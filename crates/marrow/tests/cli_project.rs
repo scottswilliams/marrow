@@ -7,7 +7,23 @@ use std::ops::Deref;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+use std::process::{Child, ExitStatus, Stdio};
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+use std::time::{Duration, Instant};
+
 const MARROW: &str = env!("CARGO_BIN_EXE_marrow");
+const VALID_MANIFEST: &str = "edition = \"2026\"\n";
+const FORMATTED_SOURCE: &str = "pub fn main() {\n    return\n}\n";
+const UNFORMATTED_SOURCE: &str = "pub fn main() {\n        return\n}\n";
+const EMPTY_IDS: &str =
+    "marrow ids v0\nmachine-written by marrow; do not edit\nhigh-water 0\nend\n";
+const MANIFEST_BYTES_LIMIT: usize = 1 << 20;
+const SOURCE_FILE_BYTES_LIMIT: u64 = 1 << 20;
+const SOURCE_TOTAL_BYTES_LIMIT: u64 = 64 << 20;
+const SOURCE_FILE_COUNT_LIMIT: usize = 4_096;
+const VISITED_ENTRY_LIMIT: usize = 65_536;
+const SOURCE_DEPTH_LIMIT: usize = 64;
 
 /// A temporary directory removed when dropped, even on a failing assertion.
 struct TempDir {
@@ -52,6 +68,213 @@ fn write(path: &Path, contents: &str) {
         fs::create_dir_all(parent).expect("create parent");
     }
     fs::write(path, contents).expect("write file");
+}
+
+fn project(root: &Path, source: &str) {
+    write(&root.join("marrow.toml"), VALID_MANIFEST);
+    write(&root.join("src").join("main.mw"), source);
+}
+
+fn assert_io_read(output: &Output) {
+    assert!(!output.status.success(), "capture must fail: {output:?}");
+    assert!(output.stdout.is_empty(), "failure wrote stdout: {output:?}");
+    let stderr = std::str::from_utf8(&output.stderr).expect("io.read stderr is valid UTF-8");
+    assert!(stderr.starts_with("io.read: "), "{stderr}");
+    assert!(stderr.ends_with('\n'), "stderr record lacks LF: {stderr:?}");
+    assert_eq!(
+        stderr.bytes().filter(|byte| *byte == b'\n').count(),
+        1,
+        "io.read must be exactly one stderr record: {stderr:?}"
+    );
+}
+
+fn assert_refused_without_writing(path: &Path, before: &str, output: &Output) {
+    assert_eq!(
+        fs::read_to_string(path).expect("read source after refusal"),
+        before,
+        "capture refusal must precede every formatter write"
+    );
+    assert_io_read(output);
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+struct ChildGuard {
+    child: Option<Child>,
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+impl ChildGuard {
+    fn spawn(command: &mut Command) -> Self {
+        command.stdout(Stdio::piped()).stderr(Stdio::piped());
+        Self {
+            child: Some(command.spawn().expect("spawn guarded child")),
+        }
+    }
+
+    fn try_wait(&mut self) -> Option<ExitStatus> {
+        self.child
+            .as_mut()
+            .expect("child remains owned")
+            .try_wait()
+            .expect("poll guarded child")
+    }
+
+    fn kill(&mut self) {
+        let Some(child) = self.child.as_mut() else {
+            return;
+        };
+        if child.try_wait().expect("poll before kill").is_some() {
+            return;
+        }
+        if let Err(error) = child.kill()
+            && child
+                .try_wait()
+                .expect("poll child after raced kill")
+                .is_none()
+        {
+            panic!("kill guarded child: {error}");
+        }
+    }
+
+    fn finish(mut self) -> Output {
+        self.child
+            .take()
+            .expect("child remains owned")
+            .wait_with_output()
+            .expect("collect guarded child")
+    }
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+impl Drop for ChildGuard {
+    fn drop(&mut self) {
+        if let Some(child) = self.child.as_mut() {
+            if matches!(child.try_wait(), Ok(None)) {
+                child.kill().ok();
+            }
+            child.wait().ok();
+        }
+    }
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+struct PermissionGuard {
+    path: PathBuf,
+    original_mode: u32,
+    restored: bool,
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+impl PermissionGuard {
+    fn make_searchable_only(path: &Path) -> Self {
+        use std::os::unix::fs::PermissionsExt;
+
+        let original_mode = fs::metadata(path)
+            .expect("inspect directory permissions")
+            .permissions()
+            .mode()
+            & 0o7777;
+        fs::set_permissions(path, fs::Permissions::from_mode(0o111))
+            .expect("make directory searchable only");
+        Self {
+            path: path.to_path_buf(),
+            original_mode,
+            restored: false,
+        }
+    }
+
+    fn restore(&mut self) {
+        use std::os::unix::fs::PermissionsExt;
+
+        fs::set_permissions(&self.path, fs::Permissions::from_mode(self.original_mode))
+            .expect("restore directory permissions");
+        self.restored = true;
+    }
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+impl Drop for PermissionGuard {
+    fn drop(&mut self) {
+        use std::os::unix::fs::PermissionsExt;
+
+        if !self.restored {
+            fs::set_permissions(&self.path, fs::Permissions::from_mode(self.original_mode)).ok();
+        }
+    }
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn create_fifo(path: &Path) {
+    let output = Command::new("/usr/bin/mkfifo")
+        .arg(path)
+        .output()
+        .expect("run mkfifo");
+    assert!(output.status.success(), "mkfifo failed: {output:?}");
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn run_with_fifo(project: &Path, fifo: &Path, payload: &str, after_open: &Path) -> Output {
+    let mut writer_command = Command::new("/bin/sh");
+    writer_command.args([
+        "-c",
+        "exec 3>\"$1\"; : >\"$2\"; printf '%s' \"$3\" >&3; exec 3>&-",
+        "marrow-fifo-writer",
+        fifo.to_str().expect("FIFO path is UTF-8"),
+        after_open.to_str().expect("sentinel path is UTF-8"),
+        payload,
+    ]);
+    let mut writer = ChildGuard::spawn(&mut writer_command);
+
+    let mut cli_command = Command::new(MARROW);
+    cli_command.args(["fmt", "--write", project.to_str().unwrap()]);
+    let mut cli = ChildGuard::spawn(&mut cli_command);
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let cli_status = cli.try_wait();
+        let writer_status = writer.try_wait();
+        match cli_status {
+            Some(status) if !status.success() => {
+                writer.kill();
+                break;
+            }
+            Some(_) if writer_status.is_some() => break,
+            _ if Instant::now() >= deadline => {
+                cli.kill();
+                writer.kill();
+                panic!(
+                    "FIFO journey exceeded its deadline: cli={cli_status:?}, writer={writer_status:?}"
+                );
+            }
+            _ => std::thread::sleep(Duration::from_millis(5)),
+        }
+    }
+
+    let writer_output = writer.finish();
+    let cli_output = cli.finish();
+    if cli_output.status.success() {
+        assert!(
+            writer_output.status.success(),
+            "current successful FIFO journey needs a successful writer: {writer_output:?}"
+        );
+    }
+    cli_output
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn run_with_deadline(args: &[&str]) -> Output {
+    let mut command = Command::new(MARROW);
+    command.args(args);
+    let mut child = ChildGuard::spawn(&mut command);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while child.try_wait().is_none() {
+        if Instant::now() >= deadline {
+            child.kill();
+            panic!("CLI journey exceeded its deadline");
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    child.finish()
 }
 
 #[test]
@@ -306,7 +529,7 @@ fn relocation_produces_identical_formatted_bytes() {
     assert_eq!(a, b);
 }
 
-#[cfg(unix)]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[test]
 fn a_symlinked_src_root_is_refused_and_external_files_stay_untouched() {
     // The containment blocker: if `src` itself is a symlink to an external
@@ -344,7 +567,7 @@ fn a_symlinked_src_root_is_refused_and_external_files_stay_untouched() {
     );
 }
 
-#[cfg(unix)]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[test]
 fn a_symlinked_source_file_is_not_followed() {
     // A symlink inside src is skipped by the physical adapter, so an unformatted
@@ -377,5 +600,429 @@ fn a_symlinked_source_file_is_not_followed() {
     assert!(
         output.status.success(),
         "the symlinked unformatted file must be skipped: {output:?}"
+    );
+}
+
+#[test]
+fn a_manifest_over_the_physical_byte_bound_is_refused_before_formatting() {
+    let temp = TempDir::new("manifest-bound");
+    let source_path = temp.join("src/main.mw");
+    project(&temp, UNFORMATTED_SOURCE);
+
+    let target_len = MANIFEST_BYTES_LIMIT + 1;
+    let mut manifest = String::with_capacity(target_len);
+    manifest.push_str(VALID_MANIFEST);
+    manifest.push('#');
+    manifest.extend(std::iter::repeat_n(
+        'x',
+        target_len
+            .checked_sub(VALID_MANIFEST.len() + 2)
+            .expect("manifest has room for comment framing"),
+    ));
+    manifest.push('\n');
+    assert_eq!(manifest.len(), target_len);
+    write(&temp.join("marrow.toml"), &manifest);
+
+    let output = run(&["fmt", "--write", temp.to_str().unwrap()]);
+    assert_refused_without_writing(&source_path, UNFORMATTED_SOURCE, &output);
+}
+
+#[test]
+fn a_missing_manifest_at_a_nested_root_keeps_its_exact_io_read_record() {
+    let temp = TempDir::new("missing-nested-manifest");
+    let project_root = temp.join("nested/project");
+    let retained = project_root.join("src/main.mw");
+    write(&retained, UNFORMATTED_SOURCE);
+    let manifest_path = project_root.join("marrow.toml");
+    let os_error = fs::read_to_string(&manifest_path).expect_err("manifest remains absent");
+
+    let output = run(&["fmt", "--write", project_root.to_str().unwrap()]);
+    assert_eq!(
+        fs::read_to_string(&retained).expect("read source after refusal"),
+        UNFORMATTED_SOURCE,
+        "a missing manifest must refuse before formatting"
+    );
+    assert!(output.stdout.is_empty(), "failure wrote stdout: {output:?}");
+    assert!(!output.status.success(), "missing manifest must fail");
+    assert_eq!(
+        String::from_utf8(output.stderr).expect("stderr is UTF-8"),
+        format!(
+            "io.read: failed to read {}: {os_error}\n",
+            manifest_path.display()
+        )
+    );
+}
+
+#[test]
+fn a_located_malformed_manifest_keeps_its_exact_cli_record() {
+    const MALFORMED_MANIFEST: &str = "edition = [\n";
+
+    let temp = TempDir::new("located-malformed-manifest");
+    let retained = temp.join("src/main.mw");
+    project(&temp, UNFORMATTED_SOURCE);
+    let manifest_path = temp.join("marrow.toml");
+    write(&manifest_path, MALFORMED_MANIFEST);
+    let error = marrow_project::Manifest::parse(MALFORMED_MANIFEST)
+        .expect_err("fixture must be malformed TOML");
+    let position = error.position.expect("malformed TOML has a location");
+
+    let output = run(&["fmt", "--write", temp.to_str().unwrap()]);
+    assert_eq!(
+        fs::read_to_string(&retained).expect("read source after refusal"),
+        UNFORMATTED_SOURCE,
+        "manifest failure must precede formatter writes"
+    );
+    assert!(output.stdout.is_empty(), "failure wrote stdout: {output:?}");
+    assert!(!output.status.success(), "malformed manifest must fail");
+    assert_eq!(
+        String::from_utf8(output.stderr).expect("stderr is UTF-8"),
+        format!(
+            "{}:{}:{}: {}: {}\n",
+            manifest_path.display(),
+            position.line,
+            position.column,
+            error.code,
+            error.message
+        )
+    );
+}
+
+#[test]
+fn a_visited_entry_over_the_physical_bound_is_refused_before_retention() {
+    let temp = TempDir::new("visited-bound");
+    write(&temp.join("marrow.toml"), VALID_MANIFEST);
+    let source_root = temp.join("src");
+    fs::create_dir(&source_root).expect("create source root");
+    for index in 0..VISITED_ENTRY_LIMIT {
+        fs::File::create(source_root.join(format!("ignored-{index:05}")))
+            .expect("create ignored source-tree entry");
+    }
+    let retained = source_root.join("main.mw");
+    write(&retained, UNFORMATTED_SOURCE);
+
+    let output = run(&["fmt", "--write", temp.to_str().unwrap()]);
+    assert_refused_without_writing(&retained, UNFORMATTED_SOURCE, &output);
+}
+
+#[test]
+fn a_directory_beyond_the_physical_depth_bound_is_refused_before_descent() {
+    let temp = TempDir::new("depth-bound");
+    write(&temp.join("marrow.toml"), VALID_MANIFEST);
+    let retained = temp.join("src/00-retained.mw");
+    write(&retained, UNFORMATTED_SOURCE);
+    let mut deepest = temp.join("src");
+    deepest.push("deep");
+    fs::create_dir(&deepest).expect("create first nested source directory");
+    for _ in 1..=SOURCE_DEPTH_LIMIT {
+        deepest.push("d");
+        fs::create_dir(&deepest).expect("create nested source directory");
+    }
+
+    let output = run(&["fmt", "--write", temp.to_str().unwrap()]);
+    assert_refused_without_writing(&retained, UNFORMATTED_SOURCE, &output);
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[test]
+fn a_symlinked_manifest_is_refused_before_formatting() {
+    use std::os::unix::fs::symlink;
+
+    let temp = TempDir::new("manifest-symlink");
+    let project_root = temp.join("app");
+    let source_path = project_root.join("src/main.mw");
+    write(&source_path, UNFORMATTED_SOURCE);
+    let outside = temp.join("outside.toml");
+    write(&outside, VALID_MANIFEST);
+    symlink(&outside, project_root.join("marrow.toml")).expect("symlink manifest");
+
+    let output = run(&["fmt", "--write", project_root.to_str().unwrap()]);
+    assert_refused_without_writing(&source_path, UNFORMATTED_SOURCE, &output);
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[test]
+fn a_hardlinked_manifest_is_refused_before_formatting() {
+    let temp = TempDir::new("manifest-hardlink");
+    let project_root = temp.join("app");
+    let source_path = project_root.join("src/main.mw");
+    write(&source_path, UNFORMATTED_SOURCE);
+    let outside = temp.join("outside.toml");
+    write(&outside, VALID_MANIFEST);
+    fs::hard_link(&outside, project_root.join("marrow.toml")).expect("hardlink manifest");
+
+    let output = run(&["fmt", "--write", project_root.to_str().unwrap()]);
+    assert_refused_without_writing(&source_path, UNFORMATTED_SOURCE, &output);
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[test]
+fn a_hardlinked_identity_ledger_is_refused_before_formatting() {
+    let temp = TempDir::new("ids-hardlink");
+    let source_path = temp.join("src/main.mw");
+    project(&temp, UNFORMATTED_SOURCE);
+    let outside = temp.join("outside.ids");
+    write(&outside, EMPTY_IDS);
+    fs::hard_link(&outside, temp.join("marrow.ids")).expect("hardlink identity ledger");
+
+    let output = run(&["fmt", "--write", temp.to_str().unwrap()]);
+    assert_refused_without_writing(&source_path, UNFORMATTED_SOURCE, &output);
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[test]
+fn a_hardlinked_selected_source_is_refused_before_formatting() {
+    let temp = TempDir::new("source-hardlink");
+    write(&temp.join("marrow.toml"), VALID_MANIFEST);
+    let outside = temp.join("outside.mw");
+    write(&outside, UNFORMATTED_SOURCE);
+    let source_path = temp.join("src/main.mw");
+    fs::create_dir_all(source_path.parent().unwrap()).expect("create source root");
+    fs::hard_link(&outside, &source_path).expect("hardlink source");
+
+    let output = run(&["fmt", "--write", temp.to_str().unwrap()]);
+    assert_refused_without_writing(&outside, UNFORMATTED_SOURCE, &output);
+    assert_eq!(
+        fs::read_to_string(&source_path).expect("read selected source"),
+        UNFORMATTED_SOURCE
+    );
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[test]
+fn a_manifest_fifo_is_refused_without_waiting_for_its_body() {
+    let temp = TempDir::new("manifest-fifo");
+    let retained = temp.join("src/main.mw");
+    write(&retained, UNFORMATTED_SOURCE);
+    let fifo = temp.join("marrow.toml");
+    create_fifo(&fifo);
+    let after_open = temp.join("manifest.after-open");
+
+    let output = run_with_fifo(&temp, &fifo, VALID_MANIFEST, &after_open);
+    let without_writer = run_with_deadline(&["fmt", "--write", temp.to_str().unwrap()]);
+    assert!(
+        !after_open.exists(),
+        "refusing the manifest FIFO must not let the writer open it"
+    );
+    assert_refused_without_writing(&retained, UNFORMATTED_SOURCE, &output);
+    assert_refused_without_writing(&retained, UNFORMATTED_SOURCE, &without_writer);
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[test]
+fn an_identity_ledger_fifo_is_refused_without_waiting_for_its_body() {
+    let temp = TempDir::new("ids-fifo");
+    let retained = temp.join("src/main.mw");
+    project(&temp, UNFORMATTED_SOURCE);
+    let fifo = temp.join("marrow.ids");
+    create_fifo(&fifo);
+    let after_open = temp.join("ids.after-open");
+
+    let output = run_with_fifo(&temp, &fifo, EMPTY_IDS, &after_open);
+    let without_writer = run_with_deadline(&["fmt", "--write", temp.to_str().unwrap()]);
+    assert!(
+        !after_open.exists(),
+        "refusing the identity-ledger FIFO must not let the writer open it"
+    );
+    assert_refused_without_writing(&retained, UNFORMATTED_SOURCE, &output);
+    assert_refused_without_writing(&retained, UNFORMATTED_SOURCE, &without_writer);
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[test]
+fn a_searchable_but_unreadable_root_is_refused_at_physical_admission() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let temp = TempDir::new("search-only-root");
+    let retained = temp.join("src/main.mw");
+    project(&temp, UNFORMATTED_SOURCE);
+    let mut permissions = PermissionGuard::make_searchable_only(&temp);
+
+    let output = run(&["fmt", "--write", temp.to_str().unwrap()]);
+    permissions.restore();
+    assert_eq!(
+        fs::metadata(&*temp)
+            .expect("inspect restored directory permissions")
+            .permissions()
+            .mode()
+            & 0o7777,
+        permissions.original_mode,
+        "the normal path must restore permissions before fixture cleanup"
+    );
+    drop(permissions);
+    assert_refused_without_writing(&retained, UNFORMATTED_SOURCE, &output);
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[test]
+fn a_symlinked_identity_ledger_retains_its_existing_typed_refusal() {
+    use std::os::unix::fs::symlink;
+
+    let temp = TempDir::new("ids-symlink");
+    write(&temp.join("marrow.toml"), VALID_MANIFEST);
+    let outside = temp.join("outside.ids");
+    write(&outside, EMPTY_IDS);
+    symlink(&outside, temp.join("marrow.ids")).expect("symlink identity ledger");
+
+    let output = run(&["fmt", "--check", temp.to_str().unwrap()]);
+    assert!(
+        !output.status.success(),
+        "linked ledger must fail: {output:?}"
+    );
+    assert_eq!(
+        String::from_utf8(output.stderr).expect("stderr is UTF-8"),
+        format!(
+            "project.ids_corrupt: {} is a symlink; the identity artifact must be a real file inside the project\n",
+            temp.join("marrow.ids").display()
+        )
+    );
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[test]
+fn a_symlinked_source_directory_remains_ignored() {
+    use std::os::unix::fs::symlink;
+
+    let temp = TempDir::new("source-dir-symlink");
+    project(&temp, FORMATTED_SOURCE);
+    let outside = temp.join("outside");
+    write(&outside.join("unformatted.mw"), UNFORMATTED_SOURCE);
+    symlink(&outside, temp.join("src/linked")).expect("symlink nested source directory");
+
+    let output = run(&["fmt", "--check", temp.to_str().unwrap()]);
+    assert!(
+        output.status.success(),
+        "a linked directory below src remains ignored: {output:?}"
+    );
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[test]
+fn a_symlinked_project_root_alias_remains_accepted() {
+    use std::os::unix::fs::symlink;
+
+    let temp = TempDir::new("root-alias");
+    let project_root = temp.join("project");
+    project(&project_root, FORMATTED_SOURCE);
+    let alias = temp.join("alias");
+    symlink(&project_root, &alias).expect("symlink project root alias");
+
+    let output = run(&["fmt", "--check", alias.to_str().unwrap()]);
+    assert!(
+        output.status.success(),
+        "root alias must remain accepted: {output:?}"
+    );
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[test]
+fn a_fifo_below_src_remains_an_ignored_special_entry() {
+    let temp = TempDir::new("ignored-source-fifo");
+    project(&temp, FORMATTED_SOURCE);
+    create_fifo(&temp.join("src/ignored.mw"));
+
+    let output = run_with_deadline(&["fmt", "--check", temp.to_str().unwrap()]);
+    assert!(
+        output.status.success(),
+        "an ignored special entry must never be opened: {output:?}"
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_non_utf8_source_path_retains_its_existing_exact_refusal() {
+    use std::ffi::OsString;
+    use std::os::unix::ffi::OsStringExt;
+
+    let temp = TempDir::new("non-utf8-source");
+    write(&temp.join("marrow.toml"), VALID_MANIFEST);
+    let path = temp
+        .join("src")
+        .join(OsString::from_vec(b"bad\xff.mw".to_vec()));
+    fs::create_dir_all(path.parent().unwrap()).expect("create source root");
+    fs::write(&path, FORMATTED_SOURCE).expect("write non-UTF-8 source path");
+
+    let output = run(&["fmt", "--check", temp.to_str().unwrap()]);
+    assert!(!output.status.success(), "non-UTF-8 source path must fail");
+    assert_eq!(
+        String::from_utf8(output.stderr).expect("stderr is UTF-8"),
+        format!(
+            "project.source_path: source path {} is not valid UTF-8\n",
+            path.display()
+        )
+    );
+}
+
+#[test]
+fn existing_source_file_byte_bound_keeps_its_exact_cli_rendering() {
+    let temp = TempDir::new("source-file-bound");
+    write(&temp.join("marrow.toml"), VALID_MANIFEST);
+    let path = temp.join("src/main.mw");
+    fs::create_dir_all(path.parent().unwrap()).expect("create source root");
+    let file = fs::File::create(&path).expect("create oversized source");
+    file.set_len(SOURCE_FILE_BYTES_LIMIT + 1)
+        .expect("size oversized source");
+
+    let output = run(&["fmt", "--check", temp.to_str().unwrap()]);
+    assert!(!output.status.success(), "oversized source must fail");
+    assert_eq!(
+        String::from_utf8(output.stderr).expect("stderr is UTF-8"),
+        format!(
+            "project.capture_limit: `src/main.mw` capture is {}, over the per-file byte limit ({SOURCE_FILE_BYTES_LIMIT})\n",
+            SOURCE_FILE_BYTES_LIMIT + 1
+        )
+    );
+}
+
+#[test]
+fn existing_source_file_count_bound_keeps_its_exact_cli_rendering() {
+    let temp = TempDir::new("source-file-count");
+    write(&temp.join("marrow.toml"), VALID_MANIFEST);
+    let source_root = temp.join("src");
+    fs::create_dir(&source_root).expect("create source root");
+    for index in 0..=SOURCE_FILE_COUNT_LIMIT {
+        fs::File::create(source_root.join(format!("{index:04}.mw")))
+            .expect("create bounded source");
+    }
+    let offender = source_root.join(format!("{SOURCE_FILE_COUNT_LIMIT:04}.mw"));
+
+    let output = run(&["fmt", "--check", temp.to_str().unwrap()]);
+    assert!(!output.status.success(), "too many sources must fail");
+    assert_eq!(
+        String::from_utf8(output.stderr).expect("stderr is UTF-8"),
+        format!(
+            "project.capture_limit: `{}` capture is {}, over the source-file limit ({SOURCE_FILE_COUNT_LIMIT})\n",
+            offender.display(),
+            SOURCE_FILE_COUNT_LIMIT + 1
+        )
+    );
+}
+
+#[test]
+fn existing_source_total_byte_bound_keeps_its_exact_cli_rendering() {
+    let temp = TempDir::new("source-total-bound");
+    write(&temp.join("marrow.toml"), VALID_MANIFEST);
+    let source_root = temp.join("src");
+    fs::create_dir(&source_root).expect("create source root");
+    let full_files = SOURCE_TOTAL_BYTES_LIMIT / SOURCE_FILE_BYTES_LIMIT;
+    for index in 0..full_files {
+        let path = source_root.join(format!("{index:04}.mw"));
+        let file = fs::File::create(path).expect("create full bounded source");
+        file.set_len(SOURCE_FILE_BYTES_LIMIT)
+            .expect("size full bounded source");
+    }
+    let offender = source_root.join(format!("{full_files:04}.mw"));
+    fs::write(&offender, [0]).expect("write limit-plus-one byte");
+
+    let output = run(&["fmt", "--check", temp.to_str().unwrap()]);
+    assert!(
+        !output.status.success(),
+        "source total over bound must fail"
+    );
+    assert_eq!(
+        String::from_utf8(output.stderr).expect("stderr is UTF-8"),
+        format!(
+            "project.capture_limit: `src/{full_files:04}.mw` capture is {}, over the project byte limit ({SOURCE_TOTAL_BYTES_LIMIT})\n",
+            SOURCE_TOTAL_BYTES_LIMIT + 1
+        )
     );
 }
