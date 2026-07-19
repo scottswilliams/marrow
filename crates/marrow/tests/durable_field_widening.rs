@@ -9,8 +9,9 @@
 //! stable per-member codes. A resource with a widened (struct/enum/`Option`) field
 //! completes its identity, verifies, and is executable — the durable value codec frames
 //! the composite inline in the one field-leaf cell (end-to-end store/read coverage lives
-//! in `durable_widened_values.rs`); a nominal field stays severed and a collection field
-//! is a precise `check.unsupported`.
+//! in `durable_widened_values.rs`). A nominal field is admitted and uses its base `int`
+//! shape while operations over its root remain parked; a collection field is a precise
+//! `check.unsupported`.
 
 use marrow_compile::{Compiled, SourceDiagnostic};
 use marrow_image::{ImageType, Scalar};
@@ -339,7 +340,7 @@ fn appending_an_enum_member_changes_the_identity_and_mints_a_fresh_id() {
         ACCOUNT_SOURCE.replace("\x20   admin\n", "\x20   admin\n\x20   auditor\n");
 
     // Without the fresh member id the append fails precisely (append cannot reuse a
-    // sibling's identity — every anchor needs its own row).
+    // sibling's identity — every anchor needs its own ledger entry).
     let diagnostics = compile(appended_source.as_str(), ACCOUNT_IDS).expect_err("needs a fresh id");
     assert!(
         diagnostics

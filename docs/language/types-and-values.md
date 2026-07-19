@@ -127,9 +127,12 @@ pub fn tryAge(n: int): Age? {
 Nominal values are ordinary copied values with the same value semantics as
 `int`. Nominal type names share the project-wide type namespace with aliases
 and resource names; a collision reports `check.name_conflict`. `Name?` is an
-ordinary optional. Nominal types are not yet admitted as resource field types,
-store key types, or constant types; those positions report `check.unsupported`
-until their lanes land.
+ordinary optional. A nominal int type is admitted as a resource field. It retains
+its nominal source type, while its image record and durable stored shape use base
+`int`; sparse requiredness is recorded separately. Operations over a root containing
+a nominal field remain unimplemented and report `check.unsupported`. Nominal types
+are not admitted as store-root keys, branch keys, or module-constant types; each
+position reports `check.unsupported`.
 
 ## Temporal Types
 
@@ -522,15 +525,16 @@ pub fn label(): string {
 }
 ```
 
-A field type is a scalar, a closed enum value type (a user `enum` or a built-in
-`Option`/`Result`), or an alias that expands to one. A user-enum field holds a
-local enum value, so a `match` may dispatch on a field read. A resource backing a
-`store` may hold a scalar field or a widened value field — a dense `struct`/record,
-a closed `enum`, or an `Option`/`Result` — each stored inline in its field-leaf
-cell and round-tripped as a runtime value. A nominal-typed stored field reports
-`check.unsupported` until its lane lands, and a collection is never stored inline in
-a field — a collection belongs under a keyed `branch`, so a collection field is
-rejected.
+A field type is a scalar, a nominal int type, a dense `struct`, a closed enum value
+type (a user `enum` or a built-in `Option`/`Result`), or an alias that expands to one.
+A user-enum field holds a local enum value, so a `match` may dispatch on a field read.
+A resource backing a `store` may hold a scalar or nominal field, or a widened value
+field — a dense `struct`/record, a closed `enum`, or an `Option`/`Result` — each stored
+inline in its field-leaf cell and round-tripped as a runtime value. A nominal field
+retains its source type while its image record and durable stored shape use base
+`int`. Operations over a root containing one remain unimplemented and report
+`check.unsupported`. A collection is never stored inline in a field — a collection
+belongs under a keyed `branch`, so a collection field is rejected.
 
 ## Structs
 

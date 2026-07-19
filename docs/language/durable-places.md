@@ -8,7 +8,7 @@ key, an engine handle, or a transaction object.
 
 ## Store Declarations
 
-A keyed store attaches a resource type to one typed identity column:
+A keyed store attaches a resource type to one typed identity key component:
 
 ```mw
 module docs::durable
@@ -31,11 +31,11 @@ pub fn title(id: int): string? {
 }
 ```
 
-Each identity column is drawn from the closed orderable durable-key scalar set:
-`int`, `string`, `bool`, `bytes`, `date`, or `instant` (a nominal type over one
-of these is admitted through its base scalar). `duration` is a span rather than
-an identity and is not a durable key. A resource declares fields that are
-`required` or sparse; a sparse field may be absent. The store root is
+Each identity key component is drawn from the closed orderable durable-key scalar
+set: `int`, `string`, `bool`, `bytes`, `date`, or `instant`. Nominal source types
+are not durable identity keys and report `check.unsupported`. `duration` is a span
+rather than an identity and is not a durable key. A resource declares fields that
+are `required` or sparse; a sparse field may be absent. The store root is
 project-wide: any module uses the declared root shape directly, and function
 visibility does not change root access.
 
@@ -75,8 +75,8 @@ resource Settings {
 store ^settings: Settings
 ```
 
-A keyed tuple has one or more ordered key columns (up to eight); a composite key
-identifies each entry by the whole tuple in column order:
+A keyed tuple has one or more ordered key components (up to eight); a composite key
+identifies each entry by the whole tuple in component order:
 
 ```mw
 module docs::durable_composite
@@ -98,17 +98,18 @@ pub fn gradeOf(student: string, course: string): int? {
 }
 ```
 
-A composite key addresses each entry by its whole tuple in column order, so
+A composite key addresses each entry by its whole tuple in component order, so
 `^enrollments[student, course]` and `^enrollments[course, student]` are distinct
-entries. Every whole-entry and field operation supplies one key operand per column, in
-declaration order; a `branch` may likewise declare more than one key column. Bounded
-traversal, however, iterates a single key column, so a `for` head over a composite-keyed
-root or branch layer is the typed `check.unsupported` rejection (see
+entries. Every whole-entry and field operation supplies one key operand per key
+component, in declaration order; a `branch` may likewise declare more than one key
+component. Bounded traversal, however, iterates a single key component, so a `for`
+head over a composite-keyed root or branch layer is the typed `check.unsupported`
+rejection (see
 [Traversal](traversal-and-indexes.md#bounded-durable-traversal)).
 
-Each root — singleton, single-column, or composite — is a distinct durable graph
+Each root — singleton, singly keyed, or composite — is a distinct durable graph
 node with its own complete identity (its placement, its stored product, one
-identity per key column, and one per stored field; see
+identity per key component, and one per stored field; see
 [Durable Identity](#durable-identity)).
 
 A stored resource may also declare static `group` namespaces and keyed `branch`
@@ -129,15 +130,16 @@ store, so a durable export does not run from `marrow run` (it reports the typed
 checked and their identity is complete; see [Project status](../status.md).
 
 Within that checked language, the *flat* keyed root is the form whose operations the
-compiler fully lowers: a keyed root — one or more key columns — whose fields are each a
+compiler fully lowers: a keyed root — one or more key components — whose fields are
+each a
 plain scalar or a widened value (a dense `struct`/record, a closed `enum`, or an
 `Option`/`Result`), whose entries are read and written through the operations below. A
 widened field value is framed inline in its single field-leaf cell and round-trips as a
 runtime value. Such a root's root-level `group` members (of scalar or widened leaves, see
-[Groups](#groups)) and its `branch` placements, with one or more key columns each, are
+[Groups](#groups)) and its `branch` placements, with one or more key components each, are
 executable in the same way; branches nest to any depth (see
 [Keyed branches](#keyed-branches)).
-A singleton root (no key columns), a root whose resource declares a **nominal-typed**
+A singleton root (no key components), a root whose resource declares a **nominal-typed**
 field, or a group nested in a branch or in another group declares and verifies its full
 identity, but its read and write operations are not yet lowered — an operation over one
 is the typed `check.unsupported` rejection rather than a silent drop, until the remaining
@@ -156,15 +158,15 @@ groups, or on one of its scalar-field branches at any depth, seals as executable
 other site — over a group nested in a branch or another group, a nominal-typed field, or a
 non-flat root — seals with a complete identity but parks, so its concrete address is
 checked and recorded while its execution waits for the remaining kernel. A group leaf has
-no site of its own: it is reached through its whole-group site. The site table holds one
+no site of its own: it is reached through its whole-group site. The site registry holds one
 entry per graph node regardless of how many operations reference it, and appending a
 sparse field adds one field-leaf site without disturbing any existing site.
 
 ## Durable Identity
 
 Every durable declaration — the application, a store root, each of its key
-columns, the stored resource, each stored field, each static `group` namespace,
-each keyed `branch` placement together with its own key columns and fields, and
+components, the stored resource, each stored field, each static `group` namespace,
+each keyed `branch` placement together with its own key components and fields, and
 each closed `enum` reachable through a durable field (its sum identity and one
 member identity per variant) — has its own durable
 identity: an opaque 128-bit id minted once from OS entropy and recorded in the
@@ -180,18 +182,18 @@ diagnostic names the missing identity.
 In the ledger model a retired identity is recorded as a tombstone and is never
 reused, so removing a declaration and re-adding its name yields a fresh
 identity. The only mint that exists today, `marrow run`, is additive-only: it
-mints a row for each anchor that lacks one and never tombstones. So under the
+mints a ledger entry for each anchor that lacks one and never tombstones. So under the
 current mint a rename mints a fresh identity for the new name and leaves the old
-row live and orphaned, and deleting a declaration then re-adding the same path
+ledger entry live and orphaned, and deleting a declaration then re-adding the same path
 readopts the old identity. This is harmless in the current trough — no
 persistent store is reachable, so no stored data is bound to a stale or readopted
 identity. The accepted apply action (future) is what classifies a rename as an
 anchor move, records a genuine removal as a tombstone, and surfaces an orphaned
-row.
+ledger entry.
 
 A program's whole durable graph additionally carries a stable 32-byte
 **durable-contract identity**, computed over the graph's ledger ids and shape:
-each root's ordered key tuple — scalar and identity per column — and its
+each root's ordered key tuple — scalar and identity per key component — and its
 resource's ordered **member tree**. The member tree is the resource's stored
 fields (the `required` flag and the stored value shape per field) interleaved
 with its static `group` namespaces (each an identity and its own member tree) and
@@ -201,11 +203,11 @@ closed-enum members; a durable-reachable enum contributes its sum identity and
 one member identity per variant, so appending an enum member (which preserves the
 existing members' identities and order) is a distinct evolution from renaming or
 re-typing one. A nested struct's leaves are structure, not separate durable
-declarations, so they mint no identities of their own. Key-column and member
+declarations, so they mint no identities of their own. Key-component and member
 order are part of the identity. The compiler derives it from
 the resolved
 graph and records it in the program image; the independent verifier rebuilds
-the descriptor from the image tables, recomputes the identity, and rejects any
+the descriptor from the image sections, recomputes the identity, and rejects any
 image whose recorded identity does not match its graph. Because the descriptor
 carries ledger ids rather than names, an anchor move preserves the durable
 identity — the ledger anchor moves, the id stays — while every semantic change (a
@@ -214,7 +216,7 @@ delete-then-re-add onto a fresh id) changes it. These are ledger-model propertie
 the conformance tests pin. Spelling and declaration order that leave the graph
 unchanged leave the identity unchanged. A rename becomes an anchor move only under
 the accepted apply action (future); the additive-only `run` mint instead leaves a
-renamed declaration's old row live, as described above. Operation sites — the
+renamed declaration's old ledger entry live, as described above. Operation sites — the
 individual read and write points over the graph — are not part of the identity,
 so adding or removing one leaves it stable.
 
@@ -520,9 +522,9 @@ complete, but an operation over it reports the typed `check.unsupported` result.
 ## Keyed Branches
 
 A resource may declare a keyed `branch`: a nested keyed subtree with its own key
-column and stored fields (see [Resources](resources.md#groups-and-branches)). A
-`branch` keyed by one column and holding only scalar fields is executable, and its own
-members may include further such branches, so a chain of single-column scalar-field
+component and stored fields (see [Resources](resources.md#groups-and-branches)). A
+`branch` keyed by one component and holding only scalar fields is executable, and its
+own members may include further such branches, so a chain of singly keyed scalar-field
 branches is executable to any depth. Each level's entries are addressed by extending the
 parent's key-path with the branch key — `^root[key].branch[bkey]`,
 `^root[key].branch[bkey].sub[skey]` — and the same operations apply at every level:
