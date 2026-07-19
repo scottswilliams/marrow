@@ -155,12 +155,15 @@ stored field (top-level, group-scoped, or branch-scoped) — and the verifier se
 by resolving its concrete address against the graph it independently reconstructs. A site
 on the flat executable root (its fields scalar or widened), on one of its root-level
 groups, or on one of its scalar-field branches at any depth, seals as executable; every
-other site — over a group nested in a branch or another group, a nominal-typed field, or a
-non-flat root — seals with a complete identity but parks, so its concrete address is
-checked and recorded while its execution waits for the remaining kernel. A group leaf has
-no site of its own: it is reached through its whole-group site. The site registry holds one
-entry per graph node regardless of how many operations reference it, and appending a
-sparse field adds one field-leaf site without disturbing any existing site.
+other site — over a group nested in a branch or another group, or over a non-flat root —
+seals with a complete identity but parks, so its concrete address is checked and recorded
+while its execution waits for the remaining kernel. A nominal source field has a separate
+compiler boundary: an operation over it reports `check.unsupported` during lowering
+without emitting executable operation bytecode. After the nominal source type erases to
+its base scalar in the image, the verifier classifies the generated sites as flat. A group
+leaf has no site of its own: it is reached through its whole-group site. The site registry
+holds one entry per graph node regardless of how many operations reference it, and
+appending a sparse field adds one field-leaf site without disturbing any existing site.
 
 ## Durable Identity
 
