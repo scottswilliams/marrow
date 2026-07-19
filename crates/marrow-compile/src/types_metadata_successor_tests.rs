@@ -263,22 +263,6 @@ impl<E> GraphOutcome for Result<ValueGraph, E> {
     }
 }
 
-trait DurableBuildOutcome {
-    fn rejected(self) -> bool;
-}
-
-impl DurableBuildOutcome for DurableRegistry {
-    fn rejected(self) -> bool {
-        false
-    }
-}
-
-impl<T, E> DurableBuildOutcome for Result<T, E> {
-    fn rejected(self) -> bool {
-        self.is_err()
-    }
-}
-
 fn mint_ready(registry: &TypeRegistry, draft: &mut ImageDraft, template: usize) -> TypeInstId {
     registry
         .mint_type_instance(draft, template, &[GArg::Scalar(ScalarType::Int)], site())
@@ -530,7 +514,11 @@ fn invalid_ready_option_argument_stops_before_durable_anchor_resolution() {
         &mut diagnostics,
     );
 
-    assert!(outcome.rejected());
+    assert!(matches!(
+        outcome,
+        Err(GenericInvariant::TypeArgumentTargetMissing(target))
+            if target == GArg::Struct(orphan)
+    ));
     assert_eq!(owner_snapshot(&registry), owner_before);
     assert_eq!(draft_fingerprint(&draft), draft_before);
     assert!(diagnostics.is_empty());
@@ -1078,4 +1066,706 @@ fn valid_generic_anchor_bytes_remain_stable() {
             .as_deref(),
         Some("Option[int]")
     );
+}
+
+fn take_resolve_invariant<T>(result: Result<T, ResolveError>) -> GenericInvariant {
+    match result {
+        Err(ResolveError::Invariant(invariant)) => invariant,
+        Err(ResolveError::Refusal(_)) => {
+            panic!("compiler metadata corruption must not become a semantic refusal")
+        }
+        Ok(_) => panic!("compiler metadata corruption must fail closed"),
+    }
+}
+
+fn take_reader_invariant<T>(result: Result<T, GenericInvariant>) -> GenericInvariant {
+    match result {
+        Err(invariant) => invariant,
+        Ok(_) => panic!("malformed Ready metadata must not reach a semantic reader"),
+    }
+}
+
+fn invariant_family_tag(invariant: GenericInvariant) -> u8 {
+    match invariant {
+        GenericInvariant::ProofClone(error) => {
+            let _ = error;
+            0
+        }
+        GenericInvariant::CacheState(state) => {
+            let _ = state;
+            1
+        }
+        GenericInvariant::ReservedTemplateMissing(reserved) => {
+            let _ = reserved;
+            2
+        }
+        GenericInvariant::TypeTemplateMissing(template) => {
+            let _ = template;
+            3
+        }
+        GenericInvariant::TypeArgumentCountMismatch {
+            template,
+            expected,
+            actual,
+        } => {
+            let _ = (template, expected, actual);
+            4
+        }
+        GenericInvariant::TemplateKindMismatch {
+            template,
+            expected,
+            actual,
+        } => {
+            let _ = (template, expected, actual);
+            5
+        }
+        GenericInvariant::TypeBodyKindMismatch { id, body } => {
+            let _ = (id, body);
+            6
+        }
+        GenericInvariant::ReadyBodyMissing(id) => {
+            let _ = id;
+            7
+        }
+        GenericInvariant::ReadyEnumVariantMissing {
+            id,
+            template,
+            variant,
+        } => {
+            let _ = (id, template, variant);
+            8
+        }
+        GenericInvariant::TypeArgumentTargetMissing(target) => {
+            let _ = target;
+            9
+        }
+        GenericInvariant::TypeArgumentParameter(param) => {
+            let _ = param;
+            10
+        }
+        GenericInvariant::CollectionIndexMismatch {
+            kind,
+            cache_index,
+            draft_index,
+        } => {
+            let _ = (kind, cache_index, draft_index);
+            11
+        }
+    }
+}
+
+#[test]
+fn generic_invariant_family_is_closed() {
+    assert_eq!(
+        invariant_family_tag(GenericInvariant::TypeTemplateMissing(7)),
+        3
+    );
+}
+
+#[test]
+fn template_for_args_reports_exact_missing_and_count_causes() {
+    let registry = test_registry(vec![struct_template("Pair", &["T", "U"])]);
+    let before = owner_snapshot(&registry);
+
+    assert!(matches!(
+        registry.template_for_args(usize::MAX, &[]),
+        Err(GenericInvariant::TypeTemplateMissing(usize::MAX))
+    ));
+    assert!(matches!(
+        registry.template_for_args(0, &[]),
+        Err(GenericInvariant::TypeArgumentCountMismatch {
+            template: 0,
+            expected: 2,
+            actual: 0,
+        })
+    ));
+    assert!(matches!(
+        registry.template_for_args(
+            0,
+            &[
+                GArg::Scalar(ScalarType::Int),
+                GArg::Scalar(ScalarType::Bool),
+                GArg::Scalar(ScalarType::Text),
+            ],
+        ),
+        Err(GenericInvariant::TypeArgumentCountMismatch {
+            template: 0,
+            expected: 2,
+            actual: 3,
+        })
+    ));
+    assert!(
+        registry
+            .template_for_args(
+                0,
+                &[
+                    GArg::Scalar(ScalarType::Int),
+                    GArg::Scalar(ScalarType::Bool),
+                ],
+            )
+            .is_ok()
+    );
+    assert_eq!(owner_snapshot(&registry), before);
+}
+
+#[test]
+fn reserved_result_application_reports_missing_and_wrong_kind_causes() {
+    let registry = test_registry(Vec::new());
+    assert_eq!(
+        take_resolve_invariant(registry.application_template("Result")),
+        GenericInvariant::ReservedTemplateMissing(Reserved::Result)
+    );
+
+    let mut result = struct_template("Result", &["T", "E"]);
+    result.reserved = Some(Reserved::Result);
+    let registry = test_registry(vec![result]);
+    assert_eq!(
+        take_resolve_invariant(registry.application_template("Result")),
+        GenericInvariant::TemplateKindMismatch {
+            template: 0,
+            expected: TypeInstKind::Enum,
+            actual: TypeInstKind::Struct,
+        }
+    );
+}
+
+fn assert_exact_target_invariant(registry: TypeRegistry, mut draft: ImageDraft, target: GArg) {
+    let owner_before = owner_snapshot(&registry);
+    let draft_before = draft_fingerprint(&draft);
+    let invariant =
+        take_resolve_invariant(registry.mint_type_instance(&mut draft, 0, &[target], site()));
+
+    assert_eq!(
+        invariant,
+        GenericInvariant::TypeArgumentTargetMissing(target)
+    );
+    assert_eq!(owner_snapshot(&registry), owner_before);
+    assert_eq!(draft_fingerprint(&draft), draft_before);
+}
+
+#[test]
+fn argument_targets_report_exact_private_causes_without_publication() {
+    let mut record_draft = ImageDraft::new();
+    let record_name = record_draft.intern_string("OrphanRecord");
+    let record = record_draft.add_record_type(RecordTypeDef {
+        name: record_name,
+        fields: Vec::new(),
+    });
+    let mut enum_draft = ImageDraft::new();
+    let enum_name = enum_draft.intern_string("OrphanEnum");
+    let enum_id = enum_draft.add_enum_type(EnumTypeDef {
+        name: enum_name,
+        variants: Vec::new(),
+    });
+
+    assert_exact_target_invariant(
+        test_registry(vec![struct_template("Box", &["T"])]),
+        ImageDraft::new(),
+        GArg::Nominal(NominalId(0)),
+    );
+    assert_exact_target_invariant(
+        test_registry(vec![struct_template("Box", &["T"])]),
+        record_draft.clone(),
+        GArg::Struct(record),
+    );
+    assert_exact_target_invariant(
+        test_registry(vec![struct_template("Box", &["T"])]),
+        record_draft,
+        GArg::Group(record),
+    );
+    assert_exact_target_invariant(
+        test_registry(vec![struct_template("Box", &["T"])]),
+        enum_draft,
+        GArg::Enum(enum_id),
+    );
+    assert_exact_target_invariant(
+        test_registry(vec![struct_template("Box", &["T"])]),
+        ImageDraft::new(),
+        GArg::Collection(0),
+    );
+
+    let (group_registry, group_draft, _, group_id) = resource_target_fixture();
+    assert_exact_target_invariant(group_registry, group_draft, GArg::Struct(group_id));
+    let (root_registry, root_draft, root_id, _) = resource_target_fixture();
+    assert_exact_target_invariant(root_registry, root_draft, GArg::Struct(root_id));
+    let (root_registry, root_draft, root_id, _) = resource_target_fixture();
+    assert_exact_target_invariant(root_registry, root_draft, GArg::Group(root_id));
+
+    let mut struct_draft = ImageDraft::new();
+    let struct_name = struct_draft.intern_string("Point");
+    let struct_id = struct_draft.add_record_type(RecordTypeDef {
+        name: struct_name,
+        fields: Vec::new(),
+    });
+    let mut struct_registry = test_registry(vec![struct_template("Box", &["T"])]);
+    struct_registry.structs.push(StructInfo {
+        type_id: struct_id,
+        name: "Point".to_string(),
+        fields: Vec::new(),
+    });
+    assert_exact_target_invariant(struct_registry, struct_draft, GArg::Group(struct_id));
+
+    let registry = test_registry(vec![struct_template("Box", &["T"])]);
+    let mut draft = ImageDraft::new();
+    let owner_before = owner_snapshot(&registry);
+    let draft_before = draft_fingerprint(&draft);
+    let invariant = take_resolve_invariant(registry.mint_type_instance(
+        &mut draft,
+        0,
+        &[GArg::Param(7)],
+        site(),
+    ));
+    assert_eq!(invariant, GenericInvariant::TypeArgumentParameter(7));
+    assert_eq!(owner_snapshot(&registry), owner_before);
+    assert_eq!(draft_fingerprint(&draft), draft_before);
+
+    let registry = test_registry(vec![struct_template("Box", &["T"])]);
+    let mut draft = ImageDraft::new();
+    let orphan_name = draft.intern_string("NestedOrphan");
+    let orphan = draft.add_record_type(RecordTypeDef {
+        name: orphan_name,
+        fields: Vec::new(),
+    });
+    let collection = seed_collection(
+        &registry,
+        &mut draft,
+        CollSpec::List {
+            elem: GArg::Struct(orphan),
+        },
+    );
+    let owner_before = owner_snapshot(&registry);
+    let draft_before = draft_fingerprint(&draft);
+    let invariant = take_resolve_invariant(registry.mint_type_instance(
+        &mut draft,
+        0,
+        &[GArg::Collection(collection)],
+        site(),
+    ));
+    assert_eq!(
+        invariant,
+        GenericInvariant::TypeArgumentTargetMissing(GArg::Struct(orphan))
+    );
+    assert_eq!(owner_snapshot(&registry), owner_before);
+    assert_eq!(draft_fingerprint(&draft), draft_before);
+}
+
+#[test]
+fn nested_non_ready_targets_report_the_exact_missing_body() {
+    for rejected in [false, true] {
+        let registry = test_registry(vec![
+            struct_template("Outer", &["T"]),
+            struct_template("Inner", &["T"]),
+        ]);
+        let mut draft = ImageDraft::new();
+        let inner = mint_ready(&registry, &mut draft, 1);
+        let row = registry
+            .generics
+            .borrow()
+            .type_insts
+            .iter()
+            .position(|inst| inst.id == inner)
+            .expect("Inner row exists");
+        registry.generics.borrow_mut().type_insts[row].state = if rejected {
+            TypeInstState::Rejected(ResolveRefusal::Unsupported)
+        } else {
+            TypeInstState::Filling { staged: None }
+        };
+        let owner_before = owner_snapshot(&registry);
+        let draft_before = draft_fingerprint(&draft);
+        let target = match inner {
+            TypeInstId::Record(id) => GArg::Struct(id),
+            TypeInstId::Enum(id) => GArg::Enum(id),
+        };
+        let invariant =
+            take_resolve_invariant(registry.mint_type_instance(&mut draft, 0, &[target], site()));
+
+        assert_eq!(invariant, GenericInvariant::ReadyBodyMissing(inner));
+        assert_eq!(owner_snapshot(&registry), owner_before);
+        assert_eq!(draft_fingerprint(&draft), draft_before);
+    }
+}
+
+#[test]
+fn ready_readers_preserve_the_exact_argument_invariant() {
+    let (registry, mut draft) = reserved_registry();
+    let option = registry
+        .instantiate_reserved_option(&mut draft, GArg::Scalar(ScalarType::Int), site())
+        .expect("control Option is Ready");
+    let orphan_name = draft.intern_string("ReaderOrphan");
+    let orphan = draft.add_record_type(RecordTypeDef {
+        name: orphan_name,
+        fields: Vec::new(),
+    });
+    registry
+        .generics
+        .borrow_mut()
+        .type_insts
+        .iter_mut()
+        .find(|inst| inst.id == TypeInstId::Enum(option))
+        .expect("Ready Option row exists")
+        .args = vec![GArg::Struct(orphan)];
+    let expected = GenericInvariant::TypeArgumentTargetMissing(GArg::Struct(orphan));
+    let owner_before = owner_snapshot(&registry);
+    let draft_before = draft_fingerprint(&draft);
+
+    assert_eq!(
+        take_reader_invariant(registry.instantiation_of(TypeInstId::Enum(option))),
+        expected
+    );
+    assert_eq!(
+        take_reader_invariant(registry.type_inst_body(TypeInstId::Enum(option))),
+        expected
+    );
+    assert_eq!(take_reader_invariant(registry.as_option(option)), expected);
+    assert_eq!(
+        take_reader_invariant(registry.enum_variants(option)),
+        expected
+    );
+    assert_eq!(
+        take_reader_invariant(registry.enum_anchor_spelling(option)),
+        expected
+    );
+    assert_eq!(
+        take_reader_invariant(ValueGraph::build(&registry)),
+        expected
+    );
+    assert_eq!(owner_snapshot(&registry), owner_before);
+    assert_eq!(draft_fingerprint(&draft), draft_before);
+
+    for invalid_ok in [true, false] {
+        let (registry, mut draft) = reserved_registry();
+        let template = registry
+            .application_template("Result")
+            .expect("reserved Result template exists");
+        let result = registry
+            .mint_type_instance(
+                &mut draft,
+                template,
+                &[
+                    GArg::Scalar(ScalarType::Int),
+                    GArg::Scalar(ScalarType::Bool),
+                ],
+                site(),
+            )
+            .ok()
+            .and_then(|id| match id {
+                TypeInstId::Enum(id) => Some(id),
+                TypeInstId::Record(_) => None,
+            })
+            .expect("control Result is Ready");
+        let orphan_name = draft.intern_string("ResultReaderOrphan");
+        let orphan = draft.add_record_type(RecordTypeDef {
+            name: orphan_name,
+            fields: Vec::new(),
+        });
+        let args = if invalid_ok {
+            vec![GArg::Struct(orphan), GArg::Scalar(ScalarType::Bool)]
+        } else {
+            vec![GArg::Scalar(ScalarType::Int), GArg::Struct(orphan)]
+        };
+        registry
+            .generics
+            .borrow_mut()
+            .type_insts
+            .iter_mut()
+            .find(|inst| inst.id == TypeInstId::Enum(result))
+            .expect("Ready Result row exists")
+            .args = args;
+        let owner_before = owner_snapshot(&registry);
+        let draft_before = draft_fingerprint(&draft);
+
+        assert_eq!(
+            take_reader_invariant(registry.as_result(result)),
+            GenericInvariant::TypeArgumentTargetMissing(GArg::Struct(orphan))
+        );
+        assert_eq!(owner_snapshot(&registry), owner_before);
+        assert_eq!(draft_fingerprint(&draft), draft_before);
+    }
+}
+
+#[test]
+fn reserved_readers_report_exact_argument_counts() {
+    for args in [
+        Vec::new(),
+        vec![
+            GArg::Scalar(ScalarType::Int),
+            GArg::Scalar(ScalarType::Bool),
+        ],
+    ] {
+        let (registry, mut draft) = reserved_registry();
+        let template = registry
+            .application_template("Option")
+            .expect("reserved Option template exists");
+        let option = registry
+            .instantiate_reserved_option(&mut draft, GArg::Scalar(ScalarType::Int), site())
+            .expect("control Option is Ready");
+        registry
+            .generics
+            .borrow_mut()
+            .type_insts
+            .iter_mut()
+            .find(|inst| inst.id == TypeInstId::Enum(option))
+            .expect("Ready Option row exists")
+            .args = args;
+        let actual = registry
+            .generics
+            .borrow()
+            .type_insts
+            .iter()
+            .find(|inst| inst.id == TypeInstId::Enum(option))
+            .expect("Ready Option row exists")
+            .args
+            .len();
+
+        assert_eq!(
+            take_reader_invariant(registry.as_option(option)),
+            GenericInvariant::TypeArgumentCountMismatch {
+                template,
+                expected: 1,
+                actual,
+            }
+        );
+    }
+
+    for args in [
+        vec![GArg::Scalar(ScalarType::Int)],
+        vec![
+            GArg::Scalar(ScalarType::Int),
+            GArg::Scalar(ScalarType::Bool),
+            GArg::Scalar(ScalarType::Text),
+        ],
+    ] {
+        let (registry, mut draft) = reserved_registry();
+        let template = registry
+            .application_template("Result")
+            .expect("reserved Result template exists");
+        let result = registry
+            .mint_type_instance(
+                &mut draft,
+                template,
+                &[
+                    GArg::Scalar(ScalarType::Int),
+                    GArg::Scalar(ScalarType::Bool),
+                ],
+                site(),
+            )
+            .ok()
+            .and_then(|id| match id {
+                TypeInstId::Enum(id) => Some(id),
+                TypeInstId::Record(_) => None,
+            })
+            .expect("control Result is Ready");
+        let actual = args.len();
+        registry
+            .generics
+            .borrow_mut()
+            .type_insts
+            .iter_mut()
+            .find(|inst| inst.id == TypeInstId::Enum(result))
+            .expect("Ready Result row exists")
+            .args = args;
+
+        assert_eq!(
+            take_reader_invariant(registry.as_result(result)),
+            GenericInvariant::TypeArgumentCountMismatch {
+                template,
+                expected: 2,
+                actual,
+            }
+        );
+    }
+}
+
+#[test]
+fn typed_struct_instance_owner_returns_only_a_ready_record() {
+    let registry = test_registry(vec![struct_template("Box", &["T"])]);
+    let mut draft = ImageDraft::new();
+    let record = registry
+        .mint_struct_instance(&mut draft, 0, &[GArg::Scalar(ScalarType::Int)], site())
+        .expect("valid struct instance is proven Ready");
+    assert_eq!(record.index(), 0);
+
+    let registry = test_registry(vec![enum_template("Maybe", "T")]);
+    let mut draft = ImageDraft::new();
+    let owner_before = owner_snapshot(&registry);
+    let draft_before = draft_fingerprint(&draft);
+    let invariant = take_resolve_invariant(registry.mint_struct_instance(
+        &mut draft,
+        0,
+        &[GArg::Scalar(ScalarType::Int)],
+        site(),
+    ));
+    assert_eq!(
+        invariant,
+        GenericInvariant::TemplateKindMismatch {
+            template: 0,
+            expected: TypeInstKind::Struct,
+            actual: TypeInstKind::Enum,
+        }
+    );
+    assert_eq!(owner_snapshot(&registry), owner_before);
+    assert_eq!(draft_fingerprint(&draft), draft_before);
+
+    let registry = test_registry(vec![struct_template("Box", &["T"])]);
+    let mut draft = ImageDraft::new();
+    let record = registry
+        .mint_struct_instance(&mut draft, 0, &[GArg::Scalar(ScalarType::Int)], site())
+        .expect("control struct instance is Ready");
+    registry
+        .generics
+        .borrow_mut()
+        .type_insts
+        .iter_mut()
+        .find(|inst| inst.id == TypeInstId::Record(record))
+        .expect("Ready struct row exists")
+        .state = TypeInstState::Ready(InstBody::Enum(Vec::new()));
+    let owner_before = owner_snapshot(&registry);
+    let draft_before = draft_fingerprint(&draft);
+    let invariant = take_resolve_invariant(registry.mint_struct_instance(
+        &mut draft,
+        0,
+        &[GArg::Scalar(ScalarType::Int)],
+        site(),
+    ));
+    assert_eq!(
+        invariant,
+        GenericInvariant::TypeBodyKindMismatch {
+            id: TypeInstId::Record(record),
+            body: TypeInstKind::Enum,
+        }
+    );
+    assert_eq!(owner_snapshot(&registry), owner_before);
+    assert_eq!(draft_fingerprint(&draft), draft_before);
+}
+
+#[test]
+fn typed_enum_variant_owner_returns_the_selected_ready_member() {
+    let registry = test_registry(vec![enum_template("Maybe", "T")]);
+    let mut draft = ImageDraft::new();
+    let witness = registry
+        .mint_enum_variant_instance(
+            &mut draft,
+            0,
+            &[GArg::Scalar(ScalarType::Int)],
+            0,
+            "item",
+            site(),
+        )
+        .expect("valid enum member is proven Ready");
+    assert_eq!(witness.variant, 0);
+    assert_eq!(witness.enum_id.index(), 0);
+
+    let registry = test_registry(vec![struct_template("Box", &["T"])]);
+    let mut draft = ImageDraft::new();
+    let owner_before = owner_snapshot(&registry);
+    let draft_before = draft_fingerprint(&draft);
+    let invariant = take_resolve_invariant(registry.mint_enum_variant_instance(
+        &mut draft,
+        0,
+        &[GArg::Scalar(ScalarType::Int)],
+        0,
+        "item",
+        site(),
+    ));
+    assert_eq!(
+        invariant,
+        GenericInvariant::TemplateKindMismatch {
+            template: 0,
+            expected: TypeInstKind::Enum,
+            actual: TypeInstKind::Struct,
+        }
+    );
+    assert_eq!(owner_snapshot(&registry), owner_before);
+    assert_eq!(draft_fingerprint(&draft), draft_before);
+
+    for renamed in [false, true] {
+        let registry = test_registry(vec![enum_template("Maybe", "T")]);
+        let mut draft = ImageDraft::new();
+        let witness = registry
+            .mint_enum_variant_instance(
+                &mut draft,
+                0,
+                &[GArg::Scalar(ScalarType::Int)],
+                0,
+                "item",
+                site(),
+            )
+            .expect("control enum member is Ready");
+        let variants = if renamed {
+            vec![InstVariant {
+                name: "renamed".to_string(),
+                payload: Vec::new(),
+            }]
+        } else {
+            Vec::new()
+        };
+        registry
+            .generics
+            .borrow_mut()
+            .type_insts
+            .iter_mut()
+            .find(|inst| inst.id == TypeInstId::Enum(witness.enum_id))
+            .expect("Ready enum row exists")
+            .state = TypeInstState::Ready(InstBody::Enum(variants));
+        let owner_before = owner_snapshot(&registry);
+        let draft_before = draft_fingerprint(&draft);
+        let invariant = take_resolve_invariant(registry.mint_enum_variant_instance(
+            &mut draft,
+            0,
+            &[GArg::Scalar(ScalarType::Int)],
+            0,
+            "item",
+            site(),
+        ));
+        assert_eq!(
+            invariant,
+            GenericInvariant::ReadyEnumVariantMissing {
+                id: witness.enum_id,
+                template: 0,
+                variant: 0,
+            }
+        );
+        assert_eq!(owner_snapshot(&registry), owner_before);
+        assert_eq!(draft_fingerprint(&draft), draft_before);
+    }
+
+    let registry = test_registry(vec![enum_template("Maybe", "T")]);
+    let mut draft = ImageDraft::new();
+    let witness = registry
+        .mint_enum_variant_instance(
+            &mut draft,
+            0,
+            &[GArg::Scalar(ScalarType::Int)],
+            0,
+            "item",
+            site(),
+        )
+        .expect("control enum member is Ready");
+    registry
+        .generics
+        .borrow_mut()
+        .type_insts
+        .iter_mut()
+        .find(|inst| inst.id == TypeInstId::Enum(witness.enum_id))
+        .expect("Ready enum row exists")
+        .state = TypeInstState::Ready(InstBody::Struct(Vec::new()));
+    let owner_before = owner_snapshot(&registry);
+    let draft_before = draft_fingerprint(&draft);
+    let invariant = take_resolve_invariant(registry.mint_enum_variant_instance(
+        &mut draft,
+        0,
+        &[GArg::Scalar(ScalarType::Int)],
+        0,
+        "item",
+        site(),
+    ));
+    assert_eq!(
+        invariant,
+        GenericInvariant::TypeBodyKindMismatch {
+            id: TypeInstId::Enum(witness.enum_id),
+            body: TypeInstKind::Struct,
+        }
+    );
+    assert_eq!(owner_snapshot(&registry), owner_before);
+    assert_eq!(draft_fingerprint(&draft), draft_before);
 }

@@ -1,5 +1,6 @@
 use super::*;
 
+use crate::types::{CollectionKind, GenericInvariant, TypeInstKind};
 use marrow_syntax::{Declaration, parse_source};
 
 fn function(source: &str) -> FunctionDecl {
@@ -97,11 +98,19 @@ fn collection_mismatch_in_interpolation_stops_before_later_part() {
     let result = lowerer.lower_interpolation(parts, *span);
     let code = lowerer.code.clone();
     let local_count = lowerer.locals.len();
-    let _ = lowerer.finish("probe", Vec::new(), ImageType::Unit);
+    let outcome = lowerer.finish("probe", Vec::new(), ImageType::Unit);
 
     assert!(result.is_none());
     assert!(diagnostics.is_empty());
     assert_eq!(local_count, 0);
+    assert!(matches!(
+        outcome,
+        Err(GenericInvariant::CollectionIndexMismatch {
+            kind: CollectionKind::List,
+            cache_index: 1,
+            draft_index: 0,
+        })
+    ));
     assert!(!code.iter().any(|instruction| matches!(
         instruction,
         Instr::ListNew(_) | Instr::ListLen | Instr::TextConcat
@@ -136,12 +145,20 @@ fn collection_mismatch_in_checked_annotation_stops_before_handler() {
     let code = lowerer.code.clone();
     let local_count = lowerer.locals.len();
     let slot_count = lowerer.slot_count;
-    let _ = lowerer.finish("probe", Vec::new(), ImageType::Unit);
+    let outcome = lowerer.finish("probe", Vec::new(), ImageType::Unit);
 
     assert_eq!(flow, Flow::Rejected);
     assert!(diagnostics.is_empty());
     assert_eq!(local_count, 0);
     assert_eq!(slot_count, 2);
+    assert!(matches!(
+        outcome,
+        Err(GenericInvariant::CollectionIndexMismatch {
+            kind: CollectionKind::List,
+            cache_index: 1,
+            draft_index: 0,
+        })
+    ));
     assert!(matches!(code.last(), Some(Instr::IntAddChecked(0))));
     assert_eq!(
         code.iter()
@@ -192,10 +209,18 @@ fn collection_mismatch_in_if_const_else_if_condition_is_terminal() {
 
     let flow = lowerer.lower_statement(statement);
     let code = lowerer.code.clone();
-    let _ = lowerer.finish("probe", Vec::new(), ImageType::Unit);
+    let outcome = lowerer.finish("probe", Vec::new(), ImageType::Unit);
 
     assert_eq!(flow, Flow::Rejected);
     assert!(diagnostics.is_empty());
+    assert!(matches!(
+        outcome,
+        Err(GenericInvariant::CollectionIndexMismatch {
+            kind: CollectionKind::List,
+            cache_index: 1,
+            draft_index: 0,
+        })
+    ));
     assert!(
         code.iter()
             .any(|instruction| matches!(instruction, Instr::Jump(0)))
@@ -241,14 +266,136 @@ fn collection_mismatch_in_first_block_statement_stops_later_mint_and_finish() {
 
     let flow = lowerer.lower_block(&function.body);
     let code = lowerer.code.clone();
-    let _ = lowerer.finish("probe", Vec::new(), ImageType::Unit);
+    let outcome = lowerer.finish("probe", Vec::new(), ImageType::Unit);
 
     assert_eq!(flow, Flow::Rejected);
     assert!(diagnostics.is_empty());
+    assert!(matches!(
+        outcome,
+        Err(GenericInvariant::CollectionIndexMismatch {
+            kind: CollectionKind::List,
+            cache_index: 1,
+            draft_index: 0,
+        })
+    ));
     assert!(
         !code
             .iter()
             .any(|instruction| matches!(instruction, Instr::ListNew(_)))
     );
     assert_eq!(draft_fingerprint(&draft), expected_ints(&[1]));
+}
+
+fn built_registry_with_generic_struct() -> (TypeRegistry, ImageDraft, usize) {
+    let parsed = parse_source("struct Box<T> {\n    value: T\n}\n");
+    assert!(parsed.diagnostics.is_empty());
+    let declaration = parsed
+        .file
+        .declarations
+        .iter()
+        .find_map(|declaration| match declaration {
+            Declaration::Struct(item) => Some(item),
+            _ => None,
+        })
+        .expect("generic struct declaration exists");
+    let structs = [("src/main.mw".to_string(), declaration)];
+    let mut draft = ImageDraft::new();
+    let mut diagnostics = Vec::new();
+    let registry = TypeRegistry::build(&mut draft, &[], &[], &structs, &[], &[], &mut diagnostics);
+    assert!(diagnostics.is_empty());
+    let template = registry
+        .type_template_by_name("Box")
+        .expect("Box template is registered");
+    (registry, draft, template)
+}
+
+fn built_reserved_registry() -> (TypeRegistry, ImageDraft) {
+    let mut draft = ImageDraft::new();
+    let mut diagnostics = Vec::new();
+    let registry = TypeRegistry::build(&mut draft, &[], &[], &[], &[], &[], &mut diagnostics);
+    assert!(diagnostics.is_empty());
+    (registry, draft)
+}
+
+#[test]
+fn generic_struct_constructor_transfers_the_registry_witness_error() {
+    let (records, mut draft) = built_reserved_registry();
+    let template = records
+        .type_template_by_name("Option")
+        .expect("reserved Option template exists");
+    let draft_before = draft_fingerprint(&draft);
+    let durable = DurableRegistry::default();
+    let functions = FunctionRegistry::default();
+    let generics = GenericRegistry::default();
+    let consts = ConstRegistry::default();
+    let mut diagnostics = Vec::new();
+    let mut lowerer = lowerer(
+        &mut draft,
+        &records,
+        &durable,
+        &functions,
+        &generics,
+        &consts,
+        &mut diagnostics,
+    );
+
+    assert!(
+        lowerer
+            .lower_generic_struct_literal(template, &[], SourceSpan::default())
+            .is_none()
+    );
+    let code = lowerer.code.clone();
+    let outcome = lowerer.finish("probe", Vec::new(), ImageType::Unit);
+
+    assert!(matches!(
+        outcome,
+        Err(GenericInvariant::TemplateKindMismatch {
+            template: selected,
+            expected: TypeInstKind::Struct,
+            actual: TypeInstKind::Enum,
+        }) if selected == template
+    ));
+    assert!(diagnostics.is_empty());
+    assert!(code.is_empty());
+    assert_eq!(draft_fingerprint(&draft), draft_before);
+}
+
+#[test]
+fn generic_enum_constructor_transfers_the_registry_witness_error() {
+    let (records, mut draft, template) = built_registry_with_generic_struct();
+    let draft_before = draft_fingerprint(&draft);
+    let durable = DurableRegistry::default();
+    let functions = FunctionRegistry::default();
+    let generics = GenericRegistry::default();
+    let consts = ConstRegistry::default();
+    let mut diagnostics = Vec::new();
+    let mut lowerer = lowerer(
+        &mut draft,
+        &records,
+        &durable,
+        &functions,
+        &generics,
+        &consts,
+        &mut diagnostics,
+    );
+
+    assert!(
+        lowerer
+            .lower_generic_enum_construct(template, "item", &[], SourceSpan::default())
+            .is_none()
+    );
+    let code = lowerer.code.clone();
+    let outcome = lowerer.finish("probe", Vec::new(), ImageType::Unit);
+
+    assert!(matches!(
+        outcome,
+        Err(GenericInvariant::TemplateKindMismatch {
+            template: selected,
+            expected: TypeInstKind::Enum,
+            actual: TypeInstKind::Struct,
+        }) if selected == template
+    ));
+    assert!(diagnostics.is_empty());
+    assert!(code.is_empty());
+    assert_eq!(draft_fingerprint(&draft), draft_before);
 }
