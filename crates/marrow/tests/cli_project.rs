@@ -75,6 +75,11 @@ fn project(root: &Path, source: &str) {
     write(&root.join("src").join("main.mw"), source);
 }
 
+fn assert_empty_streams(output: &Output) {
+    assert!(output.stdout.is_empty(), "command wrote stdout: {output:?}");
+    assert!(output.stderr.is_empty(), "command wrote stderr: {output:?}");
+}
+
 fn assert_io_read(output: &Output) {
     assert!(!output.status.success(), "capture must fail: {output:?}");
     assert!(output.stdout.is_empty(), "failure wrote stdout: {output:?}");
@@ -697,6 +702,8 @@ fn a_visited_entry_over_the_physical_bound_is_refused_before_retention() {
         fs::File::create(source_root.join(format!("ignored-{index:05}")))
             .expect("create ignored source-tree entry");
     }
+    // The selected source is the 65,537th total visited entry. Keep the
+    // ignored-entry count at exactly the 65,536-entry production limit.
     let retained = source_root.join("main.mw");
     write(&retained, UNFORMATTED_SOURCE);
 
@@ -833,11 +840,18 @@ fn a_searchable_but_unreadable_root_is_refused_at_physical_admission() {
     use std::os::unix::fs::PermissionsExt;
 
     let temp = TempDir::new("search-only-root");
-    let retained = temp.join("src/main.mw");
-    project(&temp, UNFORMATTED_SOURCE);
+    write(&temp.join("marrow.toml"), VALID_MANIFEST);
+    assert!(
+        !temp.join("src").exists(),
+        "fixture must have no source role"
+    );
+    assert!(
+        !temp.join("marrow.ids").exists(),
+        "fixture must have no identity-ledger role"
+    );
     let mut permissions = PermissionGuard::make_searchable_only(&temp);
 
-    let output = run(&["fmt", "--write", temp.to_str().unwrap()]);
+    let output = run(&["fmt", "--check", temp.to_str().unwrap()]);
     permissions.restore();
     assert_eq!(
         fs::metadata(&*temp)
@@ -849,7 +863,91 @@ fn a_searchable_but_unreadable_root_is_refused_at_physical_admission() {
         "the normal path must restore permissions before fixture cleanup"
     );
     drop(permissions);
-    assert_refused_without_writing(&retained, UNFORMATTED_SOURCE, &output);
+    if output.status.success() {
+        assert_empty_streams(&output);
+        panic!("the shared adapter must refuse a root it cannot retain: {output:?}");
+    }
+    assert_io_read(&output);
+}
+
+#[test]
+fn a_manifest_only_project_with_no_source_root_is_a_silent_noop() {
+    let temp = TempDir::new("manifest-only");
+    write(&temp.join("marrow.toml"), VALID_MANIFEST);
+    assert_eq!(
+        fs::read_dir(&*temp).expect("read project root").count(),
+        1,
+        "fixture must begin with only the manifest"
+    );
+
+    let output = run(&["fmt", "--check", temp.to_str().unwrap()]);
+    assert!(
+        output.status.success(),
+        "a missing optional source root must succeed: {output:?}"
+    );
+    assert_empty_streams(&output);
+    assert_eq!(
+        fs::read_dir(&*temp).expect("read project root").count(),
+        1,
+        "fmt --check must not create a source root or identity ledger"
+    );
+    assert!(!temp.join("src").exists());
+    assert!(!temp.join("marrow.ids").exists());
+}
+
+#[test]
+fn an_identity_ledger_over_its_byte_bound_keeps_its_exact_refusal() {
+    let temp = TempDir::new("ids-byte-bound");
+    let source_path = temp.join("src/main.mw");
+    project(&temp, UNFORMATTED_SOURCE);
+    let ids_path = temp.join("marrow.ids");
+    let oversized_bytes = marrow_project::MAX_IDS_BYTES + 1;
+    let ids = fs::File::create(&ids_path).expect("create oversized identity ledger");
+    ids.set_len(u64::try_from(oversized_bytes).expect("identity bound fits u64"))
+        .expect("size oversized identity ledger");
+
+    let output = run(&["fmt", "--write", temp.to_str().unwrap()]);
+    assert!(!output.status.success(), "oversized ledger must fail");
+    assert!(output.stdout.is_empty(), "failure wrote stdout: {output:?}");
+    assert_eq!(
+        fs::read_to_string(&source_path).expect("read source after refusal"),
+        UNFORMATTED_SOURCE,
+        "identity-ledger refusal must precede formatter writes"
+    );
+    assert_eq!(
+        String::from_utf8(output.stderr).expect("stderr is UTF-8"),
+        format!(
+            "project.ids_corrupt: {} is {oversized_bytes} bytes, over the {}-byte identity-artifact bound\n",
+            ids_path.display(),
+            marrow_project::MAX_IDS_BYTES
+        )
+    );
+}
+
+#[test]
+fn an_under_bound_non_source_entry_is_ignored_with_exact_silent_output() {
+    const IGNORED_BYTES: &str = "ordinary file; not Marrow source\n";
+
+    let temp = TempDir::new("ignored-regular");
+    let source_path = temp.join("src/main.mw");
+    let ignored_path = temp.join("src/ignored.txt");
+    project(&temp, FORMATTED_SOURCE);
+    write(&ignored_path, IGNORED_BYTES);
+
+    let output = run(&["fmt", "--check", temp.to_str().unwrap()]);
+    assert!(
+        output.status.success(),
+        "an ordinary non-source entry must remain ignored: {output:?}"
+    );
+    assert_empty_streams(&output);
+    assert_eq!(
+        fs::read_to_string(source_path).expect("read selected source"),
+        FORMATTED_SOURCE
+    );
+    assert_eq!(
+        fs::read_to_string(ignored_path).expect("read ignored entry"),
+        IGNORED_BYTES
+    );
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
