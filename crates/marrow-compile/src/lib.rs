@@ -19,3 +19,30 @@ pub use compile::{Compiled, CompiledTests, ExportEntry, TestEntry, compile, comp
 pub use diag::{IdentityGap, SourceDiagnostic};
 pub use marrow_image::ExportId;
 pub use scalar::ScalarType;
+
+#[cfg(doctest)]
+pub mod compile_invariant_privacy_doctests {
+    //! The compiler invariant is an opaque public outcome. External callers may
+    //! distinguish the outer `CompileFailure::Invariant` arm, but cannot
+    //! construct or classify its private cause.
+    //!
+    //! Tuple construction remains private:
+    //!
+    //! ```compile_fail
+    //! use marrow_compile::CompileInvariant;
+    //!
+    //! let _ = CompileInvariant(());
+    //! ```
+    //!
+    //! A cause-bearing tuple pattern remains private as well:
+    //!
+    //! ```compile_fail
+    //! use marrow_compile::CompileInvariant;
+    //!
+    //! fn classify(invariant: CompileInvariant) {
+    //!     match invariant {
+    //!         CompileInvariant(_) => {}
+    //!     }
+    //! }
+    //! ```
+}

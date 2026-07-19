@@ -10460,6 +10460,7 @@ fn logic_operand(
 #[cfg(test)]
 mod generic_cache_boundary_tests {
     use super::*;
+    use crate::types::{GenericInvariant, TypeInstKind};
     use marrow_image::{EnumTypeDef, RecordTypeDef};
 
     fn span() -> SourceSpan {
@@ -10508,17 +10509,28 @@ mod generic_cache_boundary_tests {
         )
     }
 
+    fn orphan_enum_and_struct(draft: &mut ImageDraft) -> (EnumId, TypeId) {
+        let enum_name = draft.intern_string("OrphanEnum");
+        let enum_id = draft.add_enum_type(EnumTypeDef {
+            name: enum_name,
+            variants: Vec::new(),
+        });
+        let struct_name = draft.intern_string("OrphanStruct");
+        let struct_id = draft.add_record_type(RecordTypeDef {
+            name: struct_name,
+            fields: Vec::new(),
+        });
+        (enum_id, struct_id)
+    }
+
     /// An enum-shaped local whose row is not semantically Ready is a
     /// typed internal failure, not an `enum_variants` expectation unwind.
     #[test]
     fn bare_enum_without_ready_variants_fails_without_unwinding() {
         let mut draft = ImageDraft::new();
-        let name_id = draft.intern_string("Orphan");
-        let enum_id = draft.add_enum_type(EnumTypeDef {
-            name: name_id,
-            variants: Vec::new(),
-        });
-        let records = TypeRegistry::default();
+        let records = generic_enum_registry(&mut draft);
+        let (enum_id, _) = orphan_enum_and_struct(&mut draft);
+        let draft_before = draft.encode().expect("seeded draft encodes");
         let durable = DurableRegistry::default();
         let functions = FunctionRegistry::default();
         let generics = GenericRegistry::default();
@@ -10543,7 +10555,29 @@ mod generic_cache_boundary_tests {
             slot: 0,
         });
 
-        let _ = lowerer.lower_match(&name("value"), &[], span());
+        assert!(matches!(
+            lowerer.lower_match(&name("value"), &[], span()),
+            Flow::Rejected
+        ));
+        assert!(
+            lowerer
+                .lower_generic_struct_literal(0, &[], span())
+                .is_none(),
+            "a later template-kind invariant also rejects lowering"
+        );
+        let result = lowerer.finish("broken", Vec::new(), ImageType::Unit);
+        let Err(invariant) = result else {
+            panic!("the first generic invariant must reject the real finish path")
+        };
+        let draft_after = draft.encode().expect("rejected draft still encodes");
+
+        assert_eq!(
+            invariant,
+            GenericInvariant::ReadyBodyMissing(TypeInstId::Enum(enum_id))
+        );
+        assert!(diagnostics.is_empty());
+        assert_eq!(draft_after.bytes, draft_before.bytes);
+        assert_eq!(draft_after.image_id, draft_before.image_id);
     }
 
     /// An enum template routed to the generic-struct constructor is
@@ -10552,6 +10586,8 @@ mod generic_cache_boundary_tests {
     fn enum_template_at_struct_constructor_fails_without_unwinding() {
         let mut draft = ImageDraft::new();
         let records = generic_enum_registry(&mut draft);
+        let (_, struct_id) = orphan_enum_and_struct(&mut draft);
+        let draft_before = draft.encode().expect("seeded draft encodes");
         let durable = DurableRegistry::default();
         let functions = FunctionRegistry::default();
         let generics = GenericRegistry::default();
@@ -10567,7 +10603,42 @@ mod generic_cache_boundary_tests {
             &mut diagnostics,
         );
 
-        let _ = lowerer.lower_generic_struct_literal(0, &[], span());
+        assert!(
+            lowerer
+                .lower_generic_struct_literal(0, &[], span())
+                .is_none()
+        );
+        assert!(
+            lowerer
+                .resolve_product_field(
+                    LTy::Struct {
+                        ty: struct_id,
+                        optional: false,
+                    },
+                    "value",
+                    span(),
+                    span(),
+                )
+                .is_none(),
+            "a later missing-body invariant also rejects lowering"
+        );
+        let result = lowerer.finish("broken", Vec::new(), ImageType::Unit);
+        let Err(invariant) = result else {
+            panic!("the first generic invariant must reject the real finish path")
+        };
+        let draft_after = draft.encode().expect("rejected draft still encodes");
+
+        assert_eq!(
+            invariant,
+            GenericInvariant::TemplateKindMismatch {
+                template: 0,
+                expected: TypeInstKind::Struct,
+                actual: TypeInstKind::Enum,
+            }
+        );
+        assert!(diagnostics.is_empty());
+        assert_eq!(draft_after.bytes, draft_before.bytes);
+        assert_eq!(draft_after.image_id, draft_before.image_id);
     }
 
     /// A bare struct id with no Ready body is a typed internal
@@ -10575,12 +10646,9 @@ mod generic_cache_boundary_tests {
     #[test]
     fn bare_struct_without_ready_body_fails_without_unwinding() {
         let mut draft = ImageDraft::new();
-        let name = draft.intern_string("Orphan");
-        let type_id = draft.add_record_type(RecordTypeDef {
-            name,
-            fields: Vec::new(),
-        });
-        let records = TypeRegistry::default();
+        let records = generic_enum_registry(&mut draft);
+        let (_, type_id) = orphan_enum_and_struct(&mut draft);
+        let draft_before = draft.encode().expect("seeded draft encodes");
         let durable = DurableRegistry::default();
         let functions = FunctionRegistry::default();
         let generics = GenericRegistry::default();
@@ -10596,14 +10664,37 @@ mod generic_cache_boundary_tests {
             &mut diagnostics,
         );
 
-        let _ = lowerer.resolve_product_field(
-            LTy::Struct {
-                ty: type_id,
-                optional: false,
-            },
-            "value",
-            span(),
-            span(),
+        assert!(
+            lowerer
+                .resolve_product_field(
+                    LTy::Struct {
+                        ty: type_id,
+                        optional: false,
+                    },
+                    "value",
+                    span(),
+                    span(),
+                )
+                .is_none()
         );
+        assert!(
+            lowerer
+                .lower_generic_struct_literal(0, &[], span())
+                .is_none(),
+            "a later template-kind invariant also rejects lowering"
+        );
+        let result = lowerer.finish("broken", Vec::new(), ImageType::Unit);
+        let Err(invariant) = result else {
+            panic!("the first generic invariant must reject the real finish path")
+        };
+        let draft_after = draft.encode().expect("rejected draft still encodes");
+
+        assert_eq!(
+            invariant,
+            GenericInvariant::ReadyBodyMissing(TypeInstId::Record(type_id))
+        );
+        assert!(diagnostics.is_empty());
+        assert_eq!(draft_after.bytes, draft_before.bytes);
+        assert_eq!(draft_after.image_id, draft_before.image_id);
     }
 }

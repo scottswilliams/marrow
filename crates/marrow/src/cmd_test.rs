@@ -258,3 +258,17 @@ fn emit_tests(
     }
     exit
 }
+
+#[cfg(test)]
+mod compiler_invariant_tests {
+    #[test]
+    fn invariant_mapper_is_one_payload_free_operational_record() {
+        assert_eq!(
+            super::compiler_invariant_record(),
+            super::Record::OperationalError {
+                code: marrow_codes::Code::CliCompilerInvariant.as_str(),
+                detail: None,
+            }
+        );
+    }
+}

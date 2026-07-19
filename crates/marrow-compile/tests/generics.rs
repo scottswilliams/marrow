@@ -5,6 +5,7 @@
 //! monomorphized instances.
 
 use marrow_compile::compile_with_tests;
+use marrow_compile::{CompileFailure, CompileInvariant, NonEmptySourceDiagnostics};
 use marrow_compile::{Compiled, SourceDiagnostic, compile};
 use marrow_project::{CaptureLimits, CapturedFile, Manifest, ProjectInput};
 use std::fmt::Write as _;
@@ -30,12 +31,9 @@ fn compile_ok(source: &str) -> Compiled {
 fn compile_err(source: &str) -> Vec<SourceDiagnostic> {
     match compile(&project(source)) {
         Ok(_) => panic!("expected a diagnostic, but the program compiled"),
-        Err(diagnostics) => {
-            assert!(
-                !diagnostics.is_empty(),
-                "the public compiler failure boundary returned Err([])"
-            );
-            diagnostics
+        Err(CompileFailure::Diagnostics(diagnostics)) => diagnostics.into_vec(),
+        Err(CompileFailure::Invariant(_)) => {
+            panic!("source-triggered compiler failures must remain diagnostics")
         }
     }
 }
@@ -43,12 +41,9 @@ fn compile_err(source: &str) -> Vec<SourceDiagnostic> {
 fn compile_tests_err(source: &str) -> Vec<SourceDiagnostic> {
     match compile_with_tests(&project(source)) {
         Ok(_) => panic!("expected a diagnostic, but the project tests compiled"),
-        Err(diagnostics) => {
-            assert!(
-                !diagnostics.is_empty(),
-                "the public compiler-with-tests failure boundary returned Err([])"
-            );
-            diagnostics
+        Err(CompileFailure::Diagnostics(diagnostics)) => diagnostics.into_vec(),
+        Err(CompileFailure::Invariant(_)) => {
+            panic!("source-triggered test compilation failures must remain diagnostics")
         }
     }
 }
@@ -65,12 +60,9 @@ fn compile_files_err(files: &[(&str, &str)]) -> Vec<SourceDiagnostic> {
         .expect("capture multi-file project");
     match compile(&project) {
         Ok(_) => panic!("expected a diagnostic, but the multi-file program compiled"),
-        Err(diagnostics) => {
-            assert!(
-                !diagnostics.is_empty(),
-                "the public multi-file compiler failure boundary returned Err([])"
-            );
-            diagnostics
+        Err(CompileFailure::Diagnostics(diagnostics)) => diagnostics.into_vec(),
+        Err(CompileFailure::Invariant(_)) => {
+            panic!("source-triggered multi-file compiler failures must remain diagnostics")
         }
     }
 }
@@ -103,6 +95,52 @@ fn assert_diagnostic_sites(diagnostics: &[SourceDiagnostic], expected: &[(&str, 
         .map(|diagnostic| (diagnostic.code, diagnostic.line, diagnostic.column))
         .collect();
     assert_eq!(actual, expected, "{diagnostics:#?}");
+}
+
+/// The public failure boundary has exactly two externally matchable arms. Source
+/// diagnostics retain their original ordered allocation behind the nonempty owner;
+/// compiler-private causes remain payload-blind to external consumers.
+#[test]
+fn public_compile_failure_is_exhaustive_nonempty_and_worker_safe() {
+    fn assert_error<T: std::error::Error>() {}
+    fn assert_worker<T: Send + Sync + 'static>() {}
+    fn assert_diagnostic_owner<T: std::fmt::Debug + Clone + PartialEq + Eq>() {}
+
+    assert_error::<CompileFailure>();
+    assert_error::<CompileInvariant>();
+    assert_worker::<CompileInvariant>();
+    assert_diagnostic_owner::<NonEmptySourceDiagnostics>();
+
+    let failure = compile(&project(
+        "module main\n\npub fn first(): int {\n    return true\n}\n\npub fn second(): int {\n    return false\n}\n",
+    ))
+    .expect_err("the two mismatched return types are source diagnostics");
+
+    match failure {
+        CompileFailure::Diagnostics(diagnostics) => {
+            let expected = diagnostics.as_slice().to_vec();
+            assert_diagnostic_sites(
+                diagnostics.as_slice(),
+                &[("check.type", 4, 12), ("check.type", 8, 12)],
+            );
+
+            let as_ref: &[SourceDiagnostic] = diagnostics.as_ref();
+            assert_eq!(as_ref, expected.as_slice());
+            assert_eq!(diagnostics.iter().cloned().collect::<Vec<_>>(), expected);
+            assert_eq!(
+                (&diagnostics).into_iter().cloned().collect::<Vec<_>>(),
+                expected
+            );
+            assert_eq!(
+                diagnostics.clone().into_iter().collect::<Vec<_>>(),
+                expected
+            );
+            assert_eq!(diagnostics.into_vec(), expected);
+        }
+        CompileFailure::Invariant(_) => {
+            panic!("ordinary invalid source must remain a source-diagnostic failure")
+        }
+    }
 }
 
 const SHALLOW_SEED_TYPE_COUNT: usize = 64;

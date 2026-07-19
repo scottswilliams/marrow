@@ -230,3 +230,17 @@ fn usage(message: &str) -> ExitCode {
     eprintln!("{message}; run marrow --help for usage");
     ExitCode::from(2)
 }
+
+#[cfg(test)]
+mod compiler_invariant_tests {
+    #[test]
+    fn invariant_mapper_is_fixed_and_payload_free() {
+        assert_eq!(
+            super::compiler_invariant_report(),
+            (
+                marrow_codes::Code::CliCompilerInvariant.as_str(),
+                "the compiler failed an internal consistency check",
+            )
+        );
+    }
+}

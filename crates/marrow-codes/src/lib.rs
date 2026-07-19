@@ -242,6 +242,7 @@ pub fn kind_for_code(code: &str) -> &'static str {
 
 #[cfg(test)]
 mod tests {
+    use super::Family;
     use super::{Code, Lifecycle, SeverityClass, kind_for_code};
 
     #[test]
@@ -335,6 +336,20 @@ mod tests {
         assert!(
             warnings.is_empty(),
             "no retained code carries Warning severity after the shrink, found {warnings:?}"
+        );
+    }
+
+    #[test]
+    fn compiler_invariant_is_one_internal_cli_error() {
+        let code = Code::CliCompilerInvariant;
+        assert_eq!(code.as_str(), "cli.compiler_invariant");
+        assert_eq!(code.family(), Family::Cli);
+        assert_eq!(code.severity_class(), SeverityClass::Error);
+        assert_eq!(code.lifecycle(), Lifecycle::Internal);
+        assert_eq!(
+            code.meaning(),
+            "The compiler detected an internal state inconsistency and failed closed without \
+             producing a program image or source diagnostic."
         );
     }
 }

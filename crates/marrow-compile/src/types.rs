@@ -3552,7 +3552,7 @@ mod instantiation_state_tests {
         let mut draft = ImageDraft::new();
         assert_eq!(
             registry.mint_type_instance(&mut draft, 1, &[GArg::Scalar(ScalarType::Int)], site(10),),
-            Err(ResolveRefusal::Unsupported)
+            Err(ResolveError::Refusal(ResolveRefusal::Unsupported))
         );
 
         assert!(matches!(
@@ -3573,7 +3573,7 @@ mod instantiation_state_tests {
         };
         assert_eq!(
             registry.mint_type_instance(&mut draft, 1, &[GArg::Scalar(ScalarType::Int)], site(20),),
-            Err(ResolveRefusal::Unsupported)
+            Err(ResolveError::Refusal(ResolveRefusal::Unsupported))
         );
         let generics = registry.generics.borrow();
         assert_eq!(generics.type_insts.len(), before);
@@ -3608,7 +3608,7 @@ mod instantiation_state_tests {
         let mut draft = ImageDraft::new();
         assert_eq!(
             registry.mint_type_instance(&mut draft, 0, &[GArg::Scalar(ScalarType::Int)], site(10),),
-            Err(ResolveRefusal::Unsupported)
+            Err(ResolveError::Refusal(ResolveRefusal::Unsupported))
         );
         assert!(matches!(
             row(&registry, "Outer").state,
@@ -3674,7 +3674,7 @@ mod instantiation_state_tests {
                 .expect("well-formed provisional batch settles");
             assert_eq!(
                 registry.settled_type_result(0, outer_id),
-                Err(ResolveRefusal::Limit),
+                Err(ResolveError::Refusal(ResolveRefusal::Limit)),
                 "the settled row, not its local Unsupported, owns the return"
             );
             assert!(matches!(
@@ -3709,7 +3709,7 @@ mod instantiation_state_tests {
         let mut draft = ImageDraft::new();
         assert_eq!(
             registry.mint_type_instance(&mut draft, 0, &[GArg::Scalar(ScalarType::Int)], site(10),),
-            Err(ResolveRefusal::Limit)
+            Err(ResolveError::Refusal(ResolveRefusal::Limit))
         );
         let before = registry.generics.borrow().type_insts.len();
         assert!(
@@ -3727,7 +3727,7 @@ mod instantiation_state_tests {
         assert_eq!((first[0].line, first[0].column), (10, 9));
         assert_eq!(
             registry.mint_type_instance(&mut draft, 0, &[GArg::Scalar(ScalarType::Int)], site(20),),
-            Err(ResolveRefusal::Limit)
+            Err(ResolveError::Refusal(ResolveRefusal::Limit))
         );
         assert_eq!(registry.generics.borrow().type_insts.len(), before);
         assert!(
@@ -3747,7 +3747,7 @@ mod instantiation_state_tests {
         let mut draft = ImageDraft::new();
         assert_eq!(
             registry.mint_type_instance(&mut draft, 0, &[GArg::Scalar(ScalarType::Int)], site(10),),
-            Err(ResolveRefusal::Unsupported)
+            Err(ResolveError::Refusal(ResolveRefusal::Unsupported))
         );
         let id = row(&registry, "Bad").id;
         let TypeInstId::Enum(enum_id) = id else {
@@ -3774,7 +3774,7 @@ mod instantiation_state_tests {
         assert!(registry.enum_anchor_spelling(enum_id).is_none());
         assert!(matches!(
             registry.clone_for_generic_check(),
-            Err(ResolveRefusal::Limit)
+            Err(ProofCloneError::UnstableFillState)
         ));
     }
 
@@ -3807,7 +3807,9 @@ mod instantiation_state_tests {
         let TypeInstId::Enum(choice_enum) = choice_id else {
             panic!("Choice is an enum template")
         };
-        let collection = registry.instantiate_list(&mut draft, scalar);
+        let collection = registry
+            .instantiate_list(&mut draft, scalar)
+            .expect("aligned collection owners mint");
         let composite_id = registry
             .mint_type_instance(&mut draft, 2, &[scalar], site(4))
             .expect("representative record seed mints");
@@ -3895,8 +3897,9 @@ mod instantiation_state_tests {
         });
         assert_eq!(after_local.index(), local_record.index() + 1);
 
-        let local_collection =
-            clone.instantiate_list(&mut local_draft, GArg::Scalar(ScalarType::Text));
+        let local_collection = clone
+            .instantiate_list(&mut local_draft, GArg::Scalar(ScalarType::Text))
+            .expect("aligned proof-clone collection owners mint");
         assert_eq!(
             stable_snapshot(&clone).collections,
             vec![
@@ -3936,25 +3939,31 @@ mod instantiation_state_tests {
             .expect("stable seed mints");
 
         registry.generics.borrow_mut().fill_batch_start = Some(0);
+        let before = stable_snapshot(&registry);
         assert!(matches!(
             registry.clone_for_generic_check(),
-            Err(ResolveRefusal::Limit)
+            Err(ProofCloneError::UnstableFillState)
         ));
+        assert_eq!(stable_snapshot(&registry), before);
         registry.generics.borrow_mut().fill_batch_start = None;
 
         let key = TypeInstKey::from(registry.generics.borrow().type_insts[0].id);
         registry.generics.borrow_mut().fill_rows.insert(key, 0);
+        let before = stable_snapshot(&registry);
         assert!(matches!(
             registry.clone_for_generic_check(),
-            Err(ResolveRefusal::Limit)
+            Err(ProofCloneError::UnstableFillState)
         ));
+        assert_eq!(stable_snapshot(&registry), before);
         registry.generics.borrow_mut().fill_rows.clear();
 
         registry.generics.borrow_mut().fill_stack.push(0);
+        let before = stable_snapshot(&registry);
         assert!(matches!(
             registry.clone_for_generic_check(),
-            Err(ResolveRefusal::Limit)
+            Err(ProofCloneError::UnstableFillState)
         ));
+        assert_eq!(stable_snapshot(&registry), before);
         registry.generics.borrow_mut().fill_stack.clear();
 
         registry
@@ -3962,28 +3971,43 @@ mod instantiation_state_tests {
             .borrow_mut()
             .fill_failures
             .push((0, ResolveRefusal::Unsupported));
+        let before = stable_snapshot(&registry);
         assert!(matches!(
             registry.clone_for_generic_check(),
-            Err(ResolveRefusal::Limit)
+            Err(ProofCloneError::UnstableFillState)
         ));
+        assert_eq!(stable_snapshot(&registry), before);
         registry.generics.borrow_mut().fill_failures.clear();
 
         registry.generics.borrow_mut().type_insts[0]
             .dependents
             .push(0);
+        let before = stable_snapshot(&registry);
         assert!(matches!(
             registry.clone_for_generic_check(),
-            Err(ResolveRefusal::Limit)
+            Err(ProofCloneError::UnstableFillState)
         ));
+        assert_eq!(stable_snapshot(&registry), before);
         registry.generics.borrow_mut().type_insts[0]
             .dependents
             .clear();
 
         registry.record_limit(site(9), "the real owner is no longer open");
+        let pending = stable_snapshot(&registry);
         assert!(matches!(
             registry.clone_for_generic_check(),
-            Err(ResolveRefusal::Limit)
+            Err(ProofCloneError::LimitOwnerNotOpen)
         ));
+        assert_eq!(stable_snapshot(&registry), pending);
+        registry.take_generic_diagnostics();
+        let reported = stable_snapshot(&registry);
+        assert!(matches!(
+            registry.clone_for_generic_check(),
+            Err(ProofCloneError::LimitOwnerNotOpen)
+        ));
+        assert!(matches!(pending.limit, StableLimit::Pending(_)));
+        assert!(matches!(reported.limit, StableLimit::Reported));
+        assert_eq!(stable_snapshot(&registry), reported);
         registry.generics.borrow_mut().limit = LimitState::Open;
 
         let body = {
@@ -4002,7 +4026,7 @@ mod instantiation_state_tests {
         let before = stable_snapshot(&registry);
         assert!(matches!(
             registry.clone_for_generic_check(),
-            Err(ResolveRefusal::Limit)
+            Err(ProofCloneError::UnstableFillState)
         ));
         assert_eq!(stable_snapshot(&registry), before);
     }
@@ -4017,7 +4041,7 @@ mod instantiation_state_tests {
         let result = registry.clone_for_generic_check();
         drop(guard);
 
-        assert!(result.is_err());
+        assert!(matches!(result, Err(ProofCloneError::UnstableFillState)));
         assert_eq!(stable_snapshot(&registry), before);
     }
 
@@ -4031,7 +4055,7 @@ mod instantiation_state_tests {
         let result = registry.clone_for_generic_check();
         drop(guard);
 
-        assert!(result.is_err());
+        assert!(matches!(result, Err(ProofCloneError::UnstableFillState)));
         assert_eq!(stable_snapshot(&registry), before);
     }
 
@@ -4102,17 +4126,101 @@ mod instantiation_state_tests {
         );
     }
 
+    /// Provisional and rejected reserved rows expose neither arguments nor body
+    /// shape through any semantic reader, for both Option and Result.
+    #[test]
+    fn filling_and_rejected_reserved_option_and_result_rows_are_hidden() {
+        let registry = registry(reserved_templates());
+        let mut draft = ImageDraft::new();
+        let option = registry
+            .instantiate_reserved_option(&mut draft, GArg::Scalar(ScalarType::Int), site(2))
+            .expect("ready Option mints");
+        let result_template = registry.reserved_template(Reserved::Result);
+        let result = registry
+            .mint_type_instance(
+                &mut draft,
+                result_template,
+                &[
+                    GArg::Scalar(ScalarType::Text),
+                    GArg::Scalar(ScalarType::Bool),
+                ],
+                site(3),
+            )
+            .expect("ready Result mints");
+        let TypeInstId::Enum(result) = result else {
+            panic!("the reserved Result template is enum-shaped")
+        };
+
+        {
+            let mut generics = registry.generics.borrow_mut();
+            for id in [option, result] {
+                let inst = generics
+                    .type_insts
+                    .iter_mut()
+                    .find(|inst| inst.id == TypeInstId::Enum(id))
+                    .expect("minted reserved row exists");
+                let prior = std::mem::replace(
+                    &mut inst.state,
+                    TypeInstState::Rejected(ResolveRefusal::Unsupported),
+                );
+                let TypeInstState::Ready(body) = prior else {
+                    panic!("minted reserved row is ready")
+                };
+                inst.state = TypeInstState::Filling { staged: Some(body) };
+            }
+        }
+        assert_reserved_rows_hidden(&registry, option, result);
+
+        {
+            let mut generics = registry.generics.borrow_mut();
+            for id in [option, result] {
+                let inst = generics
+                    .type_insts
+                    .iter_mut()
+                    .find(|inst| inst.id == TypeInstId::Enum(id))
+                    .expect("minted reserved row exists");
+                inst.state = TypeInstState::Rejected(ResolveRefusal::Unsupported);
+            }
+        }
+        assert_reserved_rows_hidden(&registry, option, result);
+    }
+
+    fn assert_reserved_rows_hidden(registry: &TypeRegistry, option: EnumId, result: EnumId) {
+        assert!(registry.as_option(option).is_none());
+        assert!(registry.as_result(result).is_none());
+        for id in [option, result] {
+            let id = TypeInstId::Enum(id);
+            assert!(registry.instantiation_of(id).is_none());
+            assert!(registry.type_inst_body(id).is_none());
+        }
+        assert!(registry.enum_variants(option).is_none());
+        assert!(registry.enum_variants(result).is_none());
+        assert!(registry.enum_anchor_spelling(option).is_none());
+        assert!(registry.enum_anchor_spelling(result).is_none());
+    }
+
     /// Absence of the reserved template is a typed owner failure, not
     /// an expectation unwind.
     #[test]
     fn missing_reserved_template_fails_without_unwinding() {
         let registry = registry(Vec::new());
         let mut draft = ImageDraft::new();
-        assert!(
-            registry
-                .instantiate_reserved_option(&mut draft, GArg::Scalar(ScalarType::Int), site(2),)
-                .is_err()
+        let registry_before = stable_snapshot(&registry);
+        let draft_before = draft.encode().expect("empty draft encodes");
+        let invariant = take_generic_invariant(registry.instantiate_reserved_option(
+            &mut draft,
+            GArg::Scalar(ScalarType::Int),
+            site(2),
+        ));
+        let draft_after = draft.encode().expect("failed draft still encodes");
+
+        assert_eq!(
+            invariant,
+            GenericInvariant::ReservedTemplateMissing(Reserved::Option)
         );
+        assert_eq!(stable_snapshot(&registry), registry_before);
+        assert_eq!(draft_after.bytes, draft_before.bytes);
+        assert_eq!(draft_after.image_id, draft_before.image_id);
     }
 
     /// A corrupted reserved-template kind fails before it can
@@ -4123,11 +4231,26 @@ mod instantiation_state_tests {
         registry.type_templates[0].body =
             TemplateBody::Struct(vec![("value".to_string(), name("T"))]);
         let mut draft = ImageDraft::new();
-        assert!(
-            registry
-                .instantiate_reserved_option(&mut draft, GArg::Scalar(ScalarType::Int), site(2),)
-                .is_err()
+        let registry_before = stable_snapshot(&registry);
+        let draft_before = draft.encode().expect("empty draft encodes");
+        let invariant = take_generic_invariant(registry.instantiate_reserved_option(
+            &mut draft,
+            GArg::Scalar(ScalarType::Int),
+            site(2),
+        ));
+        let draft_after = draft.encode().expect("failed draft still encodes");
+
+        assert_eq!(
+            invariant,
+            GenericInvariant::TemplateKindMismatch {
+                template: 0,
+                expected: TypeInstKind::Enum,
+                actual: TypeInstKind::Struct,
+            }
         );
+        assert_eq!(stable_snapshot(&registry), registry_before);
+        assert_eq!(draft_after.bytes, draft_before.bytes);
+        assert_eq!(draft_after.image_id, draft_before.image_id);
     }
 
     /// A struct template paired with an enum image id fails
@@ -4152,7 +4275,13 @@ mod instantiation_state_tests {
         );
         let draft_after = draft.encode().expect("failed draft still encodes");
 
-        assert!(result.is_err());
+        assert_eq!(
+            take_generic_invariant(result),
+            GenericInvariant::TypeBodyKindMismatch {
+                id: TypeInstId::Enum(wrong_id),
+                body: TypeInstKind::Struct,
+            }
+        );
         assert_eq!(stable_snapshot(&registry), registry_before);
         assert_eq!(draft_after.bytes, draft_before.bytes);
         assert_eq!(draft_after.image_id, draft_before.image_id);
@@ -4180,7 +4309,13 @@ mod instantiation_state_tests {
         );
         let draft_after = draft.encode().expect("failed draft still encodes");
 
-        assert!(result.is_err());
+        assert_eq!(
+            take_generic_invariant(result),
+            GenericInvariant::TypeBodyKindMismatch {
+                id: TypeInstId::Record(wrong_id),
+                body: TypeInstKind::Enum,
+            }
+        );
         assert_eq!(stable_snapshot(&registry), registry_before);
         assert_eq!(draft_after.bytes, draft_before.bytes);
         assert_eq!(draft_after.image_id, draft_before.image_id);
@@ -4189,7 +4324,7 @@ mod instantiation_state_tests {
     /// A List cache/draft index mismatch fails at the resolving
     /// owner, before a usable collection index can escape.
     #[test]
-    fn list_cache_draft_misalignment_fails_without_exposing_an_index() {
+    fn list_draft_ahead_misalignment_fails_without_exposing_an_index() {
         let registry = registry(Vec::new());
         let mut draft = ImageDraft::new();
         draft.add_collection_type(CollectionTypeDef::List {
@@ -4197,10 +4332,17 @@ mod instantiation_state_tests {
         });
         let before = stable_snapshot(&registry);
         let draft_before = draft.encode().expect("seeded draft encodes");
-        let result = registry.resolve_garg(&mut draft, &apply("List", vec![name("int")]), site(2));
+        let result = registry.instantiate_list(&mut draft, GArg::Scalar(ScalarType::Int));
         let draft_after = draft.encode().expect("failed draft still encodes");
 
-        assert!(result.is_err());
+        assert_eq!(
+            take_generic_invariant(result),
+            GenericInvariant::CollectionIndexMismatch {
+                kind: CollectionKind::List,
+                cache_index: 0,
+                draft_index: 1,
+            }
+        );
         assert_eq!(stable_snapshot(&registry), before);
         assert_eq!(draft_after.bytes, draft_before.bytes);
         assert_eq!(draft_after.image_id, draft_before.image_id);
@@ -4208,25 +4350,105 @@ mod instantiation_state_tests {
 
     /// The Map owner has the same no-index-on-misalignment boundary.
     #[test]
-    fn map_cache_draft_misalignment_fails_without_exposing_an_index() {
+    fn map_cache_ahead_misalignment_fails_without_exposing_an_index() {
         let registry = registry(Vec::new());
         let mut draft = ImageDraft::new();
+        registry.collections.borrow_mut().push(CollSpec::Map {
+            key: GArg::Scalar(ScalarType::Int),
+            value: GArg::Scalar(ScalarType::Text),
+        });
+        let before = stable_snapshot(&registry);
+        let draft_before = draft.encode().expect("seeded draft encodes");
+        let result = registry.instantiate_map(
+            &mut draft,
+            GArg::Scalar(ScalarType::Int),
+            GArg::Scalar(ScalarType::Text),
+        );
+        let draft_after = draft.encode().expect("failed draft still encodes");
+
+        assert_eq!(
+            take_generic_invariant(result),
+            GenericInvariant::CollectionIndexMismatch {
+                kind: CollectionKind::Map,
+                cache_index: 1,
+                draft_index: 0,
+            }
+        );
+        assert_eq!(stable_snapshot(&registry), before);
+        assert_eq!(draft_after.bytes, draft_before.bytes);
+        assert_eq!(draft_after.image_id, draft_before.image_id);
+    }
+
+    /// Owner alignment is checked even on a cache hit, before the prior index can
+    /// escape or reach collection_spec.
+    #[test]
+    fn collection_drift_blocks_a_cache_hit_without_exposing_the_prior_index() {
+        let registry = registry(Vec::new());
+        let mut draft = ImageDraft::new();
+        let list = registry
+            .instantiate_list(&mut draft, GArg::Scalar(ScalarType::Int))
+            .expect("aligned owners mint the first List");
+        assert_eq!(list, 0);
         draft.add_collection_type(CollectionTypeDef::Map {
             key: ImageType::scalar(Scalar::Text),
             value: ImageType::scalar(Scalar::Bool),
         });
         let before = stable_snapshot(&registry);
-        let draft_before = draft.encode().expect("seeded draft encodes");
-        let result = registry.resolve_garg(
-            &mut draft,
-            &apply("Map", vec![name("int"), name("string")]),
-            site(2),
-        );
+        let draft_before = draft.encode().expect("drifted draft encodes");
+
+        let result = registry.instantiate_list(&mut draft, GArg::Scalar(ScalarType::Int));
         let draft_after = draft.encode().expect("failed draft still encodes");
 
-        assert!(result.is_err());
+        assert_eq!(
+            take_generic_invariant(result),
+            GenericInvariant::CollectionIndexMismatch {
+                kind: CollectionKind::List,
+                cache_index: 1,
+                draft_index: 2,
+            }
+        );
         assert_eq!(stable_snapshot(&registry), before);
         assert_eq!(draft_after.bytes, draft_before.bytes);
         assert_eq!(draft_after.image_id, draft_before.image_id);
+    }
+
+    #[test]
+    fn aligned_collection_wrappers_publish_consecutive_indices() {
+        let registry = registry(Vec::new());
+        let mut draft = ImageDraft::new();
+        let list = registry
+            .instantiate_list(&mut draft, GArg::Scalar(ScalarType::Int))
+            .expect("aligned List owners mint");
+        let map = registry
+            .instantiate_map(
+                &mut draft,
+                GArg::Scalar(ScalarType::Text),
+                GArg::Scalar(ScalarType::Bool),
+            )
+            .expect("aligned Map owners mint");
+
+        assert_eq!((list, map), (0, 1));
+        assert_eq!(
+            stable_snapshot(&registry).collections,
+            vec![
+                CollSpec::List {
+                    elem: GArg::Scalar(ScalarType::Int),
+                },
+                CollSpec::Map {
+                    key: GArg::Scalar(ScalarType::Text),
+                    value: GArg::Scalar(ScalarType::Bool),
+                },
+            ]
+        );
+    }
+
+    fn take_generic_invariant<T>(result: Result<T, ResolveError>) -> GenericInvariant {
+        match result {
+            Err(ResolveError::Invariant(invariant)) => invariant,
+            Err(ResolveError::Refusal(_)) => {
+                panic!("compiler bookkeeping must not become a semantic refusal")
+            }
+            Ok(_) => panic!("the incoherent generic state must fail closed"),
+        }
     }
 }

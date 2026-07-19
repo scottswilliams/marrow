@@ -614,3 +614,28 @@ impl ConstValue {
         }
     }
 }
+
+#[cfg(test)]
+mod collection_count_tests {
+    use super::{CollectionTypeDef, ImageDraft};
+    use crate::{ImageType, Scalar};
+
+    #[test]
+    fn collection_type_count_tracks_the_next_published_id() {
+        let mut draft = ImageDraft::new();
+        assert_eq!(draft.collection_type_count(), 0);
+
+        let list = draft.add_collection_type(CollectionTypeDef::List {
+            elem: ImageType::scalar(Scalar::Int),
+        });
+        assert_eq!(list.index(), 0);
+        assert_eq!(draft.collection_type_count(), 1);
+
+        let map = draft.add_collection_type(CollectionTypeDef::Map {
+            key: ImageType::scalar(Scalar::Text),
+            value: ImageType::scalar(Scalar::Bool),
+        });
+        assert_eq!(map.index(), 1);
+        assert_eq!(draft.collection_type_count(), 2);
+    }
+}

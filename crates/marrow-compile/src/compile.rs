@@ -956,6 +956,11 @@ fn is_ascii_identifier(text: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::valid_export_path;
+    use super::{Built, CompileFailure, CompileStage, InvariantCause, compile_failure};
+    use crate::diag::SourceDiagnostic;
+    use crate::types::{GenericInvariant, ProofCloneError};
+    use marrow_codes::Code;
+    use marrow_syntax::SourceSpan;
 
     /// The minting guard rejects every input class whose dotted join would break
     /// the ExportId payload's injectivity, even though the current capture path
@@ -984,5 +989,143 @@ mod tests {
         assert!(!valid_export_path("1a", "run"));
         assert!(!valid_export_path("a", "1run"));
         assert!(!valid_export_path("a b", "run"));
+    }
+
+    fn diagnostic(code: &'static str, line: u32) -> SourceDiagnostic {
+        SourceDiagnostic::at(
+            code,
+            "src/main.mw",
+            SourceSpan {
+                line,
+                column: 7,
+                ..SourceSpan::default()
+            },
+            "retained source diagnostic".to_string(),
+        )
+    }
+
+    fn proof_clone_cause() -> InvariantCause {
+        InvariantCause::Generic(GenericInvariant::ProofClone(
+            ProofCloneError::UnstableFillState,
+        ))
+    }
+
+    fn stage_label(stage: CompileStage) -> &'static str {
+        match stage {
+            CompileStage::Parse => "parse",
+            CompileStage::TypeInstantiation => "type instantiation",
+            CompileStage::FunctionSignatures => "function signatures",
+            CompileStage::TemplateProof => "template proof",
+            CompileStage::BodyLowering => "body lowering",
+            CompileStage::PostLoweringValidation => "post-lowering validation",
+        }
+    }
+
+    /// A private compiler-coherence failure dominates source diagnostics already
+    /// accumulated at that stage. The public result contains no partial image.
+    #[test]
+    fn invariant_dominates_existing_diagnostics_at_the_public_boundary() {
+        let outcome: Result<Built, CompileFailure> = Err(compile_failure(
+            vec![diagnostic(Code::CheckType.as_str(), 3)],
+            Some(proof_clone_cause()),
+            CompileStage::TemplateProof,
+        ));
+        let Err(failure) = outcome else {
+            panic!("an invariant must not produce a partial image")
+        };
+
+        assert_eq!(failure.to_string(), "compiler invariant failure");
+        assert!(std::error::Error::source(&failure).is_some());
+        let CompileFailure::Invariant(invariant) = failure else {
+            panic!("the private invariant must dominate retained diagnostics")
+        };
+        assert!(matches!(
+            invariant.0,
+            InvariantCause::Generic(GenericInvariant::ProofClone(
+                ProofCloneError::UnstableFillState
+            ))
+        ));
+        assert_eq!(format!("{invariant:?}"), "CompileInvariant");
+        assert_eq!(invariant.to_string(), "compiler invariant failure");
+        assert!(std::error::Error::source(&invariant).is_none());
+    }
+
+    /// Diagnostics preserve their original order and allocation behind a statically
+    /// nonempty owner. Every borrowed and owned iteration surface observes that order.
+    #[test]
+    fn diagnostic_failure_preserves_order_allocation_and_iteration_views() {
+        let expected = vec![
+            diagnostic(Code::CheckType.as_str(), 4),
+            diagnostic(Code::CheckType.as_str(), 9),
+        ];
+        let mut original = Vec::with_capacity(8);
+        original.extend(expected.iter().cloned());
+        let original_ptr = original.as_ptr();
+        let original_capacity = original.capacity();
+        let failure = compile_failure(original, None, CompileStage::BodyLowering);
+        assert_eq!(
+            failure.to_string(),
+            "compilation failed with source diagnostics"
+        );
+        assert!(std::error::Error::source(&failure).is_none());
+        let CompileFailure::Diagnostics(diagnostics) = failure else {
+            panic!("a nonempty source failure must remain diagnostics")
+        };
+        assert_eq!(diagnostics.as_slice(), expected.as_slice());
+        let as_ref: &[SourceDiagnostic] = diagnostics.as_ref();
+        assert_eq!(as_ref, expected.as_slice());
+        assert_eq!(diagnostics.iter().cloned().collect::<Vec<_>>(), expected);
+        assert_eq!(
+            (&diagnostics).into_iter().cloned().collect::<Vec<_>>(),
+            expected
+        );
+        let recovered = diagnostics.into_vec();
+        assert_eq!(recovered.as_ptr(), original_ptr);
+        assert_eq!(recovered.capacity(), original_capacity);
+        assert_eq!(recovered, expected);
+
+        let mut original = Vec::with_capacity(8);
+        original.extend(expected.iter().cloned());
+        let original_ptr = original.as_ptr();
+        let failure = compile_failure(original, None, CompileStage::BodyLowering);
+        let CompileFailure::Diagnostics(diagnostics) = failure else {
+            panic!("a nonempty source failure must remain diagnostics")
+        };
+        let iterator: std::vec::IntoIter<SourceDiagnostic> = diagnostics.into_iter();
+        assert_eq!(iterator.as_slice().as_ptr(), original_ptr);
+        assert_eq!(iterator.as_slice(), expected.as_slice());
+        assert_eq!(iterator.collect::<Vec<_>>(), expected);
+    }
+
+    /// An empty source-diagnostic vector is a private invariant carrying the exact
+    /// stage that attempted to cross the boundary. The matcher intentionally has no
+    /// wildcard, so adding a stage requires updating this contract.
+    #[test]
+    fn empty_failure_is_an_exact_invariant_at_every_compile_stage() {
+        for stage in [
+            CompileStage::Parse,
+            CompileStage::TypeInstantiation,
+            CompileStage::FunctionSignatures,
+            CompileStage::TemplateProof,
+            CompileStage::BodyLowering,
+            CompileStage::PostLoweringValidation,
+        ] {
+            let empty = compile_failure(Vec::new(), None, stage);
+            let CompileFailure::Invariant(invariant) = empty else {
+                panic!("an empty diagnostic failure must become a compiler invariant")
+            };
+            let InvariantCause::EmptyDiagnostics(actual) = invariant.0 else {
+                panic!("the empty boundary keeps its private stage")
+            };
+            assert_eq!(stage_label(actual), stage_label(stage));
+            assert_eq!(actual, stage);
+        }
+    }
+
+    #[test]
+    fn public_invariant_is_worker_transferable_without_exposing_its_cause() {
+        fn assert_worker_type<T: Send + Sync + 'static>() {}
+
+        assert_worker_type::<super::CompileInvariant>();
     }
 }
