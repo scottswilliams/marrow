@@ -425,6 +425,6 @@ fn the_external_inventory_is_unchanged_from_the_clean_tree() {
 
     assert_eq!(
         inventory, expected,
-        "the external (name, version, source, checksum, license) inventory drifted from the clean tree"
+        "the external (name, version, checksum, license) inventory drifted from the clean tree (source is asserted separately as the one registry)"
     );
 }

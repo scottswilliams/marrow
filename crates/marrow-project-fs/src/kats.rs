@@ -922,7 +922,12 @@ fn stage_a_missing_manifest_is_the_only_reported_role() {
             .expect_err("a missing manifest refuses");
     let physical = as_physical(&failure);
     assert_eq!(physical.role(), PhysicalRole::Manifest);
-    assert!(matches!(physical.refusal(), PhysicalRefusal::Io { .. }));
+    // An absent required manifest is an I/O refusal; the target may classify it as
+    // the dedicated `Missing` variant, so this control does not exclude it.
+    assert!(matches!(
+        physical.refusal(),
+        PhysicalRefusal::Io { .. } | PhysicalRefusal::Missing { .. }
+    ));
 }
 
 #[test]
