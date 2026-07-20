@@ -106,7 +106,10 @@ fn compile(source: &str, ids: &str) -> Result<marrow_compile::Compiled, Vec<Sour
         Err(marrow_compile::CompileFailure::Diagnostics(diagnostics)) => {
             Err(diagnostics.into_vec())
         }
-        Err(marrow_compile::CompileFailure::Invariant(_) | marrow_compile::CompileFailure::ResourceLimit(_)) => {
+        Err(
+            marrow_compile::CompileFailure::Invariant(_)
+            | marrow_compile::CompileFailure::ResourceLimit(_),
+        ) => {
             panic!("source-triggered compiler failures must remain diagnostics")
         }
     }

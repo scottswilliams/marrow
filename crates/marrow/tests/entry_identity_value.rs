@@ -86,7 +86,10 @@ fn compile_errors(source: &str) -> Vec<SourceDiagnostic> {
     match marrow_compile::compile(&project) {
         Ok(_) => panic!("expected the checker to reject this program"),
         Err(marrow_compile::CompileFailure::Diagnostics(diagnostics)) => diagnostics.into_vec(),
-        Err(marrow_compile::CompileFailure::Invariant(_) | marrow_compile::CompileFailure::ResourceLimit(_)) => {
+        Err(
+            marrow_compile::CompileFailure::Invariant(_)
+            | marrow_compile::CompileFailure::ResourceLimit(_),
+        ) => {
             panic!("source-triggered compiler failures must remain diagnostics")
         }
     }

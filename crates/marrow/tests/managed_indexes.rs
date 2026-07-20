@@ -109,7 +109,10 @@ fn verify_source(source: &str, ids: &str) -> Result<marrow_verify::VerifiedImage
                 .collect::<Vec<_>>()
                 .join(","));
         }
-        Err(marrow_compile::CompileFailure::Invariant(_) | marrow_compile::CompileFailure::ResourceLimit(_)) => {
+        Err(
+            marrow_compile::CompileFailure::Invariant(_)
+            | marrow_compile::CompileFailure::ResourceLimit(_),
+        ) => {
             return Err("compiler invariant failure".to_string());
         }
     };
@@ -136,7 +139,10 @@ fn compile_codes(source: &str, ids: &str) -> Vec<&'static str> {
             .iter()
             .map(|diagnostic| diagnostic.code)
             .collect(),
-        Err(marrow_compile::CompileFailure::Invariant(_) | marrow_compile::CompileFailure::ResourceLimit(_)) => {
+        Err(
+            marrow_compile::CompileFailure::Invariant(_)
+            | marrow_compile::CompileFailure::ResourceLimit(_),
+        ) => {
             panic!("source-triggered compiler failures must remain diagnostics")
         }
     }

@@ -610,10 +610,11 @@ fn build(project: &ProjectInput, mode: TestMode) -> Result<Built, CompileFailure
     }
 
     // Refuse a structural declaration bound at its offending construct before any
-    // image structure is built. These counts are exact source properties (a record's
-    // top-level field width, a function's parameter arity, a durable member tree's
-    // group/branch nesting depth), so the check runs on the parse tree ahead of the
-    // first draft mutation.
+    // image structure is built. These counts are exact source properties — a record's
+    // top-level field width and a function's parameter arity — so the check runs on the
+    // parse tree ahead of the first draft mutation. Durable member-tree nesting depth is
+    // not checked here: its exact accounting is the encoder's, and it surfaces as a
+    // locationless `DurableDepth` resource limit rather than a divergent source count.
     check_structural_resource_bounds(&parsed, &mut diagnostics);
     if !diagnostics.is_empty() {
         return Err(diagnostic_failure(diagnostics, CompileStage::Parse));

@@ -160,7 +160,10 @@ fn pipeline(ops: &str) -> Stage {
                 .expect("a rejection carries at least one diagnostic")
                 .code,
         ),
-        Err(marrow_compile::CompileFailure::Invariant(_) | marrow_compile::CompileFailure::ResourceLimit(_)) => {
+        Err(
+            marrow_compile::CompileFailure::Invariant(_)
+            | marrow_compile::CompileFailure::ResourceLimit(_),
+        ) => {
             panic!("source-triggered compiler failures must remain diagnostics")
         }
         Ok(compiled) => match marrow_verify::verify(&compiled.image.bytes) {

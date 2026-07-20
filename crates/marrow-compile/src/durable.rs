@@ -783,10 +783,13 @@ struct IdentityResolver<'a> {
     /// diagnostics and aborts the durable build at the compile invariant boundary.
     invariant: Option<GenericInvariant>,
     /// The struct/enum value types on the current value-shape recursion path. It
-    /// bounds the recursion by the finite distinct-type set and distinguishes a
-    /// finite acyclic value nested past the depth bound (a `check.resource_limit`)
-    /// from a cyclic value (owned by the later value-cycle `check.recursion` pass),
-    /// so the two never both report.
+    /// bounds the recursion by the finite distinct-type set: a type already on the
+    /// path closes a cycle and short-circuits before the depth check. A cycle whose
+    /// repeat falls within the depth bound is therefore pre-empted here and left to
+    /// the later value-cycle `check.recursion` pass alone; a finite acyclic value, or a
+    /// cycle whose distinct prefix first crosses the depth bound, reports its own
+    /// `check.resource_limit` (the latter case then also draws `check.recursion` from
+    /// the cycle pass — both are truthful and land at real spans).
     value_path: Vec<ValueNode>,
     diagnostics: &'a mut Vec<SourceDiagnostic>,
 }
@@ -837,10 +840,13 @@ impl<'a> IdentityResolver<'a> {
             GArg::Nominal(_) => DurableValueShape::Scalar(ScalarType::Int.image()),
             GArg::Struct(type_id) => {
                 // A struct already on the path closes a value cycle: leave it to the
-                // later value-cycle pass (`check.recursion`) and drop the graph, so a
-                // cyclic value never also reports a resource limit. The path bounds the
-                // recursion, so a finite acyclic value that reaches the depth bound is
-                // genuinely over-deep and reports its own `check.resource_limit`.
+                // later value-cycle pass (`check.recursion`) and drop the graph. The
+                // cycle check precedes the depth check, so a cycle whose repeat falls
+                // within the depth bound is pre-empted here and reported only by the
+                // cycle pass. A finite acyclic value that reaches the depth bound is
+                // genuinely over-deep and reports its own `check.resource_limit`; a
+                // cycle whose distinct prefix crosses the depth bound first hits this
+                // limit and additionally draws `check.recursion` — both truthful.
                 if self.value_path.contains(&ValueNode::Struct(type_id)) {
                     self.complete = false;
                     return DurableValueShape::Scalar(ScalarType::Int.image());
@@ -1252,16 +1258,14 @@ impl<'a> IdentityResolver<'a> {
             // The projected component count crosses the fixed image projection width
             // before the index's leaves are resolved or its identity minted.
             if index.args.len() > bounds::MAX_INDEX_COMPONENTS {
-                self.complete = false;
-                self.diagnostics.push(resource_limit(
-                    self.file,
+                self.reject_resource_limit(
                     index.span,
                     format!(
                         "a managed index projects {} components; the fixed limit is {}",
                         index.args.len(),
                         bounds::MAX_INDEX_COMPONENTS
                     ),
-                ));
+                );
                 continue;
             }
             // The index name shares the root's source namespace with the identity keys,

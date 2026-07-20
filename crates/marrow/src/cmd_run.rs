@@ -253,8 +253,8 @@ fn compiler_invariant_record() -> Record {
 }
 
 /// The fixed payload-free operational record for a compiler resource-limit outcome.
-/// The typed limit's kind/bound/actual integers are internal; the CLI surfaces one
-/// fixed code with no detail, and never a source location or an image.
+/// The typed limit's kind and bound are internal; the CLI surfaces one fixed code
+/// with no detail, and never a source location or an image.
 fn compiler_resource_limit_record() -> Record {
     Record::OperationalError {
         code: marrow_codes::Code::CliCompilerResourceLimit.as_str(),
