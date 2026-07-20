@@ -32,6 +32,25 @@ impl CapturedFile {
             bytes,
         }
     }
+
+    /// Report whether a borrowed root-relative spelling is a syntactically valid
+    /// identity that exceeds [`MAX_FILE_IDENTITY_BYTES`], mapping only that
+    /// valid-overbound case to the sealed pathless
+    /// [`CaptureErrorKind::SourcePathTooLong`]. Every other outcome — a valid
+    /// in-bound identity or any syntax error — returns `Ok(())`, so an over-long
+    /// identity is refused before any path copy while a syntactically invalid
+    /// spelling stays deferred to [`capture`]'s ordinary raw-path selection. It
+    /// borrows the spelling and copies no path.
+    ///
+    /// [`MAX_FILE_IDENTITY_BYTES`]: crate::MAX_FILE_IDENTITY_BYTES
+    pub fn check_identity_bound(path: &str) -> Result<(), CaptureError> {
+        match FileIdentity::check(path) {
+            Err(SourcePathReason::TooLong { limit, actual }) => {
+                Err(CaptureError::source_path_too_long(limit, actual))
+            }
+            _ => Ok(()),
+        }
+    }
 }
 
 /// The bounds a project capture may not exceed. The physical adapter enforces
@@ -168,6 +187,26 @@ pub fn capture(
         ));
     }
 
+    // A syntactically valid identity longer than the maximum refuses first, before
+    // the ordinary invalid-path collection. The offender is the lexicographically
+    // smallest raw valid-overbound spelling; only its bounded limit/actual evidence
+    // is retained — never the raw path — so the fault is input-order independent and
+    // carries no path.
+    let mut overbound: Option<(&str, usize, usize)> = None;
+    for file in &files {
+        if let Err(SourcePathReason::TooLong { limit, actual }) =
+            FileIdentity::check(&file.relative_path)
+        {
+            let path = file.relative_path.as_str();
+            if overbound.is_none_or(|(smallest, ..)| path < smallest) {
+                overbound = Some((path, limit, actual));
+            }
+        }
+    }
+    if let Some((_, limit, actual)) = overbound {
+        return Err(CaptureError::source_path_too_long(limit, actual));
+    }
+
     // Validate every path before reporting, so an invalid path is chosen by its
     // sorted raw spelling rather than by arrival order.
     let mut invalid: Vec<(String, SourcePathReason)> = Vec::new();
@@ -282,6 +321,11 @@ pub enum CaptureErrorKind {
         path: String,
         reason: SourcePathReason,
     },
+    /// A caller-supplied path is a syntactically valid contained identity but
+    /// exceeds the maximum identity byte length. Pathless: the offending raw path
+    /// is never retained, so its bounded evidence is the limit and actual length
+    /// alone.
+    SourcePathTooLong { limit: usize, actual: usize },
     /// Two files collide on module identity.
     ModuleCollision {
         module: ModuleName,
@@ -339,6 +383,11 @@ impl CaptureError {
             }
             SourcePathReason::OutsideSourceRoot => "must live under the `src` source root",
             SourcePathReason::NotMarrowSource => "must be a `.mw` file with a non-empty name",
+            // An over-long identity is always reported pathless; the raw path is
+            // never retained, so it cannot ride the located source-path message.
+            SourcePathReason::TooLong { limit, actual } => {
+                return Self::source_path_too_long(limit, actual);
+            }
         };
         Self {
             code: Code::ProjectSourcePath,
@@ -347,6 +396,14 @@ impl CaptureError {
                 reason,
             },
             message: format!("source path `{path}` {explanation}"),
+        }
+    }
+
+    fn source_path_too_long(limit: usize, actual: usize) -> Self {
+        Self {
+            code: Code::ProjectSourcePath,
+            kind: CaptureErrorKind::SourcePathTooLong { limit, actual },
+            message: format!("source path is {actual} bytes, over the {limit}-byte source-path limit"),
         }
     }
 

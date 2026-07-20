@@ -25,7 +25,10 @@ pub use capture::{
     CaptureBound, CaptureError, CaptureErrorKind, CaptureLimits, CapturedFile, CollisionReason,
     ModuleInput, ProjectInput, capture,
 };
-pub use identity::{FileIdentity, ModuleName, SOURCE_EXTENSION, SOURCE_ROOT, SourcePathReason};
+pub use identity::{
+    FileIdentity, MAX_FILE_IDENTITY_BYTES, ModuleName, SOURCE_EXTENSION, SOURCE_ROOT,
+    SourcePathReason,
+};
 pub use ids::{
     DurableIdentityId, IDS_FILE, IdentityAnchor, IdentityKind, IdentityLedger, IdentityTombstone,
     IdsError, IdsErrorKind, MAX_IDS_BYTES, MintError,

@@ -2,8 +2,8 @@
 
 use marrow_codes::Code;
 use marrow_project::{
-    CaptureBound, CaptureErrorKind, CaptureLimits, CapturedFile, CollisionReason, Manifest,
-    ProjectInput,
+    CaptureBound, CaptureErrorKind, CaptureLimits, CapturedFile, CollisionReason,
+    MAX_FILE_IDENTITY_BYTES, Manifest, ProjectInput,
 };
 
 fn manifest() -> Manifest {
@@ -131,14 +131,95 @@ fn an_invalid_path_rejects_deterministically() {
     }
 }
 
+/// A valid single-component `.mw` identity of exactly `bytes` UTF-8 bytes.
+fn identity_of_len(lead: char, bytes: usize) -> String {
+    format!("src/{}.mw", lead.to_string().repeat(bytes - 7))
+}
+
 #[test]
-fn an_over_long_identity_refuses_with_the_source_path_family() {
-    let over = format!("src/{}.mw", "a".repeat(4090));
-    assert_eq!(over.len(), 4097);
+fn an_over_long_identity_refuses_pathless_in_the_source_path_family() {
+    let over = identity_of_len('a', MAX_FILE_IDENTITY_BYTES + 1);
     let error = capture(vec![file(&over, "x")]).expect_err("an over-long identity refuses");
     assert_eq!(error.code(), Code::ProjectSourcePath);
-    // The raw path is never retained in the message.
-    assert!(!error.message().contains("aaaa"));
+    // The sealed pathless kind carries only the bounded evidence, never the path.
+    assert_eq!(
+        *error.kind(),
+        CaptureErrorKind::SourcePathTooLong {
+            limit: MAX_FILE_IDENTITY_BYTES,
+            actual: MAX_FILE_IDENTITY_BYTES + 1,
+        }
+    );
+    assert!(
+        !error.message().contains("aaaa"),
+        "the message retains no raw path"
+    );
+}
+
+#[test]
+fn the_over_long_offender_is_the_lexically_smallest_raw_path_not_the_shortest() {
+    // The lexicographically smaller path (`a…`) is the longer of the two; selection
+    // is by raw spelling, and the reported `actual` is that path's own length.
+    let smaller_longer = identity_of_len('a', MAX_FILE_IDENTITY_BYTES + 100);
+    let larger_shorter = identity_of_len('z', MAX_FILE_IDENTITY_BYTES + 1);
+    let expected = CaptureErrorKind::SourcePathTooLong {
+        limit: MAX_FILE_IDENTITY_BYTES,
+        actual: MAX_FILE_IDENTITY_BYTES + 100,
+    };
+
+    let forward = capture(vec![
+        file(&larger_shorter, "y"),
+        file(&smaller_longer, "x"),
+    ])
+    .expect_err("refuses");
+    let reverse = capture(vec![
+        file(&smaller_longer, "x"),
+        file(&larger_shorter, "y"),
+    ])
+    .expect_err("refuses");
+    assert_eq!(*forward.kind(), expected);
+    assert_eq!(forward.kind(), reverse.kind());
+}
+
+#[test]
+fn an_over_long_identity_precedes_a_syntactically_invalid_path() {
+    // A valid-overbound identity and a syntax-invalid path together: the pathless
+    // `TooLong` refusal wins, before the ordinary invalid-path collection.
+    let over = identity_of_len('m', MAX_FILE_IDENTITY_BYTES + 1);
+    let error = capture(vec![file("/etc/x.mw", "x"), file(&over, "y")])
+        .expect_err("refuses");
+    assert!(matches!(
+        error.kind(),
+        CaptureErrorKind::SourcePathTooLong { .. }
+    ));
+}
+
+#[test]
+fn an_identity_at_the_maximum_captures() {
+    let at_max = identity_of_len('a', MAX_FILE_IDENTITY_BYTES);
+    let input = capture(vec![file(&at_max, "x")]).expect("4096 bytes captures");
+    assert_eq!(input.modules().len(), 1);
+    assert_eq!(input.modules()[0].identity().as_str().len(), MAX_FILE_IDENTITY_BYTES);
+}
+
+#[test]
+fn check_identity_bound_maps_only_the_valid_overbound_case() {
+    // A valid in-bound identity and every syntax error return `Ok`; only a valid
+    // over-long identity maps to the sealed pathless too-long refusal.
+    assert!(CapturedFile::check_identity_bound("src/main.mw").is_ok());
+    assert!(CapturedFile::check_identity_bound("/etc/x.mw").is_ok());
+    assert!(CapturedFile::check_identity_bound("src/../y.mw").is_ok());
+    assert!(CapturedFile::check_identity_bound("lib/z.mw").is_ok());
+
+    let over = identity_of_len('a', MAX_FILE_IDENTITY_BYTES + 1);
+    let error = CapturedFile::check_identity_bound(&over).expect_err("valid-overbound maps");
+    assert_eq!(error.code(), Code::ProjectSourcePath);
+    assert_eq!(
+        *error.kind(),
+        CaptureErrorKind::SourcePathTooLong {
+            limit: MAX_FILE_IDENTITY_BYTES,
+            actual: MAX_FILE_IDENTITY_BYTES + 1,
+        }
+    );
 }
 
 /// The three files the capture-limit boundary probes use, so `N` = 3.

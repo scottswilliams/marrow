@@ -1,6 +1,6 @@
 //! File-identity validation and path-derived module names.
 
-use marrow_project::{FileIdentity, SourcePathReason};
+use marrow_project::{FileIdentity, MAX_FILE_IDENTITY_BYTES, SourcePathReason};
 
 fn module_name(path: &str) -> Option<String> {
     FileIdentity::validate(path)
@@ -170,14 +170,67 @@ fn ascii_identity(bytes: usize) -> String {
 
 #[test]
 fn a_valid_identity_at_the_maximum_is_accepted_and_one_over_is_refused() {
-    let at_max = ascii_identity(4096);
-    assert_eq!(at_max.len(), 4096);
-    assert!(FileIdentity::check(&at_max).is_ok(), "4096 bytes is accepted");
-    assert!(FileIdentity::validate(&at_max).is_ok());
+    // The canonical 4,096-byte identity: fifteen 255-byte components plus a
+    // 249-byte stem, all under the `src` root. Its module name is 4,089 bytes.
+    let components: Vec<String> = (0..15).map(|_| "a".repeat(255)).collect();
+    let at_max = format!("src/{}/{}.mw", components.join("/"), "b".repeat(249));
+    assert_eq!(at_max.len(), MAX_FILE_IDENTITY_BYTES);
+    let (identity, module) = FileIdentity::validate(&at_max).expect("4096 bytes is accepted");
+    assert_eq!(identity.as_str().len(), MAX_FILE_IDENTITY_BYTES);
+    assert_eq!(module.as_str().len(), MAX_FILE_IDENTITY_BYTES - 7);
+    assert!(FileIdentity::check(&at_max).is_ok());
 
-    let over = ascii_identity(4097);
-    assert_eq!(over.len(), 4097);
-    assert!(FileIdentity::check(&over).is_err(), "4097 bytes is refused");
+    // A 250-byte stem is the 4,097-byte successor: refused with the exact tuple.
+    let over = format!("src/{}/{}.mw", components.join("/"), "b".repeat(250));
+    assert_eq!(over.len(), MAX_FILE_IDENTITY_BYTES + 1);
+    assert_eq!(
+        FileIdentity::check(&over),
+        Err(SourcePathReason::TooLong {
+            limit: MAX_FILE_IDENTITY_BYTES,
+            actual: MAX_FILE_IDENTITY_BYTES + 1,
+        }),
+    );
+    assert_eq!(FileIdentity::validate(&over).err(), FileIdentity::check(&over).err());
+}
+
+#[test]
+fn the_maximum_is_a_byte_bound_not_a_scalar_count() {
+    // Two-byte `é`: 2,045 of them plus `src/` and `.mw` is exactly 4,097 bytes but
+    // only 2,052 scalars, so a scalar bound would accept it. The byte bound refuses.
+    let over = format!("src/{}.mw", "é".repeat(2045));
+    assert_eq!(over.len(), MAX_FILE_IDENTITY_BYTES + 1);
+    assert_eq!(
+        reason(&over),
+        Some(SourcePathReason::TooLong {
+            limit: MAX_FILE_IDENTITY_BYTES,
+            actual: MAX_FILE_IDENTITY_BYTES + 1,
+        }),
+    );
+    // One `é` shorter is exactly 4,095 bytes and is accepted.
+    let under = format!("src/{}.mw", "é".repeat(2044));
+    assert_eq!(under.len(), MAX_FILE_IDENTITY_BYTES - 1);
+    assert!(FileIdentity::validate(&under).is_ok());
+}
+
+#[test]
+fn path_syntax_is_classified_before_the_length_bound() {
+    // A 5,000-byte path that is also syntactically invalid reports the syntax
+    // reason, never `TooLong`: length is the last gate, after syntax.
+    let absolute = format!("/src/{}.mw", "a".repeat(5000));
+    assert_eq!(reason(&absolute), Some(SourcePathReason::Absolute));
+    let escapes = format!("src/../{}.mw", "a".repeat(5000));
+    assert_eq!(reason(&escapes), Some(SourcePathReason::Escapes));
+    let outside = format!("lib/{}.mw", "a".repeat(5000));
+    assert_eq!(reason(&outside), Some(SourcePathReason::OutsideSourceRoot));
+    let not_source = format!("src/{}.txt", "a".repeat(5000));
+    assert_eq!(reason(&not_source), Some(SourcePathReason::NotMarrowSource));
+}
+
+#[test]
+fn check_and_validate_agree_on_an_over_long_identity() {
+    let over = ascii_identity(MAX_FILE_IDENTITY_BYTES + 1);
+    assert_eq!(FileIdentity::check(&over).err(), reason(&over));
+    assert!(FileIdentity::check(&over).is_err());
     assert!(FileIdentity::validate(&over).is_err());
 }
 

@@ -16,6 +16,16 @@ pub const SOURCE_ROOT: &str = "src";
 /// The extension every Marrow source file carries.
 pub const SOURCE_EXTENSION: &str = "mw";
 
+/// The inclusive maximum UTF-8 byte length of a canonical [`FileIdentity`]. A path
+/// that is syntactically a contained `.mw` module but longer than this is refused
+/// with [`SourcePathReason::TooLong`]; [`FileIdentity::check`] enforces this after
+/// establishing syntax and before any identity or module allocation, so no
+/// constructed identity exceeds it. This is a UTF-8 byte bound, not a `PATH_MAX`,
+/// component, or character limit. The derived [`ModuleName`] is therefore at most
+/// `MAX_FILE_IDENTITY_BYTES - 7` bytes, dropping the `src/` root prefix and the
+/// `.mw` extension.
+pub const MAX_FILE_IDENTITY_BYTES: usize = 4096;
+
 /// The canonical root-relative identity of a captured source file, such as
 /// `src/foo/bar.mw`. Independent of where the project is located on disk, so a
 /// relocated project yields byte-identical identities. Constructed only through
@@ -110,6 +120,15 @@ impl FileIdentity {
             return Err(SourcePathReason::NotMarrowSource);
         }
 
+        // Syntax is established; the valid-identity byte maximum is the last gate,
+        // before `validate` allocates any identity or module.
+        if path.len() > MAX_FILE_IDENTITY_BYTES {
+            return Err(SourcePathReason::TooLong {
+                limit: MAX_FILE_IDENTITY_BYTES,
+                actual: path.len(),
+            });
+        }
+
         Ok(())
     }
 
@@ -158,4 +177,12 @@ pub enum SourcePathReason {
     /// The path is under the source root but is not a `.mw` file with a
     /// non-empty stem.
     NotMarrowSource,
+    /// The path is a syntactically valid contained `.mw` identity but longer than
+    /// [`MAX_FILE_IDENTITY_BYTES`] UTF-8 bytes.
+    TooLong {
+        /// The inclusive maximum identity length, in UTF-8 bytes.
+        limit: usize,
+        /// The offending path's length, in UTF-8 bytes.
+        actual: usize,
+    },
 }
