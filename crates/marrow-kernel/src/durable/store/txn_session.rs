@@ -12,10 +12,10 @@ use super::super::{
     EraseOutcome, FieldSchema, IndexComponent, IndexSchema, KernelFault, Presence, ReplaceOutcome,
 };
 use super::Durable;
-use super::WITNESS;
 use super::address::{
     field_index_in_record, field_name, group_target, node_shape, node_stem, read_raw, site_record,
 };
+use super::handle::WITNESS;
 use super::index_ops::{op_index_lookup, op_index_scan};
 use super::read_ops::{
     SlotClass, op_presence, op_read_entry, op_read_field, op_read_group, probe_slot,
