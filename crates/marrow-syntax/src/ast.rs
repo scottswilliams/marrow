@@ -566,6 +566,10 @@ pub struct FunctionDecl {
     pub docs: Vec<String>,
     pub public: bool,
     pub name: String,
+    /// The source span of the function's declared name token, for editor definition
+    /// and selection ranges. When the header failed to parse a name, this falls back
+    /// to the header span rather than a zero-range.
+    pub name_span: SourceSpan,
     /// Declared generic type parameters, `<T, U supports equality>`, empty for an
     /// ordinary monomorphic function. Each parameter names a type usable in the
     /// parameter, return, and local annotations of the body.

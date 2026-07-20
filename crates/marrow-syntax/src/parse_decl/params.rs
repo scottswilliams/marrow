@@ -49,8 +49,10 @@ pub(super) fn parse_function_head(source: &str, tokens: &[Token]) -> ParseResult
         ));
     }
     let rest = &rest[1..];
-    let name = match rest.first() {
-        Some(token) if token.kind == TokenKind::Identifier => token.text(source).to_string(),
+    let (name, name_span) = match rest.first() {
+        Some(token) if token.kind == TokenKind::Identifier => {
+            (token.text(source).to_string(), token.span)
+        }
         _ => {
             return Err(ParseError::new(
                 ParseDiagnosticReason::Expected(ExpectedSyntax::FunctionName),
@@ -125,6 +127,7 @@ pub(super) fn parse_function_head(source: &str, tokens: &[Token]) -> ParseResult
     Ok(FunctionHead {
         public,
         name,
+        name_span,
         type_params,
         params,
         return_type,

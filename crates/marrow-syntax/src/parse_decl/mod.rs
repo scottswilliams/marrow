@@ -28,6 +28,7 @@ use crate::diagnostic::{ParseDiagnosticReason, SourceSpan};
 pub(super) struct FunctionHead {
     public: bool,
     name: String,
+    name_span: SourceSpan,
     type_params: Vec<TypeParamDecl>,
     params: Vec<ParamDecl>,
     return_type: Option<TypeExpr>,

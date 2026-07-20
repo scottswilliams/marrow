@@ -868,6 +868,9 @@ impl<'a> DeclParser<'a> {
                 FunctionHead {
                     public: false,
                     name: String::new(),
+                    // No name token parsed; anchor the selection at the header rather
+                    // than a zero-range.
+                    name_span: span,
                     type_params: Vec::new(),
                     params: Vec::new(),
                     return_type: None,
@@ -892,6 +895,7 @@ impl<'a> DeclParser<'a> {
             docs,
             public: head.public,
             name: head.name,
+            name_span: head.name_span,
             type_params: head.type_params,
             params: head.params,
             return_type: head.return_type,

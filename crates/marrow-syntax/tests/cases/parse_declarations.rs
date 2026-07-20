@@ -145,6 +145,25 @@ fn parses_optional_function_return_type() {
 }
 
 #[test]
+fn retains_the_function_name_span_for_definition() {
+    let source = "module app\n\nfn compute(): int {\n    return 1\n}\n";
+    let parsed = parse_source(source);
+    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    let f = parsed.file.function("compute").expect("function");
+    // The name span isolates the declared name token, not the whole header.
+    assert_eq!(
+        &source[f.name_span.start_byte..f.name_span.end_byte],
+        "compute"
+    );
+    // It nests within the header span and is strictly narrower — a real selection
+    // range, never a zero-range or the whole header.
+    assert!(f.name_span.start_byte >= f.span.start_byte);
+    assert!(f.name_span.end_byte <= f.span.end_byte);
+    assert!(f.name_span.end_byte > f.name_span.start_byte);
+    assert!(f.name_span.end_byte - f.name_span.start_byte < f.span.end_byte - f.span.start_byte);
+}
+
+#[test]
 fn parses_optional_parameter_type() {
     // `T?` is a first-class parameter type; the trailing `?` rides in the type
     // spelling exactly as a return or local annotation does.
