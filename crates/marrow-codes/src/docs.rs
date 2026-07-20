@@ -154,6 +154,7 @@ execution is in the trough.
             Code::CliCommandUnsupported,
             Code::CliTransferExcluded,
             Code::CliDurableUnsupported,
+            Code::CliCompilerResourceLimit,
         ]),
         r#"
 ### `check.*` — kind `check`
@@ -178,6 +179,7 @@ Static errors found while checking source.
             Code::CheckMatchNonexhaustive,
             Code::CheckMatchArm,
             Code::CheckInstantiationLimit,
+            Code::CheckResourceLimit,
             Code::CheckDurableIdentity,
         ]),
         r#"
