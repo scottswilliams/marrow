@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 
 /// The one source file allowed to construct a `VerifiedImage`: the verifier's
 /// sealing pass.
-const SEALING_FILE: &str = "crates/marrow-verify/src/verify.rs";
+const SEALING_FILE: &str = "crates/marrow-verify/src/verify/mod.rs";
 
 fn workspace_root() -> PathBuf {
     // CARGO_MANIFEST_DIR is `<root>/crates/marrow-verify`.
