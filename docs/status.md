@@ -15,11 +15,14 @@ refounded lane by lane; a feature is absent until its lane lands it.
 
 ## Current
 
-The beta workspace is ten crates: the retained diagnostic-code registry
+The beta workspace is fourteen crates: the retained diagnostic-code registry
 (`marrow-codes`), syntax owner (`marrow-syntax`), ordered-byte storage engine
-(`marrow-store`), and pure project-input owner (`marrow-project`); the
-refounded compiler pipeline (`marrow-compile`, `marrow-image`, `marrow-verify`,
-`marrow-vm`) and path kernel (`marrow-kernel`); and the `marrow` CLI. The
+(`marrow-store`), pure project-input owner (`marrow-project`), bounded physical
+project-input adapter (`marrow-project-fs`), and temporal-domain owner
+(`marrow-temporal`); the refounded compiler pipeline (`marrow-compile`,
+`marrow-image`, `marrow-verify`, `marrow-vm`) and path kernel (`marrow-kernel`);
+the pure local-wire protocol owner (`marrow-local-wire`) and storeless runner
+(`marrow-runner`); and the `marrow` CLI. The
 [implementation map](implementation/README.md) describes each.
 
 ### Language and tooling
@@ -32,9 +35,13 @@ refounded compiler pipeline (`marrow-compile`, `marrow-image`, `marrow-verify`,
   earlier layout/indentation surface on 2026-07-16; the decision records are the
   `2026-07-16-block-syntax-evaluation.md` and `2026-07-16-surface-coherence-evaluation.md`
   memos.
-- One pure project-input owner: the closed `marrow.toml` manifest schema
-  (required explicit `edition`), deterministic contained discovery over `src`,
-  path-derived module identity, and an immutable project input. See
+- One pure project-input owner (`marrow-project`): the closed `marrow.toml`
+  manifest schema (required explicit `edition`), deterministic contained
+  discovery over caller-supplied listings, path-derived module identity, and an
+  immutable project input. One bounded physical adapter (`marrow-project-fs`)
+  admits the project root, manifest, source tree, and identity ledger through
+  opened handles under fixed byte, visited-entry, and depth bounds and feeds that
+  owner; the CLI consumes it with an empty overlay. See
   [Projects](tools/projects.md).
 - `marrow init` creates a new project; `marrow fmt` formats a single `.mw` file
   or every captured source file in a project directory (`--check`/`--write`);

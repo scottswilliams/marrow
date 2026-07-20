@@ -25,11 +25,14 @@ TypeScript client beside the pinned Node supervision module (`src/supervisor/`,
 emitted verbatim and drift-gated). Every other command name (`check`, `data`,
 `doctor`, `evolve`, `serve`, `backup`, `restore`) is recognized and reports a
 typed `cli.command_unsupported` response until its refounding lane lands it.
-The binary depends on `marrow-codes`, `marrow-project`, `marrow-syntax`,
-`marrow-compile`, `marrow-image`, `marrow-verify`, `marrow-vm`, and
-`marrow-kernel` — never on `marrow-runner` (the CLI→runner Rust edge is an
-absence target); the physical project-capture adapter here feeds the pure
-`marrow-project` owner and never rebuilds discovery or identity.
+The binary depends on `marrow-codes`, `marrow-project`, `marrow-project-fs`,
+`marrow-syntax`, `marrow-compile`, `marrow-image`, `marrow-verify`, `marrow-vm`,
+and `marrow-kernel` — never on `marrow-runner` (the CLI→runner Rust edge is an
+absence target). The physical project-capture adapter is the separate
+`marrow-project-fs` crate; the CLI captures each project through its
+`capture_project` with an empty overlay and renders any capture failure through
+the adapter's presentation facade, rebuilding no discovery, identity, or capture
+classification here.
 
 `outcome` is the typed CLI outcome owner: the four failure families (source
 diagnostic, artifact rejection, source-mapped runtime fault, operational

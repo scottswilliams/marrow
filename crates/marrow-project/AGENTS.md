@@ -10,10 +10,11 @@ model here is pure: entropy is drawn and the artifact is published only by the
 CLI, and the compiler consumes the parsed ledger read-only.
 
 Keep it pure: no filesystem, Git, network, compiler, runtime, or store edge. The
-physical adapter that walks `src`, reads bytes, and enforces the capture limits
-lives in the `marrow` CLI crate and feeds this owner, which validates its input
-and rechecks the bounds. Discovery here is a total function of its inputs, so the
-same files yield a byte-identical `ProjectInput` regardless of order or location.
+physical adapter that walks `src`, reads bytes through admitted opened handles,
+and enforces the bounded physical admission is the separate `marrow-project-fs`
+crate; it feeds this owner, which validates its input and rechecks the source
+bounds. Discovery here is a total function of its inputs, so the same files yield
+a byte-identical `ProjectInput` regardless of order or location.
 
 Module identity is derived once from the canonical source path. The compiler
 separately owns the header law: an importable module carries the matching

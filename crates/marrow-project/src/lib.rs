@@ -9,9 +9,10 @@
 //! the immutable [`ProjectInput`] every later stage consumes.
 //!
 //! It is pure: it has no filesystem, Git, network, compiler, runtime, or store
-//! edge. The physical adapter that walks `src`, reads bytes, and enforces the
-//! capture limits lives in the CLI crate and feeds this owner, which validates
-//! its input and rechecks the bounds. Keeping discovery pure makes it
+//! edge. The physical adapter that walks `src`, reads bytes through admitted
+//! opened handles, and enforces the bounded physical admission is the separate
+//! `marrow-project-fs` crate; it feeds this owner, which validates its input and
+//! rechecks the bounds. Keeping discovery pure makes it
 //! deterministic and location-independent: the same files yield a byte-identical
 //! [`ProjectInput`] regardless of arrival order or where the project lives.
 

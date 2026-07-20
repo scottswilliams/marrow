@@ -2,8 +2,10 @@
 
 On the beta line this directory holds the retained core — the diagnostic-code
 registry (`marrow-codes`), the syntax owner (`marrow-syntax`), the ordered-byte
-storage engine (`marrow-store`), and the pure project-input owner
-(`marrow-project`) — plus the crates refounded at T01: the storeless compiler
+storage engine (`marrow-store`), the pure project-input owner (`marrow-project`),
+and the bounded physical project-input adapter (`marrow-project-fs`) that admits a
+project through opened handles and feeds that pure owner — plus the crates
+refounded at T01: the storeless compiler
 (`marrow-compile`), the image container owner (`marrow-image`), the independent
 verifier (`marrow-verify`), the stack VM (`marrow-vm`), the path kernel
 (`marrow-kernel`), and the `marrow` CLI. The prototype's

@@ -64,11 +64,26 @@ defines the import, visibility, and command-line export rules.
 ## Discovery bounds and faults
 
 Discovery is deterministic — the captured source files are ordered by identity
-regardless of the order the filesystem reports them — and bounded. Symlinks
-under `src` are skipped, and a `src` that is itself a symlink is refused with
-`project.source_path`, so the walk cannot cycle or escape the tree. A project
-that exceeds a fixed capture bound (too many source files, one file too large,
-or too much source in total) reports `project.capture_limit`.
+regardless of the order the filesystem reports them — and physically bounded. The
+project root, `marrow.toml`, `src`, and `marrow.ids` are each admitted through an
+opened handle whose observed kind and identity are checked before and after use;
+capture never trusts path metadata and then reopens the path. A symbolic link at
+`src`, `marrow.toml`, or `marrow.ids`, or on a component leading to one, is
+refused rather than followed (`project.source_path` for the source root,
+`project.ids_corrupt` for the ledger, `io.read` for the manifest); a symbolic
+link below `src` is skipped, so the walk cannot cycle or escape the tree. A
+required file — the manifest, the identity ledger, or a selected source — that is
+a special file (a FIFO, socket, or device) or a hard link with more than one link
+count is refused before its body is read; a special file below `src` is ignored
+like any other non-`.mw` entry.
+
+The walk is bounded before retention: `marrow.toml` and `marrow.ids` are each read
+to a fixed byte ceiling plus one; the total number of directory entries visited
+below `src` (65,536) and the source directory depth (64) are fixed; and a project
+that exceeds a source capture bound (4,096 source files, 1 MiB per file, or 64 MiB
+of source in total) reports `project.capture_limit`. These bounds are enforced by
+the bounded physical adapter (`marrow-project-fs`) and conformance-tested through
+the command-line capture path.
 
 Two source files that resolve to the same module identity — the same derived
 name, or paths differing only in case — report `project.module_collision`. A
