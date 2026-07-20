@@ -72,7 +72,7 @@ fn type_axis_fixture(v: usize) -> String {
 }
 
 /// Function-only axis: `v` distinct `leaf[Nk]` function instantiations, one per seed.
-/// Bounded by `MAX_FUNCTIONS = 64` (and by `MAX_TYPES` via the seeds).
+/// Bounded by `MAX_FUNCTIONS = 4096` (and by `MAX_TYPES` via the seeds).
 fn fn_axis_fixture(v: usize) -> String {
     let mut source = String::from("module main\n\nfn leaf<T>(x: T): int { return 0 }\n\n");
     seed_structs(&mut source, v);

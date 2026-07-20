@@ -84,6 +84,29 @@ fn a_narrow_resource_compiles() {
     compile_ok(10);
 }
 
+/// Monotone-widen byte-identity law: an image representational bound is a decode-time
+/// allocation guard, never a stored-format byte, so widening a bound must never change
+/// the encoded image of a program already within the old bounds. This pins, by content
+/// hash frozen at this head, the encoded bytes of a small durable resource that sits
+/// well within the former 64-type / 256 KiB caps. Any future edit that serializes a
+/// bound constant, or otherwise perturbs an in-bounds program's bytes, turns this red.
+#[test]
+fn an_in_bounds_program_has_frozen_image_bytes() {
+    let bytes = compile_ok(10).image.bytes;
+    let hex: String = marrow_image::image_id(&bytes)
+        .0
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    assert_eq!(
+        hex,
+        "f1500613d311c58ae7652b3048d13390dc07cab740793f517b63e43185ef3397",
+        "in-bounds image bytes changed; the monotone-widen law forbids this \
+         (encoded {} bytes)",
+        bytes.len(),
+    );
+}
+
 /// A durable resource near the record-field width — the widest the durable identity
 /// ledger admits at ~4090 sparse fields — encodes to ~343 KB. That exceeds the v0
 /// 256 KiB image ceiling and fits the widened 512 KiB one, so it pins
