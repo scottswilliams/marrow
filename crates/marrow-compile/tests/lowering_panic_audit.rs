@@ -668,6 +668,7 @@ fn rejects_with(source: &str, code: &str) {
                 .any(|d: &SourceDiagnostic| d.code == code),
             "expected `{code}` for:\n{source}\ngot {diagnostics:#?}",
         ),
+        Err(marrow_compile::CompileFailure::ResourceLimit(_)) => panic!("source-triggered compiler failures must remain diagnostics"),
         Err(marrow_compile::CompileFailure::Invariant(_)) => {
             panic!("source-triggered compiler failures must remain diagnostics")
         }

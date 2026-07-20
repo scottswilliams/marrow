@@ -32,6 +32,7 @@ fn compile_err(source: &str) -> Vec<SourceDiagnostic> {
     match compile(&project(source)) {
         Ok(_) => panic!("expected a diagnostic, but the program compiled"),
         Err(CompileFailure::Diagnostics(diagnostics)) => diagnostics.into_vec(),
+        Err(CompileFailure::ResourceLimit(_)) => panic!("source-triggered compiler failures must remain diagnostics"),
         Err(CompileFailure::Invariant(_)) => {
             panic!("source-triggered compiler failures must remain diagnostics")
         }
@@ -42,6 +43,7 @@ fn compile_tests_err(source: &str) -> Vec<SourceDiagnostic> {
     match compile_with_tests(&project(source)) {
         Ok(_) => panic!("expected a diagnostic, but the project tests compiled"),
         Err(CompileFailure::Diagnostics(diagnostics)) => diagnostics.into_vec(),
+        Err(CompileFailure::ResourceLimit(_)) => panic!("source-triggered compiler failures must remain diagnostics"),
         Err(CompileFailure::Invariant(_)) => {
             panic!("source-triggered test compilation failures must remain diagnostics")
         }
@@ -61,6 +63,7 @@ fn compile_files_err(files: &[(&str, &str)]) -> Vec<SourceDiagnostic> {
     match compile(&project) {
         Ok(_) => panic!("expected a diagnostic, but the multi-file program compiled"),
         Err(CompileFailure::Diagnostics(diagnostics)) => diagnostics.into_vec(),
+        Err(CompileFailure::ResourceLimit(_)) => panic!("source-triggered compiler failures must remain diagnostics"),
         Err(CompileFailure::Invariant(_)) => {
             panic!("source-triggered multi-file compiler failures must remain diagnostics")
         }
@@ -137,6 +140,7 @@ fn public_compile_failure_is_exhaustive_nonempty_and_worker_safe() {
             );
             assert_eq!(diagnostics.into_vec(), expected);
         }
+        CompileFailure::ResourceLimit(_) => panic!("source-triggered compiler failures must remain diagnostics"),
         CompileFailure::Invariant(_) => {
             panic!("ordinary invalid source must remain a source-diagnostic failure")
         }

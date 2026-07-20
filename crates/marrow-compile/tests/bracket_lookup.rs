@@ -28,6 +28,7 @@ fn compile_err(source: &str) -> Vec<SourceDiagnostic> {
     match compile(&project(source)) {
         Ok(_) => panic!("expected a diagnostic, but the program compiled"),
         Err(CompileFailure::Diagnostics(diagnostics)) => diagnostics.into_vec(),
+        Err(CompileFailure::ResourceLimit(_)) => panic!("source-triggered compiler failures must remain diagnostics"),
         Err(CompileFailure::Invariant(_)) => {
             panic!("source-triggered compiler failures must remain diagnostics")
         }

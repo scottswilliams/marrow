@@ -9,11 +9,11 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use marrow_codes::Code;
-use marrow_image::{EncodedImage, ExportId, ImageDraft};
+use marrow_image::{EncodedImage, ExportId, ImageBuildError, ImageDraft};
 use marrow_project::ProjectInput;
 use marrow_syntax::{
     AliasDecl, ConstDecl, Declaration, EnumDecl, FunctionDecl, NominalDecl, ParsedSource,
-    ResourceDecl, SourceSpan, StoreDecl, StructDecl, parse_source,
+    ResourceDecl, ResourceMember, SourceSpan, StoreDecl, StructDecl, parse_source,
 };
 
 use crate::diag::SourceDiagnostic;
@@ -133,6 +133,9 @@ impl CompileInvariant {
             InvariantCause::EmptyDiagnostics(stage) => {
                 let _ = stage;
             }
+            InvariantCause::ImageBuild(error) => {
+                let _ = error;
+            }
         }
     }
 }
@@ -172,6 +175,25 @@ pub enum ResourceLimitKind {
     Exports,
     TestEntries,
     ImageBytes,
+    /// A single interned string over the per-entry byte bound reached through a path a
+    /// source precheck does not yet cover (a folded constant or an interpolation
+    /// segment), so it surfaces as a locationless resource limit rather than the
+    /// synthetic diagnostic it once produced.
+    StringBytes,
+    /// One function frame's local count over the per-frame bound. Known only after
+    /// lowering, so it has no pre-mutation source precheck.
+    Locals,
+    /// One function's encoded bytecode over the per-function byte bound. Known only
+    /// after lowering.
+    CodeBytes,
+    /// A managed index's fully expanded projection over the component bound through a
+    /// path the source precheck does not cover (a nonunique index whose appended
+    /// identity keys carry the total past the bound).
+    IndexComponents,
+    /// A durable member tree nested past the depth bound. The exact image-side depth
+    /// accounting is owned by the encoder, so the outcome is reported as a locationless
+    /// resource limit rather than a divergent source count.
+    DurableDepth,
     /// The ordered diagnostic set grew past the count bound, so the incomplete
     /// collection was discarded rather than surfaced as a truncated result.
     DiagnosticCount,
@@ -182,26 +204,25 @@ pub enum ResourceLimitKind {
 
 /// A fixed compiler-owned resource bound compilation exhausted with no single
 /// source construct at fault. It carries only its typed [`ResourceLimitKind`] and
-/// the bound and actual counts as integers — never a source location, span, or
-/// spelling. The caller distinguishes this outcome from source diagnostics and
-/// from an opaque compiler invariant, and reports a fixed operational record.
+/// the fixed bound as integers — never a source location, span, spelling, or a
+/// fabricated count. The exact overrun count is not carried: the aggregate encode
+/// bounds report which bound they are, not by how much, and inventing an actual
+/// would reintroduce the fabricated data this boundary exists to remove. The caller
+/// distinguishes this outcome from source diagnostics and from an opaque compiler
+/// invariant, and reports a fixed operational record; a downstream bound-raise audit
+/// consumes the kind and its limit.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CompileResourceLimit {
     kind: ResourceLimitKind,
     limit: u64,
-    actual: u64,
 }
 
 impl CompileResourceLimit {
-    fn new(kind: ResourceLimitKind, limit: u64, actual: u64) -> Self {
-        Self {
-            kind,
-            limit,
-            actual,
-        }
+    fn new(kind: ResourceLimitKind, limit: u64) -> Self {
+        Self { kind, limit }
     }
 
-    /// Which aggregate bound was exhausted.
+    /// Which fixed bound was exhausted.
     pub fn kind(self) -> ResourceLimitKind {
         self.kind
     }
@@ -209,11 +230,6 @@ impl CompileResourceLimit {
     /// The fixed bound the program exceeded.
     pub fn limit(self) -> u64 {
         self.limit
-    }
-
-    /// The actual count or byte total the program reached.
-    pub fn actual(self) -> u64 {
-        self.actual
     }
 }
 
@@ -253,7 +269,6 @@ fn seal_diagnostics(diagnostics: Vec<SourceDiagnostic>) -> DiagnosticSeal {
         return DiagnosticSeal::Overflow(CompileResourceLimit::new(
             ResourceLimitKind::DiagnosticCount,
             MAX_DIAGNOSTIC_COUNT as u64,
-            diagnostics.len() as u64,
         ));
     }
     let bytes: usize = diagnostics
@@ -264,7 +279,6 @@ fn seal_diagnostics(diagnostics: Vec<SourceDiagnostic>) -> DiagnosticSeal {
         return DiagnosticSeal::Overflow(CompileResourceLimit::new(
             ResourceLimitKind::DiagnosticBytes,
             MAX_DIAGNOSTIC_BYTES as u64,
-            bytes as u64,
         ));
     }
     match NonEmptySourceDiagnostics::new(diagnostics) {
@@ -327,6 +341,13 @@ enum CompileStage {
 enum InvariantCause {
     Generic(GenericInvariant),
     EmptyDiagnostics(CompileStage),
+    /// An image-build variant unreachable from a coherent compiler: a producer-state
+    /// contradiction (an invalid cross-reference, a site path shorter than its
+    /// minimum, a local count below the parameter count) or a per-construct bound a
+    /// source precheck already refuses before the draft is built. Kept opaque: it is a
+    /// compiler-internal defect, not a source diagnostic or an aggregate resource
+    /// limit.
+    ImageBuild(ImageBuildError),
 }
 
 /// The one boundary that assembles a total [`CompileFailure`] under the precedence
@@ -363,6 +384,95 @@ fn diagnostic_failure(diagnostics: Vec<SourceDiagnostic>, stage: CompileStage) -
 
 fn invariant_failure(cause: GenericInvariant, stage: CompileStage) -> CompileFailure {
     compile_failure(Vec::new(), Some(InvariantCause::Generic(cause)), None, stage)
+}
+
+/// Classify a producer-side [`ImageBuildError`] from `ImageDraft::encode` into the
+/// compile-failure arm it belongs to. Encode runs only on the clean-diagnostics path,
+/// so there is no coexisting diagnostic and the classification is total on its own.
+///
+/// A whole-program aggregate count, or the whole-image byte ceiling, has no single
+/// source construct at fault and becomes a [`CompileResourceLimit`]. A per-construct
+/// bound is refused earlier by a source precheck at its offending span, so reaching
+/// it here means the draft was built past a bound the precheck should have caught — a
+/// compiler-internal defect — and a producer-state contradiction (an invalid
+/// reference, a too-short site path, a local count below the parameters) is likewise
+/// unreachable from a coherent compiler; both are opaque invariants. The match has no
+/// wildcard, so a new image-build variant forces an explicit classification here.
+fn image_build_failure(error: ImageBuildError) -> CompileFailure {
+    use marrow_image::bounds;
+    let stage = CompileStage::PostLoweringValidation;
+    let aggregate = |kind: ResourceLimitKind, limit: usize| {
+        resource_failure(CompileResourceLimit::new(kind, limit as u64), stage)
+    };
+    match error {
+        // Aggregate whole-program counts and the byte ceiling: no single offender.
+        ImageBuildError::TooManyStrings => aggregate(ResourceLimitKind::Strings, bounds::MAX_STRINGS),
+        ImageBuildError::TooManyConsts => aggregate(ResourceLimitKind::Consts, bounds::MAX_CONSTS),
+        ImageBuildError::TooManyTypes => aggregate(ResourceLimitKind::Types, bounds::MAX_TYPES),
+        ImageBuildError::TooManyEnums => aggregate(ResourceLimitKind::Enums, bounds::MAX_ENUMS),
+        ImageBuildError::TooManyCollections => {
+            aggregate(ResourceLimitKind::Collections, bounds::MAX_COLLECTIONS)
+        }
+        ImageBuildError::TooManyRoots => aggregate(ResourceLimitKind::Roots, bounds::MAX_ROOTS),
+        ImageBuildError::TooManyDurableMembers => {
+            aggregate(ResourceLimitKind::DurableMembers, bounds::MAX_DURABLE_MEMBERS)
+        }
+        ImageBuildError::TooManySites => aggregate(ResourceLimitKind::Sites, bounds::MAX_SITES),
+        ImageBuildError::TooManyFunctions => {
+            aggregate(ResourceLimitKind::Functions, bounds::MAX_FUNCTIONS)
+        }
+        ImageBuildError::TooManyExports => {
+            aggregate(ResourceLimitKind::Exports, bounds::MAX_EXPORTS)
+        }
+        ImageBuildError::TooManyTestEntries => {
+            aggregate(ResourceLimitKind::TestEntries, bounds::MAX_TEST_ENTRIES)
+        }
+        ImageBuildError::ImageTooLarge => {
+            aggregate(ResourceLimitKind::ImageBytes, bounds::MAX_IMAGE_BYTES)
+        }
+        // Per-construct bounds knowable only after lowering, or reachable through a
+        // path no pre-mutation source precheck yet covers: an honest locationless
+        // resource limit, never the synthetic diagnostic.
+        ImageBuildError::StringTooLong => {
+            aggregate(ResourceLimitKind::StringBytes, bounds::MAX_STRING_BYTES)
+        }
+        ImageBuildError::TooManyLocals => aggregate(ResourceLimitKind::Locals, bounds::MAX_LOCALS),
+        ImageBuildError::CodeTooLong => {
+            aggregate(ResourceLimitKind::CodeBytes, bounds::MAX_CODE_BYTES)
+        }
+        ImageBuildError::TooManyIndexComponents => {
+            aggregate(ResourceLimitKind::IndexComponents, bounds::MAX_INDEX_COMPONENTS)
+        }
+        ImageBuildError::DurableTreeTooDeep => {
+            aggregate(ResourceLimitKind::DurableDepth, bounds::MAX_DURABLE_DEPTH)
+        }
+        // Per-construct bounds a source precheck refuses before the draft is built, so
+        // an encode-time occurrence is a defense-in-depth producer defect; and
+        // producer-state contradictions unreachable from a coherent compiler. Both are
+        // opaque invariants.
+        ImageBuildError::TooManyFields
+        | ImageBuildError::TooManyStructLeaves
+        | ImageBuildError::TooManyVariants
+        | ImageBuildError::TooManyPayloadFields
+        | ImageBuildError::TooManyIndexes
+        | ImageBuildError::TooManyKeyColumns
+        | ImageBuildError::DurableValueTooDeep
+        | ImageBuildError::TooManyParams
+        | ImageBuildError::SitePathTooShort
+        | ImageBuildError::SitePathTooDeep
+        | ImageBuildError::LocalCountBelowParams
+        | ImageBuildError::InvalidReference(_) => {
+            compile_failure(Vec::new(), Some(InvariantCause::ImageBuild(error)), None, stage)
+        }
+    }
+}
+
+/// A resource-limit failure with no source diagnostic: an aggregate encode bound the
+/// program exhausted. It carries no location. Diagnostics would dominate by
+/// precedence, but encode runs only when diagnostics are empty, so this is the sole
+/// candidate at its site.
+fn resource_failure(limit: CompileResourceLimit, stage: CompileStage) -> CompileFailure {
+    compile_failure(Vec::new(), None, Some(limit), stage)
 }
 
 /// Whether a compilation includes the project's `test` declarations. A production
@@ -483,6 +593,16 @@ fn build(project: &ProjectInput, mode: TestMode) -> Result<Built, CompileFailure
             }
         }
     }
+    if !diagnostics.is_empty() {
+        return Err(diagnostic_failure(diagnostics, CompileStage::Parse));
+    }
+
+    // Refuse a structural declaration bound at its offending construct before any
+    // image structure is built. These counts are exact source properties (a record's
+    // top-level field width, a function's parameter arity, a durable member tree's
+    // group/branch nesting depth), so the check runs on the parse tree ahead of the
+    // first draft mutation.
+    check_structural_resource_bounds(&parsed, &mut diagnostics);
     if !diagnostics.is_empty() {
         return Err(diagnostic_failure(diagnostics, CompileStage::Parse));
     }
@@ -1058,19 +1178,7 @@ fn build(project: &ProjectInput, mode: TestMode) -> Result<Built, CompileFailure
         ));
     }
 
-    let image = draft.encode().map_err(|error| {
-        diagnostic_failure(
-            vec![SourceDiagnostic {
-                code: Code::CheckUnsupported.as_str(),
-                file: String::new(),
-                line: 1,
-                column: 1,
-                message: format!("program exceeds a representational bound: {error}"),
-                identity: None,
-            }],
-            CompileStage::PostLoweringValidation,
-        )
-    })?;
+    let image = draft.encode().map_err(image_build_failure)?;
     Ok(Built {
         image,
         exports,
@@ -1292,6 +1400,79 @@ fn reject_mixed_test_bodies(lowered: &[LoweredFn], diagnostics: &mut Vec<SourceD
                     .to_string(),
             ));
         }
+    }
+}
+
+/// Report `check.resource_limit` for every structural declaration bound a source
+/// construct crosses whose count is an exact property of the parse tree: a record
+/// type (a `resource` or `struct`) wider than [`MAX_RECORD_FIELDS`] top-level fields,
+/// or a function with more than [`MAX_PARAMS`] parameters. The refusal lands at the
+/// offending construct's span before the image structure is built. Bounds knowable
+/// only after type resolution (durable value depth, struct-leaf width, key tuples,
+/// index projections) or lowering (locals, code bytes) are owned elsewhere.
+fn check_structural_resource_bounds(parsed: &[Module], diagnostics: &mut Vec<SourceDiagnostic>) {
+    for module in parsed {
+        for declaration in &module.parsed.file.declarations {
+            match declaration {
+                Declaration::Resource(resource) => {
+                    check_record_field_width(
+                        &module.file,
+                        resource.name_span,
+                        &resource.members,
+                        diagnostics,
+                    );
+                }
+                Declaration::Struct(item) => {
+                    check_record_field_width(
+                        &module.file,
+                        item.name_span,
+                        &item.members,
+                        diagnostics,
+                    );
+                }
+                Declaration::Function(function) => {
+                    if function.params.len() > marrow_image::bounds::MAX_PARAMS {
+                        diagnostics.push(SourceDiagnostic::at(
+                            Code::CheckResourceLimit.as_str(),
+                            &module.file,
+                            function.span,
+                            format!(
+                                "a function declares {} parameters; the fixed limit is {}",
+                                function.params.len(),
+                                marrow_image::bounds::MAX_PARAMS
+                            ),
+                        ));
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
+/// Report a record type whose top-level `name: Type` field members exceed the image
+/// record-field width. Group and branch members are not top-level record fields, so
+/// they are not counted here.
+fn check_record_field_width(
+    file: &str,
+    span: SourceSpan,
+    members: &[ResourceMember],
+    diagnostics: &mut Vec<SourceDiagnostic>,
+) {
+    let fields = members
+        .iter()
+        .filter(|member| matches!(member, ResourceMember::Field(_)))
+        .count();
+    if fields > marrow_image::bounds::MAX_RECORD_FIELDS {
+        diagnostics.push(SourceDiagnostic::at(
+            Code::CheckResourceLimit.as_str(),
+            file,
+            span,
+            format!(
+                "a record type declares {fields} top-level fields; the fixed limit is {}",
+                marrow_image::bounds::MAX_RECORD_FIELDS
+            ),
+        ));
     }
 }
 
@@ -1561,7 +1742,7 @@ mod tests {
     }
 
     fn resource(kind: super::ResourceLimitKind) -> super::CompileResourceLimit {
-        super::CompileResourceLimit::new(kind, 64, 65)
+        super::CompileResourceLimit::new(kind, 64)
     }
 
     /// A resource candidate surfaces only when no invariant and no diagnostic set
@@ -1580,7 +1761,6 @@ mod tests {
         };
         assert_eq!(limit.kind(), super::ResourceLimitKind::Functions);
         assert_eq!(limit.limit(), 64);
-        assert_eq!(limit.actual(), 65);
         assert_eq!(
             format!("{limit}"),
             "compiler resource limit reached",
@@ -1654,5 +1834,24 @@ mod tests {
         fn assert_worker_type<T: Send + Sync + 'static>() {}
 
         assert_worker_type::<super::CompileResourceLimit>();
+    }
+
+    /// The image-build classifier routes an aggregate whole-program bound to the
+    /// resource-limit arm and a producer-state contradiction to an opaque invariant,
+    /// never to a source diagnostic with a fabricated location.
+    #[test]
+    fn image_build_errors_classify_without_a_fabricated_location() {
+        let aggregate = super::image_build_failure(marrow_image::ImageBuildError::TooManyFunctions);
+        let CompileFailure::ResourceLimit(limit) = aggregate else {
+            panic!("an aggregate count is a resource limit")
+        };
+        assert_eq!(limit.kind(), super::ResourceLimitKind::Functions);
+
+        let contradiction =
+            super::image_build_failure(marrow_image::ImageBuildError::InvalidReference("x"));
+        assert!(
+            matches!(contradiction, CompileFailure::Invariant(_)),
+            "a producer-state contradiction is an opaque invariant, not a diagnostic"
+        );
     }
 }

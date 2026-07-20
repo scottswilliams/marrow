@@ -215,6 +215,33 @@ fn over_wide_variant_payload_reports_resource_limit() {
     assert_source_resource_limit(compile(&project(&source, None)));
 }
 
+// ---- Per-declaration source-precheck: record field width and function arity.
+
+/// A record type (here a storeless `resource`) declaring more than
+/// `MAX_RECORD_FIELDS` (4096) top-level fields crosses the per-record width at its
+/// declaration.
+#[test]
+fn over_wide_record_reports_resource_limit() {
+    let mut source = String::from("module main\n\nresource Wide {\n");
+    for i in 0..4097 {
+        source.push_str(&format!("    f{i}: int\n"));
+    }
+    source.push_str("}\n\npub fn noop(): int {\n    return 0\n}\n");
+    assert_source_resource_limit(compile(&project(&source, None)));
+}
+
+/// A function declaring more than `MAX_PARAMS` (16) parameters crosses the per-frame
+/// arity bound at its declaration.
+#[test]
+fn over_wide_function_arity_reports_resource_limit() {
+    let params: Vec<String> = (0..17).map(|i| format!("p{i}: int")).collect();
+    let source = format!(
+        "module main\n\npub fn many({}): int {{\n    return 0\n}}\n",
+        params.join(", ")
+    );
+    assert_source_resource_limit(compile(&project(&source, None)));
+}
+
 // ---- Aggregate: whole-program function and export counts.
 
 /// More than `MAX_FUNCTIONS` (64) functions is an aggregate count with no single
