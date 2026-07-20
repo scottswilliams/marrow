@@ -568,6 +568,10 @@ struct Driven {
     structural: Vec<SourceDiagnostic>,
     /// The semantic pass over the cleanly-parsed modules.
     semantic: SemanticOutcome,
+    /// Editor hover facts collected while lowering the cleanly-parsed bodies. Carried
+    /// out of the traversal orthogonally to the semantic outcome; the production
+    /// compile's projection ignores them and the analysis snapshot consumes them.
+    hover_facts: Vec<crate::analysis::HoverFact>,
 }
 
 /// The outcome of the semantic pass over the cleanly-parsed modules: a complete image,
@@ -673,18 +677,26 @@ fn drive(project: &ProjectInput, mode: TestMode) -> Driven {
     let mut structural = Vec::new();
     check_structural_resource_bounds(&clean, &mut structural);
 
-    let semantic = run_semantic(&clean, project, mode);
+    let mut hover_facts = Vec::new();
+    let semantic = run_semantic(&clean, project, mode, &mut hover_facts);
     Driven {
         parse,
         structural,
         semantic,
+        hover_facts,
     }
 }
 
 /// Analyze the cleanly-parsed modules: build the named types and function signatures,
 /// lower every body, and validate the whole, or return the accumulated failure tagged
-/// with the stage that produced it.
-fn run_semantic(parsed: &[Module], project: &ProjectInput, mode: TestMode) -> SemanticOutcome {
+/// with the stage that produced it. Editor hover facts from each monomorphic function
+/// and test body are collected into `hover_facts` as they are lowered.
+fn run_semantic(
+    parsed: &[Module],
+    project: &ProjectInput,
+    mode: TestMode,
+    hover_facts: &mut Vec<crate::analysis::HoverFact>,
+) -> SemanticOutcome {
     let mut diagnostics = Vec::new();
 
     // The source-root-relative path is the authority for module identity. A file
@@ -1024,6 +1036,13 @@ fn run_semantic(parsed: &[Module], project: &ProjectInput, mode: TestMode) -> Se
                             );
                         }
                     };
+                    for (span, display) in result.hover_facts {
+                        hover_facts.push(crate::analysis::HoverFact {
+                            file: module.file.clone(),
+                            span,
+                            display,
+                        });
+                    }
                     lowered.push(LoweredFn {
                         index: result.func.index(),
                         file: module.file.clone(),
@@ -1132,6 +1151,13 @@ fn run_semantic(parsed: &[Module], project: &ProjectInput, mode: TestMode) -> Se
                         );
                     }
                 };
+                for (span, display) in result.hover_facts {
+                    hover_facts.push(crate::analysis::HoverFact {
+                        file: module.file.clone(),
+                        span,
+                        display,
+                    });
+                }
                 lowered.push(LoweredFn {
                     index: result.func.index(),
                     file: module.file.clone(),
@@ -1284,6 +1310,15 @@ pub(crate) enum Analyzed {
     Invariant(CompileInvariant),
 }
 
+/// The complete analysis of a project for the editor snapshot: the diagnostic outcome,
+/// the retained editor facts, and the identities of files that did not parse (so a
+/// position in one of them is a syntax-unavailable fact, not an absent one).
+pub(crate) struct ProjectAnalysis {
+    pub(crate) outcome: Analyzed,
+    pub(crate) hover_facts: Vec<crate::analysis::HoverFact>,
+    pub(crate) broken_files: Vec<FileIdentity>,
+}
+
 /// Drive the analysis pass over a project — test bodies included, per the editor
 /// analysis contract — and resolve its complete diagnostic picture under the shared
 /// precedence `Invariant > Diagnostics > ResourceLimit`. The complete union of every
@@ -1291,10 +1326,34 @@ pub(crate) enum Analyzed {
 /// production compile uses, so a diagnostic avalanche transactionally becomes a resource
 /// limit rather than a retained partial set — no partial or truncated snapshot is
 /// admitted.
-pub(crate) fn analyze_project(project: &ProjectInput) -> Analyzed {
+pub(crate) fn analyze_project(project: &ProjectInput) -> ProjectAnalysis {
     let driven = drive(project, TestMode::Include);
-    let mut diagnostics = driven.parse;
-    diagnostics.extend(driven.structural);
+    let hover_facts = driven.hover_facts;
+    // A file that contributed a parse-stage diagnostic did not parse cleanly; a fact
+    // query in it is syntax-unavailable rather than absent.
+    let mut broken_files: Vec<FileIdentity> = Vec::new();
+    for diagnostic in &driven.parse {
+        if !broken_files.iter().any(|file| file == diagnostic.file()) {
+            broken_files.push(diagnostic.file().clone());
+        }
+    }
+    let outcome = analyze_outcome(driven.parse, driven.structural, driven.semantic);
+    ProjectAnalysis {
+        outcome,
+        hover_facts,
+        broken_files,
+    }
+}
+
+/// Resolve the complete diagnostic outcome under the shared precedence from the driven
+/// stage buckets.
+fn analyze_outcome(
+    parse: Vec<SourceDiagnostic>,
+    structural: Vec<SourceDiagnostic>,
+    semantic: SemanticOutcome,
+) -> Analyzed {
+    let mut diagnostics = parse;
+    diagnostics.extend(structural);
     // The parse and structural prechecks preempt the semantic pass in the production
     // compile: `into_built` returns those stages before the semantic outcome is
     // consulted. So a real precheck diagnostic dominates a semantic invariant or
@@ -1304,7 +1363,7 @@ pub(crate) fn analyze_project(project: &ProjectInput) -> Analyzed {
     let precheck_present = !diagnostics.is_empty();
     let mut resource = None;
     let mut invariant = None;
-    match driven.semantic {
+    match semantic {
         SemanticOutcome::Invariant(cause, _) => invariant = Some(CompileInvariant(cause)),
         SemanticOutcome::Diagnostics(semantic, _) => diagnostics.extend(semantic),
         SemanticOutcome::ResourceLimit(limit, _) => resource = Some(limit),

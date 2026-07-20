@@ -113,6 +113,10 @@ impl<'a> FnLowerer<'a> {
                 [name] => {
                     if let Some(local) = self.lookup(name) {
                         let (slot, ty) = (local.slot, local.ty);
+                        // Record the resolved local/parameter type at this use site for
+                        // editor hover, before emitting the load.
+                        let display = ty.spelling(self.records);
+                        self.hover_facts.push((*span, display));
                         self.push(Instr::LocalGet(slot), *span);
                         return Some(ty);
                     }

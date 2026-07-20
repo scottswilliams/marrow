@@ -38,9 +38,9 @@ mod scalar;
 mod types;
 
 pub use analysis::{
-    AnalysisFailure, AnalysisResourceLimit, AnalysisSnapshot, InputRevision,
+    AnalysisFailure, AnalysisResourceLimit, AnalysisSnapshot, Fact, Hover, InputRevision,
     MAX_FORMAT_OUTPUT_BYTES, MAX_HOVER_DISPLAY_BYTES, MAX_SNAPSHOT_FACT_BYTES,
-    MAX_SNAPSHOT_FACT_COUNT, analyze,
+    MAX_SNAPSHOT_FACT_COUNT, QueryError, Unavailability, analyze,
 };
 pub use compile::{
     CompileFailure, CompileInvariant, CompileResourceLimit, Compiled, CompiledTests, ExportEntry,

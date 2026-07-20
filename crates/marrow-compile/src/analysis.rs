@@ -109,6 +109,10 @@ pub struct AnalysisSnapshot {
     input: Arc<ProjectInput>,
     revision: InputRevision,
     diagnostics: Vec<SourceDiagnostic>,
+    hover_facts: Vec<HoverFact>,
+    /// The identities of input files that did not parse. A hover query in one of these
+    /// is [`Unavailability::Syntax`], not `Absent`.
+    broken_files: Vec<FileIdentity>,
 }
 
 impl AnalysisSnapshot {
@@ -138,6 +142,43 @@ impl AnalysisSnapshot {
             .iter()
             .filter(move |diagnostic| diagnostic.file() == file)
     }
+
+    /// Resolve the source bytes of an input file, or a typed query error if the file is
+    /// not one of the snapshot's analyzed inputs.
+    fn source_of(&self, file: &FileIdentity) -> Result<&[u8], QueryError> {
+        self.input
+            .modules()
+            .iter()
+            .find(|module| module.identity() == file)
+            .map(|module| module.source())
+            .ok_or(QueryError::UnknownFile)
+    }
+
+    /// The hover fact at a byte offset in a file: the canonical type display of the
+    /// resolved local or parameter use spanning the offset. An unknown file or an
+    /// out-of-range offset is a typed [`QueryError`]; a position in a module that did
+    /// not parse is [`Unavailability::Syntax`]; a valid position with no fact is
+    /// `Absent`.
+    pub fn hover(&self, file: &FileIdentity, offset: usize) -> Result<Fact<Hover>, QueryError> {
+        let source = self.source_of(file)?;
+        if offset > source.len() {
+            return Err(QueryError::OffsetOutOfRange);
+        }
+        if self.broken_files.iter().any(|broken| broken == file) {
+            return Ok(Fact::Unavailable(Unavailability::Syntax));
+        }
+        let offset = offset as u32;
+        match self.hover_facts.iter().find(|fact| {
+            &fact.file == file
+                && fact.span.start_byte as u32 <= offset
+                && offset < fact.span.end_byte as u32
+        }) {
+            Some(fact) => Ok(Fact::Present(Hover {
+                display: fact.display.clone(),
+            })),
+            None => Ok(Fact::Absent),
+        }
+    }
 }
 
 /// Analyze one exact project input at a caller-assigned revision, producing an immutable
@@ -148,19 +189,112 @@ pub fn analyze(
     input: Arc<ProjectInput>,
     revision: InputRevision,
 ) -> Result<Arc<AnalysisSnapshot>, AnalysisFailure> {
-    match analyze_project(&input) {
-        Analyzed::Invariant(invariant) => Err(AnalysisFailure::Invariant {
+    let analysis = analyze_project(&input);
+    let diagnostics = match analysis.outcome {
+        Analyzed::Invariant(invariant) => {
+            return Err(AnalysisFailure::Invariant {
+                revision,
+                invariant,
+            });
+        }
+        Analyzed::ResourceLimit(limit) => {
+            return Err(AnalysisFailure::ResourceLimit {
+                revision,
+                limit: AnalysisResourceLimit::Compile(limit),
+            });
+        }
+        Analyzed::Diagnostics(diagnostics) => diagnostics,
+    };
+    // Enforce the fact publication bounds before retention: an overflow transactionally
+    // refuses the whole snapshot as a resource limit rather than admitting a truncated
+    // or partial fact set.
+    if analysis.hover_facts.len() as u64 > MAX_SNAPSHOT_FACT_COUNT {
+        return Err(AnalysisFailure::ResourceLimit {
             revision,
-            invariant,
-        }),
-        Analyzed::ResourceLimit(limit) => Err(AnalysisFailure::ResourceLimit {
+            limit: AnalysisResourceLimit::SnapshotFactCount {
+                limit: MAX_SNAPSHOT_FACT_COUNT,
+            },
+        });
+    }
+    let fact_bytes: u64 = analysis
+        .hover_facts
+        .iter()
+        .map(|fact| fact.retained_bytes() as u64)
+        .sum();
+    if fact_bytes > MAX_SNAPSHOT_FACT_BYTES {
+        return Err(AnalysisFailure::ResourceLimit {
             revision,
-            limit: AnalysisResourceLimit::Compile(limit),
-        }),
-        Analyzed::Diagnostics(diagnostics) => Ok(Arc::new(AnalysisSnapshot {
-            input,
-            revision,
-            diagnostics,
-        })),
+            limit: AnalysisResourceLimit::SnapshotFactBytes {
+                limit: MAX_SNAPSHOT_FACT_BYTES,
+            },
+        });
+    }
+    Ok(Arc::new(AnalysisSnapshot {
+        input,
+        revision,
+        diagnostics,
+        hover_facts: analysis.hover_facts,
+        broken_files: analysis.broken_files,
+    }))
+}
+
+/// One retained editor fact: a resolved local or parameter use site and the canonical
+/// display of its value type. Held per snapshot and queried by [`AnalysisSnapshot::hover`].
+pub(crate) struct HoverFact {
+    pub(crate) file: FileIdentity,
+    pub(crate) span: marrow_syntax::SourceSpan,
+    pub(crate) display: String,
+}
+
+impl HoverFact {
+    /// The retained byte footprint of this fact: its rendered display. The file
+    /// identity and span are fixed-size and charged by the count bound.
+    fn retained_bytes(&self) -> usize {
+        self.display.len()
+    }
+}
+
+/// A selectively-queried editor fact. It is `Present`, legitimately `Absent`, or
+/// `Unavailable` because a syntax or dependency invalidity prevents its computation. An
+/// unknown file or an out-of-range offset is not absence — it is a typed [`QueryError`],
+/// distinct from every `Fact` outcome.
+pub enum Fact<T> {
+    /// The fact is computed and present.
+    Present(T),
+    /// Every owner the fact reads is available, and there is no fact at the position.
+    Absent,
+    /// The fact cannot be computed because a required owner is invalid.
+    Unavailable(Unavailability),
+}
+
+/// Why a fact could not be computed at a position whose file and offset are valid.
+pub enum Unavailability {
+    /// The position lies in a module that did not parse.
+    Syntax,
+    /// The fact reads a project-global owner contributed by a module that did not
+    /// parse, so the owner is incomplete.
+    Dependency,
+}
+
+/// Why a hover or definition query could not be resolved to a position at all. Distinct
+/// from a `Fact` outcome: the coordinate itself is not a valid position in the snapshot's
+/// input.
+pub enum QueryError {
+    /// The file is not one of the snapshot's analyzed input files.
+    UnknownFile,
+    /// The byte offset lies outside the file's source bytes.
+    OffsetOutOfRange,
+}
+
+/// The hover fact at a source position: the compiler's canonical display of a local or
+/// parameter's value type. It carries no effects, demand, or durable-anchor spelling.
+pub struct Hover {
+    display: String,
+}
+
+impl Hover {
+    /// The canonical type display.
+    pub fn display(&self) -> &str {
+        &self.display
     }
 }

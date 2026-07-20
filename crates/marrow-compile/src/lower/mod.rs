@@ -133,6 +133,9 @@ pub(crate) struct Lowered {
     /// Whether this body owns a `transaction` block (emits a begin). A test body that
     /// drives such a function mixes invocation boundaries and is refused.
     pub owns_transaction: bool,
+    /// Editor hover facts from this body: `(use-site span, canonical type display)`
+    /// for each resolved local or parameter use.
+    pub hover_facts: Vec<(SourceSpan, String)>,
 }
 
 /// The outcome of resolving a call target against module scope.
@@ -240,6 +243,11 @@ pub(crate) struct FnLowerer<'a> {
     ret: RetType,
     /// Whether this is a function or a test body; gates the owned `assert`.
     body_kind: BodyKind,
+    /// Editor hover facts collected while lowering this body: the source span of a
+    /// resolved local or parameter use and the canonical display of its value type.
+    /// The caller keeps these for a monomorphic function or test body and discards
+    /// them for a generic instance (whose spans would duplicate the template's).
+    hover_facts: Vec<(SourceSpan, String)>,
     failed: bool,
     invariant: Option<LowerInvariant>,
 }
@@ -307,6 +315,7 @@ impl<'a> FnLowerer<'a> {
             slot_count: 0,
             ret,
             body_kind,
+            hover_facts: Vec::new(),
             failed: false,
             invariant: None,
         }
@@ -654,6 +663,7 @@ impl<'a> FnLowerer<'a> {
             unwrapped_calls: std::mem::take(&mut self.unwrapped_calls),
             has_direct_durable_op,
             owns_transaction,
+            hover_facts: std::mem::take(&mut self.hover_facts),
         }))
     }
 
