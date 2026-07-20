@@ -417,7 +417,7 @@ fn decode_arg(scalar: Scalar, text: &str) -> Result<Value, String> {
 /// Decode a `0x`-prefixed even-length lowercase-hex string to bytes.
 fn decode_hex_bytes(text: &str) -> Option<Vec<u8>> {
     let hex = text.strip_prefix("0x")?;
-    if hex.len() % 2 != 0
+    if !hex.len().is_multiple_of(2)
         || hex
             .bytes()
             .any(|b| !b.is_ascii_digit() && !(b'a'..=b'f').contains(&b))

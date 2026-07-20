@@ -178,7 +178,7 @@ pub(crate) fn encode_value(image: &VerifiedImage, value: &Value) -> Option<Json>
 /// canonical `bytes` rendering.
 fn decode_hex_bytes(text: &str) -> Option<Vec<u8>> {
     let hex = text.strip_prefix("0x")?;
-    if hex.len() % 2 != 0
+    if !hex.len().is_multiple_of(2)
         || hex
             .bytes()
             .any(|b| !b.is_ascii_digit() && !(b'a'..=b'f').contains(&b))
