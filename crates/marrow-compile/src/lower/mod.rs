@@ -708,7 +708,7 @@ impl<'a> FnLowerer<'a> {
             | Instr::IntNegChecked(t)
             | Instr::IntDivChecked(t)
             | Instr::IntRemChecked(t) => *t = target as u32,
-            #[allow(
+            #[expect(
                 clippy::unreachable,
                 reason = "lowering bookkeeping: a patch site is recorded only for the jump instructions matched above, so no other instruction is ever patched here"
             )]

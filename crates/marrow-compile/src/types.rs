@@ -4800,7 +4800,7 @@ fn build_alias_table(
         .cloned()
         .collect();
     for name in &cyclic {
-        #[allow(
+        #[expect(
             clippy::expect_used,
             reason = "lowering bookkeeping: `name` was collected from the alias declaration map being searched, so the lookup finds its declaration"
         )]
@@ -5792,7 +5792,7 @@ pub(crate) fn reject_value_cycles(
     let graph = ValueGraph::build_validated(registry, &view, &mut metadata)?;
     for info in &registry.structs {
         if let Some(path) = graph.cycle_through(ValueNode::Record(info.type_id)) {
-            #[allow(
+            #[expect(
                 clippy::expect_used,
                 reason = "lowering bookkeeping: every registered struct was reserved from this declaration list, so its declaration survives to be found"
             )]
@@ -5806,7 +5806,7 @@ pub(crate) fn reject_value_cycles(
     }
     for record in &registry.records {
         if let Some(path) = graph.cycle_through(ValueNode::Record(record.type_id)) {
-            #[allow(
+            #[expect(
                 clippy::expect_used,
                 reason = "lowering bookkeeping: every registered record was reserved from this declaration list, so its declaration survives to be found"
             )]
@@ -6035,7 +6035,7 @@ impl ValueGraph {
             let mut stack: Vec<(usize, usize)> = vec![(root, 0)];
             while let Some(&(node, edge)) = stack.last() {
                 if edge < edges[node].len() {
-                    #[allow(
+                    #[expect(
                         clippy::expect_used,
                         reason = "lowering bookkeeping: the enclosing `while let Some(..) = stack.last()` established the stack is non-empty"
                     )]
@@ -6079,7 +6079,7 @@ impl ValueGraph {
         let mut found = false;
         while let Some(&(current, edge)) = stack.last() {
             if edge < self.edges[current].len() {
-                #[allow(
+                #[expect(
                     clippy::expect_used,
                     reason = "lowering bookkeeping: the enclosing `while let Some(..) = stack.last()` established the stack is non-empty"
                 )]

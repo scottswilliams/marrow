@@ -10,7 +10,12 @@
 // Production compiler code reports every source-level problem as a typed
 // diagnostic and never aborts. The six explicit-abort families are denied in
 // non-test builds; each legitimate invariant guard carries a narrow, reasoned
-// `#[expect(...)]` at its site. Test code keeps the ordinary abort vocabulary.
+// `#[expect(...)]` at its site. `expect` self-enables its restriction lint at
+// that span, so it is fulfilled in both the test and non-test compilations under
+// the strict all-targets gate, and it additionally fails as an unfulfilled
+// expectation if a later edit removes the guarded abort — turning a stale guard
+// into a build error that a bare `allow` would silence. Test code keeps the
+// ordinary abort vocabulary.
 #![cfg_attr(
     not(test),
     deny(

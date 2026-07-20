@@ -547,7 +547,7 @@ fn build_one(
         .map(|(field, member)| {
             let (id, value) = match member {
                 DurableMemberDef::Field { id, value, .. } => (*id, value),
-                #[allow(
+                #[expect(
                     clippy::unreachable,
                     reason = "match-arm narrowing: this map zips the leading top-level-field members built earlier in this function, so every zipped member is a `Field`"
                 )]
@@ -1717,7 +1717,7 @@ fn build_branches(
         })
         .zip(sites)
         .map(|(group, sites)| {
-            #[allow(
+            #[expect(
                 clippy::expect_used,
                 reason = "checker-classified type: key columns admitted to an executable branch were classified as orderable key scalars during checking, so expansion yields a scalar"
             )]
@@ -1738,7 +1738,7 @@ fn build_branches(
                 })
                 .zip(&sites.fields)
                 .map(|(field, &site)| {
-                    #[allow(
+                    #[expect(
                         clippy::expect_used,
                         reason = "checker-classified type: fields admitted to an executable branch were classified as scalars during checking, so expansion yields a scalar"
                     )]

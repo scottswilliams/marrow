@@ -659,7 +659,7 @@ impl<'a> FnLowerer<'a> {
             return Flow::Terminates;
         }
         let at = self.push_jump(span);
-        #[allow(
+        #[expect(
             clippy::expect_used,
             reason = "lowering bookkeeping: the empty-loop-stack case returned above, so a loop context is present here"
         )]
@@ -1404,7 +1404,7 @@ impl<'a> FnLowerer<'a> {
             break_jumps: Vec::new(),
         });
         let body_flow = self.lower_block(body);
-        #[allow(
+        #[expect(
             clippy::expect_used,
             reason = "lowering bookkeeping: this function pushed a loop context before lowering the body, so the paired pop returns it"
         )]
@@ -2181,7 +2181,7 @@ impl<'a> FnLowerer<'a> {
             break_jumps: Vec::new(),
         });
         let body_flow = self.lower_block(body);
-        #[allow(
+        #[expect(
             clippy::expect_used,
             reason = "lowering bookkeeping: this function pushed a loop context before lowering the body, so the paired pop returns it"
         )]
@@ -2220,7 +2220,7 @@ impl<'a> FnLowerer<'a> {
             break_jumps: Vec::new(),
         });
         let body_flow = self.lower_block(body);
-        #[allow(
+        #[expect(
             clippy::expect_used,
             reason = "lowering bookkeeping: this function pushed a loop context before lowering the body, so the paired pop returns it"
         )]
@@ -2356,7 +2356,7 @@ impl<'a> FnLowerer<'a> {
                     BinaryOp::Multiply => Instr::IntMulChecked(0),
                     BinaryOp::Divide => Instr::IntDivChecked(0),
                     BinaryOp::Remainder => Instr::IntRemChecked(0),
-                    #[allow(
+                    #[expect(
                         clippy::unreachable,
                         reason = "match-arm narrowing: the checker admitted only these checked-arithmetic binary operators to this lowering path"
                     )]
@@ -2381,7 +2381,7 @@ impl<'a> FnLowerer<'a> {
         // `on zero_divisor` arm. A provably-nonzero literal divisor has no such arm and
         // needs no runtime test — the operation cannot reach a zero divisor.
         if is_div && let Some(zero_block) = zero_divisor {
-            #[allow(
+            #[expect(
                 clippy::expect_used,
                 reason = "parser-guaranteed shape: a division parses with a right operand, so its lowered slot is bound whenever a zero-divisor arm is present"
             )]
