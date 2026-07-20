@@ -4800,6 +4800,10 @@ fn build_alias_table(
         .cloned()
         .collect();
     for name in &cyclic {
+        #[allow(
+            clippy::expect_used,
+            reason = "lowering bookkeeping: `name` was collected from the alias declaration map being searched, so the lookup finds its declaration"
+        )]
         let (file, decl) = aliases
             .iter()
             .find(|(_, decl)| &decl.name == name)
@@ -5788,6 +5792,10 @@ pub(crate) fn reject_value_cycles(
     let graph = ValueGraph::build_validated(registry, &view, &mut metadata)?;
     for info in &registry.structs {
         if let Some(path) = graph.cycle_through(ValueNode::Record(info.type_id)) {
+            #[allow(
+                clippy::expect_used,
+                reason = "lowering bookkeeping: every registered struct was reserved from this declaration list, so its declaration survives to be found"
+            )]
             let (file, span) = structs
                 .iter()
                 .find(|(_, decl)| decl.name == info.name)
@@ -5798,6 +5806,10 @@ pub(crate) fn reject_value_cycles(
     }
     for record in &registry.records {
         if let Some(path) = graph.cycle_through(ValueNode::Record(record.type_id)) {
+            #[allow(
+                clippy::expect_used,
+                reason = "lowering bookkeeping: every registered record was reserved from this declaration list, so its declaration survives to be found"
+            )]
             let (file, span) = resources
                 .iter()
                 .find(|(_, decl)| decl.name == record.name)
@@ -6023,7 +6035,12 @@ impl ValueGraph {
             let mut stack: Vec<(usize, usize)> = vec![(root, 0)];
             while let Some(&(node, edge)) = stack.last() {
                 if edge < edges[node].len() {
-                    stack.last_mut().expect("stack is non-empty").1 += 1;
+                    #[allow(
+                        clippy::expect_used,
+                        reason = "lowering bookkeeping: the enclosing `while let Some(..) = stack.last()` established the stack is non-empty"
+                    )]
+                    let top = stack.last_mut().expect("stack is non-empty");
+                    top.1 += 1;
                     #[cfg(test)]
                     bump_scaling(|counts| counts.cycle_walk_steps += 1);
                     let next = edges[node][edge];
@@ -6062,7 +6079,12 @@ impl ValueGraph {
         let mut found = false;
         while let Some(&(current, edge)) = stack.last() {
             if edge < self.edges[current].len() {
-                stack.last_mut().expect("stack is non-empty").1 += 1;
+                #[allow(
+                    clippy::expect_used,
+                    reason = "lowering bookkeeping: the enclosing `while let Some(..) = stack.last()` established the stack is non-empty"
+                )]
+                let top = stack.last_mut().expect("stack is non-empty");
+                top.1 += 1;
                 let next = self.edges[current][edge];
                 if next == target {
                     found = true;

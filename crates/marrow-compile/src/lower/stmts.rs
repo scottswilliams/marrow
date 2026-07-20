@@ -659,6 +659,10 @@ impl<'a> FnLowerer<'a> {
             return Flow::Terminates;
         }
         let at = self.push_jump(span);
+        #[allow(
+            clippy::expect_used,
+            reason = "lowering bookkeeping: the empty-loop-stack case returned above, so a loop context is present here"
+        )]
         self.loops
             .last_mut()
             .expect("loop present")
@@ -1400,6 +1404,10 @@ impl<'a> FnLowerer<'a> {
             break_jumps: Vec::new(),
         });
         let body_flow = self.lower_block(body);
+        #[allow(
+            clippy::expect_used,
+            reason = "lowering bookkeeping: this function pushed a loop context before lowering the body, so the paired pop returns it"
+        )]
         let ctx = self.loops.pop().expect("loop was pushed");
         self.locals.truncate(mark);
         self.places.truncate(place_mark);
@@ -2173,6 +2181,10 @@ impl<'a> FnLowerer<'a> {
             break_jumps: Vec::new(),
         });
         let body_flow = self.lower_block(body);
+        #[allow(
+            clippy::expect_used,
+            reason = "lowering bookkeeping: this function pushed a loop context before lowering the body, so the paired pop returns it"
+        )]
         let ctx = self.loops.pop().expect("loop was pushed");
         self.locals.truncate(mark);
         // A two-binding durable traversal binds a per-iteration address pin as a place;
@@ -2208,6 +2220,10 @@ impl<'a> FnLowerer<'a> {
             break_jumps: Vec::new(),
         });
         let body_flow = self.lower_block(body);
+        #[allow(
+            clippy::expect_used,
+            reason = "lowering bookkeeping: this function pushed a loop context before lowering the body, so the paired pop returns it"
+        )]
         let ctx = self.loops.pop().expect("loop was pushed");
         if body_flow == Flow::Rejected {
             return Flow::Rejected;
@@ -2340,6 +2356,10 @@ impl<'a> FnLowerer<'a> {
                     BinaryOp::Multiply => Instr::IntMulChecked(0),
                     BinaryOp::Divide => Instr::IntDivChecked(0),
                     BinaryOp::Remainder => Instr::IntRemChecked(0),
+                    #[allow(
+                        clippy::unreachable,
+                        reason = "match-arm narrowing: the checker admitted only these checked-arithmetic binary operators to this lowering path"
+                    )]
                     _ => unreachable!("classified as an admitted binary op"),
                 };
                 (checked, Some(lb))
@@ -2361,6 +2381,10 @@ impl<'a> FnLowerer<'a> {
         // `on zero_divisor` arm. A provably-nonzero literal divisor has no such arm and
         // needs no runtime test — the operation cannot reach a zero divisor.
         if is_div && let Some(zero_block) = zero_divisor {
+            #[allow(
+                clippy::expect_used,
+                reason = "parser-guaranteed shape: a division parses with a right operand, so its lowered slot is bound whenever a zero-divisor arm is present"
+            )]
             let lb = lb.expect("division has a right operand");
             self.push(Instr::LocalGet(lb), span);
             let zero = self.draft.intern_int(0);

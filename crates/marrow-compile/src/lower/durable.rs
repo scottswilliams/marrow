@@ -1371,6 +1371,10 @@ impl<'a> FnLowerer<'a> {
             "isEmpty" => (1, Instr::TextIsEmpty, bool_ty),
             "contains" => (2, Instr::TextContains, bool_ty),
             "trim" => (1, Instr::TextTrim, text),
+            #[allow(
+                clippy::unreachable,
+                reason = "match-arm narrowing: the caller dispatched on this exact set of text-floor builtin names before entering this match"
+            )]
             _ => unreachable!("caller matched the text-floor names"),
         };
         if args.len() != arity || args.iter().any(|arg| arg.name.is_some()) {
@@ -1567,6 +1571,10 @@ impl<'a> FnLowerer<'a> {
         args: &[Argument],
         span: SourceSpan,
     ) -> Option<LTy> {
+        #[allow(
+            clippy::unreachable,
+            reason = "match-arm narrowing: the caller dispatches here only for a builtin whose non-empty argument list it already established"
+        )]
         let [first, rest @ ..] = args else {
             unreachable!("caller passes a non-empty argument list");
         };
@@ -2067,6 +2075,10 @@ impl<'a> FnLowerer<'a> {
                 Some(nanos) => self.draft.intern_duration(nanos),
                 None => return self.fail_temporal_literal(scalar, &decoded, *arg_span),
             },
+            #[allow(
+                clippy::unreachable,
+                reason = "match-arm narrowing: the caller restricts this dispatch to the temporal scalar types matched above"
+            )]
             _ => unreachable!("caller passes only a temporal scalar"),
         };
         self.push(Instr::ConstLoad(const_id.index()), span);
@@ -2086,6 +2098,10 @@ impl<'a> FnLowerer<'a> {
                 "a canonical UTC instant `YYYY-MM-DDTHH:MM:SS[.fraction]Z` in years 0001-9999"
             }
             ScalarType::Duration => "a canonical duration `[-]PT<seconds>[.fraction]S`",
+            #[allow(
+                clippy::unreachable,
+                reason = "match-arm narrowing: the caller restricts this dispatch to the temporal scalar types matched above"
+            )]
             _ => unreachable!("caller passes only a temporal scalar"),
         };
         self.fail(SourceDiagnostic::at(
@@ -2121,6 +2137,10 @@ impl<'a> FnLowerer<'a> {
                 Instr::DateDaysBetween,
                 ScalarType::Int,
             ),
+            #[allow(
+                clippy::unreachable,
+                reason = "match-arm narrowing: the caller restricts this dispatch to the date-arithmetic builtins matched above"
+            )]
             _ => unreachable!("caller passes only a date-arithmetic builtin"),
         };
         let [first_arg, second_arg] = args else {
@@ -2465,6 +2485,10 @@ impl<'a> FnLowerer<'a> {
         // Present: rewrite the leaf slot on the materialized record, then replace the group.
         match edit {
             GroupLeafEdit::Set { .. } => {
+                #[allow(
+                    clippy::expect_used,
+                    reason = "lowering bookkeeping: a `Set` edit lowers its value expression before this emit, so its result slot is bound"
+                )]
                 self.push(
                     Instr::LocalGet(value_slot.expect("a set evaluates its value")),
                     span,
@@ -2641,6 +2665,10 @@ impl<'a> FnLowerer<'a> {
             DurTarget::Group { entry_site, .. } => {
                 self.push(Instr::DurEraseGroup(entry_site), place.span);
             }
+            #[allow(
+                clippy::unreachable,
+                reason = "lowering bookkeeping: a group-leaf delete is dispatched on a dedicated path before this shared key-path emit, so it never reaches this arm"
+            )]
             DurTarget::GroupLeaf { .. } => {
                 unreachable!("a group-leaf delete is handled before the shared key-path emit")
             }

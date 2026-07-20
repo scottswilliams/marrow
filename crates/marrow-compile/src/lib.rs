@@ -7,6 +7,22 @@
 //! encodes to canonical bytes. It has no edge to the verifier, VM, kernel, or
 //! store: the compiler emits bytes, opens no store, and mints no verified image.
 
+// Production compiler code reports every source-level problem as a typed
+// diagnostic and never aborts. The six explicit-abort families are denied in
+// non-test builds; each legitimate invariant guard carries a narrow, reasoned
+// `#[expect(...)]` at its site. Test code keeps the ordinary abort vocabulary.
+#![cfg_attr(
+    not(test),
+    deny(
+        clippy::expect_used,
+        clippy::unwrap_used,
+        clippy::panic,
+        clippy::unreachable,
+        clippy::todo,
+        clippy::unimplemented
+    )
+)]
+
 mod compile;
 mod diag;
 mod durable;

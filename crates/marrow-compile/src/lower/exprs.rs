@@ -479,6 +479,10 @@ impl<'a> FnLowerer<'a> {
             (BinaryOp::Multiply, Int, Int) => (Instr::IntMul, Int),
             (BinaryOp::Remainder, Int, Int) => (Instr::IntRem, Int),
             (BinaryOp::Divide, Int, Int) => (Instr::IntDiv, Int),
+            #[allow(
+                clippy::expect_used,
+                reason = "match-arm narrowing: the arm guard already tested `int_comparison(op).is_some()`, so the same call in the body yields `Some`"
+            )]
             (op, Int, Int) if int_comparison(op).is_some() => {
                 (int_comparison(op).expect("guard matched"), Bool)
             }
@@ -494,12 +498,24 @@ impl<'a> FnLowerer<'a> {
             // duration sums/differences with a duration, and a duration shifts an
             // instant; there is no `date +/- int` operator (use `addDays`), no
             // `duration * int`, and no calendar-month arithmetic.
+            #[allow(
+                clippy::expect_used,
+                reason = "match-arm narrowing: the arm guard tested `temporal_comparison(op).is_some()`, which holds exactly when `date_comparison(op)` is `Some`"
+            )]
             (op, Date, Date) if temporal_comparison(op).is_some() => {
                 (date_comparison(op).expect("guard matched"), Bool)
             }
+            #[allow(
+                clippy::expect_used,
+                reason = "match-arm narrowing: the arm guard tested `temporal_comparison(op).is_some()`, which holds exactly when `instant_comparison(op)` is `Some`"
+            )]
             (op, Instant, Instant) if temporal_comparison(op).is_some() => {
                 (instant_comparison(op).expect("guard matched"), Bool)
             }
+            #[allow(
+                clippy::expect_used,
+                reason = "match-arm narrowing: the arm guard tested `temporal_comparison(op).is_some()`, which holds exactly when `duration_comparison(op)` is `Some`"
+            )]
             (op, Duration, Duration) if temporal_comparison(op).is_some() => {
                 (duration_comparison(op).expect("guard matched"), Bool)
             }
@@ -640,6 +656,10 @@ impl<'a> FnLowerer<'a> {
             }
         };
         self.push(instr, span);
+        #[allow(
+            clippy::expect_used,
+            reason = "checker-classified type: this path runs only after the checker classified the receiver as a bare nominal type"
+        )]
         let id = nominal.bare_nominal().expect("classified as a nominal");
         let info = self.records.nominal(id);
         self.push(
@@ -803,6 +823,10 @@ impl<'a> FnLowerer<'a> {
     }
 
     fn nominal_supports(&self, ty: LTy) -> SupportSet {
+        #[allow(
+            clippy::expect_used,
+            reason = "checker-classified type: the caller passes a type it already classified as a bare nominal"
+        )]
         let id = ty.bare_nominal().expect("caller classified a nominal");
         self.records.nominal(id).supports
     }
@@ -914,6 +938,10 @@ impl<'a> FnLowerer<'a> {
                 let end = self.here();
                 self.patch(to_end, end);
             }
+            #[allow(
+                clippy::unreachable,
+                reason = "match-arm narrowing: the caller reaches short-circuit lowering only for the `and`/`or` operators matched above"
+            )]
             _ => unreachable!("only and/or reach short-circuit lowering"),
         }
         Some(bool_ty)

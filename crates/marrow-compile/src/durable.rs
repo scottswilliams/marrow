@@ -547,6 +547,10 @@ fn build_one(
         .map(|(field, member)| {
             let (id, value) = match member {
                 DurableMemberDef::Field { id, value, .. } => (*id, value),
+                #[allow(
+                    clippy::unreachable,
+                    reason = "match-arm narrowing: this map zips the leading top-level-field members built earlier in this function, so every zipped member is a `Field`"
+                )]
                 _ => unreachable!("the first members are the record's top-level fields"),
             };
             IndexFieldLeaf {
@@ -1713,6 +1717,10 @@ fn build_branches(
         })
         .zip(sites)
         .map(|(group, sites)| {
+            #[allow(
+                clippy::expect_used,
+                reason = "checker-classified type: key columns admitted to an executable branch were classified as orderable key scalars during checking, so expansion yields a scalar"
+            )]
             let key = group
                 .keys
                 .iter()
@@ -1730,6 +1738,10 @@ fn build_branches(
                 })
                 .zip(&sites.fields)
                 .map(|(field, &site)| {
+                    #[allow(
+                        clippy::expect_used,
+                        reason = "checker-classified type: fields admitted to an executable branch were classified as scalars during checking, so expansion yields a scalar"
+                    )]
                     let scalar = scalar_of(&records.expand(&field.ty))
                         .expect("an executable branch field is a scalar");
                     DurableBranchField {
