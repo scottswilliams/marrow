@@ -15,8 +15,8 @@ use marrow_codes::Code;
 use marrow_project::Position;
 
 use crate::failure::{
-    CaptureFailure, CaptureFailureKind, PhysicalBound, PhysicalFailure, PhysicalRefusal,
-    PhysicalRole,
+    CaptureFailure, CaptureFailureKind, LinkPosition, PhysicalBound, PhysicalFailure, PhysicalKind,
+    PhysicalRefusal, PhysicalRole,
 };
 use crate::overlay::{OverlayBound, OverlayReason};
 use crate::path::OperationalPath;
@@ -103,7 +103,7 @@ impl<'a> CapturePresentation<'a> {
                 }
                 Ok(())
             }
-            PhysicalRefusal::Link { .. } => match failure.role() {
+            PhysicalRefusal::Link { position } => match failure.role() {
                 PhysicalRole::SourceRoot => {
                     sink.write_str("source root ")?;
                     self.write_joined(sink, failure.path())?;
@@ -117,7 +117,13 @@ impl<'a> CapturePresentation<'a> {
                         " is a symlink; the identity artifact must be a real file inside the project",
                     )
                 }
-                _ => self.write_joined(sink, failure.path()),
+                _ => {
+                    self.write_subject(sink, failure)?;
+                    sink.write_str(match position {
+                        LinkPosition::Terminal => " is a symbolic link",
+                        LinkPosition::Intermediate => " lies below a symbolic link",
+                    })
+                }
             },
             PhysicalRefusal::Bound {
                 bound,
@@ -129,10 +135,29 @@ impl<'a> CapturePresentation<'a> {
                 self.write_joined(sink, failure.path())?;
                 sink.write_str(" is not valid UTF-8")
             }
-            PhysicalRefusal::UnexpectedKind { .. }
-            | PhysicalRefusal::Hardlink
-            | PhysicalRefusal::Changed
-            | PhysicalRefusal::UnsupportedPlatform => Ok(()),
+            PhysicalRefusal::UnexpectedKind { expected, .. } => {
+                self.write_subject(sink, failure)?;
+                write!(sink, " is not {}", expected_noun(*expected))
+            }
+            PhysicalRefusal::Hardlink => {
+                self.write_subject(sink, failure)?;
+                sink.write_str(" is hard-linked")
+            }
+            PhysicalRefusal::Changed => {
+                self.write_subject(sink, failure)?;
+                sink.write_str(" changed during capture")
+            }
+            PhysicalRefusal::UnsupportedPlatform => Ok(()),
+        }
+    }
+
+    /// Write the subject of a terse physical body: the caller root joined to the
+    /// charged path when one is held, or a role noun for a pathless refusal, so a
+    /// pathless fault never renders a dangling prefix.
+    fn write_subject(&self, sink: &mut impl fmt::Write, failure: &PhysicalFailure) -> fmt::Result {
+        match failure.path() {
+            Some(path) => write!(sink, "{}", self.joined(path).display()),
+            None => sink.write_str(role_noun(failure.role())),
         }
     }
 
@@ -179,12 +204,41 @@ impl<'a> CapturePresentation<'a> {
                 "over the source-file limit",
                 true,
             ),
-            PhysicalBound::ManifestBytes
-            | PhysicalBound::VisitedEntries
-            | PhysicalBound::TraversalDepth
-            | PhysicalBound::SourceSpellingBytes
-            | PhysicalBound::RetainedPathUnits
-            | PhysicalBound::PathWorkUnits => Ok(()),
+            PhysicalBound::ManifestBytes => {
+                self.write_joined(sink, path)?;
+                write!(
+                    sink,
+                    " is {actual} bytes, over the {limit}-byte manifest bound"
+                )
+            }
+            PhysicalBound::TraversalDepth => {
+                self.write_joined(sink, path)?;
+                write!(
+                    sink,
+                    " is at depth {actual}, over the {limit}-directory traversal-depth bound"
+                )
+            }
+            PhysicalBound::SourceSpellingBytes => {
+                self.write_joined(sink, path)?;
+                write!(
+                    sink,
+                    " spelling is {actual} bytes, over the {limit}-byte source-path bound"
+                )
+            }
+            // The pre-lease path-budget bounds carry no path; their prose stands on
+            // the typed resource and its exceeded limit alone.
+            PhysicalBound::VisitedEntries => write!(
+                sink,
+                "capture visited {actual} directory entries, over the {limit}-entry bound"
+            ),
+            PhysicalBound::RetainedPathUnits => write!(
+                sink,
+                "capture retains {actual} path units, over the {limit}-unit bound"
+            ),
+            PhysicalBound::PathWorkUnits => write!(
+                sink,
+                "capture works over {actual} path units, over the {limit}-unit bound"
+            ),
         }
     }
 
@@ -220,6 +274,27 @@ impl<'a> CapturePresentation<'a> {
 
     fn joined(&self, path: &OperationalPath) -> PathBuf {
         self.root.join(path.as_path())
+    }
+}
+
+/// The role noun that names the subject of a pathless physical refusal.
+fn role_noun(role: PhysicalRole) -> &'static str {
+    match role {
+        PhysicalRole::Root => "the project root",
+        PhysicalRole::Manifest => "the manifest",
+        PhysicalRole::IdentityLedger => "the identity artifact",
+        PhysicalRole::SourceRoot => "the source root",
+        PhysicalRole::SourceDirectory => "a source directory",
+        PhysicalRole::SourceFile => "a source file",
+    }
+}
+
+/// The kind noun a role required but did not observe.
+fn expected_noun(expected: PhysicalKind) -> &'static str {
+    match expected {
+        PhysicalKind::RegularFile => "a regular file",
+        PhysicalKind::Directory => "a directory",
+        PhysicalKind::Other => "an admissible object",
     }
 }
 

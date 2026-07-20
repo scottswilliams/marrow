@@ -112,7 +112,7 @@ execution is in the trough.
 
 | Code | Meaning |
 |---|---|
-| `cli.command_unsupported` | A command name is recognized but not yet available on this beta line: its owning capability is being refounded and returns through a later lane. `marrow fmt`, `marrow --version`, and `marrow --help` are the currently available commands. |
+| `cli.command_unsupported` | A command name is recognized but not yet available on this beta line: its owning capability is being refounded and returns through a later lane. `marrow init`, `marrow fmt`, `marrow run`, `marrow test`, and `marrow client typescript` are the currently available commands. |
 | `cli.transfer_excluded` | An export's signature reaches a value type outside the wire transfer graph — a finite collection, until the earned transfer extension lands — so the program's wire interface cannot be built. `marrow client typescript` and the stock runner refuse the whole program rather than serving a partial interface; the message names the export position that is excluded. |
 | `cli.durable_unsupported` | `marrow run` resolved a durable export — one whose verified demand reads or writes durable data — that the beta line cannot yet execute. The export compiled, independently verified, and completed its durable identity, but the CLI no longer opens a store in process (T01's in-process open ended at D00, where the durable-run trough begins). Durable execution returns as the ephemeral-memory preview and later the persistent companion path. A storeless export is unaffected. |
 

@@ -26,7 +26,7 @@ use marrow_project::{CaptureLimits, CapturedFile, Manifest};
 use crate::capture::capture_project_with_limits;
 use crate::failure::{
     CaptureFailure, CaptureFailureKind, LinkPosition, PhysicalBound, PhysicalFailure,
-    PhysicalIoError, PhysicalOperation, PhysicalRefusal, PhysicalRole,
+    PhysicalIoError, PhysicalKind, PhysicalOperation, PhysicalRefusal, PhysicalRole,
 };
 use crate::limits::AdapterLimits;
 use crate::overlay::{OverlayBound, OverlayEntry, OverlayFailure, OverlayReason, OverlaySnapshot};
@@ -70,8 +70,32 @@ fn physical(
     ))
 }
 
+fn pathless(
+    role: PhysicalRole,
+    operation: PhysicalOperation,
+    refusal: PhysicalRefusal,
+) -> CaptureFailure {
+    CaptureFailure::from_physical(PhysicalFailure::new(role, operation, None, refusal))
+}
+
 fn io(kind: io::ErrorKind, message: &str) -> PhysicalIoError {
     PhysicalIoError::new(io::Error::new(kind, message))
+}
+
+/// The identical CLI and operational message body a refusal renders. Every terse
+/// physical body is operating-system-prose-free, so both writers agree.
+fn both_messages(failure: &CaptureFailure) -> String {
+    let cli = cli_message(failure);
+    let operational = operational_message(failure);
+    assert_eq!(
+        cli, operational,
+        "a terse physical body is identical in both writers"
+    );
+    assert!(
+        !cli.is_empty(),
+        "a payload-free refusal renders a nonempty body"
+    );
+    cli
 }
 
 #[test]
@@ -235,6 +259,217 @@ fn invalid_path_encoding_renders_source_path() {
     assert_eq!(
         cli_message(&failure),
         "source path /proj/src/bad.mw is not valid UTF-8"
+    );
+    // The same body renders through the operational writer.
+    assert_eq!(
+        operational_message(&failure),
+        "source path /proj/src/bad.mw is not valid UTF-8"
+    );
+}
+
+// ===== Payload-free physical refusals render a terse typed body in both writers =
+
+#[test]
+fn hardlink_renders_a_terse_typed_body() {
+    let failure = physical(
+        PhysicalRole::Manifest,
+        PhysicalOperation::Inspect,
+        "marrow.toml",
+        PhysicalRefusal::Hardlink,
+    );
+    assert_eq!(present(&failure, Path::new(ROOT)).code(), Code::IoRead);
+    assert_eq!(both_messages(&failure), "/proj/marrow.toml is hard-linked");
+}
+
+#[test]
+fn terminal_link_renders_a_terse_typed_body() {
+    let failure = physical(
+        PhysicalRole::Manifest,
+        PhysicalOperation::Inspect,
+        "marrow.toml",
+        PhysicalRefusal::Link {
+            position: LinkPosition::Terminal,
+        },
+    );
+    assert_eq!(present(&failure, Path::new(ROOT)).code(), Code::IoRead);
+    assert_eq!(
+        both_messages(&failure),
+        "/proj/marrow.toml is a symbolic link"
+    );
+}
+
+#[test]
+fn intermediate_link_renders_a_terse_typed_body() {
+    let failure = physical(
+        PhysicalRole::SourceFile,
+        PhysicalOperation::Inspect,
+        "src/a.mw",
+        PhysicalRefusal::Link {
+            position: LinkPosition::Intermediate,
+        },
+    );
+    assert_eq!(present(&failure, Path::new(ROOT)).code(), Code::IoRead);
+    assert_eq!(
+        both_messages(&failure),
+        "/proj/src/a.mw lies below a symbolic link"
+    );
+}
+
+#[test]
+fn changed_renders_a_terse_typed_body() {
+    let failure = physical(
+        PhysicalRole::SourceFile,
+        PhysicalOperation::Open,
+        "src/main.mw",
+        PhysicalRefusal::Changed,
+    );
+    assert_eq!(present(&failure, Path::new(ROOT)).code(), Code::IoRead);
+    assert_eq!(
+        both_messages(&failure),
+        "/proj/src/main.mw changed during capture"
+    );
+}
+
+#[test]
+fn unexpected_kind_with_a_path_renders_a_terse_typed_body() {
+    let failure = physical(
+        PhysicalRole::SourceFile,
+        PhysicalOperation::Inspect,
+        "src/x",
+        PhysicalRefusal::UnexpectedKind {
+            expected: PhysicalKind::Directory,
+            actual: PhysicalKind::RegularFile,
+        },
+    );
+    assert_eq!(present(&failure, Path::new(ROOT)).code(), Code::IoRead);
+    assert_eq!(both_messages(&failure), "/proj/src/x is not a directory");
+}
+
+#[test]
+fn a_pathless_unexpected_root_kind_renders_a_role_subject() {
+    let failure = pathless(
+        PhysicalRole::Root,
+        PhysicalOperation::Inspect,
+        PhysicalRefusal::UnexpectedKind {
+            expected: PhysicalKind::Directory,
+            actual: PhysicalKind::RegularFile,
+        },
+    );
+    assert_eq!(present(&failure, Path::new(ROOT)).code(), Code::IoRead);
+    assert_eq!(
+        both_messages(&failure),
+        "the project root is not a directory"
+    );
+}
+
+#[test]
+fn a_manifest_byte_bound_renders_a_terse_typed_body() {
+    let failure = physical(
+        PhysicalRole::Manifest,
+        PhysicalOperation::Read,
+        "marrow.toml",
+        PhysicalRefusal::Bound {
+            bound: PhysicalBound::ManifestBytes,
+            limit: 6,
+            actual: 7,
+        },
+    );
+    assert_eq!(present(&failure, Path::new(ROOT)).code(), Code::IoRead);
+    assert_eq!(
+        both_messages(&failure),
+        "/proj/marrow.toml is 7 bytes, over the 6-byte manifest bound"
+    );
+}
+
+#[test]
+fn a_traversal_depth_bound_renders_a_terse_typed_body() {
+    let failure = physical(
+        PhysicalRole::SourceDirectory,
+        PhysicalOperation::Enumerate,
+        "src/deep",
+        PhysicalRefusal::Bound {
+            bound: PhysicalBound::TraversalDepth,
+            limit: 1,
+            actual: 2,
+        },
+    );
+    assert_eq!(present(&failure, Path::new(ROOT)).code(), Code::IoRead);
+    assert_eq!(
+        both_messages(&failure),
+        "/proj/src/deep is at depth 2, over the 1-directory traversal-depth bound"
+    );
+}
+
+#[test]
+fn a_source_spelling_bound_renders_a_terse_typed_body() {
+    let failure = physical(
+        PhysicalRole::SourceFile,
+        PhysicalOperation::Retain,
+        "src/main.mw",
+        PhysicalRefusal::Bound {
+            bound: PhysicalBound::SourceSpellingBytes,
+            limit: 4,
+            actual: 11,
+        },
+    );
+    assert_eq!(present(&failure, Path::new(ROOT)).code(), Code::IoRead);
+    assert_eq!(
+        both_messages(&failure),
+        "/proj/src/main.mw spelling is 11 bytes, over the 4-byte source-path bound"
+    );
+}
+
+#[test]
+fn a_visited_entry_bound_renders_a_pathless_terse_body() {
+    let failure = pathless(
+        PhysicalRole::SourceDirectory,
+        PhysicalOperation::Enumerate,
+        PhysicalRefusal::Bound {
+            bound: PhysicalBound::VisitedEntries,
+            limit: 3,
+            actual: 4,
+        },
+    );
+    assert_eq!(present(&failure, Path::new(ROOT)).code(), Code::IoRead);
+    assert_eq!(
+        both_messages(&failure),
+        "capture visited 4 directory entries, over the 3-entry bound"
+    );
+}
+
+#[test]
+fn a_retained_path_bound_renders_a_pathless_terse_body() {
+    let failure = pathless(
+        PhysicalRole::SourceDirectory,
+        PhysicalOperation::Retain,
+        PhysicalRefusal::Bound {
+            bound: PhysicalBound::RetainedPathUnits,
+            limit: 1,
+            actual: 2,
+        },
+    );
+    assert_eq!(present(&failure, Path::new(ROOT)).code(), Code::IoRead);
+    assert_eq!(
+        both_messages(&failure),
+        "capture retains 2 path units, over the 1-unit bound"
+    );
+}
+
+#[test]
+fn a_path_work_bound_renders_a_pathless_terse_body() {
+    let failure = pathless(
+        PhysicalRole::SourceDirectory,
+        PhysicalOperation::Retain,
+        PhysicalRefusal::Bound {
+            bound: PhysicalBound::PathWorkUnits,
+            limit: 1,
+            actual: 2,
+        },
+    );
+    assert_eq!(present(&failure, Path::new(ROOT)).code(), Code::IoRead);
+    assert_eq!(
+        both_messages(&failure),
+        "capture works over 2 path units, over the 1-unit bound"
     );
 }
 
