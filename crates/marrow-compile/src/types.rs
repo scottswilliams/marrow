@@ -1114,6 +1114,67 @@ fn count_ready_body_match_visits<T>(run: impl FnOnce() -> T) -> (T, usize) {
     (result, visits)
 }
 
+/// Deterministic operation counts for the generic-scaling KATs. Every field counts
+/// work performed by one production owner during a single-threaded test journey;
+/// the counter observes work only and cannot alter registry state or make a hostile
+/// row reachable. It is not a public hook and not a canonical fact.
+#[cfg(test)]
+#[derive(Clone, Copy, Default, Debug)]
+pub(crate) struct ScalingCounts {
+    /// `MetadataScratch::try_new` invocations (directory builds).
+    pub(crate) directory_builds: usize,
+    /// Per-type-inst rows visited while building directories: the total directory
+    /// work, which is `directory_builds * type_insts.len()` when the directory is
+    /// rebuilt per mint.
+    pub(crate) directory_row_visits: usize,
+    /// Elements examined by the `(template, args)` primary-key scan in
+    /// `existing_type_instance` (type-mint reuse).
+    pub(crate) type_inst_scan_steps: usize,
+    /// Elements examined by the `(template, args)` primary-key scan in
+    /// `reserve_fn_instance` (function-mint reuse).
+    pub(crate) fn_inst_scan_steps: usize,
+    /// Value-graph edges traversed across every `cycle_through` start.
+    pub(crate) cycle_walk_steps: usize,
+    /// `clone_for_generic_check` invocations (proof forks).
+    pub(crate) proof_clones: usize,
+    /// Type-inst rows replayed across every proof fork (`proof_clones *
+    /// type_insts.len()`).
+    pub(crate) proof_clone_rows: usize,
+}
+
+#[cfg(test)]
+thread_local! {
+    static SCALING_COUNTS: Cell<ScalingCounts> = const { Cell::new(ScalingCounts {
+        directory_builds: 0,
+        directory_row_visits: 0,
+        type_inst_scan_steps: 0,
+        fn_inst_scan_steps: 0,
+        cycle_walk_steps: 0,
+        proof_clones: 0,
+        proof_clone_rows: 0,
+    }) };
+}
+
+#[cfg(test)]
+fn bump_scaling(update: impl FnOnce(&mut ScalingCounts)) {
+    SCALING_COUNTS.with(|cell| {
+        let mut counts = cell.get();
+        update(&mut counts);
+        cell.set(counts);
+    });
+}
+
+/// Run `run` with a fresh scaling-count window and restore the prior window after,
+/// returning its result paired with the deterministic operation counts observed.
+#[cfg(test)]
+pub(crate) fn capture_scaling_counts<T>(run: impl FnOnce() -> T) -> (T, ScalingCounts) {
+    let previous = SCALING_COUNTS.with(|cell| cell.replace(ScalingCounts::default()));
+    let result = run();
+    let counts = SCALING_COUNTS.with(Cell::get);
+    SCALING_COUNTS.with(|cell| cell.set(previous));
+    (result, counts)
+}
+
 /// One durable-validation walk over all resource leaves. These marks are separate
 /// from metadata preflight: preflight may visit a generic argument or collection
 /// before the durable walk expands that value's body.
@@ -1158,6 +1219,8 @@ impl MetadataScratch {
     fn try_new(view: &TypeMetadataView<'_>) -> Result<Self, GenericInvariant> {
         #[cfg(test)]
         METADATA_DIRECTORY_BUILDS.with(|count| count.set(count.get() + 1));
+        #[cfg(test)]
+        bump_scaling(|counts| counts.directory_builds += 1);
         let mut records = Vec::new();
         let mut enums = Vec::new();
         for (record_row, record) in view.registry.records.iter().enumerate() {
@@ -1214,6 +1277,8 @@ impl MetadataScratch {
         }
         let mut semantic_keys = HashMap::with_capacity(view.generics.type_insts.len());
         for (row, inst) in view.generics.type_insts.iter().enumerate() {
+            #[cfg(test)]
+            bump_scaling(|counts| counts.directory_row_visits += 1);
             match inst.id {
                 TypeInstId::Record(id) => {
                     let index = id.index() as usize;
@@ -3008,11 +3073,11 @@ impl TypeRegistry {
             self.template_for_args(template, args)?;
             let mut metadata = MetadataScratch::try_new(&view)?;
             view.validate_args_with(args, None, &mut metadata)?;
-            let existing = view
-                .generics
-                .type_insts
-                .iter()
-                .position(|inst| inst.template == template && inst.args == args);
+            let existing = view.generics.type_insts.iter().position(|inst| {
+                #[cfg(test)]
+                bump_scaling(|counts| counts.type_inst_scan_steps += 1);
+                inst.template == template && inst.args == args
+            });
             match existing {
                 Some(index) => {
                     let inst = &view.generics.type_insts[index];
@@ -3976,11 +4041,11 @@ impl TypeRegistry {
     ) -> Result<u16, ResolveError> {
         self.validate_type_arguments(&args)?;
         let mut generics = self.generics.borrow_mut();
-        if let Some(inst) = generics
-            .fn_insts
-            .iter()
-            .find(|inst| inst.template == template && inst.args == args)
-        {
+        if let Some(inst) = generics.fn_insts.iter().find(|inst| {
+            #[cfg(test)]
+            bump_scaling(|counts| counts.fn_inst_scan_steps += 1);
+            inst.template == template && inst.args == args
+        }) {
             return Ok(inst.func);
         }
         if generics.type_insts.len() + generics.fn_insts.len() >= MAX_INSTANTIATIONS {
@@ -4333,8 +4398,12 @@ impl TypeRegistry {
             generics: Ref::clone(&generics),
             collections: Ref::clone(&collections),
         };
+        #[cfg(test)]
+        bump_scaling(|counts| counts.proof_clones += 1);
         let mut scratch = MetadataScratch::try_new(&view)?;
         for inst in &generics.type_insts {
+            #[cfg(test)]
+            bump_scaling(|counts| counts.proof_clone_rows += 1);
             view.ready_inst_body_with(inst, &mut scratch)?;
         }
         drop(view);
@@ -5866,6 +5935,8 @@ impl ValueGraph {
     ) -> bool {
         trail.push(current);
         for &next in &self.edges[current] {
+            #[cfg(test)]
+            bump_scaling(|counts| counts.cycle_walk_steps += 1);
             if next == target {
                 return true;
             }
@@ -6704,6 +6775,10 @@ fn unsupported(file: &str, span: SourceSpan, subject: &str) -> SourceDiagnostic 
 #[cfg(test)]
 #[path = "types_metadata_successor_tests.rs"]
 mod types_metadata_successor_tests;
+
+#[cfg(test)]
+#[path = "generic_scaling_counts_tests.rs"]
+mod generic_scaling_counts_tests;
 
 #[cfg(test)]
 mod instantiation_state_tests {
