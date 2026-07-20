@@ -5867,6 +5867,11 @@ struct ValueGraph {
     nodes: Vec<ValueNode>,
     labels: Vec<String>,
     edges: Vec<Vec<usize>>,
+    /// Whether any node lies on a cycle, decided once by a single shared O(V + E)
+    /// traversal at build time. A node is on a cycle exactly when it can reach
+    /// itself, so on an acyclic graph — the only graph that compiles — every
+    /// `cycle_through` query answers `None` in O(1) without a per-start walk.
+    has_any_cycle: bool,
 }
 
 impl ValueGraph {
@@ -5989,52 +5994,97 @@ impl ValueGraph {
                 }
             }
         }
+        let has_any_cycle = Self::detect_any_cycle(&edges);
         Ok(ValueGraph {
             nodes,
             labels,
             edges,
+            has_any_cycle,
         })
     }
 
-    /// The label path of a cycle that passes through `node`, or `None` if `node` is
-    /// not on any cycle. The path starts and ends at `node`'s label.
-    fn cycle_through(&self, node: ValueNode) -> Option<Vec<String>> {
-        let start = self.nodes.iter().position(|n| *n == node)?;
-        let mut trail: Vec<usize> = Vec::new();
-        let mut visited = vec![false; self.nodes.len()];
-        if self.reaches(start, start, &mut visited, &mut trail) {
-            let mut path: Vec<String> = trail.iter().map(|i| self.labels[*i].clone()).collect();
-            path.push(self.labels[start].clone());
-            return Some(path);
-        }
-        None
-    }
-
-    /// Whether `current` can reach `target` following one or more edges, recording
-    /// the traversal in `trail`. A DFS bounded by `visited`; the graph is finite.
-    fn reaches(
-        &self,
-        current: usize,
-        target: usize,
-        visited: &mut [bool],
-        trail: &mut Vec<usize>,
-    ) -> bool {
-        trail.push(current);
-        for &next in &self.edges[current] {
-            #[cfg(test)]
-            bump_scaling(|counts| counts.cycle_walk_steps += 1);
-            if next == target {
-                return true;
+    /// Whether the directed graph holds any cycle, decided by one shared iterative
+    /// three-colour DFS over every node: a back edge to a node still on the active
+    /// stack (grey) witnesses a cycle. The single shared traversal is O(V + E) total,
+    /// replacing the former per-start reachability walks whose combined cost grew with
+    /// the number of start nodes. Explicit stacks keep the walk iterative, so a deep
+    /// value graph cannot overflow the native call stack.
+    fn detect_any_cycle(edges: &[Vec<usize>]) -> bool {
+        const WHITE: u8 = 0;
+        const GREY: u8 = 1;
+        const BLACK: u8 = 2;
+        let mut colour = vec![WHITE; edges.len()];
+        let mut has_cycle = false;
+        for root in 0..edges.len() {
+            if colour[root] != WHITE {
+                continue;
             }
-            if !visited[next] {
-                visited[next] = true;
-                if self.reaches(next, target, visited, trail) {
-                    return true;
+            colour[root] = GREY;
+            let mut stack: Vec<(usize, usize)> = vec![(root, 0)];
+            while let Some(&(node, edge)) = stack.last() {
+                if edge < edges[node].len() {
+                    stack.last_mut().expect("stack is non-empty").1 += 1;
+                    #[cfg(test)]
+                    bump_scaling(|counts| counts.cycle_walk_steps += 1);
+                    let next = edges[node][edge];
+                    match colour[next] {
+                        GREY => has_cycle = true,
+                        WHITE => {
+                            colour[next] = GREY;
+                            stack.push((next, 0));
+                        }
+                        _ => {}
+                    }
+                } else {
+                    colour[node] = BLACK;
+                    stack.pop();
                 }
             }
         }
-        trail.pop();
-        false
+        has_cycle
+    }
+
+    /// The label path of a cycle that passes through `node`, or `None` if `node` is
+    /// not on any cycle. The path starts and ends at `node`'s label. An acyclic graph
+    /// answers `None` immediately from the shared build-time verdict; only a graph
+    /// that already holds a cycle (a program that fails to compile) walks to recover
+    /// the exact path, in the same edge order the former recursive walk used.
+    fn cycle_through(&self, node: ValueNode) -> Option<Vec<String>> {
+        if !self.has_any_cycle {
+            return None;
+        }
+        let target = self.nodes.iter().position(|n| *n == node)?;
+        let mut visited = vec![false; self.nodes.len()];
+        // The start node is never marked visited, so an edge back to it is recognised
+        // as closing the cycle rather than skipped. `stack` is the active DFS path
+        // (the trail): reaching an edge to `target` from its top node yields that path.
+        let mut stack: Vec<(usize, usize)> = vec![(target, 0)];
+        let mut found = false;
+        while let Some(&(current, edge)) = stack.last() {
+            if edge < self.edges[current].len() {
+                stack.last_mut().expect("stack is non-empty").1 += 1;
+                let next = self.edges[current][edge];
+                if next == target {
+                    found = true;
+                    break;
+                }
+                if !visited[next] {
+                    visited[next] = true;
+                    stack.push((next, 0));
+                }
+            } else {
+                stack.pop();
+            }
+        }
+        if !found {
+            return None;
+        }
+        let mut path: Vec<String> = stack
+            .iter()
+            .map(|(node, _)| self.labels[*node].clone())
+            .collect();
+        path.push(self.labels[target].clone());
+        Some(path)
     }
 }
 

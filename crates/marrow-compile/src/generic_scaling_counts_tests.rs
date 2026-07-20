@@ -80,6 +80,21 @@ fn fn_axis_fixture(v: usize) -> String {
     source
 }
 
+/// A chain of `n + 1` structs `C0..Cn`, each holding the next by value and ending in
+/// a scalar leaf. The value-containment graph is an acyclic path of `n + 1` nodes:
+/// the former per-start reachability walk cost Σ(n − i) = O(n²) edge steps across the
+/// struct start nodes, while the shared build-time cycle scan visits each edge once,
+/// O(n).
+fn struct_chain_fixture(n: usize) -> String {
+    let mut source = String::from("module main\n\n");
+    for link in 0..n {
+        writeln!(source, "struct C{link} {{ next: C{} }}", link + 1).expect("write chain link");
+    }
+    writeln!(source, "struct C{n} {{ leaf: int }}").expect("write chain leaf");
+    source.push_str("\npub fn driver(): int {\n    return 0\n}\n");
+    source
+}
+
 /// The largest `v` (searching `1..=limit`) for which `fixture(v)` still compiles,
 /// with the scaling counts observed at that ceiling. Panics if even `v = 1` fails.
 fn reachable_ceiling(fixture: impl Fn(usize) -> String, limit: usize) -> (usize, ScalingCounts) {
@@ -264,6 +279,32 @@ fn generic_scaling_report() {
             top.proof_clone_rows,
         );
     }
+}
+
+/// The value-cycle audit walks the value-containment graph once at build time, so its
+/// per-edge work is linear in the graph's edges — not the former sum over start nodes
+/// of each start's reachable subgraph, which was quadratic on a chain. Measured on an
+/// acyclic struct chain the shared scan visits each edge once (n steps at chain n), so
+/// half→full doubles ~2x and the absolute count stays at the edge count. The
+/// pre-repair per-start walk cost n(n+1)/2 steps (136 at chain 16, 528 at chain 32),
+/// which fails both the linear ratio and the absolute ceiling below.
+#[test]
+fn value_cycle_walk_is_a_shared_linear_scan() {
+    let half = counts_for(struct_chain_fixture(16));
+    let full = counts_for(struct_chain_fixture(32));
+    let walk_ratio = ratio(full.cycle_walk_steps, half.cycle_walk_steps);
+    assert!(
+        (1.7..=2.3).contains(&walk_ratio),
+        "value-cycle walk is a shared linear scan; chain 16->32 steps {} -> {} \
+         ratio {walk_ratio:.2}",
+        half.cycle_walk_steps,
+        full.cycle_walk_steps,
+    );
+    assert!(
+        full.cycle_walk_steps < 100,
+        "value-cycle walk regressed to a per-start quadratic: {} steps at chain 32",
+        full.cycle_walk_steps,
+    );
 }
 
 /// The proof fork is entered once per generic template, not per instantiation. With
