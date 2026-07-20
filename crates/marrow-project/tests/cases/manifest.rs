@@ -1,6 +1,7 @@
 //! Manifest schema behavior: the closed `marrow.toml` schema, required explicit
 //! edition, and typed rejection of everything outside it.
 
+use marrow_codes::Code;
 use marrow_project::{Edition, Manifest, ManifestErrorKind};
 
 #[test]
@@ -13,22 +14,28 @@ fn parses_the_minimal_manifest() {
 #[test]
 fn edition_is_required() {
     let error = Manifest::parse("").expect_err("missing edition rejects");
-    assert_eq!(error.code, "config.invalid");
-    assert_eq!(error.kind, ManifestErrorKind::MissingEdition);
-    assert!(error.position.is_none());
+    assert_eq!(error.code(), Code::ConfigInvalid);
+    assert_eq!(error.kind(), &ManifestErrorKind::MissingEdition);
+    assert!(error.position().is_none());
+    // The message the accessor exposes is exactly the one `Display` renders.
+    assert_eq!(
+        error.to_string(),
+        format!("config.invalid: {}", error.message())
+    );
 }
 
 #[test]
 fn unknown_key_rejects() {
     let error =
         Manifest::parse("edition = \"2026\"\nname = \"app\"\n").expect_err("unknown key rejects");
-    assert_eq!(error.code, "config.invalid");
+    assert_eq!(error.code(), Code::ConfigInvalid);
     assert_eq!(
-        error.kind,
-        ManifestErrorKind::UnknownKey {
+        error.kind(),
+        &ManifestErrorKind::UnknownKey {
             key: "name".to_string()
         }
     );
+    assert!(error.message().contains("unknown manifest key"));
 }
 
 #[test]
@@ -38,8 +45,8 @@ fn unknown_key_report_is_deterministic() {
     let error =
         Manifest::parse("zeta = 1\nedition = \"2026\"\nalpha = 2\n").expect_err("unknown keys");
     assert_eq!(
-        error.kind,
-        ManifestErrorKind::UnknownKey {
+        error.kind(),
+        &ManifestErrorKind::UnknownKey {
             key: "alpha".to_string()
         }
     );
@@ -48,28 +55,30 @@ fn unknown_key_report_is_deterministic() {
 #[test]
 fn unsupported_edition_rejects() {
     let error = Manifest::parse("edition = \"1999\"\n").expect_err("unsupported edition rejects");
-    assert_eq!(error.code, "config.invalid");
+    assert_eq!(error.code(), Code::ConfigInvalid);
     assert_eq!(
-        error.kind,
-        ManifestErrorKind::UnsupportedEdition {
+        error.kind(),
+        &ManifestErrorKind::UnsupportedEdition {
             edition: "1999".to_string()
         }
     );
+    assert!(error.message().contains("unsupported edition"));
 }
 
 #[test]
 fn non_string_edition_rejects() {
     let error = Manifest::parse("edition = 2026\n").expect_err("numeric edition rejects");
-    assert_eq!(error.kind, ManifestErrorKind::EditionNotString);
+    assert_eq!(error.kind(), &ManifestErrorKind::EditionNotString);
+    assert!(error.position().is_none());
 }
 
 #[test]
 fn malformed_toml_carries_its_position() {
     let error = Manifest::parse("edition = \n").expect_err("malformed rejects");
-    assert_eq!(error.code, "config.invalid");
-    assert_eq!(error.kind, ManifestErrorKind::Malformed);
+    assert_eq!(error.code(), Code::ConfigInvalid);
+    assert_eq!(error.kind(), &ManifestErrorKind::Malformed);
     let position = error
-        .position
+        .position()
         .expect("a located syntax fault carries a position");
     assert_eq!(position.line, 1);
     assert!(position.column >= 1);
@@ -79,7 +88,7 @@ fn malformed_toml_carries_its_position() {
 fn malformed_toml_position_tracks_later_lines() {
     let error = Manifest::parse("edition = \"2026\"\n\n= bad\n").expect_err("malformed rejects");
     let position = error
-        .position
+        .position()
         .expect("a located syntax fault carries a position");
     assert_eq!(position.line, 3);
 }
@@ -88,8 +97,33 @@ fn malformed_toml_position_tracks_later_lines() {
 fn duplicate_key_rejects() {
     let error = Manifest::parse("edition = \"2026\"\nedition = \"2026\"\n")
         .expect_err("duplicate key rejects");
-    assert_eq!(error.code, "config.invalid");
-    assert_eq!(error.kind, ManifestErrorKind::Malformed);
+    assert_eq!(error.code(), Code::ConfigInvalid);
+    assert_eq!(error.kind(), &ManifestErrorKind::Malformed);
+}
+
+#[test]
+fn only_malformed_faults_carry_a_position() {
+    // The position accessor is `Some` for exactly one kind. Every validation
+    // fault with no single source point leaves it `None`.
+    for source in [
+        "",
+        "name = \"app\"\n",
+        "edition = \"1999\"\n",
+        "edition = 2026\n",
+    ] {
+        let error = Manifest::parse(source).expect_err("rejects");
+        assert!(
+            error.position().is_none(),
+            "only a malformed-TOML fault is located, got a position for {source:?}"
+        );
+    }
+    assert!(
+        Manifest::parse("edition = \n")
+            .expect_err("malformed")
+            .position()
+            .is_some(),
+        "a malformed-TOML fault is located"
+    );
 }
 
 #[test]

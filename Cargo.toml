@@ -11,6 +11,7 @@ members = [
     "crates/marrow-verify",
     "crates/marrow-vm",
     "crates/marrow-project",
+    "crates/marrow-project-fs",
     "crates/marrow-store",
     "crates/marrow-syntax",
     "crates/marrow-temporal",

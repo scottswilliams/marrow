@@ -25,6 +25,7 @@ const RETAINED_MEMBERS: &[&str] = &[
     "marrow-kernel",
     "marrow-local-wire",
     "marrow-project",
+    "marrow-project-fs",
     "marrow-runner",
     "marrow-store",
     "marrow-syntax",
@@ -279,6 +280,42 @@ fn cargo_dag_respects_the_trust_boundaries() {
         assert_eq!(
             dep, "marrow-codes",
             "marrow-local-wire must depend on marrow-codes alone; found an edge to {dep}"
+        );
+    }
+
+    // The physical project adapter is the sole filesystem owner below the tool
+    // consumers. It depends only on the pure project-input owner and the
+    // diagnostic-code registry, and the CLI is its only consumer until the
+    // separately owned LSP crate lands its edge.
+    let project_fs = find("marrow-project-fs");
+    let mut project_fs_edges: Vec<(String, bool)> = project_fs.edges.clone();
+    project_fs_edges.sort();
+    assert_eq!(
+        project_fs_edges,
+        [
+            ("marrow-codes".to_string(), false),
+            ("marrow-project".to_string(), false),
+        ],
+        "marrow-project-fs must depend only on marrow-project and marrow-codes"
+    );
+    let cli = find("marrow");
+    assert!(
+        cli.edges
+            .iter()
+            .any(|(dep, is_dev)| dep == "marrow-project-fs" && !is_dev),
+        "marrow must consume marrow-project-fs in production"
+    );
+    for package in &packages {
+        if package.name == "marrow" {
+            continue;
+        }
+        assert!(
+            !package
+                .edges
+                .iter()
+                .any(|(dep, _)| dep == "marrow-project-fs"),
+            "{} must not consume marrow-project-fs before its separately owned integration",
+            package.name
         );
     }
 

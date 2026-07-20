@@ -20,6 +20,7 @@ marrow-compile = { path = "../marrow-compile" }
 marrow-image = { path = "../marrow-image" }
 marrow-kernel = { path = "../marrow-kernel" }
 marrow-project = { path = "../marrow-project" }
+marrow-project-fs = { path = "../marrow-project-fs" }
 marrow-syntax = { path = "../marrow-syntax" }
 marrow-temporal = { path = "../marrow-temporal" }
 marrow-verify = { path = "../marrow-verify" }

@@ -43,6 +43,37 @@ impl FileIdentity {
     /// module-name semantic owner; control characters are rejected here today
     /// because they are wrong under any future domain.
     pub fn validate(path: &str) -> Result<(FileIdentity, ModuleName), SourcePathReason> {
+        Self::check(path)?;
+
+        // `check` has established that `path` is a canonical `.mw` file with a
+        // non-empty stem under the source root, with no empty, `.`, `..`,
+        // backslash, or control segment. Derive the dotted module name from the
+        // segments below the root; this allocation is validate's, not check's.
+        let mut segments = path.split('/');
+        segments.next(); // the source root, already checked.
+        let under_root: Vec<&str> = segments.collect();
+        let file_segment = *under_root
+            .last()
+            .expect("check guarantees a file under the root");
+        let stem = mw_stem(file_segment).expect("check guarantees a non-empty `.mw` stem");
+
+        let mut module_segments: Vec<&str> = under_root[..under_root.len() - 1].to_vec();
+        module_segments.push(stem);
+        let module = ModuleName(module_segments.join("."));
+
+        Ok((FileIdentity(path.to_string()), module))
+    }
+
+    /// Report why a caller-supplied root-relative path cannot name a contained
+    /// source file, in the same reason precedence as [`FileIdentity::validate`],
+    /// without allocating.
+    ///
+    /// This is the one reason owner: `validate` delegates to it before
+    /// constructing an identity, and the physical adapter calls it on a borrowed
+    /// spelling before committing to any allocation. It traverses `path` as a
+    /// borrowed `&str` only — no owned buffer, split collection, or formatting —
+    /// so a caller may reject a spelling without paying for one.
+    pub fn check(path: &str) -> Result<(), SourcePathReason> {
         if path.is_empty() {
             return Err(SourcePathReason::NonCanonical);
         }
@@ -53,9 +84,9 @@ impl FileIdentity {
             return Err(SourcePathReason::Absolute);
         }
 
-        let segments: Vec<&str> = path.split('/').collect();
-        for segment in &segments {
-            match *segment {
+        // First offending segment in source order.
+        for segment in path.split('/') {
+            match segment {
                 "" | "." => return Err(SourcePathReason::NonCanonical),
                 ".." => return Err(SourcePathReason::Escapes),
                 _ => {}
@@ -63,22 +94,23 @@ impl FileIdentity {
         }
 
         // At least the root plus one file segment: `src/x.mw`.
-        if segments.len() < 2 || segments[0] != SOURCE_ROOT {
+        let mut segments = path.split('/');
+        let root = segments
+            .next()
+            .expect("a non-empty path has a first segment");
+        if root != SOURCE_ROOT || segments.next().is_none() {
             return Err(SourcePathReason::OutsideSourceRoot);
         }
 
-        let under_root = &segments[1..];
-        let file_segment = *under_root.last().expect("at least one segment under root");
-        let stem = file_segment
-            .strip_suffix(&format!(".{SOURCE_EXTENSION}"))
-            .filter(|stem| !stem.is_empty())
-            .ok_or(SourcePathReason::NotMarrowSource)?;
+        let file_segment = path
+            .rsplit('/')
+            .next()
+            .expect("a non-empty path has a final segment");
+        if mw_stem(file_segment).is_none() {
+            return Err(SourcePathReason::NotMarrowSource);
+        }
 
-        let mut module_segments: Vec<&str> = under_root[..under_root.len() - 1].to_vec();
-        module_segments.push(stem);
-        let module = ModuleName(module_segments.join("."));
-
-        Ok((FileIdentity(path.to_string()), module))
+        Ok(())
     }
 
     /// The identity's path lowercased, used to detect two identities that differ
@@ -86,6 +118,17 @@ impl FileIdentity {
     pub(crate) fn case_fold(&self) -> String {
         self.0.to_lowercase()
     }
+}
+
+/// The non-empty stem of a `.mw` file segment, or `None` when the segment is not
+/// a `.mw` file with a non-empty name. Allocation-free: stripping the `mw`
+/// extension and its `.` separator recovers the stem without materializing the
+/// `.mw` suffix string.
+fn mw_stem(file_segment: &str) -> Option<&str> {
+    file_segment
+        .strip_suffix(SOURCE_EXTENSION)
+        .and_then(|rest| rest.strip_suffix('.'))
+        .filter(|stem| !stem.is_empty())
 }
 
 /// The path-derived dotted module name, such as `foo.bar`. Constructed only

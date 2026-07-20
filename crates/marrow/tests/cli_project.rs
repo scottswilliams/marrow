@@ -669,7 +669,7 @@ fn a_located_malformed_manifest_keeps_its_exact_cli_record() {
     write(&manifest_path, MALFORMED_MANIFEST);
     let error = marrow_project::Manifest::parse(MALFORMED_MANIFEST)
         .expect_err("fixture must be malformed TOML");
-    let position = error.position.expect("malformed TOML has a location");
+    let position = error.position().expect("malformed TOML has a location");
 
     let output = run(&["fmt", "--write", temp.to_str().unwrap()]);
     assert_eq!(
@@ -686,8 +686,8 @@ fn a_located_malformed_manifest_keeps_its_exact_cli_record() {
             manifest_path.display(),
             position.line,
             position.column,
-            error.code,
-            error.message
+            error.code().as_str(),
+            error.message()
         )
     );
 }

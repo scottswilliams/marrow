@@ -111,21 +111,48 @@ pub enum ManifestErrorKind {
 /// An invalid project manifest. Carries the stable [`Code::ConfigInvalid`] code,
 /// a typed [`ManifestErrorKind`], a human message, and — for a malformed-TOML
 /// fault the parser locates — a 1-based [`Position`].
+///
+/// Fields are private and every constructor is owner-private, so a `ManifestError`
+/// is always the exact typed code/kind/message/position triple `parse` produced;
+/// a hostile or inconsistent combination is unrepresentable outside this owner.
+/// The read-only accessors expose the typed [`Code`] rather than a spelling.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct ManifestError {
-    pub code: &'static str,
-    pub kind: ManifestErrorKind,
-    pub message: String,
+    code: Code,
+    kind: ManifestErrorKind,
+    message: String,
     /// The 1-based line and column of a malformed-TOML fault. A validation fault
     /// with no single source point leaves it `None`, keeping the located position
     /// a machine fact in the span rather than only prose a client must parse.
-    pub position: Option<Position>,
+    position: Option<Position>,
 }
 
 impl ManifestError {
+    /// The stable diagnostic code this fault carries.
+    pub fn code(&self) -> Code {
+        self.code
+    }
+
+    /// The typed reason the manifest was rejected.
+    pub fn kind(&self) -> &ManifestErrorKind {
+        &self.kind
+    }
+
+    /// The human-readable message.
+    pub fn message(&self) -> &str {
+        &self.message
+    }
+
+    /// The 1-based position of a located malformed-TOML fault, or `None` when the
+    /// fault has no single source point. Only [`ManifestErrorKind::Malformed`]
+    /// ever carries a position.
+    pub fn position(&self) -> Option<Position> {
+        self.position
+    }
+
     fn new(kind: ManifestErrorKind, message: impl Into<String>) -> Self {
         Self {
-            code: Code::ConfigInvalid.as_str(),
+            code: Code::ConfigInvalid,
             kind,
             message: message.into(),
             position: None,
@@ -135,7 +162,7 @@ impl ManifestError {
     fn malformed(error: &toml::de::Error, source: &str) -> Self {
         let position = error.span().map(|span| line_column(source, span.start));
         Self {
-            code: Code::ConfigInvalid.as_str(),
+            code: Code::ConfigInvalid,
             kind: ManifestErrorKind::Malformed,
             message: error.message().to_string(),
             position,
@@ -177,7 +204,7 @@ impl ManifestError {
 
 impl fmt::Display for ManifestError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}: {}", self.code, self.message)
+        write!(f, "{}: {}", self.code.as_str(), self.message)
     }
 }
 

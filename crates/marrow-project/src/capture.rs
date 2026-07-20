@@ -302,14 +302,34 @@ pub enum CaptureErrorKind {
 /// A capture failure. Carries a stable code, a typed [`CaptureErrorKind`], and a
 /// human message. Path and manifest faults share [`Code::ConfigInvalid`] with the
 /// manifest layer; discovery-specific faults use the `project.*` family.
+///
+/// Fields are private and every constructor is owner-private, so a `CaptureError`
+/// is always the exact typed code/kind/message triple [`capture`] produced; a
+/// hostile or inconsistent combination is unrepresentable outside this owner. The
+/// read-only accessors expose the typed [`Code`] rather than a spelling.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct CaptureError {
-    pub code: &'static str,
-    pub kind: CaptureErrorKind,
-    pub message: String,
+    code: Code,
+    kind: CaptureErrorKind,
+    message: String,
 }
 
 impl CaptureError {
+    /// The stable diagnostic code this fault carries.
+    pub fn code(&self) -> Code {
+        self.code
+    }
+
+    /// The typed reason the capture failed.
+    pub fn kind(&self) -> &CaptureErrorKind {
+        &self.kind
+    }
+
+    /// The human-readable message.
+    pub fn message(&self) -> &str {
+        &self.message
+    }
+
     fn source_path(path: String, reason: SourcePathReason) -> Self {
         let explanation = match reason {
             SourcePathReason::Absolute => "must be relative to the project root, not absolute",
@@ -321,7 +341,7 @@ impl CaptureError {
             SourcePathReason::NotMarrowSource => "must be a `.mw` file with a non-empty name",
         };
         Self {
-            code: Code::ProjectSourcePath.as_str(),
+            code: Code::ProjectSourcePath,
             kind: CaptureErrorKind::SourcePath {
                 path: path.clone(),
                 reason,
@@ -350,7 +370,7 @@ impl CaptureError {
             ),
         };
         Self {
-            code: Code::ProjectModuleCollision.as_str(),
+            code: Code::ProjectModuleCollision,
             kind: CaptureErrorKind::ModuleCollision {
                 module,
                 first,
@@ -367,8 +387,9 @@ impl CaptureError {
 
     fn ids(error: IdsError) -> Self {
         let message = format!("marrow.ids is corrupt: {}", error.message);
+        let code = Code::from_code(error.code).expect("marrow.ids fault carries a registered code");
         Self {
-            code: error.code,
+            code,
             kind: CaptureErrorKind::IdsCorrupt { error },
             message,
         }
@@ -396,7 +417,7 @@ impl CaptureError {
             }
         };
         Self {
-            code: Code::ProjectCaptureLimit.as_str(),
+            code: Code::ProjectCaptureLimit,
             kind: CaptureErrorKind::CaptureLimit {
                 bound,
                 limit,
@@ -409,7 +430,7 @@ impl CaptureError {
 
 impl std::fmt::Display for CaptureError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}: {}", self.code, self.message)
+        write!(f, "{}: {}", self.code.as_str(), self.message)
     }
 }
 

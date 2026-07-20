@@ -108,6 +108,60 @@ fn rejects_control_characters() {
     );
 }
 
+/// Every path `validate` accepts or rejects, `check` must classify identically.
+/// `check` is the one allocation-free reason owner; `validate` delegates to it,
+/// so they can never disagree on acceptance or on the exact reason.
+const REASON_PARITY_PATHS: &[&str] = &[
+    "src/main.mw",
+    "src/shelf/books.mw",
+    "src/a/b/c.mw",
+    "src/a.b.mw",
+    "lib/books.mw",
+    "books.mw",
+    "src",
+    "src/notes.txt",
+    "src/books",
+    "src/.mw",
+    "/src/books.mw",
+    "src/../secret.mw",
+    "../src/books.mw",
+    "",
+    "src//books.mw",
+    "src/./books.mw",
+    "src\\books.mw",
+    "src/bo\0oks.mw",
+    "src/bo\toks.mw",
+    "src/bo\noks.mw",
+    "src/bo\u{1b}oks.mw",
+];
+
+#[test]
+fn check_and_validate_agree_on_every_reason() {
+    for &path in REASON_PARITY_PATHS {
+        let checked = FileIdentity::check(path);
+        let validated = FileIdentity::validate(path);
+        assert_eq!(
+            checked.is_ok(),
+            validated.is_ok(),
+            "check and validate disagree on acceptance of {path:?}"
+        );
+        assert_eq!(
+            checked.err(),
+            validated.err(),
+            "check and validate disagree on the reason for {path:?}"
+        );
+    }
+}
+
+#[test]
+fn check_does_not_change_the_identities_validate_builds() {
+    // Delegation to `check` leaves the exact identity and module bytes unchanged.
+    let (identity, module) = FileIdentity::validate("src/shelf/books.mw").expect("valid");
+    assert_eq!(identity.as_str(), "src/shelf/books.mw");
+    assert_eq!(module.as_str(), "shelf.books");
+    assert!(FileIdentity::check("src/shelf/books.mw").is_ok());
+}
+
 #[test]
 fn a_dotted_stem_derives_a_name_that_collides_with_a_nested_path() {
     // `file_stem` strips only the final `.mw`, so `src/a.b.mw` derives module

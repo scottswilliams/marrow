@@ -1,5 +1,6 @@
 //! Deterministic contained capture into an immutable `ProjectInput`.
 
+use marrow_codes::Code;
 use marrow_project::{
     CaptureBound, CaptureErrorKind, CaptureLimits, CapturedFile, CollisionReason, Manifest,
     ProjectInput,
@@ -84,8 +85,8 @@ fn empty_project_is_valid() {
 fn duplicate_module_identity_rejects() {
     let error = capture(vec![file("src/a/b.mw", "x"), file("src/a.b.mw", "y")])
         .expect_err("colliding module names reject");
-    assert_eq!(error.code, "project.module_collision");
-    match error.kind {
+    assert_eq!(error.code(), Code::ProjectModuleCollision);
+    match error.kind() {
         CaptureErrorKind::ModuleCollision {
             module,
             first,
@@ -93,7 +94,7 @@ fn duplicate_module_identity_rejects() {
             reason,
         } => {
             assert_eq!(module.as_str(), "a.b");
-            assert_eq!(reason, CollisionReason::DuplicateModule);
+            assert_eq!(*reason, CollisionReason::DuplicateModule);
             // Offenders are named smaller-identity-first, deterministically.
             assert_eq!(first.as_str(), "src/a.b.mw");
             assert_eq!(second.as_str(), "src/a/b.mw");
@@ -106,10 +107,10 @@ fn duplicate_module_identity_rejects() {
 fn case_insensitive_path_collision_rejects() {
     let error = capture(vec![file("src/Books.mw", "x"), file("src/books.mw", "y")])
         .expect_err("case-only difference rejects");
-    assert_eq!(error.code, "project.module_collision");
-    match error.kind {
+    assert_eq!(error.code(), Code::ProjectModuleCollision);
+    match error.kind() {
         CaptureErrorKind::ModuleCollision { reason, .. } => {
-            assert_eq!(reason, CollisionReason::CaseInsensitivePath);
+            assert_eq!(*reason, CollisionReason::CaseInsensitivePath);
         }
         other => panic!("expected a case collision, got {other:?}"),
     }
@@ -122,10 +123,10 @@ fn an_invalid_path_rejects_deterministically() {
         .expect_err("invalid paths reject");
     let b = capture(vec![file("src/../y.mw", "y"), file("/etc/x.mw", "x")])
         .expect_err("invalid paths reject");
-    assert_eq!(a.code, "project.source_path");
-    assert_eq!(a.kind, b.kind);
-    match a.kind {
-        CaptureErrorKind::SourcePath { path, .. } => assert_eq!(path, "/etc/x.mw"),
+    assert_eq!(a.code(), Code::ProjectSourcePath);
+    assert_eq!(a.kind(), b.kind());
+    match a.kind() {
+        CaptureErrorKind::SourcePath { path, .. } => assert_eq!(path.as_str(), "/etc/x.mw"),
         other => panic!("expected a source-path fault, got {other:?}"),
     }
 }
@@ -152,16 +153,16 @@ fn file_count_limit_boundary() {
     let mut over = three_files();
     over.push(file("src/d.mw", "d"));
     let error = marrow_project::capture(&manifest, over, None, &limits).expect_err("N+1 rejects");
-    assert_eq!(error.code, "project.capture_limit");
-    match error.kind {
+    assert_eq!(error.code(), Code::ProjectCaptureLimit);
+    match error.kind() {
         CaptureErrorKind::CaptureLimit {
             bound,
             limit,
             actual,
         } => {
-            assert_eq!(bound, CaptureBound::FileCount);
-            assert_eq!(limit, 3);
-            assert_eq!(actual, 4);
+            assert_eq!(*bound, CaptureBound::FileCount);
+            assert_eq!(*limit, 3);
+            assert_eq!(*actual, 4);
         }
         other => panic!("expected a capture-limit fault, got {other:?}"),
     }
@@ -177,15 +178,15 @@ fn per_file_byte_limit_boundary() {
     );
     let error = marrow_project::capture(&manifest, vec![file("src/a.mw", "abcde")], None, &limits)
         .expect_err("oversize file rejects");
-    match error.kind {
+    match error.kind() {
         CaptureErrorKind::CaptureLimit {
             bound,
             limit,
             actual,
         } => {
-            assert_eq!(bound, CaptureBound::FileBytes);
-            assert_eq!(limit, 4);
-            assert_eq!(actual, 5);
+            assert_eq!(*bound, CaptureBound::FileBytes);
+            assert_eq!(*limit, 4);
+            assert_eq!(*actual, 5);
         }
         other => panic!("expected a capture-limit fault, got {other:?}"),
     }
@@ -213,15 +214,15 @@ fn total_byte_limit_boundary() {
         &limits,
     )
     .expect_err("over-total rejects");
-    match error.kind {
+    match error.kind() {
         CaptureErrorKind::CaptureLimit {
             bound,
             limit,
             actual,
         } => {
-            assert_eq!(bound, CaptureBound::TotalBytes);
-            assert_eq!(limit, 6);
-            assert_eq!(actual, 7);
+            assert_eq!(*bound, CaptureBound::TotalBytes);
+            assert_eq!(*limit, 6);
+            assert_eq!(*actual, 7);
         }
         other => panic!("expected a capture-limit fault, got {other:?}"),
     }

@@ -71,6 +71,7 @@ dependencies = [
  "marrow-image",
  "marrow-kernel",
  "marrow-project",
+ "marrow-project-fs",
  "marrow-syntax",
  "marrow-temporal",
  "marrow-verify",
@@ -121,6 +122,14 @@ version = "0.1.0"
 dependencies = [
  "marrow-codes",
  "toml",
+]
+
+[[package]]
+name = "marrow-project-fs"
+version = "0.1.0"
+dependencies = [
+ "marrow-codes",
+ "marrow-project",
 ]
 
 [[package]]

@@ -1,0 +1,16 @@
+[package]
+name = "marrow-project-fs"
+description = "Bounded physical project-input adapter for Marrow tools."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+marrow-codes = { path = "../marrow-codes" }
+marrow-project = { path = "../marrow-project" }
+
+[lints]
+workspace = true

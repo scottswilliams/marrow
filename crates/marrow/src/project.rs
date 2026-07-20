@@ -12,9 +12,7 @@ use std::io;
 use std::path::{Component, Path, PathBuf};
 
 use marrow_codes::Code;
-use marrow_project::{
-    CaptureLimits, CapturedFile, Manifest, ManifestError, ManifestErrorKind, ProjectInput,
-};
+use marrow_project::{CaptureLimits, CapturedFile, Manifest, ManifestError, ProjectInput};
 
 /// The manifest file at a project root.
 pub(crate) const MANIFEST_FILE: &str = "marrow.toml";
@@ -58,7 +56,7 @@ pub(crate) fn capture_project(root: &Path) -> Result<ProjectInput, CaptureFailur
     let files = walk_source(root, &limits)?;
     let ids = read_ids(root)?;
     marrow_project::capture(&manifest, files, ids.as_deref(), &limits)
-        .map_err(|error| CaptureFailure::simple(error.code, error.message))
+        .map_err(|error| CaptureFailure::simple(error.code().as_str(), error.message().to_string()))
 }
 
 /// Read the raw bytes of the project's `marrow.ids`, or `None` when the
@@ -107,17 +105,16 @@ fn read_manifest(root: &Path) -> Result<Manifest, CaptureFailure> {
 }
 
 fn manifest_failure(path: &Path, error: ManifestError) -> CaptureFailure {
-    let location = match (&error.kind, error.position) {
-        (ManifestErrorKind::Malformed, Some(position)) => Some(ManifestLocation {
-            file: path.display().to_string(),
-            line: position.line,
-            column: position.column,
-        }),
-        _ => None,
-    };
+    // Only a malformed-TOML fault carries a position, so the located CLI record
+    // follows directly from `position()` without matching the error kind.
+    let location = error.position().map(|position| ManifestLocation {
+        file: path.display().to_string(),
+        line: position.line,
+        column: position.column,
+    });
     CaptureFailure {
-        code: error.code,
-        message: error.message,
+        code: error.code().as_str(),
+        message: error.message().to_string(),
         location,
     }
 }
