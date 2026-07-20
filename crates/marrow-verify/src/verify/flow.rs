@@ -1,7 +1,7 @@
 //! Phase 4+ type-flow checking: the abstract stack machine and durable-op predicates.
 
-use super::Decoded;
 use super::context::Ctx;
+use super::decode_code::Decoded;
 use super::model::DecodedFunction;
 use super::presence::push_on_fallthrough;
 use super::reject;

@@ -1,6 +1,6 @@
 //! Span projection for the sealed image.
 
-use super::Decoded;
+use super::decode_code::Decoded;
 use super::model::DecodedFunction;
 use super::reject;
 use crate::reject::{VerifyPhase, VerifyRejection};

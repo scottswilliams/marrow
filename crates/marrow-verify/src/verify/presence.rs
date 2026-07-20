@@ -1,11 +1,11 @@
 //! Phase 3+ call-graph and presence-flow checking over sealed functions.
 
 use super::context::Ctx;
-use super::decode_code;
+use super::decode_code::decode_code;
+use super::decode_code::resolve_jumps;
 use super::flow::{Frame, branch_key_columns, check_flow};
 use super::model::{DecodedFunction, DecodedImage};
 use super::reject;
-use super::resolve_jumps;
 use super::spans::map_spans;
 use crate::reject::{VerifyPhase, VerifyRejection};
 use crate::sealed::{SealedFunction, SealedInstr, SealedSite, SealedSiteTarget};
