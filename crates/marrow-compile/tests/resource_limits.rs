@@ -1,0 +1,263 @@
+//! Compiler resource-limit totality (CRES01): every user-reachable construction
+//! bound classifies before mutation as a truthful `check.resource_limit` source
+//! diagnostic (one offending construct), a payload-free `CompileFailure::ResourceLimit`
+//! (an aggregate exhaustion), or a private invariant (a producer contradiction).
+//! These reds drive the production `compile()` path over over-bound projects and
+//! assert the classified outcome, including the three defects the rescope named:
+//! a finite acyclic over-deep durable value silently dropping its root, a root
+//! key-column bound reported as `check.unsupported`, and an unprechecked branch
+//! key tuple reaching the synthetic image-bound diagnostic.
+
+use marrow_compile::{CompileFailure, compile};
+use marrow_project::{CaptureLimits, CapturedFile, Manifest, ProjectInput};
+
+fn project(source: &str, ids: Option<&[u8]>) -> ProjectInput {
+    let manifest = Manifest::parse("edition = \"2026\"\n").expect("valid manifest");
+    let files = vec![CapturedFile::new(
+        "src/main.mw".to_string(),
+        source.as_bytes().to_vec(),
+    )];
+    marrow_project::capture(&manifest, files, ids, &CaptureLimits::DEFAULT).expect("capture project")
+}
+
+/// Assert the failure is a source-diagnostic result carrying exactly one
+/// `check.resource_limit` at a real, non-empty source file, and that no diagnostic
+/// in the set carries an empty (fabricated) filename.
+fn assert_source_resource_limit(result: Result<impl std::fmt::Debug, CompileFailure>) {
+    match result {
+        Ok(compiled) => panic!("expected a resource-limit diagnostic, compiled: {compiled:?}"),
+        Err(CompileFailure::Diagnostics(diagnostics)) => {
+            assert!(
+                diagnostics
+                    .iter()
+                    .all(|diagnostic| !diagnostic.file.is_empty()),
+                "no resource diagnostic may carry a fabricated empty filename: {:#?}",
+                diagnostics.as_slice(),
+            );
+            assert!(
+                diagnostics
+                    .iter()
+                    .any(|diagnostic| diagnostic.code == "check.resource_limit"
+                        && diagnostic.file == "src/main.mw"),
+                "expected a check.resource_limit at src/main.mw, got {:#?}",
+                diagnostics.as_slice(),
+            );
+        }
+        Err(other) => panic!("expected a source diagnostic, got {other:?}"),
+    }
+}
+
+/// Assert the failure is the payload-free aggregate `ResourceLimit` arm.
+fn assert_aggregate_resource_limit(result: Result<impl std::fmt::Debug, CompileFailure>) {
+    match result {
+        Ok(compiled) => panic!("expected an aggregate resource limit, compiled: {compiled:?}"),
+        Err(CompileFailure::ResourceLimit(_)) => {}
+        Err(other) => panic!("expected CompileFailure::ResourceLimit, got {other:?}"),
+    }
+}
+
+/// A durable identity ledger built from an ordered anchor list, each `"kind path"`
+/// receiving a distinct seeded id. No hand-alignment: the caller lists exactly the
+/// anchors its shape declares.
+fn ledger(anchors: &[String]) -> Vec<u8> {
+    let mut out = String::from("marrow ids v0\nmachine-written by marrow; do not edit\n");
+    for (seed, anchor) in anchors.iter().enumerate() {
+        out.push_str(&format!("id {anchor} {:032x}\n", seed as u128 + 1));
+    }
+    out.push_str("high-water 0\nend\n");
+    out.into_bytes()
+}
+
+// ---- Defect 1: a finite acyclic over-deep durable value silently drops its root.
+
+/// A durable field whose stored value nests structs past `MAX_DURABLE_VALUE_DEPTH`
+/// (32) is finite and acyclic, so the value-cycle pass never fires. Today the
+/// builder marks the graph incomplete and drops the root with no diagnostic, so the
+/// program compiles with the durable graph silently absent. It must instead report a
+/// `check.resource_limit` at the offending field.
+#[test]
+fn over_deep_durable_value_reports_resource_limit_not_a_silent_drop() {
+    let mut source = String::from("module main\n\n");
+    for level in 0..40 {
+        source.push_str(&format!("struct S{level} {{ s: S{} }}\n", level + 1));
+    }
+    source.push_str("struct S40 { x: int }\n\n");
+    source.push_str("resource Deep {\n    required d: S0\n}\n\n");
+    source.push_str("store ^deep[id: int]: Deep\n\n");
+    source.push_str("pub fn noop(): int {\n    return 0\n}\n");
+    let ids = ledger(&[
+        "application .".into(),
+        "product Deep".into(),
+        "field Deep.d".into(),
+        "root deep".into(),
+        "key deep.id".into(),
+    ]);
+    assert_source_resource_limit(compile(&project(&source, Some(&ids))));
+}
+
+// ---- Defect 2: a root key tuple over the bound must not be `check.unsupported`.
+
+/// A store root with more than `MAX_KEY_COLUMNS` (8) key columns is prechecked
+/// today, but under the displaced `check.unsupported` code. The migration reports it
+/// as `check.resource_limit` at the store root.
+#[test]
+fn over_wide_root_key_reports_resource_limit_not_unsupported() {
+    let cols: Vec<String> = (0..9).map(|i| format!("k{i}: int")).collect();
+    let source = format!(
+        "module main\n\nresource R {{\n    required v: int\n}}\n\nstore ^r[{}]: R\n\npub fn noop(): int {{\n    return 0\n}}\n",
+        cols.join(", ")
+    );
+    let mut anchors = vec![
+        "application .".into(),
+        "product R".into(),
+        "field R.v".into(),
+        "root r".into(),
+    ];
+    for i in 0..9 {
+        anchors.push(format!("key r.k{i}"));
+    }
+    assert_source_resource_limit(compile(&project(&source, Some(&ledger(&anchors)))));
+}
+
+// ---- Defect 3: an unprechecked branch key tuple reaches the synthetic diagnostic.
+
+/// A keyed `branch` with more than `MAX_KEY_COLUMNS` (8) key columns is caught only
+/// at encode today, producing the synthetic empty-filename image-bound diagnostic.
+/// It must be prechecked at the branch, reporting `check.resource_limit` at a real
+/// span.
+#[test]
+fn over_wide_branch_key_reports_resource_limit() {
+    let cols: Vec<String> = (0..9).map(|i| format!("k{i}: int")).collect();
+    let source = format!(
+        "module main\n\nresource R {{\n    required title: string\n\n    b[{}] {{\n        required v: int\n    }}\n}}\n\nstore ^r[id: int]: R\n\npub fn noop(): int {{\n    return 0\n}}\n",
+        cols.join(", ")
+    );
+    let mut anchors = vec![
+        "application .".into(),
+        "product R".into(),
+        "field R.title".into(),
+        "root r".into(),
+        "key r.id".into(),
+        "root R.b".into(),
+    ];
+    for i in 0..9 {
+        anchors.push(format!("key R.b.k{i}"));
+    }
+    anchors.push("field R.b.v".into());
+    assert_source_resource_limit(compile(&project(&source, Some(&ledger(&anchors)))));
+}
+
+// ---- Named source-precheck: an index projection past its component bound.
+
+/// A `unique` managed index projecting more than `MAX_INDEX_COMPONENTS` (72) leaves
+/// crosses the projection bound. It must report `check.resource_limit` at the index.
+#[test]
+fn over_wide_index_projection_reports_resource_limit() {
+    let field_count = 73;
+    let mut source = String::from("module main\n\nresource R {\n");
+    for i in 0..field_count {
+        source.push_str(&format!("    f{i}: int\n"));
+    }
+    source.push_str("}\n\n");
+    let projection: Vec<String> = (0..field_count).map(|i| format!("f{i}")).collect();
+    source.push_str(&format!(
+        "store ^r[id: int]: R {{\n    index wide[{}] unique\n}}\n\npub fn noop(): int {{\n    return 0\n}}\n",
+        projection.join(", ")
+    ));
+    let mut anchors = vec!["application .".into(), "product R".into()];
+    for i in 0..field_count {
+        anchors.push(format!("field R.f{i}"));
+    }
+    anchors.push("root r".into());
+    anchors.push("key r.id".into());
+    anchors.push("index r.wide".into());
+    assert_source_resource_limit(compile(&project(&source, Some(&ledger(&anchors)))));
+}
+
+// ---- Named source-precheck: an overlong interned source string.
+
+/// A string literal longer than `MAX_STRING_BYTES` (4 KiB) is a single source
+/// construct crossing the interned-string bound, so it reports `check.resource_limit`
+/// at that literal rather than the synthetic image-bound diagnostic.
+#[test]
+fn over_long_string_literal_reports_resource_limit() {
+    let literal = "a".repeat(5000);
+    let source =
+        format!("module main\n\npub fn label(): string {{\n    return \"{literal}\"\n}}\n");
+    assert_source_resource_limit(compile(&project(&source, None)));
+}
+
+// ---- Per-declaration source-precheck: enum variant count.
+
+/// An enum declaring more than `MAX_VARIANTS` (256) members crosses the per-enum
+/// variant bound at its declaration.
+#[test]
+fn over_wide_enum_reports_resource_limit() {
+    let variants: Vec<String> = (0..257).map(|i| format!("    V{i}")).collect();
+    let source = format!(
+        "module main\n\nenum E {{\n{}\n}}\n\npub fn pick(): E {{\n    return E::V0\n}}\n",
+        variants.join("\n")
+    );
+    assert_source_resource_limit(compile(&project(&source, None)));
+}
+
+// ---- Per-declaration source-precheck: variant payload width.
+
+/// An enum variant carrying more than `MAX_PAYLOAD_FIELDS` (64) payload leaves
+/// crosses the per-variant payload bound.
+#[test]
+fn over_wide_variant_payload_reports_resource_limit() {
+    let payload: Vec<String> = (0..65).map(|i| format!("a{i}: int")).collect();
+    let source = format!(
+        "module main\n\nenum E {{\n    Small\n    Big({})\n}}\n\npub fn pick(): E {{\n    return E::Small\n}}\n",
+        payload.join(", "),
+    );
+    assert_source_resource_limit(compile(&project(&source, None)));
+}
+
+// ---- Aggregate: whole-program function and export counts.
+
+/// More than `MAX_FUNCTIONS` (64) functions is an aggregate count with no single
+/// offending declaration, so it is the payload-free `ResourceLimit` arm.
+#[test]
+fn too_many_functions_is_an_aggregate_resource_limit() {
+    let mut source = String::from("module main\n\n");
+    for i in 0..65 {
+        source.push_str(&format!("fn f{i}(): int {{\n    return 0\n}}\n\n"));
+    }
+    source.push_str("pub fn main(): int {\n    return 0\n}\n");
+    assert_aggregate_resource_limit(compile(&project(&source, None)));
+}
+
+/// More than `MAX_EXPORTS` (32) public functions is an aggregate export count.
+#[test]
+fn too_many_exports_is_an_aggregate_resource_limit() {
+    let mut source = String::from("module main\n\n");
+    for i in 0..33 {
+        source.push_str(&format!("pub fn f{i}(): int {{\n    return 0\n}}\n\n"));
+    }
+    assert_aggregate_resource_limit(compile(&project(&source, None)));
+}
+
+/// A durable resource whose emitted graph exceeds the whole-image byte ceiling
+/// (`MAX_IMAGE_BYTES`) is an aggregate exhaustion with no single offender.
+#[test]
+fn image_too_large_is_an_aggregate_resource_limit() {
+    let fields = 3200;
+    let mut source = String::from("module main\n\nresource Wide {\n    required tag: int\n");
+    for i in 0..fields {
+        source.push_str(&format!("    f{i}: int\n"));
+    }
+    source.push_str("}\n\nstore ^wide[id: int]: Wide\n\npub fn noop(): int {\n    return 0\n}\n");
+    let mut anchors = vec![
+        "application .".into(),
+        "product Wide".into(),
+        "field Wide.tag".into(),
+    ];
+    for i in 0..fields {
+        anchors.push(format!("field Wide.f{i}"));
+    }
+    anchors.push("root wide".into());
+    anchors.push("key wide.id".into());
+    assert_aggregate_resource_limit(compile(&project(&source, Some(&ledger(&anchors)))));
+}
