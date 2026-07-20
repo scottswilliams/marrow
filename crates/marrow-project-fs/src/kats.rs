@@ -444,19 +444,23 @@ impl Drop for TempDir {
 /// Production limits with the frozen production values; a test tightens exactly one
 /// field to isolate the bound it drives.
 fn base_limits() -> AdapterLimits {
+    // Copy the frozen production defaults field by field (every field is `Copy`),
+    // so the test base can never drift from `AdapterLimits::DEFAULT`; a test then
+    // tightens exactly one field to isolate the bound it drives.
+    let default = &AdapterLimits::DEFAULT;
     AdapterLimits {
-        manifest_bytes: 1 << 20,
-        identity_ledger_bytes: 1 << 20,
-        visited_entries: 65_536,
-        traversal_depth: 64,
-        source: CaptureLimits::new(4096, 1 << 20, 64 << 20),
-        overlay_entries: 4096,
-        overlay_key_bytes: 4096,
-        overlay_file_bytes: 1 << 20,
-        overlay_total_bytes: 64 << 20,
-        max_source_spelling_bytes: 4096,
-        max_retained_path_units: 64 << 20,
-        max_path_work_units: 64 << 20,
+        manifest_bytes: default.manifest_bytes,
+        identity_ledger_bytes: default.identity_ledger_bytes,
+        visited_entries: default.visited_entries,
+        traversal_depth: default.traversal_depth,
+        source: default.source,
+        overlay_entries: default.overlay_entries,
+        overlay_key_bytes: default.overlay_key_bytes,
+        overlay_file_bytes: default.overlay_file_bytes,
+        overlay_total_bytes: default.overlay_total_bytes,
+        max_source_spelling_bytes: default.max_source_spelling_bytes,
+        max_retained_path_units: default.max_retained_path_units,
+        max_path_work_units: default.max_path_work_units,
     }
 }
 
@@ -1192,6 +1196,115 @@ mod directory_admission {
             visited, 0,
             "a refused aggregate leaves visited at the baseline"
         );
+    }
+
+    /// The exact `(bound, limit, actual)` tuple of a bound refusal.
+    fn bound_tuple(failure: &CaptureFailure) -> (PhysicalBound, usize, usize) {
+        match failure.kind() {
+            CaptureFailureKind::Physical(physical) => match physical.refusal() {
+                PhysicalRefusal::Bound {
+                    bound,
+                    limit,
+                    actual,
+                } => (*bound, *limit, *actual),
+                other => panic!("expected a bound refusal, got {other:?}"),
+            },
+            _ => panic!("expected a physical failure"),
+        }
+    }
+
+    /// Settle a synthetic multiset, drop the staged carriers to release all live
+    /// charge, and observe only the committed work — the work-only calibration.
+    fn work_after_release(order: &[&str], limits: &AdapterLimits) -> (usize, usize) {
+        let mut budget = PathBudget::new();
+        let mut visited = 0usize;
+        let children = DirectoryAdmission::settle(
+            ok_entries(order).into_iter(),
+            Path::new("src"),
+            &mut budget,
+            limits,
+            &mut visited,
+        )
+        .expect("an under-bound batch settles");
+        drop(children);
+        (budget.work(), budget.retained())
+    }
+
+    #[test]
+    fn the_work_only_calibration_is_commutative_and_monotone_after_release() {
+        let limits = base_limits();
+        let forward = work_after_release(&["/root/a", "/root/bb", "/root/ccc"], &limits);
+        let reverse = work_after_release(&["/root/ccc", "/root/bb", "/root/a"], &limits);
+        let zigzag = work_after_release(&["/root/bb", "/root/ccc", "/root/a"], &limits);
+        assert_eq!(forward, reverse, "committed work is order-independent");
+        assert_eq!(forward, zigzag, "committed work is order-independent");
+        assert_eq!(
+            forward.1, 0,
+            "dropping the staged carriers releases all live charge"
+        );
+        assert!(
+            forward.0 > 0,
+            "work is committed and monotone across yield orders"
+        );
+    }
+
+    #[test]
+    fn a_wide_directory_settles_at_the_visit_limit_and_refuses_at_the_limit_plus_one() {
+        let limits = base_limits();
+        let limit = limits.visited_entries;
+
+        // Exactly the limit settles: 65,536 entries.
+        let full: Vec<io::Result<PathBuf>> = (0..limit)
+            .map(|index| Ok(PathBuf::from(format!("/root/{index:06}"))))
+            .collect();
+        let mut budget = PathBudget::new();
+        let mut visited = 0usize;
+        let children = DirectoryAdmission::settle(
+            full.into_iter(),
+            Path::new("src"),
+            &mut budget,
+            &limits,
+            &mut visited,
+        )
+        .expect("exactly the visit limit settles");
+        assert_eq!(children.len(), limit);
+        assert_eq!(visited, limit);
+
+        // One extra entry refuses with the exact tuple and baseline counters,
+        // whether the extra entry is yielded last or first.
+        for extra_first in [false, true] {
+            let mut order: Vec<io::Result<PathBuf>> = (0..limit)
+                .map(|index| Ok(PathBuf::from(format!("/root/{index:06}"))))
+                .collect();
+            let extra = Ok(PathBuf::from("/root/extra"));
+            if extra_first {
+                order.insert(0, extra);
+            } else {
+                order.push(extra);
+            }
+            let mut budget = PathBudget::new();
+            let mut visited = 0usize;
+            let failure = refusal(DirectoryAdmission::settle(
+                order.into_iter(),
+                Path::new("src"),
+                &mut budget,
+                &limits,
+                &mut visited,
+            ));
+            assert_eq!(
+                bound_tuple(&failure),
+                (PhysicalBound::VisitedEntries, limit, limit + 1),
+                "the {}-first N+1 batch refuses with the exact visit tuple",
+                if extra_first { "extra" } else { "wide" }
+            );
+            assert_eq!(visited, 0, "a refused batch leaves visited at the baseline");
+            assert_eq!(budget.work(), 0, "a refused batch commits no work");
+            assert_eq!(
+                budget.retained(),
+                0,
+                "a refused batch commits no live charge"
+            );
+        }
     }
 }
 

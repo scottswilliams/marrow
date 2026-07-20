@@ -187,12 +187,19 @@ impl Child {
     }
 }
 
-/// The atomic order-independent directory admission owner, `Enumerating` settling to
-/// `Traversing`. It is generic over the observation sequence so tests drive synthetic
-/// yield orders while production feeds the real `read_dir` entries. It counts at most
-/// the remaining visit allowance plus one, measures the aggregate carrier units
-/// commutatively, settles the aggregate bounds once (retained wins), commits
-/// visited/work once, and sorts the carriers in native lexical order.
+/// The atomic order-independent directory admission owner: a stateless settle
+/// function over one observation sequence. It is generic over that sequence so
+/// tests drive synthetic yield orders while production feeds the real `read_dir`
+/// entries. It counts at most the remaining visit allowance plus one, measures the
+/// aggregate carrier units commutatively, settles the aggregate bounds once
+/// (retained wins), reserves live-only carriers, commits the aggregate work and the
+/// visit count once, and sorts the carriers in native lexical order.
+///
+/// The settlement is atomic through the `Result` boundary rather than a mutable
+/// typestate: a partially settled batch is unrepresentable because every refusal
+/// returns before any commit, so a refused batch leaves `visited`, `work`, and the
+/// live counter at their baseline and the caller receives either the fully staged
+/// carriers or a pathless refusal.
 pub(crate) struct DirectoryAdmission;
 
 impl DirectoryAdmission {
@@ -365,7 +372,7 @@ impl Traversal<'_, '_> {
                 let subframe = self.enumerate(relative, child_depth, admitted)?;
                 stack.push(subframe);
             } else if file_type.is_file() && has_mw_extension(&relative) {
-                self.admit_source(&absolute, &relative)?;
+                self.admit_source(&relative)?;
             } else {
                 // An ignored entry (special file, or non-`.mw` regular file): counted
                 // but never opened, and a wrong-role overlay member if named.
@@ -412,7 +419,7 @@ impl Traversal<'_, '_> {
     /// Admit one selected `.mw` source: file-count check, opened-handle admission,
     /// borrowed spelling, allocation-free check, valid-only spelling bound, checked
     /// materialization, pure validation, then overlay or disk bytes.
-    fn admit_source(&mut self, absolute: &Path, relative: &Path) -> Result<(), CaptureFailure> {
+    fn admit_source(&mut self, relative: &Path) -> Result<(), CaptureFailure> {
         if self.batch.len() >= self.limits.source.max_files() {
             // The file-count bound fires before opening the next file; it joins the
             // caller root to the offending path.
@@ -449,7 +456,6 @@ impl Traversal<'_, '_> {
             PhysicalRole::SourceFile,
             relative.to_path_buf(),
         )?;
-        let _ = absolute;
         let mut admitted = admit_relative(
             self.canonical,
             live,
