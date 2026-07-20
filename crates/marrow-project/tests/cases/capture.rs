@@ -131,6 +131,16 @@ fn an_invalid_path_rejects_deterministically() {
     }
 }
 
+#[test]
+fn an_over_long_identity_refuses_with_the_source_path_family() {
+    let over = format!("src/{}.mw", "a".repeat(4090));
+    assert_eq!(over.len(), 4097);
+    let error = capture(vec![file(&over, "x")]).expect_err("an over-long identity refuses");
+    assert_eq!(error.code(), Code::ProjectSourcePath);
+    // The raw path is never retained in the message.
+    assert!(!error.message().contains("aaaa"));
+}
+
 /// The three files the capture-limit boundary probes use, so `N` = 3.
 fn three_files() -> Vec<CapturedFile> {
     vec![

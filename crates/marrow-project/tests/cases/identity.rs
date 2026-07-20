@@ -162,6 +162,25 @@ fn check_does_not_change_the_identities_validate_builds() {
     assert!(FileIdentity::check("src/shelf/books.mw").is_ok());
 }
 
+/// A syntactically valid single-component `.mw` identity of exactly `bytes`
+/// UTF-8 bytes: `src/` (4) plus an ASCII stem plus `.mw` (3).
+fn ascii_identity(bytes: usize) -> String {
+    format!("src/{}.mw", "a".repeat(bytes - 7))
+}
+
+#[test]
+fn a_valid_identity_at_the_maximum_is_accepted_and_one_over_is_refused() {
+    let at_max = ascii_identity(4096);
+    assert_eq!(at_max.len(), 4096);
+    assert!(FileIdentity::check(&at_max).is_ok(), "4096 bytes is accepted");
+    assert!(FileIdentity::validate(&at_max).is_ok());
+
+    let over = ascii_identity(4097);
+    assert_eq!(over.len(), 4097);
+    assert!(FileIdentity::check(&over).is_err(), "4097 bytes is refused");
+    assert!(FileIdentity::validate(&over).is_err());
+}
+
 #[test]
 fn a_dotted_stem_derives_a_name_that_collides_with_a_nested_path() {
     // `file_stem` strips only the final `.mw`, so `src/a.b.mw` derives module
