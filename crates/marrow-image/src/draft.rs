@@ -463,6 +463,11 @@ impl ImageDraft {
         id
     }
 
+    /// The number of collection types already appended to this draft.
+    pub fn collection_type_count(&self) -> usize {
+        self.colls.len()
+    }
+
     /// Add a collection type (a concrete `List`/`Map` instantiation), returning its
     /// index. Unlike records and enums a collection type has no forward-reference
     /// need — its element/key/value types are already-resolved [`ImageType`]s — so

@@ -293,5 +293,6 @@ already close. They are not ordinary user-facing diagnostics.
 
 | Code | Meaning |
 |---|---|
+| `cli.compiler_invariant` | The compiler detected an internal state inconsistency and failed closed without producing a program image or source diagnostic. |
 | `run.enum_variant` | A defense-in-depth guard: a bytecode enum-payload read named a variant the running enum value did not select. The compiler dispatches on the enum tag before extracting a variant's payload, so ordinary compiled programs never reach this; it fails an image closed rather than reading a differently-typed payload leaf when a hand-built or corrupted image extracts the wrong variant. Mapped to the operation's source span and not catchable inside the program. |
 | `runner.reply_encode` | A defense-in-depth guard: a served export's return value failed to encode for the wire. Interface build excludes an export whose return shape is not transferable, so ordinary served programs never reach this; the runner fails the request closed rather than emitting a partial reply. |

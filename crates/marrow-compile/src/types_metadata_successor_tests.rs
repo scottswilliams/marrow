@@ -449,6 +449,103 @@ fn malformed_reserved_option_ready_metadata_is_hidden_from_all_readers() {
 }
 
 #[test]
+fn durable_build_uses_one_metadata_session_across_stores_and_repeated_enum_anchors() {
+    const IDS: &str = "marrow ids v0\n\
+         machine-written by marrow; do not edit\n\
+         id application . 01010101010101010101010101010101\n\
+         id product First 02020202020202020202020202020202\n\
+         id field First.value 03030303030303030303030303030303\n\
+         id root first 04040404040404040404040404040404\n\
+         id key first.id 05050505050505050505050505050505\n\
+         id product Second 06060606060606060606060606060606\n\
+         id field Second.value 07070707070707070707070707070707\n\
+         id root second 08080808080808080808080808080808\n\
+         id key second.id 09090909090909090909090909090909\n\
+         id sum Result[Option[int],Option[int]] 10101010101010101010101010101010\n\
+         id member Result[Option[int],Option[int]].ok 11111111111111111111111111111111\n\
+         id member Result[Option[int],Option[int]].err 12121212121212121212121212121212\n\
+         id sum Option[int] 13131313131313131313131313131313\n\
+         id member Option[int].none 14141414141414141414141414141414\n\
+         id member Option[int].some 15151515151515151515151515151515\n\
+         high-water 0\n\
+         end\n";
+
+    let parsed = marrow_syntax::parse_source(
+        r#"module main
+
+resource First {
+    required value: Result<Option<int>, Option<int>>
+}
+
+resource Second {
+    required value: Result<Option<int>, Option<int>>
+}
+
+store ^first[id: int]: First
+store ^second[id: int]: Second
+"#,
+    );
+    assert!(parsed.diagnostics.is_empty());
+    let resources = vec![
+        (
+            "src/main.mw".to_string(),
+            parsed.file.resource("First").expect("First exists"),
+        ),
+        (
+            "src/main.mw".to_string(),
+            parsed.file.resource("Second").expect("Second exists"),
+        ),
+    ];
+    let stores = vec![
+        (
+            "src/main.mw".to_string(),
+            parsed.file.store("first").expect("first exists"),
+        ),
+        (
+            "src/main.mw".to_string(),
+            parsed.file.store("second").expect("second exists"),
+        ),
+    ];
+    let mut draft = ImageDraft::new();
+    let mut diagnostics = Vec::new();
+    let records = TypeRegistry::build(&mut draft, &[], &[], &[], &[], &resources, &mut diagnostics);
+    assert!(diagnostics.is_empty());
+    let shared = records.by_name("First").expect("First record").fields[0].ty;
+    assert!(matches!(shared, GArg::Enum(_)));
+    assert_eq!(
+        records.by_name("Second").expect("Second record").fields[0].ty,
+        shared,
+        "both stores reuse the same Ready Result instantiation"
+    );
+    let ledger = IdentityLedger::parse(IDS.as_bytes()).expect("fixture ledger parses");
+
+    let (outcome, builds) = count_metadata_directory_builds(|| {
+        DurableRegistry::build(
+            &mut draft,
+            &records,
+            &resources,
+            &stores,
+            Some(&ledger),
+            &mut diagnostics,
+        )
+    });
+
+    assert_eq!(builds, 1, "one metadata session spans the complete build");
+    let durable = outcome.expect("valid durable registry builds");
+    assert!(diagnostics.is_empty(), "{diagnostics:#?}");
+    for root_name in ["first", "second"] {
+        assert_eq!(
+            durable
+                .root_by_name(root_name)
+                .and_then(|root| root.field("value"))
+                .map(|field| field.ty),
+            Some(shared),
+            "{root_name} reaches the repeated enum shape"
+        );
+    }
+}
+
+#[test]
 fn invalid_ready_option_argument_stops_before_durable_anchor_resolution() {
     const IDS: &str = "marrow ids v0\n\
          machine-written by marrow; do not edit\n\
@@ -1135,13 +1232,25 @@ fn invariant_family_tag(invariant: GenericInvariant) -> u8 {
             let _ = (id, template, variant);
             8
         }
+        GenericInvariant::TypeIdentityCollision(id) => {
+            let _ = id;
+            9
+        }
+        GenericInvariant::TypeInstantiationKeyCollision { first, duplicate } => {
+            let _ = (first, duplicate);
+            10
+        }
+        GenericInvariant::TypeArgumentOrderViolation { owner, target } => {
+            let _ = (owner, target);
+            11
+        }
         GenericInvariant::TypeArgumentTargetMissing(target) => {
             let _ = target;
-            9
+            12
         }
         GenericInvariant::TypeArgumentParameter(param) => {
             let _ = param;
-            10
+            13
         }
         GenericInvariant::CollectionIndexMismatch {
             kind,
@@ -1149,7 +1258,11 @@ fn invariant_family_tag(invariant: GenericInvariant) -> u8 {
             draft_index,
         } => {
             let _ = (kind, cache_index, draft_index);
-            11
+            14
+        }
+        GenericInvariant::ReadyBodyShapeMismatch(id) => {
+            let _ = id;
+            15
         }
     }
 }
@@ -1647,8 +1760,10 @@ fn typed_enum_variant_owner_returns_the_selected_ready_member() {
             &mut draft,
             0,
             &[GArg::Scalar(ScalarType::Int)],
-            0,
-            "item",
+            EnumVariantSelection {
+                index: 0,
+                name: "item",
+            },
             site(),
         )
         .expect("valid enum member is proven Ready");
@@ -1663,8 +1778,10 @@ fn typed_enum_variant_owner_returns_the_selected_ready_member() {
         &mut draft,
         0,
         &[GArg::Scalar(ScalarType::Int)],
-        0,
-        "item",
+        EnumVariantSelection {
+            index: 0,
+            name: "item",
+        },
         site(),
     ));
     assert_eq!(
@@ -1686,8 +1803,10 @@ fn typed_enum_variant_owner_returns_the_selected_ready_member() {
                 &mut draft,
                 0,
                 &[GArg::Scalar(ScalarType::Int)],
-                0,
-                "item",
+                EnumVariantSelection {
+                    index: 0,
+                    name: "item",
+                },
                 site(),
             )
             .expect("control enum member is Ready");
@@ -1713,8 +1832,10 @@ fn typed_enum_variant_owner_returns_the_selected_ready_member() {
             &mut draft,
             0,
             &[GArg::Scalar(ScalarType::Int)],
-            0,
-            "item",
+            EnumVariantSelection {
+                index: 0,
+                name: "item",
+            },
             site(),
         ));
         assert_eq!(
@@ -1736,8 +1857,10 @@ fn typed_enum_variant_owner_returns_the_selected_ready_member() {
             &mut draft,
             0,
             &[GArg::Scalar(ScalarType::Int)],
-            0,
-            "item",
+            EnumVariantSelection {
+                index: 0,
+                name: "item",
+            },
             site(),
         )
         .expect("control enum member is Ready");
@@ -1755,8 +1878,10 @@ fn typed_enum_variant_owner_returns_the_selected_ready_member() {
         &mut draft,
         0,
         &[GArg::Scalar(ScalarType::Int)],
-        0,
-        "item",
+        EnumVariantSelection {
+            index: 0,
+            name: "item",
+        },
         site(),
     ));
     assert_eq!(

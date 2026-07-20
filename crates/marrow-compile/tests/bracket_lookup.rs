@@ -5,7 +5,7 @@
 //! builtins. Diagnostics are asserted by typed code and, for the teaching diagnostics
 //! this lane mints, by the governing teaching sentence.
 
-use marrow_compile::{Compiled, SourceDiagnostic, compile};
+use marrow_compile::{CompileFailure, Compiled, SourceDiagnostic, compile};
 use marrow_project::{CaptureLimits, CapturedFile, Manifest, ProjectInput};
 
 fn project(source: &str) -> ProjectInput {
@@ -27,7 +27,10 @@ fn compile_ok(source: &str) -> Compiled {
 fn compile_err(source: &str) -> Vec<SourceDiagnostic> {
     match compile(&project(source)) {
         Ok(_) => panic!("expected a diagnostic, but the program compiled"),
-        Err(diagnostics) => diagnostics,
+        Err(CompileFailure::Diagnostics(diagnostics)) => diagnostics.into_vec(),
+        Err(CompileFailure::Invariant(_)) => {
+            panic!("source-triggered compiler failures must remain diagnostics")
+        }
     }
 }
 

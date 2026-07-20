@@ -115,7 +115,10 @@ fn compile_errors(body: &str) -> Vec<marrow_compile::SourceDiagnostic> {
     .expect("capture");
     match marrow_compile::compile(&project) {
         Ok(_) => panic!("expected the checker to reject this program"),
-        Err(diagnostics) => diagnostics,
+        Err(marrow_compile::CompileFailure::Diagnostics(diagnostics)) => diagnostics.into_vec(),
+        Err(marrow_compile::CompileFailure::Invariant(_)) => {
+            panic!("source-triggered compiler failures must remain diagnostics")
+        }
     }
 }
 

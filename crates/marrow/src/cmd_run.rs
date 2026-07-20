@@ -19,7 +19,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::rc::Rc;
 
-use marrow_compile::{ExportEntry, ExportId, SourceDiagnostic, compile};
+use marrow_compile::{CompileFailure, ExportEntry, ExportId, SourceDiagnostic, compile};
 use marrow_project::{DurableIdentityId, IdentityAnchor, ProjectInput};
 use marrow_verify::{
     FunctionIndex, ImageType, Scalar, SealedEnumType, SealedRecordType, VerifiedImage,
@@ -69,55 +69,75 @@ pub(crate) fn run(rest: &[String]) -> ExitCode {
     // them into `marrow.ids` and compiles again; any other failure reports as-is.
     let compiled = match compile(&project) {
         Ok(compiled) => compiled,
-        Err(diagnostics) => match mint_missing_identities(&project, &diagnostics) {
-            MintOutcome::Minted => {
-                let recaptured = match capture_project(&PathBuf::from(".")) {
-                    Ok(project) => project,
-                    Err(failure) => {
-                        return emit(
-                            args.format,
-                            &[Record::OperationalError {
-                                code: failure.code,
-                                detail: Some(failure.message),
-                            }],
-                            &[],
-                            &[],
-                            ExitCode::FAILURE,
-                        );
-                    }
-                };
-                match compile(&recaptured) {
-                    Ok(compiled) => compiled,
-                    Err(diagnostics) => {
-                        return emit(
-                            args.format,
-                            &diagnostic_records(&diagnostics),
-                            &[],
-                            &[],
-                            ExitCode::FAILURE,
-                        );
+        Err(CompileFailure::Diagnostics(diagnostics)) => {
+            match mint_missing_identities(&project, diagnostics.as_slice()) {
+                MintOutcome::Minted => {
+                    let recaptured = match capture_project(&PathBuf::from(".")) {
+                        Ok(project) => project,
+                        Err(failure) => {
+                            return emit(
+                                args.format,
+                                &[Record::OperationalError {
+                                    code: failure.code,
+                                    detail: Some(failure.message),
+                                }],
+                                &[],
+                                &[],
+                                ExitCode::FAILURE,
+                            );
+                        }
+                    };
+                    match compile(&recaptured) {
+                        Ok(compiled) => compiled,
+                        Err(CompileFailure::Diagnostics(diagnostics)) => {
+                            return emit(
+                                args.format,
+                                &diagnostic_records(diagnostics.as_slice()),
+                                &[],
+                                &[],
+                                ExitCode::FAILURE,
+                            );
+                        }
+                        Err(CompileFailure::Invariant(_)) => {
+                            return emit(
+                                args.format,
+                                &[compiler_invariant_record()],
+                                &[],
+                                &[],
+                                ExitCode::FAILURE,
+                            );
+                        }
                     }
                 }
+                MintOutcome::NotApplicable => {
+                    return emit(
+                        args.format,
+                        &diagnostic_records(diagnostics.as_slice()),
+                        &[],
+                        &[],
+                        ExitCode::FAILURE,
+                    );
+                }
+                MintOutcome::Failed(code) => {
+                    return emit(
+                        args.format,
+                        &[Record::OperationalError { code, detail: None }],
+                        &[],
+                        &[],
+                        ExitCode::FAILURE,
+                    );
+                }
             }
-            MintOutcome::NotApplicable => {
-                return emit(
-                    args.format,
-                    &diagnostic_records(&diagnostics),
-                    &[],
-                    &[],
-                    ExitCode::FAILURE,
-                );
-            }
-            MintOutcome::Failed(code) => {
-                return emit(
-                    args.format,
-                    &[Record::OperationalError { code, detail: None }],
-                    &[],
-                    &[],
-                    ExitCode::FAILURE,
-                );
-            }
-        },
+        }
+        Err(CompileFailure::Invariant(_)) => {
+            return emit(
+                args.format,
+                &[compiler_invariant_record()],
+                &[],
+                &[],
+                ExitCode::FAILURE,
+            );
+        }
     };
 
     // Resolve the caller-supplied name to a stable id through the compiler's export
@@ -205,6 +225,13 @@ fn diagnostic_records(diagnostics: &[SourceDiagnostic]) -> Vec<Record> {
             column: diagnostic.column,
         })
         .collect()
+}
+
+fn compiler_invariant_record() -> Record {
+    Record::OperationalError {
+        code: marrow_codes::Code::CliCompilerInvariant.as_str(),
+        detail: None,
+    }
 }
 
 /// What the `run` mint pre-pass did with a compile failure.

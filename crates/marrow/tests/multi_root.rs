@@ -101,7 +101,15 @@ fn compile(source: &str, ids: &str) -> Result<marrow_compile::Compiled, Vec<Sour
         &marrow_project::CaptureLimits::DEFAULT,
     )
     .expect("capture");
-    marrow_compile::compile(&project)
+    match marrow_compile::compile(&project) {
+        Ok(compiled) => Ok(compiled),
+        Err(marrow_compile::CompileFailure::Diagnostics(diagnostics)) => {
+            Err(diagnostics.into_vec())
+        }
+        Err(marrow_compile::CompileFailure::Invariant(_)) => {
+            panic!("source-triggered compiler failures must remain diagnostics")
+        }
+    }
 }
 
 fn verify(source: &str, ids: &str) -> VerifiedImage {

@@ -14,7 +14,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use marrow_codes::Code;
-use marrow_compile::compile_with_tests;
+use marrow_compile::{CompileFailure, compile_with_tests};
 
 use crate::outcome::{Record, TestOutcome, TestRecord, TestSummary};
 use crate::project::capture_project;
@@ -54,7 +54,7 @@ pub(crate) fn test(rest: &[String]) -> ExitCode {
     // test) surfaces here, before any image is produced.
     let compiled = match compile_with_tests(&project) {
         Ok(compiled) => compiled,
-        Err(diagnostics) => {
+        Err(CompileFailure::Diagnostics(diagnostics)) => {
             let records: Vec<Record> = diagnostics
                 .iter()
                 .map(|diagnostic| Record::Diagnostic {
@@ -64,6 +64,13 @@ pub(crate) fn test(rest: &[String]) -> ExitCode {
                 })
                 .collect();
             return emit_records(args.format, &records, ExitCode::FAILURE);
+        }
+        Err(CompileFailure::Invariant(_)) => {
+            return emit_records(
+                args.format,
+                &[compiler_invariant_record()],
+                ExitCode::FAILURE,
+            );
         }
     };
 
@@ -151,6 +158,13 @@ pub(crate) fn test(rest: &[String]) -> ExitCode {
         ExitCode::SUCCESS
     };
     emit_tests(args.format, &records, &summary, exit)
+}
+
+fn compiler_invariant_record() -> Record {
+    Record::OperationalError {
+        code: Code::CliCompilerInvariant.as_str(),
+        detail: None,
+    }
 }
 
 /// Map a durable VM run into a test outcome. A run classifies by its result; a

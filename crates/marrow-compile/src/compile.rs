@@ -22,7 +22,7 @@ use crate::konst::ConstRegistry;
 use crate::lower::{
     FnLowerer, FunctionRegistry, GenericRegistry, is_reserved_builtin_name, reserved_builtin_name,
 };
-use crate::types::TypeRegistry;
+use crate::types::{GenericInvariant, TypeRegistry};
 
 /// One resolved public export: its dotted module, its item name, and the stable
 /// [`ExportId`] the image carries. This directory is the only place a human export
@@ -64,6 +64,161 @@ pub struct CompiledTests {
     pub image: EncodedImage,
     pub exports: Vec<ExportEntry>,
     pub tests: Vec<TestEntry>,
+}
+
+/// The ordered source diagnostics from a failed compilation.
+///
+/// This owner is statically nonempty. It preserves the compiler's original
+/// diagnostic allocation and exposes only immutable or consuming access.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NonEmptySourceDiagnostics(Vec<SourceDiagnostic>);
+
+impl NonEmptySourceDiagnostics {
+    fn new(diagnostics: Vec<SourceDiagnostic>) -> Option<Self> {
+        (!diagnostics.is_empty()).then_some(Self(diagnostics))
+    }
+
+    /// Borrow the diagnostics in compiler order.
+    pub fn as_slice(&self) -> &[SourceDiagnostic] {
+        &self.0
+    }
+
+    /// Iterate over the diagnostics in compiler order.
+    pub fn iter(&self) -> std::slice::Iter<'_, SourceDiagnostic> {
+        self.0.iter()
+    }
+
+    /// Recover the original diagnostic allocation in compiler order.
+    pub fn into_vec(self) -> Vec<SourceDiagnostic> {
+        self.0
+    }
+}
+
+impl AsRef<[SourceDiagnostic]> for NonEmptySourceDiagnostics {
+    fn as_ref(&self) -> &[SourceDiagnostic] {
+        self.as_slice()
+    }
+}
+
+impl<'a> IntoIterator for &'a NonEmptySourceDiagnostics {
+    type Item = &'a SourceDiagnostic;
+    type IntoIter = std::slice::Iter<'a, SourceDiagnostic>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.iter()
+    }
+}
+
+impl IntoIterator for NonEmptySourceDiagnostics {
+    type Item = SourceDiagnostic;
+    type IntoIter = std::vec::IntoIter<SourceDiagnostic>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.into_iter()
+    }
+}
+
+/// An opaque compiler-coherence failure.
+///
+/// Its cause is intentionally private. Callers may distinguish this outcome
+/// from source diagnostics but cannot classify compiler internals.
+pub struct CompileInvariant(InvariantCause);
+
+impl CompileInvariant {
+    fn retain_private_cause(&self) {
+        match &self.0 {
+            InvariantCause::Generic(cause) => {
+                let _ = cause;
+            }
+            InvariantCause::EmptyDiagnostics(stage) => {
+                let _ = stage;
+            }
+        }
+    }
+}
+
+impl std::fmt::Debug for CompileInvariant {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.retain_private_cause();
+        formatter.write_str("CompileInvariant")
+    }
+}
+
+impl std::fmt::Display for CompileInvariant {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("compiler invariant failure")
+    }
+}
+
+impl std::error::Error for CompileInvariant {}
+
+/// Why compilation produced no image.
+#[derive(Debug)]
+pub enum CompileFailure {
+    /// One or more source diagnostics blocked compilation.
+    Diagnostics(NonEmptySourceDiagnostics),
+    /// Private compiler state was incoherent.
+    Invariant(CompileInvariant),
+}
+
+impl std::fmt::Display for CompileFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Diagnostics(_) => {
+                formatter.write_str("compilation failed with source diagnostics")
+            }
+            Self::Invariant(_) => formatter.write_str("compiler invariant failure"),
+        }
+    }
+}
+
+impl std::error::Error for CompileFailure {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Diagnostics(_) => None,
+            Self::Invariant(invariant) => Some(invariant),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CompileStage {
+    Parse,
+    TypeInstantiation,
+    FunctionSignatures,
+    TemplateProof,
+    BodyLowering,
+    PostLoweringValidation,
+}
+
+#[derive(Debug)]
+enum InvariantCause {
+    Generic(GenericInvariant),
+    EmptyDiagnostics(CompileStage),
+}
+
+fn compile_failure(
+    diagnostics: Vec<SourceDiagnostic>,
+    invariant: Option<InvariantCause>,
+    stage: CompileStage,
+) -> CompileFailure {
+    if let Some(cause) = invariant {
+        return CompileFailure::Invariant(CompileInvariant(cause));
+    }
+    match NonEmptySourceDiagnostics::new(diagnostics) {
+        Some(diagnostics) => CompileFailure::Diagnostics(diagnostics),
+        None => {
+            CompileFailure::Invariant(CompileInvariant(InvariantCause::EmptyDiagnostics(stage)))
+        }
+    }
+}
+
+fn diagnostic_failure(diagnostics: Vec<SourceDiagnostic>, stage: CompileStage) -> CompileFailure {
+    compile_failure(diagnostics, None, stage)
+}
+
+fn invariant_failure(cause: GenericInvariant, stage: CompileStage) -> CompileFailure {
+    compile_failure(Vec::new(), Some(InvariantCause::Generic(cause)), stage)
 }
 
 /// Whether a compilation includes the project's `test` declarations. A production
@@ -113,9 +268,10 @@ struct LoweredFn {
 }
 
 /// Compile a captured project into canonical program-image bytes and its export
-/// directory, or return the typed source diagnostics that block it. The production
-/// path: `test` declarations are not lowered and the TEST-ENTRY table is empty.
-pub fn compile(project: &ProjectInput) -> Result<Compiled, Vec<SourceDiagnostic>> {
+/// directory, or return source diagnostics or an opaque compiler-coherence failure.
+/// The production path excludes `test` declarations and emits an empty TEST-ENTRY
+/// table.
+pub fn compile(project: &ProjectInput) -> Result<Compiled, CompileFailure> {
     let built = build(project, TestMode::Exclude)?;
     Ok(Compiled {
         image: built.image,
@@ -125,8 +281,9 @@ pub fn compile(project: &ProjectInput) -> Result<Compiled, Vec<SourceDiagnostic>
 
 /// Compile a captured project *with* its tests: the image additionally carries the
 /// test functions and the closed TEST-ENTRY table, and the returned directory pairs
-/// each test's title with its location for `marrow test`.
-pub fn compile_with_tests(project: &ProjectInput) -> Result<CompiledTests, Vec<SourceDiagnostic>> {
+/// each test's title with its location for `marrow test`. Failure uses the same
+/// source-diagnostic or opaque compiler-invariant boundary as [`compile`].
+pub fn compile_with_tests(project: &ProjectInput) -> Result<CompiledTests, CompileFailure> {
     let built = build(project, TestMode::Include)?;
     Ok(CompiledTests {
         image: built.image,
@@ -144,8 +301,8 @@ struct Built {
 }
 
 /// Compile a captured project, including or excluding its `test` declarations per
-/// `mode`, or return the typed source diagnostics that block it.
-fn build(project: &ProjectInput, mode: TestMode) -> Result<Built, Vec<SourceDiagnostic>> {
+/// `mode`, or return its total typed failure.
+fn build(project: &ProjectInput, mode: TestMode) -> Result<Built, CompileFailure> {
     let mut diagnostics = Vec::new();
 
     // Parse every module first. A parse error blocks semantic processing, mirroring
@@ -183,7 +340,7 @@ fn build(project: &ProjectInput, mode: TestMode) -> Result<Built, Vec<SourceDiag
         }
     }
     if !diagnostics.is_empty() {
-        return Err(diagnostics);
+        return Err(diagnostic_failure(diagnostics, CompileStage::Parse));
     }
 
     // The source-root-relative path is the authority for module identity. A file
@@ -339,9 +496,18 @@ fn build(project: &ProjectInput, mode: TestMode) -> Result<Built, Vec<SourceDiag
         &resources,
         &mut diagnostics,
     );
+    if let Some(invariant) = records.build_invariant() {
+        return Err(invariant_failure(
+            invariant,
+            CompileStage::TypeInstantiation,
+        ));
+    }
     if records.has_instantiation_limit() {
         diagnostics.extend(records.take_generic_diagnostics().into_ordered());
-        return Err(diagnostics);
+        return Err(diagnostic_failure(
+            diagnostics,
+            CompileStage::TypeInstantiation,
+        ));
     }
     let stores: Vec<(String, &StoreDecl)> = parsed
         .iter()
@@ -355,15 +521,23 @@ fn build(project: &ProjectInput, mode: TestMode) -> Result<Built, Vec<SourceDiag
             })
         })
         .collect();
-    let durable = DurableRegistry::build(
+    let durable = match DurableRegistry::build(
         &mut draft,
         &records,
         &resources,
         &stores,
         project.identity_ledger(),
         &mut diagnostics,
-    );
-    let Some(signatures) = FunctionRegistry::build(
+    ) {
+        Ok(durable) => durable,
+        Err(invariant) => {
+            return Err(invariant_failure(
+                invariant,
+                CompileStage::TypeInstantiation,
+            ));
+        }
+    };
+    let signatures = match FunctionRegistry::build(
         &records,
         &mut draft,
         &durable,
@@ -371,9 +545,21 @@ fn build(project: &ProjectInput, mode: TestMode) -> Result<Built, Vec<SourceDiag
         module_names,
         imports,
         &mut diagnostics,
-    ) else {
-        diagnostics.extend(records.take_generic_diagnostics().into_ordered());
-        return Err(diagnostics);
+    ) {
+        Ok(Some(signatures)) => signatures,
+        Ok(None) => {
+            diagnostics.extend(records.take_generic_diagnostics().into_ordered());
+            return Err(diagnostic_failure(
+                diagnostics,
+                CompileStage::FunctionSignatures,
+            ));
+        }
+        Err(invariant) => {
+            return Err(invariant_failure(
+                invariant,
+                CompileStage::FunctionSignatures,
+            ));
+        }
     };
     // Generic functions are templates with no image index; they are monomorphized at
     // each call site and once-checked below against their constraints.
@@ -414,7 +600,7 @@ fn build(project: &ProjectInput, mode: TestMode) -> Result<Built, Vec<SourceDiag
     // is instantiated — so an unconstrained parameter used with `==`/`<`, or any
     // other constraint violation, is caught here rather than per instantiation.
     for template in generics.templates() {
-        let Ok(outcome) = FnLowerer::check_template(
+        let outcome = match FnLowerer::check_template(
             &draft,
             &records,
             &durable,
@@ -422,9 +608,11 @@ fn build(project: &ProjectInput, mode: TestMode) -> Result<Built, Vec<SourceDiag
             &generics,
             &constants,
             template,
-        ) else {
-            diagnostics.extend(records.take_generic_diagnostics().into_ordered());
-            return Err(diagnostics);
+        ) {
+            Ok(outcome) => outcome,
+            Err(invariant) => {
+                return Err(invariant_failure(invariant, CompileStage::TemplateProof));
+            }
         };
         diagnostics.extend(outcome.diagnostics);
         records.adopt_generic_diagnostics(outcome.generic);
@@ -434,7 +622,7 @@ fn build(project: &ProjectInput, mode: TestMode) -> Result<Built, Vec<SourceDiag
     }
     if records.has_instantiation_limit() {
         diagnostics.extend(records.take_generic_diagnostics().into_ordered());
-        return Err(diagnostics);
+        return Err(diagnostic_failure(diagnostics, CompileStage::TemplateProof));
     }
 
     // Generic instances are image functions with no stable identity, indexed after
@@ -469,7 +657,7 @@ fn build(project: &ProjectInput, mode: TestMode) -> Result<Built, Vec<SourceDiag
                     let _ = function;
                 }
                 Declaration::Function(function) => {
-                    let Some(result) = FnLowerer::lower(
+                    let result = match FnLowerer::lower(
                         &mut draft,
                         &records,
                         &durable,
@@ -480,11 +668,17 @@ fn build(project: &ProjectInput, mode: TestMode) -> Result<Built, Vec<SourceDiag
                         &module.file,
                         &module.name,
                         function,
-                    ) else {
-                        if records.has_instantiation_limit() {
-                            break 'function_bodies;
+                    ) {
+                        Ok(Some(result)) => result,
+                        Ok(None) => {
+                            if records.has_instantiation_limit() {
+                                break 'function_bodies;
+                            }
+                            continue;
                         }
-                        continue;
+                        Err(invariant) => {
+                            return Err(invariant_failure(invariant, CompileStage::BodyLowering));
+                        }
                     };
                     lowered.push(LoweredFn {
                         index: result.func.index(),
@@ -567,7 +761,7 @@ fn build(project: &ProjectInput, mode: TestMode) -> Result<Built, Vec<SourceDiag
                     ));
                     continue;
                 }
-                let Some(result) = FnLowerer::lower_test(
+                let result = match FnLowerer::lower_test(
                     &mut draft,
                     &records,
                     &durable,
@@ -579,11 +773,17 @@ fn build(project: &ProjectInput, mode: TestMode) -> Result<Built, Vec<SourceDiag
                     &module.name,
                     &test.name,
                     &test.body,
-                ) else {
-                    if records.has_instantiation_limit() {
-                        break 'test_bodies;
+                ) {
+                    Ok(Some(result)) => result,
+                    Ok(None) => {
+                        if records.has_instantiation_limit() {
+                            break 'test_bodies;
+                        }
+                        continue;
                     }
-                    continue;
+                    Err(invariant) => {
+                        return Err(invariant_failure(invariant, CompileStage::BodyLowering));
+                    }
                 };
                 lowered.push(LoweredFn {
                     index: result.func.index(),
@@ -623,7 +823,7 @@ fn build(project: &ProjectInput, mode: TestMode) -> Result<Built, Vec<SourceDiag
     if diagnostics.is_empty() && !records.has_instantiation_limit() {
         while let Some((template_index, args, reserved)) = records.next_fn_pending() {
             let template = &generics.templates()[template_index];
-            let Some(result) = FnLowerer::lower_instance(
+            let result = match FnLowerer::lower_instance(
                 &mut draft,
                 &records,
                 &durable,
@@ -633,8 +833,12 @@ fn build(project: &ProjectInput, mode: TestMode) -> Result<Built, Vec<SourceDiag
                 &mut diagnostics,
                 template,
                 &args,
-            ) else {
-                break;
+            ) {
+                Ok(Some(result)) => result,
+                Ok(None) => break,
+                Err(invariant) => {
+                    return Err(invariant_failure(invariant, CompileStage::BodyLowering));
+                }
             };
             debug_assert_eq!(
                 result.func.index(),
@@ -665,9 +869,16 @@ fn build(project: &ProjectInput, mode: TestMode) -> Result<Built, Vec<SourceDiag
     let stopped_on_limit = records.has_instantiation_limit();
     diagnostics.extend(records.take_generic_diagnostics().into_ordered());
     if stopped_on_limit {
-        return Err(diagnostics);
+        return Err(diagnostic_failure(diagnostics, CompileStage::BodyLowering));
     }
-    crate::types::reject_value_cycles(&records, &structs, &resources, &mut diagnostics);
+    if let Err(invariant) =
+        crate::types::reject_value_cycles(&records, &structs, &resources, &mut diagnostics)
+    {
+        return Err(invariant_failure(
+            invariant,
+            CompileStage::PostLoweringValidation,
+        ));
+    }
 
     // The compiled subset does not admit recursion: the direct-call graph must be
     // acyclic. Reported at check time so the source carries the diagnostic. The
@@ -697,18 +908,24 @@ fn build(project: &ProjectInput, mode: TestMode) -> Result<Built, Vec<SourceDiag
     }
 
     if !diagnostics.is_empty() {
-        return Err(diagnostics);
+        return Err(diagnostic_failure(
+            diagnostics,
+            CompileStage::PostLoweringValidation,
+        ));
     }
 
     let image = draft.encode().map_err(|error| {
-        vec![SourceDiagnostic {
-            code: Code::CheckUnsupported.as_str(),
-            file: String::new(),
-            line: 1,
-            column: 1,
-            message: format!("program exceeds a representational bound: {error}"),
-            identity: None,
-        }]
+        diagnostic_failure(
+            vec![SourceDiagnostic {
+                code: Code::CheckUnsupported.as_str(),
+                file: String::new(),
+                line: 1,
+                column: 1,
+                message: format!("program exceeds a representational bound: {error}"),
+                identity: None,
+            }],
+            CompileStage::PostLoweringValidation,
+        )
     })?;
     Ok(Built {
         image,
@@ -958,7 +1175,10 @@ mod tests {
     use super::valid_export_path;
     use super::{Built, CompileFailure, CompileStage, InvariantCause, compile_failure};
     use crate::diag::SourceDiagnostic;
-    use crate::types::{GenericInvariant, ProofCloneError};
+    use crate::types::{
+        CollectionKind, GenericCacheInvariant, GenericInvariant, ProofCloneError, Reserved,
+        TypeInstKind,
+    };
     use marrow_codes::Code;
     use marrow_syntax::SourceSpan;
 
@@ -1019,6 +1239,72 @@ mod tests {
             CompileStage::BodyLowering => "body lowering",
             CompileStage::PostLoweringValidation => "post-lowering validation",
         }
+    }
+
+    fn private_generic_cause_label(cause: GenericInvariant) -> &'static str {
+        match cause {
+            GenericInvariant::ProofClone(cause) => match cause {
+                ProofCloneError::UnstableFillState => "unstable proof clone",
+                ProofCloneError::LimitOwnerNotOpen => "closed limit owner",
+            },
+            GenericInvariant::CacheState(cause) => match cause {
+                GenericCacheInvariant::ActiveBatchMissing => "active batch missing",
+                GenericCacheInvariant::ActiveBatchRange => "active batch range",
+                GenericCacheInvariant::ActiveRowCardinality => "active row cardinality",
+                GenericCacheInvariant::ActiveRowKeyMismatch => "active row key mismatch",
+                GenericCacheInvariant::ActiveFillStackNotEmpty => "active stack not empty",
+                GenericCacheInvariant::FailureIndexOutOfRange => "failure index range",
+                GenericCacheInvariant::DependentIndexOutOfRange => "dependent index range",
+                GenericCacheInvariant::StableRowInActiveBatch => "stable active row",
+                GenericCacheInvariant::IncompleteRowWithoutRefusal => "incomplete row",
+                GenericCacheInvariant::FillingReuseOutsideBatch => "orphan Filling reuse",
+                GenericCacheInvariant::SettledRowMissing => "settled row missing",
+                GenericCacheInvariant::SettledRowStillFilling => "settled row Filling",
+                GenericCacheInvariant::FillStackMismatch => "fill stack mismatch",
+            },
+            GenericInvariant::ReservedTemplateMissing(reserved) => match reserved {
+                Reserved::Option => "Option template missing",
+                Reserved::Result => "Result template missing",
+            },
+            GenericInvariant::TypeTemplateMissing(_) => "type template missing",
+            GenericInvariant::TypeArgumentCountMismatch { .. } => "type argument count mismatch",
+            GenericInvariant::TemplateKindMismatch {
+                expected, actual, ..
+            } => match (expected, actual) {
+                (TypeInstKind::Struct, TypeInstKind::Struct) => "struct is struct",
+                (TypeInstKind::Struct, TypeInstKind::Enum) => "enum where struct expected",
+                (TypeInstKind::Enum, TypeInstKind::Struct) => "struct where enum expected",
+                (TypeInstKind::Enum, TypeInstKind::Enum) => "enum is enum",
+            },
+            GenericInvariant::TypeBodyKindMismatch { body, .. } => match body {
+                TypeInstKind::Struct => "Ready struct body mismatch",
+                TypeInstKind::Enum => "Ready enum body mismatch",
+            },
+            GenericInvariant::ReadyBodyShapeMismatch(_) => "Ready body shape mismatch",
+            GenericInvariant::ReadyBodyMissing(_) => "Ready body missing",
+            GenericInvariant::ReadyEnumVariantMissing { .. } => "Ready enum variant missing",
+            GenericInvariant::TypeIdentityCollision(_) => "type identity collision",
+            GenericInvariant::TypeInstantiationKeyCollision { .. } => {
+                "type instantiation key collision"
+            }
+            GenericInvariant::TypeArgumentOrderViolation { .. } => "type argument order violation",
+            GenericInvariant::TypeArgumentTargetMissing(_) => "type argument target missing",
+            GenericInvariant::TypeArgumentParameter(_) => "concrete type argument is a parameter",
+            GenericInvariant::CollectionIndexMismatch { kind, .. } => match kind {
+                CollectionKind::List => "List owner mismatch",
+                CollectionKind::Map => "Map owner mismatch",
+            },
+        }
+    }
+
+    #[test]
+    fn private_generic_cause_classification_has_no_wildcard() {
+        assert_eq!(
+            private_generic_cause_label(GenericInvariant::ProofClone(
+                ProofCloneError::UnstableFillState
+            )),
+            "unstable proof clone"
+        );
     }
 
     /// A private compiler-coherence failure dominates source diagnostics already

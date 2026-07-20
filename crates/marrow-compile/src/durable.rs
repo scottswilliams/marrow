@@ -41,7 +41,7 @@ use marrow_syntax::{
 
 use crate::diag::{IdentityGap, SourceDiagnostic};
 use crate::scalar::ScalarType;
-use crate::types::{GArg, TypeRegistry};
+use crate::types::{GArg, GenericInvariant, TypeMetadataSession, TypeRegistry};
 
 /// The application's fixed ledger anchor path: one local application per
 /// project, so the anchor is the project itself.
@@ -348,34 +348,46 @@ impl DurableRegistry {
         stores: &[(String, &StoreDecl)],
         ledger: Option<&IdentityLedger>,
         diagnostics: &mut Vec<SourceDiagnostic>,
-    ) -> Self {
-        let mut registry = Self::default();
-        for (file, store) in stores {
-            // A repeated placement name has no unambiguous address and cannot key a second
-            // DURABLE-table row; reject it and keep the first declaration.
-            if registry.declared_roots.contains(&store.root.root) {
-                diagnostics.push(SourceDiagnostic::at(
-                    Code::CheckType.as_str(),
+    ) -> Result<Self, GenericInvariant> {
+        if stores.is_empty() {
+            return Ok(Self::default());
+        }
+        records.with_metadata_session(|metadata| {
+            let mut registry = Self::default();
+            let mut type_metadata = DurableTypeMetadata { records, metadata };
+            for (file, store) in stores {
+                // A repeated placement name has no unambiguous address and cannot key a second
+                // DURABLE-table row; reject it and keep the first declaration.
+                if registry.declared_roots.contains(&store.root.root) {
+                    diagnostics.push(SourceDiagnostic::at(
+                        Code::CheckType.as_str(),
+                        file,
+                        store.root.span,
+                        format!(
+                            "store root `^{}` is declared more than once; each store root has a \
+                             distinct name",
+                            store.root.root
+                        ),
+                    ));
+                    continue;
+                }
+                if let Some(built) = build_one(
+                    draft,
+                    &mut type_metadata,
+                    resources,
                     file,
-                    store.root.span,
-                    format!(
-                        "store root `^{}` is declared more than once; each store root has a \
-                         distinct name",
-                        store.root.root
-                    ),
-                ));
-                continue;
-            }
-            if let Some(built) =
-                build_one(draft, records, resources, file, store, ledger, diagnostics)
-            {
-                registry.declared_roots.push(built.name);
-                if let Some(root) = built.executable {
-                    registry.roots.push(root);
+                    store,
+                    ledger,
+                    diagnostics,
+                )? {
+                    registry.declared_roots.push(built.name);
+                    if let Some(root) = built.executable {
+                        registry.roots.push(root);
+                    }
                 }
             }
-        }
-        registry
+            Ok(registry)
+        })
     }
 }
 
@@ -384,6 +396,14 @@ impl DurableRegistry {
 struct BuiltRoot {
     name: String,
     executable: Option<DurableRoot>,
+}
+
+/// The immutable type owner and its one operation-local validation session.
+/// Durable construction passes them together so no store can silently open a
+/// second metadata directory while the registry remains unchanged.
+struct DurableTypeMetadata<'registry, 'session> {
+    records: &'registry TypeRegistry,
+    metadata: &'session mut TypeMetadataSession<'registry>,
 }
 
 /// Resolve, validate, and commit one `store` declaration into the draft, returning its
@@ -396,30 +416,34 @@ struct BuiltRoot {
 /// admissible.
 fn build_one(
     draft: &mut ImageDraft,
-    records: &TypeRegistry,
+    type_metadata: &mut DurableTypeMetadata<'_, '_>,
     resources: &[(String, &ResourceDecl)],
     file: &str,
     store: &StoreDecl,
     ledger: Option<&IdentityLedger>,
     diagnostics: &mut Vec<SourceDiagnostic>,
-) -> Option<BuiltRoot> {
+) -> Result<Option<BuiltRoot>, GenericInvariant> {
+    let records = type_metadata.records;
+    let metadata = &mut *type_metadata.metadata;
     if store.root.keys.len() > bounds::MAX_KEY_COLUMNS {
         diagnostics.push(unsupported(
             file,
             store.root.span,
             "a store key with more than eight columns",
         ));
-        return None;
+        return Ok(None);
     }
     // Resolve each root key column's scalar in declared tuple order. A singleton
     // root has no columns.
-    let key_scalars = resolve_key_scalars(
+    let Some(key_scalars) = resolve_key_scalars(
         file,
         store.root.span,
         &store.root.keys,
         records,
         diagnostics,
-    )?;
+    ) else {
+        return Ok(None);
+    };
     let Some(record) = records.by_name(&store.resource) else {
         diagnostics.push(SourceDiagnostic::at(
             Code::CheckType.as_str(),
@@ -427,11 +451,26 @@ fn build_one(
             store.span,
             format!("`{}` is not a resource in this project", store.resource),
         ));
-        return None;
+        return Ok(None);
     };
-    let (_, resource) = resources
+    let Some((_, resource)) = resources
         .iter()
-        .find(|(_, decl)| decl.name == store.resource)?;
+        .find(|(_, decl)| decl.name == store.resource)
+    else {
+        return Ok(None);
+    };
+
+    // Compiler-owned enum readiness is validated before the first ledger lookup.
+    // This keeps a malformed Ready body out of both contextual Unsupported
+    // diagnostics and durable identity resolution.
+    metadata.validate_durable_value_metadata(
+        record.fields.iter().map(|field| field.ty).chain(
+            record
+                .groups
+                .iter()
+                .flat_map(|group| group.fields.iter().map(|field| field.ty)),
+        ),
+    )?;
 
     // Resolve the durable graph's ledger identities. The application, the root
     // placement, its product, and each root key column anchor first; then the
@@ -472,11 +511,15 @@ fn build_one(
                 &format!("{}.{}", store.resource, field.name),
             ),
             required: field.required,
-            value: resolver.build_value_shape(records, field.ty, 1),
+            value: resolver.build_value_shape(records, metadata, field.ty, 1),
         })
         .collect();
     let groups_and_branches =
         resolver.build_extras(draft, records, &resource.members, &store.resource);
+
+    if let Some(invariant) = resolver.invariant {
+        return Err(invariant);
+    }
 
     // Resolve the root's managed indexes before appending the group/branch members
     // (an index projects only the root's identity keys and top-level fields, so it
@@ -523,7 +566,7 @@ fn build_one(
     // operation over it is not additionally mislabelled "not yet executable"
     // (the identity gap is the diagnosis, whatever the shape).
     if !resolver.complete {
-        return None;
+        return Ok(None);
     }
     draft.set_application_identity(application);
     let key_columns: Vec<KeyColumn> = key_scalars
@@ -637,10 +680,10 @@ fn build_one(
     });
 
     if !executable {
-        return Some(BuiltRoot {
+        return Ok(Some(BuiltRoot {
             name: store.root.root.clone(),
             executable: None,
-        });
+        }));
     }
     // A flat root's top-level fields map positionally to `top_field_sites`, so
     // `top_field_sites[i]` is the field-leaf site of `record.fields[i]` (both in
@@ -658,7 +701,7 @@ fn build_one(
         })
         .collect();
 
-    Some(BuiltRoot {
+    Ok(Some(BuiltRoot {
         name: store.root.root.clone(),
         executable: Some(DurableRoot {
             name: store.root.root.clone(),
@@ -672,7 +715,7 @@ fn build_one(
             branches,
             indexes: lowered_indexes,
         }),
-    })
+    }))
 }
 
 /// Resolve each key column's scalar in declared tuple order, rejecting a key type
@@ -732,6 +775,9 @@ struct IdentityResolver<'a> {
     /// been resolved, so an enum reachable from several durable fields resolves —
     /// and reports any identity gap — exactly once.
     seen_enums: BTreeSet<String>,
+    /// The first compiler-owned enum-shape coherence failure. It bypasses source
+    /// diagnostics and aborts the durable build at the compile invariant boundary.
+    invariant: Option<GenericInvariant>,
     diagnostics: &'a mut Vec<SourceDiagnostic>,
 }
 
@@ -748,6 +794,7 @@ impl<'a> IdentityResolver<'a> {
             ledger,
             complete: true,
             seen_enums: BTreeSet::new(),
+            invariant: None,
             diagnostics,
         }
     }
@@ -763,6 +810,7 @@ impl<'a> IdentityResolver<'a> {
     fn build_value_shape(
         &mut self,
         records: &TypeRegistry,
+        metadata: &mut TypeMetadataSession<'_>,
         ty: GArg,
         depth: usize,
     ) -> DurableValueShape {
@@ -782,7 +830,7 @@ impl<'a> IdentityResolver<'a> {
                 Some(info) => DurableValueShape::Struct(
                     info.fields
                         .iter()
-                        .map(|field| self.build_value_shape(records, field.ty, depth + 1))
+                        .map(|field| self.build_value_shape(records, metadata, field.ty, depth + 1))
                         .collect(),
                 ),
                 None => {
@@ -790,7 +838,7 @@ impl<'a> IdentityResolver<'a> {
                     DurableValueShape::Struct(Vec::new())
                 }
             },
-            GArg::Enum(enum_id) => self.build_enum_value_shape(records, enum_id, depth),
+            GArg::Enum(enum_id) => self.build_enum_value_shape(records, metadata, enum_id, depth),
             GArg::Collection(_) => {
                 self.reject_value(
                     "a collection stored directly in a durable field (a large collection \
@@ -819,15 +867,14 @@ impl<'a> IdentityResolver<'a> {
     fn build_enum_value_shape(
         &mut self,
         records: &TypeRegistry,
+        metadata: &mut TypeMetadataSession<'_>,
         enum_id: marrow_image::EnumId,
         depth: usize,
     ) -> DurableValueShape {
-        let Some(spelling) = records.enum_anchor_spelling(enum_id) else {
-            self.reject_value("this enum value");
-            return DurableValueShape::Scalar(ScalarType::Int.image());
-        };
-        let Some(variants) = records.enum_variants(enum_id) else {
-            self.reject_value("this enum value");
+        let Some((variants, spelling)) = self.accept_ready_shape(
+            metadata.durable_enum_shape_and_anchor(enum_id),
+            "this enum value",
+        ) else {
             return DurableValueShape::Scalar(ScalarType::Int.image());
         };
         // Resolve (and gap-report) an enum's anchors only the first time it is
@@ -844,12 +891,37 @@ impl<'a> IdentityResolver<'a> {
                 );
                 let payload = payload
                     .iter()
-                    .map(|arg| self.build_value_shape(records, *arg, depth + 1))
+                    .map(|arg| self.build_value_shape(records, metadata, *arg, depth + 1))
                     .collect();
                 DurableEnumMemberShape { id, payload }
             })
             .collect();
         DurableValueShape::Enum { sum, members }
+    }
+
+    fn accept_ready_shape<T>(
+        &mut self,
+        result: Result<Option<T>, GenericInvariant>,
+        subject: &str,
+    ) -> Option<T> {
+        match result {
+            Ok(Some(value)) => Some(value),
+            Ok(None) => {
+                self.reject_value(subject);
+                None
+            }
+            Err(invariant) => {
+                self.remember_invariant(invariant);
+                None
+            }
+        }
+    }
+
+    fn remember_invariant(&mut self, invariant: GenericInvariant) {
+        self.complete = false;
+        if self.invariant.is_none() {
+            self.invariant = Some(invariant);
+        }
     }
 
     /// Resolve one enum sum/member anchor. On the enum's first occurrence this is the
@@ -885,6 +957,9 @@ impl<'a> IdentityResolver<'a> {
     /// placeholder id — the caller discards the whole graph when `complete` is
     /// false, so the placeholder is never encoded.
     fn resolve(&mut self, kind: IdentityKind, path: &str) -> LedgerIdBytes {
+        if self.invariant.is_some() {
+            return LedgerIdBytes::from_bytes([0u8; 16]);
+        }
         let (live, retired) = match self.ledger {
             Some(ledger) => (ledger.lookup(kind, path), ledger.is_retired(kind, path)),
             None => (None, false),
@@ -1641,7 +1716,8 @@ fn unsupported(file: &str, span: SourceSpan, subject: &str) -> SourceDiagnostic 
 #[cfg(test)]
 mod generic_enum_shape_tests {
     use super::*;
-    use crate::types::MintSite;
+    use crate::types::{MintSite, TypeInstId, TypeInstKind};
+    use marrow_syntax::{Declaration, parse_source};
 
     /// A committed reserved enum reaches the durable-shape owner
     /// with its exact member and payload layout. Missing ledger rows may make the
@@ -1672,7 +1748,13 @@ mod generic_enum_shape_tests {
         let mut diagnostics = Vec::new();
         let mut resolver =
             IdentityResolver::new("src/main.mw", SourceSpan::default(), None, &mut diagnostics);
-        let shape = resolver.build_enum_value_shape(&records, option, 0);
+        let shape = records
+            .with_metadata_session(|metadata| {
+                Ok::<_, GenericInvariant>(
+                    resolver.build_enum_value_shape(&records, metadata, option, 0),
+                )
+            })
+            .expect("the Ready Option metadata session opens");
         let DurableValueShape::Enum { members, .. } = shape else {
             panic!("a Ready Option remains enum-shaped")
         };
@@ -1715,15 +1797,108 @@ mod generic_enum_shape_tests {
         let mut resolver =
             IdentityResolver::new("src/main.mw", SourceSpan::default(), None, &mut diagnostics);
 
-        assert_eq!(
-            resolver.build_enum_value_shape(&records, unavailable, 0),
-            DurableValueShape::Scalar(ScalarType::Int.image())
-        );
+        let shape = records
+            .with_metadata_session(|metadata| {
+                Ok::<_, GenericInvariant>(resolver.build_enum_value_shape(
+                    &records,
+                    metadata,
+                    unavailable,
+                    0,
+                ))
+            })
+            .expect("the unavailable enum metadata session opens");
+        assert_eq!(shape, DurableValueShape::Scalar(ScalarType::Int.image()));
         assert!(!resolver.complete);
         assert!(resolver.seen_enums.is_empty());
         drop(resolver);
         assert_eq!(diagnostics.len(), 1);
         assert_eq!(diagnostics[0].code, Code::CheckUnsupported.as_str());
         assert!(diagnostics[0].identity.is_none());
+    }
+
+    #[test]
+    fn ready_enum_with_struct_body_is_not_contextualized_or_resolved() {
+        let mut draft = ImageDraft::new();
+        let mut build_diagnostics = Vec::new();
+        let records =
+            TypeRegistry::build(&mut draft, &[], &[], &[], &[], &[], &mut build_diagnostics);
+        let option = records
+            .instantiate_reserved_option(
+                &mut draft,
+                GArg::Scalar(ScalarType::Int),
+                MintSite {
+                    file: "src/main.mw",
+                    span: SourceSpan::default(),
+                },
+            )
+            .expect("Option row mints ready");
+        let expected = GenericInvariant::TypeBodyKindMismatch {
+            id: TypeInstId::Enum(option),
+            body: TypeInstKind::Struct,
+        };
+        let mut diagnostics = Vec::new();
+        let mut resolver =
+            IdentityResolver::new("src/main.mw", SourceSpan::default(), None, &mut diagnostics);
+
+        assert!(
+            resolver
+                .accept_ready_shape::<()>(Err(expected), "this enum value")
+                .is_none()
+        );
+        assert_eq!(resolver.invariant, Some(expected));
+        assert!(resolver.seen_enums.is_empty());
+        drop(resolver);
+        assert!(diagnostics.is_empty());
+    }
+
+    #[test]
+    fn durable_typed_error_stops_before_identity_or_draft_effects() {
+        let parsed = parse_source(
+            r#"resource Holder {
+    required value: Option<int>
+}
+
+store ^holders[id: int]: Holder
+"#,
+        );
+        assert!(parsed.diagnostics.is_empty());
+        let resource = parsed
+            .file
+            .declarations
+            .iter()
+            .find_map(|declaration| match declaration {
+                Declaration::Resource(resource) => Some(resource),
+                _ => None,
+            })
+            .expect("resource parses");
+        let resources = vec![("src/main.mw".to_string(), resource)];
+        let mut draft = ImageDraft::new();
+        let mut diagnostics = Vec::new();
+        let records =
+            TypeRegistry::build(&mut draft, &[], &[], &[], &[], &resources, &mut diagnostics);
+        assert!(diagnostics.is_empty());
+        let option = match records.by_name("Holder").expect("record exists").fields[0].ty {
+            GArg::Enum(id) => id,
+            _ => panic!("resource field resolves to Option"),
+        };
+        let expected = GenericInvariant::TypeBodyKindMismatch {
+            id: TypeInstId::Enum(option),
+            body: TypeInstKind::Struct,
+        };
+        let before = draft.encode().expect("seeded draft encodes");
+        let mut resolver =
+            IdentityResolver::new("src/main.mw", SourceSpan::default(), None, &mut diagnostics);
+        assert!(
+            resolver
+                .accept_ready_shape::<()>(Err(expected), "this durable value")
+                .is_none()
+        );
+        assert_eq!(resolver.invariant, Some(expected));
+        assert!(resolver.seen_enums.is_empty());
+        drop(resolver);
+        assert!(diagnostics.is_empty());
+        let after = draft.encode().expect("rejected draft still encodes");
+        assert_eq!(after.bytes, before.bytes);
+        assert_eq!(after.image_id, before.image_id);
     }
 }

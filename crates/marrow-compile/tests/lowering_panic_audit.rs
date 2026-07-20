@@ -19,6 +19,38 @@ use marrow_compile::{SourceDiagnostic, compile};
 use marrow_project::{CaptureLimits, CapturedFile, Manifest, ProjectInput};
 
 const LOWERING_SOURCE: &str = include_str!("../src/lower.rs");
+const TEST_ONLY_BOUNDARY: &str = "\n#[cfg(test)]\nmod generic_cache_boundary_tests {";
+
+fn production_lowering_source() -> &'static str {
+    let code = mask_comments_and_literals(LOWERING_SOURCE);
+    let boundaries: Vec<usize> = code
+        .windows(TEST_ONLY_BOUNDARY.len())
+        .enumerate()
+        .filter_map(|(index, window)| (window == TEST_ONLY_BOUNDARY.as_bytes()).then_some(index))
+        .collect();
+    let [boundary] = boundaries.as_slice() else {
+        panic!("lower.rs keeps one explicit generic-cache test-module boundary")
+    };
+    let open = code[*boundary..]
+        .iter()
+        .position(|byte| *byte == b'{')
+        .map(|offset| *boundary + offset)
+        .expect("the generic-cache test module has an opening delimiter");
+    let close = matching_delimiter(&code, open)
+        .expect("the generic-cache test module has a matching closing delimiter");
+    assert!(
+        code[close + 1..]
+            .iter()
+            .all(|byte| byte.is_ascii_whitespace()),
+        "only whitespace or comments may follow the generic-cache test module"
+    );
+    let test_module = &LOWERING_SOURCE[*boundary..=close];
+    assert!(
+        test_module.contains("fn bare_enum_without_ready_variants_fails_without_unwinding()"),
+        "the excluded suffix must remain the generic-cache test module"
+    );
+    &LOWERING_SOURCE[..*boundary]
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum InvariantClass {
@@ -541,7 +573,7 @@ panic!("live after literals");
 
 #[test]
 fn every_explicit_lowering_panic_is_allowlisted() {
-    let sites = explicit_panic_sites(LOWERING_SOURCE);
+    let sites = explicit_panic_sites(production_lowering_source());
     let expected_total: usize = ALLOWED_PANIC_SITES
         .iter()
         .map(|allowed| allowed.multiplicity)
@@ -609,6 +641,13 @@ fn every_explicit_lowering_panic_is_allowlisted() {
     );
 }
 
+#[test]
+fn explicit_panic_audit_excludes_only_the_pinned_test_module() {
+    let production = production_lowering_source();
+    assert!(!production.contains("mod generic_cache_boundary_tests"));
+    assert!(LOWERING_SOURCE[production.len()..].starts_with(TEST_ONLY_BOUNDARY));
+}
+
 fn project(source: &str) -> ProjectInput {
     let manifest = Manifest::parse("edition = \"2026\"\n").expect("valid manifest");
     let files = vec![CapturedFile::new(
@@ -623,12 +662,15 @@ fn project(source: &str) -> ProjectInput {
 fn rejects_with(source: &str, code: &str) {
     match compile(&project(source)) {
         Ok(_) => panic!("expected `{code}`, but the program compiled:\n{source}"),
-        Err(diagnostics) => assert!(
+        Err(marrow_compile::CompileFailure::Diagnostics(diagnostics)) => assert!(
             diagnostics
                 .iter()
                 .any(|d: &SourceDiagnostic| d.code == code),
             "expected `{code}` for:\n{source}\ngot {diagnostics:#?}",
         ),
+        Err(marrow_compile::CompileFailure::Invariant(_)) => {
+            panic!("source-triggered compiler failures must remain diagnostics")
+        }
     }
 }
 

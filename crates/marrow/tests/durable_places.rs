@@ -67,7 +67,12 @@ fn compile_error_codes(source: &str) -> Vec<String> {
     .expect("capture");
     match marrow_compile::compile(&project) {
         Ok(_) => Vec::new(),
-        Err(diagnostics) => diagnostics.iter().map(|d| d.code.to_string()).collect(),
+        Err(marrow_compile::CompileFailure::Diagnostics(diagnostics)) => {
+            diagnostics.iter().map(|d| d.code.to_string()).collect()
+        }
+        Err(marrow_compile::CompileFailure::Invariant(_)) => {
+            panic!("source-triggered compiler failures must remain diagnostics")
+        }
     }
 }
 

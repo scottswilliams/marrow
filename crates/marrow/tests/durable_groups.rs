@@ -523,8 +523,15 @@ fn compile_diagnostics(body: &str) -> Vec<SourceDiagnostic> {
         &marrow_project::CaptureLimits::DEFAULT,
     )
     .expect("capture");
-    marrow_compile::compile(&project)
-        .expect_err("a group-leaf-shaped projection over a stored field must be rejected")
+    match marrow_compile::compile(&project) {
+        Ok(_) => {
+            panic!("a group-leaf-shaped projection over a stored field must be rejected")
+        }
+        Err(marrow_compile::CompileFailure::Diagnostics(diagnostics)) => diagnostics.into_vec(),
+        Err(marrow_compile::CompileFailure::Invariant(_)) => {
+            panic!("source-triggered compiler failures must remain diagnostics")
+        }
+    }
 }
 
 /// A selector chained off a stored durable field — `^books[shelf, id].title.sub` — is

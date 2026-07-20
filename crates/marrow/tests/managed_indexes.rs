@@ -100,8 +100,19 @@ fn verify_source(source: &str, ids: &str) -> Result<marrow_verify::VerifiedImage
         &marrow_project::CaptureLimits::DEFAULT,
     )
     .expect("capture");
-    let compiled = marrow_compile::compile(&project)
-        .map_err(|diags| diags.iter().map(|d| d.code).collect::<Vec<_>>().join(","))?;
+    let compiled = match marrow_compile::compile(&project) {
+        Ok(compiled) => compiled,
+        Err(marrow_compile::CompileFailure::Diagnostics(diagnostics)) => {
+            return Err(diagnostics
+                .iter()
+                .map(|diagnostic| diagnostic.code)
+                .collect::<Vec<_>>()
+                .join(","));
+        }
+        Err(marrow_compile::CompileFailure::Invariant(_)) => {
+            return Err("compiler invariant failure".to_string());
+        }
+    };
     marrow_verify::verify(&compiled.image.bytes).map_err(|r| format!("verify: {r:?}"))
 }
 
@@ -121,7 +132,13 @@ fn compile_codes(source: &str, ids: &str) -> Vec<&'static str> {
     .expect("capture");
     match marrow_compile::compile(&project) {
         Ok(_) => Vec::new(),
-        Err(diags) => diags.iter().map(|d| d.code).collect(),
+        Err(marrow_compile::CompileFailure::Diagnostics(diagnostics)) => diagnostics
+            .iter()
+            .map(|diagnostic| diagnostic.code)
+            .collect(),
+        Err(marrow_compile::CompileFailure::Invariant(_)) => {
+            panic!("source-triggered compiler failures must remain diagnostics")
+        }
     }
 }
 

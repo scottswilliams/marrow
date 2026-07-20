@@ -153,12 +153,16 @@ fn pipeline(ops: &str) -> Stage {
     )
     .expect("capture");
     match marrow_compile::compile_with_tests(&project) {
-        Err(diagnostics) => Stage::CheckerRejected(
+        Err(marrow_compile::CompileFailure::Diagnostics(diagnostics)) => Stage::CheckerRejected(
             diagnostics
+                .as_slice()
                 .first()
                 .expect("a rejection carries at least one diagnostic")
                 .code,
         ),
+        Err(marrow_compile::CompileFailure::Invariant(_)) => {
+            panic!("source-triggered compiler failures must remain diagnostics")
+        }
         Ok(compiled) => match marrow_verify::verify(&compiled.image.bytes) {
             Err(rejection) => Stage::VerifyRejected {
                 code: rejection.code(),

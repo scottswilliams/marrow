@@ -4,7 +4,7 @@
 //! The durable graph still admits a single store this step; a second resource is a
 //! value type, not a second root.
 
-use marrow_compile::{SourceDiagnostic, compile};
+use marrow_compile::{CompileFailure, compile};
 use marrow_project::{CaptureLimits, CapturedFile, Manifest, ProjectInput};
 
 /// The identity ledger for a single `^ledgers` store over the `Ledger` resource. A
@@ -75,8 +75,13 @@ pub fn make(): string {
     return "x"
 }
 "#;
-    let diagnostics: Vec<SourceDiagnostic> =
-        compile(&project(source, None)).expect_err("a duplicate resource name must be rejected");
+    let diagnostics = match compile(&project(source, None)) {
+        Ok(_) => panic!("a duplicate resource name must be rejected"),
+        Err(CompileFailure::Diagnostics(diagnostics)) => diagnostics,
+        Err(CompileFailure::Invariant(_)) => {
+            panic!("source-triggered compiler failures must remain diagnostics")
+        }
+    };
     let hit = diagnostics
         .iter()
         .find(|d| d.code == "check.type")

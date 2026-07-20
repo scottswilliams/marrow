@@ -15,7 +15,10 @@ mod lower;
 mod scalar;
 mod types;
 
-pub use compile::{Compiled, CompiledTests, ExportEntry, TestEntry, compile, compile_with_tests};
+pub use compile::{
+    CompileFailure, CompileInvariant, Compiled, CompiledTests, ExportEntry,
+    NonEmptySourceDiagnostics, TestEntry, compile, compile_with_tests,
+};
 pub use diag::{IdentityGap, SourceDiagnostic};
 pub use marrow_image::ExportId;
 pub use scalar::ScalarType;

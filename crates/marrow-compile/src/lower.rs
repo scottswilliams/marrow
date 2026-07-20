@@ -57,8 +57,10 @@ use crate::durable::DurableRegistry;
 use crate::konst::{ConstRegistry, ConstScalar};
 use crate::scalar::ScalarType;
 use crate::types::{
-    CollSpec, GArg, GenericDiagnostics, MintSite, NominalId, OPTION_NONE, OPTION_SOME, RESULT_ERR,
-    RESULT_OK, ResolveRefusal, SupportSet, TypeConstraint, TypeInstId, TypeRegistry,
+    CollSpec, EnumVariantSelection, GArg, GenericDiagnostics, GenericInvariant as LowerInvariant,
+    MintSite, NominalId, OPTION_NONE, OPTION_SOME, ProductFieldProjection, RESULT_ERR, RESULT_OK,
+    ReservedEnumArgs, ResolveError, ResolveRefusal, StaticNamedType, StructFieldProjection,
+    SupportSet, TypeConstraint, TypeInstId, TypeMetadataSession, TypeRegistry,
 };
 
 /// A lowered value type: a scalar, a nominal int type, or the project record,
@@ -245,6 +247,26 @@ impl LTy {
             LTy::Identity { optional, .. } => ("Id(^root)".to_string(), optional),
         };
         if optional { format!("{base}?") } else { base }
+    }
+
+    fn spelling_in(
+        self,
+        records: &TypeRegistry,
+        metadata: &mut TypeMetadataSession<'_>,
+    ) -> Result<String, LowerInvariant> {
+        let (base, optional) = match self {
+            LTy::Scalar { scalar, optional } => (scalar.spelling().to_string(), optional),
+            LTy::Nominal { id, optional } => (records.nominal(id).name.clone(), optional),
+            LTy::Record { optional, .. } => ("record".to_string(), optional),
+            LTy::Struct { ty, optional } => (metadata.garg_spelling(GArg::Struct(ty))?, optional),
+            LTy::Enum { ty, optional } => (metadata.garg_spelling(GArg::Enum(ty))?, optional),
+            LTy::Collection { idx, optional } => {
+                (metadata.garg_spelling(GArg::Collection(idx))?, optional)
+            }
+            LTy::Param { index, optional } => (format!("type parameter #{index}"), optional),
+            LTy::Identity { optional, .. } => ("Id(^root)".to_string(), optional),
+        };
+        Ok(if optional { format!("{base}?") } else { base })
     }
 
     /// The bare nominal identity, if this is one.
@@ -612,7 +634,7 @@ enum Flow {
 }
 
 /// The only two outcomes of a finite positional walk: completed lowering with its
-/// deferred `break` jumps, or terminal rejection by the shared instantiation owner.
+/// deferred `break` jumps, or terminal rejection by the shared generic owner.
 enum PositionalWalkOutcome {
     Complete(Vec<usize>),
     Rejected,
@@ -1137,6 +1159,8 @@ pub(crate) struct TemplateProofOutcome {
     pub(crate) generic: GenericDiagnostics,
 }
 
+type LowerResult = Result<Option<Lowered>, LowerInvariant>;
+
 impl FunctionRegistry {
     /// Resolve every function's signature in declaration order. The i-th function
     /// takes image index `i`, matching the order [`FnLowerer::lower`] adds them.
@@ -1149,7 +1173,7 @@ impl FunctionRegistry {
         modules: BTreeSet<String>,
         imports: BTreeMap<String, Vec<(String, String)>>,
         diagnostics: &mut Vec<SourceDiagnostic>,
-    ) -> Option<Self> {
+    ) -> Result<Option<Self>, LowerInvariant> {
         let mut sigs = Vec::with_capacity(functions.len());
         let mut accepted = true;
         // Only monomorphic functions take an image index and enter the signature
@@ -1171,11 +1195,12 @@ impl FunctionRegistry {
                 };
                 match param_type(records, draft, durable, &param.ty, TypeEnv::EMPTY, site) {
                     Ok(ty) => params.push(ty),
-                    Err(ResolveRefusal::Unsupported) => {
+                    Err(ResolveError::Refusal(ResolveRefusal::Unsupported)) => {
                         diagnostics.push(unsupported(file, param.ty.span(), "this parameter type"));
                         accepted = false;
                     }
-                    Err(ResolveRefusal::Limit) => accepted = false,
+                    Err(ResolveError::Refusal(ResolveRefusal::Limit)) => accepted = false,
+                    Err(ResolveError::Invariant(invariant)) => return Err(invariant),
                 }
             }
             let ret = match &function.return_type {
@@ -1186,7 +1211,7 @@ impl FunctionRegistry {
                         span: annotation.span(),
                     };
                     match resolve_type(records, draft, durable, annotation, TypeEnv::EMPTY, site) {
-                        Err(ResolveRefusal::Unsupported) => {
+                        Err(ResolveError::Refusal(ResolveRefusal::Unsupported)) => {
                             diagnostics.push(unsupported(
                                 file,
                                 annotation.span(),
@@ -1195,10 +1220,11 @@ impl FunctionRegistry {
                             accepted = false;
                             RetType::Unit
                         }
-                        Err(ResolveRefusal::Limit) => {
+                        Err(ResolveError::Refusal(ResolveRefusal::Limit)) => {
                             accepted = false;
                             RetType::Unit
                         }
+                        Err(ResolveError::Invariant(invariant)) => return Err(invariant),
                         Ok(ty) => RetType::Value(ty),
                     }
                 }
@@ -1213,11 +1239,11 @@ impl FunctionRegistry {
             });
             index += 1;
         }
-        accepted.then_some(Self {
+        Ok(accepted.then_some(Self {
             sigs,
             modules,
             imports,
-        })
+        }))
     }
 
     /// The number of monomorphic functions, which is the number of image FUNCTIONS
@@ -1478,6 +1504,7 @@ pub(crate) struct FnLowerer<'a> {
     /// Whether this is a function or a test body; gates the owned `assert`.
     body_kind: BodyKind,
     failed: bool,
+    invariant: Option<LowerInvariant>,
 }
 
 impl<'a> FnLowerer<'a> {
@@ -1524,6 +1551,7 @@ impl<'a> FnLowerer<'a> {
             ret,
             body_kind,
             failed: false,
+            invariant: None,
         }
     }
 
@@ -1544,7 +1572,7 @@ impl<'a> FnLowerer<'a> {
         file: &'a str,
         module: &'a str,
         function: &FunctionDecl,
-    ) -> Option<Lowered> {
+    ) -> LowerResult {
         Self::lower_with_env(
             draft,
             records,
@@ -1577,7 +1605,7 @@ impl<'a> FnLowerer<'a> {
         diagnostics: &'a mut Vec<SourceDiagnostic>,
         template: &'a GenericTemplate<'a>,
         args: &[GArg],
-    ) -> Option<Lowered> {
+    ) -> LowerResult {
         let type_env = template
             .type_params
             .iter()
@@ -1619,7 +1647,7 @@ impl<'a> FnLowerer<'a> {
         generics: &GenericRegistry,
         consts: &ConstRegistry,
         template: &GenericTemplate,
-    ) -> Result<TemplateProofOutcome, ResolveRefusal> {
+    ) -> Result<TemplateProofOutcome, LowerInvariant> {
         let file = &template.file;
         let module = &template.module;
         // Clone the registry and the in-progress draft together so the template body
@@ -1652,7 +1680,7 @@ impl<'a> FnLowerer<'a> {
             template.decl,
             type_env,
             LowerMode::Template,
-        );
+        )?;
         let generic = check_records.take_generic_diagnostics();
         Ok(TemplateProofOutcome {
             diagnostics,
@@ -1678,7 +1706,7 @@ impl<'a> FnLowerer<'a> {
         function: &FunctionDecl,
         type_env: Vec<TypeParamSlot>,
         mode: LowerMode,
-    ) -> Option<Lowered> {
+    ) -> LowerResult {
         let ret = {
             let env = TypeEnv { params: &type_env };
             match &function.return_type {
@@ -1690,15 +1718,16 @@ impl<'a> FnLowerer<'a> {
                     };
                     match resolve_type(records, draft, durable, annotation, env, site) {
                         Ok(ty) => RetType::Value(ty),
-                        Err(ResolveRefusal::Unsupported) => {
+                        Err(ResolveError::Refusal(ResolveRefusal::Unsupported)) => {
                             diagnostics.push(unsupported(
                                 file,
                                 annotation.span(),
                                 "this return type",
                             ));
-                            return None;
+                            return Ok(None);
                         }
-                        Err(ResolveRefusal::Limit) => return None,
+                        Err(ResolveError::Refusal(ResolveRefusal::Limit)) => return Ok(None),
+                        Err(ResolveError::Invariant(invariant)) => return Err(invariant),
                     }
                 }
             }
@@ -1730,8 +1759,8 @@ impl<'a> FnLowerer<'a> {
                 lowerer.fail(reserved_builtin_name(file, function.span, &param.name));
             }
             let Some(ty) = lowerer.param_type(&param.ty) else {
-                if lowerer.records.has_instantiation_limit() {
-                    return None;
+                if lowerer.terminal_rejection() {
+                    return lowerer.finish(&function.name, Vec::new(), ImageType::Unit);
                 }
                 continue;
             };
@@ -1755,8 +1784,8 @@ impl<'a> FnLowerer<'a> {
             }
         }
 
-        if lowerer.records.has_instantiation_limit() {
-            return None;
+        if lowerer.terminal_rejection() {
+            return lowerer.finish(&function.name, Vec::new(), ImageType::Unit);
         }
 
         let body_flow = lowerer.lower_block(&function.body);
@@ -1773,7 +1802,9 @@ impl<'a> FnLowerer<'a> {
                     "not all paths return a value".to_string(),
                 ));
             }
-            (Flow::Rejected, _) => return None,
+            (Flow::Rejected, _) => {
+                return lowerer.finish(&function.name, Vec::new(), ImageType::Unit);
+            }
         }
 
         let params: Vec<ImageType> = function
@@ -1810,7 +1841,7 @@ impl<'a> FnLowerer<'a> {
         module: &'a str,
         name: &str,
         body: &Block,
-    ) -> Option<Lowered> {
+    ) -> LowerResult {
         let mut lowerer = FnLowerer::new(
             draft,
             records,
@@ -1829,7 +1860,7 @@ impl<'a> FnLowerer<'a> {
         match lowerer.lower_block(body) {
             Flow::Fallthrough => lowerer.push(Instr::Return, body.span),
             Flow::Terminates => {}
-            Flow::Rejected => return None,
+            Flow::Rejected => return lowerer.finish(name, Vec::new(), ImageType::Unit),
         }
         lowerer.finish(name, Vec::new(), ImageType::Unit)
     }
@@ -1837,9 +1868,12 @@ impl<'a> FnLowerer<'a> {
     /// Intern the function name and source, add the lowered function to the draft,
     /// and return its identity — the shared tail of function and test lowering. A
     /// body that failed to lower returns `None`.
-    fn finish(mut self, name: &str, params: Vec<ImageType>, ret_ref: ImageType) -> Option<Lowered> {
-        if self.failed || self.records.has_instantiation_limit() {
-            return None;
+    fn finish(mut self, name: &str, params: Vec<ImageType>, ret_ref: ImageType) -> LowerResult {
+        if let Some(invariant) = self.invariant {
+            return Err(invariant);
+        }
+        if self.failed || self.terminal_rejection() {
+            return Ok(None);
         }
         let name_id = self.draft.intern_string(name);
         let source_id = self.draft.intern_string(self.file);
@@ -1856,14 +1890,14 @@ impl<'a> FnLowerer<'a> {
             code,
             spans,
         });
-        Some(Lowered {
+        Ok(Some(Lowered {
             func: func_id,
             callees: std::mem::take(&mut self.calls),
             unwrapped_mutations: std::mem::take(&mut self.unwrapped_mutations),
             unwrapped_calls: std::mem::take(&mut self.unwrapped_calls),
             has_direct_durable_op,
             owns_transaction,
-        })
+        }))
     }
 
     // --- emission helpers ---
@@ -1939,10 +1973,54 @@ impl<'a> FnLowerer<'a> {
         self.failed = true;
     }
 
-    fn reject_resolution(&mut self, refusal: ResolveRefusal, span: SourceSpan, subject: &str) {
-        match refusal {
-            ResolveRefusal::Limit => self.failed = true,
-            ResolveRefusal::Unsupported => self.fail(unsupported(self.file, span, subject)),
+    fn reject_resolution(&mut self, error: ResolveError, span: SourceSpan, subject: &str) {
+        match error {
+            ResolveError::Refusal(ResolveRefusal::Limit) => self.failed = true,
+            ResolveError::Refusal(ResolveRefusal::Unsupported) => {
+                self.fail(unsupported(self.file, span, subject));
+            }
+            ResolveError::Invariant(invariant) => {
+                if self.invariant.is_none() {
+                    self.invariant = Some(invariant);
+                }
+                self.failed = true;
+            }
+        }
+    }
+
+    /// Whether lowering must stop before any later handler, interning, patching, or
+    /// emission. Both the shared instantiation limit and the first private generic
+    /// invariant are terminal for the current body.
+    fn terminal_rejection(&self) -> bool {
+        self.records.has_instantiation_limit() || self.invariant.is_some()
+    }
+
+    fn accept_resolution<T>(
+        &mut self,
+        result: Result<T, ResolveError>,
+        span: SourceSpan,
+        subject: &str,
+    ) -> Option<T> {
+        match result {
+            Ok(value) => Some(value),
+            Err(error) => {
+                self.reject_resolution(error, span, subject);
+                None
+            }
+        }
+    }
+
+    fn reject_unification(&mut self, error: UnifyError, span: SourceSpan, subject: &str) {
+        match error {
+            UnifyError::Mismatch(message) => self.fail(SourceDiagnostic::at(
+                Code::CheckType.as_str(),
+                self.file,
+                span,
+                message,
+            )),
+            UnifyError::Invariant(invariant) => {
+                self.reject_resolution(ResolveError::Invariant(invariant), span, subject);
+            }
         }
     }
 
@@ -1978,7 +2056,7 @@ impl<'a> FnLowerer<'a> {
     // --- statements ---
 
     fn lower_block(&mut self, block: &Block) -> Flow {
-        if self.records.has_instantiation_limit() {
+        if self.terminal_rejection() {
             return Flow::Rejected;
         }
         let mark = self.locals.len();
@@ -1999,7 +2077,7 @@ impl<'a> FnLowerer<'a> {
                 break;
             }
             flow = self.lower_statement(statement);
-            if flow == Flow::Rejected || self.records.has_instantiation_limit() {
+            if flow == Flow::Rejected || self.terminal_rejection() {
                 flow = Flow::Rejected;
                 break;
             }
@@ -2656,6 +2734,9 @@ impl<'a> FnLowerer<'a> {
         branches: &[(&Expression, &Block)],
         else_block: Option<&Block>,
     ) -> Flow {
+        if self.terminal_rejection() {
+            return Flow::Rejected;
+        }
         let mut end_jumps: Vec<usize> = Vec::new();
         let mut all_terminate = else_block.is_some();
 
@@ -2664,7 +2745,7 @@ impl<'a> FnLowerer<'a> {
             // block: a sparse-field set through `p` there lowers to the strict form.
             let guard_path = self.exists_guard_path(cond);
             if self.lower_condition(cond).is_none() {
-                return if self.records.has_instantiation_limit() {
+                return if self.terminal_rejection() {
                     Flow::Rejected
                 } else {
                     Flow::Fallthrough
@@ -2740,6 +2821,9 @@ impl<'a> FnLowerer<'a> {
         else_ifs: &[ElseIf],
         else_block: Option<&Block>,
     ) -> Flow {
+        if self.terminal_rejection() {
+            return Flow::Rejected;
+        }
         let mark = self.locals.len();
         let present_mark = self.present_places.len();
 
@@ -2750,7 +2834,7 @@ impl<'a> FnLowerer<'a> {
         let Some(fail_jumps) = self.lower_if_const_head(bindings, condition) else {
             self.present_places.truncate(present_mark);
             self.locals.truncate(mark);
-            return if self.records.has_instantiation_limit() {
+            return if self.terminal_rejection() {
                 Flow::Rejected
             } else {
                 Flow::Fallthrough
@@ -2902,12 +2986,15 @@ impl<'a> FnLowerer<'a> {
         value: &Expression,
         else_block: &Block,
     ) -> Flow {
+        if self.terminal_rejection() {
+            return Flow::Rejected;
+        }
         let mark = self.locals.len();
         let present_mark = self.present_places.len();
         let Some(fail_jumps) = self.lower_if_const_head(&[(name, annotation, value)], None) else {
             self.locals.truncate(mark);
             self.present_places.truncate(present_mark);
-            return if self.records.has_instantiation_limit() {
+            return if self.terminal_rejection() {
                 Flow::Rejected
             } else {
                 Flow::Fallthrough
@@ -2967,8 +3054,11 @@ impl<'a> FnLowerer<'a> {
     /// by an earlier arm, so only its own member reaches it, which also makes its
     /// positional payload reads (`EnumPayloadGet`) sound.
     fn lower_match(&mut self, scrutinee: &Expression, arms: &[MatchArm], span: SourceSpan) -> Flow {
+        if self.terminal_rejection() {
+            return Flow::Rejected;
+        }
         let Some(scrut_ty) = self.lower_expr(scrutinee) else {
-            return if self.records.has_instantiation_limit() {
+            return if self.terminal_rejection() {
                 Flow::Rejected
             } else {
                 Flow::Fallthrough
@@ -2991,11 +3081,29 @@ impl<'a> FnLowerer<'a> {
         // user `enum`, a generic enum instantiation, and the reserved `Option`/
         // `Result` (themselves generic enums) all supply their variants through the
         // one enum-shape owner.
+        let variants = match self.records.enum_variants(enum_id) {
+            Ok(Some(variants)) => variants,
+            Ok(None) => {
+                self.reject_resolution(
+                    ResolveError::Invariant(LowerInvariant::ReadyBodyMissing(TypeInstId::Enum(
+                        enum_id,
+                    ))),
+                    scrutinee.span(),
+                    "this enum match",
+                );
+                return Flow::Rejected;
+            }
+            Err(invariant) => {
+                self.reject_resolution(
+                    ResolveError::Invariant(invariant),
+                    scrutinee.span(),
+                    "this enum match",
+                );
+                return Flow::Rejected;
+            }
+        };
         let enum_name = scrut_ty.spelling(self.records);
-        let variants: Vec<(String, Vec<LTy>)> = self
-            .records
-            .enum_variants(enum_id)
-            .expect("a bare enum value resolves to enum variants")
+        let variants: Vec<(String, Vec<LTy>)> = variants
             .into_iter()
             .map(|(name, payload)| (name, payload.into_iter().map(garg_to_lty).collect()))
             .collect();
@@ -3582,9 +3690,13 @@ impl<'a> FnLowerer<'a> {
         };
         let key_ty = target.key_ty;
         // The frozen keys materialize as one `List[K]`; mint (deduplicated) that row.
-        let list_ty = self
+        let result = self
             .records
             .instantiate_list(self.draft, GArg::Scalar(key_ty));
+        let Some(list_ty) = self.accept_resolution(result, span, "this bounded traversal result")
+        else {
+            return Flow::Rejected;
+        };
 
         // Evaluate the ancestor key-path (root-first) then the inclusive `from` key, so
         // the opcode pops `from` (top) then the ancestor path. Keys are captured once,
@@ -3819,9 +3931,12 @@ impl<'a> FnLowerer<'a> {
             return Flow::Fallthrough;
         };
         // The frozen keys are the raw identity scalars; they materialize as `List[K]`.
-        let list_ty = self
+        let result = self
             .records
             .instantiate_list(self.draft, GArg::Scalar(id_scalar));
+        let Some(list_ty) = self.accept_resolution(result, span, "this index scan result") else {
+            return Flow::Rejected;
+        };
         // Emit the held prefix (leading field components, in projection order), then scan.
         for (key, key_ty) in keys.iter().zip(prefix_types) {
             if self.lower_as(key, LTy::bare_scalar(*key_ty)).is_none() {
@@ -4060,8 +4175,9 @@ impl<'a> FnLowerer<'a> {
     /// patched to fall through immediately after the loop, and the returned break
     /// jumps are left unpatched so the caller can route them past whatever trailing
     /// code it emits (a bounded traversal skips them past its `on more` block; a
-    /// plain collection walk patches them to the same fall-through point). A body
-    /// limit returns `Rejected` only after unwinding the loop and scoped bindings.
+    /// plain collection walk patches them to the same fall-through point). A
+    /// terminal generic failure returns `Rejected` only after unwinding the loop and
+    /// scoped bindings.
     fn lower_positional_walk(
         &mut self,
         coll_slot: u16,
@@ -4070,6 +4186,9 @@ impl<'a> FnLowerer<'a> {
         span: SourceSpan,
         bind: impl FnOnce(&mut Self, u16),
     ) -> PositionalWalkOutcome {
+        if self.terminal_rejection() {
+            return PositionalWalkOutcome::Rejected;
+        }
         // The cursor starts at -1 so the increment at the loop top reaches 0 first,
         // which lets `continue` jump to that increment and always make progress.
         let index_slot = self.alloc_slot();
@@ -4117,9 +4236,12 @@ impl<'a> FnLowerer<'a> {
     }
 
     fn lower_while(&mut self, condition: &Expression, body: &Block) -> Flow {
+        if self.terminal_rejection() {
+            return Flow::Rejected;
+        }
         let top = self.here();
         if self.lower_condition(condition).is_none() {
-            return if self.records.has_instantiation_limit() {
+            return if self.terminal_rejection() {
                 Flow::Rejected
             } else {
                 Flow::Fallthrough
@@ -4159,6 +4281,9 @@ impl<'a> FnLowerer<'a> {
         zero_divisor: Option<&Block>,
         span: SourceSpan,
     ) -> Flow {
+        if self.terminal_rejection() {
+            return Flow::Rejected;
+        }
         // The wrapped operation: a single int `+`/`-`/`*`/`/`/`%` or negation.
         enum Wrapped<'e> {
             Binary(BinaryOp, &'e Expression, &'e Expression),
@@ -4238,7 +4363,7 @@ impl<'a> FnLowerer<'a> {
         let (checked, lb) = match wrapped {
             Wrapped::Binary(bop, left, right) => {
                 if self.lower_as(left, int).is_none() {
-                    return if self.records.has_instantiation_limit() {
+                    return if self.terminal_rejection() {
                         Flow::Rejected
                     } else {
                         Flow::Fallthrough
@@ -4247,7 +4372,7 @@ impl<'a> FnLowerer<'a> {
                 self.push(Instr::LocalSet(la), span);
                 let lb = self.alloc_slot();
                 if self.lower_as(right, int).is_none() {
-                    return if self.records.has_instantiation_limit() {
+                    return if self.terminal_rejection() {
                         Flow::Rejected
                     } else {
                         Flow::Fallthrough
@@ -4266,7 +4391,7 @@ impl<'a> FnLowerer<'a> {
             }
             Wrapped::Neg(operand) => {
                 if self.lower_as(operand, int).is_none() {
-                    return if self.records.has_instantiation_limit() {
+                    return if self.terminal_rejection() {
                         Flow::Rejected
                     } else {
                         Flow::Fallthrough
@@ -4316,7 +4441,7 @@ impl<'a> FnLowerer<'a> {
         // `const`/`var` binding (`pending` is `Some`) falls through and jumps over the
         // handler; a `return` binding leaves the frame, so no skip jump is needed.
         let pending = self.store_checked_result(bind, span);
-        if self.records.has_instantiation_limit() {
+        if self.terminal_rejection() {
             return Flow::Rejected;
         }
         let end_jump = pending.is_some().then(|| self.push_jump(span));
@@ -4405,17 +4530,25 @@ impl<'a> FnLowerer<'a> {
         };
         let declared = match self.resolve(annotation) {
             Ok(declared) => declared,
-            Err(ResolveRefusal::Limit) => {
+            Err(ResolveError::Refusal(ResolveRefusal::Limit)) => {
                 self.failed = true;
                 return None;
             }
-            Err(ResolveRefusal::Unsupported) => {
+            Err(ResolveError::Refusal(ResolveRefusal::Unsupported)) => {
                 self.fail(unsupported(
                     self.file,
                     annotation.span(),
                     "this type annotation",
                 ));
                 return Some(int);
+            }
+            Err(ResolveError::Invariant(invariant)) => {
+                self.reject_resolution(
+                    ResolveError::Invariant(invariant),
+                    annotation.span(),
+                    "this type annotation",
+                );
+                return None;
             }
         };
         self.coerce_bare_int_to(declared, annotation.span(), span);
@@ -4755,11 +4888,14 @@ impl<'a> FnLowerer<'a> {
         parts: &[InterpolationPart],
         span: SourceSpan,
     ) -> Option<LTy> {
+        if self.terminal_rejection() {
+            return None;
+        }
         let mut pushed = false;
         let mut ok = true;
         for part in parts {
             let part_ok = self.lower_interpolation_part(part);
-            if !part_ok && self.records.has_instantiation_limit() {
+            if self.terminal_rejection() {
                 return None;
             }
             ok &= part_ok;
@@ -5502,29 +5638,26 @@ impl<'a> FnLowerer<'a> {
             self.fail(unsupported(self.file, span, "this call"));
             return None;
         };
-        match segments.as_slice() {
-            [name] => self.lower_unqualified_call(name, args, span),
+        let generic_enum_template = match segments.as_slice() {
+            [enum_name, _] => self
+                .records
+                .type_template_by_name(enum_name)
+                .filter(|template| self.records.template_is_enum(*template)),
+            _ => None,
+        };
+        match (segments.as_slice(), generic_enum_template) {
+            ([name], _) => self.lower_unqualified_call(name, args, span),
             // `Enum::member(payload...)` constructs a payload-carrying enum value.
-            [enum_name, item] if self.records.enum_by_name(enum_name).is_some() => self
+            ([enum_name, item], _) if self.records.enum_by_name(enum_name).is_some() => self
                 .lower_enum_construct(enum_name, item, args, span)
                 .map(CallResult::Value),
             // A generic enum template's variant infers its instantiation from the
             // payload values.
-            [enum_name, item]
-                if self
-                    .records
-                    .type_template_by_name(enum_name)
-                    .is_some_and(|t| self.records.template_is_enum(t)) =>
-            {
-                let template = self
-                    .records
-                    .type_template_by_name(enum_name)
-                    .expect("the match guard proved this name resolves to a template");
-                self.lower_generic_enum_construct(template, item, args, span)
-                    .map(CallResult::Value)
-            }
-            [prefix @ .., item] => self.lower_qualified_call(prefix, item, args, span),
-            [] => {
+            ([_, item], Some(template)) => self
+                .lower_generic_enum_construct(template, item, args, span)
+                .map(CallResult::Value),
+            ([prefix @ .., item], _) => self.lower_qualified_call(prefix, item, args, span),
+            ([], _) => {
                 self.fail(unsupported(self.file, span, "this call"));
                 None
             }
@@ -5826,19 +5959,18 @@ impl<'a> FnLowerer<'a> {
             }
             let got = self.lower_expr(&argument.value)?;
             let expanded = self.records.expand(&param.ty);
-            if let Err(message) = unify_type_param(
+            if let Err(error) = unify_type_param(
                 self.records,
                 &template.type_params,
                 &expanded,
                 got,
                 &mut subst,
             ) {
-                self.fail(SourceDiagnostic::at(
-                    Code::CheckType.as_str(),
-                    self.file,
+                self.reject_unification(
+                    error,
                     argument.value.span(),
-                    message,
-                ));
+                    "this generic call inference",
+                );
                 return None;
             }
         }
@@ -5903,11 +6035,11 @@ impl<'a> FnLowerer<'a> {
         // real draft for an instance, the throwaway draft for the template pass).
         let ret = match self.resolve_generic_return(template, &concrete) {
             Ok(ret) => ret,
-            Err(ResolveRefusal::Limit) => {
+            Err(ResolveError::Refusal(ResolveRefusal::Limit)) => {
                 self.failed = true;
                 return None;
             }
-            Err(ResolveRefusal::Unsupported) => {
+            Err(ResolveError::Refusal(ResolveRefusal::Unsupported)) => {
                 let span = template
                     .decl
                     .return_type
@@ -5915,6 +6047,14 @@ impl<'a> FnLowerer<'a> {
                     .map(TypeExpr::span)
                     .unwrap_or(template.decl.span);
                 self.fail(unsupported(&template.file, span, "this return type"));
+                return None;
+            }
+            Err(ResolveError::Invariant(invariant)) => {
+                self.reject_resolution(
+                    ResolveError::Invariant(invariant),
+                    span,
+                    "this return type",
+                );
                 return None;
             }
         };
@@ -5942,8 +6082,8 @@ impl<'a> FnLowerer<'a> {
                     },
                 ) {
                     Ok(func) => func,
-                    Err(refusal) => {
-                        self.reject_resolution(refusal, span, "this generic function call");
+                    Err(error) => {
+                        self.reject_resolution(error, span, "this generic function call");
                         return None;
                     }
                 };
@@ -5963,7 +6103,7 @@ impl<'a> FnLowerer<'a> {
         &mut self,
         template: &GenericTemplate,
         concrete: &[GArg],
-    ) -> Result<RetType, ResolveRefusal> {
+    ) -> Result<RetType, ResolveError> {
         let Some(annotation) = &template.decl.return_type else {
             return Ok(RetType::Unit);
         };
@@ -6090,7 +6230,14 @@ impl<'a> FnLowerer<'a> {
         args: &[Argument],
         span: SourceSpan,
     ) -> Option<LTy> {
-        let record_type_id = self.records.by_name(name)?.type_id;
+        let record = self.accept_resolution(
+            self.records
+                .static_record_projection(name)
+                .map_err(ResolveError::Invariant),
+            span,
+            "this record construction",
+        )??;
+        let record_type_id = record.type_id;
 
         // Resolve each named argument against a top-level field or a group before
         // emitting, so evaluation order is the declaration order (fields first, then
@@ -6106,7 +6253,6 @@ impl<'a> FnLowerer<'a> {
                 ));
                 return None;
             };
-            let record = self.records.by_name(name)?;
             if record.field(arg_name).is_none() && record.group(arg_name).is_none() {
                 self.fail(SourceDiagnostic::at(
                     Code::CheckType.as_str(),
@@ -6118,9 +6264,7 @@ impl<'a> FnLowerer<'a> {
             }
         }
 
-        let field_plan: Vec<MemberPlan> = self
-            .records
-            .by_name(name)?
+        let field_plan: Vec<MemberPlan> = record
             .fields
             .iter()
             .map(|field| (field.name.clone(), field.ty, field.required))
@@ -6156,9 +6300,7 @@ impl<'a> FnLowerer<'a> {
         // omitted all-sparse group defaults to present with vacant leaves; an omitted
         // group with a required leaf cannot be auto-completed, so it is the
         // required-completeness rejection here rather than a silent incomplete value.
-        let group_plan: Vec<GroupPlan> = self
-            .records
-            .by_name(name)?
+        let group_plan: Vec<GroupPlan> = record
             .groups
             .iter()
             .map(|group| {
@@ -6352,7 +6494,13 @@ impl<'a> FnLowerer<'a> {
             return None;
         }
         let display = format!("{resource}.{group_name}");
-        let (_, group) = self.records.by_name(resource)?.group(group_name)?;
+        let group = self.accept_resolution(
+            self.records
+                .static_group_projection(resource, group_name)
+                .map_err(ResolveError::Invariant),
+            span,
+            "this resource-group construction",
+        )??;
         let group_type_id = group.type_id;
         let leaf_plan: Vec<MemberPlan> = group
             .fields
@@ -6423,7 +6571,14 @@ impl<'a> FnLowerer<'a> {
         args: &[Argument],
         span: SourceSpan,
     ) -> Option<LTy> {
-        let type_id = self.records.struct_by_name(name)?.type_id;
+        let info = self.accept_resolution(
+            self.records
+                .static_struct_projection(name)
+                .map_err(ResolveError::Invariant),
+            span,
+            "this struct construction",
+        )??;
+        let type_id = info.type_id;
 
         let mut ok = true;
         let mut seen: BTreeSet<&str> = BTreeSet::new();
@@ -6438,7 +6593,7 @@ impl<'a> FnLowerer<'a> {
                 ok = false;
                 continue;
             };
-            if self.records.struct_by_name(name)?.field(arg_name).is_none() {
+            if info.field(arg_name).is_none() {
                 self.fail(SourceDiagnostic::at(
                     Code::CheckType.as_str(),
                     self.file,
@@ -6462,9 +6617,7 @@ impl<'a> FnLowerer<'a> {
             return None;
         }
 
-        let field_plan: Vec<(String, GArg)> = self
-            .records
-            .struct_by_name(name)?
+        let field_plan: Vec<(String, GArg)> = info
             .fields
             .iter()
             .map(|field| (field.name.clone(), field.ty))
@@ -6505,11 +6658,21 @@ impl<'a> FnLowerer<'a> {
         args: &[Argument],
         span: SourceSpan,
     ) -> Option<LTy> {
+        if self.terminal_rejection() {
+            return None;
+        }
         let name = self.records.template_name(template).to_string();
-        let fields = self
-            .records
-            .template_struct_fields(template)
-            .expect("a struct template has struct fields");
+        let fields = match self.records.template_struct_fields(template) {
+            Ok(fields) => fields,
+            Err(invariant) => {
+                self.reject_resolution(
+                    ResolveError::Invariant(invariant),
+                    span,
+                    "this generic struct construction",
+                );
+                return None;
+            }
+        };
         if !self.check_named_args(
             &name,
             args,
@@ -6535,15 +6698,13 @@ impl<'a> FnLowerer<'a> {
             };
             let got = self.lower_expr(&argument.value)?;
             let expanded = self.records.expand(field_ty);
-            if let Err(message) =
-                unify_type_param(self.records, &params, &expanded, got, &mut subst)
+            if let Err(error) = unify_type_param(self.records, &params, &expanded, got, &mut subst)
             {
-                self.fail(SourceDiagnostic::at(
-                    Code::CheckType.as_str(),
-                    self.file,
+                self.reject_unification(
+                    error,
                     argument.value.span(),
-                    message,
-                ));
+                    "this generic struct inference",
+                );
                 return None;
             }
         }
@@ -6555,18 +6716,15 @@ impl<'a> FnLowerer<'a> {
             file: self.file,
             span,
         };
-        let minted = match self
+        let type_id = match self
             .records
-            .mint_type_instance(self.draft, template, &concrete, site)
+            .mint_struct_instance(self.draft, template, &concrete, site)
         {
-            Ok(minted) => minted,
-            Err(refusal) => {
-                self.reject_resolution(refusal, span, "this generic struct construction");
+            Ok(type_id) => type_id,
+            Err(error) => {
+                self.reject_resolution(error, span, "this generic struct construction");
                 return None;
             }
-        };
-        let TypeInstId::Record(type_id) = minted else {
-            return None;
         };
         self.push(Instr::RecordNew(type_id.index()), span);
         Some(LTy::Struct {
@@ -6586,18 +6744,32 @@ impl<'a> FnLowerer<'a> {
         args: &[Argument],
         span: SourceSpan,
     ) -> Option<LTy> {
+        if self.terminal_rejection() {
+            return None;
+        }
         let name = self.records.template_name(template).to_string();
-        let Some(payload) = self
+        let (template_variant, payload) = match self
             .records
             .template_variant_payload(template, variant_name)
-        else {
-            self.fail(SourceDiagnostic::at(
-                Code::CheckType.as_str(),
-                self.file,
-                span,
-                format!("enum `{name}` has no member `{variant_name}`"),
-            ));
-            return None;
+        {
+            Ok(Some(payload)) => payload,
+            Ok(None) => {
+                self.fail(SourceDiagnostic::at(
+                    Code::CheckType.as_str(),
+                    self.file,
+                    span,
+                    format!("enum `{name}` has no member `{variant_name}`"),
+                ));
+                return None;
+            }
+            Err(invariant) => {
+                self.reject_resolution(
+                    ResolveError::Invariant(invariant),
+                    span,
+                    "this generic enum construction",
+                );
+                return None;
+            }
         };
         if !self.check_named_args(
             &format!("{name}::{variant_name}"),
@@ -6624,15 +6796,13 @@ impl<'a> FnLowerer<'a> {
             };
             let got = self.lower_expr(&argument.value)?;
             let expanded = self.records.expand(field_ty);
-            if let Err(message) =
-                unify_type_param(self.records, &params, &expanded, got, &mut subst)
+            if let Err(error) = unify_type_param(self.records, &params, &expanded, got, &mut subst)
             {
-                self.fail(SourceDiagnostic::at(
-                    Code::CheckType.as_str(),
-                    self.file,
+                self.reject_unification(
+                    error,
                     argument.value.span(),
-                    message,
-                ));
+                    "this generic enum inference",
+                );
                 return None;
             }
         }
@@ -6644,33 +6814,31 @@ impl<'a> FnLowerer<'a> {
             file: self.file,
             span,
         };
-        let minted = match self
-            .records
-            .mint_type_instance(self.draft, template, &concrete, site)
-        {
-            Ok(minted) => minted,
-            Err(refusal) => {
-                self.reject_resolution(refusal, span, "this generic enum construction");
+        let witness = match self.records.mint_enum_variant_instance(
+            self.draft,
+            template,
+            &concrete,
+            EnumVariantSelection {
+                index: template_variant,
+                name: variant_name,
+            },
+            site,
+        ) {
+            Ok(witness) => witness,
+            Err(error) => {
+                self.reject_resolution(error, span, "this generic enum construction");
                 return None;
             }
         };
-        let TypeInstId::Enum(enum_id) = minted else {
-            return None;
-        };
-        let variant_index = self
-            .records
-            .enum_variants(enum_id)
-            .and_then(|variants| variants.iter().position(|(v, _)| v == variant_name))?
-            as u16;
         self.push(
             Instr::EnumConstruct {
-                enum_idx: enum_id.index(),
-                variant: variant_index,
+                enum_idx: witness.enum_id.index(),
+                variant: witness.variant,
             },
             span,
         );
         Some(LTy::Enum {
-            ty: enum_id,
+            ty: witness.enum_id,
             optional: false,
         })
     }
@@ -6798,8 +6966,14 @@ impl<'a> FnLowerer<'a> {
         args: &[Argument],
         span: SourceSpan,
     ) -> Option<LTy> {
+        let info = self.accept_resolution(
+            self.records
+                .static_enum_projection(enum_name)
+                .map_err(ResolveError::Invariant),
+            span,
+            "this enum construction",
+        )??;
         let (enum_id, variant_index) = {
-            let info = self.records.enum_by_name(enum_name)?;
             let Some((index, _)) = info.variant(variant_name) else {
                 self.fail(SourceDiagnostic::at(
                     Code::CheckType.as_str(),
@@ -6813,9 +6987,7 @@ impl<'a> FnLowerer<'a> {
         };
         // The payload plan, resolved before emission so evaluation order is the
         // payload declaration order.
-        let plan: Vec<(String, ScalarType)> = self
-            .records
-            .enum_by_name(enum_name)?
+        let plan: Vec<(String, ScalarType)> = info
             .variant(variant_name)?
             .1
             .payload
@@ -6931,6 +7103,9 @@ impl<'a> FnLowerer<'a> {
     /// error. `Option`/`Result` are ordinary generic enums; these reserved spellings
     /// resolve to their variants recovered from the minting template.
     fn lower_ctor_as(&mut self, kind: CtorKind, expr: &Expression, expected: LTy) -> Option<()> {
+        if self.terminal_rejection() {
+            return None;
+        }
         let span = expr.span();
         // A sparse optional enum target (`Option<T>?`/`Result<T, E>?`) takes a bare
         // constructor wrapped present: lower against the bare enum, then `SomeWrap`.
@@ -6965,10 +7140,15 @@ impl<'a> FnLowerer<'a> {
             ));
             return None;
         };
-        let option_arg = self.records.as_option(enum_id);
-        let result_args = self.records.as_result(enum_id);
-        match (kind, option_arg, result_args) {
-            (CtorKind::None, Some(_), _) => {
+        let reserved = self.accept_resolution(
+            self.records
+                .reserved_enum_args(enum_id)
+                .map_err(ResolveError::Invariant),
+            span,
+            "this reserved constructor",
+        )?;
+        match (kind, reserved) {
+            (CtorKind::None, Some(ReservedEnumArgs::Option(_))) => {
                 self.push(
                     Instr::EnumConstruct {
                         enum_idx: enum_id.index(),
@@ -6978,7 +7158,7 @@ impl<'a> FnLowerer<'a> {
                 );
                 Some(())
             }
-            (CtorKind::Some, Some(inner), _) => {
+            (CtorKind::Some, Some(ReservedEnumArgs::Option(inner))) => {
                 let arg = self.single_ctor_arg(expr, "some")?;
                 self.lower_as(arg, garg_to_lty(inner))?;
                 self.push(
@@ -6990,7 +7170,7 @@ impl<'a> FnLowerer<'a> {
                 );
                 Some(())
             }
-            (CtorKind::Ok, _, Some((ok, _))) => {
+            (CtorKind::Ok, Some(ReservedEnumArgs::Result(ok, _))) => {
                 let arg = self.single_ctor_arg(expr, "ok")?;
                 self.lower_as(arg, garg_to_lty(ok))?;
                 self.push(
@@ -7002,7 +7182,7 @@ impl<'a> FnLowerer<'a> {
                 );
                 Some(())
             }
-            (CtorKind::Err, _, Some((_, err))) => {
+            (CtorKind::Err, Some(ReservedEnumArgs::Result(_, err))) => {
                 let arg = self.single_ctor_arg(expr, "err")?;
                 self.lower_as(arg, garg_to_lty(err))?;
                 self.push(
@@ -7103,11 +7283,11 @@ impl<'a> FnLowerer<'a> {
     /// yielding the `ok` value `T`. Dispatches on the tag: on `err` it rebuilds the
     /// error in the return `Result` and returns; on `ok` it extracts the value.
     fn lower_try(&mut self, inner: &Expression, span: SourceSpan) -> Option<LTy> {
+        if self.terminal_rejection() {
+            return None;
+        }
         let inner_ty = self.lower_expr(inner)?;
-        let src = inner_ty
-            .bare_enum()
-            .and_then(|id| self.records.as_result(id));
-        let Some((t_arg, e_arg)) = src else {
+        let Some(src_id) = inner_ty.bare_enum() else {
             self.fail(SourceDiagnostic::at(
                 Code::CheckType.as_str(),
                 self.file,
@@ -7123,8 +7303,34 @@ impl<'a> FnLowerer<'a> {
             RetType::Value(ty) => ty.bare_enum(),
             RetType::Unit => None,
         };
-        let ret_result = ret_id.and_then(|id| self.records.as_result(id).map(|args| (id, args)));
-        let Some((ret_id, (_, ret_err))) = ret_result else {
+        let classified = self.records.with_metadata_session(|session| {
+            let source = session.reserved_instantiation(src_id)?;
+            let ret = match (source, ret_id) {
+                (Some(ReservedEnumArgs::Result(_, _)), Some(id)) => {
+                    session.reserved_instantiation(id)?.map(|args| (id, args))
+                }
+                _ => None,
+            };
+            Ok::<_, LowerInvariant>((source, ret))
+        });
+        let (source, ret_result) = self.accept_resolution(
+            classified.map_err(ResolveError::Invariant),
+            inner.span(),
+            "this try operand",
+        )?;
+        let Some(ReservedEnumArgs::Result(t_arg, e_arg)) = source else {
+            self.fail(SourceDiagnostic::at(
+                Code::CheckType.as_str(),
+                self.file,
+                inner.span(),
+                format!(
+                    "`try` needs a Result value, found {}",
+                    inner_ty.spelling(self.records)
+                ),
+            ));
+            return None;
+        };
+        let Some((ret_id, ReservedEnumArgs::Result(_, ret_err))) = ret_result else {
             self.fail(SourceDiagnostic::at(
                 Code::CheckType.as_str(),
                 self.file,
@@ -7259,27 +7465,32 @@ impl<'a> FnLowerer<'a> {
                 ty,
                 optional: false,
             } => {
-                if let Some(record) = self.records.by_name_for_type(ty) {
-                    if let Some((index, field)) = record.field(name) {
-                        return Some((index, field.ty, field.required));
+                let projection = self.accept_resolution(
+                    self.records
+                        .product_field_projection(ty, name)
+                        .map_err(ResolveError::Invariant),
+                    field_span,
+                    "this record field access",
+                )?;
+                match projection {
+                    ProductFieldProjection::Field {
+                        index,
+                        ty,
+                        required,
+                    } => return Some((index, ty, required)),
+                    ProductFieldProjection::Group { index, ty } => {
+                        return Some((index, GArg::Group(ty), true));
                     }
-                    // An unkeyed group member reads as its nested group sub-record
-                    // value (always present); its own leaves resolve one level down.
-                    if let Some((index, group)) = record.group(name) {
-                        return Some((index, GArg::Group(group.type_id), true));
+                    ProductFieldProjection::MissingRecordField => {
+                        self.fail(SourceDiagnostic::at(
+                            Code::CheckType.as_str(),
+                            self.file,
+                            field_span,
+                            format!("record has no field `{name}`"),
+                        ));
+                        return None;
                     }
-                    self.fail(SourceDiagnostic::at(
-                        Code::CheckType.as_str(),
-                        self.file,
-                        field_span,
-                        format!("record has no field `{name}`"),
-                    ));
-                    return None;
-                }
-                // A group sub-record value resolves its scalar/enum leaves against the
-                // group's field layout (a sparse leaf reads `T?`).
-                if let Some(group) = self.records.group_by_type(ty) {
-                    let Some((index, field)) = group.field(name) else {
+                    ProductFieldProjection::MissingGroupField => {
                         self.fail(SourceDiagnostic::at(
                             Code::CheckType.as_str(),
                             self.file,
@@ -7287,8 +7498,8 @@ impl<'a> FnLowerer<'a> {
                             format!("group has no field `{name}`"),
                         ));
                         return None;
-                    };
-                    return Some((index, field.ty, field.required));
+                    }
+                    ProductFieldProjection::Absent => {}
                 }
                 // A materialized keyed branch entry value (from `if const n =
                 // ^root(k).branch(bk)`) is an image record the resource registry does not
@@ -7312,33 +7523,32 @@ impl<'a> FnLowerer<'a> {
                 ty,
                 optional: false,
             } => {
-                // A concrete struct reads its fields from the registry; a generic
-                // struct instantiation reads them from its resolved body.
-                if let Some(info) = self.records.struct_by_type(ty) {
-                    let Some((index, field)) = info.field(name) else {
-                        self.fail(SourceDiagnostic::at(
-                            Code::CheckType.as_str(),
-                            self.file,
-                            field_span,
-                            format!("`{}` has no field `{name}`", info.name),
-                        ));
-                        return None;
-                    };
-                    return Some((index, field.ty, field.required));
-                }
-                let fields = match self.records.type_inst_body(TypeInstId::Record(ty)) {
-                    Some(crate::types::InstBody::Struct(fields)) => fields,
-                    _ => panic!("a bare struct type resolves to a struct info or instantiation"),
-                };
-                match fields.iter().position(|(fname, _)| fname == name) {
-                    Some(index) => Some((index as u16, fields[index].1, true)),
-                    None => {
+                let projection = self.accept_resolution(
+                    self.records
+                        .struct_field_projection(ty, name)
+                        .map_err(ResolveError::Invariant),
+                    field_span,
+                    "this struct field access",
+                )?;
+                match projection {
+                    StructFieldProjection::Field { index, ty } => Some((index, ty, true)),
+                    StructFieldProjection::Missing => {
                         self.fail(SourceDiagnostic::at(
                             Code::CheckType.as_str(),
                             self.file,
                             field_span,
                             format!("`{}` has no field `{name}`", base_ty.spelling(self.records)),
                         ));
+                        None
+                    }
+                    StructFieldProjection::Absent => {
+                        self.reject_resolution(
+                            ResolveError::Invariant(LowerInvariant::ReadyBodyMissing(
+                                TypeInstId::Record(ty),
+                            )),
+                            field_span,
+                            "this struct field access",
+                        );
                         None
                     }
                 }
@@ -8316,9 +8526,10 @@ impl<'a> FnLowerer<'a> {
         for arg in args {
             self.lower_as(&arg.value, text)?;
         }
-        let idx = self
+        let result = self
             .records
             .instantiate_list(self.draft, GArg::Scalar(ScalarType::Text));
+        let idx = self.accept_resolution(result, span, "this text collection result")?;
         let instr = if name == "split" {
             Instr::TextSplit(idx)
         } else {
@@ -8509,7 +8720,8 @@ impl<'a> FnLowerer<'a> {
             self.push(Instr::LocalSet(slot), span);
             slots.push(slot);
         }
-        let idx = self.records.instantiate_list(self.draft, elem_garg);
+        let result = self.records.instantiate_list(self.draft, elem_garg);
+        let idx = self.accept_resolution(result, span, "this list literal")?;
         self.push(Instr::ListNew(idx), span);
         for slot in slots {
             self.push(Instr::LocalGet(slot), span);
@@ -9542,7 +9754,7 @@ impl<'a> FnLowerer<'a> {
 
     // --- type resolution ---
 
-    fn resolve(&mut self, annotation: &TypeExpr) -> Result<LTy, ResolveRefusal> {
+    fn resolve(&mut self, annotation: &TypeExpr) -> Result<LTy, ResolveError> {
         let env = TypeEnv {
             params: &self.type_env,
         };
@@ -9637,7 +9849,7 @@ fn param_type(
     ty: &TypeExpr,
     env: TypeEnv,
     site: MintSite<'_>,
-) -> Result<LTy, ResolveRefusal> {
+) -> Result<LTy, ResolveError> {
     match resolve_type(records, draft, durable, ty, env, site) {
         Ok(
             param @ (LTy::Scalar {
@@ -9670,8 +9882,13 @@ fn param_type(
                 optional: false, ..
             }),
         ) => Ok(param),
-        Ok(_) | Err(ResolveRefusal::Unsupported) => Err(ResolveRefusal::Unsupported),
-        Err(ResolveRefusal::Limit) => Err(ResolveRefusal::Limit),
+        Ok(_) | Err(ResolveError::Refusal(ResolveRefusal::Unsupported)) => {
+            Err(ResolveError::Refusal(ResolveRefusal::Unsupported))
+        }
+        Err(ResolveError::Refusal(ResolveRefusal::Limit)) => {
+            Err(ResolveError::Refusal(ResolveRefusal::Limit))
+        }
+        Err(ResolveError::Invariant(invariant)) => Err(ResolveError::Invariant(invariant)),
     }
 }
 
@@ -9686,7 +9903,7 @@ fn resolve_type(
     annotation: &TypeExpr,
     env: TypeEnv,
     site: MintSite<'_>,
-) -> Result<LTy, ResolveRefusal> {
+) -> Result<LTy, ResolveError> {
     resolve_expanded(
         records,
         draft,
@@ -9704,7 +9921,7 @@ fn resolve_expanded(
     annotation: &TypeExpr,
     env: TypeEnv,
     site: MintSite<'_>,
-) -> Result<LTy, ResolveRefusal> {
+) -> Result<LTy, ResolveError> {
     match annotation {
         TypeExpr::Name { text, .. } => {
             // A type-parameter name resolves before scalar/named-type classification,
@@ -9725,30 +9942,28 @@ fn resolve_expanded(
                     id,
                     optional: false,
                 })
-            } else if let Some(info) = records.struct_by_name(text) {
-                Ok(LTy::Struct {
-                    ty: info.type_id,
-                    optional: false,
-                })
-            } else if let Some(info) = records.enum_by_name(text) {
-                Ok(LTy::Enum {
-                    ty: info.enum_id,
-                    optional: false,
-                })
             } else {
-                records
-                    .by_name(text)
-                    .map(|record| LTy::Record {
-                        ty: record.type_id,
+                match records.static_named_type_projection(text)? {
+                    Some(StaticNamedType::Struct(ty)) => Ok(LTy::Struct {
+                        ty,
                         optional: false,
-                    })
-                    .ok_or(ResolveRefusal::Unsupported)
+                    }),
+                    Some(StaticNamedType::Enum(ty)) => Ok(LTy::Enum {
+                        ty,
+                        optional: false,
+                    }),
+                    Some(StaticNamedType::Record(ty)) => Ok(LTy::Record {
+                        ty,
+                        optional: false,
+                    }),
+                    None => Err(ResolveError::Refusal(ResolveRefusal::Unsupported)),
+                }
             }
         }
         TypeExpr::Optional { inner, .. } => {
             let inner = resolve_expanded(records, draft, durable, inner, env, site)?;
             if inner.is_optional() {
-                Err(ResolveRefusal::Unsupported)
+                Err(ResolveError::Refusal(ResolveRefusal::Unsupported))
             } else {
                 Ok(inner.to_optional())
             }
@@ -9763,7 +9978,7 @@ fn resolve_expanded(
         TypeExpr::Identity(identity) => {
             let root = durable
                 .root_by_name(&identity.root)
-                .ok_or(ResolveRefusal::Unsupported)?;
+                .ok_or(ResolveError::Refusal(ResolveRefusal::Unsupported))?;
             Ok(LTy::Identity {
                 root: root.root_id,
                 optional: false,
@@ -9788,55 +10003,48 @@ fn resolve_generic(
     args: &[TypeExpr],
     env: TypeEnv,
     site: MintSite<'_>,
-) -> Result<LTy, ResolveRefusal> {
+) -> Result<LTy, ResolveError> {
     match head {
         "List" => {
             let [elem] = args else {
-                return Err(ResolveRefusal::Unsupported);
+                return Err(ResolveError::Refusal(ResolveRefusal::Unsupported));
             };
             let elem = resolve_expanded(records, draft, durable, elem, env, site)?
                 .as_garg()
-                .ok_or(ResolveRefusal::Unsupported)?;
+                .ok_or(ResolveError::Refusal(ResolveRefusal::Unsupported))?;
             Ok(LTy::Collection {
-                idx: records.instantiate_list(draft, elem),
+                idx: records.instantiate_list(draft, elem)?,
                 optional: false,
             })
         }
         "Map" => {
             let [key, value] = args else {
-                return Err(ResolveRefusal::Unsupported);
+                return Err(ResolveError::Refusal(ResolveRefusal::Unsupported));
             };
             let key = resolve_expanded(records, draft, durable, key, env, site)?
                 .as_garg()
-                .ok_or(ResolveRefusal::Unsupported)?;
-            // A type parameter is not admitted as a map key: keys are drawn from the
-            // durable-key scalar family, and a generic key would need an order
-            // constraint the collection contract does not model here.
-            if !key.is_key_type() {
-                return Err(ResolveRefusal::Unsupported);
-            }
+                .ok_or(ResolveError::Refusal(ResolveRefusal::Unsupported))?;
+            records.check_map_key_admissibility(key)?;
             let value = resolve_expanded(records, draft, durable, value, env, site)?
                 .as_garg()
-                .ok_or(ResolveRefusal::Unsupported)?;
+                .ok_or(ResolveError::Refusal(ResolveRefusal::Unsupported))?;
             Ok(LTy::Collection {
-                idx: records.instantiate_map(draft, key, value),
+                idx: records.instantiate_map(draft, key, value)?,
                 optional: false,
             })
         }
         _ => {
-            let template = records
-                .type_template_by_name(head)
-                .ok_or(ResolveRefusal::Unsupported)?;
+            let template = records.application_template(head)?;
             let params = records.template_type_params(template);
             if args.len() != params.len() {
-                return Err(ResolveRefusal::Unsupported);
+                return Err(ResolveError::Refusal(ResolveRefusal::Unsupported));
             }
             let mut resolved = Vec::with_capacity(args.len());
             for arg in args {
                 resolved.push(
                     resolve_expanded(records, draft, durable, arg, env, site)?
                         .as_garg()
-                        .ok_or(ResolveRefusal::Unsupported)?,
+                        .ok_or(ResolveError::Refusal(ResolveRefusal::Unsupported))?,
                 );
             }
             // Per-application constraint revalidation: a concrete argument must
@@ -9857,7 +10065,12 @@ fn resolve_generic(
                         other => other.satisfies(*constraint),
                     };
                     if !satisfied {
-                        return Err(ResolveRefusal::Unsupported);
+                        // A malformed registry remains an invariant even when this
+                        // application also violates a source constraint. The normal
+                        // successful mint path owns the same preflight and must not
+                        // rebuild it here.
+                        records.validate_type_arguments(&resolved)?;
+                        return Err(ResolveError::Refusal(ResolveRefusal::Unsupported));
                     }
                 }
             }
@@ -9881,119 +10094,186 @@ fn resolve_generic(
 /// parameter position requires a bare argument (no implicit bare-to-optional
 /// widening), and a concrete named position requires an exactly matching argument. A
 /// conflicting binding or a shape mismatch is an error the caller reports.
+enum UnifyError {
+    Mismatch(String),
+    Invariant(LowerInvariant),
+}
+
+impl From<LowerInvariant> for UnifyError {
+    fn from(invariant: LowerInvariant) -> Self {
+        Self::Invariant(invariant)
+    }
+}
+
 fn unify_type_param(
     records: &TypeRegistry,
     type_params: &[(String, Option<TypeConstraint>)],
     annotation: &TypeExpr,
     got: LTy,
     subst: &mut [Option<GArg>],
-) -> Result<(), String> {
+) -> Result<(), UnifyError> {
+    records.with_metadata_session(|metadata| {
+        if let Some(arg) = got.to_bare().as_garg() {
+            metadata.validate_type_arguments(&[arg])?;
+        }
+        unify_type_param_with(records, metadata, type_params, annotation, got, subst)
+    })
+}
+
+fn unify_type_param_with(
+    records: &TypeRegistry,
+    metadata: &mut TypeMetadataSession<'_>,
+    type_params: &[(String, Option<TypeConstraint>)],
+    annotation: &TypeExpr,
+    got: LTy,
+    subst: &mut [Option<GArg>],
+) -> Result<(), UnifyError> {
     match annotation {
         TypeExpr::Name { text, .. } => {
             if let Some(index) = type_params.iter().position(|(name, _)| name == text) {
                 if got.is_optional() {
-                    return Err(format!(
+                    return Err(UnifyError::Mismatch(format!(
                         "type parameter `{text}` matches a bare value, but the argument is `{}`",
-                        got.spelling(records)
-                    ));
+                        got.spelling_in(records, metadata)?
+                    )));
                 }
                 let arg = got.as_garg().ok_or_else(|| {
-                    format!(
+                    UnifyError::Mismatch(format!(
                         "`{}` is not a value type that can instantiate `{text}`",
                         got.spelling(records)
-                    )
+                    ))
                 })?;
                 match subst[index] {
                     None => subst[index] = Some(arg),
                     Some(previous) if previous == arg => {}
                     Some(previous) => {
-                        return Err(format!(
+                        let previous = garg_to_lty(previous).spelling_in(records, metadata)?;
+                        let current = garg_to_lty(arg).spelling_in(records, metadata)?;
+                        return Err(UnifyError::Mismatch(format!(
                             "type parameter `{text}` is inferred as both `{}` and `{}`",
-                            garg_to_lty(previous).spelling(records),
-                            garg_to_lty(arg).spelling(records)
-                        ));
+                            previous, current
+                        )));
                     }
                 }
                 Ok(())
             } else {
-                match named_type(records, text) {
+                match named_type(records, metadata, text)? {
                     Some(expected) if expected == got => Ok(()),
-                    Some(expected) => Err(format!(
+                    Some(expected) => Err(UnifyError::Mismatch(format!(
                         "expected `{}`, found `{}`",
-                        expected.spelling(records),
-                        got.spelling(records)
-                    )),
-                    None => Err(format!("unknown type `{text}` in a generic parameter")),
+                        expected.spelling_in(records, metadata)?,
+                        got.spelling_in(records, metadata)?
+                    ))),
+                    None => Err(UnifyError::Mismatch(format!(
+                        "unknown type `{text}` in a generic parameter"
+                    ))),
                 }
             }
         }
         TypeExpr::Optional { inner, .. } => {
             if !got.is_optional() {
-                return Err(format!(
+                return Err(UnifyError::Mismatch(format!(
                     "expected an optional argument, found `{}`",
-                    got.spelling(records)
-                ));
+                    got.spelling_in(records, metadata)?
+                )));
             }
-            unify_type_param(records, type_params, inner, got.to_bare(), subst)
+            unify_type_param_with(records, metadata, type_params, inner, got.to_bare(), subst)
         }
         TypeExpr::Apply { head, args, .. } => {
-            unify_apply(records, type_params, head, args, got, subst)
+            unify_apply_with(records, metadata, type_params, head, args, got, subst)
         }
-        _ => Err("this parameter type is not supported for generic inference".to_string()),
+        _ => Err(UnifyError::Mismatch(
+            "this parameter type is not supported for generic inference".to_string(),
+        )),
     }
 }
 
 /// Unify a built-in generic parameter application (`List`/`Map`/`Option`/`Result`)
 /// against an argument, recursing into the argument's element/key/value/payload
 /// types.
-fn unify_apply(
+fn unify_apply_with(
     records: &TypeRegistry,
+    metadata: &mut TypeMetadataSession<'_>,
     type_params: &[(String, Option<TypeConstraint>)],
     head: &str,
     args: &[TypeExpr],
     got: LTy,
     subst: &mut [Option<GArg>],
-) -> Result<(), String> {
-    let mismatch = |what: &str| format!("expected a {what}, found `{}`", got.spelling(records));
+) -> Result<(), UnifyError> {
     match head {
         "List" => {
             let [elem] = args else {
-                return Err("`List` takes one type argument".to_string());
+                return Err(UnifyError::Mismatch(
+                    "`List` takes one type argument".to_string(),
+                ));
             };
             let LTy::Collection {
                 idx,
                 optional: false,
             } = got
             else {
-                return Err(mismatch("List"));
+                return Err(UnifyError::Mismatch(format!(
+                    "expected a List, found `{}`",
+                    got.spelling_in(records, metadata)?
+                )));
             };
-            match records.collection_spec(idx) {
-                CollSpec::List { elem: got_elem } => {
-                    unify_type_param(records, type_params, elem, garg_to_lty(got_elem), subst)
-                }
-                CollSpec::Map { .. } => Err(mismatch("List")),
+            match metadata.collection_spec(idx)? {
+                CollSpec::List { elem: got_elem } => unify_type_param_with(
+                    records,
+                    metadata,
+                    type_params,
+                    elem,
+                    garg_to_lty(got_elem),
+                    subst,
+                ),
+                CollSpec::Map { .. } => Err(UnifyError::Mismatch(format!(
+                    "expected a List, found `{}`",
+                    got.spelling_in(records, metadata)?
+                ))),
             }
         }
         "Map" => {
             let [key, value] = args else {
-                return Err("`Map` takes two type arguments".to_string());
+                return Err(UnifyError::Mismatch(
+                    "`Map` takes two type arguments".to_string(),
+                ));
             };
             let LTy::Collection {
                 idx,
                 optional: false,
             } = got
             else {
-                return Err(mismatch("Map"));
+                return Err(UnifyError::Mismatch(format!(
+                    "expected a Map, found `{}`",
+                    got.spelling_in(records, metadata)?
+                )));
             };
-            match records.collection_spec(idx) {
+            match metadata.collection_spec(idx)? {
                 CollSpec::Map {
                     key: got_key,
                     value: got_value,
                 } => {
-                    unify_type_param(records, type_params, key, garg_to_lty(got_key), subst)?;
-                    unify_type_param(records, type_params, value, garg_to_lty(got_value), subst)
+                    unify_type_param_with(
+                        records,
+                        metadata,
+                        type_params,
+                        key,
+                        garg_to_lty(got_key),
+                        subst,
+                    )?;
+                    unify_type_param_with(
+                        records,
+                        metadata,
+                        type_params,
+                        value,
+                        garg_to_lty(got_value),
+                        subst,
+                    )
                 }
-                CollSpec::List { .. } => Err(mismatch("Map")),
+                CollSpec::List { .. } => Err(UnifyError::Mismatch(format!(
+                    "expected a Map, found `{}`",
+                    got.spelling_in(records, metadata)?
+                ))),
             }
         }
         // Every other generic head is a value-type template (the reserved
@@ -10001,14 +10281,16 @@ fn unify_apply(
         // instantiation of the same template, and each type argument unifies
         // positionally against its parameter.
         _ => {
-            let template = records
-                .type_template_by_name(head)
-                .ok_or_else(|| format!("`{head}` is not a generic type usable in a parameter"))?;
+            let template = records.type_template_by_name(head).ok_or_else(|| {
+                UnifyError::Mismatch(format!(
+                    "`{head}` is not a generic type usable in a parameter"
+                ))
+            })?;
             if args.len() != records.template_type_params(template).len() {
-                return Err(format!(
+                return Err(UnifyError::Mismatch(format!(
                     "`{head}` takes {} type argument(s)",
                     records.template_type_params(template).len()
-                ));
+                )));
             }
             let inst_id = match got {
                 LTy::Struct {
@@ -10019,16 +10301,34 @@ fn unify_apply(
                     ty,
                     optional: false,
                 } => TypeInstId::Enum(ty),
-                _ => return Err(mismatch(head)),
+                _ => {
+                    return Err(UnifyError::Mismatch(format!(
+                        "expected a {head}, found `{}`",
+                        got.spelling_in(records, metadata)?
+                    )));
+                }
             };
-            let (got_template, got_args) = records
-                .instantiation_of(inst_id)
-                .ok_or_else(|| mismatch(head))?;
+            let Some((got_template, got_args)) = metadata.instantiation_of(inst_id)? else {
+                return Err(UnifyError::Mismatch(format!(
+                    "expected a {head}, found `{}`",
+                    got.spelling_in(records, metadata)?
+                )));
+            };
             if got_template != template {
-                return Err(mismatch(head));
+                return Err(UnifyError::Mismatch(format!(
+                    "expected a {head}, found `{}`",
+                    got.spelling_in(records, metadata)?
+                )));
             }
             for (arg, got_arg) in args.iter().zip(&got_args) {
-                unify_type_param(records, type_params, arg, garg_to_lty(*got_arg), subst)?;
+                unify_type_param_with(
+                    records,
+                    metadata,
+                    type_params,
+                    arg,
+                    garg_to_lty(*got_arg),
+                    subst,
+                )?;
             }
             Ok(())
         }
@@ -10038,28 +10338,33 @@ fn unify_apply(
 /// Resolve a concrete named type (a scalar spelling or a declared nominal/struct/
 /// enum/record) to its bare lowered type without minting into any draft, for
 /// exact-match generic inference.
-fn named_type(records: &TypeRegistry, text: &str) -> Option<LTy> {
+fn named_type(
+    records: &TypeRegistry,
+    metadata: &mut TypeMetadataSession<'_>,
+    text: &str,
+) -> Result<Option<LTy>, LowerInvariant> {
     if let Some(scalar) = ScalarType::from_spelling(text) {
-        Some(LTy::bare_scalar(scalar))
+        Ok(Some(LTy::bare_scalar(scalar)))
     } else if let Some((id, _)) = records.nominal_by_name(text) {
-        Some(LTy::Nominal {
+        Ok(Some(LTy::Nominal {
             id,
             optional: false,
-        })
-    } else if let Some(info) = records.struct_by_name(text) {
-        Some(LTy::Struct {
-            ty: info.type_id,
-            optional: false,
-        })
-    } else if let Some(info) = records.enum_by_name(text) {
-        Some(LTy::Enum {
-            ty: info.enum_id,
-            optional: false,
-        })
+        }))
     } else {
-        records.by_name(text).map(|record| LTy::Record {
-            ty: record.type_id,
-            optional: false,
+        Ok(match metadata.static_named_type(text)? {
+            Some(StaticNamedType::Struct(ty)) => Some(LTy::Struct {
+                ty,
+                optional: false,
+            }),
+            Some(StaticNamedType::Enum(ty)) => Some(LTy::Enum {
+                ty,
+                optional: false,
+            }),
+            Some(StaticNamedType::Record(ty)) => Some(LTy::Record {
+                ty,
+                optional: false,
+            }),
+            None => None,
         })
     }
 }
@@ -10464,8 +10769,9 @@ mod lower_metadata_successor_tests;
 #[cfg(test)]
 mod generic_cache_boundary_tests {
     use super::*;
-    use crate::types::{GenericInvariant, TypeInstKind};
+    use crate::types::{GenericInvariant, Reserved, TypeInstKind, count_metadata_directory_builds};
     use marrow_image::{EnumTypeDef, RecordTypeDef};
+    use marrow_syntax::{Declaration, parse_source};
 
     fn span() -> SourceSpan {
         SourceSpan {
@@ -10486,6 +10792,259 @@ mod generic_cache_boundary_tests {
     fn generic_enum_registry(draft: &mut ImageDraft) -> TypeRegistry {
         let mut diagnostics = Vec::new();
         TypeRegistry::build(draft, &[], &[], &[], &[], &[], &mut diagnostics)
+    }
+
+    fn generic_struct_registry(draft: &mut ImageDraft) -> TypeRegistry {
+        let parsed = parse_source(
+            r#"struct Box<T> {
+    value: T
+}
+"#,
+        );
+        assert!(parsed.diagnostics.is_empty());
+        let declaration = parsed
+            .file
+            .declarations
+            .iter()
+            .find_map(|declaration| match declaration {
+                Declaration::Struct(declaration) => Some(declaration),
+                _ => None,
+            })
+            .expect("generic struct parses");
+        let mut diagnostics = Vec::new();
+        let records = TypeRegistry::build(
+            draft,
+            &[],
+            &[],
+            &[("src/main.mw".to_string(), declaration)],
+            &[],
+            &[],
+            &mut diagnostics,
+        );
+        assert!(diagnostics.is_empty());
+        records
+    }
+
+    #[test]
+    fn recursive_generic_unification_builds_one_metadata_directory() {
+        let mut draft = ImageDraft::new();
+        let records = generic_enum_registry(&mut draft);
+        let list = records
+            .instantiate_list(&mut draft, GArg::Scalar(ScalarType::Int))
+            .expect("List<int> mints");
+        let map = records
+            .instantiate_map(
+                &mut draft,
+                GArg::Scalar(ScalarType::Int),
+                GArg::Collection(list),
+            )
+            .expect("Map<int,List<int>> mints");
+        let parameter = || TypeExpr::Name {
+            text: "T".to_string(),
+            span: span(),
+        };
+        let annotation = TypeExpr::Apply {
+            head: "Map".to_string(),
+            args: vec![
+                parameter(),
+                TypeExpr::Apply {
+                    head: "List".to_string(),
+                    args: vec![parameter()],
+                    span: span(),
+                },
+            ],
+            span: span(),
+        };
+        let type_params = vec![("T".to_string(), None)];
+        let mut subst = vec![None];
+
+        let (result, builds) = count_metadata_directory_builds(|| {
+            unify_type_param(
+                &records,
+                &type_params,
+                &annotation,
+                LTy::Collection {
+                    idx: map,
+                    optional: false,
+                },
+                &mut subst,
+            )
+        });
+
+        assert!(matches!(result, Ok(())));
+        assert_eq!(subst, vec![Some(GArg::Scalar(ScalarType::Int))]);
+        assert_eq!(builds, 1);
+    }
+
+    #[test]
+    fn generic_unification_prevalidates_inferred_metadata_before_named_mismatch() {
+        let mut draft = ImageDraft::new();
+        let records = generic_enum_registry(&mut draft);
+        let (_, orphan) = orphan_enum_and_struct(&mut draft);
+        let arg = GArg::Struct(orphan);
+        let expected = GenericInvariant::TypeArgumentTargetMissing(arg);
+        let draft_before = draft.encode().expect("hostile draft still encodes");
+        let type_params = vec![("T".to_string(), None)];
+        let sentinel = vec![Some(GArg::Scalar(ScalarType::Bool))];
+
+        assert_eq!(records.validate_type_arguments(&[arg]), Err(expected));
+        for (name, optional) in [
+            ("int", false),
+            ("MissingType", false),
+            ("MissingType", true),
+        ] {
+            let annotation = TypeExpr::Name {
+                text: name.to_string(),
+                span: span(),
+            };
+            let mut subst = sentinel.clone();
+            let (result, builds) = count_metadata_directory_builds(|| {
+                unify_type_param(
+                    &records,
+                    &type_params,
+                    &annotation,
+                    LTy::Struct {
+                        ty: orphan,
+                        optional,
+                    },
+                    &mut subst,
+                )
+            });
+
+            assert!(matches!(
+                result,
+                Err(UnifyError::Invariant(found)) if found == expected
+            ));
+            assert_eq!(builds, 1, "one session owns the hostile preflight");
+            assert_eq!(subst, sentinel);
+        }
+        assert_eq!(records.validate_type_arguments(&[arg]), Err(expected));
+        let draft_after = draft.encode().expect("rejected draft still encodes");
+        assert_eq!(draft_after.bytes, draft_before.bytes);
+        assert_eq!(draft_after.image_id, draft_before.image_id);
+    }
+
+    #[test]
+    fn map_resolution_validates_hostile_key_metadata_before_refusal() {
+        let annotation = TypeExpr::Apply {
+            head: "Map".to_string(),
+            args: vec![
+                TypeExpr::Name {
+                    text: "K".to_string(),
+                    span: span(),
+                },
+                TypeExpr::Name {
+                    text: "int".to_string(),
+                    span: span(),
+                },
+            ],
+            span: span(),
+        };
+
+        for family in ["struct", "enum", "collection"] {
+            let mut draft = ImageDraft::new();
+            let records = generic_enum_registry(&mut draft);
+            let (orphan_enum, orphan_struct) = orphan_enum_and_struct(&mut draft);
+            let arg = match family {
+                "struct" => GArg::Struct(orphan_struct),
+                "enum" => GArg::Enum(orphan_enum),
+                "collection" => GArg::Collection(0),
+                _ => unreachable!("the hostile family table is closed"),
+            };
+            let expected = GenericInvariant::TypeArgumentTargetMissing(arg);
+            let params = [TypeParamSlot {
+                name: "K".to_string(),
+                binding: ParamBinding::Concrete(arg),
+            }];
+            let draft_before = draft.encode().expect("hostile draft still encodes");
+            assert_eq!(records.validate_type_arguments(&[arg]), Err(expected));
+
+            let (result, builds) = count_metadata_directory_builds(|| {
+                resolve_type(
+                    &records,
+                    &mut draft,
+                    &DurableRegistry::default(),
+                    &annotation,
+                    TypeEnv { params: &params },
+                    MintSite {
+                        file: "src/main.mw",
+                        span: span(),
+                    },
+                )
+            });
+            assert!(matches!(
+                result,
+                Err(ResolveError::Invariant(found)) if found == expected
+            ));
+            assert_eq!(builds, 1, "{family} key uses one metadata proof");
+            assert_eq!(records.validate_type_arguments(&[arg]), Err(expected));
+            let draft_after = draft.encode().expect("rejected draft still encodes");
+            assert_eq!(draft_after.bytes, draft_before.bytes);
+            assert_eq!(draft_after.image_id, draft_before.image_id);
+        }
+    }
+
+    #[test]
+    fn lower_map_resolution_rejects_a_missing_nominal_before_value_mint() {
+        let annotation = TypeExpr::Apply {
+            head: "Map".to_string(),
+            args: vec![
+                TypeExpr::Name {
+                    text: "K".to_string(),
+                    span: span(),
+                },
+                TypeExpr::Apply {
+                    head: "List".to_string(),
+                    args: vec![TypeExpr::Name {
+                        text: "int".to_string(),
+                        span: span(),
+                    }],
+                    span: span(),
+                },
+            ],
+            span: span(),
+        };
+        let mut draft = ImageDraft::new();
+        let records = generic_enum_registry(&mut draft);
+        let missing = GArg::Nominal(NominalId(0));
+        let params = [TypeParamSlot {
+            name: "K".to_string(),
+            binding: ParamBinding::Concrete(missing),
+        }];
+        let expected = GenericInvariant::TypeArgumentTargetMissing(missing);
+        let draft_before = draft.encode().expect("empty draft encodes");
+
+        let (resolved, builds) = count_metadata_directory_builds(|| {
+            resolve_type(
+                &records,
+                &mut draft,
+                &DurableRegistry::default(),
+                &annotation,
+                TypeEnv { params: &params },
+                MintSite {
+                    file: "src/main.mw",
+                    span: span(),
+                },
+            )
+        });
+        assert!(matches!(
+            resolved,
+            Err(ResolveError::Invariant(found)) if found == expected
+        ));
+        assert_eq!(
+            builds, 0,
+            "the nominal owner rejects before List resolution"
+        );
+        let draft_after = draft.encode().expect("rejected draft encodes");
+        assert_eq!(draft_after.bytes, draft_before.bytes);
+        assert_eq!(draft_after.image_id, draft_before.image_id);
+        assert_eq!(
+            records
+                .instantiate_list(&mut draft, GArg::Scalar(ScalarType::Int))
+                .expect("the first post-refusal collection mints"),
+            0,
+            "the refused Map did not mint its List value"
+        );
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -10525,6 +11084,65 @@ mod generic_cache_boundary_tests {
             fields: Vec::new(),
         });
         (enum_id, struct_id)
+    }
+
+    fn assert_typed_invariant_rejects_consumer(invariant: GenericInvariant) {
+        let mut draft = ImageDraft::new();
+        let records = generic_enum_registry(&mut draft);
+        let before = draft.encode().expect("empty draft encodes");
+        let durable = DurableRegistry::default();
+        let functions = FunctionRegistry::default();
+        let generics = GenericRegistry::default();
+        let consts = ConstRegistry::default();
+        let mut diagnostics = Vec::new();
+        let mut lowerer = lowerer(
+            &mut draft,
+            &records,
+            &durable,
+            &functions,
+            &generics,
+            &consts,
+            &mut diagnostics,
+        );
+
+        assert!(
+            lowerer
+                .accept_resolution::<()>(
+                    Err(ResolveError::Invariant(invariant)),
+                    span(),
+                    "this generic consumer",
+                )
+                .is_none()
+        );
+        assert!(lowerer.terminal_rejection());
+        assert!(matches!(
+            lowerer.finish("broken", Vec::new(), ImageType::Unit),
+            Err(found) if found == invariant
+        ));
+        assert!(diagnostics.is_empty());
+        let after = draft.encode().expect("rejected draft still encodes");
+        assert_eq!(after.bytes, before.bytes);
+        assert_eq!(after.image_id, before.image_id);
+    }
+
+    #[test]
+    fn lower_generic_reports_exact_missing_option_and_result_templates() {
+        for reserved in [Reserved::Option, Reserved::Result] {
+            assert_typed_invariant_rejects_consumer(GenericInvariant::ReservedTemplateMissing(
+                reserved,
+            ));
+        }
+    }
+
+    #[test]
+    fn lower_generic_reports_exact_wrong_option_and_result_template_kinds() {
+        for template in [0, 1] {
+            assert_typed_invariant_rejects_consumer(GenericInvariant::TemplateKindMismatch {
+                template,
+                expected: TypeInstKind::Enum,
+                actual: TypeInstKind::Struct,
+            });
+        }
     }
 
     /// An enum-shaped local whose row is not semantically Ready is a
@@ -10700,5 +11318,708 @@ mod generic_cache_boundary_tests {
         assert!(diagnostics.is_empty());
         assert_eq!(draft_after.bytes, draft_before.bytes);
         assert_eq!(draft_after.image_id, draft_before.image_id);
+    }
+
+    #[test]
+    fn generic_struct_minted_as_enum_is_an_exact_invariant() {
+        let mut draft = ImageDraft::new();
+        let records = generic_struct_registry(&mut draft);
+        let template = records
+            .type_template_by_name("Box")
+            .expect("Box template exists");
+        let record_id = records
+            .mint_type_instance(
+                &mut draft,
+                template,
+                &[GArg::Scalar(ScalarType::Int)],
+                MintSite {
+                    file: "src/main.mw",
+                    span: span(),
+                },
+            )
+            .expect("Box row mints ready");
+        let TypeInstId::Record(_) = record_id else {
+            panic!("Box mints a record")
+        };
+        let (enum_id, _) = orphan_enum_and_struct(&mut draft);
+        let expected = GenericInvariant::TypeBodyKindMismatch {
+            id: TypeInstId::Enum(enum_id),
+            body: TypeInstKind::Struct,
+        };
+        let before = draft.encode().expect("seeded draft encodes");
+        let durable = DurableRegistry::default();
+        let functions = FunctionRegistry::default();
+        let generics = GenericRegistry::default();
+        let consts = ConstRegistry::default();
+        let mut diagnostics = Vec::new();
+        let mut lowerer = lowerer(
+            &mut draft,
+            &records,
+            &durable,
+            &functions,
+            &generics,
+            &consts,
+            &mut diagnostics,
+        );
+        lowerer.reject_unification(
+            UnifyError::Invariant(expected),
+            span(),
+            "this generic struct inference",
+        );
+        lowerer.locals.push(Local {
+            name: "item".to_string(),
+            ty: LTy::bare_scalar(ScalarType::Int),
+            mutable: false,
+            slot: 0,
+        });
+        let args = [Argument {
+            name: Some("value".to_string()),
+            value: name("item"),
+        }];
+
+        assert!(
+            lowerer
+                .lower_generic_struct_literal(template, &args, span())
+                .is_none()
+        );
+        let Err(invariant) = lowerer.finish("broken", Vec::new(), ImageType::Unit) else {
+            panic!("wrong minted ID kind rejects finish")
+        };
+        assert_eq!(invariant, expected);
+        assert!(diagnostics.is_empty());
+        let after = draft.encode().expect("rejected draft still encodes");
+        assert_eq!(after.bytes, before.bytes);
+        assert_eq!(after.image_id, before.image_id);
+    }
+
+    #[test]
+    fn generic_enum_minted_as_record_is_an_exact_invariant() {
+        let mut draft = ImageDraft::new();
+        let records = generic_enum_registry(&mut draft);
+        let template = records
+            .type_template_by_name("Option")
+            .expect("Option template exists");
+        let _enum_id = records
+            .instantiate_reserved_option(
+                &mut draft,
+                GArg::Scalar(ScalarType::Int),
+                MintSite {
+                    file: "src/main.mw",
+                    span: span(),
+                },
+            )
+            .expect("Option row mints ready");
+        let (_, record_id) = orphan_enum_and_struct(&mut draft);
+        let expected = GenericInvariant::TypeBodyKindMismatch {
+            id: TypeInstId::Record(record_id),
+            body: TypeInstKind::Enum,
+        };
+        let before = draft.encode().expect("seeded draft encodes");
+        let durable = DurableRegistry::default();
+        let functions = FunctionRegistry::default();
+        let generics = GenericRegistry::default();
+        let consts = ConstRegistry::default();
+        let mut diagnostics = Vec::new();
+        let mut lowerer = lowerer(
+            &mut draft,
+            &records,
+            &durable,
+            &functions,
+            &generics,
+            &consts,
+            &mut diagnostics,
+        );
+        lowerer.reject_unification(
+            UnifyError::Invariant(expected),
+            span(),
+            "this generic enum inference",
+        );
+        lowerer.locals.push(Local {
+            name: "item".to_string(),
+            ty: LTy::bare_scalar(ScalarType::Int),
+            mutable: false,
+            slot: 0,
+        });
+        let args = [Argument {
+            name: Some("value".to_string()),
+            value: name("item"),
+        }];
+
+        assert!(
+            lowerer
+                .lower_generic_enum_construct(template, "some", &args, span())
+                .is_none()
+        );
+        let Err(invariant) = lowerer.finish("broken", Vec::new(), ImageType::Unit) else {
+            panic!("wrong minted ID kind rejects finish")
+        };
+        assert_eq!(invariant, expected);
+        assert!(diagnostics.is_empty());
+        let after = draft.encode().expect("rejected draft still encodes");
+        assert_eq!(after.bytes, before.bytes);
+        assert_eq!(after.image_id, before.image_id);
+    }
+
+    #[test]
+    fn ready_enum_id_with_struct_body_rejects_lowering_exactly() {
+        let mut draft = ImageDraft::new();
+        let records = generic_enum_registry(&mut draft);
+        let enum_id = records
+            .instantiate_reserved_option(
+                &mut draft,
+                GArg::Scalar(ScalarType::Int),
+                MintSite {
+                    file: "src/main.mw",
+                    span: span(),
+                },
+            )
+            .expect("Option row mints ready");
+        let expected = GenericInvariant::TypeBodyKindMismatch {
+            id: TypeInstId::Enum(enum_id),
+            body: TypeInstKind::Struct,
+        };
+        let draft_before = draft.encode().expect("seeded draft encodes");
+        let durable = DurableRegistry::default();
+        let functions = FunctionRegistry::default();
+        let generics = GenericRegistry::default();
+        let consts = ConstRegistry::default();
+        let mut diagnostics = Vec::new();
+        let mut lowerer = lowerer(
+            &mut draft,
+            &records,
+            &durable,
+            &functions,
+            &generics,
+            &consts,
+            &mut diagnostics,
+        );
+        assert!(
+            lowerer
+                .accept_resolution::<()>(
+                    Err(ResolveError::Invariant(expected)),
+                    span(),
+                    "this enum match",
+                )
+                .is_none()
+        );
+        lowerer.locals.push(Local {
+            name: "value".to_string(),
+            ty: LTy::Enum {
+                ty: enum_id,
+                optional: false,
+            },
+            mutable: false,
+            slot: 0,
+        });
+
+        assert_eq!(
+            lowerer.lower_match(&name("value"), &[], span()),
+            Flow::Rejected
+        );
+        let Err(invariant) = lowerer.finish("broken", Vec::new(), ImageType::Unit) else {
+            panic!("wrong Ready body rejects finish")
+        };
+        assert_eq!(invariant, expected);
+        assert!(diagnostics.is_empty());
+        let draft_after = draft.encode().expect("rejected draft still encodes");
+        assert_eq!(draft_after.bytes, draft_before.bytes);
+        assert_eq!(draft_after.image_id, draft_before.image_id);
+    }
+
+    #[test]
+    fn template_confirmed_generic_enum_missing_ready_variant_is_invariant() {
+        let mut draft = ImageDraft::new();
+        let records = generic_enum_registry(&mut draft);
+        let template = records
+            .type_template_by_name("Option")
+            .expect("Option template exists");
+        let enum_id = records
+            .instantiate_reserved_option(
+                &mut draft,
+                GArg::Scalar(ScalarType::Int),
+                MintSite {
+                    file: "src/main.mw",
+                    span: span(),
+                },
+            )
+            .expect("Option row mints ready");
+        let expected = GenericInvariant::ReadyEnumVariantMissing {
+            id: enum_id,
+            template,
+            variant: 1,
+        };
+        let draft_before = draft.encode().expect("seeded draft encodes");
+        let durable = DurableRegistry::default();
+        let functions = FunctionRegistry::default();
+        let generics = GenericRegistry::default();
+        let consts = ConstRegistry::default();
+        let mut diagnostics = Vec::new();
+        let mut lowerer = lowerer(
+            &mut draft,
+            &records,
+            &durable,
+            &functions,
+            &generics,
+            &consts,
+            &mut diagnostics,
+        );
+        assert!(
+            lowerer
+                .accept_resolution::<()>(
+                    Err(ResolveError::Invariant(expected)),
+                    span(),
+                    "this generic enum construction",
+                )
+                .is_none()
+        );
+        lowerer.locals.push(Local {
+            name: "item".to_string(),
+            ty: LTy::bare_scalar(ScalarType::Int),
+            mutable: false,
+            slot: 0,
+        });
+        let args = [Argument {
+            name: Some("value".to_string()),
+            value: name("item"),
+        }];
+
+        assert!(
+            lowerer
+                .lower_generic_enum_construct(template, "some", &args, span())
+                .is_none()
+        );
+        let Err(invariant) = lowerer.finish("broken", Vec::new(), ImageType::Unit) else {
+            panic!("missing Ready variant rejects finish")
+        };
+        assert_eq!(invariant, expected);
+        assert!(diagnostics.is_empty());
+        let draft_after = draft.encode().expect("rejected draft still encodes");
+        assert_eq!(draft_after.bytes, draft_before.bytes);
+        assert_eq!(draft_after.image_id, draft_before.image_id);
+    }
+
+    #[test]
+    fn interpolation_invariant_stops_before_later_literal_emission() {
+        let mut draft = ImageDraft::new();
+        let records = generic_enum_registry(&mut draft);
+        let template = records
+            .type_template_by_name("Option")
+            .expect("Option template exists");
+        let enum_id = records
+            .instantiate_reserved_option(
+                &mut draft,
+                GArg::Scalar(ScalarType::Int),
+                MintSite {
+                    file: "src/main.mw",
+                    span: span(),
+                },
+            )
+            .expect("Option row mints ready");
+        let expected = GenericInvariant::ReadyEnumVariantMissing {
+            id: enum_id,
+            template,
+            variant: 1,
+        };
+        let draft_before = draft.encode().expect("seeded draft encodes");
+        let durable = DurableRegistry::default();
+        let functions = FunctionRegistry::default();
+        let generics = GenericRegistry::default();
+        let consts = ConstRegistry::default();
+        let mut diagnostics = Vec::new();
+        let mut lowerer = lowerer(
+            &mut draft,
+            &records,
+            &durable,
+            &functions,
+            &generics,
+            &consts,
+            &mut diagnostics,
+        );
+        assert!(
+            lowerer
+                .accept_resolution::<()>(
+                    Err(ResolveError::Invariant(expected)),
+                    span(),
+                    "this interpolation expression",
+                )
+                .is_none()
+        );
+        lowerer.locals.push(Local {
+            name: "item".to_string(),
+            ty: LTy::bare_scalar(ScalarType::Int),
+            mutable: false,
+            slot: 0,
+        });
+        let parts = [
+            InterpolationPart::Expr(Expression::Call {
+                callee: Box::new(Expression::Name {
+                    segments: vec!["Option".to_string(), "some".to_string()],
+                    segment_spans: vec![span(), span()],
+                    span: span(),
+                }),
+                args: vec![Argument {
+                    name: Some("value".to_string()),
+                    value: name("item"),
+                }],
+                multiline: false,
+                span: span(),
+            }),
+            InterpolationPart::Text {
+                text: "later-sentinel".to_string(),
+                span: span(),
+            },
+        ];
+
+        assert!(lowerer.lower_interpolation(&parts, span()).is_none());
+        assert!(lowerer.code.is_empty());
+        let Err(invariant) = lowerer.finish("broken", Vec::new(), ImageType::Unit) else {
+            panic!("interpolation invariant rejects finish")
+        };
+        assert_eq!(invariant, expected);
+        assert!(diagnostics.is_empty());
+        let draft_after = draft.encode().expect("rejected draft still encodes");
+        assert_eq!(draft_after.bytes, draft_before.bytes);
+        assert_eq!(draft_after.image_id, draft_before.image_id);
+    }
+
+    #[test]
+    fn reserved_constructor_and_try_stop_before_effects_after_typed_reader_failure() {
+        let mut draft = ImageDraft::new();
+        let records = generic_enum_registry(&mut draft);
+        let option = records
+            .instantiate_reserved_option(
+                &mut draft,
+                GArg::Scalar(ScalarType::Int),
+                MintSite {
+                    file: "src/main.mw",
+                    span: span(),
+                },
+            )
+            .expect("Option row mints ready");
+        let expected = GenericInvariant::TypeBodyKindMismatch {
+            id: TypeInstId::Enum(option),
+            body: TypeInstKind::Struct,
+        };
+        let before = draft.encode().expect("seeded draft encodes");
+        let durable = DurableRegistry::default();
+        let functions = FunctionRegistry::default();
+        let generics = GenericRegistry::default();
+        let consts = ConstRegistry::default();
+        let mut diagnostics = Vec::new();
+        let mut lowerer = lowerer(
+            &mut draft,
+            &records,
+            &durable,
+            &functions,
+            &generics,
+            &consts,
+            &mut diagnostics,
+        );
+        assert!(
+            lowerer
+                .accept_resolution::<()>(
+                    Err(ResolveError::Invariant(expected)),
+                    span(),
+                    "this reserved type reader",
+                )
+                .is_none()
+        );
+
+        assert!(
+            lowerer
+                .lower_ctor_as(
+                    CtorKind::None,
+                    &Expression::Name {
+                        segments: vec!["none".to_string()],
+                        segment_spans: vec![span()],
+                        span: span(),
+                    },
+                    LTy::Enum {
+                        ty: option,
+                        optional: false,
+                    },
+                )
+                .is_none()
+        );
+        assert!(lowerer.lower_try(&name("value"), span()).is_none());
+        assert!(lowerer.code.is_empty());
+        assert!(matches!(
+            lowerer.finish("broken", Vec::new(), ImageType::Unit),
+            Err(found) if found == expected
+        ));
+        assert!(diagnostics.is_empty());
+        let after = draft.encode().expect("rejected draft still encodes");
+        assert_eq!(after.bytes, before.bytes);
+        assert_eq!(after.image_id, before.image_id);
+    }
+
+    #[test]
+    fn checked_result_invariant_stops_before_handler_and_patch_work() {
+        let mut draft = ImageDraft::new();
+        let records = generic_enum_registry(&mut draft);
+        let expected = GenericInvariant::ReservedTemplateMissing(Reserved::Option);
+        draft.intern_int(1);
+        draft.intern_int(2);
+        let draft_before = draft.encode().expect("seeded draft encodes");
+        let durable = DurableRegistry::default();
+        let functions = FunctionRegistry::default();
+        let generics = GenericRegistry::default();
+        let consts = ConstRegistry::default();
+        let mut diagnostics = Vec::new();
+        let mut lowerer = lowerer(
+            &mut draft,
+            &records,
+            &durable,
+            &functions,
+            &generics,
+            &consts,
+            &mut diagnostics,
+        );
+        assert!(
+            lowerer
+                .accept_resolution::<()>(
+                    Err(ResolveError::Invariant(expected)),
+                    span(),
+                    "this checked result annotation",
+                )
+                .is_none()
+        );
+        let integer = |text: &str| Expression::Literal {
+            kind: LiteralKind::Integer,
+            text: text.to_string(),
+            span: span(),
+        };
+        let operation = Expression::Binary {
+            op: BinaryOp::Add,
+            left: Box::new(integer("1")),
+            right: Box::new(integer("2")),
+            span: span(),
+        };
+        let annotation = TypeExpr::Apply {
+            head: "Option".to_string(),
+            args: vec![TypeExpr::Name {
+                text: "int".to_string(),
+                span: span(),
+            }],
+            span: span(),
+        };
+        let handler = Block {
+            statements: vec![Statement::Expr {
+                value: Expression::Literal {
+                    kind: LiteralKind::String,
+                    text: "handler-sentinel".to_string(),
+                    span: span(),
+                },
+                span: span(),
+            }],
+            comments: Vec::new(),
+            span: span(),
+        };
+
+        assert_eq!(
+            lowerer.lower_checked(
+                &CheckedBind::Const {
+                    name: "result".to_string(),
+                    ty: Some(annotation),
+                },
+                &operation,
+                Some(&handler),
+                None,
+                span(),
+            ),
+            Flow::Rejected
+        );
+        assert!(lowerer.code.is_empty());
+        let Err(invariant) = lowerer.finish("broken", Vec::new(), ImageType::Unit) else {
+            panic!("checked-result invariant rejects finish")
+        };
+        assert_eq!(invariant, expected);
+        assert!(diagnostics.is_empty());
+        let draft_after = draft.encode().expect("rejected draft still encodes");
+        assert_eq!(draft_after.bytes, draft_before.bytes);
+        assert_eq!(draft_after.image_id, draft_before.image_id);
+    }
+
+    #[test]
+    fn nested_else_if_terminal_invariant_never_falls_through_or_patches() {
+        let mut draft = ImageDraft::new();
+        let records = generic_enum_registry(&mut draft);
+        let expected = GenericInvariant::ReservedTemplateMissing(Reserved::Result);
+        let before = draft.encode().expect("empty draft encodes");
+        let durable = DurableRegistry::default();
+        let functions = FunctionRegistry::default();
+        let generics = GenericRegistry::default();
+        let consts = ConstRegistry::default();
+        let mut diagnostics = Vec::new();
+        let mut lowerer = lowerer(
+            &mut draft,
+            &records,
+            &durable,
+            &functions,
+            &generics,
+            &consts,
+            &mut diagnostics,
+        );
+        assert!(
+            lowerer
+                .accept_resolution::<()>(
+                    Err(ResolveError::Invariant(expected)),
+                    span(),
+                    "this nested condition",
+                )
+                .is_none()
+        );
+        let condition = Expression::Literal {
+            kind: LiteralKind::Bool,
+            text: "true".to_string(),
+            span: span(),
+        };
+        let empty = Block {
+            statements: Vec::new(),
+            comments: Vec::new(),
+            span: span(),
+        };
+        let else_ifs = [ElseIf {
+            condition: condition.clone(),
+            block: empty.clone(),
+        }];
+
+        assert_eq!(
+            lowerer
+                .lower_if_const_bindings(&[], Some(&condition), &empty, &else_ifs, Some(&empty),),
+            Flow::Rejected
+        );
+        assert_eq!(
+            lowerer.lower_cond_chain(&[(&condition, &empty)], Some(&empty)),
+            Flow::Rejected
+        );
+        assert!(lowerer.code.is_empty());
+        assert!(matches!(
+            lowerer.finish("broken", Vec::new(), ImageType::Unit),
+            Err(found) if found == expected
+        ));
+        assert!(diagnostics.is_empty());
+        let after = draft.encode().expect("rejected draft still encodes");
+        assert_eq!(after.bytes, before.bytes);
+        assert_eq!(after.image_id, before.image_id);
+    }
+
+    #[test]
+    fn first_invariant_stops_real_block_before_later_owner_mutation() {
+        let mut draft = ImageDraft::new();
+        let records = generic_enum_registry(&mut draft);
+        let template = records
+            .type_template_by_name("Option")
+            .expect("Option template exists");
+        let enum_id = records
+            .instantiate_reserved_option(
+                &mut draft,
+                GArg::Scalar(ScalarType::Int),
+                MintSite {
+                    file: "src/main.mw",
+                    span: span(),
+                },
+            )
+            .expect("Option row mints ready");
+        let expected = GenericInvariant::ReadyBodyMissing(TypeInstId::Enum(enum_id));
+        let draft_before = draft.encode().expect("seeded draft encodes");
+        let durable = DurableRegistry::default();
+        let functions = FunctionRegistry::default();
+        let generics = GenericRegistry::default();
+        let consts = ConstRegistry::default();
+        let mut diagnostics = Vec::new();
+        let mut lowerer = lowerer(
+            &mut draft,
+            &records,
+            &durable,
+            &functions,
+            &generics,
+            &consts,
+            &mut diagnostics,
+        );
+        assert!(
+            lowerer
+                .accept_resolution::<()>(
+                    Err(ResolveError::Invariant(expected)),
+                    span(),
+                    "this enum match",
+                )
+                .is_none()
+        );
+        lowerer.locals.push(Local {
+            name: "value".to_string(),
+            ty: LTy::Enum {
+                ty: enum_id,
+                optional: false,
+            },
+            mutable: false,
+            slot: 0,
+        });
+        let block = Block {
+            statements: vec![
+                Statement::Match {
+                    scrutinee: name("value"),
+                    arms: Vec::new(),
+                    span: span(),
+                },
+                Statement::Const {
+                    name: "later_generic".to_string(),
+                    ty: Some(TypeExpr::Apply {
+                        head: "Option".to_string(),
+                        args: vec![TypeExpr::Name {
+                            text: "int".to_string(),
+                            span: span(),
+                        }],
+                        span: span(),
+                    }),
+                    value: Expression::Absent { span: span() },
+                    span: span(),
+                },
+                Statement::Expr {
+                    value: Expression::Literal {
+                        kind: LiteralKind::String,
+                        text: "later-sentinel".to_string(),
+                        span: span(),
+                    },
+                    span: span(),
+                },
+                Statement::Expr {
+                    value: name("value"),
+                    span: span(),
+                },
+            ],
+            comments: Vec::new(),
+            span: span(),
+        };
+
+        assert_eq!(lowerer.lower_block(&block), Flow::Rejected);
+        assert!(lowerer.code.is_empty());
+        assert_eq!(lowerer.locals.len(), 1);
+        assert_eq!(lowerer.locals[0].name, "value");
+        assert_eq!(lowerer.slot_count, 0);
+        let Err(invariant) = lowerer.finish("broken", Vec::new(), ImageType::Unit) else {
+            panic!("first block invariant rejects finish")
+        };
+        assert_eq!(invariant, expected);
+        assert!(diagnostics.is_empty());
+        let draft_after = draft.encode().expect("rejected draft still encodes");
+        assert_eq!(draft_after.bytes, draft_before.bytes);
+        assert_eq!(draft_after.image_id, draft_before.image_id);
+
+        assert_eq!(
+            records.mint_type_instance(
+                &mut draft,
+                template,
+                &[GArg::Scalar(ScalarType::Int)],
+                MintSite {
+                    file: "src/main.mw",
+                    span: span(),
+                },
+            ),
+            Ok(TypeInstId::Enum(enum_id))
+        );
+        let after_probe = draft.encode().expect("cache probe leaves draft intact");
+        assert_eq!(after_probe.bytes, draft_before.bytes);
+        assert_eq!(after_probe.image_id, draft_before.image_id);
     }
 }

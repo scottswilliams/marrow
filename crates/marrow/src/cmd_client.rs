@@ -55,7 +55,7 @@ pub(crate) fn client(rest: &[String]) -> ExitCode {
     // identities — a project with unminted durable declarations fails precisely.
     let compiled = match marrow_compile::compile(&project) {
         Ok(compiled) => compiled,
-        Err(diagnostics) => {
+        Err(marrow_compile::CompileFailure::Diagnostics(diagnostics)) => {
             for diagnostic in &diagnostics {
                 eprintln!(
                     "{}:{}:{}: {}: {}",
@@ -66,6 +66,11 @@ pub(crate) fn client(rest: &[String]) -> ExitCode {
                     diagnostic.message
                 );
             }
+            return ExitCode::FAILURE;
+        }
+        Err(marrow_compile::CompileFailure::Invariant(_)) => {
+            let (code, message) = compiler_invariant_report();
+            crate::report_simple_error(code, message);
             return ExitCode::FAILURE;
         }
     };
@@ -229,6 +234,13 @@ fn parse_options(options: &[String]) -> Result<ClientArgs, ExitCode> {
 fn usage(message: &str) -> ExitCode {
     eprintln!("{message}; run marrow --help for usage");
     ExitCode::from(2)
+}
+
+fn compiler_invariant_report() -> (&'static str, &'static str) {
+    (
+        marrow_codes::Code::CliCompilerInvariant.as_str(),
+        "the compiler failed an internal consistency check",
+    )
 }
 
 #[cfg(test)]
