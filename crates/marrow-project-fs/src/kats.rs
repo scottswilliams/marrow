@@ -975,3 +975,253 @@ fn control_empty_overlay_capture_is_byte_stable() {
         .expect("captures");
     assert_eq!(input.modules()[0].source(), b"disk");
 }
+
+// ===== Target-owner KATs: directory admission and path budget =================
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+mod directory_admission {
+    use std::io;
+    use std::path::{Path, PathBuf};
+
+    use super::base_limits;
+    use crate::capture::unix::DirectoryAdmission;
+    use crate::failure::{CaptureFailure, CaptureFailureKind, PhysicalBound, PhysicalRefusal};
+    use crate::limits::AdapterLimits;
+    use crate::path::PathBudget;
+
+    fn ok_entries(order: &[&str]) -> Vec<io::Result<PathBuf>> {
+        order.iter().map(|path| Ok(PathBuf::from(*path))).collect()
+    }
+
+    fn refusal<T>(result: Result<T, CaptureFailure>) -> CaptureFailure {
+        match result {
+            Ok(_) => panic!("expected a refusal"),
+            Err(failure) => failure,
+        }
+    }
+
+    fn bound_of(failure: &CaptureFailure) -> PhysicalBound {
+        match failure.kind() {
+            CaptureFailureKind::Physical(physical) => match physical.refusal() {
+                PhysicalRefusal::Bound { bound, .. } => *bound,
+                other => panic!("expected a bound refusal, got {other:?}"),
+            },
+            _ => panic!("expected a physical failure"),
+        }
+    }
+
+    fn is_io(failure: &CaptureFailure) -> bool {
+        matches!(
+            failure.kind(),
+            CaptureFailureKind::Physical(physical)
+                if matches!(physical.refusal(), PhysicalRefusal::Io { .. } | PhysicalRefusal::Missing { .. })
+        )
+    }
+
+    /// Settle a synthetic all-success batch from a fresh budget, observing the sorted
+    /// relatives and the committed work/retained/visited totals.
+    fn observe(order: &[&str], limits: &AdapterLimits) -> (Vec<String>, usize, usize, usize) {
+        let mut budget = PathBudget::new();
+        let mut visited = 0usize;
+        let children = DirectoryAdmission::settle(
+            ok_entries(order).into_iter(),
+            Path::new("src"),
+            &mut budget,
+            limits,
+            &mut visited,
+        )
+        .expect("an under-bound batch settles");
+        let relatives = children
+            .iter()
+            .map(|child| child.relative().to_string_lossy().into_owned())
+            .collect();
+        (relatives, budget.work(), budget.retained(), visited)
+    }
+
+    #[test]
+    fn settlement_is_commutative_over_yield_order() {
+        let limits = base_limits();
+        let forward = observe(&["/root/a", "/root/b", "/root/c"], &limits);
+        let reverse = observe(&["/root/c", "/root/b", "/root/a"], &limits);
+        let zigzag = observe(&["/root/b", "/root/a", "/root/c"], &limits);
+        assert_eq!(
+            forward, reverse,
+            "reverse yield order gives byte-identical results"
+        );
+        assert_eq!(
+            forward, zigzag,
+            "zigzag yield order gives byte-identical results"
+        );
+        assert_eq!(
+            forward.0,
+            ["src/a", "src/b", "src/c"],
+            "children sort in native order"
+        );
+    }
+
+    #[test]
+    fn a_successful_batch_commits_visited_and_work_once() {
+        let limits = base_limits();
+        let (_, work, retained, visited) = observe(&["/root/aa", "/root/bb"], &limits);
+        // Two 8-byte native paths: work and retained each advance by the exact
+        // aggregate once, and visited by the exact count.
+        assert_eq!(visited, 2);
+        assert_eq!(work, 16);
+        assert_eq!(retained, 16);
+    }
+
+    #[test]
+    fn a_visit_over_the_remaining_allowance_leaves_counters_at_baseline() {
+        let mut limits = base_limits();
+        limits.visited_entries = 3;
+        let mut budget = PathBudget::new();
+        let mut visited = 2usize;
+        let ok = DirectoryAdmission::settle(
+            ok_entries(&["/root/a"]).into_iter(),
+            Path::new("src"),
+            &mut budget,
+            &limits,
+            &mut visited,
+        );
+        assert!(ok.is_ok(), "the N-th visit settles");
+        assert_eq!(visited, 3);
+
+        let baseline_work = budget.work();
+        let baseline_retained = budget.retained();
+        let failure = refusal(DirectoryAdmission::settle(
+            ok_entries(&["/root/b", "/root/c"]).into_iter(),
+            Path::new("src"),
+            &mut budget,
+            &limits,
+            &mut visited,
+        ));
+        assert_eq!(bound_of(&failure), PhysicalBound::VisitedEntries);
+        assert_eq!(visited, 3, "a refused batch leaves visited at the baseline");
+        assert_eq!(budget.work(), baseline_work, "no work commits on refusal");
+        assert_eq!(
+            budget.retained(),
+            baseline_retained,
+            "no live charge commits on refusal"
+        );
+    }
+
+    #[test]
+    fn count_first_wins_when_the_extra_entry_is_a_success() {
+        let mut limits = base_limits();
+        limits.visited_entries = 1;
+        let mut budget = PathBudget::new();
+        let mut visited = 0usize;
+        let failure = refusal(DirectoryAdmission::settle(
+            ok_entries(&["/root/a", "/root/b"]).into_iter(),
+            Path::new("src"),
+            &mut budget,
+            &limits,
+            &mut visited,
+        ));
+        assert_eq!(bound_of(&failure), PhysicalBound::VisitedEntries);
+    }
+
+    #[test]
+    fn the_first_iterator_error_wins_without_an_extra_success() {
+        let mut limits = base_limits();
+        limits.visited_entries = 1;
+        let mut budget = PathBudget::new();
+        let mut visited = 0usize;
+        // `[Ok, Err]` with a one-entry allowance: the error at the second position
+        // wins because no extra success was observed.
+        let entries: Vec<io::Result<PathBuf>> = vec![
+            Ok(PathBuf::from("/root/a")),
+            Err(io::Error::from(io::ErrorKind::PermissionDenied)),
+        ];
+        let failure = refusal(DirectoryAdmission::settle(
+            entries.into_iter(),
+            Path::new("src"),
+            &mut budget,
+            &limits,
+            &mut visited,
+        ));
+        assert!(
+            is_io(&failure),
+            "an iterator error is an I/O refusal, not a visit bound"
+        );
+    }
+
+    #[test]
+    fn an_extra_success_before_an_error_still_wins_by_count() {
+        let mut limits = base_limits();
+        limits.visited_entries = 1;
+        let mut budget = PathBudget::new();
+        let mut visited = 0usize;
+        // `[Ok, Ok, Err]`: the extra success at the second position establishes N+1
+        // before the error is ever polled.
+        let entries: Vec<io::Result<PathBuf>> = vec![
+            Ok(PathBuf::from("/root/a")),
+            Ok(PathBuf::from("/root/b")),
+            Err(io::Error::from(io::ErrorKind::PermissionDenied)),
+        ];
+        let failure = refusal(DirectoryAdmission::settle(
+            entries.into_iter(),
+            Path::new("src"),
+            &mut budget,
+            &limits,
+            &mut visited,
+        ));
+        assert_eq!(bound_of(&failure), PhysicalBound::VisitedEntries);
+    }
+
+    #[test]
+    fn retained_wins_a_simultaneous_aggregate_bound() {
+        let mut limits = base_limits();
+        limits.max_retained_path_units = 1;
+        limits.max_path_work_units = 1;
+        let mut budget = PathBudget::new();
+        let mut visited = 0usize;
+        let failure = refusal(DirectoryAdmission::settle(
+            ok_entries(&["/root/a"]).into_iter(),
+            Path::new("src"),
+            &mut budget,
+            &limits,
+            &mut visited,
+        ));
+        assert_eq!(
+            bound_of(&failure),
+            PhysicalBound::RetainedPathUnits,
+            "retained wins when both aggregate bounds would be exceeded"
+        );
+        assert_eq!(
+            visited, 0,
+            "a refused aggregate leaves visited at the baseline"
+        );
+    }
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+mod path_budget {
+    use crate::path::{PathBudget, ReserveError};
+
+    #[test]
+    fn a_checked_add_overflow_is_reported_without_wrapping() {
+        let mut budget = PathBudget::new();
+        let _lease = budget
+            .reserve(usize::MAX, usize::MAX, usize::MAX)
+            .expect("the first reserve fits the range");
+        let overflow = budget.reserve(1, usize::MAX, usize::MAX);
+        assert!(matches!(overflow, Err(ReserveError::Overflow)));
+    }
+
+    #[test]
+    fn a_released_lease_returns_the_live_charge_but_never_refunds_work() {
+        let mut budget = PathBudget::new();
+        {
+            let _lease = budget.reserve(10, 100, 100).expect("reserve fits");
+            assert_eq!(budget.retained(), 10);
+            assert_eq!(budget.work(), 10);
+        }
+        assert_eq!(
+            budget.retained(),
+            0,
+            "a dropped lease releases its live charge"
+        );
+        assert_eq!(budget.work(), 10, "work is monotone and never refunds");
+    }
+}
