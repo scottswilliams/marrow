@@ -568,11 +568,6 @@ impl AdmittedObject {
         self.live.into_guard()
     }
 
-    /// Consume into terminal failure evidence, transferring the live charge.
-    fn into_operational(self) -> OperationalPath {
-        self.live.into_operational()
-    }
-
     fn read_bounded(
         &mut self,
         primary: ReadBudget,

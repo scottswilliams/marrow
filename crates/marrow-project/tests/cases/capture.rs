@@ -166,16 +166,10 @@ fn the_over_long_offender_is_the_lexically_smallest_raw_path_not_the_shortest() 
         actual: MAX_FILE_IDENTITY_BYTES + 100,
     };
 
-    let forward = capture(vec![
-        file(&larger_shorter, "y"),
-        file(&smaller_longer, "x"),
-    ])
-    .expect_err("refuses");
-    let reverse = capture(vec![
-        file(&smaller_longer, "x"),
-        file(&larger_shorter, "y"),
-    ])
-    .expect_err("refuses");
+    let forward =
+        capture(vec![file(&larger_shorter, "y"), file(&smaller_longer, "x")]).expect_err("refuses");
+    let reverse =
+        capture(vec![file(&smaller_longer, "x"), file(&larger_shorter, "y")]).expect_err("refuses");
     assert_eq!(*forward.kind(), expected);
     assert_eq!(forward.kind(), reverse.kind());
 }
@@ -185,8 +179,7 @@ fn an_over_long_identity_precedes_a_syntactically_invalid_path() {
     // A valid-overbound identity and a syntax-invalid path together: the pathless
     // `TooLong` refusal wins, before the ordinary invalid-path collection.
     let over = identity_of_len('m', MAX_FILE_IDENTITY_BYTES + 1);
-    let error = capture(vec![file("/etc/x.mw", "x"), file(&over, "y")])
-        .expect_err("refuses");
+    let error = capture(vec![file("/etc/x.mw", "x"), file(&over, "y")]).expect_err("refuses");
     assert!(matches!(
         error.kind(),
         CaptureErrorKind::SourcePathTooLong { .. }
@@ -198,7 +191,10 @@ fn an_identity_at_the_maximum_captures() {
     let at_max = identity_of_len('a', MAX_FILE_IDENTITY_BYTES);
     let input = capture(vec![file(&at_max, "x")]).expect("4096 bytes captures");
     assert_eq!(input.modules().len(), 1);
-    assert_eq!(input.modules()[0].identity().as_str().len(), MAX_FILE_IDENTITY_BYTES);
+    assert_eq!(
+        input.modules()[0].identity().as_str().len(),
+        MAX_FILE_IDENTITY_BYTES
+    );
 }
 
 #[test]

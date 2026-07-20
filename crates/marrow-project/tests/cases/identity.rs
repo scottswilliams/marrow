@@ -190,7 +190,10 @@ fn a_valid_identity_at_the_maximum_is_accepted_and_one_over_is_refused() {
             actual: MAX_FILE_IDENTITY_BYTES + 1,
         }),
     );
-    assert_eq!(FileIdentity::validate(&over).err(), FileIdentity::check(&over).err());
+    assert_eq!(
+        FileIdentity::validate(&over).err(),
+        FileIdentity::check(&over).err()
+    );
 }
 
 #[test]

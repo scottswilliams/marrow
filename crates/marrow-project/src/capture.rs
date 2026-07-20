@@ -403,7 +403,9 @@ impl CaptureError {
         Self {
             code: Code::ProjectSourcePath,
             kind: CaptureErrorKind::SourcePathTooLong { limit, actual },
-            message: format!("source path is {actual} bytes, over the {limit}-byte source-path limit"),
+            message: format!(
+                "source path is {actual} bytes, over the {limit}-byte source-path limit"
+            ),
         }
     }
 
