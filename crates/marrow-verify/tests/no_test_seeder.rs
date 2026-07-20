@@ -14,7 +14,8 @@ use std::path::{Path, PathBuf};
 
 /// The one source file allowed to construct a `VerifiedImage`: the verifier's
 /// sealing pass.
-const SEALING_FILE: &str = "crates/marrow-verify/src/verify/mod.rs";
+const SEALING_FILE: &str = "crates/marrow-verify/src/verify/seal.rs";
+const VERIFY_FILE: &str = "crates/marrow-verify/src/verify/mod.rs";
 
 fn workspace_root() -> PathBuf {
     // CARGO_MANIFEST_DIR is `<root>/crates/marrow-verify`.
@@ -99,8 +100,8 @@ fn verify_is_the_only_function_returning_a_verified_image() {
             let trimmed = line.trim_start();
             let returns_image = trimmed.starts_with("pub fn ") || trimmed.starts_with("fn ");
             if returns_image && line.contains("-> VerifiedImage") {
-                let is_verify = path == SEALING_FILE
-                    && (trimmed.starts_with("pub fn verify(") || trimmed.starts_with("fn seal("));
+                let is_verify = (path == VERIFY_FILE && trimmed.starts_with("pub fn verify("))
+                    || (path == SEALING_FILE && trimmed.starts_with("fn seal("));
                 assert!(
                     is_verify,
                     "{path} declares a function returning VerifiedImage outside the verifier: \
