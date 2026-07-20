@@ -59,8 +59,8 @@ pub(crate) fn test(rest: &[String]) -> ExitCode {
                 .iter()
                 .map(|diagnostic| Record::Diagnostic {
                     code: diagnostic.code,
-                    line: diagnostic.line,
-                    column: diagnostic.column,
+                    line: diagnostic.line(),
+                    column: diagnostic.column(),
                 })
                 .collect();
             return emit_records(args.format, &records, ExitCode::FAILURE);

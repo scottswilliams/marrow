@@ -95,7 +95,7 @@ pub fn make(): string {
             )
         });
     assert!(
-        hit.line >= 1 && hit.column >= 1,
+        hit.line() >= 1 && hit.column() >= 1,
         "the duplicate-name rejection carries a located span: {hit:?}"
     );
 }

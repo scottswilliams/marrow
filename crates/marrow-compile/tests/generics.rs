@@ -89,7 +89,7 @@ fn assert_one_located_limit(diagnostics: &[SourceDiagnostic], line: u32, column:
     let diagnostic = &diagnostics[0];
     assert_eq!(diagnostic.code, "check.instantiation_limit");
     assert_eq!(diagnostic.file, "src/main.mw");
-    assert_eq!((diagnostic.line, diagnostic.column), (line, column));
+    assert_eq!((diagnostic.line(), diagnostic.column()), (line, column));
 }
 
 fn assert_diagnostic_sites(diagnostics: &[SourceDiagnostic], expected: &[(&str, u32, u32)]) {
@@ -101,7 +101,7 @@ fn assert_diagnostic_sites(diagnostics: &[SourceDiagnostic], expected: &[(&str, 
     );
     let actual: Vec<(&str, u32, u32)> = diagnostics
         .iter()
-        .map(|diagnostic| (diagnostic.code, diagnostic.line, diagnostic.column))
+        .map(|diagnostic| (diagnostic.code, diagnostic.line(), diagnostic.column()))
         .collect();
     assert_eq!(actual, expected, "{diagnostics:#?}");
 }
@@ -620,7 +620,7 @@ pub fn driver(): int {
     let diagnostic = &diagnostics[0];
     assert_eq!(diagnostic.code, "check.instantiation_limit");
     assert_eq!(diagnostic.file, "src/library.mw");
-    assert_eq!((diagnostic.line, diagnostic.column), (7, 25));
+    assert_eq!((diagnostic.line(), diagnostic.column()), (7, 25));
 }
 
 /// A monomorphic signature cannot silently drop a parameter whose generic type
@@ -1058,7 +1058,7 @@ pub fn driver(value: Pair<int, string>): int {
     assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
     assert_eq!(diagnostics[0].code, "check.unsupported");
     assert_eq!(diagnostics[0].file, "src/main.mw");
-    assert_eq!((diagnostics[0].line, diagnostics[0].column), (7, 22));
+    assert_eq!((diagnostics[0].line(), diagnostics[0].column()), (7, 22));
 }
 
 /// A genuinely unsupported checked-result annotation remains the contextual

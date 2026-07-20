@@ -60,8 +60,8 @@ pub(crate) fn client(rest: &[String]) -> ExitCode {
                 eprintln!(
                     "{}:{}:{}: {}: {}",
                     diagnostic.file,
-                    diagnostic.line,
-                    diagnostic.column,
+                    diagnostic.line(),
+                    diagnostic.column(),
                     diagnostic.code,
                     diagnostic.message
                 );

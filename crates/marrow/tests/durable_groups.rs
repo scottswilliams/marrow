@@ -552,7 +552,7 @@ fn a_read_projecting_off_a_stored_durable_field_is_a_located_type_error() {
         .find(|d| d.code == marrow_codes::Code::CheckType.as_str())
         .unwrap_or_else(|| panic!("a check.type diagnostic for the projection: {diagnostics:?}"));
     assert!(
-        hit.line >= 1 && hit.column >= 1,
+        hit.line() >= 1 && hit.column() >= 1,
         "the rejection carries a located span",
     );
 }
@@ -566,7 +566,7 @@ fn a_write_through_a_stored_durable_field_projection_is_located() {
          ^books[shelf, id].title.sub = v\n    }\n}\n",
     );
     assert!(
-        diagnostics.iter().any(|d| d.line >= 1 && d.column >= 1),
+        diagnostics.iter().any(|d| d.line() >= 1 && d.column() >= 1),
         "the write is refused with a located diagnostic: {diagnostics:?}",
     );
 }
@@ -580,7 +580,7 @@ fn a_delete_through_a_stored_durable_field_projection_is_located() {
          delete ^books[shelf, id].title.sub\n    }\n}\n",
     );
     assert!(
-        diagnostics.iter().any(|d| d.line >= 1 && d.column >= 1),
+        diagnostics.iter().any(|d| d.line() >= 1 && d.column() >= 1),
         "the delete is refused with a located diagnostic: {diagnostics:?}",
     );
 }
@@ -599,7 +599,7 @@ fn a_missing_group_leaf_still_reports_its_group_diagnostic() {
         .find(|d| d.code == marrow_codes::Code::CheckType.as_str())
         .unwrap_or_else(|| panic!("a check.type diagnostic for the group leaf: {diagnostics:?}"));
     assert!(
-        hit.line >= 1 && hit.column >= 1,
+        hit.line() >= 1 && hit.column() >= 1,
         "the rejection carries a located span",
     );
 }

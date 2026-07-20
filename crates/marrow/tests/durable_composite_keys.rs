@@ -550,7 +550,7 @@ fn bounded_traversal_over_a_composite_layer_is_rejected() {
         .find(|d| d.code == marrow_codes::Code::CheckUnsupported.as_str())
         .expect("a check.unsupported diagnostic for composite-key traversal");
     assert!(
-        hit.line >= 1 && hit.column >= 1,
+        hit.line() >= 1 && hit.column() >= 1,
         "the rejection carries a located span",
     );
 }
@@ -577,7 +577,7 @@ fn a_missing_field_through_a_composite_root_place_names_the_root_container() {
         "a composite-root place names its root container, not an empty branch",
     );
     assert!(
-        hit.line >= 1 && hit.column >= 1,
+        hit.line() >= 1 && hit.column() >= 1,
         "the rejection carries a located span",
     );
 }

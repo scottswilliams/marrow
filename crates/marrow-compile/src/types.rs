@@ -7636,7 +7636,7 @@ mod instantiation_state_tests {
         let first = registry.take_generic_diagnostics().into_ordered();
         assert_eq!(first.len(), 1);
         assert_eq!(first[0].code, Code::CheckInstantiationLimit.as_str());
-        assert_eq!((first[0].line, first[0].column), (10, 9));
+        assert_eq!((first[0].line(), first[0].column()), (10, 9));
         assert_eq!(
             registry.mint_type_instance(&mut draft, 0, &[GArg::Scalar(ScalarType::Int)], site(20),),
             Err(ResolveError::Refusal(ResolveRefusal::Limit))

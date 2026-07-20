@@ -8,12 +8,17 @@ use marrow_project::{IdentityAnchor, IdentityKind};
 use marrow_syntax::SourceSpan;
 
 /// A single source diagnostic.
+///
+/// The full UTF-8 [`SourceSpan`] of the offending construct is retained, not only
+/// its 1-based start point: the editor analysis floor projects the byte range into
+/// a selection, and the point `line`/`column` are read back from the span so there
+/// is one span owner. `line()`/`column()` expose the start point every existing
+/// caller consumes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SourceDiagnostic {
     pub code: &'static str,
     pub file: String,
-    pub line: u32,
-    pub column: u32,
+    pub span: SourceSpan,
     pub message: String,
     /// The typed durable-identity gap behind a `check.durable_identity`
     /// diagnostic, `None` for every other code. The CLI's `marrow run` mint
@@ -43,8 +48,7 @@ impl SourceDiagnostic {
         Self {
             code,
             file: file.to_string(),
-            line: span.line,
-            column: span.column,
+            span,
             message,
             identity: None,
         }
@@ -60,10 +64,24 @@ impl SourceDiagnostic {
         Self {
             code,
             file: file.to_string(),
-            line: span.line,
-            column: span.column,
+            span,
             message,
             identity: Some(gap),
         }
+    }
+
+    /// The full UTF-8 span of the offending construct.
+    pub fn span(&self) -> SourceSpan {
+        self.span
+    }
+
+    /// The 1-based start line of the diagnostic, read from its span.
+    pub fn line(&self) -> u32 {
+        self.span.line
+    }
+
+    /// The 1-based start column of the diagnostic, read from its span.
+    pub fn column(&self) -> u32 {
+        self.span.column
     }
 }

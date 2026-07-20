@@ -78,7 +78,7 @@ fn assert_rejected(body: &str, code: &str) {
             )
         });
     assert!(
-        hit.line >= 1 && hit.column >= 1,
+        hit.line() >= 1 && hit.column() >= 1,
         "the rejection carries a located span: {hit:?}"
     );
 }

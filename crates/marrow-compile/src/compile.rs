@@ -586,8 +586,14 @@ fn build(project: &ProjectInput, mode: TestMode) -> Result<Built, CompileFailure
             Err(_) => diagnostics.push(SourceDiagnostic {
                 code: Code::CheckUnsupported.as_str(),
                 file,
-                line: 1,
-                column: 1,
+                // A non-UTF-8 file has no parsed construct to point at: a
+                // zero-length span at the file start, whose 1-based point is 1:1.
+                span: SourceSpan {
+                    start_byte: 0,
+                    end_byte: 0,
+                    line: 1,
+                    column: 1,
+                },
                 message: "source file is not valid UTF-8".to_string(),
                 identity: None,
             }),

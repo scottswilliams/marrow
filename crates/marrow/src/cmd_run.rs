@@ -239,8 +239,8 @@ fn diagnostic_records(diagnostics: &[SourceDiagnostic]) -> Vec<Record> {
         .iter()
         .map(|diagnostic| Record::Diagnostic {
             code: diagnostic.code,
-            line: diagnostic.line,
-            column: diagnostic.column,
+            line: diagnostic.line(),
+            column: diagnostic.column(),
         })
         .collect()
 }
