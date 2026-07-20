@@ -2271,7 +2271,8 @@ fn ent(value: i64, label: Option<&str>) -> EntryValue {
 mod read {
     use super::*;
     use crate::durable::AuthorizedSite;
-    use crate::durable::store::{op_index_lookup, op_index_scan, resolve_site};
+    use crate::durable::store::resolve::resolve_site;
+    use crate::durable::store::{op_index_lookup, op_index_scan};
 
     fn scan_site() -> AuthorizedSite {
         resolve_site(&indexed_schema(), 0, &SiteTarget::IndexScan(0))
