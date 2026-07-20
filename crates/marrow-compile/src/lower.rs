@@ -4837,6 +4837,19 @@ impl<'a> FnLowerer<'a> {
                     self.fail(unsupported(self.file, span, "this string literal"));
                     return None;
                 };
+                if decoded.len() > marrow_image::bounds::MAX_STRING_BYTES {
+                    self.fail(SourceDiagnostic::at(
+                        Code::CheckResourceLimit.as_str(),
+                        self.file,
+                        span,
+                        format!(
+                            "a string literal is {} bytes; the fixed limit is {}",
+                            decoded.len(),
+                            marrow_image::bounds::MAX_STRING_BYTES
+                        ),
+                    ));
+                    return None;
+                }
                 (ScalarType::Text, self.draft.intern_text(&decoded))
             }
             // The prototype's `1.second` duration-suffix literal is not in the beta

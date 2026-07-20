@@ -5285,6 +5285,19 @@ fn declare_enums<'a>(
             ));
             continue;
         }
+        if decl.members.len() > marrow_image::bounds::MAX_VARIANTS {
+            diagnostics.push(SourceDiagnostic::at(
+                Code::CheckResourceLimit.as_str(),
+                file,
+                decl.name_span,
+                format!(
+                    "an enum declares {} members; the fixed limit is {}",
+                    decl.members.len(),
+                    marrow_image::bounds::MAX_VARIANTS
+                ),
+            ));
+            continue;
+        }
         let name_id = draft.intern_string(&decl.name);
         let enum_id = draft.add_enum_type(EnumTypeDef {
             name: name_id,
@@ -5413,6 +5426,19 @@ fn enum_payload(
     member: &EnumMember,
     diagnostics: &mut Vec<SourceDiagnostic>,
 ) -> Option<(Vec<EnumPayloadInfo>, Vec<ScalarType>)> {
+    if member.payload.len() > marrow_image::bounds::MAX_PAYLOAD_FIELDS {
+        diagnostics.push(SourceDiagnostic::at(
+            Code::CheckResourceLimit.as_str(),
+            file,
+            member.span,
+            format!(
+                "an enum member carries {} payload fields; the fixed limit is {}",
+                member.payload.len(),
+                marrow_image::bounds::MAX_PAYLOAD_FIELDS
+            ),
+        ));
+        return None;
+    }
     let mut payload = Vec::new();
     let mut scalars = Vec::new();
     let mut ok = true;

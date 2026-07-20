@@ -426,10 +426,14 @@ fn build_one(
     let records = type_metadata.records;
     let metadata = &mut *type_metadata.metadata;
     if store.root.keys.len() > bounds::MAX_KEY_COLUMNS {
-        diagnostics.push(unsupported(
+        diagnostics.push(resource_limit(
             file,
             store.root.span,
-            "a store key with more than eight columns",
+            format!(
+                "a store root key tuple has {} columns; the fixed limit is {}",
+                store.root.keys.len(),
+                bounds::MAX_KEY_COLUMNS
+            ),
         ));
         return Ok(None);
     }
@@ -778,7 +782,20 @@ struct IdentityResolver<'a> {
     /// The first compiler-owned enum-shape coherence failure. It bypasses source
     /// diagnostics and aborts the durable build at the compile invariant boundary.
     invariant: Option<GenericInvariant>,
+    /// The struct/enum value types on the current value-shape recursion path. It
+    /// bounds the recursion by the finite distinct-type set and distinguishes a
+    /// finite acyclic value nested past the depth bound (a `check.resource_limit`)
+    /// from a cyclic value (owned by the later value-cycle `check.recursion` pass),
+    /// so the two never both report.
+    value_path: Vec<ValueNode>,
     diagnostics: &'a mut Vec<SourceDiagnostic>,
+}
+
+/// One struct or enum value type on the durable value-shape recursion path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ValueNode {
+    Struct(marrow_image::TypeId),
+    Enum(marrow_image::EnumId),
 }
 
 impl<'a> IdentityResolver<'a> {
@@ -795,6 +812,7 @@ impl<'a> IdentityResolver<'a> {
             complete: true,
             seen_enums: BTreeSet::new(),
             invariant: None,
+            value_path: Vec::new(),
             diagnostics,
         }
     }
@@ -814,31 +832,67 @@ impl<'a> IdentityResolver<'a> {
         ty: GArg,
         depth: usize,
     ) -> DurableValueShape {
-        // A well-typed durable value is acyclic and shallow; exceeding the bound means
-        // the value graph is cyclic (a struct or enum reaching itself). The checker's
-        // value-cycle pass reports that as `check.recursion`; here the bound only
-        // stops unbounded recursion, marking the graph incomplete so its placeholder
-        // shape is discarded (no duplicate diagnostic).
-        if depth > bounds::MAX_DURABLE_VALUE_DEPTH {
-            self.complete = false;
-            return DurableValueShape::Scalar(ScalarType::Int.image());
-        }
         match ty {
             GArg::Scalar(scalar) => DurableValueShape::Scalar(scalar.image()),
             GArg::Nominal(_) => DurableValueShape::Scalar(ScalarType::Int.image()),
-            GArg::Struct(type_id) => match records.struct_by_type(type_id) {
-                Some(info) => DurableValueShape::Struct(
-                    info.fields
-                        .iter()
-                        .map(|field| self.build_value_shape(records, metadata, field.ty, depth + 1))
-                        .collect(),
-                ),
-                None => {
-                    self.reject_value("this struct value");
-                    DurableValueShape::Struct(Vec::new())
+            GArg::Struct(type_id) => {
+                // A struct already on the path closes a value cycle: leave it to the
+                // later value-cycle pass (`check.recursion`) and drop the graph, so a
+                // cyclic value never also reports a resource limit. The path bounds the
+                // recursion, so a finite acyclic value that reaches the depth bound is
+                // genuinely over-deep and reports its own `check.resource_limit`.
+                if self.value_path.contains(&ValueNode::Struct(type_id)) {
+                    self.complete = false;
+                    return DurableValueShape::Scalar(ScalarType::Int.image());
                 }
-            },
-            GArg::Enum(enum_id) => self.build_enum_value_shape(records, metadata, enum_id, depth),
+                if depth > bounds::MAX_DURABLE_VALUE_DEPTH {
+                    self.reject_resource_limit(self.span, over_deep_value_message());
+                    return DurableValueShape::Scalar(ScalarType::Int.image());
+                }
+                match records.struct_by_type(type_id) {
+                    Some(info) => {
+                        if info.fields.len() > bounds::MAX_STRUCT_LEAVES {
+                            self.reject_resource_limit(
+                                self.span,
+                                format!(
+                                    "a durable struct value carries more than the fixed limit \
+                                     of {} leaves",
+                                    bounds::MAX_STRUCT_LEAVES
+                                ),
+                            );
+                            return DurableValueShape::Scalar(ScalarType::Int.image());
+                        }
+                        self.value_path.push(ValueNode::Struct(type_id));
+                        let leaves = info
+                            .fields
+                            .iter()
+                            .map(|field| {
+                                self.build_value_shape(records, metadata, field.ty, depth + 1)
+                            })
+                            .collect();
+                        self.value_path.pop();
+                        DurableValueShape::Struct(leaves)
+                    }
+                    None => {
+                        self.reject_value("this struct value");
+                        DurableValueShape::Struct(Vec::new())
+                    }
+                }
+            }
+            GArg::Enum(enum_id) => {
+                if self.value_path.contains(&ValueNode::Enum(enum_id)) {
+                    self.complete = false;
+                    return DurableValueShape::Scalar(ScalarType::Int.image());
+                }
+                if depth > bounds::MAX_DURABLE_VALUE_DEPTH {
+                    self.reject_resource_limit(self.span, over_deep_value_message());
+                    return DurableValueShape::Scalar(ScalarType::Int.image());
+                }
+                self.value_path.push(ValueNode::Enum(enum_id));
+                let shape = self.build_enum_value_shape(records, metadata, enum_id, depth);
+                self.value_path.pop();
+                shape
+            }
             GArg::Collection(_) => {
                 self.reject_value(
                     "a collection stored directly in a durable field (a large collection \
@@ -952,6 +1006,15 @@ impl<'a> IdentityResolver<'a> {
             .push(unsupported(self.file, self.span, subject));
     }
 
+    /// Report a durable construct that crosses a fixed compiler-owned resource bound
+    /// at `span`, and mark the graph incomplete so its placeholder never reaches the
+    /// image.
+    fn reject_resource_limit(&mut self, span: SourceSpan, message: String) {
+        self.complete = false;
+        self.diagnostics
+            .push(resource_limit(self.file, span, message));
+    }
+
     /// Resolve one anchor to its live ledger id. On a gap this reports the precise
     /// `(kind, path)` diagnostic, flips `complete` to false, and returns a
     /// placeholder id — the caller discards the whole graph when `complete` is
@@ -1042,6 +1105,17 @@ impl<'a> IdentityResolver<'a> {
         group: &GroupDecl,
         path: &str,
     ) -> Vec<KeyColumn> {
+        if group.keys.len() > bounds::MAX_KEY_COLUMNS {
+            self.reject_resource_limit(
+                group.span,
+                format!(
+                    "a branch key tuple has {} columns; the fixed limit is {}",
+                    group.keys.len(),
+                    bounds::MAX_KEY_COLUMNS
+                ),
+            );
+            return Vec::new();
+        }
         let scalars = match resolve_key_scalars(
             self.file,
             group.span,
@@ -1175,6 +1249,21 @@ impl<'a> IdentityResolver<'a> {
         let mut shapes = Vec::with_capacity(indexes.len());
         let mut seen_names: Vec<&str> = Vec::new();
         for index in indexes {
+            // The projected component count crosses the fixed image projection width
+            // before the index's leaves are resolved or its identity minted.
+            if index.args.len() > bounds::MAX_INDEX_COMPONENTS {
+                self.complete = false;
+                self.diagnostics.push(resource_limit(
+                    self.file,
+                    index.span,
+                    format!(
+                        "a managed index projects {} components; the fixed limit is {}",
+                        index.args.len(),
+                        bounds::MAX_INDEX_COMPONENTS
+                    ),
+                ));
+                continue;
+            }
             // The index name shares the root's source namespace with the identity keys,
             // the stored fields, and the other indexes; a collision has no unambiguous
             // address.
@@ -1710,6 +1799,20 @@ fn unsupported(file: &str, span: SourceSpan, subject: &str) -> SourceDiagnostic 
         file,
         span,
         format!("{subject} is not yet supported on the beta line"),
+    )
+}
+
+/// A `check.resource_limit`: one durable construct crosses a fixed compiler-owned
+/// bound the image cannot represent, reported at the offending construct's span so
+/// the source, not a fabricated location, carries the diagnostic.
+fn resource_limit(file: &str, span: SourceSpan, message: String) -> SourceDiagnostic {
+    SourceDiagnostic::at(Code::CheckResourceLimit.as_str(), file, span, message)
+}
+
+fn over_deep_value_message() -> String {
+    format!(
+        "a durable field value nests structs or enums deeper than the fixed limit of {} levels",
+        bounds::MAX_DURABLE_VALUE_DEPTH
     )
 }
 

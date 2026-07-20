@@ -195,7 +195,7 @@ fn over_long_string_literal_reports_resource_limit() {
 fn over_wide_enum_reports_resource_limit() {
     let variants: Vec<String> = (0..257).map(|i| format!("    V{i}")).collect();
     let source = format!(
-        "module main\n\nenum E {{\n{}\n}}\n\npub fn pick(): E {{\n    return E::V0\n}}\n",
+        "module main\n\nenum E {{\n{}\n}}\n\npub fn noop(): int {{\n    return 0\n}}\n",
         variants.join("\n")
     );
     assert_source_resource_limit(compile(&project(&source, None)));
@@ -209,7 +209,7 @@ fn over_wide_enum_reports_resource_limit() {
 fn over_wide_variant_payload_reports_resource_limit() {
     let payload: Vec<String> = (0..65).map(|i| format!("a{i}: int")).collect();
     let source = format!(
-        "module main\n\nenum E {{\n    Small\n    Big({})\n}}\n\npub fn pick(): E {{\n    return E::Small\n}}\n",
+        "module main\n\nenum E {{\n    Small\n    Big({})\n}}\n\npub fn noop(): int {{\n    return 0\n}}\n",
         payload.join(", "),
     );
     assert_source_resource_limit(compile(&project(&source, None)));
