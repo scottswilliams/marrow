@@ -88,9 +88,10 @@ explicit:
   contain.
 
 The intended language is useful without a store. Ordinary modules, functions,
-algebraic data types, generics, closures, collections, packages, formatting,
-testing, and editor support are language foundations. Direct durable state is
-the differentiator, not a substitute for those foundations.
+algebraic data types, generics, collections, packages, formatting, testing, and
+editor support are language foundations, with closures deferred until a
+maintained program needs them. Direct durable state is the differentiator, not a
+substitute for those foundations.
 
 ## Current implementation
 
@@ -101,8 +102,9 @@ the trustworthy decoupled parts retained.
 | Area | Current implementation |
 |---|---|
 | Front end | Native lexer, parser, and formatter for `.mw` source with typed parse diagnostics |
-| CLI | `marrow fmt` over a single file, plus `--version`/`--help`; other command names report `cli.command_unsupported` until refounded |
-| Storage engine | A private ordered-byte engine contract with in-memory and redb backends under one conformance suite, plus the logical key/value/civil-date codecs, with no source-language consumer yet |
+| CLI | `marrow init`, `marrow fmt` (a single file or a project directory, `--check`/`--write`), `marrow run`, `marrow test`, and `marrow client typescript`, plus `--version`/`--help`; the refounding command names (`check`, `data`, `doctor`, `evolve`, `serve`, `backup`, `restore`) report `cli.command_unsupported` until they land |
+| Compiler pipeline | The storeless compiler, reproducible program image, independent verifier, bytecode VM, and typed path kernel run a narrow, growing language subset end to end; a well-formed construct outside the admitted subset is a typed `check.unsupported` diagnostic |
+| Storage engine | A private ordered-byte engine contract with in-memory and redb backends under one conformance suite, plus the logical key/value/civil-date codecs; the path kernel is the engine's source-language consumer through a narrow byte seam |
 
 The prototype checker, tree-walking interpreter, catalog, durable lifecycle, and
 the `surface`/server/client families were deleted at B00 and are being rebuilt
@@ -114,8 +116,9 @@ lane.
 The beta is planned as one canonical distribution with:
 
 - an ordinary storeless language demonstrated by a useful command-line program;
-- a light Git/path package workflow with an exact lock, offline cache, and
-  vendoring;
+- a light Git/path package workflow with exact pinned dependency edges, a
+  separate stable-identity ledger, and a verified offline cache, with no
+  dependency lock file or vendoring;
 - canonical, independently verified program images and a portable VM;
 - direct durable trees over ordinary language values, explicit transactions,
   and bounded ordered traversal;
@@ -136,7 +139,7 @@ reference pages move together.
 ## Scope
 
 Marrow does not currently provide a query language, planner, ORM, general CRUD
-generator, compiler-integrated path authorization, bytecode, a supported
+generator, compiler-integrated path authorization, a supported
 desktop bundle or public serving profile, replication, high availability, or
 institutional application certification.
 

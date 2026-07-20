@@ -16,11 +16,15 @@ not the ambition. This raises the design bar without licensing maturity claims �
 the documentation standard's evidence rules still govern what may be called
 production-ready.
 
-The current production path is a parser, checker, tree interpreter, catalog,
-and redb-backed ordered tree. The target is one package-aware compiler,
-canonical image, independent verifier, VM, path kernel, lifecycle, and private
-qualified engine. Do not describe target ownership as implemented today or turn
-prototype topology into a compatibility requirement.
+The current production path runs source through the parser and the storeless
+checker/compiler to a reproducible immutable program image, an independent
+verifier that is the image's only decoder, a bytecode VM, and a typed path
+kernel over a private ordered-byte engine. These owners are present but early:
+their admitted language subset is narrow, and their durable identity, lifecycle,
+and authority attenuation are stubs with named refounding points. The capability
+trough is explicit — a feature is absent until its refounding lane lands it. Do
+not describe a stub or a future capability as implemented today, and do not turn
+the current topology into a compatibility requirement.
 
 ## Documentation authority
 
@@ -161,14 +165,16 @@ dependency cannot satisfy. Repository source remains Apache-2.0.
   settings, limits, raw evidence, and regression policy. Do not call a behavior
   proven, safe, scalable, portable, or institution-ready without the
   corresponding evidence.
-- Checker, inference, analysis, hover, and other semantic-tooling changes must
-  run `marrow check --compiler-dev <projectdir>` on each affected clean fixture
-  project. Every `compiler.dev.unknown_type` warning blocks integration until
-  either the missing checker-owned type or fact is fixed, or an existing typed
-  semantic owner establishes that the position is non-value and audit
-  eligibility is corrected. Do not baseline warnings, add source/path/span
-  allowlists, or silence them with lexical probe exceptions. The hidden mode is
-  for compiler contributors and is not end-user advice.
+- The compiler-dev audit mode is not executable on the beta line: `check` is a
+  refounding command that reports `cli.command_unsupported`, so no
+  `--compiler-dev` audit runs. Checker, inference, analysis, hover, and other
+  semantic-tooling changes instead rely on the production-path test tiers above —
+  source exercised through the production parser/checker or compiler and the
+  production runtime — with adversarial sibling cases beside the invariant. A
+  well-formed construct outside the admitted subset carries the typed
+  `check.unsupported` diagnostic at its span, and that typed unsupported outcome
+  is the recorded evidence for an absent capability; do not substitute a
+  suppressed audit warning or another baseline for it.
 
 ## Worktrees, builds, and integration
 
