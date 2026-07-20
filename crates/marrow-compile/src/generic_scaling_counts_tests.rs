@@ -100,7 +100,10 @@ fn struct_chain_fixture(n: usize) -> String {
 }
 
 /// The largest `v` (searching `1..=limit`) for which `fixture(v)` still compiles,
-/// with the scaling counts observed at that ceiling. Panics if even `v = 1` fails.
+/// with the scaling counts observed at that `v`. Panics if even `v = 1` fails. With
+/// the widened image bounds the axis fixtures compile well past a modest `limit`, so a
+/// caller passing a small `limit` uses it as a sampling window (the returned `v` is
+/// then `limit` itself) rather than a true compile ceiling.
 fn reachable_ceiling(fixture: impl Fn(usize) -> String, limit: usize) -> (usize, ScalingCounts) {
     let mut best = None;
     for v in 1..=limit {
@@ -117,7 +120,7 @@ fn ratio(at_2v: usize, at_v: usize) -> f64 {
     at_2v as f64 / at_v as f64
 }
 
-/// The compiler's shared instantiation budget, far above the reachable ceiling.
+/// The compiler's shared instantiation budget, reported by the manual scaling probe.
 const MAX_INSTANTIATIONS: usize = super::MAX_INSTANTIATIONS;
 
 /// The `(template, args)` mint-dedup reuse probe is a keyed lookup, so its scan-step
@@ -127,7 +130,8 @@ const MAX_INSTANTIATIONS: usize = super::MAX_INSTANTIATIONS;
 /// per-mint metadata directory rebuild (row work roughly quadruples per doubling) and
 /// its build count stays ~linear. Their frozen shapes are the recurrence gate for the
 /// follow-on lane. (The type axis reaches ~`MAX_TYPES / 2` because each instantiation
-/// costs its seed plus its `Held` record; the 4096 point is a fn-axis doubling.)
+/// costs its seed plus its `Held` record; the near-4096 point is exercised on the fn
+/// axis, which reaches ~`MAX_FUNCTIONS − 1`.)
 #[test]
 fn type_axis_scan_is_linear_directory_rebuild_still_quadratic() {
     let a = counts_for(type_axis_fixture(512));

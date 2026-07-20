@@ -280,7 +280,9 @@ fn image_too_large_is_an_aggregate_resource_limit() {
     let mut source = String::from("module main\n\n");
     for i in 0..150 {
         let literal = format!("{i:04}{}", "a".repeat(3996));
-        source.push_str(&format!("fn f{i}(): string {{\n    return \"{literal}\"\n}}\n\n"));
+        source.push_str(&format!(
+            "fn f{i}(): string {{\n    return \"{literal}\"\n}}\n\n"
+        ));
     }
     source.push_str("pub fn main(): int {\n    return 0\n}\n");
     assert_aggregate_resource_limit(compile(&project(&source, None)));
