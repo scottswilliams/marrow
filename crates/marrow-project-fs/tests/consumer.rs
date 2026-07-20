@@ -30,12 +30,13 @@ fn a_consumer_presents_a_capture_failure_through_the_public_facade() {
 }
 
 #[test]
-fn a_nonempty_overlay_is_refused_before_any_filesystem_access_and_is_presentable() {
+fn a_nonempty_overlay_is_refused_and_presentable() {
     let root = Path::new(ABSENT_ROOT);
     let entries = [OverlayEntry::new("src/main.mw", b"fn main() {}")];
     let snapshot = OverlaySnapshot::try_new(&entries).expect("baseline try_new is infallible");
 
-    // The nonempty overlay is refused before the absent manifest is even read.
+    // A nonempty overlay is refused, and the refusal is presentable through the
+    // facade without a panic or an empty message.
     let failure = capture_project(root, snapshot).expect_err("a nonempty overlay is refused");
     let presentation = failure.presentation(root);
 
