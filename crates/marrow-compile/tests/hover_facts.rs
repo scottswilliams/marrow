@@ -118,6 +118,46 @@ fn a_valid_module_keeps_hover_facts_past_a_sibling_parse_error() {
     }
 }
 
+#[test]
+fn hover_on_a_same_module_call_shows_the_resolved_signature() {
+    let source = "pub fn add(a: int, b: int): int {\n    return a\n}\n\n\
+                  pub fn f(): int {\n    return add(1, 2)\n}\n";
+    let snapshot = snap(&[("src/main.mw", source)]);
+    let call_offset = offset_of(source, "add(1, 2)");
+    match snapshot.hover(&identity("src/main.mw"), call_offset) {
+        Ok(Fact::Present(hover)) => assert_eq!(hover.display(), "fn add(int, int): int"),
+        other => panic!("expected the resolved signature, got {}", label(&other)),
+    }
+}
+
+#[test]
+fn hover_on_a_cross_module_call_shows_the_resolved_signature() {
+    let lib = "module lib\n\npub fn helper(x: int): int {\n    return x\n}\n";
+    let main = "module main\nuse lib\n\npub fn f(): int {\n    return lib::helper(1)\n}\n";
+    let snapshot = snap(&[("src/lib.mw", lib), ("src/main.mw", main)]);
+    // The origin is the callee leaf `helper`, not the `lib` prefix.
+    let call_offset = offset_of(main, "lib::helper") + "lib::".len();
+    match snapshot.hover(&identity("src/main.mw"), call_offset) {
+        Ok(Fact::Present(hover)) => assert_eq!(hover.display(), "fn helper(int): int"),
+        other => panic!("expected the resolved signature, got {}", label(&other)),
+    }
+}
+
+#[test]
+fn hover_inside_a_generic_body_is_absent_on_this_floor() {
+    // Only monomorphic function and test bodies are collected; a position inside a
+    // generic function's body is honestly `Absent` on this floor. A future change to
+    // this boundary must be a deliberate red here, not silent drift.
+    let source = "pub fn id<T>(x: T): T {\n    return x\n}\n\n\
+                  pub fn f(): int {\n    return id(1)\n}\n";
+    let snapshot = snap(&[("src/main.mw", source)]);
+    let use_offset = offset_of(source, "return x") + "return ".len();
+    assert!(matches!(
+        snapshot.hover(&identity("src/main.mw"), use_offset),
+        Ok(Fact::Absent)
+    ));
+}
+
 fn label<T>(fact: &Result<Fact<T>, QueryError>) -> &'static str {
     match fact {
         Ok(Fact::Present(_)) => "Present",

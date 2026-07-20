@@ -1038,7 +1038,12 @@ impl<'a> FnLowerer<'a> {
         args: &[Argument],
         span: SourceSpan,
     ) -> Option<CallResult> {
-        let Expression::Name { segments, .. } = callee else {
+        let Expression::Name {
+            segments,
+            segment_spans,
+            ..
+        } = callee
+        else {
             // `Age.checked(n)`: the nominal range test, the one member call the
             // subset admits. Any other field-shaped callee stays unsupported.
             if let Expression::Field { base, name, .. } = callee {
@@ -1107,8 +1112,11 @@ impl<'a> FnLowerer<'a> {
                 .filter(|template| self.records.template_is_enum(*template)),
             _ => None,
         };
+        // The origin of a definition/hover fact is the callee's leaf name segment, not
+        // the whole call. A degenerate empty path falls back to the call span.
+        let callee_span = segment_spans.last().copied().unwrap_or(span);
         match (segments.as_slice(), generic_enum_template) {
-            ([name], _) => self.lower_unqualified_call(name, args, span),
+            ([name], _) => self.lower_unqualified_call(name, args, span, callee_span),
             // `Enum::member(payload...)` constructs a payload-carrying enum value.
             ([enum_name, item], _) if self.records.enum_by_name(enum_name).is_some() => self
                 .lower_enum_construct(enum_name, item, args, span)
@@ -1118,7 +1126,9 @@ impl<'a> FnLowerer<'a> {
             ([_, item], Some(template)) => self
                 .lower_generic_enum_construct(template, item, args, span)
                 .map(CallResult::Value),
-            ([prefix @ .., item], _) => self.lower_qualified_call(prefix, item, args, span),
+            ([prefix @ .., item], _) => {
+                self.lower_qualified_call(prefix, item, args, span, callee_span)
+            }
             ([], _) => {
                 self.fail(unsupported(self.file, span, "this call"));
                 None
@@ -1133,6 +1143,7 @@ impl<'a> FnLowerer<'a> {
         name: &str,
         args: &[Argument],
         span: SourceSpan,
+        callee_span: SourceSpan,
     ) -> Option<CallResult> {
         // The reserved built-ins are intercepted before any user resolution, so a
         // colliding declaration (rejected at its declaration site) can never reach
@@ -1254,6 +1265,8 @@ impl<'a> FnLowerer<'a> {
         }
         if let Some(sig) = self.functions.same_module(self.module, name) {
             let (index, params, ret) = (sig.index, sig.params.clone(), sig.ret);
+            let display = signature_display(name, &params, ret, self.records);
+            self.hover_facts.push((callee_span, display));
             return self.lower_function_call(index, &params, ret, args, span);
         }
         // A same-module generic function is monomorphized at the call site (its type
@@ -1298,10 +1311,13 @@ impl<'a> FnLowerer<'a> {
         item: &str,
         args: &[Argument],
         span: SourceSpan,
+        callee_span: SourceSpan,
     ) -> Option<CallResult> {
         match self.functions.resolve_qualified(self.module, prefix, item) {
             CallResolution::Found(sig) => {
                 let (index, params, ret) = (sig.index, sig.params.clone(), sig.ret);
+                let display = signature_display(item, &params, ret, self.records);
+                self.hover_facts.push((callee_span, display));
                 self.lower_function_call(index, &params, ret, args, span)
             }
             CallResolution::NotPublic => {
@@ -3033,5 +3049,20 @@ impl<'a> FnLowerer<'a> {
                 None
             }
         }
+    }
+}
+
+/// The canonical hover display of a resolved function callee: `fn name(p1, p2): ret`
+/// with the resolved concrete parameter and return types. A unit return omits the
+/// `: ret`. Effects and demand are not shown.
+fn signature_display(name: &str, params: &[LTy], ret: RetType, records: &TypeRegistry) -> String {
+    let params = params
+        .iter()
+        .map(|param| param.spelling(records))
+        .collect::<Vec<_>>()
+        .join(", ");
+    match ret {
+        RetType::Unit => format!("fn {name}({params})"),
+        RetType::Value(ty) => format!("fn {name}({params}): {}", ty.spelling(records)),
     }
 }

@@ -155,10 +155,15 @@ impl AnalysisSnapshot {
     }
 
     /// The hover fact at a byte offset in a file: the canonical type display of the
-    /// resolved local or parameter use spanning the offset. An unknown file or an
-    /// out-of-range offset is a typed [`QueryError`]; a position in a module that did
-    /// not parse is [`Unavailability::Syntax`]; a valid position with no fact is
-    /// `Absent`.
+    /// resolved local or parameter use, or the resolved-function signature of a call
+    /// callee, spanning the offset. An unknown file or an out-of-range offset is a typed
+    /// [`QueryError`]; a position in a module that did not parse is
+    /// [`Unavailability::Syntax`]; a valid position with no fact is `Absent`.
+    ///
+    /// Floor boundary: positions inside a generic function's body yield `Absent` on this
+    /// floor — only monomorphic function and test bodies are collected, so a generic
+    /// template's per-position facts are future work with a named trigger (the H00c
+    /// breadth row).
     pub fn hover(&self, file: &FileIdentity, offset: usize) -> Result<Fact<Hover>, QueryError> {
         let source = self.source_of(file)?;
         if offset > source.len() {
