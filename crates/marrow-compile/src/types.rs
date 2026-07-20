@@ -27,6 +27,7 @@ use marrow_image::{
     CollectionTypeDef, EnumId, EnumTypeDef, FieldDef, ImageDraft, ImageType, RecordTypeDef, Scalar,
     TypeId, VariantDef,
 };
+use marrow_project::FileIdentity;
 use marrow_syntax::{
     AliasDecl, EnumDecl, EnumMember, Expression, GroupDecl, LiteralKind, NominalDecl, ResourceDecl,
     ResourceMember, SourceSpan, StructDecl, TypeExpr, UnaryOp, range_expr,
@@ -456,7 +457,11 @@ impl TemplateBody {
 #[derive(Clone)]
 struct TypeTemplate {
     name: String,
-    file: String,
+    /// The captured file this template was declared in, or `None` for a reserved
+    /// toolchain generic (`Option`, `Result`) that has no source file. A template
+    /// with a source file always carries a real identity; the absence is
+    /// structural, so no diagnostic can ever name an empty or sentinel file.
+    file: Option<FileIdentity>,
     name_span: SourceSpan,
     reserved: Option<Reserved>,
     type_params: Vec<(String, Option<TypeConstraint>)>,
@@ -689,10 +694,13 @@ struct FnInst {
 /// [`TypeRegistry::mint_type_instance`] so a mint-time rejection — a collection as
 /// an enum payload leaf — points at the construction or annotation site rather than
 /// the reserved `Option`/`Result` template, which carries no user span. `file` is
-/// empty only for a synthetic mint with no source anchor.
+/// The source anchor for a generic instantiation: the file and span a mint-time
+/// diagnostic (an instantiation limit or a rejected payload) points at. Always a
+/// real captured file — a mint is triggered by a use site, never by a fileless
+/// synthetic construct.
 #[derive(Clone, Copy)]
 pub(crate) struct MintSite<'a> {
-    pub(crate) file: &'a str,
+    pub(crate) file: &'a FileIdentity,
     pub(crate) span: SourceSpan,
 }
 
@@ -3216,14 +3224,6 @@ impl TypeRegistry {
             let over_depth = generics.fill_stack.len() >= MINT_DEPTH_LIMIT;
             if over_count || over_depth {
                 drop(generics);
-                let site = if site.file.is_empty() {
-                    MintSite {
-                        file: &template_info.file,
-                        span: template_info.name_span,
-                    }
-                } else {
-                    site
-                };
                 self.record_limit(
                     site,
                     "a generic type likely nests inside itself over an ever-growing type",
@@ -4341,11 +4341,11 @@ impl TypeRegistry {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn build(
         draft: &mut ImageDraft,
-        aliases: &[(String, &AliasDecl)],
-        nominals: &[(String, &NominalDecl)],
-        structs: &[(String, &StructDecl)],
-        enums: &[(String, &EnumDecl)],
-        resources: &[(String, &ResourceDecl)],
+        aliases: &[(FileIdentity, &AliasDecl)],
+        nominals: &[(FileIdentity, &NominalDecl)],
+        structs: &[(FileIdentity, &StructDecl)],
+        enums: &[(FileIdentity, &EnumDecl)],
+        resources: &[(FileIdentity, &ResourceDecl)],
         diagnostics: &mut Vec<SourceDiagnostic>,
     ) -> Self {
         let mut registry = Self {
@@ -4364,12 +4364,12 @@ impl TypeRegistry {
         // A generic `struct`/`enum` (one carrying type parameters) is a template
         // monomorphized on use, not a concrete image type; the concrete declarations
         // are declared-then-filled below, the templates registered aside.
-        let concrete_structs: Vec<(String, &StructDecl)> = structs
+        let concrete_structs: Vec<(FileIdentity, &StructDecl)> = structs
             .iter()
             .filter(|(_, decl)| decl.type_params.is_empty())
             .map(|(file, decl)| (file.clone(), *decl))
             .collect();
-        let concrete_enums: Vec<(String, &EnumDecl)> = enums
+        let concrete_enums: Vec<(FileIdentity, &EnumDecl)> = enums
             .iter()
             .filter(|(_, decl)| decl.type_params.is_empty())
             .map(|(file, decl)| (file.clone(), *decl))
@@ -4512,7 +4512,7 @@ fn reserved_templates() -> Vec<TypeTemplate> {
     vec![
         TypeTemplate {
             name: "Option".to_string(),
-            file: String::new(),
+            file: None,
             name_span: SourceSpan::default(),
             reserved: Some(Reserved::Option),
             type_params: vec![("T".to_string(), None)],
@@ -4529,7 +4529,7 @@ fn reserved_templates() -> Vec<TypeTemplate> {
         },
         TypeTemplate {
             name: "Result".to_string(),
-            file: String::new(),
+            file: None,
             name_span: SourceSpan::default(),
             reserved: Some(Reserved::Result),
             type_params: vec![("T".to_string(), None), ("E".to_string(), None)],
@@ -4556,9 +4556,9 @@ fn reserved_templates() -> Vec<TypeTemplate> {
 /// dropped so no `Name<Args>` use resolves against it.
 fn register_type_templates(
     registry: &mut TypeRegistry,
-    structs: &[(String, &StructDecl)],
-    enums: &[(String, &EnumDecl)],
-    resources: &[(String, &ResourceDecl)],
+    structs: &[(FileIdentity, &StructDecl)],
+    enums: &[(FileIdentity, &EnumDecl)],
+    resources: &[(FileIdentity, &ResourceDecl)],
     diagnostics: &mut Vec<SourceDiagnostic>,
 ) {
     let type_param_names =
@@ -4613,7 +4613,7 @@ fn register_type_templates(
         };
         registry.type_templates.push(TypeTemplate {
             name: decl.name.clone(),
-            file: file.clone(),
+            file: Some(file.clone()),
             name_span: decl.name_span,
             reserved: None,
             type_params: type_param_names(&decl.type_params),
@@ -4642,7 +4642,7 @@ fn register_type_templates(
         };
         registry.type_templates.push(TypeTemplate {
             name: decl.name.clone(),
-            file: file.clone(),
+            file: Some(file.clone()),
             name_span: decl.name_span,
             reserved: None,
             type_params: type_param_names(&decl.type_params),
@@ -4655,7 +4655,7 @@ fn register_type_templates(
 /// member is not the bare `name: Type` form (matching the concrete-struct rule; the
 /// field types themselves are resolved per instantiation).
 fn template_struct_fields(
-    file: &str,
+    file: &FileIdentity,
     decl: &StructDecl,
     diagnostics: &mut Vec<SourceDiagnostic>,
 ) -> Option<Vec<(String, TypeExpr)>> {
@@ -4699,7 +4699,7 @@ fn template_struct_fields(
 /// `None` if any member is a `category` or a nested member (a generic enum is flat;
 /// its payload field types are resolved per instantiation).
 fn template_enum_variants(
-    file: &str,
+    file: &FileIdentity,
     decl: &EnumDecl,
     diagnostics: &mut Vec<SourceDiagnostic>,
 ) -> Option<Vec<TemplateVariant>> {
@@ -4735,10 +4735,10 @@ fn template_enum_variants(
 /// `check.name_conflict`; an alias on a cyclic chain is a `check.recursion`
 /// and does not enter the map.
 fn build_alias_table(
-    aliases: &[(String, &AliasDecl)],
-    resources: &[(String, &ResourceDecl)],
-    structs: &[(String, &StructDecl)],
-    enums: &[(String, &EnumDecl)],
+    aliases: &[(FileIdentity, &AliasDecl)],
+    resources: &[(FileIdentity, &ResourceDecl)],
+    structs: &[(FileIdentity, &StructDecl)],
+    enums: &[(FileIdentity, &EnumDecl)],
     diagnostics: &mut Vec<SourceDiagnostic>,
 ) -> BTreeMap<String, TypeExpr> {
     let mut raw: BTreeMap<String, TypeExpr> = BTreeMap::new();
@@ -4895,7 +4895,7 @@ fn expand_in(table: &BTreeMap<String, TypeExpr>, ty: &TypeExpr) -> TypeExpr {
 /// `check.unsupported`.
 fn validate_alias_targets(
     registry: &TypeRegistry,
-    aliases: &[(String, &AliasDecl)],
+    aliases: &[(FileIdentity, &AliasDecl)],
     diagnostics: &mut Vec<SourceDiagnostic>,
 ) {
     for (file, decl) in aliases {
@@ -4941,10 +4941,10 @@ fn validate_alias_targets(
 #[allow(clippy::too_many_arguments)]
 fn build_nominals(
     registry: &TypeRegistry,
-    nominals: &[(String, &NominalDecl)],
-    resources: &[(String, &ResourceDecl)],
-    structs: &[(String, &StructDecl)],
-    enums: &[(String, &EnumDecl)],
+    nominals: &[(FileIdentity, &NominalDecl)],
+    resources: &[(FileIdentity, &ResourceDecl)],
+    structs: &[(FileIdentity, &StructDecl)],
+    enums: &[(FileIdentity, &EnumDecl)],
     diagnostics: &mut Vec<SourceDiagnostic>,
 ) -> Vec<NominalInfo> {
     let mut built: Vec<NominalInfo> = Vec::new();
@@ -5013,7 +5013,7 @@ fn build_nominals(
 /// includes it — with int-literal bounds (a leading `-` allowed), no step, and
 /// at least one admitted value.
 fn nominal_interval(
-    file: &str,
+    file: &FileIdentity,
     interval: &Expression,
     diagnostics: &mut Vec<SourceDiagnostic>,
 ) -> Option<(i64, i64)> {
@@ -5091,7 +5091,7 @@ fn literal_int(expr: &Expression) -> Option<i64> {
 /// Resolve a declaration's `supports` spellings against the closed capability
 /// set, rejecting an unknown or repeated capability.
 fn support_set(
-    file: &str,
+    file: &FileIdentity,
     decl: &NominalDecl,
     diagnostics: &mut Vec<SourceDiagnostic>,
 ) -> Option<SupportSet> {
@@ -5131,7 +5131,7 @@ fn support_set(
 /// One struct reserved in pass one: the file it was declared in, its declaration,
 /// and the image record index it will fill in pass two.
 struct ReservedStruct<'a> {
-    file: String,
+    file: FileIdentity,
     decl: &'a StructDecl,
     type_id: TypeId,
 }
@@ -5144,8 +5144,8 @@ struct ReservedStruct<'a> {
 fn declare_structs<'a>(
     draft: &mut ImageDraft,
     registry: &mut TypeRegistry,
-    structs: &'a [(String, &StructDecl)],
-    resources: &[(String, &ResourceDecl)],
+    structs: &'a [(FileIdentity, &StructDecl)],
+    resources: &[(FileIdentity, &ResourceDecl)],
     diagnostics: &mut Vec<SourceDiagnostic>,
 ) -> Vec<ReservedStruct<'a>> {
     let mut reserved: Vec<ReservedStruct<'a>> = Vec::new();
@@ -5233,7 +5233,7 @@ type ResolvedStructFields = (Vec<FieldInfo>, Vec<FieldDef>);
 fn struct_fields(
     draft: &mut ImageDraft,
     registry: &TypeRegistry,
-    file: &str,
+    file: &FileIdentity,
     decl: &StructDecl,
     diagnostics: &mut Vec<SourceDiagnostic>,
 ) -> Result<Option<ResolvedStructFields>, GenericInvariant> {
@@ -5307,7 +5307,7 @@ fn struct_fields(
 /// One enum reserved in pass one: the file it was declared in, its declaration,
 /// and the image ENUMS index it will fill in pass two.
 struct ReservedEnum<'a> {
-    file: String,
+    file: FileIdentity,
     decl: &'a EnumDecl,
     enum_id: EnumId,
 }
@@ -5322,8 +5322,8 @@ struct ReservedEnum<'a> {
 fn declare_enums<'a>(
     draft: &mut ImageDraft,
     registry: &mut TypeRegistry,
-    enums: &'a [(String, &EnumDecl)],
-    resources: &[(String, &ResourceDecl)],
+    enums: &'a [(FileIdentity, &EnumDecl)],
+    resources: &[(FileIdentity, &ResourceDecl)],
     diagnostics: &mut Vec<SourceDiagnostic>,
 ) -> Vec<ReservedEnum<'a>> {
     let mut reserved: Vec<ReservedEnum<'a>> = Vec::new();
@@ -5422,7 +5422,7 @@ fn fill_enums(
 fn enum_variants(
     draft: &mut ImageDraft,
     registry: &TypeRegistry,
-    file: &str,
+    file: &FileIdentity,
     decl: &EnumDecl,
     diagnostics: &mut Vec<SourceDiagnostic>,
 ) -> Option<(Vec<VariantInfo>, Vec<VariantDef>)> {
@@ -5486,7 +5486,7 @@ fn enum_variants(
 /// a field is not the bare `name: scalar` form.
 fn enum_payload(
     registry: &TypeRegistry,
-    file: &str,
+    file: &FileIdentity,
     member: &EnumMember,
     diagnostics: &mut Vec<SourceDiagnostic>,
 ) -> Option<(Vec<EnumPayloadInfo>, Vec<ScalarType>)> {
@@ -5544,9 +5544,9 @@ fn enum_payload(
 fn declare_records<'a>(
     draft: &mut ImageDraft,
     registry: &mut TypeRegistry,
-    resources: &'a [(String, &ResourceDecl)],
+    resources: &'a [(FileIdentity, &ResourceDecl)],
     diagnostics: &mut Vec<SourceDiagnostic>,
-) -> Vec<(String, &'a ResourceDecl)> {
+) -> Vec<(FileIdentity, &'a ResourceDecl)> {
     let mut survivors = Vec::new();
     for (file, resource) in resources {
         if is_reserved_type_name(&resource.name) {
@@ -5589,7 +5589,7 @@ fn declare_records<'a>(
 fn fill_records(
     draft: &mut ImageDraft,
     registry: &mut TypeRegistry,
-    record_decls: &[(String, &ResourceDecl)],
+    record_decls: &[(FileIdentity, &ResourceDecl)],
     diagnostics: &mut Vec<SourceDiagnostic>,
 ) -> Result<(), GenericInvariant> {
     // The survivors are in the same order as the reserved records, so record `index`
@@ -5611,7 +5611,7 @@ fn fill_record(
     draft: &mut ImageDraft,
     registry: &mut TypeRegistry,
     index: usize,
-    file: &str,
+    file: &FileIdentity,
     resource: &ResourceDecl,
     diagnostics: &mut Vec<SourceDiagnostic>,
 ) -> Result<(), GenericInvariant> {
@@ -5720,7 +5720,7 @@ fn build_group_leaves(
     draft: &mut ImageDraft,
     registry: &TypeRegistry,
     group: &GroupDecl,
-    file: &str,
+    file: &FileIdentity,
     diagnostics: &mut Vec<SourceDiagnostic>,
 ) -> Result<(Vec<FieldInfo>, Vec<FieldDef>), GenericInvariant> {
     let mut fields = Vec::new();
@@ -5783,8 +5783,8 @@ fn build_group_leaves(
 /// the trust boundary.
 pub(crate) fn reject_value_cycles(
     registry: &TypeRegistry,
-    structs: &[(String, &StructDecl)],
-    resources: &[(String, &ResourceDecl)],
+    structs: &[(FileIdentity, &StructDecl)],
+    resources: &[(FileIdentity, &ResourceDecl)],
     diagnostics: &mut Vec<SourceDiagnostic>,
 ) -> Result<(), GenericInvariant> {
     let view = registry.metadata_view();
@@ -5836,8 +5836,18 @@ pub(crate) fn reject_value_cycles(
         if let Some(path) = graph.cycle_through(node) {
             reported.push(inst.template);
             let template = &registry.type_templates[inst.template];
+            // A reserved toolchain generic (`Option`, `Result`) is payloaded by a
+            // type parameter and never defines a value cycle itself: any cycle it
+            // sits on closes through a user type (`struct A { me: Option<A> }`
+            // cycles through `A`), which is reported at its own real declaration by
+            // the struct/resource loops above or by a user-template instance. Such a
+            // reserved instance carries no source file, so it is skipped here rather
+            // than attributed to an empty file.
+            let Some(file) = &template.file else {
+                continue;
+            };
             diagnostics.push(value_cycle_diagnostic(
-                &template.file,
+                file,
                 template.name_span,
                 &template.name,
                 &path,
@@ -5848,7 +5858,7 @@ pub(crate) fn reject_value_cycles(
 }
 
 fn value_cycle_diagnostic(
-    file: &str,
+    file: &FileIdentity,
     span: SourceSpan,
     name: &str,
     path: &[String],
@@ -6912,7 +6922,7 @@ fn scalar_of(ty: &TypeExpr) -> Option<ScalarType> {
 }
 
 /// The diagnostic for a declaration that reuses a built-in generic type name.
-fn reserved_name(file: &str, span: SourceSpan, name: &str) -> SourceDiagnostic {
+fn reserved_name(file: &FileIdentity, span: SourceSpan, name: &str) -> SourceDiagnostic {
     SourceDiagnostic::at(
         Code::CheckNameConflict.as_str(),
         file,
@@ -6921,7 +6931,7 @@ fn reserved_name(file: &str, span: SourceSpan, name: &str) -> SourceDiagnostic {
     )
 }
 
-fn unsupported(file: &str, span: SourceSpan, subject: &str) -> SourceDiagnostic {
+fn unsupported(file: &FileIdentity, span: SourceSpan, subject: &str) -> SourceDiagnostic {
     SourceDiagnostic::at(
         Code::CheckUnsupported.as_str(),
         file,
@@ -6961,7 +6971,7 @@ mod instantiation_state_tests {
     fn template(name: &str, fields: Vec<(&str, TypeExpr)>) -> TypeTemplate {
         TypeTemplate {
             name: name.to_string(),
-            file: "src/main.mw".to_string(),
+            file: Some(crate::test_file_identity("src/main.mw")),
             name_span: SourceSpan::default(),
             reserved: None,
             type_params: vec![("T".to_string(), None)],
@@ -6977,7 +6987,7 @@ mod instantiation_state_tests {
     fn enum_template(name: &str, payload: TypeExpr) -> TypeTemplate {
         TypeTemplate {
             name: name.to_string(),
-            file: "src/main.mw".to_string(),
+            file: Some(crate::test_file_identity("src/main.mw")),
             name_span: SourceSpan::default(),
             reserved: None,
             type_params: vec![("T".to_string(), None)],
@@ -7006,7 +7016,7 @@ mod instantiation_state_tests {
 
     fn site(line: u32) -> MintSite<'static> {
         MintSite {
-            file: "src/main.mw",
+            file: crate::test_main_file_identity(),
             span: SourceSpan {
                 line,
                 column: 9,
@@ -10498,9 +10508,9 @@ store ^holders[id: int]: Holder
                     _ => None,
                 })
                 .expect("store parses");
-            let structs = vec![("src/main.mw".to_string(), generic_struct)];
-            let resources = vec![("src/main.mw".to_string(), resource)];
-            let stores = vec![("src/main.mw".to_string(), store)];
+            let structs = vec![(crate::test_file_identity("src/main.mw"), generic_struct)];
+            let resources = vec![(crate::test_file_identity("src/main.mw"), resource)];
+            let stores = vec![(crate::test_file_identity("src/main.mw"), store)];
             let mut draft = ImageDraft::new();
             let mut diagnostics = Vec::new();
             let registry = TypeRegistry::build(
@@ -10569,7 +10579,7 @@ store ^holders[id: int]: Holder
         };
         let mut diagnostics = vec![SourceDiagnostic::at(
             Code::CheckType.as_str(),
-            "src/main.mw",
+            crate::test_main_file_identity(),
             SourceSpan::default(),
             "earlier source failure".to_string(),
         )];

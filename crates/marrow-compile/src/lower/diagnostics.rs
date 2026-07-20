@@ -134,7 +134,11 @@ pub(super) fn simple_value_spelling(value: &Expression) -> Option<String> {
     }
 }
 
-pub(super) fn unsupported(file: &str, span: SourceSpan, subject: &str) -> SourceDiagnostic {
+pub(super) fn unsupported(
+    file: &FileIdentity,
+    span: SourceSpan,
+    subject: &str,
+) -> SourceDiagnostic {
     SourceDiagnostic::at(
         Code::CheckUnsupported.as_str(),
         file,
@@ -193,7 +197,11 @@ pub(super) fn is_group_leaf_address(expr: &Expression) -> bool {
 /// rather than silently dropped. Keyed roots — single-column or a composite tuple — whose
 /// top-level fields are scalars or widened values (`struct`/`enum`/`Option`), their
 /// root-level `group` members, and their `branch` placements, are executable.
-pub(super) fn not_yet_executable(file: &str, span: SourceSpan, root: &str) -> SourceDiagnostic {
+pub(super) fn not_yet_executable(
+    file: &FileIdentity,
+    span: SourceSpan,
+    root: &str,
+) -> SourceDiagnostic {
     SourceDiagnostic::at(
         Code::CheckUnsupported.as_str(),
         file,
@@ -206,7 +214,7 @@ pub(super) fn not_yet_executable(file: &str, span: SourceSpan, root: &str) -> So
     )
 }
 
-pub(super) fn name_error(file: &str, span: SourceSpan, name: &str) -> SourceDiagnostic {
+pub(super) fn name_error(file: &FileIdentity, span: SourceSpan, name: &str) -> SourceDiagnostic {
     SourceDiagnostic::at(
         Code::CheckType.as_str(),
         file,
@@ -215,7 +223,11 @@ pub(super) fn name_error(file: &str, span: SourceSpan, name: &str) -> SourceDiag
     )
 }
 
-pub(super) fn checked_arm_error(file: &str, span: SourceSpan, detail: &str) -> SourceDiagnostic {
+pub(super) fn checked_arm_error(
+    file: &FileIdentity,
+    span: SourceSpan,
+    detail: &str,
+) -> SourceDiagnostic {
     SourceDiagnostic::at(
         Code::CheckType.as_str(),
         file,
@@ -224,7 +236,7 @@ pub(super) fn checked_arm_error(file: &str, span: SourceSpan, detail: &str) -> S
     )
 }
 
-pub(super) fn loop_error(file: &str, span: SourceSpan, keyword: &str) -> SourceDiagnostic {
+pub(super) fn loop_error(file: &FileIdentity, span: SourceSpan, keyword: &str) -> SourceDiagnostic {
     SourceDiagnostic::at(
         Code::CheckType.as_str(),
         file,
@@ -235,7 +247,7 @@ pub(super) fn loop_error(file: &str, span: SourceSpan, keyword: &str) -> SourceD
 
 pub(super) fn type_mismatch(
     records: &TypeRegistry,
-    file: &str,
+    file: &FileIdentity,
     span: SourceSpan,
     found: LTy,
     want: LTy,
@@ -254,7 +266,7 @@ pub(super) fn type_mismatch(
 
 pub(super) fn unary_error(
     records: &TypeRegistry,
-    file: &str,
+    file: &FileIdentity,
     span: SourceSpan,
     verb: &str,
     ty: LTy,
@@ -269,7 +281,7 @@ pub(super) fn unary_error(
 
 pub(super) fn binary_error(
     records: &TypeRegistry,
-    file: &str,
+    file: &FileIdentity,
     span: SourceSpan,
     op: BinaryOp,
     left: LTy,
@@ -290,7 +302,7 @@ pub(super) fn binary_error(
 
 pub(super) fn logic_operand(
     records: &TypeRegistry,
-    file: &str,
+    file: &FileIdentity,
     span: SourceSpan,
     op: BinaryOp,
     ty: LTy,

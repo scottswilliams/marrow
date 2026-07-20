@@ -14,7 +14,7 @@ fn name(text: &str) -> TypeExpr {
 fn struct_template(template_name: &str, params: &[&str]) -> TypeTemplate {
     TypeTemplate {
         name: template_name.to_string(),
-        file: "src/main.mw".to_string(),
+        file: Some(crate::test_file_identity("src/main.mw")),
         name_span: SourceSpan::default(),
         reserved: None,
         type_params: params
@@ -33,7 +33,7 @@ fn struct_template(template_name: &str, params: &[&str]) -> TypeTemplate {
 fn enum_template(template_name: &str, param: &str) -> TypeTemplate {
     TypeTemplate {
         name: template_name.to_string(),
-        file: "src/main.mw".to_string(),
+        file: Some(crate::test_file_identity("src/main.mw")),
         name_span: SourceSpan::default(),
         reserved: None,
         type_params: vec![(param.to_string(), None)],
@@ -62,7 +62,7 @@ fn test_registry(templates: Vec<TypeTemplate>) -> TypeRegistry {
 
 fn site() -> MintSite<'static> {
     MintSite {
-        file: "src/main.mw",
+        file: crate::test_main_file_identity(),
         span: SourceSpan {
             line: 3,
             column: 9,
@@ -488,21 +488,21 @@ store ^second[id: int]: Second
     assert!(parsed.diagnostics.is_empty());
     let resources = vec![
         (
-            "src/main.mw".to_string(),
+            crate::test_file_identity("src/main.mw"),
             parsed.file.resource("First").expect("First exists"),
         ),
         (
-            "src/main.mw".to_string(),
+            crate::test_file_identity("src/main.mw"),
             parsed.file.resource("Second").expect("Second exists"),
         ),
     ];
     let stores = vec![
         (
-            "src/main.mw".to_string(),
+            crate::test_file_identity("src/main.mw"),
             parsed.file.store("first").expect("first exists"),
         ),
         (
-            "src/main.mw".to_string(),
+            crate::test_file_identity("src/main.mw"),
             parsed.file.store("second").expect("second exists"),
         ),
     ];
@@ -569,8 +569,8 @@ fn invalid_ready_option_argument_stops_before_durable_anchor_resolution() {
         .file
         .store("resources")
         .expect("fixture store exists");
-    let resources = vec![("src/main.mw".to_string(), resource)];
-    let stores = vec![("src/main.mw".to_string(), store)];
+    let resources = vec![(crate::test_file_identity("src/main.mw"), resource)];
+    let stores = vec![(crate::test_file_identity("src/main.mw"), store)];
     let mut draft = ImageDraft::new();
     let mut diagnostics = Vec::new();
     let registry =

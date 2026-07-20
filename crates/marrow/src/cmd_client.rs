@@ -59,7 +59,7 @@ pub(crate) fn client(rest: &[String]) -> ExitCode {
             for diagnostic in &diagnostics {
                 eprintln!(
                     "{}:{}:{}: {}: {}",
-                    diagnostic.file,
+                    diagnostic.file().as_str(),
                     diagnostic.line(),
                     diagnostic.column(),
                     diagnostic.code,

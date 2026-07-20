@@ -88,7 +88,7 @@ fn assert_one_located_limit(diagnostics: &[SourceDiagnostic], line: u32, column:
     );
     let diagnostic = &diagnostics[0];
     assert_eq!(diagnostic.code, "check.instantiation_limit");
-    assert_eq!(diagnostic.file, "src/main.mw");
+    assert_eq!(diagnostic.file().as_str(), "src/main.mw");
     assert_eq!((diagnostic.line(), diagnostic.column()), (line, column));
 }
 
@@ -96,7 +96,7 @@ fn assert_diagnostic_sites(diagnostics: &[SourceDiagnostic], expected: &[(&str, 
     assert!(
         diagnostics
             .iter()
-            .all(|diagnostic| diagnostic.file == "src/main.mw"),
+            .all(|diagnostic| diagnostic.file().as_str() == "src/main.mw"),
         "every diagnostic must retain the source file: {diagnostics:#?}"
     );
     let actual: Vec<(&str, u32, u32)> = diagnostics
@@ -619,7 +619,7 @@ pub fn driver(): int {
     assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
     let diagnostic = &diagnostics[0];
     assert_eq!(diagnostic.code, "check.instantiation_limit");
-    assert_eq!(diagnostic.file, "src/library.mw");
+    assert_eq!(diagnostic.file().as_str(), "src/library.mw");
     assert_eq!((diagnostic.line(), diagnostic.column()), (7, 25));
 }
 
@@ -1057,7 +1057,7 @@ pub fn driver(value: Pair<int, string>): int {
     );
     assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
     assert_eq!(diagnostics[0].code, "check.unsupported");
-    assert_eq!(diagnostics[0].file, "src/main.mw");
+    assert_eq!(diagnostics[0].file().as_str(), "src/main.mw");
     assert_eq!((diagnostics[0].line(), diagnostics[0].column()), (7, 22));
 }
 

@@ -31,7 +31,7 @@ fn assert_source_resource_limit(result: Result<impl std::fmt::Debug, CompileFail
             assert!(
                 diagnostics
                     .iter()
-                    .all(|diagnostic| !diagnostic.file.is_empty()),
+                    .all(|diagnostic| !diagnostic.file().as_str().is_empty()),
                 "no resource diagnostic may carry a fabricated empty filename: {:#?}",
                 diagnostics.as_slice(),
             );
@@ -39,7 +39,7 @@ fn assert_source_resource_limit(result: Result<impl std::fmt::Debug, CompileFail
                 diagnostics
                     .iter()
                     .any(|diagnostic| diagnostic.code == "check.resource_limit"
-                        && diagnostic.file == "src/main.mw"),
+                        && diagnostic.file().as_str() == "src/main.mw"),
                 "expected a check.resource_limit at src/main.mw, got {:#?}",
                 diagnostics.as_slice(),
             );

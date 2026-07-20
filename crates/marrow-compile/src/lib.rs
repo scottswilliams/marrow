@@ -44,6 +44,26 @@ pub use diag::{IdentityGap, SourceDiagnostic};
 pub use marrow_image::ExportId;
 pub use scalar::ScalarType;
 
+/// The canonical [`FileIdentity`](marrow_project::FileIdentity) for a test source
+/// path. Tests attribute diagnostics to a real captured file exactly as the
+/// production capture path does, so they name the same identity type rather than a
+/// bare string.
+#[cfg(test)]
+pub(crate) fn test_file_identity(path: &str) -> marrow_project::FileIdentity {
+    marrow_project::FileIdentity::validate(path)
+        .expect("test source path is a canonical identity")
+        .0
+}
+
+/// A `'static` reference to the canonical `src/main.mw` identity, for test sites
+/// that borrow a `&FileIdentity` (a `MintSite`, an identity resolver, a lowerer
+/// file) or return one with `'static` lifetime.
+#[cfg(test)]
+pub(crate) fn test_main_file_identity() -> &'static marrow_project::FileIdentity {
+    static ID: std::sync::OnceLock<marrow_project::FileIdentity> = std::sync::OnceLock::new();
+    ID.get_or_init(|| test_file_identity("src/main.mw"))
+}
+
 #[cfg(doctest)]
 pub mod compile_invariant_privacy_doctests {
     //! The compiler invariant is an opaque public outcome. External callers may

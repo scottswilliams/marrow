@@ -4,7 +4,7 @@
 //! points into, a 1-based line/column, and a rendered message. It is distinct from
 //! an artifact rejection, a runtime fault, and an operational error.
 
-use marrow_project::{IdentityAnchor, IdentityKind};
+use marrow_project::{FileIdentity, IdentityAnchor, IdentityKind};
 use marrow_syntax::SourceSpan;
 
 /// A single source diagnostic.
@@ -17,7 +17,7 @@ use marrow_syntax::SourceSpan;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SourceDiagnostic {
     pub code: &'static str,
-    pub file: String,
+    file: FileIdentity,
     pub span: SourceSpan,
     pub message: String,
     /// The typed durable-identity gap behind a `check.durable_identity`
@@ -44,10 +44,15 @@ impl IdentityGap {
 }
 
 impl SourceDiagnostic {
-    pub(crate) fn at(code: &'static str, file: &str, span: SourceSpan, message: String) -> Self {
+    pub(crate) fn at(
+        code: &'static str,
+        file: &FileIdentity,
+        span: SourceSpan,
+        message: String,
+    ) -> Self {
         Self {
             code,
-            file: file.to_string(),
+            file: file.clone(),
             span,
             message,
             identity: None,
@@ -56,18 +61,25 @@ impl SourceDiagnostic {
 
     pub(crate) fn identity_gap(
         code: &'static str,
-        file: &str,
+        file: &FileIdentity,
         span: SourceSpan,
         message: String,
         gap: IdentityGap,
     ) -> Self {
         Self {
             code,
-            file: file.to_string(),
+            file: file.clone(),
             span,
             message,
             identity: Some(gap),
         }
+    }
+
+    /// The captured source file this diagnostic points into. Always a canonical
+    /// FIDB01-bounded identity — never empty, a sentinel, or a consumer-chosen
+    /// placeholder.
+    pub fn file(&self) -> &FileIdentity {
+        &self.file
     }
 
     /// The full UTF-8 span of the offending construct.

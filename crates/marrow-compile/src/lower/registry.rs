@@ -27,7 +27,7 @@ impl FunctionRegistry {
         records: &TypeRegistry,
         draft: &mut ImageDraft,
         durable: &DurableRegistry,
-        functions: &[(String, String, &FunctionDecl)],
+        functions: &[(FileIdentity, String, &FunctionDecl)],
         modules: BTreeSet<String>,
         imports: BTreeMap<String, Vec<(String, String)>>,
         diagnostics: &mut Vec<SourceDiagnostic>,
@@ -185,7 +185,7 @@ impl FunctionRegistry {
 /// names and constraints, held for lazy monomorphization. A template has no image
 /// index; each concrete application is a distinct image function.
 pub(crate) struct GenericTemplate<'p> {
-    pub(super) file: String,
+    pub(super) file: FileIdentity,
     pub(super) module: String,
     pub(super) public: bool,
     pub(super) decl: &'p FunctionDecl,
@@ -203,7 +203,7 @@ pub(crate) struct GenericRegistry<'p> {
 impl<'p> GenericRegistry<'p> {
     /// Collect every generic function (one carrying type parameters) as a template,
     /// paired with its source file and dotted module name.
-    pub(crate) fn build(functions: &[(String, String, &'p FunctionDecl)]) -> Self {
+    pub(crate) fn build(functions: &[(FileIdentity, String, &'p FunctionDecl)]) -> Self {
         let templates = functions
             .iter()
             .filter(|(_, _, function)| !function.type_params.is_empty())
@@ -250,7 +250,7 @@ impl<'p> GenericRegistry<'p> {
 }
 
 impl<'p> GenericTemplate<'p> {
-    pub(crate) fn source_file(&self) -> &str {
+    pub(crate) fn source_file(&self) -> &FileIdentity {
         &self.file
     }
 

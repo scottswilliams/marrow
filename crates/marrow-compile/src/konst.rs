@@ -9,6 +9,7 @@
 use std::collections::BTreeMap;
 
 use marrow_codes::Code;
+use marrow_project::FileIdentity;
 use marrow_syntax::{ConstDecl, Expression, LiteralKind, TypeExpr, UnaryOp, decode_string_literal};
 
 use crate::diag::SourceDiagnostic;
@@ -56,7 +57,7 @@ impl ConstRegistry {
     /// duplicate name within one module. `consts` pairs each declaration with its
     /// dotted module and its file identity (for the diagnostic span).
     pub(crate) fn build(
-        consts: &[(String, String, &ConstDecl)],
+        consts: &[(String, FileIdentity, &ConstDecl)],
         types: &TypeRegistry,
         diagnostics: &mut Vec<SourceDiagnostic>,
     ) -> Self {
@@ -93,7 +94,7 @@ impl ConstRegistry {
 /// Evaluate one constant declaration to its folded value, checking a type
 /// annotation when present.
 fn evaluate(
-    file: &str,
+    file: &FileIdentity,
     decl: &ConstDecl,
     types: &TypeRegistry,
     diagnostics: &mut Vec<SourceDiagnostic>,
@@ -135,7 +136,7 @@ fn evaluate(
 
 /// Fold a scalar literal (or a negated integer literal) to its value.
 fn literal_value(
-    file: &str,
+    file: &FileIdentity,
     expression: &Expression,
     diagnostics: &mut Vec<SourceDiagnostic>,
 ) -> Option<ConstScalar> {
@@ -214,7 +215,7 @@ fn literal_value(
     }
 }
 
-fn unsupported(file: &str, decl: &ConstDecl, subject: &str) -> SourceDiagnostic {
+fn unsupported(file: &FileIdentity, decl: &ConstDecl, subject: &str) -> SourceDiagnostic {
     SourceDiagnostic::at(
         Code::CheckUnsupported.as_str(),
         file,

@@ -10,7 +10,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use marrow_codes::Code;
 use marrow_image::{EncodedImage, ExportId, ImageBuildError, ImageDraft};
-use marrow_project::ProjectInput;
+use marrow_project::{FileIdentity, ProjectInput};
 use marrow_syntax::{
     AliasDecl, ConstDecl, Declaration, EnumDecl, FunctionDecl, NominalDecl, ParsedSource,
     ResourceDecl, ResourceMember, SourceSpan, StoreDecl, StructDecl, parse_source,
@@ -273,7 +273,7 @@ fn seal_diagnostics(diagnostics: Vec<SourceDiagnostic>) -> DiagnosticSeal {
     }
     let bytes: usize = diagnostics
         .iter()
-        .map(|diagnostic| diagnostic.message.len() + diagnostic.file.len())
+        .map(|diagnostic| diagnostic.message.len() + diagnostic.file().as_str().len())
         .sum();
     if bytes > MAX_DIAGNOSTIC_BYTES {
         return DiagnosticSeal::Overflow(CompileResourceLimit::new(
@@ -499,7 +499,7 @@ enum TestMode {
 /// A parsed module: its file identity (for spans and diagnostics), its dotted
 /// module name (for export identity), and the parse tree.
 struct Module {
-    file: String,
+    file: FileIdentity,
     name: String,
     parsed: ParsedSource,
 }
@@ -510,7 +510,7 @@ struct Module {
 /// performs outside any `transaction` block.
 struct LoweredFn {
     index: u16,
-    file: String,
+    file: FileIdentity,
     name: String,
     span: SourceSpan,
     callees: Vec<u16>,
@@ -575,7 +575,7 @@ fn build(project: &ProjectInput, mode: TestMode) -> Result<Built, CompileFailure
     // the total-parser contract: semantics run only on `!has_errors`.
     let mut parsed: Vec<Module> = Vec::new();
     for module in project.modules() {
-        let file = module.identity().as_str().to_string();
+        let file = module.identity().clone();
         let name = module.module().as_str().to_string();
         match std::str::from_utf8(module.source()) {
             Ok(source) => parsed.push(Module {
@@ -583,20 +583,19 @@ fn build(project: &ProjectInput, mode: TestMode) -> Result<Built, CompileFailure
                 name,
                 parsed: parse_source(source),
             }),
-            Err(_) => diagnostics.push(SourceDiagnostic {
-                code: Code::CheckUnsupported.as_str(),
-                file,
+            Err(_) => diagnostics.push(SourceDiagnostic::at(
+                Code::CheckUnsupported.as_str(),
+                &file,
                 // A non-UTF-8 file has no parsed construct to point at: a
                 // zero-length span at the file start, whose 1-based point is 1:1.
-                span: SourceSpan {
+                SourceSpan {
                     start_byte: 0,
                     end_byte: 0,
                     line: 1,
                     column: 1,
                 },
-                message: "source file is not valid UTF-8".to_string(),
-                identity: None,
-            }),
+                "source file is not valid UTF-8".to_string(),
+            )),
         }
     }
     for module in &parsed {
@@ -693,7 +692,7 @@ fn build(project: &ProjectInput, mode: TestMode) -> Result<Built, CompileFailure
 
     // The function signatures paired with their dotted module, in declaration order
     // (the order lowering assigns image indices).
-    let functions: Vec<(String, String, &FunctionDecl)> = parsed
+    let functions: Vec<(FileIdentity, String, &FunctionDecl)> = parsed
         .iter()
         .flat_map(|module| {
             module.parsed.file.declarations.iter().filter_map(|decl| {
@@ -710,7 +709,7 @@ fn build(project: &ProjectInput, mode: TestMode) -> Result<Built, CompileFailure
     // type — and the function signatures before body lowering, so annotations,
     // constructors, field reads, and forward calls resolve.
     let mut draft = ImageDraft::new();
-    let aliases: Vec<(String, &AliasDecl)> = parsed
+    let aliases: Vec<(FileIdentity, &AliasDecl)> = parsed
         .iter()
         .flat_map(|module| {
             module.parsed.file.declarations.iter().filter_map(|decl| {
@@ -722,7 +721,7 @@ fn build(project: &ProjectInput, mode: TestMode) -> Result<Built, CompileFailure
             })
         })
         .collect();
-    let nominals: Vec<(String, &NominalDecl)> = parsed
+    let nominals: Vec<(FileIdentity, &NominalDecl)> = parsed
         .iter()
         .flat_map(|module| {
             module.parsed.file.declarations.iter().filter_map(|decl| {
@@ -734,7 +733,7 @@ fn build(project: &ProjectInput, mode: TestMode) -> Result<Built, CompileFailure
             })
         })
         .collect();
-    let resources: Vec<(String, &ResourceDecl)> = parsed
+    let resources: Vec<(FileIdentity, &ResourceDecl)> = parsed
         .iter()
         .flat_map(|module| {
             module.parsed.file.declarations.iter().filter_map(|decl| {
@@ -746,7 +745,7 @@ fn build(project: &ProjectInput, mode: TestMode) -> Result<Built, CompileFailure
             })
         })
         .collect();
-    let structs: Vec<(String, &StructDecl)> = parsed
+    let structs: Vec<(FileIdentity, &StructDecl)> = parsed
         .iter()
         .flat_map(|module| {
             module.parsed.file.declarations.iter().filter_map(|decl| {
@@ -758,7 +757,7 @@ fn build(project: &ProjectInput, mode: TestMode) -> Result<Built, CompileFailure
             })
         })
         .collect();
-    let enums: Vec<(String, &EnumDecl)> = parsed
+    let enums: Vec<(FileIdentity, &EnumDecl)> = parsed
         .iter()
         .flat_map(|module| {
             module.parsed.file.declarations.iter().filter_map(|decl| {
@@ -792,7 +791,7 @@ fn build(project: &ProjectInput, mode: TestMode) -> Result<Built, CompileFailure
             CompileStage::TypeInstantiation,
         ));
     }
-    let stores: Vec<(String, &StoreDecl)> = parsed
+    let stores: Vec<(FileIdentity, &StoreDecl)> = parsed
         .iter()
         .flat_map(|module| {
             module.parsed.file.declarations.iter().filter_map(|decl| {
@@ -846,7 +845,7 @@ fn build(project: &ProjectInput, mode: TestMode) -> Result<Built, CompileFailure
     };
     // Generic functions are templates with no image index; they are monomorphized at
     // each call site and once-checked below against their constraints.
-    let generic_functions: Vec<(String, String, &FunctionDecl)> = parsed
+    let generic_functions: Vec<(FileIdentity, String, &FunctionDecl)> = parsed
         .iter()
         .flat_map(|module| {
             module.parsed.file.declarations.iter().filter_map(|decl| {
@@ -864,7 +863,7 @@ fn build(project: &ProjectInput, mode: TestMode) -> Result<Built, CompileFailure
 
     // Module-private constants, evaluated before body lowering so a reference folds
     // to its value.
-    let const_decls: Vec<(String, String, &ConstDecl)> = parsed
+    let const_decls: Vec<(String, FileIdentity, &ConstDecl)> = parsed
         .iter()
         .flat_map(|module| {
             module.parsed.file.declarations.iter().filter_map(|decl| {
@@ -1086,7 +1085,7 @@ fn build(project: &ProjectInput, mode: TestMode) -> Result<Built, CompileFailure
                 tests.push(TestEntry {
                     name: test.name.clone(),
                     module: module.name.clone(),
-                    file: module.file.clone(),
+                    file: module.file.as_str().to_string(),
                     line: test.name_span.line,
                     column: test.name_span.column,
                 });
@@ -1130,7 +1129,7 @@ fn build(project: &ProjectInput, mode: TestMode) -> Result<Built, CompileFailure
             );
             lowered.push(LoweredFn {
                 index: result.func.index(),
-                file: template.source_file().to_string(),
+                file: template.source_file().clone(),
                 name: template.name().to_string(),
                 span: template.span(),
                 callees: result.callees,
@@ -1473,7 +1472,7 @@ fn check_structural_resource_bounds(parsed: &[Module], diagnostics: &mut Vec<Sou
 /// record-field width. Group and branch members are not top-level record fields, so
 /// they are not counted here.
 fn check_record_field_width(
-    file: &str,
+    file: &FileIdentity,
     span: SourceSpan,
     members: &[ResourceMember],
     diagnostics: &mut Vec<SourceDiagnostic>,
@@ -1558,7 +1557,7 @@ mod tests {
     fn diagnostic(code: &'static str, line: u32) -> SourceDiagnostic {
         SourceDiagnostic::at(
             code,
-            "src/main.mw",
+            crate::test_main_file_identity(),
             SourceSpan {
                 line,
                 column: 7,

@@ -59,7 +59,7 @@ fn lowerer<'a>(
         generics,
         consts,
         diagnostics,
-        "src/main.mw",
+        crate::test_main_file_identity(),
         "main",
         RetType::Unit,
         BodyKind::Function,
@@ -298,7 +298,7 @@ fn built_registry_with_generic_struct() -> (TypeRegistry, ImageDraft, usize) {
             _ => None,
         })
         .expect("generic struct declaration exists");
-    let structs = [("src/main.mw".to_string(), declaration)];
+    let structs = [(crate::test_file_identity("src/main.mw"), declaration)];
     let mut draft = ImageDraft::new();
     let mut diagnostics = Vec::new();
     let registry = TypeRegistry::build(&mut draft, &[], &[], &structs, &[], &[], &mut diagnostics);

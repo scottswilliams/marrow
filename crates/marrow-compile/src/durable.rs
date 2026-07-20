@@ -33,7 +33,7 @@ use marrow_image::{
     DurableValueShape, FieldDef, ImageDraft, ImageType, KeyColumn, LedgerIdBytes, RecordTypeDef,
     RootDef, RootIdentity, Scalar, SemanticPath, SemanticStep, SemanticStepKind, SiteDef, bounds,
 };
-use marrow_project::{IdentityKind, IdentityLedger};
+use marrow_project::{FileIdentity, IdentityKind, IdentityLedger};
 use marrow_syntax::{
     FieldDecl, GroupDecl, IndexDecl, KeyParam, ResourceDecl, ResourceMember, SourceSpan, StoreDecl,
     TypeExpr,
@@ -344,8 +344,8 @@ impl DurableRegistry {
     pub(crate) fn build(
         draft: &mut ImageDraft,
         records: &TypeRegistry,
-        resources: &[(String, &ResourceDecl)],
-        stores: &[(String, &StoreDecl)],
+        resources: &[(FileIdentity, &ResourceDecl)],
+        stores: &[(FileIdentity, &StoreDecl)],
         ledger: Option<&IdentityLedger>,
         diagnostics: &mut Vec<SourceDiagnostic>,
     ) -> Result<Self, GenericInvariant> {
@@ -417,8 +417,8 @@ struct DurableTypeMetadata<'registry, 'session> {
 fn build_one(
     draft: &mut ImageDraft,
     type_metadata: &mut DurableTypeMetadata<'_, '_>,
-    resources: &[(String, &ResourceDecl)],
-    file: &str,
+    resources: &[(FileIdentity, &ResourceDecl)],
+    file: &FileIdentity,
     store: &StoreDecl,
     ledger: Option<&IdentityLedger>,
     diagnostics: &mut Vec<SourceDiagnostic>,
@@ -731,7 +731,7 @@ fn build_one(
 /// column is not a supported key scalar; a singleton placement has no columns and
 /// yields an empty vector. Shared by root and branch key tuples.
 fn resolve_key_scalars(
-    file: &str,
+    file: &FileIdentity,
     span: SourceSpan,
     keys: &[KeyParam],
     records: &TypeRegistry,
@@ -775,7 +775,7 @@ fn resolve_key_scalars(
 /// every anchor resolved; the caller discards the graph when it is false, so an id
 /// resolved to a placeholder on a gap never reaches the image.
 struct IdentityResolver<'a> {
-    file: &'a str,
+    file: &'a FileIdentity,
     span: SourceSpan,
     ledger: Option<&'a IdentityLedger>,
     complete: bool,
@@ -807,7 +807,7 @@ enum ValueNode {
 
 impl<'a> IdentityResolver<'a> {
     fn new(
-        file: &'a str,
+        file: &'a FileIdentity,
         span: SourceSpan,
         ledger: Option<&'a IdentityLedger>,
         diagnostics: &'a mut Vec<SourceDiagnostic>,
@@ -1775,7 +1775,7 @@ fn scalar_of(ty: &TypeExpr) -> Option<ScalarType> {
 /// The precise missing/retired-identity diagnostic: the typed `(kind, path)`
 /// gap plus a message naming the identity and the command that mints it.
 fn identity_gap(
-    file: &str,
+    file: &FileIdentity,
     span: SourceSpan,
     kind: IdentityKind,
     path: &str,
@@ -1809,7 +1809,7 @@ fn identity_gap(
     )
 }
 
-fn unsupported(file: &str, span: SourceSpan, subject: &str) -> SourceDiagnostic {
+fn unsupported(file: &FileIdentity, span: SourceSpan, subject: &str) -> SourceDiagnostic {
     SourceDiagnostic::at(
         Code::CheckUnsupported.as_str(),
         file,
@@ -1821,7 +1821,7 @@ fn unsupported(file: &str, span: SourceSpan, subject: &str) -> SourceDiagnostic 
 /// A `check.resource_limit`: one durable construct crosses a fixed compiler-owned
 /// bound the image cannot represent, reported at the offending construct's span so
 /// the source, not a fabricated location, carries the diagnostic.
-fn resource_limit(file: &str, span: SourceSpan, message: String) -> SourceDiagnostic {
+fn resource_limit(file: &FileIdentity, span: SourceSpan, message: String) -> SourceDiagnostic {
     SourceDiagnostic::at(Code::CheckResourceLimit.as_str(), file, span, message)
 }
 
@@ -1854,7 +1854,7 @@ mod generic_enum_shape_tests {
                 &mut draft,
                 GArg::Scalar(ScalarType::Int),
                 MintSite {
-                    file: "src/main.mw",
+                    file: crate::test_main_file_identity(),
                     span: SourceSpan {
                         line: 1,
                         column: 1,
@@ -1865,8 +1865,12 @@ mod generic_enum_shape_tests {
             .expect("Ready Option mints");
 
         let mut diagnostics = Vec::new();
-        let mut resolver =
-            IdentityResolver::new("src/main.mw", SourceSpan::default(), None, &mut diagnostics);
+        let mut resolver = IdentityResolver::new(
+            crate::test_main_file_identity(),
+            SourceSpan::default(),
+            None,
+            &mut diagnostics,
+        );
         let shape = records
             .with_metadata_session(|metadata| {
                 Ok::<_, GenericInvariant>(
@@ -1913,8 +1917,12 @@ mod generic_enum_shape_tests {
             variants: Vec::new(),
         });
         let mut diagnostics = Vec::new();
-        let mut resolver =
-            IdentityResolver::new("src/main.mw", SourceSpan::default(), None, &mut diagnostics);
+        let mut resolver = IdentityResolver::new(
+            crate::test_main_file_identity(),
+            SourceSpan::default(),
+            None,
+            &mut diagnostics,
+        );
 
         let shape = records
             .with_metadata_session(|metadata| {
@@ -1946,7 +1954,7 @@ mod generic_enum_shape_tests {
                 &mut draft,
                 GArg::Scalar(ScalarType::Int),
                 MintSite {
-                    file: "src/main.mw",
+                    file: crate::test_main_file_identity(),
                     span: SourceSpan::default(),
                 },
             )
@@ -1956,8 +1964,12 @@ mod generic_enum_shape_tests {
             body: TypeInstKind::Struct,
         };
         let mut diagnostics = Vec::new();
-        let mut resolver =
-            IdentityResolver::new("src/main.mw", SourceSpan::default(), None, &mut diagnostics);
+        let mut resolver = IdentityResolver::new(
+            crate::test_main_file_identity(),
+            SourceSpan::default(),
+            None,
+            &mut diagnostics,
+        );
 
         assert!(
             resolver
@@ -1990,7 +2002,7 @@ store ^holders[id: int]: Holder
                 _ => None,
             })
             .expect("resource parses");
-        let resources = vec![("src/main.mw".to_string(), resource)];
+        let resources = vec![(crate::test_file_identity("src/main.mw"), resource)];
         let mut draft = ImageDraft::new();
         let mut diagnostics = Vec::new();
         let records =
@@ -2005,8 +2017,12 @@ store ^holders[id: int]: Holder
             body: TypeInstKind::Struct,
         };
         let before = draft.encode().expect("seeded draft encodes");
-        let mut resolver =
-            IdentityResolver::new("src/main.mw", SourceSpan::default(), None, &mut diagnostics);
+        let mut resolver = IdentityResolver::new(
+            crate::test_main_file_identity(),
+            SourceSpan::default(),
+            None,
+            &mut diagnostics,
+        );
         assert!(
             resolver
                 .accept_ready_shape::<()>(Err(expected), "this durable value")

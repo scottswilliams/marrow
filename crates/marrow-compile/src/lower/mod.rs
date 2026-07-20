@@ -45,6 +45,7 @@ use marrow_codes::Code;
 use marrow_image::{
     EnumId, FuncId, FunctionDef, ImageDraft, ImageType, Instr, Scalar, SpanEntry, TypeId,
 };
+use marrow_project::FileIdentity;
 use marrow_syntax::{
     Argument, BinaryOp, Block, CheckedBind, ElseIf, Expression, ForBinding, FunctionDecl,
     InterpolationPart, LiteralKind, MatchArm, RangeExpr, SourceSpan, Statement, TraversalBound,
@@ -195,7 +196,7 @@ pub(crate) struct FnLowerer<'a> {
     generics: &'a GenericRegistry<'a>,
     consts: &'a ConstRegistry,
     diagnostics: &'a mut Vec<SourceDiagnostic>,
-    file: &'a str,
+    file: &'a FileIdentity,
     /// The dotted module the function being lowered belongs to; unqualified calls
     /// resolve within it.
     module: &'a str,
@@ -276,7 +277,7 @@ impl<'a> FnLowerer<'a> {
         generics: &'a GenericRegistry<'a>,
         consts: &'a ConstRegistry,
         diagnostics: &'a mut Vec<SourceDiagnostic>,
-        file: &'a str,
+        file: &'a FileIdentity,
         module: &'a str,
         ret: RetType,
         body_kind: BodyKind,
@@ -325,7 +326,7 @@ impl<'a> FnLowerer<'a> {
         generics: &'a GenericRegistry<'a>,
         consts: &'a ConstRegistry,
         diagnostics: &'a mut Vec<SourceDiagnostic>,
-        file: &'a str,
+        file: &'a FileIdentity,
         module: &'a str,
         function: &FunctionDecl,
     ) -> LowerResult {
@@ -457,7 +458,7 @@ impl<'a> FnLowerer<'a> {
         generics: &'a GenericRegistry<'a>,
         consts: &'a ConstRegistry,
         diagnostics: &'a mut Vec<SourceDiagnostic>,
-        file: &'a str,
+        file: &'a FileIdentity,
         module: &'a str,
         function: &FunctionDecl,
         type_env: Vec<TypeParamSlot>,
@@ -593,7 +594,7 @@ impl<'a> FnLowerer<'a> {
         generics: &'a GenericRegistry<'a>,
         consts: &'a ConstRegistry,
         diagnostics: &'a mut Vec<SourceDiagnostic>,
-        file: &'a str,
+        file: &'a FileIdentity,
         module: &'a str,
         name: &str,
         body: &Block,
@@ -632,7 +633,7 @@ impl<'a> FnLowerer<'a> {
             return Ok(None);
         }
         let name_id = self.draft.intern_string(name);
-        let source_id = self.draft.intern_string(self.file);
+        let source_id = self.draft.intern_string(self.file.as_str());
         let code = std::mem::take(&mut self.code);
         let spans = std::mem::take(&mut self.spans);
         let has_direct_durable_op = code.iter().any(is_durable_place_op);
@@ -868,7 +869,7 @@ mod generic_cache_boundary_tests {
             draft,
             &[],
             &[],
-            &[("src/main.mw".to_string(), declaration)],
+            &[(crate::test_file_identity("src/main.mw"), declaration)],
             &[],
             &[],
             &mut diagnostics,
@@ -1019,7 +1020,7 @@ mod generic_cache_boundary_tests {
                     &annotation,
                     TypeEnv { params: &params },
                     MintSite {
-                        file: "src/main.mw",
+                        file: crate::test_main_file_identity(),
                         span: span(),
                     },
                 )
@@ -1074,7 +1075,7 @@ mod generic_cache_boundary_tests {
                 &annotation,
                 TypeEnv { params: &params },
                 MintSite {
-                    file: "src/main.mw",
+                    file: crate::test_main_file_identity(),
                     span: span(),
                 },
             )
@@ -1117,7 +1118,7 @@ mod generic_cache_boundary_tests {
             generics,
             consts,
             diagnostics,
-            "src/main.mw",
+            crate::test_main_file_identity(),
             "main",
             RetType::Unit,
             BodyKind::Function,
@@ -1385,7 +1386,7 @@ mod generic_cache_boundary_tests {
                 template,
                 &[GArg::Scalar(ScalarType::Int)],
                 MintSite {
-                    file: "src/main.mw",
+                    file: crate::test_main_file_identity(),
                     span: span(),
                 },
             )
@@ -1456,7 +1457,7 @@ mod generic_cache_boundary_tests {
                 &mut draft,
                 GArg::Scalar(ScalarType::Int),
                 MintSite {
-                    file: "src/main.mw",
+                    file: crate::test_main_file_identity(),
                     span: span(),
                 },
             )
@@ -1521,7 +1522,7 @@ mod generic_cache_boundary_tests {
                 &mut draft,
                 GArg::Scalar(ScalarType::Int),
                 MintSite {
-                    file: "src/main.mw",
+                    file: crate::test_main_file_identity(),
                     span: span(),
                 },
             )
@@ -1590,7 +1591,7 @@ mod generic_cache_boundary_tests {
                 &mut draft,
                 GArg::Scalar(ScalarType::Int),
                 MintSite {
-                    file: "src/main.mw",
+                    file: crate::test_main_file_identity(),
                     span: span(),
                 },
             )
@@ -1662,7 +1663,7 @@ mod generic_cache_boundary_tests {
                 &mut draft,
                 GArg::Scalar(ScalarType::Int),
                 MintSite {
-                    file: "src/main.mw",
+                    file: crate::test_main_file_identity(),
                     span: span(),
                 },
             )
@@ -1743,7 +1744,7 @@ mod generic_cache_boundary_tests {
                 &mut draft,
                 GArg::Scalar(ScalarType::Int),
                 MintSite {
-                    file: "src/main.mw",
+                    file: crate::test_main_file_identity(),
                     span: span(),
                 },
             )
@@ -1968,7 +1969,7 @@ mod generic_cache_boundary_tests {
                 &mut draft,
                 GArg::Scalar(ScalarType::Int),
                 MintSite {
-                    file: "src/main.mw",
+                    file: crate::test_main_file_identity(),
                     span: span(),
                 },
             )
@@ -2064,7 +2065,7 @@ mod generic_cache_boundary_tests {
                 template,
                 &[GArg::Scalar(ScalarType::Int)],
                 MintSite {
-                    file: "src/main.mw",
+                    file: crate::test_main_file_identity(),
                     span: span(),
                 },
             ),
