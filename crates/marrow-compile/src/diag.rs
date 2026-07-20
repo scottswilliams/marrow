@@ -18,7 +18,7 @@ use marrow_syntax::SourceSpan;
 pub struct SourceDiagnostic {
     pub code: &'static str,
     file: FileIdentity,
-    pub span: SourceSpan,
+    span: SourceSpan,
     pub message: String,
     /// The typed durable-identity gap behind a `check.durable_identity`
     /// diagnostic, `None` for every other code. The CLI's `marrow run` mint

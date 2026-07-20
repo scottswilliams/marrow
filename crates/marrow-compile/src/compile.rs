@@ -2077,4 +2077,66 @@ mod driver_agreement {
             Some(driven.parse.clone())
         );
     }
+
+    /// A valid module that genuinely depends on a parse-failed module is analyzed
+    /// without a dangling reference: the broken module is absent from the analyzed
+    /// set, so the dependent's references reduce to the ordinary missing-module
+    /// diagnostic family — never a panic, an invariant, or a fabricated fact — and the
+    /// production compile still projects only the broken module's parse stage. This
+    /// pins the cross-reference case the midpoint review probed by hand.
+    #[test]
+    fn a_module_depending_on_a_parse_failed_module_reduces_to_the_missing_module_family() {
+        let files = &[
+            (
+                "src/base.mw",
+                "module base\n\npub fn provide(: int {\n    return 1\n}\n",
+            ),
+            (
+                "src/dependent.mw",
+                "module dependent\nuse base\n\npub fn f(): int {\n    return base::provide()\n}\n",
+            ),
+        ];
+        let input = project(files);
+        let driven = drive(&input, TestMode::Include);
+
+        // The broken base module's parse error is recorded.
+        assert!(
+            driven
+                .parse
+                .iter()
+                .any(|d| d.file().as_str() == "src/base.mw")
+        );
+
+        // The dependent module is analyzed, and its cross-references to the absent base
+        // module reduce to the ordinary missing-module family — no panic, no invariant,
+        // no resource limit.
+        let semantic = match &driven.semantic {
+            SemanticOutcome::Diagnostics(diagnostics, _) => diagnostics.clone(),
+            _ => panic!("a dependent module must still produce ordinary semantic diagnostics"),
+        };
+        let dependent: Vec<&SourceDiagnostic> = semantic
+            .iter()
+            .filter(|d| d.file().as_str() == "src/dependent.mw")
+            .collect();
+        assert!(
+            !dependent.is_empty(),
+            "the dependent module must be analyzed against the absent base: {semantic:?}",
+        );
+        let missing_family = [
+            marrow_codes::Code::CheckImport.as_str(),
+            marrow_codes::Code::CheckType.as_str(),
+        ];
+        assert!(
+            dependent.iter().all(|d| missing_family.contains(&d.code)),
+            "a reference to a parse-failed module reduces to the ordinary missing-reference \
+             family (check.import / check.type), never a fabricated or invariant code: {dependent:?}",
+        );
+
+        // Byte-identical: the production compile projects only the base module's parse
+        // stage.
+        assert_eq!(
+            compiled(&compile_with_tests(&input)),
+            Some(driven.parse.clone())
+        );
+    }
 }
