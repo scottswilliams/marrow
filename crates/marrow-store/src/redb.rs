@@ -1035,7 +1035,7 @@ mod tests {
                 let mut txn = engine.begin().expect("begin");
                 for n in 0..40u32 {
                     let key = format!("\x30{:02}", (n * 3) % 20).into_bytes();
-                    if n % 4 == 0 {
+                    if n.is_multiple_of(4) {
                         txn.remove(&key).expect("remove");
                     } else {
                         txn.put(&key, format!("v{n}").into_bytes()).expect("put");

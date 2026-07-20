@@ -643,7 +643,7 @@ fn parse_for_binding(source: &str, tokens: &[Token]) -> Option<ForBinding> {
     }
     let mut names = Vec::new();
     for (index, token) in tokens.iter().enumerate() {
-        if index % 2 == 0 {
+        if index.is_multiple_of(2) {
             if token.kind != TokenKind::Identifier {
                 return None;
             }
@@ -657,7 +657,7 @@ fn parse_for_binding(source: &str, tokens: &[Token]) -> Option<ForBinding> {
     }
     // A trailing comma leaves the final token at an even index without a following
     // name, so the loop ends on a comma — reject that dangling separator.
-    if tokens.len() % 2 == 0 {
+    if tokens.len().is_multiple_of(2) {
         return None;
     }
     Some(ForBinding { names })

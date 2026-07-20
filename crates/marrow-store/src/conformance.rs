@@ -232,7 +232,7 @@ fn a_model_sequence_matches_a_reference_map<E: ByteEngine>(
         let mut txn = engine.begin()?;
         for n in 0..20u32 {
             let key = format!("\x50{:03}", (step * 7 + n) % 50).into_bytes();
-            if (round + n) % 5 == 0 {
+            if (round + n).is_multiple_of(5) {
                 txn.remove(&key)?;
                 model.remove(&key);
             } else {

@@ -256,7 +256,7 @@ pub(super) fn arm_member_path(
     let mut spans = Vec::new();
     for (index, token) in tokens.iter().enumerate() {
         // Even positions are identifiers, odd positions the `::` separators.
-        if index % 2 == 0 {
+        if index.is_multiple_of(2) {
             if token.kind != TokenKind::Identifier {
                 return None;
             }
