@@ -70,7 +70,7 @@ fn compile_error_codes(source: &str) -> Vec<String> {
         Err(marrow_compile::CompileFailure::Diagnostics(diagnostics)) => {
             diagnostics.iter().map(|d| d.code.to_string()).collect()
         }
-        Err(marrow_compile::CompileFailure::Invariant(_)) => {
+        Err(marrow_compile::CompileFailure::Invariant(_) | marrow_compile::CompileFailure::ResourceLimit(_)) => {
             panic!("source-triggered compiler failures must remain diagnostics")
         }
     }

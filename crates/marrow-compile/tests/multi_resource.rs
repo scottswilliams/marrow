@@ -78,7 +78,9 @@ pub fn make(): string {
     let diagnostics = match compile(&project(source, None)) {
         Ok(_) => panic!("a duplicate resource name must be rejected"),
         Err(CompileFailure::Diagnostics(diagnostics)) => diagnostics,
-        Err(CompileFailure::ResourceLimit(_)) => panic!("source-triggered compiler failures must remain diagnostics"),
+        Err(CompileFailure::ResourceLimit(_)) => {
+            panic!("source-triggered compiler failures must remain diagnostics")
+        }
         Err(CompileFailure::Invariant(_)) => {
             panic!("source-triggered compiler failures must remain diagnostics")
         }

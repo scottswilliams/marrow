@@ -17,7 +17,8 @@ fn project(source: &str, ids: Option<&[u8]>) -> ProjectInput {
         "src/main.mw".to_string(),
         source.as_bytes().to_vec(),
     )];
-    marrow_project::capture(&manifest, files, ids, &CaptureLimits::DEFAULT).expect("capture project")
+    marrow_project::capture(&manifest, files, ids, &CaptureLimits::DEFAULT)
+        .expect("capture project")
 }
 
 /// Assert the failure is a source-diagnostic result carrying exactly one

@@ -528,7 +528,7 @@ fn compile_diagnostics(body: &str) -> Vec<SourceDiagnostic> {
             panic!("a group-leaf-shaped projection over a stored field must be rejected")
         }
         Err(marrow_compile::CompileFailure::Diagnostics(diagnostics)) => diagnostics.into_vec(),
-        Err(marrow_compile::CompileFailure::Invariant(_)) => {
+        Err(marrow_compile::CompileFailure::Invariant(_) | marrow_compile::CompileFailure::ResourceLimit(_)) => {
             panic!("source-triggered compiler failures must remain diagnostics")
         }
     }

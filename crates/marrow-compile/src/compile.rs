@@ -371,9 +371,9 @@ fn compile_failure(
         DiagnosticSeal::Overflow(limit) => CompileFailure::ResourceLimit(limit),
         DiagnosticSeal::Empty => match resource {
             Some(limit) => CompileFailure::ResourceLimit(limit),
-            None => CompileFailure::Invariant(CompileInvariant(InvariantCause::EmptyDiagnostics(
-                stage,
-            ))),
+            None => {
+                CompileFailure::Invariant(CompileInvariant(InvariantCause::EmptyDiagnostics(stage)))
+            }
         },
     }
 }
@@ -383,7 +383,12 @@ fn diagnostic_failure(diagnostics: Vec<SourceDiagnostic>, stage: CompileStage) -
 }
 
 fn invariant_failure(cause: GenericInvariant, stage: CompileStage) -> CompileFailure {
-    compile_failure(Vec::new(), Some(InvariantCause::Generic(cause)), None, stage)
+    compile_failure(
+        Vec::new(),
+        Some(InvariantCause::Generic(cause)),
+        None,
+        stage,
+    )
 }
 
 /// Classify a producer-side [`ImageBuildError`] from `ImageDraft::encode` into the
@@ -406,7 +411,9 @@ fn image_build_failure(error: ImageBuildError) -> CompileFailure {
     };
     match error {
         // Aggregate whole-program counts and the byte ceiling: no single offender.
-        ImageBuildError::TooManyStrings => aggregate(ResourceLimitKind::Strings, bounds::MAX_STRINGS),
+        ImageBuildError::TooManyStrings => {
+            aggregate(ResourceLimitKind::Strings, bounds::MAX_STRINGS)
+        }
         ImageBuildError::TooManyConsts => aggregate(ResourceLimitKind::Consts, bounds::MAX_CONSTS),
         ImageBuildError::TooManyTypes => aggregate(ResourceLimitKind::Types, bounds::MAX_TYPES),
         ImageBuildError::TooManyEnums => aggregate(ResourceLimitKind::Enums, bounds::MAX_ENUMS),
@@ -414,9 +421,10 @@ fn image_build_failure(error: ImageBuildError) -> CompileFailure {
             aggregate(ResourceLimitKind::Collections, bounds::MAX_COLLECTIONS)
         }
         ImageBuildError::TooManyRoots => aggregate(ResourceLimitKind::Roots, bounds::MAX_ROOTS),
-        ImageBuildError::TooManyDurableMembers => {
-            aggregate(ResourceLimitKind::DurableMembers, bounds::MAX_DURABLE_MEMBERS)
-        }
+        ImageBuildError::TooManyDurableMembers => aggregate(
+            ResourceLimitKind::DurableMembers,
+            bounds::MAX_DURABLE_MEMBERS,
+        ),
         ImageBuildError::TooManySites => aggregate(ResourceLimitKind::Sites, bounds::MAX_SITES),
         ImageBuildError::TooManyFunctions => {
             aggregate(ResourceLimitKind::Functions, bounds::MAX_FUNCTIONS)
@@ -440,9 +448,10 @@ fn image_build_failure(error: ImageBuildError) -> CompileFailure {
         ImageBuildError::CodeTooLong => {
             aggregate(ResourceLimitKind::CodeBytes, bounds::MAX_CODE_BYTES)
         }
-        ImageBuildError::TooManyIndexComponents => {
-            aggregate(ResourceLimitKind::IndexComponents, bounds::MAX_INDEX_COMPONENTS)
-        }
+        ImageBuildError::TooManyIndexComponents => aggregate(
+            ResourceLimitKind::IndexComponents,
+            bounds::MAX_INDEX_COMPONENTS,
+        ),
         ImageBuildError::DurableTreeTooDeep => {
             aggregate(ResourceLimitKind::DurableDepth, bounds::MAX_DURABLE_DEPTH)
         }
@@ -461,9 +470,12 @@ fn image_build_failure(error: ImageBuildError) -> CompileFailure {
         | ImageBuildError::SitePathTooShort
         | ImageBuildError::SitePathTooDeep
         | ImageBuildError::LocalCountBelowParams
-        | ImageBuildError::InvalidReference(_) => {
-            compile_failure(Vec::new(), Some(InvariantCause::ImageBuild(error)), None, stage)
-        }
+        | ImageBuildError::InvalidReference(_) => compile_failure(
+            Vec::new(),
+            Some(InvariantCause::ImageBuild(error)),
+            None,
+            stage,
+        ),
     }
 }
 
