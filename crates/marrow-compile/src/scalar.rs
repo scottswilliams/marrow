@@ -8,7 +8,7 @@
 use marrow_image::Scalar;
 
 /// A scalar language type in the compiled subset.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ScalarType {
     Int,
     Bool,

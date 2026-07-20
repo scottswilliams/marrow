@@ -101,12 +101,14 @@ fn ratio(at_2v: usize, at_v: usize) -> f64 {
 /// The compiler's shared instantiation budget, far above the reachable ceiling.
 const MAX_INSTANTIATIONS: usize = super::MAX_INSTANTIATIONS;
 
-/// The reachable number of distinct type instantiations is bounded by the image
-/// record cap (~30, well below `MAX_INSTANTIATIONS = 4096`), and the per-mint
-/// directory rebuild plus `(template, args)` scan are quadratic on that capped
-/// domain. The absolute operation count at the ceiling stays in the low thousands.
+/// The `(template, args)` mint-dedup reuse probe is a keyed lookup, so its work is
+/// linear in the number of mint attempts (one probe each), not quadratic in the
+/// number of distinct instantiations. The per-mint directory rebuild is deliberately
+/// unchanged by the index repair (its build count and row work stay identical), so it
+/// remains quadratic on the reachable domain; this test pins the repaired scan as
+/// linear while holding the directory rebuild at its frozen shape.
 #[test]
-fn type_axis_is_image_capped_and_quadratic_on_that_domain() {
+fn type_axis_scan_is_keyed_lookup_directory_rebuild_unchanged() {
     let (ceiling, top) = reachable_ceiling(type_axis_fixture, 64);
 
     assert!(
@@ -115,10 +117,10 @@ fn type_axis_is_image_capped_and_quadratic_on_that_domain() {
          MAX_INSTANTIATIONS ({MAX_INSTANTIATIONS}); the 512..4096 axis is unreachable"
     );
 
-    // Quadratic shape on the reachable domain: half vs. full ceiling.
     let half = counts_for(type_axis_fixture(ceiling / 2));
     let row_ratio = ratio(top.directory_row_visits, half.directory_row_visits);
     let scan_ratio = ratio(top.type_inst_scan_steps, half.type_inst_scan_steps);
+    // The unrepaired per-mint directory rebuild is still super-linear on the domain.
     assert!(
         row_ratio >= 2.6,
         "per-mint directory rebuild is super-linear; ceiling={ceiling} \
@@ -126,10 +128,11 @@ fn type_axis_is_image_capped_and_quadratic_on_that_domain() {
         half.directory_row_visits,
         top.directory_row_visits
     );
+    // The repaired keyed reuse probe is linear in mint attempts (one probe each).
     assert!(
-        scan_ratio >= 2.6,
-        "(template,args) primary-key scan is super-linear; ceiling={ceiling} \
-         scan steps half={} full={} ratio={scan_ratio:.2}",
+        (1.7..=2.3).contains(&scan_ratio),
+        "(template,args) reuse probe is a keyed lookup, linear in mint attempts; \
+         ceiling={ceiling} probe steps half={} full={} ratio={scan_ratio:.2}",
         half.type_inst_scan_steps,
         top.type_inst_scan_steps
     );
@@ -148,9 +151,10 @@ fn type_axis_is_image_capped_and_quadratic_on_that_domain() {
     );
 
     // Tight absolute ceilings at the image-capped domain (observed: builds 129,
-    // row_visits 2048, ty_scan 496 at ceiling 32). Each cap is below twice the
-    // observed value, so a 2x constant-factor rebuild/scan regression fails here
-    // even when the half→full ratio is unchanged.
+    // row_visits 2048 unchanged by the index repair; ty_scan 32 = one keyed probe per
+    // mint attempt at ceiling 32, down from the pre-repair 496 linear scan). Each cap
+    // is below twice the observed value, so a regression that reintroduces a linear
+    // scan (or doubles the rebuild) fails here even with an unchanged half→full ratio.
     assert!(
         top.directory_builds < 170,
         "directory build count regressed past the frozen level: {} (ceiling={ceiling})",
@@ -162,17 +166,18 @@ fn type_axis_is_image_capped_and_quadratic_on_that_domain() {
         top.directory_row_visits
     );
     assert!(
-        top.type_inst_scan_steps < 800,
-        "type-inst scan work regressed past the frozen level: {} (ceiling={ceiling})",
+        top.type_inst_scan_steps < 64,
+        "reuse probe regressed to a linear scan: {} (ceiling={ceiling})",
         top.type_inst_scan_steps
     );
 }
 
-/// The function axis is bounded by `MAX_FUNCTIONS = 64` and is quadratic on that
-/// capped domain through the `reserve_fn_instance` scan and the per-mint directory
-/// rebuild; absolute cost at the ceiling stays small.
+/// The function axis is bounded by `MAX_FUNCTIONS = 64`. The `reserve_fn_instance`
+/// reuse probe is now a keyed lookup — linear in reserve attempts — and the function
+/// axis drives no per-mint type directory rebuild, so the whole axis is linear after
+/// the index repair.
 #[test]
-fn fn_axis_is_image_capped_and_quadratic_on_that_domain() {
+fn fn_axis_scan_is_keyed_lookup() {
     let (ceiling, top) = reachable_ceiling(fn_axis_fixture, 64);
 
     assert!(
@@ -184,9 +189,9 @@ fn fn_axis_is_image_capped_and_quadratic_on_that_domain() {
     let half = counts_for(fn_axis_fixture(ceiling / 2));
     let scan_ratio = ratio(top.fn_inst_scan_steps, half.fn_inst_scan_steps);
     assert!(
-        scan_ratio >= 2.6,
-        "reserve_fn_instance scan is super-linear; ceiling={ceiling} \
-         scan steps half={} full={} ratio={scan_ratio:.2}",
+        (1.7..=2.3).contains(&scan_ratio),
+        "reserve_fn_instance reuse probe is a keyed lookup, linear in reserve \
+         attempts; ceiling={ceiling} probe steps half={} full={} ratio={scan_ratio:.2}",
         half.fn_inst_scan_steps,
         top.fn_inst_scan_steps
     );
@@ -201,18 +206,18 @@ fn fn_axis_is_image_capped_and_quadratic_on_that_domain() {
         top.directory_builds
     );
 
-    // Tight absolute ceilings at the image-capped domain (observed: builds 191,
-    // fn_scan 1953 at ceiling 63). Each cap is below twice the observed value, so a
-    // 2x constant-factor rebuild/scan regression fails here even with an unchanged
-    // half→full ratio.
+    // Tight absolute ceilings at the image-capped domain (observed: builds 191;
+    // fn_scan 63 = one keyed probe per reserve attempt at ceiling 63, down from the
+    // pre-repair 1953 linear scan). The scan cap is below twice the observed value, so
+    // a regression that reintroduces a linear scan fails here.
     assert!(
         top.directory_builds < 260,
         "directory build count regressed past the frozen level: {} (ceiling={ceiling})",
         top.directory_builds
     );
     assert!(
-        top.fn_inst_scan_steps < 3_000,
-        "fn-inst scan work regressed past the frozen level: {} (ceiling={ceiling})",
+        top.fn_inst_scan_steps < 128,
+        "reuse probe regressed to a linear scan: {} (ceiling={ceiling})",
         top.fn_inst_scan_steps
     );
 }

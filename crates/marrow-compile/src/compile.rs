@@ -1599,6 +1599,7 @@ mod tests {
                 GenericCacheInvariant::SettledRowMissing => "settled row missing",
                 GenericCacheInvariant::SettledRowStillFilling => "settled row Filling",
                 GenericCacheInvariant::FillStackMismatch => "fill stack mismatch",
+                GenericCacheInvariant::MintIndexDrift => "mint index drift",
             },
             GenericInvariant::ReservedTemplateMissing(reserved) => match reserved {
                 Reserved::Option => "Option template missing",

@@ -37,7 +37,7 @@ use crate::scalar::ScalarType;
 
 /// The identity of a nominal type in [`TypeRegistry`] order, carried by the
 /// lowered type so classification never re-reads the source spelling.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) struct NominalId(pub(crate) u16);
 
 /// A concrete bare (non-optional) value type used as a `Option`/`Result` type
@@ -45,7 +45,7 @@ pub(crate) struct NominalId(pub(crate) u16);
 /// so `Option[int]` and `Option[string]` are distinct instantiations, and
 /// `Option[Option[int]]` nests through the [`GArg::Enum`] case. A resource record
 /// is not a value type, so it is not a representable argument.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum GArg {
     Scalar(ScalarType),
     Nominal(NominalId),
@@ -165,7 +165,7 @@ impl TypeConstraint {
 /// types so `List[Age]` and `List[int]` stay distinct even though both erase to the
 /// same image. The registry's collection table indexes these in the same order the
 /// image COLLTYPES table records them.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum CollSpec {
     List { elem: GArg },
     Map { key: GArg, value: GArg },
@@ -293,6 +293,10 @@ pub(crate) enum GenericCacheInvariant {
     SettledRowMissing,
     SettledRowStillFilling,
     FillStackMismatch,
+    /// A lookup-only mint-dedup index (`type_index`/`fn_index`) resolved a
+    /// `(template, args)` key to a row that does not carry that key: the secondary
+    /// index diverged from its append-order authority vector.
+    MintIndexDrift,
 }
 
 /// Detailed compiler-private causes that cross the build boundary only through the
@@ -745,8 +749,22 @@ impl GenericDiagnostics {
 #[derive(Default)]
 struct Monomorph {
     type_insts: Vec<TypeInst>,
+    /// Lookup-only secondary index `(template, args) -> row in type_insts`. The
+    /// append-order `type_insts` vector remains the sole authority for instantiation
+    /// identity, mint order, and image emission; this index is never iterated to
+    /// assign an id, select a diagnostic, drain work, or emit bytes — it only
+    /// accelerates the mint-dedup reuse probe from a linear key scan to a keyed
+    /// lookup. It is append-only in lockstep with `type_insts`, so a lookup whose row
+    /// does not carry the looked-up key is index/authority drift, reported as the
+    /// typed coherence failure `MintIndexDrift` rather than silently trusted.
+    type_index: HashMap<(usize, Vec<GArg>), usize>,
     fn_base: u16,
     fn_insts: Vec<FnInst>,
+    /// Lookup-only secondary index `(template, args) -> row in fn_insts`, with the
+    /// same authority discipline and drift detection as `type_index`. `fn_insts`
+    /// stays the sole reservation-order authority; the reserved image function index
+    /// is always read from the row, never from this index.
+    fn_index: HashMap<(usize, Vec<GArg>), usize>,
     fn_queue: VecDeque<FnInst>,
     /// The first row appended by the active outermost fill. Settlement
     /// touches only this contiguous suffix, never the stable prefix.
@@ -3073,11 +3091,29 @@ impl TypeRegistry {
             self.template_for_args(template, args)?;
             let mut metadata = MetadataScratch::try_new(&view)?;
             view.validate_args_with(args, None, &mut metadata)?;
-            let existing = view.generics.type_insts.iter().position(|inst| {
-                #[cfg(test)]
-                bump_scaling(|counts| counts.type_inst_scan_steps += 1);
-                inst.template == template && inst.args == args
-            });
+            // Mint-dedup reuse probe: a keyed lookup into the append-only secondary
+            // index, not a linear scan of the authority vector. The row it names is
+            // re-checked against the looked-up key so index/authority drift surfaces
+            // as a typed coherence failure rather than a wrong reuse.
+            #[cfg(test)]
+            bump_scaling(|counts| counts.type_inst_scan_steps += 1);
+            let existing = match view.generics.type_index.get(&(template, args.to_vec())) {
+                Some(&index) => {
+                    let drifted = view
+                        .generics
+                        .type_insts
+                        .get(index)
+                        .is_none_or(|inst| inst.template != template || inst.args != args);
+                    if drifted {
+                        return Err(GenericInvariant::CacheState(
+                            GenericCacheInvariant::MintIndexDrift,
+                        )
+                        .into());
+                    }
+                    Some(index)
+                }
+                None => None,
+            };
             match existing {
                 Some(index) => {
                     let inst = &view.generics.type_insts[index];
@@ -3225,6 +3261,11 @@ impl TypeRegistry {
                 state: TypeInstState::Filling { staged: None },
                 dependents: Vec::new(),
             });
+            // Keep the lookup-only reuse index in lockstep with its authority. A mint
+            // only appends on a dedup miss, so this key is new; a pre-existing entry
+            // would be a mint/dedup coherence failure.
+            let displaced = generics.type_index.insert((template, args.to_vec()), index);
+            debug_assert!(displaced.is_none(), "type mint index key already present");
             generics.fill_rows.insert(id.into(), index);
             index
         };
@@ -4041,11 +4082,21 @@ impl TypeRegistry {
     ) -> Result<u16, ResolveError> {
         self.validate_type_arguments(&args)?;
         let mut generics = self.generics.borrow_mut();
-        if let Some(inst) = generics.fn_insts.iter().find(|inst| {
-            #[cfg(test)]
-            bump_scaling(|counts| counts.fn_inst_scan_steps += 1);
-            inst.template == template && inst.args == args
-        }) {
+        // Reservation-dedup reuse probe: a keyed lookup into the append-only secondary
+        // index. The reserved image function index is read from the named row (the
+        // authority), and a row that does not carry the looked-up key is drift.
+        #[cfg(test)]
+        bump_scaling(|counts| counts.fn_inst_scan_steps += 1);
+        if let Some(&row) = generics.fn_index.get(&(template, args.clone())) {
+            let reused = generics
+                .fn_insts
+                .get(row)
+                .filter(|inst| inst.template == template && inst.args == args);
+            let Some(inst) = reused else {
+                return Err(
+                    GenericInvariant::CacheState(GenericCacheInvariant::MintIndexDrift).into(),
+                );
+            };
             return Ok(inst.func);
         }
         if generics.type_insts.len() + generics.fn_insts.len() >= MAX_INSTANTIATIONS {
@@ -4056,12 +4107,19 @@ impl TypeRegistry {
             );
             return Err(ResolveRefusal::Limit.into());
         }
-        let func = generics.fn_base + generics.fn_insts.len() as u16;
+        let row = generics.fn_insts.len();
+        let func = generics.fn_base + row as u16;
         let inst = FnInst {
             template,
             args,
             func,
         };
+        // Keep the lookup-only reuse index in lockstep with its authority; a reserve
+        // only appends on a dedup miss, so this key is new.
+        let displaced = generics
+            .fn_index
+            .insert((inst.template, inst.args.clone()), row);
+        debug_assert!(displaced.is_none(), "fn reserve index key already present");
         generics.fn_insts.push(inst.clone());
         generics.fn_queue.push_back(inst);
         Ok(func)
@@ -4416,8 +4474,10 @@ impl TypeRegistry {
             type_templates: self.type_templates.clone(),
             generics: RefCell::new(Monomorph {
                 type_insts: generics.type_insts.clone(),
+                type_index: generics.type_index.clone(),
                 fn_base: generics.fn_base,
                 fn_insts: generics.fn_insts.clone(),
+                fn_index: generics.fn_index.clone(),
                 fn_queue: generics.fn_queue.clone(),
                 fill_batch_start: None,
                 fill_rows: BTreeMap::new(),
@@ -7167,6 +7227,7 @@ mod instantiation_state_tests {
             GenericCacheInvariant::SettledRowMissing => "settled row missing",
             GenericCacheInvariant::SettledRowStillFilling => "settled row still Filling",
             GenericCacheInvariant::FillStackMismatch => "fill stack mismatch",
+            GenericCacheInvariant::MintIndexDrift => "mint index drift",
         }
     }
 
