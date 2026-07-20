@@ -3,7 +3,7 @@
 use super::Decoded;
 use super::context::Ctx;
 use super::model::DecodedFunction;
-use super::push_on_fallthrough;
+use super::presence::push_on_fallthrough;
 use super::reject;
 use crate::reject::{VerifyPhase, VerifyRejection};
 use crate::sealed::{

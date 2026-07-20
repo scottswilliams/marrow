@@ -1,11 +1,11 @@
 //! Shared per-function checking context: Ctx, FnSig, and the Effects accumulator.
 
-use super::call_targets;
 use super::flow::borrow_two;
 use super::flow::durable_op_class;
 use super::flow::durable_site;
 use super::flow::is_mutation;
-use super::flow_successors;
+use super::presence::call_targets;
+use super::presence::flow_successors;
 use super::reject;
 use crate::reject::{VerifyPhase, VerifyRejection};
 use crate::sealed::{
