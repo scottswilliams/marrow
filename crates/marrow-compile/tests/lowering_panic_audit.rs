@@ -18,18 +18,46 @@
 use marrow_compile::{SourceDiagnostic, compile};
 use marrow_project::{CaptureLimits, CapturedFile, Manifest, ProjectInput};
 
-const LOWERING_SOURCE: &str = include_str!("../src/lower.rs");
+const LOWER_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/src/lower");
+const TEST_MODULE_FILE: &str = "lower_metadata_successor_tests.rs";
 const TEST_ONLY_BOUNDARY: &str = "\n#[cfg(test)]\nmod generic_cache_boundary_tests {";
 
-fn production_lowering_source() -> &'static str {
-    let code = mask_comments_and_literals(LOWERING_SOURCE);
+/// The complete production lowering source across the `lower/` directory module,
+/// concatenated with the in-tree generic-cache test module and the successor-
+/// metadata test file excluded. The audit spans every submodule, so a panic site
+/// relocated by the module split is still counted exactly once.
+fn production_lowering_source() -> String {
+    let mut paths: Vec<std::path::PathBuf> = std::fs::read_dir(LOWER_DIR)
+        .expect("lower/ module directory is readable")
+        .map(|entry| entry.expect("readable directory entry").path())
+        .filter(|path| path.extension().is_some_and(|extension| extension == "rs"))
+        .filter(|path| path.file_name().and_then(|name| name.to_str()) != Some(TEST_MODULE_FILE))
+        .collect();
+    paths.sort();
+    let mut source = String::new();
+    for path in &paths {
+        let text = std::fs::read_to_string(path).expect("readable lowering source");
+        if path.file_name().and_then(|name| name.to_str()) == Some("mod.rs") {
+            source.push_str(strip_test_module(&text));
+        } else {
+            source.push_str(&text);
+        }
+        source.push('\n');
+    }
+    source
+}
+
+/// The production prefix of `lower/mod.rs`: everything before the pinned in-tree
+/// generic-cache test module, which is the file's final item.
+fn strip_test_module(mod_source: &str) -> &str {
+    let code = mask_comments_and_literals(mod_source);
     let boundaries: Vec<usize> = code
         .windows(TEST_ONLY_BOUNDARY.len())
         .enumerate()
         .filter_map(|(index, window)| (window == TEST_ONLY_BOUNDARY.as_bytes()).then_some(index))
         .collect();
     let [boundary] = boundaries.as_slice() else {
-        panic!("lower.rs keeps one explicit generic-cache test-module boundary")
+        panic!("lower/mod.rs keeps one explicit generic-cache test-module boundary")
     };
     let open = code[*boundary..]
         .iter()
@@ -44,12 +72,12 @@ fn production_lowering_source() -> &'static str {
             .all(|byte| byte.is_ascii_whitespace()),
         "only whitespace or comments may follow the generic-cache test module"
     );
-    let test_module = &LOWERING_SOURCE[*boundary..=close];
+    let test_module = &mod_source[*boundary..=close];
     assert!(
         test_module.contains("fn bare_enum_without_ready_variants_fails_without_unwinding()"),
         "the excluded suffix must remain the generic-cache test module"
     );
-    &LOWERING_SOURCE[..*boundary]
+    &mod_source[..*boundary]
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -161,7 +189,8 @@ const ALLOWED_PANIC_SITES: &[AllowedPanicSite] = &[
 /// than repeated behind an expectation.
 #[test]
 fn generic_enum_dispatch_binds_one_template_lookup() {
-    let body = LOWERING_SOURCE
+    let source = production_lowering_source();
+    let body = source
         .split_once("fn lower_call_core(")
         .expect("lower_call_core remains present")
         .1
@@ -573,7 +602,8 @@ panic!("live after literals");
 
 #[test]
 fn every_explicit_lowering_panic_is_allowlisted() {
-    let sites = explicit_panic_sites(production_lowering_source());
+    let source = production_lowering_source();
+    let sites = explicit_panic_sites(&source);
     let expected_total: usize = ALLOWED_PANIC_SITES
         .iter()
         .map(|allowed| allowed.multiplicity)
@@ -643,9 +673,12 @@ fn every_explicit_lowering_panic_is_allowlisted() {
 
 #[test]
 fn explicit_panic_audit_excludes_only_the_pinned_test_module() {
-    let production = production_lowering_source();
+    let mod_source =
+        std::fs::read_to_string(std::path::Path::new(LOWER_DIR).join("mod.rs"))
+            .expect("lower/mod.rs is readable");
+    let production = strip_test_module(&mod_source);
     assert!(!production.contains("mod generic_cache_boundary_tests"));
-    assert!(LOWERING_SOURCE[production.len()..].starts_with(TEST_ONLY_BOUNDARY));
+    assert!(mod_source[production.len()..].starts_with(TEST_ONLY_BOUNDARY));
 }
 
 fn project(source: &str) -> ProjectInput {
