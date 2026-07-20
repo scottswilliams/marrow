@@ -1,7 +1,7 @@
 //! Instruction decoding: operand readers, jump resolution, and the decoded-op model.
 
-use super::decode_bare_scalar;
 use super::reject;
+use super::tables::decode_bare_scalar;
 use crate::reader::Reader;
 use crate::reject::{VerifyPhase, VerifyRejection};
 use crate::sealed::SealedInstr;
