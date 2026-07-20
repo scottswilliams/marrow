@@ -382,15 +382,6 @@ fn diagnostic_failure(diagnostics: Vec<SourceDiagnostic>, stage: CompileStage) -
     compile_failure(diagnostics, None, None, stage)
 }
 
-fn invariant_failure(cause: GenericInvariant, stage: CompileStage) -> CompileFailure {
-    compile_failure(
-        Vec::new(),
-        Some(InvariantCause::Generic(cause)),
-        None,
-        stage,
-    )
-}
-
 /// Classify a producer-side [`ImageBuildError`] from `ImageDraft::encode` into the
 /// compile-failure arm it belongs to. Encode runs only on the clean-diagnostics path,
 /// so there is no coexisting diagnostic and the classification is total on its own.
@@ -403,11 +394,11 @@ fn invariant_failure(cause: GenericInvariant, stage: CompileStage) -> CompileFai
 /// reference, a too-short site path, a local count below the parameters) is likewise
 /// unreachable from a coherent compiler; both are opaque invariants. The match has no
 /// wildcard, so a new image-build variant forces an explicit classification here.
-fn image_build_failure(error: ImageBuildError) -> CompileFailure {
+fn image_build_outcome(error: ImageBuildError) -> SemanticOutcome {
     use marrow_image::bounds;
     let stage = CompileStage::PostLoweringValidation;
     let aggregate = |kind: ResourceLimitKind, limit: usize| {
-        resource_failure(CompileResourceLimit::new(kind, limit as u64), stage)
+        SemanticOutcome::ResourceLimit(CompileResourceLimit::new(kind, limit as u64), stage)
     };
     match error {
         // Aggregate whole-program counts and the byte ceiling: no single offender.
@@ -470,12 +461,9 @@ fn image_build_failure(error: ImageBuildError) -> CompileFailure {
         | ImageBuildError::SitePathTooShort
         | ImageBuildError::SitePathTooDeep
         | ImageBuildError::LocalCountBelowParams
-        | ImageBuildError::InvalidReference(_) => compile_failure(
-            Vec::new(),
-            Some(InvariantCause::ImageBuild(error)),
-            None,
-            stage,
-        ),
+        | ImageBuildError::InvalidReference(_) => {
+            SemanticOutcome::Invariant(InvariantCause::ImageBuild(error), stage)
+        }
     }
 }
 
@@ -538,7 +526,7 @@ struct LoweredFn {
 /// The production path excludes `test` declarations and emits an empty TEST-ENTRY
 /// table.
 pub fn compile(project: &ProjectInput) -> Result<Compiled, CompileFailure> {
-    let built = build(project, TestMode::Exclude)?;
+    let built = drive(project, TestMode::Exclude).into_built()?;
     Ok(Compiled {
         image: built.image,
         exports: built.exports,
@@ -550,7 +538,7 @@ pub fn compile(project: &ProjectInput) -> Result<Compiled, CompileFailure> {
 /// each test's title with its location for `marrow test`. Failure uses the same
 /// source-diagnostic or opaque compiler-invariant boundary as [`compile`].
 pub fn compile_with_tests(project: &ProjectInput) -> Result<CompiledTests, CompileFailure> {
-    let built = build(project, TestMode::Include)?;
+    let built = drive(project, TestMode::Include).into_built()?;
     Ok(CompiledTests {
         image: built.image,
         exports: built.exports,
@@ -566,13 +554,65 @@ struct Built {
     tests: Vec<TestEntry>,
 }
 
-/// Compile a captured project, including or excluding its `test` declarations per
-/// `mode`, or return its total typed failure.
-fn build(project: &ProjectInput, mode: TestMode) -> Result<Built, CompileFailure> {
-    let mut diagnostics = Vec::new();
+/// The staged outcome of one analysis/lowering pass over a project. Diagnostics are
+/// bucketed by the stage that produced them, so a single traversal serves both the
+/// production compile — which projects the first non-empty stage and thereby
+/// reproduces the historical staged early-return byte for byte — and the editor
+/// analysis snapshot, which consumes every stage. There is no analyze/compile mode
+/// flag forking control flow: the traversal is one and the same; only the projection
+/// differs.
+struct Driven {
+    /// Invalid-UTF-8 and syntax diagnostics from every module, parseable or not.
+    parse: Vec<SourceDiagnostic>,
+    /// Structural-bound diagnostics over the cleanly-parsed modules.
+    structural: Vec<SourceDiagnostic>,
+    /// The semantic pass over the cleanly-parsed modules.
+    semantic: SemanticOutcome,
+}
 
-    // Parse every module first. A parse error blocks semantic processing, mirroring
-    // the total-parser contract: semantics run only on `!has_errors`.
+/// The outcome of the semantic pass over the cleanly-parsed modules: a complete image,
+/// or the accumulated failure tagged with the stage that produced it.
+enum SemanticOutcome {
+    Built(Built),
+    Diagnostics(Vec<SourceDiagnostic>, CompileStage),
+    ResourceLimit(CompileResourceLimit, CompileStage),
+    Invariant(InvariantCause, CompileStage),
+}
+
+impl Driven {
+    /// Project the production compile result. The first non-empty stage in order —
+    /// parse, then structural, then semantic — is the failure, byte-identical to the
+    /// historical staged early-return (diagnostics are never sorted or deduped, so a
+    /// stage's set is exactly what that stage would have returned). A fully clean pass
+    /// yields the image.
+    fn into_built(self) -> Result<Built, CompileFailure> {
+        if !self.parse.is_empty() {
+            return Err(diagnostic_failure(self.parse, CompileStage::Parse));
+        }
+        if !self.structural.is_empty() {
+            return Err(diagnostic_failure(self.structural, CompileStage::Parse));
+        }
+        match self.semantic {
+            SemanticOutcome::Built(built) => Ok(built),
+            SemanticOutcome::Diagnostics(diagnostics, stage) => {
+                Err(diagnostic_failure(diagnostics, stage))
+            }
+            SemanticOutcome::ResourceLimit(limit, stage) => Err(resource_failure(limit, stage)),
+            SemanticOutcome::Invariant(cause, stage) => {
+                Err(compile_failure(Vec::new(), Some(cause), None, stage))
+            }
+        }
+    }
+}
+
+/// Parse every module, then analyze the cleanly-parsed ones. A module with a parse
+/// error contributes its parse diagnostics and its declarations are left unanalyzed —
+/// dependency resilience: a syntax error in one component does not suppress the
+/// diagnostics or facts of an independent valid component. The semantic pass always
+/// runs over whatever parsed cleanly; the projection decides what the production
+/// compile reports.
+fn drive(project: &ProjectInput, mode: TestMode) -> Driven {
+    let mut parse = Vec::new();
     let mut parsed: Vec<Module> = Vec::new();
     for module in project.modules() {
         let file = module.identity().clone();
@@ -583,11 +623,11 @@ fn build(project: &ProjectInput, mode: TestMode) -> Result<Built, CompileFailure
                 name,
                 parsed: parse_source(source),
             }),
-            Err(_) => diagnostics.push(SourceDiagnostic::at(
+            Err(_) => parse.push(SourceDiagnostic::at(
                 Code::CheckUnsupported.as_str(),
                 &file,
-                // A non-UTF-8 file has no parsed construct to point at: a
-                // zero-length span at the file start, whose 1-based point is 1:1.
+                // A non-UTF-8 file has no parsed construct to point at: a zero-length
+                // span at the file start, whose 1-based point is 1:1.
                 SourceSpan {
                     start_byte: 0,
                     end_byte: 0,
@@ -601,7 +641,7 @@ fn build(project: &ProjectInput, mode: TestMode) -> Result<Built, CompileFailure
     for module in &parsed {
         for diagnostic in &module.parsed.diagnostics {
             if diagnostic.severity == marrow_syntax::Severity::Error {
-                diagnostics.push(SourceDiagnostic::at(
+                parse.push(SourceDiagnostic::at(
                     diagnostic.code,
                     &module.file,
                     diagnostic.span,
@@ -610,9 +650,19 @@ fn build(project: &ProjectInput, mode: TestMode) -> Result<Built, CompileFailure
             }
         }
     }
-    if !diagnostics.is_empty() {
-        return Err(diagnostic_failure(diagnostics, CompileStage::Parse));
-    }
+
+    // Only cleanly-parsed modules enter analysis; a module with a parse error is
+    // skipped as a dependent unit (its parse diagnostics are already recorded).
+    let clean: Vec<Module> = parsed
+        .into_iter()
+        .filter(|module| {
+            !module
+                .parsed
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.severity == marrow_syntax::Severity::Error)
+        })
+        .collect();
 
     // Refuse a structural declaration bound at its offending construct before any
     // image structure is built. These counts are exact source properties — a record's
@@ -620,10 +670,22 @@ fn build(project: &ProjectInput, mode: TestMode) -> Result<Built, CompileFailure
     // parse tree ahead of the first draft mutation. Durable member-tree nesting depth is
     // not checked here: its exact accounting is the encoder's, and it surfaces as a
     // locationless `DurableDepth` resource limit rather than a divergent source count.
-    check_structural_resource_bounds(&parsed, &mut diagnostics);
-    if !diagnostics.is_empty() {
-        return Err(diagnostic_failure(diagnostics, CompileStage::Parse));
+    let mut structural = Vec::new();
+    check_structural_resource_bounds(&clean, &mut structural);
+
+    let semantic = run_semantic(&clean, project, mode);
+    Driven {
+        parse,
+        structural,
+        semantic,
     }
+}
+
+/// Analyze the cleanly-parsed modules: build the named types and function signatures,
+/// lower every body, and validate the whole, or return the accumulated failure tagged
+/// with the stage that produced it.
+fn run_semantic(parsed: &[Module], project: &ProjectInput, mode: TestMode) -> SemanticOutcome {
+    let mut diagnostics = Vec::new();
 
     // The source-root-relative path is the authority for module identity. A file
     // that declares a `module` header is an importable module and must spell the
@@ -631,7 +693,7 @@ fn build(project: &ProjectInput, mode: TestMode) -> Result<Built, CompileFailure
     // is a single-file script: it keeps a path-derived identity for its own scope
     // and its exports, but is not importable by module path.
     let mut module_names: BTreeSet<String> = BTreeSet::new();
-    for module in &parsed {
+    for module in parsed {
         if let Some(header) = &module.parsed.file.module {
             let declared = header.name.replace("::", ".");
             if declared == module.name {
@@ -655,7 +717,7 @@ fn build(project: &ProjectInput, mode: TestMode) -> Result<Built, CompileFailure
     // name an importable project module; two imports binding the same final segment
     // in one module are ambiguous.
     let mut imports: BTreeMap<String, Vec<(String, String)>> = BTreeMap::new();
-    for module in &parsed {
+    for module in parsed {
         let bindings = imports.entry(module.name.clone()).or_default();
         for use_decl in &module.parsed.file.uses {
             let target = use_decl.name.replace("::", ".");
@@ -688,7 +750,7 @@ fn build(project: &ProjectInput, mode: TestMode) -> Result<Built, CompileFailure
 
     // A module has at most one function with a given name, so an unqualified or
     // qualified call resolves to one target.
-    reject_duplicate_functions(&parsed, &mut diagnostics);
+    reject_duplicate_functions(parsed, &mut diagnostics);
 
     // The function signatures paired with their dotted module, in declaration order
     // (the order lowering assigns image indices).
@@ -779,17 +841,14 @@ fn build(project: &ProjectInput, mode: TestMode) -> Result<Built, CompileFailure
         &mut diagnostics,
     );
     if let Some(invariant) = records.build_invariant() {
-        return Err(invariant_failure(
-            invariant,
+        return SemanticOutcome::Invariant(
+            InvariantCause::Generic(invariant),
             CompileStage::TypeInstantiation,
-        ));
+        );
     }
     if records.has_instantiation_limit() {
         diagnostics.extend(records.take_generic_diagnostics().into_ordered());
-        return Err(diagnostic_failure(
-            diagnostics,
-            CompileStage::TypeInstantiation,
-        ));
+        return SemanticOutcome::Diagnostics(diagnostics, CompileStage::TypeInstantiation);
     }
     let stores: Vec<(FileIdentity, &StoreDecl)> = parsed
         .iter()
@@ -813,10 +872,10 @@ fn build(project: &ProjectInput, mode: TestMode) -> Result<Built, CompileFailure
     ) {
         Ok(durable) => durable,
         Err(invariant) => {
-            return Err(invariant_failure(
-                invariant,
+            return SemanticOutcome::Invariant(
+                InvariantCause::Generic(invariant),
                 CompileStage::TypeInstantiation,
-            ));
+            );
         }
     };
     let signatures = match FunctionRegistry::build(
@@ -831,16 +890,13 @@ fn build(project: &ProjectInput, mode: TestMode) -> Result<Built, CompileFailure
         Ok(Some(signatures)) => signatures,
         Ok(None) => {
             diagnostics.extend(records.take_generic_diagnostics().into_ordered());
-            return Err(diagnostic_failure(
-                diagnostics,
-                CompileStage::FunctionSignatures,
-            ));
+            return SemanticOutcome::Diagnostics(diagnostics, CompileStage::FunctionSignatures);
         }
         Err(invariant) => {
-            return Err(invariant_failure(
-                invariant,
+            return SemanticOutcome::Invariant(
+                InvariantCause::Generic(invariant),
                 CompileStage::FunctionSignatures,
-            ));
+            );
         }
     };
     // Generic functions are templates with no image index; they are monomorphized at
@@ -893,7 +949,10 @@ fn build(project: &ProjectInput, mode: TestMode) -> Result<Built, CompileFailure
         ) {
             Ok(outcome) => outcome,
             Err(invariant) => {
-                return Err(invariant_failure(invariant, CompileStage::TemplateProof));
+                return SemanticOutcome::Invariant(
+                    InvariantCause::Generic(invariant),
+                    CompileStage::TemplateProof,
+                );
             }
         };
         diagnostics.extend(outcome.diagnostics);
@@ -904,7 +963,7 @@ fn build(project: &ProjectInput, mode: TestMode) -> Result<Built, CompileFailure
     }
     if records.has_instantiation_limit() {
         diagnostics.extend(records.take_generic_diagnostics().into_ordered());
-        return Err(diagnostic_failure(diagnostics, CompileStage::TemplateProof));
+        return SemanticOutcome::Diagnostics(diagnostics, CompileStage::TemplateProof);
     }
 
     // Generic instances are image functions with no stable identity, indexed after
@@ -931,7 +990,7 @@ fn build(project: &ProjectInput, mode: TestMode) -> Result<Built, CompileFailure
     // monomorphized on demand and drained below.
     let mut exports: Vec<ExportEntry> = Vec::new();
     let mut lowered: Vec<LoweredFn> = Vec::new();
-    'function_bodies: for module in &parsed {
+    'function_bodies: for module in parsed {
         for declaration in &module.parsed.file.declarations {
             match declaration {
                 Declaration::Function(function) if !function.type_params.is_empty() => {
@@ -959,7 +1018,10 @@ fn build(project: &ProjectInput, mode: TestMode) -> Result<Built, CompileFailure
                             continue;
                         }
                         Err(invariant) => {
-                            return Err(invariant_failure(invariant, CompileStage::BodyLowering));
+                            return SemanticOutcome::Invariant(
+                                InvariantCause::Generic(invariant),
+                                CompileStage::BodyLowering,
+                            );
                         }
                     };
                     lowered.push(LoweredFn {
@@ -1029,7 +1091,7 @@ fn build(project: &ProjectInput, mode: TestMode) -> Result<Built, CompileFailure
     // indices follow the functions'. Titles are unique across the project.
     let mut tests: Vec<TestEntry> = Vec::new();
     if mode == TestMode::Include && !records.has_instantiation_limit() {
-        'test_bodies: for module in &parsed {
+        'test_bodies: for module in parsed {
             for declaration in &module.parsed.file.declarations {
                 let Declaration::Test(test) = declaration else {
                     continue;
@@ -1064,7 +1126,10 @@ fn build(project: &ProjectInput, mode: TestMode) -> Result<Built, CompileFailure
                         continue;
                     }
                     Err(invariant) => {
-                        return Err(invariant_failure(invariant, CompileStage::BodyLowering));
+                        return SemanticOutcome::Invariant(
+                            InvariantCause::Generic(invariant),
+                            CompileStage::BodyLowering,
+                        );
                     }
                 };
                 lowered.push(LoweredFn {
@@ -1119,7 +1184,10 @@ fn build(project: &ProjectInput, mode: TestMode) -> Result<Built, CompileFailure
                 Ok(Some(result)) => result,
                 Ok(None) => break,
                 Err(invariant) => {
-                    return Err(invariant_failure(invariant, CompileStage::BodyLowering));
+                    return SemanticOutcome::Invariant(
+                        InvariantCause::Generic(invariant),
+                        CompileStage::BodyLowering,
+                    );
                 }
             };
             debug_assert_eq!(
@@ -1151,15 +1219,15 @@ fn build(project: &ProjectInput, mode: TestMode) -> Result<Built, CompileFailure
     let stopped_on_limit = records.has_instantiation_limit();
     diagnostics.extend(records.take_generic_diagnostics().into_ordered());
     if stopped_on_limit {
-        return Err(diagnostic_failure(diagnostics, CompileStage::BodyLowering));
+        return SemanticOutcome::Diagnostics(diagnostics, CompileStage::BodyLowering);
     }
     if let Err(invariant) =
         crate::types::reject_value_cycles(&records, &structs, &resources, &mut diagnostics)
     {
-        return Err(invariant_failure(
-            invariant,
+        return SemanticOutcome::Invariant(
+            InvariantCause::Generic(invariant),
             CompileStage::PostLoweringValidation,
-        ));
+        );
     }
 
     // The compiled subset does not admit recursion: the direct-call graph must be
@@ -1190,18 +1258,17 @@ fn build(project: &ProjectInput, mode: TestMode) -> Result<Built, CompileFailure
     }
 
     if !diagnostics.is_empty() {
-        return Err(diagnostic_failure(
-            diagnostics,
-            CompileStage::PostLoweringValidation,
-        ));
+        return SemanticOutcome::Diagnostics(diagnostics, CompileStage::PostLoweringValidation);
     }
 
-    let image = draft.encode().map_err(image_build_failure)?;
-    Ok(Built {
-        image,
-        exports,
-        tests,
-    })
+    match draft.encode() {
+        Ok(image) => SemanticOutcome::Built(Built {
+            image,
+            exports,
+            tests,
+        }),
+        Err(error) => image_build_outcome(error),
+    }
 }
 
 /// Report a `check.name_conflict` for every function name declared more than once
@@ -1860,17 +1927,154 @@ mod tests {
     /// never to a source diagnostic with a fabricated location.
     #[test]
     fn image_build_errors_classify_without_a_fabricated_location() {
-        let aggregate = super::image_build_failure(marrow_image::ImageBuildError::TooManyFunctions);
-        let CompileFailure::ResourceLimit(limit) = aggregate else {
+        let aggregate = super::image_build_outcome(marrow_image::ImageBuildError::TooManyFunctions);
+        let super::SemanticOutcome::ResourceLimit(limit, _) = aggregate else {
             panic!("an aggregate count is a resource limit")
         };
         assert_eq!(limit.kind(), super::ResourceLimitKind::Functions);
 
         let contradiction =
-            super::image_build_failure(marrow_image::ImageBuildError::InvalidReference("x"));
+            super::image_build_outcome(marrow_image::ImageBuildError::InvalidReference("x"));
         assert!(
-            matches!(contradiction, CompileFailure::Invariant(_)),
+            matches!(contradiction, super::SemanticOutcome::Invariant(_, _)),
             "a producer-state contradiction is an opaque invariant, not a diagnostic"
+        );
+    }
+}
+
+/// The driver's stage-tagged accumulator is one traversal projected two ways: the
+/// production compile takes the first non-empty stage (parse, then structural, then
+/// semantic), byte-identical to the historical staged early-return; the editor
+/// analysis snapshot consumes every stage. This gate proves the projection is faithful
+/// over a corpus of clean projects and one intentionally-failing project per stage
+/// stop, and that the traversal is dependency-resilient — a syntax error in one
+/// component does not suppress the analysis of an independent valid component.
+#[cfg(test)]
+mod driver_agreement {
+    use super::*;
+    use marrow_project::{CaptureLimits, CapturedFile, Manifest};
+
+    fn project(files: &[(&str, &str)]) -> ProjectInput {
+        let manifest = Manifest::parse("edition = \"2026\"\n").expect("valid manifest");
+        let captured = files
+            .iter()
+            .map(|(path, source)| CapturedFile::new(path.to_string(), source.as_bytes().to_vec()))
+            .collect();
+        marrow_project::capture(&manifest, captured, None, &CaptureLimits::DEFAULT)
+            .expect("capture project")
+    }
+
+    /// The diagnostics the first-non-empty-stage projection of a driven pass yields,
+    /// or `None` for a clean pass; a resource limit or invariant carries no
+    /// diagnostics.
+    fn projected(driven: &Driven) -> Option<Vec<SourceDiagnostic>> {
+        if !driven.parse.is_empty() {
+            return Some(driven.parse.clone());
+        }
+        if !driven.structural.is_empty() {
+            return Some(driven.structural.clone());
+        }
+        match &driven.semantic {
+            SemanticOutcome::Built(_) => None,
+            SemanticOutcome::Diagnostics(diagnostics, _) => Some(diagnostics.clone()),
+            SemanticOutcome::ResourceLimit(..) | SemanticOutcome::Invariant(..) => Some(Vec::new()),
+        }
+    }
+
+    /// The diagnostics `compile_with_tests` reports, or `None` for a built image; a
+    /// resource limit or invariant carries no diagnostics.
+    fn compiled(result: &Result<CompiledTests, CompileFailure>) -> Option<Vec<SourceDiagnostic>> {
+        match result {
+            Ok(_) => None,
+            Err(CompileFailure::Diagnostics(diagnostics)) => Some(diagnostics.as_slice().to_vec()),
+            Err(CompileFailure::ResourceLimit(_) | CompileFailure::Invariant(_)) => {
+                Some(Vec::new())
+            }
+        }
+    }
+
+    /// `compile_with_tests` is exactly the first-non-empty-stage projection of the one
+    /// driven traversal — same diagnostics, same order, no stage mixing.
+    fn assert_projection_faithful(files: &[(&str, &str)]) {
+        let input = project(files);
+        let driven = drive(&input, TestMode::Include);
+        assert_eq!(
+            projected(&driven),
+            compiled(&compile_with_tests(&input)),
+            "projection diverged from compile_with_tests for {files:?}",
+        );
+    }
+
+    #[test]
+    fn projection_is_faithful_across_stage_stops() {
+        // Clean (image builds).
+        assert_projection_faithful(&[("src/main.mw", "pub fn f(): int {\n    return 1\n}\n")]);
+        // Parse stop: a malformed header.
+        assert_projection_faithful(&[("src/main.mw", "pub fn f(: int {\n    return 1\n}\n")]);
+        // Semantic stop: a call to an undefined function.
+        assert_projection_faithful(&[(
+            "src/main.mw",
+            "pub fn f(): int {\n    return missing()\n}\n",
+        )]);
+        // A multi-module project with an interdependence.
+        assert_projection_faithful(&[
+            (
+                "src/library.mw",
+                "module library\n\npub fn helper(): int {\n    return 2\n}\n",
+            ),
+            (
+                "src/main.mw",
+                "module main\nuse library\n\npub fn f(): int {\n    return library::helper()\n}\n",
+            ),
+        ]);
+    }
+
+    /// A syntax error in one module does not suppress the analysis of an independent
+    /// valid module: the broken module contributes its parse diagnostic, and the valid
+    /// module is still analyzed to the semantic stage (its own diagnostic is present in
+    /// the driven accumulator), even though the production compile projects only the
+    /// parse stage.
+    #[test]
+    fn an_independent_valid_module_is_analyzed_past_a_sibling_parse_error() {
+        let files = &[
+            (
+                "src/broken.mw",
+                "module broken\n\npub fn g(: int {\n    return 1\n}\n",
+            ),
+            (
+                "src/valid.mw",
+                "module valid\n\npub fn h(): int {\n    return missing()\n}\n",
+            ),
+        ];
+        let input = project(files);
+        let driven = drive(&input, TestMode::Include);
+
+        // The broken module's parse error is recorded.
+        assert!(
+            driven
+                .parse
+                .iter()
+                .any(|d| d.file().as_str() == "src/broken.mw"),
+            "the broken module's parse diagnostic must be recorded: {:?}",
+            driven.parse,
+        );
+
+        // The valid module was analyzed despite the sibling parse error: its own
+        // semantic diagnostic reached the semantic stage.
+        let semantic = match &driven.semantic {
+            SemanticOutcome::Diagnostics(diagnostics, _) => diagnostics.clone(),
+            _ => panic!("expected semantic diagnostics from the valid module"),
+        };
+        assert!(
+            semantic.iter().any(|d| d.file().as_str() == "src/valid.mw"),
+            "the valid module must be analyzed past the sibling parse error: {semantic:?}",
+        );
+
+        // The production compile still projects only the parse stage — byte-identical
+        // to the historical parse hard-stop.
+        assert_eq!(
+            compiled(&compile_with_tests(&input)),
+            Some(driven.parse.clone())
         );
     }
 }
