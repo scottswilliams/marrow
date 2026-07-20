@@ -1271,6 +1271,60 @@ fn run_semantic(parsed: &[Module], project: &ProjectInput, mode: TestMode) -> Se
     }
 }
 
+/// The complete diagnostic picture the editor analysis snapshot consumes: every stage's
+/// diagnostics over every module — the resilient union, not the first-non-empty
+/// projection the production compile takes — or the dominating non-diagnostic failure.
+pub(crate) enum Analyzed {
+    /// The complete bounded diagnostic set, in compiler order (empty for a clean
+    /// project). A snapshot is producible.
+    Diagnostics(Vec<SourceDiagnostic>),
+    /// An aggregate resource bound with no diagnostic to dominate it.
+    ResourceLimit(CompileResourceLimit),
+    /// An opaque compiler-coherence failure that dominates everything.
+    Invariant(CompileInvariant),
+}
+
+/// Drive the analysis pass over a project — test bodies included, per the editor
+/// analysis contract — and resolve its complete diagnostic picture under the shared
+/// precedence `Invariant > Diagnostics > ResourceLimit`. The complete union of every
+/// stage's diagnostics is sealed against the same CRES01 count/byte bounds the
+/// production compile uses, so a diagnostic avalanche transactionally becomes a resource
+/// limit rather than a retained partial set — no partial or truncated snapshot is
+/// admitted.
+pub(crate) fn analyze_project(project: &ProjectInput) -> Analyzed {
+    let driven = drive(project, TestMode::Include);
+    let mut diagnostics = driven.parse;
+    diagnostics.extend(driven.structural);
+    // The parse and structural prechecks preempt the semantic pass in the production
+    // compile: `into_built` returns those stages before the semantic outcome is
+    // consulted. So a real precheck diagnostic dominates a semantic invariant or
+    // resource limit here too — otherwise a defense-in-depth encode outcome (a bound the
+    // precheck already owns) would diverge from the production result. The semantic
+    // pass's own diagnostics still union in for dependency resilience.
+    let precheck_present = !diagnostics.is_empty();
+    let mut resource = None;
+    let mut invariant = None;
+    match driven.semantic {
+        SemanticOutcome::Invariant(cause, _) => invariant = Some(CompileInvariant(cause)),
+        SemanticOutcome::Diagnostics(semantic, _) => diagnostics.extend(semantic),
+        SemanticOutcome::ResourceLimit(limit, _) => resource = Some(limit),
+        SemanticOutcome::Built(_) => {}
+    }
+    if let Some(invariant) = invariant
+        && !precheck_present
+    {
+        return Analyzed::Invariant(invariant);
+    }
+    match seal_diagnostics(diagnostics) {
+        DiagnosticSeal::Complete(diagnostics) => Analyzed::Diagnostics(diagnostics.into_vec()),
+        DiagnosticSeal::Overflow(limit) => Analyzed::ResourceLimit(limit),
+        DiagnosticSeal::Empty => match resource {
+            Some(limit) => Analyzed::ResourceLimit(limit),
+            None => Analyzed::Diagnostics(Vec::new()),
+        },
+    }
+}
+
 /// Report a `check.name_conflict` for every function name declared more than once
 /// within a single module (a `Call` must resolve to a unique target) and for every
 /// function whose name is a reserved built-in the compiler intercepts in call

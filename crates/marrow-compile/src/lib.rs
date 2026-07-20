@@ -28,6 +28,7 @@
     )
 )]
 
+mod analysis;
 mod compile;
 mod diag;
 mod durable;
@@ -36,6 +37,11 @@ mod lower;
 mod scalar;
 mod types;
 
+pub use analysis::{
+    AnalysisFailure, AnalysisResourceLimit, AnalysisSnapshot, InputRevision,
+    MAX_FORMAT_OUTPUT_BYTES, MAX_HOVER_DISPLAY_BYTES, MAX_SNAPSHOT_FACT_BYTES,
+    MAX_SNAPSHOT_FACT_COUNT, analyze,
+};
 pub use compile::{
     CompileFailure, CompileInvariant, CompileResourceLimit, Compiled, CompiledTests, ExportEntry,
     NonEmptySourceDiagnostics, ResourceLimitKind, TestEntry, compile, compile_with_tests,
