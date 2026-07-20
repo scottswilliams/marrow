@@ -1443,19 +1443,19 @@ fn check_structural_resource_bounds(parsed: &[Module], diagnostics: &mut Vec<Sou
                         diagnostics,
                     );
                 }
-                Declaration::Function(function) => {
-                    if function.params.len() > marrow_image::bounds::MAX_PARAMS {
-                        diagnostics.push(SourceDiagnostic::at(
-                            Code::CheckResourceLimit.as_str(),
-                            &module.file,
-                            function.span,
-                            format!(
-                                "a function declares {} parameters; the fixed limit is {}",
-                                function.params.len(),
-                                marrow_image::bounds::MAX_PARAMS
-                            ),
-                        ));
-                    }
+                Declaration::Function(function)
+                    if function.params.len() > marrow_image::bounds::MAX_PARAMS =>
+                {
+                    diagnostics.push(SourceDiagnostic::at(
+                        Code::CheckResourceLimit.as_str(),
+                        &module.file,
+                        function.span,
+                        format!(
+                            "a function declares {} parameters; the fixed limit is {}",
+                            function.params.len(),
+                            marrow_image::bounds::MAX_PARAMS
+                        ),
+                    ));
                 }
                 _ => {}
             }
