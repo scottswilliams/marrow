@@ -1,3 +1,5 @@
+//! Expression lowering: literals, operators, calls, constructors, and try/field access.
+
 use super::*;
 
 impl<'a> FnLowerer<'a> {
@@ -422,7 +424,12 @@ impl<'a> FnLowerer<'a> {
     /// Lower the right operand and the arithmetic/comparison operator, given the left
     /// operand's already-pushed type. Both operands must be bare scalars or bare
     /// nominals; a nominal operand routes to the capability-gated nominal table.
-    pub(super) fn lower_binary_op(&mut self, op: BinaryOp, left_ty: LTy, right: &Expression) -> Option<LTy> {
+    pub(super) fn lower_binary_op(
+        &mut self,
+        op: BinaryOp,
+        left_ty: LTy,
+        right: &Expression,
+    ) -> Option<LTy> {
         // The `step` capability admits only the literal `1`, so the right operand's
         // shape is read before it is lowered.
         let right_is_one = matches!(
@@ -2525,7 +2532,12 @@ impl<'a> FnLowerer<'a> {
     /// type. A constructor used where its reserved enum is not expected is a typed
     /// error. `Option`/`Result` are ordinary generic enums; these reserved spellings
     /// resolve to their variants recovered from the minting template.
-    pub(super) fn lower_ctor_as(&mut self, kind: CtorKind, expr: &Expression, expected: LTy) -> Option<()> {
+    pub(super) fn lower_ctor_as(
+        &mut self,
+        kind: CtorKind,
+        expr: &Expression,
+        expected: LTy,
+    ) -> Option<()> {
         if self.terminal_rejection() {
             return None;
         }

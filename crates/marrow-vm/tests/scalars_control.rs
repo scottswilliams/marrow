@@ -12,19 +12,31 @@ use marrow_vm::{Value, run};
 
 #[test]
 fn rendering_and_conversion_owner_comments_do_not_regress() {
-    let lower = include_str!("../../marrow-compile/src/lower.rs");
+    let lower = [
+        include_str!("../../marrow-compile/src/lower/mod.rs"),
+        include_str!("../../marrow-compile/src/lower/builtins.rs"),
+        include_str!("../../marrow-compile/src/lower/diagnostics.rs"),
+        include_str!("../../marrow-compile/src/lower/durable.rs"),
+        include_str!("../../marrow-compile/src/lower/exprs.rs"),
+        include_str!("../../marrow-compile/src/lower/ltype.rs"),
+        include_str!("../../marrow-compile/src/lower/registry.rs"),
+        include_str!("../../marrow-compile/src/lower/stmts.rs"),
+        include_str!("../../marrow-compile/src/lower/types.rs"),
+    ]
+    .concat();
+    let lower = lower.as_str();
     let render = include_str!("../src/render.rs");
     let outcome = include_str!("../../marrow/src/outcome.rs");
     let controls = include_str!("scalars_control.rs");
     let checks = [
         (
-            "crates/marrow-compile/src/lower.rs",
+            "crates/marrow-compile/src/lower/",
             lower,
             ["same closed", " conversions"].concat(),
             0,
         ),
         (
-            "crates/marrow-compile/src/lower.rs",
+            "crates/marrow-compile/src/lower/",
             lower,
             ["Lower a closed scalar", " conversion"].concat(),
             0,

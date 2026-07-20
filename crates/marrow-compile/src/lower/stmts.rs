@@ -1,3 +1,5 @@
+//! Statement, control-flow, loop, and traversal lowering.
+
 use super::*;
 
 impl<'a> FnLowerer<'a> {
@@ -1001,7 +1003,12 @@ impl<'a> FnLowerer<'a> {
     /// in source order runs unconditionally (no test): every other member is caught
     /// by an earlier arm, so only its own member reaches it, which also makes its
     /// positional payload reads (`EnumPayloadGet`) sound.
-    pub(super) fn lower_match(&mut self, scrutinee: &Expression, arms: &[MatchArm], span: SourceSpan) -> Flow {
+    pub(super) fn lower_match(
+        &mut self,
+        scrutinee: &Expression,
+        arms: &[MatchArm],
+        span: SourceSpan,
+    ) -> Flow {
         if self.terminal_rejection() {
             return Flow::Rejected;
         }

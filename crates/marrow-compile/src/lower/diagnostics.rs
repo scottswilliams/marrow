@@ -1,3 +1,5 @@
+//! Typed diagnostic builders and the small literal-shape helpers lowering reports through.
+
 use super::*;
 
 /// Whether `ty` is a value that renders to canonical text — a bare scalar, enum, or

@@ -1,3 +1,5 @@
+//! The durable-place model and the lowering of durable reads, writes, presence, traversal, and managed-index access.
+
 use super::*;
 
 /// The structural durable shape of a place expression.
@@ -284,7 +286,6 @@ pub(super) struct TraversalTarget<'e> {
     pub(super) span: SourceSpan,
 }
 
-
 /// Whether an instruction is a direct durable-place operation — a read, write,
 /// presence probe, erase, or managed-index access over a `^` place. A `Duration*`
 /// arithmetic opcode is not one. The test-body strict-separation check uses this to
@@ -438,7 +439,6 @@ pub(super) fn is_mutation_instr(instr: &Instr) -> bool {
         | Instr::MapValueAt => false,
     }
 }
-
 
 impl<'a> FnLowerer<'a> {
     // --- durable places (design §D) ---
@@ -815,7 +815,12 @@ impl<'a> FnLowerer<'a> {
     /// durable entry address (not a field, another place, or a non-durable value).
     /// A place over a not-yet-executable root reports the same trough diagnostic as
     /// an inline operation over it.
-    pub(super) fn lower_place_binding(&mut self, name: &str, name_span: SourceSpan, place_expr: &Expression) {
+    pub(super) fn lower_place_binding(
+        &mut self,
+        name: &str,
+        name_span: SourceSpan,
+        place_expr: &Expression,
+    ) {
         if is_reserved_builtin_name(name) {
             self.fail(reserved_builtin_name(self.file, name_span, name));
             return;
@@ -1282,7 +1287,11 @@ impl<'a> FnLowerer<'a> {
     /// column in declaration order, each checked against that column's scalar type. The
     /// key operands are pushed root-first, then `MakeIdentity` wraps them into the
     /// `Id(^root)` value.
-    pub(super) fn lower_identity_ctor(&mut self, args: &[Argument], span: SourceSpan) -> Option<LTy> {
+    pub(super) fn lower_identity_ctor(
+        &mut self,
+        args: &[Argument],
+        span: SourceSpan,
+    ) -> Option<LTy> {
         if args.iter().any(|arg| arg.name.is_some()) {
             self.fail(SourceDiagnostic::at(
                 Code::CheckType.as_str(),
@@ -1384,7 +1393,12 @@ impl<'a> FnLowerer<'a> {
     /// or `lines(text): List[string]`. Both mint (and reuse) the one `List[string]`
     /// COLLTYPES instantiation and emit the split/lines opcode carrying it; the VM
     /// bounds the result by the same law-9 collection limits `append` observes.
-    pub(super) fn lower_text_split(&mut self, name: &str, args: &[Argument], span: SourceSpan) -> Option<LTy> {
+    pub(super) fn lower_text_split(
+        &mut self,
+        name: &str,
+        args: &[Argument],
+        span: SourceSpan,
+    ) -> Option<LTy> {
         let text = LTy::bare_scalar(ScalarType::Text);
         let arity = if name == "split" { 2 } else { 1 };
         if args.len() != arity || args.iter().any(|arg| arg.name.is_some()) {
@@ -1548,7 +1562,11 @@ impl<'a> FnLowerer<'a> {
     /// inferred from the first argument and every later argument is checked against it.
     /// The elements evaluate left to right into locals so the minted list can be filled
     /// in source order once its element type is known.
-    pub(super) fn lower_list_literal_inferred(&mut self, args: &[Argument], span: SourceSpan) -> Option<LTy> {
+    pub(super) fn lower_list_literal_inferred(
+        &mut self,
+        args: &[Argument],
+        span: SourceSpan,
+    ) -> Option<LTy> {
         let [first, rest @ ..] = args else {
             unreachable!("caller passes a non-empty argument list");
         };
@@ -2200,7 +2218,11 @@ impl<'a> FnLowerer<'a> {
     /// Lower `unreachable("static text")`: the sole application-invariant fault. It
     /// takes exactly one static string literal, emits a fault instruction carrying
     /// that text, and diverges (control never continues past it).
-    pub(super) fn lower_unreachable(&mut self, args: &[Argument], span: SourceSpan) -> Option<CallResult> {
+    pub(super) fn lower_unreachable(
+        &mut self,
+        args: &[Argument],
+        span: SourceSpan,
+    ) -> Option<CallResult> {
         let [arg] = args else {
             self.fail(SourceDiagnostic::at(
                 Code::CheckType.as_str(),

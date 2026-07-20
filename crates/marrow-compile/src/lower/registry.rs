@@ -1,3 +1,5 @@
+//! The function and generic-template registries resolved before body lowering.
+
 use super::*;
 
 /// The project's functions and the module scope a call resolves against: every
@@ -16,7 +18,6 @@ pub(crate) struct TemplateProofOutcome {
     pub(crate) diagnostics: Vec<SourceDiagnostic>,
     pub(crate) generic: GenericDiagnostics,
 }
-
 
 impl FunctionRegistry {
     /// Resolve every function's signature in declaration order. The i-th function

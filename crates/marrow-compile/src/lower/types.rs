@@ -1,3 +1,5 @@
+//! Type-annotation and operator resolution: the type-parameter environment, unification, and the operator/comparison tables.
+
 use super::*;
 
 /// A generic type parameter's binding in the body being lowered.
@@ -666,7 +668,6 @@ pub(super) fn operator_symbol(op: BinaryOp) -> &'static str {
 pub(crate) fn parse_int(text: &str) -> Option<i64> {
     text.replace('_', "").parse().ok()
 }
-
 
 impl<'a> FnLowerer<'a> {
     // --- type resolution ---

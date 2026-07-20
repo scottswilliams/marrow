@@ -243,32 +243,25 @@ pub(crate) struct FnLowerer<'a> {
     invariant: Option<LowerInvariant>,
 }
 
-mod stmts;
-
-mod exprs;
-
-mod durable;
-pub(in crate::lower) use self::durable::*;
-
-mod registry;
-pub(in crate::lower) use self::registry::*;
-pub(crate) use self::registry::FunctionRegistry;
-pub(crate) use self::registry::GenericRegistry;
-
-mod types;
-pub(in crate::lower) use self::types::*;
-pub(crate) use self::types::parse_int;
-
-mod diagnostics;
-pub(in crate::lower) use self::diagnostics::*;
-
-mod ltype;
-pub(in crate::lower) use self::ltype::*;
-
 mod builtins;
+mod diagnostics;
+mod durable;
+mod exprs;
+mod ltype;
+mod registry;
+mod stmts;
+mod types;
+
 pub(in crate::lower) use self::builtins::*;
-pub(crate) use self::builtins::is_reserved_builtin_name;
-pub(crate) use self::builtins::reserved_builtin_name;
+pub(in crate::lower) use self::diagnostics::*;
+pub(in crate::lower) use self::durable::*;
+pub(in crate::lower) use self::ltype::*;
+pub(in crate::lower) use self::registry::*;
+pub(in crate::lower) use self::types::*;
+
+pub(crate) use self::builtins::{is_reserved_builtin_name, reserved_builtin_name};
+pub(crate) use self::registry::{FunctionRegistry, GenericRegistry};
+pub(crate) use self::types::parse_int;
 
 impl<'a> FnLowerer<'a> {
     /// A fresh lowerer over an empty body, for one function or test body. The
@@ -815,7 +808,6 @@ impl<'a> FnLowerer<'a> {
     fn lookup(&self, name: &str) -> Option<&Local> {
         self.locals.iter().rev().find(|local| local.name == name)
     }
-
 }
 
 #[cfg(test)]

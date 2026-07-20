@@ -1,3 +1,5 @@
+//! The lowered value type ([`LTy`]) and its conversions to image and generic-argument forms.
+
 use super::*;
 
 /// A lowered value type: a scalar, a nominal int type, or the project record,

@@ -1,3 +1,5 @@
+//! Built-in and constructor classification: the `Builtin`/`CtorKind` vocabulary and the free classifiers over call syntax.
+
 use super::*;
 
 /// The bare lowered type a built-in generic argument denotes (the inverse of
@@ -196,7 +198,12 @@ pub(super) fn collection_ctor_call(expr: &Expression) -> Option<(&'static str, &
 }
 
 /// The diagnostic for a built-in called with the wrong argument shape.
-pub(super) fn builtin_arity(file: &str, span: SourceSpan, name: &str, arity: usize) -> SourceDiagnostic {
+pub(super) fn builtin_arity(
+    file: &str,
+    span: SourceSpan,
+    name: &str,
+    arity: usize,
+) -> SourceDiagnostic {
     SourceDiagnostic::at(
         Code::CheckType.as_str(),
         file,

@@ -673,9 +673,8 @@ fn every_explicit_lowering_panic_is_allowlisted() {
 
 #[test]
 fn explicit_panic_audit_excludes_only_the_pinned_test_module() {
-    let mod_source =
-        std::fs::read_to_string(std::path::Path::new(LOWER_DIR).join("mod.rs"))
-            .expect("lower/mod.rs is readable");
+    let mod_source = std::fs::read_to_string(std::path::Path::new(LOWER_DIR).join("mod.rs"))
+        .expect("lower/mod.rs is readable");
     let production = strip_test_module(&mod_source);
     assert!(!production.contains("mod generic_cache_boundary_tests"));
     assert!(mod_source[production.len()..].starts_with(TEST_ONLY_BOUNDARY));
