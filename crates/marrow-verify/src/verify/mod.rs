@@ -17,31 +17,31 @@ use marrow_image::{
     DemandAtom, DurableBranchShape, DurableContractDescriptor, DurableContractId,
     DurableEnumMemberShape, DurableFieldShape, DurableGroupShape, DurableIndexComponent,
     DurableIndexShape, DurableKeyShape, DurableMemberShape, DurableRootShape, DurableValueShape,
-    ExportDemand, ExportId, ImageId, ImageType, LedgerIdBytes, OP_ASSERT, OP_BOOL_NOT,
-    OP_BRANCH_PRESENT, OP_BYTES_GE, OP_BYTES_GT, OP_BYTES_LE, OP_BYTES_LT, OP_CALL, OP_CONST_LOAD,
-    OP_CONV_BYTES_TEXT, OP_CONV_STRING, OP_DATE_ADD_DAYS, OP_DATE_DAYS_BETWEEN, OP_DATE_GE,
-    OP_DATE_GT, OP_DATE_LE, OP_DATE_LT, OP_DUR_CREATE_ENTRY, OP_DUR_ERASE_ENTRY,
-    OP_DUR_ERASE_FIELD, OP_DUR_ERASE_GROUP, OP_DUR_EXISTS, OP_DUR_FAMILY_EXISTS,
-    OP_DUR_INDEX_LOOKUP, OP_DUR_INDEX_SCAN, OP_DUR_ITERATE_BOUNDED, OP_DUR_READ_ENTRY,
-    OP_DUR_READ_FIELD, OP_DUR_READ_GROUP, OP_DUR_REPLACE_ENTRY, OP_DUR_REPLACE_GROUP,
-    OP_DUR_SET_REQUIRED, OP_DUR_SET_SPARSE, OP_DUR_SET_SPARSE_PRESENT, OP_DURATION_ADD,
-    OP_DURATION_GE, OP_DURATION_GT, OP_DURATION_LE, OP_DURATION_LT, OP_DURATION_SUB,
-    OP_ENUM_CONSTRUCT, OP_ENUM_PAYLOAD_GET, OP_ENUM_TAG, OP_EQ_BOOL, OP_EQ_BYTES, OP_EQ_DATE,
-    OP_EQ_DURATION, OP_EQ_ENUM, OP_EQ_ID, OP_EQ_INSTANT, OP_EQ_INT, OP_EQ_TEXT, OP_FIELD_GET,
-    OP_FIELD_SET, OP_FIELD_UNSET, OP_IDENTITY_KEY_PATH, OP_INSTANT_ADD_DURATION, OP_INSTANT_GE,
-    OP_INSTANT_GT, OP_INSTANT_LE, OP_INSTANT_LT, OP_INSTANT_SUB_DURATION, OP_INT_ADD,
-    OP_INT_ADD_CHECKED, OP_INT_DIV, OP_INT_DIV_CHECKED, OP_INT_GE, OP_INT_GT, OP_INT_LE, OP_INT_LT,
-    OP_INT_MUL, OP_INT_MUL_CHECKED, OP_INT_NEG, OP_INT_NEG_CHECKED, OP_INT_REM, OP_INT_REM_CHECKED,
-    OP_INT_SUB, OP_INT_SUB_CHECKED, OP_JUMP, OP_JUMP_IF_FALSE, OP_LIST_APPEND, OP_LIST_GET,
-    OP_LIST_INDEX, OP_LIST_LEN, OP_LIST_NEW, OP_LOCAL_GET, OP_LOCAL_SET, OP_MAKE_IDENTITY,
-    OP_MAP_GET, OP_MAP_INSERT, OP_MAP_KEY_AT, OP_MAP_LEN, OP_MAP_NEW, OP_MAP_REMOVE,
-    OP_MAP_VALUE_AT, OP_POP, OP_RANGE_GUARD, OP_RECORD_NEW, OP_RETURN, OP_SOME_WRAP,
-    OP_TEXT_CONCAT, OP_TEXT_CONTAINS, OP_TEXT_GE, OP_TEXT_GT, OP_TEXT_IS_EMPTY, OP_TEXT_JOIN,
-    OP_TEXT_LE, OP_TEXT_LINES, OP_TEXT_LT, OP_TEXT_SPLIT, OP_TEXT_TRIM, OP_TODO, OP_TXN_BEGIN,
-    OP_TXN_COMMIT, OP_UNREACHABLE, OP_VACANT_LOAD, OPTIONAL_FLAG, OperationClass, Scalar,
-    SemanticNode, SemanticNodeKind, SemanticPath, SemanticStep, SemanticStepKind, SemanticTarget,
-    TAG_BOOL, TAG_BYTES, TAG_COLLECTION, TAG_DATE, TAG_DURATION, TAG_ENUM, TAG_IDENTITY,
-    TAG_INSTANT, TAG_INT, TAG_RECORD, TAG_TEXT, TAG_UNIT, image_id,
+    ExportDemand, ExportId, ImageType, LedgerIdBytes, OP_ASSERT, OP_BOOL_NOT, OP_BRANCH_PRESENT,
+    OP_BYTES_GE, OP_BYTES_GT, OP_BYTES_LE, OP_BYTES_LT, OP_CALL, OP_CONST_LOAD, OP_CONV_BYTES_TEXT,
+    OP_CONV_STRING, OP_DATE_ADD_DAYS, OP_DATE_DAYS_BETWEEN, OP_DATE_GE, OP_DATE_GT, OP_DATE_LE,
+    OP_DATE_LT, OP_DUR_CREATE_ENTRY, OP_DUR_ERASE_ENTRY, OP_DUR_ERASE_FIELD, OP_DUR_ERASE_GROUP,
+    OP_DUR_EXISTS, OP_DUR_FAMILY_EXISTS, OP_DUR_INDEX_LOOKUP, OP_DUR_INDEX_SCAN,
+    OP_DUR_ITERATE_BOUNDED, OP_DUR_READ_ENTRY, OP_DUR_READ_FIELD, OP_DUR_READ_GROUP,
+    OP_DUR_REPLACE_ENTRY, OP_DUR_REPLACE_GROUP, OP_DUR_SET_REQUIRED, OP_DUR_SET_SPARSE,
+    OP_DUR_SET_SPARSE_PRESENT, OP_DURATION_ADD, OP_DURATION_GE, OP_DURATION_GT, OP_DURATION_LE,
+    OP_DURATION_LT, OP_DURATION_SUB, OP_ENUM_CONSTRUCT, OP_ENUM_PAYLOAD_GET, OP_ENUM_TAG,
+    OP_EQ_BOOL, OP_EQ_BYTES, OP_EQ_DATE, OP_EQ_DURATION, OP_EQ_ENUM, OP_EQ_ID, OP_EQ_INSTANT,
+    OP_EQ_INT, OP_EQ_TEXT, OP_FIELD_GET, OP_FIELD_SET, OP_FIELD_UNSET, OP_IDENTITY_KEY_PATH,
+    OP_INSTANT_ADD_DURATION, OP_INSTANT_GE, OP_INSTANT_GT, OP_INSTANT_LE, OP_INSTANT_LT,
+    OP_INSTANT_SUB_DURATION, OP_INT_ADD, OP_INT_ADD_CHECKED, OP_INT_DIV, OP_INT_DIV_CHECKED,
+    OP_INT_GE, OP_INT_GT, OP_INT_LE, OP_INT_LT, OP_INT_MUL, OP_INT_MUL_CHECKED, OP_INT_NEG,
+    OP_INT_NEG_CHECKED, OP_INT_REM, OP_INT_REM_CHECKED, OP_INT_SUB, OP_INT_SUB_CHECKED, OP_JUMP,
+    OP_JUMP_IF_FALSE, OP_LIST_APPEND, OP_LIST_GET, OP_LIST_INDEX, OP_LIST_LEN, OP_LIST_NEW,
+    OP_LOCAL_GET, OP_LOCAL_SET, OP_MAKE_IDENTITY, OP_MAP_GET, OP_MAP_INSERT, OP_MAP_KEY_AT,
+    OP_MAP_LEN, OP_MAP_NEW, OP_MAP_REMOVE, OP_MAP_VALUE_AT, OP_POP, OP_RANGE_GUARD, OP_RECORD_NEW,
+    OP_RETURN, OP_SOME_WRAP, OP_TEXT_CONCAT, OP_TEXT_CONTAINS, OP_TEXT_GE, OP_TEXT_GT,
+    OP_TEXT_IS_EMPTY, OP_TEXT_JOIN, OP_TEXT_LE, OP_TEXT_LINES, OP_TEXT_LT, OP_TEXT_SPLIT,
+    OP_TEXT_TRIM, OP_TODO, OP_TXN_BEGIN, OP_TXN_COMMIT, OP_UNREACHABLE, OP_VACANT_LOAD,
+    OPTIONAL_FLAG, OperationClass, Scalar, SemanticNode, SemanticNodeKind, SemanticPath,
+    SemanticStep, SemanticStepKind, SemanticTarget, TAG_BOOL, TAG_BYTES, TAG_COLLECTION, TAG_DATE,
+    TAG_DURATION, TAG_ENUM, TAG_IDENTITY, TAG_INSTANT, TAG_INT, TAG_RECORD, TAG_TEXT, TAG_UNIT,
+    image_id,
 };
 
 use crate::reader::Reader;
@@ -53,6 +53,13 @@ use crate::sealed::{
     SpanRow, TestKind, VerifiedImage,
 };
 use crate::vtype::VType;
+
+mod model;
+
+use model::{
+    DecodedEnum, DecodedField, DecodedFunction, DecodedImage, DecodedIndex, DecodedMember,
+    DecodedRecordType, DecodedRoot, DecodedVariant,
+};
 
 const MAGIC: &[u8; 4] = b"MWI\0";
 const VERSION: u8 = 0x00;
@@ -74,142 +81,6 @@ pub fn verify(bytes: &[u8]) -> Result<VerifiedImage, VerifyRejection> {
 // ---------------------------------------------------------------------------
 // Phase 1 (envelope) + phase 2 (table closure).
 // ---------------------------------------------------------------------------
-
-struct DecodedRecordType {
-    #[allow(dead_code)]
-    name: u16,
-    fields: Vec<DecodedField>,
-}
-
-struct DecodedField {
-    name: u16,
-    /// A bare (non-optional) type: a scalar for a durable-storable field, or a
-    /// closed enum for a local-only value field. The enum index is bounds-checked
-    /// against the ENUMS table after it decodes (`validate_record_field_enums`).
-    ty: ImageType,
-    required: bool,
-}
-
-/// A decoded enum type: name string index and its ordered variants.
-struct DecodedEnum {
-    name: u16,
-    variants: Vec<DecodedVariant>,
-}
-
-/// A decoded enum variant: name string index, `category` flag, and dense payload
-/// in declaration order. Each leaf is a bare (non-optional) [`ImageType`].
-struct DecodedVariant {
-    name: u16,
-    category: bool,
-    payload: Vec<ImageType>,
-}
-
-/// A decoded durable root: name string index, its ordered key tuple (each column a
-/// scalar and its ledger id; empty for a singleton root), record type index, the
-/// rest of the root's placement/product ledger identity, and the resource's durable
-/// member tree.
-struct DecodedRoot {
-    name: u16,
-    keys: Vec<(Scalar, LedgerIdBytes)>,
-    record: u16,
-    placement: LedgerIdBytes,
-    product: LedgerIdBytes,
-    members: Vec<DecodedMember>,
-    indexes: Vec<DecodedIndex>,
-}
-
-/// A decoded managed index of a root: its `Index` ledger id, its `unique` flag, and
-/// its ordered projection of leaf references. Each component is re-resolved against
-/// the root's own top-level fields and identity keys during decode, so a component
-/// referencing no real leaf is refused.
-struct DecodedIndex {
-    id: LedgerIdBytes,
-    unique: bool,
-    components: Vec<DurableIndexComponent>,
-}
-
-/// One decoded durable member, in the image's declaration order: a stored scalar
-/// field, a static `group` namespace, or a keyed `branch` placement. Groups and
-/// branches recurse.
-enum DecodedMember {
-    Field {
-        id: LedgerIdBytes,
-        required: bool,
-        value: DurableValueShape,
-    },
-    Group {
-        id: LedgerIdBytes,
-        members: Vec<DecodedMember>,
-    },
-    Branch {
-        placement: LedgerIdBytes,
-        /// The branch's simple name (string index), for the physical layer.
-        name: u16,
-        /// The branch entry's materialized record type index.
-        record: u16,
-        keys: Vec<(Scalar, LedgerIdBytes)>,
-        members: Vec<DecodedMember>,
-    },
-}
-
-impl DecodedMember {
-    /// Whether this member is a field-only keyed branch, recursively — the branch shape
-    /// the kernel executes at any depth. Its key is one or more columns and every direct
-    /// member itself keeps flat: a field (scalar or widened composite), or a nested branch
-    /// that is itself a simple branch. A static `group` breaks it. The recursion admits an
-    /// arbitrarily deep chain of field-only branches with composite keys, which the
-    /// recursive physical layout and profile serve.
-    fn is_simple_branch(&self) -> bool {
-        matches!(
-            self,
-            DecodedMember::Branch { keys, members, .. }
-                if !keys.is_empty()
-                    && members.iter().all(DecodedMember::keeps_root_flat)
-        )
-    }
-
-    /// Whether this member keeps its containing root flat-executable: a field (scalar or
-    /// widened composite — the durable field codec frames a composite inline in the one
-    /// field-leaf cell) or a simple (recursively field-only, keyed) branch. A static
-    /// `group` and a composite/nested branch still park the root.
-    fn keeps_root_flat(&self) -> bool {
-        match self {
-            DecodedMember::Field { .. } => true,
-            DecodedMember::Group { .. } => false,
-            DecodedMember::Branch { .. } => self.is_simple_branch(),
-        }
-    }
-}
-
-struct DecodedFunction {
-    name: u16,
-    source: u16,
-    params: Vec<ImageType>,
-    ret: RetShape,
-    local_count: u16,
-    code: Vec<u8>,
-    spans: Vec<(u32, u32, u32)>,
-}
-
-struct DecodedImage {
-    image_id: ImageId,
-    strings: Vec<Rc<str>>,
-    types: Vec<DecodedRecordType>,
-    enums: Vec<DecodedEnum>,
-    collections: Vec<SealedCollectionType>,
-    roots: Vec<DecodedRoot>,
-    sites: Vec<SealedSite>,
-    /// Each site's resolved graph-node path, parallel to `sites` by index.
-    site_paths: Vec<SemanticPath>,
-    durable_contract: DurableContractId,
-    durable_descriptor: DurableContractDescriptor,
-    consts: Vec<SealedConst>,
-    functions: Vec<DecodedFunction>,
-    exports: Vec<(ExportId, u16)>,
-    /// Decoded TEST-ENTRY rows: `(name-string-index, function-index)`, ascending by
-    /// name index.
-    test_entries: Vec<(u16, u16)>,
-}
 
 fn decode_container(bytes: &[u8]) -> Result<DecodedImage, VerifyRejection> {
     if bytes.len() > marrow_image::bounds::MAX_IMAGE_BYTES {
