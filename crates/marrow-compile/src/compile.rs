@@ -152,11 +152,139 @@ impl std::fmt::Display for CompileInvariant {
 
 impl std::error::Error for CompileInvariant {}
 
-/// Why compilation produced no image.
+/// Which fixed compiler-owned aggregate bound compilation exhausted. Each variant
+/// names a whole-program count or byte ceiling that no single source construct is
+/// at fault for; a bound one construct crosses is a `check.resource_limit` source
+/// diagnostic instead. The enum is closed and exhaustively matchable so a
+/// downstream consumer (bound-raise audits, the analysis-fact floor) can classify
+/// every kind without a wildcard.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResourceLimitKind {
+    Strings,
+    Consts,
+    Types,
+    Enums,
+    Collections,
+    Roots,
+    DurableMembers,
+    Sites,
+    Functions,
+    Exports,
+    TestEntries,
+    ImageBytes,
+    /// The ordered diagnostic set grew past the count bound, so the incomplete
+    /// collection was discarded rather than surfaced as a truncated result.
+    DiagnosticCount,
+    /// The ordered diagnostic set grew past the total-byte bound, so the incomplete
+    /// collection was discarded.
+    DiagnosticBytes,
+}
+
+/// A fixed compiler-owned resource bound compilation exhausted with no single
+/// source construct at fault. It carries only its typed [`ResourceLimitKind`] and
+/// the bound and actual counts as integers — never a source location, span, or
+/// spelling. The caller distinguishes this outcome from source diagnostics and
+/// from an opaque compiler invariant, and reports a fixed operational record.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CompileResourceLimit {
+    kind: ResourceLimitKind,
+    limit: u64,
+    actual: u64,
+}
+
+impl CompileResourceLimit {
+    fn new(kind: ResourceLimitKind, limit: u64, actual: u64) -> Self {
+        Self {
+            kind,
+            limit,
+            actual,
+        }
+    }
+
+    /// Which aggregate bound was exhausted.
+    pub fn kind(self) -> ResourceLimitKind {
+        self.kind
+    }
+
+    /// The fixed bound the program exceeded.
+    pub fn limit(self) -> u64 {
+        self.limit
+    }
+
+    /// The actual count or byte total the program reached.
+    pub fn actual(self) -> u64 {
+        self.actual
+    }
+}
+
+impl std::fmt::Display for CompileResourceLimit {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("compiler resource limit reached")
+    }
+}
+
+impl std::error::Error for CompileResourceLimit {}
+
+/// The largest ordered diagnostic set eligible for the [`CompileFailure::Diagnostics`]
+/// arm, and the largest total message-byte footprint. A count or byte overflow
+/// transactionally discards the incomplete collection and classifies as a
+/// [`CompileResourceLimit`], so only a complete bounded diagnostic result reaches a
+/// caller (§ law 9). The bounds sit far above any real edit cycle's diagnostic set
+/// while still failing a pathological error avalanche closed.
+const MAX_DIAGNOSTIC_COUNT: usize = 4096;
+const MAX_DIAGNOSTIC_BYTES: usize = 1024 * 1024;
+
+/// The bounded diagnostic collection owner: it seals an assembled ordered diagnostic
+/// set into the arm it is eligible for. A set within both the count and byte bounds
+/// commits as `Complete`; an empty set is `Empty` (its stage becomes a private
+/// invariant unless a resource candidate exists); an overflow discards the whole
+/// set (prefix included) and yields the resource limit that displaced it.
+enum DiagnosticSeal {
+    Complete(NonEmptySourceDiagnostics),
+    Empty,
+    Overflow(CompileResourceLimit),
+}
+
+/// Seal an assembled ordered diagnostic set: overflow of either bound discards the
+/// incomplete collection and reports the displacing resource limit, so a truncated
+/// diagnostic set never reaches the `Diagnostics` arm.
+fn seal_diagnostics(diagnostics: Vec<SourceDiagnostic>) -> DiagnosticSeal {
+    if diagnostics.len() > MAX_DIAGNOSTIC_COUNT {
+        return DiagnosticSeal::Overflow(CompileResourceLimit::new(
+            ResourceLimitKind::DiagnosticCount,
+            MAX_DIAGNOSTIC_COUNT as u64,
+            diagnostics.len() as u64,
+        ));
+    }
+    let bytes: usize = diagnostics
+        .iter()
+        .map(|diagnostic| diagnostic.message.len() + diagnostic.file.len())
+        .sum();
+    if bytes > MAX_DIAGNOSTIC_BYTES {
+        return DiagnosticSeal::Overflow(CompileResourceLimit::new(
+            ResourceLimitKind::DiagnosticBytes,
+            MAX_DIAGNOSTIC_BYTES as u64,
+            bytes as u64,
+        ));
+    }
+    match NonEmptySourceDiagnostics::new(diagnostics) {
+        Some(diagnostics) => DiagnosticSeal::Complete(diagnostics),
+        None => DiagnosticSeal::Empty,
+    }
+}
+
+/// Why compilation produced no image. One central boundary owns the precedence
+/// `Invariant > Diagnostics > ResourceLimit`: an opaque compiler-coherence failure
+/// dominates every source diagnostic already accumulated, a complete bounded
+/// diagnostic set dominates an independent later resource candidate, and a resource
+/// limit surfaces only when no invariant and no complete diagnostic set exist.
 #[derive(Debug)]
 pub enum CompileFailure {
     /// One or more source diagnostics blocked compilation.
     Diagnostics(NonEmptySourceDiagnostics),
+    /// A fixed compiler-owned aggregate resource bound was exhausted with no single
+    /// source construct at fault, so no diagnostic and no image were produced.
+    ResourceLimit(CompileResourceLimit),
     /// Private compiler state was incoherent.
     Invariant(CompileInvariant),
 }
@@ -167,6 +295,9 @@ impl std::fmt::Display for CompileFailure {
             Self::Diagnostics(_) => {
                 formatter.write_str("compilation failed with source diagnostics")
             }
+            Self::ResourceLimit(_) => {
+                formatter.write_str("compilation reached a fixed resource limit")
+            }
             Self::Invariant(_) => formatter.write_str("compiler invariant failure"),
         }
     }
@@ -176,6 +307,7 @@ impl std::error::Error for CompileFailure {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Diagnostics(_) => None,
+            Self::ResourceLimit(limit) => Some(limit),
             Self::Invariant(invariant) => Some(invariant),
         }
     }
@@ -197,28 +329,40 @@ enum InvariantCause {
     EmptyDiagnostics(CompileStage),
 }
 
+/// The one boundary that assembles a total [`CompileFailure`] under the precedence
+/// `Invariant > Diagnostics > ResourceLimit`. An invariant dominates unconditionally.
+/// Otherwise the accumulated diagnostics are sealed: a complete bounded set is the
+/// `Diagnostics` arm (dominating any independent `resource` candidate); an empty set
+/// yields the `resource` candidate if one exists, else the empty-boundary invariant;
+/// and a diagnostic-collector overflow discards the incomplete set and reports the
+/// resource limit that displaced it.
 fn compile_failure(
     diagnostics: Vec<SourceDiagnostic>,
     invariant: Option<InvariantCause>,
+    resource: Option<CompileResourceLimit>,
     stage: CompileStage,
 ) -> CompileFailure {
     if let Some(cause) = invariant {
         return CompileFailure::Invariant(CompileInvariant(cause));
     }
-    match NonEmptySourceDiagnostics::new(diagnostics) {
-        Some(diagnostics) => CompileFailure::Diagnostics(diagnostics),
-        None => {
-            CompileFailure::Invariant(CompileInvariant(InvariantCause::EmptyDiagnostics(stage)))
-        }
+    match seal_diagnostics(diagnostics) {
+        DiagnosticSeal::Complete(diagnostics) => CompileFailure::Diagnostics(diagnostics),
+        DiagnosticSeal::Overflow(limit) => CompileFailure::ResourceLimit(limit),
+        DiagnosticSeal::Empty => match resource {
+            Some(limit) => CompileFailure::ResourceLimit(limit),
+            None => CompileFailure::Invariant(CompileInvariant(InvariantCause::EmptyDiagnostics(
+                stage,
+            ))),
+        },
     }
 }
 
 fn diagnostic_failure(diagnostics: Vec<SourceDiagnostic>, stage: CompileStage) -> CompileFailure {
-    compile_failure(diagnostics, None, stage)
+    compile_failure(diagnostics, None, None, stage)
 }
 
 fn invariant_failure(cause: GenericInvariant, stage: CompileStage) -> CompileFailure {
-    compile_failure(Vec::new(), Some(InvariantCause::Generic(cause)), stage)
+    compile_failure(Vec::new(), Some(InvariantCause::Generic(cause)), None, stage)
 }
 
 /// Whether a compilation includes the project's `test` declarations. A production
@@ -1314,6 +1458,7 @@ mod tests {
         let outcome: Result<Built, CompileFailure> = Err(compile_failure(
             vec![diagnostic(Code::CheckType.as_str(), 3)],
             Some(proof_clone_cause()),
+            None,
             CompileStage::TemplateProof,
         ));
         let Err(failure) = outcome else {
@@ -1348,7 +1493,7 @@ mod tests {
         original.extend(expected.iter().cloned());
         let original_ptr = original.as_ptr();
         let original_capacity = original.capacity();
-        let failure = compile_failure(original, None, CompileStage::BodyLowering);
+        let failure = compile_failure(original, None, None, CompileStage::BodyLowering);
         assert_eq!(
             failure.to_string(),
             "compilation failed with source diagnostics"
@@ -1373,7 +1518,7 @@ mod tests {
         let mut original = Vec::with_capacity(8);
         original.extend(expected.iter().cloned());
         let original_ptr = original.as_ptr();
-        let failure = compile_failure(original, None, CompileStage::BodyLowering);
+        let failure = compile_failure(original, None, None, CompileStage::BodyLowering);
         let CompileFailure::Diagnostics(diagnostics) = failure else {
             panic!("a nonempty source failure must remain diagnostics")
         };
@@ -1396,7 +1541,7 @@ mod tests {
             CompileStage::BodyLowering,
             CompileStage::PostLoweringValidation,
         ] {
-            let empty = compile_failure(Vec::new(), None, stage);
+            let empty = compile_failure(Vec::new(), None, None, stage);
             let CompileFailure::Invariant(invariant) = empty else {
                 panic!("an empty diagnostic failure must become a compiler invariant")
             };
@@ -1413,5 +1558,101 @@ mod tests {
         fn assert_worker_type<T: Send + Sync + 'static>() {}
 
         assert_worker_type::<super::CompileInvariant>();
+    }
+
+    fn resource(kind: super::ResourceLimitKind) -> super::CompileResourceLimit {
+        super::CompileResourceLimit::new(kind, 64, 65)
+    }
+
+    /// A resource candidate surfaces only when no invariant and no diagnostic set
+    /// coexist: it is the lowest arm of the `Invariant > Diagnostics > ResourceLimit`
+    /// precedence.
+    #[test]
+    fn resource_limit_surfaces_with_no_invariant_and_no_diagnostics() {
+        let failure = compile_failure(
+            Vec::new(),
+            None,
+            Some(resource(super::ResourceLimitKind::Functions)),
+            CompileStage::PostLoweringValidation,
+        );
+        let CompileFailure::ResourceLimit(limit) = failure else {
+            panic!("an aggregate bound with no diagnostics is a resource limit")
+        };
+        assert_eq!(limit.kind(), super::ResourceLimitKind::Functions);
+        assert_eq!(limit.limit(), 64);
+        assert_eq!(limit.actual(), 65);
+        assert_eq!(
+            format!("{limit}"),
+            "compiler resource limit reached",
+            "the limit's display carries no location or count"
+        );
+    }
+
+    /// A complete bounded diagnostic set dominates an independent later resource
+    /// candidate.
+    #[test]
+    fn complete_diagnostics_dominate_a_resource_candidate() {
+        let failure = compile_failure(
+            vec![diagnostic(Code::CheckType.as_str(), 3)],
+            None,
+            Some(resource(super::ResourceLimitKind::Sites)),
+            CompileStage::PostLoweringValidation,
+        );
+        assert!(
+            matches!(failure, CompileFailure::Diagnostics(_)),
+            "a complete diagnostic set outranks a resource candidate"
+        );
+    }
+
+    /// A private invariant dominates a coexisting resource candidate.
+    #[test]
+    fn invariant_dominates_a_resource_candidate() {
+        let failure = compile_failure(
+            Vec::new(),
+            Some(proof_clone_cause()),
+            Some(resource(super::ResourceLimitKind::ImageBytes)),
+            CompileStage::PostLoweringValidation,
+        );
+        assert!(
+            matches!(failure, CompileFailure::Invariant(_)),
+            "an invariant outranks a resource candidate"
+        );
+    }
+
+    /// A diagnostic set past the count bound transactionally discards the incomplete
+    /// collection (its prefix included) and reports the displacing resource limit; no
+    /// partial `Diagnostics` candidate survives.
+    #[test]
+    fn diagnostic_count_overflow_discards_the_incomplete_collection() {
+        let overflowing: Vec<SourceDiagnostic> = (0..=super::MAX_DIAGNOSTIC_COUNT as u32)
+            .map(|line| diagnostic(Code::CheckType.as_str(), line + 1))
+            .collect();
+        assert!(overflowing.len() > super::MAX_DIAGNOSTIC_COUNT);
+        let failure = compile_failure(
+            overflowing,
+            None,
+            None,
+            CompileStage::PostLoweringValidation,
+        );
+        let CompileFailure::ResourceLimit(limit) = failure else {
+            panic!("an overflowing diagnostic collection is discarded for a resource limit")
+        };
+        assert_eq!(limit.kind(), super::ResourceLimitKind::DiagnosticCount);
+        assert_eq!(limit.limit(), super::MAX_DIAGNOSTIC_COUNT as u64);
+    }
+
+    /// An empty diagnostic set with no resource candidate is still the private
+    /// empty-boundary invariant, so the resource arm never masks that invariant.
+    #[test]
+    fn empty_without_a_resource_candidate_stays_an_invariant() {
+        let failure = compile_failure(Vec::new(), None, None, CompileStage::Parse);
+        assert!(matches!(failure, CompileFailure::Invariant(_)));
+    }
+
+    #[test]
+    fn public_resource_limit_is_worker_transferable() {
+        fn assert_worker_type<T: Send + Sync + 'static>() {}
+
+        assert_worker_type::<super::CompileResourceLimit>();
     }
 }

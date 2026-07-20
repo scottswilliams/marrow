@@ -65,6 +65,13 @@ pub(crate) fn test(rest: &[String]) -> ExitCode {
                 .collect();
             return emit_records(args.format, &records, ExitCode::FAILURE);
         }
+        Err(CompileFailure::ResourceLimit(_)) => {
+            return emit_records(
+                args.format,
+                &[compiler_resource_limit_record()],
+                ExitCode::FAILURE,
+            );
+        }
         Err(CompileFailure::Invariant(_)) => {
             return emit_records(
                 args.format,
@@ -163,6 +170,15 @@ pub(crate) fn test(rest: &[String]) -> ExitCode {
 fn compiler_invariant_record() -> Record {
     Record::OperationalError {
         code: Code::CliCompilerInvariant.as_str(),
+        detail: None,
+    }
+}
+
+/// The fixed payload-free operational record for a compiler resource-limit outcome:
+/// one fixed code, no detail, no source location, no image.
+fn compiler_resource_limit_record() -> Record {
+    Record::OperationalError {
+        code: Code::CliCompilerResourceLimit.as_str(),
         detail: None,
     }
 }

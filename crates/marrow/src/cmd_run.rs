@@ -98,6 +98,15 @@ pub(crate) fn run(rest: &[String]) -> ExitCode {
                                 ExitCode::FAILURE,
                             );
                         }
+                        Err(CompileFailure::ResourceLimit(_)) => {
+                            return emit(
+                                args.format,
+                                &[compiler_resource_limit_record()],
+                                &[],
+                                &[],
+                                ExitCode::FAILURE,
+                            );
+                        }
                         Err(CompileFailure::Invariant(_)) => {
                             return emit(
                                 args.format,
@@ -128,6 +137,15 @@ pub(crate) fn run(rest: &[String]) -> ExitCode {
                     );
                 }
             }
+        }
+        Err(CompileFailure::ResourceLimit(_)) => {
+            return emit(
+                args.format,
+                &[compiler_resource_limit_record()],
+                &[],
+                &[],
+                ExitCode::FAILURE,
+            );
         }
         Err(CompileFailure::Invariant(_)) => {
             return emit(
@@ -230,6 +248,16 @@ fn diagnostic_records(diagnostics: &[SourceDiagnostic]) -> Vec<Record> {
 fn compiler_invariant_record() -> Record {
     Record::OperationalError {
         code: marrow_codes::Code::CliCompilerInvariant.as_str(),
+        detail: None,
+    }
+}
+
+/// The fixed payload-free operational record for a compiler resource-limit outcome.
+/// The typed limit's kind/bound/actual integers are internal; the CLI surfaces one
+/// fixed code with no detail, and never a source location or an image.
+fn compiler_resource_limit_record() -> Record {
+    Record::OperationalError {
+        code: marrow_codes::Code::CliCompilerResourceLimit.as_str(),
         detail: None,
     }
 }

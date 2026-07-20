@@ -68,6 +68,11 @@ pub(crate) fn client(rest: &[String]) -> ExitCode {
             }
             return ExitCode::FAILURE;
         }
+        Err(marrow_compile::CompileFailure::ResourceLimit(_)) => {
+            let (code, message) = compiler_resource_limit_report();
+            crate::report_simple_error(code, message);
+            return ExitCode::FAILURE;
+        }
         Err(marrow_compile::CompileFailure::Invariant(_)) => {
             let (code, message) = compiler_invariant_report();
             crate::report_simple_error(code, message);
@@ -240,6 +245,16 @@ fn compiler_invariant_report() -> (&'static str, &'static str) {
     (
         marrow_codes::Code::CliCompilerInvariant.as_str(),
         "the compiler failed an internal consistency check",
+    )
+}
+
+/// The fixed code and bounded message a compiler resource-limit outcome emits on
+/// stderr. The generator writes no client and no stdout: it fails the whole program
+/// closed with one fixed line carrying no source location or limit payload.
+fn compiler_resource_limit_report() -> (&'static str, &'static str) {
+    (
+        marrow_codes::Code::CliCompilerResourceLimit.as_str(),
+        "the compiler reached a fixed resource limit",
     )
 }
 
