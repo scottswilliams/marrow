@@ -83,3 +83,22 @@ fn a_wide_resource_compiles() {
 fn a_narrow_resource_compiles() {
     compile_ok(10);
 }
+
+/// A durable resource near the record-field width — the widest the durable identity
+/// ledger admits at ~4090 sparse fields — encodes to ~343 KB. That exceeds the v0
+/// 256 KiB image ceiling and fits the widened 512 KiB one, so it pins
+/// [`marrow_image::bounds::MAX_IMAGE_BYTES`] as the load-bearing bound for a
+/// wide durable resource rather than the field-count guard.
+#[test]
+fn a_near_max_width_durable_resource_needs_the_widened_image_ceiling() {
+    let bytes = compile_ok(4090).image.bytes.len();
+    assert!(
+        bytes > 256 * 1024,
+        "the near-max-width durable resource exceeds the v0 256 KiB ceiling: {bytes} bytes",
+    );
+    assert!(
+        bytes <= marrow_image::bounds::MAX_IMAGE_BYTES,
+        "it must fit the widened image ceiling ({} bytes): {bytes} bytes",
+        marrow_image::bounds::MAX_IMAGE_BYTES,
+    );
+}

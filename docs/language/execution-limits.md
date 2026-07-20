@@ -24,10 +24,12 @@ A violation is an `image.table` or `image.function` rejection.
 
 | Limit | Value |
 |---|---:|
-| Whole image | 256 KiB |
-| String-pool entries / bytes per entry | 1024 / 4 KiB |
+| Whole image | 512 KiB |
+| Record / enum / collection types | 4096 each |
+| Durable roots | 4096 |
+| String-pool entries / bytes per entry | 8192 / 4 KiB |
 | Constant-pool entries | 1024 |
-| Functions / params per function | 64 / 16 |
+| Functions / params per function | 4096 / 16 |
 | Locals per frame | 256 |
 | Code bytes per function | 64 KiB |
 | Operand-stack depth | 256 |

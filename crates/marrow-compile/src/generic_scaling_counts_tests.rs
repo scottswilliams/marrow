@@ -1,20 +1,20 @@
 //! Deterministic operation-count KATs for generic instantiation scaling, driven
 //! through the production `compile` path. These record exact operation counts (no
-//! wall time, no noise) for each mapped owner and pin the decisive structural fact:
-//! the reachable number of distinct instantiations is capped by the image bounds
-//! (`MAX_TYPES` / `MAX_ENUMS` / `MAX_FUNCTIONS` = 64 each), far below the compiler's
-//! `MAX_INSTANTIATIONS = 4096`. The per-mint directory rebuild and the
-//! `(template, args)` primary-key scan are quadratic in the number of distinct
-//! instantiations, but that number is bounded by ~64, so the absolute cost is a few
-//! thousand primitive operations per compile — the packet's 512/1024/2048/4096
-//! scaling points are unreachable on the beta image format.
+//! wall time, no noise) for each mapped owner. The evidence-widened scale floor raised
+//! the image type/function bounds (`MAX_TYPES` / `MAX_ENUMS` / `MAX_FUNCTIONS` = 4096),
+//! so the 512/1024/2048 doubling points are now reachable and the scaling law is
+//! exercised directly rather than argued from a ~64 cap.
+//!
+//! The `(template, args)` mint-dedup reuse probe is now a keyed lookup, so its per-mint
+//! work is one probe: the scan-step count equals the mint-attempt count and doubles ~2x
+//! across a doubled axis. Two owners are deliberately left unchanged by the scan repair
+//! and remain super-linear on this domain — the per-mint metadata directory rebuild
+//! (its build count and row work are byte-for-byte identical to before the repair) and
+//! the per-template proof clone — so their frozen shapes are asserted here as the
+//! recurrence gate for the follow-on lane that narrows them.
 //!
 //! Counts are observed through the private `super::capture_scaling_counts` window;
-//! they are neither a public hook nor a canonical fact. Freeze semantics: a
-//! measurement-only close may not add an equivalent per-mint scan or rebuild site.
-//! The reachable-ceiling and quadratic-shape assertions are the recurrence gate; if
-//! the image type bounds are ever raised, this domain grows and the owners named
-//! here must be revisited before that lane lands.
+//! they are neither a public hook nor a canonical fact.
 
 use std::fmt::Write as _;
 
@@ -52,18 +52,22 @@ fn seed_structs(source: &mut String, v: usize) {
     }
 }
 
-/// Type-only axis: `v` distinct `Held[Nk]` type instantiations, one per seed. Each
-/// seed and each `Held` instance consumes an image record slot, so this axis is
-/// bounded by `MAX_TYPES = 64` at roughly `v = 30`.
+/// Type-only axis: `v` distinct `Held[Nk]` type instantiations, one per seed, each
+/// accumulated into a single reused `int` local (so the axis is bounded by the type
+/// population, not by `MAX_LOCALS`). Each seed and each `Held` instance consumes an
+/// image record slot, so the reachable ceiling is roughly `MAX_TYPES / 2`.
 fn type_axis_fixture(v: usize) -> String {
     let mut source = String::from("module main\n\nstruct Held<T> { value: T }\n\n");
     seed_structs(&mut source, v);
-    source.push_str("\npub fn driver(): int {\n");
+    source.push_str("\npub fn driver(): int {\n    var sink: int = 0\n");
     for seed in 0..v {
-        writeln!(source, "    const h{seed} = Held(value: N{seed}(value: 0))")
-            .expect("write held construction");
+        writeln!(
+            source,
+            "    sink = sink + Held(value: N{seed}(value: 0)).value.value"
+        )
+        .expect("write held accumulation");
     }
-    source.push_str("    return 0\n}\n");
+    source.push_str("    return sink\n}\n");
     source
 }
 
@@ -116,124 +120,93 @@ fn ratio(at_2v: usize, at_v: usize) -> f64 {
 /// The compiler's shared instantiation budget, far above the reachable ceiling.
 const MAX_INSTANTIATIONS: usize = super::MAX_INSTANTIATIONS;
 
-/// The `(template, args)` mint-dedup reuse probe is a keyed lookup, so its work is
-/// linear in the number of mint attempts (one probe each), not quadratic in the
-/// number of distinct instantiations. The per-mint directory rebuild is deliberately
-/// unchanged by the index repair (its build count and row work stay identical), so it
-/// remains quadratic on the reachable domain; this test pins the repaired scan as
-/// linear while holding the directory rebuild at its frozen shape.
+/// The `(template, args)` mint-dedup reuse probe is a keyed lookup, so its scan-step
+/// count equals the mint-attempt count and doubles ~2x across a doubled type axis —
+/// proven directly at the now-reachable 512→1024 and 1024→2048 doubling points. Two
+/// owners are deliberately unchanged by the scan repair and stay super-linear here: the
+/// per-mint metadata directory rebuild (row work roughly quadruples per doubling) and
+/// its build count stays ~linear. Their frozen shapes are the recurrence gate for the
+/// follow-on lane. (The type axis reaches ~`MAX_TYPES / 2` because each instantiation
+/// costs its seed plus its `Held` record; the 4096 point is a fn-axis doubling.)
 #[test]
-fn type_axis_scan_is_keyed_lookup_directory_rebuild_unchanged() {
-    let (ceiling, top) = reachable_ceiling(type_axis_fixture, 64);
+fn type_axis_scan_is_linear_directory_rebuild_still_quadratic() {
+    let a = counts_for(type_axis_fixture(512));
+    let b = counts_for(type_axis_fixture(1024));
+    let c = counts_for(type_axis_fixture(2048));
 
-    assert!(
-        ceiling < MAX_INSTANTIATIONS / 8,
-        "distinct type instantiations are image-capped ({ceiling}) far below \
-         MAX_INSTANTIATIONS ({MAX_INSTANTIATIONS}); the 512..4096 axis is unreachable"
+    // Repaired: one keyed probe per mint attempt, so the scan count is the axis width
+    // and each doubling is ~2x.
+    for (lo, hi) in [(&a, &b), (&b, &c)] {
+        let scan_ratio = ratio(hi.type_inst_scan_steps, lo.type_inst_scan_steps);
+        assert!(
+            (1.7..=2.3).contains(&scan_ratio),
+            "type reuse probe is a keyed lookup, linear in mint attempts; \
+             steps {} -> {} ratio {scan_ratio:.2}",
+            lo.type_inst_scan_steps,
+            hi.type_inst_scan_steps,
+        );
+    }
+    assert_eq!(
+        c.type_inst_scan_steps, 2048,
+        "one keyed probe per mint attempt at v=2048"
     );
 
-    let half = counts_for(type_axis_fixture(ceiling / 2));
-    let row_ratio = ratio(top.directory_row_visits, half.directory_row_visits);
-    let scan_ratio = ratio(top.type_inst_scan_steps, half.type_inst_scan_steps);
-    // The unrepaired per-mint directory rebuild is still super-linear on the domain.
-    assert!(
-        row_ratio >= 2.6,
-        "per-mint directory rebuild is super-linear; ceiling={ceiling} \
-         row visits half={} full={} ratio={row_ratio:.2}",
-        half.directory_row_visits,
-        top.directory_row_visits
-    );
-    // The repaired keyed reuse probe is linear in mint attempts (one probe each).
-    assert!(
-        (1.7..=2.3).contains(&scan_ratio),
-        "(template,args) reuse probe is a keyed lookup, linear in mint attempts; \
-         ceiling={ceiling} probe steps half={} full={} ratio={scan_ratio:.2}",
-        half.type_inst_scan_steps,
-        top.type_inst_scan_steps
-    );
-
-    // The directory-build COUNT is ~linear (one rebuild per mint attempt): the
-    // half→full ratio sits near 2x. A ratio band alone would still pass if every
-    // count doubled at a constant factor, so the tight absolute ceilings below pin
-    // the level and fail a doubled-rebuild regression that keeps the ratio.
-    let build_ratio = ratio(top.directory_builds, half.directory_builds);
+    // Unrepaired (frozen): the per-mint directory rebuild is super-linear — row work
+    // roughly quadruples per doubling — awaiting the follow-on lane.
+    for (lo, hi) in [(&a, &b), (&b, &c)] {
+        let row_ratio = ratio(hi.directory_row_visits, lo.directory_row_visits);
+        assert!(
+            row_ratio >= 3.5,
+            "per-mint directory rebuild is still super-linear; \
+             row visits {} -> {} ratio {row_ratio:.2}",
+            lo.directory_row_visits,
+            hi.directory_row_visits,
+        );
+    }
+    // The directory-build COUNT stays ~linear (one rebuild per mint attempt).
+    let build_ratio = ratio(c.directory_builds, b.directory_builds);
     assert!(
         (1.7..=2.3).contains(&build_ratio),
-        "directory build count is ~linear in V; ceiling={ceiling} \
-         builds half={} full={} ratio={build_ratio:.2}",
-        half.directory_builds,
-        top.directory_builds
-    );
-
-    // Tight absolute ceilings at the image-capped domain (observed: builds 129,
-    // row_visits 2048 unchanged by the index repair; ty_scan 32 = one keyed probe per
-    // mint attempt at ceiling 32, down from the pre-repair 496 linear scan). Each cap
-    // is below twice the observed value, so a regression that reintroduces a linear
-    // scan (or doubles the rebuild) fails here even with an unchanged half→full ratio.
-    assert!(
-        top.directory_builds < 170,
-        "directory build count regressed past the frozen level: {} (ceiling={ceiling})",
-        top.directory_builds
-    );
-    assert!(
-        top.directory_row_visits < 3_000,
-        "directory row work regressed past the frozen level: {} (ceiling={ceiling})",
-        top.directory_row_visits
-    );
-    assert!(
-        top.type_inst_scan_steps < 64,
-        "reuse probe regressed to a linear scan: {} (ceiling={ceiling})",
-        top.type_inst_scan_steps
+        "directory build count is ~linear; builds {} -> {} ratio {build_ratio:.2}",
+        b.directory_builds,
+        c.directory_builds,
     );
 }
 
-/// The function axis is bounded by `MAX_FUNCTIONS = 64`. The `reserve_fn_instance`
-/// reuse probe is now a keyed lookup — linear in reserve attempts — and the function
-/// axis drives no per-mint type directory rebuild, so the whole axis is linear after
-/// the index repair.
+/// The `reserve_fn_instance` reuse probe is a keyed lookup — one probe per reserve
+/// attempt — so its scan-step count is the axis width and doubles ~2x, proven at the
+/// now-reachable 512→1024 and 2048→4095 doubling points (the function axis reaches
+/// ~`MAX_FUNCTIONS − 1` before its seed types exhaust `MAX_TYPES`). The function axis
+/// drives no per-mint type directory rebuild, so it is linear after the repair.
 #[test]
-fn fn_axis_scan_is_keyed_lookup() {
-    let (ceiling, top) = reachable_ceiling(fn_axis_fixture, 64);
+fn fn_axis_scan_is_linear() {
+    let a = counts_for(fn_axis_fixture(512));
+    let b = counts_for(fn_axis_fixture(1024));
+    let c = counts_for(fn_axis_fixture(2048));
+    let d = counts_for(fn_axis_fixture(4095));
 
-    assert!(
-        ceiling < MAX_INSTANTIATIONS / 8,
-        "distinct function instantiations are image-capped ({ceiling}) far below \
-         MAX_INSTANTIATIONS ({MAX_INSTANTIATIONS})"
+    for (lo, hi) in [(&a, &b), (&c, &d)] {
+        let scan_ratio = ratio(hi.fn_inst_scan_steps, lo.fn_inst_scan_steps);
+        assert!(
+            (1.7..=2.3).contains(&scan_ratio),
+            "fn reuse probe is a keyed lookup, linear in reserve attempts; \
+             steps {} -> {} ratio {scan_ratio:.2}",
+            lo.fn_inst_scan_steps,
+            hi.fn_inst_scan_steps,
+        );
+    }
+    assert_eq!(
+        d.fn_inst_scan_steps, 4095,
+        "one keyed probe per reserve attempt at v=4095"
     );
 
-    let half = counts_for(fn_axis_fixture(ceiling / 2));
-    let scan_ratio = ratio(top.fn_inst_scan_steps, half.fn_inst_scan_steps);
-    assert!(
-        (1.7..=2.3).contains(&scan_ratio),
-        "reserve_fn_instance reuse probe is a keyed lookup, linear in reserve \
-         attempts; ceiling={ceiling} probe steps half={} full={} ratio={scan_ratio:.2}",
-        half.fn_inst_scan_steps,
-        top.fn_inst_scan_steps
-    );
-
-    // The per-fn-mint directory rebuild count is ~linear; its ratio sits near 2x.
-    let build_ratio = ratio(top.directory_builds, half.directory_builds);
+    // The per-fn-mint directory rebuild count stays ~linear across a doubling.
+    let build_ratio = ratio(c.directory_builds, b.directory_builds);
     assert!(
         (1.7..=2.3).contains(&build_ratio),
-        "directory build count is ~linear in V; ceiling={ceiling} \
-         builds half={} full={} ratio={build_ratio:.2}",
-        half.directory_builds,
-        top.directory_builds
-    );
-
-    // Tight absolute ceilings at the image-capped domain (observed: builds 191;
-    // fn_scan 63 = one keyed probe per reserve attempt at ceiling 63, down from the
-    // pre-repair 1953 linear scan). The scan cap is below twice the observed value, so
-    // a regression that reintroduces a linear scan fails here.
-    assert!(
-        top.directory_builds < 260,
-        "directory build count regressed past the frozen level: {} (ceiling={ceiling})",
-        top.directory_builds
-    );
-    assert!(
-        top.fn_inst_scan_steps < 128,
-        "reuse probe regressed to a linear scan: {} (ceiling={ceiling})",
-        top.fn_inst_scan_steps
+        "directory build count is ~linear; builds {} -> {} ratio {build_ratio:.2}",
+        b.directory_builds,
+        c.directory_builds,
     );
 }
 

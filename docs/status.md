@@ -134,8 +134,11 @@ owner. Widened field values — a dense `struct`/record, a closed `enum`, and
 nominal-typed fields stay parked with their owning lanes, and a collection in a field is
 rejected. A resource may declare thousands of mostly-sparse fields: a whole-entry read
 is a field-leaf range scan whose engine work is proportional to the present count
-(`O(populated / page + 1)` scan calls), not the declared width, and the durable field
-width is bounded by the image byte ceiling at roughly 3100 declared fields. A
+(`O(populated / page + 1)` scan calls), not the declared width. The declared width
+guard admits up to 4096 top-level fields; a durable resource's binding limit is the
+image byte ceiling (~84 bytes per stored field) together with the durable identity
+ledger, which together admit roughly 4090 declared durable fields at ~343 KB within
+the 512 KiB image ceiling. A
 materialized resource value is an ordinary by-value value: it is named by a
 `const`/`var` annotation (bare or optional), passed to a bare function parameter,
 and returned (bare or optional) from a function, copied by value at each boundary

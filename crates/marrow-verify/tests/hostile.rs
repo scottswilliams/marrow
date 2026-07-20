@@ -125,11 +125,11 @@ fn code_of(bytes: &[u8]) -> String {
         .unwrap_or_else(|| "VERIFIED".to_string())
 }
 
-/// The nine section frames as `(id, body_offset, body_len)` (header is 38 bytes).
+/// The ten section frames as `(id, body_offset, body_len)` (header is 38 bytes).
 fn sections(bytes: &[u8]) -> Vec<(u8, usize, usize)> {
     let mut out = Vec::new();
     let mut off = 38usize;
-    for _ in 0..9 {
+    for _ in 0..10 {
         let id = bytes[off];
         off += 1;
         let len = u32::from_be_bytes(bytes[off..off + 4].try_into().unwrap()) as usize;
@@ -269,6 +269,50 @@ fn rehashed_unknown_const_tag_rejects_at_table() {
     bytes[body + 2] = 0x7F; // corrupt the first constant's tag
     rehash(&mut bytes);
     assert_eq!(code_of(&bytes), "image.table");
+}
+
+/// Patch a table section's leading `u16` count to `bound + 1` and revalidate the
+/// digest, so only the count-bound invariant is violated. The verifier's decode-time
+/// guard rejects the claimed count before it allocates the table, at the raised bound.
+fn count_over_bound_rejects(section: u8, bound: usize) -> String {
+    let mut bytes = good_image();
+    let (_, body, _) = *sections(&bytes)
+        .iter()
+        .find(|(id, ..)| *id == section)
+        .expect("section present");
+    let over = u16::try_from(bound + 1).expect("bound + 1 fits the u16 count field");
+    bytes[body..body + 2].copy_from_slice(&over.to_be_bytes());
+    rehash(&mut bytes);
+    code_of(&bytes)
+}
+
+/// A hostile image claiming more record types, enum types, functions, or collection
+/// types than its widened bound is rejected by the decode-time count guard before the
+/// verifier allocates the table. Each bound is read from `marrow_image::bounds`, so
+/// the rejection tracks the widened scale floor rather than a pinned literal.
+#[test]
+fn rehashed_type_family_counts_over_bound_reject_at_table() {
+    use marrow_image::bounds;
+    assert_eq!(
+        count_over_bound_rejects(0x02, bounds::MAX_TYPES),
+        "image.table",
+        "type count over MAX_TYPES",
+    );
+    assert_eq!(
+        count_over_bound_rejects(0x09, bounds::MAX_ENUMS),
+        "image.table",
+        "enum count over MAX_ENUMS",
+    );
+    assert_eq!(
+        count_over_bound_rejects(0x05, bounds::MAX_FUNCTIONS),
+        "image.table",
+        "function count over MAX_FUNCTIONS",
+    );
+    assert_eq!(
+        count_over_bound_rejects(0x0A, bounds::MAX_COLLECTIONS),
+        "image.table",
+        "collection count over MAX_COLLECTIONS",
+    );
 }
 
 #[test]

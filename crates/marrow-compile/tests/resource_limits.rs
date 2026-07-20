@@ -245,12 +245,12 @@ fn over_wide_function_arity_reports_resource_limit() {
 
 // ---- Aggregate: whole-program function and export counts.
 
-/// More than `MAX_FUNCTIONS` (64) functions is an aggregate count with no single
+/// More than `MAX_FUNCTIONS` (4096) functions is an aggregate count with no single
 /// offending declaration, so it is the payload-free `ResourceLimit` arm.
 #[test]
 fn too_many_functions_is_an_aggregate_resource_limit() {
     let mut source = String::from("module main\n\n");
-    for i in 0..65 {
+    for i in 0..4097 {
         source.push_str(&format!("fn f{i}(): int {{\n    return 0\n}}\n\n"));
     }
     source.push_str("pub fn main(): int {\n    return 0\n}\n");
@@ -267,25 +267,21 @@ fn too_many_exports_is_an_aggregate_resource_limit() {
     assert_aggregate_resource_limit(compile(&project(&source, None)));
 }
 
-/// A durable resource whose emitted graph exceeds the whole-image byte ceiling
-/// (`MAX_IMAGE_BYTES`) is an aggregate exhaustion with no single offender.
+/// A program whose emitted image exceeds the whole-image byte ceiling
+/// (`MAX_IMAGE_BYTES`, 512 KiB) is an aggregate exhaustion with no single offender.
+/// The string pool is the bulk here: a wide durable resource is bounded first by the
+/// durable identity ledger (~4091 fields, ~343 KB) well under the ceiling, so the
+/// ceiling is driven instead by many distinct near-maximal string literals — each a
+/// live return value, so none is dead-stripped.
 #[test]
 fn image_too_large_is_an_aggregate_resource_limit() {
-    let fields = 3200;
-    let mut source = String::from("module main\n\nresource Wide {\n    required tag: int\n");
-    for i in 0..fields {
-        source.push_str(&format!("    f{i}: int\n"));
+    // 150 distinct ~4000-byte strings ≈ 600 KB of string pool, past the 512 KiB image
+    // ceiling while staying under MAX_STRINGS and MAX_STRING_BYTES.
+    let mut source = String::from("module main\n\n");
+    for i in 0..150 {
+        let literal = format!("{i:04}{}", "a".repeat(3996));
+        source.push_str(&format!("fn f{i}(): string {{\n    return \"{literal}\"\n}}\n\n"));
     }
-    source.push_str("}\n\nstore ^wide[id: int]: Wide\n\npub fn noop(): int {\n    return 0\n}\n");
-    let mut anchors = vec![
-        "application .".into(),
-        "product Wide".into(),
-        "field Wide.tag".into(),
-    ];
-    for i in 0..fields {
-        anchors.push(format!("field Wide.f{i}"));
-    }
-    anchors.push("root wide".into());
-    anchors.push("key wide.id".into());
-    assert_aggregate_resource_limit(compile(&project(&source, Some(&ledger(&anchors)))));
+    source.push_str("pub fn main(): int {\n    return 0\n}\n");
+    assert_aggregate_resource_limit(compile(&project(&source, None)));
 }

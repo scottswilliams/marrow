@@ -41,7 +41,7 @@ fn over_bound_project(dir: &Path) {
     std::fs::write(dir.join("marrow.toml"), "edition = \"2026\"\n").expect("write manifest");
     std::fs::create_dir_all(dir.join("src")).expect("create src");
     let mut source = String::from("module main\n\n");
-    for i in 0..64 {
+    for i in 0..4097 {
         source.push_str(&format!("fn f{i}(): int {{\n    return 0\n}}\n\n"));
     }
     source.push_str("pub fn main(): int {\n    return 0\n}\n");
