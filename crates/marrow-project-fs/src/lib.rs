@@ -64,12 +64,17 @@
 
 #![warn(missing_docs)]
 
+mod capture;
 mod failure;
 mod limits;
 mod overlay;
 mod path;
 mod presentation;
 
+#[cfg(test)]
+mod kats;
+
+pub use capture::capture_project;
 pub use failure::{
     CaptureFailure, LinkPosition, PhysicalBound, PhysicalFailure, PhysicalIoError, PhysicalKind,
     PhysicalOperation, PhysicalRefusal, PhysicalRole,

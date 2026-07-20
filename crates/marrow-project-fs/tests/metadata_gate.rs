@@ -6,10 +6,11 @@
 //! and workspace lints; the exact one-member / three-present-internal-edge set;
 //! the absence of the approved-future `marrow-lsp -> marrow-project-fs` edge and
 //! the permanently forbidden direct `marrow-lsp -> marrow-project` edge; the exact
-//! internal lockfile edges; and the sorted external
-//! `(name, version, source, checksum, license)` inventory frozen from the clean
-//! tree. A missing license, an added external node, a source or checksum change,
-//! or a forbidden edge fails the ordinary gate.
+//! internal lockfile edges; and the sorted external inventory frozen from the
+//! clean tree. Every external package's source is asserted to be the one registry,
+//! and the frozen `(name, version, checksum, license)` rows are compared exactly.
+//! A missing license, an added external node, a source or checksum change, or a
+//! forbidden edge fails the ordinary gate.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;

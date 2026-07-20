@@ -12,11 +12,13 @@
 
 use std::fmt;
 use std::io;
+use std::path::Path;
 
 use marrow_project::{CaptureError, ManifestError};
 
 use crate::overlay::OverlayFailure;
 use crate::path::OperationalPath;
+use crate::presentation::CapturePresentation;
 
 /// A physical filesystem role the adapter admits while capturing a project.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -105,6 +107,11 @@ pub enum PhysicalBound {
 pub struct PhysicalIoError(io::Error);
 
 impl PhysicalIoError {
+    /// Wrap a raw operating-system error as opaque evidence.
+    pub(crate) fn new(error: io::Error) -> Self {
+        Self(error)
+    }
+
     /// The typed [`io::ErrorKind`] of the underlying error.
     pub fn kind(&self) -> io::ErrorKind {
         self.0.kind()
@@ -113,6 +120,12 @@ impl PhysicalIoError {
     /// The raw operating-system error code, when the error carries one.
     pub fn raw_os_error(&self) -> Option<i32> {
         self.0.raw_os_error()
+    }
+
+    /// The raw error, available only to the crate's CLI presentation writer for
+    /// exact operating-system `Display` byte compatibility.
+    pub(crate) fn as_io_error(&self) -> &io::Error {
+        &self.0
     }
 }
 
@@ -178,15 +191,28 @@ pub enum PhysicalRefusal {
 pub struct PhysicalFailure {
     role: PhysicalRole,
     operation: PhysicalOperation,
-    // Populated by the physical producer and read only by the presentation facade,
-    // both introduced in the capture baseline; declared here so the closed public
-    // shape and its `Send + Sync + 'static` guarantee are fixed first.
-    #[allow(dead_code)]
+    // Already-charged root-relative evidence, read only by the presentation facade.
     path: Option<OperationalPath>,
     refusal: PhysicalRefusal,
 }
 
 impl PhysicalFailure {
+    /// Build a physical admission failure from its role, operation, root-relative
+    /// path evidence, and typed refusal.
+    pub(crate) fn new(
+        role: PhysicalRole,
+        operation: PhysicalOperation,
+        path: Option<OperationalPath>,
+        refusal: PhysicalRefusal,
+    ) -> Self {
+        Self {
+            role,
+            operation,
+            path,
+            refusal,
+        }
+    }
+
     /// The physical role being admitted at refusal.
     pub fn role(&self) -> PhysicalRole {
         self.role
@@ -200,6 +226,12 @@ impl PhysicalFailure {
     /// The typed refusal evidence.
     pub fn refusal(&self) -> &PhysicalRefusal {
         &self.refusal
+    }
+
+    /// The already-charged root-relative path evidence, for the presentation
+    /// facade only.
+    pub(crate) fn path(&self) -> Option<&OperationalPath> {
+        self.path.as_ref()
     }
 }
 
@@ -216,11 +248,9 @@ impl fmt::Debug for PhysicalFailure {
 }
 
 /// The private family a [`CaptureFailure`] wraps. It is neither constructible nor
-/// matchable outside this crate; the presentation facade is its only reader.
-// Constructed by the capture producer and read by the presentation facade, both
-// introduced in the capture baseline.
-#[allow(dead_code)]
-enum CaptureFailureKind {
+/// matchable outside this crate; the presentation facade is its only external
+/// reader.
+pub(crate) enum CaptureFailureKind {
     /// Manifest bytes reached the pure manifest parser and were refused.
     Manifest(ManifestError),
     /// Admitted bytes reached the pure project owner and were refused.
@@ -236,14 +266,45 @@ enum CaptureFailureKind {
 /// This is an opaque wrapper over a private closed family. It exposes no public
 /// family accessor, variant constructor, destructuring surface, or
 /// family-bearing `Debug`: formatting reveals only the type name. A consumer
-/// obtains a message and the typed code through the presentation facade
-/// introduced in the capture baseline.
+/// obtains a message and the typed code through [`CaptureFailure::presentation`].
 ///
 /// [`ProjectInput`]: marrow_project::ProjectInput
-// The wrapped family is read only by the presentation facade in the capture
-// baseline; the opaque boundary is fixed here first.
-#[allow(dead_code)]
 pub struct CaptureFailure(CaptureFailureKind);
+
+impl CaptureFailure {
+    /// Wrap a pure manifest refusal.
+    pub(crate) fn from_manifest(error: ManifestError) -> Self {
+        Self(CaptureFailureKind::Manifest(error))
+    }
+
+    /// Wrap a pure project-capture refusal.
+    pub(crate) fn from_project(error: CaptureError) -> Self {
+        Self(CaptureFailureKind::Project(error))
+    }
+
+    /// Wrap a physical admission refusal.
+    pub(crate) fn from_physical(failure: PhysicalFailure) -> Self {
+        Self(CaptureFailureKind::Physical(failure))
+    }
+
+    /// Wrap a borrowed-overlay-input refusal that occurred before capture. This is
+    /// the sole public family constructor: it lets a consumer that received an
+    /// [`OverlayFailure`] from snapshot construction carry it through the opaque
+    /// boundary for presentation, performing no new classification or rendering.
+    pub fn from_overlay_input(failure: OverlayFailure) -> Self {
+        Self(CaptureFailureKind::OverlayInput(failure))
+    }
+
+    /// Borrow a presentation facade over this failure and a caller root spelling.
+    pub fn presentation<'a>(&'a self, caller_root: &'a Path) -> CapturePresentation<'a> {
+        CapturePresentation::new(caller_root, self)
+    }
+
+    /// The private family, for the crate's presentation facade only.
+    pub(crate) fn kind(&self) -> &CaptureFailureKind {
+        &self.0
+    }
+}
 
 impl fmt::Debug for CaptureFailure {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {

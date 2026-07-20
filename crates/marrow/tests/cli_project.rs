@@ -1124,3 +1124,121 @@ fn existing_source_total_byte_bound_keeps_its_exact_cli_rendering() {
         )
     );
 }
+
+/// Run the built binary with `dir` as its working directory, so `run`, `test`, and
+/// `client` capture the project there (each captures the current directory).
+fn run_in(dir: &Path, args: &[&str]) -> Output {
+    Command::new(MARROW)
+        .current_dir(dir)
+        .args(args)
+        .output()
+        .expect("run marrow binary")
+}
+
+/// The unlocated `io.read` message a missing-manifest capture renders. The binary
+/// reads `./marrow.toml` relative to its working directory, so the path is the
+/// exact working-directory-relative spelling regardless of where `dir` lives.
+fn missing_manifest_io_read_message(dir: &Path) -> String {
+    let os_error = fs::read_to_string(dir.join("marrow.toml")).expect_err("manifest is absent");
+    format!("io.read: failed to read ./marrow.toml: {os_error}")
+}
+
+const RUN_ERROR_JSONL: &str = "{\"code\":\"io.read\",\"kind\":\"run\",\"outcome\":\"error\"}\n";
+
+#[test]
+fn client_reports_an_unlocated_capture_failure_on_styled_stderr() {
+    let temp = TempDir::new("client-capture");
+    let expected = missing_manifest_io_read_message(&temp);
+    let output = run_in(&temp, &["client", "typescript"]);
+    assert!(
+        output.stdout.is_empty(),
+        "client capture wrote stdout: {output:?}"
+    );
+    assert!(!output.status.success(), "a missing manifest must fail");
+    assert_eq!(
+        String::from_utf8(output.stderr).expect("stderr is UTF-8"),
+        format!("{expected}\n")
+    );
+}
+
+#[test]
+fn run_reports_an_unlocated_capture_failure_on_stdout_text() {
+    let temp = TempDir::new("run-capture-text");
+    let expected = missing_manifest_io_read_message(&temp);
+    let output = run_in(&temp, &["run", "main"]);
+    assert!(
+        output.stderr.is_empty(),
+        "run capture wrote stderr: {output:?}"
+    );
+    assert!(!output.status.success(), "a missing manifest must fail");
+    assert_eq!(
+        String::from_utf8(output.stdout).expect("stdout is UTF-8"),
+        format!("{expected}\n")
+    );
+}
+
+#[test]
+fn run_reports_a_capture_failure_as_one_jsonl_record() {
+    let temp = TempDir::new("run-capture-jsonl");
+    let output = run_in(&temp, &["run", "main", "--format", "jsonl"]);
+    assert!(
+        output.stderr.is_empty(),
+        "run jsonl wrote stderr: {output:?}"
+    );
+    assert!(!output.status.success(), "a missing manifest must fail");
+    assert_eq!(
+        String::from_utf8(output.stdout).expect("stdout is UTF-8"),
+        RUN_ERROR_JSONL
+    );
+}
+
+#[test]
+fn test_reports_an_unlocated_capture_failure_on_stdout_text() {
+    let temp = TempDir::new("test-capture-text");
+    let expected = missing_manifest_io_read_message(&temp);
+    let output = run_in(&temp, &["test"]);
+    assert!(
+        output.stderr.is_empty(),
+        "test capture wrote stderr: {output:?}"
+    );
+    assert!(!output.status.success(), "a missing manifest must fail");
+    assert_eq!(
+        String::from_utf8(output.stdout).expect("stdout is UTF-8"),
+        format!("{expected}\n")
+    );
+}
+
+#[test]
+fn test_reports_a_capture_failure_as_one_jsonl_record_with_run_kind() {
+    let temp = TempDir::new("test-capture-jsonl");
+    let output = run_in(&temp, &["test", "--format", "jsonl"]);
+    assert!(
+        output.stderr.is_empty(),
+        "test jsonl wrote stderr: {output:?}"
+    );
+    assert!(!output.status.success(), "a missing manifest must fail");
+    // `test` intentionally retains the current `kind:"run"`.
+    assert_eq!(
+        String::from_utf8(output.stdout).expect("stdout is UTF-8"),
+        RUN_ERROR_JSONL
+    );
+}
+
+#[test]
+fn run_renders_a_located_manifest_fault_as_an_unlocated_record() {
+    // `run`, `test`, and `client` render only the code and message; the manifest
+    // location a located fault carries is dropped, unlike `fmt`.
+    let temp = TempDir::new("run-located-manifest");
+    write(&temp.join("marrow.toml"), "edition = [\n");
+    let error = marrow_project::Manifest::parse("edition = [\n").expect_err("malformed");
+    let output = run_in(&temp, &["run", "main"]);
+    assert!(
+        output.stderr.is_empty(),
+        "run located manifest wrote stderr: {output:?}"
+    );
+    assert!(!output.status.success(), "a malformed manifest must fail");
+    assert_eq!(
+        String::from_utf8(output.stdout).expect("stdout is UTF-8"),
+        format!("{}: {}\n", error.code().as_str(), error.message())
+    );
+}

@@ -14,8 +14,9 @@ use std::fmt;
 /// expose its borrowed body bytes.
 #[derive(Clone, Copy)]
 pub struct OverlayEntry<'a> {
-    // Read by the overlay constructor and membership settlement introduced in the
-    // capture baseline; the borrowed shape is fixed here first.
+    // Read by the bounds/lexical/membership settlement introduced in target
+    // hardening; the borrowed shape is fixed here and the baseline constructor
+    // retains the slice without inspecting it.
     #[allow(dead_code)]
     relative_path: &'a str,
     #[allow(dead_code)]
@@ -50,10 +51,43 @@ impl OverlayEntryIndex {
 
 /// An opaque borrowed overlay snapshot. Its redacted `Debug` reports only the
 /// entry count, so formatting cannot traverse the borrowed entries or expose the
-/// replacement bodies. Bounds checking and construction land in the capture
-/// baseline.
+/// replacement bodies.
+///
+/// The baseline constructor retains the borrowed slice in O(1) without iterating,
+/// validating, indexing, or allocating; the raw bounds, canonical-path checks,
+/// and bounded-index construction land in target hardening. [`empty`] is
+/// allocation-free and infallible.
+///
+/// [`empty`]: OverlaySnapshot::empty
 pub struct OverlaySnapshot<'a> {
     entries: &'a [OverlayEntry<'a>],
+}
+
+impl<'a> OverlaySnapshot<'a> {
+    /// The empty overlay: no entry replaces any disk body. Allocation-free and
+    /// infallible, and the only overlay every current CLI capture supplies.
+    #[must_use]
+    pub fn empty() -> Self {
+        Self { entries: &[] }
+    }
+
+    /// Retain a borrowed overlay slice. In this baseline the retention is O(1) and
+    /// does not inspect the entries; the raw bounds, canonical-path validation,
+    /// duplicate check, and bounded borrowed-index construction land in target
+    /// hardening, so this constructor is presently infallible on the input slice.
+    pub fn try_new(entries: &'a [OverlayEntry<'a>]) -> Result<Self, OverlayFailure> {
+        Ok(Self { entries })
+    }
+
+    /// The number of borrowed entries.
+    pub(crate) fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    /// Whether the overlay is empty.
+    pub(crate) fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
 }
 
 impl fmt::Debug for OverlaySnapshot<'_> {
@@ -129,6 +163,11 @@ pub struct OverlayFailure {
 }
 
 impl OverlayFailure {
+    /// Build a typed overlay refusal from its reason.
+    pub(crate) fn new(reason: OverlayReason) -> Self {
+        Self { reason }
+    }
+
     /// The typed refusal evidence.
     pub fn reason(&self) -> &OverlayReason {
         &self.reason
