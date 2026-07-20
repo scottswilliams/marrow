@@ -218,13 +218,6 @@ impl<'a> CapturePresentation<'a> {
                     " is at depth {actual}, over the {limit}-directory traversal-depth bound"
                 )
             }
-            PhysicalBound::SourceSpellingBytes => {
-                self.write_joined(sink, path)?;
-                write!(
-                    sink,
-                    " spelling is {actual} bytes, over the {limit}-byte source-path bound"
-                )
-            }
             // The pre-lease path-budget bounds carry no path; their prose stands on
             // the typed resource and its exceeded limit alone.
             PhysicalBound::VisitedEntries => write!(
@@ -324,7 +317,6 @@ fn physical_code(failure: &PhysicalFailure) -> Code {
             PhysicalBound::ManifestBytes
             | PhysicalBound::VisitedEntries
             | PhysicalBound::TraversalDepth
-            | PhysicalBound::SourceSpellingBytes
             | PhysicalBound::RetainedPathUnits
             | PhysicalBound::PathWorkUnits => Code::IoRead,
         },

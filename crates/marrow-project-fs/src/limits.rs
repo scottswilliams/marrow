@@ -29,8 +29,6 @@ pub(crate) struct AdapterLimits {
     pub(crate) overlay_file_bytes: usize,
     /// Bytes across all overlay replacement bodies.
     pub(crate) overlay_total_bytes: usize,
-    /// UTF-8 bytes in one semantically valid selected-source spelling.
-    pub(crate) max_source_spelling_bytes: usize,
     /// Simultaneously live platform-native path units the adapter retains.
     pub(crate) max_retained_path_units: usize,
     /// Aggregate platform-native path units the adapter works over.
@@ -46,10 +44,9 @@ impl AdapterLimits {
         traversal_depth: 64,
         source: CaptureLimits::DEFAULT,
         overlay_entries: 4096,
-        overlay_key_bytes: 4096,
+        overlay_key_bytes: marrow_project::MAX_FILE_IDENTITY_BYTES,
         overlay_file_bytes: 1 << 20,
         overlay_total_bytes: 64 << 20,
-        max_source_spelling_bytes: 4096,
         max_retained_path_units: 64 << 20,
         max_path_work_units: 64 << 20,
     };
@@ -67,10 +64,9 @@ const _: () = {
     assert!(limits.source.max_file_bytes() == 1 << 20);
     assert!(limits.source.max_total_bytes() == 64 << 20);
     assert!(limits.overlay_entries == 4096);
-    assert!(limits.overlay_key_bytes == 4096);
+    assert!(limits.overlay_key_bytes == marrow_project::MAX_FILE_IDENTITY_BYTES);
     assert!(limits.overlay_file_bytes == 1 << 20);
     assert!(limits.overlay_total_bytes == 64 << 20);
-    assert!(limits.max_source_spelling_bytes == 4096);
     assert!(limits.max_retained_path_units == 64 << 20);
     assert!(limits.max_path_work_units == 64 << 20);
 };

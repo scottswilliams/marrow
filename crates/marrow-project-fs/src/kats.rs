@@ -401,22 +401,30 @@ fn a_traversal_depth_bound_renders_a_terse_typed_body() {
 }
 
 #[test]
-fn a_source_spelling_bound_renders_a_terse_typed_body() {
-    let failure = physical(
-        PhysicalRole::SourceFile,
-        PhysicalOperation::Retain,
-        "src/main.mw",
-        PhysicalRefusal::Bound {
-            bound: PhysicalBound::SourceSpellingBytes,
-            limit: 4,
-            actual: 11,
-        },
+fn an_over_long_identity_forwards_the_pathless_pure_source_path_family() {
+    // The pure projection maps a valid over-long spelling to the sealed pathless
+    // pure Capture family. The adapter forwards it unmatched: presentation renders
+    // the pure code and message, and the message retains no raw path.
+    let overbound = format!(
+        "src/{}.mw",
+        "a".repeat(marrow_project::MAX_FILE_IDENTITY_BYTES)
     );
-    assert_eq!(present(&failure, Path::new(ROOT)).code(), Code::IoRead);
+    let error = CapturedFile::check_identity_bound(&overbound)
+        .expect_err("a valid over-long identity refuses");
+    assert_eq!(error.code(), Code::ProjectSourcePath);
+    let message = error.message().to_string();
+    assert!(
+        !message.contains("aaaa"),
+        "the pure message retains no raw path"
+    );
+    let failure = CaptureFailure::from_project(error);
     assert_eq!(
-        both_messages(&failure),
-        "/proj/src/main.mw spelling is 11 bytes, over the 4-byte source-path bound"
+        present(&failure, Path::new(ROOT)).code(),
+        Code::ProjectSourcePath
     );
+    assert_eq!(cli_message(&failure), message);
+    // A valid in-bound identity passes the projection with no refusal.
+    assert!(CapturedFile::check_identity_bound("src/main.mw").is_ok());
 }
 
 #[test]
@@ -693,7 +701,6 @@ fn base_limits() -> AdapterLimits {
         overlay_key_bytes: default.overlay_key_bytes,
         overlay_file_bytes: default.overlay_file_bytes,
         overlay_total_bytes: default.overlay_total_bytes,
-        max_source_spelling_bytes: default.max_source_spelling_bytes,
         max_retained_path_units: default.max_retained_path_units,
         max_path_work_units: default.max_path_work_units,
     }
@@ -821,28 +828,6 @@ fn red_a_hardlinked_source_file_is_refused_as_a_hardlink() {
 }
 
 // --- Row: source spelling, retained native paths, aggregate path work ----------
-
-#[test]
-fn red_an_over_bound_source_spelling_is_refused() {
-    let temp = TempDir::new("spelling-bound");
-    valid_project(&temp);
-    temp.write("src/main.mw", b"pub fn main()\n");
-    let mut limits = base_limits();
-    // `src/main.mw` is 11 bytes, over a 4-byte spelling policy.
-    limits.max_source_spelling_bytes = 4;
-    let result = capture_project_with_limits(temp.path(), OverlaySnapshot::empty(), &limits);
-    assert!(
-        result.is_err(),
-        "target refuses an over-bound valid spelling before materialization"
-    );
-    assert!(matches!(
-        as_physical(&result.unwrap_err()).refusal(),
-        PhysicalRefusal::Bound {
-            bound: PhysicalBound::SourceSpellingBytes,
-            ..
-        }
-    ));
-}
 
 #[test]
 fn red_over_bound_aggregate_path_work_is_refused() {

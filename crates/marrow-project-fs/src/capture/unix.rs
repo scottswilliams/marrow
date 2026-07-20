@@ -450,6 +450,14 @@ impl Traversal<'_, '_> {
             ));
         };
 
+        // The pure identity-byte maximum is enforced on the borrowed spelling before
+        // any native-path lease or opened handle: a valid over-long spelling forwards
+        // the sealed pathless pure Capture family and materializes no path. Only that
+        // case forwards; a syntactically invalid spelling stays deferred to pure
+        // capture, which keeps `project.source_path` precedence. The opaque error is
+        // forwarded unmatched — CAP neither inspects the reason nor reclassifies it.
+        CapturedFile::check_identity_bound(&spelling).map_err(CaptureFailure::from_project)?;
+
         let live = reserve_fixed(
             self.budget,
             self.limits,
@@ -464,18 +472,6 @@ impl Traversal<'_, '_> {
         )?;
 
         let valid_spelling = FileIdentity::check(&spelling).is_ok();
-        if valid_spelling && spelling.len() > self.limits.max_source_spelling_bytes {
-            return Err(physical(
-                PhysicalRole::SourceFile,
-                PhysicalOperation::Retain,
-                admitted.into_operational(),
-                bound_refusal(
-                    PhysicalBound::SourceSpellingBytes,
-                    self.limits.max_source_spelling_bytes,
-                    spelling.len(),
-                ),
-            ));
-        }
 
         // Overlay membership decides the body: an exact member replaces the disk body
         // and never reads it; a pure-invalid spelling always takes the disk path so

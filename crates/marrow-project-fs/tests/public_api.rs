@@ -70,7 +70,6 @@ fn match_physical_refusal(refusal: PhysicalRefusal) {
                 | PhysicalBound::SourceFiles
                 | PhysicalBound::SourceFileBytes
                 | PhysicalBound::SourceTotalBytes
-                | PhysicalBound::SourceSpellingBytes
                 | PhysicalBound::RetainedPathUnits
                 | PhysicalBound::PathWorkUnits => {}
             }

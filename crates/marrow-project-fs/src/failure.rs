@@ -93,8 +93,6 @@ pub enum PhysicalBound {
     SourceFileBytes,
     /// Bytes retained for all selected source files.
     SourceTotalBytes,
-    /// UTF-8 bytes in one semantically valid selected-source spelling.
-    SourceSpellingBytes,
     /// Simultaneously live platform-native path units the adapter retains.
     RetainedPathUnits,
     /// Aggregate platform-native path units the adapter works over.
