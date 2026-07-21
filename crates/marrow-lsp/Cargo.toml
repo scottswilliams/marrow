@@ -1,0 +1,35 @@
+[package]
+name = "marrow-lsp"
+description = "The Marrow language server: diagnostics, formatting, hover, and definition over the compiler's published analysis facts."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[lib]
+name = "marrow_lsp"
+path = "src/lib.rs"
+
+[dependencies]
+# The published editor-analysis fact floor (H00f/H00f2): AnalysisSnapshot, hover,
+# definition, and checked formatting over one exact ProjectInput. The LSP reconstructs
+# no semantics; it consumes these facts only.
+marrow-compile = { path = "../marrow-compile" }
+# The pure project owner: FileIdentity, ProjectInput, ModuleInput.
+marrow-project = { path = "../marrow-project" }
+# The shared bounded physical project adapter and its borrowed overlay/capture facade
+# (CAP01). The only H00a-added internal project/capture edge.
+marrow-project-fs = { path = "../marrow-project-fs" }
+# The syntax owner's SourceSpan and FormatRefusal, consumed through the analysis facade.
+marrow-syntax = { path = "../marrow-syntax" }
+
+# The standard LSP payload types and method-name constants. H00a owns its own bounded
+# JSON-RPC envelope and transport; lsp-types supplies only the standard structures.
+lsp-types = { version = "=0.97.0", default-features = false }
+serde = { version = "=1.0.228", default-features = false, features = ["derive", "std"] }
+serde_json = { version = "=1.0.150", default-features = false, features = ["raw_value", "std"] }
+
+[lints]
+workspace = true
