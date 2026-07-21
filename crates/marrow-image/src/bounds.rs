@@ -182,8 +182,22 @@ pub const MAX_PARAMS: usize = 16;
 pub const MAX_LOCALS: usize = 256;
 pub const MAX_CODE_BYTES: usize = 64 * 1024;
 
-/// Exports.
-pub const MAX_EXPORTS: usize = 32;
+/// Exported functions per image: the public entry surface `marrow check`/`run`/`test`
+/// and the generated client address by stable id. A production application's public
+/// surface is a family of exports across its modules — a measured five-module teaching
+/// ensemble declared 43 natural exports — so the count admits that surface with
+/// production-shaped headroom rather than the T01 waypoint of 32. Widening from 32 is
+/// monotone: an export table is a decode-time allocation guard, never a stored-format
+/// byte (the image encodes its actual `u16` export count), so every image the narrow
+/// bound accepted a wider one still accepts byte-for-byte, and no image-container or
+/// profile version bump is required (see the module header). The verifier rechecks
+/// `count <= MAX_EXPORTS` against the received bytes before it allocates the export
+/// vector (`marrow_verify::verify::code_tables`), so a hostile image claiming more
+/// exports is refused with a typed bound rejection, not misread. Each export targets a
+/// distinct function (the v0 one-export-per-function invariant), so [`MAX_FUNCTIONS`]
+/// bounds this count from above; [`MAX_IMAGE_BYTES`] remains the true byte bound on the
+/// emitted export table.
+pub const MAX_EXPORTS: usize = 256;
 
 /// Test entries (the closed non-wire TEST-ENTRY table). A test entry names a
 /// storeless zero-argument function `marrow test` runs; it is never an export,
@@ -261,6 +275,10 @@ const _: () = {
         MAX_ROOTS <= MAX_TYPES,
         "each root's resource is a record type; the type table bounds the root count",
     );
+    assert!(
+        MAX_EXPORTS <= MAX_FUNCTIONS,
+        "each export targets a distinct function; the function table bounds the export count",
+    );
 };
 
 #[cfg(test)]
@@ -295,5 +313,15 @@ mod tests {
             "root count tracks the record-type count"
         );
         assert_eq!(MAX_IMAGE_BYTES, 512 * 1024, "whole-image byte ceiling");
+    }
+
+    /// The exported-function surface bound: widened from the T01 waypoint of 32 to admit a
+    /// production application's multi-module export family (a measured 43-export teaching
+    /// ensemble) with production-shaped headroom. The `MAX_EXPORTS <= MAX_FUNCTIONS`
+    /// relationship (each export targets a distinct function) is enforced at compile time
+    /// by the `const _` block above.
+    #[test]
+    fn export_bound_holds_its_widened_value() {
+        assert_eq!(MAX_EXPORTS, 256, "exported functions per image");
     }
 }

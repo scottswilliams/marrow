@@ -391,14 +391,29 @@ fn too_many_functions_is_an_aggregate_resource_limit() {
     assert_aggregate_resource_limit(compile(&project(&source, None)));
 }
 
-/// More than `MAX_EXPORTS` (32) public functions is an aggregate export count.
+/// More than `MAX_EXPORTS` (256) public functions is an aggregate export count.
 #[test]
 fn too_many_exports_is_an_aggregate_resource_limit() {
     let mut source = String::from("module main\n\n");
-    for i in 0..33 {
+    for i in 0..257 {
         source.push_str(&format!("pub fn f{i}(): int {{\n    return 0\n}}\n\n"));
     }
     assert_aggregate_resource_limit(compile(&project(&source, None)));
+}
+
+/// Exactly `MAX_EXPORTS` (256) public functions compiles: the M2 widen raised the export
+/// bound from the T01 waypoint of 32 to admit a production application's multi-module
+/// public surface (a measured 43-export ensemble) with headroom. Before the widen a
+/// 33-export program refused as an aggregate resource limit.
+#[test]
+fn exports_within_the_widened_bound_compile() {
+    let mut source = String::from("module main\n\n");
+    for i in 0..256 {
+        source.push_str(&format!("pub fn f{i}(): int {{\n    return 0\n}}\n\n"));
+    }
+    compile(&project(&source, None)).unwrap_or_else(|failure| {
+        panic!("256 exports must compile after the M2 widen: {failure:?}")
+    });
 }
 
 /// A program whose emitted image exceeds the whole-image byte ceiling

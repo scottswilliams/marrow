@@ -547,10 +547,12 @@ clublocker.tagTaken reads ^assets.byTag
 // ---------------------------------------------------------------------------
 
 /// The counted watches from the ratified E07 bounds audit: the flagship's export count
-/// (MAX_EXPORTS = 32), its operation-site count (MAX_SITES = 8192), and its encoded
+/// (MAX_EXPORTS = 256), its operation-site count (MAX_SITES = 8192), and its encoded
 /// image size (MAX_IMAGE_BYTES = 512 KiB). All three clear their ceiling with wide
 /// headroom; this test freezes the counts so a regression that pushes any toward its
-/// bound is conspicuous.
+/// bound is conspicuous. The frozen image size is the byte-identity witness for the M2
+/// export widen: MAX_EXPORTS is a decode-time guard, never a stored byte, so raising it
+/// leaves this in-bounds image byte-for-byte unchanged.
 #[test]
 fn flagship_bound_watches_are_counted_and_within_ceiling() {
     let (image_bytes, image) = compile_flagship();
@@ -558,7 +560,7 @@ fn flagship_bound_watches_are_counted_and_within_ceiling() {
     assert_eq!(
         image.exports().len(),
         24,
-        "export count is the MAX_EXPORTS=32 watch",
+        "export count is the MAX_EXPORTS watch",
     );
     assert_eq!(
         image.sites().len(),
@@ -570,7 +572,10 @@ fn flagship_bound_watches_are_counted_and_within_ceiling() {
         "encoded image size is the MAX_IMAGE_BYTES=512KiB watch",
     );
 
-    assert!(image.exports().len() <= 32, "MAX_EXPORTS headroom");
+    assert!(
+        image.exports().len() <= marrow_image::bounds::MAX_EXPORTS,
+        "MAX_EXPORTS headroom",
+    );
     assert!(image.sites().len() <= 8192, "MAX_SITES headroom");
     assert!(image_bytes <= 512 * 1024, "MAX_IMAGE_BYTES headroom");
 }
