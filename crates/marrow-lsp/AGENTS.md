@@ -28,26 +28,27 @@ opens no store.
   owner from depending on this crate, and forbids this crate from reaching the
   kernel, store, VM, image, verifier, or wire owners.
 
-## Current coverage (honest scope)
+## Coverage
 
-The server implements the primary journeys end to end over real stdio:
-initialize/initialized, full-document open/change/close sync, whole-project
-recomputation, per-file diagnostic publication with empty lists and tombstones, and
-hover/definition/formatting with document resolution and revision reauthorization.
-The foundation modules — capacities, the JSON-RPC envelope decoder, framing, the URI
-and document-identity owner, UTF-16 position mapping, the document ledger, the
-lifecycle FSM, the outbound seam, and the capacity credits — are individually tested
-with their own red suites.
+The server implements the primary journeys end to end over real stdio
+(`marrow/tests/lsp_stdio.rs`): initialize/initialized, full-document open/change/close
+sync, whole-project recomputation, per-file diagnostic publication with empty lists
+and tombstones, and hover/definition/formatting.
 
-Not yet fully realized in the coordinator, and owed as follow-up work before this
-lane's full design law set can be claimed enforced: the exhaustive
-terminal-arbitration matrix (`AbandonedByTerminal`/`DeliveryUnknown` under every
-ready-receipt/terminal race), the ingress-flood `IngressOverload` N/N+1 reds, the
-capture-episode latch (`Eligible`/`Latched`) with its publication-reset interaction,
-the publication-exclusivity credit held across receipts under interleaving, and the
-`-32801 ContentModified` reauthorization for a query held across an edit. These are
-tracked in the lane completion notes; the coordinator's module docstring marks the
-boundary.
+The coordinator is a pure event machine, so its concurrency law matrix is enforced by
+deterministic in-crate tests (no timing dependence, no test-only production entry
+point): receipt-gated initialize-response delivery gating the first analysis; the
+shared live-entry budget with `IngressOverload` fail-stop at N+1, duplicate-live
+classification consuming no entry, and anonymous-slot exhaustion; terminal arbitration
+classifying a handed-off-but-unreceipted request `DeliveryUnknown` and a held query
+`AbandonedByTerminal`; the capture-episode latch (`Eligible`/`Latched`) notifying once
+and resetting only after the observing publication set fully delivers; publication
+exclusivity holding the single plan credit across receipts so a newer result waits and
+derives its tombstones from the final ledger; and `-32801 ContentModified`
+reauthorization for a query held across an edit. The foundation modules — capacities,
+the JSON-RPC envelope decoder, framing, the URI and document-identity owner, UTF-16
+position mapping, the document ledger, the lifecycle FSM, the outbound seam, and the
+capacity credits — each carry their own red suite.
 
 ## Absences (standing)
 
