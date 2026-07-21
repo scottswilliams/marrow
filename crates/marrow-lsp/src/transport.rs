@@ -52,6 +52,11 @@ pub enum FramingFault {
 pub type FrameResult = Result<FrameEvent, FrameError>;
 
 /// A framing step failed with an I/O error or a typed framing fault.
+/// A framing step failed with an I/O error or a typed framing fault. Production
+/// terminates on any framing fault without inspecting its detail; the typed payloads are
+/// the transport's fault vocabulary, retained for tests and a future diagnostic surface,
+/// so the wrapped values are legitimately unread by production code.
+#[allow(dead_code)]
 #[derive(Debug)]
 pub enum FrameError {
     /// The underlying stream reported an I/O error.

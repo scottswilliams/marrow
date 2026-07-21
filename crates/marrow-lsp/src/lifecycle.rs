@@ -62,11 +62,11 @@ pub const INTERNAL_ERROR: i32 = -32603;
 /// `-32700`: the message was not valid JSON.
 pub const PARSE_ERROR: i32 = -32700;
 
-/// The lifecycle owner.
+/// The lifecycle owner. First-wins termination is enforced by the coordinator (which
+/// stops on the first terminal event); this owner only maps events to phases and exit
+/// codes.
 pub struct Lifecycle {
     phase: Phase,
-    /// Set once a first-wins terminal (EOF, exit, or producer fault) occurs.
-    terminal: bool,
 }
 
 impl Lifecycle {
@@ -74,18 +74,12 @@ impl Lifecycle {
     pub fn new() -> Self {
         Self {
             phase: Phase::AwaitInitialize,
-            terminal: false,
         }
     }
 
     /// The current phase.
     pub fn phase(&self) -> Phase {
         self.phase
-    }
-
-    /// Whether a terminal has been reached.
-    pub fn is_terminal(&self) -> bool {
-        self.terminal
     }
 
     /// Gate an ordinary (non-lifecycle) request by phase. Lifecycle methods
@@ -184,18 +178,16 @@ impl Lifecycle {
     }
 
     /// The process exit code for a valid `exit` notification: `0` after an accepted
-    /// shutdown, `1` before. Marks the terminal.
-    pub fn on_exit(&mut self) -> u8 {
-        self.terminal = true;
+    /// shutdown, `1` before.
+    pub fn on_exit(&self) -> u8 {
         match self.phase {
             Phase::ShutdownReplyPending | Phase::AwaitExit => 0,
             _ => 1,
         }
     }
 
-    /// Mark a first-wins terminal from EOF or a producer fault (no exit): exit code `1`.
-    pub fn on_terminal(&mut self) -> u8 {
-        self.terminal = true;
+    /// The exit code for a terminal from EOF or a producer fault (no exit): `1`.
+    pub fn on_terminal(&self) -> u8 {
         1
     }
 }
@@ -280,7 +272,6 @@ mod tests {
         life.on_shutdown_delivered();
         assert_eq!(life.phase(), Phase::AwaitExit);
         assert_eq!(life.on_exit(), 0);
-        assert!(life.is_terminal());
     }
 
     #[test]
@@ -300,8 +291,7 @@ mod tests {
 
     #[test]
     fn eof_terminal_is_nonzero() {
-        let mut life = Lifecycle::new();
+        let life = Lifecycle::new();
         assert_eq!(life.on_terminal(), 1);
-        assert!(life.is_terminal());
     }
 }

@@ -114,11 +114,13 @@ impl DocumentLedger {
     }
 
     /// The number of open documents.
+    #[cfg(test)]
     pub fn len(&self) -> usize {
         self.entries.len()
     }
 
     /// Whether the ledger is empty.
+    #[cfg(test)]
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }
@@ -171,8 +173,9 @@ impl DocumentLedger {
         }
     }
 
-    /// Replace an open entry's state after a successful `validate_change` and revision
-    /// advance.
+    /// Replace an open entry's state directly. The coordinator admits a change through
+    /// `insert` (which is insert-or-replace), so this is a test convenience.
+    #[cfg(test)]
     pub fn replace(&mut self, key: &DocumentKey, state: DocumentState) {
         if let Some(slot) = self.entries.get_mut(key) {
             *slot = state;

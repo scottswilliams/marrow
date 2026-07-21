@@ -31,10 +31,12 @@ use lsp_types::{
 };
 use marrow_compile::{AnalysisSnapshot, InputRevision};
 
-use crate::analysis::{AnalysisOutcome, CaptureRejection, OverlayInput, run_analysis};
+use crate::analysis::{
+    AnalysisOutcome, CaptureRejection, OverlayInput, run_analysis, validate_overlay,
+};
 use crate::capacities::{
-    MAX_ANONYMOUS_ERROR_SLOTS, MAX_LIVE_REQUEST_ENTRIES, OUTBOUND_QUEUE_CAPACITY,
-    RECEIPT_QUEUE_CAPACITY, THREAD_STACK_BYTES,
+    B_PUBLICATION_PLAN_BYTES, MAX_ANONYMOUS_ERROR_SLOTS, MAX_LIVE_REQUEST_ENTRIES,
+    OUTBOUND_QUEUE_CAPACITY, RECEIPT_QUEUE_CAPACITY, THREAD_STACK_BYTES,
 };
 use crate::credit::{CreditPool, OutboundCredit, PublicationPlanCredit};
 use crate::document::{DocumentLedger, DocumentState, RevisionCounter, UnavailableEvidence};
@@ -46,11 +48,6 @@ use crate::lifecycle::{
 use crate::outbound::{MessageType, Outbound, encode};
 use crate::protocol::{Inbound, InvalidReason, Reject, RequestId, decode};
 use crate::uri::{DocumentKey, SelectedRoot, UriError};
-
-/// A completed analysis job returned by the worker.
-struct WorkerResult {
-    outcome: AnalysisOutcome,
-}
 
 /// A unit of capture/analyze work handed to the worker.
 struct WorkerJob {
@@ -70,7 +67,7 @@ pub fn serve() -> u8 {
 
     let (ingress_tx, ingress_rx) = sync_channel::<ReaderEvent>(1);
     let (work_tx, work_rx) = sync_channel::<WorkerJob>(1);
-    let (result_tx, result_rx) = sync_channel::<WorkerResult>(1);
+    let (result_tx, result_rx) = sync_channel::<AnalysisOutcome>(1);
     let (frame_tx, frame_rx) = sync_channel::<Vec<u8>>(OUTBOUND_QUEUE_CAPACITY);
     let (receipt_tx, receipt_rx) = sync_channel::<Receipt>(RECEIPT_QUEUE_CAPACITY);
     let (wake_tx, wake_rx) = sync_channel::<()>(1);
@@ -120,7 +117,7 @@ fn spawn(name: &str, body: impl FnOnce() + Send + 'static) -> JoinHandle<()> {
 fn drive(
     coordinator: &mut Coordinator,
     ingress: &Receiver<ReaderEvent>,
-    results: &Receiver<WorkerResult>,
+    results: &Receiver<AnalysisOutcome>,
     receipts: &Receiver<Receipt>,
     wake: &Receiver<()>,
     work_tx: &SyncSender<WorkerJob>,
@@ -195,7 +192,7 @@ fn reader_loop(ingress: SyncSender<ReaderEvent>, wake: SyncSender<()>) {
 
 fn worker_loop(
     work: &Receiver<WorkerJob>,
-    result: &SyncSender<WorkerResult>,
+    result: &SyncSender<AnalysisOutcome>,
     wake: &SyncSender<()>,
 ) {
     while let Ok(job) = work.recv() {
@@ -208,7 +205,7 @@ fn worker_loop(
             })
             .collect();
         let outcome = run_analysis(&job.root, &overlay, job.revision);
-        if result.send(WorkerResult { outcome }).is_err() {
+        if result.send(outcome).is_err() {
             return;
         }
         let _ = wake.try_send(());
@@ -281,13 +278,14 @@ impl RequestLedger {
         self.entries.contains_key(id)
     }
 
-    /// Reserve one entry for a unique id, or `None` when the budget is exhausted.
-    fn reserve(&mut self, id: RequestId) -> Option<()> {
+    /// Reserve one entry for a unique id. Returns `false` when the budget is exhausted.
+    #[must_use]
+    fn reserve(&mut self, id: RequestId) -> bool {
         if self.entries.len() >= self.capacity {
-            return None;
+            return false;
         }
         self.entries.insert(id, ReqState::Live);
-        Some(())
+        true
     }
 
     fn set_awaiting(&mut self, id: &RequestId) {
@@ -303,14 +301,22 @@ impl RequestLedger {
 
 // ---- held queries ----
 
+/// The kind of a held semantic query, parsed to fixed-size fields at admission so a held
+/// query never retains unbounded raw parameters.
+enum HeldKind {
+    Hover(lsp_types::Position),
+    Definition(lsp_types::Position),
+    Formatting,
+}
+
 /// A semantic request held until the analysis snapshot for its revision is ready. It is
 /// bound to the admission-time revision and document version, and reauthorized before its
 /// success is encoded: a changed revision or document state replaces the success with
-/// `-32801 ContentModified`.
+/// `-32801 ContentModified`. Only fixed-size fields are retained — never the raw params —
+/// so the held set is bounded by the request-ledger capacity, not the inbound frame size.
 struct HeldQuery {
     id: RequestId,
-    method: String,
-    params: Option<Box<serde_json::value::RawValue>>,
+    kind: HeldKind,
     revision: InputRevision,
     key: DocumentKey,
     version: i32,
@@ -338,7 +344,10 @@ enum CaptureEpisode {
 /// that observed the still-current latch resets it.
 struct PublicationState {
     credit: PublicationPlanCredit,
-    frames_remaining: usize,
+    /// Pre-encoded frames not yet handed off, charged against the publication-plan bound.
+    pending: VecDeque<Vec<u8>>,
+    /// Handed-off frames awaiting a delivery receipt.
+    in_flight_count: usize,
     observed_episode: Option<u64>,
 }
 
@@ -475,7 +484,7 @@ impl Coordinator {
             return;
         }
         // Reserve the shared live-entry budget before any lifecycle or method routing.
-        if self.requests.reserve(id.clone()).is_none() {
+        if !self.requests.reserve(id.clone()) {
             // Exhaustion is a fixed terminal: no response, no state mutation.
             self.terminate(1);
             return;
@@ -520,22 +529,28 @@ impl Coordinator {
         };
         self.root = root;
         // Receipt-gated delivery: hand off the response but do not advance the lifecycle
-        // until the delivery receipt for this frame arrives.
+        // until the delivery receipt for this frame arrives. The initialize response is a
+        // fixed small frame that cannot overflow the outbound bound; a serialization
+        // failure would be a fail-stop.
         self.requests.retire(&id);
-        self.send(
-            Outbound::Initialize {
+        if !self.hand_off(
+            &Outbound::Initialize {
                 id,
                 result: Box::new(initialize_result()),
             },
             FrameOwner::Initialize,
-        );
+        ) {
+            self.terminate(1);
+        }
     }
 
     fn on_shutdown(&mut self, id: RequestId) {
         match self.lifecycle.on_shutdown() {
             RequestGate::Route => {
                 self.requests.retire(&id);
-                self.send(Outbound::Null { id }, FrameOwner::Shutdown);
+                if !self.hand_off(&Outbound::Null { id }, FrameOwner::Shutdown) {
+                    self.terminate(1);
+                }
             }
             RequestGate::NotInitialized => {
                 self.answer_error(&id, SERVER_NOT_INITIALIZED, "server not initialized")
@@ -556,21 +571,18 @@ impl Coordinator {
             self.answer_error(&id, SERVER_NOT_INITIALIZED, "server not initialized");
             return;
         }
-        if self.root.is_none() {
-            self.answer_error(&id, INVALID_PARAMS, "no selected root");
-            return;
-        }
         // An unavailable project makes every semantic request the same fixed -32803.
         if !self.ledger.all_available() {
             self.answer_error(&id, REQUEST_FAILED, "project capture unavailable");
             return;
         }
-        // Resolve the target document version for the revision binding.
         let Some(root) = self.root.clone() else {
             self.answer_error(&id, INVALID_PARAMS, "no selected root");
             return;
         };
-        let Some(key) = self.request_document_key(&root, method, params.as_deref()) else {
+        // Parse the request into a minimal typed kind and target key at admission, so a
+        // held query retains only fixed-size fields — never the unbounded raw params.
+        let Some((kind, key)) = parse_semantic(&root, method, params.as_deref()) else {
             self.answer_error(&id, INVALID_PARAMS, "malformed params");
             return;
         };
@@ -580,8 +592,7 @@ impl Coordinator {
         };
         let held = HeldQuery {
             id,
-            method: method.to_owned(),
-            params,
+            kind,
             revision: self.current_revision,
             key,
             version: *version,
@@ -594,39 +605,11 @@ impl Coordinator {
         }
     }
 
-    /// The document key a semantic request targets, for revision binding.
-    fn request_document_key(
-        &self,
-        root: &SelectedRoot,
-        method: &str,
-        params: Option<&serde_json::value::RawValue>,
-    ) -> Option<DocumentKey> {
-        let uri = match method {
-            "textDocument/hover" => {
-                parse::<HoverParams>(params?)?
-                    .text_document_position_params
-                    .text_document
-                    .uri
-            }
-            "textDocument/definition" => {
-                parse::<GotoDefinitionParams>(params?)?
-                    .text_document_position_params
-                    .text_document
-                    .uri
-            }
-            "textDocument/formatting" => {
-                parse::<DocumentFormattingParams>(params?)?
-                    .text_document
-                    .uri
-            }
-            _ => return None,
-        };
-        DocumentKey::from_uri(uri.as_str(), root).ok()
-    }
-
     /// Answer a held query, reauthorizing its revision and document version. A changed
     /// revision or document state is `-32801 ContentModified`; the success encoder is
-    /// never invoked in that case.
+    /// never invoked in that case. The ledger entry rides as `AwaitingDelivery` and is
+    /// retired only by its delivery receipt (never at handoff), so no duplicate-id or
+    /// double-response window opens.
     fn answer_held(&mut self, held: HeldQuery) {
         let current = self.current_revision;
         let doc_ok = matches!(
@@ -645,17 +628,13 @@ impl Coordinator {
             self.answer_error(&held.id, REQUEST_FAILED, "analysis not ready");
             return;
         };
-        match self.answer_semantic(&snapshot, &root, &held.method, held.params.as_deref()) {
+        match self.answer_kind(&snapshot, &root, &held.kind, &held.key) {
             SemanticAnswer::Reply(body) => {
-                let id = held.id.clone();
-                self.requests.retire(&id);
-                self.send(body.into_outbound(id.clone()), FrameOwner::Request(id));
+                let outbound = body.into_outbound(held.id.clone());
+                self.respond(held.id, outbound);
             }
             SemanticAnswer::ContentModified => {
                 self.answer_error(&held.id, CONTENT_MODIFIED, "content modified")
-            }
-            SemanticAnswer::BadParams => {
-                self.answer_error(&held.id, INVALID_PARAMS, "malformed params")
             }
             SemanticAnswer::Internal => {
                 self.answer_error(&held.id, INTERNAL_ERROR, "internal error")
@@ -663,41 +642,24 @@ impl Coordinator {
         }
     }
 
-    fn answer_semantic(
+    /// Build the reply for a resolved held-query kind against the current snapshot. The
+    /// document is resolved from the bound key (not a re-parsed URI); a closed document is
+    /// `ContentModified`.
+    fn answer_kind(
         &self,
         snapshot: &AnalysisSnapshot,
         root: &SelectedRoot,
-        method: &str,
-        params: Option<&serde_json::value::RawValue>,
+        kind: &HeldKind,
+        key: &DocumentKey,
     ) -> SemanticAnswer {
-        match method {
-            "textDocument/hover" => {
-                let Some(params) = params.and_then(parse::<HoverParams>) else {
-                    return SemanticAnswer::BadParams;
-                };
-                let position = params.text_document_position_params;
-                let Some((identity, source)) =
-                    self.resolve_document(root, position.text_document.uri.as_str())
-                else {
-                    return SemanticAnswer::ContentModified;
-                };
-                SemanticAnswer::Reply(OutboundBody::Hover(facts::hover(
-                    snapshot,
-                    &identity,
-                    &source,
-                    position.position,
-                )))
-            }
-            "textDocument/definition" => {
-                let Some(params) = params.and_then(parse::<GotoDefinitionParams>) else {
-                    return SemanticAnswer::BadParams;
-                };
-                let position = params.text_document_position_params;
-                let Some((identity, source)) =
-                    self.resolve_document(root, position.text_document.uri.as_str())
-                else {
-                    return SemanticAnswer::ContentModified;
-                };
+        let Some((identity, source)) = self.resolve_by_key(key) else {
+            return SemanticAnswer::ContentModified;
+        };
+        match kind {
+            HeldKind::Hover(position) => SemanticAnswer::Reply(OutboundBody::Hover(facts::hover(
+                snapshot, &identity, &source, *position,
+            ))),
+            HeldKind::Definition(position) => {
                 let source_lookup = |file: &marrow_project_fs::FileIdentity| self.file_source(file);
                 match facts::definition(
                     snapshot,
@@ -705,47 +667,30 @@ impl Coordinator {
                     &identity,
                     &source,
                     source_lookup,
-                    position.position,
+                    *position,
                 ) {
                     Ok(location) => SemanticAnswer::Reply(OutboundBody::Definition(location)),
                     Err(_) => SemanticAnswer::Internal,
                 }
             }
-            "textDocument/formatting" => {
-                let Some(params) = params.and_then(parse::<DocumentFormattingParams>) else {
-                    return SemanticAnswer::BadParams;
-                };
-                let Some((identity, source)) =
-                    self.resolve_document(root, params.text_document.uri.as_str())
-                else {
-                    return SemanticAnswer::ContentModified;
-                };
-                SemanticAnswer::Reply(OutboundBody::Formatting(facts::formatting(
-                    snapshot, &identity, &source,
-                )))
-            }
-            _ => SemanticAnswer::Internal,
+            HeldKind::Formatting => SemanticAnswer::Reply(OutboundBody::Formatting(
+                facts::formatting(snapshot, &identity, &source),
+            )),
         }
     }
 
-    fn resolve_document(
+    /// The file identity and current open text for a document key, if it is still an open
+    /// text document.
+    fn resolve_by_key(
         &self,
-        root: &SelectedRoot,
-        uri: &str,
+        key: &DocumentKey,
     ) -> Option<(marrow_project_fs::FileIdentity, String)> {
-        let (key, source) = self.resolve_open_document(root, uri)?;
-        let (identity, _) = marrow_project_fs::FileIdentity::validate(key.relative()).ok()?;
-        Some((identity, source))
-    }
-
-    fn resolve_open_document(
-        &self,
-        root: &SelectedRoot,
-        uri: &str,
-    ) -> Option<(DocumentKey, String)> {
-        let key = DocumentKey::from_uri(uri, root).ok()?;
-        match self.ledger.get(&key) {
-            Some(DocumentState::OpenText { text, .. }) => Some((key, text.clone())),
+        match self.ledger.get(key) {
+            Some(DocumentState::OpenText { text, .. }) => {
+                let (identity, _) =
+                    marrow_project_fs::FileIdentity::validate(key.relative()).ok()?;
+                Some((identity, text.clone()))
+            }
             _ => None,
         }
     }
@@ -802,14 +747,7 @@ impl Coordinator {
             return;
         };
         self.current_revision = revision;
-        self.ledger.insert(
-            key,
-            DocumentState::OpenText {
-                version: document.version,
-                text: document.text,
-            },
-        );
-        self.maybe_recompute(&root);
+        self.admit_document(&root, key, document.version, document.text);
     }
 
     fn on_did_change(&mut self, params: Option<Box<serde_json::value::RawValue>>) {
@@ -843,14 +781,7 @@ impl Coordinator {
             return;
         };
         self.current_revision = revision;
-        self.ledger.replace(
-            &key,
-            DocumentState::OpenText {
-                version,
-                text: change.text,
-            },
-        );
-        self.maybe_recompute(&root);
+        self.admit_document(&root, key, version, change.text);
     }
 
     fn on_did_close(&mut self, params: Option<Box<serde_json::value::RawValue>>) {
@@ -878,7 +809,60 @@ impl Coordinator {
         };
         self.current_revision = revision;
         self.ledger.remove(&key);
-        self.maybe_recompute(&root);
+        // Closing commits the removal and revision, but disk recapture waits until every
+        // remaining open entry is available (design: no recompute while an entry is
+        // unavailable).
+        if self.ledger.all_available() {
+            self.maybe_recompute(&root);
+        }
+    }
+
+    /// Admit a new or changed document body: validate the full candidate overlay, store
+    /// `OpenText` on success or `OpenUnavailable` (with rendered evidence) on refusal, and
+    /// enqueue a recompute only when every open entry is available.
+    fn admit_document(
+        &mut self,
+        root: &SelectedRoot,
+        key: DocumentKey,
+        version: i32,
+        text: String,
+    ) {
+        let candidate = self.candidate_overlay(&key, text.as_bytes());
+        let inputs: Vec<OverlayInput<'_>> = candidate
+            .iter()
+            .map(|(key, bytes)| OverlayInput {
+                key: key.as_str(),
+                bytes: bytes.as_slice(),
+            })
+            .collect();
+        let state = match validate_overlay(root, &inputs) {
+            Ok(()) => DocumentState::OpenText { version, text },
+            Err(evidence) => DocumentState::OpenUnavailable {
+                version,
+                failure: evidence.unwrap_or_else(unrenderable_overlay_evidence),
+            },
+        };
+        drop(inputs);
+        drop(candidate);
+        let available = state.is_text();
+        self.ledger.insert(key, state);
+        if available && self.ledger.all_available() {
+            self.maybe_recompute(root);
+        }
+    }
+
+    /// Build the full candidate overlay: every other open text entry plus this key's new
+    /// body. The changed key's prior state (text or unavailable) is excluded so the
+    /// candidate body is the one under validation.
+    fn candidate_overlay(&self, changed: &DocumentKey, body: &[u8]) -> Vec<(String, Vec<u8>)> {
+        let mut overlay: Vec<(String, Vec<u8>)> = self
+            .ledger
+            .text_entries()
+            .filter(|(key, _)| *key != changed)
+            .map(|(key, text)| (key.relative().to_owned(), text.as_bytes().to_vec()))
+            .collect();
+        overlay.push((changed.relative().to_owned(), body.to_vec()));
+        overlay
     }
 
     fn enter_running(&mut self) {
@@ -912,9 +896,9 @@ impl Coordinator {
 
     // ---- worker results ----
 
-    fn on_worker_result(&mut self, result: WorkerResult) {
+    fn on_worker_result(&mut self, outcome: AnalysisOutcome) {
         self.worker_busy = false;
-        match result.outcome {
+        match outcome {
             AnalysisOutcome::Snapshot(snapshot) => {
                 if snapshot.revision() == self.current_revision {
                     self.snapshot = Some(snapshot.clone());
@@ -928,10 +912,15 @@ impl Coordinator {
                     self.on_background_capture_failure(rejection);
                 }
             }
-            AnalysisOutcome::ResourceLimit { .. } => {
-                // Recoverable: publishes and clears nothing.
+            AnalysisOutcome::ResourceLimit { revision } => {
+                // Recoverable: publishes and clears nothing. A request whose bound analysis
+                // reached the resource limit gets a fixed `-32803`; the delivered
+                // diagnostic ledger is unchanged.
+                if revision == self.current_revision {
+                    self.fail_held_queries();
+                }
             }
-            AnalysisOutcome::Invariant { .. } => {
+            AnalysisOutcome::Invariant => {
                 self.terminate(1);
                 return;
             }
@@ -947,6 +936,15 @@ impl Coordinator {
         let held: Vec<HeldQuery> = std::mem::take(&mut self.held_queries);
         for query in held {
             self.answer_held(query);
+        }
+    }
+
+    /// Answer every held query with a fixed `-32803`: the analysis for their revision could
+    /// not produce a snapshot (a resource limit), so no success is possible.
+    fn fail_held_queries(&mut self) {
+        let held: Vec<HeldQuery> = std::mem::take(&mut self.held_queries);
+        for query in held {
+            self.answer_error(&query.id, REQUEST_FAILED, "analysis resource limit");
         }
     }
 
@@ -966,7 +964,7 @@ impl Coordinator {
                     failed_revision: rejection.revision,
                 };
                 if let Some(evidence) = rejection.evidence {
-                    self.send(show_message(&evidence), FrameOwner::ShowMessage);
+                    self.send_show_message(show_message(&evidence));
                 }
             }
         }
@@ -990,31 +988,55 @@ impl Coordinator {
             CaptureEpisode::Latched { episode, .. } => Some(episode),
             CaptureEpisode::Eligible => None,
         };
-        let frames = self.build_publication_frames(&snapshot);
-        let frames_remaining = frames.len();
-        if frames_remaining == 0 {
-            // A zero-frame commit resets the episode immediately (no frame to await).
+        let (frames, new_published) = self.plan_publication(&snapshot);
+        // Pre-encode the whole set fallibly before committing anything. A serialization
+        // failure or a plan whose retained bytes exceed the publication-plan bound is a
+        // fixed `PublicationPlanFailed`: the credit is released, the delivered ledger and
+        // capture episode are unchanged, and the server fail-stops. This is why a single
+        // oversized diagnostic frame can never strand the exclusive credit.
+        let mut encoded = VecDeque::new();
+        let mut retained: u64 = 0;
+        for outbound in &frames {
+            let Ok(bytes) = encode(outbound) else {
+                self.publication_credits.release(credit);
+                self.terminate(1);
+                return;
+            };
+            retained = retained.saturating_add(bytes.len() as u64);
+            if retained > B_PUBLICATION_PLAN_BYTES {
+                self.publication_credits.release(credit);
+                self.terminate(1);
+                return;
+            }
+            encoded.push_back(bytes);
+        }
+        if encoded.is_empty() {
+            // A zero-frame commit resets the episode immediately (no frame to await), and
+            // still commits the (empty) ledger transition.
+            self.published = new_published;
             self.publication_credits.release(credit);
             self.reset_episode_if_observed(observed_episode);
             return;
         }
+        // Commit: the delivered-ledger update happens only now, after every frame encoded.
+        self.published = new_published;
         self.publication = Some(PublicationState {
             credit,
-            frames_remaining,
+            pending: encoded,
+            in_flight_count: 0,
             observed_episode,
         });
-        for outbound in frames {
-            self.send(outbound, FrameOwner::Publication);
-        }
+        self.feed_publication();
     }
 
-    /// Build the complete publication set: every current file's diagnostic list (including
-    /// empties) plus an empty tombstone for every previously published file absent from the
-    /// snapshot. The delivered-ledger update commits here (before frames deliver), matching
-    /// the coordinator's single-writer FIFO ordering.
-    fn build_publication_frames(&mut self, snapshot: &AnalysisSnapshot) -> Vec<Outbound> {
+    /// Compute the complete publication set without committing it: every current file's
+    /// diagnostic list (including empties) plus an empty tombstone for every previously
+    /// published file absent from the snapshot, and the new delivered-ledger key set. The
+    /// delivered ledger is read but not mutated; `begin_publication` commits it only after
+    /// the whole set encodes.
+    fn plan_publication(&self, snapshot: &AnalysisSnapshot) -> (Vec<Outbound>, Vec<DocumentKey>) {
         let Some(root) = self.root.clone() else {
-            return Vec::new();
+            return (Vec::new(), Vec::new());
         };
         let mut frames = Vec::new();
         let mut new_published = Vec::new();
@@ -1039,8 +1061,7 @@ impl Coordinator {
             .iter()
             .map(|module| DocumentKey::from_identity(module.identity()))
             .collect();
-        let previously = std::mem::take(&mut self.published);
-        for key in &previously {
+        for key in &self.published {
             if !snapshot_keys.contains(key)
                 && let Ok((identity, _)) = marrow_project_fs::FileIdentity::validate(key.relative())
                 && let Some(uri) = lsp_uri(&root, &identity)
@@ -1054,28 +1075,53 @@ impl Coordinator {
                 )));
             }
         }
-        self.published = new_published;
-        frames
+        (frames, new_published)
+    }
+
+    /// Move pre-encoded publication frames into the outbound path one per available credit,
+    /// so publication retention stays bounded by the plan buffer and never floods the
+    /// pending-frame queue past `W`.
+    fn feed_publication(&mut self) {
+        loop {
+            let has_pending = self
+                .publication
+                .as_ref()
+                .is_some_and(|state| !state.pending.is_empty());
+            if !has_pending {
+                break;
+            }
+            let Some(credit) = self.outbound_credits.acquire() else {
+                break;
+            };
+            let state = self.publication.as_mut().expect("publication present");
+            let bytes = state.pending.pop_front().expect("pending frame present");
+            state.in_flight_count += 1;
+            self.outbox.push_back(bytes);
+            self.in_flight.push_back((FrameOwner::Publication, credit));
+        }
     }
 
     fn on_publication_receipt(&mut self) {
-        let Some(mut state) = self.publication.take() else {
-            return;
-        };
-        state.frames_remaining = state.frames_remaining.saturating_sub(1);
-        if state.frames_remaining == 0 {
+        if let Some(state) = self.publication.as_mut() {
+            state.in_flight_count = state.in_flight_count.saturating_sub(1);
+        }
+        // The freed credit lets the next pre-encoded frame proceed.
+        self.feed_publication();
+        let done = self
+            .publication
+            .as_ref()
+            .is_some_and(|state| state.pending.is_empty() && state.in_flight_count == 0);
+        if done {
             // The whole committed set is delivered: release the exclusive credit and reset
             // the episode only if the commit observed the still-current latch.
-            let observed = state.observed_episode;
+            let state = self.publication.take().expect("publication present");
             self.publication_credits.release(state.credit);
-            self.reset_episode_if_observed(observed);
+            self.reset_episode_if_observed(state.observed_episode);
             // A newer result that waited may now build its plan and derive tombstones from
             // the final ledger.
             if let Some(snapshot) = self.pending_publication.take() {
                 self.begin_publication(snapshot);
             }
-        } else {
-            self.publication = Some(state);
         }
     }
 
@@ -1089,21 +1135,61 @@ impl Coordinator {
 
     // ---- outbound plumbing ----
 
+    /// Encode and hand off one frame, acquiring an outbound credit. Returns whether the
+    /// frame was handed off. A pre-handoff encode failure emits zero bytes and returns
+    /// `false`, so the caller reconciles its own bookkeeping rather than stranding it. A
+    /// request-owned handoff moves its ledger entry to `AwaitingDelivery`; the credit is
+    /// held until the delivery receipt whether the frame is written immediately or queued.
+    #[must_use]
+    fn hand_off(&mut self, outbound: &Outbound, owner: FrameOwner) -> bool {
+        let Ok(bytes) = encode(outbound) else {
+            return false;
+        };
+        if let FrameOwner::Request(id) = &owner {
+            self.requests.set_awaiting(id);
+        }
+        match self.outbound_credits.acquire() {
+            Some(credit) => {
+                self.outbox.push_back(bytes);
+                self.in_flight.push_back((owner, credit));
+            }
+            None => self.pending_frames.push_back((bytes, owner)),
+        }
+        true
+    }
+
+    /// Hand off a known-id response. On a pre-handoff encode failure (an oversized success,
+    /// or a serialization defect) the entry gets exactly one fixed same-id `-32603`
+    /// fallback — already internal-error class, so it takes no further fallback — and
+    /// fail-stops if even that cannot encode. The entry stays owned and retires on its
+    /// delivery receipt, so a dropped response is never a silent no-reply.
+    fn respond(&mut self, id: RequestId, outbound: Outbound) {
+        if self.hand_off(&outbound, FrameOwner::Request(id.clone())) {
+            return;
+        }
+        let fallback = Outbound::Error {
+            id: Some(id.clone()),
+            code: INTERNAL_ERROR,
+            message: "internal error".to_owned(),
+        };
+        if !self.hand_off(&fallback, FrameOwner::Request(id)) {
+            self.terminate(1);
+        }
+    }
+
     fn answer_error(&mut self, id: &RequestId, code: i32, message: &str) {
-        // A request whose response is a known-id error retires its own ledger entry on
-        // delivery, so keep the entry live through handoff.
-        self.send(
+        self.respond(
+            id.clone(),
             Outbound::Error {
                 id: Some(id.clone()),
                 code,
                 message: message.to_owned(),
             },
-            FrameOwner::Request(id.clone()),
         );
     }
 
     fn reserve_and_error(&mut self, id: RequestId, code: i32, message: &str) {
-        if self.requests.reserve(id.clone()).is_none() {
+        if !self.requests.reserve(id.clone()) {
             self.terminate(1);
             return;
         }
@@ -1117,37 +1203,26 @@ impl Coordinator {
             return;
         }
         self.anonymous_slots += 1;
-        self.send(
-            Outbound::Error {
+        // A null-id protocol error has no recursive fallback: a pre-handoff encode failure
+        // is a fixed `OutboundEncodingFailed` terminal, and the reserved slot is released.
+        if !self.hand_off(
+            &Outbound::Error {
                 id: None,
                 code,
                 message: message.to_owned(),
             },
             FrameOwner::Anonymous,
-        );
+        ) {
+            self.anonymous_slots -= 1;
+            self.terminate(1);
+        }
     }
 
-    /// Encode and hand off one frame, acquiring an outbound credit. A request-owned frame
-    /// moves its ledger entry to `AwaitingDelivery`. When no credit is available the frame
-    /// queues, still credited on acquisition, so `W` bounds total outstanding frames.
-    fn send(&mut self, outbound: Outbound, owner: FrameOwner) {
-        let bytes = match encode(&outbound) {
-            Ok(bytes) => bytes,
-            Err(_) => {
-                // A pre-handoff encoding failure emits zero bytes; the ledger entry stays
-                // live and is classified at terminal.
-                return;
-            }
-        };
-        if let FrameOwner::Request(id) = &owner {
-            self.requests.set_awaiting(id);
-        }
-        match self.outbound_credits.acquire() {
-            Some(credit) => {
-                self.outbox.push_back(bytes);
-                self.in_flight.push_back((owner, credit));
-            }
-            None => self.pending_frames.push_back((bytes, owner)),
+    /// Hand off a background `showMessage`. A pre-handoff encode failure fail-stops with no
+    /// substitute frame (no recursive protocol fallback).
+    fn send_show_message(&mut self, message: Outbound) {
+        if !self.hand_off(&message, FrameOwner::ShowMessage) {
+            self.terminate(1);
         }
     }
 
@@ -1194,8 +1269,7 @@ impl Coordinator {
                 awaiting.push(id.clone());
             }
         }
-        for (bytes, owner) in &self.pending_frames {
-            let _ = bytes;
+        for (_, owner) in &self.pending_frames {
             if let FrameOwner::Request(id) = owner {
                 awaiting.push(id.clone());
             }
@@ -1247,8 +1321,45 @@ impl OutboundBody {
 enum SemanticAnswer {
     Reply(OutboundBody),
     ContentModified,
-    BadParams,
     Internal,
+}
+
+/// Parse a semantic request into its minimal typed kind and target document key. Returns
+/// `None` for a malformed request, an unknown method, or a URI outside the selected root.
+fn parse_semantic(
+    root: &SelectedRoot,
+    method: &str,
+    params: Option<&serde_json::value::RawValue>,
+) -> Option<(HeldKind, DocumentKey)> {
+    let (kind, uri) = match method {
+        "textDocument/hover" => {
+            let params = parse::<HoverParams>(params?)?.text_document_position_params;
+            (HeldKind::Hover(params.position), params.text_document.uri)
+        }
+        "textDocument/definition" => {
+            let params = parse::<GotoDefinitionParams>(params?)?.text_document_position_params;
+            (
+                HeldKind::Definition(params.position),
+                params.text_document.uri,
+            )
+        }
+        "textDocument/formatting" => {
+            let params = parse::<DocumentFormattingParams>(params?)?;
+            (HeldKind::Formatting, params.text_document.uri)
+        }
+        _ => return None,
+    };
+    let key = DocumentKey::from_uri(uri.as_str(), root).ok()?;
+    Some((kind, key))
+}
+
+/// The fallback unavailable-evidence when even the bounded operational message overflows
+/// its sink (defensive: overlay refusal messages are short and cannot reach the cap).
+fn unrenderable_overlay_evidence() -> UnavailableEvidence {
+    UnavailableEvidence {
+        code: marrow_codes::Code::ProjectSourcePath.as_str(),
+        message: String::new(),
+    }
 }
 
 fn show_message(evidence: &UnavailableEvidence) -> Outbound {
@@ -1270,28 +1381,23 @@ enum RootError {
 }
 
 fn select_root(params: &InitializeParams) -> Result<Option<SelectedRoot>, RootError> {
+    let admit = |uri: &str| {
+        SelectedRoot::from_uri(uri)
+            .map(Some)
+            .map_err(|_: UriError| RootError::Malformed)
+    };
     if let Some(folders) = &params.workspace_folders {
         match folders.as_slice() {
             [] => {}
-            [folder] => {
-                return SelectedRoot::from_uri(folder.uri.as_str())
-                    .map(Some)
-                    .map_err(uri_to_root_error);
-            }
+            [folder] => return admit(folder.uri.as_str()),
             _ => return Err(RootError::TooMany),
         }
     }
     #[allow(deprecated)]
     match &params.root_uri {
-        Some(uri) => SelectedRoot::from_uri(uri.as_str())
-            .map(Some)
-            .map_err(uri_to_root_error),
+        Some(uri) => admit(uri.as_str()),
         None => Ok(None),
     }
-}
-
-fn uri_to_root_error(_: UriError) -> RootError {
-    RootError::Malformed
 }
 
 /// A rejected initialize leaves the lifecycle in its initial `AwaitInitialize` phase.
@@ -1598,9 +1704,7 @@ mod tests {
         // The snapshot for the new revision arrives; the held hover reauthorizes against
         // the stale revision and is replaced with -32801 ContentModified.
         let snapshot = snapshot_at(&dir, main2, coordinator.current_revision);
-        coordinator.on_worker_result(WorkerResult {
-            outcome: AnalysisOutcome::Snapshot(snapshot),
-        });
+        coordinator.on_worker_result(AnalysisOutcome::Snapshot(snapshot));
         assert!(
             frames(&coordinator)
                 .iter()
@@ -1623,15 +1727,13 @@ mod tests {
         let revision = coordinator.current_revision;
 
         // First background capture failure: latch + one showMessage.
-        coordinator.on_worker_result(WorkerResult {
-            outcome: AnalysisOutcome::Capture(CaptureRejection {
-                revision,
-                evidence: Some(UnavailableEvidence {
-                    code: "project.source_path",
-                    message: "broken".to_owned(),
-                }),
+        coordinator.on_worker_result(AnalysisOutcome::Capture(CaptureRejection {
+            revision,
+            evidence: Some(UnavailableEvidence {
+                code: "project.source_path",
+                message: "broken".to_owned(),
             }),
-        });
+        }));
         assert!(matches!(
             coordinator.episode,
             CaptureEpisode::Latched { .. }
@@ -1643,15 +1745,13 @@ mod tests {
         assert_eq!(show_count, 1, "exactly one showMessage on latch");
 
         // Second failure while latched: suppressed.
-        coordinator.on_worker_result(WorkerResult {
-            outcome: AnalysisOutcome::Capture(CaptureRejection {
-                revision,
-                evidence: Some(UnavailableEvidence {
-                    code: "project.source_path",
-                    message: "still broken".to_owned(),
-                }),
+        coordinator.on_worker_result(AnalysisOutcome::Capture(CaptureRejection {
+            revision,
+            evidence: Some(UnavailableEvidence {
+                code: "project.source_path",
+                message: "still broken".to_owned(),
             }),
-        });
+        }));
         let show_count2 = frames(&coordinator)
             .iter()
             .filter(|f| f.contains("window/showMessage"))
@@ -1660,9 +1760,7 @@ mod tests {
 
         // A successful publication set that observed the latch resets it on full delivery.
         let snapshot = snapshot_at(&dir, main, revision);
-        coordinator.on_worker_result(WorkerResult {
-            outcome: AnalysisOutcome::Snapshot(snapshot),
-        });
+        coordinator.on_worker_result(AnalysisOutcome::Snapshot(snapshot));
         assert!(coordinator.publication.is_some(), "publication in flight");
         // Deliver every publication frame.
         while coordinator.publication.is_some() {
@@ -1672,6 +1770,117 @@ mod tests {
             coordinator.episode,
             CaptureEpisode::Eligible,
             "the latch resets after the observing set fully delivers"
+        );
+        cleanup(&dir);
+    }
+
+    // ---- Soundness: a reply retires its entry only on delivery, not at handoff ----
+
+    #[test]
+    fn duplicate_id_after_reply_handoff_is_rejected_not_answered_twice() {
+        let main = "module main\n\npub fn f(): int {\n    return 1\n}\n";
+        let dir = temp_project("dupreply", main);
+        let mut coordinator = running(&dir);
+        coordinator.job_out = None;
+        coordinator.on_frame(open_body(&dir, 1, main).as_bytes());
+        coordinator.job_out = None;
+
+        // Hover id=5 held (no snapshot yet), then the snapshot lands and it is answered.
+        coordinator.on_frame(hover_body(&dir, 5, 3, 12).as_bytes());
+        let snapshot = snapshot_at(&dir, main, coordinator.current_revision);
+        coordinator.on_worker_result(AnalysisOutcome::Snapshot(snapshot));
+        // The reply frame was handed off; its ledger entry is still live (AwaitingDelivery),
+        // not retired at handoff.
+        assert!(coordinator.requests.is_live(&RequestId::Integer(5)));
+
+        // A second request reusing the in-flight id is caught as a duplicate — no second
+        // response for id 5 — rather than being admitted and answered again.
+        coordinator.on_frame(hover_body(&dir, 5, 3, 12).as_bytes());
+        let id5_results = frames(&coordinator)
+            .iter()
+            .filter(|f| f.contains(r#""id":5"#) && f.contains(r#""result""#))
+            .count();
+        assert_eq!(id5_results, 1, "the reused id is answered exactly once");
+        assert!(
+            frames(&coordinator)
+                .iter()
+                .any(|f| f.contains(r#""id":null"#) && f.contains("-32600")),
+            "the duplicate id gets a null-id -32600"
+        );
+    }
+
+    // ---- Law: per-document overlay refusal -> OpenUnavailable -> -32803, then recovery ----
+
+    #[test]
+    fn oversized_change_marks_document_unavailable_then_recovers() {
+        let main = "module main\n\npub fn f(): int {\n    return 1\n}\n";
+        let dir = temp_project("unavail", main);
+        let mut coordinator = running(&dir);
+        coordinator.job_out = None;
+        coordinator.on_frame(open_body(&dir, 1, main).as_bytes());
+        coordinator.job_out = None;
+
+        // A change whose body exceeds the 1 MiB per-file overlay bound is refused: the
+        // document becomes OpenUnavailable and no recompute is enqueued.
+        let huge = "x".repeat((1 << 20) + 1);
+        coordinator.on_frame(change_body(&dir, 2, &huge).as_bytes());
+        assert!(
+            !coordinator.ledger.all_available(),
+            "the oversized document is unavailable"
+        );
+        assert!(
+            coordinator.job_out.is_none(),
+            "no recompute while unavailable"
+        );
+
+        // Every semantic request is the same fixed -32803 while a document is unavailable.
+        coordinator.on_frame(hover_body(&dir, 7, 3, 12).as_bytes());
+        assert!(
+            frames(&coordinator)
+                .iter()
+                .any(|f| f.contains(r#""id":7"#) && f.contains("-32803")),
+            "semantic requests are -32803 while unavailable"
+        );
+
+        // A later valid change recovers the document and re-enables recomputation. Model
+        // the worker as idle (it consumed the earlier job) so recovery dispatches rather
+        // than coalescing.
+        coordinator.worker_busy = false;
+        coordinator.on_frame(change_body(&dir, 3, main).as_bytes());
+        assert!(
+            coordinator.ledger.all_available(),
+            "a valid change recovers the document"
+        );
+        assert!(
+            coordinator.job_out.is_some(),
+            "recompute re-enqueues on recovery"
+        );
+        cleanup(&dir);
+    }
+
+    // ---- Law: a resource-limited analysis fails held queries with -32803 ----
+
+    #[test]
+    fn analysis_resource_limit_fails_held_queries() {
+        let main = "module main\n\npub fn f(): int {\n    return 1\n}\n";
+        let dir = temp_project("reslimit", main);
+        let mut coordinator = running(&dir);
+        coordinator.job_out = None;
+        coordinator.on_frame(open_body(&dir, 1, main).as_bytes());
+        coordinator.job_out = None;
+
+        coordinator.on_frame(hover_body(&dir, 8, 3, 12).as_bytes());
+        assert_eq!(coordinator.held_queries.len(), 1);
+
+        coordinator.on_worker_result(AnalysisOutcome::ResourceLimit {
+            revision: coordinator.current_revision,
+        });
+        assert!(coordinator.held_queries.is_empty(), "held queries drain");
+        assert!(
+            frames(&coordinator)
+                .iter()
+                .any(|f| f.contains(r#""id":8"#) && f.contains("-32803")),
+            "a held query at a resource-limited revision is -32803"
         );
         cleanup(&dir);
     }
@@ -1691,9 +1900,7 @@ mod tests {
 
         // First snapshot: publication A builds and holds the exclusive credit.
         let snapshot_a = snapshot_at(&dir, main1, rev1);
-        coordinator.on_worker_result(WorkerResult {
-            outcome: AnalysisOutcome::Snapshot(snapshot_a),
-        });
+        coordinator.on_worker_result(AnalysisOutcome::Snapshot(snapshot_a));
         assert!(coordinator.publication.is_some());
         let frames_after_a = coordinator.outbox.len();
 
@@ -1703,9 +1910,7 @@ mod tests {
         coordinator.job_out = None;
         let rev2 = coordinator.current_revision;
         let snapshot_b = snapshot_at(&dir, main2, rev2);
-        coordinator.on_worker_result(WorkerResult {
-            outcome: AnalysisOutcome::Snapshot(snapshot_b),
-        });
+        coordinator.on_worker_result(AnalysisOutcome::Snapshot(snapshot_b));
         assert!(
             coordinator.pending_publication.is_some(),
             "the newer set waits for the exclusive credit"

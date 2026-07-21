@@ -71,9 +71,9 @@ pub const OUTBOUND_QUEUE_CAPACITY: usize = 8;
 /// to the coordinator.
 pub const RECEIPT_QUEUE_CAPACITY: usize = 8;
 
-/// The number of distinct revision-owned snapshot records the server retains at once
-/// (bounded by [`crate::credit::SnapshotCredit`]). Two lets a newer analysis land
-/// while an in-flight request still references the prior snapshot.
+/// The number of distinct revision-owned snapshot records the server retains at once,
+/// bounded by the coordinator's current-plus-pending snapshot `Option`s. Two lets a newer
+/// analysis land while an in-flight request still references the prior snapshot.
 pub const MAX_RETAINED_SNAPSHOTS: usize = 2;
 
 /// `W`: the number of non-`Clone` outbound credits. Equals outbound-queue capacity
@@ -159,9 +159,10 @@ pub const B_SELECTED_ROOT_URI_BYTES: u64 = MAX_URI_BYTES as u64;
 /// The fixed terminal-state record (`B_fixed_terminal`).
 pub const B_FIXED_TERMINAL_BYTES: u64 = 4 * 1024;
 
-/// The checked retained-capacity term sum `M_owned`. Every term charges an observed
-/// retained maximum; the sum uses checked arithmetic so an overflow is a compile-time
-/// failure of [`assert_capacity_budget`] rather than a silent wrap.
+/// The retained-capacity term sum `M_owned`. Every term charges an observed retained
+/// maximum. Evaluated in a `const` context, so any `+`/`*` overflow is itself a
+/// compile-time error (const evaluation panics on overflow) rather than a silent wrap —
+/// the assertion cannot be proven on a wrapped sum.
 ///
 /// Thread stacks are excluded from `M_owned`: they are OS-mapped lazily, are not
 /// heap retention the server allocates, and are held to the separate measured-RSS

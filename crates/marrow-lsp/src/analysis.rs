@@ -47,10 +47,7 @@ pub enum AnalysisOutcome {
         revision: InputRevision,
     },
     /// The compiler was internally incoherent. Fail-stop class.
-    Invariant {
-        /// The revision the incoherent analysis belonged to.
-        revision: InputRevision,
-    },
+    Invariant,
 }
 
 /// Bounded rendered capture-failure evidence: a stable code and an operational message.
@@ -109,7 +106,28 @@ fn run_analyze(input: ProjectInput, revision: InputRevision) -> AnalysisOutcome 
         Err(AnalysisFailure::ResourceLimit { revision, .. }) => {
             AnalysisOutcome::ResourceLimit { revision }
         }
-        Err(AnalysisFailure::Invariant { revision, .. }) => AnalysisOutcome::Invariant { revision },
+        Err(AnalysisFailure::Invariant { .. }) => AnalysisOutcome::Invariant,
+    }
+}
+
+/// Validate a version-selected overlay under the frozen adapter bounds without capturing.
+/// The coordinator calls this at document open/change to classify a document as available
+/// (`Ok`) or unavailable; on refusal it returns the rendered bounded evidence (or `None`
+/// when even the operational message overflows its sink).
+pub fn validate_overlay(
+    root: &SelectedRoot,
+    overlay: &[OverlayInput<'_>],
+) -> Result<(), Option<UnavailableEvidence>> {
+    let entries: Vec<OverlayEntry<'_>> = overlay
+        .iter()
+        .map(|input| OverlayEntry::new(input.key, input.bytes))
+        .collect();
+    match OverlaySnapshot::try_new(&entries) {
+        Ok(_) => Ok(()),
+        Err(failure) => {
+            let failure = CaptureFailure::from_overlay_input(failure);
+            Err(render_failure(&root.to_path(), &failure))
+        }
     }
 }
 
@@ -117,24 +135,30 @@ fn run_analyze(input: ProjectInput, revision: InputRevision) -> AnalysisOutcome 
 /// facade methods used are the allowlisted [`CapturePresentation::code`] and
 /// [`CapturePresentation::write_operational_message`]; `position` and the location and
 /// CLI writers are never called, so a capture failure is always unlocated.
+fn render_failure(root_path: &Path, failure: &CaptureFailure) -> Option<UnavailableEvidence> {
+    let presentation: CapturePresentation<'_> = failure.presentation(root_path);
+    let code = presentation.code().as_str();
+    let mut sink = BoundedSink::new(MAX_OPERATIONAL_MESSAGE_BYTES);
+    match presentation.write_operational_message(&mut sink) {
+        Ok(()) => Some(UnavailableEvidence {
+            code,
+            message: sink.into_string(),
+        }),
+        // The bounded sink overflowed: discard the partial bytes; the caller maps this to
+        // an outbound-encoding failure rather than a truncated message.
+        Err(_) => None,
+    }
+}
+
 fn render_rejection(
     root_path: &Path,
     failure: &CaptureFailure,
     revision: InputRevision,
 ) -> CaptureRejection {
-    let presentation: CapturePresentation<'_> = failure.presentation(root_path);
-    let code = presentation.code().as_str();
-    let mut sink = BoundedSink::new(MAX_OPERATIONAL_MESSAGE_BYTES);
-    let evidence = match presentation.write_operational_message(&mut sink) {
-        Ok(()) => Some(UnavailableEvidence {
-            code,
-            message: sink.into_string(),
-        }),
-        // The bounded sink overflowed: discard the partial bytes; the coordinator maps
-        // this to an outbound-encoding failure rather than a truncated message.
-        Err(_) => None,
-    };
-    CaptureRejection { revision, evidence }
+    CaptureRejection {
+        revision,
+        evidence: render_failure(root_path, failure),
+    }
 }
 
 /// A `fmt::Write` sink that admits at most `limit` bytes and then fails, so a rendered
@@ -303,7 +327,7 @@ mod tests {
             AnalysisOutcome::Snapshot(_) => "snapshot",
             AnalysisOutcome::Capture(_) => "capture",
             AnalysisOutcome::ResourceLimit { .. } => "resource",
-            AnalysisOutcome::Invariant { .. } => "invariant",
+            AnalysisOutcome::Invariant => "invariant",
         }
     }
 

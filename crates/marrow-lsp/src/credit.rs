@@ -2,36 +2,31 @@
 //!
 //! Each credit type is non-`Clone` and `#[must_use]`. A fixed number exists; a holder
 //! moves a credit through its states and it is destroyed (not reissued) at a terminal
-//! outcome. The credits are the type-level enforcement of the affine-topology and
-//! retained-capacity laws: work that needs a credit cannot begin without acquiring one,
-//! and the pools mint exactly the frozen counts.
+//! outcome. The credits are the type-level enforcement of the outbound and publication
+//! bounds: work that needs a credit cannot begin without acquiring one, and the pools
+//! mint exactly the frozen counts.
 //!
-//! - [`WorkerCredit`]: exactly one. Permits ready-snapshot service, attaching a waiter
-//!   to the active revision, or starting one analysis. No per-request compile queue
-//!   exists — the single credit serializes analysis.
 //! - [`OutboundCredit`]: exactly [`OUTBOUND_CREDITS`] (`W`). Every response, error,
-//!   null-id protocol frame, and `showMessage` acquires one before construction.
-//! - [`SnapshotCredit`]: exactly [`MAX_RETAINED_SNAPSHOTS`]. Bounds the distinct
-//!   revision-owned snapshot records retained at once.
+//!   null-id protocol frame, `showMessage`, and diagnostic frame acquires one before it
+//!   is handed to the writer, and it returns only when the writer's delivery receipt is
+//!   consumed — so no more than `W` frames are ever outstanding toward the writer.
 //! - [`PublicationPlanCredit`]: exactly one. Held from plan construction through the
 //!   final delivery receipt so the delivered ledger cannot drift under a precomputed
 //!   union.
+//!
+//! Two other bounds the design frames as credits are enforced by simpler owned state and
+//! are not credit types here: single-analysis serialization is the coordinator's
+//! `worker_busy` flag over its cap-one work channel, and retained-snapshot count is the
+//! coordinator's current-plus-pending snapshot `Option`s (at most
+//! [`MAX_RETAINED_SNAPSHOTS`]).
 
-use crate::capacities::{MAX_RETAINED_SNAPSHOTS, OUTBOUND_CREDITS};
-
-/// The single analysis-worker credit. Non-`Clone`: only its holder may drive analysis.
-#[must_use]
-pub struct WorkerCredit(());
+use crate::capacities::OUTBOUND_CREDITS;
 
 /// One outbound-frame credit. Non-`Clone`: acquired before a frame is constructed,
 /// counted, or encoded, and returned only when the writer's delivery receipt is
 /// consumed.
 #[must_use]
 pub struct OutboundCredit(());
-
-/// One retained-snapshot credit. Non-`Clone`: bounds distinct retained revisions.
-#[must_use]
-pub struct SnapshotCredit(());
 
 /// The single exclusive publication-plan credit. Non-`Clone`: held for the whole life
 /// of one diagnostic publication set.
@@ -74,20 +69,15 @@ impl<T> CreditPool<T> {
     }
 
     /// The number of credits currently available.
+    #[cfg(test)]
     pub fn available(&self) -> usize {
         self.available.len()
     }
 
     /// The fixed capacity.
+    #[cfg(test)]
     pub fn capacity(&self) -> usize {
         self.capacity
-    }
-}
-
-impl CreditPool<WorkerCredit> {
-    /// The single-credit worker pool.
-    pub fn worker() -> Self {
-        Self::new(|| WorkerCredit(()), 1)
     }
 }
 
@@ -95,13 +85,6 @@ impl CreditPool<OutboundCredit> {
     /// The `W`-credit outbound pool.
     pub fn outbound() -> Self {
         Self::new(|| OutboundCredit(()), OUTBOUND_CREDITS)
-    }
-}
-
-impl CreditPool<SnapshotCredit> {
-    /// The retained-snapshot pool.
-    pub fn snapshot() -> Self {
-        Self::new(|| SnapshotCredit(()), MAX_RETAINED_SNAPSHOTS)
     }
 }
 
@@ -117,16 +100,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn worker_pool_has_exactly_one_credit() {
-        let mut pool = CreditPool::worker();
-        assert_eq!(pool.capacity(), 1);
-        let credit = pool.acquire().expect("first acquire");
-        assert!(pool.acquire().is_none(), "no second worker credit exists");
-        pool.release(credit);
-        assert_eq!(pool.available(), 1);
-    }
-
-    #[test]
     fn outbound_pool_mints_exactly_w_credits() {
         let mut pool = CreditPool::outbound();
         assert_eq!(pool.capacity(), OUTBOUND_CREDITS);
@@ -139,18 +112,6 @@ mod tests {
             pool.release(credit);
         }
         assert_eq!(pool.available(), OUTBOUND_CREDITS);
-    }
-
-    #[test]
-    fn snapshot_pool_bounds_retained_revisions() {
-        let mut pool = CreditPool::snapshot();
-        assert_eq!(pool.capacity(), MAX_RETAINED_SNAPSHOTS);
-        let mut held = Vec::new();
-        for _ in 0..MAX_RETAINED_SNAPSHOTS {
-            held.push(pool.acquire().unwrap());
-        }
-        assert!(pool.acquire().is_none());
-        drop(held);
     }
 
     #[test]
