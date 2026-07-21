@@ -1031,6 +1031,9 @@ mod index_site_partition {
                 }
             }
         }
+        // A liveness sanity check, not a completeness one: it guards against a wholly
+        // dead classifier (everything routed to `Unrelated`). Family completeness is the
+        // no-wildcard `role` match — a new opcode cannot join without being classified.
         assert!(
             exercised >= 1,
             "the sweep classified no opcode as IndexRead-class — the partition is mis-wired",
