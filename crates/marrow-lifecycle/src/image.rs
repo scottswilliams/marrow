@@ -50,8 +50,7 @@ pub fn active_binding(image: &VerifiedImage) -> ActiveBinding {
 /// Returns a [`FormatError`] only if the node count exceeds the head map's bound.
 pub fn head_map(image: &VerifiedImage) -> Result<HeadMap, FormatError> {
     let (nodes, order) = split_order(image);
-    let ledger_ids: Vec<LedgerIdBytes> =
-        order.iter().map(|&i| nodes[i].path.node_id()).collect();
+    let ledger_ids: Vec<LedgerIdBytes> = order.iter().map(|&i| nodes[i].path.node_id()).collect();
     HeadMap::assign(&ledger_ids)
 }
 
