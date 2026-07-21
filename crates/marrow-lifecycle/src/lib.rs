@@ -18,23 +18,31 @@
 //! [`codec`] reader. The digest kinds and framing live in `marrow-image`, the workspace's
 //! identity-framing owner, so this crate composes them without a hash dependency of its own.
 
+mod actor;
 mod codec;
 mod envelope;
 mod head;
 mod headmap;
+mod image;
 mod instance;
 mod lock;
 mod provision;
+mod reopen;
 mod store_dir;
 
+pub use actor::{
+    AttachOutcome, ChangedFact, ContractChanged, LifecycleError, RebindReceipt, attach,
+};
 pub use codec::FormatError;
 pub use envelope::{EngineKind, StoreEnvelope};
 pub use head::{ActiveBinding, LogicalHead};
 pub use headmap::{HeadMap, HeadMapEntry, MAX_HEAD_MAP_ENTRIES};
+pub use image::{active_binding, head_map};
 pub use instance::{EntropyUnavailable, StoreInstanceId};
 pub use lock::{Acquired, LockError, LockOwner, OwnerLock};
 pub use provision::{
     OpenError, OpenStore, Preflight, ProvisionError, ProvisionRequest, Provisioned, open,
     preflight, provision,
 };
+pub use reopen::reopen_and_classify;
 pub use store_dir::{ENGINE_FILE, ENVELOPE_FILE, HEAD_FILE, LOCK_FILE};

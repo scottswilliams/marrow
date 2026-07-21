@@ -70,8 +70,8 @@ pub use semantic::{
     SemanticNode, SemanticNodeKind, SemanticPath, SemanticStep, SemanticStepKind, SemanticTarget,
 };
 pub use store_digest::{
-    STORE_DATA_KIND, STORE_ENVELOPE_KIND, STORE_HEAD_KIND, StoreDataDigest, StoreEnvelopeDigest,
-    StoreHeadDigest,
+    STORE_DATA_KIND, STORE_ENVELOPE_KIND, STORE_HEAD_KIND, STORE_INTERFACE_KIND, StoreDataDigest,
+    StoreEnvelopeDigest, StoreHeadDigest, interface_fingerprint,
 };
 pub use ty::{
     ImageType, OPTIONAL_FLAG, Scalar, TAG_BOOL, TAG_BYTES, TAG_COLLECTION, TAG_DATE, TAG_DURATION,

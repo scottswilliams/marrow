@@ -15,7 +15,8 @@ mod run;
 mod value;
 
 pub use attach::{
-    DurableRun, Ephemeral, mint_ephemeral, run_driver_test, run_durable_test, run_export,
+    DurableRun, Ephemeral, derive_store_schemas, mint_ephemeral, run_driver_test, run_durable_test,
+    run_export,
 };
 pub use fault::RuntimeFault;
 pub use run::{run, run_durable};

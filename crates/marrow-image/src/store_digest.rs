@@ -30,6 +30,29 @@ pub const STORE_HEAD_KIND: &[u8] = b"marrow.store.head.v0";
 /// operation (audit/backup/restore at F04+).
 pub const STORE_DATA_KIND: &[u8] = b"marrow.store.data.v0";
 
+/// The digest kind of the store's interface binding fingerprint: a digest over the store's
+/// exported call surface, one of the binding facts a binding-only rebind compares.
+pub const STORE_INTERFACE_KIND: &[u8] = b"marrow.store.iface.v0";
+
+/// A runner-free interface binding fingerprint: a domain-separated digest over the sorted
+/// set of the program's export declaration identities (each an
+/// [`ExportId`](crate::ExportId)'s 32 bytes). Sorting makes it the export *set* fingerprint,
+/// independent of export order; a body-only edit that preserves every export's declaration
+/// identity preserves it, while adding, removing, or resignaturing an export changes it —
+/// exactly the interface-changed signal a binding-only rebind must catch. It is computed
+/// purely from a `VerifiedImage`'s exports, so the store owner needs no dependency on the
+/// runner's interface projection.
+pub fn interface_fingerprint(export_ids: &[[u8; 32]]) -> [u8; 32] {
+    let mut sorted: Vec<[u8; 32]> = export_ids.to_vec();
+    sorted.sort_unstable();
+    let mut payload = Vec::with_capacity(4 + sorted.len() * 32);
+    payload.extend_from_slice(&(sorted.len() as u32).to_be_bytes());
+    for id in &sorted {
+        payload.extend_from_slice(id);
+    }
+    frame_id(STORE_INTERFACE_KIND, &payload)
+}
+
 /// Render 32 identity bytes as their 64-character lowercase hex spelling, for diagnostics
 /// and tests. Shared by the store digest newtypes below.
 fn to_hex(bytes: &[u8; 32]) -> String {

@@ -12,6 +12,12 @@ authors.workspace = true
 marrow-codes = { path = "../marrow-codes" }
 marrow-image = { path = "../marrow-image" }
 marrow-kernel = { path = "../marrow-kernel" }
+marrow-verify = { path = "../marrow-verify" }
+
+[dev-dependencies]
+marrow-project = { path = "../marrow-project" }
+marrow-compile = { path = "../marrow-compile" }
+marrow-vm = { path = "../marrow-vm" }
 
 [lints]
 workspace = true

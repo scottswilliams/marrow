@@ -93,7 +93,7 @@ human-readable message; their wording is not a machine contract. The store
 reports a `store.*` code:
 `store.io`, `store.permission_denied`, `store.locked`, `store.format_version`,
 `store.corruption`, `store.recovery_required`, `store.limit`, `store.cursor`,
-`store.transaction`, and `store.read_only`.
+`store.transaction`, `store.read_only`, and `store.contract_changed`.
 `store.limit` reports an exhausted finite representation bound: a store framing
 length/count that does not fit its `u32` field, a record/problem/index count
 overflow, or exhaustion of the `u64` commit-ID sequence.
@@ -270,6 +270,7 @@ closed with a typed code — never a process crash: a truncated or torn body is
             Code::StoreCursor,
             Code::StoreTransaction,
             Code::StoreReadOnly,
+            Code::StoreContractChanged,
         ]),
         r#"
 ### `io.*` — kind `io`

@@ -154,7 +154,7 @@ pub struct BranchSchema {
 /// `u32` assigned to each root, field, group, and branch. Cell keys are prefixed by these
 /// numbers rather than by source spelling, so a rename is zero-cell metadata. The width is
 /// `u32` for lifetime headroom, independent of the image's `u16` table rings (FR01 §4).
-type NodeNumber = u32;
+pub type NodeNumber = u32;
 
 /// The store-local numbering of one root's durable nodes, mirroring its [`StoreSchema`]
 /// structure: the root's own number, one number per top-level field (in order), one
@@ -162,27 +162,27 @@ type NodeNumber = u32;
 /// the schema at store construction by [`number_store`], and walked in lockstep with the
 /// schema by the site resolver to number every addressed node.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct RootNumbering {
-    pub(super) root: NodeNumber,
-    pub(super) fields: Vec<NodeNumber>,
-    pub(super) groups: Vec<GroupNumbering>,
-    pub(super) branches: Vec<BranchNumbering>,
+pub struct RootNumbering {
+    pub root: NodeNumber,
+    pub fields: Vec<NodeNumber>,
+    pub groups: Vec<GroupNumbering>,
+    pub branches: Vec<BranchNumbering>,
 }
 
 /// The numbering of one unkeyed group: its own number and one number per field.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct GroupNumbering {
-    pub(super) number: NodeNumber,
-    pub(super) fields: Vec<NodeNumber>,
+pub struct GroupNumbering {
+    pub number: NodeNumber,
+    pub fields: Vec<NodeNumber>,
 }
 
 /// The numbering of one keyed branch, recursively: its own number, one number per field,
 /// and one [`BranchNumbering`] per nested sub-branch.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct BranchNumbering {
-    pub(super) number: NodeNumber,
-    pub(super) fields: Vec<NodeNumber>,
-    pub(super) branches: Vec<BranchNumbering>,
+pub struct BranchNumbering {
+    pub number: NodeNumber,
+    pub fields: Vec<NodeNumber>,
+    pub branches: Vec<BranchNumbering>,
 }
 
 /// Assign store-wide pre-order [`NodeNumber`]s to every durable node of every root, the
@@ -194,7 +194,7 @@ pub(super) struct BranchNumbering {
 /// which derive the same schema from the same image — number identically, and no second
 /// grammar exists. The result is store-wide unique, the bijection the head map (F02a
 /// provision) persists against ledger ids.
-pub(super) fn number_store(schemas: &[StoreSchema]) -> Vec<RootNumbering> {
+pub fn number_store(schemas: &[StoreSchema]) -> Vec<RootNumbering> {
     let mut next = 0u32;
     let mut alloc = || {
         let n = next;

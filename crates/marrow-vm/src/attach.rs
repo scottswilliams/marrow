@@ -248,6 +248,15 @@ pub fn run_export(
 /// whole image parks, since a partial store — some roots served, others silently absent —
 /// is never minted. The image is the sole source of a valid schema — a forged image cannot
 /// be verified, so it can never reach this derivation.
+/// The public projection from a verified image to the kernel's root-indexed schema and site
+/// tables — the store shape a persistent provision opens the engine under. The persistent
+/// lifecycle and the terminal companion derive the same tables the ephemeral attachment
+/// does, so a store is provisioned under exactly the schema the running program expects.
+/// `None` when the image's durable shape is not yet executable by the flat kernel.
+pub fn derive_store_schemas(image: &VerifiedImage) -> Option<(Vec<StoreSchema>, Vec<SiteSpec>)> {
+    derive_schemas(image)
+}
+
 fn derive_schemas(image: &VerifiedImage) -> Option<(Vec<StoreSchema>, Vec<SiteSpec>)> {
     // A durable image declares at least one root; a storeless image never reaches attach.
     if image.roots().is_empty() {

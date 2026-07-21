@@ -58,7 +58,7 @@ human-readable message; their wording is not a machine contract. The store
 reports a `store.*` code:
 `store.io`, `store.permission_denied`, `store.locked`, `store.format_version`,
 `store.corruption`, `store.recovery_required`, `store.limit`, `store.cursor`,
-`store.transaction`, and `store.read_only`.
+`store.transaction`, `store.read_only`, and `store.contract_changed`.
 `store.limit` reports an exhausted finite representation bound: a store framing
 length/count that does not fit its `u32` field, a record/problem/index count
 overflow, or exhaustion of the `u64` commit-ID sequence.
@@ -218,6 +218,7 @@ closed with a typed code — never a process crash: a truncated or torn body is
 | `store.cursor` | A bounded scan cursor does not belong to the scan being resumed. |
 | `store.transaction` | A transaction or snapshot operation was requested in an invalid store state. |
 | `store.read_only` | A write-capability operation was requested through a read-only store handle. |
+| `store.contract_changed` | An attach presented a program image whose durable contract, exported interface, or authority ceiling differs from the store's active binding, so it is not a binding-only code update. This is not corruption: the store is intact and the prior program remains usable. Run `marrow apply` to review and accept the change (an evolution of the durable contract, the interface, or the ceiling) before activating the new program against this store. |
 
 ### `io.*` — kind `io`
 
