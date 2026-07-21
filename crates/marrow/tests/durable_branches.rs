@@ -1083,3 +1083,58 @@ fn branch_place_field_operations_read_and_guarded_set_through_the_two_key_place(
         "the guarded branch-place set preserved the required field",
     );
 }
+
+// --- DX05 gap 2: a branch is not a field of a materialized entry record. ---
+
+fn compile_diags(body: &str) -> Vec<marrow_compile::SourceDiagnostic> {
+    let source = format!("{SOURCE}\n{body}");
+    let manifest = marrow_project::Manifest::parse("edition = \"2026\"\n").expect("manifest");
+    let files = vec![marrow_project::CapturedFile::new(
+        "src/main.mw".to_string(),
+        source.into_bytes(),
+    )];
+    let project = marrow_project::capture(
+        &manifest,
+        files,
+        Some(IDS.as_bytes()),
+        &marrow_project::CaptureLimits::DEFAULT,
+    )
+    .expect("capture");
+    match marrow_compile::compile(&project) {
+        Ok(_) => panic!("expected the checker to reject chaining a branch off a record value"),
+        Err(marrow_compile::CompileFailure::Diagnostics(diagnostics)) => diagnostics.into_vec(),
+        Err(
+            marrow_compile::CompileFailure::Invariant(_)
+            | marrow_compile::CompileFailure::ResourceLimit(_),
+        ) => panic!("source-triggered compiler failures must remain diagnostics"),
+    }
+}
+
+#[test]
+fn chaining_a_branch_off_a_materialized_record_steers_to_the_durable_path() {
+    // `if const b = ^books[id]` materializes the whole entry as a local record value; a
+    // keyed branch is a distinct durable node, not a projectable field of that record. The
+    // access is refused with a steering `check.type` at the branch name, naming the branch,
+    // the rule, and the durable-path fix.
+    let diagnostics = compile_diags(
+        "pub fn noteText(id: int, nid: string): string? {\n    if const b = ^books[id] {\n        return b.notes[nid].text\n    }\n    return absent\n}\n",
+    );
+    let diagnostic = diagnostics
+        .iter()
+        .find(|d| d.code == "check.type")
+        .unwrap_or_else(|| panic!("no check.type diagnostic in {diagnostics:#?}"));
+    // The span points at the branch name `notes` in `b.notes`.
+    assert_eq!(diagnostic.line(), 70, "{}", diagnostic.message);
+    // Voice: fact (the branch in source spelling), rule, then the canonical durable-path fix.
+    assert!(
+        diagnostic.message.contains("`notes` is a keyed branch of `Book`"),
+        "{}",
+        diagnostic.message
+    );
+    assert!(
+        diagnostic.message.contains("distinct durable node")
+            && diagnostic.message.contains("`^books["),
+        "{}",
+        diagnostic.message
+    );
+}
