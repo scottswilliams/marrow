@@ -292,6 +292,27 @@ pub(super) fn name_error(file: &FileIdentity, span: SourceSpan, name: &str) -> S
     )
 }
 
+/// A reference to a store root whose durable identity failed admission: the root was
+/// declared but each identity gap was reported as `check.durable_identity`, so it dropped
+/// from the registry. Reporting a bare not-in-scope name here would misdirect toward a
+/// typo; instead the reference site names the admission failure and points at the identity
+/// reports. A genuinely undeclared root keeps the plain [`name_error`].
+pub(super) fn identity_admission_failed(
+    file: &FileIdentity,
+    span: SourceSpan,
+    name: &str,
+) -> SourceDiagnostic {
+    SourceDiagnostic::at(
+        Code::CheckType.as_str(),
+        file,
+        span,
+        format!(
+            "`{name}` was declared but failed identity admission; see the \
+             `check.durable_identity` reports"
+        ),
+    )
+}
+
 pub(super) fn checked_arm_error(
     file: &FileIdentity,
     span: SourceSpan,

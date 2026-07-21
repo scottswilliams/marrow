@@ -269,6 +269,12 @@ impl DurableRoot {
 pub(crate) struct DurableRegistry {
     roots: Vec<DurableRoot>,
     declared_roots: Vec<String>,
+    /// Placement names of stores whose durable identity failed admission: every identity
+    /// gap was reported precisely as `check.durable_identity`, so the root dropped from
+    /// the registry rather than entering `declared_roots`. Retained so a later reference
+    /// to `^name` is steered to those identity reports instead of a bare not-in-scope
+    /// name error (the ledger confound: an identity-less root reads as an unknown name).
+    admission_failed_roots: Vec<String>,
     /// The durable-path naming join for every admitted graph node, `(ledger id, sigil,
     /// simple name)`, accumulated across the project's admitted stores. The
     /// [`DurableNaming`] the demand sentence spells paths through is built from this.
@@ -353,6 +359,19 @@ impl DurableRegistry {
             .map(String::as_str)
     }
 
+    /// Whether a store of placement `name` was declared but dropped from the registry
+    /// because its durable identity failed admission (each gap already reported as
+    /// `check.durable_identity`). `true` exactly when such a root exists, so the lowerer
+    /// steers a reference to `^name` to those identity reports rather than reporting a
+    /// bare unknown name. `resolve_root` consults the admitted roots (`root_by_name`)
+    /// first, so if a later same-named store is admitted its executable root wins and this
+    /// steering never applies — the two vectors need not be globally disjoint.
+    pub(crate) fn admission_failed_root_named(&self, name: &str) -> bool {
+        self.admission_failed_roots
+            .iter()
+            .any(|declared| declared == name)
+    }
+
     /// Build the registry from the project's store declarations, adding each admitted
     /// root and its complete ledger identity block to the draft in declaration order (so
     /// a root's DURABLE-table index is its RootId). A store whose placement name repeats
@@ -398,7 +417,7 @@ impl DurableRegistry {
                     ));
                     continue;
                 }
-                if let Some(built) = build_one(
+                match build_one(
                     draft,
                     &mut type_metadata,
                     resources,
@@ -407,11 +426,17 @@ impl DurableRegistry {
                     ledger,
                     diagnostics,
                 )? {
-                    registry.naming.extend(built.naming);
-                    registry.declared_roots.push(built.name);
-                    if let Some(root) = built.executable {
-                        registry.roots.push(root);
+                    StoreBuild::Admitted(built) => {
+                        registry.naming.extend(built.naming);
+                        registry.declared_roots.push(built.name);
+                        if let Some(root) = built.executable {
+                            registry.roots.push(root);
+                        }
                     }
+                    StoreBuild::IdentityIncomplete(name) => {
+                        registry.admission_failed_roots.push(name)
+                    }
+                    StoreBuild::Rejected => {}
                 }
             }
             Ok(registry)
@@ -419,7 +444,23 @@ impl DurableRegistry {
     }
 }
 
-/// One store declaration's build outcome: the placement name that entered the draft and,
+/// One store declaration's build outcome.
+enum StoreBuild {
+    /// The graph is admissible: its identity is complete and its root (with any executable
+    /// descriptor) entered the draft.
+    Admitted(BuiltRoot),
+    /// The durable graph's identity is incomplete — every gap was reported precisely as
+    /// `check.durable_identity` and the root was dropped. Its placement name is retained so
+    /// a later reference to `^name` steers to those reports rather than a bare not-in-scope
+    /// name error.
+    IdentityIncomplete(String),
+    /// The store failed another admission check (a repeated placement name, caught before
+    /// `build_one`; a missing or mismatched resource; an out-of-range key tuple; a bad key
+    /// scalar). Each pushed its own precise diagnostic; no root and no steering name.
+    Rejected,
+}
+
+/// One store declaration's admitted build: the placement name that entered the draft and,
 /// when the root is a flat kernel-serviceable shape, its executable descriptor.
 struct BuiltRoot {
     name: String,
@@ -438,13 +479,14 @@ struct DurableTypeMetadata<'registry, 'session> {
 }
 
 /// Resolve, validate, and commit one `store` declaration into the draft, returning its
-/// build outcome or `None` when the store fails validation (its diagnostic is pushed and
-/// no root, site, or application identity is committed for it, so a failing store cannot
-/// corrupt an already-appended root; `build_extras` may append record types before the
-/// gate, which is harmless — the pushed diagnostic fails compilation). The heavy resolution
-/// runs against a local [`IdentityResolver`] and the completeness gate below precedes
-/// every root/site/identity commit, so the draft is touched only once the store is known
-/// admissible.
+/// build outcome. A failing store pushes its diagnostic and commits no root, site, or
+/// application identity, so it cannot corrupt an already-appended root (`build_extras` may
+/// append record types before the gate, which is harmless — the pushed diagnostic fails
+/// compilation). An identity gap yields [`StoreBuild::IdentityIncomplete`] carrying the
+/// placement name; any other rejection yields [`StoreBuild::Rejected`]. The heavy
+/// resolution runs against a local [`IdentityResolver`] and the completeness gate below
+/// precedes every root/site/identity commit, so the draft is touched only once the store
+/// is known admissible.
 fn build_one(
     draft: &mut ImageDraft,
     type_metadata: &mut DurableTypeMetadata<'_, '_>,
@@ -453,7 +495,7 @@ fn build_one(
     store: &StoreDecl,
     ledger: Option<&IdentityLedger>,
     diagnostics: &mut Vec<SourceDiagnostic>,
-) -> Result<Option<BuiltRoot>, GenericInvariant> {
+) -> Result<StoreBuild, GenericInvariant> {
     let records = type_metadata.records;
     let metadata = &mut *type_metadata.metadata;
     if store.root.keys.len() > bounds::MAX_KEY_COLUMNS {
@@ -466,7 +508,7 @@ fn build_one(
                 bounds::MAX_KEY_COLUMNS
             ),
         ));
-        return Ok(None);
+        return Ok(StoreBuild::Rejected);
     }
     // Resolve each root key column's scalar in declared tuple order. A singleton
     // root has no columns.
@@ -477,7 +519,7 @@ fn build_one(
         records,
         diagnostics,
     ) else {
-        return Ok(None);
+        return Ok(StoreBuild::Rejected);
     };
     let Some(record) = records.by_name(&store.resource) else {
         diagnostics.push(SourceDiagnostic::at(
@@ -486,13 +528,13 @@ fn build_one(
             store.span,
             format!("`{}` is not a resource in this project", store.resource),
         ));
-        return Ok(None);
+        return Ok(StoreBuild::Rejected);
     };
     let Some((_, resource)) = resources
         .iter()
         .find(|(_, decl)| decl.name == store.resource)
     else {
-        return Ok(None);
+        return Ok(StoreBuild::Rejected);
     };
 
     // Compiler-owned enum readiness is validated before the first ledger lookup.
@@ -609,9 +651,11 @@ fn build_one(
     // Every identity must resolve before the graph enters the image; a single
     // gap already reported precisely leaves the durable graph absent, so an
     // operation over it is not additionally mislabelled "not yet executable"
-    // (the identity gap is the diagnosis, whatever the shape).
+    // (the identity gap is the diagnosis, whatever the shape). The placement name
+    // is retained so a reference to `^name` steers to those identity reports
+    // rather than reading as an unknown name.
     if !resolver.complete {
-        return Ok(None);
+        return Ok(StoreBuild::IdentityIncomplete(store.root.root.clone()));
     }
     // The graph is admissible: its naming entries may now be committed with its root,
     // sites, and identity. A discarded (incomplete) graph never reaches here, so no
@@ -729,7 +773,7 @@ fn build_one(
     });
 
     if !executable {
-        return Ok(Some(BuiltRoot {
+        return Ok(StoreBuild::Admitted(BuiltRoot {
             name: store.root.root.clone(),
             executable: None,
             naming,
@@ -751,7 +795,7 @@ fn build_one(
         })
         .collect();
 
-    Ok(Some(BuiltRoot {
+    Ok(StoreBuild::Admitted(BuiltRoot {
         name: store.root.root.clone(),
         naming,
         executable: Some(DurableRoot {

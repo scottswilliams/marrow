@@ -869,6 +869,8 @@ impl<'a> FnLowerer<'a> {
         }
         let diagnostic = if durable.not_yet_executable_root_named(name).is_some() {
             not_yet_executable(self.file, span, name)
+        } else if durable.admission_failed_root_named(name) {
+            identity_admission_failed(self.file, span, name)
         } else {
             name_error(self.file, span, name)
         };
