@@ -272,6 +272,45 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// Every installation-damage message is actionable and free of runner/wire/lifecycle
+    /// mechanism vocabulary — a user sees an install problem and a repair, never the spawn
+    /// mechanism (exit-gate property: ordinary output and guidance carry no such vocabulary).
+    #[test]
+    fn damage_messages_are_actionable_and_free_of_mechanism_vocabulary() {
+        let all = [
+            CompanionError::TerminalPathUnknown,
+            CompanionError::ManifestMissing,
+            CompanionError::ManifestMalformed,
+            CompanionError::ReleaseMismatch,
+            CompanionError::CompanionMissing,
+            CompanionError::CompanionMismatch,
+        ];
+        let forbidden = [
+            "runner",
+            "wire",
+            "socket",
+            "nonce",
+            "lifecycle",
+            "attach",
+            "spawn",
+        ];
+        for error in all {
+            let message = error.message().to_lowercase();
+            for word in forbidden {
+                assert!(
+                    !message.contains(word),
+                    "message leaks `{word}`: {}",
+                    error.message(),
+                );
+            }
+            assert!(
+                message.contains("reinstall"),
+                "message must name a repair action: {}",
+                error.message(),
+            );
+        }
+    }
+
     #[test]
     fn a_traversing_runner_name_is_refused() {
         let dir = scratch("traverse");

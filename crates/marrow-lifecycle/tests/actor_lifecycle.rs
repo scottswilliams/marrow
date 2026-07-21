@@ -5,9 +5,9 @@
 use std::path::{Path, PathBuf};
 
 use marrow_lifecycle::{
-    AttachOutcome, ChangedFact, EngineKind, LifecycleError, LogicalHead, ProvisionRequest,
-    StoreEnvelope, StoreInstanceId, active_binding, attach, head_map, provision,
-    reopen_and_classify,
+    AttachOutcome, ChangedFact, EngineKind, HEAD_FILE, LifecycleError, LogicalHead,
+    ProvisionRequest, StoreEnvelope, StoreInstanceId, active_binding, attach, head_map, open,
+    provision, reopen_and_classify,
 };
 use marrow_verify::{VerifiedImage, verify};
 
@@ -336,8 +336,47 @@ fn a_body_only_edit_is_a_binding_only_rebind() {
 /// Reopen the store's head via a fresh open, returning the persisted logical head.
 fn open_head(dir: &Path, image: &VerifiedImage) -> LogicalHead {
     let (schemas, sites) = schemas_of(image);
-    let opened = marrow_lifecycle::open(dir, schemas, sites).expect("open");
+    let opened = open(dir, schemas, sites).expect("open");
     opened.head
+}
+
+/// The fast-path crash matrix (F02b): a kill during a binding-only rebind, after the head
+/// (the active-binding commit point) is renamed into place but before the envelope (writer
+/// provenance) is rewritten, recovers to the complete NEW binding — the store reopens cleanly
+/// and its active binding is the new image, with the stale envelope forensic-only. A kill
+/// before the head rename leaves the OLD binding, since a single-file rename is atomic (each
+/// artifact is wholly old or wholly new, never torn); this test exercises the new-binding leg,
+/// the one the ordering makes non-trivial.
+#[test]
+fn a_crash_between_head_and_envelope_commit_recovers_to_the_new_binding() {
+    let scratch = Scratch::new("crash-rebind");
+    let image_a = compile(BASE_SOURCE, BASE_IDS);
+    provision_from(scratch.dir(), &image_a);
+
+    // A body-only edit: same durable contract, interface, and ceiling; different code.
+    let edited = compile(&BASE_SOURCE.replace("?? 0", "?? 1"), BASE_IDS);
+    let binding_b = active_binding(&edited);
+
+    // Simulate the crash: open the store, stamp the new binding into the head (the commit
+    // point), and write only the head back — leaving the old envelope, exactly the on-disk
+    // state a kill between the head rename and the envelope rewrite leaves.
+    let (schemas, sites) = schemas_of(&image_a);
+    let mut opened = open(scratch.dir(), schemas, sites).expect("open");
+    opened.head.binding = binding_b;
+    let crashed_head = opened.head.encode();
+    drop(opened); // release the single-owner lock before reopening
+    std::fs::write(scratch.dir().join(HEAD_FILE), &crashed_head).expect("write crashed head");
+
+    // Reopen: the store is complete and runnable, and the active binding is the new image B.
+    let reopened = open_head(scratch.dir(), &edited);
+    assert_eq!(
+        reopened.binding.image_id, binding_b.image_id,
+        "reopen after the crash yields the new binding (the head is the commit point)",
+    );
+    assert!(
+        reopened.binding.facts_equal(&binding_b),
+        "the recovered binding facts match the new image",
+    );
 }
 
 #[test]

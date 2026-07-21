@@ -111,8 +111,7 @@ fn fast_path_costs_are_recorded() {
     std::fs::create_dir_all(store.parent().unwrap()).unwrap();
     provision(&store, &image);
     let open = measure(21, || {
-        let opened =
-            marrow_lifecycle::open(&store, schemas.clone(), sites.clone()).expect("open");
+        let opened = marrow_lifecycle::open(&store, schemas.clone(), sites.clone()).expect("open");
         drop(opened);
     });
 
@@ -123,7 +122,10 @@ fn fast_path_costs_are_recorded() {
         src.extend_from_slice(b"\nfn _budgetProbe(): int {\n    return 0\n}\n");
         let manifest = marrow_project::Manifest::parse("edition = \"2026\"\n").unwrap();
         let ids = std::fs::read(fixture_dir().join("marrow.ids")).unwrap();
-        let files = vec![marrow_project::CapturedFile::new("src/main.mw".to_string(), src)];
+        let files = vec![marrow_project::CapturedFile::new(
+            "src/main.mw".to_string(),
+            src,
+        )];
         let project = marrow_project::capture(
             &manifest,
             files,
@@ -139,8 +141,7 @@ fn fast_path_costs_are_recorded() {
         // Alternate the active image so every attach is a real rebind (a head commit).
         let img = if toggle { &image } else { &edited };
         toggle = !toggle;
-        match marrow_lifecycle::attach(&store, img, schemas.clone(), sites.clone())
-            .expect("attach")
+        match marrow_lifecycle::attach(&store, img, schemas.clone(), sites.clone()).expect("attach")
         {
             marrow_lifecycle::AttachOutcome::Rebound { store, .. } => drop(store),
             marrow_lifecycle::AttachOutcome::AlreadyActive(store) => drop(store),
@@ -174,10 +175,19 @@ fn fast_path_costs_are_recorded() {
     // Non-regression ceilings only (generous — the recorded medians are the evidence). Each
     // in-process step is well under an interactive frame; the end-to-end spawn dominates and
     // stays far under a human-interactive threshold.
-    assert!(verify < Duration::from_millis(50), "verification: {verify:?}");
+    assert!(
+        verify < Duration::from_millis(50),
+        "verification: {verify:?}"
+    );
     assert!(open < Duration::from_millis(200), "open: {open:?}");
-    assert!(head_commit < Duration::from_secs(1), "head commit: {head_commit:?}");
-    assert!(end_to_end < Duration::from_secs(5), "end-to-end: {end_to_end:?}");
+    assert!(
+        head_commit < Duration::from_secs(1),
+        "head commit: {head_commit:?}"
+    );
+    assert!(
+        end_to_end < Duration::from_secs(5),
+        "end-to-end: {end_to_end:?}"
+    );
 
     let _ = std::fs::remove_dir_all(store.parent().unwrap());
     let _ = std::fs::remove_dir_all(call_store.parent().unwrap());
