@@ -43,6 +43,13 @@ pub(crate) enum Record {
         code: &'static str,
         detail: Option<String>,
     },
+    /// Family 4 specialization: an aggregate compiler resource-limit outcome. Unlike a
+    /// bare operational error it carries the typed kind detail — which fixed bound was
+    /// exhausted — so a caller (or a bound-raise audit) can bisect which limit fired
+    /// without re-running. `kind_detail` is a frozen identifier from
+    /// [`marrow_compile::ResourceLimitKind::detail`]; the record still carries no numeric
+    /// limit and no source location. The code is always `cli.compiler_resource_limit`.
+    CompilerResourceLimit { kind_detail: &'static str },
 }
 
 impl Record {
@@ -68,6 +75,10 @@ impl Record {
                 Some(text) => format!("{code}: {text}"),
                 None => code.to_string(),
             },
+            Record::CompilerResourceLimit { kind_detail } => format!(
+                "{}: {kind_detail}",
+                marrow_codes::Code::CliCompilerResourceLimit.as_str()
+            ),
         }
     }
 
@@ -102,6 +113,11 @@ impl Record {
             Record::OperationalError { code, .. } => format!(
                 r#"{{"code":{},"kind":"run","outcome":"error"}}"#,
                 json_string(code)
+            ),
+            Record::CompilerResourceLimit { kind_detail } => format!(
+                r#"{{"code":{},"kind":"run","kind_detail":{},"outcome":"error"}}"#,
+                json_string(marrow_codes::Code::CliCompilerResourceLimit.as_str()),
+                json_string(kind_detail),
             ),
         }
     }
@@ -452,6 +468,25 @@ mod tests {
         assert_eq!(
             record.to_jsonl(&[], &[]),
             r#"{"code":"project.ids_corrupt","kind":"run","outcome":"error"}"#
+        );
+    }
+
+    /// The compiler resource-limit record carries the typed kind detail on the frozen
+    /// JSONL surface (keys in ascending byte order: `code`, `kind`, `kind_detail`,
+    /// `outcome`) and in text output, so which aggregate bound fired is legible without
+    /// re-running.
+    #[test]
+    fn compiler_resource_limit_carries_the_kind_detail() {
+        let record = Record::CompilerResourceLimit {
+            kind_detail: "Exports",
+        };
+        assert_eq!(
+            record.to_jsonl(&[], &[]),
+            r#"{"code":"cli.compiler_resource_limit","kind":"run","kind_detail":"Exports","outcome":"error"}"#
+        );
+        assert_eq!(
+            record.to_text(&[], &[]),
+            "cli.compiler_resource_limit: Exports"
         );
     }
 

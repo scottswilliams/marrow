@@ -1,9 +1,10 @@
 //! CRES01 command-surface bytes: a program that exhausts an aggregate compiler
-//! resource bound (more than `MAX_FUNCTIONS` functions, no single source construct at
-//! fault) surfaces through the real `marrow` binary as the fixed `cli.compiler_
-//! resource_limit` outcome — a payload-free operational record on `run`/`test` and a
-//! fixed bounded stderr line on `client`, with no image, identity mint, diagnostic,
-//! or partial output.
+//! resource bound (no single source construct at fault) surfaces through the real
+//! `marrow` binary as the fixed `cli.compiler_resource_limit` outcome carrying the typed
+//! kind detail — which bound fired — on `run`/`test` records and the `client` stderr
+//! line, with no image, identity mint, diagnostic, numeric limit, source location, or
+//! partial output. Over `MAX_FUNCTIONS` functions reports `Functions`; over `MAX_EXPORTS`
+//! public functions reports `Exports`.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -48,6 +49,20 @@ fn over_bound_project(dir: &Path) {
     std::fs::write(dir.join("src").join("main.mw"), source).expect("write source");
 }
 
+/// A storeless program with more public functions than `MAX_EXPORTS` (256) admits, yet
+/// well under `MAX_FUNCTIONS`: the export table is the aggregate bound that fills first,
+/// so the outcome names the `Exports` kind. Includes `main` as the run entry.
+fn over_export_project(dir: &Path) {
+    std::fs::write(dir.join("marrow.toml"), "edition = \"2026\"\n").expect("write manifest");
+    std::fs::create_dir_all(dir.join("src")).expect("create src");
+    let mut source = String::from("module main\n\n");
+    for i in 0..257 {
+        source.push_str(&format!("pub fn f{i}(): int {{\n    return 0\n}}\n\n"));
+    }
+    source.push_str("pub fn main(): int {\n    return 0\n}\n");
+    std::fs::write(dir.join("src").join("main.mw"), source).expect("write source");
+}
+
 fn run_in(dir: &Path, args: &[&str]) -> Output {
     Command::new(MARROW)
         .args(args)
@@ -57,43 +72,43 @@ fn run_in(dir: &Path, args: &[&str]) -> Output {
 }
 
 #[test]
-fn run_text_emits_the_fixed_resource_limit_record() {
+fn run_text_emits_the_kinded_resource_limit_record() {
     let dir = TempDir::new("run-text");
     over_bound_project(&dir.root);
     let output = run_in(&dir.root, &["run", "main"]);
     assert!(!output.status.success(), "an exhausted bound fails the run");
     assert_eq!(
         String::from_utf8(output.stdout).expect("utf8 stdout"),
-        "cli.compiler_resource_limit\n"
+        "cli.compiler_resource_limit: Functions\n"
     );
 }
 
 #[test]
-fn run_jsonl_emits_the_fixed_operational_record() {
+fn run_jsonl_emits_the_kinded_operational_record() {
     let dir = TempDir::new("run-jsonl");
     over_bound_project(&dir.root);
     let output = run_in(&dir.root, &["run", "main", "--format", "jsonl"]);
     assert!(!output.status.success());
     assert_eq!(
         String::from_utf8(output.stdout).expect("utf8 stdout"),
-        "{\"code\":\"cli.compiler_resource_limit\",\"kind\":\"run\",\"outcome\":\"error\"}\n"
+        "{\"code\":\"cli.compiler_resource_limit\",\"kind\":\"run\",\"kind_detail\":\"Functions\",\"outcome\":\"error\"}\n"
     );
 }
 
 #[test]
-fn test_command_emits_the_fixed_operational_record() {
+fn test_command_emits_the_kinded_operational_record() {
     let dir = TempDir::new("test-jsonl");
     over_bound_project(&dir.root);
     let output = run_in(&dir.root, &["test", "--format", "jsonl"]);
     assert!(!output.status.success());
     assert_eq!(
         String::from_utf8(output.stdout).expect("utf8 stdout"),
-        "{\"code\":\"cli.compiler_resource_limit\",\"kind\":\"run\",\"outcome\":\"error\"}\n"
+        "{\"code\":\"cli.compiler_resource_limit\",\"kind\":\"run\",\"kind_detail\":\"Functions\",\"outcome\":\"error\"}\n"
     );
 }
 
 #[test]
-fn client_emits_the_fixed_stderr_line_and_no_stdout() {
+fn client_emits_the_kinded_stderr_line_and_no_stdout() {
     let dir = TempDir::new("client");
     over_bound_project(&dir.root);
     let output = run_in(&dir.root, &["client", "typescript"]);
@@ -104,6 +119,21 @@ fn client_emits_the_fixed_stderr_line_and_no_stdout() {
     );
     assert_eq!(
         String::from_utf8(output.stderr).expect("utf8 stderr"),
-        "cli.compiler_resource_limit: the compiler reached a fixed resource limit\n"
+        "cli.compiler_resource_limit: the compiler reached a fixed resource limit (Functions)\n"
+    );
+}
+
+/// A program that exhausts the export bound specifically (more than `MAX_EXPORTS` public
+/// functions, still under `MAX_FUNCTIONS`) reports the `Exports` kind — so the record
+/// distinguishes which aggregate bound fired, the DX finding this lane closes.
+#[test]
+fn run_jsonl_names_the_export_bound_kind() {
+    let dir = TempDir::new("run-exports");
+    over_export_project(&dir.root);
+    let output = run_in(&dir.root, &["run", "main", "--format", "jsonl"]);
+    assert!(!output.status.success());
+    assert_eq!(
+        String::from_utf8(output.stdout).expect("utf8 stdout"),
+        "{\"code\":\"cli.compiler_resource_limit\",\"kind\":\"run\",\"kind_detail\":\"Exports\",\"outcome\":\"error\"}\n"
     );
 }

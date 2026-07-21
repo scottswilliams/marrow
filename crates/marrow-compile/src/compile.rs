@@ -210,6 +210,36 @@ pub enum ResourceLimitKind {
     DiagnosticBytes,
 }
 
+impl ResourceLimitKind {
+    /// The stable identifier for which fixed bound was exhausted. It names the kind — not
+    /// its numeric limit or any source location — so an operator (or a bound-raise audit)
+    /// can bisect which aggregate bound fired without re-running under instrumentation. The
+    /// strings are a frozen surface: the CLI resource-limit record carries this verbatim.
+    pub fn detail(self) -> &'static str {
+        match self {
+            ResourceLimitKind::Strings => "Strings",
+            ResourceLimitKind::Consts => "Consts",
+            ResourceLimitKind::Types => "Types",
+            ResourceLimitKind::Enums => "Enums",
+            ResourceLimitKind::Collections => "Collections",
+            ResourceLimitKind::Roots => "Roots",
+            ResourceLimitKind::DurableMembers => "DurableMembers",
+            ResourceLimitKind::Sites => "Sites",
+            ResourceLimitKind::Functions => "Functions",
+            ResourceLimitKind::Exports => "Exports",
+            ResourceLimitKind::TestEntries => "TestEntries",
+            ResourceLimitKind::ImageBytes => "ImageBytes",
+            ResourceLimitKind::StringBytes => "StringBytes",
+            ResourceLimitKind::Locals => "Locals",
+            ResourceLimitKind::CodeBytes => "CodeBytes",
+            ResourceLimitKind::IndexComponents => "IndexComponents",
+            ResourceLimitKind::DurableDepth => "DurableDepth",
+            ResourceLimitKind::DiagnosticCount => "DiagnosticCount",
+            ResourceLimitKind::DiagnosticBytes => "DiagnosticBytes",
+        }
+    }
+}
+
 /// A fixed compiler-owned resource bound compilation exhausted with no single
 /// source construct at fault. It carries only its typed [`ResourceLimitKind`] and
 /// the fixed bound as integers — never a source location, span, spelling, or a
@@ -2006,6 +2036,37 @@ mod tests {
 
     fn resource(kind: super::ResourceLimitKind) -> super::CompileResourceLimit {
         super::CompileResourceLimit::new(kind, 64)
+    }
+
+    /// The frozen kind-detail surface: each aggregate bound names itself with a stable
+    /// identifier the CLI resource-limit record carries verbatim. A drift here is a
+    /// deliberate change to that published surface.
+    #[test]
+    fn resource_limit_kind_detail_is_frozen() {
+        use super::ResourceLimitKind::*;
+        for (kind, detail) in [
+            (Strings, "Strings"),
+            (Consts, "Consts"),
+            (Types, "Types"),
+            (Enums, "Enums"),
+            (Collections, "Collections"),
+            (Roots, "Roots"),
+            (DurableMembers, "DurableMembers"),
+            (Sites, "Sites"),
+            (Functions, "Functions"),
+            (Exports, "Exports"),
+            (TestEntries, "TestEntries"),
+            (ImageBytes, "ImageBytes"),
+            (StringBytes, "StringBytes"),
+            (Locals, "Locals"),
+            (CodeBytes, "CodeBytes"),
+            (IndexComponents, "IndexComponents"),
+            (DurableDepth, "DurableDepth"),
+            (DiagnosticCount, "DiagnosticCount"),
+            (DiagnosticBytes, "DiagnosticBytes"),
+        ] {
+            assert_eq!(kind.detail(), detail);
+        }
     }
 
     /// A resource candidate surfaces only when no invariant and no diagnostic set

@@ -98,10 +98,10 @@ pub(crate) fn run(rest: &[String]) -> ExitCode {
                                 ExitCode::FAILURE,
                             );
                         }
-                        Err(CompileFailure::ResourceLimit(_)) => {
+                        Err(CompileFailure::ResourceLimit(limit)) => {
                             return emit(
                                 args.format,
-                                &[compiler_resource_limit_record()],
+                                &[compiler_resource_limit_record(limit)],
                                 &[],
                                 &[],
                                 ExitCode::FAILURE,
@@ -138,10 +138,10 @@ pub(crate) fn run(rest: &[String]) -> ExitCode {
                 }
             }
         }
-        Err(CompileFailure::ResourceLimit(_)) => {
+        Err(CompileFailure::ResourceLimit(limit)) => {
             return emit(
                 args.format,
-                &[compiler_resource_limit_record()],
+                &[compiler_resource_limit_record(limit)],
                 &[],
                 &[],
                 ExitCode::FAILURE,
@@ -252,13 +252,13 @@ fn compiler_invariant_record() -> Record {
     }
 }
 
-/// The fixed payload-free operational record for a compiler resource-limit outcome.
-/// The typed limit's kind and bound are internal; the CLI surfaces one fixed code
-/// with no detail, and never a source location or an image.
-fn compiler_resource_limit_record() -> Record {
-    Record::OperationalError {
-        code: marrow_codes::Code::CliCompilerResourceLimit.as_str(),
-        detail: None,
+/// The operational record for a compiler resource-limit outcome. It carries the typed
+/// kind detail — which fixed aggregate bound was exhausted — so an operator can bisect
+/// the limit; the numeric bound and any source location stay internal, and no image is
+/// produced.
+fn compiler_resource_limit_record(limit: marrow_compile::CompileResourceLimit) -> Record {
+    Record::CompilerResourceLimit {
+        kind_detail: limit.kind().detail(),
     }
 }
 
