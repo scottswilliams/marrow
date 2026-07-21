@@ -155,6 +155,7 @@ name = "marrow-lsp"
 version = "0.1.0"
 dependencies = [
  "lsp-types",
+ "marrow-codes",
  "marrow-compile",
  "marrow-project",
  "marrow-project-fs",

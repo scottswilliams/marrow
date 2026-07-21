@@ -82,6 +82,45 @@ impl<'a> LineMap<'a> {
             end: self.position_at(end_byte),
         }
     }
+
+    /// The UTF-8 byte offset of an LSP position. A line past the end clamps to the end
+    /// of source; a character past the line end clamps to the line end (the LSP
+    /// convention). Total and defensive: a stale client position never panics.
+    pub fn byte_at(&self, position: Position) -> usize {
+        // Find the byte offset of the requested line's start.
+        let mut line = 0u32;
+        let mut line_start = 0usize;
+        if position.line > 0 {
+            for (index, byte) in self.source.as_bytes().iter().enumerate() {
+                if *byte == b'\n' {
+                    line += 1;
+                    if line == position.line {
+                        line_start = index + 1;
+                        break;
+                    }
+                }
+            }
+            if line < position.line {
+                // The line is past the end of source.
+                return self.source.len();
+            }
+        }
+        // Advance UTF-16 code units within the line up to the requested character.
+        let line_text = &self.source[line_start..];
+        let mut character = 0u32;
+        for (index, ch) in line_text.char_indices() {
+            if character >= position.character || ch == '\n' {
+                return line_start + index;
+            }
+            character += ch.len_utf16() as u32;
+        }
+        line_start + line_text.trim_end_matches('\n').len()
+    }
+
+    /// The end-of-source position — the range end of a whole-document edit.
+    pub fn end_position(&self) -> Position {
+        self.position_at(self.source.len())
+    }
 }
 
 #[cfg(test)]
@@ -129,6 +168,32 @@ mod tests {
         // Offset 1 is inside the 4-byte astral char at byte 0.
         let map = LineMap::new("😀x");
         assert_eq!(map.position_at(1), Position { line: 0, character: 0 });
+    }
+
+    #[test]
+    fn byte_at_round_trips_position_at() {
+        let source = "let x = 1\nlet 😀 = 2\nend";
+        let map = LineMap::new(source);
+        for offset in [0usize, 4, 9, 10, 14, source.len()] {
+            let position = map.position_at(offset);
+            // Round-trip lands on a character boundary at or before the original offset.
+            let back = map.byte_at(position);
+            assert!(back <= offset, "byte_at({position:?})={back} > {offset}");
+            assert_eq!(map.position_at(back), position);
+        }
+    }
+
+    #[test]
+    fn byte_at_clamps_line_and_character() {
+        let map = LineMap::new("ab\ncd");
+        assert_eq!(map.byte_at(Position { line: 9, character: 0 }), 5);
+        assert_eq!(map.byte_at(Position { line: 0, character: 99 }), 2);
+    }
+
+    #[test]
+    fn end_position_is_source_end() {
+        let map = LineMap::new("ab\ncde");
+        assert_eq!(map.end_position(), Position { line: 1, character: 3 });
     }
 
     #[test]

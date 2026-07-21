@@ -13,6 +13,9 @@ name = "marrow_lsp"
 path = "src/lib.rs"
 
 [dependencies]
+# The published diagnostic-code registry: the stable `Code` vocabulary and its
+# severity classification, consumed to project a diagnostic's code into LSP severity.
+marrow-codes = { path = "../marrow-codes" }
 # The published editor-analysis fact floor (H00f/H00f2): AnalysisSnapshot, hover,
 # definition, and checked formatting over one exact ProjectInput. The LSP reconstructs
 # no semantics; it consumes these facts only.

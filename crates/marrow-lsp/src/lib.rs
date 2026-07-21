@@ -23,9 +23,11 @@
 
 #![warn(missing_docs)]
 
+pub mod analysis;
 pub mod capacities;
 pub mod credit;
 pub mod document;
+pub mod facts;
 pub mod position;
 pub mod protocol;
 pub mod transport;
