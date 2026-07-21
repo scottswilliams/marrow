@@ -5,10 +5,12 @@
 //! `^root[key].branch` base does. The place's key-path — evaluated once at its binding —
 //! is the traversal's ancestor key-path; the branch adds its own immediate key. These
 //! tests drive the whole production path (capture -> compile -> verify -> attach -> VM)
-//! over one persistent ephemeral attachment: a simple root place, an identity-keyed
-//! place, a per-iteration pin used as an inner base, a two-binding traversal that deletes
-//! through the pin, and a composite-root place whose whole two-column key-path locates the
-//! branch.
+//! over one persistent ephemeral attachment: a simple root place, a per-iteration pin used
+//! as an inner base, a two-binding traversal that deletes through the pin, the `on more`
+//! overflow arm through a place base, and a composite-root place whose whole two-column
+//! key-path locates the branch. A place bound through an entry identity is refused as a
+//! traversal base (its key-path carries a typed identity column the traversal ancestor pop
+//! does not yet accept); that refusal is pinned here too.
 
 use marrow_verify::{SealedExport, VerifiedImage};
 use marrow_vm::{DurableRun, Ephemeral, Value, mint_ephemeral, run_export};
@@ -220,12 +222,22 @@ fn a_root_place_is_a_branch_traversal_base() {
     // `place b = ^books[1]; for pos in b.notes` folds book 1's notes {10,20} = 30; the
     // layer is exhausted, so `on more` does not run.
     assert_eq!(
-        run(&image, &mut attachment, "sumNotesViaPlace", vec![Value::Int(1)]),
+        run(
+            &image,
+            &mut attachment,
+            "sumNotesViaPlace",
+            vec![Value::Int(1)]
+        ),
         Some(Value::Int(30))
     );
     // Book 2 has no notes: the branch under the place is empty.
     assert_eq!(
-        run(&image, &mut attachment, "sumNotesViaPlace", vec![Value::Int(2)]),
+        run(
+            &image,
+            &mut attachment,
+            "sumNotesViaPlace",
+            vec![Value::Int(2)]
+        ),
         Some(Value::Int(0))
     );
 }
@@ -369,7 +381,12 @@ fn a_two_binding_place_base_deletes_through_the_pin() {
     );
     // The reading place traversal agrees the notes are gone.
     assert_eq!(
-        run(&image, &mut attachment, "sumNotesViaPlace", vec![Value::Int(1)]),
+        run(
+            &image,
+            &mut attachment,
+            "sumNotesViaPlace",
+            vec![Value::Int(1)]
+        ),
         Some(Value::Int(0))
     );
 }
@@ -382,7 +399,11 @@ fn a_composite_root_place_locates_a_branch_by_its_whole_key_path() {
         &image,
         &mut attachment,
         "putGrade",
-        vec![Value::Text("amy".into()), Value::Text("cs".into()), Value::Text("fall".into())],
+        vec![
+            Value::Text("amy".into()),
+            Value::Text("cs".into()),
+            Value::Text("fall".into()),
+        ],
     );
     for slot in [3i64, 4] {
         run(
@@ -402,7 +423,11 @@ fn a_composite_root_place_locates_a_branch_by_its_whole_key_path() {
         &image,
         &mut attachment,
         "putGrade",
-        vec![Value::Text("bob".into()), Value::Text("cs".into()), Value::Text("fall".into())],
+        vec![
+            Value::Text("bob".into()),
+            Value::Text("cs".into()),
+            Value::Text("fall".into()),
+        ],
     );
     run(
         &image,
