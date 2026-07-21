@@ -261,6 +261,28 @@ pub(super) fn subbranch_not_a_field(
     )
 }
 
+/// `absent` used as an operand of `==`/`!=`. Presence is a distinct question with one
+/// canonical vocabulary (`if const` / `??` / `exists`); a second equality-shaped spelling
+/// is not admitted, so the message steers to the presence forms rather than reporting the
+/// generic uninferable-`absent` type error. Points at the `absent` operand span.
+pub(super) fn absent_not_operand(
+    file: &FileIdentity,
+    span: SourceSpan,
+    op: BinaryOp,
+) -> SourceDiagnostic {
+    SourceDiagnostic::at(
+        Code::CheckType.as_str(),
+        file,
+        span,
+        format!(
+            "`absent` is not an operand of `{}`. Presence is a distinct question, asked with a \
+             presence form rather than equality: guard the value with `if const x = _`, \
+             coalesce with `?? _`, or test a durable path with `exists(...)`.",
+            operator_symbol(op)
+        ),
+    )
+}
+
 pub(super) fn name_error(file: &FileIdentity, span: SourceSpan, name: &str) -> SourceDiagnostic {
     SourceDiagnostic::at(
         Code::CheckType.as_str(),

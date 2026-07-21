@@ -420,6 +420,24 @@ impl<'a> FnLowerer<'a> {
             BinaryOp::And | BinaryOp::Or => self.lower_short_circuit(op, left, right),
             BinaryOp::Coalesce => self.lower_coalesce(left, right),
             _ => {
+                // `absent` is not an equality operand: presence has one canonical vocabulary
+                // (`if const` / `??` / `exists`), and a second equality spelling for the same
+                // question is not admitted. Steer before generic operand typing, so the
+                // message names the presence forms rather than the uninferable-`absent` error.
+                // The left operand is lowered first so a genuinely ill-typed left still errors
+                // at its own site.
+                if matches!(op, BinaryOp::Equal | BinaryOp::NotEqual) {
+                    if let Expression::Absent { span } = left {
+                        self.fail(absent_not_operand(self.file, *span, op));
+                        return None;
+                    }
+                    let left_ty = self.lower_expr(left)?;
+                    if let Expression::Absent { span } = right {
+                        self.fail(absent_not_operand(self.file, *span, op));
+                        return None;
+                    }
+                    return self.lower_binary_op(op, left_ty, right);
+                }
                 let left_ty = self.lower_expr(left)?;
                 self.lower_binary_op(op, left_ty, right)
             }
