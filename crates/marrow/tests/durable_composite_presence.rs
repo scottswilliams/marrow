@@ -106,7 +106,9 @@ fn run(
     match run_export(image, attachment, export(image, name), args) {
         DurableRun::Ran(Ok(value)) => value,
         DurableRun::Ran(Err(fault)) => panic!("{name} faulted at run: {}", fault.code()),
-        DurableRun::Parked => panic!("{name} parked — the composite-root shortcut is not executable"),
+        DurableRun::Parked => {
+            panic!("{name} parked — the composite-root shortcut is not executable")
+        }
         DurableRun::Failed(code) => panic!("{name} failed to mint its attachment: {code}"),
     }
 }
@@ -121,7 +123,12 @@ fn composite_root_place_presence_shortcuts_run_end_to_end() {
     let mut store = attach(&image);
 
     // Seed one composite-key entry.
-    run(&image, &mut store, "enroll", vec![s("ada"), s("cs"), Value::Int(95)]);
+    run(
+        &image,
+        &mut store,
+        "enroll",
+        vec![s("ada"), s("cs"), Value::Int(95)],
+    );
 
     // `exists(^t[a, b])` inline over a composite root: present for the seeded key, absent
     // for an unseeded one.

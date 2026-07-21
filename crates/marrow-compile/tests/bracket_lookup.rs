@@ -242,7 +242,9 @@ fn equality_against_absent_steers_to_the_presence_forms() {
         // Voice: `absent` in source spelling leads, the presence rule follows, and the fix
         // names the canonical presence forms.
         assert!(
-            diagnostic.message.starts_with("`absent` is not an operand of"),
+            diagnostic
+                .message
+                .starts_with("`absent` is not an operand of"),
             "{op}: {}",
             diagnostic.message
         );

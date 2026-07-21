@@ -1127,7 +1127,9 @@ fn chaining_a_branch_off_a_materialized_record_steers_to_the_durable_path() {
     assert_eq!(diagnostic.line(), 70, "{}", diagnostic.message);
     // Voice: fact (the branch in source spelling), rule, then the canonical durable-path fix.
     assert!(
-        diagnostic.message.contains("`notes` is a keyed branch of `Book`"),
+        diagnostic
+            .message
+            .contains("`notes` is a keyed branch of `Book`"),
         "{}",
         diagnostic.message
     );
