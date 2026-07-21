@@ -1,0 +1,164 @@
+// A small ERP order-entry slice: multiple store roots (a catalog, an order book,
+// and an id counter), managed indexes read inside nested loops, whole-entry
+// partial-copy round trips, accumulation, an early-rejection/late-commit order
+// placement, and the blessed fixed-scale money idiom carried by a nominal `Cents`
+// type. Money is stored as a plain `int` cent count because a nominal-typed durable
+// field is not executable; the nominal type guards local arithmetic only.
+
+// shape ---------------------------------------------------------------------
+
+/// A fixed-scale money amount in whole cents. The interval is the fixed-scale
+/// discipline; `supports` admits the money operators the accumulation needs.
+type Cents: int in 0..=100000000 supports add, subtract, scale
+
+resource Item {
+    required name: string
+    required category: string
+    priceCents: int
+    barcode: string
+    discontinued: bool
+}
+
+store ^items[sku: string]: Item {
+    index byCategory[category, sku]
+    index byBarcode[barcode] unique
+}
+
+resource Order {
+    required customer: string
+    placedAt: instant
+
+    lines[lineNo: int] {
+        required sku: string
+        required qty: int
+        unitPriceCents: int
+    }
+}
+
+store ^orders[orderId: int]: Order
+
+resource Counter {
+    required value: int
+}
+
+store ^idseq[name: string]: Counter
+
+// acts ----------------------------------------------------------------------
+
+pub fn addItem(sku: string, name: string, category: string, priceCents: int) {
+    transaction {
+        ^items[sku] = Item(name: name, category: category, priceCents: priceCents)
+    }
+}
+
+pub fn setBarcode(sku: string, barcode: string) {
+    transaction {
+        place item = ^items[sku]
+        if exists(item) {
+            item.barcode = barcode
+        }
+    }
+}
+
+pub fn priceOf(sku: string): int? {
+    return ^items[sku].priceCents
+}
+
+// A whole-entry partial-copy round trip. Reading the whole `Item` into a local
+// carries every field, so writing it back after changing one preserves the
+// unread sparse fields (`barcode`, `discontinued`). This is the safe read-modify-
+// write; a partial constructor in the same assignment position would instead drop
+// every field it omits.
+pub fn applyMarkupPercent(sku: string, percent: int): Result<int, string> {
+    transaction {
+        const current = ^items[sku] else return err("no such item")
+        const base = current.priceCents ?? 0
+        const delta = checked base * percent
+            on out_of_range return err("markup overflow")
+        const bump = delta / 100
+        const raised = checked base + bump
+            on out_of_range return err("price overflow")
+        var next = current
+        next.priceCents = raised
+        ^items[sku] = next
+        return ok(raised)
+    }
+}
+
+// The fixed-scale money idiom. `Cents.checked` validates the unit price against the
+// fixed-scale interval; recovering the underlying int needs `unit - Cents(0)`
+// because a nominal type has no value accessor and money*money / money+money are
+// not expressible, so the line total is accumulated in plain int.
+pub fn extendedPriceCents(unitCents: int, qty: int): Result<int, string> {
+    const unit = Cents.checked(unitCents) else return err("unit price out of fixed-scale range")
+    if qty < 0 { return err("negative quantity") }
+    const base = unit - Cents(0)
+    const total = checked base * qty
+        on out_of_range return err("line total overflow")
+    return ok(total)
+}
+
+pub fn placeOrder(customer: string, at: instant): Result<int, string> {
+    transaction {
+        if customer == "" { return err("missing customer") }
+        place seq = ^idseq["order"]
+        const next = (seq.value ?? 0) + 1
+        seq.value = next
+        ^orders[next] = Order(customer: customer, placedAt: at)
+        return ok(next)
+    }
+}
+
+pub fn addLine(orderId: int, lineNo: int, sku: string, qty: int): Result<int, string> {
+    transaction {
+        if qty <= 0 { return err("nonpositive quantity") }
+        const price = ^items[sku].priceCents else return err("item has no price")
+        ^orders[orderId].lines[lineNo] = Order.lines(sku: sku, qty: qty, unitPriceCents: price)
+        return ok(lineNo)
+    }
+}
+
+// Accumulation over a keyed branch: sum each line's extended price. The running
+// total is a plain int because the branch stores int cents and money values do not
+// add directly.
+pub fn orderTotalCents(orderId: int): int {
+    var total = 0
+    place order = ^orders[orderId]
+    for lineNo, line in order.lines at most 1000 {
+        if const got = line {
+            const qty = got.qty
+            const unit = got.unitPriceCents ?? 0
+            total += unit * qty
+        }
+    } on more return -1
+    return total
+}
+
+// An indexed lookup nested inside a loop: for each requested category, scan the
+// non-unique `byCategory` index and accumulate the catalog value of the present
+// items. The index scan yields each `Id(^items)`, dereferenced to read the entry.
+pub fn catalogValueOfTwo(catA: string, catB: string): int {
+    const categories = List(catA, catB)
+    var total = 0
+    for category in categories {
+        for sku in ^items.byCategory[category] at most 1000 {
+            if const item = ^items[sku] {
+                total += item.priceCents ?? 0
+            }
+        } on more return -1
+    }
+    return total
+}
+
+// A unique-index lookup: the barcode index yields exactly the one matching item or
+// absent, never a sibling. The bound `Id(^items)` is dereferenced to read the entry.
+pub fn nameByBarcode(barcode: string): string? {
+    if const found = ^items.byBarcode[barcode] {
+        return ^items[found].name
+    }
+    return absent
+}
+
+pub fn barcodeTaken(barcode: string): bool {
+    return exists(^items.byBarcode[barcode])
+}

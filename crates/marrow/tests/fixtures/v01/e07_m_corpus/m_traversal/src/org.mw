@@ -1,0 +1,135 @@
+// An M-shaped traversal stress: an org tree three keyed-branch layers deep
+// (departments / teams / members), exercised by three-level nested bounded
+// traversal with an `on more` arm at every level, a three-deep Result error-
+// bubbling chain whose error is constructed once at the source and surfaced typed
+// at the boundary, and a bounded innermost-first purge (full removal by
+// composition). Branch entries are built with named-argument constructors.
+
+resource Org {
+    required name: string
+
+    departments[deptId: int] {
+        required name: string
+
+        teams[teamId: int] {
+            required name: string
+
+            members[memberId: int] {
+                required name: string
+                active: bool
+            }
+        }
+    }
+}
+
+store ^orgs[orgId: int]: Org
+
+// --- seeding (named-argument branch constructors) --------------------------
+
+pub fn createOrg(orgId: int, name: string) {
+    transaction {
+        ^orgs[orgId] = Org(name: name)
+    }
+}
+
+pub fn addDepartment(orgId: int, deptId: int, name: string) {
+    transaction {
+        ^orgs[orgId].departments[deptId] = Org.departments(name: name)
+    }
+}
+
+pub fn addTeam(orgId: int, deptId: int, teamId: int, name: string) {
+    transaction {
+        ^orgs[orgId].departments[deptId].teams[teamId] = Org.departments.teams(name: name)
+    }
+}
+
+pub fn addMember(orgId: int, deptId: int, teamId: int, memberId: int, name: string, active: bool) {
+    transaction {
+        ^orgs[orgId].departments[deptId].teams[teamId].members[memberId] = Org.departments.teams.members(name: name, active: active)
+    }
+}
+
+// --- three-level nested bounded traversal with `on more` at each level ------
+
+// Count the active members across the whole org tree. Each of the three `for`
+// heads is bounded and carries its own `on more` arm; an overflow at any level
+// abandons the count with -1.
+pub fn activeMemberCount(orgId: int): int {
+    var count = 0
+    place org = ^orgs[orgId]
+    for deptId, dept in org.departments at most 1000 {
+        for teamId, team in dept.teams at most 1000 {
+            for memberId, member in team.members at most 1000 {
+                if const got = member {
+                    if got.active ?? false {
+                        count += 1
+                    }
+                }
+            } on more return -1
+        } on more return -1
+    } on more return -1
+    return count
+}
+
+// --- three-deep error bubbling ---------------------------------------------
+
+// The error is constructed once at the deepest source and propagated with `try`
+// through each layer, surfacing typed at the export boundary. No layer re-threads
+// an error flag or reconstructs the message.
+fn memberName(orgId: int, deptId: int, teamId: int, memberId: int): Result<string, string> {
+    if const m = ^orgs[orgId].departments[deptId].teams[teamId].members[memberId] {
+        return ok(m.name)
+    }
+    return err("no such member")
+}
+
+fn teamMemberName(orgId: int, deptId: int, teamId: int, memberId: int): Result<string, string> {
+    const name = try memberName(orgId, deptId, teamId, memberId)
+    return ok(name)
+}
+
+fn departmentMemberName(orgId: int, deptId: int, teamId: int, memberId: int): Result<string, string> {
+    const name = try teamMemberName(orgId, deptId, teamId, memberId)
+    return ok(name)
+}
+
+pub fn lookupMemberName(orgId: int, deptId: int, teamId: int, memberId: int): Result<string, string> {
+    const name = try departmentMemberName(orgId, deptId, teamId, memberId)
+    return ok(name)
+}
+
+// --- bounded full removal by composition ------------------------------------
+
+// A whole-entry `delete` is payload-only, so removing an org and every descendant
+// is a bounded innermost-first composition: each traversal descends one branch
+// layer and deletes the per-iteration pin, then the entry's own payload last.
+pub fn purgeOrg(orgId: int) {
+    transaction {
+        place org = ^orgs[orgId]
+        for deptId, dept in org.departments at most 1000 {
+            for teamId, team in dept.teams at most 1000 {
+                for memberId, member in team.members at most 1000 {
+                    delete member
+                } on more {}
+                delete team
+            } on more {}
+            delete dept
+        } on more {}
+        delete org
+    }
+}
+
+// --- reads ------------------------------------------------------------------
+
+pub fn orgName(orgId: int): string? {
+    return ^orgs[orgId].name
+}
+
+pub fn memberActive(orgId: int, deptId: int, teamId: int, memberId: int): bool {
+    return ^orgs[orgId].departments[deptId].teams[teamId].members[memberId].active ?? false
+}
+
+pub fn orgExists(orgId: int): bool {
+    return exists(^orgs[orgId])
+}
