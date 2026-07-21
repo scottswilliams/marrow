@@ -5,12 +5,55 @@ use super::super::{
     BoundedKeys, BoundedLimit, BranchSchema, CommitResult, CreateOutcome, DemandCoverage,
     EntryValue, EraseOutcome, FieldSchema, GroupSchema, IndexComponent, IndexSchema,
     InvocationGrant, KernelFault, Presence, ReplaceOutcome, SessionError, SiteSpec, SiteTarget,
-    StoreSchema,
+    StoreSchema, number_store,
 };
 use super::{Durable, DurableStore};
 use crate::codec::key::KeyScalar;
 use crate::codec::value::{RuntimeScalar, ScalarKind};
 use crate::equality::ValueDomain;
+
+/// The store-wide cell-key number of top-level field `index` of a single-root `schema`,
+/// from the same numbering the store computes — so a test's hand-built cells key by the
+/// exact numbers the ops write (correct by construction, not by hardcoded literals).
+fn field_num(schema: &StoreSchema, index: usize) -> physical::NodeNumber {
+    number_store(std::slice::from_ref(schema))[0].fields[index]
+}
+
+/// The cell-key number of the branch reached by `path` (per-level branch indices from the
+/// root down) in a single-root `schema`.
+fn branch_num(schema: &StoreSchema, path: &[usize]) -> physical::NodeNumber {
+    let numbering = number_store(std::slice::from_ref(schema));
+    let mut level = &numbering[0].branches;
+    let mut number = 0;
+    for &p in path {
+        number = level[p].number;
+        level = &level[p].branches;
+    }
+    number
+}
+
+/// The cell-key number of field `field` of the branch reached by `path` in a single-root
+/// `schema`.
+fn branch_field_num(schema: &StoreSchema, path: &[usize], field: usize) -> physical::NodeNumber {
+    let numbering = number_store(std::slice::from_ref(schema));
+    let mut level = &numbering[0].branches;
+    let mut node = &level[path[0]];
+    for &p in &path[1..] {
+        level = &node.branches;
+        node = &level[p];
+    }
+    node.fields[field]
+}
+
+/// The cell-key number of group `index` of a single-root `schema`.
+fn group_num(schema: &StoreSchema, index: usize) -> physical::NodeNumber {
+    number_store(std::slice::from_ref(schema))[0].groups[index].number
+}
+
+/// The cell-key number of field `field` of group `index` of a single-root `schema`.
+fn group_field_num(schema: &StoreSchema, index: usize, field: usize) -> physical::NodeNumber {
+    number_store(std::slice::from_ref(schema))[0].groups[index].fields[field]
+}
 
 fn schema() -> StoreSchema {
     StoreSchema {
@@ -149,8 +192,8 @@ fn a_field_leaf_without_a_marker_is_corruption() {
         let mut txn = engine.begin().expect("begin");
         txn.put(
             &physical::stem_field_leaf(
-                &physical::marker_key("counters", &[KeyScalar::Str("x".into())]),
-                "value",
+                &physical::marker_key(0, &[KeyScalar::Str("x".into())]),
+                field_num(&schema(), 0),
             ),
             b"5".to_vec(),
         )
@@ -236,8 +279,8 @@ fn a_committed_orphan_reads_as_corruption() {
         let mut txn = engine.begin().expect("begin");
         txn.put(
             &physical::stem_field_leaf(
-                &physical::marker_key("counters", &[KeyScalar::Str("x".into())]),
-                "value",
+                &physical::marker_key(0, &[KeyScalar::Str("x".into())]),
+                field_num(&schema(), 0),
             ),
             b"5".to_vec(),
         )
@@ -446,9 +489,10 @@ fn a_branch_entry_makes_its_root_descendant_only_and_root_create_preserves_it() 
 // is *corrupt* — and the own-leaf corruption is surfaced ahead of the legitimate
 // descendant (the `0x10 < 0x30` precedence).
 
-/// The byte prefix (marker stem) of a `books` root entry.
+/// The byte prefix (marker stem) of a `books` root entry. `books` is the sole root, so it
+/// is cell-key number 0.
 fn book_stem(key: &str) -> Vec<u8> {
-    physical::marker_key("books", &[KeyScalar::Str(key.into())])
+    physical::marker_key(0, &[KeyScalar::Str(key.into())])
 }
 
 /// Seed `cells` (key, value pairs) into a fresh engine and wrap it in a branch-schema
@@ -473,11 +517,15 @@ fn injected_branch_store(cells: &[(Vec<u8>, Vec<u8>)]) -> DurableStore<MemoryEng
 #[test]
 fn an_injected_descendant_only_node_reads_payload_absent_not_corruption() {
     let stem = book_stem("a");
-    let branch_stem = physical::branch_child_stem(&stem, "notes", &[KeyScalar::Int(7)]);
+    let branch_stem = physical::branch_child_stem(
+        &stem,
+        branch_num(&branch_schema().0, &[0]),
+        &[KeyScalar::Int(7)],
+    );
     let mut store = injected_branch_store(&[
         (branch_stem.clone(), physical::MARKER_VALUE.to_vec()),
         (
-            physical::stem_field_leaf(&branch_stem, "text"),
+            physical::stem_field_leaf(&branch_stem, branch_field_num(&branch_schema().0, &[0], 0)),
             b"hi".to_vec(),
         ),
     ]);
@@ -514,17 +562,21 @@ fn an_injected_descendant_only_node_reads_payload_absent_not_corruption() {
 #[test]
 fn an_injected_root_own_leaf_without_a_marker_is_corruption_even_with_a_descendant() {
     let stem = book_stem("a");
-    let branch_stem = physical::branch_child_stem(&stem, "notes", &[KeyScalar::Int(7)]);
+    let branch_stem = physical::branch_child_stem(
+        &stem,
+        branch_num(&branch_schema().0, &[0]),
+        &[KeyScalar::Int(7)],
+    );
     let mut store = injected_branch_store(&[
         // The root's own `title` leaf, with no root marker: an orphan.
         (
-            physical::stem_field_leaf(&stem, "title"),
+            physical::stem_field_leaf(&stem, field_num(&branch_schema().0, 0)),
             b"Book A".to_vec(),
         ),
         // A legitimate branch descendant below the same (markerless) root.
         (branch_stem.clone(), physical::MARKER_VALUE.to_vec()),
         (
-            physical::stem_field_leaf(&branch_stem, "text"),
+            physical::stem_field_leaf(&branch_stem, branch_field_num(&branch_schema().0, &[0], 0)),
             b"hi".to_vec(),
         ),
     ]);
@@ -546,17 +598,21 @@ fn an_injected_root_own_leaf_without_a_marker_is_corruption_even_with_a_descenda
 #[test]
 fn an_injected_branch_own_leaf_without_a_branch_marker_is_corruption() {
     let stem = book_stem("a");
-    let branch_stem = physical::branch_child_stem(&stem, "notes", &[KeyScalar::Int(7)]);
+    let branch_stem = physical::branch_child_stem(
+        &stem,
+        branch_num(&branch_schema().0, &[0]),
+        &[KeyScalar::Int(7)],
+    );
     let mut store = injected_branch_store(&[
         // The root has a real payload, so the root itself is well-formed.
         (stem.clone(), physical::MARKER_VALUE.to_vec()),
         (
-            physical::stem_field_leaf(&stem, "title"),
+            physical::stem_field_leaf(&stem, field_num(&branch_schema().0, 0)),
             b"Book A".to_vec(),
         ),
         // The branch child's own leaf with no branch marker: an orphan.
         (
-            physical::stem_field_leaf(&branch_stem, "text"),
+            physical::stem_field_leaf(&branch_stem, branch_field_num(&branch_schema().0, &[0], 0)),
             b"hi".to_vec(),
         ),
     ]);
@@ -587,16 +643,22 @@ fn a_bounded_acquisition_skips_a_run_of_descendant_only_entries_between_siblings
     for present in ["k1", "k4"] {
         let stem = book_stem(present);
         cells.push((stem.clone(), physical::MARKER_VALUE.to_vec()));
-        cells.push((physical::stem_field_leaf(&stem, "title"), b"T".to_vec()));
+        cells.push((
+            physical::stem_field_leaf(&stem, field_num(&branch_schema().0, 0)),
+            b"T".to_vec(),
+        ));
     }
     // Descendant-only entries: a branch child (marker plus `text` leaf) with no
     // root marker, so the root has children but no visitable payload.
     for descendant_only in ["k2", "k3"] {
-        let branch_stem =
-            physical::branch_child_stem(&book_stem(descendant_only), "notes", &[KeyScalar::Int(7)]);
+        let branch_stem = physical::branch_child_stem(
+            &book_stem(descendant_only),
+            branch_num(&branch_schema().0, &[0]),
+            &[KeyScalar::Int(7)],
+        );
         cells.push((branch_stem.clone(), physical::MARKER_VALUE.to_vec()));
         cells.push((
-            physical::stem_field_leaf(&branch_stem, "text"),
+            physical::stem_field_leaf(&branch_stem, branch_field_num(&branch_schema().0, &[0], 0)),
             b"hi".to_vec(),
         ));
     }
@@ -694,11 +756,12 @@ fn all_cells(store: &DurableStore<MemoryEngine>) -> std::collections::BTreeMap<V
         .collect()
 }
 
-/// The physical marker stem of note `note` under book `book`.
+/// The physical marker stem of note `note` under book `book`. The `notes` branch is the
+/// root's first branch; it numbers to 2 in the branch and wide-branch schemas alike.
 fn note_stem(book: &str, note: i64) -> Vec<u8> {
     physical::branch_child_stem(
-        &physical::marker_key("books", &[KeyScalar::Str(book.into())]),
-        "notes",
+        &book_stem(book),
+        branch_num(&branch_schema().0, &[0]),
         &[KeyScalar::Int(note)],
     )
 }
@@ -801,10 +864,7 @@ fn a_field_exact_required_branch_set_reconcile_creates_the_branch_marker() {
         "the reconcile created the branch node's marker",
     );
     assert!(
-        !cells.contains_key(&physical::marker_key(
-            "books",
-            &[KeyScalar::Str("a".into())]
-        )),
+        !cells.contains_key(&physical::marker_key(0, &[KeyScalar::Str("a".into())])),
         "a field-exact branch set does not create the root marker",
     );
 }
@@ -1017,14 +1077,20 @@ fn bounded_acquisition_skips_descendant_only_entries() {
     for present in ["k1", "k4"] {
         let stem = book_stem(present);
         cells.push((stem.clone(), physical::MARKER_VALUE.to_vec()));
-        cells.push((physical::stem_field_leaf(&stem, "title"), b"T".to_vec()));
+        cells.push((
+            physical::stem_field_leaf(&stem, field_num(&branch_schema().0, 0)),
+            b"T".to_vec(),
+        ));
     }
     for descendant_only in ["k2", "k3"] {
-        let branch_stem =
-            physical::branch_child_stem(&book_stem(descendant_only), "notes", &[KeyScalar::Int(7)]);
+        let branch_stem = physical::branch_child_stem(
+            &book_stem(descendant_only),
+            branch_num(&branch_schema().0, &[0]),
+            &[KeyScalar::Int(7)],
+        );
         cells.push((branch_stem.clone(), physical::MARKER_VALUE.to_vec()));
         cells.push((
-            physical::stem_field_leaf(&branch_stem, "text"),
+            physical::stem_field_leaf(&branch_stem, branch_field_num(&branch_schema().0, &[0], 0)),
             b"hi".to_vec(),
         ));
     }
@@ -1466,17 +1532,25 @@ fn vi(n: i64) -> Option<ValueDomain> {
     Some(ValueDomain::Scalar(RuntimeScalar::Int(n)))
 }
 
-/// The physical marker stem of book `book` (level 0).
+/// The physical marker stem of book `book` (level 0). `books` is the sole root: number 0.
 fn nested_book_stem(book: &str) -> Vec<u8> {
-    physical::marker_key("books", &[ks(book)])
+    physical::marker_key(0, &[ks(book)])
 }
 /// The physical marker stem of note `note` under `book` (level 1).
 fn nested_note_stem(book: &str, note: i64) -> Vec<u8> {
-    physical::branch_child_stem(&nested_book_stem(book), "notes", &[ki(note)])
+    physical::branch_child_stem(
+        &nested_book_stem(book),
+        branch_num(&nested_schema().0, &[0]),
+        &[ki(note)],
+    )
 }
 /// The physical marker stem of tag `tag` under `book`/`note` (level 2).
 fn nested_tag_stem(book: &str, note: i64, tag: &str) -> Vec<u8> {
-    physical::branch_child_stem(&nested_note_stem(book, note), "tags", &[ks(tag)])
+    physical::branch_child_stem(
+        &nested_note_stem(book, note),
+        branch_num(&nested_schema().0, &[0, 0]),
+        &[ks(tag)],
+    )
 }
 
 fn nested_store() -> DurableStore<MemoryEngine> {
@@ -1556,7 +1630,10 @@ fn a_nested_branch_entry_addresses_its_multi_hop_stem_and_reads_back() {
         "the tags marker sits at the multi-hop stem",
     );
     assert!(
-        cells.contains_key(&physical::stem_field_leaf(&tag_stem, "label")),
+        cells.contains_key(&physical::stem_field_leaf(
+            &tag_stem,
+            branch_field_num(&nested_schema().0, &[0, 0], 0)
+        )),
         "the tags label leaf hangs off the multi-hop stem",
     );
     // A nested entry create writes no shallower marker: neither the parent note nor
@@ -1632,7 +1709,7 @@ fn probe_slot_present_absent_and_descendant_only_at_a_level_two_node() {
 fn an_injected_level_two_orphan_leaf_is_corruption() {
     let tag_stem = nested_tag_stem("a", 1, "x");
     let mut store = injected_nested_store(&[(
-        physical::stem_field_leaf(&tag_stem, "label"),
+        physical::stem_field_leaf(&tag_stem, branch_field_num(&nested_schema().0, &[0, 0], 0)),
         b"home".to_vec(),
     )]);
     let mut read = store
@@ -1683,7 +1760,7 @@ fn a_replace_of_a_branch_entry_erases_omitted_fields_and_preserves_its_sub_branc
     assert!(
         !after.contains_key(&physical::stem_field_leaf(
             &nested_note_stem("a", 1),
-            "color"
+            branch_field_num(&nested_schema().0, &[0], 1)
         )),
         "the replace erased the omitted color field",
     );
@@ -1747,7 +1824,7 @@ fn an_erase_of_a_branch_entry_removes_its_own_cells_and_preserves_its_sub_branch
     assert!(
         !after.contains_key(&physical::stem_field_leaf(
             &nested_note_stem("a", 1),
-            "text"
+            branch_field_num(&nested_schema().0, &[0], 0)
         )),
         "the erase removed the note's own field leaf",
     );
@@ -2197,7 +2274,7 @@ fn index_cells<E: ByteEngine>(store: &DurableStore<E>) -> Vec<(Vec<u8>, Vec<u8>)
 fn label_cell(name: &str, label: &str) -> (Vec<u8>, Vec<u8>) {
     (
         physical::index_cell_key(
-            "counters",
+            0,
             &BY_LABEL,
             &[KeyScalar::Str(label.into()), KeyScalar::Str(name.into())],
         ),
@@ -2209,7 +2286,7 @@ fn label_cell(name: &str, label: &str) -> (Vec<u8>, Vec<u8>) {
 /// the projected `[value]`, valued by the source key `[name]`.
 fn value_cell(name: &str, value: i64) -> (Vec<u8>, Vec<u8>) {
     (
-        physical::index_cell_key("counters", &BY_VALUE, &[KeyScalar::Int(value)]),
+        physical::index_cell_key(0, &BY_VALUE, &[KeyScalar::Int(value)]),
         physical::index_cell_value(&[KeyScalar::Str(name.into())]),
     )
 }
@@ -2275,11 +2352,15 @@ mod read {
     use crate::durable::store::resolve::resolve_site;
 
     fn scan_site() -> AuthorizedSite {
-        resolve_site(&indexed_schema(), 0, &SiteTarget::IndexScan(0))
+        let schema = indexed_schema();
+        let numbering = super::number_store(std::slice::from_ref(&schema));
+        resolve_site(&schema, &numbering[0], 0, &SiteTarget::IndexScan(0))
     }
 
     fn lookup_site() -> AuthorizedSite {
-        resolve_site(&indexed_schema(), 0, &SiteTarget::IndexLookup(1))
+        let schema = indexed_schema();
+        let numbering = super::number_store(std::slice::from_ref(&schema));
+        resolve_site(&schema, &numbering[0], 0, &SiteTarget::IndexLookup(1))
     }
 
     /// A store seeded through the real maintenance path: three entries whose `byLabel`
@@ -2469,7 +2550,7 @@ mod read {
         // label the projection declares: a reference-valid image the runtime must not
         // read as a label.
         let store = forged(&[(
-            physical::index_cell_key("counters", &BY_LABEL, &[ki(5), ks("a")]),
+            physical::index_cell_key(0, &BY_LABEL, &[ki(5), ks("a")]),
             physical::index_cell_value(&[ks("a")]),
         )]);
         assert_eq!(scan(&store, &[], None, 10), Err(KernelFault::Corruption));
@@ -2479,10 +2560,7 @@ mod read {
     fn a_forged_cell_whose_value_is_not_a_source_key_is_corruption() {
         // A unique `byValue` cell whose value does not decode as the root's key tuple
         // (an empty value cannot yield the one expected source key column).
-        let store = forged(&[(
-            physical::index_cell_key("counters", &BY_VALUE, &[ki(7)]),
-            Vec::new(),
-        )]);
+        let store = forged(&[(physical::index_cell_key(0, &BY_VALUE, &[ki(7)]), Vec::new())]);
         assert_eq!(lookup(&store, &[ki(7)]), Err(KernelFault::Corruption));
     }
 }
@@ -2727,8 +2805,8 @@ fn a_corrupt_projected_leaf_faults_corruption() {
         assert_eq!(txn.commit(), CommitResult::Committed);
     }
     // Tamper the `label` leaf of entry "a" with bytes no value decodes.
-    let marker = physical::marker_key("counters", &[ks("a")]);
-    let leaf = physical::stem_field_leaf(&marker, "label");
+    let marker = physical::marker_key(0, &[ks("a")]);
+    let leaf = physical::stem_field_leaf(&marker, field_num(&schema(), 1));
     {
         let mut txn = store.engine.begin().expect("begin");
         // Bytes no value codec decodes (decimal to avoid spelling a structural tag
@@ -2856,7 +2934,10 @@ fn group_store() -> DurableStore<MemoryEngine> {
 /// The physical prefix of book `book`'s `details` group — the byte range its leaves
 /// occupy.
 fn details_prefix(book: &str) -> Vec<u8> {
-    physical::group_stem(&physical::marker_key("books", &[ks(book)]), "details")
+    physical::group_stem(
+        &physical::marker_key(0, &[ks(book)]),
+        group_num(&group_schema().0, 0),
+    )
 }
 
 /// Book `book`'s own entry cells (its marker is a byte-prefix of its whole subtree)
@@ -2868,7 +2949,7 @@ fn entry_siblings(
     book: &str,
     exclude: &[u8],
 ) -> std::collections::BTreeMap<Vec<u8>, Vec<u8>> {
-    let entry = physical::marker_key("books", &[ks(book)]);
+    let entry = physical::marker_key(0, &[ks(book)]);
     all_cells(store)
         .into_iter()
         .filter(|(key, _)| key.starts_with(&entry) && !key.starts_with(exclude))
@@ -3053,7 +3134,7 @@ fn read_group_follows_entry_presence_and_replace_requires_the_entry() {
         );
         assert_eq!(txn.commit(), CommitResult::Committed);
     }
-    let entry = physical::marker_key("books", &[ks("a")]);
+    let entry = physical::marker_key(0, &[ks("a")]);
     assert!(
         all_cells(&store).keys().all(|key| !key.starts_with(&entry)),
         "a Missing group replace wrote no entry cell",
@@ -3125,7 +3206,7 @@ fn a_present_entry_missing_a_required_group_leaf_is_corruption() {
 
     // Inject a present entry (marker + required title) with the required group leaf
     // `isbn` absent — a state the ops never write, so it is seeded raw.
-    let book_stem = physical::marker_key("books", &[ks("a")]);
+    let book_stem = physical::marker_key(0, &[ks("a")]);
     let title_bytes =
         encode_domain(&ValueDomain::Scalar(RuntimeScalar::Str("t".into()))).expect("encode title");
     let mut engine = MemoryEngine::new();
@@ -3133,8 +3214,11 @@ fn a_present_entry_missing_a_required_group_leaf_is_corruption() {
         let mut txn = engine.begin().expect("begin");
         txn.put(&book_stem, physical::MARKER_VALUE.to_vec())
             .expect("seed marker");
-        txn.put(&physical::stem_field_leaf(&book_stem, "title"), title_bytes)
-            .expect("seed title");
+        txn.put(
+            &physical::stem_field_leaf(&book_stem, field_num(&group_schema().0, 0)),
+            title_bytes,
+        )
+        .expect("seed title");
         assert_eq!(txn.commit(), CommitOutcome::Confirmed);
     }
     let mut store = DurableStore::from_engine(engine, schema, sites);
@@ -3185,7 +3269,7 @@ fn a_whole_entry_read_faults_on_a_present_entry_missing_a_required_group_leaf() 
 
     // Seed a present entry (marker + required title) with the required group leaf
     // `isbn` absent — a state the ops never write.
-    let book_stem = physical::marker_key("books", &[ks("a")]);
+    let book_stem = physical::marker_key(0, &[ks("a")]);
     let title_bytes =
         encode_domain(&ValueDomain::Scalar(RuntimeScalar::Str("t".into()))).expect("encode title");
     let mut engine = MemoryEngine::new();
@@ -3193,8 +3277,11 @@ fn a_whole_entry_read_faults_on_a_present_entry_missing_a_required_group_leaf() 
         let mut txn = engine.begin().expect("begin");
         txn.put(&book_stem, physical::MARKER_VALUE.to_vec())
             .expect("seed marker");
-        txn.put(&physical::stem_field_leaf(&book_stem, "title"), title_bytes)
-            .expect("seed title");
+        txn.put(
+            &physical::stem_field_leaf(&book_stem, field_num(&group_schema().0, 0)),
+            title_bytes,
+        )
+        .expect("seed title");
         assert_eq!(txn.commit(), CommitOutcome::Confirmed);
     }
     let mut store = DurableStore::from_engine(engine, schema, sites);
@@ -3225,9 +3312,9 @@ fn a_forged_markerless_group_leaf_cell_reads_as_corruption() {
     // Seed only a `details.pages` group leaf (tag `0x28`) under book "a" — no marker,
     // no other cell. A group leaf is the entry's own payload, so a markerless one is an
     // orphan, never a descendant-only node.
-    let book_stem = physical::marker_key("books", &[ks("a")]);
-    let group_stem = physical::group_stem(&book_stem, "details");
-    let leaf = physical::stem_field_leaf(&group_stem, "pages");
+    let book_stem = physical::marker_key(0, &[ks("a")]);
+    let group_stem = physical::group_stem(&book_stem, group_num(&group_schema().0, 0));
+    let leaf = physical::stem_field_leaf(&group_stem, group_field_num(&group_schema().0, 0, 0));
     let pages_bytes =
         encode_domain(&ValueDomain::Scalar(RuntimeScalar::Int(384))).expect("encode pages");
     let mut engine = MemoryEngine::new();
@@ -3390,8 +3477,9 @@ fn a_whole_entry_erase_sweeps_group_leaves_and_preserves_branches() {
         assert_eq!(txn.commit(), CommitResult::Committed);
     }
 
-    let entry = physical::marker_key("books", &[ks("a")]);
-    let note_stem = physical::branch_child_stem(&entry, "notes", &[ki(1)]);
+    let entry = physical::marker_key(0, &[ks("a")]);
+    let note_stem =
+        physical::branch_child_stem(&entry, branch_num(&group_schema().0, &[0]), &[ki(1)]);
     let cells = all_cells(&store);
     assert!(
         cells.keys().all(|k| !k.starts_with(&details_prefix("a"))),

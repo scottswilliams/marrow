@@ -5,13 +5,12 @@ use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use marrow_store::{ByteEngine, ReadView, StoreError, WriteTxn};
+use marrow_store::{ByteEngine, ReadView, StoreError};
 
 use super::super::physical;
-use super::super::profile;
 use super::super::{
-    AuthorizedSite, DemandCoverage, Denied, IndexSchema, InvocationGrant, Reopen, SessionError,
-    SiteSpec, StoreSchema,
+    AuthorizedSite, DemandCoverage, Denied, IndexSchema, InvocationGrant, Reopen, RootNumbering,
+    SessionError, SiteSpec, StoreSchema, number_store,
 };
 use super::resolve::resolve_site;
 use super::{ReadSession, TxnSession};
@@ -20,10 +19,15 @@ use super::{ReadSession, TxnSession};
 pub struct DurableStore<E: ByteEngine> {
     pub(super) engine: E,
     /// The store's roots by declaration position: one [`StoreSchema`] per durable root,
-    /// each with its own name-keyed physical cell family. A site's `root` indexes this
+    /// each with its own id-keyed physical cell family. A site's `root` indexes this
     /// table. One engine transaction spans every root, so a cross-root write commits or
     /// rolls back as one unit.
     schemas: Vec<StoreSchema>,
+    /// The store-local cell-key numbering of every root's durable nodes (FR01 §3), computed
+    /// once from `schemas` at construction and parallel to it. The site resolver walks a
+    /// root's [`RootNumbering`] in lockstep with its schema to number every addressed node,
+    /// so cell keys are keyed by number, never by source spelling.
+    numbering: Vec<RootNumbering>,
     sites: Vec<SiteSpec>,
     /// The store's deployment ceiling: the read/write coverage this handle admits,
     /// intersected with each invocation's grant before the first engine call. For a
@@ -59,9 +63,11 @@ impl<E: ByteEngine> DurableStore<E> {
         sites: Vec<SiteSpec>,
         ceiling: DemandCoverage,
     ) -> Self {
+        let numbering = number_store(&schemas);
         Self {
             engine,
             schemas,
+            numbering,
             sites,
             ceiling,
             poisoned: false,
@@ -93,31 +99,23 @@ impl<E: ByteEngine> DurableStore<E> {
         }
     }
 
-    fn verify_profile(&self) -> Result<(), SessionError> {
-        match self
-            .engine
-            .read_view()
-            .map_err(SessionError::Engine)?
-            .get(&physical::meta_key(PROFILE))
-            .map_err(SessionError::Engine)?
-        {
-            None => Ok(()),
-            Some(stored) if stored == profile::store_descriptor(&self.schemas) => Ok(()),
-            Some(_) => Err(SessionError::ProfileMismatch),
-        }
-    }
-
     fn authorized_sites(&self) -> Vec<AuthorizedSite> {
         self.sites
             .iter()
-            .map(|site| resolve_site(&self.schemas[site.root as usize], site.root, &site.target))
+            .map(|site| {
+                resolve_site(
+                    &self.schemas[site.root as usize],
+                    &self.numbering[site.root as usize],
+                    site.root,
+                    &site.target,
+                )
+            })
             .collect()
     }
 
     /// Open a read session over a coherent read view after resolving effective
-    /// authority and revalidating the store profile. The view is bound to the
-    /// session's borrow of the store, so its reads observe one version for the
-    /// whole call.
+    /// authority. The view is bound to the session's borrow of the store, so its reads
+    /// observe one version for the whole call.
     pub fn read_session(
         &mut self,
         grant: InvocationGrant,
@@ -125,14 +123,15 @@ impl<E: ByteEngine> DurableStore<E> {
     ) -> Result<ReadSession<'_, E>, SessionError> {
         resolve_authority(demand, self.ceiling, grant).map_err(|Denied| SessionError::Denied)?;
         self.check_poison()?;
-        self.verify_profile()?;
         let auth = self.authorized_sites();
         let view = self.engine.read_view().map_err(SessionError::Engine)?;
         Ok(ReadSession { view, auth })
     }
 
-    /// Open a transaction session after resolving effective authority, revalidating
-    /// the profile, and provisioning the profile cell on a fresh store.
+    /// Open a transaction session after resolving effective authority. Schema-binding
+    /// consistency is owned by the lifecycle head (F02a provision), not an in-store profile
+    /// cell: the id-keyed layout makes a rename zero-cell, so no name-keyed profile
+    /// descriptor is written or revalidated here.
     pub fn txn_session(
         &mut self,
         grant: InvocationGrant,
@@ -140,9 +139,7 @@ impl<E: ByteEngine> DurableStore<E> {
     ) -> Result<TxnSession<'_, E>, SessionError> {
         resolve_authority(demand, self.ceiling, grant).map_err(|Denied| SessionError::Denied)?;
         self.check_poison()?;
-        self.verify_profile()?;
         let auth = self.authorized_sites();
-        let descriptor = profile::store_descriptor(&self.schemas);
         // Per-root managed indexes: a write to root R maintains exactly `indexes[R]`, so a
         // cross-root transaction keeps each root's own indexes coherent without confusing
         // one root's index cells with another's.
@@ -152,22 +149,11 @@ impl<E: ByteEngine> DurableStore<E> {
             .map(|schema| schema.indexes.clone())
             .collect();
         // Split the store's fields into disjoint borrows: the transaction borrows the
-        // engine mutably while the session still writes the poison flag. The schema is
-        // read here (into `descriptor` and the resolved sites) before the split.
+        // engine mutably while the session still writes the poison flag.
         let Self {
             engine, poisoned, ..
         } = self;
-        let mut txn = engine.begin().map_err(SessionError::Engine)?;
-        // First provision: record the profile inside this transaction if absent.
-        let profile_key = physical::meta_key(PROFILE);
-        if txn
-            .get(&profile_key)
-            .map_err(SessionError::Engine)?
-            .is_none()
-        {
-            txn.put(&profile_key, descriptor)
-                .map_err(SessionError::Engine)?;
-        }
+        let txn = engine.begin().map_err(SessionError::Engine)?;
         Ok(TxnSession {
             txn: Some(txn),
             poisoned,
@@ -179,8 +165,7 @@ impl<E: ByteEngine> DurableStore<E> {
     }
 }
 
-/// The meta-cell names in the `0x10` family.
-pub(super) const PROFILE: &str = "profile";
+/// The witness meta-cell name in the `0x10` family.
 pub(super) const WITNESS: &str = "witness";
 
 /// Resolve effective authority: `demand ⊆ ceiling ∩ grant`. Demand never grants; it
@@ -285,11 +270,10 @@ mod tests {
         );
     }
 
-    /// The poison consult runs before profile provisioning and before the engine is
-    /// touched: a poisoned handle whose store was never provisioned still refuses rather
-    /// than writing a profile cell or opening a transaction.
+    /// The poison consult runs before the engine is touched: a poisoned handle refuses the
+    /// transaction open before `begin`, so no cell — not even the witness — is written.
     #[test]
-    fn the_poison_consult_precedes_profile_provisioning() {
+    fn the_poison_consult_precedes_any_engine_write() {
         let mut store = store();
         store.poisoned = true;
         let grant = InvocationGrant::full_store();
@@ -301,14 +285,14 @@ mod tests {
             store.txn_session(grant, demand),
             Err(SessionError::Poisoned)
         ));
-        // No profile cell was written: the refusal short-circuited before `begin`.
+        // Nothing was written: the refusal short-circuited before `begin`.
         assert_eq!(
             store
                 .engine
                 .read_view()
                 .expect("read view")
-                .get(&physical::meta_key(PROFILE))
-                .expect("get profile"),
+                .get(&physical::meta_key(WITNESS))
+                .expect("get witness"),
             None,
         );
     }

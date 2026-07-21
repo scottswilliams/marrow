@@ -1,37 +1,48 @@
-//! Physical cell layout for the T01 store profile (design §G).
+//! Physical cell layout for the durable store (design §G; FR01 §3 id-keyed cell keys).
 //!
-//! Durable cells are keyed by name at this stage — a compromise the versioned
-//! store profile makes safe (a stale reinterpretation is a typed refusal, not
-//! silent misreading); durable identity proper lands at D00, the named deletion
-//! point. Every logical entry is a *marker* cell (its payload-presence record) plus
-//! one *field leaf* per present field, and — for a hierarchical resource — one keyed
-//! *branch* family per declared branch nested beneath the entry's marker:
+//! Durable cells are keyed by a durable node's compact **number** — a store-local
+//! never-reused `u32` allocated for each root, field, group, and branch — never by its
+//! source spelling (FR01 §3). A rename is therefore zero-cell metadata: the source anchor
+//! moves, the node's identity and number are unchanged, and no cell is touched. Every
+//! logical entry is a *marker* cell (its payload-presence record) plus one *field leaf* per
+//! present field, and — for a hierarchical resource — one keyed *branch* family per declared
+//! branch nested beneath the entry's marker. Each number component is a fixed-width 4-byte
+//! big-endian integer, so it self-delimits trivially and the containment/separation laws
+//! below carry over unchanged from the earlier escaped-name form (they never depended on
+//! what fills the name slot, only on its self-delimitation):
 //!
 //! ```text
-//! entry family prefix   0x01 0x20 esc(root_name)
+//! entry family prefix   0x01 0x20 num(root)
 //! marker key            <family> enc(keytuple) 0x00                        value = 0x01
-//! field leaf key        <marker> 0x10 esc(field)                           value = codec bytes
-//! group leaf key        <marker> 0x28 esc(group) 0x10 esc(field)           value = codec bytes
-//! branch child marker   <marker> 0x30 esc(branch) enc(childTuple) 0x00     value = 0x01
+//! field leaf key        <marker> 0x10 num(field)                           value = codec bytes
+//! group leaf key        <marker> 0x28 num(group) 0x10 num(field)           value = codec bytes
+//! branch child marker   <marker> 0x30 num(branch) enc(childTuple) 0x00     value = 0x01
 //! iteration cursor      <family> enc(keytuple) 0xFF
-//! index cell key        0x02 esc(root_name) index_id[16] enc(projValues)   value = enc(sourceKey)
+//! index cell key        0x02 num(root) index_id[16] enc(projValues)        value = enc(sourceKey)
 //! meta cell key         0x10 esc(name)
 //! ```
 //!
+//! `num(x)` is the node's 4-byte big-endian store-local number. The meta family is the sole
+//! exception (FR01 §3): a closed, small, kernel-internal namespace (`profile`/`witness`
+//! constants) that never renames and never scales with data, so it keeps its name-keyed
+//! grammar. No source spelling ever enters an entry, group, branch, or index cell key —
+//! the enforcement artifact of record is the absence gate at `no_source_spelling_in_cell_keys`.
+//!
 //! An unkeyed *group* is a static field-path namespace inside the entry's payload — not a
 //! keyed node. It carries no marker and no key; its leaves are the entry's own payload
-//! namespaced under the group name (`<marker> 0x28 esc(group) 0x10 esc(field)`), and its
+//! namespaced under the group number (`<marker> 0x28 num(group) 0x10 num(field)`), and its
 //! presence is the entry's presence. The group tag `0x28` sorts between the field tag
 //! `0x10` and the branch tag `0x30`, so an entry's own field leaves precede its group
 //! leaves, which precede its branch descendants; every group leaf still nests inside the
 //! entry's `(marker, cursor]` range. A group's whole read/replace/erase confine to the
-//! group's own leaves under its `<marker> 0x28 esc(group)` prefix, disjoint from the
+//! group's own leaves under its `<marker> 0x28 num(group)` prefix, disjoint from the
 //! entry's top-level fields, its sibling groups, and its branches.
 //!
 //! A managed index's cells form their own family (`0x02`), disjoint from the entry family
 //! (`0x01`) and the meta family (`0x10`). One index's cells are separated from another's
-//! under the same root by the index's stable 16-byte identity, so an index rename (which
-//! preserves that identity) never orphans its cells. After the identity comes the
+//! under the same root (identified by the root's number) by the index's stable 16-byte
+//! identity, so an index rename (which preserves that identity) never orphans its cells.
+//! After the identity comes the
 //! prefix-free encoding of the index's ordered projected component values; because that
 //! encoding self-delimits every column, two index rows never share a key where one is a
 //! prefix of the other, and a leading-component prefix is a valid scan bound. Each cell's
@@ -69,6 +80,20 @@ use crate::codec::key::{
     KeyScalar, decode_key_value, encode_escaped_bytes, encode_key_tuple, encode_key_value,
 };
 
+/// A durable node's store-local cell-key number: root, field, group, or branch. A
+/// fixed-width `u32` (FR01 §3/§4) chosen for the store's lifetime headroom and independent
+/// of the image's `u16` table rings; never reused within a store.
+pub(super) type NodeNumber = u32;
+
+/// Append a node's cell-key number in the canonical fixed-width 4-byte big-endian form.
+/// Fixed width self-delimits, so a number component is prefix-free by construction and the
+/// containment/separation laws hold exactly as they did for the escaped-name form. This is
+/// the single owner of the number-to-key-bytes mapping: no source spelling ever reaches an
+/// entry, group, branch, or index cell key.
+fn push_component(out: &mut Vec<u8>, number: NodeNumber) {
+    out.extend_from_slice(&number.to_be_bytes());
+}
+
 /// First byte of every entry cell (marker or field leaf).
 const ENTRY_FAMILY: u8 = 0x01;
 /// Root discriminator, following [`ENTRY_FAMILY`].
@@ -105,10 +130,10 @@ const INDEX_FAMILY: u8 = 0x02;
 /// The value stored at a marker cell: the payload presence record.
 pub(super) const MARKER_VALUE: &[u8] = &[0x01];
 
-/// The `0x01 0x20 esc(root)` prefix shared by every cell of `root`'s entries.
-pub(super) fn entry_family_prefix(root: &str) -> Vec<u8> {
+/// The `0x01 0x20 num(root)` prefix shared by every cell of the root numbered `root`.
+pub(super) fn entry_family_prefix(root: NodeNumber) -> Vec<u8> {
     let mut out = vec![ENTRY_FAMILY, ROOT_TAG];
-    encode_escaped_bytes(root.as_bytes(), &mut out);
+    push_component(&mut out, root);
     out
 }
 
@@ -116,7 +141,7 @@ pub(super) fn entry_family_prefix(root: &str) -> Vec<u8> {
 /// marker key is its marker *stem*: the byte prefix from which its field leaves, its
 /// branch descendants, and its cursor all derive (see [`stem_field_leaf`],
 /// [`stem_cursor`]). `keys` is the root's whole key tuple, one column per key scalar.
-pub(super) fn marker_key(root: &str, keys: &[KeyScalar]) -> Vec<u8> {
+pub(super) fn marker_key(root: NodeNumber, keys: &[KeyScalar]) -> Vec<u8> {
     child_marker(&entry_family_prefix(root), keys)
 }
 
@@ -125,10 +150,10 @@ pub(super) fn marker_key(root: &str, keys: &[KeyScalar]) -> Vec<u8> {
 /// inside the node's `(marker, cursor]` range ahead of any branch descendant. The
 /// single owner of the marker-stem-to-field-leaf mapping: the root entry and every
 /// branch entry derive their field leaves through it from their own resolved stem.
-pub(super) fn stem_field_leaf(stem: &[u8], field: &str) -> Vec<u8> {
+pub(super) fn stem_field_leaf(stem: &[u8], field: NodeNumber) -> Vec<u8> {
     let mut out = stem.to_vec();
     out.push(FIELD_TAG);
-    encode_escaped_bytes(field.as_bytes(), &mut out);
+    push_component(&mut out, field);
     out
 }
 
@@ -170,10 +195,10 @@ pub(super) fn stem_cursor(stem: &[u8]) -> Vec<u8> {
 /// shares it — so it is the traversable [`Layer`] prefix of that branch. The single
 /// owner of the branch-family prefix bytes; both [`branch_child_stem`] and
 /// [`Layer::branch`] derive from it.
-pub(super) fn branch_family_prefix(parent_stem: &[u8], branch: &str) -> Vec<u8> {
+pub(super) fn branch_family_prefix(parent_stem: &[u8], branch: NodeNumber) -> Vec<u8> {
     let mut out = parent_stem.to_vec();
     out.push(BRANCH_TAG);
-    encode_escaped_bytes(branch.as_bytes(), &mut out);
+    push_component(&mut out, branch);
     out
 }
 
@@ -187,10 +212,10 @@ pub(super) fn branch_family_prefix(parent_stem: &[u8], branch: &str) -> Vec<u8> 
 /// as a node's own fields derive from its marker stem, one namespace level down. The
 /// single owner of the group-namespace prefix bytes; both a group's leaf enumeration and
 /// its whole-group read/replace/erase derive every cell it touches from this prefix.
-pub(super) fn group_stem(stem: &[u8], group: &str) -> Vec<u8> {
+pub(super) fn group_stem(stem: &[u8], group: NodeNumber) -> Vec<u8> {
     let mut out = stem.to_vec();
     out.push(GROUP_TAG);
-    encode_escaped_bytes(group.as_bytes(), &mut out);
+    push_component(&mut out, group);
     out
 }
 
@@ -204,7 +229,7 @@ pub(super) fn group_stem(stem: &[u8], group: &str) -> Vec<u8> {
 /// planner and every branch session op derive a branch node's stem through it.
 pub(super) fn branch_child_stem(
     parent_stem: &[u8],
-    branch: &str,
+    branch: NodeNumber,
     child_keys: &[KeyScalar],
 ) -> Vec<u8> {
     child_marker(&branch_family_prefix(parent_stem, branch), child_keys)
@@ -232,16 +257,20 @@ pub(super) fn meta_key(name: &str) -> Vec<u8> {
     out
 }
 
-/// The physical cell key of one managed-index row: the index family byte, the escaped
-/// root name, the index's 16-byte identity, and the prefix-free encoding of its ordered
+/// The physical cell key of one managed-index row: the index family byte, the root's
+/// number, the index's 16-byte identity, and the prefix-free encoding of its ordered
 /// projected component values. The single owner of the index cell key shape — the
 /// consequence planner builds every index write and removal through it, so no second site
-/// spells an index cell. Because `esc(root)` self-terminates, the identity is fixed width,
-/// and the projected-value encoding is prefix-free, one index's cells occupy a distinct,
-/// self-delimited key range under the root.
-pub(super) fn index_cell_key(root: &str, index_id: &[u8; 16], projected: &[KeyScalar]) -> Vec<u8> {
+/// spells an index cell. Because the root number is fixed width, the identity is fixed
+/// width, and the projected-value encoding is prefix-free, one index's cells occupy a
+/// distinct, self-delimited key range under the root.
+pub(super) fn index_cell_key(
+    root: NodeNumber,
+    index_id: &[u8; 16],
+    projected: &[KeyScalar],
+) -> Vec<u8> {
     let mut out = vec![INDEX_FAMILY];
-    encode_escaped_bytes(root.as_bytes(), &mut out);
+    push_component(&mut out, root);
     out.extend_from_slice(index_id);
     out.extend_from_slice(&encode_key_tuple(projected));
     out
@@ -389,16 +418,16 @@ pub(super) struct Layer {
 
 impl Layer {
     /// The root's own entry family.
-    pub(super) fn root(root: &str) -> Self {
+    pub(super) fn root(root: NodeNumber) -> Self {
         Self {
             prefix: entry_family_prefix(root),
         }
     }
 
-    /// The branch family `branch` beneath the entry whose marker `parent_stem` is
-    /// given. Because `esc(branch)` self-terminates, this prefix delimits exactly one
-    /// branch family: a differently-named sibling branch is foreign to it.
-    pub(super) fn branch(parent_stem: &[u8], branch: &str) -> Self {
+    /// The branch family numbered `branch` beneath the entry whose marker `parent_stem` is
+    /// given. Because the branch number is fixed width, this prefix delimits exactly one
+    /// branch family: a differently-numbered sibling branch is foreign to it.
+    pub(super) fn branch(parent_stem: &[u8], branch: NodeNumber) -> Self {
         Self {
             prefix: branch_family_prefix(parent_stem, branch),
         }
@@ -455,7 +484,7 @@ impl IndexLayer {
     /// held. `fixed` is a strict prefix of the index's ordered projection (fewer columns
     /// than the whole projection), so no full cell equals this prefix — every matching
     /// cell strictly extends it with at least the next component's encoding.
-    pub(super) fn new(root: &str, index_id: &[u8; 16], fixed: &[KeyScalar]) -> Self {
+    pub(super) fn new(root: NodeNumber, index_id: &[u8; 16], fixed: &[KeyScalar]) -> Self {
         Self {
             prefix: index_cell_key(root, index_id, fixed),
         }
@@ -510,37 +539,59 @@ impl IndexLayer {
 mod tests {
     use super::*;
 
+    // Distinct cell-key numbers standing in for the durable nodes these layout tests
+    // exercise. The tests assert byte ordering, containment, and classification, which
+    // depend only on the numbers being distinct and on the structural tag bytes — not on
+    // any particular value — so arbitrary distinct numbers suffice in place of the former
+    // node names.
+    const ROOT_COUNTERS: NodeNumber = 0;
+    const ROOT_BOOKS: NodeNumber = 1;
+    const ROOT_CELLS: NodeNumber = 2;
+    const ROOT_TOMES: NodeNumber = 3;
+    const ROOT_STOCK: NodeNumber = 4;
+    const F_VALUE: NodeNumber = 10;
+    const F_LABEL: NodeNumber = 11;
+    const F_TITLE: NodeNumber = 12;
+    const F_TEXT: NodeNumber = 13;
+    const F_PAGES: NodeNumber = 14;
+    const F_LANGUAGE: NodeNumber = 15;
+    const B_NOTES: NodeNumber = 20;
+    const B_TAGS: NodeNumber = 21;
+    const B_SPANS: NodeNumber = 22;
+    const G_DETAILS: NodeNumber = 30;
+    const G_CREDITS: NodeNumber = 31;
+
     /// A single-column marker key: the layout tests below exercise the single-column
     /// case, so `mk` wraps the one key column as a one-element tuple. Composite-tuple
     /// containment and separation have their own test.
-    fn mk(root: &str, key: &KeyScalar) -> Vec<u8> {
+    fn mk(root: NodeNumber, key: &KeyScalar) -> Vec<u8> {
         marker_key(root, std::slice::from_ref(key))
     }
 
     /// A single-column branch-child stem, the tuple builder's one-column convenience.
-    fn bcs(parent_stem: &[u8], branch: &str, key: &KeyScalar) -> Vec<u8> {
+    fn bcs(parent_stem: &[u8], branch: NodeNumber, key: &KeyScalar) -> Vec<u8> {
         branch_child_stem(parent_stem, branch, std::slice::from_ref(key))
     }
 
     /// A root entry's subtree cursor, the root convenience over [`Layer::child_cursor`]
     /// the ordering tests assert against.
-    fn cursor(root: &str, key: &KeyScalar) -> Vec<u8> {
+    fn cursor(root: NodeNumber, key: &KeyScalar) -> Vec<u8> {
         Layer::root(root).child_cursor(key)
     }
 
     /// Classify a cell against a root's entry family, the root convenience over
     /// [`Layer::classify`] the classification tests assert against.
-    fn classify_cell(root: &str, cell_key: &[u8]) -> CellKind {
+    fn classify_cell(root: NodeNumber, cell_key: &[u8]) -> CellKind {
         Layer::root(root).classify(cell_key)
     }
 
     // The ordering property iteration relies on: for keys k < k',
     // marker(k) < every cell of k < cursor(k) < marker(k').
-    fn assert_between(root: &str, key: &KeyScalar, fields: &[&str]) {
+    fn assert_between(root: NodeNumber, key: &KeyScalar, fields: &[NodeNumber]) {
         let marker = mk(root, key);
         let cur = cursor(root, key);
         assert!(marker < cur, "marker precedes cursor for {key:?}");
-        for field in fields {
+        for &field in fields {
             let leaf = stem_field_leaf(&mk(root, key), field);
             assert!(marker < leaf, "marker precedes leaf {field} for {key:?}");
             assert!(leaf < cur, "leaf {field} precedes cursor for {key:?}");
@@ -549,7 +600,7 @@ mod tests {
 
     #[test]
     fn cursor_separates_adjacent_and_prefix_related_keys() {
-        let root = "counters";
+        let root = ROOT_COUNTERS;
         let keys = [
             KeyScalar::Int(i64::MIN),
             KeyScalar::Int(-1),
@@ -566,7 +617,7 @@ mod tests {
         let mut sorted = keys.to_vec();
         sorted.sort();
         for key in &sorted {
-            assert_between(root, key, &["value", "label"]);
+            assert_between(root, key, &[F_VALUE, F_LABEL]);
         }
         // Between consecutive keys, cursor(k) < marker(k').
         for pair in sorted.windows(2) {
@@ -583,14 +634,14 @@ mod tests {
 
     #[test]
     fn classify_distinguishes_marker_leaf_and_foreign() {
-        let root = "counters";
+        let root = ROOT_COUNTERS;
         let key = KeyScalar::Str("a".into());
         assert!(matches!(
             classify_cell(root, &mk(root, &key)),
             CellKind::Marker(k) if k == key
         ));
         assert!(matches!(
-            classify_cell(root, &stem_field_leaf(&mk(root, &key), "value")),
+            classify_cell(root, &stem_field_leaf(&mk(root, &key), F_VALUE)),
             CellKind::Orphan
         ));
         assert!(matches!(
@@ -601,7 +652,7 @@ mod tests {
 
     #[test]
     fn meta_family_is_disjoint_from_entries() {
-        let root = "counters";
+        let root = ROOT_COUNTERS;
         let entry = mk(root, &KeyScalar::Int(0));
         let meta = meta_key("profile");
         assert_ne!(entry.first(), meta.first());
@@ -631,14 +682,14 @@ mod tests {
     /// subtree lives under one entry's marker and below its cursor.
     #[test]
     fn branch_descendants_nest_inside_the_parent_entry_range() {
-        let root = "books";
+        let root = ROOT_BOOKS;
         for parent in representative_keys() {
             let parent_marker = mk(root, &parent);
             let parent_cursor = cursor(root, &parent);
-            let child = bcs(&parent_marker, "notes", &KeyScalar::Int(7));
-            let child_field = stem_field_leaf(&child, "text");
+            let child = bcs(&parent_marker, B_NOTES, &KeyScalar::Int(7));
+            let child_field = stem_field_leaf(&child, F_TEXT);
             let child_cursor = stem_cursor(&child);
-            let grandchild = bcs(&child, "tags", &KeyScalar::Str("x".into()));
+            let grandchild = bcs(&child, B_TAGS, &KeyScalar::Str("x".into()));
             for cell in [&child, &child_field, &child_cursor, &grandchild] {
                 assert!(
                     parent_marker.as_slice() < cell.as_slice(),
@@ -657,10 +708,10 @@ mod tests {
     /// descendant — the precedence the bounded prefix probe relies on.
     #[test]
     fn own_field_leaves_sort_before_branch_descendants() {
-        let root = "books";
+        let root = ROOT_BOOKS;
         let parent = mk(root, &KeyScalar::Str("a".into()));
-        let own_field = stem_field_leaf(&parent, "title");
-        let branch_child = bcs(&parent, "notes", &KeyScalar::Int(1));
+        let own_field = stem_field_leaf(&parent, F_TITLE);
+        let branch_child = bcs(&parent, B_NOTES, &KeyScalar::Int(1));
         assert!(
             parent.as_slice() < own_field.as_slice(),
             "marker precedes own field"
@@ -674,7 +725,12 @@ mod tests {
     /// A group leaf of `group` and field `field` of the entry keyed `key`: the
     /// entry-marker-stem, the group prefix, then the field leaf, through the shared
     /// [`stem_field_leaf`] owner one namespace level down.
-    fn group_leaf(root: &str, key: &KeyScalar, group: &str, field: &str) -> Vec<u8> {
+    fn group_leaf(
+        root: NodeNumber,
+        key: &KeyScalar,
+        group: NodeNumber,
+        field: NodeNumber,
+    ) -> Vec<u8> {
         stem_field_leaf(&group_stem(&mk(root, key), group), field)
     }
 
@@ -685,13 +741,13 @@ mod tests {
     /// before the cursor.
     #[test]
     fn group_leaves_sort_between_own_fields_and_branch_descendants() {
-        let root = "books";
+        let root = ROOT_BOOKS;
         let key = KeyScalar::Str("a".into());
         let marker = mk(root, &key);
         let cur = cursor(root, &key);
-        let own_field = stem_field_leaf(&marker, "title");
-        let group_leaf = group_leaf(root, &key, "details", "pages");
-        let branch_child = bcs(&marker, "notes", &KeyScalar::Int(1));
+        let own_field = stem_field_leaf(&marker, F_TITLE);
+        let group_leaf = group_leaf(root, &key, G_DETAILS, F_PAGES);
+        let branch_child = bcs(&marker, B_NOTES, &KeyScalar::Int(1));
         assert!(marker < own_field, "marker precedes own field");
         assert!(
             own_field < group_leaf,
@@ -710,12 +766,12 @@ mod tests {
     /// rest of the entry.
     #[test]
     fn group_leaves_nest_inside_the_entry_range() {
-        let root = "books";
+        let root = ROOT_BOOKS;
         for key in representative_keys() {
             let marker = mk(root, &key);
             let cur = cursor(root, &key);
-            for field in ["pages", "language"] {
-                let leaf = group_leaf(root, &key, "details", field);
+            for field in [F_PAGES, F_LANGUAGE] {
+                let leaf = group_leaf(root, &key, G_DETAILS, field);
                 assert!(
                     marker.as_slice() < leaf.as_slice(),
                     "group leaf sorts after the marker for {key:?}",
@@ -734,13 +790,13 @@ mod tests {
     /// of them. The `group_stem` prefix bounds one group's cells and no other's.
     #[test]
     fn group_leaves_are_disjoint_from_fields_sibling_groups_and_branches() {
-        let root = "books";
+        let root = ROOT_BOOKS;
         let key = KeyScalar::Str("a".into());
         let marker = mk(root, &key);
-        let details = group_stem(&marker, "details");
-        let details_leaf = stem_field_leaf(&details, "pages");
+        let details = group_stem(&marker, G_DETAILS);
+        let details_leaf = stem_field_leaf(&details, F_PAGES);
         // A top-level field named identically to a group leaf's field is a distinct cell.
-        let top_field = stem_field_leaf(&marker, "pages");
+        let top_field = stem_field_leaf(&marker, F_PAGES);
         assert!(
             !details_leaf.starts_with(&marker_field_prefix(&marker)),
             "a group leaf is not under the top-level field tag"
@@ -751,8 +807,8 @@ mod tests {
             "a top-level field leaf is outside the group prefix"
         );
         // A sibling group's leaves are outside this group's prefix, and vice versa.
-        let credits = group_stem(&marker, "credits");
-        let credits_leaf = stem_field_leaf(&credits, "pages");
+        let credits = group_stem(&marker, G_CREDITS);
+        let credits_leaf = stem_field_leaf(&credits, F_PAGES);
         assert!(
             !credits_leaf.starts_with(&details),
             "a sibling group's leaf is outside this group's prefix"
@@ -762,7 +818,7 @@ mod tests {
             "this group's leaf is outside the sibling group's prefix"
         );
         // A branch cell is outside the group prefix (branch tag 0x30 ≠ group tag 0x28).
-        let branch_child = bcs(&marker, "notes", &KeyScalar::Int(1));
+        let branch_child = bcs(&marker, B_NOTES, &KeyScalar::Int(1));
         assert!(
             !branch_child.starts_with(&details),
             "a branch cell is outside the group prefix"
@@ -785,10 +841,10 @@ mod tests {
     /// while the other calls it corruption.
     #[test]
     fn a_markerless_group_leaf_is_an_orphan_on_both_paths() {
-        let root = "books";
+        let root = ROOT_BOOKS;
         let key = KeyScalar::Str("a".into());
         let stem = mk(root, &key);
-        let leaf = group_leaf(root, &key, "details", "pages");
+        let leaf = group_leaf(root, &key, G_DETAILS, F_PAGES);
         assert!(matches!(classify_cell(root, &leaf), CellKind::Orphan));
         assert!(matches!(below_marker(&stem, &leaf), BelowMarker::OwnGroup));
     }
@@ -798,15 +854,15 @@ mod tests {
     /// the cursor skips the subtree regardless of branch fan-out.
     #[test]
     fn parent_cursor_skips_the_whole_subtree_and_precedes_the_next_sibling() {
-        let root = "books";
+        let root = ROOT_BOOKS;
         let a = mk(root, &KeyScalar::Str("a".into()));
         let a_cursor = cursor(root, &KeyScalar::Str("a".into()));
         let b_marker = mk(root, &KeyScalar::Str("b".into()));
         let subtree = [
-            stem_field_leaf(&a, "title"),
-            bcs(&a, "notes", &KeyScalar::Int(i64::MIN)),
-            bcs(&a, "notes", &KeyScalar::Int(i64::MAX)),
-            stem_field_leaf(&bcs(&a, "notes", &KeyScalar::Int(1)), "text"),
+            stem_field_leaf(&a, F_TITLE),
+            bcs(&a, B_NOTES, &KeyScalar::Int(i64::MIN)),
+            bcs(&a, B_NOTES, &KeyScalar::Int(i64::MAX)),
+            stem_field_leaf(&bcs(&a, B_NOTES, &KeyScalar::Int(1)), F_TEXT),
         ];
         for cell in &subtree {
             assert!(
@@ -826,15 +882,15 @@ mod tests {
     /// proves at the root, one level down.
     #[test]
     fn branch_children_are_separated_by_their_own_cursor() {
-        let root = "books";
+        let root = ROOT_BOOKS;
         let parent = mk(root, &KeyScalar::Str("a".into()));
         let mut children = representative_keys();
         children.sort();
         for pair in children.windows(2) {
-            let lo = bcs(&parent, "notes", &pair[0]);
-            let lo_field = stem_field_leaf(&lo, "text");
+            let lo = bcs(&parent, B_NOTES, &pair[0]);
+            let lo_field = stem_field_leaf(&lo, F_TEXT);
             let lo_cursor = stem_cursor(&lo);
-            let hi = bcs(&parent, "notes", &pair[1]);
+            let hi = bcs(&parent, B_NOTES, &pair[1]);
             assert!(
                 lo.as_slice() < lo_field.as_slice(),
                 "child marker precedes its field"
@@ -859,11 +915,11 @@ mod tests {
     /// root-level key it descends from.
     #[test]
     fn classify_recognizes_a_branch_descendant() {
-        let root = "books";
+        let root = ROOT_BOOKS;
         let key = KeyScalar::Str("a".into());
         let parent = mk(root, &key);
-        let child = bcs(&parent, "notes", &KeyScalar::Int(1));
-        let grandchild = bcs(&child, "tags", &KeyScalar::Int(2));
+        let child = bcs(&parent, B_NOTES, &KeyScalar::Int(1));
+        let grandchild = bcs(&child, B_TAGS, &KeyScalar::Int(2));
         assert!(matches!(
             classify_cell(root, &child),
             CellKind::Descendant(k) if k == key
@@ -877,7 +933,7 @@ mod tests {
             CellKind::Marker(k) if k == key
         ));
         assert!(matches!(
-            classify_cell(root, &stem_field_leaf(&parent, "title")),
+            classify_cell(root, &stem_field_leaf(&parent, F_TITLE)),
             CellKind::Orphan
         ));
     }
@@ -888,7 +944,7 @@ mod tests {
     /// cannot slip through one path as absent while the other calls it corruption.
     #[test]
     fn an_unknown_post_stem_tag_is_corruption_on_both_paths() {
-        let root = "books";
+        let root = ROOT_BOOKS;
         let key = KeyScalar::Str("a".into());
         let stem = mk(root, &key);
         // 0x40 is neither FIELD_TAG (0x10) nor BRANCH_TAG (0x30): a tag the layout
@@ -909,7 +965,7 @@ mod tests {
     /// single-key ordering laws the traversal-skip and precedence rules rest on.
     #[test]
     fn composite_key_markers_are_contained_and_separated_across_column_boundaries() {
-        let root = "cells";
+        let root = ROOT_CELLS;
         // Column 0 shared, column 1 differs — including a trailing NUL that abuts the
         // marker terminator. Column-major order is a < a\0 < b in column 1.
         let a = &[KeyScalar::Int(1), KeyScalar::Str("a".into())][..];
@@ -928,10 +984,10 @@ mod tests {
             );
             // lo's whole subtree — its own field and a composite-keyed branch child —
             // nests below lo's cursor, which precedes the next sibling's marker.
-            let lo_field = stem_field_leaf(&marker_key(root, pair[0]), "value");
+            let lo_field = stem_field_leaf(&marker_key(root, pair[0]), F_VALUE);
             let lo_branch = branch_child_stem(
                 &marker_key(root, pair[0]),
-                "spans",
+                B_SPANS,
                 &[KeyScalar::Int(9), KeyScalar::Bytes(vec![0x00, 0x00])],
             );
             for cell in [&lo_field, &lo_branch] {
@@ -954,9 +1010,9 @@ mod tests {
     /// families, so an index cell never aliases an entry marker/leaf or a meta cell.
     #[test]
     fn index_cells_are_their_own_family() {
-        let key = index_cell_key("books", &IDX_A, &[KeyScalar::Str("a".into())]);
+        let key = index_cell_key(ROOT_BOOKS, &IDX_A, &[KeyScalar::Str("a".into())]);
         assert_eq!(key.first(), Some(&INDEX_FAMILY));
-        let entry = marker_key("books", &[KeyScalar::Int(1)]);
+        let entry = marker_key(ROOT_BOOKS, &[KeyScalar::Int(1)]);
         let meta = meta_key("profile");
         assert_ne!(key.first(), entry.first(), "disjoint from the entry family");
         assert_ne!(key.first(), meta.first(), "disjoint from the meta family");
@@ -968,26 +1024,26 @@ mod tests {
     #[test]
     fn index_cell_keys_separate_by_identity_root_and_values() {
         let proj = [KeyScalar::Str("a".into()), KeyScalar::Int(1)];
-        let base = index_cell_key("books", &IDX_A, &proj);
+        let base = index_cell_key(ROOT_BOOKS, &IDX_A, &proj);
         assert_eq!(
             base,
-            index_cell_key("books", &IDX_A, &proj),
+            index_cell_key(ROOT_BOOKS, &IDX_A, &proj),
             "deterministic"
         );
         assert_ne!(
             base,
-            index_cell_key("books", &IDX_B, &proj),
+            index_cell_key(ROOT_BOOKS, &IDX_B, &proj),
             "distinct index id"
         );
         assert_ne!(
             base,
-            index_cell_key("tomes", &IDX_A, &proj),
+            index_cell_key(ROOT_TOMES, &IDX_A, &proj),
             "distinct root"
         );
         assert_ne!(
             base,
             index_cell_key(
-                "books",
+                ROOT_BOOKS,
                 &IDX_A,
                 &[KeyScalar::Str("a".into()), KeyScalar::Int(2)],
             ),
@@ -1002,17 +1058,17 @@ mod tests {
     #[test]
     fn index_cell_keys_are_prefix_free_and_prefix_bounded() {
         let a1 = index_cell_key(
-            "books",
+            ROOT_BOOKS,
             &IDX_A,
             &[KeyScalar::Str("a".into()), KeyScalar::Int(1)],
         );
         let a2 = index_cell_key(
-            "books",
+            ROOT_BOOKS,
             &IDX_A,
             &[KeyScalar::Str("a".into()), KeyScalar::Int(2)],
         );
         let ab = index_cell_key(
-            "books",
+            ROOT_BOOKS,
             &IDX_A,
             &[KeyScalar::Str("ab".into()), KeyScalar::Int(1)],
         );
@@ -1025,7 +1081,7 @@ mod tests {
 
         // The leading-component projection is a byte-prefix of every full key sharing it,
         // so a scan over `shelf = "a"` seeks that prefix and meets a1 then a2.
-        let a_prefix = index_cell_key("books", &IDX_A, &[KeyScalar::Str("a".into())]);
+        let a_prefix = index_cell_key(ROOT_BOOKS, &IDX_A, &[KeyScalar::Str("a".into())]);
         assert!(a1.starts_with(&a_prefix) && a2.starts_with(&a_prefix));
         assert!(
             !ab.starts_with(&a_prefix),
@@ -1052,14 +1108,14 @@ mod tests {
     fn index_skip_cursor_passes_one_component_and_stops_before_the_next() {
         // `byShelf[shelf, id]` held at `shelf = "a"`: enumerate the `id` component. The
         // `id` column is the last projected column, so a cell equals its component row key.
-        let layer = IndexLayer::new("books", &IDX_A, &[KeyScalar::Str("a".into())]);
+        let layer = IndexLayer::new(ROOT_BOOKS, &IDX_A, &[KeyScalar::Str("a".into())]);
         let cell_a1 = index_cell_key(
-            "books",
+            ROOT_BOOKS,
             &IDX_A,
             &[KeyScalar::Str("a".into()), KeyScalar::Int(1)],
         );
         let cell_a2 = index_cell_key(
-            "books",
+            ROOT_BOOKS,
             &IDX_A,
             &[KeyScalar::Str("a".into()), KeyScalar::Int(2)],
         );
@@ -1083,9 +1139,9 @@ mod tests {
         // the same law: the skip cursor still sits between the component's rows and the
         // next component. `byRegionShelfId[region, shelf, id]` held at `region = "west"`,
         // enumerating `shelf`, with two rows sharing `shelf = "a"`.
-        let wide = IndexLayer::new("stock", &IDX_B, &[KeyScalar::Str("west".into())]);
+        let wide = IndexLayer::new(ROOT_STOCK, &IDX_B, &[KeyScalar::Str("west".into())]);
         let west_a_1 = index_cell_key(
-            "stock",
+            ROOT_STOCK,
             &IDX_B,
             &[
                 KeyScalar::Str("west".into()),
@@ -1094,7 +1150,7 @@ mod tests {
             ],
         );
         let west_a_2 = index_cell_key(
-            "stock",
+            ROOT_STOCK,
             &IDX_B,
             &[
                 KeyScalar::Str("west".into()),
@@ -1103,7 +1159,7 @@ mod tests {
             ],
         );
         let west_b_1 = index_cell_key(
-            "stock",
+            ROOT_STOCK,
             &IDX_B,
             &[
                 KeyScalar::Str("west".into()),
@@ -1121,5 +1177,86 @@ mod tests {
             wide.next_component(&west_a_1),
             Some(KeyScalar::Str("a".into()))
         );
+    }
+
+    /// The absence gate of record (FR01 §3): no source spelling enters entry/group/branch/
+    /// index cell-key construction. The escaped-name grammar (`encode_escaped_bytes`) and a
+    /// `&str` node parameter survive in exactly one place — the meta family's `meta_key`, the
+    /// sanctioned kernel-internal exception ("profile"/"witness"). Reverting any cell-key
+    /// constructor to a name parameter would add a second `&str` function or a second
+    /// escaped-name call and fail this gate.
+    #[test]
+    fn no_source_spelling_in_cell_keys() {
+        let src = include_str!("physical.rs");
+        let production = src
+            .split("#[cfg(test)]")
+            .next()
+            .expect("production precedes the test module");
+        assert_eq!(
+            production.matches("encode_escaped_bytes(").count(),
+            1,
+            "the escaped-name grammar survives only in meta_key; a cell-key constructor \
+             must never spell a name",
+        );
+        assert_eq!(
+            production.matches(": &str").count(),
+            1,
+            "only meta_key takes a &str; every entry/group/branch/index cell-key \
+             constructor takes a NodeNumber",
+        );
+        let meta = production.find("fn meta_key").expect("meta_key exists");
+        let call = production
+            .find("encode_escaped_bytes(")
+            .expect("the one escaped-name call exists");
+        assert!(
+            call > meta,
+            "the sole escaped-name call sits inside meta_key",
+        );
+    }
+
+    /// The frozen id-keyed cell-key layout (FR01 §3 durability contract): the exact bytes of
+    /// a marker, a field leaf, a group leaf, a branch child marker, and an index cell key,
+    /// so the on-disk key grammar cannot drift silently. Each node component is its 4-byte
+    /// big-endian number; the marker terminator, structural tags, and key-tuple encoding are
+    /// unchanged from the escaped-name form.
+    #[test]
+    fn id_keyed_cell_key_layout_is_frozen() {
+        let key = KeyScalar::Int(1);
+        let enc_key = encode_key_value(&key); // 0x02 then 8 order-preserving bytes
+
+        // Marker: 0x01 0x20 num(root=0) enc(key) 0x00
+        let marker = marker_key(0, std::slice::from_ref(&key));
+        let mut expected = vec![0x01, 0x20, 0x00, 0x00, 0x00, 0x00];
+        expected.extend_from_slice(&enc_key);
+        expected.push(0x00);
+        assert_eq!(marker, expected, "marker layout");
+
+        // Field leaf: <marker> 0x10 num(field=10)
+        let leaf = stem_field_leaf(&marker, 10);
+        let mut expected = marker.clone();
+        expected.extend_from_slice(&[0x10, 0x00, 0x00, 0x00, 0x0A]);
+        assert_eq!(leaf, expected, "field-leaf layout");
+
+        // Group leaf: <marker> 0x28 num(group=30) 0x10 num(field=10)
+        let group_leaf = stem_field_leaf(&group_stem(&marker, 30), 10);
+        let mut expected = marker.clone();
+        expected.extend_from_slice(&[0x28, 0x00, 0x00, 0x00, 0x1E, 0x10, 0x00, 0x00, 0x00, 0x0A]);
+        assert_eq!(group_leaf, expected, "group-leaf layout");
+
+        // Branch child marker: <marker> 0x30 num(branch=20) enc(childKey) 0x00
+        let child = KeyScalar::Int(7);
+        let branch = branch_child_stem(&marker, 20, std::slice::from_ref(&child));
+        let mut expected = marker.clone();
+        expected.extend_from_slice(&[0x30, 0x00, 0x00, 0x00, 0x14]);
+        expected.extend_from_slice(&encode_key_value(&child));
+        expected.push(0x00);
+        assert_eq!(branch, expected, "branch-child-marker layout");
+
+        // Index cell key: 0x02 num(root=0) index_id[16] enc(projValues)
+        let index = index_cell_key(0, &[0xAB; 16], std::slice::from_ref(&key));
+        let mut expected = vec![0x02, 0x00, 0x00, 0x00, 0x00];
+        expected.extend_from_slice(&[0xAB; 16]);
+        expected.extend_from_slice(&encode_key_tuple(std::slice::from_ref(&key)));
+        assert_eq!(index, expected, "index-cell-key layout");
     }
 }

@@ -3,14 +3,14 @@
 //! The kernel sits below the language. It consumes verified sites and typed
 //! scalars — never source — and turns durable operations into ordered-byte engine
 //! calls through the narrow [`marrow_store::ByteEngine`] seam. It owns the durable
-//! operation algebra outcomes, the authority triple, the store profile, the
-//! name-keyed physical layout, and the commit witness.
+//! operation algebra outcomes, the authority triple, the id-keyed physical layout
+//! ([`number_store`] assigns every node its cell-key number), and the commit witness.
 //!
 //! The kernel provides the flat read/write kernel and the ephemeral-memory
 //! attachment: a fresh in-memory store minted from a verified image's schema,
 //! sites, and deployment ceiling, driving read and single-write sessions bounded
 //! by `demand ∩ ceiling ∩ grant`. The executable physical layout is the
-//! name-keyed root — its fields each a scalar or a widened value (`struct`/`enum`/
+//! id-keyed root — its fields each a scalar or a widened value (`struct`/`enum`/
 //! `Option`, framed inline) — plus keyed branches nested to any depth; groups,
 //! composite-keyed branches, nominal-typed fields, and composite root keys stay
 //! parked until their owners land them.
@@ -18,7 +18,6 @@
 mod attach;
 mod physical;
 mod plan;
-mod profile;
 mod store;
 
 pub use attach::{
@@ -143,6 +142,111 @@ pub struct BranchSchema {
     pub branches: Vec<BranchSchema>,
 }
 
+/// A durable node's store-local cell-key number (FR01 §3): a store-wide, never-reused
+/// `u32` assigned to each root, field, group, and branch. Cell keys are prefixed by these
+/// numbers rather than by source spelling, so a rename is zero-cell metadata. The width is
+/// `u32` for lifetime headroom, independent of the image's `u16` table rings (FR01 §4).
+type NodeNumber = u32;
+
+/// The store-local numbering of one root's durable nodes, mirroring its [`StoreSchema`]
+/// structure: the root's own number, one number per top-level field (in order), one
+/// [`GroupNumbering`] per group, and one [`BranchNumbering`] per branch. Computed once from
+/// the schema at store construction by [`number_store`], and walked in lockstep with the
+/// schema by the site resolver to number every addressed node.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct RootNumbering {
+    pub(super) root: NodeNumber,
+    pub(super) fields: Vec<NodeNumber>,
+    pub(super) groups: Vec<GroupNumbering>,
+    pub(super) branches: Vec<BranchNumbering>,
+}
+
+/// The numbering of one unkeyed group: its own number and one number per field.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct GroupNumbering {
+    pub(super) number: NodeNumber,
+    pub(super) fields: Vec<NodeNumber>,
+}
+
+/// The numbering of one keyed branch, recursively: its own number, one number per field,
+/// and one [`BranchNumbering`] per nested sub-branch.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct BranchNumbering {
+    pub(super) number: NodeNumber,
+    pub(super) fields: Vec<NodeNumber>,
+    pub(super) branches: Vec<BranchNumbering>,
+}
+
+/// Assign store-wide pre-order [`NodeNumber`]s to every durable node of every root, the
+/// single owner of the cell-key numbering (FR01 §3). One global counter starts at zero and
+/// walks each root in declaration order; within a node it numbers the node itself, then its
+/// fields in order, then each group (the group node, then the group's fields), then each
+/// branch (the branch node, then its fields, then its sub-branches recursively). The order
+/// is a deterministic function of the schema structure, so the ephemeral and native paths —
+/// which derive the same schema from the same image — number identically, and no second
+/// grammar exists. The result is store-wide unique, the bijection the head map (F02a
+/// provision) persists against ledger ids.
+pub(super) fn number_store(schemas: &[StoreSchema]) -> Vec<RootNumbering> {
+    let mut next = 0u32;
+    let mut alloc = || {
+        let n = next;
+        next += 1;
+        n
+    };
+    schemas
+        .iter()
+        .map(|schema| RootNumbering {
+            root: alloc(),
+            fields: schema.fields.iter().map(|_| alloc()).collect(),
+            groups: schema
+                .groups
+                .iter()
+                .map(|group| GroupNumbering {
+                    number: alloc(),
+                    fields: group.fields.iter().map(|_| alloc()).collect(),
+                })
+                .collect(),
+            branches: number_branches(&schema.branches, &mut alloc),
+        })
+        .collect()
+}
+
+/// Number a level of branches in pre-order, recursing into sub-branches, through the shared
+/// counter so the whole forest shares one store-wide number space.
+fn number_branches(
+    branches: &[BranchSchema],
+    alloc: &mut impl FnMut() -> NodeNumber,
+) -> Vec<BranchNumbering> {
+    branches
+        .iter()
+        .map(|branch| BranchNumbering {
+            number: alloc(),
+            fields: branch.fields.iter().map(|_| alloc()).collect(),
+            branches: number_branches(&branch.branches, alloc),
+        })
+        .collect()
+}
+
+/// One field of a resolved node: the cell-key [`NodeNumber`] the physical layer keys leaves
+/// by (never the source spelling), the value shape and required flag the ops need, and the
+/// field's source name retained for diagnostics only — the `RequiredMissing` reconcile fault
+/// names the missing required field, but no cell key is ever built from the name. The
+/// resolver produces these from a [`FieldSchema`] and its [`NodeNumber`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct ResolvedField {
+    pub(super) number: NodeNumber,
+    pub(super) name: String,
+    pub(super) shape: ValueShape,
+    pub(super) required: bool,
+}
+
+/// One resolved unkeyed group: its cell-key [`NodeNumber`] and its resolved fields.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct ResolvedGroup {
+    pub(super) number: NodeNumber,
+    pub(super) fields: Vec<ResolvedField>,
+}
+
 /// A verified operation site the kernel maps to physical layout, indexed by the
 /// image's site index. `root` is the site's durable root by declaration position —
 /// its index into the store's root-indexed schema table, so a per-root read or write
@@ -244,8 +348,6 @@ pub struct Denied;
 pub enum SessionError {
     /// The export's demand exceeds ceiling ∩ grant (`run.authority`).
     Denied,
-    /// The store's recorded profile does not match this program's schema.
-    ProfileMismatch,
     /// The handle was poisoned by an earlier indeterminate commit: its durability is
     /// unknown, so no further session may open on it until the store is reopened and the
     /// commit reclassified (complete-old vs complete-new). Consulted at session open so a
@@ -411,10 +513,12 @@ pub enum Reopen {
 /// asserts as defense in depth over the verifier's proof.
 #[derive(Debug, Clone)]
 pub struct AuthorizedSite {
-    root: String,
+    /// The addressed root's cell-key number (FR01 §3): the fixed-width component that keys
+    /// the root's physical cell family, in place of its source spelling.
+    root_number: NodeNumber,
     /// The addressed root's declaration position — its index into the store's
     /// root-indexed schema and per-root managed-index tables. A write op maintains
-    /// exactly this root's indexes; the root *name* keys the physical cell family, and
+    /// exactly this root's indexes; the root *number* keys the physical cell family, and
     /// this index selects the root's schema-derived facts.
     root_index: u16,
     /// The root's ordered key column kinds, checked against the leading columns of an
@@ -426,49 +530,50 @@ pub struct AuthorizedSite {
     target: AuthTarget,
 }
 
-/// One hop of a site's branch path: the branch's name (which keys its physical child
-/// stem) and its ordered key column kinds (checked against the operation key columns).
+/// One hop of a site's branch path: the branch's cell-key number (which keys its physical
+/// child stem) and its ordered key column kinds (checked against the operation key columns).
 #[derive(Debug, Clone)]
 struct BranchHop {
-    name: String,
+    number: NodeNumber,
     key: Vec<ScalarKind>,
 }
 
 impl BranchHop {
-    fn new(name: String, key: Vec<ScalarKind>) -> Self {
-        Self { name, key }
+    fn new(number: NodeNumber, key: Vec<ScalarKind>) -> Self {
+        Self { number, key }
     }
 }
 
 #[derive(Debug, Clone)]
 enum AuthTarget {
-    /// A whole-entry target: the addressed node's own record fields and its groups,
-    /// resolved once at session setup so the whole-entry ops enumerate its footprint —
-    /// marker, own field leaves, and every group's leaves — without the schema. A branch
-    /// node carries no group (group-in-branch is not yet executable), so its group list is
-    /// empty.
+    /// A whole-entry target: the addressed node's own resolved record fields and its
+    /// resolved groups, numbered once at session setup so the whole-entry ops enumerate its
+    /// footprint — marker, own field leaves, and every group's leaves — without the schema
+    /// or any source spelling. A branch node carries no group (group-in-branch is not yet
+    /// executable), so its group list is empty.
     Entry {
-        fields: Vec<FieldSchema>,
-        groups: Vec<GroupSchema>,
+        fields: Vec<ResolvedField>,
+        groups: Vec<ResolvedGroup>,
     },
     Field {
-        name: String,
+        number: NodeNumber,
         shape: ValueShape,
         required: bool,
         /// The addressed field's containing node record — the root's fields for a
         /// top-level field, a branch's fields for a branch field. A staged sparse or
         /// required set carries this so the commit reconcile validates the *node's*
         /// marker and required fields, node-parametrically, one level down for a branch.
-        record: Vec<FieldSchema>,
+        record: Vec<ResolvedField>,
     },
-    /// A whole-group target: the group's name (which keys its physical leaf namespace
-    /// under the containing entry) and its own record fields. A group carries no marker
-    /// and no key — its presence is its containing entry's presence — so the whole-group
-    /// ops materialize, replace, or erase the group's leaves scoped to this field set,
-    /// leaving the entry's marker, top-level fields, sibling groups, and branches intact.
+    /// A whole-group target: the group's cell-key number (which keys its physical leaf
+    /// namespace under the containing entry) and its own resolved record fields. A group
+    /// carries no marker and no key — its presence is its containing entry's presence — so
+    /// the whole-group ops materialize, replace, or erase the group's leaves scoped to this
+    /// field set, leaving the entry's marker, top-level fields, sibling groups, and branches
+    /// intact.
     Group {
-        name: String,
-        fields: Vec<FieldSchema>,
+        number: NodeNumber,
+        fields: Vec<ResolvedField>,
     },
     /// A managed-index read target: the index's cell-family identity, whether it is a
     /// unique complete-key lookup or a nonunique progressive-prefix scan, and the scalar
@@ -484,10 +589,10 @@ enum AuthTarget {
 }
 
 impl AuthTarget {
-    /// A field target from a resolved field schema and its containing node record.
-    fn field(field: &FieldSchema, record: &[FieldSchema]) -> Self {
+    /// A field target from a resolved field and its containing resolved record.
+    fn field(field: &ResolvedField, record: &[ResolvedField]) -> Self {
         Self::Field {
-            name: field.name.clone(),
+            number: field.number,
             shape: field.shape.clone(),
             required: field.required,
             record: record.to_vec(),
@@ -506,18 +611,18 @@ impl AuthTarget {
 }
 
 impl AuthorizedSite {
-    /// Assemble a resolved site from its root name and declaration position, root key
+    /// Assemble a resolved site from its root number and declaration position, root key
     /// column kinds, branch path, and target. Kernel-internal; the store's site resolver
     /// is the sole constructor.
     fn new(
-        root: String,
+        root_number: NodeNumber,
         root_index: u16,
         key: Vec<ScalarKind>,
         branch: Vec<BranchHop>,
         target: AuthTarget,
     ) -> Self {
         Self {
-            root,
+            root_number,
             root_index,
             key,
             branch,
@@ -527,9 +632,14 @@ impl AuthorizedSite {
 
     /// A root-level managed-index read site: no branch path, an [`AuthTarget::Index`]
     /// target. The store's site resolver is the sole constructor.
-    fn index(root: String, root_index: u16, key: Vec<ScalarKind>, target: AuthTarget) -> Self {
+    fn index(
+        root_number: NodeNumber,
+        root_index: u16,
+        key: Vec<ScalarKind>,
+        target: AuthTarget,
+    ) -> Self {
         Self {
-            root,
+            root_number,
             root_index,
             key,
             branch: Vec::new(),

@@ -9,11 +9,12 @@ use super::super::physical;
 use super::super::plan::{CellWrite, IndexOp, Planner};
 use super::super::{
     AuthTarget, AuthorizedSite, BoundedKeys, BoundedLimit, CommitResult, CreateOutcome, EntryValue,
-    EraseOutcome, FieldSchema, IndexComponent, IndexSchema, KernelFault, Presence, ReplaceOutcome,
+    EraseOutcome, IndexComponent, IndexSchema, KernelFault, Presence, ReplaceOutcome,
+    ResolvedField,
 };
 use super::Durable;
 use super::address::{
-    field_index_in_record, field_name, group_target, node_shape, node_stem, read_raw, site_record,
+    field_index_in_record, field_number, group_target, node_shape, node_stem, read_raw, site_record,
 };
 use super::handle::WITNESS;
 use super::index_ops::{op_index_lookup, op_index_scan};
@@ -60,7 +61,7 @@ where
 /// node's marker and required fields at its own physical stem, one level down for a
 /// branch node.
 pub(super) struct PendingNode {
-    fields: Vec<FieldSchema>,
+    fields: Vec<ResolvedField>,
     key: KeyScalar,
 }
 
@@ -151,7 +152,7 @@ impl<'s, E: ByteEngine + 's> TxnSession<'s, E> {
             let mut any_leaf = false;
             let mut missing_required: Option<String> = None;
             for field in &node.fields {
-                let leaf = physical::stem_field_leaf(stem, &field.name);
+                let leaf = physical::stem_field_leaf(stem, field.number);
                 let present = read_raw(self.txn(), &leaf)
                     .map_err(|_| CommitResult::CommitFault)?
                     .is_some();
@@ -242,14 +243,14 @@ impl<'s, E: ByteEngine + 's> Durable for TxnSession<'s, E> {
         value: EntryValue,
     ) -> Result<ReplaceOutcome, KernelFault> {
         let stem = node_stem(site, keys)?;
-        let (name, fields) = group_target(site);
+        let (number, fields) = group_target(site);
         // A group has no independent existence: replacing a group of a payload-absent
         // entry is Missing and touches nothing (symmetric with a whole-entry replace over
         // a markerless node).
         if read_raw(self.txn(), &stem)?.is_none() {
             return Ok(ReplaceOutcome::Missing);
         }
-        let group_stem = physical::group_stem(&stem, name);
+        let group_stem = physical::group_stem(&stem, number);
         let planner = Planner::new();
         // Exact replacement scoped to the group's own leaves through the group-parametric
         // planner: remove them all, then write the present ones. The entry marker, the
@@ -267,8 +268,8 @@ impl<'s, E: ByteEngine + 's> Durable for TxnSession<'s, E> {
         keys: &[KeyScalar],
     ) -> Result<EraseOutcome, KernelFault> {
         let stem = node_stem(site, keys)?;
-        let (name, fields) = group_target(site);
-        let group_stem = physical::group_stem(&stem, name);
+        let (number, fields) = group_target(site);
+        let group_stem = physical::group_stem(&stem, number);
         let planner = Planner::new();
         // A group carries no marker, so erasing it removes only its own field leaves. It
         // existed if any leaf was present; the removal is by exact key, so the entry
@@ -325,7 +326,7 @@ impl<'s, E: ByteEngine + 's> Durable for TxnSession<'s, E> {
         value: ValueDomain,
     ) -> Result<(), KernelFault> {
         let stem = node_stem(site, keys)?;
-        let leaf = physical::stem_field_leaf(&stem, field_name(site, true));
+        let leaf = physical::stem_field_leaf(&stem, field_number(site, true));
         let bytes = encode_domain(&value).map_err(|_| KernelFault::ValueRange)?;
         let maintenance = self.field_maintenance_before(site, &stem)?;
         self.txn_mut()
@@ -342,7 +343,7 @@ impl<'s, E: ByteEngine + 's> Durable for TxnSession<'s, E> {
         value: Option<ValueDomain>,
     ) -> Result<(), KernelFault> {
         let stem = node_stem(site, keys)?;
-        let leaf = physical::stem_field_leaf(&stem, field_name(site, false));
+        let leaf = physical::stem_field_leaf(&stem, field_number(site, false));
         let maintenance = self.field_maintenance_before(site, &stem)?;
         match value {
             Some(value) => {
@@ -458,7 +459,7 @@ impl<'s, E: ByteEngine + 's> Durable for TxnSession<'s, E> {
         keys: &[KeyScalar],
     ) -> Result<EraseOutcome, KernelFault> {
         let stem = node_stem(site, keys)?;
-        let leaf = physical::stem_field_leaf(&stem, field_name(site, false));
+        let leaf = physical::stem_field_leaf(&stem, field_number(site, false));
         let existed = read_raw(self.txn(), &leaf)?.is_some();
         let maintenance = self.field_maintenance_before(site, &stem)?;
         self.txn_mut().remove(&leaf).map_err(KernelFault::Engine)?;
@@ -587,13 +588,13 @@ impl<'s, E: ByteEngine + 's> TxnSession<'s, E> {
     fn read_projected(
         &self,
         stem: &[u8],
-        record: &[FieldSchema],
+        record: &[ResolvedField],
         positions: &[usize],
     ) -> Result<Vec<Option<ValueDomain>>, KernelFault> {
         let mut fields = vec![None; record.len()];
         for &position in positions {
             let field = &record[position];
-            let leaf = physical::stem_field_leaf(stem, &field.name);
+            let leaf = physical::stem_field_leaf(stem, field.number);
             if let Some(bytes) = read_raw(self.txn(), &leaf)? {
                 fields[position] =
                     Some(decode_domain(&bytes, &field.shape).ok_or(KernelFault::Corruption)?);
@@ -649,7 +650,7 @@ impl<'s, E: ByteEngine + 's> TxnSession<'s, E> {
         };
         let mut new = old.clone();
         new[position] = new_value;
-        let ops = Planner::new().index_writes(&site.root, &indexes, keys, &old, &new)?;
+        let ops = Planner::new().index_writes(site.root_number, &indexes, keys, &old, &new)?;
         self.apply_index_ops(ops)
     }
 
@@ -663,7 +664,8 @@ impl<'s, E: ByteEngine + 's> TxnSession<'s, E> {
         old: &[Option<ValueDomain>],
         new: &[Option<ValueDomain>],
     ) -> Result<(), KernelFault> {
-        let ops = Planner::new().index_writes(&site.root, self.indexes_of(site), keys, old, new)?;
+        let ops =
+            Planner::new().index_writes(site.root_number, self.indexes_of(site), keys, old, new)?;
         self.apply_index_ops(ops)
     }
 

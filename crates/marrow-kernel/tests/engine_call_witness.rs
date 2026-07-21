@@ -26,11 +26,12 @@
 //! | derived address without I/O | kernel (pure codec)                  | operational (below): the physical address and value are computed in memory; a rejected write stages zero engine writes |
 //! | demand/ceiling/grant/budgets | kernel session open (pure)          | operational (below): a denied session returns before the store's first engine access, with the open tally at zero |
 //!
-//! The boundary: [`SessionError::ProfileMismatch`] is detected by reading the store's
-//! recorded profile cell — the session's *first* engine access. It is therefore
-//! deliberately outside the zero-engine-call set; the zero-call property covers
-//! exactly the classes ordered before the first engine access. Once the profile
-//! matches and the view or transaction is open, ordinary engine access begins.
+//! The boundary: a permitted session opens the engine (a read view or a write
+//! transaction) as its *first* engine access. The zero-call property covers exactly the
+//! rejection classes ordered before that first access — authority denial and the poison
+//! latch, both decided in memory. Once the session is open, ordinary engine access begins.
+//! (Schema-binding consistency is no longer an in-store profile read: the id-keyed layout
+//! makes a rename zero-cell, so the lifecycle head owns binding, not a profile cell.)
 
 mod common;
 
@@ -134,10 +135,10 @@ fn a_denied_read_open_makes_zero_engine_calls() {
     );
 }
 
-/// The witness is real: a permitted session reads the profile cell, so it opens the
-/// engine a nonzero number of times. Without this a broken counter would pass the
-/// zero-call assertions vacuously. This also pins the boundary: the profile read is
-/// the session's first engine access, the point where `ProfileMismatch` is decided.
+/// The witness is real: a permitted session opens the engine (a read view), so it makes a
+/// nonzero number of engine opens. Without this a broken counter would pass the zero-call
+/// assertions vacuously. This also pins the boundary: the view open is the session's first
+/// engine access, after the in-memory authority and poison-latch checks.
 #[test]
 fn a_permitted_open_makes_a_nonzero_number_of_engine_calls() {
     let counters = Counters::new();
@@ -158,7 +159,7 @@ fn a_permitted_open_makes_a_nonzero_number_of_engine_calls() {
     drop(read);
     assert!(
         counters.opens() > 0,
-        "a permitted read reads the profile cell, so the counter must observe it",
+        "a permitted read opens the engine view, so the counter must observe it",
     );
 }
 

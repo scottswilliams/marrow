@@ -76,7 +76,7 @@ fn layer_of(
             if site.key.len() != 1 {
                 return Err(KernelFault::Corruption);
             }
-            Ok(physical::Layer::root(&site.root))
+            Ok(physical::Layer::root(site.root_number))
         }
         Some((traversed, parent_hops)) => {
             // The traversed branch layer must be single-column (composite-keyed layers are
@@ -87,15 +87,15 @@ fn layer_of(
             }
             let mut cols = ancestor_keys;
             let root_cols = take_columns(&mut cols, &site.key)?;
-            let mut stem = physical::marker_key(&site.root, root_cols);
+            let mut stem = physical::marker_key(site.root_number, root_cols);
             for hop in parent_hops {
                 let hop_cols = take_columns(&mut cols, &hop.key)?;
-                stem = physical::branch_child_stem(&stem, &hop.name, hop_cols);
+                stem = physical::branch_child_stem(&stem, hop.number, hop_cols);
             }
             if !cols.is_empty() {
                 return Err(KernelFault::Corruption);
             }
-            Ok(physical::Layer::branch(&stem, &traversed.name))
+            Ok(physical::Layer::branch(&stem, traversed.number))
         }
     }
 }

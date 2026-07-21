@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use marrow_store::ReadView;
 
 use super::super::physical;
-use super::super::{AuthTarget, AuthorizedSite, EntryValue, FieldSchema, KernelFault, Presence};
+use super::super::{AuthTarget, AuthorizedSite, EntryValue, KernelFault, Presence, ResolvedField};
 use super::address::{group_target, node_shape, node_stem, read_raw};
 use crate::codec::key::KeyScalar;
 use crate::codec::value::decode_domain;
@@ -65,7 +65,7 @@ pub(super) fn op_presence<V: ReadView>(
     let stem = node_stem(site, keys)?;
     let physical_key = match &site.target {
         AuthTarget::Entry { .. } => stem,
-        AuthTarget::Field { name, .. } => physical::stem_field_leaf(&stem, name),
+        AuthTarget::Field { number, .. } => physical::stem_field_leaf(&stem, *number),
         AuthTarget::Index { .. } | AuthTarget::Group { .. } => {
             unreachable!("verifier proved a presence op targets a node site")
         }
@@ -81,10 +81,10 @@ pub(super) fn op_read_field<V: ReadView>(
     site: &AuthorizedSite,
     keys: &[KeyScalar],
 ) -> Result<Option<ValueDomain>, KernelFault> {
-    let AuthTarget::Field { name, shape, .. } = &site.target else {
+    let AuthTarget::Field { number, shape, .. } = &site.target else {
         unreachable!("verifier proved a field read targets a field site")
     };
-    let leaf = physical::stem_field_leaf(&node_stem(site, keys)?, name);
+    let leaf = physical::stem_field_leaf(&node_stem(site, keys)?, *number);
     match read_raw(cells, &leaf)? {
         None => Ok(None),
         Some(bytes) => decode_domain(&bytes, shape)
@@ -125,7 +125,7 @@ pub(super) fn op_read_entry<V: ReadView>(
     // is the same marker/payload mismatch as a missing required top-level field.
     let mut group_values = Vec::with_capacity(groups.len());
     for group in groups {
-        let group_stem = physical::group_stem(&stem, &group.name);
+        let group_stem = physical::group_stem(&stem, group.number);
         group_values.push(EntryValue {
             fields: read_record_leaves(cells, &group_stem, &group.fields)?,
             groups: Vec::new(),
@@ -154,11 +154,11 @@ pub(super) fn op_read_entry<V: ReadView>(
 fn read_record_leaves<V: ReadView>(
     cells: &V,
     stem: &[u8],
-    fields: &[FieldSchema],
+    fields: &[ResolvedField],
 ) -> Result<Vec<Option<ValueDomain>>, KernelFault> {
     let mut position: HashMap<Vec<u8>, usize> = HashMap::with_capacity(fields.len());
     for (index, field) in fields.iter().enumerate() {
-        position.insert(physical::stem_field_leaf(stem, &field.name), index);
+        position.insert(physical::stem_field_leaf(stem, field.number), index);
     }
     let mut values: Vec<Option<ValueDomain>> = (0..fields.len()).map(|_| None).collect();
 
@@ -209,7 +209,7 @@ pub(super) fn op_read_group<V: ReadView>(
     tolerate_pending: bool,
 ) -> Result<Option<EntryValue>, KernelFault> {
     let stem = node_stem(site, keys)?;
-    let (name, fields) = group_target(site);
+    let (number, fields) = group_target(site);
     match probe_slot(cells, &stem)? {
         SlotClass::DescendantOnly | SlotClass::Absent => return Ok(None),
         SlotClass::Orphan => {
@@ -221,7 +221,7 @@ pub(super) fn op_read_group<V: ReadView>(
         }
         SlotClass::Present => {}
     }
-    let group_stem = physical::group_stem(&stem, name);
+    let group_stem = physical::group_stem(&stem, number);
     Ok(Some(EntryValue {
         fields: read_record_leaves(cells, &group_stem, fields)?,
         groups: Vec::new(),

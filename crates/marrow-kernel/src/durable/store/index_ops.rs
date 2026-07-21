@@ -53,7 +53,7 @@ pub(super) fn op_index_scan<V: ReadView>(
         return Err(KernelFault::Corruption);
     }
 
-    let layer = physical::IndexLayer::new(&site.root, id, prefix);
+    let layer = physical::IndexLayer::new(site.root_number, id, prefix);
     let mut keys: Vec<KeyScalar> = Vec::with_capacity(limit.get().min(1024));
     // An inclusive `from` seeks to `prefix ++ enc(from)`; a bare forward scan then
     // excludes an equal cursor, which misses the `from` row only when `from` completes
@@ -113,7 +113,7 @@ pub(super) fn op_index_lookup<V: ReadView>(
         return Err(KernelFault::Corruption);
     }
     check_kinds(key, projection)?;
-    let cell_key = physical::index_cell_key(&site.root, id, key);
+    let cell_key = physical::index_cell_key(site.root_number, id, key);
     match cells.get(&cell_key).map_err(KernelFault::Engine)? {
         None => Ok(None),
         Some(bytes) => match physical::decode_index_source_key(&bytes, site.key.len()) {

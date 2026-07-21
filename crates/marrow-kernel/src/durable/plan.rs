@@ -22,7 +22,7 @@
 //!   perform finite-ancestor maintenance.
 
 use super::physical;
-use super::{EntryValue, FieldSchema, GroupSchema, IndexComponent, IndexSchema, KernelFault};
+use super::{EntryValue, IndexComponent, IndexSchema, KernelFault, ResolvedField, ResolvedGroup};
 use crate::codec::key::KeyScalar;
 use crate::codec::value::encode_domain;
 use crate::equality::ValueDomain;
@@ -65,7 +65,7 @@ impl Planner {
     /// node-parametric field-leaf primitive: the root entry and every branch entry
     /// derive their field leaves through this one owner, so the marker/field topology
     /// has a single owner regardless of a node's depth.
-    pub(super) fn node_field_leaf(&self, stem: &[u8], field: &str) -> Vec<u8> {
+    pub(super) fn node_field_leaf(&self, stem: &[u8], field: physical::NodeNumber) -> Vec<u8> {
         physical::stem_field_leaf(stem, field)
     }
 
@@ -78,16 +78,16 @@ impl Planner {
     pub(super) fn node_cells(
         &self,
         stem: &[u8],
-        fields: &[FieldSchema],
-        groups: &[GroupSchema],
+        fields: &[ResolvedField],
+        groups: &[ResolvedGroup],
     ) -> Vec<Vec<u8>> {
         let mut cells = Vec::with_capacity(1 + fields.len());
         cells.push(stem.to_vec());
         for field in fields {
-            cells.push(self.node_field_leaf(stem, &field.name));
+            cells.push(self.node_field_leaf(stem, field.number));
         }
         for group in groups {
-            let group_stem = physical::group_stem(stem, &group.name);
+            let group_stem = physical::group_stem(stem, group.number);
             cells.extend(self.group_cells(&group_stem, &group.fields));
         }
         cells
@@ -103,8 +103,8 @@ impl Planner {
     pub(super) fn node_write(
         &self,
         stem: &[u8],
-        fields: &[FieldSchema],
-        groups: &[GroupSchema],
+        fields: &[ResolvedField],
+        groups: &[ResolvedGroup],
         entry: &EntryValue,
     ) -> Result<Vec<CellWrite>, KernelFault> {
         let mut writes = Vec::with_capacity(1 + entry.fields.len());
@@ -116,13 +116,13 @@ impl Planner {
             if let Some(value) = slot {
                 let bytes = encode_domain(value).map_err(|_| KernelFault::ValueRange)?;
                 writes.push(CellWrite::Put(
-                    self.node_field_leaf(stem, &fields[index].name),
+                    self.node_field_leaf(stem, fields[index].number),
                     bytes,
                 ));
             }
         }
         for (group, sub) in groups.iter().zip(&entry.groups) {
-            let group_stem = physical::group_stem(stem, &group.name);
+            let group_stem = physical::group_stem(stem, group.number);
             writes.extend(self.group_write(&group_stem, &group.fields, sub)?);
         }
         Ok(writes)
@@ -136,8 +136,8 @@ impl Planner {
     pub(super) fn node_erase(
         &self,
         stem: &[u8],
-        fields: &[FieldSchema],
-        groups: &[GroupSchema],
+        fields: &[ResolvedField],
+        groups: &[ResolvedGroup],
     ) -> Vec<CellWrite> {
         self.node_cells(stem, fields, groups)
             .into_iter()
@@ -153,10 +153,10 @@ impl Planner {
     /// esc(group)`), the whole footprint is disjoint from the entry's top-level fields,
     /// its sibling groups, and its branch descendants. The single owner of a group's
     /// footprint enumeration.
-    pub(super) fn group_cells(&self, group_stem: &[u8], fields: &[FieldSchema]) -> Vec<Vec<u8>> {
+    pub(super) fn group_cells(&self, group_stem: &[u8], fields: &[ResolvedField]) -> Vec<Vec<u8>> {
         fields
             .iter()
-            .map(|field| self.node_field_leaf(group_stem, &field.name))
+            .map(|field| self.node_field_leaf(group_stem, field.number))
             .collect()
     }
 
@@ -169,7 +169,7 @@ impl Planner {
     pub(super) fn group_write(
         &self,
         group_stem: &[u8],
-        fields: &[FieldSchema],
+        fields: &[ResolvedField],
         value: &EntryValue,
     ) -> Result<Vec<CellWrite>, KernelFault> {
         let mut writes = Vec::with_capacity(value.fields.len());
@@ -177,7 +177,7 @@ impl Planner {
             if let Some(value) = slot {
                 let bytes = encode_domain(value).map_err(|_| KernelFault::ValueRange)?;
                 writes.push(CellWrite::Put(
-                    self.node_field_leaf(group_stem, &fields[index].name),
+                    self.node_field_leaf(group_stem, fields[index].number),
                     bytes,
                 ));
             }
@@ -190,7 +190,11 @@ impl Planner {
     /// under `group_stem`; the entry marker, the entry's top-level fields, its sibling
     /// groups, and its branch descendants are all preserved (the group-scoped
     /// payload-only erase law).
-    pub(super) fn group_erase(&self, group_stem: &[u8], fields: &[FieldSchema]) -> Vec<CellWrite> {
+    pub(super) fn group_erase(
+        &self,
+        group_stem: &[u8],
+        fields: &[ResolvedField],
+    ) -> Vec<CellWrite> {
         self.group_cells(group_stem, fields)
             .into_iter()
             .map(CellWrite::Remove)
@@ -210,7 +214,7 @@ impl Planner {
     /// excludes it).
     pub(super) fn index_writes(
         &self,
-        root: &str,
+        root: physical::NodeNumber,
         indexes: &[IndexSchema],
         keys: &[KeyScalar],
         old: &[Option<ValueDomain>],
@@ -280,8 +284,9 @@ mod tests {
     use super::*;
     use crate::codec::key::KeyScalar;
     use crate::codec::value::{RuntimeScalar, ScalarKind};
-    use crate::durable::{FieldSchema, StoreSchema};
+    use crate::durable::{FieldSchema, StoreSchema, number_store};
     use crate::equality::ValueDomain;
+    use physical::NodeNumber;
 
     fn schema() -> StoreSchema {
         StoreSchema {
@@ -294,6 +299,54 @@ mod tests {
             branches: Vec::new(),
             groups: Vec::new(),
             indexes: Vec::new(),
+        }
+    }
+
+    /// A resolved field with an arbitrary distinct number (the planner keys leaves by the
+    /// number, so structural tests only need distinctness); the name is diagnostics-only.
+    fn rf(number: NodeNumber, kind: ScalarKind, required: bool) -> ResolvedField {
+        ResolvedField {
+            number,
+            name: String::new(),
+            shape: crate::codec::value::ValueShape::Scalar(kind),
+            required,
+        }
+    }
+
+    /// The root's cell-key number and its fields/groups as the planner consumes them, from
+    /// the store-wide numbering — the same numbers the store computes for this schema.
+    fn resolved(schema: &StoreSchema) -> (NodeNumber, Vec<ResolvedField>, Vec<ResolvedGroup>) {
+        let numbering = number_store(std::slice::from_ref(schema));
+        let n = &numbering[0];
+        let fields = schema
+            .fields
+            .iter()
+            .zip(&n.fields)
+            .map(|(f, num)| rf_named(*num, f))
+            .collect();
+        let groups = schema
+            .groups
+            .iter()
+            .zip(&n.groups)
+            .map(|(g, gn)| ResolvedGroup {
+                number: gn.number,
+                fields: g
+                    .fields
+                    .iter()
+                    .zip(&gn.fields)
+                    .map(|(f, num)| rf_named(*num, f))
+                    .collect(),
+            })
+            .collect();
+        (n.root, fields, groups)
+    }
+
+    fn rf_named(number: NodeNumber, field: &FieldSchema) -> ResolvedField {
+        ResolvedField {
+            number,
+            name: field.name.clone(),
+            shape: field.shape.clone(),
+            required: field.required,
         }
     }
 
@@ -310,15 +363,16 @@ mod tests {
     #[test]
     fn node_cells_are_the_marker_then_one_leaf_per_field_in_order() {
         let schema = schema();
+        let (root, fields, groups) = resolved(&schema);
         let planner = Planner::new();
         let key = KeyScalar::Int(1);
-        let stem = physical::marker_key(&schema.root_name, std::slice::from_ref(&key));
+        let stem = physical::marker_key(root, std::slice::from_ref(&key));
         assert_eq!(
-            planner.node_cells(&stem, &schema.fields, &schema.groups),
+            planner.node_cells(&stem, &fields, &groups),
             vec![
                 stem.clone(),
-                planner.node_field_leaf(&stem, "value"),
-                planner.node_field_leaf(&stem, "label"),
+                planner.node_field_leaf(&stem, fields[0].number),
+                planner.node_field_leaf(&stem, fields[1].number),
             ]
         );
     }
@@ -328,22 +382,23 @@ mod tests {
     #[test]
     fn node_write_plans_the_marker_and_only_present_leaves() {
         let schema = schema();
+        let (root, fields, groups) = resolved(&schema);
         let planner = Planner::new();
         let key = KeyScalar::Int(1);
-        let stem = physical::marker_key(&schema.root_name, std::slice::from_ref(&key));
+        let stem = physical::marker_key(root, std::slice::from_ref(&key));
         // Required value present, sparse label absent.
         let entry = EntryValue {
             fields: vec![Some(ValueDomain::Scalar(RuntimeScalar::Int(5))), None],
             groups: Vec::new(),
         };
         let ops = planner
-            .node_write(&stem, &schema.fields, &schema.groups, &entry)
+            .node_write(&stem, &fields, &groups, &entry)
             .expect("in range");
         assert_eq!(
             keys(&ops),
             vec![
                 stem.as_slice(),
-                planner.node_field_leaf(&stem, "value").as_slice(),
+                planner.node_field_leaf(&stem, fields[0].number).as_slice(),
             ],
             "a whole-entry write touches only the marker and present leaves"
         );
@@ -358,14 +413,15 @@ mod tests {
     #[test]
     fn node_erase_removes_the_marker_and_every_field_leaf() {
         let schema = schema();
+        let (root, fields, groups) = resolved(&schema);
         let planner = Planner::new();
         let key = KeyScalar::Int(1);
-        let stem = physical::marker_key(&schema.root_name, std::slice::from_ref(&key));
-        let ops = planner.node_erase(&stem, &schema.fields, &schema.groups);
+        let stem = physical::marker_key(root, std::slice::from_ref(&key));
+        let ops = planner.node_erase(&stem, &fields, &groups);
         assert!(ops.iter().all(|op| matches!(op, CellWrite::Remove(_))));
         assert_eq!(
             keys(&ops),
-            keys_of(&planner.node_cells(&stem, &schema.fields, &schema.groups)),
+            keys_of(&planner.node_cells(&stem, &fields, &groups)),
         );
     }
 
@@ -378,14 +434,16 @@ mod tests {
     #[test]
     fn the_node_core_operates_on_an_arbitrary_node_stem_and_fields() {
         let schema = schema();
+        let (root, _, _) = resolved(&schema);
         let planner = Planner::new();
         // Any marker stem stands in for a node here (a branch entry's stem is one such
         // stem, one level below the root); the fields differ from the root's schema.
-        let stem = physical::marker_key(&schema.root_name, &[KeyScalar::Int(7)]);
-        let fields = vec![FieldSchema::scalar("text", ScalarKind::Str, true)];
+        let stem = physical::marker_key(root, &[KeyScalar::Int(7)]);
+        let text = rf(99, ScalarKind::Str, true);
+        let fields = vec![text.clone()];
         assert_eq!(
             planner.node_cells(&stem, &fields, &[]),
-            vec![stem.clone(), planner.node_field_leaf(&stem, "text")],
+            vec![stem.clone(), planner.node_field_leaf(&stem, text.number)],
         );
         let entry = EntryValue {
             fields: vec![Some(ValueDomain::Scalar(RuntimeScalar::Str("hi".into())))],
@@ -398,7 +456,7 @@ mod tests {
             keys(&writes),
             vec![
                 stem.as_slice(),
-                planner.node_field_leaf(&stem, "text").as_slice(),
+                planner.node_field_leaf(&stem, text.number).as_slice(),
             ],
         );
         let erases = planner.node_erase(&stem, &fields, &[]);
@@ -419,20 +477,25 @@ mod tests {
     #[test]
     fn group_cells_are_the_field_leaves_alone_with_no_marker() {
         let schema = schema();
+        let (root, _, _) = resolved(&schema);
         let planner = Planner::new();
-        let stem = physical::marker_key(&schema.root_name, &[KeyScalar::Int(1)]);
-        let group_stem = physical::group_stem(&stem, "details");
-        let fields = vec![
-            FieldSchema::scalar("pages", ScalarKind::Int, false),
-            FieldSchema::scalar("language", ScalarKind::Str, false),
-        ];
+        let stem = physical::marker_key(root, &[KeyScalar::Int(1)]);
+        // A group numbered 30 with two fields (numbers 31, 32).
+        let group_stem = physical::group_stem(&stem, 30);
+        let pages = rf(31, ScalarKind::Int, false);
+        let language = rf(32, ScalarKind::Str, false);
+        let fields = vec![pages.clone(), language.clone()];
         // The footprint is exactly the two leaves — the marker cell is absent.
         let cells = planner.group_cells(&group_stem, &fields);
         assert_eq!(
             keys_of(&cells),
             vec![
-                planner.node_field_leaf(&group_stem, "pages").as_slice(),
-                planner.node_field_leaf(&group_stem, "language").as_slice(),
+                planner
+                    .node_field_leaf(&group_stem, pages.number)
+                    .as_slice(),
+                planner
+                    .node_field_leaf(&group_stem, language.number)
+                    .as_slice(),
             ]
         );
         assert!(
@@ -450,7 +513,11 @@ mod tests {
             .expect("in range");
         assert_eq!(
             keys(&writes),
-            vec![planner.node_field_leaf(&group_stem, "pages").as_slice()],
+            vec![
+                planner
+                    .node_field_leaf(&group_stem, pages.number)
+                    .as_slice()
+            ],
             "a group write touches only present leaves"
         );
 
@@ -467,20 +534,22 @@ mod tests {
     #[test]
     fn a_group_write_is_disjoint_from_siblings() {
         let schema = schema();
+        let (root, fields, _) = resolved(&schema);
         let planner = Planner::new();
-        let stem = physical::marker_key(&schema.root_name, &[KeyScalar::Int(1)]);
-        let group_fields = vec![FieldSchema::scalar("pages", ScalarKind::Int, false)];
-        let details = physical::group_stem(&stem, "details");
+        let stem = physical::marker_key(root, &[KeyScalar::Int(1)]);
+        let group_fields = vec![rf(31, ScalarKind::Int, false)];
+        // The group under test (number 30) and a sibling group (number 40).
+        let details = physical::group_stem(&stem, 30);
 
         let group_ops = planner.group_erase(&details, &group_fields);
         let touched: Vec<&[u8]> = keys(&group_ops);
 
         // Sibling cells the entry owns, none of which a group op may name.
         let siblings = vec![
-            stem.clone(),                            // the entry marker
-            planner.node_field_leaf(&stem, "value"), // a top-level field leaf
-            planner.node_field_leaf(&physical::group_stem(&stem, "credits"), "pages"), // sibling group
-            physical::branch_child_stem(&stem, "notes", &[KeyScalar::Int(7)]), // a branch cell
+            stem.clone(),                                                  // the entry marker
+            planner.node_field_leaf(&stem, fields[0].number),              // a top-level field leaf
+            planner.node_field_leaf(&physical::group_stem(&stem, 40), 31), // sibling group leaf
+            physical::branch_child_stem(&stem, 50, &[KeyScalar::Int(7)]),  // a branch cell
         ];
         for sibling in &siblings {
             assert!(
@@ -500,6 +569,8 @@ mod tests {
     #[test]
     fn index_writes_emit_remove_then_put_per_changed_index_in_order() {
         let planner = Planner::new();
+        // The root's cell-key number (the schema's single root numbers to 0).
+        let (root, _, _) = resolved(&schema());
         // Two indexes over a root keyed by one int column, with one int field (position 0):
         // a non-unique index projecting [field 0, key 0] and a unique index projecting
         // [field 0].
@@ -518,21 +589,15 @@ mod tests {
         let keys = [KeyScalar::Int(7)];
         // Field 0 changes from 1 to 2: both indexes' rows move.
         let ops = planner
-            .index_writes("counters", &indexes, &keys, &[scalar(1)], &[scalar(2)])
+            .index_writes(root, &indexes, &keys, &[scalar(1)], &[scalar(2)])
             .expect("in range");
 
-        let nonunique_old = physical::index_cell_key(
-            "counters",
-            &[0xA0; 16],
-            &[KeyScalar::Int(1), KeyScalar::Int(7)],
-        );
-        let nonunique_new = physical::index_cell_key(
-            "counters",
-            &[0xA0; 16],
-            &[KeyScalar::Int(2), KeyScalar::Int(7)],
-        );
-        let unique_old = physical::index_cell_key("counters", &[0xB1; 16], &[KeyScalar::Int(1)]);
-        let unique_new = physical::index_cell_key("counters", &[0xB1; 16], &[KeyScalar::Int(2)]);
+        let nonunique_old =
+            physical::index_cell_key(root, &[0xA0; 16], &[KeyScalar::Int(1), KeyScalar::Int(7)]);
+        let nonunique_new =
+            physical::index_cell_key(root, &[0xA0; 16], &[KeyScalar::Int(2), KeyScalar::Int(7)]);
+        let unique_old = physical::index_cell_key(root, &[0xB1; 16], &[KeyScalar::Int(1)]);
+        let unique_new = physical::index_cell_key(root, &[0xB1; 16], &[KeyScalar::Int(2)]);
         let value = physical::index_cell_value(&keys);
 
         // Stable order: the first index's remove+put precede the second's; the unique
@@ -549,6 +614,7 @@ mod tests {
     #[test]
     fn an_absent_projected_field_contributes_no_row() {
         let planner = Planner::new();
+        let (root, _, _) = resolved(&schema());
         let indexes = vec![IndexSchema {
             id: [0xA0; 16],
             unique: false,
@@ -557,7 +623,7 @@ mod tests {
         let keys = [KeyScalar::Int(7)];
         // Create (old all-absent) with the projected field absent: no row.
         let ops = planner
-            .index_writes("counters", &indexes, &keys, &[None], &[None])
+            .index_writes(root, &indexes, &keys, &[None], &[None])
             .expect("in range");
         assert!(ops.is_empty());
     }
