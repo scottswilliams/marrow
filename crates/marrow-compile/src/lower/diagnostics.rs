@@ -430,6 +430,18 @@ pub(super) fn loop_error(file: &FileIdentity, span: SourceSpan, keyword: &str) -
     )
 }
 
+/// The steer appended when an optional value `T?` is used where the present `T` is
+/// required — the optional-vs-present misuse family. It names the two presence idioms so
+/// the diagnostic points at the fix rather than only reporting the type clash. Callers
+/// append it only once they have established that an operand is optional where a present
+/// value is required.
+fn present_idiom_steer(message: &mut String) {
+    message.push_str(
+        " This value is optional; prove it present by binding it with `if const x = … { … }`, \
+         or supply a fallback with `… ?? default`, then use the present value.",
+    );
+}
+
 pub(super) fn type_mismatch(
     records: &TypeRegistry,
     file: &FileIdentity,
@@ -437,16 +449,17 @@ pub(super) fn type_mismatch(
     found: LTy,
     want: LTy,
 ) -> SourceDiagnostic {
-    SourceDiagnostic::at(
-        Code::CheckType.as_str(),
-        file,
-        span,
-        format!(
-            "found {} where {} is required",
-            found.spelling(records),
-            want.spelling(records)
-        ),
-    )
+    let mut message = format!(
+        "found {} where {} is required",
+        found.spelling(records),
+        want.spelling(records)
+    );
+    // An optional used exactly where its present counterpart is required steers to the
+    // presence idiom: `found` is `want` under one optional layer.
+    if found.is_optional() && !want.is_optional() && found.to_bare() == want {
+        present_idiom_steer(&mut message);
+    }
+    SourceDiagnostic::at(Code::CheckType.as_str(), file, span, message)
 }
 
 pub(super) fn unary_error(
@@ -456,12 +469,11 @@ pub(super) fn unary_error(
     verb: &str,
     ty: LTy,
 ) -> SourceDiagnostic {
-    SourceDiagnostic::at(
-        Code::CheckType.as_str(),
-        file,
-        span,
-        format!("cannot {verb} {}", ty.spelling(records)),
-    )
+    let mut message = format!("cannot {verb} {}", ty.spelling(records));
+    if ty.is_optional() {
+        present_idiom_steer(&mut message);
+    }
+    SourceDiagnostic::at(Code::CheckType.as_str(), file, span, message)
 }
 
 pub(super) fn binary_error(
@@ -472,17 +484,18 @@ pub(super) fn binary_error(
     left: LTy,
     right: LTy,
 ) -> SourceDiagnostic {
-    SourceDiagnostic::at(
-        Code::CheckType.as_str(),
-        file,
-        span,
-        format!(
-            "`{}` is not defined for {} and {}",
-            operator_symbol(op),
-            left.spelling(records),
-            right.spelling(records)
-        ),
-    )
+    let mut message = format!(
+        "`{}` is not defined for {} and {}",
+        operator_symbol(op),
+        left.spelling(records),
+        right.spelling(records)
+    );
+    // An operand is optional where a present value is required: an optional never combines
+    // under an operator, so steer to making it present first.
+    if left.is_optional() || right.is_optional() {
+        present_idiom_steer(&mut message);
+    }
+    SourceDiagnostic::at(Code::CheckType.as_str(), file, span, message)
 }
 
 pub(super) fn logic_operand(
@@ -492,16 +505,15 @@ pub(super) fn logic_operand(
     op: BinaryOp,
     ty: LTy,
 ) -> SourceDiagnostic {
-    SourceDiagnostic::at(
-        Code::CheckType.as_str(),
-        file,
-        span,
-        format!(
-            "`{}` operand must be bool, found {}",
-            operator_symbol(op),
-            ty.spelling(records)
-        ),
-    )
+    let mut message = format!(
+        "`{}` operand must be bool, found {}",
+        operator_symbol(op),
+        ty.spelling(records)
+    );
+    if ty.is_optional() {
+        present_idiom_steer(&mut message);
+    }
+    SourceDiagnostic::at(Code::CheckType.as_str(), file, span, message)
 }
 
 #[cfg(test)]
