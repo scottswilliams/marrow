@@ -291,6 +291,13 @@ impl DurableRegistry {
         self.roots.iter().find(|root| root.entry_site == entry_site)
     }
 
+    /// The executable root whose declaration-ordered RootId is `root_id` — the root an
+    /// entry identity `Id(^root)` carries, so a `place` bound to an identity operand can
+    /// recover the root's ordered key scalars for the columns the identity spreads into.
+    pub(crate) fn root_by_id(&self, root_id: u16) -> Option<&DurableRoot> {
+        self.roots.iter().find(|root| root.root_id == root_id)
+    }
+
     /// The executable branch whose materialized entry record is the image type `ty`, if
     /// any — the owner that resolves a field of a materialized branch entry value read
     /// through `if const n = ^root(k)….branch(bk)`. Searches every executable root's whole

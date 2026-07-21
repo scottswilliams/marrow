@@ -809,6 +809,32 @@ impl<'a> FnLowerer<'a> {
         Some(slots)
     }
 
+    /// Materialize a durable operation's whole key-path into one pre-evaluated slot per
+    /// physical key column (root-first) — the capture a read-modify-write or an upsert
+    /// needs so its several ops key off one evaluation. A `Bound` column reuses the place
+    /// slot it already holds; an `Expr` column is evaluated once into a fresh slot; an
+    /// entry-identity column spreads into the addressed root's columns through
+    /// [`capture_identity_key_slots`], so a single identity operand yields one slot per
+    /// root key column. The returned slots are the physical key-path in column order.
+    fn capture_key_slots(&mut self, keys: &[DurKey], span: SourceSpan) -> Option<Vec<u16>> {
+        let mut slots = Vec::with_capacity(keys.len());
+        for column in keys {
+            match column.key {
+                PlaceKey::Bound(slot) => slots.push(slot),
+                PlaceKey::Expr(_) => {
+                    let slot = self.alloc_slot();
+                    self.emit_key(column.key, column.key_ty, span)?;
+                    self.push(Instr::LocalSet(slot), span);
+                    slots.push(slot);
+                }
+                PlaceKey::Identity { expr, root, cols } => {
+                    slots.extend(self.capture_identity_key_slots(expr, root, cols, span)?);
+                }
+            }
+        }
+        Some(slots)
+    }
+
     /// Lower `place name = ^root(key)`: evaluate the entry address's key tuple
     /// exactly once into a fresh local slot and record the binding. The binding is
     /// immutable and does not shadow an existing name; the target must be a whole
@@ -863,28 +889,51 @@ impl<'a> FnLowerer<'a> {
             return;
         };
         // Evaluate each key column of the address exactly once into a fresh slot, root
-        // column first, so every later operation through the place reads the slots
-        // rather than re-running the key operands. A branch place binds its whole key-path.
+        // column first, so every later operation through the place reads the slots rather
+        // than re-running the key operands. A branch place binds its whole key-path, and an
+        // identity operand at the root position spreads into the root's key columns — a
+        // composite-key root binds one slot per column from the single identity value.
         let mut key_slots = Vec::with_capacity(place.keys.len());
         for column in place.keys {
-            let PlaceKey::Expr(key_expr) = column.key else {
-                self.fail(SourceDiagnostic::at(
-                    Code::CheckType.as_str(),
-                    self.file,
-                    place_expr.span(),
-                    "a `place` names a store address `^root(key)`, not another place".to_string(),
-                ));
-                return;
-            };
-            let key_slot = self.alloc_slot();
-            if self
-                .lower_as(key_expr, LTy::bare_scalar(column.key_ty))
-                .is_none()
-            {
-                return;
+            match column.key {
+                PlaceKey::Expr(key_expr) => {
+                    let key_slot = self.alloc_slot();
+                    if self
+                        .lower_as(key_expr, LTy::bare_scalar(column.key_ty))
+                        .is_none()
+                    {
+                        return;
+                    }
+                    self.push(Instr::LocalSet(key_slot), span);
+                    key_slots.push((key_slot, column.key_ty));
+                }
+                PlaceKey::Identity { expr, root, cols } => {
+                    let Some(slots) = self.capture_identity_key_slots(expr, root, cols, span)
+                    else {
+                        return;
+                    };
+                    // The identity spreads into the addressed root's ordered key columns;
+                    // recover each column's scalar from that root so the place records its
+                    // whole physical key-path.
+                    let Some(scalars) = self.durable.root_by_id(root).map(|root| root.key.clone())
+                    else {
+                        return;
+                    };
+                    for (slot, scalar) in slots.into_iter().zip(scalars) {
+                        key_slots.push((slot, scalar));
+                    }
+                }
+                PlaceKey::Bound(_) => {
+                    self.fail(SourceDiagnostic::at(
+                        Code::CheckType.as_str(),
+                        self.file,
+                        place_expr.span(),
+                        "a `place` names a store address `^root(key)`, not another place"
+                            .to_string(),
+                    ));
+                    return;
+                }
             }
-            self.push(Instr::LocalSet(key_slot), span);
-            key_slots.push((key_slot, column.key_ty));
         }
         self.places.push(PlaceLocal {
             name: name.to_string(),
@@ -2441,30 +2490,9 @@ impl<'a> FnLowerer<'a> {
         span: SourceSpan,
     ) -> Option<()> {
         // Evaluate each key column once into a fresh slot (root-first) so the read and the
-        // replace key off the same evaluated columns.
-        let mut key_slots = Vec::with_capacity(keys.len());
-        for column in keys {
-            let key_slot = match column.key {
-                PlaceKey::Bound(existing) => existing,
-                PlaceKey::Expr(_) => {
-                    let key_slot = self.alloc_slot();
-                    self.emit_key(column.key, column.key_ty, span)?;
-                    self.push(Instr::LocalSet(key_slot), span);
-                    key_slot
-                }
-                PlaceKey::Identity { .. } => {
-                    self.fail(SourceDiagnostic::at(
-                        Code::CheckUnsupported.as_str(),
-                        self.file,
-                        span,
-                        "writing a group leaf through an identity key is not yet supported"
-                            .to_string(),
-                    ));
-                    return None;
-                }
-            };
-            key_slots.push(key_slot);
-        }
+        // replace key off the same evaluated columns. A group is a root-level value unit, so
+        // its key-path is the root's — an identity operand spreads into the root's columns.
+        let key_slots = self.capture_key_slots(keys, span)?;
         // A set evaluates its bare leaf value once into a slot before the read, so the read
         // record is on top of the stack when the leaf op runs.
         let value_slot = match &edit {
@@ -2525,42 +2553,11 @@ impl<'a> FnLowerer<'a> {
         // A bound (place) column already holds its key in a pre-evaluated slot; reuse it
         // so the create/replace ops key off it (the verifier's presence lattice
         // recognizes a root create as establishing that slot's entry). An inline column
-        // is evaluated once into a fresh slot. An entry identity supplies the whole root
-        // key tuple as a single operand; its columns are captured into per-column slots
-        // (root-first) so the exists/replace/create ops key off the same evaluation.
-        let key_slots: Vec<u16> = if let [column] = keys
-            && let PlaceKey::Identity { expr, root, cols } = column.key
-        {
-            self.capture_identity_key_slots(expr, root, cols, span)?
-        } else {
-            let mut key_slots = Vec::with_capacity(keys.len());
-            for column in keys {
-                let slot = match column.key {
-                    PlaceKey::Bound(slot) => slot,
-                    PlaceKey::Expr(_) => {
-                        let slot = self.alloc_slot();
-                        self.emit_key(column.key, column.key_ty, span)?;
-                        self.push(Instr::LocalSet(slot), span);
-                        slot
-                    }
-                    PlaceKey::Identity { .. } => {
-                        // An identity only appears as the sole key column (it stands for
-                        // the whole root tuple), handled above; it cannot sit among
-                        // explicit columns.
-                        self.fail(SourceDiagnostic::at(
-                            Code::CheckUnsupported.as_str(),
-                            self.file,
-                            span,
-                            "writing a whole entry through an identity key is not yet supported"
-                                .to_string(),
-                        ));
-                        return None;
-                    }
-                };
-                key_slots.push(slot);
-            }
-            key_slots
-        };
+        // is evaluated once into a fresh slot. An entry-identity root column spreads into
+        // the root's key columns, so the exists/replace/create ops key off the same
+        // evaluation whether the whole-entry address is a root (identity or per-column) or
+        // a branch below an identity-keyed root.
+        let key_slots: Vec<u16> = self.capture_key_slots(keys, span)?;
         let rec_slot = self.alloc_slot();
         self.lower_as(
             value,

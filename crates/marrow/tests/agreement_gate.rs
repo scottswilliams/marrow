@@ -190,10 +190,6 @@ enum Expect {
         code: &'static str,
         detail: &'static str,
     },
-    /// A composition the checker refuses outright (a not-yet-lowered form). The
-    /// checker-accept ⇒ verify implication holds vacuously; the row is ledgered
-    /// so promoting the form flips it to `RoundTrips`.
-    CheckerRefused { code: &'static str },
 }
 
 struct Row {
@@ -381,17 +377,53 @@ fn matrix() -> Vec<Row> {
                 detail: "a transaction performs no durable operation",
             },
         },
-        // ---- A genuinely-deferred form, refused in agreement by both owners. ----
-        // A group-leaf write through an identity-lookup result is not yet lowered
-        // (distinct from D3's whole-entry write, which is). The checker refuses it, so
-        // the checker-accept ⇒ verify implication holds vacuously; ledgered so its
-        // eventual promotion flips this row to a round trip.
+        // ---- IDK01: entry-identity operands in every key-path-capturing position. ----
+        // An identity operand spreads into the addressed root's key columns at the one
+        // capture point a read-modify-write, an upsert, or a `place` binding evaluates its
+        // key-path into slots — the same `IdentityKeyPath` spread the single-emit forms
+        // (field read/write, whole-entry read, delete, exists) already use. These rows drive
+        // each formerly-refused capturing position end to end.
+        //
+        // A `place` bound to an identity operand: the identity is captured into the root's
+        // key slots at the binding, so a whole-entry write and a field read through the place
+        // key off the one pre-evaluated address (durable-places.md §Named Places).
         Row {
-            label: "group-leaf write through an identity key (deferred)",
-            ops: "pub fn identityGroupWrite(isbn: string) {\n    transaction {\n        if const found = ^books.byIsbn[isbn] {\n            ^books[found].details.pages = 3\n        }\n    }\n}",
-            expect: Expect::CheckerRefused {
-                code: "check.unsupported",
-            },
+            label: "IDK01: place bound to an identity operand writes then reads back / driver test",
+            ops: "pub fn plWrite(id: int, title: string) {\n    transaction {\n        place p = ^books[Id(^books, id)]\n        p = Book(title: title, isbn: \"i\")\n    }\n}\n\npub fn plTitle(id: int): string? {\n    return ^books[id].title\n}\n\ntest \"place over an identity operand round trips\" {\n    plWrite(20, \"dune\")\n    assert plTitle(20) ?? \"none\" == \"dune\"\n}",
+            expect: Expect::RoundTrips { run: true },
+        },
+        // A branch whole-entry write through an identity root-parent: the key-path is
+        // [root identity, branch key]. The upsert captures the identity into the root's
+        // columns and the branch key into its own slot, then keys exists/replace/create off
+        // the same evaluation.
+        Row {
+            label: "IDK01: branch whole-entry write through an identity key / driver test",
+            ops: "pub fn brWrite(id: int, n: string, text: string) {\n    transaction {\n        ^books[Id(^books, id)].notes[n] = Book.notes(text: text)\n    }\n}\n\npub fn brText(id: int, n: string): string? {\n    return ^books[id].notes[n].text\n}\n\ntest \"branch write through an identity key round trips\" {\n    brWrite(21, \"n1\", \"hello\")\n    assert brText(21, \"n1\") ?? \"none\" == \"hello\"\n}",
+            expect: Expect::RoundTrips { run: true },
+        },
+        // A group-leaf write through an identity key (formerly deferred): the whole-group
+        // read-modify-write captures the identity into the root's key columns, reads the
+        // group, rewrites the leaf, and writes the group back off the same slots.
+        Row {
+            label: "IDK01: group-leaf write through an identity key / driver test",
+            ops: "pub fn glWrite(id: int, pages: int) {\n    transaction {\n        ^books[Id(^books, id)] = Book(title: \"t\", isbn: \"i\")\n        ^books[Id(^books, id)].details.pages = pages\n    }\n}\n\npub fn glPages(id: int): int? {\n    return ^books[id].details.pages\n}\n\ntest \"group-leaf write through an identity key round trips\" {\n    glWrite(22, 7)\n    assert glPages(22) ?? 0 == 7\n}",
+            expect: Expect::RoundTrips { run: true },
+        },
+        // A group-leaf delete through an identity key: the same read-modify-write, clearing
+        // the leaf. The sibling of the write above, from the same capturing helper.
+        Row {
+            label: "IDK01: group-leaf delete through an identity key / driver test",
+            ops: "pub fn gdSet(id: int, pages: int) {\n    transaction {\n        ^books[id] = Book(title: \"t\", isbn: \"i\")\n        ^books[id].details.pages = pages\n    }\n}\n\npub fn gdClear(id: int) {\n    transaction {\n        delete ^books[Id(^books, id)].details.pages\n    }\n}\n\npub fn gdPages(id: int): int? {\n    return ^books[id].details.pages\n}\n\ntest \"group-leaf delete through an identity key round trips\" {\n    gdSet(23, 7)\n    gdClear(23)\n    assert gdPages(23) ?? 0 == 0\n}",
+            expect: Expect::RoundTrips { run: true },
+        },
+        // A composite-root `place` bound to a single identity operand: the identity spreads
+        // into the composite root's several key columns at the binding (the PL01 provenance —
+        // a place carries several key slots yet is still a root), so a field write and read
+        // through the place resolve the root's field off the pre-evaluated address.
+        Row {
+            label: "IDK01: composite-root place bound to a single identity operand / driver test",
+            ops: "pub fn crIdSeed(s: string, c: string, score: int) {\n    transaction {\n        ^grades[s, c] = Grade(score: score)\n    }\n}\n\npub fn crIdPlaceWrite(s: string, c: string, score: int) {\n    transaction {\n        place g = ^grades[Id(^grades, s, c)]\n        g.score = score\n    }\n}\n\npub fn crIdRead(s: string, c: string): int? {\n    return ^grades[s, c].score\n}\n\ntest \"composite-root place over a single identity operand round trips\" {\n    crIdSeed(\"amy\", \"cs\", 90)\n    crIdPlaceWrite(\"amy\", \"cs\", 75)\n    assert crIdRead(\"amy\", \"cs\") ?? 0 == 75\n}",
+            expect: Expect::RoundTrips { run: true },
         },
     ]
 }
@@ -439,12 +471,11 @@ fn run_all_tests(label: &str, image: &VerifiedImage) {
 }
 
 /// The standing agreement gate. Each row's whole-pipeline verdict must match its
-/// pinned expectation exactly; the known-divergent and checker-refused ledgers
-/// are additionally size-pinned so the divergence set cannot grow unremarked.
+/// pinned expectation exactly; the known-divergent ledger is additionally
+/// size-pinned so the divergence set cannot grow unremarked.
 #[test]
 fn checker_acceptance_implies_verification_over_the_composition_matrix() {
     let mut known_divergent = 0usize;
-    let mut checker_refused = 0usize;
 
     for row in matrix() {
         let stage = pipeline(row.ops);
@@ -488,36 +519,19 @@ fn checker_acceptance_implies_verification_over_the_composition_matrix() {
                  ({code}); re-classify the row.",
                 row.label
             ),
-            (Expect::CheckerRefused { code }, Stage::CheckerRejected(got)) => {
-                assert_eq!(*code, got, "{}: refusal code drifted", row.label);
-                checker_refused += 1;
-            }
-            (Expect::CheckerRefused { code }, Stage::Verified(_)) => panic!(
-                "LEDGER STALE — `{}` now verifies; the {code} refusal is lowered. Move this row to \
-                 Expect::RoundTrips so the gate enforces it.",
-                row.label
-            ),
-            (Expect::CheckerRefused { .. }, Stage::VerifyRejected { code, detail }) => panic!(
-                "`{}` was checker-refused but now reaches the verifier and is rejected there \
-                 ({code}: {detail}); re-classify the row.",
-                row.label
-            ),
         }
     }
 
-    // The divergence set is explicit and bounded. RV01 closed D1/D2/D3, and DX01 turned
-    // the return-inside-region row into a round trip, so the only remaining
-    // checker-accept/verify-reject row is the empty (no-op) transaction TX02 owns;
-    // nothing is checker-refused beyond the deferred group-leaf case. A new divergence
-    // added without a ledger row fails an individual row above; these counts fail if a
-    // ledger row is silently removed or an unledgered one appears.
+    // The divergence set is explicit and bounded. RV01 closed D1/D2/D3, DX01 turned the
+    // return-inside-region row into a round trip, and IDK01 lowered every identity-operand
+    // capturing position (place binding, branch write, group-leaf write/delete, composite-
+    // root place), so the only remaining checker-accept/verify-reject row is the empty
+    // (no-op) transaction TX02 owns. A new divergence added without a ledger row fails an
+    // individual row above; this count fails if the ledgered divergence is silently removed
+    // or an unledgered one appears.
     assert_eq!(
         known_divergent, 1,
         "expected exactly the TX02-owned empty-transaction divergence",
-    );
-    assert_eq!(
-        checker_refused, 1,
-        "expected exactly the deferred group-leaf-through-identity refusal",
     );
 }
 

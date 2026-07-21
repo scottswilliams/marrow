@@ -170,6 +170,51 @@ fn construct_dereference_reads_the_named_entry() {
     );
 }
 
+// A `place` bound to an identity operand `^books[id]`: the identity spreads into the
+// root's key columns at the binding, so a whole-entry write and a field read through the
+// place both key off the one pre-evaluated address, exactly as an inline `^books[id]`
+// operation does (durable-places.md §Named Places).
+const PLACE_SOURCE: &str = r#"resource Book {
+    required title: string
+}
+
+store ^books[id: int]: Book
+
+pub fn make(id: int): Id(^books) {
+    return Id(^books, id)
+}
+
+pub fn shelveViaPlace(bid: Id(^books), title: string) {
+    transaction {
+        place p = ^books[bid]
+        p = Book(title: title)
+    }
+}
+
+pub fn titleViaPlace(bid: Id(^books)): string? {
+    place p = ^books[bid]
+    return p.title
+}
+"#;
+
+#[test]
+fn a_place_bound_to_an_identity_operand_writes_and_reads_the_entry() {
+    let image = compile_verify(PLACE_SOURCE, IDS);
+    let mut store = attach(&image);
+
+    let id = run(&image, &mut store, "make", vec![Value::Int(3)]).expect("identity value");
+    run(
+        &image,
+        &mut store,
+        "shelveViaPlace",
+        vec![id.clone(), Value::Text("neuromancer".into())],
+    );
+    assert_eq!(
+        run(&image, &mut store, "titleViaPlace", vec![id]),
+        some_text("neuromancer"),
+    );
+}
+
 #[test]
 fn dereference_of_absent_entry_is_absent() {
     let image = compile_verify(SOURCE, IDS);

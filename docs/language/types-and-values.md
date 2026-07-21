@@ -802,6 +802,17 @@ values do not create a cascading relationship: deleting the addressed entry
 does not rewrite other values that contain its identity. `marrow data integrity`
 can report such dangling identities.
 
+A bound entry identity is a durable key operand. Wherever a durable address names
+its root with a full key, a single `Id(^root)` value supplies that whole root key in
+place of the per-component operands — including a composite root's several key
+components. This
+holds for a whole-entry read, write, replacement, presence test, or deletion
+(`^root[id]`), a field or group access (`^root[id].field`, `^root[id].group.leaf`), a
+branch address whose root position it fills (`^root[id].branch[bkey]`), and a
+[`place`](durable-places.md#named-places) binding (`place p = ^root[id]`). The
+identity addresses the same entry the equivalent per-component key names; the operand
+must be an identity of that same root, or the access is a `check.type` mismatch.
+
 ## Mutability
 
 Type and mutability are separate. `const` prevents reassignment of its binding;

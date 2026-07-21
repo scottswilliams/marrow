@@ -328,6 +328,13 @@ durable node — a store root or a keyed `branch` — follows the address it bin
 key-operand count: a place over a composite-key root addresses that root and reads its
 fields exactly like the inline `^root[k1, k2].field` form.
 
+The address's key operand may be an entry identity `Id(^root)` (see
+[Entry identity](types-and-values.md#entry-identity)) in place of the per-component
+operands: a single identity value supplies the whole root key, spreading into a
+composite root's key components, so `place p = ^root[id]` binds the same address as the
+per-component form and every operation through the name resolves through that one
+evaluated address.
+
 ## Field Assignment
 
 Assigning one field changes that field and preserves the entry's other fields:
