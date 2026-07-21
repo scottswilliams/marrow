@@ -28,6 +28,7 @@ mod instance;
 mod lock;
 mod provision;
 mod reopen;
+mod report;
 mod store_dir;
 
 pub use actor::{
@@ -45,4 +46,5 @@ pub use provision::{
     preflight, provision,
 };
 pub use reopen::reopen_and_classify;
+pub use report::{ProvisionApproval, ProvisionImageError, ProvisionReport, provision_image};
 pub use store_dir::{ENGINE_FILE, ENVELOPE_FILE, HEAD_FILE, LOCK_FILE};

@@ -20,6 +20,35 @@ impl Service {
         match message {
             ClientMessage::Hello { .. } => reject(Code::RunnerHandshake),
             ClientMessage::Request { export, args } => self.handle_request(export.bytes(), &args),
+            ClientMessage::Provision { store, approval } => {
+                self.handle_provision(&store, &approval)
+            }
+        }
+    }
+
+    /// Provision a fresh persistent store for the launched image at `store`, gated by the
+    /// accepted-report `approval` token. Derives the store shape from the verified image,
+    /// rebuilds the report the approval must match (so an approval for a different store or
+    /// image is refused), and publishes the store complete-or-not-at-all. A parked durable
+    /// shape, a mismatched approval, or a taken destination each surface as a typed reject.
+    fn handle_provision(&self, store: &str, approval: &str) -> ServerMessage {
+        let Some((schemas, sites)) = marrow_vm::derive_store_schemas(&self.image) else {
+            return reject(Code::CliDurableUnsupported);
+        };
+        let approval = marrow_lifecycle::ProvisionApproval::from_token(approval);
+        match marrow_lifecycle::provision_image(
+            std::path::Path::new(store),
+            &self.image,
+            schemas,
+            sites,
+            &approval,
+        ) {
+            Ok(provisioned) => ServerMessage::Provisioned {
+                instance: provisioned.instance.to_hex(),
+            },
+            Err(error) => ServerMessage::Reject {
+                code: error.code().to_string(),
+            },
         }
     }
 

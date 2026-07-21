@@ -387,6 +387,7 @@ fn cargo_dag_respects_the_trust_boundaries() {
         "marrow-image",
         "marrow-verify",
         "marrow-vm",
+        "marrow-lifecycle",
         "marrow-temporal",
         "marrow-codes",
     ];

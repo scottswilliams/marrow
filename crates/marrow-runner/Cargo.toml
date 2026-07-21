@@ -17,6 +17,7 @@ marrow-local-wire = { path = "../marrow-local-wire" }
 marrow-image = { path = "../marrow-image" }
 marrow-verify = { path = "../marrow-verify" }
 marrow-vm = { path = "../marrow-vm" }
+marrow-lifecycle = { path = "../marrow-lifecycle" }
 marrow-temporal = { path = "../marrow-temporal" }
 
 [dev-dependencies]

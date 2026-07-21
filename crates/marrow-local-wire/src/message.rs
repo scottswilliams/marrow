@@ -25,6 +25,12 @@ pub enum ClientMessage {
     /// Invoke `export` with positional `args`, each an already-encoded transfer
     /// value. The runner decodes them against the export's verified signature.
     Request { export: Id32, args: Vec<Json> },
+    /// Provision a fresh persistent store for the launched image at the `store`
+    /// destination, gated by `approval` — the token of the exact rendered provision
+    /// report the owner accepted. The runner rebuilds the report for its image and
+    /// destination and refuses a token that does not match, so a store is never
+    /// provisioned without an auditable acceptance.
+    Provision { store: String, approval: String },
 }
 
 /// A message from the runner to the caller.
@@ -41,6 +47,9 @@ pub enum ServerMessage {
     /// mismatch, or a durable export the stock runner will not execute). The
     /// `code` is the runner's typed reason.
     Reject { code: String },
+    /// A store was provisioned: `instance` is the fresh store instance identity
+    /// (lowercase hex). The receipt of a completed provision.
+    Provisioned { instance: String },
 }
 
 impl ClientMessage {
@@ -67,6 +76,13 @@ impl ClientMessage {
                     args: object.array("args")?.to_vec(),
                 })
             }
+            "provision" => {
+                object.exact(&["approval", "kind", "store"])?;
+                Ok(ClientMessage::Provision {
+                    store: object.string("store")?,
+                    approval: object.string("approval")?,
+                })
+            }
             _ => Err(WireError::Malformed),
         }
     }
@@ -81,6 +97,11 @@ impl ClientMessage {
                 ("kind", Json::Str("request".to_string())),
                 ("export", Json::Str(export.to_hex())),
                 ("args", Json::Array(args.clone())),
+            ]),
+            ClientMessage::Provision { store, approval } => object(vec![
+                ("kind", Json::Str("provision".to_string())),
+                ("store", Json::Str(store.clone())),
+                ("approval", Json::Str(approval.clone())),
             ]),
         }
     }
@@ -123,6 +144,12 @@ impl ServerMessage {
                     code: object.code("code")?,
                 })
             }
+            "provisioned" => {
+                object.exact(&["instance", "kind"])?;
+                Ok(ServerMessage::Provisioned {
+                    instance: object.string("instance")?,
+                })
+            }
             _ => Err(WireError::Malformed),
         }
     }
@@ -146,6 +173,10 @@ impl ServerMessage {
             ServerMessage::Reject { code } => object(vec![
                 ("kind", Json::Str("reject".to_string())),
                 ("code", Json::Str(code.clone())),
+            ]),
+            ServerMessage::Provisioned { instance } => object(vec![
+                ("kind", Json::Str("provisioned".to_string())),
+                ("instance", Json::Str(instance.clone())),
             ]),
         }
     }
@@ -208,6 +239,15 @@ impl<'a> Fields<'a> {
     fn array(&self, key: &str) -> Result<&'a [Json], WireError> {
         match self.get(key)? {
             Json::Array(items) => Ok(items),
+            _ => Err(WireError::Malformed),
+        }
+    }
+
+    /// An arbitrary JSON string field (a destination path or a report/instance token). The
+    /// wire carries it opaquely; the runner interprets it against its image and filesystem.
+    fn string(&self, key: &str) -> Result<String, WireError> {
+        match self.get(key)? {
+            Json::Str(s) => Ok(s.clone()),
             _ => Err(WireError::Malformed),
         }
     }
@@ -312,6 +352,27 @@ mod tests {
             ),
             r#"{"code":"runner.unknown_export","kind":"reject"}"#
         );
+        assert_eq!(
+            json_of(
+                &ClientMessage::Provision {
+                    store: "/data/notes".to_string(),
+                    approval: "0123456789abcdef".to_string(),
+                }
+                .encode()
+                .unwrap()
+            ),
+            r#"{"approval":"0123456789abcdef","kind":"provision","store":"/data/notes"}"#
+        );
+        assert_eq!(
+            json_of(
+                &ServerMessage::Provisioned {
+                    instance: "00112233445566778899aabbccddeeff".to_string(),
+                }
+                .encode()
+                .unwrap()
+            ),
+            r#"{"instance":"00112233445566778899aabbccddeeff","kind":"provisioned"}"#
+        );
     }
 
     fn client_round_trip(msg: ClientMessage) {
@@ -334,6 +395,13 @@ mod tests {
         client_round_trip(ClientMessage::Request {
             export: Id32::from_bytes([3; 32]),
             args: vec![Json::Null, Json::Str("x".to_string())],
+        });
+        client_round_trip(ClientMessage::Provision {
+            store: "/data/notes".to_string(),
+            approval: "0123456789abcdef".to_string(),
+        });
+        server_round_trip(ServerMessage::Provisioned {
+            instance: "00112233445566778899aabbccddeeff".to_string(),
         });
         server_round_trip(ServerMessage::Ready {
             session: Id32::from_bytes([1; 32]),
@@ -362,6 +430,21 @@ mod tests {
         assert!(ServerMessage::decode(&hello[4..]).is_err());
         let value = ServerMessage::Value { data: Json::Null }.encode().unwrap();
         assert!(ClientMessage::decode(&value[4..]).is_err());
+        // A provision request is a client message; a provisioned receipt is a server
+        // message. Neither decodes in the other direction.
+        let provision = ClientMessage::Provision {
+            store: "/data/x".to_string(),
+            approval: "abc".to_string(),
+        }
+        .encode()
+        .unwrap();
+        assert!(ServerMessage::decode(&provision[4..]).is_err());
+        let provisioned = ServerMessage::Provisioned {
+            instance: "00".to_string(),
+        }
+        .encode()
+        .unwrap();
+        assert!(ClientMessage::decode(&provisioned[4..]).is_err());
     }
 
     /// An extra or missing field is malformed even when the JSON is canonical.

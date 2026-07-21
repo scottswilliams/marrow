@@ -201,6 +201,7 @@ dependencies = [
  "marrow-codes",
  "marrow-compile",
  "marrow-image",
+ "marrow-lifecycle",
  "marrow-local-wire",
  "marrow-project",
  "marrow-temporal",
