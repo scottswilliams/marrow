@@ -276,7 +276,6 @@ fn matrix() -> Vec<Row> {
             ops: "test \"direct whole-entry round trip\" {\n    ^books[1] = Book(title: \"dune\", isbn: \"i1\")\n    if const b = ^books[1] {\n        assert b.title == \"dune\"\n    } else {\n        assert false\n    }\n}",
             expect: Expect::RoundTrips { run: true },
         },
-        // ---- PL01: a place over a composite-key root resolves fields by the root node. ----
         // A composite-key root place carries several key slots but is still a root, so a
         // field read (`g.score`) and a symmetric field write (`g.score = s`) through it both
         // resolve the root's field — not a branch record. The node kind is recorded at the

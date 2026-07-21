@@ -9,21 +9,47 @@
 use marrow_image::{ExportId, FunctionDef, ImageDraft, ImageType, Instr, Scalar, SpanEntry};
 use marrow_verify::verify;
 use marrow_vm::{Value, run};
+use std::path::{Path, PathBuf};
+
+/// The `#[path]`-included test module under `lower/`; it carries no owner comments and
+/// is excluded from the source corpus scanned below.
+const LOWER_TEST_MODULE: &str = "lower_metadata_successor_tests.rs";
+
+/// The `marrow-compile` lowering source directory, sibling to this crate.
+fn lower_dir() -> PathBuf {
+    // CARGO_MANIFEST_DIR is `<root>/crates/marrow-vm`; the lowering source is its sibling.
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../marrow-compile/src/lower")
+}
+
+/// Every production `.rs` file under `lower/`, sorted and concatenated. The directory is
+/// scanned at test time so a newly added submodule is covered automatically instead of
+/// escaping a hardcoded list; only the `#[path]`-included test module is dropped. Each
+/// read is `expect`ed, so an unreadable file fails the test rather than silently
+/// shrinking the corpus.
+fn lower_source() -> String {
+    let mut paths: Vec<PathBuf> = std::fs::read_dir(lower_dir())
+        .expect("read lower/ directory")
+        .map(|entry| entry.expect("lower/ dir entry").path())
+        .filter(|path| {
+            path.extension().is_some_and(|ext| ext == "rs")
+                && path.file_name().and_then(|name| name.to_str()) != Some(LOWER_TEST_MODULE)
+        })
+        .collect();
+    paths.sort();
+    assert!(
+        !paths.is_empty(),
+        "lower/ must contain production source files"
+    );
+    paths
+        .iter()
+        .map(|path| std::fs::read_to_string(path).expect("read lower/ source file"))
+        .collect::<Vec<_>>()
+        .concat()
+}
 
 #[test]
 fn rendering_and_conversion_owner_comments_do_not_regress() {
-    let lower = [
-        include_str!("../../marrow-compile/src/lower/mod.rs"),
-        include_str!("../../marrow-compile/src/lower/builtins.rs"),
-        include_str!("../../marrow-compile/src/lower/diagnostics.rs"),
-        include_str!("../../marrow-compile/src/lower/durable.rs"),
-        include_str!("../../marrow-compile/src/lower/exprs.rs"),
-        include_str!("../../marrow-compile/src/lower/ltype.rs"),
-        include_str!("../../marrow-compile/src/lower/registry.rs"),
-        include_str!("../../marrow-compile/src/lower/stmts.rs"),
-        include_str!("../../marrow-compile/src/lower/types.rs"),
-    ]
-    .concat();
+    let lower = lower_source();
     let lower = lower.as_str();
     let render = include_str!("../src/render.rs");
     let outcome = include_str!("../../marrow/src/outcome.rs");
