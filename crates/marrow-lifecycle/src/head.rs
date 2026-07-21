@@ -247,7 +247,7 @@ mod tests {
     #[test]
     fn decode_rejects_forged_nonzero_reserved_slots() {
         // The commit position sits right after the four 32-byte binding ids: offset
-        // magic(4)+ver(1)+imgfmt(1)+4×32 = 38.
+        // magic(4)+ver(1)+imgfmt(1)+4×32 = 134.
         let commit_pos_at = 6 + 32 * 4;
         for offset in [
             commit_pos_at,      // commit_position (first byte of the u64)
@@ -293,7 +293,7 @@ mod tests {
         // The head map's entry count sits after the fixed prefix + high-water u32. Rather
         // than surgically forge, assert the whole-head decode still enforces the map's
         // bijection by corrupting the high-water to be below an existing number.
-        // Fixed prefix: magic(4)+ver(1)+imgfmt(1)+4×id(32)+commit(8)+ddig(32)+ddpos(8) = 190.
+        // Fixed prefix: magic(4)+ver(1)+imgfmt(1)+4×id(32)+commit(8)+ddig(32)+ddpos(8) = 182.
         let map_start = 4 + 1 + 1 + 32 * 4 + 8 + 32 + 8;
         // The single entry is numbered 0 with high-water 1; set the high-water to 0 so the
         // number 0 is now at/above the high-water.
