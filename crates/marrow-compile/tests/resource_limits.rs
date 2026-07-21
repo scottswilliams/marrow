@@ -96,6 +96,140 @@ fn over_deep_durable_value_reports_resource_limit_not_a_silent_drop() {
     assert_source_resource_limit(compile(&project(&source, Some(&ids))));
 }
 
+// ---- Long-cycle double-report law (QP01): the depth bound and the value-cycle
+// pass are distinct owners in separate compile stages. The over-deep depth report
+// is emitted by the durable value-shape builder (before the value graph exists);
+// the cycle report is emitted later by the independent `reject_value_cycles` graph
+// pass. A value-containment cycle whose distinct prefix crosses
+// `MAX_DURABLE_VALUE_DEPTH` therefore truthfully draws BOTH, and that pair is the
+// pinned law — not a redundancy to suppress. Suppressing the depth report for such
+// a cycle would require the durable-identity stage to consult the later type-cycle
+// graph (a cross-stage coupling and a second cycle-membership owner), and the only
+// stage-local signal — a global "any cycle exists" flag — would wrongly silence the
+// finite acyclic over-deep case whenever an unrelated cycle sat elsewhere in the
+// program. The three sibling cases below fix the law in place.
+
+/// The stable diagnostic codes of a failed compile, in report order. Panics if the
+/// project compiled or failed at the aggregate/invariant arm. Also asserts no
+/// diagnostic carries a fabricated empty filename, so every pinned report lands at a
+/// real source span.
+fn diagnostic_codes(result: Result<impl std::fmt::Debug, CompileFailure>) -> Vec<&'static str> {
+    match result {
+        Ok(compiled) => panic!("expected diagnostics, compiled: {compiled:?}"),
+        Err(CompileFailure::Diagnostics(diagnostics)) => {
+            assert!(
+                diagnostics
+                    .iter()
+                    .all(|diagnostic| !diagnostic.file().as_str().is_empty()),
+                "no diagnostic may carry a fabricated empty filename: {:#?}",
+                diagnostics.as_slice(),
+            );
+            diagnostics
+                .iter()
+                .map(|diagnostic| diagnostic.code)
+                .collect()
+        }
+        Err(other) => panic!("expected source diagnostics, got {other:?}"),
+    }
+}
+
+/// A durable-reachable value-containment cycle through `struct_count` distinct
+/// structs (`S0 -> S1 -> ... -> S{n-1} -> S0`). At `struct_count > 33` the distinct
+/// prefix crosses `MAX_DURABLE_VALUE_DEPTH` (32) before the cycle closes; at a small
+/// count the cycle closes within the bound.
+fn cyclic_struct_chain(struct_count: usize) -> ProjectInput {
+    let mut source = String::from("module main\n\n");
+    for level in 0..struct_count {
+        let next = (level + 1) % struct_count;
+        source.push_str(&format!("struct S{level} {{ s: S{next} }}\n"));
+    }
+    source.push_str("\nresource R {\n    required d: S0\n}\n\n");
+    source.push_str("store ^r[id: int]: R\n\n");
+    source.push_str("pub fn noop(): int {\n    return 0\n}\n");
+    let ids = ledger(&[
+        "application .".into(),
+        "product R".into(),
+        "field R.d".into(),
+        "root r".into(),
+        "key r.id".into(),
+    ]);
+    project(&source, Some(&ids))
+}
+
+/// A cycle whose distinct prefix crosses `MAX_DURABLE_VALUE_DEPTH` draws BOTH the
+/// depth `check.resource_limit` (exactly once, at the durable declaration) and the
+/// value-cycle `check.recursion` (once per struct on the cycle). The pair is the
+/// pinned law: dropping either report would fail this test.
+#[test]
+fn long_value_cycle_reports_both_resource_limit_and_recursion() {
+    let struct_count = 34;
+    let codes = diagnostic_codes(compile(&cyclic_struct_chain(struct_count)));
+    assert_eq!(
+        codes
+            .iter()
+            .filter(|code| **code == "check.resource_limit")
+            .count(),
+        1,
+        "a cycle crossing the depth bound draws exactly one depth report: {codes:?}",
+    );
+    assert_eq!(
+        codes
+            .iter()
+            .filter(|code| **code == "check.recursion")
+            .count(),
+        struct_count,
+        "the value-cycle pass reports every struct on the cycle: {codes:?}",
+    );
+}
+
+/// A cycle whose repeat falls within `MAX_DURABLE_VALUE_DEPTH` is pre-empted at the
+/// value-shape builder's on-path check before any depth report, so only the
+/// value-cycle pass fires.
+#[test]
+fn short_value_cycle_reports_only_recursion() {
+    let codes = diagnostic_codes(compile(&cyclic_struct_chain(2)));
+    assert!(
+        codes.contains(&"check.recursion"),
+        "a cycle within the depth bound reports the value-cycle pass: {codes:?}",
+    );
+    assert!(
+        !codes.contains(&"check.resource_limit"),
+        "a cycle within the depth bound draws no depth report: {codes:?}",
+    );
+}
+
+/// A finite acyclic value that reaches the depth bound draws only the depth
+/// `check.resource_limit`; the value-cycle pass never fires, so no `check.recursion`
+/// accompanies it. This is the sibling that a global "any cycle exists" suppression
+/// signal would wrongly silence, and the reason the depth report stays stage-local.
+#[test]
+fn acyclic_over_deep_value_reports_only_resource_limit() {
+    let mut source = String::from("module main\n\n");
+    for level in 0..40 {
+        source.push_str(&format!("struct S{level} {{ s: S{} }}\n", level + 1));
+    }
+    source.push_str("struct S40 { x: int }\n\n");
+    source.push_str("resource Deep {\n    required d: S0\n}\n\n");
+    source.push_str("store ^deep[id: int]: Deep\n\n");
+    source.push_str("pub fn noop(): int {\n    return 0\n}\n");
+    let ids = ledger(&[
+        "application .".into(),
+        "product Deep".into(),
+        "field Deep.d".into(),
+        "root deep".into(),
+        "key deep.id".into(),
+    ]);
+    let codes = diagnostic_codes(compile(&project(&source, Some(&ids))));
+    assert!(
+        codes.contains(&"check.resource_limit"),
+        "an acyclic over-deep value reports the depth bound: {codes:?}",
+    );
+    assert!(
+        !codes.contains(&"check.recursion"),
+        "an acyclic over-deep value draws no value-cycle report: {codes:?}",
+    );
+}
+
 // ---- Defect 2: a root key tuple over the bound must not be `check.unsupported`.
 
 /// A store root with more than `MAX_KEY_COLUMNS` (8) key columns is prechecked
