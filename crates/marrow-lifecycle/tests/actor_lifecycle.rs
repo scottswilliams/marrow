@@ -141,45 +141,108 @@ fn active_binding_and_head_map_derive_from_the_image() {
     assert_eq!(map.next_number(), 3);
 }
 
+/// A durable program exercising every cell-key node kind: a `books` root with a top-level
+/// field, a root-level `details` group of one field, and a field-only keyed `notes` branch —
+/// so the head-map split-order walk (fields → groups → branches, recursive) is fully driven,
+/// not just the flat-field case.
+const GRAPH_SOURCE: &str = r#"resource Book {
+    required title: string
+
+    details {
+        pages: int
+    }
+
+    notes[noteId: string] {
+        required text: string
+    }
+}
+
+store ^books[id: int]: Book
+
+pub fn readTitle(id: int): string {
+    return ^books[id].title ?? "?"
+}
+"#;
+
+/// The identity ledger for [`GRAPH_SOURCE`]: the application, the `Book` product, its
+/// top-level field, the `books` root and its key, the `details` group and its field, and the
+/// `notes` branch (a `root`-anchored placement), its key, and its field — every anchor group-
+/// or branch-qualified.
+const GRAPH_IDS: &str = "marrow ids v0\n\
+     machine-written by marrow; do not edit\n\
+     id application . 0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a\n\
+     id product Book 0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d\n\
+     id field Book.title 0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e\n\
+     id root books 0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b\n\
+     id key books.id 0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c\n\
+     id group Book.details 20202020202020202020202020202020\n\
+     id field Book.details.pages 21212121212121212121212121212121\n\
+     id root Book.notes 30303030303030303030303030303030\n\
+     id key Book.notes.noteId 31313131313131313131313131313131\n\
+     id field Book.notes.text 32323232323232323232323232323232\n\
+     high-water 0\n\
+     end\n";
+
 /// The head-map numbering agrees node-for-node with the kernel's `number_store`: both walk
-/// the durable graph in the same split pre-order, so they assign the same count of nodes.
-/// This is the cross-crate enforcement artifact against pre-order drift (FR01 §3).
+/// the durable graph in the same canonical split pre-order, so they assign the same *kind* to
+/// each cell-key node at each position. This is the cross-crate enforcement artifact against
+/// pre-order drift between the two independent numbering owners (FR01 §3): a divergence in the
+/// order of, or the fields/groups/branches split within, either walk fails here. The fixture
+/// exercises every node kind (root field, a root-level group of a field, and a field-only
+/// nested branch), so the split logic — the only place the two walks can disagree — is driven.
 #[test]
-fn head_map_numbering_agrees_with_the_kernel() {
-    let image = compile(BASE_SOURCE, BASE_IDS);
+fn head_map_numbering_agrees_with_the_kernel_node_for_node() {
+    use marrow_verify::SemanticNodeKind;
+
+    let image = compile(GRAPH_SOURCE, GRAPH_IDS);
     let (schemas, _sites) = schemas_of(&image);
+
+    // The kernel's numbering, flattened into its cell-key node kinds in numbering order.
     let numbering = marrow_kernel::durable::number_store(&schemas);
+    let mut kernel_order: Vec<SemanticNodeKind> = Vec::new();
+    for root in &numbering {
+        kernel_order.push(SemanticNodeKind::Root);
+        kernel_order.extend(root.fields.iter().map(|_| SemanticNodeKind::Field));
+        for group in &root.groups {
+            kernel_order.push(SemanticNodeKind::Group);
+            kernel_order.extend(group.fields.iter().map(|_| SemanticNodeKind::Field));
+        }
+        flatten_branches(&root.branches, &mut kernel_order);
+    }
 
-    let kernel_node_count: usize = numbering
-        .iter()
-        .map(|root| {
-            1 + root.fields.len()
-                + root
-                    .groups
-                    .iter()
-                    .map(|group| 1 + group.fields.len())
-                    .sum::<usize>()
-                + branch_node_count(&root.branches)
-        })
-        .sum();
+    // The lifecycle head-map walk's node kinds, in its numbering order.
+    let lifecycle_order = marrow_lifecycle::head_map_node_order(&image);
 
-    let map = head_map(&image).expect("head map");
     assert_eq!(
-        map.len(),
-        kernel_node_count,
-        "the head-map walk must visit exactly the kernel's cell-key nodes",
+        lifecycle_order, kernel_order,
+        "the head-map split-order walk must agree node-for-node with the kernel numbering",
     );
-    // The head map's numbers are exactly 0..count in the kernel's order.
+    // And the persisted head map has exactly one entry per node, numbered 0..n in that order.
+    let map = head_map(&image).expect("head map");
+    assert_eq!(map.len(), kernel_order.len());
+    assert!(
+        kernel_order.iter().any(|k| *k == SemanticNodeKind::Group),
+        "the fixture must exercise a group",
+    );
+    assert!(
+        kernel_order.iter().any(|k| *k == SemanticNodeKind::Branch),
+        "the fixture must exercise a branch",
+    );
     for (i, entry) in map.entries().iter().enumerate() {
         assert_eq!(entry.number, i as u32);
     }
 }
 
-fn branch_node_count(branches: &[marrow_kernel::durable::BranchNumbering]) -> usize {
-    branches
-        .iter()
-        .map(|branch| 1 + branch.fields.len() + branch_node_count(&branch.branches))
-        .sum()
+fn flatten_branches(
+    branches: &[marrow_kernel::durable::BranchNumbering],
+    out: &mut Vec<marrow_verify::SemanticNodeKind>,
+) {
+    use marrow_verify::SemanticNodeKind;
+    for branch in branches {
+        out.push(SemanticNodeKind::Branch);
+        out.extend(branch.fields.iter().map(|_| SemanticNodeKind::Field));
+        flatten_branches(&branch.branches, out);
+    }
 }
 
 #[test]

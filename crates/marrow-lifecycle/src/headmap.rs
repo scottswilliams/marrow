@@ -15,6 +15,8 @@
 //! The map count is a separate `u32` store framing length bounded by [`MAX_HEAD_MAP_ENTRIES`]
 //! before any allocation, so a hostile head can never drive an unbounded reservation.
 
+use std::collections::HashSet;
+
 use marrow_image::LedgerIdBytes;
 
 use crate::codec::{FormatError, Reader, put_u32};
@@ -111,25 +113,26 @@ impl HeadMap {
 
     /// Reject a map that reuses a ledger id or a number, or that binds a number at or above
     /// the high-water. This is the bijection-and-high-water invariant every construction and
-    /// every decode passes.
+    /// every decode passes. Linear in the entry count via two hash sets, so a hostile head at
+    /// the [`MAX_HEAD_MAP_ENTRIES`] bound cannot drive a quadratic decode-time stall.
     fn check_bijection(&self) -> Result<(), FormatError> {
-        for (i, a) in self.entries.iter().enumerate() {
-            if a.number >= self.next_number {
+        let mut seen_numbers: HashSet<u32> = HashSet::with_capacity(self.entries.len());
+        let mut seen_ids: HashSet<[u8; 16]> = HashSet::with_capacity(self.entries.len());
+        for entry in &self.entries {
+            if entry.number >= self.next_number {
                 return Err(FormatError::Malformed {
                     reason: "head map number at or above the high-water",
                 });
             }
-            for b in &self.entries[i + 1..] {
-                if a.number == b.number {
-                    return Err(FormatError::Malformed {
-                        reason: "head map reuses a number",
-                    });
-                }
-                if a.ledger_id.bytes() == b.ledger_id.bytes() {
-                    return Err(FormatError::Malformed {
-                        reason: "head map reuses a ledger id",
-                    });
-                }
+            if !seen_numbers.insert(entry.number) {
+                return Err(FormatError::Malformed {
+                    reason: "head map reuses a number",
+                });
+            }
+            if !seen_ids.insert(*entry.ledger_id.bytes()) {
+                return Err(FormatError::Malformed {
+                    reason: "head map reuses a ledger id",
+                });
             }
         }
         Ok(())

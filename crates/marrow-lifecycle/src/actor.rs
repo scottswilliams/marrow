@@ -172,8 +172,8 @@ pub fn attach(
     }
 
     // Binding-only rebind: the durable contract, interface, and ceiling are unchanged and
-    // only the image code differs. Atomically rewrite the envelope (writer provenance) then
-    // the head (the active-binding commit point), preserving the head map and reserved slots.
+    // only the image code differs. Atomically commit the head (the active-binding commit
+    // point) then the envelope (writer provenance), preserving the head map and reserved slots.
     let new_envelope = crate::envelope::StoreEnvelope {
         writer_toolchain: current_toolchain(),
         ..opened.envelope.clone()
@@ -215,18 +215,24 @@ fn current_toolchain() -> String {
     env!("CARGO_PKG_VERSION").to_string()
 }
 
-/// Rewrite the envelope and head durably, the head last so it is the atomic commit point: a
-/// crash between the two leaves the head — the active-binding authority — either wholly old or
-/// wholly new (each single-file rename is atomic), never torn. Each file is written to a
-/// sibling temporary path, flushed, and atomically renamed over the live file; the directory
-/// is flushed after the head commit so the new head is durable before the receipt issues.
+/// Rewrite the head and envelope durably. The head is the active-binding commit point, so it
+/// is committed *first* — written to a sibling temporary path, flushed, atomically renamed
+/// over the live head, then the directory is flushed so the rename is durable. Only then is
+/// the envelope (writer provenance) rewritten the same way and the directory flushed again.
+/// Each single-file rename is atomic (a reader sees the file wholly old or wholly new, never
+/// torn), and committing the head before the envelope means the recorded provenance can never
+/// precede the active binding it describes: a crash between the two leaves the new binding
+/// active with slightly stale provenance — forensic-only — never a provenance describing a
+/// write the binding does not reflect. The receipt issues only after the final directory
+/// flush returns.
 fn rewrite_atomically(
     dir: &Path,
     envelope: &crate::envelope::StoreEnvelope,
     head: &LogicalHead,
 ) -> std::io::Result<()> {
-    replace_file(&store_dir::envelope_path(dir), &envelope.encode())?;
     replace_file(&store_dir::head_path(dir), &head.encode())?;
+    sync_dir(dir)?;
+    replace_file(&store_dir::envelope_path(dir), &envelope.encode())?;
     sync_dir(dir)
 }
 

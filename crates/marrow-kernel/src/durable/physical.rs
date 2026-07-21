@@ -7,9 +7,9 @@
 //! logical entry is a *marker* cell (its payload-presence record) plus one *field leaf* per
 //! present field, and — for a hierarchical resource — one keyed *branch* family per declared
 //! branch nested beneath the entry's marker. Each number component is a fixed-width 4-byte
-//! big-endian integer, so it self-delimits trivially and the containment/separation laws
-//! below carry over unchanged from the earlier escaped-name form (they never depended on
-//! what fills the name slot, only on its self-delimitation):
+//! big-endian integer, so it self-delimits trivially: the containment/separation laws below
+//! depend only on each component's self-delimitation, never on what fills it, so a
+//! fixed-width number satisfies them by construction:
 //!
 //! ```text
 //! entry family prefix   0x01 0x20 num(root)
@@ -56,7 +56,7 @@
 //! case. Because the concatenation is itself prefix-free and sorts column-major, every
 //! ordering property below holds column-wise exactly as for a single key.
 //!
-//! The layout is recursive: a branch child's marker (`<marker> 0x30 esc(branch)
+//! The layout is recursive: a branch child's marker (`<marker> 0x30 num(branch)
 //! enc(childKey) 0x00`) is itself a marker stem, so the child's own field leaves,
 //! nested branches, and iteration cursor derive from it exactly as a root entry's
 //! do. An entry's marker is therefore a byte-prefix of every cell it owns — its
@@ -87,7 +87,7 @@ pub(super) type NodeNumber = u32;
 
 /// Append a node's cell-key number in the canonical fixed-width 4-byte big-endian form.
 /// Fixed width self-delimits, so a number component is prefix-free by construction and the
-/// containment/separation laws hold exactly as they did for the escaped-name form. This is
+/// containment/separation laws hold because each component self-delimits. This is
 /// the single owner of the number-to-key-bytes mapping: no source spelling ever reaches an
 /// entry, group, branch, or index cell key.
 fn push_component(out: &mut Vec<u8>, number: NodeNumber) {
@@ -190,7 +190,7 @@ pub(super) fn stem_cursor(stem: &[u8]) -> Vec<u8> {
 
 /// The byte prefix shared by every cell of the branch family `branch` beneath the
 /// node whose marker `parent_stem` is given: the parent stem, the branch tag, and the
-/// escaped branch name. Because `esc(branch)` is self-terminating, this prefix
+/// branch number. Because the fixed-width branch number self-delimits, this prefix
 /// uniquely delimits one branch family — a cell of a differently-named branch never
 /// shares it — so it is the traversable [`Layer`] prefix of that branch. The single
 /// owner of the branch-family prefix bytes; both [`branch_child_stem`] and
@@ -204,7 +204,7 @@ pub(super) fn branch_family_prefix(parent_stem: &[u8], branch: NodeNumber) -> Ve
 
 /// The byte prefix shared by every field leaf of the group `group` beneath the node
 /// whose marker `stem` is given: the node's marker stem, the group tag, and the escaped
-/// group name. Because `esc(group)` self-terminates, this prefix uniquely delimits one
+/// group number. Because the fixed-width group number self-delimits, this prefix uniquely delimits one
 /// group's leaves — a leaf of a differently-named sibling group, or one of the node's
 /// own top-level field leaves, never shares it. A group carries no marker and no key
 /// (its presence is its containing entry's presence), so this stem is *not* a marker
@@ -238,8 +238,8 @@ pub(super) fn branch_child_stem(
 /// The marker key of the entry keyed by the tuple `keys` directly under a layer
 /// `prefix`: the prefix, the prefix-free encoding of the whole key tuple, and a marker
 /// terminator. The single owner of the layer-prefix-plus-key marker shape shared by a
-/// root entry (prefix `0x01 0x20 esc(root)`) and a branch child (prefix
-/// `parent 0x30 esc(branch)`). Because the tuple encoding is prefix-free (each column
+/// root entry (prefix `0x01 0x20 num(root)`) and a branch child (prefix
+/// `parent 0x30 num(branch)`). Because the tuple encoding is prefix-free (each column
 /// self-delimits), two distinct key tuples yield markers where neither is a prefix of
 /// the other, so the containment and separation laws hold column-wise as they do for a
 /// single key.
@@ -405,8 +405,8 @@ pub(super) fn below_marker(stem: &[u8], cell_key: &[u8]) -> BelowMarker {
 }
 
 /// A traversable layer of immediate keyed children sharing one byte prefix: the root's
-/// own entry family (`0x01 0x20 esc(root)`) or one keyed branch family beneath a fixed
-/// parent entry (`parent 0x30 esc(branch)`). A child's marker is
+/// own entry family (`0x01 0x20 num(root)`) or one keyed branch family beneath a fixed
+/// parent entry (`parent 0x30 num(branch)`). A child's marker is
 /// `prefix ++ enc(key) ++ MARKER_TERMINATOR`; raising that terminator to the cursor
 /// sentinel yields the child's subtree cursor, so one prefix-successor seek past a
 /// child skips its whole subtree regardless of branch fan-out (the traversal-skip
@@ -467,7 +467,7 @@ impl Layer {
 }
 
 /// One managed index's cell family narrowed to a fixed leading projection prefix: the
-/// `0x02 esc(root) index_id enc(fixed)` byte range a progressive-prefix scan traverses.
+/// `0x02 num(root) index_id enc(fixed)` byte range a progressive-prefix scan traverses.
 /// A cell of this index whose first `fixed.len()` projected components equal `fixed`
 /// begins with this prefix and continues with the encoding of the next component
 /// (an incomplete prefix) or nothing (the complete projection); a differently-prefixed
@@ -786,7 +786,7 @@ mod tests {
 
     /// A group's leaves occupy a byte range disjoint from the entry's top-level field
     /// leaves, from a differently-named sibling group's leaves, and from the entry's
-    /// branches: a group write confined to `<marker> 0x28 esc(group)` never aliases any
+    /// branches: a group write confined to `<marker> 0x28 num(group)` never aliases any
     /// of them. The `group_stem` prefix bounds one group's cells and no other's.
     #[test]
     fn group_leaves_are_disjoint_from_fields_sibling_groups_and_branches() {
@@ -1218,7 +1218,7 @@ mod tests {
     /// a marker, a field leaf, a group leaf, a branch child marker, and an index cell key,
     /// so the on-disk key grammar cannot drift silently. Each node component is its 4-byte
     /// big-endian number; the marker terminator, structural tags, and key-tuple encoding are
-    /// unchanged from the escaped-name form.
+    /// the same frozen bytes the ordering laws rest on.
     #[test]
     fn id_keyed_cell_key_layout_is_frozen() {
         let key = KeyScalar::Int(1);

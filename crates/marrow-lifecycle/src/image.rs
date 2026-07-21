@@ -44,17 +44,37 @@ pub fn active_binding(image: &VerifiedImage) -> ActiveBinding {
 
 /// Build the head identity map for `image`: the ledger-id ↔ cell-number bijection (FR01 §3),
 /// where node `i` in the store-local cell-key numbering is the `i`-th durable node in the
-/// kernel's canonical pre-order. The walk mirrors the kernel's `number_store` exactly — each
-/// root in declaration order, then per node its fields (in order), then its groups (each
-/// group node followed by its fields), then its branches (each branch node followed by its
-/// fields and its sub-branches, recursively) — reconstructed from the image's
-/// [`semantic_nodes`](VerifiedImage::semantic_nodes) by regrouping the declaration-ordered
-/// node list into that split order. Managed-index nodes carry a 16-byte identity in their
-/// cell keys, not a number, so they are excluded. The agreement between this walk and the
-/// kernel's numbering is pinned by a cross-crate test.
+/// kernel's canonical split pre-order (see [`split_order`]). A projection of that one walk:
+/// number `i` binds to the ledger id of the `i`-th walked node.
 ///
 /// Returns a [`FormatError`] only if the node count exceeds the head map's bound.
 pub fn head_map(image: &VerifiedImage) -> Result<HeadMap, FormatError> {
+    let (nodes, order) = split_order(image);
+    let ledger_ids: Vec<LedgerIdBytes> =
+        order.iter().map(|&i| nodes[i].path.node_id()).collect();
+    HeadMap::assign(&ledger_ids)
+}
+
+/// The kind of each durable node in the same canonical split pre-order the head map numbers,
+/// the other projection of [`split_order`]. This is the cross-crate enforcement artifact: a
+/// test compares this sequence against the kernel's [`number_store`](marrow_kernel::durable::number_store)
+/// structure flattened in the same order, so a divergence in the two independent walks — the
+/// exact hazard of a two-owner numbering — fails a build rather than silently binding ledger
+/// ids to the wrong cell numbers after a rename.
+pub fn head_map_node_order(image: &VerifiedImage) -> Vec<SemanticNodeKind> {
+    let (nodes, order) = split_order(image);
+    order.iter().map(|&i| nodes[i].kind).collect()
+}
+
+/// The single owner of the durable graph's canonical split pre-order over the image's
+/// [`semantic_nodes`](VerifiedImage::semantic_nodes): the node indices in the order the
+/// kernel's `number_store` numbers them — each root in declaration order, then per node its
+/// fields (in order), then its groups (each group node followed by its own members,
+/// recursively), then its branches (each branch node followed by its members, recursively).
+/// Managed-index nodes carry a 16-byte identity in their cell keys, not a number, so they are
+/// excluded. Both [`head_map`] and [`head_map_node_order`] project this one walk, so they
+/// cannot disagree.
+fn split_order(image: &VerifiedImage) -> (Vec<SemanticNode>, Vec<usize>) {
     let nodes = image.semantic_nodes();
 
     // Children of each container, keyed by the container's full step chain, in the
@@ -69,37 +89,34 @@ pub fn head_map(image: &VerifiedImage) -> Result<HeadMap, FormatError> {
         }
     }
 
-    // Walk each root in declaration order, emitting ledger ids in the kernel's split order.
-    let mut ledger_ids: Vec<LedgerIdBytes> = Vec::with_capacity(nodes.len());
+    let mut order: Vec<usize> = Vec::with_capacity(nodes.len());
     for (index, node) in nodes.iter().enumerate() {
         if node.kind == SemanticNodeKind::Root {
-            walk_split_order(index, &nodes, &children, &mut ledger_ids);
+            walk_split_order(index, &nodes, &children, &mut order);
         }
     }
-
-    HeadMap::assign(&ledger_ids)
+    (nodes, order)
 }
 
-/// Emit `nodes[index]`'s ledger id, then — in the kernel's split order — its field children,
-/// its group children (each recursively, so a group node precedes its own fields), and its
-/// branch children (each recursively). Index children are excluded: an index cell key is
-/// prefixed by the index's 16-byte identity, never a number. Because the shared counter that
-/// consumes this sequence starts at zero and advances one per emitted node, node `i` is
-/// assigned number `i`, matching `number_store`.
+/// Append `index`, then — in the kernel's split order — its field children, its group
+/// children (each recursively, so a group node precedes its own members), and its branch
+/// children (each recursively). A field is a cell-key leaf, so it is appended without
+/// recursion. Because the shared counter that later consumes this sequence starts at zero and
+/// advances one per node, node `i` is assigned number `i`, matching `number_store`.
 fn walk_split_order(
     index: usize,
     nodes: &[SemanticNode],
     children: &HashMap<Vec<SemanticStep>, Vec<usize>>,
-    out: &mut Vec<LedgerIdBytes>,
+    out: &mut Vec<usize>,
 ) {
-    out.push(nodes[index].path.node_id());
+    out.push(index);
     let key = nodes[index].path.steps().to_vec();
     let Some(kids) = children.get(&key) else {
         return;
     };
     for &kid in kids {
         if nodes[kid].kind == SemanticNodeKind::Field {
-            out.push(nodes[kid].path.node_id());
+            out.push(kid);
         }
     }
     for &kid in kids {

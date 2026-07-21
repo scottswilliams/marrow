@@ -88,7 +88,7 @@ impl std::error::Error for FormatError {}
 /// remaining input before it borrows, so a truncated artifact rejects with
 /// [`FormatError::Truncated`] rather than panicking, and [`Reader::finish`] rejects any
 /// unconsumed trailing bytes.
-pub struct Reader<'a> {
+pub(crate) struct Reader<'a> {
     bytes: &'a [u8],
     pos: usize,
 }
@@ -157,12 +157,12 @@ impl<'a> Reader<'a> {
 }
 
 /// Append a big-endian `u32`.
-pub fn put_u32(out: &mut Vec<u8>, value: u32) {
+pub(crate) fn put_u32(out: &mut Vec<u8>, value: u32) {
     out.extend_from_slice(&value.to_be_bytes());
 }
 
 /// Append a big-endian `u64`.
-pub fn put_u64(out: &mut Vec<u8>, value: u64) {
+pub(crate) fn put_u64(out: &mut Vec<u8>, value: u64) {
     out.extend_from_slice(&value.to_be_bytes());
 }
 
