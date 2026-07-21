@@ -1,0 +1,10 @@
+pub fn add(a: int, b: int): int {
+    return a + b
+}
+
+pub fn total(): int {
+    return add(
+        1, // this comment is stranded inside an open call
+        2,
+    )
+}

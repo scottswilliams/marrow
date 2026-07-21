@@ -1,0 +1,43 @@
+resource Member {
+    required name: string
+    email: string
+}
+
+store ^members[id: int]: Member
+
+pub fn register(id: int, name: string) {
+    transaction {
+        ^members[id] = Member(name: name)
+    }
+}
+
+pub fn nameOf(id: int): string? {
+    return ^members[id].name
+}
+
+pub fn isRegistered(id: int): bool {
+    return exists(^members[id])
+}
+
+pub fn greeting(name: string): string {
+    return "Hello, " + name
+}
+
+test "greeting composes a salutation" {
+    assert greeting("Ada") == "Hello, Ada"
+}
+
+test "a fresh member is not registered" {
+    assert isRegistered(1) == false
+}
+
+test "a directly written member reads back" {
+    ^members[1].name = "Ada"
+    assert ^members[1].name ?? "" == "Ada"
+    assert ^members[1].email ?? "none" == "none"
+}
+
+test "register then read back through exports" {
+    register(2, "Grace")
+    assert nameOf(2) ?? "" == "Grace"
+}

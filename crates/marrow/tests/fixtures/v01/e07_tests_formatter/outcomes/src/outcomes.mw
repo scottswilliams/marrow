@@ -1,0 +1,15 @@
+pub fn double(n: int): int {
+    return n + n
+}
+
+test "double doubles its argument" {
+    assert double(21) == 42
+}
+
+test "a false assertion fails the test" {
+    assert double(1) == 3
+}
+
+test "an unfinished path errors the test" {
+    todo("compute the expected total")
+}

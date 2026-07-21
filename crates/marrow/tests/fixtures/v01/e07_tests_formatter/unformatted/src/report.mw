@@ -1,0 +1,13 @@
+pub fn total(a: int,b: int): int {
+        // sum the two inputs
+        return a+b
+}
+
+
+
+pub fn describe(n: int): string {
+    if n>0 {
+        return "positive"    // the common case
+    }
+    return "nonpositive"
+}
