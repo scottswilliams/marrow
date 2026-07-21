@@ -7,8 +7,6 @@
 //! mints a new one, so a store instance is never confused with the image it was provisioned
 //! from or with a peer store of the same program.
 
-use std::sync::atomic::{AtomicU64, Ordering};
-
 /// A persistent store's nonforgeable instance identity: 128 bits drawn from OS entropy at
 /// provision. Unguessable and constructible only through [`StoreInstanceId::draw`], never
 /// derived from the image, a clock, or a counter, so a forged image or a copied envelope
@@ -63,13 +61,11 @@ impl std::fmt::Display for EntropyUnavailable {
 
 impl std::error::Error for EntropyUnavailable {}
 
-/// A per-process monotonic counter mixed into an entropy draw only as a last-resort
-/// distinctness aid; the OS entropy read is the nonforgeability source.
-static COUNTER: AtomicU64 = AtomicU64::new(0);
-
 /// Draw 16 bytes from the OS entropy source. Reads `/dev/urandom` on Unix — the same
 /// approved source the durable-identity mint and the attachment id use — and refuses on a
-/// platform without one rather than substituting a predictable value.
+/// platform without one rather than substituting a predictable value. The 128-bit draw is
+/// the whole identity: no clock, counter, or hash is mixed in, so the id is exactly what the
+/// entropy source returned.
 #[cfg(unix)]
 fn draw_entropy() -> Result<[u8; 16], EntropyUnavailable> {
     use std::io::Read;
@@ -77,18 +73,11 @@ fn draw_entropy() -> Result<[u8; 16], EntropyUnavailable> {
     std::fs::File::open("/dev/urandom")
         .and_then(|mut f| f.read_exact(&mut bytes))
         .map_err(EntropyUnavailable)?;
-    // Mix a process-monotonic counter into the low bytes so two ids minted in the same
-    // nanosecond still differ even under a degenerate entropy source.
-    let counter = COUNTER.fetch_add(1, Ordering::Relaxed).to_be_bytes();
-    for (slot, mixed) in bytes[8..].iter_mut().zip(counter) {
-        *slot ^= mixed;
-    }
     Ok(bytes)
 }
 
 #[cfg(not(unix))]
 fn draw_entropy() -> Result<[u8; 16], EntropyUnavailable> {
-    let _ = COUNTER.fetch_add(1, Ordering::Relaxed);
     Err(EntropyUnavailable(std::io::Error::new(
         std::io::ErrorKind::Unsupported,
         "minting a store identity requires an OS entropy source on this platform",

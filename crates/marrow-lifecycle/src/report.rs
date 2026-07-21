@@ -11,7 +11,7 @@
 
 use std::path::Path;
 
-use marrow_kernel::durable::{SiteSpec, StoreSchema};
+use marrow_kernel::durable::{NATIVE_ENGINE_FORMAT_VERSION, SiteSpec, StoreSchema};
 use marrow_verify::{CeilingDescriptor, VerifiedImage};
 
 use crate::envelope::{EngineKind, StoreEnvelope};
@@ -19,12 +19,6 @@ use crate::head::LogicalHead;
 use crate::image::{active_binding, head_map};
 use crate::instance::{EntropyUnavailable, StoreInstanceId};
 use crate::provision::{ProvisionError, ProvisionRequest, Provisioned, provision};
-
-/// The redb engine's on-disk format version this build writes, recorded in the envelope's
-/// engine tuple (FR01 R2). It mirrors the native engine's own `FORMAT_VERSION`; the store
-/// records what wrote it so a later toolchain can refuse rather than misread an unknown
-/// engine format.
-const REDB_FORMAT_VERSION: u32 = 1;
 
 /// The report a first provision presents for acceptance, in source vocabulary only. It names
 /// the destination, the durable roots by name, and whether the program reads and/or writes
@@ -59,28 +53,29 @@ impl ProvisionReport {
     /// provision; contains no identity hash, witness, or ceiling id — only the destination,
     /// the roots by name, and the effects and ceiling in demand terms.
     pub fn render(&self) -> String {
-        let mut out = format!("Provision a new durable store at {}\n", self.destination);
+        use std::fmt::Write;
+        let mut out = String::new();
+        let _ = writeln!(out, "Provision a new durable store at {}", self.destination);
         out.push_str("Durable roots:\n");
         if self.roots.is_empty() {
             out.push_str("  (none)\n");
         } else {
             for root in &self.roots {
-                out.push_str(&format!("  - {root}\n"));
+                let _ = writeln!(out, "  - {root}");
             }
         }
-        out.push_str(&format!(
-            "Effects: {}\n",
-            match (self.reads, self.writes) {
-                (true, true) => "reads and writes durable data",
-                (true, false) => "reads durable data",
-                (false, true) => "writes durable data",
-                (false, false) => "no durable effect",
-            },
-        ));
-        out.push_str(&format!(
-            "Initial authority ceiling: reads={}, writes={}\n",
+        let effects = match (self.reads, self.writes) {
+            (true, true) => "reads and writes durable data",
+            (true, false) => "reads durable data",
+            (false, true) => "writes durable data",
+            (false, false) => "no durable effect",
+        };
+        let _ = writeln!(out, "Effects: {effects}");
+        let _ = writeln!(
+            out,
+            "Initial authority ceiling: reads={}, writes={}",
             self.reads, self.writes,
-        ));
+        );
         out
     }
 
@@ -211,7 +206,7 @@ pub fn provision_image(
         instance,
         writer_toolchain: env!("CARGO_PKG_VERSION").to_string(),
         engine_kind: EngineKind::Redb,
-        engine_format_version: REDB_FORMAT_VERSION,
+        engine_format_version: NATIVE_ENGINE_FORMAT_VERSION,
     };
     let head = LogicalHead::provision(
         active_binding(image),

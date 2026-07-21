@@ -23,6 +23,8 @@ use std::path::{Path, PathBuf};
 use marrow_codes::Code;
 use marrow_kernel::durable::{NativeStore, SiteSpec, StoreError, StoreSchema};
 
+use crate::codec::FormatError;
+use crate::durable_fs::{sync_dir, write_file};
 use crate::envelope::StoreEnvelope;
 use crate::head::LogicalHead;
 use crate::instance::StoreInstanceId;
@@ -199,8 +201,11 @@ pub enum OpenError {
     Incomplete,
     /// The store is held by another owner, or the lock could not be taken.
     Lock(LockError),
-    /// The envelope or head bytes did not decode, or the unclean-open integrity audit failed:
-    /// the store is corrupt.
+    /// The persisted envelope or head bytes did not decode. Carries the typed
+    /// [`FormatError`] so an unknown writer version (`store.format_version`) or an over-bound
+    /// field (`store.limit`) is reported as itself, not flattened to corruption (FR01 §6).
+    Decode(FormatError),
+    /// The unclean-open integrity audit found the engine's stored bytes corrupt.
     Corruption { message: String },
     /// The ordered-byte engine could not be opened.
     Store(StoreError),
@@ -214,6 +219,7 @@ impl OpenError {
         match self {
             OpenError::NotProvisioned => Code::StoreIo.as_str(),
             OpenError::Incomplete | OpenError::Corruption { .. } => Code::StoreCorruption.as_str(),
+            OpenError::Decode(error) => error.code(),
             OpenError::Lock(error) => error.code(),
             OpenError::Store(error) => error.code(),
             OpenError::Io(_) => Code::StoreIo.as_str(),
@@ -232,6 +238,7 @@ impl std::fmt::Display for OpenError {
                 )
             }
             OpenError::Lock(error) => write!(f, "{error}"),
+            OpenError::Decode(error) => write!(f, "the store {error}"),
             OpenError::Corruption { message } => write!(f, "the store is corrupt: {message}"),
             OpenError::Store(error) => write!(f, "the store engine could not be opened: {error}"),
             OpenError::Io(error) => write!(f, "opening the store failed: {error}"),
@@ -261,20 +268,25 @@ pub fn open(
     let head = decode_head(dir)?;
 
     // Take the single-owner lock before opening the engine; a second owner is named here.
-    let acquired = OwnerLock::acquire(dir, envelope.instance).map_err(OpenError::Lock)?;
+    let mut acquired = OwnerLock::acquire(dir, envelope.instance).map_err(OpenError::Lock)?;
 
     let mut store = NativeStore::open_native(&store_dir::engine_path(dir), schemas, sites)
         .map_err(OpenError::Store)?;
 
     // Unclean prior shutdown: run the crash-path integrity audit. (See the module note — this
     // covers crash-path corruption only; it makes no claim about an externally flipped bit in
-    // a cleanly-closed store.)
+    // a cleanly-closed store.) On audit failure the lock drops un-marked, so the uncleanness
+    // persists and the next open audits again rather than skipping the check.
     if acquired.prior_unclean {
         store.audit().map_err(|error| match error {
             StoreError::Corruption { message } => OpenError::Corruption { message },
             other => OpenError::Store(other),
         })?;
     }
+
+    // The open is healthy: record it so a clean close truncates the lock body to the clean
+    // signal. Until this point a drop preserves the unclean descriptor.
+    acquired.lock.mark_clean();
 
     Ok(OpenStore {
         store,
@@ -286,16 +298,12 @@ pub fn open(
 
 fn decode_envelope(dir: &Path) -> Result<StoreEnvelope, OpenError> {
     let bytes = std::fs::read(store_dir::envelope_path(dir)).map_err(OpenError::Io)?;
-    StoreEnvelope::decode(&bytes).map_err(|error| OpenError::Corruption {
-        message: error.to_string(),
-    })
+    StoreEnvelope::decode(&bytes).map_err(OpenError::Decode)
 }
 
 fn decode_head(dir: &Path) -> Result<LogicalHead, OpenError> {
     let bytes = std::fs::read(store_dir::head_path(dir)).map_err(OpenError::Io)?;
-    LogicalHead::decode(&bytes).map_err(|error| OpenError::Corruption {
-        message: error.to_string(),
-    })
+    LogicalHead::decode(&bytes).map_err(OpenError::Decode)
 }
 
 /// A private sibling temporary directory for building a store before its atomic claim: the
@@ -326,26 +334,6 @@ fn create_private_dir(dir: &Path) -> std::io::Result<()> {
 #[cfg(not(unix))]
 fn create_private_dir(dir: &Path) -> std::io::Result<()> {
     std::fs::DirBuilder::new().create(dir)
-}
-
-/// Write `bytes` to `path` (creating it), then flush to disk so the file body is durable
-/// before the parent directory is synced and the store is claimed.
-fn write_file(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    use std::io::Write;
-    let mut file = std::fs::File::create(path)?;
-    file.write_all(bytes)?;
-    file.sync_all()
-}
-
-/// Flush a directory entry to disk so a newly created file or subdirectory is durable.
-#[cfg(unix)]
-fn sync_dir(dir: &Path) -> std::io::Result<()> {
-    std::fs::File::open(dir)?.sync_all()
-}
-
-#[cfg(not(unix))]
-fn sync_dir(_dir: &Path) -> std::io::Result<()> {
-    Ok(())
 }
 
 #[cfg(test)]

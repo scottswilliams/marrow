@@ -35,6 +35,11 @@ pub use marrow_store::StoreError;
 /// naming the byte-engine crate.
 pub type NativeStore = DurableStore<marrow_store::NativeEngine>;
 
+/// The native engine's on-disk format version, re-exported so a downstream lifecycle owner
+/// records the engine tuple (FR01 R2) from the engine's single owner rather than a mirrored
+/// literal — without a direct dependency on the byte-engine crate.
+pub const NATIVE_ENGINE_FORMAT_VERSION: u32 = marrow_store::NativeEngine::FORMAT_VERSION;
+
 use std::num::NonZeroU32;
 
 use crate::codec::key::KeyScalar;

@@ -141,6 +141,16 @@ impl LogicalHead {
         let commit_position = reader.u64()?;
         let data_digest = reader.array::<32>()?;
         let data_digest_position = reader.u64()?;
+        // A v0 head carries no claim in the reserved slots: sequencing and the data digest are
+        // turned on only under a head-version bump (FR01 §2, coherence finding F-4). Enforcing
+        // zero on read — not only on write — makes the incoherent "stale digest reads current"
+        // state unrepresentable even for a validly-resealed forged head. A v1 decoder relaxes
+        // this for the slots it maintains.
+        if commit_position != 0 || data_digest != [0u8; 32] || data_digest_position != 0 {
+            return Err(FormatError::Malformed {
+                reason: "v0 head reserves the sequencing and data-digest slots as zero",
+            });
+        }
         let head_map = HeadMap::decode(&mut reader)?;
         let sealed = reader.array::<32>()?;
         reader.finish()?;
@@ -228,6 +238,36 @@ mod tests {
             !a.facts_equal(&contract_change),
             "a durable-contract change is a binding-fact delta",
         );
+    }
+
+    /// A v0 head whose reserved slots are forged nonzero — and validly resealed so the digest
+    /// passes — is rejected on decode (FR01 §2, coherence finding F-4): zero-ness is enforced
+    /// on read, not only on write, so the incoherent "stale digest reads current" state is
+    /// unrepresentable.
+    #[test]
+    fn decode_rejects_forged_nonzero_reserved_slots() {
+        // The commit position sits right after the four 32-byte binding ids: offset
+        // magic(4)+ver(1)+imgfmt(1)+4×32 = 38.
+        let commit_pos_at = 6 + 32 * 4;
+        for offset in [
+            commit_pos_at,      // commit_position (first byte of the u64)
+            commit_pos_at + 8,  // data_digest (first byte)
+            commit_pos_at + 40, // data_digest_position (first byte, after the 32-byte digest)
+        ] {
+            let mut bytes = head().encode();
+            bytes[offset] = 0x01; // forge a nonzero reserved byte
+            // Reseal the body so the digest passes and the reserved-zero rule is the rejector.
+            let body_len = bytes.len() - 32;
+            let resealed = StoreHeadDigest::compute(&bytes[..body_len]);
+            bytes[body_len..].copy_from_slice(resealed.bytes());
+            assert_eq!(
+                LogicalHead::decode(&bytes),
+                Err(FormatError::Malformed {
+                    reason: "v0 head reserves the sequencing and data-digest slots as zero"
+                }),
+                "a forged nonzero reserved slot at offset {offset} must reject",
+            );
+        }
     }
 
     #[test]

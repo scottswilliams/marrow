@@ -230,30 +230,9 @@ fn rewrite_atomically(
     envelope: &crate::envelope::StoreEnvelope,
     head: &LogicalHead,
 ) -> std::io::Result<()> {
+    use crate::durable_fs::{replace_file, sync_dir};
     replace_file(&store_dir::head_path(dir), &head.encode())?;
     sync_dir(dir)?;
     replace_file(&store_dir::envelope_path(dir), &envelope.encode())?;
     sync_dir(dir)
-}
-
-/// Write `bytes` to a sibling temporary file, flush it, and atomically rename it over `path`.
-fn replace_file(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    use std::io::Write;
-    let temp = path.with_extension("rebinding");
-    {
-        let mut file = std::fs::File::create(&temp)?;
-        file.write_all(bytes)?;
-        file.sync_all()?;
-    }
-    std::fs::rename(&temp, path)
-}
-
-#[cfg(unix)]
-fn sync_dir(dir: &Path) -> std::io::Result<()> {
-    std::fs::File::open(dir)?.sync_all()
-}
-
-#[cfg(not(unix))]
-fn sync_dir(_dir: &Path) -> std::io::Result<()> {
-    Ok(())
 }

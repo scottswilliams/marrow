@@ -20,6 +20,7 @@
 
 mod actor;
 mod codec;
+mod durable_fs;
 mod envelope;
 mod head;
 mod headmap;

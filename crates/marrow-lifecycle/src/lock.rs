@@ -72,10 +72,16 @@ impl LockOwner {
     }
 }
 
-/// A held owner lock. Dropping it truncates the lock body to empty (the clean-shutdown
-/// signal) and releases the advisory lock, so the next acquirer sees a clean prior state.
+/// A held owner lock. Dropping it releases the advisory lock; it truncates the lock body to
+/// empty (the clean-shutdown signal) *only* once [`OwnerLock::mark_clean`] has recorded that a
+/// healthy open completed. A lock dropped before that — an open that acquired the lock but
+/// then failed its integrity audit or engine open — leaves the descriptor in place, so the
+/// uncleanness persists and the next open audits again rather than skipping the check.
 pub struct OwnerLock {
     file: File,
+    /// Whether a healthy open completed under this lock. Set by [`OwnerLock::mark_clean`] on
+    /// the open success path; only then does [`Drop`] truncate the body to the clean signal.
+    clean_on_drop: bool,
 }
 
 /// The result of acquiring an owner lock: the held lock and whether the prior shutdown was
@@ -172,9 +178,21 @@ impl OwnerLock {
         write_owner(&mut file, &owner).map_err(LockError::Io)?;
 
         Ok(Acquired {
-            lock: OwnerLock { file },
+            lock: OwnerLock {
+                file,
+                clean_on_drop: false,
+            },
             prior_unclean,
         })
+    }
+
+    /// Record that a healthy open completed under this lock, so a subsequent clean drop
+    /// truncates the lock body to the clean-shutdown signal. Called on the open success path
+    /// after any unclean-open integrity audit has passed. Until it is called, dropping the
+    /// lock preserves the owner descriptor, so an open that fails after acquiring the lock
+    /// leaves the store unclean and the next open re-runs the audit.
+    pub fn mark_clean(&mut self) {
+        self.clean_on_drop = true;
     }
 
     /// The owner descriptor currently written in the held lock body (this process).
@@ -185,12 +203,15 @@ impl OwnerLock {
 
 impl Drop for OwnerLock {
     fn drop(&mut self) {
-        // Clean shutdown: truncate the body to empty so the next acquirer sees a clean prior
-        // state, then let the file close (releasing the advisory lock). Best-effort — a
-        // failure here degrades only to an unclean-open audit next time, never to lost
+        // Release the advisory lock by closing the file. Truncate the body to the clean signal
+        // only when a healthy open completed (`mark_clean`); otherwise the owner descriptor
+        // stays so the next acquirer still sees an unclean prior shutdown and audits. Truncate
+        // is best-effort — a failure degrades only to an extra audit next time, never to lost
         // exclusion.
-        let _ = self.file.set_len(0);
-        let _ = self.file.sync_all();
+        if self.clean_on_drop {
+            let _ = self.file.set_len(0);
+            let _ = self.file.sync_all();
+        }
     }
 }
 
@@ -223,6 +244,52 @@ fn now_unix_secs() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn scratch_dir(tag: &str) -> std::path::PathBuf {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let dir =
+            std::env::temp_dir().join(format!("marrow-lock-{tag}-{}-{nonce}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("scratch dir");
+        dir
+    }
+
+    /// A lock dropped WITHOUT `mark_clean` — an open that acquired the lock but then failed
+    /// (its integrity audit or engine open) — leaves the owner descriptor in place, so the
+    /// next acquire still reports `prior_unclean`. Only a `mark_clean` drop truncates to the
+    /// clean signal. Without this, one failed unclean-open audit would erase the crash marker
+    /// and the next open would skip the audit over a still-corrupt store.
+    #[test]
+    fn an_unmarked_drop_preserves_uncleanness_and_mark_clean_clears_it() {
+        let dir = scratch_dir("latch");
+        let instance = StoreInstanceId::from_bytes([0x07; 16]);
+
+        // A fresh lock: clean prior. Drop it WITHOUT marking clean (a failed open).
+        let acquired = OwnerLock::acquire(&dir, instance).expect("acquire");
+        assert!(!acquired.prior_unclean, "a fresh store is clean");
+        drop(acquired.lock);
+
+        // The next acquire sees the preserved descriptor: still unclean.
+        let again = OwnerLock::acquire(&dir, instance).expect("reacquire");
+        assert!(
+            again.prior_unclean,
+            "a lock dropped without mark_clean must leave the store unclean",
+        );
+
+        // A healthy open marks clean; its drop truncates the body to the clean signal.
+        let mut lock = again.lock;
+        lock.mark_clean();
+        drop(lock);
+        let clean = OwnerLock::acquire(&dir, instance).expect("acquire after clean");
+        assert!(
+            !clean.prior_unclean,
+            "a mark_clean drop truncates to the clean signal",
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn owner_descriptor_byte_layout_is_frozen() {

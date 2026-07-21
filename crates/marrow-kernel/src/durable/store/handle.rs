@@ -132,8 +132,12 @@ impl<E: ByteEngine> DurableStore<E> {
         grant: InvocationGrant,
         demand: DemandCoverage,
     ) -> Result<ReadSession<'_, E>, SessionError> {
-        resolve_authority(demand, self.ceiling, grant).map_err(|Denied| SessionError::Denied)?;
+        // Poison dominates authority: a store whose last commit was indeterminate is in an
+        // unknown state, so it refuses every session with `Poisoned` until reopen
+        // classification — before an authorization verdict, which cannot be meaningful over an
+        // unknown state.
         self.check_poison()?;
+        resolve_authority(demand, self.ceiling, grant).map_err(|Denied| SessionError::Denied)?;
         let auth = self.authorized_sites();
         let view = self.engine.read_view().map_err(SessionError::Engine)?;
         Ok(ReadSession { view, auth })
@@ -148,8 +152,12 @@ impl<E: ByteEngine> DurableStore<E> {
         grant: InvocationGrant,
         demand: DemandCoverage,
     ) -> Result<TxnSession<'_, E>, SessionError> {
-        resolve_authority(demand, self.ceiling, grant).map_err(|Denied| SessionError::Denied)?;
+        // Poison dominates authority: a store whose last commit was indeterminate is in an
+        // unknown state, so it refuses every session with `Poisoned` until reopen
+        // classification — before an authorization verdict, which cannot be meaningful over an
+        // unknown state.
         self.check_poison()?;
+        resolve_authority(demand, self.ceiling, grant).map_err(|Denied| SessionError::Denied)?;
         let auth = self.authorized_sites();
         // Per-root managed indexes: a write to root R maintains exactly `indexes[R]`, so a
         // cross-root transaction keeps each root's own indexes coherent without confusing

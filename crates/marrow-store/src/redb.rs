@@ -546,6 +546,12 @@ fn open_commit_error(error: redb::CommitError) -> StoreError {
 }
 
 impl NativeEngine {
+    /// The on-disk format version this build stamps into a new store and requires on open.
+    /// The single owner of the value; a store's persisted-envelope engine tuple (FR01 R2)
+    /// records it from here rather than mirroring the literal, so provenance cannot drift from
+    /// what the engine actually wrote.
+    pub const FORMAT_VERSION: u32 = FORMAT_VERSION;
+
     /// Open the redb-backed store at `path`, creating the file if needed. A
     /// concurrent read-only or read-write holder is rejected as
     /// [`StoreError::Locked`], and a file recording a different [`FORMAT_VERSION`]
