@@ -917,6 +917,18 @@ impl<'a> FnLowerer<'a> {
             ));
             return;
         }
+        if self.bind_place_address(name, place_expr).is_none() {
+            // The address did not resolve (a dropped root, a bad key, a non-entry
+            // target); its own diagnostic already fired. Poison the name so its later
+            // uses do not each re-report an unbound place on top of that cause.
+            self.poisoned_bindings.insert(name.to_string());
+        }
+    }
+
+    /// Bind a validated `place` name to its durable entry address, pushing the
+    /// [`PlaceLocal`] on success. Returns `None` when the address does not resolve — the
+    /// resolver has already reported why — so the caller can poison the name.
+    fn bind_place_address(&mut self, name: &str, place_expr: &Expression) -> Option<()> {
         if !matches!(self.durable_access(place_expr), Some(DurShape::Entry)) {
             self.fail(SourceDiagnostic::at(
                 Code::CheckType.as_str(),
@@ -924,11 +936,9 @@ impl<'a> FnLowerer<'a> {
                 place_expr.span(),
                 "a `place` names a whole durable entry address such as `^root(key)`".to_string(),
             ));
-            return;
+            return None;
         }
-        let Some(place) = self.resolve_durable(place_expr) else {
-            return;
-        };
+        let place = self.resolve_durable(place_expr)?;
         let span = place.span;
         let DurTarget::Entry {
             entry_site,
@@ -943,7 +953,7 @@ impl<'a> FnLowerer<'a> {
                 "a `place` names a whole durable entry address such as `^root(key)`, not a field"
                     .to_string(),
             ));
-            return;
+            return None;
         };
         // Evaluate each key column of the address exactly once into a fresh slot, root
         // column first, so every later operation through the place reads the slots rather
@@ -955,22 +965,14 @@ impl<'a> FnLowerer<'a> {
             match column.key {
                 PlaceKey::Expr(key_expr) => {
                     let key_slot = self.alloc_slot();
-                    if self
-                        .lower_as(key_expr, LTy::bare_scalar(column.key_ty))
-                        .is_none()
-                    {
-                        return;
-                    }
+                    self.lower_as(key_expr, LTy::bare_scalar(column.key_ty))?;
                     self.push(Instr::LocalSet(key_slot), span);
                     key_slots.push((key_slot, column.key_ty));
                 }
                 PlaceKey::Identity { expr, root, cols } => {
                     // The identity spreads into the addressed root's ordered key columns, so
                     // the place records its whole physical key-path.
-                    let Some(columns) = self.capture_identity_key_columns(expr, root, cols, span)
-                    else {
-                        return;
-                    };
+                    let columns = self.capture_identity_key_columns(expr, root, cols, span)?;
                     key_slots.extend(columns);
                 }
                 PlaceKey::Bound(_) => {
@@ -981,7 +983,7 @@ impl<'a> FnLowerer<'a> {
                         "a `place` names a store address `^root(key)`, not another place"
                             .to_string(),
                     ));
-                    return;
+                    return None;
                 }
             }
         }
@@ -992,6 +994,7 @@ impl<'a> FnLowerer<'a> {
             record,
             node_kind,
         });
+        Some(())
     }
 
     /// Resolve a durable place against the store root, reporting a diagnostic on a
@@ -1391,6 +1394,16 @@ impl<'a> FnLowerer<'a> {
             };
             self.push(Instr::DurExists(site), place.span);
             return Some(LTy::bare_scalar(ScalarType::Bool));
+        }
+        // A bare name whose binding failed to resolve (a poisoned `const`/`place`) is
+        // already reported at the binding; its `exists` use is a consequence, not a
+        // fresh misuse, so it adds no diagnostic.
+        if let Expression::Name { segments, .. } = &arg.value
+            && let [name] = segments.as_slice()
+            && self.poisoned_bindings.contains(name.as_str())
+        {
+            self.failed = true;
+            return None;
         }
         self.fail(SourceDiagnostic::at(
             Code::CheckType.as_str(),

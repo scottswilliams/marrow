@@ -61,6 +61,8 @@ fn lowerer<'a>(
         consts,
         diagnostics,
         dependency_gaps,
+        // Process-scoped test scaffolding for the admission-steer dedup set.
+        Box::leak(Box::new(std::collections::BTreeSet::new())),
         crate::test_main_file_identity(),
         "main",
         RetType::Unit,

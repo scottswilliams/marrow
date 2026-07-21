@@ -241,6 +241,13 @@ pub(crate) struct FnLowerer<'a> {
     /// a module that did not parse. Threaded in like `diagnostics` so the gap survives
     /// even when the body it sits in fails to lower (an unresolved call fails the body).
     dependency_gaps: &'a mut Vec<(FileIdentity, SourceSpan)>,
+    /// Store roots whose durable identity failed admission that have already had one
+    /// reference-site steer emitted this compile. A dropped root is referenced from
+    /// many sites; the primary `check.durable_identity` reports name the fix once per
+    /// missing row, so the reference steer fires once per root rather than at every
+    /// use, keeping one dropped root from flooding the transcript. Shared across every
+    /// body lowered in the compile.
+    admission_steered: &'a mut BTreeSet<String>,
     file: &'a FileIdentity,
     /// The dotted module the function being lowered belongs to; unqualified calls
     /// resolve within it.
@@ -269,6 +276,11 @@ pub(crate) struct FnLowerer<'a> {
     /// is refused here when this body is an export entry.
     unwrapped_calls: Vec<(u16, SourceSpan)>,
     locals: Vec<Local>,
+    /// Names of `const`/`var` bindings whose initializer failed to type-check, so no
+    /// `Local` was bound. A later reference to such a name is the consequence of the
+    /// initializer's own error, not a fresh undefined name; suppressing it keeps one
+    /// bad initializer from spawning an `is not in scope` report at every later use.
+    poisoned_bindings: BTreeSet<String>,
     /// In-scope source-local named `place` bindings, scoped like `locals`.
     places: Vec<PlaceLocal>,
     /// The key-paths of `place` bindings a presence fact currently dominates: the
@@ -330,6 +342,7 @@ impl<'a> FnLowerer<'a> {
         consts: &'a ConstRegistry,
         diagnostics: &'a mut Vec<SourceDiagnostic>,
         dependency_gaps: &'a mut Vec<(FileIdentity, SourceSpan)>,
+        admission_steered: &'a mut BTreeSet<String>,
         file: &'a FileIdentity,
         module: &'a str,
         ret: RetType,
@@ -344,6 +357,7 @@ impl<'a> FnLowerer<'a> {
             consts,
             diagnostics,
             dependency_gaps,
+            admission_steered,
             file,
             module,
             type_env: Vec::new(),
@@ -355,6 +369,7 @@ impl<'a> FnLowerer<'a> {
             unwrapped_mutations: Vec::new(),
             unwrapped_calls: Vec::new(),
             locals: Vec::new(),
+            poisoned_bindings: BTreeSet::new(),
             places: Vec::new(),
             present_places: Vec::new(),
             loops: Vec::new(),
@@ -382,6 +397,7 @@ impl<'a> FnLowerer<'a> {
         consts: &'a ConstRegistry,
         diagnostics: &'a mut Vec<SourceDiagnostic>,
         dependency_gaps: &'a mut Vec<(FileIdentity, SourceSpan)>,
+        admission_steered: &'a mut BTreeSet<String>,
         file: &'a FileIdentity,
         module: &'a str,
         function: &FunctionDecl,
@@ -395,6 +411,7 @@ impl<'a> FnLowerer<'a> {
             consts,
             diagnostics,
             dependency_gaps,
+            admission_steered,
             file,
             module,
             function,
@@ -418,6 +435,7 @@ impl<'a> FnLowerer<'a> {
         consts: &'a ConstRegistry,
         diagnostics: &'a mut Vec<SourceDiagnostic>,
         dependency_gaps: &'a mut Vec<(FileIdentity, SourceSpan)>,
+        admission_steered: &'a mut BTreeSet<String>,
         template: &'a GenericTemplate<'a>,
         args: &[GArg],
     ) -> LowerResult {
@@ -439,6 +457,7 @@ impl<'a> FnLowerer<'a> {
             consts,
             diagnostics,
             dependency_gaps,
+            admission_steered,
             &template.file,
             &template.module,
             template.decl,
@@ -484,6 +503,9 @@ impl<'a> FnLowerer<'a> {
             })
             .collect::<Vec<_>>();
         let mut dependency_gaps = Vec::new();
+        // The template proof runs over abstract parameters into a throwaway draft; its
+        // reference steers are self-contained, so it keeps its own dedup set.
+        let mut admission_steered = BTreeSet::new();
         FnLowerer::lower_with_env(
             &mut throwaway,
             &check_records,
@@ -493,6 +515,7 @@ impl<'a> FnLowerer<'a> {
             consts,
             &mut diagnostics,
             &mut dependency_gaps,
+            &mut admission_steered,
             file,
             module,
             template.decl,
@@ -520,6 +543,7 @@ impl<'a> FnLowerer<'a> {
         consts: &'a ConstRegistry,
         diagnostics: &'a mut Vec<SourceDiagnostic>,
         dependency_gaps: &'a mut Vec<(FileIdentity, SourceSpan)>,
+        admission_steered: &'a mut BTreeSet<String>,
         file: &'a FileIdentity,
         module: &'a str,
         function: &FunctionDecl,
@@ -561,6 +585,7 @@ impl<'a> FnLowerer<'a> {
             consts,
             diagnostics,
             dependency_gaps,
+            admission_steered,
             file,
             module,
             ret,
@@ -658,6 +683,7 @@ impl<'a> FnLowerer<'a> {
         consts: &'a ConstRegistry,
         diagnostics: &'a mut Vec<SourceDiagnostic>,
         dependency_gaps: &'a mut Vec<(FileIdentity, SourceSpan)>,
+        admission_steered: &'a mut BTreeSet<String>,
         file: &'a FileIdentity,
         module: &'a str,
         name: &str,
@@ -672,6 +698,7 @@ impl<'a> FnLowerer<'a> {
             consts,
             diagnostics,
             dependency_gaps,
+            admission_steered,
             file,
             module,
             RetType::Unit,
@@ -867,14 +894,32 @@ impl<'a> FnLowerer<'a> {
         if let Some(root) = durable.root_by_name(name) {
             return Some(root);
         }
-        let diagnostic = if durable.not_yet_executable_root_named(name).is_some() {
-            not_yet_executable(self.file, span, name)
-        } else if durable.admission_failed_root_named(name) {
-            identity_admission_failed(self.file, span, name)
-        } else {
-            name_error(self.file, span, name)
-        };
-        self.fail(diagnostic);
+        if durable.not_yet_executable_root_named(name).is_some() {
+            self.fail(not_yet_executable(self.file, span, name));
+            return None;
+        }
+        if durable.admission_failed_root_named(name) {
+            // A dropped root is referenced from many sites; the primary
+            // `check.durable_identity` reports name the fix once per missing row. Steer
+            // the first reference to those reports and stay silent at the rest, so one
+            // missing ledger row does not echo an admission failure at every use.
+            if self.admission_steered.insert(name.to_string()) {
+                self.fail(identity_admission_failed(self.file, span, name));
+            } else {
+                self.failed = true;
+            }
+            return None;
+        }
+        // A genuinely undeclared root: a plain unknown name, with the nearest declared
+        // store root offered when one is a close misspelling.
+        let suggestion = nearest_name(name, durable.root_names());
+        self.fail(name_not_in_scope(
+            self.file,
+            span,
+            name,
+            suggestion.as_deref(),
+            NameKind::Root,
+        ));
         None
     }
 
@@ -1188,6 +1233,9 @@ mod generic_cache_boundary_tests {
             consts,
             diagnostics,
             dependency_gaps,
+            // Each test lowers a single body; the admission-steer dedup set is
+            // process-scoped test scaffolding, leaked so it outlives the borrow.
+            Box::leak(Box::new(BTreeSet::new())),
             crate::test_main_file_identity(),
             "main",
             RetType::Unit,

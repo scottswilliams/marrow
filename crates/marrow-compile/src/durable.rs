@@ -344,6 +344,17 @@ impl DurableRegistry {
         self.roots.iter().find_map(|root| find(&root.branches, ty))
     }
 
+    /// Every declared store-root name — admitted, parked, or dropped for a failed
+    /// identity — so a reference to an unknown `^root` can offer the nearest declared
+    /// root as a did-you-mean. The two backing lists are disjoint (a root enters exactly
+    /// one), so the names are unique.
+    pub(crate) fn root_names(&self) -> impl Iterator<Item = &str> {
+        self.declared_roots
+            .iter()
+            .chain(self.admission_failed_roots.iter())
+            .map(String::as_str)
+    }
+
     /// The name of a declared root of placement `name` that the kernel cannot yet serve (a
     /// singleton root, a resource declaring a nominal-typed field, or a group nested in a
     /// branch or another group). `Some` exactly when a root of that name is declared but

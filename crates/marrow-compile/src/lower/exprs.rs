@@ -141,7 +141,25 @@ impl<'a> FnLowerer<'a> {
                     if let Some(value) = self.consts.get(self.module, name).cloned() {
                         return Some(self.lower_const_value(&value, *span));
                     }
-                    self.fail(name_error(self.file, *span, name));
+                    // A binding whose initializer failed left this name unbound; the
+                    // initializer already reported the cause, so a later use is silent.
+                    if self.poisoned_bindings.contains(name.as_str()) {
+                        self.failed = true;
+                        return None;
+                    }
+                    let candidates = self
+                        .locals
+                        .iter()
+                        .map(|local| local.name.as_str())
+                        .chain(self.functions.module_function_names(self.module));
+                    let suggestion = nearest_name(name, candidates);
+                    self.fail(name_not_in_scope(
+                        self.file,
+                        *span,
+                        name,
+                        suggestion.as_deref(),
+                        NameKind::Value,
+                    ));
                     None
                 }
                 // `Enum::member` for a payloadless member is an enum value.
@@ -1305,7 +1323,14 @@ impl<'a> FnLowerer<'a> {
         if let Some(result) = self.lower_collection_fallback(name, args, span) {
             return result;
         }
-        self.fail(name_error(self.file, span, name));
+        let suggestion = nearest_name(name, self.functions.module_function_names(self.module));
+        self.fail(name_not_in_scope(
+            self.file,
+            span,
+            name,
+            suggestion.as_deref(),
+            NameKind::Function,
+        ));
         None
     }
 
@@ -1393,7 +1418,21 @@ impl<'a> FnLowerer<'a> {
                     .chain(std::iter::once(item))
                     .collect::<Vec<_>>()
                     .join("::");
-                self.fail(name_error(self.file, span, &path));
+                // When the prefix names a real module, offer the nearest function in
+                // that module as a did-you-mean for a misspelled cross-module callee.
+                let suggestion = self
+                    .functions
+                    .resolved_module(self.module, prefix)
+                    .and_then(|module| {
+                        nearest_name(item, self.functions.module_function_names(&module))
+                    });
+                self.fail(name_not_in_scope(
+                    self.file,
+                    span,
+                    &path,
+                    suggestion.as_deref(),
+                    NameKind::Function,
+                ));
                 None
             }
         }

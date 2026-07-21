@@ -777,6 +777,9 @@ fn run_semantic(
     dependency_gaps: &mut Vec<(FileIdentity, SourceSpan)>,
 ) -> SemanticOutcome {
     let mut diagnostics = Vec::new();
+    // Store roots whose durable identity failed admission, steered to their identity
+    // reports once each across the whole compile rather than at every reference.
+    let mut admission_steered: BTreeSet<String> = BTreeSet::new();
     // A generic instance's callee spans duplicate its template's, so its dependency
     // gaps (like its hover facts) are discarded to keep a generic body's positions
     // `Absent` on this floor.
@@ -1103,6 +1106,7 @@ fn run_semantic(
                         &constants,
                         &mut diagnostics,
                         dependency_gaps,
+                        &mut admission_steered,
                         &module.file,
                         &module.name,
                         function,
@@ -1219,6 +1223,7 @@ fn run_semantic(
                     &constants,
                     &mut diagnostics,
                     dependency_gaps,
+                    &mut admission_steered,
                     &module.file,
                     &module.name,
                     &test.name,
@@ -1293,6 +1298,7 @@ fn run_semantic(
                 &constants,
                 &mut diagnostics,
                 &mut discarded_gaps,
+                &mut admission_steered,
                 template,
                 &args,
             ) {

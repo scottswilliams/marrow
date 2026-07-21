@@ -120,6 +120,19 @@ impl FunctionRegistry {
         self.sigs.len() as u16
     }
 
+    /// The names of every function declared in `module`, so an unresolved call can
+    /// offer the nearest one as a did-you-mean. Used for both an unqualified call (the
+    /// caller's own module) and a qualified call (the resolved target module).
+    pub(super) fn module_function_names<'s>(
+        &'s self,
+        module: &'s str,
+    ) -> impl Iterator<Item = &'s str> {
+        self.sigs
+            .iter()
+            .filter(move |sig| sig.module == module)
+            .map(|sig| sig.name.as_str())
+    }
+
     /// Resolve an unqualified call from within `module`: a function of that name in
     /// the same module.
     pub(super) fn same_module(&self, module: &str, name: &str) -> Option<&FnSignature> {

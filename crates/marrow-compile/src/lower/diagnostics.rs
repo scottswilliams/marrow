@@ -292,6 +292,99 @@ pub(super) fn name_error(file: &FileIdentity, span: SourceSpan, name: &str) -> S
     )
 }
 
+/// Which family an unresolved name was looked up in, so a did-you-mean names the kind
+/// of thing the suggested identifier is: a store root reads back with its `^` sigil, a
+/// function or a value reads back plainly.
+#[derive(Clone, Copy)]
+pub(super) enum NameKind {
+    Root,
+    Function,
+    Value,
+}
+
+/// An unresolved name, offering the nearest declared identifier of the same family when
+/// one is a close misspelling. Without a suggestion this is exactly [`name_error`]; the
+/// suggestion, when present, spells the candidate in its family's form so the fix is a
+/// single edit the reader can apply directly.
+pub(super) fn name_not_in_scope(
+    file: &FileIdentity,
+    span: SourceSpan,
+    name: &str,
+    suggestion: Option<&str>,
+    kind: NameKind,
+) -> SourceDiagnostic {
+    let mut message = format!("`{name}` is not in scope");
+    if let Some(candidate) = suggestion {
+        let hint = match kind {
+            NameKind::Root => format!(". Did you mean the store root `^{candidate}`?"),
+            NameKind::Function => format!(". Did you mean the function `{candidate}`?"),
+            NameKind::Value => format!(". Did you mean `{candidate}`?"),
+        };
+        message.push_str(&hint);
+    }
+    SourceDiagnostic::at(Code::CheckType.as_str(), file, span, message)
+}
+
+/// The single declared name within edit distance two of `target`, or `None` when none
+/// is that close or two candidates tie for nearest. Deliberately conservative: a
+/// did-you-mean earns its place only as one unambiguous suggestion, never a list. A
+/// candidate must also be closer than a full rewrite (`distance < target length`), so a
+/// short name does not match an unrelated one.
+pub(super) fn nearest_name<'n>(
+    target: &str,
+    candidates: impl Iterator<Item = &'n str>,
+) -> Option<String> {
+    let target_len = target.chars().count();
+    let mut best: Option<usize> = None;
+    let mut best_name: Option<&str> = None;
+    let mut tied = false;
+    for candidate in candidates {
+        if candidate == target {
+            return None;
+        }
+        let distance = edit_distance(target, candidate);
+        if distance > 2 || distance >= target_len {
+            continue;
+        }
+        match best {
+            Some(current) if distance < current => {
+                best = Some(distance);
+                best_name = Some(candidate);
+                tied = false;
+            }
+            Some(current) if distance == current => tied = true,
+            Some(_) => {}
+            None => {
+                best = Some(distance);
+                best_name = Some(candidate);
+            }
+        }
+    }
+    if tied {
+        None
+    } else {
+        best_name.map(str::to_string)
+    }
+}
+
+/// The Levenshtein edit distance between two identifiers. Names are short, so the plain
+/// two-row dynamic program is the right cost.
+fn edit_distance(a: &str, b: &str) -> usize {
+    let a: Vec<char> = a.chars().collect();
+    let b: Vec<char> = b.chars().collect();
+    let mut prev: Vec<usize> = (0..=b.len()).collect();
+    let mut curr: Vec<usize> = vec![0; b.len() + 1];
+    for (i, ca) in a.iter().enumerate() {
+        curr[0] = i + 1;
+        for (j, cb) in b.iter().enumerate() {
+            let substitution = prev[j] + usize::from(ca != cb);
+            curr[j + 1] = substitution.min(prev[j + 1] + 1).min(curr[j] + 1);
+        }
+        std::mem::swap(&mut prev, &mut curr);
+    }
+    prev[b.len()]
+}
+
 /// A reference to a store root whose durable identity failed admission: the root was
 /// declared but each identity gap was reported as `check.durable_identity`, so it dropped
 /// from the registry. Reporting a bare not-in-scope name here would misdirect toward a

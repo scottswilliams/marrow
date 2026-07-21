@@ -289,11 +289,13 @@ impl<'a> FnLowerer<'a> {
                 }
             };
             if self.lower_as(value, expected).is_none() {
+                self.poisoned_bindings.insert(name.to_string());
                 return;
             }
             expected
         } else {
             let Some(ty) = self.lower_expr(value) else {
+                self.poisoned_bindings.insert(name.to_string());
                 return;
             };
             ty
@@ -540,7 +542,11 @@ impl<'a> FnLowerer<'a> {
             return None;
         };
         let Some(local) = self.lookup(name) else {
-            self.fail(name_error(self.file, *span, name));
+            if self.poisoned_bindings.contains(name.as_str()) {
+                self.failed = true;
+            } else {
+                self.fail(name_error(self.file, *span, name));
+            }
             return None;
         };
         Some((local.slot, local.ty, local.mutable, *span, name.clone()))
@@ -559,7 +565,11 @@ impl<'a> FnLowerer<'a> {
                     return None;
                 };
                 let Some(local) = self.lookup(name) else {
-                    self.fail(name_error(self.file, *span, name));
+                    if self.poisoned_bindings.contains(name.as_str()) {
+                        self.failed = true;
+                    } else {
+                        self.fail(name_error(self.file, *span, name));
+                    }
                     return None;
                 };
                 Some(PlaceChain {
@@ -948,6 +958,9 @@ impl<'a> FnLowerer<'a> {
         let Some(fail_jumps) = self.lower_if_const_head(&[(name, annotation, value)], None) else {
             self.locals.truncate(mark);
             self.present_places.truncate(present_mark);
+            // The head's read did not resolve (for example a dropped durable root); its
+            // own diagnostic already fired. Poison the name so its later uses are silent.
+            self.poisoned_bindings.insert(name.to_string());
             return if self.terminal_rejection() {
                 Flow::Rejected
             } else {
