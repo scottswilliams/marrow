@@ -1063,17 +1063,18 @@ impl TypeExpr {
 }
 
 impl fmt::Display for TypeExpr {
-    // The canonical, whitespace-free source spelling. The formatter re-emits it
-    // exactly and the durable digest hashes it, so this is the inverse of the type
-    // parser: a spelling parsed and re-rendered is byte-identical.
+    // The canonical angle-bracket source spelling and the inverse of the type parser:
+    // the formatter re-emits it, and a spelling parsed and re-rendered is byte-identical.
+    // Presentation-only — it feeds no durable identity. `DurableContractId` hashes the
+    // graph's ledger ids, and durable type anchors use the space-free bracket grammar
+    // (`Name[arg,...]`) via `inst_anchor_spelling`, not this angle form.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             TypeExpr::Name { text, .. } => f.write_str(text),
             TypeExpr::Identity(identity) => write!(f, "Id(^{})", identity.root),
             TypeExpr::Optional { inner, .. } => write!(f, "{inner}?"),
             // The canonical spelling separates arguments with `", "`. Any source
-            // spacing parses to the same node, so this is idempotent and the digest
-            // it feeds is stable across reformatting.
+            // spacing parses to the same node, so re-rendering is idempotent.
             TypeExpr::Apply { head, args, .. } => {
                 write!(f, "{head}<")?;
                 for (index, arg) in args.iter().enumerate() {
