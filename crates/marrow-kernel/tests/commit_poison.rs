@@ -23,7 +23,7 @@ use marrow_kernel::codec::key::KeyScalar;
 use marrow_kernel::codec::value::{RuntimeScalar, ScalarKind};
 use marrow_kernel::durable::{
     CommitResult, DemandCoverage, Durable, DurableStore, EntryValue, FieldSchema, InvocationGrant,
-    KernelFault, Reopen, SiteSpec, SiteTarget, StoreSchema,
+    KernelFault, Reopen, SessionError, SiteSpec, SiteTarget, StoreSchema,
 };
 use marrow_kernel::equality::ValueDomain;
 
@@ -254,26 +254,38 @@ fn commit_one(
     (token, result)
 }
 
-/// An indeterminate commit reports `CommitFault`, latches poison, and makes every later
-/// commit fault — there is no retry, only a reopen. `CommitResult::CommitFault` is the
-/// value `marrow-vm` maps to the `run.commit` fault.
+/// An indeterminate commit reports `CommitFault`, latches poison, and the latch is
+/// consulted at session open (E02 residue, F02a): every later session open — read or
+/// write — refuses with [`SessionError::Poisoned`], so a poisoned handle can neither
+/// replay a commit nor observe its own indeterminate state. The only recovery is a reopen
+/// that reclassifies. `CommitResult::CommitFault` is the value `marrow-vm` maps to the
+/// `run.commit` fault.
 #[test]
-fn an_indeterminate_commit_poisons_and_every_later_commit_faults() {
+fn an_indeterminate_commit_poisons_and_every_later_session_open_refuses() {
     let mode = ModeHandle::new(Mode::IndeterminateDrop);
     let mut store = DurableStore::from_engine(FaultEngine::new(mode.clone()), schema(), sites());
 
     let (_token, result) = commit_one(&mut store, "a", 1);
     assert_eq!(result, CommitResult::CommitFault);
 
-    // A "retry" would be a fresh, well-formed transaction committing cleanly. Even with
-    // the double flipped to confirm, the latched poison refuses it: the only recovery is
-    // a reopen, never a replay.
+    // A "retry" would be a fresh, well-formed transaction. Even with the double flipped to
+    // confirm, the latch consulted at open refuses the transaction session outright — no
+    // replay, only a reopen — and a read session is refused for the same reason: the
+    // store's state is indeterminate until reclassified.
     mode.set(Mode::Confirm);
-    let (_token2, retry) = commit_one(&mut store, "b", 2);
-    assert_eq!(
-        retry,
-        CommitResult::CommitFault,
-        "a poisoned store refuses every later commit rather than retrying"
+    assert!(
+        matches!(
+            store.txn_session(InvocationGrant::full_store(), write()),
+            Err(SessionError::Poisoned)
+        ),
+        "a poisoned handle refuses a later transaction open rather than replaying",
+    );
+    assert!(
+        matches!(
+            store.read_session(InvocationGrant::full_store(), write()),
+            Err(SessionError::Poisoned)
+        ),
+        "a poisoned handle refuses a later read open until a reopen reclassifies",
     );
 }
 
@@ -362,10 +374,13 @@ fn read_value(store: &mut DurableStore<FaultEngine>, key: &str) -> Option<ValueD
 /// The witness put shares the staged data's transaction (`store.rs` ~424-432): if it
 /// fails, the commit poisons and reports `CommitFault`, and the transaction rolls back so
 /// prior committed state survives. Fail the third write of the commit — after the created
-/// entry's marker and value leaf, the witness put is next — and confirm the poison latch,
-/// the fault, and the untouched prior entry.
+/// entry's marker and value leaf, the witness put is next — and confirm the fault and the
+/// poison latch consulted at open. (The commit-time rollback that preserves the prior
+/// entry is the `do_commit` contract; re-verifying surviving state after a reopen is owned
+/// by the lifecycle reopen path in F02a, since a poisoned handle refuses reads until it is
+/// reclassified.)
 #[test]
-fn a_witness_put_failure_poisons_and_leaves_prior_state() {
+fn a_witness_put_failure_poisons_and_refuses_later_sessions() {
     let mode = ModeHandle::new(Mode::Confirm);
     let write_fault = WriteFaultHandle::inert();
     let mut store = DurableStore::from_engine(
@@ -376,6 +391,11 @@ fn a_witness_put_failure_poisons_and_leaves_prior_state() {
 
     let (_token, seeded) = commit_one(&mut store, "a", 1);
     assert_eq!(seeded, CommitResult::Committed);
+    // Prior state is present on the healthy handle, before the poisoning fault.
+    assert_eq!(
+        read_value(&mut store, "a"),
+        Some(ValueDomain::Scalar(RuntimeScalar::Int(1)))
+    );
 
     // In the next commit: write 1 = marker put, write 2 = value-leaf put, write 3 = the
     // witness put. Fail the witness put.
@@ -383,31 +403,28 @@ fn a_witness_put_failure_poisons_and_leaves_prior_state() {
     let (_token2, faulted) = commit_one(&mut store, "b", 2);
     assert_eq!(faulted, CommitResult::CommitFault);
 
-    // Poisoned: a later well-formed commit faults rather than retrying.
+    // Poisoned by the witness-put failure: the latch is consulted at open, so neither a
+    // later write nor read session opens until a reopen reclassifies.
     write_fault.set(None);
-    let (_token3, later) = commit_one(&mut store, "c", 3);
-    assert_eq!(
-        later,
-        CommitResult::CommitFault,
-        "a witness-put failure poisons the store"
-    );
-
-    // The prior commit survives; neither the faulted nor the refused write landed.
-    assert_eq!(
-        read_value(&mut store, "a"),
-        Some(ValueDomain::Scalar(RuntimeScalar::Int(1)))
-    );
-    assert_eq!(read_value(&mut store, "b"), None);
-    assert_eq!(read_value(&mut store, "c"), None);
+    assert!(matches!(
+        store.txn_session(InvocationGrant::full_store(), write()),
+        Err(SessionError::Poisoned)
+    ));
+    assert!(matches!(
+        store.read_session(InvocationGrant::full_store(), write()),
+        Err(SessionError::Poisoned)
+    ));
 }
 
 /// Reconcile writes an absent marker for a markerless entry whose required fields are all
 /// staged (`store.rs` ~483-486). If that marker put fails, reconcile returns a fault, so
 /// the commit poisons, reports `CommitFault`, and rolls back. Stage a required field
 /// through `set_required` (which stages a leaf but no marker) and fail reconcile's marker
-/// put — the second write of the commit, after the leaf.
+/// put — the second write of the commit, after the leaf — then confirm the fault and the
+/// poison latch consulted at open. (As above, re-verifying surviving prior state after a
+/// reopen is owned by F02a's lifecycle reopen path.)
 #[test]
-fn a_reconcile_marker_put_failure_poisons_and_leaves_prior_state() {
+fn a_reconcile_marker_put_failure_poisons_and_refuses_later_sessions() {
     let mode = ModeHandle::new(Mode::Confirm);
     let write_fault = WriteFaultHandle::inert();
     let mut store = DurableStore::from_engine(
@@ -437,21 +454,17 @@ fn a_reconcile_marker_put_failure_poisons_and_leaves_prior_state() {
     };
     assert_eq!(faulted, CommitResult::CommitFault);
 
-    // Poisoned by the reconcile fault: a later well-formed commit still faults.
+    // Poisoned by the reconcile fault: the latch is consulted at open, so a later write or
+    // read session refuses until a reopen reclassifies.
     write_fault.set(None);
-    let (_token3, later) = commit_one(&mut store, "c", 3);
-    assert_eq!(
-        later,
-        CommitResult::CommitFault,
-        "a reconcile marker-put failure poisons the store"
-    );
-
-    assert_eq!(
-        read_value(&mut store, "a"),
-        Some(ValueDomain::Scalar(RuntimeScalar::Int(1)))
-    );
-    assert_eq!(read_value(&mut store, "b"), None);
-    assert_eq!(read_value(&mut store, "c"), None);
+    assert!(matches!(
+        store.txn_session(InvocationGrant::full_store(), write()),
+        Err(SessionError::Poisoned)
+    ));
+    assert!(matches!(
+        store.read_session(InvocationGrant::full_store(), write()),
+        Err(SessionError::Poisoned)
+    ));
 }
 
 /// An `apply` put or remove that fails mid-plan (`store.rs` ~646-660) faults the durable

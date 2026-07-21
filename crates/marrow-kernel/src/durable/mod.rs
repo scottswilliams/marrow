@@ -246,6 +246,15 @@ pub enum SessionError {
     Denied,
     /// The store's recorded profile does not match this program's schema.
     ProfileMismatch,
+    /// The handle was poisoned by an earlier indeterminate commit: its durability is
+    /// unknown, so no further session may open on it until the store is reopened and the
+    /// commit reclassified (complete-old vs complete-new). Consulted at session open so a
+    /// read or write against a poisoned handle refuses rather than observing an
+    /// indeterminate state. Reachable only on a native handle whose engine can report an
+    /// indeterminate commit; the ephemeral memory engine always confirms, so its handle is
+    /// never poisoned. Renders `run.commit`, matching the execution-time
+    /// [`KernelFault::Poisoned`] the same latch drives at commit.
+    Poisoned,
     /// The ordered-byte engine failed while setting up the session.
     Engine(StoreError),
 }

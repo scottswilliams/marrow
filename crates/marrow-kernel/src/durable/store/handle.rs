@@ -77,6 +77,22 @@ impl<E: ByteEngine> DurableStore<E> {
         }
     }
 
+    /// Refuse a session open on a poisoned handle. An earlier indeterminate commit sets
+    /// the latch (its durability is unknown), and the handle then refuses every further
+    /// read or write until the store is reopened and the interrupted commit reclassified
+    /// (complete-old vs complete-new via [`Self::classify`]). Consulted at open on both
+    /// session paths so a poisoned handle never opens a view or a transaction that would
+    /// observe an indeterminate state. Reachable only on a native handle whose engine can
+    /// report [`CommitOutcome::Indeterminate`](marrow_store::CommitOutcome); the ephemeral
+    /// memory engine always confirms, so its handle is never poisoned.
+    fn check_poison(&self) -> Result<(), SessionError> {
+        if self.poisoned {
+            Err(SessionError::Poisoned)
+        } else {
+            Ok(())
+        }
+    }
+
     fn verify_profile(&self) -> Result<(), SessionError> {
         match self
             .engine
@@ -108,6 +124,7 @@ impl<E: ByteEngine> DurableStore<E> {
         demand: DemandCoverage,
     ) -> Result<ReadSession<'_, E>, SessionError> {
         resolve_authority(demand, self.ceiling, grant).map_err(|Denied| SessionError::Denied)?;
+        self.check_poison()?;
         self.verify_profile()?;
         let auth = self.authorized_sites();
         let view = self.engine.read_view().map_err(SessionError::Engine)?;
@@ -122,6 +139,7 @@ impl<E: ByteEngine> DurableStore<E> {
         demand: DemandCoverage,
     ) -> Result<TxnSession<'_, E>, SessionError> {
         resolve_authority(demand, self.ceiling, grant).map_err(|Denied| SessionError::Denied)?;
+        self.check_poison()?;
         self.verify_profile()?;
         let auth = self.authorized_sites();
         let descriptor = profile::store_descriptor(&self.schemas);
@@ -194,4 +212,104 @@ fn mint_token() -> [u8; 16] {
     let counter = COUNTER.fetch_add(1, Ordering::Relaxed) as u128;
     let pid = u128::from(std::process::id());
     (nanos ^ counter.rotate_left(64) ^ pid.rotate_left(32)).to_be_bytes()
+}
+
+#[cfg(test)]
+mod tests {
+    use marrow_store::MemoryEngine;
+
+    use super::*;
+    use crate::codec::value::ScalarKind;
+    use crate::durable::{FieldSchema, InvocationGrant, SiteSpec, SiteTarget};
+
+    fn store() -> DurableStore<MemoryEngine> {
+        let schema = StoreSchema {
+            root_name: "counters".into(),
+            key: vec![ScalarKind::Int],
+            fields: vec![FieldSchema::scalar("value", ScalarKind::Int, true)],
+            branches: Vec::new(),
+            groups: Vec::new(),
+            indexes: Vec::new(),
+        };
+        let sites = vec![SiteSpec {
+            root: 0,
+            target: SiteTarget::WholePayload,
+        }];
+        DurableStore::from_schemas_with_ceiling(
+            MemoryEngine::new(),
+            vec![schema],
+            sites,
+            DemandCoverage {
+                read: true,
+                write: true,
+            },
+        )
+    }
+
+    /// The E02 poison-latch consult at session open: a poisoned handle refuses every
+    /// further read and write session with [`SessionError::Poisoned`], before any view or
+    /// transaction opens, until the store is reopened and the interrupted commit
+    /// reclassified. The latch is set here directly because the ephemeral memory engine
+    /// never reports an indeterminate commit (the state is reachable only on the native
+    /// path), so this owner-local unit test drives the consult the persistent lifecycle
+    /// relies on.
+    #[test]
+    fn a_poisoned_handle_refuses_every_session_open() {
+        let mut store = store();
+        let grant = InvocationGrant::full_store();
+        let demand = DemandCoverage {
+            read: true,
+            write: true,
+        };
+
+        // A healthy handle opens both sessions.
+        assert!(store.read_session(grant, demand).is_ok());
+        assert!(store.txn_session(grant, demand).is_ok());
+
+        // Poison the latch as an indeterminate commit would.
+        store.poisoned = true;
+
+        assert!(
+            matches!(
+                store.read_session(grant, demand),
+                Err(SessionError::Poisoned)
+            ),
+            "a read session must refuse on a poisoned handle",
+        );
+        assert!(
+            matches!(
+                store.txn_session(grant, demand),
+                Err(SessionError::Poisoned)
+            ),
+            "a transaction session must refuse on a poisoned handle",
+        );
+    }
+
+    /// The poison consult runs before profile provisioning and before the engine is
+    /// touched: a poisoned handle whose store was never provisioned still refuses rather
+    /// than writing a profile cell or opening a transaction.
+    #[test]
+    fn the_poison_consult_precedes_profile_provisioning() {
+        let mut store = store();
+        store.poisoned = true;
+        let grant = InvocationGrant::full_store();
+        let demand = DemandCoverage {
+            read: true,
+            write: true,
+        };
+        assert!(matches!(
+            store.txn_session(grant, demand),
+            Err(SessionError::Poisoned)
+        ));
+        // No profile cell was written: the refusal short-circuited before `begin`.
+        assert_eq!(
+            store
+                .engine
+                .read_view()
+                .expect("read view")
+                .get(&physical::meta_key(PROFILE))
+                .expect("get profile"),
+            None,
+        );
+    }
 }
