@@ -914,11 +914,18 @@ impl<'a> FnLowerer<'a> {
                     };
                     // The identity spreads into the addressed root's ordered key columns;
                     // recover each column's scalar from that root so the place records its
-                    // whole physical key-path.
-                    let Some(scalars) = self.durable.root_by_id(root).map(|root| root.key.clone())
-                    else {
-                        return;
-                    };
+                    // whole physical key-path. The RootId was resolved from a root in this
+                    // registry when the identity column was built, so it is present here.
+                    #[allow(
+                        clippy::expect_used,
+                        reason = "lowering invariant: an identity operand's RootId names a root in this registry"
+                    )]
+                    let scalars = self
+                        .durable
+                        .root_by_id(root)
+                        .expect("an identity operand's root is registered")
+                        .key
+                        .clone();
                     for (slot, scalar) in slots.into_iter().zip(scalars) {
                         key_slots.push((slot, scalar));
                     }
@@ -1107,6 +1114,10 @@ impl<'a> FnLowerer<'a> {
                     && self.identity_operand_root(only).is_some()
                 {
                     let columns = vec![DurKey {
+                        // The identity is lowered against its own root type, not a scalar, so
+                        // the wrapper `key_ty` is unused for this column (both emit and capture
+                        // recover the per-column scalars from the spread instead); it carries
+                        // the first key column only to satisfy the shared `DurKey` shape.
                         key: PlaceKey::Identity {
                             expr: only,
                             root: root.root_id,
