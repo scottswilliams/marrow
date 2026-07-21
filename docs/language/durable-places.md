@@ -650,6 +650,66 @@ keyed descendants but no payload of its own is *descendant-only*: it reads
 payload-absent and `exists` is `false`, yet its descendants remain reachable at their
 own addresses.
 
+### Full Removal By Composition
+
+Because a whole-entry `delete` is payload-only, removing an entry *and* every
+descendant beneath it is written as a composition: a bounded traversal descends
+each keyed `branch` layer and deletes the per-iteration pin, innermost first, then
+deletes the entry's own payload last. The traversal owns the descent; `delete` on
+each pin removes one node's payload.
+
+```mw
+module docs::durable_purge
+
+resource Book {
+    required title: string
+
+    notes[noteId: string] {
+        required text: string
+
+        tags[tagId: int] {
+            required weight: int
+        }
+    }
+}
+
+store ^books[id: int]: Book
+
+pub fn seed(id: int) {
+    transaction {
+        ^books[id] = Book(title: "root")
+        ^books[id].notes["n1"] = Book.notes(text: "hello")
+        ^books[id].notes["n1"].tags[7] = Book.notes.tags(weight: 3)
+    }
+}
+
+pub fn purge(id: int) {
+    transaction {
+        for noteId, note in ^books[id].notes at most 1000 {
+            for tagId, tag in ^books[id].notes[noteId].tags at most 1000 {
+                delete tag
+            } on more {}
+            delete note
+        } on more {}
+        delete ^books[id]
+    }
+}
+```
+
+After `purge(id)` every node is gone: `exists(^books[id])` is `false`, the note and
+its tag read absent, and a traversal of `^books[id].notes` visits nothing. Ordering
+the deletes innermost-first is not required for correctness — each `delete` addresses
+its own node — but it keeps the traversal reading a subtree it has not yet emptied.
+
+This composition is **bounded**: each `for` head names an `at most N`, so one
+transaction removes a subtree only as large as its bounds admit, and the `on more`
+arm observes when a layer held more keys than the bound froze. A subtree whose
+fan-out exceeds one transaction's bounds is removed by repeating the bounded purge
+over successive batches — the same application-owned progress that advances any
+work larger than a single transaction. There is no single whole-subtree delete
+operation; removal is always the composition of bounded traversal and per-node
+`delete`.
+
 ## Access Demand
 
 Each exported function has a derived **access demand**: the set of durable places
