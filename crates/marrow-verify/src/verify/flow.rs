@@ -1333,6 +1333,21 @@ fn apply_durable(
     if let SealedSiteTarget::IndexScan(index) | SealedSiteTarget::IndexLookup(index) = site_target {
         return apply_index_read(ctx, instr, frame, site_root, root, *index);
     }
+    // A managed-index opcode is executable only over an index site. A forged image pairing
+    // one with a whole-entry, field, or group site is refused here rather than falling
+    // through to the whole-entry key-path logic (which has no arm for it), so the trust
+    // boundary rejects the mismatch instead of reaching the closed-complement `unreachable`.
+    if matches!(
+        instr,
+        SealedInstr::DurIndexScan { .. }
+            | SealedInstr::DurIndexLookup(_)
+            | SealedInstr::DurIndexExists(_)
+    ) {
+        return Err(reject(
+            VerifyPhase::Function,
+            "a managed-index opcode over a non-index site",
+        ));
+    }
     // Defense in depth: a flat site's root is free of groups and composite/nested
     // branches by construction (field-only branches with composite keys are executable;
     // a widened field is inline-framed and executable), but recheck at the opcode.

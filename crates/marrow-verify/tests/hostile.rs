@@ -810,6 +810,41 @@ fn a_family_populated_probe_over_a_field_leaf_site_rejects() {
 }
 
 #[test]
+fn a_managed_index_probe_over_a_field_leaf_site_rejects() {
+    // `DurIndexExists` (the unique-index arm of `exists`) is executable only over an index
+    // site. A forged image aiming it at a field-leaf site is refused at the opcode — a
+    // trust-boundary reject, not a fall-through to the closed-complement `unreachable` — the
+    // same family guard the scan and lookup opcodes share.
+    let mut draft = ImageDraft::new();
+    let (_entry, value_site, _label) = durable_schema(&mut draft);
+    let src = draft.intern_string("src/main.mw");
+    let name = draft.intern_string("probe");
+    let code = vec![
+        Instr::LocalGet(0),
+        Instr::DurIndexExists(value_site),
+        Instr::Pop,
+        Instr::Return,
+    ];
+    let func = draft.add_function(FunctionDef {
+        name,
+        source: src,
+        params: vec![ImageType::scalar(Scalar::Text)],
+        ret: ImageType::Unit,
+        local_count: 1,
+        spans: spans(&code),
+        code,
+    });
+    draft.add_export(ExportId::of_local("", "probe"), func);
+    let rejection = verify(&draft.encode().unwrap().bytes)
+        .expect_err("a managed-index probe over a field site is refused");
+    assert_eq!(rejection.code(), "image.function");
+    assert_eq!(
+        rejection.detail(),
+        "a managed-index opcode over a non-index site"
+    );
+}
+
+#[test]
 fn a_bounded_traversal_after_commit_rejects() {
     // The commit consumes the session's engine transaction, so no durable operation may
     // follow it. A bounded traversal is a durable read; the flow lattice refuses it after
