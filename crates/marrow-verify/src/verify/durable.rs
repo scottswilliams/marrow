@@ -25,7 +25,9 @@ use std::rc::Rc;
 /// sites, then the 32-byte durable-contract id closing the section. Each root
 /// carries its ledger identity block (placement, product, and key ids plus one id
 /// per record field). Every site is revalidated against the roots and record
-/// types, every ledger id in the section must be pairwise distinct, and the
+/// types, every declaration ledger id in the section must be pairwise distinct
+/// (a durable enum's sum and member ids are one per-declaration identity that
+/// later fields of that enum reference rather than reclaim), and the
 /// contract id is independently recomputed from the decoded graph and checked
 /// against the carried bytes.
 /// The decoded durable graph: the roots, the sealed operation sites, each site's
@@ -53,11 +55,11 @@ pub(super) fn decode_durable(
     if root_count > marrow_image::bounds::MAX_ROOTS {
         return Err(reject(VerifyPhase::Table, "too many durable roots"));
     }
-    let mut ledger_ids = LedgerScope::default();
+    let mut scope = LedgerScope::default();
     let application = if root_count > 0 {
         Some(take_distinct_id(
             &mut reader,
-            &mut ledger_ids,
+            &mut scope,
             "short application identity",
         )?)
     } else {
@@ -82,7 +84,7 @@ pub(super) fn decode_durable(
         if key_count > marrow_image::bounds::MAX_KEY_COLUMNS {
             return Err(reject(VerifyPhase::Table, "too many root key columns"));
         }
-        let keys = decode_key_tuple(&mut reader, key_count, &mut ledger_ids)?;
+        let keys = decode_key_tuple(&mut reader, key_count, &mut scope)?;
         let record = reader
             .u16()
             .ok_or(reject(VerifyPhase::Table, "short root record"))?;
@@ -92,14 +94,14 @@ pub(super) fn decode_durable(
                 "root record type index out of range",
             ));
         }
-        let placement = take_distinct_id(&mut reader, &mut ledger_ids, "short placement identity")?;
-        let product = take_distinct_id(&mut reader, &mut ledger_ids, "short product identity")?;
+        let placement = take_distinct_id(&mut reader, &mut scope, "short placement identity")?;
+        let product = take_distinct_id(&mut reader, &mut scope, "short product identity")?;
         // The resource's durable member tree: top-level fields interleaved with
         // static `group` namespaces and keyed `branch` placements. A field's stored
         // value is drawn from the closed acyclic durable value set (a bare scalar, a
         // dense struct, or a closed enum with sum/member ids).
         let mut member_budget = marrow_image::bounds::MAX_DURABLE_MEMBERS;
-        let members = decode_members(&mut reader, 1, &mut member_budget, &mut ledger_ids)?;
+        let members = decode_members(&mut reader, 1, &mut member_budget, &mut scope)?;
         // The member tree's top-level fields and groups are exactly the materialized
         // record's stored field slots followed by its trailing group slots, in order and
         // value shape: this ties the durable identity to the executable record so a
@@ -118,7 +120,7 @@ pub(super) fn decode_durable(
         // ledger id is a distinct id across the whole table; each projected component
         // must reference a real top-level field or identity key of this same root, so a
         // hostile image cannot forge a projection over a leaf that does not exist.
-        let indexes = decode_indexes(&mut reader, &keys, &members, &mut ledger_ids)?;
+        let indexes = decode_indexes(&mut reader, &keys, &members, &mut scope)?;
         roots.push(DecodedRoot {
             name,
             keys,
@@ -645,9 +647,10 @@ fn branch_index(members: &[DecodedMember], placement_id: LedgerIdBytes) -> Optio
 /// enum's sum and member ids on the enum's first durable occurrence — which must be
 /// pairwise distinct because entropy-minted ids are distinct by construction. `enums`
 /// records each durable enum identity by its sum id: the ordered member ids claimed at
-/// its first occurrence. An enum reached from a second durable field is a *reference*
-/// to that one per-declaration identity, so it reclaims nothing and is instead required
-/// to carry the identical sum and member ids.
+/// its first occurrence. A later value shape carrying an already-recorded sum id — the
+/// shape a second durable field of that enum emits — is a *reference* to that one
+/// per-declaration identity, so it reclaims nothing and must carry the identical member
+/// ids in order.
 #[derive(Default)]
 struct LedgerScope {
     seen: Vec<LedgerIdBytes>,
@@ -678,11 +681,11 @@ fn claim_distinct(scope: &mut LedgerScope, id: LedgerIdBytes) -> Result<(), Veri
 /// Read one 16-byte ledger id and claim it as a fresh, pairwise-distinct declaration id.
 fn take_distinct_id(
     reader: &mut Reader<'_>,
-    seen: &mut LedgerScope,
+    scope: &mut LedgerScope,
     what: &'static str,
 ) -> Result<LedgerIdBytes, VerifyRejection> {
     let id = read_id(reader, what)?;
-    claim_distinct(seen, id)?;
+    claim_distinct(scope, id)?;
     Ok(id)
 }
 
@@ -692,7 +695,7 @@ fn take_distinct_id(
 fn decode_key_tuple(
     reader: &mut Reader<'_>,
     count: usize,
-    seen: &mut LedgerScope,
+    scope: &mut LedgerScope,
 ) -> Result<Vec<(Scalar, LedgerIdBytes)>, VerifyRejection> {
     let mut keys = Vec::with_capacity(count);
     for _ in 0..count {
@@ -715,7 +718,7 @@ fn decode_key_tuple(
                 ));
             }
         };
-        let key_id = take_distinct_id(reader, seen, "short key identity")?;
+        let key_id = take_distinct_id(reader, scope, "short key identity")?;
         keys.push((scalar, key_id));
     }
     Ok(keys)
@@ -923,12 +926,14 @@ fn validate_branch_records(
 /// group is tag `0x01`; a branch is tag `0x02`. `budget` bounds the total member
 /// records across the whole tree and `depth` bounds nesting, so a hostile image
 /// cannot drive unbounded recursion or allocation before the bounds are rechecked
-/// (§ law 9). Every ledger id is distinct across the table.
+/// (§ law 9). Every declaration ledger id is distinct across the table; a durable
+/// enum's sum and member ids are the exception — one per-declaration identity a
+/// later field of that enum references rather than reclaims.
 fn decode_members(
     reader: &mut Reader<'_>,
     depth: usize,
     budget: &mut usize,
-    seen: &mut LedgerScope,
+    scope: &mut LedgerScope,
 ) -> Result<Vec<DecodedMember>, VerifyRejection> {
     if depth > marrow_image::bounds::MAX_DURABLE_DEPTH {
         return Err(reject(VerifyPhase::Table, "durable member tree too deep"));
@@ -947,7 +952,7 @@ fn decode_members(
             .ok_or(reject(VerifyPhase::Table, "short durable member tag"))?;
         let member = match tag {
             0x00 => {
-                let id = take_distinct_id(reader, seen, "short durable field identity")?;
+                let id = take_distinct_id(reader, scope, "short durable field identity")?;
                 let required = match reader.u8().ok_or(reject(
                     VerifyPhase::Table,
                     "short durable field required flag",
@@ -961,7 +966,7 @@ fn decode_members(
                         ));
                     }
                 };
-                let value = decode_value_shape(reader, 1, seen)?;
+                let value = decode_value_shape(reader, 1, scope)?;
                 DecodedMember::Field {
                     id,
                     required,
@@ -969,12 +974,12 @@ fn decode_members(
                 }
             }
             0x01 => {
-                let id = take_distinct_id(reader, seen, "short durable group identity")?;
-                let inner = decode_members(reader, depth + 1, budget, seen)?;
+                let id = take_distinct_id(reader, scope, "short durable group identity")?;
+                let inner = decode_members(reader, depth + 1, budget, scope)?;
                 DecodedMember::Group { id, members: inner }
             }
             0x02 => {
-                let placement = take_distinct_id(reader, seen, "short durable branch identity")?;
+                let placement = take_distinct_id(reader, scope, "short durable branch identity")?;
                 // The branch's surface name and materialized record type index follow
                 // the placement. Their ranges (against the string and type tables) and
                 // the record/member-field alignment are checked in
@@ -992,8 +997,8 @@ fn decode_members(
                 if key_count > marrow_image::bounds::MAX_KEY_COLUMNS {
                     return Err(reject(VerifyPhase::Table, "too many branch key columns"));
                 }
-                let keys = decode_key_tuple(reader, key_count, seen)?;
-                let inner = decode_members(reader, depth + 1, budget, seen)?;
+                let keys = decode_key_tuple(reader, key_count, scope)?;
+                let inner = decode_members(reader, depth + 1, budget, scope)?;
                 DecodedMember::Branch {
                     placement,
                     name,
@@ -1021,7 +1026,7 @@ fn decode_indexes(
     reader: &mut Reader<'_>,
     keys: &[(Scalar, LedgerIdBytes)],
     members: &[DecodedMember],
-    seen: &mut LedgerScope,
+    scope: &mut LedgerScope,
 ) -> Result<Vec<DecodedIndex>, VerifyRejection> {
     let field_ids: Vec<LedgerIdBytes> = members
         .iter()
@@ -1060,7 +1065,7 @@ fn decode_indexes(
     }
     let mut indexes = Vec::with_capacity(count);
     for _ in 0..count {
-        let id = take_distinct_id(reader, seen, "short durable index identity")?;
+        let id = take_distinct_id(reader, scope, "short durable index identity")?;
         let unique = match reader.u8().ok_or(reject(
             VerifyPhase::Table,
             "short durable index unique flag",
@@ -1202,16 +1207,17 @@ fn validate_index_projection(
 /// Decode a durable field's stored value shape: `u8(value_tag) ‖ body`. A scalar is
 /// tag `0x00` (a bare scalar); a dense struct is tag `0x01` (`u16(count) ‖ value*`);
 /// a closed enum is tag `0x02` (`sum id ‖ u16(count) ‖ [member id ‖ u16(payload) ‖
-/// value*]*`). An enum's sum and member ids are the identity of the enum *declaration*:
-/// its first durable occurrence claims them as fresh pairwise-distinct ids; a later
-/// occurrence — a second durable field of the same enum type — is a reference that
-/// reclaims nothing and must carry the identical sum and member ids. `depth` bounds
-/// nesting so a hostile image cannot drive unbounded recursion before the value shape is
-/// rechecked (§ law 9).
+/// value*]*`). An enum's sum and member ids are the identity of the enum *declaration*.
+/// The first occurrence of a given sum id claims it and its member ids as fresh
+/// pairwise-distinct ids; a later occurrence carrying an already-claimed sum id — the
+/// shape a second durable field of that enum emits — is a reference that reclaims
+/// nothing and must carry the identical member ids in order. `depth` bounds nesting so a
+/// hostile image cannot drive unbounded recursion before the value shape is rechecked
+/// (§ law 9).
 fn decode_value_shape(
     reader: &mut Reader<'_>,
     depth: usize,
-    seen: &mut LedgerScope,
+    scope: &mut LedgerScope,
 ) -> Result<DurableValueShape, VerifyRejection> {
     if depth > marrow_image::bounds::MAX_DURABLE_VALUE_DEPTH {
         return Err(reject(
@@ -1243,7 +1249,7 @@ fn decode_value_shape(
             }
             let mut leaves = Vec::with_capacity(count);
             for _ in 0..count {
-                leaves.push(decode_value_shape(reader, depth + 1, seen)?);
+                leaves.push(decode_value_shape(reader, depth + 1, scope)?);
             }
             Ok(DurableValueShape::Struct(leaves))
         }
@@ -1258,8 +1264,12 @@ fn decode_value_shape(
             }
             // An enum reached before (by its sum id) is a reference to that one
             // per-declaration identity: it reclaims neither the sum nor any member id,
-            // and must present the identical member ids in the identical order.
-            let recorded = seen.enums.get(&sum).cloned();
+            // and must present the identical member ids in the identical order. The
+            // recorded identity is the ordered member ids only; each occurrence's payload
+            // shapes are tied to the field's own enum-table entry by `value_shape_matches`,
+            // so a payload divergence is caught there rather than against the first
+            // occurrence.
+            let recorded = scope.enums.get(&sum).cloned();
             match &recorded {
                 Some(recorded_ids) if recorded_ids.len() != member_count => {
                     return Err(reject(
@@ -1268,10 +1278,9 @@ fn decode_value_shape(
                     ));
                 }
                 Some(_) => {}
-                None => claim_distinct(seen, sum)?,
+                None => claim_distinct(scope, sum)?,
             }
             let mut members = Vec::with_capacity(member_count);
-            let mut member_ids = Vec::with_capacity(member_count);
             for index in 0..member_count {
                 let id = read_id(reader, "short durable enum member identity")?;
                 match &recorded {
@@ -1282,7 +1291,7 @@ fn decode_value_shape(
                         ));
                     }
                     Some(_) => {}
-                    None => claim_distinct(seen, id)?,
+                    None => claim_distinct(scope, id)?,
                 }
                 let payload_count = reader.u16().ok_or(reject(
                     VerifyPhase::Table,
@@ -1296,13 +1305,14 @@ fn decode_value_shape(
                 }
                 let mut payload = Vec::with_capacity(payload_count);
                 for _ in 0..payload_count {
-                    payload.push(decode_value_shape(reader, depth + 1, seen)?);
+                    payload.push(decode_value_shape(reader, depth + 1, scope)?);
                 }
                 members.push(DurableEnumMemberShape { id, payload });
-                member_ids.push(id);
             }
             if recorded.is_none() {
-                seen.enums.insert(sum, member_ids);
+                scope
+                    .enums
+                    .insert(sum, members.iter().map(|member| member.id).collect());
             }
             Ok(DurableValueShape::Enum { sum, members })
         }

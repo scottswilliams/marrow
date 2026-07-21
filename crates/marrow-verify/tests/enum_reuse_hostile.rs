@@ -89,7 +89,12 @@ fn access_shape(sum: [u8; 16], members: [[u8; 16]; 3]) -> DurableValueShape {
 /// A one-root image ("grants", int key) whose `Access` record carries two enum fields.
 /// Each field's ledger id and durable enum value shape are supplied so a hostile can
 /// forge a duplicate field id or an inconsistent enum reference.
-fn build(field_one: [u8; 16], shape_one: DurableValueShape, field_two: [u8; 16], shape_two: DurableValueShape) -> Vec<u8> {
+fn build(
+    field_one: [u8; 16],
+    shape_one: DurableValueShape,
+    field_two: [u8; 16],
+    shape_two: DurableValueShape,
+) -> Vec<u8> {
     let mut draft = ImageDraft::new();
     draft.set_application_identity(id(APPLICATION_ID));
     let enum_idx = access_enum(&mut draft);
@@ -182,8 +187,8 @@ fn two_fields_of_one_enum_type_verify() {
 fn a_repeated_field_id_still_rejects() {
     // Genuine duplicate: the second field claims the first field's ledger id.
     let (one, two) = shared();
-    let rejection =
-        verify(&build(FIELD_ONE, one, FIELD_ONE, two)).expect_err("a repeated field id must reject");
+    let rejection = verify(&build(FIELD_ONE, one, FIELD_ONE, two))
+        .expect_err("a repeated field id must reject");
     assert_eq!(rejection.phase(), VerifyPhase::Table);
     assert!(
         rejection.detail().contains("duplicate durable ledger id"),
