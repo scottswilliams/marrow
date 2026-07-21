@@ -1431,8 +1431,11 @@ fn apply_durable(
             let (_traversed_key, ancestor_path) = key_path
                 .split_first()
                 .expect("an entry site has a non-empty key-path");
+            // The ancestor key-path locates the probed family's fixed parent entry; an
+            // entry-identity parent column carries its root, re-proven exactly as the
+            // whole key-path pop does.
             for ty in ancestor_path {
-                expect(pop(stack)?, *ty)?;
+                pop_key_column(stack, *ty, site_root)?;
             }
             stack.push(VType::bare_scalar(Scalar::Bool));
         }
@@ -1522,12 +1525,14 @@ fn apply_durable(
             }
             // The strict form reads its key-path from the place's pre-evaluated local
             // slots rather than the stack, so only the value is popped. Each slot must be
-            // definitely initialized with its column's key type, root-first.
+            // definitely initialized with its column's key type, root-first. A slot captured
+            // from an entry identity carries its root as an identity column, re-proven here
+            // against the site root exactly as the stack key-path pop does.
             let value = durable_field_vtype(field).to_optional();
             expect(pop(stack)?, value)?;
             for (slot, column_ty) in key_slots.iter().zip(&columns_root_first) {
                 match frame.locals.get(*slot as usize) {
-                    Some(Some(slot_ty)) if slot_ty == column_ty => {}
+                    Some(Some(slot_ty)) if slot_keys_column(*slot_ty, *column_ty, site_root) => {}
                     Some(Some(_)) => {
                         return Err(reject(
                             VerifyPhase::Function,
@@ -1606,12 +1611,17 @@ fn apply_durable(
                 unreachable!("a durable key-path element is a bare scalar");
             };
             // The inclusive `from` key sits on top of the ancestor key-path and types
-            // as the traversed key `K`.
+            // as the traversed key `K`. It is a source key expression, never an identity
+            // column, so it pops as a bare scalar.
             if *from {
                 expect(pop(stack)?, *traversed_key)?;
             }
+            // The ancestor key-path locates the traversed layer's fixed parent entry. A
+            // column spread from an entry-identity parent (`^root[Id(…)].branch`, or an
+            // identity-keyed place base) carries its root, re-proven here exactly as a
+            // whole key-path pop does.
             for ty in ancestor_path {
-                expect(pop(stack)?, *ty)?;
+                pop_key_column(stack, *ty, site_root)?;
             }
             // `list_ty` must name exactly `List[K]`: the frozen keys materialize into
             // this one list value, so a hostile image naming a wider or wrong-element
@@ -1820,25 +1830,49 @@ fn pop_key_path(
     site_root: u16,
 ) -> Result<(), VerifyRejection> {
     for ty in key_path {
-        match pop(stack)? {
-            // A key column spread from an entry identity carries its root; it may key
-            // this operation only when the identity addresses the *same* root as the
-            // site, and its scalar must still match the site's key column. This re-proves
-            // the cross-root identity distinction through a local slot, independently of
-            // the compiler.
-            VType::IdentityColumn { root, scalar } => {
-                if root != site_root {
-                    return Err(reject(
-                        VerifyPhase::Function,
-                        "an entry identity keys a durable operation on a different store root",
-                    ));
-                }
-                expect(VType::bare_scalar(scalar), *ty)?;
-            }
-            other => expect(other, *ty)?,
-        }
+        pop_key_column(stack, *ty, site_root)?;
     }
     Ok(())
+}
+
+/// Pop one key column and type-check it against `want`. A column spread from an entry
+/// identity carries its root; it may key this operation only when the identity addresses
+/// the *same* root as the site, and its scalar must still match the site's key column.
+/// This re-proves the cross-root identity distinction through a local slot, independently
+/// of the compiler. One owner for the per-column pop so the whole key-path pop, the
+/// bounded-traversal ancestor pop, and the family-probe ancestor pop admit an
+/// identity-keyed parent identically rather than through forked checks.
+fn pop_key_column(
+    stack: &mut Vec<VType>,
+    want: VType,
+    site_root: u16,
+) -> Result<(), VerifyRejection> {
+    match pop(stack)? {
+        VType::IdentityColumn { root, scalar } => {
+            if root != site_root {
+                return Err(reject(
+                    VerifyPhase::Function,
+                    "an entry identity keys a durable operation on a different store root",
+                ));
+            }
+            expect(VType::bare_scalar(scalar), want)
+        }
+        other => expect(other, want),
+    }
+}
+
+/// Whether a definitely-initialized key slot of type `have` keys a column of type `want`
+/// on `site_root`. A slot captured from an entry identity carries its root as an identity
+/// column; it keys the column only when it addresses the same root and its scalar matches.
+/// The slot-reading counterpart of [`pop_key_column`] for the strict present-entry set,
+/// which reads its key-path from local slots rather than the stack.
+fn slot_keys_column(have: VType, want: VType, site_root: u16) -> bool {
+    match have {
+        VType::IdentityColumn { root, scalar } => {
+            root == site_root && VType::bare_scalar(scalar) == want
+        }
+        other => other == want,
+    }
 }
 
 /// The field a field-target site addresses, or a rejection when the site is an

@@ -462,6 +462,50 @@ fn matrix() -> Vec<Row> {
             ops: "pub fn cAddBook(id: int, isbn: string) {\n    transaction {\n        ^books[id] = Book(title: \"t\", isbn: isbn)\n    }\n}\n\npub fn cAddNote(id: int, n: string) {\n    transaction {\n        ^books[id].notes[n] = Book.notes(text: \"x\")\n    }\n}\n\npub fn cCountViaPin(): int {\n    var c = 0\n    for id, book in ^books at most 100 {\n        for noteId in book.notes at most 100 {\n            c += 1\n        } on more {\n            c = -1\n        }\n    } on more {\n        c = -1\n    }\n    return c\n}\n\ntest \"a per-iteration pin is an inner traversal base\" {\n    cAddBook(70, \"i70\")\n    cAddNote(70, \"a\")\n    cAddBook(71, \"i71\")\n    cAddNote(71, \"b\")\n    assert cCountViaPin() == 2\n}",
             expect: Expect::RoundTrips { run: true },
         },
+        // ---- IDTRAV01: an entry-identity parent as a bounded-traversal / family-probe base. ----
+        // A traversal or family probe whose fixed parent is addressed through an entry
+        // identity (`^root[Id(…)].branch`, or an identity-keyed place base) feeds an identity
+        // column as the ancestor key-path. The verifier's ancestor pop re-proves that column's
+        // root and scalar exactly as every other key-path pop does, so each round trip is whole.
+        //
+        // An identity-keyed place base: `place b = ^books[Id(^books, id)]; for noteId in
+        // b.notes` traverses the branch beneath the entry the identity addresses.
+        Row {
+            label: "IDTRAV01: identity-keyed place base branch traversal / driver test",
+            ops: "pub fn iAddBook(id: int) {\n    transaction {\n        ^books[id] = Book(title: \"t\", isbn: \"i\")\n    }\n}\n\npub fn iAddNote(id: int, n: string) {\n    transaction {\n        ^books[id].notes[n] = Book.notes(text: \"x\")\n    }\n}\n\npub fn iCountViaIdPlace(id: int): int {\n    var c = 0\n    place b = ^books[Id(^books, id)]\n    for noteId in b.notes at most 100 {\n        c += 1\n    } on more {\n        c = -1\n    }\n    return c\n}\n\ntest \"identity-keyed place base is a branch traversal base\" {\n    iAddBook(80)\n    iAddNote(80, \"a\")\n    iAddNote(80, \"b\")\n    assert iCountViaIdPlace(80) == 2\n}",
+            expect: Expect::RoundTrips { run: true },
+        },
+        // The inline sibling: `for noteId in ^books[Id(^books, id)].notes` supplies the one
+        // identity operand as the branch traversal's ancestor key-path.
+        Row {
+            label: "IDTRAV01: inline identity-parent branch traversal / driver test",
+            ops: "pub fn jAddBook(id: int) {\n    transaction {\n        ^books[id] = Book(title: \"t\", isbn: \"i\")\n    }\n}\n\npub fn jAddNote(id: int, n: string) {\n    transaction {\n        ^books[id].notes[n] = Book.notes(text: \"x\")\n    }\n}\n\npub fn jCountViaInlineId(id: int): int {\n    var c = 0\n    for noteId in ^books[Id(^books, id)].notes at most 100 {\n        c += 1\n    } on more {\n        c = -1\n    }\n    return c\n}\n\ntest \"inline identity parent is a branch traversal base\" {\n    jAddBook(81)\n    jAddNote(81, \"a\")\n    jAddNote(81, \"b\")\n    assert jCountViaInlineId(81) == 2\n}",
+            expect: Expect::RoundTrips { run: true },
+        },
+        // The two-binding inline form: the per-iteration pin `note` reuses the identity
+        // ancestor slots plus the frozen key to delete each note through the pin.
+        Row {
+            label: "IDTRAV01: inline identity-parent two-binding delete through the pin / driver test",
+            ops: "pub fn kAddBook(id: int) {\n    transaction {\n        ^books[id] = Book(title: \"t\", isbn: \"i\")\n    }\n}\n\npub fn kAddNote(id: int, n: string) {\n    transaction {\n        ^books[id].notes[n] = Book.notes(text: \"x\")\n    }\n}\n\npub fn kClearViaInlineId(id: int): int {\n    var c = 0\n    transaction {\n        for noteId, note in ^books[Id(^books, id)].notes at most 100 {\n            c += 1\n            delete note\n        } on more {\n            c = -1\n        }\n    }\n    return c\n}\n\npub fn kCountViaInlineId(id: int): int {\n    var c = 0\n    for noteId in ^books[Id(^books, id)].notes at most 100 {\n        c += 1\n    } on more {\n        c = -1\n    }\n    return c\n}\n\ntest \"inline identity parent two-binding deletes through the pin\" {\n    kAddBook(82)\n    kAddNote(82, \"a\")\n    kAddNote(82, \"b\")\n    assert kClearViaInlineId(82) == 2\n    assert kCountViaInlineId(82) == 0\n}",
+            expect: Expect::RoundTrips { run: true },
+        },
+        // The family-probe sibling: `exists(^books[Id(^books, id)].notes)` emits only the
+        // identity ancestor key-path before `DurFamilyExists`, so its ancestor pop re-proves
+        // the same identity column the traversal pop does.
+        Row {
+            label: "IDTRAV01: family-populated probe under an identity parent / driver test",
+            ops: "pub fn mAddBook(id: int, isbn: string) {\n    transaction {\n        ^books[id] = Book(title: \"t\", isbn: isbn)\n    }\n}\n\npub fn mAddNote(id: int, n: string) {\n    transaction {\n        ^books[id].notes[n] = Book.notes(text: \"x\")\n    }\n}\n\npub fn mHasNotes(id: int): bool {\n    return exists(^books[Id(^books, id)].notes)\n}\n\ntest \"family probe under an identity parent sees present and empty\" {\n    mAddBook(83, \"i83\")\n    mAddBook(84, \"i84\")\n    mAddNote(83, \"a\")\n    assert mHasNotes(83)\n    assert not mHasNotes(84)\n}",
+            expect: Expect::RoundTrips { run: true },
+        },
+        // The strict present-entry sibling: a presence-dominated sparse field set through an
+        // identity-keyed named place reads its key-path from the place's pre-evaluated slots,
+        // which carry the identity column. The set-sparse-present slot-type check re-proves
+        // that identity column exactly as the stack key-path pop does, so the round trip runs.
+        Row {
+            label: "IDTRAV01: strict present sparse set through an identity-keyed place / driver test",
+            ops: "pub fn spSeed(id: int) {\n    transaction {\n        ^books[id] = Book(title: \"t\", isbn: \"i\")\n    }\n}\n\npub fn spSetVia(id: int, s: string): bool {\n    transaction {\n        place b = ^books[Id(^books, id)]\n        if exists(b) {\n            b.subtitle = s\n            return true\n        }\n    }\n    return false\n}\n\npub fn spSubtitle(id: int): string? {\n    return ^books[id].subtitle\n}\n\ntest \"strict present sparse set through an identity place round trips\" {\n    spSeed(90)\n    assert spSetVia(90, \"x\")\n    assert spSubtitle(90) ?? \"none\" == \"x\"\n}",
+            expect: Expect::RoundTrips { run: true },
+        },
     ]
 }
 

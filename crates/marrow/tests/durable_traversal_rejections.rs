@@ -309,4 +309,3 @@ fn an_unknown_branch_beneath_a_place_is_rejected() {
         "check.type",
     );
 }
-
