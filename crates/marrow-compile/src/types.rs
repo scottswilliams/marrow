@@ -298,6 +298,11 @@ pub(crate) enum GenericCacheInvariant {
     /// `(template, args)` key to a row that does not carry that key: the secondary
     /// index diverged from its append-order authority vector.
     MintIndexDrift,
+    /// A mint appended a `(template, args)` key that `type_index` already held. A mint
+    /// reaches the append only on a dedup miss, so a displaced key means the dedup probe
+    /// and the index disagree — the same divergence `MintIndexDrift` names, observed at
+    /// the write. Rejected here so a duplicate instantiation row can never be admitted.
+    MintKeyAlreadyPresent,
 }
 
 /// Detailed compiler-private causes that cross the build boundary only through the
@@ -963,6 +968,133 @@ pub(crate) struct TypeRegistry {
     /// order. Interior-mutable so a shared `&TypeRegistry` can mint one on first use
     /// of a concrete `List`/`Map`, deduping by source element/key/value types.
     collections: RefCell<Vec<CollSpec>>,
+    /// A metadata directory reused across the mint/dedup probes of one monomorphization
+    /// pass. Type instantiations and collections are appended in strict image order, so
+    /// the directory maps image identity to row and is extended for the newly appended
+    /// rows rather than rebuilt over every prior row on each probe. It is a projection of
+    /// the append-only owners, never a mint/dedup authority; a caller that mutates an
+    /// already-classified row out of the append order must invalidate it.
+    row_directory: RefCell<Option<RowDirectory>>,
+}
+
+/// The image-identity directory of the monomorphization pass, plus the image-order
+/// watermarks it has already classified. Extended in place as rows and collections are
+/// appended; it holds identity mapping and per-walk marks, not argument keys.
+struct RowDirectory {
+    scratch: MetadataScratch,
+    declared: DeclaredCounts,
+    built_type_insts: usize,
+    built_collections: usize,
+}
+
+/// The declared-type population a directory classified. Declared records (with their
+/// groups), structs, and enums, and the groups of each record, are all fixed once
+/// monomorphization begins — the declare phase completes before the first mint — so in
+/// the production pipeline incremental extension only appends generic rows and
+/// collections, and this length triple is a complete change-detector: a differing count
+/// forces a rebuild. It is kept O(1) rather than summing group counts per probe so the
+/// reuse check adds no per-mint factor in the declared-type count. A test that mutates a
+/// committed declared type out of that append order reclassifies via
+/// `invalidate_row_directory`.
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct DeclaredCounts {
+    records: usize,
+    structs: usize,
+    enums: usize,
+}
+
+impl DeclaredCounts {
+    fn of(registry: &TypeRegistry) -> Self {
+        Self {
+            records: registry.records.len(),
+            structs: registry.structs.len(),
+            enums: registry.enums.len(),
+        }
+    }
+}
+
+impl RowDirectory {
+    /// A directory classifying every currently declared and instantiated row, with its
+    /// watermarks set to the current image lengths. Used to seed the cache.
+    fn build_full(view: &TypeMetadataView<'_>) -> Result<Self, GenericInvariant> {
+        Ok(Self {
+            scratch: MetadataScratch::try_new(view)?,
+            declared: DeclaredCounts::of(view.registry),
+            built_type_insts: view.generics.type_insts.len(),
+            built_collections: view.collections.len(),
+        })
+    }
+
+    /// Classify the type instantiations and collections appended since the last build,
+    /// extending the directory in image order. Rows below the watermark were classified
+    /// on a prior probe and are not revisited. A `(template, args)` semantic-key collision
+    /// cannot arise on an appended row (mint dedup admits only a fresh key), so extension
+    /// checks only image-identity placement; the full `try_new` semantic-key scan still
+    /// runs on every cold or invalidated build and on every unrouted projection path.
+    fn extend(&mut self, view: &TypeMetadataView<'_>) -> Result<(), GenericInvariant> {
+        let type_insts = view.generics.type_insts.len();
+        for row in self.built_type_insts..type_insts {
+            let id = view.generics.type_insts[row].id;
+            place_generic_row(&mut self.scratch.records, &mut self.scratch.enums, row, id)?;
+        }
+        self.built_type_insts = type_insts;
+        let collections = view.collections.len();
+        for index in self.built_collections..collections {
+            let target = collection_generic_target(
+                &self.scratch.records,
+                &self.scratch.enums,
+                &self.scratch.collection_generic_targets,
+                index,
+                view.collections[index],
+            );
+            self.scratch.collection_generic_targets.push(target);
+        }
+        self.built_collections = collections;
+        Ok(())
+    }
+
+    /// Reset the per-walk visitation marks to cover every current row and collection.
+    /// The directory content persists; only the traversal state is cleared for the next
+    /// probe.
+    fn reset_marks(&mut self, view: &TypeMetadataView<'_>) {
+        let type_insts = view.generics.type_insts.len();
+        let collections = view.collections.len();
+        self.scratch.seen_rows.clear();
+        self.scratch.seen_rows.resize(type_insts, false);
+        self.scratch.seen_collections.clear();
+        self.scratch.seen_collections.resize(collections, false);
+        self.scratch.tasks.clear();
+    }
+}
+
+/// A borrowed row directory. On drop it is returned to the registry cache so the next
+/// mint probe extends it rather than rebuilding over every prior row.
+struct RowDirectoryGuard<'r> {
+    registry: &'r TypeRegistry,
+    directory: Option<RowDirectory>,
+}
+
+impl RowDirectoryGuard<'_> {
+    #[expect(
+        clippy::expect_used,
+        reason = "the directory is Some from construction until Drop takes it; no other \
+                  path clears it, so this guard cannot observe None"
+    )]
+    fn scratch(&mut self) -> &mut MetadataScratch {
+        &mut self
+            .directory
+            .as_mut()
+            .expect("directory is present until drop")
+            .scratch
+    }
+}
+
+impl Drop for RowDirectoryGuard<'_> {
+    fn drop(&mut self) {
+        if let Some(directory) = self.directory.take() {
+            *self.registry.row_directory.borrow_mut() = Some(directory);
+        }
+    }
 }
 
 /// One immutable view of the generic and collection owners for a complete metadata
@@ -1149,9 +1281,11 @@ fn count_ready_body_match_visits<T>(run: impl FnOnce() -> T) -> (T, usize) {
 pub(crate) struct ScalingCounts {
     /// `MetadataScratch::try_new` invocations (directory builds).
     pub(crate) directory_builds: usize,
-    /// Per-type-inst rows visited while building directories: the total directory
-    /// work, which is `directory_builds * type_insts.len()` when the directory is
-    /// rebuilt per mint.
+    /// Generic instantiation rows classified into directories, counting a full build's
+    /// whole population and an incremental extension's newly appended rows alike. When a
+    /// directory is rebuilt per probe this is `directory_builds * type_insts.len()`; when
+    /// the reused row directory is extended it is one visit per appended row, so it grows
+    /// linearly with the instantiation count rather than quadratically.
     pub(crate) directory_row_visits: usize,
     /// Elements examined by the `(template, args)` primary-key scan in
     /// `existing_type_instance` (type-mint reuse).
@@ -1241,6 +1375,114 @@ impl DurableMetadataScratch {
     }
 }
 
+/// Place one generic instantiation row into the record/enum directory, rejecting a
+/// second owner of the same image type identity. Shared by the full directory build
+/// and the batch-scoped incremental extension so both classify identity once.
+fn place_generic_row(
+    records: &mut Vec<Option<RecordMetadataOwner>>,
+    enums: &mut Vec<Option<EnumMetadataOwner>>,
+    row: usize,
+    id: TypeInstId,
+) -> Result<(), GenericInvariant> {
+    #[cfg(test)]
+    bump_scaling(|counts| counts.directory_row_visits += 1);
+    match id {
+        TypeInstId::Record(record_id) => {
+            let index = record_id.index() as usize;
+            if records.len() <= index {
+                records.resize(index + 1, None);
+            }
+            let slot = &mut records[index];
+            if slot.is_some() {
+                return Err(GenericInvariant::TypeIdentityCollision(id));
+            }
+            *slot = Some(RecordMetadataOwner::GenericRow(row));
+        }
+        TypeInstId::Enum(enum_id) => {
+            let index = enum_id.index() as usize;
+            if enums.len() <= index {
+                enums.resize(index + 1, None);
+            }
+            let slot = &mut enums[index];
+            if slot.is_some() {
+                return Err(GenericInvariant::TypeIdentityCollision(id));
+            }
+            *slot = Some(EnumMetadataOwner::GenericRow(row));
+        }
+    }
+    Ok(())
+}
+
+/// The generic row a collection instantiation resolves to for ordering: the latest
+/// (highest-row) generic target among the collection's element/key/value arguments and
+/// any nested collection already resolved. `index` is the collection's own position, so
+/// only strictly earlier child collections are consulted. Shared by the full directory
+/// build and the batch-scoped incremental extension.
+fn collection_generic_target(
+    records: &[Option<RecordMetadataOwner>],
+    enums: &[Option<EnumMetadataOwner>],
+    resolved_targets: &[Option<GenericRowRef>],
+    index: usize,
+    spec: CollSpec,
+) -> Option<GenericRowRef> {
+    let direct = |arg: GArg| -> Option<GenericRowRef> {
+        match arg {
+            GArg::Struct(id) => records
+                .get(id.index() as usize)
+                .and_then(|owner| match owner {
+                    Some(RecordMetadataOwner::GenericRow(row)) => Some(GenericRowRef {
+                        row: *row,
+                        id: TypeInstId::Record(id),
+                    }),
+                    Some(
+                        RecordMetadataOwner::ResourceRecord(_)
+                        | RecordMetadataOwner::DeclaredStruct(_)
+                        | RecordMetadataOwner::Group(_, _),
+                    )
+                    | None => None,
+                }),
+            GArg::Enum(id) => enums
+                .get(id.index() as usize)
+                .and_then(|owner| match owner {
+                    Some(EnumMetadataOwner::GenericRow(row)) => Some(GenericRowRef {
+                        row: *row,
+                        id: TypeInstId::Enum(id),
+                    }),
+                    Some(EnumMetadataOwner::DeclaredEnum(_)) | None => None,
+                }),
+            GArg::Scalar(_)
+            | GArg::Nominal(_)
+            | GArg::Group(_)
+            | GArg::Collection(_)
+            | GArg::Param(_) => None,
+        }
+    };
+    let mut latest: Option<GenericRowRef> = None;
+    let mut consider = |candidate: Option<GenericRowRef>| {
+        if candidate.is_some_and(|candidate| {
+            latest.is_none_or(|current: GenericRowRef| candidate.row > current.row)
+        }) {
+            latest = candidate;
+        }
+    };
+    let mut consider_arg = |arg: GArg| {
+        consider(direct(arg));
+        if let GArg::Collection(child) = arg
+            && (child as usize) < index
+        {
+            consider(resolved_targets.get(child as usize).copied().flatten());
+        }
+    };
+    match spec {
+        CollSpec::List { elem } => consider_arg(elem),
+        CollSpec::Map { key, value } => {
+            consider_arg(key);
+            consider_arg(value);
+        }
+    }
+    latest
+}
+
 impl MetadataScratch {
     fn try_new(view: &TypeMetadataView<'_>) -> Result<Self, GenericInvariant> {
         #[cfg(test)]
@@ -1303,32 +1545,7 @@ impl MetadataScratch {
         }
         let mut semantic_keys = HashMap::with_capacity(view.generics.type_insts.len());
         for (row, inst) in view.generics.type_insts.iter().enumerate() {
-            #[cfg(test)]
-            bump_scaling(|counts| counts.directory_row_visits += 1);
-            match inst.id {
-                TypeInstId::Record(id) => {
-                    let index = id.index() as usize;
-                    if records.len() <= index {
-                        records.resize(index + 1, None);
-                    }
-                    let slot = &mut records[index];
-                    if slot.is_some() {
-                        return Err(GenericInvariant::TypeIdentityCollision(inst.id));
-                    }
-                    *slot = Some(RecordMetadataOwner::GenericRow(row));
-                }
-                TypeInstId::Enum(id) => {
-                    let index = id.index() as usize;
-                    if enums.len() <= index {
-                        enums.resize(index + 1, None);
-                    }
-                    let slot = &mut enums[index];
-                    if slot.is_some() {
-                        return Err(GenericInvariant::TypeIdentityCollision(inst.id));
-                    }
-                    *slot = Some(EnumMetadataOwner::GenericRow(row));
-                }
-            }
+            place_generic_row(&mut records, &mut enums, row, inst.id)?;
             let key = TypeInstSemanticKey {
                 template: inst.template,
                 args: &inst.args,
@@ -1340,66 +1557,15 @@ impl MetadataScratch {
                 });
             }
         }
-        let direct_generic_target = |arg: GArg| match arg {
-            GArg::Struct(id) => records
-                .get(id.index() as usize)
-                .and_then(|owner| match owner {
-                    Some(RecordMetadataOwner::GenericRow(row)) => Some(GenericRowRef {
-                        row: *row,
-                        id: TypeInstId::Record(id),
-                    }),
-                    Some(
-                        RecordMetadataOwner::ResourceRecord(_)
-                        | RecordMetadataOwner::DeclaredStruct(_)
-                        | RecordMetadataOwner::Group(_, _),
-                    )
-                    | None => None,
-                }),
-            GArg::Enum(id) => enums
-                .get(id.index() as usize)
-                .and_then(|owner| match owner {
-                    Some(EnumMetadataOwner::GenericRow(row)) => Some(GenericRowRef {
-                        row: *row,
-                        id: TypeInstId::Enum(id),
-                    }),
-                    Some(EnumMetadataOwner::DeclaredEnum(_)) | None => None,
-                }),
-            GArg::Scalar(_)
-            | GArg::Nominal(_)
-            | GArg::Group(_)
-            | GArg::Collection(_)
-            | GArg::Param(_) => None,
-        };
         let mut collection_generic_targets = Vec::with_capacity(view.collections.len());
         for (index, spec) in view.collections.iter().copied().enumerate() {
-            let mut latest = None;
-            let mut include = |candidate: Option<GenericRowRef>| {
-                if candidate.is_some_and(|candidate| {
-                    latest.is_none_or(|current: GenericRowRef| candidate.row > current.row)
-                }) {
-                    latest = candidate;
-                }
-            };
-            let mut include_arg = |arg: GArg| {
-                include(direct_generic_target(arg));
-                if let GArg::Collection(child) = arg
-                    && (child as usize) < index
-                {
-                    include(
-                        collection_generic_targets
-                            .get(child as usize)
-                            .copied()
-                            .flatten(),
-                    );
-                }
-            };
-            match spec {
-                CollSpec::List { elem } => include_arg(elem),
-                CollSpec::Map { key, value } => {
-                    include_arg(key);
-                    include_arg(value);
-                }
-            }
+            let latest = collection_generic_target(
+                &records,
+                &enums,
+                &collection_generic_targets,
+                index,
+                spec,
+            );
             collection_generic_targets.push(latest);
         }
         Ok(Self {
@@ -2732,6 +2898,42 @@ impl TypeRegistry {
         }
     }
 
+    /// A metadata directory for one mint/dedup probe. The directory is reused across the
+    /// pass's probes and extended for the rows appended since the previous probe, so
+    /// minting a deeply nested type classifies each row once instead of rescanning every
+    /// prior row per level. A row appended after the previous probe is classified now;
+    /// rows below the watermark were classified before.
+    fn row_directory(
+        &self,
+        view: &TypeMetadataView<'_>,
+    ) -> Result<RowDirectoryGuard<'_>, GenericInvariant> {
+        let cached = self.row_directory.borrow_mut().take();
+        let reusable = cached.filter(|directory| {
+            directory.declared == DeclaredCounts::of(self)
+                && directory.built_type_insts <= view.generics.type_insts.len()
+                && directory.built_collections <= view.collections.len()
+        });
+        let mut directory = match reusable {
+            Some(directory) => directory,
+            None => RowDirectory::build_full(view)?,
+        };
+        directory.extend(view)?;
+        directory.reset_marks(view);
+        Ok(RowDirectoryGuard {
+            registry: self,
+            directory: Some(directory),
+        })
+    }
+
+    /// Discard the reused row directory so the next probe rebuilds and re-classifies
+    /// identity from the owners. The production append path keeps the directory current
+    /// without this; only a test that mutates an already-classified row out of the append
+    /// order needs to reclassify, so this affordance is test-only.
+    #[cfg(test)]
+    fn invalidate_row_directory(&self) {
+        *self.row_directory.borrow_mut() = None;
+    }
+
     /// Select one template only after proving the cache key has exactly the
     /// declaration's argument cardinality. This owner never indexes or zips an
     /// unchecked template/argument pair.
@@ -3097,8 +3299,8 @@ impl TypeRegistry {
         let filling = {
             let view = self.metadata_view();
             self.template_for_args(template, args)?;
-            let mut metadata = MetadataScratch::try_new(&view)?;
-            view.validate_args_with(args, None, &mut metadata)?;
+            let mut metadata = view.registry.row_directory(&view)?;
+            view.validate_args_with(args, None, metadata.scratch())?;
             // Mint-dedup reuse probe: a keyed lookup into the append-only secondary
             // index, not a linear scan of the authority vector. The row it names is
             // re-checked against the looked-up key so index/authority drift surfaces
@@ -3128,10 +3330,10 @@ impl TypeRegistry {
                     match &inst.state {
                         TypeInstState::Ready(_) => {
                             let body = view
-                                .ready_inst_header_with(inst, &mut metadata)?
+                                .ready_inst_header_with(inst, metadata.scratch())?
                                 .ok_or(GenericInvariant::ReadyBodyMissing(inst.id))?;
                             self.validate_ready_requirement(inst, body, requirement)?;
-                            view.validate_ready_body_with(inst, body, &mut metadata)?;
+                            view.validate_ready_body_with(inst, body, metadata.scratch())?;
                             return Ok(Some(inst.id));
                         }
                         TypeInstState::Rejected(refusal) => {
@@ -3262,10 +3464,18 @@ impl TypeRegistry {
                 dependents: Vec::new(),
             });
             // Keep the lookup-only reuse index in lockstep with its authority. A mint
-            // only appends on a dedup miss, so this key is new; a pre-existing entry
-            // would be a mint/dedup coherence failure.
+            // only appends on a dedup miss, so this key is new; a pre-existing entry is a
+            // mint/dedup coherence failure. Reject it as a typed invariant rather than
+            // trusting the append: the batch-directory extension classifies an appended
+            // row without rescanning `(template, args)`, so a duplicate key must never be
+            // admitted here.
             let displaced = generics.type_index.insert((template, args.to_vec()), index);
-            debug_assert!(displaced.is_none(), "type mint index key already present");
+            if displaced.is_some() {
+                return Err(GenericInvariant::CacheState(
+                    GenericCacheInvariant::MintKeyAlreadyPresent,
+                )
+                .into());
+            }
             generics.fill_rows.insert(id.into(), index);
             index
         };
@@ -3806,12 +4016,12 @@ impl TypeRegistry {
                 GenericCacheInvariant::SettledRowMissing,
             )));
         };
-        let mut metadata = MetadataScratch::try_new(&view)?;
+        let mut metadata = view.registry.row_directory(&view)?;
         let body = view
-            .ready_inst_header_with(inst, &mut metadata)?
+            .ready_inst_header_with(inst, metadata.scratch())?
             .ok_or(GenericInvariant::ReadyBodyMissing(id))?;
         self.validate_ready_requirement(inst, body, requirement)?;
-        view.validate_ready_body_with(inst, body, &mut metadata)?;
+        view.validate_ready_body_with(inst, body, metadata.scratch())?;
         Ok(id)
     }
 
@@ -4357,6 +4567,7 @@ impl TypeRegistry {
             type_templates: reserved_templates(),
             generics: RefCell::default(),
             collections: RefCell::default(),
+            row_directory: RefCell::default(),
         };
         registry.nominals =
             build_nominals(&registry, nominals, resources, structs, enums, diagnostics);
@@ -4489,6 +4700,7 @@ impl TypeRegistry {
                 argument_domain: ArgumentDomain::TemplateProof,
             }),
             collections: RefCell::new(collections.clone()),
+            row_directory: RefCell::default(),
         };
         Ok(clone)
     }
@@ -7011,6 +7223,7 @@ mod instantiation_state_tests {
             type_templates: templates,
             generics: RefCell::default(),
             collections: RefCell::default(),
+            row_directory: RefCell::default(),
         }
     }
 
@@ -7310,6 +7523,7 @@ mod instantiation_state_tests {
             GenericCacheInvariant::SettledRowStillFilling => "settled row still Filling",
             GenericCacheInvariant::FillStackMismatch => "fill stack mismatch",
             GenericCacheInvariant::MintIndexDrift => "mint index drift",
+            GenericCacheInvariant::MintKeyAlreadyPresent => "mint key already present",
         }
     }
 
@@ -7874,6 +8088,9 @@ mod instantiation_state_tests {
             generics.type_insts[1].id = first_id;
             first_id
         };
+        // The row identity was corrupted out of the append order, so the classified
+        // directory must be discarded before a probe reclassifies the owners.
+        registry.invalidate_row_directory();
         let expected = GenericInvariant::TypeIdentityCollision(duplicate);
         let owner_before = stable_snapshot(&registry);
         let draft_before = draft_snapshot(&draft);
@@ -7919,6 +8136,9 @@ mod instantiation_state_tests {
             generics.type_insts[1].args = first_args;
             generics.type_insts[1].state = first_state;
         }
+        // The row was corrupted out of the append order, so the classified directory
+        // must be discarded before a probe reclassifies the owners.
+        registry.invalidate_row_directory();
         let expected = GenericInvariant::TypeInstantiationKeyCollision { first, duplicate };
         let owner_before = stable_snapshot(&registry);
         let draft_before = draft_snapshot(&draft);
@@ -8059,6 +8279,9 @@ mod instantiation_state_tests {
             .mint_type_instance(&mut draft, 0, &[GArg::Scalar(ScalarType::Int)], site(5))
             .expect("generic record mints ready");
         registry.generics.borrow_mut().type_insts[0].id = TypeInstId::Record(resource);
+        // The row identity was corrupted out of the append order, so the classified
+        // directory must be discarded before a probe reclassifies the owners.
+        registry.invalidate_row_directory();
         let expected = GenericInvariant::TypeIdentityCollision(TypeInstId::Record(resource));
         let owner_before = metadata_owner_snapshot(&registry);
         let draft_before = draft_snapshot(&draft);
@@ -8969,13 +9192,20 @@ mod instantiation_state_tests {
             registry.mint_type_instance(&mut draft, 0, &[GArg::Scalar(ScalarType::Int)], site(2))
         });
         let id = fresh.expect("the cold Box row mints");
-        assert_eq!(fresh_builds, 2, "preflight plus post-settlement proof");
+        assert_eq!(
+            fresh_builds, 1,
+            "the cold preflight builds the directory once; the post-settlement proof \
+             extends that classification rather than rebuilding it"
+        );
 
         let (replayed, replay_builds) = count_metadata_directory_builds(|| {
             registry.mint_type_instance(&mut draft, 0, &[GArg::Scalar(ScalarType::Int)], site(3))
         });
         assert_eq!(replayed, Ok(id));
-        assert_eq!(replay_builds, 1, "a Ready cache hit uses its one proof");
+        assert_eq!(
+            replay_builds, 0,
+            "a Ready cache hit reuses the classified directory with no rebuild"
+        );
 
         let list = registry
             .instantiate_list(&mut draft, GArg::Scalar(ScalarType::Int))
@@ -8999,7 +9229,10 @@ mod instantiation_state_tests {
                 .expect("the immutable metadata session opens")
         });
         assert_eq!(blocked, (true, true));
-        assert_eq!(session_builds, 1);
+        assert_eq!(
+            session_builds, 1,
+            "an out-of-line metadata session builds its own fresh directory"
+        );
         assert!(registry.generics.try_borrow_mut().is_ok());
         assert!(registry.collections.try_borrow_mut().is_ok());
 
@@ -9022,7 +9255,7 @@ mod instantiation_state_tests {
         );
         assert_eq!(
             post_mutation_builds, 1,
-            "a later read builds one fresh directory after mutation"
+            "a later session read builds one fresh directory after a metadata mutation"
         );
     }
 
@@ -10081,6 +10314,9 @@ mod instantiation_state_tests {
                     }
                 }
             };
+            // The template or row was corrupted out of the append order, so the
+            // classified directory must be discarded before a probe reclassifies it.
+            registry.invalidate_row_directory();
             let owner_before = stable_snapshot(&registry);
             let draft_before = draft_snapshot(&draft);
 

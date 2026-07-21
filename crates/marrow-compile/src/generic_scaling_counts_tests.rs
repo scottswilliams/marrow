@@ -5,13 +5,15 @@
 //! so the 512/1024/2048 doubling points are now reachable and the scaling law is
 //! exercised directly rather than argued from a ~64 cap.
 //!
-//! The `(template, args)` mint-dedup reuse probe is now a keyed lookup, so its per-mint
-//! work is one probe: the scan-step count equals the mint-attempt count and doubles ~2x
-//! across a doubled axis. Two owners are deliberately left unchanged by the scan repair
-//! and remain super-linear on this domain — the per-mint metadata directory rebuild
-//! (its build count and row work are byte-for-byte identical to before the repair) and
-//! the per-template proof clone — so their frozen shapes are asserted here as the
-//! recurrence gate for the follow-on lane that narrows them.
+//! The `(template, args)` mint-dedup reuse probe is a keyed lookup, so its per-mint work
+//! is one probe: the scan-step count equals the mint-attempt count and doubles ~2x across
+//! a doubled axis. The mint/resolution directory is reused across a pass and extended for
+//! the newly appended rows, so classifying a growing instantiation population is linear
+//! (`nested_type_mint_directory_is_linear_in_instantiation_count`). Two owners remain
+//! super-linear on this domain and are asserted here as the recurrence gate for a
+//! follow-on lane that narrows them: the per-field-projection presentation directory
+//! rebuild (exercised by the `.value.value` accesses on the type axis) and the
+//! per-template proof clone.
 //!
 //! Counts are observed through the private `super::capture_scaling_counts` window;
 //! they are neither a public hook nor a canonical fact.
@@ -115,6 +117,25 @@ fn reachable_ceiling(fixture: impl Fn(usize) -> String, limit: usize) -> (usize,
     best.expect("at least v=1 must compile")
 }
 
+/// A function whose one parameter has a type nested `d` levels deep,
+/// `Wrap<Wrap<...<int>>>`. Resolving the annotation mints `d` distinct type
+/// instantiations (one per nesting level), each a separate top-level mint, exercising
+/// the mint/dedup directory across a growing instantiation population without any value
+/// construction or field projection.
+fn nested_type_fixture(d: usize) -> String {
+    let mut source = String::from("module main\n\nstruct Wrap<T> { inner: T }\n\n");
+    source.push_str("pub fn driver(x: ");
+    for _ in 0..d {
+        source.push_str("Wrap<");
+    }
+    source.push_str("int");
+    for _ in 0..d {
+        source.push('>');
+    }
+    source.push_str("): int {\n    return 0\n}\n");
+    source
+}
+
 fn ratio(at_2v: usize, at_v: usize) -> f64 {
     assert!(at_v > 0, "1x count must be positive to form a ratio");
     at_2v as f64 / at_v as f64
@@ -125,15 +146,17 @@ const MAX_INSTANTIATIONS: usize = super::MAX_INSTANTIATIONS;
 
 /// The `(template, args)` mint-dedup reuse probe is a keyed lookup, so its scan-step
 /// count equals the mint-attempt count and doubles ~2x across a doubled type axis —
-/// proven directly at the now-reachable 512→1024 and 1024→2048 doubling points. Two
-/// owners are deliberately unchanged by the scan repair and stay super-linear here: the
-/// per-mint metadata directory rebuild (row work roughly quadruples per doubling) and
-/// its build count stays ~linear. Their frozen shapes are the recurrence gate for the
-/// follow-on lane. (The type axis reaches ~`MAX_TYPES / 2` because each instantiation
-/// costs its seed plus its `Held` record; the near-4096 point is exercised on the fn
-/// axis, which reaches ~`MAX_FUNCTIONS − 1`.)
+/// proven directly at the now-reachable 512→1024 and 1024→2048 doubling points. The
+/// mint/resolution directory is reused and extended (see
+/// `nested_type_mint_directory_is_linear_in_instantiation_count`), but this fixture also
+/// projects two struct fields per seed (`.value.value`), and each field-projection
+/// session builds a fresh directory over every prior row. That presentation/projection
+/// rebuild remains super-linear here (row work roughly quadruples per doubling, build
+/// count ~linear) and is the recurrence gate for a follow-on lane. (The type axis reaches
+/// ~`MAX_TYPES / 2` because each instantiation costs its seed plus its `Held` record; the
+/// near-4096 point is exercised on the fn axis, which reaches ~`MAX_FUNCTIONS − 1`.)
 #[test]
-fn type_axis_scan_is_linear_directory_rebuild_still_quadratic() {
+fn type_axis_scan_is_linear_field_projection_rebuild_still_quadratic() {
     let a = counts_for(type_axis_fixture(512));
     let b = counts_for(type_axis_fixture(1024));
     let c = counts_for(type_axis_fixture(2048));
@@ -155,19 +178,20 @@ fn type_axis_scan_is_linear_directory_rebuild_still_quadratic() {
         "one keyed probe per mint attempt at v=2048"
     );
 
-    // Unrepaired (frozen): the per-mint directory rebuild is super-linear — row work
-    // roughly quadruples per doubling — awaiting the follow-on lane.
+    // Frozen: the per-field-projection directory rebuild is super-linear — each of the
+    // two field projections per seed builds a fresh directory over every prior row, so
+    // row work roughly quadruples per doubling — awaiting a follow-on lane.
     for (lo, hi) in [(&a, &b), (&b, &c)] {
         let row_ratio = ratio(hi.directory_row_visits, lo.directory_row_visits);
         assert!(
             row_ratio >= 3.5,
-            "per-mint directory rebuild is still super-linear; \
+            "field-projection directory rebuild is still super-linear; \
              row visits {} -> {} ratio {row_ratio:.2}",
             lo.directory_row_visits,
             hi.directory_row_visits,
         );
     }
-    // The directory-build COUNT stays ~linear (one rebuild per mint attempt).
+    // The directory-build COUNT stays ~linear (one rebuild per field projection).
     let build_ratio = ratio(c.directory_builds, b.directory_builds);
     assert!(
         (1.7..=2.3).contains(&build_ratio),
@@ -306,5 +330,49 @@ fn proof_fork_entry_is_per_template_not_per_instantiation() {
     assert_eq!(
         fn_half.proof_clones, fn_top.proof_clones,
         "proof-fork entry is constant per template across instantiation counts"
+    );
+}
+
+/// Minting a type nested `d` levels deep classifies each instantiation row once, not
+/// once per level: the mint/resolution directory is reused across the pass's probes and
+/// extended for the newly appended rows, so its row-classification work is linear in the
+/// instantiation count. Before this repair each nested level rebuilt the directory over
+/// every prior row, so `directory_row_visits` quadrupled (roughly `2 * d^2`) per depth
+/// doubling and `directory_builds` grew ~linearly; both are pinned linear here at the
+/// 32→64 and 64→128 doublings. The remaining directory rebuild on the width + field
+/// projection axis (the `type_axis` KAT above) is a distinct owner — presentation and
+/// field-projection sessions each build a fresh directory — and stays super-linear.
+#[test]
+fn nested_type_mint_directory_is_linear_in_instantiation_count() {
+    let a = counts_for(nested_type_fixture(32));
+    let b = counts_for(nested_type_fixture(64));
+    let c = counts_for(nested_type_fixture(128));
+
+    // One classification per level, not one rescan of every prior row per level: the
+    // row-visit count is proportional to the depth and doubles ~2x per doubling.
+    for (lo, hi) in [(&a, &b), (&b, &c)] {
+        let visit_ratio = ratio(hi.directory_row_visits, lo.directory_row_visits);
+        assert!(
+            (1.7..=2.3).contains(&visit_ratio),
+            "mint directory row visits are linear in depth; visits {} -> {} ratio {visit_ratio:.2}",
+            lo.directory_row_visits,
+            hi.directory_row_visits,
+        );
+    }
+
+    // A bounded, depth-independent number of full directory builds seeds the reuse; the
+    // remaining classification is incremental extension, which is not a full build.
+    assert!(
+        a.directory_builds == b.directory_builds && b.directory_builds == c.directory_builds,
+        "full directory builds are constant across depth: {} / {} / {}",
+        a.directory_builds,
+        b.directory_builds,
+        c.directory_builds,
+    );
+    assert!(
+        c.directory_builds <= 4,
+        "the reused directory is seeded by a small constant number of full builds, not one \
+         per level: {} at depth 128",
+        c.directory_builds,
     );
 }
