@@ -23,6 +23,7 @@ const RETAINED_MEMBERS: &[&str] = &[
     "marrow-compile",
     "marrow-image",
     "marrow-kernel",
+    "marrow-lifecycle",
     "marrow-local-wire",
     "marrow-lsp",
     "marrow-project",
