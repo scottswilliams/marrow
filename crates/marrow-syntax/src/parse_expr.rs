@@ -953,8 +953,8 @@ impl<'a> ExprParser<'a> {
                 Expression::Absent { span: token.span }
             }
             TokenKind::Identifier => self.name_expr(),
-            // A path segment keyword leading `::` starts a name path
-            // (`bytes::length`).
+            // A reserved type word leading `::` starts a name path, as `bytes`
+            // does in a `bytes::…` path after `use std::bytes`.
             TokenKind::Keyword(keyword)
                 if is_expression_path_segment_keyword(keyword)
                     && matches!(self.peek_at(1), Some(TokenKind::DoubleColon)) =>
@@ -1194,8 +1194,8 @@ impl<'a> ExprParser<'a> {
                     None,
                 );
             };
-            // A path segment is an identifier or an allowed keyword used as a name,
-            // such as the `bytes` in `std::bytes::length`.
+            // A path segment is an identifier or a reserved type word used as a
+            // name, such as the `bytes` in a `std::bytes::…` path.
             let is_segment = match segment.kind {
                 TokenKind::Identifier => true,
                 TokenKind::Keyword(keyword) => is_expression_path_segment_keyword(keyword),

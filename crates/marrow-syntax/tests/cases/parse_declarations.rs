@@ -491,6 +491,9 @@ fn reserved_words_as_import_segments_are_rejected() {
         );
     }
 
+    // `bytes` is a reserved type word, but a project may declare `module std::bytes`,
+    // so this one import spelling keeps a reserved final segment legal. It is a
+    // path-shape allowance, not a shipped standard-library module.
     let std_bytes = parse_source("module app\nuse std::bytes\n");
     assert!(
         std_bytes.diagnostics.is_empty(),

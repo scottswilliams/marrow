@@ -3,10 +3,14 @@
 //! A Marrow string literal recognizes exactly five escapes: `\\`, `\"`, `\n`,
 //! `\r`, and `\t`. A bytes literal recognizes those same five plus `\xNN` hex.
 //! Any other backslash escape, a trailing backslash with no following character,
-//! and a malformed or truncated `\xNN` are rejected. Every layer that interprets
-//! literal text — the evaluator, the checker's literal validation and constant
-//! defaults, and the saved-path key parser — decodes through here so each escape
-//! grammar has a single owner.
+//! and a malformed or truncated `\xNN` are rejected. The layers that interpret
+//! string-literal text — literal lowering, constant folding, and the saved-path
+//! key parser — decode through the string entry points here, so that escape
+//! grammar has one owner. The bytes decoder owns the bytes escape grammar the
+//! same way, but no production layer currently reaches it: the beta lowers a byte
+//! literal to a typed `check.unsupported` rejection rather than decoding it, so
+//! `decode_bytes_literal` is exercised only by this crate's own tests until byte
+//! values are admitted.
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StringLiteralError {

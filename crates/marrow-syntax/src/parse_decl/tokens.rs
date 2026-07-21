@@ -56,8 +56,10 @@ pub(super) fn module_name(source: &str, tokens: &[Token]) -> Result<String, Path
     qualified_name_text(source, tokens).ok_or(PathNameError::NotQualified)
 }
 pub(super) fn import_name(source: &str, tokens: &[Token]) -> Result<String, PathNameError> {
-    // `std::bytes` is the one import whose final segment is a reserved word, so a
-    // reserved segment elsewhere is the path error.
+    // A project may declare `module std::bytes`, so the reserved type word `bytes`
+    // stays legal as that import's final segment; a reserved segment in any other
+    // position is the path error. This is a path-shape allowance, not a shipped
+    // module.
     if let Some(reserved) =
         reserved_segment(tokens).filter(|_| !is_std_bytes_import(source, tokens))
     {

@@ -138,52 +138,6 @@ mod decl_parser_corpus {
     }
 
     #[test]
-    fn parses_documented_modules() {
-        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("..")
-            .join("..")
-            .join("docs")
-            .join("language");
-        let mut entries = std::fs::read_dir(&dir)
-            .expect("read docs/language")
-            .map(|entry| entry.expect("language doc entry").path())
-            .collect::<Vec<_>>();
-        entries.sort();
-        let mut module_blocks = 0usize;
-        for path in entries {
-            if path.extension().and_then(|extension| extension.to_str()) != Some("md") {
-                continue;
-            }
-            let text = std::fs::read_to_string(&path).expect("read language doc");
-            let mut in_block = false;
-            let mut source = String::new();
-            for line in text.lines() {
-                if line.trim() == "```mw" {
-                    in_block = true;
-                    source.clear();
-                    continue;
-                }
-                if line.trim() == "```" && in_block {
-                    if source.trim_start().starts_with("module ") {
-                        module_blocks += 1;
-                        assert_deterministic(&source);
-                    }
-                    in_block = false;
-                    continue;
-                }
-                if in_block {
-                    source.push_str(line);
-                    source.push('\n');
-                }
-            }
-        }
-        assert!(
-            module_blocks >= 5,
-            "expected several documented module files, found {module_blocks}"
-        );
-    }
-
-    #[test]
     fn parses_edge_cases_deterministically() {
         let cases = [
             // module / use

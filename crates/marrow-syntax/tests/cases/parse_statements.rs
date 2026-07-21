@@ -139,7 +139,9 @@ fn absent_is_a_primary_expression() {
 
 #[test]
 fn parses_a_type_keyword_as_a_path_segment() {
-    // `bytes` is a type keyword but must be valid mid-path, as in `std::bytes::length`.
+    // `bytes` is a reserved type word but must stay valid mid-path, so a path
+    // through an imported `module std::bytes` parses. `length` here is an ordinary
+    // path segment, not a shipped function.
     let parsed = parse_source("module app\nfn main() {\n    return std::bytes::length(data)\n}\n");
     assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
     let main = parsed.file.function("main").expect("main function");
@@ -157,9 +159,10 @@ fn parses_a_type_keyword_as_a_path_segment() {
 
 #[test]
 fn parses_a_type_keyword_as_a_leading_path_segment() {
-    // A short-form std call leads its path with a type keyword, as in `bytes::length`
-    // after `use std::bytes`. The keyword must begin a path when followed by `::`,
-    // exactly as it is valid mid-path — otherwise short-form `std::bytes` is unusable.
+    // After `use std::bytes`, a path may lead with the reserved type word `bytes`.
+    // The reserved word must begin a path when followed by `::`, exactly as it is
+    // valid mid-path — otherwise the short-form spelling of an imported
+    // `module std::bytes` is unusable. `length` is an ordinary segment here.
     let parsed = parse_source(
         "module app\nuse std::bytes\nfn main() {\n    return bytes::length(data)\n}\n",
     );
