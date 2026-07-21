@@ -67,3 +67,40 @@ jobs:
       # Early warning for upcoming-toolchain lint drift; never gates a push.
       - name: Clippy (stable, advisory)
         run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings -F unsafe-code
+
+  supply-chain-advisory:
+    name: Supply chain (advisory)
+    runs-on: ubuntu-latest
+    # Non-gating, like stable-advisory: an upstream RustSec advisory or SBOM
+    # tooling change must never red the required matrix or block a push. A real
+    # advisory here is a finding to triage, not an integration stop. cargo-audit
+    # and cargo-cyclonedx are CI-only tool installs; neither is a workspace
+    # dependency, and neither touches Cargo.lock.
+    continue-on-error: true
+    env:
+      RUSTUP_TOOLCHAIN: stable
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        run: rustup toolchain install stable --profile minimal
+
+      - name: Install advisory tools
+        run: cargo install cargo-audit cargo-cyclonedx --locked
+
+      # Scans the committed Cargo.lock against the RustSec advisory database.
+      - name: Audit dependencies
+        run: cargo audit
+
+      # Emits a CycloneDX SBOM per crate from cargo metadata; does not build or
+      # resolve new dependencies and leaves Cargo.lock byte-unchanged.
+      - name: Generate SBOM
+        run: cargo cyclonedx --all --format json
+
+      - name: Upload SBOM
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom-cyclonedx
+          path: "**/*.cdx.json"
+          if-no-files-found: error

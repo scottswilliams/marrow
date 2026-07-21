@@ -15,6 +15,7 @@ queue, or an execution schedule.
 - [Local applications](local-applications.md)
 - [Public paths](public-paths.md)
 - [Served execution](served-execution.md)
+- [Threat posture](threat-posture.md)
 
 Future pages state a goal, important constraints, evidence needed to make the
 claim current, and explicit deferrals. They contain no proposed `.mw` syntax,
