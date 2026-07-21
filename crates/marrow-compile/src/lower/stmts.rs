@@ -1626,25 +1626,15 @@ impl<'a> FnLowerer<'a> {
             return None;
         };
         let place = self.lookup_place(name)?;
-        let identity_keyed = place.identity_keyed;
+        // The place's key-path — evaluated once at its binding, including an entry-identity
+        // operand captured into the root's key columns — is the traversal's ancestor path.
+        // An identity-captured slot carries its root as a typed identity column, which the
+        // bounded-traversal ancestor pop re-proves exactly as every other key-path pop does.
         let ancestor_keys = place.bound_keys();
         // The traversed branch is declared beneath the place's node — the same projection a
         // place field access uses. The node borrows the registry (`'a`), not `&self`, so a
         // diagnostic may still borrow `self` mutably.
         let node = self.place_node(place)?;
-        // A place bound through an entry identity carries its root as a typed identity
-        // column, which the bounded-traversal ancestor pop does not yet accept; refuse it as
-        // a traversal base truthfully rather than admitting an image the verifier rejects.
-        // Every other operation through the place still accepts the identity column, so
-        // binding the place to its key columns (`^root[key]`) traverses a branch beneath it.
-        if identity_keyed {
-            self.fail(unsupported(
-                self.file,
-                layer_span,
-                "traversing a branch beneath a place bound to an entry identity",
-            ));
-            return None;
-        }
         let Some(branch) = node.branch(layer_name) else {
             self.fail(SourceDiagnostic::at(
                 Code::CheckType.as_str(),
@@ -1753,26 +1743,6 @@ impl<'a> FnLowerer<'a> {
             return Flow::Rejected;
         };
 
-        // A traversal's ancestor key-path locates the traversed layer's fixed parent entry.
-        // An entry-identity ancestor column (`^root[Id(…)].branch`, or an identity-keyed
-        // place base) carries its root as a typed identity column that the bounded-traversal
-        // ancestor pop does not yet accept, so admitting it would break the checker-accept ⇒
-        // verify-accept law. Refuse it truthfully for both bindings uniformly; spell the
-        // parent with its key columns (`^root[key].branch`) instead. (A place base bound
-        // through an identity is already refused earlier; this closes the inline form.)
-        if target
-            .ancestor_keys
-            .iter()
-            .any(|column| matches!(column.key, PlaceKey::Identity { .. }))
-        {
-            self.fail(unsupported(
-                self.file,
-                target.span,
-                "bounded traversal under an entry-identity parent key",
-            ));
-            return Flow::Fallthrough;
-        }
-
         // Evaluate the ancestor key-path (root-first) then the inclusive `from` key, so
         // the opcode pops `from` (top) then the ancestor path. Keys are captured once,
         // before any body runs. A two-binding traversal captures the ancestor keys into
@@ -1782,11 +1752,11 @@ impl<'a> FnLowerer<'a> {
         let ancestor_slots: Vec<(u16, ScalarType)> = if place_var.is_some() {
             let mut slots = Vec::with_capacity(target.ancestor_keys.len());
             for column in &target.ancestor_keys {
-                let slot = match column.key {
+                match column.key {
                     // A place/pin base supplies its ancestor columns as slots evaluated once
                     // at the place binding; the pin reuses those slots directly rather than
                     // re-evaluating the key.
-                    PlaceKey::Bound(slot) => slot,
+                    PlaceKey::Bound(slot) => slots.push((slot, column.key_ty)),
                     // An inline `^root(k)….branch` base evaluates each ancestor key once here
                     // into a fresh slot, so the pin and the opcode read one evaluation.
                     PlaceKey::Expr(key_expr) => {
@@ -1798,20 +1768,34 @@ impl<'a> FnLowerer<'a> {
                             return Flow::Fallthrough;
                         }
                         self.push(Instr::LocalSet(slot), target.span);
-                        slot
+                        slots.push((slot, column.key_ty));
                     }
-                    // Pre-refused by the entry-identity guard above; kept as a defensive
-                    // refusal so no identity column can ever reach operand emission.
-                    PlaceKey::Identity { .. } => {
-                        self.fail(unsupported(
-                            self.file,
-                            target.span,
-                            "bounded traversal under an entry-identity parent key",
-                        ));
-                        return Flow::Fallthrough;
+                    // An inline `^root[Id(…)].branch` base spreads the one identity operand
+                    // into the addressed root's key columns, captured once into a slot per
+                    // column (root-first). Each slot carries its root as a typed identity
+                    // column the traversal ancestor pop re-proves, exactly as the single-emit
+                    // forms do.
+                    PlaceKey::Identity { expr, root, cols } => {
+                        let Some(captured) =
+                            self.capture_identity_key_slots(expr, root, cols, target.span)
+                        else {
+                            return Flow::Fallthrough;
+                        };
+                        #[allow(
+                            clippy::expect_used,
+                            reason = "lowering invariant: an identity operand's RootId names a root in this registry"
+                        )]
+                        let scalars = self
+                            .durable
+                            .root_by_id(root)
+                            .expect("an identity operand's root is registered")
+                            .key
+                            .clone();
+                        for (slot, scalar) in captured.into_iter().zip(scalars) {
+                            slots.push((slot, scalar));
+                        }
                     }
-                };
-                slots.push((slot, column.key_ty));
+                }
             }
             for (slot, _) in &slots {
                 self.push(Instr::LocalGet(*slot), target.span);
@@ -1893,10 +1877,6 @@ impl<'a> FnLowerer<'a> {
                         entry_site,
                         record,
                         node_kind,
-                        // A per-iteration pin's key-path is the captured ancestor slots plus
-                        // the frozen loop key — all bare scalar columns, never an identity
-                        // column — so a nested traversal through the pin is admitted.
-                        identity_keyed: false,
                     });
                 }
             },

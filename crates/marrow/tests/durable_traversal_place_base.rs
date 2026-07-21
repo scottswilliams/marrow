@@ -8,9 +8,10 @@
 //! over one persistent ephemeral attachment: a simple root place, a per-iteration pin used
 //! as an inner base, a two-binding traversal that deletes through the pin, the `on more`
 //! overflow arm through a place base, and a composite-root place whose whole two-column
-//! key-path locates the branch. A place bound through an entry identity is refused as a
-//! traversal base (its key-path carries a typed identity column the traversal ancestor pop
-//! does not yet accept); that refusal is pinned here too.
+//! key-path locates the branch. A base bound through an entry identity — a `place b =
+//! ^books[Id(…)]`, an inline `^books[Id(…)].notes`, and its two-binding pin form — is a
+//! branch traversal base too: the identity spreads into the root's key columns and the
+//! traversal ancestor pop re-proves that typed identity column, so those round trips run.
 
 use marrow_verify::{SealedExport, VerifiedImage};
 use marrow_vm::{DurableRun, Ephemeral, Value, mint_ephemeral, run_export};
@@ -145,6 +146,40 @@ pub fn sumMarksViaPlace(s: string, c: string): int {
     }
     return total
 }
+
+pub fn sumNotesViaIdPlace(id: int): int {
+    var total = 0
+    place b = ^books[Id(^books, id)]
+    for pos in b.notes at most 100 {
+        total += pos
+    } on more {
+        total = total + 1000
+    }
+    return total
+}
+
+pub fn sumNotesViaInlineId(id: int): int {
+    var total = 0
+    for pos in ^books[Id(^books, id)].notes at most 100 {
+        total += pos
+    } on more {
+        total = total + 1000
+    }
+    return total
+}
+
+pub fn clearNotesViaInlineId(id: int): int {
+    var total = 0
+    transaction {
+        for pos, note in ^books[Id(^books, id)].notes at most 100 {
+            total += pos
+            delete note
+        } on more {
+            total = total + 1000
+        }
+    }
+    return total
+}
 "#;
 
 fn compile_verify(source: &str) -> VerifiedImage {
@@ -275,58 +310,86 @@ fn a_place_base_carries_the_on_more_overflow_arm() {
 }
 
 #[test]
-fn an_identity_keyed_place_base_is_refused_until_the_verifier_accepts_its_column() {
-    // A place bound through an entry identity carries its root as a typed identity column,
-    // which the bounded-traversal ancestor pop does not yet accept. Admitting it would break
-    // the checker-accept ⇒ verify-accept agreement law, so the checker refuses it truthfully
-    // with `check.unsupported` at the traversed branch. (The verifier acceptance that would
-    // make this a round trip is a separate soundness-critical lane; see the lane report.)
-    let source = format!(
-        "{SCHEMA_ONLY}\n{}",
-        "pub fn sumNotesViaIdPlace(id: int): int {\n    var total = 0\n    place b = ^books[Id(^books, id)]\n    for pos in b.notes at most 100 {\n        total += pos\n    } on more {\n        total = total + 1000\n    }\n    return total\n}\n"
+fn an_identity_keyed_place_base_is_a_branch_traversal_base() {
+    // `place b = ^books[Id(^books, id)]` binds the root through an entry identity, spread
+    // into the root's key columns at the binding; `for pos in b.notes` then traverses the
+    // branch beneath it. The captured slot carries its root as a typed identity column that
+    // the traversal ancestor pop re-proves, so the round trip runs end to end.
+    let image = compile_verify(SOURCE);
+    let mut attachment = attach(&image);
+    seed_notes(&image, &mut attachment);
+
+    // Book 1's notes {10, 20} = 30; the layer is exhausted, so `on more` does not run.
+    assert_eq!(
+        run(
+            &image,
+            &mut attachment,
+            "sumNotesViaIdPlace",
+            vec![Value::Int(1)]
+        ),
+        Some(Value::Int(30))
     );
-    let manifest = marrow_project::Manifest::parse("edition = \"2026\"\n").expect("manifest");
-    let files = vec![marrow_project::CapturedFile::new(
-        "src/main.mw".to_string(),
-        source.into_bytes(),
-    )];
-    let project = marrow_project::capture(
-        &manifest,
-        files,
-        Some(IDS.as_bytes()),
-        &marrow_project::CaptureLimits::DEFAULT,
-    )
-    .expect("capture");
-    let diagnostics = match marrow_compile::compile(&project) {
-        Ok(_) => panic!("an identity-keyed place base must be refused"),
-        Err(marrow_compile::CompileFailure::Diagnostics(diagnostics)) => diagnostics.into_vec(),
-        Err(other) => panic!("expected diagnostics, got {other:?}"),
-    };
-    let hit = diagnostics
-        .iter()
-        .find(|d| d.code == "check.unsupported")
-        .unwrap_or_else(|| {
-            panic!(
-                "expected check.unsupported, got {:?}",
-                diagnostics.iter().map(|d| d.code).collect::<Vec<_>>()
-            )
-        });
-    assert!(
-        hit.line() >= 1 && hit.column() >= 1,
-        "the refusal carries a located span: {hit:?}"
+    // Book 2 has no notes: the branch under the identity-keyed place is empty.
+    assert_eq!(
+        run(
+            &image,
+            &mut attachment,
+            "sumNotesViaIdPlace",
+            vec![Value::Int(2)]
+        ),
+        Some(Value::Int(0))
     );
 }
 
-/// The books-only schema, for the identity-keyed refusal fixture above.
-const SCHEMA_ONLY: &str = r#"resource Book {
-    required title: string
+#[test]
+fn an_inline_identity_parent_is_a_branch_traversal_base() {
+    // The inline sibling `for pos in ^books[Id(^books, id)].notes`: the one identity operand
+    // is the branch traversal's ancestor key-path, spread into the root's key columns at emit
+    // and left as a typed identity column the ancestor pop re-proves.
+    let image = compile_verify(SOURCE);
+    let mut attachment = attach(&image);
+    seed_notes(&image, &mut attachment);
 
-    notes[pos: int] {
-        required text: string
-    }
+    assert_eq!(
+        run(
+            &image,
+            &mut attachment,
+            "sumNotesViaInlineId",
+            vec![Value::Int(1)]
+        ),
+        Some(Value::Int(30))
+    );
 }
 
-store ^books[id: int]: Book"#;
+#[test]
+fn an_inline_identity_parent_two_binding_deletes_through_the_pin() {
+    // The two-binding inline form: `for pos, note in ^books[Id(^books, id)].notes` captures
+    // the identity ancestor into the root's key slots, then the per-iteration pin `note`
+    // reuses those identity-carrying slots plus the frozen key to delete each note.
+    let image = compile_verify(SOURCE);
+    let mut attachment = attach(&image);
+    seed_notes(&image, &mut attachment);
+
+    // Deleting book 1's notes {10, 20} folds 30; a re-count then reads an empty branch.
+    assert_eq!(
+        run(
+            &image,
+            &mut attachment,
+            "clearNotesViaInlineId",
+            vec![Value::Int(1)]
+        ),
+        Some(Value::Int(30))
+    );
+    assert_eq!(
+        run(
+            &image,
+            &mut attachment,
+            "sumNotesViaInlineId",
+            vec![Value::Int(1)]
+        ),
+        Some(Value::Int(0))
+    );
+}
 
 #[test]
 fn a_per_iteration_pin_is_an_inner_traversal_base() {
