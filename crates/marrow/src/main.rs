@@ -11,6 +11,7 @@ mod cmd_init;
 mod cmd_lsp;
 mod cmd_run;
 mod cmd_test;
+mod companion;
 mod outcome;
 mod project;
 mod term_style;

@@ -24,7 +24,10 @@ mod ty;
 
 pub use ceiling::{CEILING_KIND, CeilingDescriptor, CeilingId};
 pub use demand::{DEMAND_SET_KIND, DemandAtom, DemandSetId, ExportDemand, OperationClass};
-pub use digest::{IMAGE_DIGEST_KIND, ImageId, image_id};
+pub use digest::{
+    COMPANION_RELEASE_KIND, CompanionReleaseId, IMAGE_DIGEST_KIND, ImageId, companion_release_id,
+    image_id,
+};
 pub use draft::{
     CollTypeId, CollectionTypeDef, ConstId, DurableMemberDef, EnumId, EnumTypeDef, FieldDef,
     FuncId, FunctionDef, ImageBuildError, ImageDraft, KeyColumn, RecordTypeDef, RootDef,

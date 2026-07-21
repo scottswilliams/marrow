@@ -6,14 +6,14 @@
 //! surfaces as its own typed [`Record`]; the value or the first failure sets the
 //! exit code.
 //!
-//! Durable execution is in the trough for `run`. A durable export (nonempty
-//! verified demand) compiles, verifies, and completes its identity here, but the CLI
-//! opens no store — T01's in-process open died at D00. The export is reported with
-//! the typed `cli.durable_unsupported` outcome; durable `run` returns with the
-//! persistent companion path (F02b). (Durable source *tests* already run against a
-//! fresh ephemeral-memory attachment through `marrow test`; `run` does not attach.)
-//! A fresh durable declaration with no ledger identity is still minted here — `run`
-//! is the one convenience mint action; see [`mint_missing_identities`].
+//! A durable export runs against a provisioned store with `marrow run … --store
+//! <dir>`: the terminal never opens the store — it verifies the companion runner
+//! against the release manifest, spawns it as an attached session, submits one call,
+//! and renders the result ([`run_persistent`]). Without `--store` there is no store
+//! to bind, so a durable export reports the typed `cli.durable_unsupported` outcome.
+//! A fresh durable declaration with no ledger identity is minted only on the
+//! storeless path — the run-mint window is closed for a persistent store; see
+//! [`mint_missing_identities`].
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -40,6 +40,10 @@ struct RunArgs {
     export: String,
     format: Format,
     call_args: Vec<String>,
+    /// The persistent store to run against (`--store <dir>`). When present, the run is
+    /// served by a companion attached to the store and no identity is auto-minted; when
+    /// absent, the run is storeless and a missing durable identity is minted.
+    store: Option<PathBuf>,
 }
 
 pub(crate) fn run(rest: &[String]) -> ExitCode {
@@ -65,10 +69,24 @@ pub(crate) fn run(rest: &[String]) -> ExitCode {
     };
 
     // Family 1: source diagnostics. When compilation fails *only* because fresh
-    // durable declarations lack ledger identities, `run` — and only `run` — mints
-    // them into `marrow.ids` and compiles again; any other failure reports as-is.
+    // durable declarations lack ledger identities, storeless `run` — and only storeless
+    // `run` — mints them into `marrow.ids` and compiles again; any other failure reports
+    // as-is. The run-mint window is closed for a persistent store (`--store`): once a store
+    // is bindable, a fresh anchor is a precise `check.durable_identity` failure the developer
+    // resolves deliberately, never an additive auto-mint that could readopt an orphaned id or
+    // diverge from the store's committed ledger. Tombstone-aware minting is the accepted
+    // apply action's job (F03), not pulled forward here.
     let compiled = match compile(&project) {
         Ok(compiled) => compiled,
+        Err(CompileFailure::Diagnostics(diagnostics)) if args.store.is_some() => {
+            return emit(
+                args.format,
+                &diagnostic_records(diagnostics.as_slice()),
+                &[],
+                &[],
+                ExitCode::FAILURE,
+            );
+        }
         Err(CompileFailure::Diagnostics(diagnostics)) => {
             match mint_missing_identities(&project, diagnostics.as_slice()) {
                 MintOutcome::Minted => {
@@ -192,11 +210,26 @@ pub(crate) fn run(rest: &[String]) -> ExitCode {
     let func_index = export.function();
     let demand = export.demand();
 
-    // Durable execution is in the trough for `run`: T01's in-process store open died
-    // at D00. The export has compiled, verified, and completed its identity, but the
-    // CLI opens no store, so a durable export (nonempty demand) is reported with the
-    // typed trough outcome rather than run. Durable `run` returns with the persistent
-    // companion path (F02b); durable source tests already run through `marrow test`.
+    // Persistent path: `marrow run … --store <dir>` runs the export against a provisioned
+    // store. The CLI never opens the store — it verifies the companion runner against the
+    // release manifest and spawns it as an attached session (durable or storeless), submits
+    // one call, and renders the result. The spawn is invisible in ordinary output.
+    if let Some(store_dir) = &args.store {
+        let function = image.function(func_index);
+        return run_persistent(
+            args.format,
+            &image,
+            &compiled.image.bytes,
+            *export_id.bytes(),
+            store_dir,
+            function.params(),
+            &args.call_args,
+        );
+    }
+
+    // Durable execution needs a store: without `--store`, T01's in-process store open died
+    // at D00, so a durable export (nonempty demand) is reported with the typed trough
+    // outcome rather than run. Durable source tests already run through `marrow test`.
     if !demand.is_empty() {
         return emit(
             args.format,
@@ -415,6 +448,146 @@ fn run_storeless(
     }
 }
 
+/// Run an export against a persistent store through the companion attached session, then
+/// render the result exactly as a storeless run would — no runner, wire, or lifecycle
+/// vocabulary reaches the output. Locates and verifies the companion against the release
+/// manifest first; installation damage yields an actionable repair message.
+fn run_persistent(
+    format: Format,
+    image: &VerifiedImage,
+    image_bytes: &[u8],
+    export_id: [u8; 32],
+    store: &Path,
+    params: &[ImageType],
+    call_args: &[String],
+) -> ExitCode {
+    let runner = match crate::companion::discover_companion() {
+        Ok(runner) => runner,
+        Err(damage) => {
+            eprintln!(
+                "{}: {}",
+                marrow_codes::Code::CliInstallationDamaged.as_str(),
+                damage.message(),
+            );
+            return ExitCode::FAILURE;
+        }
+    };
+
+    let args = match build_json_args(params, call_args) {
+        Ok(args) => args,
+        Err(code) => return code,
+    };
+
+    match marrow_runner::attach_and_call(&runner, image, image_bytes, store, export_id, args) {
+        Ok(outcome) => {
+            let record = call_outcome_to_record(outcome);
+            let exit = match &record {
+                Record::Value(_) => ExitCode::SUCCESS,
+                _ => ExitCode::FAILURE,
+            };
+            emit(format, &[record], image.record_types(), image.enums(), exit)
+        }
+        Err(error) => {
+            eprintln!("{}", error.code());
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// Map a companion call outcome onto the terminal's outcome record. A durable-shape reject is
+/// reported as the store-run trough outcome; other typed rejects keep their code.
+fn call_outcome_to_record(outcome: marrow_runner::CallOutcome) -> Record {
+    match outcome {
+        marrow_runner::CallOutcome::Value(value) => Record::Value(value),
+        marrow_runner::CallOutcome::Fault { code, line, column } => Record::Fault {
+            code: fault_code(&code),
+            line,
+            column,
+            detail: None,
+        },
+        marrow_runner::CallOutcome::Reject { code } => Record::OperationalError {
+            code: if code == marrow_codes::Code::RunnerDurableUnsupported.as_str() {
+                marrow_codes::Code::CliDurableUnsupported.as_str()
+            } else {
+                fault_code(&code)
+            },
+            detail: None,
+        },
+    }
+}
+
+/// Intern a wire-carried dotted code back to its static form so the record renders the stable
+/// code without allocating; an unrecognized code (never expected on the beta line) falls back
+/// to an internal invariant code rather than leaking an unstyled string.
+fn fault_code(code: &str) -> &'static str {
+    marrow_codes::Code::from_code(code)
+        .map(marrow_codes::Code::as_str)
+        .unwrap_or_else(|| marrow_codes::Code::CliCompilerInvariant.as_str())
+}
+
+/// Build the wire JSON arguments for a persistent call from the command-line strings and the
+/// export's parameter types, validating the same way a storeless run does. A record or
+/// optional parameter has no command-line spelling.
+fn build_json_args(
+    params: &[ImageType],
+    args: &[String],
+) -> Result<Vec<marrow_runner::Json>, ExitCode> {
+    if params.len() != args.len() {
+        return Err(usage(&format!(
+            "this export takes {} argument(s), found {}",
+            params.len(),
+            args.len()
+        )));
+    }
+    let mut out = Vec::with_capacity(params.len());
+    for (param, text) in params.iter().zip(args) {
+        match param {
+            ImageType::Scalar {
+                scalar,
+                optional: false,
+            } => out.push(scalar_to_json(*scalar, text).map_err(|message| usage(&message))?),
+            _ => {
+                return Err(usage(
+                    "a struct argument cannot be passed on the command line",
+                ));
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// Validate a command-line scalar against its type and produce its wire JSON. Numbers and
+/// booleans carry their JSON kind; the text-shaped scalars (text/bytes/temporal) travel as a
+/// canonical string, validated here so a malformed value is a terminal usage error rather
+/// than a wire rejection.
+fn scalar_to_json(scalar: Scalar, text: &str) -> Result<marrow_runner::Json, String> {
+    use marrow_runner::Json;
+    match scalar {
+        Scalar::Int => text
+            .parse::<i64>()
+            .map(Json::Int)
+            .map_err(|_| format!("`{text}` is not an integer")),
+        Scalar::Bool => match text {
+            "true" => Ok(Json::Bool(true)),
+            "false" => Ok(Json::Bool(false)),
+            _ => Err(format!("`{text}` is not a boolean (true/false)")),
+        },
+        Scalar::Text => Ok(Json::Str(text.to_string())),
+        Scalar::Bytes => decode_hex_bytes(text)
+            .map(|_| Json::Str(text.to_string()))
+            .ok_or_else(|| format!("`{text}` is not `0x`-prefixed lowercase hex")),
+        Scalar::Date => marrow_temporal::parse_date(text.as_bytes())
+            .map(|_| Json::Str(text.to_string()))
+            .ok_or_else(|| format!("`{text}` is not a canonical date `YYYY-MM-DD`")),
+        Scalar::Instant => marrow_temporal::parse_instant(text.as_bytes())
+            .map(|_| Json::Str(text.to_string()))
+            .ok_or_else(|| format!("`{text}` is not a canonical UTC instant")),
+        Scalar::Duration => marrow_temporal::parse_duration(text.as_bytes())
+            .map(|_| Json::Str(text.to_string()))
+            .ok_or_else(|| format!("`{text}` is not a canonical duration `PT<seconds>S`")),
+    }
+}
+
 /// Decode positional CLI arguments against the export's parameter types. A scalar
 /// parameter decodes from its text; a record (`struct`) parameter has no
 /// command-line spelling, so an export taking one cannot be run from the terminal.
@@ -489,6 +662,7 @@ fn parse_args(rest: &[String]) -> Result<RunArgs, ExitCode> {
     let mut export: Option<String> = None;
     let mut format = Format::Text;
     let mut call_args: Vec<String> = Vec::new();
+    let mut store: Option<PathBuf> = None;
     let mut iter = rest.iter();
     while let Some(arg) = iter.next() {
         match arg.as_str() {
@@ -496,6 +670,10 @@ fn parse_args(rest: &[String]) -> Result<RunArgs, ExitCode> {
                 call_args.extend(iter.by_ref().cloned());
                 break;
             }
+            "--store" => match iter.next() {
+                Some(dir) => store = Some(PathBuf::from(dir)),
+                None => return Err(usage("`--store` needs a store directory")),
+            },
             "--format" => match iter.next().map(String::as_str) {
                 Some("jsonl") => format = Format::Jsonl,
                 Some("text") => format = Format::Text,
@@ -518,6 +696,7 @@ fn parse_args(rest: &[String]) -> Result<RunArgs, ExitCode> {
         export,
         format,
         call_args,
+        store,
     })
 }
 

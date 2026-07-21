@@ -68,7 +68,7 @@ pub fn interface_of(image: &VerifiedImage) -> Result<Interface, InterfaceError> 
 
 /// Map a function's return shape to the bare-or-optional [`ImageType`] the interface
 /// builder consumes.
-fn ret_to_image(ret: RetShape) -> ImageType {
+pub(crate) fn ret_to_image(ret: RetShape) -> ImageType {
     match ret {
         RetShape::Unit => ImageType::Unit,
         RetShape::Scalar { scalar, optional } => ImageType::Scalar { scalar, optional },
@@ -123,6 +123,12 @@ impl Service {
     /// handshake.
     pub fn interface_id(&self) -> Id32 {
         self.interface_id
+    }
+
+    /// The verified image this service serves. The attached session reads it to dispatch a
+    /// durable export against the native store.
+    pub(crate) fn image(&self) -> &VerifiedImage {
+        &self.image
     }
 
     /// The dispatch entry for an export identity, if the image carries it.

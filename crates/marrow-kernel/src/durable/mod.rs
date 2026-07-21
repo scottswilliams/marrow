@@ -18,11 +18,13 @@
 mod attach;
 mod physical;
 mod plan;
+mod session_host;
 mod store;
 
 pub use attach::{
     AttachError, AttachmentId, CeilingIdToken, DeploymentCeiling, EphemeralAttachment,
 };
+pub use session_host::SessionHost;
 pub use store::{Durable, DurableStore, ReadSession, TxnSession};
 
 /// The engine error the store surfaces, re-exported so a downstream lifecycle owner can

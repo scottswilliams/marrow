@@ -13,6 +13,12 @@ use marrow_local_wire::{ClientMessage, Json, ServerMessage, Span};
 use crate::descriptor::Service;
 use crate::transfer;
 
+impl crate::channel::Handler for Service {
+    fn handle(&mut self, message: ClientMessage) -> ServerMessage {
+        Service::handle(self, message)
+    }
+}
+
 impl Service {
     /// Produce the response to a client message. A `Hello` after the handshake is a
     /// protocol error, not a second handshake.

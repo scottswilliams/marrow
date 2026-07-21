@@ -108,15 +108,19 @@ In the ledger model the ledger is append-only about the past: a retired identity
 is recorded as a tombstone and is never reissued, so removing a durable
 declaration and re-adding its name yields a fresh identity rather than silently
 adopting old data. Recording a removal as a tombstone is the accepted apply
-action's job (future). The only mint today, [`marrow run`](cli.md), is
-additive-only — it adds a row for each missing anchor and never tombstones, so
-deleting a declaration and re-adding the same path readopts the old id, and a
-rename leaves the old row live and orphaned. This is harmless in the current
-trough, where no persistent store is reachable. In ordinary development the
-ledger is invisible — `marrow run` mints missing identities automatically; every
-other command requires them to be present and fails precisely with
-`check.durable_identity` when one is missing. A storeless project has no
-`marrow.ids`.
+action's job (future). The one mint today is **storeless** [`marrow run`](cli.md)
+— run without `--store`: it is additive-only, adding a row for each missing anchor
+and never tombstoning, so deleting a declaration and re-adding the same path
+readopts the old id, and a rename leaves the old row live and orphaned. This is
+bounded to development before a store exists. A persistent
+[`marrow run … --store <dir>`](cli.md) does **not** mint: once a store is bindable
+the additive mint could readopt an orphaned id or diverge from the store's
+committed ledger, so a missing identity there is a precise `check.durable_identity`
+failure the developer resolves deliberately (the tombstone-aware mint is the
+accepted apply action's job). In ordinary development the ledger is invisible —
+storeless `marrow run` mints missing identities automatically; every other command
+requires them to be present and fails precisely with `check.durable_identity` when
+one is missing. A storeless project has no `marrow.ids`.
 
 ## Creating a project
 

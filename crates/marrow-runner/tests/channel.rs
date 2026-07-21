@@ -113,7 +113,7 @@ fn secrets(nonce: Id32, session: Id32) -> LaunchSecrets {
 #[test]
 #[ignore = "binds a Unix socket; run with the sandbox disabled"]
 fn end_to_end_storeless_call() {
-    let (service, export) = service_for(ADD);
+    let (mut service, export) = service_for(ADD);
     let channel = Channel::bind().expect("bind");
     let path = channel.socket_path().to_path_buf();
     let nonce = mint_id().unwrap();
@@ -139,7 +139,7 @@ fn end_to_end_storeless_call() {
     let mut conn = channel
         .accept_authenticated(&secrets(nonce, session), interface, &quick(), 16)
         .expect("accept");
-    conn.run_session(&service, &quick()).expect("serve");
+    conn.run_session(&mut service, &quick()).expect("serve");
     let (ready, value) = client.join().unwrap();
     channel.teardown();
 
@@ -152,7 +152,7 @@ fn end_to_end_storeless_call() {
 #[test]
 #[ignore = "binds a Unix socket; run with the sandbox disabled"]
 fn a_bad_nonce_racer_does_not_starve_the_real_client() {
-    let (service, export) = service_for(ADD);
+    let (mut service, export) = service_for(ADD);
     let channel = Channel::bind().expect("bind");
     let path = channel.socket_path().to_path_buf();
     let nonce = mint_id().unwrap();
@@ -190,7 +190,7 @@ fn a_bad_nonce_racer_does_not_starve_the_real_client() {
     let mut conn = channel
         .accept_authenticated(&secrets(nonce, session), interface, &quick(), 16)
         .expect("the real client is admitted after the racer");
-    conn.run_session(&service, &quick()).expect("serve");
+    conn.run_session(&mut service, &quick()).expect("serve");
     let (ready, value) = client.join().unwrap();
     channel.teardown();
 
@@ -231,7 +231,7 @@ fn a_silent_client_times_out_without_hanging() {
 #[test]
 #[ignore = "binds a Unix socket; run with the sandbox disabled"]
 fn a_partial_frame_ends_the_session() {
-    let (service, _export) = service_for(ADD);
+    let (mut service, _export) = service_for(ADD);
     let channel = Channel::bind().expect("bind");
     let path = channel.socket_path().to_path_buf();
     let nonce = mint_id().unwrap();
@@ -252,7 +252,8 @@ fn a_partial_frame_ends_the_session() {
         .accept_authenticated(&secrets(nonce, session), interface, &quick(), 16)
         .expect("accept");
     // serve must return (on the frame deadline), not block forever.
-    conn.run_session(&service, &quick()).expect("serve returns");
+    conn.run_session(&mut service, &quick())
+        .expect("serve returns");
     drop(conn);
     client.join().unwrap();
     channel.teardown();

@@ -154,6 +154,7 @@ execution is in the trough.
             Code::CliCommandUnsupported,
             Code::CliTransferExcluded,
             Code::CliDurableUnsupported,
+            Code::CliInstallationDamaged,
             Code::CliCompilerResourceLimit,
         ]),
         r#"
@@ -354,6 +355,7 @@ signature, or a durable export the stock runner cannot yet execute.
             Code::RunnerUnknownExport,
             Code::RunnerArgMismatch,
             Code::RunnerDurableUnsupported,
+            Code::RunnerSpawn,
         ]),
         r#""#.to_string(),
         INTERNAL_HEADING.to_string(),

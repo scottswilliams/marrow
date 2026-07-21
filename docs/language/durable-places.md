@@ -123,11 +123,15 @@ operations below execute through the read kernel under `marrow test`. Each durab
 test gets its own attachment minted from the verified test image with a ceiling
 equal to the test-image demand union, so one test never observes another's writes,
 and the attachment is discarded when the test ends — there is no persistent store.
-Persistent `marrow run` execution is still in the trough: the CLI no longer opens a
-store, so a durable export does not run from `marrow run` (it reports the typed
-`cli.durable_unsupported` outcome) until the persistent companion runner lands
-(F02). The operations described below are the current durable *language* — they are
-checked and their identity is complete; see [Project status](../status.md).
+Persistent execution runs over a provisioned store through the **companion path**:
+`marrow run <export> --store <dir>` verifies the companion runner against the
+toolchain's release manifest, spawns it as a session attached to the store, submits
+one call, and renders the result — the terminal itself never opens the store. A
+durable export run *without* `--store` still reports the typed
+`cli.durable_unsupported` outcome (there is no store to bind), naming the `--store`
+form. See [Persistent execution](#persistent-execution) below. The operations
+described below are the current durable *language* — they are checked and their
+identity is complete; see [Project status](../status.md).
 
 Within that checked language, the *flat* keyed root is the form whose operations the
 compiler fully lowers: a keyed root — one or more key components — whose fields are
@@ -740,3 +744,52 @@ program's durable footprint. Whether an invocation is permitted to exercise a
 demand is a separate concern that intersects demand with the access a deployment
 and an invocation allow; that intersection is not yet part of the current
 language.
+
+## Persistent execution
+
+A provisioned store runs a program through a **companion runner**, never in the
+terminal process. `marrow run <export> --store <dir>` compiles and verifies the
+project, locates the stock runner at a fixed path beside the terminal binary,
+verifies it against the toolchain's release manifest (a release-identity match and a
+content digest over the runner's bytes), and spawns it as a session **attached** to
+the store. The runner takes the store's single-owner lock, binds the verified image
+to the store's active binding, runs the one call against a durable session, and
+returns the result; the terminal renders it exactly as a storeless run would. The
+terminal never opens the store, holds no lock, and constructs no lifecycle state.
+
+Binding the image to the store is one of three outcomes. An image byte-identical to
+the store's active binding opens directly. An image whose code changed but whose
+durable contract, exported interface, and authority ceiling are all unchanged is a
+**binding-only rebind**: the active image is updated atomically with no user action,
+so a body-only edit is picked up on the next run. Any change to the durable
+contract, the interface, or the ceiling is a typed refusal that names the changed
+category and points at the accepted-change review — it is never reported as
+corruption, and the prior program remains usable. A second process that tries to
+open a store already held reports the store as in use and names the owner.
+
+If the companion runner or its release manifest is missing, mismatched, or altered,
+the terminal reports installation damage with a repair action and runs nothing; it
+never falls back to an unverified executable found on `PATH`, the working directory,
+or the environment.
+
+### Durability envelope
+
+A native store commits with the ordered-byte engine's immediate durability: each
+confirmed commit is flushed to the operating system with `fsync` before the commit
+is reported, and a fresh store's directory entry is flushed so a provisioned store
+survives a crash. On this basis a confirmed commit is durable across **process
+termination and operating-system crash** — measured on the macOS/APFS target by a
+repeated kill-during-commit matrix that recovered every store to a complete
+prior-or-new state with no torn or lost confirmed commit.
+
+The commit path issues `fsync`, not macOS `F_FULLFSYNC`. `fsync` hands data to the
+kernel but does not force the drive to flush its internal write cache to permanent
+media, so a confirmed commit is **not** guaranteed durable across sudden **power
+loss or a drive-cache-losing hardware reset**, where an unflushed drive cache could
+lose or reorder the last write. This is the same durability envelope as a
+default-configured SQLite database on macOS; it is a property of the platform's
+`fsync`, not of the engine, and no candidate engine changes it. Routing commits
+through `F_FULLFSYNC` for power-loss durability remains available as a later
+operations decision without any change to the store format, the language, or the
+path contract; the beta does not enable it, and this reference makes no
+power-loss durability claim it has not measured.

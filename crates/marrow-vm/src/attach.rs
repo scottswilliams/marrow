@@ -17,8 +17,8 @@
 use marrow_kernel::codec::value::{ScalarKind, ValueShape};
 use marrow_kernel::durable::{
     BranchSchema, CeilingIdToken, DemandCoverage, DeploymentCeiling, EphemeralAttachment,
-    FieldSchema, GroupSchema, IndexComponent, IndexSchema, InvocationGrant, SiteSpec, SiteTarget,
-    StoreSchema,
+    FieldSchema, GroupSchema, IndexComponent, IndexSchema, InvocationGrant, SessionHost, SiteSpec,
+    SiteTarget, StoreSchema,
 };
 use marrow_verify::{
     CeilingDescriptor, ExportDemand, FunctionIndex, ImageType, Scalar, SealedExport, SealedIndex,
@@ -215,9 +215,14 @@ pub fn mint_ephemeral(image: &VerifiedImage) -> Ephemeral {
 /// calls, a mutating export's committed writes are visible to a later read invocation
 /// on the same attachment, and a mutating export that faults before its commit leaves
 /// the store unchanged.
-pub fn run_export(
+///
+/// Generic over the [`SessionHost`]: the ephemeral-memory attachment and the persistent
+/// native store open sessions the same way, so the terminal companion path (F02b) drives a
+/// durable export against a real native store through exactly this path. A committed native
+/// transaction is durable across a restart; a faulting one leaves the store unchanged.
+pub fn run_export<H: SessionHost>(
     image: &VerifiedImage,
-    attachment: &mut EphemeralAttachment,
+    host: &mut H,
     export: &SealedExport,
     args: Vec<Value>,
 ) -> DurableRun {
@@ -225,14 +230,14 @@ pub fn run_export(
     let demand = coverage(export.demand().reads(), export.demand().writes());
     let func = export.function();
     let result = if demand.write {
-        match attachment.txn_session(grant, demand) {
+        match host.txn_session(grant, demand) {
             Ok(mut session) => run_durable(image, func, args, &mut session),
             Err(_) => {
                 return DurableRun::Failed(marrow_codes::Code::CliDurableUnsupported.as_str());
             }
         }
     } else {
-        match attachment.read_session(grant, demand) {
+        match host.read_session(grant, demand) {
             Ok(mut session) => run_durable(image, func, args, &mut session),
             Err(_) => {
                 return DurableRun::Failed(marrow_codes::Code::CliDurableUnsupported.as_str());

@@ -22,6 +22,10 @@ marrow-kernel = { path = "../marrow-kernel" }
 # The in-tree language server, dispatched as `marrow lsp`.
 marrow-lsp = { path = "../marrow-lsp" }
 marrow-project = { path = "../marrow-project" }
+# The local-wire process/socket owner: the terminal spawns a release-verified companion
+# runner through it for a persistent `marrow run --store`, builds the call's JSON arguments
+# through its re-exported wire `Json`, and renders the returned value.
+marrow-runner = { path = "../marrow-runner" }
 marrow-project-fs = { path = "../marrow-project-fs" }
 marrow-syntax = { path = "../marrow-syntax" }
 marrow-temporal = { path = "../marrow-temporal" }

@@ -40,6 +40,8 @@ enum Command {
         store: PathBuf,
         accept: bool,
     },
+    /// Attach the image to the persistent store at `store` and serve its exports.
+    Attach { image: PathBuf, store: PathBuf },
 }
 
 fn main() -> ExitCode {
@@ -50,10 +52,12 @@ fn main() -> ExitCode {
             store,
             accept,
         }) => provision_command(&image, &store, accept),
+        Some(Command::Attach { image, store }) => attach(&image, &store),
         None => {
             eprintln!(
                 "usage: marrow-runner --image <path>\n       marrow-runner provision --image \
-                 <path> --store <dir> [--yes]"
+                 <path> --store <dir> [--yes]\n       marrow-runner attach --image <path> \
+                 --store <dir>"
             );
             ExitCode::from(2)
         }
@@ -130,19 +134,9 @@ fn provision_command(image_path: &Path, store: &Path, accept: bool) -> ExitCode 
 
 /// Serve the image's storeless exports over a private local channel (the `--image` command).
 fn serve(image_path: &Path) -> ExitCode {
-    let bytes = match std::fs::read(image_path) {
-        Ok(bytes) => bytes,
-        Err(err) => {
-            eprintln!("{}: {err}", marrow_codes::Code::IoRead.as_str());
-            return ExitCode::FAILURE;
-        }
-    };
-    let image = match marrow_verify::verify(&bytes) {
+    let image = match load_image(image_path) {
         Ok(image) => image,
-        Err(rejection) => {
-            eprintln!("{}", rejection.code());
-            return ExitCode::FAILURE;
-        }
+        Err(code) => return code,
     };
     let service = match Service::build(image) {
         Ok(service) => service,
@@ -154,7 +148,63 @@ fn serve(image_path: &Path) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+    let interface = service.interface_id();
+    serve_over_channel(service, interface)
+}
 
+/// Attach the image to the persistent store at `store` through the privileged lifecycle
+/// actor and serve its durable and storeless exports over a private local channel (the
+/// `attach` command). The lifecycle actor takes the store's single-owner lock, rereads the
+/// head, and classifies the image: an identical or binding-only-updated image opens; a
+/// contract change is a typed refusal pointing at `marrow apply`. The CLI never opens the
+/// store — it spawns this command and speaks the wire protocol to it.
+fn attach(image_path: &Path, store: &Path) -> ExitCode {
+    let image = match load_image(image_path) {
+        Ok(image) => image,
+        Err(code) => return code,
+    };
+    let Some((schemas, sites)) = marrow_vm::derive_store_schemas(&image) else {
+        eprintln!(
+            "{}: the program's durable shape is not yet executable by the store",
+            marrow_codes::Code::CliDurableUnsupported.as_str()
+        );
+        return ExitCode::FAILURE;
+    };
+
+    let opened = match marrow_lifecycle::attach(store, &image, schemas, sites) {
+        Ok(marrow_lifecycle::AttachOutcome::AlreadyActive(opened)) => opened,
+        // A binding-only rebind atomically updated the active code with the durable contract
+        // unchanged; the store is open on the new image. The receipt is confirmed-commit
+        // evidence, consumed here rather than echoed to the client (the spawn is invisible).
+        Ok(marrow_lifecycle::AttachOutcome::Rebound { store, .. }) => store,
+        Err(error) => {
+            eprintln!("{}: {error}", error.code());
+            return ExitCode::FAILURE;
+        }
+    };
+
+    let service = match Service::build(image) {
+        Ok(service) => service,
+        Err(error) => {
+            eprintln!(
+                "{}: {error}",
+                marrow_codes::Code::CliTransferExcluded.as_str()
+            );
+            return ExitCode::FAILURE;
+        }
+    };
+    let interface = service.interface_id();
+    serve_over_channel(
+        marrow_runner::AttachedService::new(service, opened),
+        interface,
+    )
+}
+
+/// The shared channel discipline for both serving modes: mint the session secrets, bind a
+/// private local channel, publish one launch descriptor for the supervisor/terminal, admit
+/// one authenticated client, and serve it until it hangs up, tearing the channel down on
+/// every non-panic path.
+fn serve_over_channel<H: marrow_runner::Handler>(mut handler: H, interface: Id32) -> ExitCode {
     let expected_nonce = match nonce_from_env() {
         Ok(nonce) => nonce,
         Err(()) => return ExitCode::FAILURE,
@@ -188,7 +238,7 @@ fn serve(image_path: &Path) -> ExitCode {
     println!(
         "{}",
         launch_descriptor(
-            service.interface_id(),
+            interface,
             // A minted nonce is published for a standalone launch; a supervisor-set
             // one is already known to the supervisor and is not echoed.
             published_nonce,
@@ -202,7 +252,7 @@ fn serve(image_path: &Path) -> ExitCode {
         expected_nonce,
         session,
     };
-    let outcome = run_session_once(&channel, &service, &secrets, &deadlines);
+    let outcome = run_session_once(&channel, &mut handler, interface, &secrets, &deadlines);
     channel.teardown();
 
     match outcome {
@@ -211,19 +261,15 @@ fn serve(image_path: &Path) -> ExitCode {
     }
 }
 
-fn run_session_once(
+fn run_session_once<H: marrow_runner::Handler>(
     channel: &Channel,
-    service: &Service,
+    handler: &mut H,
+    interface: Id32,
     secrets: &LaunchSecrets,
     deadlines: &Deadlines,
 ) -> Result<(), ()> {
     let mut connection = channel
-        .accept_authenticated(
-            secrets,
-            service.interface_id(),
-            deadlines,
-            MAX_ACCEPT_ATTEMPTS,
-        )
+        .accept_authenticated(secrets, interface, deadlines, MAX_ACCEPT_ATTEMPTS)
         .map_err(|error| {
             eprintln!(
                 "{}: {error:?}",
@@ -231,20 +277,38 @@ fn run_session_once(
             )
         })?;
     connection
-        .run_session(service, deadlines)
+        .run_session(handler, deadlines)
         .map_err(|err| eprintln!("{}: {err}", marrow_codes::Code::IoRead.as_str()))
 }
 
 fn parse_args() -> Option<Command> {
     let mut args = std::env::args().skip(1);
     match args.next().as_deref() {
-        // `provision` branches before the `--image` serve path.
+        // `provision` and `attach` branch before the `--image` serve path.
         Some("provision") => parse_provision(args),
+        Some("attach") => parse_attach(args),
         Some("--image") => args.next().map(|image| Command::Serve {
             image: PathBuf::from(image),
         }),
         _ => None,
     }
+}
+
+/// Parse `attach --image <path> --store <dir>` in any flag order. Both are required.
+fn parse_attach(mut args: impl Iterator<Item = String>) -> Option<Command> {
+    let mut image: Option<PathBuf> = None;
+    let mut store: Option<PathBuf> = None;
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--image" => image = Some(PathBuf::from(args.next()?)),
+            "--store" => store = Some(PathBuf::from(args.next()?)),
+            _ => return None,
+        }
+    }
+    Some(Command::Attach {
+        image: image?,
+        store: store?,
+    })
 }
 
 /// Parse `provision --image <path> --store <dir> [--yes]` in any flag order. Both `--image`

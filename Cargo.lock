@@ -107,6 +107,7 @@ dependencies = [
  "marrow-lsp",
  "marrow-project",
  "marrow-project-fs",
+ "marrow-runner",
  "marrow-syntax",
  "marrow-temporal",
  "marrow-verify",

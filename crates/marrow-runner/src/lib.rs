@@ -15,11 +15,15 @@
 //! transfer codec between wire JSON and runtime values, and export dispatch. The
 //! long-lived attached-session mode is never named `serve` in the product surface.
 
+mod attach;
 mod channel;
+mod client;
 mod descriptor;
 mod execute;
 mod transfer;
 
-pub use channel::{AcceptError, Channel, Connection, Deadlines, LaunchSecrets, mint_id};
+pub use attach::AttachedService;
+pub use channel::{AcceptError, Channel, Connection, Deadlines, Handler, LaunchSecrets, mint_id};
+pub use client::{CallOutcome, ClientError, attach_and_call};
 pub use descriptor::{Service, interface_of};
-pub use marrow_local_wire::Id32;
+pub use marrow_local_wire::{Id32, Json};

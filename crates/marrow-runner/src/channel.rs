@@ -187,6 +187,15 @@ impl Drop for Channel {
     }
 }
 
+/// A request handler over one launched program: the storeless [`Service`](crate::Service)
+/// and the native attached session share this seam so the connection's serial request loop
+/// is written once. `handle` takes `&mut self` because the attached session opens a durable
+/// session per request; the storeless handler ignores the mutability.
+pub trait Handler {
+    /// Produce the response to one client message.
+    fn handle(&mut self, message: ClientMessage) -> ServerMessage;
+}
+
 /// An authenticated connection: the byte stream after a proven handshake.
 pub struct Connection {
     stream: UnixStream,
@@ -196,9 +205,9 @@ impl Connection {
     /// Attend to requests over this connection until the client hangs up or a fault
     /// closes it. One request is handled at a time (a single serial worker). This is
     /// the long-lived attached-session loop; it is deliberately not named `serve`.
-    pub fn run_session(
+    pub fn run_session<H: Handler>(
         &mut self,
-        service: &crate::Service,
+        handler: &mut H,
         deadlines: &Deadlines,
     ) -> io::Result<()> {
         loop {
@@ -219,7 +228,7 @@ impl Connection {
                 Err(ReadError::Io(err)) => return Err(err),
             };
             let response = match ClientMessage::decode(&body) {
-                Ok(message) => service.handle(message),
+                Ok(message) => handler.handle(message),
                 Err(wire) => ServerMessage::Reject {
                     code: wire.code_str().to_string(),
                 },
