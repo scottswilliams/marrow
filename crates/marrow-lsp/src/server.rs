@@ -255,9 +255,25 @@ enum FrameOwner {
     Request(RequestId),
     Anonymous,
     Publication,
-    Initialize,
-    Shutdown,
+    /// The `initialize` response: a known-id frame that also advances the lifecycle on
+    /// delivery. Its entry is retired on its receipt, like an ordinary request, so the
+    /// initialize id cannot be reused in the handoff-to-delivery window.
+    Initialize(RequestId),
+    /// The `shutdown` response, the same known-id / receipt-retired discipline.
+    Shutdown(RequestId),
     ShowMessage,
+}
+
+impl FrameOwner {
+    /// The request id whose ledger entry this frame owns and retires on delivery.
+    fn owned_id(&self) -> Option<&RequestId> {
+        match self {
+            FrameOwner::Request(id) | FrameOwner::Initialize(id) | FrameOwner::Shutdown(id) => {
+                Some(id)
+            }
+            FrameOwner::Anonymous | FrameOwner::Publication | FrameOwner::ShowMessage => None,
+        }
+    }
 }
 
 /// The shared live-entry budget: ordinary requests and known-id error-only entries.
@@ -529,16 +545,15 @@ impl Coordinator {
         };
         self.root = root;
         // Receipt-gated delivery: hand off the response but do not advance the lifecycle
-        // until the delivery receipt for this frame arrives. The initialize response is a
-        // fixed small frame that cannot overflow the outbound bound; a serialization
-        // failure would be a fail-stop.
-        self.requests.retire(&id);
+        // until the delivery receipt for this frame arrives. The entry retires on that
+        // receipt (not at handoff), so the initialize id cannot be reused in the window.
+        // The initialize response is a fixed small frame; a serialization failure fail-stops.
         if !self.hand_off(
             &Outbound::Initialize {
-                id,
+                id: id.clone(),
                 result: Box::new(initialize_result()),
             },
-            FrameOwner::Initialize,
+            FrameOwner::Initialize(id),
         ) {
             self.terminate(1);
         }
@@ -547,8 +562,7 @@ impl Coordinator {
     fn on_shutdown(&mut self, id: RequestId) {
         match self.lifecycle.on_shutdown() {
             RequestGate::Route => {
-                self.requests.retire(&id);
-                if !self.hand_off(&Outbound::Null { id }, FrameOwner::Shutdown) {
+                if !self.hand_off(&Outbound::Null { id: id.clone() }, FrameOwner::Shutdown(id)) {
                     self.terminate(1);
                 }
             }
@@ -597,12 +611,12 @@ impl Coordinator {
             key,
             version: *version,
         };
-        // Answer now against a ready exact-current snapshot, else hold until analysis.
-        if self.snapshot_revision == Some(self.current_revision) {
-            self.answer_held(held);
-        } else {
-            self.held_queries.push(held);
-        }
+        // Every semantic reply is deferred as a held query and served only against an
+        // available outbound credit, so a burst of requests cannot materialize a burst of
+        // (possibly large) reply frames. When a snapshot is ready and a credit is free the
+        // query is answered synchronously here; otherwise it waits.
+        self.held_queries.push(held);
+        self.serve_ready_queries();
     }
 
     /// Answer a held query, reauthorizing its revision and document version. A changed
@@ -904,7 +918,7 @@ impl Coordinator {
                     self.snapshot = Some(snapshot.clone());
                     self.snapshot_revision = Some(snapshot.revision());
                     self.begin_publication(snapshot);
-                    self.drain_held_queries();
+                    self.serve_ready_queries();
                 }
             }
             AnalysisOutcome::Capture(rejection) => {
@@ -932,9 +946,18 @@ impl Coordinator {
         }
     }
 
-    fn drain_held_queries(&mut self) {
-        let held: Vec<HeldQuery> = std::mem::take(&mut self.held_queries);
-        for query in held {
+    /// Answer held queries while a snapshot for the current revision is ready and an
+    /// outbound credit is available. A potentially large reply (a whole-document format) is
+    /// thus only ever materialized against an available credit, so replies never enter the
+    /// pending-frame queue; the unanswered remainder stays held — bounded by the request
+    /// ledger, at fixed-size cost — and is served as credits free on later receipts.
+    fn serve_ready_queries(&mut self) {
+        while self.snapshot_revision == Some(self.current_revision)
+            && self.outbound_credits.available() > 0
+        {
+            let Some(query) = self.held_queries.pop() else {
+                break;
+            };
             self.answer_held(query);
         }
     }
@@ -1145,7 +1168,7 @@ impl Coordinator {
         let Ok(bytes) = encode(outbound) else {
             return false;
         };
-        if let FrameOwner::Request(id) = &owner {
+        if let Some(id) = owner.owned_id() {
             self.requests.set_awaiting(id);
         }
         match self.outbound_credits.acquire() {
@@ -1236,15 +1259,24 @@ impl Coordinator {
             FrameOwner::Request(id) => self.requests.retire(&id),
             FrameOwner::Anonymous => self.anonymous_slots = self.anonymous_slots.saturating_sub(1),
             FrameOwner::Publication => self.on_publication_receipt(),
-            FrameOwner::Initialize => {
+            FrameOwner::Initialize(id) => {
+                self.requests.retire(&id);
                 if self.lifecycle.on_initialize_delivered() {
                     self.enter_running();
                 }
             }
-            FrameOwner::Shutdown => self.lifecycle.on_shutdown_delivered(),
+            FrameOwner::Shutdown(id) => {
+                self.requests.retire(&id);
+                self.lifecycle.on_shutdown_delivered();
+            }
             FrameOwner::ShowMessage => {}
         }
-        // A freed credit lets a queued frame proceed.
+        // The freed credit makes progress on outstanding work, in priority order: the
+        // in-flight publication set, then a ready held query (its potentially large reply
+        // is only ever materialized against an available credit, so it never enters the
+        // pending-frame queue), then a queued small frame.
+        self.feed_publication();
+        self.serve_ready_queries();
         if let Some((bytes, owner)) = self.pending_frames.pop_front() {
             match self.outbound_credits.acquire() {
                 Some(credit) => {
@@ -1265,12 +1297,12 @@ impl Coordinator {
         // AbandonedByTerminal.
         let mut awaiting: Vec<RequestId> = Vec::new();
         for (owner, _credit) in &self.in_flight {
-            if let FrameOwner::Request(id) = owner {
+            if let Some(id) = owner.owned_id() {
                 awaiting.push(id.clone());
             }
         }
         for (_, owner) in &self.pending_frames {
-            if let FrameOwner::Request(id) = owner {
+            if let Some(id) = owner.owned_id() {
                 awaiting.push(id.clone());
             }
         }
@@ -1882,6 +1914,129 @@ mod tests {
                 .any(|f| f.contains(r#""id":8"#) && f.contains("-32803")),
             "a held query at a resource-limited revision is -32803"
         );
+        cleanup(&dir);
+    }
+
+    // ---- Soundness: a credit freed by a non-publication receipt feeds a starved plan ----
+
+    #[test]
+    fn freed_credit_feeds_a_credit_starved_publication() {
+        let main = "module main\n\npub fn f(): int {\n    return 1\n}\n";
+        let dir = temp_project("starve", main);
+        let mut coordinator = running(&dir);
+        coordinator.job_out = None;
+        coordinator.on_frame(open_body(&dir, 1, main).as_bytes());
+        coordinator.job_out = None;
+
+        // Exhaust every outbound credit with in-flight (unreceipted) error frames.
+        for id in 0..(crate::capacities::OUTBOUND_CREDITS as i64) {
+            coordinator.on_frame(
+                format!(r#"{{"jsonrpc":"2.0","id":{id},"method":"noSuchMethod"}}"#).as_bytes(),
+            );
+        }
+        assert_eq!(coordinator.outbound_credits.available(), 0);
+
+        // A snapshot commits its publication plan but is credit-starved: the plan holds the
+        // exclusive credit with frames pending and nothing in flight.
+        let snapshot = snapshot_at(&dir, main, coordinator.current_revision);
+        coordinator.on_worker_result(AnalysisOutcome::Snapshot(snapshot));
+        assert!(coordinator.publication.is_some(), "plan committed");
+        let starved = coordinator
+            .publication
+            .as_ref()
+            .expect("publication present");
+        assert!(
+            !starved.pending.is_empty(),
+            "frames pending under starvation"
+        );
+        assert_eq!(starved.in_flight_count, 0, "nothing fed yet");
+
+        // Delivering a non-publication frame frees a credit; the receipt must feed the
+        // starved publication rather than leaving its credit held forever.
+        coordinator.on_receipt();
+        assert!(
+            coordinator
+                .publication
+                .as_ref()
+                .is_some_and(|state| state.in_flight_count > 0),
+            "a freed credit feeds the starved publication"
+        );
+
+        // Drain to completion: the exclusive credit is released.
+        while coordinator.publication.is_some() {
+            coordinator.on_receipt();
+        }
+        cleanup(&dir);
+    }
+
+    // ---- Soundness: replies never flood the pending-frame queue past W ----
+
+    #[test]
+    fn credit_starved_replies_stay_held_not_queued() {
+        let main = "module main\n\npub fn f(): int {\n    return 1\n}\n";
+        let dir = temp_project("noflood", main);
+        let mut coordinator = running(&dir);
+        coordinator.job_out = None;
+        coordinator.on_frame(open_body(&dir, 1, main).as_bytes());
+        coordinator.job_out = None;
+
+        // Exhaust every outbound credit.
+        for id in 0..(crate::capacities::OUTBOUND_CREDITS as i64) {
+            coordinator.on_frame(
+                format!(r#"{{"jsonrpc":"2.0","id":{id},"method":"noSuchMethod"}}"#).as_bytes(),
+            );
+        }
+        assert_eq!(coordinator.outbound_credits.available(), 0);
+        let pending_before = coordinator.pending_frames.len();
+
+        // A burst of semantic requests with no free credit: they are held, not materialized.
+        for id in 100..140 {
+            coordinator.on_frame(hover_body(&dir, id, 3, 12).as_bytes());
+        }
+        assert!(
+            coordinator.held_queries.len() >= 40,
+            "the burst is held, not answered"
+        );
+
+        // A snapshot lands while credits are exhausted: no reply materializes, so the
+        // pending-frame queue does not grow with reply frames.
+        let snapshot = snapshot_at(&dir, main, coordinator.current_revision);
+        coordinator.on_worker_result(AnalysisOutcome::Snapshot(snapshot));
+        assert_eq!(
+            coordinator.pending_frames.len(),
+            pending_before,
+            "replies never enter the pending-frame queue"
+        );
+        assert!(
+            !coordinator.held_queries.is_empty(),
+            "unanswered replies stay held, bounded by the request ledger"
+        );
+        cleanup(&dir);
+    }
+
+    // ---- Soundness: initialize/shutdown ids retire on receipt, not at handoff ----
+
+    #[test]
+    fn initialize_id_reuse_in_delivery_window_is_rejected() {
+        let dir = temp_project("initreuse", "module main\n");
+        let mut coordinator = Coordinator::new();
+        coordinator.on_frame(initialize_body(&root_uri(dir.as_path())).as_bytes());
+        // The initialize id rides AwaitingDelivery until its receipt (not retired at handoff).
+        assert!(coordinator.requests.is_live(&RequestId::Integer(1)));
+
+        // A frame reusing the in-flight initialize id is caught as a duplicate, not answered
+        // a second time.
+        coordinator.on_frame(br#"{"jsonrpc":"2.0","id":1,"method":"noSuchMethod"}"#);
+        assert!(
+            frames(&coordinator)
+                .iter()
+                .any(|f| f.contains(r#""id":null"#) && f.contains("-32600")),
+            "the reused initialize id gets a null-id -32600"
+        );
+
+        // The receipt retires the id and advances the lifecycle.
+        coordinator.on_receipt();
+        assert!(!coordinator.requests.is_live(&RequestId::Integer(1)));
         cleanup(&dir);
     }
 

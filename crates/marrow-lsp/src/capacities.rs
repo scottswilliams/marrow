@@ -153,6 +153,12 @@ pub const F_IN_BYTES: u64 = MAX_FRAME_BODY_BYTES as u64;
 /// One writer receipt record (`B_receipt`).
 pub const B_RECEIPT_BYTES: u64 = 256;
 
+/// The largest small (non-diagnostic) outbound frame the pending queue holds: an error,
+/// a `showMessage`, or a null-id protocol frame. A semantic reply is never queued here —
+/// it materializes only against an available outbound credit — so the pending-frame queue
+/// holds at most one such small frame per live request/anonymous entry.
+pub const MAX_SMALL_FRAME_BYTES: u64 = 16 * 1024;
+
 /// The retained selected-root URI spelling (`B_selected_root_uri`).
 pub const B_SELECTED_ROOT_URI_BYTES: u64 = MAX_URI_BYTES as u64;
 
@@ -177,6 +183,10 @@ pub const fn m_owned() -> u64 {
     let coordinator = B_COORDINATOR_TRANSIENT_BYTES;
     let diagnostics = B_DIAG_LEDGER_BYTES + B_PUBLICATION_PLAN_BYTES;
     let outbound = OUTBOUND_CREDITS as u64 * (F_OUT_BYTES + B_RECEIPT_BYTES);
+    // The pending-frame queue holds at most one small frame per live request/anonymous
+    // entry (replies never queue — they materialize only against a credit).
+    let pending = (MAX_LIVE_REQUEST_ENTRIES as u64 + MAX_ANONYMOUS_ERROR_SLOTS as u64)
+        * MAX_SMALL_FRAME_BYTES;
     let fixed = B_SELECTED_ROOT_URI_BYTES + B_FIXED_TERMINAL_BYTES;
 
     inbound
@@ -187,6 +197,7 @@ pub const fn m_owned() -> u64 {
         + coordinator
         + diagnostics
         + outbound
+        + pending
         + fixed
 }
 

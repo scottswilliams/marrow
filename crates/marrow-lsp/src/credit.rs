@@ -69,7 +69,6 @@ impl<T> CreditPool<T> {
     }
 
     /// The number of credits currently available.
-    #[cfg(test)]
     pub fn available(&self) -> usize {
         self.available.len()
     }
