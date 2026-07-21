@@ -214,6 +214,53 @@ pub(super) fn not_yet_executable(
     )
 }
 
+/// A keyed branch named where a field of a materialized entry record is expected — the
+/// `b.notes[…]` chain off `if const b = ^root(k)`. A branch is a distinct durable node, not
+/// a projection of the whole-entry value, so the message steers to the durable-path form.
+/// `root` is the store-root source name (`books` for `^books`); `resource` is the resource
+/// the record materializes; `branch` is the branch member in source spelling.
+pub(super) fn branch_not_a_field(
+    file: &FileIdentity,
+    span: SourceSpan,
+    branch: &str,
+    resource: &str,
+    root: &str,
+) -> SourceDiagnostic {
+    SourceDiagnostic::at(
+        Code::CheckType.as_str(),
+        file,
+        span,
+        format!(
+            "`{branch}` is a keyed branch of `{resource}`, not a field of the bound entry \
+             value. A keyed branch is a distinct durable node reached through a store path, \
+             not projected from a materialized record. Read it directly with \
+             `^{root}[key].{branch}[branchKey]`, or bind the branch with a nested `if const`."
+        ),
+    )
+}
+
+/// A keyed sub-branch named on a materialized branch entry value (the `n.replies[…]` chain
+/// off `if const n = ^root(k).notes(nk)`). Like a top-level branch it is a distinct durable
+/// node, not a field; the concrete root spelling is not in hand here, so the message steers
+/// to the durable-path form generically.
+pub(super) fn subbranch_not_a_field(
+    file: &FileIdentity,
+    span: SourceSpan,
+    branch: &str,
+) -> SourceDiagnostic {
+    SourceDiagnostic::at(
+        Code::CheckType.as_str(),
+        file,
+        span,
+        format!(
+            "`{branch}` is a keyed branch, not a field of the bound entry value. A keyed \
+             branch is a distinct durable node reached through a store path, not projected \
+             from a materialized record. Read it through its durable path, or bind it with a \
+             nested `if const`."
+        ),
+    )
+}
+
 pub(super) fn name_error(file: &FileIdentity, span: SourceSpan, name: &str) -> SourceDiagnostic {
     SourceDiagnostic::at(
         Code::CheckType.as_str(),

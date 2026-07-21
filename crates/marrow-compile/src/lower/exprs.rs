@@ -3005,6 +3005,21 @@ impl<'a> FnLowerer<'a> {
                         return Some((index, GArg::Group(ty), true));
                     }
                     ProductFieldProjection::MissingRecordField => {
+                        // A keyed branch of the resource this whole-entry record materializes
+                        // from is not a projectable field: steer to the durable-path form
+                        // rather than reporting a bare missing field.
+                        if let Some(root) = self.durable.root_by_record(ty)
+                            && root.branch(name).is_some()
+                        {
+                            self.fail(branch_not_a_field(
+                                self.file,
+                                field_span,
+                                name,
+                                &root.resource,
+                                &root.name,
+                            ));
+                            return None;
+                        }
                         self.fail(SourceDiagnostic::at(
                             Code::CheckType.as_str(),
                             self.file,
@@ -3029,6 +3044,13 @@ impl<'a> FnLowerer<'a> {
                 // own; resolve its scalar fields against the branch's field layout.
                 if let Some(branch) = self.durable.branch_by_record(ty) {
                     let Some((index, field)) = branch.field_index(name) else {
+                        // A sub-branch of this materialized branch entry is a distinct durable
+                        // node, not a field: steer to the durable-path form, the same as a
+                        // top-level branch off a whole-entry record.
+                        if branch.branch(name).is_some() {
+                            self.fail(subbranch_not_a_field(self.file, field_span, name));
+                            return None;
+                        }
                         self.fail(SourceDiagnostic::at(
                             Code::CheckType.as_str(),
                             self.file,

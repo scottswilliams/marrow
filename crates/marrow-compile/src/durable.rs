@@ -298,6 +298,14 @@ impl DurableRegistry {
         self.roots.iter().find(|root| root.root_id == root_id)
     }
 
+    /// The executable root whose whole-entry record is the image type `ty`, if any — the
+    /// owner that recognizes a keyed branch named on a materialized entry record value read
+    /// through `if const b = ^root(k)`, so a `b.branch[…]` chain steers to the durable-path
+    /// form. Each root has a distinct record type, so at most one matches.
+    pub(crate) fn root_by_record(&self, ty: marrow_image::TypeId) -> Option<&DurableRoot> {
+        self.roots.iter().find(|root| root.record == ty)
+    }
+
     /// The executable branch whose materialized entry record is the image type `ty`, if
     /// any — the owner that resolves a field of a materialized branch entry value read
     /// through `if const n = ^root(k)….branch(bk)`. Searches every executable root's whole

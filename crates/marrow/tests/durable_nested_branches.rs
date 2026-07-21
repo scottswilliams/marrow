@@ -617,3 +617,50 @@ fn bounded_traversal_iterates_an_inner_branch_layer_under_a_fixed_ancestor_path(
         "the inner traversal is scoped to its ancestor path",
     );
 }
+
+// --- DX05 gap 2 (sibling): a sub-branch is not a field of a materialized branch value. ---
+
+fn compile_diags(body: &str) -> Vec<marrow_compile::SourceDiagnostic> {
+    let source = format!("{SOURCE}\n{body}");
+    let manifest = marrow_project::Manifest::parse("edition = \"2026\"\n").expect("manifest");
+    let files = vec![marrow_project::CapturedFile::new(
+        "src/main.mw".to_string(),
+        source.into_bytes(),
+    )];
+    let project = marrow_project::capture(
+        &manifest,
+        files,
+        Some(IDS.as_bytes()),
+        &marrow_project::CaptureLimits::DEFAULT,
+    )
+    .expect("capture");
+    match marrow_compile::compile(&project) {
+        Ok(_) => panic!("expected the checker to reject chaining a sub-branch off a record value"),
+        Err(marrow_compile::CompileFailure::Diagnostics(diagnostics)) => diagnostics.into_vec(),
+        Err(
+            marrow_compile::CompileFailure::Invariant(_)
+            | marrow_compile::CompileFailure::ResourceLimit(_),
+        ) => panic!("source-triggered compiler failures must remain diagnostics"),
+    }
+}
+
+#[test]
+fn chaining_a_subbranch_off_a_materialized_branch_steers_to_the_durable_path() {
+    // `if const n = ^books[id].notes[nid]` materializes the branch entry as a local record;
+    // its nested `tags` branch is a distinct durable node, not a projectable field, so the
+    // chain is refused with the same steering `check.type` a top-level branch gets.
+    let diagnostics = compile_diags(
+        "pub fn tagWeight(id: int, nid: string, tid: int): int? {\n    if const n = ^books[id].notes[nid] {\n        return n.tags[tid].weight\n    }\n    return absent\n}\n",
+    );
+    let diagnostic = diagnostics
+        .iter()
+        .find(|d| d.code == "check.type")
+        .unwrap_or_else(|| panic!("no check.type diagnostic in {diagnostics:#?}"));
+    assert!(
+        diagnostic.message.contains("`tags` is a keyed branch")
+            && diagnostic.message.contains("distinct durable node")
+            && diagnostic.message.contains("nested `if const`"),
+        "{}",
+        diagnostic.message
+    );
+}
