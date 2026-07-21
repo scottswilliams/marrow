@@ -380,19 +380,20 @@ impl<'a> StmtParser<'a> {
         match parsed {
             Some((binding, order, iterable, step, bound_head)) => {
                 let mut end = body.span;
-                let bound = bound_head.map(|(limit, from)| {
-                    // A bounded durable traversal takes a mandatory `on more` block
-                    // dedented like `else`; consume it when present (the checker reports
-                    // a missing arm), extending the statement span over it.
-                    let on_more = self.take_on_more_block();
-                    if let Some(block) = &on_more {
-                        end = block.span;
-                    }
-                    TraversalBound {
-                        limit,
-                        from,
-                        on_more,
-                    }
+                // A durable traversal takes a mandatory `on more` block dedented like
+                // `else`; consume it whenever it trails the body so it never desyncs
+                // into a bogus following statement. When the head carried `at most` the
+                // block rides its `TraversalBound` (the checker reports a missing arm);
+                // when it did not, the head is unbounded and the checker reports that at
+                // the head — the trailing block is consumed and dropped either way.
+                let on_more = self.take_on_more_block();
+                if let Some(block) = &on_more {
+                    end = block.span;
+                }
+                let bound = bound_head.map(|(limit, from)| TraversalBound {
+                    limit,
+                    from,
+                    on_more,
                 });
                 Some(Statement::For {
                     binding,
