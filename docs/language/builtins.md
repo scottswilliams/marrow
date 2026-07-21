@@ -125,7 +125,10 @@ check a keyed scalar leaf, so no durable form of `append` is current.
 keys without reading the store.
 
 `nextId` and `key` are not current built-ins. A caller supplies an identity
-directly as an `Id(^root)`.
+directly as an `Id(^root)`. An application that needs a fresh monotonically
+increasing key maintains its own durable counter root and allocates from it in
+the same transaction as the create; see
+[Counter allocation](idioms.md#counter-allocation).
 
 ## Output
 

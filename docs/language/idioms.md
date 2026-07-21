@@ -184,6 +184,96 @@ an unmarked operation that overflows or divides by zero stops with a
 source-uncatchable runtime fault instead. Writing `checked` is the visible signal
 that arithmetic here is expected to survive a fault, and the arm names which one.
 
+## Counter Allocation
+
+A caller supplies its own entry keys: `nextId` and `key` are not built-ins (see
+[Built-ins](builtins.md#entry-identities)). An application that needs a fresh,
+monotonically increasing key mints one from a durable counter it owns. The counter
+is an ordinary keyed root; a single `name`-keyed root serves every sequence in the
+program, one entry per sequence name.
+
+```mw
+module docs::allocation
+
+resource Counter {
+    required value: int
+}
+
+store ^idseq[name: string]: Counter
+
+resource Book {
+    required title: string
+}
+
+store ^books[id: int]: Book
+
+pub fn createBook(title: string): int {
+    transaction {
+        place seq = ^idseq["book"]
+        const next = (seq.value ?? 0) + 1
+        seq.value = next
+        ^books[next] = Book(title: title)
+        return next
+    }
+}
+
+pub fn titleOf(id: int): string? {
+    return ^books[id].title
+}
+
+pub fn seqValue(): int? {
+    return ^idseq["book"].value
+}
+```
+
+The allocation and the write that consumes it share the export's one
+`transaction`, so the increment and the create commit or roll back as a unit: a
+key is never advanced without the entry it was minted for, and a rolled-back
+create leaves the counter untouched. The read `seq.value ?? 0` supplies the
+first-allocation value when the counter entry is absent, so no separate
+initialization step is needed. Consistency between the counter and the payload
+root — advancing `^idseq["book"]` for each `^books` create — is the program's
+responsibility; the language enforces only that the two writes share the
+transaction.
+
+The allocated `int` is a bare key. To carry an allocated key as an
+[entry identity](types-and-values.md#entry-identity), wrap it with `Id(^root, key)`
+and use that value as the key operand:
+
+```mw
+module docs::allocation_identity
+
+resource Counter {
+    required value: int
+}
+
+store ^idseq[name: string]: Counter
+
+resource Book {
+    required title: string
+}
+
+store ^books[id: int]: Book
+
+pub fn createBook(title: string): Id(^books) {
+    transaction {
+        place seq = ^idseq["book"]
+        const next = (seq.value ?? 0) + 1
+        seq.value = next
+        const bid = Id(^books, next)
+        ^books[bid] = Book(title: title)
+        return bid
+    }
+}
+
+pub fn titleOf(id: Id(^books)): string? {
+    return ^books[id].title
+}
+```
+
+`Id(^books, next)` constructs the identity from the allocated key without reading
+the store, and the returned `Id(^books)` round-trips as the key of a later read.
+
 ## File Skeleton: Shape, Places, Acts
 
 A module is ordered from what data is to where it lives to what the program does:
