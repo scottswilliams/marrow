@@ -1,0 +1,43 @@
+module seating
+
+// Reserved seats by seat number over a Map<int, string>. Numbers need not be
+// contiguous, so seat 2 is a hole: the map keeps no positional filler, a missing seat
+// reads absent, and iteration visits seats in ascending key order. This is the shape a
+// durable numbered placement would round-trip through — present, hole, present. The
+// values here are local; no store is opened.
+
+fn plan(): Map<int, string> {
+    var seats: Map<int, string> = Map()
+    seats[1] = "ada"
+    seats[3] = "grace"
+    seats[4] = "hopper"
+    return seats
+}
+
+pub fn occupied(): int {
+    return length(plan())
+}
+
+pub fn holder(seat: int): string? {
+    const seats = plan()
+    return seats[seat]
+}
+
+pub fn order(): string {
+    var out: string = ""
+    for seat, name in plan() {
+        if not isEmpty(out) {
+            out += ","
+        }
+        out += name
+    }
+    return out
+}
+
+// A Map<int, V> admits the key 0 as an ordinary key, not a dead index.
+pub fn zeroKeyReads(): string? {
+    var m: Map<int, string> = Map()
+    m[0] = "front"
+    m[2] = "back"
+    return m[0]
+}

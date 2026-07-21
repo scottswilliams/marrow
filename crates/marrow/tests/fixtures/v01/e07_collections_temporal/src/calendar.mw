@@ -1,0 +1,34 @@
+module calendar
+
+// A project calendar keyed by date, the crossover of the collection and temporal
+// gates. A temporal type is a key type, so a Map<date, string> iterates in ascending
+// date order regardless of insertion order, and a day with no event reads absent.
+
+fn events(): Map<date, string> {
+    var c: Map<date, string> = Map()
+    c[date("2026-07-25")] = "release"
+    c[date("2026-07-10")] = "kickoff"
+    c[date("2026-07-18")] = "review"
+    return c
+}
+
+pub fn agenda(): string {
+    var out: string = ""
+    for day, label in events() {
+        if not isEmpty(out) {
+            out += " -> "
+        }
+        out += label
+    }
+    return out
+}
+
+pub fn labelOnKickoff(): string? {
+    const c = events()
+    return c[date("2026-07-10")]
+}
+
+pub fn labelOnEmptyDay(): string? {
+    const c = events()
+    return c[date("2026-07-11")]
+}

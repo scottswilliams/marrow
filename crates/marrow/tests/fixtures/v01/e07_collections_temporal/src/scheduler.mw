@@ -1,0 +1,71 @@
+module scheduler
+
+// A due-date desk over the narrow temporal value types. Dates, instants, and
+// durations are pure values built from canonical literals; there is no ambient clock,
+// so the assignment day is a fixed literal and the caller supplies only a lead time.
+// The operation floor is same-type comparison, `addDays`/`daysBetween`, `duration`
+// sums, and shifting an `instant` by a `duration`.
+
+fn assignedOn(): date {
+    return date("2026-07-15")
+}
+
+// The Unix epoch origin, the anchor a `date` is measured from (day zero).
+pub fn epochOrigin(): date {
+    return date("1970-01-01")
+}
+
+pub fn dueDate(leadDays: int): date {
+    return addDays(assignedOn(), leadDays)
+}
+
+// Days from the day at `todayLead` to the day at `dueLead`, both relative to the
+// assignment day (negative when the due day is already past).
+pub fn daysUntil(dueLead: int, todayLead: int): int {
+    const due = addDays(assignedOn(), dueLead)
+    const today = addDays(assignedOn(), todayLead)
+    return daysBetween(today, due)
+}
+
+pub fn overdue(dueLead: int, todayLead: int): bool {
+    const due = addDays(assignedOn(), dueLead)
+    const today = addDays(assignedOn(), todayLead)
+    return due < today
+}
+
+// A whole-unit duration written as a word literal (the singular unit form).
+pub fn oneDay(): duration {
+    return 1 day
+}
+
+// `duration + duration` sums two lead windows: three days plus one week.
+pub fn totalLead(): duration {
+    return 3 days + 1 week
+}
+
+// `instant - duration`: a reminder two hours before a deadline instant.
+pub fn reminder(): instant {
+    const deadline = instant("2026-07-15T17:00:00Z")
+    return deadline - 2 hours
+}
+
+// `instant + duration`: a deadline an eight-hour window after a start instant.
+pub fn deadline(): instant {
+    const start = instant("2026-07-15T09:00:00Z")
+    return start + 8 hours
+}
+
+// A sub-second fraction parses and orders after the whole second.
+pub fn fractionalAfterWhole(): bool {
+    return instant("2026-07-15T12:00:00.5Z") > instant("2026-07-15T12:00:00Z")
+}
+
+// A negative duration orders below zero.
+pub fn negativeBelowZero(): bool {
+    return duration("-PT1S") < duration("PT0S")
+}
+
+// Same-type date equality and inequality.
+pub fn dateEquality(): bool {
+    return date("2026-07-15") == date("2026-07-15") and date("2026-07-15") != date("2026-07-16")
+}

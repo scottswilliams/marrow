@@ -1,0 +1,65 @@
+module inventory
+
+// A stock ledger over a Map<string, int>: restock, discontinue, and read on-hand
+// quantities. A `Map` is a copied value, so a reader rebuilds the same ledger and a
+// mutation on a copy never touches its source; a real store would hold it durably.
+
+fn ledger(): Map<string, int> {
+    var stock: Map<string, int> = Map()
+    stock["apple"] = 10
+    stock["pear"] = 5
+    stock["plum"] = 7
+    return stock
+}
+
+pub fn skuCount(): int {
+    return length(ledger())
+}
+
+pub fn onHand(sku: string): int {
+    const stock = ledger()
+    return stock[sku] ?? 0
+}
+
+pub fn totalUnits(): int {
+    var total: int = 0
+    for sku, qty in ledger() {
+        total += qty
+    }
+    return total
+}
+
+// One restock/discontinue journey: restock apple (a replace at an existing key),
+// discontinue pear (`unset`), and stock a new sku. Returns the final ledger.
+pub fn afterRestock(): Map<string, int> {
+    var stock = ledger()
+    stock["apple"] = (stock["apple"] ?? 0) + 3
+    unset stock["pear"]
+    stock["cherry"] = 4
+    return stock
+}
+
+pub fn discontinuedIsAbsent(): bool {
+    var stock = ledger()
+    unset stock["pear"]
+    if const hit = stock["pear"] {
+        return false
+    } else return true
+}
+
+// `unset` on an absent key is an idempotent no-op that never faults.
+pub fn unsetAbsentIsNoop(): int {
+    var stock = ledger()
+    unset stock["quince"]
+    return length(stock)
+}
+
+// Value semantics: unsetting a key on a copy leaves the source untouched.
+pub fn copyDoesNotAlias(): bool {
+    const original = ledger()
+    var copy = original
+    unset copy["apple"]
+    const inOriginal = original["apple"] ?? 0
+    const inCopy = copy["apple"] ?? 0
+    return inOriginal == 10 and inCopy == 0
+}

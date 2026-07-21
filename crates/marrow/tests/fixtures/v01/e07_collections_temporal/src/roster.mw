@@ -1,0 +1,44 @@
+module roster
+
+// A sign-up sheet parsed from one comma-separated line, the way a desk takes a day's
+// names. A `List` is a finite ordered value: it constructs from text, grows with
+// `append`, reads with 1-based bracket positions, and iterates in insertion order.
+
+fn parse(raw: string): List<string> {
+    return split(raw, ",")
+}
+
+pub fn first(raw: string): string? {
+    const names = parse(raw)
+    return names[1]
+}
+
+pub fn last(raw: string): string? {
+    const names = parse(raw)
+    return names[length(names)]
+}
+
+pub fn at(raw: string, pos: int): string? {
+    const names = parse(raw)
+    return names[pos]
+}
+
+pub fn addAndList(raw: string, latecomer: string, sep: string): string {
+    var names = parse(raw)
+    names = append(names, latecomer)
+    return join(names, sep)
+}
+
+pub fn sumEntries(a: int, b: int, c: int): int {
+    const xs = List(a, b, c)
+    var total: int = 0
+    for x in xs {
+        total += x
+    }
+    return total
+}
+
+pub fn emptyList(): bool {
+    const xs: List<int> = List()
+    return length(xs) == 0 and isEmpty(xs)
+}
