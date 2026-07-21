@@ -269,3 +269,65 @@ fn an_unknown_traversed_branch_is_rejected() {
         "check.type",
     );
 }
+
+#[test]
+fn a_bare_place_name_is_not_a_traversal_family() {
+    // A `place` names one durable entry, not a family. Iterating the bare place name is
+    // refused with a steering `check.type` — the branch beneath it (`b.notes`) is the family.
+    assert_rejected(
+        r#"pub fn f(n: int): int {
+    var t = 0
+    place b = ^books[n]
+    for k in b at most 5 {
+        t += k
+    } on more {
+        t = -1
+    }
+    return t
+}
+"#,
+        "check.type",
+    );
+}
+
+#[test]
+fn an_unknown_branch_beneath_a_place_is_rejected() {
+    // A branch selection on a place resolves against the place's node; an unknown branch
+    // name is a precise `check.type` at the traversed name.
+    assert_rejected(
+        r#"pub fn f(n: int): int {
+    var t = 0
+    place b = ^books[n]
+    for p in b.unknownBranch at most 5 {
+        t += p
+    } on more {
+        t = -1
+    }
+    return t
+}
+"#,
+        "check.type",
+    );
+}
+
+#[test]
+fn a_place_base_bound_through_an_entry_identity_is_not_yet_executable() {
+    // A place bound through an entry identity carries its root as a typed identity column
+    // the bounded-traversal ancestor pop does not yet accept; the checker refuses the
+    // traversal base with `check.unsupported` rather than admitting an image the verifier
+    // rejects (the checker-accept ⇒ verify-accept agreement law).
+    assert_rejected(
+        r#"pub fn f(n: int): int {
+    var t = 0
+    place b = ^books[Id(^books, n)]
+    for p in b.notes at most 5 {
+        t += p
+    } on more {
+        t = -1
+    }
+    return t
+}
+"#,
+        "check.unsupported",
+    );
+}

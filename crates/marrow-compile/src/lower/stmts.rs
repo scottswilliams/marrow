@@ -1275,7 +1275,7 @@ impl<'a> FnLowerer<'a> {
             return self.lower_index_scan(binding, read, bound, body, span);
         }
         // A durable traversal place iterates the store; it is always bounded.
-        if Self::is_traversal_place(iterable) {
+        if self.is_traversal_place(iterable) {
             if order != marrow_syntax::LoopOrder::Forward {
                 self.fail(unsupported(self.file, span, "reversed durable traversal"));
                 return Flow::Fallthrough;
@@ -1284,6 +1284,21 @@ impl<'a> FnLowerer<'a> {
                 return Flow::Fallthrough;
             };
             return self.lower_bounded_traversal(binding, target, bound, body, span);
+        }
+        // A bare `place`/pin name is one durable entry, not a family: it is not a
+        // traversal base. Steer to the branch family beneath it rather than falling to the
+        // generic collection refusal.
+        if self.is_place_name(iterable) {
+            self.fail(SourceDiagnostic::at(
+                Code::CheckType.as_str(),
+                self.file,
+                span,
+                "a `place` names one durable entry, not a family to iterate. Traverse a \
+                 keyed branch beneath it with `for k in <place>.branch at most N`, or \
+                 iterate the store root directly (`for k in ^root at most N`)."
+                    .to_string(),
+            ));
+            return Flow::Fallthrough;
         }
         // A range or local collection takes no `at most N` / `on more` clause.
         if bound.is_some() {
@@ -1457,14 +1472,16 @@ impl<'a> FnLowerer<'a> {
     }
 
     /// Whether `iterable` names a durable traversal place syntactically: a bare store root
-    /// `^root` (the root entry family) or an entry address extended by a bare branch-layer
+    /// `^root` (the root entry family), an entry address extended by a bare branch-layer
     /// name `^root(key)….branch` (a keyed branch family under a fixed ancestor key-path, at
-    /// any depth). The resolver rechecks the store and branch names; this only routes the
-    /// head to the durable path.
-    fn is_traversal_place(iterable: &Expression) -> bool {
+    /// any depth), or a bare branch selection on an in-scope `place`/pin name
+    /// `<place>.branch` (the branch family beneath the entry the place already addresses).
+    /// The resolver rechecks the store, place, and branch names; this only routes the head
+    /// to the durable path.
+    fn is_traversal_place(&self, iterable: &Expression) -> bool {
         match iterable {
             Expression::SavedRoot { .. } => true,
-            Expression::Field { base, .. } => is_entry_address(base),
+            Expression::Field { base, .. } => is_entry_address(base) || self.is_place_name(base),
             _ => false,
         }
     }
@@ -1543,6 +1560,17 @@ impl<'a> FnLowerer<'a> {
                 span,
                 ..
             } => {
+                // A bare branch selection on an in-scope `place`/pin name iterates the
+                // branch family beneath the entry the place already addresses; its ancestor
+                // key-path is the place's pre-evaluated key slots.
+                if self.is_place_name(base) {
+                    return self.resolve_traversal_through_place(
+                        base,
+                        layer_name,
+                        *layer_span,
+                        *span,
+                    );
+                }
                 // The base is the addressed parent entry `^root(k)….b(bk)`; the final bare
                 // name is the branch family iterated under it. Its ancestor key-path is the
                 // parent entry's whole key-path (root-first). The store is resolved at the
@@ -1573,6 +1601,93 @@ impl<'a> FnLowerer<'a> {
             }
             _ => None,
         }
+    }
+
+    /// Resolve `<place>.branch` into the traversed branch layer's entry site, its immediate
+    /// key type, and the ancestor key-path locating its parent entry. The parent is the
+    /// entry the `place`/pin already addresses, so the ancestor key-path is the place's
+    /// pre-evaluated key slots (`bound_keys`), root-first: one slot for a single-key root
+    /// place, several for a composite-key root place or a nested branch place. The branch is
+    /// found beneath the place's recorded durable node — its branch record for a branch
+    /// place, its owning root for a root place — so resolution never re-parses the address.
+    /// Reports a precise diagnostic and returns `None` when the place's node declares no
+    /// keyed branch by that name.
+    fn resolve_traversal_through_place<'e>(
+        &mut self,
+        place_base: &Expression,
+        layer_name: &str,
+        layer_span: SourceSpan,
+        span: SourceSpan,
+    ) -> Option<TraversalTarget<'e>> {
+        let Expression::Name { segments, .. } = place_base else {
+            return None;
+        };
+        let [name] = segments.as_slice() else {
+            return None;
+        };
+        let place = self.lookup_place(name)?;
+        let node_kind = place.node_kind;
+        let record = place.record;
+        let entry_site = place.entry_site;
+        let identity_keyed = place.identity_keyed;
+        let ancestor_keys = place.bound_keys();
+        // A place bound through an entry identity carries its root as a typed identity
+        // column, which the bounded-traversal ancestor pop does not yet accept; refuse it as
+        // a traversal base truthfully rather than admitting an image the verifier rejects.
+        // Every other operation through the place still accepts the identity column, so
+        // binding the place to its key columns (`^root[key]`) traverses a branch beneath it.
+        if identity_keyed {
+            self.fail(unsupported(
+                self.file,
+                layer_span,
+                "traversing a branch beneath a place bound to an entry identity",
+            ));
+            return None;
+        }
+
+        // The traversed branch is declared beneath the place's node, selected by its
+        // recorded node kind — the same projection a place field access uses. `self.durable`
+        // outlives the `&self` borrow, so the resolved branch is independent of the mutable
+        // calls below.
+        let durable: &'a crate::durable::DurableRegistry = self.durable;
+        let branch = match node_kind {
+            PlaceNodeKind::Branch => durable
+                .branch_by_record(record)
+                .and_then(|branch| branch.branch(layer_name)),
+            PlaceNodeKind::Root => durable
+                .root_by_entry_site(entry_site)
+                .and_then(|root| root.branch(layer_name)),
+        };
+        let Some(branch) = branch else {
+            let container = match node_kind {
+                PlaceNodeKind::Branch => durable
+                    .branch_by_record(record)
+                    .map(|branch| branch.name.clone())
+                    .unwrap_or_default(),
+                PlaceNodeKind::Root => durable
+                    .root_by_entry_site(entry_site)
+                    .map(|root| root.name.clone())
+                    .unwrap_or_default(),
+            };
+            self.fail(SourceDiagnostic::at(
+                Code::CheckType.as_str(),
+                self.file,
+                layer_span,
+                format!("`{container}` has no keyed branch `{layer_name}`"),
+            ));
+            return None;
+        };
+        let branch_entry_site = branch.entry_site;
+        let branch_record = branch.record;
+        let key_ty = self.single_traversal_column(&branch.key, span)?;
+        Some(TraversalTarget {
+            entry_site: branch_entry_site,
+            key_ty,
+            record: branch_record,
+            node_kind: PlaceNodeKind::Branch,
+            ancestor_keys,
+            span,
+        })
     }
 
     /// The single key column of a traversable layer, or a typed `check.unsupported` when
@@ -1670,22 +1785,33 @@ impl<'a> FnLowerer<'a> {
         let ancestor_slots: Vec<(u16, ScalarType)> = if place_var.is_some() {
             let mut slots = Vec::with_capacity(target.ancestor_keys.len());
             for column in &target.ancestor_keys {
-                let PlaceKey::Expr(key_expr) = column.key else {
-                    self.fail(unsupported(
-                        self.file,
-                        target.span,
-                        "a per-iteration address over this traversal",
-                    ));
-                    return Flow::Fallthrough;
+                let slot = match column.key {
+                    // A place/pin base supplies its ancestor columns as slots evaluated once
+                    // at the place binding; the pin reuses those slots directly rather than
+                    // re-evaluating the key.
+                    PlaceKey::Bound(slot) => slot,
+                    // An inline `^root(k)….branch` base evaluates each ancestor key once here
+                    // into a fresh slot, so the pin and the opcode read one evaluation.
+                    PlaceKey::Expr(key_expr) => {
+                        let slot = self.alloc_slot();
+                        if self
+                            .lower_as(key_expr, LTy::bare_scalar(column.key_ty))
+                            .is_none()
+                        {
+                            return Flow::Fallthrough;
+                        }
+                        self.push(Instr::LocalSet(slot), target.span);
+                        slot
+                    }
+                    PlaceKey::Identity { .. } => {
+                        self.fail(unsupported(
+                            self.file,
+                            target.span,
+                            "a per-iteration address over an identity-keyed traversal parent",
+                        ));
+                        return Flow::Fallthrough;
+                    }
                 };
-                let slot = self.alloc_slot();
-                if self
-                    .lower_as(key_expr, LTy::bare_scalar(column.key_ty))
-                    .is_none()
-                {
-                    return Flow::Fallthrough;
-                }
-                self.push(Instr::LocalSet(slot), target.span);
                 slots.push((slot, column.key_ty));
             }
             for (slot, _) in &slots {
@@ -1768,6 +1894,10 @@ impl<'a> FnLowerer<'a> {
                         entry_site,
                         record,
                         node_kind,
+                        // A per-iteration pin's key-path is the captured ancestor slots plus
+                        // the frozen loop key — all bare scalar columns, never an identity
+                        // column — so a nested traversal through the pin is admitted.
+                        identity_keyed: false,
                     });
                 }
             },

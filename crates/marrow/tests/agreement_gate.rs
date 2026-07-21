@@ -434,6 +434,34 @@ fn matrix() -> Vec<Row> {
             ops: "pub fn crIdSeed(s: string, c: string, score: int) {\n    transaction {\n        ^grades[s, c] = Grade(score: score)\n    }\n}\n\npub fn crIdPlaceWrite(s: string, c: string, score: int) {\n    transaction {\n        place g = ^grades[Id(^grades, s, c)]\n        g.score = score\n    }\n}\n\npub fn crIdRead(s: string, c: string): int? {\n    return ^grades[s, c].score\n}\n\ntest \"composite-root place over a single identity operand round trips\" {\n    crIdSeed(\"amy\", \"cs\", 90)\n    crIdPlaceWrite(\"amy\", \"cs\", 75)\n    assert crIdRead(\"amy\", \"cs\") ?? 0 == 75\n}",
             expect: Expect::RoundTrips { run: true },
         },
+        // ---- DX02: a named place or per-iteration pin as a bounded-traversal base. ----
+        // A place already addresses an entry; `for k in <place>.branch` traverses the branch
+        // family beneath it, feeding the place's captured key slots as the traversal's
+        // ancestor key-path. Each row drives the branch traversal through a place/pin base
+        // end to end.
+        //
+        // A root place is a branch traversal base: `place b = ^books[id]; for noteId in
+        // b.notes` counts the entries under the fixed parent the place binds.
+        Row {
+            label: "DX02: root place branch traversal / driver test",
+            ops: "pub fn aAddBook(id: int) {\n    transaction {\n        ^books[id] = Book(title: \"t\", isbn: \"i\")\n    }\n}\n\npub fn aAddNote(id: int, n: string) {\n    transaction {\n        ^books[id].notes[n] = Book.notes(text: \"x\")\n    }\n}\n\npub fn aCountViaPlace(id: int): int {\n    var c = 0\n    place b = ^books[id]\n    for noteId in b.notes at most 100 {\n        c += 1\n    } on more {\n        c = -1\n    }\n    return c\n}\n\ntest \"root place is a branch traversal base\" {\n    aAddBook(50)\n    aAddNote(50, \"a\")\n    aAddNote(50, \"b\")\n    assert aCountViaPlace(50) == 2\n}",
+            expect: Expect::RoundTrips { run: true },
+        },
+        // A two-binding place base: the pin's key-path is the place's captured root slot
+        // followed by each frozen note key, so `delete note` erases through the pin. This
+        // drives the ancestor-slot capture over a `PlaceKey::Bound` column.
+        Row {
+            label: "DX02: two-binding place base deletes through the pin / driver test",
+            ops: "pub fn bAddBook(id: int) {\n    transaction {\n        ^books[id] = Book(title: \"t\", isbn: \"i\")\n    }\n}\n\npub fn bAddNote(id: int, n: string) {\n    transaction {\n        ^books[id].notes[n] = Book.notes(text: \"x\")\n    }\n}\n\npub fn bClearViaPlace(id: int): int {\n    var c = 0\n    transaction {\n        place b = ^books[id]\n        for noteId, note in b.notes at most 100 {\n            c += 1\n            delete note\n        } on more {\n            c = -1\n        }\n    }\n    return c\n}\n\npub fn bCountViaPlace(id: int): int {\n    var c = 0\n    place b = ^books[id]\n    for noteId in b.notes at most 100 {\n        c += 1\n    } on more {\n        c = -1\n    }\n    return c\n}\n\ntest \"two-binding place base deletes through the pin\" {\n    bAddBook(60)\n    bAddNote(60, \"a\")\n    bAddNote(60, \"b\")\n    assert bClearViaPlace(60) == 2\n    assert bCountViaPlace(60) == 0\n}",
+            expect: Expect::RoundTrips { run: true },
+        },
+        // A per-iteration pin is an inner traversal base: the outer pin `book` addresses each
+        // frozen entry, and `for noteId in book.notes` traverses the branch beneath it.
+        Row {
+            label: "DX02: per-iteration pin as an inner traversal base / driver test",
+            ops: "pub fn cAddBook(id: int, isbn: string) {\n    transaction {\n        ^books[id] = Book(title: \"t\", isbn: isbn)\n    }\n}\n\npub fn cAddNote(id: int, n: string) {\n    transaction {\n        ^books[id].notes[n] = Book.notes(text: \"x\")\n    }\n}\n\npub fn cCountViaPin(): int {\n    var c = 0\n    for id, book in ^books at most 100 {\n        for noteId in book.notes at most 100 {\n            c += 1\n        } on more {\n            c = -1\n        }\n    } on more {\n        c = -1\n    }\n    return c\n}\n\ntest \"a per-iteration pin is an inner traversal base\" {\n    cAddBook(70, \"i70\")\n    cAddNote(70, \"a\")\n    cAddBook(71, \"i71\")\n    cAddNote(71, \"b\")\n    assert cCountViaPin() == 2\n}",
+            expect: Expect::RoundTrips { run: true },
+        },
     ]
 }
 

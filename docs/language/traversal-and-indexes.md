@@ -19,13 +19,21 @@ for k[, p] in <place> at most N [from f] {
 }
 ```
 
-`<place>` is a store root such as `^books` (the root entry family) or a keyed
+`<place>` is a store root such as `^books` (the root entry family), a keyed
 branch such as `^books[id].notes` (the branch family beneath one fixed parent
-entry, at any nesting depth). The first loop variable `k` binds each immediate key
-in ascending [typed key order](types-and-values.md#key-types); the value at that key
-is read separately inside the body. `N` is a positive integer literal no larger
-than the traversal ceiling (65536). An inclusive `from f` starts the walk at or
-after the key `f`.
+entry, at any nesting depth), or a bare branch selection on a [named
+`place`](durable-places.md#named-places) or a per-iteration pin — `b.notes`, where
+`b` already addresses an entry. A place base reuses the entry the place already
+addresses as the traversal's fixed parent, so its key-path is evaluated once at the
+place binding rather than re-spelled at the head. The first loop variable `k` binds
+each immediate key in ascending [typed key order](types-and-values.md#key-types); the
+value at that key is read separately inside the body. `N` is a positive integer literal
+no larger than the traversal ceiling (65536). An inclusive `from f` starts the walk at
+or after the key `f`.
+
+A bare `place`/pin name is one durable entry, not a family, so it is not itself a
+traversal base: iterate a keyed branch beneath it (`for k in b.notes …`), or iterate
+the store root directly (`for k in ^books …`).
 
 An optional second variable `p` binds a per-iteration address pin: a
 [`place`](durable-places.md#named-places) over the entry at the current key,
@@ -72,6 +80,49 @@ pub fn sumNoteKeys(id: int): int {
     var sum = 0
     for pos in ^books[id].notes at most 100 from 1 {
         sum += pos
+    } on more {
+        sum = -1
+    }
+    return sum
+}
+```
+
+A named `place` or a per-iteration pin can stand in for the fixed parent. `place b =
+^books[id]` addresses one book; `for pos in b.notes` then traverses the notes beneath
+it, and an outer pin `book` is itself an inner base:
+
+```mw
+module docs::place_traversal
+
+resource Book {
+    required title: string
+
+    notes[pos: int] {
+        required text: string
+    }
+}
+
+store ^books[id: int]: Book
+
+pub fn sumNoteKeysViaPlace(id: int): int {
+    var sum = 0
+    place b = ^books[id]
+    for pos in b.notes at most 100 {
+        sum += pos
+    } on more {
+        sum = -1
+    }
+    return sum
+}
+
+pub fn sumAllNoteKeys(): int {
+    var sum = 0
+    for id, book in ^books at most 100 {
+        for pos in book.notes at most 100 {
+            sum += pos
+        } on more {
+            sum = -1
+        }
     } on more {
         sum = -1
     }

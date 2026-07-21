@@ -106,6 +106,13 @@ pub(super) struct PlaceLocal {
     pub(super) entry_site: u16,
     pub(super) record: TypeId,
     pub(super) node_kind: PlaceNodeKind,
+    /// Whether any key column was captured from an entry-identity operand
+    /// (`^root[Id(…)]`). Such a slot carries the identity's root through the verifier as a
+    /// typed identity column, which the bounded-traversal ancestor pop does not yet accept;
+    /// a place base with an identity column is therefore refused as a traversal base until
+    /// that verifier acceptance lands. Every other operation through the place already
+    /// admits an identity-column key-path.
+    pub(super) identity_keyed: bool,
 }
 
 /// A resolved source managed-index read `^root.index[keys]`: the index, the executable
@@ -128,7 +135,7 @@ impl PlaceLocal {
 
     /// This place's key-path as resolved [`DurKey`] columns reading the pre-evaluated
     /// slots, root column first.
-    fn bound_keys(&self) -> Vec<DurKey<'static>> {
+    pub(super) fn bound_keys(&self) -> Vec<DurKey<'static>> {
         self.key_slots
             .iter()
             .map(|(slot, ty)| DurKey {
@@ -909,6 +916,13 @@ impl<'a> FnLowerer<'a> {
             return;
         };
         let span = place.span;
+        // A key captured from an entry identity carries the identity's root as a typed
+        // identity column through the verifier; record it so a traversal base through this
+        // place is refused until the traversal ancestor pop accepts that column.
+        let identity_keyed = place
+            .keys
+            .iter()
+            .any(|column| matches!(column.key, PlaceKey::Identity { .. }));
         let DurTarget::Entry {
             entry_site,
             record,
@@ -984,6 +998,7 @@ impl<'a> FnLowerer<'a> {
             entry_site,
             record,
             node_kind,
+            identity_keyed,
         });
     }
 

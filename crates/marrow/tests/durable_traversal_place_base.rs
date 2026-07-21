@@ -105,17 +105,6 @@ pub fn sumNotesViaPlaceFirst2(id: int): int {
     return total
 }
 
-pub fn sumNotesViaIdPlace(id: int): int {
-    var total = 0
-    place b = ^books[Id(^books, id)]
-    for pos in b.notes at most 100 {
-        total += pos
-    } on more {
-        total = total + 1000
-    }
-    return total
-}
-
 pub fn clearNotesViaPlace(id: int): int {
     var total = 0
     transaction {
@@ -274,23 +263,58 @@ fn a_place_base_carries_the_on_more_overflow_arm() {
 }
 
 #[test]
-fn an_identity_keyed_place_is_a_branch_traversal_base() {
-    let image = compile_verify(SOURCE);
-    let mut attachment = attach(&image);
-    seed_notes(&image, &mut attachment);
-
-    // `place b = ^books[Id(^books, 1)]`: the identity spreads into the root key column at
-    // the binding, so the branch traversal beneath the place folds notes {10,20} = 30.
-    assert_eq!(
-        run(
-            &image,
-            &mut attachment,
-            "sumNotesViaIdPlace",
-            vec![Value::Int(1)]
-        ),
-        Some(Value::Int(30))
+fn an_identity_keyed_place_base_is_refused_until_the_verifier_accepts_its_column() {
+    // A place bound through an entry identity carries its root as a typed identity column,
+    // which the bounded-traversal ancestor pop does not yet accept. Admitting it would break
+    // the checker-accept ⇒ verify-accept agreement law, so the checker refuses it truthfully
+    // with `check.unsupported` at the traversed branch. (The verifier acceptance that would
+    // make this a round trip is a separate soundness-critical lane; see the lane report.)
+    let source = format!(
+        "{SCHEMA_ONLY}\n{}",
+        "pub fn sumNotesViaIdPlace(id: int): int {\n    var total = 0\n    place b = ^books[Id(^books, id)]\n    for pos in b.notes at most 100 {\n        total += pos\n    } on more {\n        total = total + 1000\n    }\n    return total\n}\n"
+    );
+    let manifest = marrow_project::Manifest::parse("edition = \"2026\"\n").expect("manifest");
+    let files = vec![marrow_project::CapturedFile::new(
+        "src/main.mw".to_string(),
+        source.into_bytes(),
+    )];
+    let project = marrow_project::capture(
+        &manifest,
+        files,
+        Some(IDS.as_bytes()),
+        &marrow_project::CaptureLimits::DEFAULT,
+    )
+    .expect("capture");
+    let diagnostics = match marrow_compile::compile(&project) {
+        Ok(_) => panic!("an identity-keyed place base must be refused"),
+        Err(marrow_compile::CompileFailure::Diagnostics(diagnostics)) => diagnostics.into_vec(),
+        Err(other) => panic!("expected diagnostics, got {other:?}"),
+    };
+    let hit = diagnostics
+        .iter()
+        .find(|d| d.code == "check.unsupported")
+        .unwrap_or_else(|| {
+            panic!(
+                "expected check.unsupported, got {:?}",
+                diagnostics.iter().map(|d| d.code).collect::<Vec<_>>()
+            )
+        });
+    assert!(
+        hit.line() >= 1 && hit.column() >= 1,
+        "the refusal carries a located span: {hit:?}"
     );
 }
+
+/// The books-only schema, for the identity-keyed refusal fixture above.
+const SCHEMA_ONLY: &str = r#"resource Book {
+    required title: string
+
+    notes[pos: int] {
+        required text: string
+    }
+}
+
+store ^books[id: int]: Book"#;
 
 #[test]
 fn a_per_iteration_pin_is_an_inner_traversal_base() {
