@@ -227,3 +227,31 @@ fn get_and_insert_are_deleted_but_shadowable() {
         "fn get(a: int): int {\n    return a\n}\n\npub fn f(): int {\n    return get(7)\n}",
     ));
 }
+
+/// `optional == absent` / `!= absent` is not a presence form: presence is asked with
+/// `if const`, `??`, or `exists(...)`. The equality is refused with a steering `check.type`
+/// at the `absent` operand naming the canonical presence forms, rather than the bare
+/// "the type of `absent` cannot be inferred here".
+#[test]
+fn equality_against_absent_steers_to_the_presence_forms() {
+    for op in ["==", "!="] {
+        let diagnostics = compile_err(&wrap(&format!(
+            "pub fn f(xs: List<int>): bool {{\n    return xs[1] {op} absent\n}}"
+        )));
+        let diagnostic = first_of(&diagnostics, "check.type");
+        // Voice: `absent` in source spelling leads, the presence rule follows, and the fix
+        // names the canonical presence forms.
+        assert!(
+            diagnostic.message.starts_with("`absent` is not an operand of"),
+            "{op}: {}",
+            diagnostic.message
+        );
+        assert!(
+            diagnostic.message.contains("if const")
+                && diagnostic.message.contains("??")
+                && diagnostic.message.contains("exists("),
+            "{op}: {}",
+            diagnostic.message
+        );
+    }
+}
