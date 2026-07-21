@@ -8,6 +8,7 @@ mod cmd_check;
 mod cmd_client;
 mod cmd_fmt;
 mod cmd_init;
+mod cmd_lsp;
 mod cmd_run;
 mod cmd_test;
 mod outcome;
@@ -25,6 +26,7 @@ Usage:
   marrow run <export> [--format jsonl] [-- <args>...]
   marrow test [--format text|jsonl] [--filter <substring>]
   marrow client typescript [--out <dir>]
+  marrow lsp
   marrow --version
   marrow --help
 
@@ -37,7 +39,9 @@ compiles the project at the working directory, verifies the program image, and
 runs an exported function. `test` discovers `test \"name\"` declarations, runs
 each storeless through the verified image, and reports pass/fail/error. `client
 typescript` compiles and verifies the project, then emits the generated strict
-TypeScript client and the pinned Node supervision module. The data, doctor,
+TypeScript client and the pinned Node supervision module. `lsp` runs the in-tree
+language server over stdio, serving diagnostics, formatting, hover, and definition
+to an editor from the compiler's published analysis facts. The data, doctor,
 evolve, serve, backup, and restore commands are being refounded and return
 through their later lanes; invoking one reports cli.command_unsupported.
 ";
@@ -94,6 +98,7 @@ fn dispatch(command: &str, rest: &[String]) -> ExitCode {
         "run" => cmd_run::run(rest),
         "test" => cmd_test::test(rest),
         "client" => cmd_client::client(rest),
+        "lsp" => cmd_lsp::lsp(rest),
         "--help" | "-h" | "help" => {
             print!("{}", term_style::render_help(Stream::Stdout, HELP));
             ExitCode::SUCCESS

@@ -42,9 +42,15 @@ pub enum AnalysisOutcome {
     /// evidence is carried for the request-owned `-32803` and the background episode.
     Capture(CaptureRejection),
     /// The analysis floor exhausted a fixed resource bound. Recoverable.
-    ResourceLimit { revision: InputRevision },
+    ResourceLimit {
+        /// The revision the exhausted analysis belonged to.
+        revision: InputRevision,
+    },
     /// The compiler was internally incoherent. Fail-stop class.
-    Invariant { revision: InputRevision },
+    Invariant {
+        /// The revision the incoherent analysis belonged to.
+        revision: InputRevision,
+    },
 }
 
 /// Bounded rendered capture-failure evidence: a stable code and an operational message.

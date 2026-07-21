@@ -38,7 +38,10 @@ pub enum FramingFault {
     /// The `Content-Length` value was not a non-negative integer.
     InvalidContentLength,
     /// The declared body length exceeded [`MAX_FRAME_BODY_BYTES`].
-    BodyTooLarge { declared: usize },
+    BodyTooLarge {
+        /// The declared `Content-Length` that exceeded the bound.
+        declared: usize,
+    },
     /// The stream ended after a partial frame (header or body).
     TruncatedFrame,
     /// A memory reservation for the bounded body failed.

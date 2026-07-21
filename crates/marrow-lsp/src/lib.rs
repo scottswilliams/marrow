@@ -32,5 +32,8 @@ pub mod lifecycle;
 pub mod outbound;
 pub mod position;
 pub mod protocol;
+pub mod server;
 pub mod transport;
 pub mod uri;
+
+pub use server::serve;
