@@ -408,7 +408,14 @@ impl<'a> FnLowerer<'a> {
         match op {
             UnaryOp::Neg => {
                 if ty != LTy::bare_scalar(ScalarType::Int) {
-                    self.fail(unary_error(self.records, self.file, span, "negate", ty));
+                    self.fail(unary_error(
+                        self.records,
+                        self.file,
+                        span,
+                        "negate",
+                        ty,
+                        LTy::bare_scalar(ScalarType::Int),
+                    ));
                     return None;
                 }
                 self.push(Instr::IntNeg, span);
@@ -422,6 +429,7 @@ impl<'a> FnLowerer<'a> {
                         span,
                         "apply `not` to",
                         ty,
+                        LTy::bare_scalar(ScalarType::Bool),
                     ));
                     return None;
                 }

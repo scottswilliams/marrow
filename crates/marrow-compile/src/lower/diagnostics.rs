@@ -468,9 +468,13 @@ pub(super) fn unary_error(
     span: SourceSpan,
     verb: &str,
     ty: LTy,
+    wanted: LTy,
 ) -> SourceDiagnostic {
     let mut message = format!("cannot {verb} {}", ty.spelling(records));
-    if ty.is_optional() {
+    // Steer only when presence is the sole blocker: the operand is `wanted` under one
+    // optional layer, so making it present resolves the operation. A different bare type
+    // (`not text`) is not presence-fixable and carries no steer.
+    if ty.is_optional() && ty.to_bare() == wanted {
         present_idiom_steer(&mut message);
     }
     SourceDiagnostic::at(Code::CheckType.as_str(), file, span, message)
@@ -490,9 +494,10 @@ pub(super) fn binary_error(
         left.spelling(records),
         right.spelling(records)
     );
-    // An operand is optional where a present value is required: an optional never combines
-    // under an operator, so steer to making it present first.
-    if left.is_optional() || right.is_optional() {
+    // Steer only when the operands differ solely in presence — same bare type, at least one
+    // optional — so making the optional present is what resolves the operator. Operands of
+    // different bare types (`int? + text`) are not presence-fixable and carry no steer.
+    if (left.is_optional() || right.is_optional()) && left.to_bare() == right.to_bare() {
         present_idiom_steer(&mut message);
     }
     SourceDiagnostic::at(Code::CheckType.as_str(), file, span, message)
@@ -510,7 +515,9 @@ pub(super) fn logic_operand(
         operator_symbol(op),
         ty.spelling(records)
     );
-    if ty.is_optional() {
+    // `and`/`or` require bool; steer only when the operand is `bool?`, so presence is the
+    // sole blocker. A non-bool optional (`int?`) is not presence-fixable here.
+    if ty.is_optional() && ty.to_bare() == LTy::bare_scalar(ScalarType::Bool) {
         present_idiom_steer(&mut message);
     }
     SourceDiagnostic::at(Code::CheckType.as_str(), file, span, message)

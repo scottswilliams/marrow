@@ -710,8 +710,16 @@ impl<'a> FnLowerer<'a> {
             // branch reaches the resolver and reports "no keyed branch" — the same message
             // the inline `^root(k).branch[bk]` form gives — rather than falling through.
             Expression::Keyed { .. } => self.is_place_rooted(expr).then_some(DurShape::Entry),
+            // A field cell off a place: a stored field or a whole root-level group off a
+            // place-rooted entry base (a bare place, or a branch-hop chain), or a group leaf.
+            // The entry-base case is classified syntactically — by place-rootedness of an
+            // entry-shaped base — not by resolving it, so an unknown branch in the base
+            // reaches the resolver and reports "no keyed branch" rather than falling through
+            // to a confusing projection error. A group leaf is confirmed against the model so
+            // a projection on a durable field value (`p.field.sub`) still falls through.
             Expression::Field { base, .. } => (self.place_middle_names_a_group(base)
-                || self.place_entry_target(base).is_some())
+                || (matches!(&**base, Expression::Name { .. } | Expression::Keyed { .. })
+                    && self.is_place_rooted(base)))
             .then_some(DurShape::Field),
             _ => None,
         }

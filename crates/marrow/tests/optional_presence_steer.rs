@@ -75,6 +75,21 @@ pub fn main(): int {
     );
 }
 
+/// A `bool?` operand under `and` steers — presence is the sole blocker.
+#[test]
+fn a_bool_optional_logic_operand_steers() {
+    let source = r#"pub fn main(a: bool): bool {
+    var maybe: bool? = true
+    return maybe and a
+}
+"#;
+    let message = only_type_message(source);
+    assert!(
+        message.contains(STEER),
+        "a `bool?` logic operand steers: {message:?}"
+    );
+}
+
 /// A kind mismatch unrelated to optionality carries no presence steer: the steer is
 /// specific to the optional-vs-present family and does not leak onto every type error.
 #[test]
@@ -87,5 +102,41 @@ fn an_unrelated_type_mismatch_carries_no_presence_steer() {
     assert!(
         !message.contains(STEER),
         "a plain string-vs-int mismatch is not a presence misuse: {message:?}",
+    );
+}
+
+/// An optional operand whose bare type still would not satisfy the operator is not
+/// presence-fixable, so it carries no steer — the tightened family does not mislead.
+#[test]
+fn a_non_presence_fixable_optional_operand_carries_no_steer() {
+    // `int? + string`: bare types differ, so making the optional present still fails.
+    let mixed = r#"pub fn main(): int {
+    var n: int? = 1
+    return n + "x"
+}
+"#;
+    assert!(
+        !only_type_message(mixed).contains(STEER),
+        "a cross-type optional operand is not presence-fixable",
+    );
+    // `not (int?)`: the bare type is `int`, which `not` still rejects.
+    let not_int = r#"pub fn main(): bool {
+    var n: int? = 1
+    return not n
+}
+"#;
+    assert!(
+        !only_type_message(not_int).contains(STEER),
+        "an optional whose bare type the unary op still rejects is not presence-fixable",
+    );
+    // `int? and bool`: `and` wants bool, and the bare type is `int`.
+    let non_bool_logic = r#"pub fn main(a: bool): bool {
+    var n: int? = 1
+    return n and a
+}
+"#;
+    assert!(
+        !only_type_message(non_bool_logic).contains(STEER),
+        "a non-bool optional logic operand is not presence-fixable",
     );
 }

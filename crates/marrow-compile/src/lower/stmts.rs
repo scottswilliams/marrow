@@ -1515,18 +1515,16 @@ impl<'a> FnLowerer<'a> {
             // rather than misreporting the branch as a missing field.
             Expression::Field { base, name, .. } => self
                 .entry_address_node(base)
-                .or_else(|| {
-                    self.is_place_name(base)
-                        .then(|| self.place_base_node(base))
-                        .flatten()
-                })
+                .or_else(|| self.place_base_node(base))
                 .is_some_and(|parent| parent.branch(name).is_some()),
             _ => false,
         }
     }
 
     /// The durable node a bare named `place`/pin base addresses, for the `exists` family
-    /// classifier. `None` when the base is not an in-scope place name. Non-emitting.
+    /// classifier — the bare-place base form the traversal-place resolver admits (a keyed
+    /// place base is not a family probe here). `None` when the base is not an in-scope place
+    /// name. Non-emitting.
     fn place_base_node(&self, base: &Expression) -> Option<DurNode<'a>> {
         let Expression::Name { segments, .. } = base else {
             return None;
