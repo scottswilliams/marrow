@@ -1,0 +1,43 @@
+marrow ids v0
+machine-written by marrow; do not edit
+id application . 4cf9d80f18df2f89a815419204853e70
+id product Asset e6ce3b129cb0eba975171d18c1558fc6
+id product Counter 1a81d0f9cc6c23cc19ee7eaffd896d6d
+id product Member 8b5e29a62427e5eece9c51307b18369c
+id field Asset.category 772a379668cf3b58f8b590d13282d7a0
+id field Asset.name 3f9cd7e18196e0d4705db3aeefb94f93
+id field Asset.onLoanTo 7b3ef89ff59840be455c556ca708d6d2
+id field Asset.serviceLog.at 1e2b4f6a83e7dcd536eb3e90bc3848fc
+id field Asset.serviceLog.note 1af5c68bbab0c14762352094815eb179
+id field Asset.tag 33e69da538d2427e2fd55919218ead8a
+id field Counter.value 7279ce6947d0922832719da2b31b870f
+id field Member.activeLoans.loanNo 39a0a640e186f0f133ca8a5407be2c5b
+id field Member.activeLoans.since aeb6b72c15c5b573ab9405ea4366d15b
+id field Member.email a2996a1db7dde2241894efff7fd1a7f5
+id field Member.history.action 9d9a312352b98b79dd44551c1ba53022
+id field Member.history.assetId e2ba7734d162fc06f4ca358b9eedcb12
+id field Member.history.at 110229b98a4333b56231669beded62f3
+id field Member.historyCount c028c4ebc1a910c7b78db33323903e45
+id field Member.joined e6e0d59a5dc384759a1785f713c8b2c2
+id field Member.name 70c83a0f816e3159135cf976da44599a
+id field Member.phone 908407f84b89b15c4fbb5a8049ccc240
+id field Member.standing eee0ae77b2673ce23c57dcdf1f88eed0
+id root Asset.serviceLog 33deccd09d378cb0f99f77ac858327eb
+id root Member.activeLoans 092b4848b50f061d0033f4b9729ca894
+id root Member.history 4f0cb96e3e0613a24b27e4b95d6be84f
+id root assets 02e0e71eff45867a36db47a589362b82
+id root idseq 5f76933227d000913edc2052f619cd65
+id root members fa63b942682bebb90267ee53ebc7587a
+id key Asset.serviceLog.seq 7e694c1eb23fc51e84415f518a7a78ef
+id key Member.activeLoans.assetId 9cc605b57377d0bae2c6d3fd694a0994
+id key Member.history.seq 953f3417424a69aeff266d9c74427432
+id key assets.assetId a300ce7bb3bfa810f89feb9110d9b4e4
+id key idseq.name dde0bc3c9a397c8372f4baaea0f2c7f3
+id key members.memberId 7872c6a57298a8769ded9e33446a0f3d
+id sum Standing 702f2cdb54e8928561feb056396169c9
+id member Standing.active 7045cbdb53172f6de945cebecd0608fb
+id member Standing.suspended 9472486d94ac78948cb0a91016542eaa
+id index assets.byCategory 56e517ae7c027a3f19207814e61ad077
+id index assets.byTag 797eaa72a85809b87b88d12e6a5764de
+high-water 0
+end
