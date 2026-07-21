@@ -8,7 +8,7 @@ resource Chart {
     primaryProvider: string
     admittedAt: instant
     glucoseReading: Option<int>
-    lactateReading: int
+    lactateReading: Option<int>
     topf0000: int
     topf0001: string
     topf0002: bool

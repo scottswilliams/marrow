@@ -43,6 +43,8 @@ const SCHEMA: &str = r#"resource Book {
     required title: string
     required isbn: string
     subtitle: string
+    glucose: Option<int>
+    lactate: Option<int>
 
     details {
         pages: int
@@ -72,10 +74,15 @@ const IDS: &str = "marrow ids v0\n\
      id application . 31985fe4a848fb49176f9debb5948854\n\
      id product Book 37476822645b6802b40160c53d1a7fb6\n\
      id field Book.details.pages 7557aec5eed45271842bd2d8f03c065e\n\
+     id field Book.glucose a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1\n\
      id field Book.isbn dc43cd86f5de791211612a599f1a1b01\n\
+     id field Book.lactate a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2\n\
      id field Book.notes.text c3cde175f2329c20c8c8ce0d39405712\n\
      id field Book.subtitle 26ba2d1538308102805dfa7e5007a493\n\
      id field Book.title ea95ccce4ce370579210f6697baf7316\n\
+     id sum Option[int] a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3\n\
+     id member Option[int].none a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4\n\
+     id member Option[int].some a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5\n\
      id root Book.notes adc70cb07526b070b5a5a23f078c0784\n\
      id root books 980b01438681e85db8137bb42f2960c5\n\
      id key Book.notes.noteId 6b07eb3f8fb174293b3f8a5b67ffc27b\n\
@@ -504,6 +511,17 @@ fn matrix() -> Vec<Row> {
         Row {
             label: "IDTRAV01: strict present sparse set through an identity-keyed place / driver test",
             ops: "pub fn spSeed(id: int) {\n    transaction {\n        ^books[id] = Book(title: \"t\", isbn: \"i\")\n    }\n}\n\npub fn spSetVia(id: int, s: string): bool {\n    transaction {\n        place b = ^books[Id(^books, id)]\n        if exists(b) {\n            b.subtitle = s\n            return true\n        }\n    }\n    return false\n}\n\npub fn spSubtitle(id: int): string? {\n    return ^books[id].subtitle\n}\n\ntest \"strict present sparse set through an identity place round trips\" {\n    spSeed(90)\n    assert spSetVia(90, \"x\")\n    assert spSubtitle(90) ?? \"none\" == \"x\"\n}",
+            expect: Expect::RoundTrips { run: true },
+        },
+        // ---- ENUMDUP01: two durable fields of one enum type. ----
+        // `glucose` and `lactate` are both `Option<int>`, so they share one enum durable
+        // identity (its sum and member ids appear once per referencing field). The
+        // checker emits the shared identity and the verifier reads the reuse as one
+        // per-declaration claim rather than a duplicate ledger id. Driven end to end: one
+        // write sets both fields, and a reader unwraps each `some` payload back.
+        Row {
+            label: "ENUMDUP01: two Option<int> fields of one enum type round trip / driver test",
+            ops: "pub fn setReadings(id: int, g: int, l: int) {\n    transaction {\n        ^books[id] = Book(title: \"t\", isbn: \"i\", glucose: some(g), lactate: some(l))\n    }\n}\n\npub fn glucoseVal(id: int): int {\n    if const cell = ^books[id].glucose {\n        match cell {\n            some(v) => return v\n            none => return -1\n        }\n    }\n    return -2\n}\n\npub fn lactateVal(id: int): int {\n    if const cell = ^books[id].lactate {\n        match cell {\n            some(v) => return v\n            none => return -1\n        }\n    }\n    return -2\n}\n\ntest \"two fields of one enum type round trip\" {\n    setReadings(1, 95, 12)\n    assert glucoseVal(1) == 95\n    assert lactateVal(1) == 12\n}",
             expect: Expect::RoundTrips { run: true },
         },
     ]

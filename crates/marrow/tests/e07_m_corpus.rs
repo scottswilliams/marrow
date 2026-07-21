@@ -146,7 +146,10 @@ fn counted_watch_clinical_2000_fields() {
     // Recorded freeze count (2026-07-21): 2028 operation sites. 2000 field-leaf
     // sites (100 top-level + 1900 group-scoped) + 20 whole-group sites + 1 root
     // placement + 2 branch placements (observations, diagnoses) + 5 branch field-leaf
-    // (4 observations + 1 diagnoses) = 2028. The emitted image is 199_449 bytes.
+    // (4 observations + 1 diagnoses) = 2028. Field type does not affect the site
+    // count: the two `Option<int>` fields (`glucoseReading`, `lactateReading`) each
+    // remain one field-leaf site while sharing one enum durable identity. The emitted
+    // image is 199_506 bytes.
     assert_eq!(
         sites, 2028,
         "clinical operation-site count is frozen at 2028"
