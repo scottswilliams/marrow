@@ -1,0 +1,23 @@
+resource Book {
+    required title: string
+    required isbn: string
+}
+
+store ^books[id: int]: Book {
+    index byIsbn[isbn] unique
+}
+
+pub fn lookup(isbn: string): string? {
+    if const found = ^books.byIsbn[isbn] {
+        if const b = ^books[found] {
+            return b.title
+        }
+    }
+    return absent
+}
+
+pub fn put(id: int, title: string, isbn: string) {
+    transaction {
+        ^books[id] = Book(title: title, isbn: isbn)
+    }
+}

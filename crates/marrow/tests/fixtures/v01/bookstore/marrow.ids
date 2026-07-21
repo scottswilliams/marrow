@@ -1,0 +1,11 @@
+marrow ids v0
+machine-written by marrow; do not edit
+id application . 0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a
+id product Book 0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d
+id field Book.title 0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e
+id field Book.isbn 2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e
+id root books 0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b
+id key books.id 0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c
+id index books.byIsbn 4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b
+high-water 0
+end

@@ -1,63 +1,13 @@
 //! End-to-end `marrow test` tests: `test "name"` declarations and their owned
 //! `assert` statement travel the real production path (capture → compile-with-tests
 //! → encode → verify → VM) through the built binary and report typed JSONL.
+//!
+//! Sources are inline through the shared harness's [`Project`] builder; each test
+//! scaffolds a project and drives the built binary through the CLI path.
 
-use std::fs;
-use std::ops::Deref;
-use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+mod common;
 
-const MARROW: &str = env!("CARGO_BIN_EXE_marrow");
-
-struct TempDir {
-    root: PathBuf,
-}
-
-impl TempDir {
-    fn new(name: &str) -> Self {
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("clock after epoch")
-            .as_nanos();
-        let root =
-            std::env::temp_dir().join(format!("marrow-p00b-{name}-{}-{nanos}", std::process::id()));
-        fs::create_dir_all(&root).expect("create temp dir");
-        TempDir { root }
-    }
-}
-
-impl Deref for TempDir {
-    type Target = Path;
-    fn deref(&self) -> &Path {
-        &self.root
-    }
-}
-
-impl Drop for TempDir {
-    fn drop(&mut self) {
-        fs::remove_dir_all(&self.root).ok();
-    }
-}
-
-fn write(path: &Path, contents: &str) {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).expect("create parent");
-    }
-    fs::write(path, contents).expect("write file");
-}
-
-fn project(dir: &Path, source: &str) {
-    write(&dir.join("marrow.toml"), "edition = \"2026\"\n");
-    write(&dir.join("src").join("main.mw"), source);
-}
-
-fn run_in(dir: &Path, args: &[&str]) -> Output {
-    Command::new(MARROW)
-        .args(args)
-        .current_dir(dir)
-        .output()
-        .expect("run marrow binary")
-}
+use common::Project;
 
 /// One passing and one failing test drive `marrow test --format jsonl`: the
 /// passing test reports `passed`, the failing one reports `failed` with the
@@ -65,9 +15,7 @@ fn run_in(dir: &Path, args: &[&str]) -> Output {
 /// nonzero because a test failed.
 #[test]
 fn passing_and_failing_tests_report_typed_jsonl() {
-    let temp = TempDir::new("pass-fail");
-    project(
-        &temp,
+    let output = Project::single(
         r#"test "one plus one" {
     assert 1 + 1 == 2
 }
@@ -76,9 +24,8 @@ test "one is two" {
     assert 1 == 2
 }
 "#,
-    );
-
-    let output = run_in(&temp, &["test", "--format", "jsonl"]);
+    )
+    .run_cli("pass-fail", &["test", "--format", "jsonl"]);
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
         !output.status.success(),
@@ -112,16 +59,14 @@ test "one is two" {
 /// `assert` outside a `test` body is a source diagnostic, not a runtime concept.
 #[test]
 fn assert_outside_a_test_is_a_check_diagnostic() {
-    let temp = TempDir::new("assert-outside");
-    project(
-        &temp,
+    let output = Project::single(
         r#"pub fn bad(): int {
     assert true
     return 0
 }
 "#,
-    );
-    let output = run_in(&temp, &["run", "bad", "--format", "jsonl"]);
+    )
+    .run_cli("assert-outside", &["run", "bad", "--format", "jsonl"]);
     assert!(!output.status.success(), "{output:?}");
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains(r#""outcome":"diagnostic""#), "{output:?}");
@@ -147,9 +92,7 @@ const COUNTERS_IDS: &str = "marrow ids v0\n\
 /// storeless test in the same project runs and passes too.
 #[test]
 fn a_durable_read_test_runs_against_a_fresh_attachment() {
-    let temp = TempDir::new("durable-test");
-    project(
-        &temp,
+    let output = Project::single(
         r#"resource Counter {
     required value: int
     label: string
@@ -165,10 +108,9 @@ test "durable probe" {
     assert exists(^counters[1]) == false
 }
 "#,
-    );
-    write(&temp.join("marrow.ids"), COUNTERS_IDS);
-
-    let output = run_in(&temp, &["test", "--format", "jsonl"]);
+    )
+    .ids(COUNTERS_IDS)
+    .run_cli("durable-test", &["test", "--format", "jsonl"]);
     let stdout = String::from_utf8_lossy(&output.stdout);
     // Every test passes, so the command exits zero.
     assert!(output.status.success(), "{output:?}");
@@ -194,9 +136,7 @@ test "durable probe" {
 /// the read kernel's runtime fault reaches the test report.
 #[test]
 fn a_failing_durable_assert_reports_run_assert() {
-    let temp = TempDir::new("durable-fail");
-    project(
-        &temp,
+    let output = Project::single(
         r#"resource Counter {
     required value: int
     label: string
@@ -208,10 +148,9 @@ test "present on empty" {
     assert exists(^counters[1])
 }
 "#,
-    );
-    write(&temp.join("marrow.ids"), COUNTERS_IDS);
-
-    let output = run_in(&temp, &["test", "--format", "jsonl"]);
+    )
+    .ids(COUNTERS_IDS)
+    .run_cli("durable-fail", &["test", "--format", "jsonl"]);
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(!output.status.success(), "{output:?}");
     let durable = stdout
@@ -246,9 +185,7 @@ test "present on empty" {
 /// families are not durable read-kernel behaviors at all.
 #[test]
 fn flat_durable_place_behaviors_run_as_source_tests() {
-    let temp = TempDir::new("flat-durable-extraction");
-    project(
-        &temp,
+    let output = Project::single(
         r#"resource Counter {
     required value: int
     label: string
@@ -325,10 +262,9 @@ test "a fresh attachment does not observe another test's write" {
     assert ^counters[77].value ?? -1 == -1
 }
 "#,
-    );
-    write(&temp.join("marrow.ids"), COUNTERS_IDS);
-
-    let output = run_in(&temp, &["test", "--format", "jsonl"]);
+    )
+    .ids(COUNTERS_IDS)
+    .run_cli("flat-durable-extraction", &["test", "--format", "jsonl"]);
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
         output.status.success(),
@@ -356,9 +292,7 @@ test "a fresh attachment does not observe another test's write" {
 /// read observes the committed value, with no raw seeding — the E06 app-testing style.
 #[test]
 fn a_driver_test_drives_a_mutating_export_and_reads_it_back() {
-    let temp = TempDir::new("driver");
-    project(
-        &temp,
+    let output = Project::single(
         r#"resource Counter {
     required value: int
     label: string
@@ -381,10 +315,9 @@ test "driver sets then reads back" {
     assert valueOf(1) ?? 0 == 42
 }
 "#,
-    );
-    write(&temp.join("marrow.ids"), COUNTERS_IDS);
-
-    let output = run_in(&temp, &["test", "--format", "jsonl"]);
+    )
+    .ids(COUNTERS_IDS)
+    .run_cli("driver", &["test", "--format", "jsonl"]);
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(output.status.success(), "{output:?}");
     let record = stdout
@@ -400,9 +333,7 @@ test "driver sets then reads back" {
 /// session the direct operation needs. The compiler refuses the mix at check time.
 #[test]
 fn mixing_a_direct_durable_op_and_driving_an_export_is_a_check_diagnostic() {
-    let temp = TempDir::new("mixed-body");
-    project(
-        &temp,
+    let output = Project::single(
         r#"resource Counter {
     required value: int
     label: string
@@ -421,10 +352,9 @@ test "mixed body" {
     assert exists(^counters[1])
 }
 "#,
-    );
-    write(&temp.join("marrow.ids"), COUNTERS_IDS);
-
-    let output = run_in(&temp, &["test", "--format", "jsonl"]);
+    )
+    .ids(COUNTERS_IDS)
+    .run_cli("mixed-body", &["test", "--format", "jsonl"]);
     assert!(!output.status.success(), "{output:?}");
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains(r#""outcome":"diagnostic""#), "{stdout}");
@@ -434,9 +364,7 @@ test "mixed body" {
 /// `--filter` selects tests by a substring of their name and fails when none match.
 #[test]
 fn filter_selects_a_subset_by_name() {
-    let temp = TempDir::new("filter");
-    project(
-        &temp,
+    let workspace = Project::single(
         r#"test "alpha check" {
     assert true
 }
@@ -445,13 +373,14 @@ test "beta check" {
     assert true
 }
 "#,
-    );
-    let output = run_in(&temp, &["test", "--format", "jsonl", "--filter", "alpha"]);
+    )
+    .materialize("filter");
+    let output = workspace.marrow(&["test", "--format", "jsonl", "--filter", "alpha"]);
     assert!(output.status.success(), "{output:?}");
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains(r#""name":"alpha check""#), "{stdout}");
     assert!(!stdout.contains(r#""name":"beta check""#), "{stdout}");
 
-    let none = run_in(&temp, &["test", "--filter", "gamma"]);
+    let none = workspace.marrow(&["test", "--filter", "gamma"]);
     assert!(!none.status.success(), "a filter matching nothing fails");
 }

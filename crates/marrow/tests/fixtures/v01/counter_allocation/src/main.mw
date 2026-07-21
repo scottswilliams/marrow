@@ -1,0 +1,29 @@
+resource Counter {
+    required value: int
+}
+
+store ^idseq[name: string]: Counter
+
+resource Book {
+    required title: string
+}
+
+store ^books[id: int]: Book
+
+pub fn createBook(title: string): int {
+    transaction {
+        place seq = ^idseq["book"]
+        const next = (seq.value ?? 0) + 1
+        seq.value = next
+        ^books[next] = Book(title: title)
+        return next
+    }
+}
+
+pub fn titleOf(id: int): string? {
+    return ^books[id].title
+}
+
+pub fn seqValue(): int? {
+    return ^idseq["book"].value
+}
