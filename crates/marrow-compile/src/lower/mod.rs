@@ -115,6 +115,32 @@ pub(crate) struct FnSignature {
     params: Vec<LTy>,
     ret: RetType,
     public: bool,
+    /// The file the function is declared in, for the editor definition target.
+    file: FileIdentity,
+    /// The span of the function's declared name — the definition selection range.
+    name_span: SourceSpan,
+    /// The function's header-through-body span — the full definition range.
+    decl_range: SourceSpan,
+}
+
+/// The editor definition target of a resolved function callee: the file it is declared
+/// in, its declared-name span (the selection range), and its header-through-body range.
+#[derive(Clone)]
+pub(crate) struct DefinitionTarget {
+    pub(crate) file: FileIdentity,
+    pub(crate) name_span: SourceSpan,
+    pub(crate) decl_range: SourceSpan,
+}
+
+impl FnSignature {
+    /// The definition target of this function for an editor definition query.
+    pub(super) fn definition_target(&self) -> DefinitionTarget {
+        DefinitionTarget {
+            file: self.file.clone(),
+            name_span: self.name_span,
+            decl_range: self.decl_range,
+        }
+    }
 }
 
 /// A successfully lowered function: its image index and the indices of the
@@ -133,9 +159,9 @@ pub(crate) struct Lowered {
     /// Whether this body owns a `transaction` block (emits a begin). A test body that
     /// drives such a function mixes invocation boundaries and is refused.
     pub owns_transaction: bool,
-    /// Editor hover facts from this body: `(use-site span, canonical type display)`
-    /// for each resolved local or parameter use.
-    pub hover_facts: Vec<(SourceSpan, String)>,
+    /// Editor facts from this body: `(span, hover display, optional definition target)`
+    /// for each resolved local/parameter use and function callee.
+    pub hover_facts: Vec<(SourceSpan, String, Option<DefinitionTarget>)>,
 }
 
 /// The outcome of resolving a call target against module scope.
@@ -243,11 +269,13 @@ pub(crate) struct FnLowerer<'a> {
     ret: RetType,
     /// Whether this is a function or a test body; gates the owned `assert`.
     body_kind: BodyKind,
-    /// Editor hover facts collected while lowering this body: the source span of a
-    /// resolved local or parameter use and the canonical display of its value type.
-    /// The caller keeps these for a monomorphic function or test body and discards
-    /// them for a generic instance (whose spans would duplicate the template's).
-    hover_facts: Vec<(SourceSpan, String)>,
+    /// Editor facts collected while lowering this body: `(span, hover display,
+    /// optional definition target)`. A resolved local/parameter use carries a type
+    /// display and no definition; a resolved function callee carries its signature
+    /// display and its definition target. The caller keeps these for a monomorphic
+    /// function or test body and discards them for a generic instance (whose spans
+    /// would duplicate the template's).
+    hover_facts: Vec<(SourceSpan, String, Option<DefinitionTarget>)>,
     failed: bool,
     invariant: Option<LowerInvariant>,
 }

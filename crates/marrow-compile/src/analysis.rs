@@ -184,6 +184,74 @@ impl AnalysisSnapshot {
             None => Ok(Fact::Absent),
         }
     }
+
+    /// The definition target at a byte offset: for a resolved function callee spanning
+    /// the offset, the file, declared-name span, and header-through-body range of its
+    /// target. An unknown file or an out-of-range offset is a typed [`QueryError`]; a
+    /// position in a module that did not parse is [`Unavailability::Syntax`]; a position
+    /// with no callee fact (a local use, a literal, whitespace) is `Absent`.
+    ///
+    /// Floor boundary: definition covers source-defined function callees only, and a
+    /// generic call targets its source template — not the local/parameter, type, import,
+    /// or field definitions deferred past this floor.
+    pub fn definition(
+        &self,
+        file: &FileIdentity,
+        offset: usize,
+    ) -> Result<Fact<Definition>, QueryError> {
+        let source = self.source_of(file)?;
+        if offset > source.len() {
+            return Err(QueryError::OffsetOutOfRange);
+        }
+        if self.broken_files.iter().any(|broken| broken == file) {
+            return Ok(Fact::Unavailable(Unavailability::Syntax));
+        }
+        let offset = offset as u32;
+        let target = self.hover_facts.iter().find_map(|fact| {
+            if &fact.file == file
+                && fact.span.start_byte as u32 <= offset
+                && offset < fact.span.end_byte as u32
+            {
+                fact.definition.as_ref()
+            } else {
+                None
+            }
+        });
+        match target {
+            Some(target) => Ok(Fact::Present(Definition {
+                file: target.file.clone(),
+                name_span: target.name_span,
+                declaration_range: target.decl_range,
+            })),
+            None => Ok(Fact::Absent),
+        }
+    }
+}
+
+/// The definition target of a resolved function callee: the file the target is declared
+/// in, the span of its declared name (the selection range), and the full
+/// header-through-body declaration range. A generic call targets its source template.
+pub struct Definition {
+    file: FileIdentity,
+    name_span: marrow_syntax::SourceSpan,
+    declaration_range: marrow_syntax::SourceSpan,
+}
+
+impl Definition {
+    /// The file the target is declared in.
+    pub fn file(&self) -> &FileIdentity {
+        &self.file
+    }
+
+    /// The span of the target's declared name — the selection range.
+    pub fn name_span(&self) -> marrow_syntax::SourceSpan {
+        self.name_span
+    }
+
+    /// The full header-through-body declaration range of the target.
+    pub fn declaration_range(&self) -> marrow_syntax::SourceSpan {
+        self.declaration_range
+    }
 }
 
 /// Analyze one exact project input at a caller-assigned revision, producing an immutable
@@ -249,13 +317,21 @@ pub(crate) struct HoverFact {
     pub(crate) file: FileIdentity,
     pub(crate) span: marrow_syntax::SourceSpan,
     pub(crate) display: String,
+    /// The definition target when this fact is a resolved function callee; `None` for a
+    /// local or parameter use.
+    pub(crate) definition: Option<crate::lower::DefinitionTarget>,
 }
 
 impl HoverFact {
-    /// The retained byte footprint of this fact: its rendered display. The file
-    /// identity and span are fixed-size and charged by the count bound.
+    /// The retained byte footprint of this fact: its rendered display plus any retained
+    /// definition-target file path. The spans and identities are otherwise fixed-size
+    /// and charged by the count bound.
     fn retained_bytes(&self) -> usize {
         self.display.len()
+            + self
+                .definition
+                .as_ref()
+                .map_or(0, |target| target.file.as_str().len())
     }
 }
 

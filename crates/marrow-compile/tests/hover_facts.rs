@@ -4,7 +4,9 @@
 
 use std::sync::Arc;
 
-use marrow_compile::{AnalysisSnapshot, Fact, InputRevision, QueryError, Unavailability, analyze};
+use marrow_compile::{
+    AnalysisSnapshot, Definition, Fact, InputRevision, QueryError, Unavailability, analyze,
+};
 use marrow_project::{CaptureLimits, CapturedFile, FileIdentity, Manifest, ProjectInput};
 
 fn project(files: &[(&str, &str)]) -> ProjectInput {
@@ -156,6 +158,71 @@ fn hover_inside_a_generic_body_is_absent_on_this_floor() {
         snapshot.hover(&identity("src/main.mw"), use_offset),
         Ok(Fact::Absent)
     ));
+}
+
+#[test]
+fn definition_on_a_same_module_call_targets_the_declaration() {
+    let source = "pub fn add(a: int, b: int): int {\n    return a\n}\n\n\
+                  pub fn f(): int {\n    return add(1, 2)\n}\n";
+    let snapshot = snap(&[("src/main.mw", source)]);
+    let call_offset = offset_of(source, "add(1, 2)");
+    match snapshot.definition(&identity("src/main.mw"), call_offset) {
+        Ok(Fact::Present(def)) => {
+            assert_eq!(def.file().as_str(), "src/main.mw");
+            // The selection range is the declaration's name, not the call's.
+            let name = &source[def.name_span().start_byte..def.name_span().end_byte];
+            assert_eq!(name, "add");
+            assert_eq!(def.name_span().start_byte, offset_of(source, "add"));
+            // The declaration range runs from the header start through the body end.
+            assert_eq!(def.declaration_range().start_byte, 0);
+            assert!(def.declaration_range().end_byte > offset_of(source, "return a"));
+        }
+        other => panic!("expected a definition, got {}", label_def(&other)),
+    }
+}
+
+#[test]
+fn definition_on_a_cross_module_call_targets_the_other_file() {
+    let lib = "module lib\n\npub fn helper(x: int): int {\n    return x\n}\n";
+    let main = "module main\nuse lib\n\npub fn f(): int {\n    return lib::helper(1)\n}\n";
+    let snapshot = snap(&[("src/lib.mw", lib), ("src/main.mw", main)]);
+    let call_offset = offset_of(main, "lib::helper") + "lib::".len();
+    match snapshot.definition(&identity("src/main.mw"), call_offset) {
+        Ok(Fact::Present(def)) => {
+            assert_eq!(def.file().as_str(), "src/lib.mw");
+            let name = &lib[def.name_span().start_byte..def.name_span().end_byte];
+            assert_eq!(name, "helper");
+        }
+        other => panic!(
+            "expected a cross-module definition, got {}",
+            label_def(&other)
+        ),
+    }
+}
+
+#[test]
+fn definition_on_a_local_use_is_absent() {
+    let source = "pub fn f(x: int): int {\n    return x\n}\n";
+    let snapshot = snap(&[("src/main.mw", source)]);
+    let use_offset = offset_of(source, "return x") + "return ".len();
+    assert!(matches!(
+        snapshot.definition(&identity("src/main.mw"), use_offset),
+        Ok(Fact::Absent)
+    ));
+}
+
+#[test]
+fn definition_in_an_unknown_file_is_a_query_error() {
+    let source = "pub fn f(): int {\n    return 1\n}\n";
+    let snapshot = snap(&[("src/main.mw", source)]);
+    assert!(matches!(
+        snapshot.definition(&identity("src/other.mw"), 0),
+        Err(QueryError::UnknownFile)
+    ));
+}
+
+fn label_def(fact: &Result<Fact<Definition>, QueryError>) -> &'static str {
+    label(fact)
 }
 
 fn label<T>(fact: &Result<Fact<T>, QueryError>) -> &'static str {

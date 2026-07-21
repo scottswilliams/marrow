@@ -114,9 +114,10 @@ impl<'a> FnLowerer<'a> {
                     if let Some(local) = self.lookup(name) {
                         let (slot, ty) = (local.slot, local.ty);
                         // Record the resolved local/parameter type at this use site for
-                        // editor hover, before emitting the load.
+                        // editor hover, before emitting the load. A local use has no
+                        // definition target.
                         let display = ty.spelling(self.records);
-                        self.hover_facts.push((*span, display));
+                        self.hover_facts.push((*span, display, None));
                         self.push(Instr::LocalGet(slot), *span);
                         return Some(ty);
                     }
@@ -1264,9 +1265,14 @@ impl<'a> FnLowerer<'a> {
                 .map(CallResult::Value);
         }
         if let Some(sig) = self.functions.same_module(self.module, name) {
-            let (index, params, ret) = (sig.index, sig.params.clone(), sig.ret);
+            let (index, params, ret, target) = (
+                sig.index,
+                sig.params.clone(),
+                sig.ret,
+                sig.definition_target(),
+            );
             let display = signature_display(name, &params, ret, self.records);
-            self.hover_facts.push((callee_span, display));
+            self.hover_facts.push((callee_span, display, Some(target)));
             return self.lower_function_call(index, &params, ret, args, span);
         }
         // A same-module generic function is monomorphized at the call site (its type
@@ -1315,9 +1321,14 @@ impl<'a> FnLowerer<'a> {
     ) -> Option<CallResult> {
         match self.functions.resolve_qualified(self.module, prefix, item) {
             CallResolution::Found(sig) => {
-                let (index, params, ret) = (sig.index, sig.params.clone(), sig.ret);
+                let (index, params, ret, target) = (
+                    sig.index,
+                    sig.params.clone(),
+                    sig.ret,
+                    sig.definition_target(),
+                );
                 let display = signature_display(item, &params, ret, self.records);
-                self.hover_facts.push((callee_span, display));
+                self.hover_facts.push((callee_span, display, Some(target)));
                 self.lower_function_call(index, &params, ret, args, span)
             }
             CallResolution::NotPublic => {

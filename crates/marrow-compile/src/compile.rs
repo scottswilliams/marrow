@@ -1036,11 +1036,12 @@ fn run_semantic(
                             );
                         }
                     };
-                    for (span, display) in result.hover_facts {
+                    for (span, display, definition) in result.hover_facts {
                         hover_facts.push(crate::analysis::HoverFact {
                             file: module.file.clone(),
                             span,
                             display,
+                            definition,
                         });
                     }
                     lowered.push(LoweredFn {
@@ -1151,11 +1152,12 @@ fn run_semantic(
                         );
                     }
                 };
-                for (span, display) in result.hover_facts {
+                for (span, display, definition) in result.hover_facts {
                     hover_facts.push(crate::analysis::HoverFact {
                         file: module.file.clone(),
                         span,
                         display,
+                        definition,
                     });
                 }
                 lowered.push(LoweredFn {

@@ -38,8 +38,8 @@ mod scalar;
 mod types;
 
 pub use analysis::{
-    AnalysisFailure, AnalysisResourceLimit, AnalysisSnapshot, Fact, Hover, InputRevision,
-    MAX_FORMAT_OUTPUT_BYTES, MAX_HOVER_DISPLAY_BYTES, MAX_SNAPSHOT_FACT_BYTES,
+    AnalysisFailure, AnalysisResourceLimit, AnalysisSnapshot, Definition, Fact, Hover,
+    InputRevision, MAX_FORMAT_OUTPUT_BYTES, MAX_HOVER_DISPLAY_BYTES, MAX_SNAPSHOT_FACT_BYTES,
     MAX_SNAPSHOT_FACT_COUNT, QueryError, Unavailability, analyze,
 };
 pub use compile::{
