@@ -474,8 +474,7 @@ impl Coordinator {
                 }
             }
             "textDocument/formatting" => {
-                let Some(params) = params.and_then(parse::<DocumentFormattingParams>)
-                else {
+                let Some(params) = params.and_then(parse::<DocumentFormattingParams>) else {
                     return SemanticAnswer::BadParams;
                 };
                 let Some((identity, source)) =
@@ -554,7 +553,10 @@ impl Coordinator {
         let Some(root) = self.root.clone() else {
             return;
         };
-        let Some(params) = params.as_deref().and_then(parse::<DidOpenTextDocumentParams>) else {
+        let Some(params) = params
+            .as_deref()
+            .and_then(parse::<DidOpenTextDocumentParams>)
+        else {
             return;
         };
         let document = params.text_document;
@@ -586,7 +588,10 @@ impl Coordinator {
         let Some(root) = self.root.clone() else {
             return;
         };
-        let Some(params) = params.as_deref().and_then(parse::<DidChangeTextDocumentParams>) else {
+        let Some(params) = params
+            .as_deref()
+            .and_then(parse::<DidChangeTextDocumentParams>)
+        else {
             return;
         };
         let version = params.text_document.version;
@@ -625,7 +630,10 @@ impl Coordinator {
         let Some(root) = self.root.clone() else {
             return;
         };
-        let Some(params) = params.as_deref().and_then(parse::<DidCloseTextDocumentParams>) else {
+        let Some(params) = params
+            .as_deref()
+            .and_then(parse::<DidCloseTextDocumentParams>)
+        else {
             return;
         };
         let Ok(key) = DocumentKey::from_uri(params.text_document.uri.as_str(), &root) else {
@@ -743,7 +751,8 @@ impl Coordinator {
             let key = DocumentKey::from_identity(identity);
             let source = std::str::from_utf8(module.source()).unwrap_or("");
             let version = self.version_for(&key);
-            if let Ok(params) = facts::diagnostics_for_file(snapshot, &root, identity, source, version)
+            if let Ok(params) =
+                facts::diagnostics_for_file(snapshot, &root, identity, source, version)
             {
                 let has = !params.diagnostics.is_empty();
                 self.send(Outbound::PublishDiagnostics(Box::new(params)));
@@ -900,7 +909,10 @@ fn uri_to_root_error(_: UriError) -> RootError {
     RootError::Malformed
 }
 
-fn lsp_uri(root: &SelectedRoot, identity: &marrow_project_fs::FileIdentity) -> Option<lsp_types::Uri> {
+fn lsp_uri(
+    root: &SelectedRoot,
+    identity: &marrow_project_fs::FileIdentity,
+) -> Option<lsp_types::Uri> {
     use std::str::FromStr;
     lsp_types::Uri::from_str(&crate::uri::diagnostic_uri(root, identity)).ok()
 }
