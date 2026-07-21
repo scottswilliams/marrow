@@ -30,6 +30,7 @@
 
 mod analysis;
 mod compile;
+mod demand;
 mod diag;
 mod durable;
 mod konst;
@@ -46,6 +47,7 @@ pub use compile::{
     CompileFailure, CompileInvariant, CompileResourceLimit, Compiled, CompiledTests, ExportEntry,
     NonEmptySourceDiagnostics, ResourceLimitKind, TestEntry, compile, compile_with_tests,
 };
+pub use demand::DurableNaming;
 pub use diag::{IdentityGap, SourceDiagnostic};
 pub use marrow_image::ExportId;
 pub use marrow_syntax::FormatRefusal;

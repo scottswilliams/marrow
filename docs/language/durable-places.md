@@ -721,7 +721,9 @@ storage location. A function that reads one field demands `read` of that field; 
 function that reads a field and then writes it demands both `read` and `write` of
 that field.
 
-Demand describes the access a program *requires*; it never grants access. The
+Demand describes the access a program *requires*; it never grants access.
+[`marrow check`](../tools/cli.md) reports it: for a project that
+checks clean, it prints each export's demand in source spelling. The
 compiler emits the operation points and the verifier independently rebuilds each
 export's demand from them — the demand is not stored in the program image. Two
 exports that touch the same place with the same operation carry the same demand

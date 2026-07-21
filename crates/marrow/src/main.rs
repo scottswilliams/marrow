@@ -4,6 +4,7 @@ use std::process::ExitCode;
 
 use crate::term_style::{Stream, Style};
 
+mod cmd_check;
 mod cmd_client;
 mod cmd_fmt;
 mod cmd_init;
@@ -20,6 +21,7 @@ Marrow
 Usage:
   marrow init <projectdir>
   marrow fmt [--check | --write] <file.mw | projectdir>
+  marrow check [projectdir]
   marrow run <export> [--format jsonl] [-- <args>...]
   marrow test [--format text|jsonl] [--filter <substring>]
   marrow client typescript [--out <dir>]
@@ -28,14 +30,16 @@ Usage:
 
 This is the beta line's thin CLI. `init` creates a new project (a manifest and a
 contained src tree). `fmt` formats every captured source file in a project
-directory, or one Marrow source file, through the retained formatter. `run` compiles the
-project at the working directory, verifies the program image, and runs an
-exported function. `test` discovers `test \"name\"` declarations, runs each
-storeless through the verified image, and reports pass/fail/error. `client
+directory, or one Marrow source file, through the retained formatter. `check`
+captures and checks a project, reporting each diagnostic with its span and, when
+clean, each exported function's durable access demand in source spelling. `run`
+compiles the project at the working directory, verifies the program image, and
+runs an exported function. `test` discovers `test \"name\"` declarations, runs
+each storeless through the verified image, and reports pass/fail/error. `client
 typescript` compiles and verifies the project, then emits the generated strict
-TypeScript client and the pinned Node supervision module. The check, data,
-doctor, evolve, serve, backup, and restore commands are being refounded and
-return through their later lanes; invoking one reports cli.command_unsupported.
+TypeScript client and the pinned Node supervision module. The data, doctor,
+evolve, serve, backup, and restore commands are being refounded and return
+through their later lanes; invoking one reports cli.command_unsupported.
 ";
 
 fn main() -> ExitCode {
@@ -80,12 +84,11 @@ fn utf8_args(args: &[OsString]) -> Option<Vec<String>> {
 /// The command names whose owning capability is being refounded and returns
 /// through a later lane. Recognizing them keeps the not-yet-supported response
 /// distinct from an unknown-command usage error.
-const REFOUNDING_COMMANDS: &[&str] = &[
-    "check", "data", "doctor", "evolve", "serve", "backup", "restore",
-];
+const REFOUNDING_COMMANDS: &[&str] = &["data", "doctor", "evolve", "serve", "backup", "restore"];
 
 fn dispatch(command: &str, rest: &[String]) -> ExitCode {
     match command {
+        "check" => cmd_check::check(rest),
         "fmt" => cmd_fmt::fmt(rest),
         "init" => cmd_init::init(rest),
         "run" => cmd_run::run(rest),

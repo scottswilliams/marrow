@@ -1,8 +1,14 @@
 # marrow CLI Contributor Notes
 
-On the beta line this is a thin CLI with five implemented commands. `marrow
+On the beta line this is a thin CLI with six implemented commands. `marrow
 init` creates a project, and `marrow fmt` formats a single `.mw` file or every
 captured source file in a project directory through the retained formatter.
+`marrow check [projectdir]` captures the project, runs the resilient analysis
+floor for the complete diagnostic set (printing each diagnostic with its span),
+and — when the project checks clean — compiles and verifies it to describe each
+export's verifier-reconstructed durable demand in source spelling through the
+compiler-owned `DurableNaming` join. It opens no store and runs no code; the
+sentence describes access and never grants it.
 `marrow run
 <export>` drives the production path: capture the project at the working
 directory (including the machine-written `marrow.ids` identity ledger), compile
@@ -22,7 +28,7 @@ per test plus a summary. `marrow client typescript`
 compiles and verifies the project, reconstructs its wire interface (the one
 transfer/identity owner is `marrow-image`), and emits the deterministic strict
 TypeScript client beside the pinned Node supervision module (`src/supervisor/`,
-emitted verbatim and drift-gated). Every other command name (`check`, `data`,
+emitted verbatim and drift-gated). Every other command name (`data`,
 `doctor`, `evolve`, `serve`, `backup`, `restore`) is recognized and reports a
 typed `cli.command_unsupported` response until its refounding lane lands it.
 The binary depends on `marrow-codes`, `marrow-project`, `marrow-project-fs`,

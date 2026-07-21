@@ -39,6 +39,7 @@ use marrow_syntax::{
     TypeExpr,
 };
 
+use crate::demand::{DurableNaming, PathSigil};
 use crate::diag::{IdentityGap, SourceDiagnostic};
 use crate::scalar::ScalarType;
 use crate::types::{GArg, GenericInvariant, TypeMetadataSession, TypeRegistry};
@@ -268,9 +269,20 @@ impl DurableRoot {
 pub(crate) struct DurableRegistry {
     roots: Vec<DurableRoot>,
     declared_roots: Vec<String>,
+    /// The durable-path naming join for every admitted graph node, `(ledger id, sigil,
+    /// simple name)`, accumulated across the project's admitted stores. The
+    /// [`DurableNaming`] the demand sentence spells paths through is built from this.
+    naming: Vec<(LedgerIdBytes, PathSigil, String)>,
 }
 
 impl DurableRegistry {
+    /// The compiler-owned join from each admitted durable node's ledger id to its source
+    /// spelling, so a verifier-reconstructed demand set can be described in the program's
+    /// own `^root.member` spelling.
+    pub(crate) fn naming(&self) -> DurableNaming {
+        DurableNaming::from_entries(self.naming.clone())
+    }
+
     /// The executable flat keyed root declared with the placement name `name`, if any —
     /// the owner an entry address `^name[…]` resolves against.
     pub(crate) fn root_by_name(&self, name: &str) -> Option<&DurableRoot> {
@@ -395,6 +407,7 @@ impl DurableRegistry {
                     ledger,
                     diagnostics,
                 )? {
+                    registry.naming.extend(built.naming);
                     registry.declared_roots.push(built.name);
                     if let Some(root) = built.executable {
                         registry.roots.push(root);
@@ -411,6 +424,9 @@ impl DurableRegistry {
 struct BuiltRoot {
     name: String,
     executable: Option<DurableRoot>,
+    /// This store's durable-path naming entries — its root placement, stored fields,
+    /// managed indexes, groups, and keyed branches — committed only for an admitted graph.
+    naming: Vec<(LedgerIdBytes, PathSigil, String)>,
 }
 
 /// The immutable type owner and its one operation-local validation session.
@@ -499,6 +515,7 @@ fn build_one(
     let mut resolver = IdentityResolver::new(file, store.span, ledger, diagnostics);
     let application = resolver.resolve(IdentityKind::Application, APPLICATION_ANCHOR_PATH);
     let placement = resolver.resolve(IdentityKind::Root, &store.root.root);
+    resolver.name_step(placement, PathSigil::Root, &store.root.root);
     let product = resolver.resolve(IdentityKind::Product, &store.resource);
     let key_ids: Vec<LedgerIdBytes> = store
         .root
@@ -575,6 +592,11 @@ fn build_one(
             }
         })
         .collect();
+    // Each top-level stored field is a path-step node named `^root.field`; record its
+    // spelling under its ledger id for the demand-sentence join.
+    for leaf in &field_entries {
+        resolver.name_step(leaf.id, PathSigil::Child, &leaf.name);
+    }
     let built_indexes = resolver.build_indexes(
         &store.root.root,
         &key_entries,
@@ -591,6 +613,10 @@ fn build_one(
     if !resolver.complete {
         return Ok(None);
     }
+    // The graph is admissible: its naming entries may now be committed with its root,
+    // sites, and identity. A discarded (incomplete) graph never reaches here, so no
+    // placeholder id enters the join.
+    let naming = std::mem::take(&mut resolver.naming);
     draft.set_application_identity(application);
     let key_columns: Vec<KeyColumn> = key_scalars
         .iter()
@@ -706,6 +732,7 @@ fn build_one(
         return Ok(Some(BuiltRoot {
             name: store.root.root.clone(),
             executable: None,
+            naming,
         }));
     }
     // A flat root's top-level fields map positionally to `top_field_sites`, so
@@ -726,6 +753,7 @@ fn build_one(
 
     Ok(Some(BuiltRoot {
         name: store.root.root.clone(),
+        naming,
         executable: Some(DurableRoot {
             name: store.root.root.clone(),
             root_id,
@@ -810,6 +838,9 @@ struct IdentityResolver<'a> {
     /// `check.resource_limit` (the latter case then also draws `check.recursion` from
     /// the cycle pass — both are truthful and land at real spans).
     value_path: Vec<ValueNode>,
+    /// The durable-path naming entries collected as this store's nodes resolve, drained
+    /// into the [`BuiltRoot`] once the graph is known complete.
+    naming: Vec<(LedgerIdBytes, PathSigil, String)>,
     diagnostics: &'a mut Vec<SourceDiagnostic>,
 }
 
@@ -835,8 +866,17 @@ impl<'a> IdentityResolver<'a> {
             seen_enums: BTreeSet::new(),
             invariant: None,
             value_path: Vec::new(),
+            naming: Vec::new(),
             diagnostics,
         }
+    }
+
+    /// Record one path-step node's source spelling under its ledger id, for the
+    /// durable-path naming join. Only nodes a [`SemanticPath`] step names are recorded —
+    /// a store root, a stored field, a managed index, a static group, or a keyed branch
+    /// placement — never a key column or an enum sum/member, which are not path steps.
+    fn name_step(&mut self, id: LedgerIdBytes, sigil: PathSigil, name: &str) {
+        self.naming.push((id, sigil, name.to_string()));
     }
 
     /// Build a durable field's stored value shape from its resolved value type, over
@@ -1089,6 +1129,7 @@ impl<'a> IdentityResolver<'a> {
                 // flatten into the containing resource's namespace, so it mints no
                 // record type of its own.
                 let id = self.resolve(IdentityKind::Group, &path);
+                self.name_step(id, PathSigil::Child, &group.name);
                 let (inner, _record_fields) = self.build_member_tree(draft, records, group, &path);
                 groups.push(DurableMemberDef::Group { id, members: inner });
             } else {
@@ -1100,6 +1141,7 @@ impl<'a> IdentityResolver<'a> {
                 // spelling; the branch's own `name` is the simple member name the
                 // physical layer keys its family by.
                 let placement = self.resolve(IdentityKind::Root, &path);
+                self.name_step(placement, PathSigil::Child, &group.name);
                 let keys = self.build_branch_keys(records, group, &path);
                 let (inner, record_fields) = self.build_member_tree(draft, records, group, &path);
                 let record_name = draft.intern_string(&path);
@@ -1218,6 +1260,7 @@ impl<'a> IdentityResolver<'a> {
             return None;
         };
         let id = self.resolve(IdentityKind::Field, &format!("{container}.{}", field.name));
+        self.name_step(id, PathSigil::Child, &field.name);
         let member = DurableMemberDef::Field {
             id,
             required: field.required,
@@ -1324,6 +1367,7 @@ impl<'a> IdentityResolver<'a> {
             let components = resolved.iter().map(|item| item.component).collect();
             let projection = resolved.iter().map(|item| item.scalar).collect();
             let id = self.resolve(IdentityKind::Index, &format!("{root}.{}", index.name));
+            self.name_step(id, PathSigil::Child, &index.name);
             shapes.push(BuiltIndex {
                 shape: DurableIndexShape {
                     id,

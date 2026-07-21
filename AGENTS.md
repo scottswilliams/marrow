@@ -165,9 +165,9 @@ dependency cannot satisfy. Repository source remains Apache-2.0.
   settings, limits, raw evidence, and regression policy. Do not call a behavior
   proven, safe, scalable, portable, or institution-ready without the
   corresponding evidence.
-- The compiler-dev audit mode is not executable on the beta line: `check` is a
-  refounding command that reports `cli.command_unsupported`, so no
-  `--compiler-dev` audit runs. Checker, inference, analysis, hover, and other
+- The compiler-dev audit mode is not executable on the beta line: `marrow check`
+  is the minimal surface — it reports diagnostics and each export's durable access
+  demand — and carries no `--compiler-dev` audit mode. Checker, inference, analysis, hover, and other
   semantic-tooling changes instead rely on the production-path test tiers above —
   source exercised through the production parser/checker or compiler and the
   production runtime — with adversarial sibling cases beside the invariant. A

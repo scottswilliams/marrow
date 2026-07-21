@@ -16,6 +16,7 @@ use marrow_syntax::{
     ResourceDecl, ResourceMember, SourceSpan, StoreDecl, StructDecl, parse_source,
 };
 
+use crate::demand::DurableNaming;
 use crate::diag::SourceDiagnostic;
 use crate::durable::DurableRegistry;
 use crate::konst::ConstRegistry;
@@ -41,6 +42,10 @@ pub struct ExportEntry {
 pub struct Compiled {
     pub image: EncodedImage,
     pub exports: Vec<ExportEntry>,
+    /// The durable-path naming join for the program's admitted durable graph, so a
+    /// caller can describe each export's verifier-reconstructed demand in source
+    /// spelling. Empty for a storeless project.
+    pub naming: DurableNaming,
 }
 
 /// One discovered `test "name"` declaration: its report title, the module and
@@ -64,6 +69,9 @@ pub struct CompiledTests {
     pub image: EncodedImage,
     pub exports: Vec<ExportEntry>,
     pub tests: Vec<TestEntry>,
+    /// The durable-path naming join for the program's admitted durable graph (see
+    /// [`Compiled::naming`]).
+    pub naming: DurableNaming,
 }
 
 /// The ordered source diagnostics from a failed compilation.
@@ -530,6 +538,7 @@ pub fn compile(project: &ProjectInput) -> Result<Compiled, CompileFailure> {
     Ok(Compiled {
         image: built.image,
         exports: built.exports,
+        naming: built.naming,
     })
 }
 
@@ -543,6 +552,7 @@ pub fn compile_with_tests(project: &ProjectInput) -> Result<CompiledTests, Compi
         image: built.image,
         exports: built.exports,
         tests: built.tests,
+        naming: built.naming,
     })
 }
 
@@ -552,6 +562,7 @@ struct Built {
     image: EncodedImage,
     exports: Vec<ExportEntry>,
     tests: Vec<TestEntry>,
+    naming: DurableNaming,
 }
 
 /// The staged outcome of one analysis/lowering pass over a project. Diagnostics are
@@ -1340,6 +1351,7 @@ fn run_semantic(
             image,
             exports,
             tests,
+            naming: durable.naming(),
         }),
         Err(error) => image_build_outcome(error),
     }

@@ -4,7 +4,7 @@ The installed command is `marrow`. A bare invocation and an unknown command are
 usage failures (exit `2`). `marrow --help` prints the syntax implemented by the
 current binary; `marrow --version` prints the package version.
 
-The beta line's CLI is deliberately thin. `init`, `fmt`, `run`, `test`,
+The beta line's CLI is deliberately thin. `init`, `fmt`, `check`, `run`, `test`,
 `client typescript`, `--help`, and `--version` are the available commands;
 every other recognized
 command name belongs to a capability being refounded and reports the typed code
@@ -18,10 +18,11 @@ direction.
 |---|---|
 | `init` | Create a new project directory (this page). |
 | `fmt` | Format a `.mw` file or every captured source file in a project (this page). |
+| `check` | Check a project and describe each export's durable access demand (this page). |
 | `run` | Compile, verify, and run an exported function (this page). |
 | `test` | Discover and run `test` declarations (this page; see [tests](tests.md)). |
 | `client typescript` | Generate the strict TypeScript client and the pinned Node supervision module (this page; see [TypeScript client](typescript-client.md)). |
-| `check`, `data`, `doctor`, `evolve`, `serve`, `backup`, `restore` | Recognized; report `cli.command_unsupported` until their refounding lanes land. |
+| `data`, `doctor`, `evolve`, `serve`, `backup`, `restore` | Recognized; report `cli.command_unsupported` until their refounding lanes land. |
 
 ## `marrow init`
 
@@ -56,6 +57,37 @@ Source that does not parse is left untouched and reported with located
 refused with `fmt.comment_loss` rather than published lossily. A directory whose
 manifest or source tree is invalid reports the matching `config.invalid` or
 `project.*` code.
+
+## `marrow check`
+
+```text
+marrow check [projectdir]
+```
+
+Captures and checks the [project](projects.md) at `projectdir` (the working
+directory by default) and reports every diagnostic, each with its source file and
+1-based line and column. `check` opens no store and runs no code. Diagnostics are
+written to standard error; the command exits `0` when the project checks clean, `1`
+when any diagnostic is reported or a fixed compiler bound is reached, and `2` on a
+usage error.
+
+A project that checks clean is compiled and independently verified, and `check`
+prints one line per exported (`pub fn`) function to standard output, in
+`module.item` order, describing that export's durable
+[access demand](../language/durable-places.md#access-demand) in source spelling:
+
+```text
+bookstore.lookup reads ^books and ^books.byIsbn
+bookstore.put reads ^books; writes ^books
+```
+
+The demand is the set of durable places the export's whole call graph touches,
+named by their durable paths (`^root`, `^root.field`, `^root.index`) and grouped by
+whether the export reads or writes each. A presence probe, a field or entry read,
+and an ordered index or family traversal are reads; a write and an erase are writes;
+a place a read-modify-write export both reads and writes is named in both clauses.
+The demand *describes* the access a program requires and never grants it. An export
+that touches no durable data is reported as reading or writing no durable data.
 
 ## `marrow run`
 

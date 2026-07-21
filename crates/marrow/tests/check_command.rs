@@ -23,8 +23,10 @@ impl TempDir {
             .duration_since(std::time::UNIX_EPOCH)
             .expect("clock after epoch")
             .as_nanos();
-        let root =
-            std::env::temp_dir().join(format!("marrow-a5b01-{name}-{}-{nanos}", std::process::id()));
+        let root = std::env::temp_dir().join(format!(
+            "marrow-a5b01-{name}-{}-{nanos}",
+            std::process::id()
+        ));
         fs::create_dir_all(&root).expect("create temp dir");
         TempDir { root }
     }
