@@ -10,7 +10,8 @@ use marrow_image::{
     OP_BYTES_LT, OP_CALL, OP_CONST_LOAD, OP_CONV_BYTES_TEXT, OP_CONV_STRING, OP_DATE_ADD_DAYS,
     OP_DATE_DAYS_BETWEEN, OP_DATE_GE, OP_DATE_GT, OP_DATE_LE, OP_DATE_LT, OP_DUR_CREATE_ENTRY,
     OP_DUR_ERASE_ENTRY, OP_DUR_ERASE_FIELD, OP_DUR_ERASE_GROUP, OP_DUR_EXISTS,
-    OP_DUR_FAMILY_EXISTS, OP_DUR_INDEX_LOOKUP, OP_DUR_INDEX_SCAN, OP_DUR_ITERATE_BOUNDED,
+    OP_DUR_FAMILY_EXISTS, OP_DUR_INDEX_EXISTS, OP_DUR_INDEX_LOOKUP, OP_DUR_INDEX_SCAN,
+    OP_DUR_ITERATE_BOUNDED,
     OP_DUR_READ_ENTRY, OP_DUR_READ_FIELD, OP_DUR_READ_GROUP, OP_DUR_REPLACE_ENTRY,
     OP_DUR_REPLACE_GROUP, OP_DUR_SET_REQUIRED, OP_DUR_SET_SPARSE, OP_DUR_SET_SPARSE_PRESENT,
     OP_DURATION_ADD, OP_DURATION_GE, OP_DURATION_GT, OP_DURATION_LE, OP_DURATION_LT,
@@ -205,6 +206,7 @@ pub(super) fn decode_code(code: &[u8]) -> Result<Vec<Decoded>, VerifyRejection> 
                 list_ty: operand_u16(&mut reader)?,
             },
             OP_DUR_INDEX_LOOKUP => SealedInstr::DurIndexLookup(operand_u16(&mut reader)?),
+            OP_DUR_INDEX_EXISTS => SealedInstr::DurIndexExists(operand_u16(&mut reader)?),
             OP_TXN_BEGIN => SealedInstr::TxnBegin,
             OP_TXN_COMMIT => SealedInstr::TxnCommit,
             OP_LIST_NEW => SealedInstr::ListNew(operand_u16(&mut reader)?),
@@ -494,6 +496,7 @@ mod opcode_bijection {
                 bytes
             }
             SealedInstr::DurIndexLookup(_) => u16op(OP_DUR_INDEX_LOOKUP),
+            SealedInstr::DurIndexExists(_) => u16op(OP_DUR_INDEX_EXISTS),
             SealedInstr::TxnBegin => none(OP_TXN_BEGIN),
             SealedInstr::TxnCommit => none(OP_TXN_COMMIT),
             SealedInstr::ListNew(_) => u16op(OP_LIST_NEW),
@@ -641,6 +644,7 @@ mod opcode_bijection {
                 list_ty: 0,
             },
             SealedInstr::DurIndexLookup(0),
+            SealedInstr::DurIndexExists(0),
             SealedInstr::TxnBegin,
             SealedInstr::TxnCommit,
             SealedInstr::ListNew(0),

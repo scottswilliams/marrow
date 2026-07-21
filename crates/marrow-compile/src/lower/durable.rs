@@ -310,6 +310,7 @@ pub(super) fn is_durable_place_op(instr: &Instr) -> bool {
             | Instr::DurIterateBounded { .. }
             | Instr::DurIndexScan { .. }
             | Instr::DurIndexLookup(_)
+            | Instr::DurIndexExists(_)
     )
 }
 
@@ -425,6 +426,7 @@ pub(super) fn is_mutation_instr(instr: &Instr) -> bool {
         | Instr::TxnCommit
         | Instr::DurIndexScan { .. }
         | Instr::DurIndexLookup(_)
+        | Instr::DurIndexExists(_)
         | Instr::ListNew(_)
         | Instr::ListAppend
         | Instr::ListLen
@@ -637,6 +639,40 @@ impl<'a> FnLowerer<'a> {
             root: root_id,
             optional: true,
         })
+    }
+
+    /// Lower a unique index's presence probe `exists(^root.index[keys])`: check the operands
+    /// against the whole projection, then emit `DurIndexExists` over the same lookup site.
+    /// The result is a bare `bool` — the presence half of [`lower_index_lookup`], without
+    /// materializing the found identity.
+    pub(super) fn lower_index_exists(
+        &mut self,
+        index: &crate::durable::DurableIndex,
+        keys: &[Expression],
+        span: SourceSpan,
+    ) -> Option<LTy> {
+        if keys.len() != index.projection.len() {
+            self.fail(SourceDiagnostic::at(
+                Code::CheckType.as_str(),
+                self.file,
+                span,
+                format!(
+                    "unique index `{}` is probed by its whole projection of {} key(s)",
+                    index.name,
+                    index.projection.len()
+                ),
+            ));
+            return None;
+        }
+        let site = index.site;
+        // The projection scalar types are copied out first so the operand lowering (a
+        // mutable borrow of `self`) does not overlap the index borrow.
+        let projection: Vec<ScalarType> = index.projection.clone();
+        for (key, key_ty) in keys.iter().zip(&projection) {
+            self.lower_as(key, LTy::bare_scalar(*key_ty))?;
+        }
+        self.push(Instr::DurIndexExists(site), span);
+        Some(LTy::bare_scalar(ScalarType::Bool))
     }
 
     pub(super) fn durable_access(&self, expr: &Expression) -> Option<DurShape> {
@@ -1295,6 +1331,25 @@ impl<'a> FnLowerer<'a> {
             ));
             return None;
         };
+        // A managed-index read completes the presence family over an index: a unique index
+        // is a complete-key probe (the presence half of the `if const` lookup), a nonunique
+        // index is scan-only and has no keyed presence probe.
+        if let Some(read) = self.resolve_index_read(&arg.value) {
+            if read.index.unique {
+                return self.lower_index_exists(read.index, read.keys, arg.value.span());
+            }
+            self.fail(SourceDiagnostic::at(
+                Code::CheckType.as_str(),
+                self.file,
+                arg.value.span(),
+                format!(
+                    "the non-unique index `{}` is scan-only and has no `exists` probe; scan it \
+                     with a `for` head",
+                    read.index.name
+                ),
+            ));
+            return None;
+        }
         // A family argument (a store root, or a keyed branch family whose tail names a
         // declared branch) is the family-populated probe: it names no immediate child key,
         // so it reuses the traversal place resolver and emits only the ancestor key-path.

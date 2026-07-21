@@ -1016,6 +1016,7 @@ fn apply(
         | SealedInstr::DurIterateBounded { .. }
         | SealedInstr::DurIndexScan { .. }
         | SealedInstr::DurIndexLookup(_)
+        | SealedInstr::DurIndexExists(_)
         | SealedInstr::TxnBegin
         | SealedInstr::TxnCommit
         | SealedInstr::ListNew(_)
@@ -1123,7 +1124,8 @@ pub(super) fn durable_site(instr: &SealedInstr) -> Option<u16> {
         | SealedInstr::DurEraseGroup(site)
         | SealedInstr::DurIterateBounded { site, .. }
         | SealedInstr::DurIndexScan { site, .. }
-        | SealedInstr::DurIndexLookup(site) => Some(*site),
+        | SealedInstr::DurIndexLookup(site)
+        | SealedInstr::DurIndexExists(site) => Some(*site),
         _ => None,
     }
 }
@@ -1156,9 +1158,13 @@ pub(super) fn durable_op_class(instr: &SealedInstr) -> Option<OperationClass> {
         SealedInstr::DurEraseField(_)
         | SealedInstr::DurEraseEntry(_)
         | SealedInstr::DurEraseGroup(_) => Some(OperationClass::Erase),
+        // A unique-index presence probe reads the same index cell family as the lookup —
+        // revealing strictly less (a bool, not the identity) — so it demands the same
+        // index-read authority rather than a novel presence-over-an-index atom.
         SealedInstr::DurIterateBounded { .. }
         | SealedInstr::DurIndexScan { .. }
-        | SealedInstr::DurIndexLookup(_) => Some(OperationClass::IndexRead),
+        | SealedInstr::DurIndexLookup(_)
+        | SealedInstr::DurIndexExists(_) => Some(OperationClass::IndexRead),
         // Region markers open and close the transaction but stage no access.
         SealedInstr::TxnBegin | SealedInstr::TxnCommit => None,
         // The closed complement: every pure opcode stages no durable access.
@@ -1760,7 +1766,21 @@ fn apply_index_read(
                 optional: true,
             });
         }
-        _ => unreachable!("apply_index_read only handles the two index reads"),
+        SealedInstr::DurIndexExists(_) => {
+            if !index.unique {
+                return Err(reject(
+                    VerifyPhase::Function,
+                    "presence probe of a nonunique index",
+                ));
+            }
+            // Pop the whole projection (one key per component, projection order reversed),
+            // then push the presence bool — the identity is never materialized.
+            for scalar in projection.iter().rev() {
+                expect(pop(stack)?, VType::bare_scalar(*scalar))?;
+            }
+            stack.push(VType::bare_scalar(Scalar::Bool));
+        }
+        _ => unreachable!("apply_index_read only handles the three index reads"),
     }
     Ok(Control::Fallthrough)
 }

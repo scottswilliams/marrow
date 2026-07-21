@@ -532,7 +532,7 @@ fn encode_code(
                 out.push(u8::from(*from));
                 push_u16(&mut out, *list_ty);
             }
-            Instr::DurIndexLookup(site) => push_u16(&mut out, *site),
+            Instr::DurIndexLookup(site) | Instr::DurIndexExists(site) => push_u16(&mut out, *site),
             _ => {}
         }
     }

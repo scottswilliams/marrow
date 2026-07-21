@@ -319,9 +319,9 @@ fn no_application_opcode_maintains_a_managed_index() {
     // index-maintenance opcode, and the operation-target set names no index *write*
     // target.
 
-    // (1) The only `OP_DUR_*INDEX*` opcodes are the two reads (`SCAN`, `LOOKUP`); no
-    // opcode maintains (writes) an index. Scanning the frozen opcode constants of
-    // `marrow-image`'s `instr.rs` by source text — as the workspace's other tidy gates
+    // (1) The only `OP_DUR_*INDEX*` opcodes are the three reads (`SCAN`, `LOOKUP`,
+    // `EXISTS`); no opcode maintains (writes) an index. Scanning the frozen opcode constants
+    // of `marrow-image`'s `instr.rs` by source text — as the workspace's other tidy gates
     // scan source — keeps the law honest against a future index-maintenance byte.
     let instr_src = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
@@ -339,8 +339,8 @@ fn no_application_opcode_maintains_a_managed_index() {
             continue;
         }
         assert!(
-            name == "INDEX_SCAN" || name == "INDEX_LOOKUP",
-            "durable opcode `OP_DUR_{name}` names an index but is not one of the two \
+            name == "INDEX_SCAN" || name == "INDEX_LOOKUP" || name == "INDEX_EXISTS",
+            "durable opcode `OP_DUR_{name}` names an index but is not one of the three \
              reads; managed-index maintenance must remain compiler-owned with no \
              application write opcode",
         );

@@ -1199,6 +1199,21 @@ fn execute<'s>(
                 stack.push(Value::Optional(value));
                 pc += 1;
             }
+            SealedInstr::DurIndexExists(site) => {
+                let durable = session
+                    .as_deref_mut()
+                    .expect("verifier proved a durable opcode runs with a session");
+                let authorized = durable.site(*site);
+                let arity = authorized
+                    .index_projection_len()
+                    .expect("verifier proved an index lookup site");
+                let key = pop_key_path(&mut stack, arity);
+                let found = durable
+                    .index_lookup(&authorized, &key)
+                    .map_err(|kf| kernel_fault(function, pc, &kf))?;
+                stack.push(Value::Bool(found.is_some()));
+                pc += 1;
+            }
         }
     }
 }

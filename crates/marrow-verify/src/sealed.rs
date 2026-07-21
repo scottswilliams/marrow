@@ -295,6 +295,11 @@ pub enum SealedInstr {
     /// `[projection-keys] → Id(^root)?`: pop the whole projection (one key per component,
     /// projection order) and push the optional source identity.
     DurIndexLookup(u16),
+    /// The presence half of [`DurIndexLookup`] — the unique-index arm of `exists`. Stack
+    /// effect `[projection-keys] → bool`: pop the whole projection (one key per component,
+    /// projection order) and push whether a matching entry exists, without materializing its
+    /// identity. `site` names the same unique-index lookup site.
+    DurIndexExists(u16),
     /// Open the export's single transaction region.
     TxnBegin,
     /// Close the export's single transaction region.

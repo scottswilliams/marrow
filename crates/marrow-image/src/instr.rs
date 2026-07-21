@@ -163,6 +163,7 @@ pub const OP_INSTANT_SUB_DURATION: u8 = 0xB5;
 // exact complete-projection lookup yielding the optional source identity.
 pub const OP_DUR_INDEX_SCAN: u8 = 0xB6;
 pub const OP_DUR_INDEX_LOOKUP: u8 = 0xB7;
+pub const OP_DUR_INDEX_EXISTS: u8 = 0xB8;
 
 /// A draft instruction. Jump targets are instruction indices into the function's
 /// own instruction list; the encoder rewrites them to container byte offsets.
@@ -419,6 +420,11 @@ pub enum Instr {
     /// identity as an optional `Id(^root)` — present with the source key tuple, or vacant.
     /// `site` names the index lookup site. Stack effect `[projection-keys] → Id(^root)?`.
     DurIndexLookup(u16),
+    /// The presence half of [`DurIndexLookup`] — the unique-index arm of `exists`. Pop the
+    /// index's whole projection (one key per component, projection order) and push whether a
+    /// matching entry exists, without materializing its identity. `site` names the same
+    /// unique-index lookup site the lookup uses. Stack effect `[projection-keys] → bool`.
+    DurIndexExists(u16),
     /// Push an empty `List` of the COLLTYPES index `_0`.
     ListNew(u16),
     /// `[list, value] → [list']`: append the bare value after the last element,
@@ -563,6 +569,7 @@ impl Instr {
             Instr::TxnCommit => OP_TXN_COMMIT,
             Instr::DurIndexScan { .. } => OP_DUR_INDEX_SCAN,
             Instr::DurIndexLookup(_) => OP_DUR_INDEX_LOOKUP,
+            Instr::DurIndexExists(_) => OP_DUR_INDEX_EXISTS,
             Instr::ListNew(_) => OP_LIST_NEW,
             Instr::ListAppend => OP_LIST_APPEND,
             Instr::ListLen => OP_LIST_LEN,
@@ -611,7 +618,9 @@ impl Instr {
             // A big-endian `u16` root key-column count.
             | Instr::IdentityKeyPath(_)
             // A big-endian `u16` index lookup site.
-            | Instr::DurIndexLookup(_) => 2,
+            | Instr::DurIndexLookup(_)
+            // A big-endian `u16` unique-index presence-probe site.
+            | Instr::DurIndexExists(_) => 2,
             // Two big-endian `u16` operands: the store-root index and the key-column count.
             Instr::MakeIdentity { .. } => 4,
             Instr::Jump(_)

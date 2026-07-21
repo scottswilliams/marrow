@@ -11,6 +11,12 @@ optional value — a local optional, a local collection read, or a user-function
 result — is resolved with `if const`, `??`, or `?.` instead. A true branch
 narrows a stable durable path read.
 
+A complete-key read of a `unique` managed index, `exists(^root.uidx[keys])`, is
+also a presence subject: it reports whether the index holds a matching entry,
+the presence half of the [`if const` lookup](traversal-and-indexes.md#reading-an-index)
+without binding the found identity. A non-unique index is scan-only and has no
+`exists` probe.
+
 `if const`, `??`, and `?.` are language constructs rather than calls; they
 resolve any optional value:
 

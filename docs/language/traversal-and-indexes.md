@@ -268,6 +268,29 @@ yields the next distinct component; the complete projection yields the source-ro
 and a `unique` index read is a complete-key exact lookup that yields exactly the one
 matching `Id(^root)` or absent — never a sibling.
 
+The presence of a matching entry is asked directly with `exists(^root.indexName[keys])`,
+supplying the whole projection and yielding a `bool` without binding the identity — the
+presence half of the lookup:
+
+```mw
+module docs::index_exists
+
+resource Book {
+    required title: string
+    required isbn: string
+}
+
+store ^books[id: int]: Book {
+    index byIsbn[isbn] unique
+}
+
+pub fn isbnTaken(isbn: string): bool {
+    return exists(^books.byIsbn[isbn])
+}
+```
+
+A non-unique index is scan-only and has no `exists` probe (see [Built-ins](builtins.md#presence)).
+
 A bound `Id(^root)` addresses the whole entry: dereferencing it with `^root[id]` reads
 the entry, and inside a transaction the same address is written or replaced — for
 example `^root[found] = Resource(...)` updates the entry the lookup found — exactly as an
