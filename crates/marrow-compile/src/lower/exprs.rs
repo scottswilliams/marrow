@@ -1279,6 +1279,7 @@ impl<'a> FnLowerer<'a> {
         // arguments inferred from the arguments), resolved before the collection
         // fallbacks so a generic named `get`/`append`/... shadows them.
         if let Some(template) = self.generics.same_module(self.module, name) {
+            self.record_generic_call(template, callee_span);
             return self.lower_generic_call(template, args, span);
         }
         // The procedural collection operations resolve last, so a same-module
@@ -1357,6 +1358,7 @@ impl<'a> FnLowerer<'a> {
                         ));
                         return None;
                     }
+                    self.record_generic_call(template, callee_span);
                     return self.lower_generic_call(template, args, span);
                 }
                 let path = prefix
@@ -1408,6 +1410,25 @@ impl<'a> FnLowerer<'a> {
             RetType::Unit => CallResult::Unit,
             RetType::Value(ty) => CallResult::Value(ty),
         })
+    }
+
+    /// Record the editor fact for a resolved generic call at the callee leaf span: the
+    /// template's canonical signature display and its definition target. The target is
+    /// the source template, never a minted instance.
+    fn record_generic_call(&mut self, index: usize, callee_span: SourceSpan) {
+        let (display, target) = {
+            let template = &self.generics.templates()[index];
+            let decl = template.decl;
+            (
+                generic_signature_display(decl),
+                DefinitionTarget {
+                    file: template.file.clone(),
+                    name_span: decl.name_span,
+                    decl_range: decl_range(decl),
+                },
+            )
+        };
+        self.hover_facts.push((callee_span, display, Some(target)));
     }
 
     /// Lower a call to a generic function: infer each type argument from the call's
@@ -3060,6 +3081,34 @@ impl<'a> FnLowerer<'a> {
                 None
             }
         }
+    }
+}
+
+/// The canonical hover display of a resolved generic function callee, from its source
+/// template: `fn name<T>(p: Ty): ret` with the declared type parameters and declared
+/// parameter and return spellings. A generic call targets its source template, never a
+/// minted instance.
+fn generic_signature_display(decl: &FunctionDecl) -> String {
+    let type_params = if decl.type_params.is_empty() {
+        String::new()
+    } else {
+        let names = decl
+            .type_params
+            .iter()
+            .map(|param| param.name.clone())
+            .collect::<Vec<_>>()
+            .join(", ");
+        format!("<{names}>")
+    };
+    let params = decl
+        .params
+        .iter()
+        .map(|param| param.ty.to_string())
+        .collect::<Vec<_>>()
+        .join(", ");
+    match &decl.return_type {
+        None => format!("fn {}{type_params}({params})", decl.name),
+        Some(ret) => format!("fn {}{type_params}({params}): {ret}", decl.name),
     }
 }
 

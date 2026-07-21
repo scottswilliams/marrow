@@ -143,6 +143,18 @@ impl FnSignature {
     }
 }
 
+/// The header-through-body declaration range of a function: the header-only `span`
+/// joined with the body span. The single owner of this join, for both the monomorphic
+/// signature table and the generic-template definition target.
+pub(super) fn decl_range(decl: &FunctionDecl) -> SourceSpan {
+    SourceSpan {
+        start_byte: decl.span.start_byte,
+        end_byte: decl.body.span.end_byte,
+        line: decl.span.line,
+        column: decl.span.column,
+    }
+}
+
 /// A successfully lowered function: its image index and the indices of the
 /// functions it calls directly (for check-time recursion detection).
 pub(crate) struct Lowered {

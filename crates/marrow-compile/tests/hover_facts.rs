@@ -221,6 +221,58 @@ fn definition_in_an_unknown_file_is_a_query_error() {
     ));
 }
 
+#[test]
+fn hover_on_a_generic_call_shows_the_template_signature() {
+    let source = "pub fn id<T>(x: T): T {\n    return x\n}\n\n\
+                  pub fn f(): int {\n    return id(1)\n}\n";
+    let snapshot = snap(&[("src/main.mw", source)]);
+    let call_offset = offset_of(source, "id(1)");
+    match snapshot.hover(&identity("src/main.mw"), call_offset) {
+        Ok(Fact::Present(hover)) => assert_eq!(hover.display(), "fn id<T>(T): T"),
+        other => panic!("expected the template signature, got {}", label(&other)),
+    }
+}
+
+#[test]
+fn definition_on_a_generic_call_targets_the_source_template() {
+    let source = "pub fn id<T>(x: T): T {\n    return x\n}\n\n\
+                  pub fn f(): int {\n    return id(1)\n}\n";
+    let snapshot = snap(&[("src/main.mw", source)]);
+    let call_offset = offset_of(source, "id(1)");
+    match snapshot.definition(&identity("src/main.mw"), call_offset) {
+        Ok(Fact::Present(def)) => {
+            assert_eq!(def.file().as_str(), "src/main.mw");
+            // The target is the template declaration, not a minted instance.
+            let name = &source[def.name_span().start_byte..def.name_span().end_byte];
+            assert_eq!(name, "id");
+            assert_eq!(def.name_span().start_byte, offset_of(source, "id"));
+        }
+        other => panic!(
+            "expected the template definition, got {}",
+            label_def(&other)
+        ),
+    }
+}
+
+#[test]
+fn definition_on_a_cross_module_generic_call_targets_the_template_file() {
+    let lib = "module lib\n\npub fn wrap<T>(x: T): T {\n    return x\n}\n";
+    let main = "module main\nuse lib\n\npub fn f(): int {\n    return lib::wrap(1)\n}\n";
+    let snapshot = snap(&[("src/lib.mw", lib), ("src/main.mw", main)]);
+    let call_offset = offset_of(main, "lib::wrap") + "lib::".len();
+    match snapshot.definition(&identity("src/main.mw"), call_offset) {
+        Ok(Fact::Present(def)) => {
+            assert_eq!(def.file().as_str(), "src/lib.mw");
+            let name = &lib[def.name_span().start_byte..def.name_span().end_byte];
+            assert_eq!(name, "wrap");
+        }
+        other => panic!(
+            "expected a cross-module template definition, got {}",
+            label_def(&other)
+        ),
+    }
+}
+
 fn label_def(fact: &Result<Fact<Definition>, QueryError>) -> &'static str {
     label(fact)
 }

@@ -96,14 +96,7 @@ impl FunctionRegistry {
                 public: function.public,
                 file: file.clone(),
                 name_span: function.name_span,
-                // The declaration range runs from the header start to the body end; the
-                // header-only `span` is joined with the body span.
-                decl_range: SourceSpan {
-                    start_byte: function.span.start_byte,
-                    end_byte: function.body.span.end_byte,
-                    line: function.span.line,
-                    column: function.span.column,
-                },
+                decl_range: decl_range(function),
             });
             index += 1;
         }
