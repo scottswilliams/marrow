@@ -184,7 +184,9 @@ pub const fn m_owned() -> u64 {
     let diagnostics = B_DIAG_LEDGER_BYTES + B_PUBLICATION_PLAN_BYTES;
     let outbound = OUTBOUND_CREDITS as u64 * (F_OUT_BYTES + B_RECEIPT_BYTES);
     // The pending-frame queue holds at most one small frame per live request/anonymous
-    // entry (replies never queue — they materialize only against a credit).
+    // entry (replies never queue — they materialize only against a credit). The
+    // at-most-one outstanding showMessage frame (the episode latch admits a new one only
+    // after a reset) is a small frame absorbed by the owned-ceiling margin, not a term.
     let pending = (MAX_LIVE_REQUEST_ENTRIES as u64 + MAX_ANONYMOUS_ERROR_SLOTS as u64)
         * MAX_SMALL_FRAME_BYTES;
     let fixed = B_SELECTED_ROOT_URI_BYTES + B_FIXED_TERMINAL_BYTES;
