@@ -481,6 +481,7 @@ impl<'a> FnLowerer<'a> {
         functions: &FunctionRegistry,
         generics: &GenericRegistry,
         consts: &ConstRegistry,
+        admission_steered: &mut BTreeSet<String>,
         template: &GenericTemplate,
     ) -> Result<TemplateProofOutcome, LowerInvariant> {
         let file = &template.file;
@@ -503,9 +504,6 @@ impl<'a> FnLowerer<'a> {
             })
             .collect::<Vec<_>>();
         let mut dependency_gaps = Vec::new();
-        // The template proof runs over abstract parameters into a throwaway draft; its
-        // reference steers are self-contained, so it keeps its own dedup set.
-        let mut admission_steered = BTreeSet::new();
         FnLowerer::lower_with_env(
             &mut throwaway,
             &check_records,
@@ -515,7 +513,7 @@ impl<'a> FnLowerer<'a> {
             consts,
             &mut diagnostics,
             &mut dependency_gaps,
-            &mut admission_steered,
+            admission_steered,
             file,
             module,
             template.decl,

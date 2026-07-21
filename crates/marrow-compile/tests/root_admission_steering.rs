@@ -119,3 +119,34 @@ fn a_genuinely_undeclared_root_keeps_the_unknown_name_message() {
         "an undeclared root never claims to have been declared: {diagnostics:#?}",
     );
 }
+
+/// The reference steer fires once per dropped root across the whole compile, even when
+/// one reference sits in a generic function's once-checked template body (proved before
+/// the monomorphic bodies) and another in an ordinary function. The template proof shares
+/// the compile-wide steered-root set, so a root referenced from both does not steer twice.
+#[test]
+fn a_dropped_root_referenced_from_a_generic_and_an_ordinary_function_steers_once() {
+    let source = "module main\n\n\
+         resource Member {\n\
+         \x20   required email: string\n\
+         }\n\n\
+         store ^members[id: int]: Member\n\n\
+         pub fn probe<T>(seed: T, id: int): T {\n\
+         \x20   if exists(^members[id]) {\n\
+         \x20       return seed\n\
+         \x20   }\n\
+         \x20   return seed\n\
+         }\n\n\
+         pub fn other(id: int): bool {\n\
+         \x20   return exists(^members[id])\n\
+         }\n";
+    let diagnostics = diagnostics(&project(&[("src/main.mw", source)]));
+    assert_eq!(
+        diagnostics
+            .iter()
+            .filter(|d| d.code == "check.type" && d.message.contains("failed identity admission"))
+            .count(),
+        1,
+        "one steer per dropped root, not one per reference site: {diagnostics:#?}",
+    );
+}

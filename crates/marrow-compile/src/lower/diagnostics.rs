@@ -352,7 +352,9 @@ pub(super) fn nearest_name<'n>(
                 best_name = Some(candidate);
                 tied = false;
             }
-            Some(current) if distance == current => tied = true,
+            // A shadowed local can present the same name twice; only a *different* name
+            // at the same distance is a real tie that suppresses the suggestion.
+            Some(current) if distance == current => tied |= best_name != Some(candidate),
             Some(_) => {}
             None => {
                 best = Some(distance);
@@ -500,4 +502,46 @@ pub(super) fn logic_operand(
             ty.spelling(records)
         ),
     )
+}
+
+#[cfg(test)]
+mod nearest_name_tests {
+    use super::nearest_name;
+
+    #[test]
+    fn a_single_close_candidate_is_suggested() {
+        assert_eq!(
+            nearest_name("membrs", ["members", "assets", "idseq"].into_iter()),
+            Some("members".to_string()),
+        );
+    }
+
+    #[test]
+    fn two_distinct_equally_close_candidates_suppress_the_suggestion() {
+        // `cat` is edit distance one from both `car` and `bat`: ambiguous, so silent.
+        assert_eq!(nearest_name("cat", ["car", "bat"].into_iter()), None);
+    }
+
+    #[test]
+    fn a_shadowed_name_repeated_at_the_same_distance_is_not_a_tie() {
+        // A shadowing local presents the same candidate name twice; that is one
+        // unambiguous suggestion, not an ambiguous tie.
+        assert_eq!(
+            nearest_name("cache", ["cache", "cache"].into_iter()),
+            None,
+            "an exact match is never suggested",
+        );
+        assert_eq!(
+            nearest_name("chache", ["cache", "cache", "count"].into_iter()),
+            Some("cache".to_string()),
+            "the duplicate candidate is deduped, not read as a tie",
+        );
+    }
+
+    #[test]
+    fn a_far_or_short_name_earns_no_suggestion() {
+        assert_eq!(nearest_name("ghosts", ["members"].into_iter()), None);
+        // A two-character name is fully rewritten at distance two, so it never matches.
+        assert_eq!(nearest_name("ab", ["cd"].into_iter()), None);
+    }
 }
