@@ -2135,13 +2135,11 @@ fn direct_self_recursion_is_a_check_time_diagnostic() {
     );
 }
 
-// --- Durable tracer (D00): the durable-run trough. The CLI compiles, verifies,
-// and completes the identity of a durable program, but T01's in-process `--store`
-// open died at D00, so a durable `run` reports the typed `cli.durable_unsupported`
-// trough outcome rather than executing. Durable execution returns as the
-// ephemeral-memory preview (E01); the persistent terminal path — one process
-// writing a store, a fresh process reading it back — returns at F02b over the
-// companion runner, and its end-to-end CLI restart gate returns with it. ---
+// --- Durable tracer: without `--store` the CLI compiles, verifies, and completes the
+// identity of a durable program but opens no store, so a storeless `run` of a durable export
+// reports the typed `cli.durable_unsupported` outcome. With `--store` (F02b) the persistent
+// companion path runs it against a provisioned store — one process writing, a fresh process
+// reading it back — spawned through a release-verified companion runner. ---
 
 const COUNTER_SOURCE: &str = r#"resource Counter {
     required value: int
@@ -2191,14 +2189,30 @@ fn a_durable_export_parks_in_the_trough() {
     );
 }
 
-/// `--store` no longer names a CLI open path: it died at D00 and returns at F02b.
-/// Until then it is an unknown option, a usage error before the command body.
+/// `--store` returns at F02b as the persistent companion path: it is a recognized flag, not a
+/// usage error (exit 2). It also closes the run-mint window — with a persistent store a
+/// missing durable identity is a precise `check.durable_identity` failure, never the additive
+/// auto-mint the storeless path performs. (The `COUNTER_SOURCE` project has no committed
+/// `marrow.ids`, so a storeless `run` would mint; `--store` refuses and reports the gap.)
 #[test]
-fn the_store_flag_is_gone() {
+fn the_store_flag_is_recognized_and_closes_the_run_mint_window() {
     let temp = TempDir::new("counter-store-flag");
     project(&temp, COUNTER_SOURCE);
     let output = run_in(&temp, &["run", "get", "--store", "s", "--", "hits"]);
-    assert_eq!(output.status.code(), Some(2), "{output:?}");
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "--store is a recognized flag that fails precisely, not a usage error (2): {output:?}"
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stdout).contains("check.durable_identity"),
+        "with --store a missing identity is a precise failure, not an auto-mint: {output:?}"
+    );
+    // The refusal wrote no ledger: the run-mint window is closed for a persistent store.
+    assert!(
+        !temp.join("marrow.ids").exists(),
+        "no marrow.ids may be minted on the persistent path: {output:?}"
+    );
 }
 
 /// `duration` is a span, not an identity, so it is not in the durable-key set: a

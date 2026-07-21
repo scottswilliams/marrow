@@ -3,7 +3,7 @@
 //! This is an **explicitly disposable, non-canonical** logical-cell copy — *not* the F04
 //! logical archive. It round-trips one populated store's logical content through the native
 //! path so the persistent lifecycle has a working backup/restore vertical before F04, but it
-//! carries **no digest claim** and is not a compatibility surface: the canonical, versioned,
+//! carries **no digest claim** and is not a compatibility contract: the canonical, versioned,
 //! engine-neutral, streaming archive grammar and its KAT freeze remain F04's to define (FR01
 //! §1 R4 / §2). Because this slice writes no archive-shaped canonical bytes, the FR01
 //! advisory-3 freeze does **not** transfer here, and the store head's reserved `data_digest`
@@ -77,7 +77,7 @@ pub fn backup_slice(store: &OpenStore, out: &mut impl Write) -> Result<(), Slice
         for (key, value) in page {
             if let Err(error) = write_frame(out, key).and_then(|()| write_frame(out, value)) {
                 sink_error = Some(error);
-                // Surface as a store-side stop; the real cause is carried out of band.
+                // Report a store-side stop; the real cause is carried out of band.
                 return Err(StoreError::Io {
                     op: "backup_slice.write",
                     message: "the slice sink failed".to_string(),
