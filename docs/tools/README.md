@@ -14,6 +14,9 @@ they do not define a second language or saved-data model.
 - [TypeScript client](typescript-client.md) covers `marrow client typescript`:
   the generated strict client, the pinned Node supervision module, and the
   closed loss classification for calls whose reply is lost.
+- [Language server](lsp.md) covers `marrow lsp`: the editor-facing server that
+  serves diagnostics, formatting, hover, and definition over the compiler's
+  published analysis facts.
 
 The prototype check/data/doctor/evolve/backup/restore tooling and the
 surface/client/serve commands were deleted at B00; each returns through its

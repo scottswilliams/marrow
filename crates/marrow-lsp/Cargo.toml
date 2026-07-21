@@ -20,10 +20,10 @@ marrow-codes = { path = "../marrow-codes" }
 # definition, and checked formatting over one exact ProjectInput. The LSP reconstructs
 # no semantics; it consumes these facts only.
 marrow-compile = { path = "../marrow-compile" }
-# The pure project owner: FileIdentity, ProjectInput, ModuleInput.
-marrow-project = { path = "../marrow-project" }
 # The shared bounded physical project adapter and its borrowed overlay/capture facade
-# (CAP01). The only H00a-added internal project/capture edge.
+# (CAP01). The only H00a-added internal project/capture edge; it re-exports the pure
+# owner facts a thin consumer needs (ProjectInput, FileIdentity) so the LSP names the
+# project boundary without a direct marrow-project edge.
 marrow-project-fs = { path = "../marrow-project-fs" }
 # The syntax owner's SourceSpan and FormatRefusal, consumed through the analysis facade.
 marrow-syntax = { path = "../marrow-syntax" }

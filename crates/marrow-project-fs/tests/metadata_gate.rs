@@ -4,11 +4,12 @@
 //! This pins, from full locked `cargo metadata` plus the manifest and lockfile
 //! sources (no metadata parser dependency): the new package's inherited fields
 //! and workspace lints; the exact one-member / three-present-internal-edge set;
-//! the absence of the approved-future `marrow-lsp -> marrow-project-fs` edge and
-//! the permanently forbidden direct `marrow-lsp -> marrow-project` edge; the exact
-//! internal lockfile edges; and the sorted external inventory frozen from the
-//! clean tree. Every external package's source is asserted to be the one registry,
-//! and the frozen `(name, version, checksum, license)` rows are compared exactly.
+//! the approved `marrow-lsp -> marrow-project-fs` edge and the permanently
+//! forbidden direct `marrow-lsp -> marrow-project` edge; the exact
+//! internal lockfile edges; and the sorted external inventory (which H00a widened
+//! by the reviewed lsp-types/serde/serde_json family). Every external package's
+//! source is asserted to be the one registry, and the frozen
+//! `(name, version, checksum, license)` rows are compared exactly.
 //! A missing license, an added external node, a source or checksum change, or a
 //! forbidden edge fails the ordinary gate.
 
@@ -19,9 +20,16 @@ use std::process::Command;
 const REGISTRY_SOURCE: &str = "registry+https://github.com/rust-lang/crates.io-index";
 
 /// The frozen external dependency inventory: `(name, version, checksum, license)`,
-/// sorted, captured from the clean stage-one tree. Commit S adds no external
-/// dependency, so this is byte-identical before and after adding the member.
+/// sorted. The CAP01 baseline added no external dependency; H00a added the reviewed
+/// lsp-types/serde/serde_json family (and their transitive nodes) for the language
+/// server, recorded here with their checksums and permissive licenses.
 const EXTERNAL_INVENTORY: &[(&str, &str, &str, &str)] = &[
+    (
+        "bitflags",
+        "1.3.2",
+        "bef38d45163c2f1dde094a7dfd33ccf595c92905c8f8f4fdc18d06fb1037718a",
+        "MIT/Apache-2.0",
+    ),
     (
         "block-buffer",
         "0.10.4",
@@ -53,16 +61,40 @@ const EXTERNAL_INVENTORY: &[(&str, &str, &str, &str)] = &[
         "MIT OR Apache-2.0",
     ),
     (
+        "fluent-uri",
+        "0.1.4",
+        "17c704e9dbe1ddd863da1e6ff3567795087b1eb201ce80d8fa81162e1516500d",
+        "MIT",
+    ),
+    (
         "generic-array",
         "0.14.7",
         "85649ca51fd72272d7821adaf274ad91c288277713d9c18820d8499a7ff69e9a",
         "MIT",
     ),
     (
+        "itoa",
+        "1.0.18",
+        "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682",
+        "MIT OR Apache-2.0",
+    ),
+    (
         "libc",
         "0.2.186",
         "68ab91017fe16c622486840e4c83c9a37afeff978bd239b5293d61ece587de66",
         "MIT OR Apache-2.0",
+    ),
+    (
+        "lsp-types",
+        "0.97.0",
+        "53353550a17c04ac46c585feb189c2db82154fc84b79c7a66c96c2c644f66071",
+        "MIT",
+    ),
+    (
+        "memchr",
+        "2.8.3",
+        "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98",
+        "Unlicense OR MIT",
     ),
     (
         "proc-macro2",
@@ -83,6 +115,12 @@ const EXTERNAL_INVENTORY: &[(&str, &str, &str, &str)] = &[
         "MIT OR Apache-2.0",
     ),
     (
+        "serde",
+        "1.0.228",
+        "9a8e94ea7f378bd32cbbd37198a4a91436180c5bb472411e48b5ec2e2124ae9e",
+        "MIT OR Apache-2.0",
+    ),
+    (
         "serde_core",
         "1.0.228",
         "41d385c7d4ca58e59fc732af25c3983b67ac852c1a25000afe1175de458b67ad",
@@ -92,6 +130,18 @@ const EXTERNAL_INVENTORY: &[(&str, &str, &str, &str)] = &[
         "serde_derive",
         "1.0.228",
         "d540f220d3187173da220f885ab66608367b6574e925011a9353e4badda91d79",
+        "MIT OR Apache-2.0",
+    ),
+    (
+        "serde_json",
+        "1.0.150",
+        "e8014e44b4736ed0538adeecded0fce2a272f22dc9578a7eb6b2d9993c74cfb9",
+        "MIT OR Apache-2.0",
+    ),
+    (
+        "serde_repr",
+        "0.1.20",
+        "175ee3e80ae9982737ca543e96133087cbd9a485eecc3bc4de9c1a37b47ea59c",
         "MIT OR Apache-2.0",
     ),
     (
@@ -152,6 +202,12 @@ const EXTERNAL_INVENTORY: &[(&str, &str, &str, &str)] = &[
         "winnow",
         "1.0.4",
         "23b97319f7b8343df12cc98938e5c3eb436064524c8d2b4e30a1d3a36eecdf81",
+        "MIT",
+    ),
+    (
+        "zmij",
+        "1.0.23",
+        "29666d0abbfad1e3dc4dcf6144730dd3a3ab225bbbdac83319345b1b44ccfc1b",
         "MIT",
     ),
 ];
@@ -362,16 +418,18 @@ fn the_internal_edges_are_exactly_the_three_present_edges() {
         "marrow must consume marrow-project-fs"
     );
 
-    // The future `marrow-lsp -> marrow-project-fs` edge and the forbidden direct
-    // `marrow-lsp -> marrow-project` edge are both absent: no marrow-lsp package.
+    // The language server consumes the adapter through the approved
+    // `marrow-lsp -> marrow-project-fs` edge, and reaches the pure project facts only
+    // through the facade's re-exports: the direct `marrow-lsp -> marrow-project` edge
+    // stays permanently forbidden.
+    let lsp_deps = lock_dependencies(&lock, "marrow-lsp");
     assert!(
-        !lock.contains("name = \"marrow-lsp\""),
-        "marrow-lsp must not appear in the workspace lockfile in this lane"
+        lsp_deps.iter().any(|d| d == "marrow-project-fs"),
+        "marrow-lsp must consume marrow-project-fs"
     );
-    let metadata = full_metadata(&root);
     assert!(
-        !metadata.contains("\"name\":\"marrow-lsp\""),
-        "marrow-lsp must not appear in workspace metadata in this lane"
+        !lsp_deps.iter().any(|d| d == "marrow-project"),
+        "marrow-lsp must not have a direct marrow-project edge; it names project facts through the facade"
     );
 }
 

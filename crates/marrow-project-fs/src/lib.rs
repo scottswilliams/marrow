@@ -85,4 +85,4 @@ pub use overlay::{
 pub use presentation::CapturePresentation;
 
 pub use marrow_codes::Code;
-pub use marrow_project::{CaptureError, ManifestError, Position, ProjectInput};
+pub use marrow_project::{CaptureError, FileIdentity, ManifestError, Position, ProjectInput};

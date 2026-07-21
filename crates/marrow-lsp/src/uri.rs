@@ -12,7 +12,7 @@
 
 use std::fmt::Write as _;
 
-use marrow_project::FileIdentity;
+use marrow_project_fs::FileIdentity;
 
 use crate::capacities::MAX_URI_BYTES;
 

@@ -5,7 +5,7 @@ usage failures (exit `2`). `marrow --help` prints the syntax implemented by the
 current binary; `marrow --version` prints the package version.
 
 The beta line's CLI is deliberately thin. `init`, `fmt`, `check`, `run`, `test`,
-`client typescript`, `--help`, and `--version` are the available commands;
+`client typescript`, `lsp`, `--help`, and `--version` are the available commands;
 every other recognized
 command name belongs to a capability being refounded and reports the typed code
 `cli.command_unsupported` with exit `1`, so a script never mistakes absence for
@@ -22,6 +22,7 @@ direction.
 | `run` | Compile, verify, and run an exported function (this page). |
 | `test` | Discover and run `test` declarations (this page; see [tests](tests.md)). |
 | `client typescript` | Generate the strict TypeScript client and the pinned Node supervision module (this page; see [TypeScript client](typescript-client.md)). |
+| `lsp` | Run the language server over stdio (this page; see [language server](lsp.md)). |
 | `data`, `doctor`, `evolve`, `serve`, `backup`, `restore` | Recognized; report `cli.command_unsupported` until their refounding lanes land. |
 
 ## `marrow init`
@@ -172,6 +173,21 @@ refuses the whole generation with `cli.transfer_excluded`. Unlike `run`, the
 generator never mints durable identities. See
 [TypeScript client](typescript-client.md) for the generated API, the
 supervision law, and the loss classification.
+
+## `marrow lsp`
+
+```text
+marrow lsp
+```
+
+Runs the [language server](lsp.md) over standard input and output, speaking
+JSON-RPC 2.0 with Language Server Protocol framing. The server captures and
+analyzes the project at the client-selected workspace root and serves
+diagnostics, whole-document formatting, hover, and go-to-definition from the
+compiler's published analysis facts. It takes no arguments and is normally
+launched by an editor, not run by hand; it reads and writes the protocol stream,
+never ordinary terminal text. The command does not open a store. See
+[language server](lsp.md) for the served capabilities and the protocol contract.
 
 ## Usage and exit codes
 

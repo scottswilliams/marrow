@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use marrow_compile::{AnalysisFailure, AnalysisSnapshot, InputRevision, analyze};
-use marrow_project::ProjectInput;
+use marrow_project_fs::ProjectInput;
 use marrow_project_fs::{
     CaptureFailure, CapturePresentation, OverlayEntry, OverlaySnapshot, capture_project,
 };

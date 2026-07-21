@@ -301,13 +301,18 @@ fn cargo_dag_respects_the_trust_boundaries() {
             "marrow-lsp reconstructs no semantics and must not depend on {dep}"
         );
     }
+    // The LSP names the pure project boundary through the CAP facade's re-exports, not a
+    // direct edge: `marrow-project` is deliberately absent.
     const LSP_ALLOWED: &[&str] = &[
         "marrow-codes",
         "marrow-compile",
-        "marrow-project",
         "marrow-project-fs",
         "marrow-syntax",
     ];
+    assert!(
+        !lsp.edges.iter().any(|(dep, _)| dep == "marrow-project"),
+        "marrow-lsp must reach project facts through marrow-project-fs, not a direct marrow-project edge"
+    );
     for (dep, is_dev) in &lsp.edges {
         if *is_dev {
             continue;

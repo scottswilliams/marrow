@@ -16,7 +16,7 @@ use lsp_types::{
 };
 use marrow_codes::{Code, SeverityClass};
 use marrow_compile::{AnalysisSnapshot, Fact, FormatOutcome};
-use marrow_project::FileIdentity;
+use marrow_project_fs::FileIdentity;
 
 use crate::position::{LineMap, Position, Range};
 use crate::uri::{SelectedRoot, diagnostic_uri};

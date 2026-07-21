@@ -460,7 +460,7 @@ impl Coordinator {
                 else {
                     return SemanticAnswer::ContentModified;
                 };
-                let source_lookup = |file: &marrow_project::FileIdentity| self.file_source(file);
+                let source_lookup = |file: &marrow_project_fs::FileIdentity| self.file_source(file);
                 match facts::definition(
                     snapshot,
                     root,
@@ -497,9 +497,9 @@ impl Coordinator {
         &self,
         root: &SelectedRoot,
         uri: &str,
-    ) -> Option<(marrow_project::FileIdentity, String)> {
+    ) -> Option<(marrow_project_fs::FileIdentity, String)> {
         let (key, source) = self.resolve_open_document(root, uri)?;
-        let (identity, _) = marrow_project::FileIdentity::validate(key.relative()).ok()?;
+        let (identity, _) = marrow_project_fs::FileIdentity::validate(key.relative()).ok()?;
         Some((identity, source))
     }
 
@@ -517,7 +517,7 @@ impl Coordinator {
         }
     }
 
-    fn file_source(&self, file: &marrow_project::FileIdentity) -> Option<String> {
+    fn file_source(&self, file: &marrow_project_fs::FileIdentity) -> Option<String> {
         let key = DocumentKey::from_identity(file);
         for (open_key, text) in self.ledger.text_entries() {
             if open_key == &key {
@@ -762,7 +762,7 @@ impl Coordinator {
         let previously = std::mem::take(&mut self.published);
         for key in &previously {
             if !snapshot_keys.contains(key)
-                && let Ok(identity) = marrow_project::FileIdentity::validate(key.relative())
+                && let Ok(identity) = marrow_project_fs::FileIdentity::validate(key.relative())
                 && let Some(uri) = lsp_uri(&root, &identity.0)
             {
                 let tombstone = lsp_types::PublishDiagnosticsParams {
@@ -900,7 +900,7 @@ fn uri_to_root_error(_: UriError) -> RootError {
     RootError::Malformed
 }
 
-fn lsp_uri(root: &SelectedRoot, identity: &marrow_project::FileIdentity) -> Option<lsp_types::Uri> {
+fn lsp_uri(root: &SelectedRoot, identity: &marrow_project_fs::FileIdentity) -> Option<lsp_types::Uri> {
     use std::str::FromStr;
     lsp_types::Uri::from_str(&crate::uri::diagnostic_uri(root, identity)).ok()
 }
