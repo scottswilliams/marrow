@@ -28,7 +28,14 @@ fn runner_exe() -> PathBuf {
 }
 
 fn compile_verify() -> (VerifiedImage, Vec<u8>) {
-    let source = std::fs::read(fixture_dir().join("src/main.mw")).expect("read fixture source");
+    compile_verify_with("")
+}
+
+/// Compile the Workshop image, optionally appending `extra` source (used to produce a
+/// body-only-edited image with the same durable contract, interface, and ceiling).
+fn compile_verify_with(extra: &str) -> (VerifiedImage, Vec<u8>) {
+    let mut source = std::fs::read(fixture_dir().join("src/main.mw")).expect("read fixture source");
+    source.extend_from_slice(extra.as_bytes());
     let ids = std::fs::read(fixture_dir().join("marrow.ids")).expect("read fixture ledger");
     let manifest = marrow_project::Manifest::parse("edition = \"2026\"\n").expect("manifest");
     let files = vec![marrow_project::CapturedFile::new(
@@ -195,6 +202,79 @@ fn workshop_journey_over_the_companion_path() {
     assert_eq!(terminal.value("moveCount", vec![]), Some(Value::Int(1)));
 
     let _ = std::fs::remove_dir_all(terminal.store.parent().expect("parent"));
+}
+
+/// The persistent edit-to-run loop over the companion path: a committed write under one
+/// image is read back after a body-only edit. The edited image (a fresh private helper — same
+/// durable contract, interface, and ceiling, different bytes) is picked up on the next run
+/// with no extra action: the companion binds-only-rebinds the active image and the prior
+/// committed durable data stands intact.
+#[test]
+fn a_body_edit_rebinds_and_preserves_committed_data() {
+    let (image_a, bytes_a) = compile_verify();
+    let (image_b, bytes_b) = compile_verify_with("\nfn _f02bEditProbe(): int {\n    return 0\n}\n");
+    // Same durable contract / interface / ceiling, different code.
+    assert_ne!(
+        image_a.image_id().0,
+        image_b.image_id().0,
+        "the body edit must change the image identity",
+    );
+
+    let store = scratch();
+    std::fs::create_dir_all(store.parent().expect("parent")).expect("scratch dir");
+    provision(&store, &image_a);
+    let epoch = marrow_temporal::format_instant(0).expect("epoch instant");
+    let runner = runner_exe();
+
+    // Commit an asset under image A.
+    match attach_and_call(
+        &runner,
+        &image_a,
+        &bytes_a,
+        &store,
+        export_id(&image_a, "add"),
+        vec![
+            Json::Int(3),
+            Json::Str("T-300".into()),
+            Json::Str("Impact Driver".into()),
+            Json::Str("power".into()),
+            Json::Str(epoch),
+        ],
+    )
+    .expect("add under image A")
+    {
+        CallOutcome::Value(Some(Value::Bool(true))) => {}
+        other => panic!("add did not return true: {}", describe(&other)),
+    }
+
+    // Read it back under the body-edited image B: the companion rebinds to B and the data
+    // committed under A is intact.
+    let read = attach_and_call(
+        &runner,
+        &image_b,
+        &bytes_b,
+        &store,
+        export_id(&image_b, "assetName"),
+        vec![Json::Int(3)],
+    )
+    .expect("assetName under image B");
+    match read {
+        CallOutcome::Value(value) => assert_eq!(value, present_name("Impact Driver")),
+        other => panic!(
+            "assetName under B did not return the committed name: {}",
+            describe(&other)
+        ),
+    }
+
+    let _ = std::fs::remove_dir_all(store.parent().expect("parent"));
+}
+
+fn describe(outcome: &CallOutcome) -> String {
+    match outcome {
+        CallOutcome::Value(value) => format!("value {value:?}"),
+        CallOutcome::Fault { code, .. } => format!("fault {code}"),
+        CallOutcome::Reject { code } => format!("reject {code}"),
+    }
 }
 
 /// A committed add is durable across a restart with its `log` descendant: a later process
