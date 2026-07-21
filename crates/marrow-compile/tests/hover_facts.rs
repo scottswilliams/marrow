@@ -312,6 +312,42 @@ fn an_unrelated_valid_position_is_absent_not_dependency_unavailable() {
     ));
 }
 
+#[test]
+fn a_call_to_a_non_utf8_module_is_dependency_unavailable() {
+    // A non-UTF-8 source never enters parsing, but it is still a project module that
+    // did not parse: a qualified call into it is a dependency gap, not an absence.
+    let manifest = Manifest::parse("edition = \"2026\"\n").expect("valid manifest");
+    let main = "module main\nuse broken\n\n\
+                pub fn f(): int {\n    return broken::helper()\n}\n\n\
+                pub fn g(): int {\n    return 5\n}\n";
+    let files = vec![
+        CapturedFile::new("src/broken.mw".to_string(), vec![0xff, 0xfe, 0x00]),
+        CapturedFile::new("src/main.mw".to_string(), main.as_bytes().to_vec()),
+    ];
+    let input = marrow_project::capture(&manifest, files, None, &CaptureLimits::DEFAULT)
+        .expect("capture project");
+    let Ok(snapshot) = analyze(Arc::new(input), InputRevision::new(1)) else {
+        panic!("a resilient snapshot is produced");
+    };
+    let main_id = identity("src/main.mw");
+    let call_offset = offset_of(main, "broken::helper") + "broken::".len();
+    assert!(matches!(
+        snapshot.hover(&main_id, call_offset),
+        Ok(Fact::Unavailable(Unavailability::Dependency))
+    ));
+    assert!(matches!(
+        snapshot.definition(&main_id, call_offset),
+        Ok(Fact::Unavailable(Unavailability::Dependency))
+    ));
+    // The unrelated-position control extends: a valid literal in the same file with a
+    // non-UTF-8 sibling stays Absent, not Dependency.
+    let literal = offset_of(main, "return 5") + "return ".len();
+    assert!(matches!(
+        snapshot.hover(&main_id, literal),
+        Ok(Fact::Absent)
+    ));
+}
+
 fn label_def(fact: &Result<Fact<Definition>, QueryError>) -> &'static str {
     label(fact)
 }

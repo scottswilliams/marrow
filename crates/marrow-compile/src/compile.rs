@@ -621,6 +621,7 @@ impl Driven {
 fn drive(project: &ProjectInput, mode: TestMode) -> Driven {
     let mut parse = Vec::new();
     let mut parsed: Vec<Module> = Vec::new();
+    let mut non_utf8_modules: BTreeSet<String> = BTreeSet::new();
     for module in project.modules() {
         let file = module.identity().clone();
         let name = module.module().as_str().to_string();
@@ -630,19 +631,25 @@ fn drive(project: &ProjectInput, mode: TestMode) -> Driven {
                 name,
                 parsed: parse_source(source),
             }),
-            Err(_) => parse.push(SourceDiagnostic::at(
-                Code::CheckUnsupported.as_str(),
-                &file,
-                // A non-UTF-8 file has no parsed construct to point at: a zero-length
-                // span at the file start, whose 1-based point is 1:1.
-                SourceSpan {
-                    start_byte: 0,
-                    end_byte: 0,
-                    line: 1,
-                    column: 1,
-                },
-                "source file is not valid UTF-8".to_string(),
-            )),
+            Err(_) => {
+                parse.push(SourceDiagnostic::at(
+                    Code::CheckUnsupported.as_str(),
+                    &file,
+                    // A non-UTF-8 file has no parsed construct to point at: a
+                    // zero-length span at the file start, whose 1-based point is 1:1.
+                    SourceSpan {
+                        start_byte: 0,
+                        end_byte: 0,
+                        line: 1,
+                        column: 1,
+                    },
+                    "source file is not valid UTF-8".to_string(),
+                ));
+                // A non-UTF-8 file never enters parsing, but it is still a project
+                // module that did not parse; record it as broken so a qualified call
+                // into it is a dependency gap rather than an absence.
+                non_utf8_modules.insert(name);
+            }
         }
     }
     for module in &parsed {
@@ -658,9 +665,11 @@ fn drive(project: &ProjectInput, mode: TestMode) -> Driven {
         }
     }
 
-    // The dotted names of modules that did not parse. A qualified call to one of these
-    // is a dependency gap; the resilient analysis records it as an unavailable fact.
-    let broken_modules: BTreeSet<String> = parsed
+    // The dotted names of modules that did not parse — a syntax error in a parsed
+    // module, or a non-UTF-8 file that never entered parsing. A qualified call to one
+    // of these is a dependency gap; the resilient analysis records it as an unavailable
+    // fact.
+    let mut broken_modules: BTreeSet<String> = parsed
         .iter()
         .filter(|module| {
             module
@@ -671,6 +680,7 @@ fn drive(project: &ProjectInput, mode: TestMode) -> Driven {
         })
         .map(|module| module.name.clone())
         .collect();
+    broken_modules.extend(non_utf8_modules);
 
     // Only cleanly-parsed modules enter analysis; a module with a parse error is
     // skipped as a dependent unit (its parse diagnostics are already recorded).
