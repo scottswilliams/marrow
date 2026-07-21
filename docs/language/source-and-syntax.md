@@ -85,10 +85,35 @@ if condition {
 ```
 
 A trailing clause cuddles the closing brace of the block before it — `} else {`,
-`} else if c {`, `} on more { ... }`. A header may continue across a line break
-after a trailing `and`, `or`, `,`, or `=`, and continuation is implicit inside an
-open `(` or `[`; the header ends at its `{`. A trailing comma is allowed in
-multiline argument lists, key groups, and constructors.
+`} else if c {`, `} on more { ... }`. A trailing comma is allowed in multiline
+argument lists, key groups, and constructors.
+
+## Line Continuation
+
+A line break ends a statement, and a header ends at its `{`. A logical line continues
+across a physical line break in exactly two cases: while inside an open `(` or `[`, and
+after a trailing `and`, `or`, `,`, or `=`. These are the only continuations; there is no
+line-continuation character, and a break outside these cases ends the statement. This
+closed set keeps statement boundaries readable without a trailing sigil.
+
+To spread a long expression across several lines, wrap it in parentheses — the break
+inside `(` continues the line — and break a long condition after `and` or `or`:
+
+```mw
+module docs::continuation
+
+pub fn score(a: int, b: int, c: int): int {
+    return (a * 100 +
+        b * 10 +
+        c)
+}
+
+pub fn eligible(active: bool, verified: bool, member: bool): bool {
+    return active and
+        verified and
+        member
+}
+```
 
 ## Declarations
 

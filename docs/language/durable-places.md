@@ -721,6 +721,14 @@ storage location. A function that reads one field demands `read` of that field; 
 function that reads a field and then writes it demands both `read` and `write` of
 that field.
 
+A whole-entry write reflects its create-or-reconcile behavior in demand. A store-root
+or branch create-or-replace (`^root[key] = Record(…)`, `place = Record(…)`) observes the
+entry's presence to choose between create and replace and then writes, so it demands a
+read-side `presence` and a `write` at the entry and renders under both clauses — an export
+that only writes a whole entry still `reads` it. A sparse field set
+(`^root[key].field = value`) is a blind write: it stages the field without reading, so it
+demands only `write` at that field and renders write-only.
+
 Demand describes the access a program *requires*; it never grants access.
 [`marrow check`](../tools/cli.md) reports it: for a project that
 checks clean, it prints each export's demand in source spelling. The
