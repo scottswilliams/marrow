@@ -258,10 +258,11 @@ fn decode_site(
 /// node's kind, is refused. A whole-payload, keyed-branch-entry, or field-leaf site on
 /// a flat-executable keyed root seals as [`SealedSite::Flat`] with its re-derived root
 /// index and (for a field leaf) resolved field index — widened field values, composite
-/// keys, and keyed branches nested to any depth all execute. Every other resolved site
-/// — a singleton (keyless) root, a group-bearing root, or a managed-index read — seals
-/// as [`SealedSite::Parked`], carrying the resolved path and target. Both forms
-/// re-derive everything from the reconstructed graph, never trusting the image.
+/// keys, and keyed branches nested to any depth all execute. A managed-index read also
+/// seals [`SealedSite::Flat`] with its re-derived index position and read-kind target. A
+/// site on a non-flat root — a singleton (keyless) root, or a group at any level — seals
+/// as [`SealedSite::Parked`], carrying the resolved path and target. Both forms re-derive
+/// everything from the reconstructed graph, never trusting the image.
 fn resolve_site(
     steps: &[SemanticStep],
     target: SemanticTarget,
@@ -290,8 +291,8 @@ fn resolve_site(
             ));
         }
     }
-    // An index read site resolves to its managed index and seals parked (an index node
-    // is never a flat-executable node; runtime traversal/lookup lands at E05). The
+    // An index read site resolves to its managed index and seals flat-executable, carrying
+    // the index's global position and read-kind target for the VM's bounded scan/lookup. The
     // read kind must agree with the index's `unique` flag: a nonunique index admits
     // only a progressive-prefix `IndexScan`, and a unique index admits only a
     // complete-key `IndexLookup`. This is where a site that claims to *traverse* a

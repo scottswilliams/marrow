@@ -1669,13 +1669,16 @@ fn index_component_scalar(
     }
 }
 
-/// Phase-3 stack effect for the two managed-index reads. The projection scalar types
+/// Phase-3 stack effect for the three managed-index reads. The projection scalar types
 /// come from the sealed index the site names, re-resolved here against the root rather
 /// than trusted from the instruction. A scan holds the index's leading field components
 /// as a prefix and freezes the trailing identity component as `List[K]`; a lookup pops
-/// the whole projection and yields the optional source identity. The read kind is
-/// rechecked against the index's `unique` flag (defense in depth over the seal-time
-/// check), so a scan over a unique index or a lookup over a nonunique one is refused.
+/// the whole projection and yields the optional source identity; an `exists` probe pops
+/// the whole projection and yields a bare `bool`. The read kind is rechecked against the
+/// index's `unique` flag (defense in depth over the seal-time check), so a scan over a
+/// unique index or a lookup/probe over a nonunique one is refused. A non-index durable
+/// opcode routed here by a forged index-site operand is refused rather than reaching the
+/// closed-complement `unreachable`.
 fn apply_index_read(
     ctx: &Ctx,
     instr: &SealedInstr,
@@ -1795,7 +1798,15 @@ fn apply_index_read(
             }
             stack.push(VType::bare_scalar(Scalar::Bool));
         }
-        _ => unreachable!("apply_index_read only handles the three index reads"),
+        // A whole-entry, field, or group opcode whose forged site operand names an index
+        // site is dispatched here by site kind; it is not an index read, so refuse it at the
+        // trust boundary rather than reaching the closed-complement of the three index reads.
+        _ => {
+            return Err(reject(
+                VerifyPhase::Function,
+                "a non-index opcode over a managed-index site",
+            ));
+        }
     }
     Ok(Control::Fallthrough)
 }

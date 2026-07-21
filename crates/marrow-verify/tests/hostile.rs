@@ -845,6 +845,42 @@ fn a_managed_index_probe_over_a_field_leaf_site_rejects() {
 }
 
 #[test]
+fn a_non_index_opcode_over_a_managed_index_site_rejects() {
+    // The mirror of the field-leaf probe: `apply_durable` dispatches to the index-read path
+    // by SITE kind, so a forged image aiming a whole-entry/field opcode (here `DurReadField`)
+    // at a managed-index site is routed there even though it is not an index read. The trust
+    // boundary refuses it rather than reaching the closed-complement of the three index reads.
+    let mut draft = indexed_draft(by_label_projection());
+    let lookup_site = draft
+        .add_site(SiteDef::index_lookup(index_path(BY_VALUE_INDEX_ID)))
+        .index();
+    let src = draft.intern_string("src/main.mw");
+    let name = draft.intern_string("probe");
+    let code = vec![
+        Instr::LocalGet(0),
+        Instr::DurReadField(lookup_site),
+        Instr::Return,
+    ];
+    let func = draft.add_function(FunctionDef {
+        name,
+        source: src,
+        params: vec![ImageType::scalar(Scalar::Text)],
+        ret: ImageType::opt_scalar(Scalar::Int),
+        local_count: 1,
+        spans: spans(&code),
+        code,
+    });
+    draft.add_export(ExportId::of_local("", "probe"), func);
+    let rejection = verify(&draft.encode().unwrap().bytes)
+        .expect_err("a non-index opcode over an index site is refused");
+    assert_eq!(rejection.code(), "image.function");
+    assert_eq!(
+        rejection.detail(),
+        "a non-index opcode over a managed-index site"
+    );
+}
+
+#[test]
 fn a_bounded_traversal_after_commit_rejects() {
     // The commit consumes the session's engine transaction, so no durable operation may
     // follow it. A bounded traversal is a durable read; the flow lattice refuses it after
