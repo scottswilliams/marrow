@@ -412,6 +412,47 @@ impl Diagnostics {
             .map(|d| (d.code, d.line(), d.column()))
             .collect()
     }
+
+    /// The number of diagnostics carrying `code` — the count a cascade-suppression
+    /// fixture pins so one fault cannot re-report at every dependent site.
+    pub fn count_code(&self, code: &str) -> usize {
+        self.diagnostics.iter().filter(|d| d.code == code).count()
+    }
+
+    /// The total number of diagnostics.
+    pub fn len(&self) -> usize {
+        self.diagnostics.len()
+    }
+
+    /// Whether the set is empty.
+    pub fn is_empty(&self) -> bool {
+        self.diagnostics.is_empty()
+    }
+
+    /// The single diagnostic carrying `code`, panicking unless exactly one does. The
+    /// actionability suite asserts against one primary diagnostic per defect, so a
+    /// second occurrence is a cascade regression the accessor surfaces immediately.
+    pub fn only(&self, code: &str) -> &SourceDiagnostic {
+        let mut matches = self.diagnostics.iter().filter(|d| d.code == code);
+        let first = matches
+            .next()
+            .unwrap_or_else(|| panic!("no `{code}` diagnostic in {:?}", self.all()));
+        assert!(
+            matches.next().is_none(),
+            "expected exactly one `{code}`, found several in {:?}",
+            self.all()
+        );
+        first
+    }
+
+    /// The rendered messages, in compiler order, for asserting an actionable steer (a
+    /// did-you-mean candidate, a named bound clause) that rides the diagnostic payload.
+    pub fn messages(&self) -> Vec<&str> {
+        self.diagnostics
+            .iter()
+            .map(|d| d.message.as_str())
+            .collect()
+    }
 }
 
 // ---------------------------------------------------------------------------
