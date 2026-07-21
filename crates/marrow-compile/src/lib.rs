@@ -38,9 +38,9 @@ mod scalar;
 mod types;
 
 pub use analysis::{
-    AnalysisFailure, AnalysisResourceLimit, AnalysisSnapshot, Definition, Fact, Hover,
-    InputRevision, MAX_FORMAT_OUTPUT_BYTES, MAX_HOVER_DISPLAY_BYTES, MAX_SNAPSHOT_FACT_BYTES,
-    MAX_SNAPSHOT_FACT_COUNT, QueryError, Unavailability, analyze,
+    AnalysisFailure, AnalysisResourceLimit, AnalysisSnapshot, Definition, Fact, FormatOutcome,
+    Hover, InputRevision, MAX_FORMAT_OUTPUT_BYTES, MAX_HOVER_DISPLAY_BYTES,
+    MAX_SNAPSHOT_FACT_BYTES, MAX_SNAPSHOT_FACT_COUNT, QueryError, Unavailability, analyze,
 };
 pub use compile::{
     CompileFailure, CompileInvariant, CompileResourceLimit, Compiled, CompiledTests, ExportEntry,
@@ -48,6 +48,7 @@ pub use compile::{
 };
 pub use diag::{IdentityGap, SourceDiagnostic};
 pub use marrow_image::ExportId;
+pub use marrow_syntax::FormatRefusal;
 pub use scalar::ScalarType;
 
 /// The canonical [`FileIdentity`](marrow_project::FileIdentity) for a test source

@@ -1057,3 +1057,20 @@ fn format_source_preserves_structure_and_reparses_cleanly() {
         );
     }
 }
+
+#[test]
+fn check_format_is_the_one_owned_format_policy() {
+    use marrow_syntax::{FormatRefusal, check_format};
+
+    // Valid source formats to its canonical form.
+    let formatted = check_format("pub fn f():int{\nreturn 1\n}\n").expect("valid source formats");
+    assert!(formatted.contains("pub fn f(): int"), "got: {formatted:?}");
+    // Idempotent: the formatted output re-formats to itself.
+    assert_eq!(check_format(&formatted).expect("re-formats"), formatted);
+
+    // Unparsed source is refused with its parse diagnostics carried.
+    match check_format("pub fn f(: int {\n    return 1\n}\n") {
+        Err(FormatRefusal::ParseInvalid(diagnostics)) => assert!(!diagnostics.is_empty()),
+        other => panic!("expected ParseInvalid, got {other:?}"),
+    }
+}

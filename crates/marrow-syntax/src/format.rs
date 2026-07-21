@@ -9,11 +9,42 @@
 
 use crate::{
     AliasDecl, Argument, BinaryOp, Block, CheckedBind, Comment, CommentMarker, CommentPlacement,
-    CompoundAssignOp, ConstDecl, Declaration, ElseIf, EnumDecl, EnumMember, Expression, ForBinding,
-    FunctionDecl, IfConstBinding, InterpolationPart, KeyParam, LiteralKind, LoopOrder, MatchArm,
-    NominalDecl, ParamDecl, ResourceDecl, ResourceMember, Statement, StoreDecl, StructDecl,
-    TokenKind, TraversalBound, TypeExpr, UnaryOp, duration_unit_forms, encode_string_literal,
+    CompoundAssignOp, ConstDecl, Declaration, Diagnostic, ElseIf, EnumDecl, EnumMember, Expression,
+    ForBinding, FunctionDecl, IfConstBinding, InterpolationPart, KeyParam, LiteralKind, LoopOrder,
+    MatchArm, NominalDecl, ParamDecl, ResourceDecl, ResourceMember, Statement, StoreDecl,
+    StructDecl, TokenKind, TraversalBound, TypeExpr, UnaryOp, duration_unit_forms,
+    encode_string_literal,
 };
+
+/// Why checked whole-document formatting was refused. This is the one syntax-owned
+/// policy the CLI's `marrow fmt` and the editor snapshot both consume, so the refusal
+/// is classified once rather than reconstructed in each caller.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FormatRefusal {
+    /// The source did not parse; the parse diagnostics are carried for the caller to
+    /// render. Formatting an unparsed document could drop or mangle syntax.
+    ParseInvalid(Vec<Diagnostic>),
+    /// Formatting would discard retained comments the parser cannot re-emit (a comment
+    /// stranded on a continuation line inside an open delimiter), so the lossless
+    /// contract refuses rather than silently drop them.
+    CommentLoss,
+}
+
+/// Format `source` if it parses and formatting is lossless, or return a typed
+/// [`FormatRefusal`]. The single owner of the parse-then-format-then-comment-check
+/// policy: `marrow fmt` and the editor analysis snapshot both consume this, so neither
+/// reparses source text nor re-derives the refusal decision.
+pub fn check_format(source: &str) -> Result<String, FormatRefusal> {
+    let parsed = crate::parse_source(source);
+    if parsed.has_errors() {
+        return Err(FormatRefusal::ParseInvalid(parsed.diagnostics));
+    }
+    let formatted = format_parsed(source, &parsed);
+    if !format_preserves_comments(source, &formatted) {
+        return Err(FormatRefusal::CommentLoss);
+    }
+    Ok(formatted)
+}
 
 /// Precedence used to decide where parentheses are required, tightest-binding
 /// last: atoms bind tightest, then unary, with binary operators below.

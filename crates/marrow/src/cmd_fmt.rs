@@ -181,41 +181,31 @@ enum FmtOutcome {
 /// untouched and reported (`Err`). The `Print` mode writes to stdout (only valid
 /// for a single file).
 fn fmt_one(file: &str, source: &str, mode: FmtMode) -> Result<FmtOutcome, ()> {
-    let parsed = marrow_syntax::parse_source(source);
-    if parsed.has_errors() {
-        report_parse(file, &parsed);
-        return Err(());
-    }
-    let formatted = marrow_syntax::format_source(source);
+    // The checked-format policy (parse, format, refuse on parse failure or comment
+    // loss) is owned once by the syntax crate; this command only routes its outcome to
+    // the terminal and, in `--write`, to disk.
+    let formatted = match marrow_syntax::check_format(source) {
+        Ok(formatted) => formatted,
+        Err(marrow_syntax::FormatRefusal::ParseInvalid(diagnostics)) => {
+            report_parse(file, &diagnostics);
+            return Err(());
+        }
+        Err(marrow_syntax::FormatRefusal::CommentLoss) => {
+            report_simple_error(
+                Code::FmtCommentLoss.as_str(),
+                &format!("refusing to format {file}: formatting would discard retained comments"),
+            );
+            return Err(());
+        }
+    };
     match mode {
         FmtMode::Print => {
-            // Stdout mode must agree with `--check`/`--write` on losslessness: a
-            // comment the formatter cannot re-emit (stranded on a continuation
-            // line inside an open delimiter) is refused here too, so piping a
-            // file through `fmt` never silently drops content.
-            if !marrow_syntax::format_preserves_comments(source, &formatted) {
-                report_simple_error(
-                    Code::FmtCommentLoss.as_str(),
-                    &format!(
-                        "refusing to format {file}: formatting would discard retained comments"
-                    ),
-                );
-                return Err(());
-            }
             print!("{formatted}");
             Ok(FmtOutcome::Unchanged)
         }
         FmtMode::Check => {
             if source == formatted {
                 Ok(FmtOutcome::Unchanged)
-            } else if !marrow_syntax::format_preserves_comments(source, &formatted) {
-                report_simple_error(
-                    Code::FmtCommentLoss.as_str(),
-                    &format!(
-                        "refusing to format {file}: formatting would discard retained comments"
-                    ),
-                );
-                Err(())
             } else {
                 eprintln!("{file}: not formatted; run marrow fmt --write {file} to format it");
                 Ok(FmtOutcome::NeedsFormatting)
@@ -224,14 +214,6 @@ fn fmt_one(file: &str, source: &str, mode: FmtMode) -> Result<FmtOutcome, ()> {
         FmtMode::Write => {
             if source == formatted {
                 Ok(FmtOutcome::Unchanged)
-            } else if !marrow_syntax::format_preserves_comments(source, &formatted) {
-                report_simple_error(
-                    Code::FmtCommentLoss.as_str(),
-                    &format!(
-                        "refusing to write {file}: formatting would discard retained comments"
-                    ),
-                );
-                Err(())
             } else if let Err(error) = write_formatted_source(file, &formatted) {
                 report_simple_error(
                     Code::IoWrite.as_str(),

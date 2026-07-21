@@ -195,8 +195,8 @@ pub(crate) fn take_single_target(
 
 /// Report a source file's parse diagnostics on standard error. The sole caller
 /// invokes this only for source with parse errors, so there is no success arm.
-pub(crate) fn report_parse(file: &str, parsed: &marrow_syntax::ParsedSource) {
-    for diagnostic in &parsed.diagnostics {
+pub(crate) fn report_parse(file: &str, diagnostics: &[marrow_syntax::Diagnostic]) {
+    for diagnostic in diagnostics {
         eprintln!("{}", syntax_diagnostic_line(file, diagnostic));
         if let Some(help) = &diagnostic.help {
             eprintln!(

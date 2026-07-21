@@ -17,6 +17,7 @@
 use std::sync::Arc;
 
 use marrow_project::{FileIdentity, ProjectInput};
+use marrow_syntax::FormatRefusal;
 
 use crate::compile::{Analyzed, analyze_project};
 use crate::{CompileInvariant, CompileResourceLimit, SourceDiagnostic};
@@ -244,6 +245,42 @@ impl AnalysisSnapshot {
             None => Ok(Fact::Absent),
         }
     }
+
+    /// The checked whole-document format of an input file. Consumes the one
+    /// syntax-owned [`marrow_syntax::check_format`] policy — the same the CLI's
+    /// `marrow fmt` uses — so the refusal decision is classified once. The output is
+    /// bounded by [`MAX_FORMAT_OUTPUT_BYTES`] as a query-local refusal (never retained
+    /// in the snapshot). An unknown file is a typed [`QueryError`].
+    pub fn format(&self, file: &FileIdentity) -> Result<FormatOutcome, QueryError> {
+        let source = self.source_of(file)?;
+        let Ok(source) = std::str::from_utf8(source) else {
+            // A non-UTF-8 file cannot be lexed; formatting is refused as parse-invalid.
+            return Ok(FormatOutcome::Refused(FormatRefusal::ParseInvalid(
+                Vec::new(),
+            )));
+        };
+        match marrow_syntax::check_format(source) {
+            Ok(formatted) if formatted.len() as u64 > MAX_FORMAT_OUTPUT_BYTES => {
+                Ok(FormatOutcome::TooLarge {
+                    limit: MAX_FORMAT_OUTPUT_BYTES,
+                })
+            }
+            Ok(formatted) => Ok(FormatOutcome::Formatted(formatted)),
+            Err(refusal) => Ok(FormatOutcome::Refused(refusal)),
+        }
+    }
+}
+
+/// The outcome of a checked whole-document format query.
+pub enum FormatOutcome {
+    /// The canonical formatted source.
+    Formatted(String),
+    /// Formatting was refused by the syntax-owned policy (unparsed source, or comment
+    /// loss).
+    Refused(FormatRefusal),
+    /// The formatted output exceeded [`MAX_FORMAT_OUTPUT_BYTES`]; a query-local refusal,
+    /// not retained.
+    TooLarge { limit: u64 },
 }
 
 /// The definition target of a resolved function callee: the file the target is declared
