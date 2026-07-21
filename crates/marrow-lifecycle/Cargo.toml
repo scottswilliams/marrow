@@ -1,0 +1,16 @@
+[package]
+name = "marrow-lifecycle"
+description = "Privileged persistent-store lifecycle: store identity, the persisted envelope and logical active head, and the provision/open composition over the image, runtime, and engine owners."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+marrow-codes = { path = "../marrow-codes" }
+marrow-image = { path = "../marrow-image" }
+
+[lints]
+workspace = true

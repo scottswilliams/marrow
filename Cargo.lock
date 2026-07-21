@@ -146,6 +146,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "marrow-lifecycle"
+version = "0.1.0"
+dependencies = [
+ "marrow-codes",
+ "marrow-image",
+]
+
+[[package]]
 name = "marrow-local-wire"
 version = "0.1.0"
 dependencies = [
