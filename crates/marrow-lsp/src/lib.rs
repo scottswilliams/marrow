@@ -28,6 +28,8 @@ pub mod capacities;
 pub mod credit;
 pub mod document;
 pub mod facts;
+pub mod lifecycle;
+pub mod outbound;
 pub mod position;
 pub mod protocol;
 pub mod transport;
