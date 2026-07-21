@@ -1,0 +1,457 @@
+// Graph Report over a durable graph.
+//
+// The storeless P02a Graph Report parses a directed graph out of a text blob and
+// reports over it. This is the same report over a *durable* graph: the nodes and
+// their edges live in the store, the build API mutates them under transactions, and
+// the read-only `report` export harvests the whole graph with bounded, presence-heavy
+// traversal into a local working set, then assembles the same deterministic report.
+//
+// Durable shape:
+// - `^nodes[name]` holds one node per name, with a required `label` and a sparse
+//   `color`, and a keyed `edges[dst]` branch of weighted out-edges.
+// - `^config["root"]` names the reachability root, so the report reads two roots.
+//
+// All durable iteration is over a single-column keyed layer in ascending key order,
+// so every listing is sorted without a sort primitive, and every read that may be
+// absent flows through `exists`/`if const`/`??`.
+
+resource Node {
+    required label: string
+    color: string
+
+    edges[dst: string] {
+        required weight: int
+    }
+}
+
+store ^nodes[name: string]: Node
+
+resource Meta {
+    required value: string
+}
+
+store ^config[key: string]: Meta
+
+struct Edge {
+    src: string
+    dst: string
+    weight: int
+}
+
+enum Role {
+    source
+    sink
+    internal
+    isolated
+}
+
+// Read a map value or a fallback when the key is absent. One helper serves the degree
+// maps (`int`) and the reachability/visited maps (`bool`).
+fn getOr<V>(m: Map<string, V>, key: string, fallback: V): V {
+    return m[key] ?? fallback
+}
+
+fn classifyRole(outDegree: int, inDegree: int): Role {
+    if outDegree == 0 and inDegree == 0 { return Role::isolated }
+    if inDegree == 0 { return Role::source }
+    if outDegree == 0 { return Role::sink }
+    return Role::internal
+}
+
+fn roleName(r: Role): string {
+    match r {
+        source => return "source"
+        sink => return "sink"
+        internal => return "internal"
+        isolated => return "isolated"
+    }
+}
+
+// The set of nodes reachable from `start`, computed by a bounded fixpoint: each pass
+// relaxes every edge whose source is already reachable, and a pass that adds nothing
+// stops. At most `nodeCount` passes add a node, so the loop terminates.
+fn reachableFrom(edges: List<Edge>, start: string, nodeCount: int): Map<string, bool> {
+    var reached: Map<string, bool> = Map()
+    reached[start] = true
+    var changed: bool = true
+    var passes: int = 0
+    while changed and passes <= nodeCount {
+        changed = false
+        passes += 1
+        for e in edges {
+            if getOr(reached, e.src, false) {
+                if not getOr(reached, e.dst, false) {
+                    reached[e.dst] = true
+                    changed = true
+                }
+            }
+        }
+    }
+    return reached
+}
+
+// A layered topological order (Kahn's algorithm). Each pass recomputes the remaining
+// in-degree counting only predecessors not yet emitted, emits every node whose
+// remaining in-degree is zero in ascending-name order, and stops when a pass emits
+// nothing. Nodes left unemitted are exactly those on or behind a cycle. At most
+// `nodeCount + 1` passes run.
+fn topoOrder(edges: List<Edge>, nodes: Map<string, bool>, nodeCount: int): List<string> {
+    var order: List<string> = List()
+    var emitted: Map<string, bool> = Map()
+    var count: int = 0
+    var passes: int = 0
+    var progress: bool = true
+    while count < nodeCount and progress and passes <= nodeCount + 1 {
+        passes += 1
+        var remaining: Map<string, int> = Map()
+        for e in edges {
+            if not getOr(emitted, e.src, false) {
+                remaining[e.dst] = getOr(remaining, e.dst, 0) + 1
+            }
+        }
+        var ready: List<string> = List()
+        for n in nodes {
+            if not getOr(emitted, n, false) and getOr(remaining, n, 0) == 0 {
+                ready = append(ready, n)
+            }
+        }
+        if isEmpty(ready) {
+            progress = false
+        } else {
+            for n in ready {
+                order = append(order, n)
+                emitted[n] = true
+                count += 1
+            }
+        }
+    }
+    return order
+}
+
+// Render one indented line per element, in list order.
+fn bulletLines(xs: List<string>): string {
+    var out: string = ""
+    var first: bool = true
+    for x in xs {
+        if first {
+            out = "  " + x
+            first = false
+        } else {
+            out = out + "\n  " + x
+        }
+    }
+    return out
+}
+
+// The nodes present as a map key but absent from `order`, in ascending order.
+fn missingFrom(order: List<string>, nodes: Map<string, bool>): List<string> {
+    var inOrder: Map<string, bool> = Map()
+    for n in order {
+        inOrder[n] = true
+    }
+    var missing: List<string> = List()
+    for n in nodes {
+        if not getOr(inOrder, n, false) {
+            missing = append(missing, n)
+        }
+    }
+    return missing
+}
+
+// The harvested working set: the durable graph read once into local values.
+struct Graph {
+    nodes: Map<string, bool>
+    labels: Map<string, string>
+    colors: Map<string, string>
+    outDeg: Map<string, int>
+    inDeg: Map<string, int>
+    edges: List<Edge>
+    overflow: bool
+}
+
+// Harvest the whole durable graph into a local working set with a nested bounded
+// traversal: the outer walk visits every node in ascending name order, and the inner
+// walk visits each node's out-edges. Presence-typed reads through the per-iteration
+// pins (`node.label`, `node.color`, `edge.weight`) resolve with `??`/`if const`. The
+// `on more` arms record whether either layer held more keys than the bound froze.
+fn harvest(): Graph {
+    var nodes: Map<string, bool> = Map()
+    var labels: Map<string, string> = Map()
+    var colors: Map<string, string> = Map()
+    var outDeg: Map<string, int> = Map()
+    var inDeg: Map<string, int> = Map()
+    var edges: List<Edge> = List()
+    var overflow: bool = false
+
+    for name, node in ^nodes at most 1000 {
+        nodes[name] = true
+        labels[name] = node.label ?? name
+        if const c = node.color {
+            colors[name] = c
+        }
+        for dst, edge in node.edges at most 1000 {
+            nodes[dst] = true
+            const weight = edge.weight ?? 0
+            edges = append(edges, Edge(src: name, dst: dst, weight: weight))
+            outDeg[name] = getOr(outDeg, name, 0) + 1
+            inDeg[dst] = getOr(inDeg, dst, 0) + 1
+        } on more {
+            overflow = true
+        }
+    } on more {
+        overflow = true
+    }
+
+    return Graph(nodes: nodes, labels: labels, colors: colors, outDeg: outDeg, inDeg: inDeg, edges: edges, overflow: overflow)
+}
+
+// The degree section: one line per node in ascending order with its label, out-degree,
+// in-degree, role, and — when present — color.
+fn renderDegrees(g: Graph): string {
+    var out: string = ""
+    var first: bool = true
+    for n in g.nodes {
+        const o = getOr(g.outDeg, n, 0)
+        const i = getOr(g.inDeg, n, 0)
+        const lbl = getOr(g.labels, n, n)
+        var line = "  " + n + " [" + lbl + "] out=" + string(o) + " in=" + string(i) + " role=" + roleName(classifyRole(o, i))
+        if const c = g.colors[n] {
+            line = line + " color=" + c
+        }
+        if first {
+            out = line
+            first = false
+        } else {
+            out = out + "\n" + line
+        }
+    }
+    return out
+}
+
+// The edge section: one line per out-edge in (source, destination) order.
+fn renderEdges(edges: List<Edge>): string {
+    var out: string = ""
+    var first: bool = true
+    for e in edges {
+        const line = "  " + e.src + " -> " + e.dst + " w=" + string(e.weight)
+        if first {
+            out = line
+            first = false
+        } else {
+            out = out + "\n" + line
+        }
+    }
+    return out
+}
+
+// The reachability section body.
+fn renderReachable(g: Graph, hasRoot: bool, root: string, nodeCount: int): string {
+    if not hasRoot { return "  (no root)" }
+    if not getOr(g.nodes, root, false) { return "  root " + root + " is not a node" }
+    const reached = reachableFrom(g.edges, root, nodeCount)
+    var names: List<string> = List()
+    var reachedCount: int = 0
+    for n in g.nodes {
+        if getOr(reached, n, false) {
+            names = append(names, n)
+            reachedCount += 1
+        }
+    }
+    return "  from " + root + ": " + join(names, ", ") + " (" + string(reachedCount) + "/" + string(nodeCount) + ")"
+}
+
+pub fn report(): string {
+    const g = harvest()
+
+    var root: string = ""
+    var hasRoot: bool = false
+    if const r = ^config["root"] {
+        root = r.value
+        hasRoot = true
+    }
+
+    const nodeCount = length(g.nodes)
+    const edgeCount = length(g.edges)
+
+    const order = topoOrder(g.edges, g.nodes, nodeCount)
+    const cyclic = missingFrom(order, g.nodes)
+
+    var rootLabel: string = "-"
+    if hasRoot {
+        rootLabel = root
+    }
+
+    var body: string = "Graph Report"
+    body = body + "\n" + "nodes=" + string(nodeCount) + " edges=" + string(edgeCount) + " root=" + rootLabel + " overflow=" + string(g.overflow)
+    body = body + "\n" + "-- degrees --"
+    if nodeCount > 0 {
+        body = body + "\n" + renderDegrees(g)
+    }
+    body = body + "\n" + "-- edges --"
+    if edgeCount > 0 {
+        body = body + "\n" + renderEdges(g.edges)
+    } else {
+        body = body + "\n" + "  (none)"
+    }
+    body = body + "\n" + "-- reachable --"
+    body = body + "\n" + renderReachable(g, hasRoot, root, nodeCount)
+    body = body + "\n" + "-- order --"
+    if isEmpty(order) {
+        body = body + "\n" + "  (none)"
+    } else {
+        body = body + "\n" + bulletLines(order)
+    }
+    body = body + "\n" + "-- cycle --"
+    if isEmpty(cyclic) {
+        body = body + "\n" + "  none"
+    } else {
+        body = body + "\n" + "  " + join(cyclic, ", ")
+    }
+    return body
+}
+
+// -- build API --------------------------------------------------------------------
+
+// Create or replace a node's payload with the given label. Exact replacement drops a
+// previously set sparse color.
+pub fn addNode(name: string, label: string) {
+    transaction {
+        ^nodes[name] = Node(label: label)
+    }
+}
+
+// Add a weighted out-edge, materializing either endpoint node with a default label
+// first when it is absent. The endpoint creation and the edge write commit as one unit.
+pub fn addEdge(src: string, dst: string, weight: int) {
+    transaction {
+        if not exists(^nodes[src]) {
+            ^nodes[src] = Node(label: src)
+        }
+        if not exists(^nodes[dst]) {
+            ^nodes[dst] = Node(label: dst)
+        }
+        ^nodes[src].edges[dst] = Node.edges(weight: weight)
+    }
+}
+
+// Remove one out-edge; a no-op when the edge is already absent.
+pub fn removeEdge(src: string, dst: string) {
+    transaction {
+        delete ^nodes[src].edges[dst]
+    }
+}
+
+// Set a node's color through a guarded place: the color lands only when the node
+// already exists, and the write is statically known to update a present entry.
+pub fn setColor(name: string, color: string) {
+    transaction {
+        place n = ^nodes[name]
+        if exists(n) {
+            n.color = color
+        }
+    }
+}
+
+// Set a node's color without a presence guard. On a present node it updates the color;
+// on an absent node it stages the color alone, and the commit rolls the whole
+// transaction back with `run.required_missing` because the required label is unset —
+// the graph is left unchanged.
+pub fn tint(name: string, color: string) {
+    transaction {
+        ^nodes[name].color = color
+    }
+}
+
+// Designate the reachability root.
+pub fn setRoot(name: string) {
+    transaction {
+        ^config["root"] = Meta(value: name)
+    }
+}
+
+// -- read probes ------------------------------------------------------------------
+
+pub fn nodeExists(name: string): bool {
+    return exists(^nodes[name])
+}
+
+pub fn colorOf(name: string): string? {
+    return ^nodes[name].color
+}
+
+pub fn edgeWeight(src: string, dst: string): int? {
+    return ^nodes[src].edges[dst].weight
+}
+
+pub fn outDegree(name: string): int {
+    var count = 0
+    for dst in ^nodes[name].edges at most 1000 {
+        count += 1
+    } on more {
+        count = -1
+    }
+    return count
+}
+
+// -- in-source tests (driver tests: they reach durable data only through exports) --
+
+test "an empty graph reports an empty graph" {
+    assert report() == "Graph Report\nnodes=0 edges=0 root=- overflow=false\n-- degrees --\n-- edges --\n  (none)\n-- reachable --\n  (no root)\n-- order --\n  (none)\n-- cycle --\n  none"
+}
+
+test "a rooted chain reports degrees, roles, reachability, order, and a color" {
+    setRoot("a")
+    addEdge("a", "b", 5)
+    addEdge("b", "c", 7)
+    setColor("b", "red")
+    const want = "Graph Report\nnodes=3 edges=2 root=a overflow=false\n-- degrees --\n  a [a] out=1 in=0 role=source\n  b [b] out=1 in=1 role=internal color=red\n  c [c] out=0 in=1 role=sink\n-- edges --\n  a -> b w=5\n  b -> c w=7\n-- reachable --\n  from a: a, b, c (3/3)\n-- order --\n  a\n  b\n  c\n-- cycle --\n  none"
+    assert report() == want
+}
+
+test "a cycle is detected and left out of the topological order" {
+    addEdge("a", "b", 1)
+    addEdge("b", "c", 1)
+    addEdge("c", "a", 1)
+    addEdge("d", "a", 1)
+    const want = "Graph Report\nnodes=4 edges=4 root=- overflow=false\n-- degrees --\n  a [a] out=1 in=2 role=internal\n  b [b] out=1 in=1 role=internal\n  c [c] out=1 in=1 role=internal\n  d [d] out=1 in=0 role=source\n-- edges --\n  a -> b w=1\n  b -> c w=1\n  c -> a w=1\n  d -> a w=1\n-- reachable --\n  (no root)\n-- order --\n  d\n-- cycle --\n  a, b, c"
+    assert report() == want
+}
+
+test "an isolated node is reported and a root naming no node is flagged" {
+    addNode("solo", "Solo")
+    addEdge("a", "b", 2)
+    setRoot("ghost")
+    const want = "Graph Report\nnodes=3 edges=1 root=ghost overflow=false\n-- degrees --\n  a [a] out=1 in=0 role=source\n  b [b] out=0 in=1 role=sink\n  solo [Solo] out=0 in=0 role=isolated\n-- edges --\n  a -> b w=2\n-- reachable --\n  root ghost is not a node\n-- order --\n  a\n  solo\n  b\n-- cycle --\n  none"
+    assert report() == want
+}
+
+test "a guarded color set updates a present node and is a no-op on an absent one" {
+    addNode("a", "Alpha")
+    setColor("a", "green")
+    assert (colorOf("a") ?? "") == "green"
+    // The node "b" was never added, so the guarded set writes nothing and does not fault.
+    setColor("b", "blue")
+    assert not nodeExists("b")
+    assert (colorOf("b") ?? "unset") == "unset"
+}
+
+test "adding an edge materializes both endpoints and records the weight" {
+    addEdge("x", "y", 42)
+    assert nodeExists("x")
+    assert nodeExists("y")
+    assert outDegree("x") == 1
+    assert outDegree("y") == 0
+    assert (edgeWeight("x", "y") ?? 0) == 42
+}
+
+test "removing an edge drops it from the out-degree and the weight read" {
+    addEdge("a", "b", 3)
+    addEdge("a", "c", 4)
+    assert outDegree("a") == 2
+    removeEdge("a", "b")
+    assert outDegree("a") == 1
+    assert (edgeWeight("a", "b") ?? -1) == -1
+    assert (edgeWeight("a", "c") ?? 0) == 4
+    // The endpoint node survives an edge removal; only the edge is gone.
+    assert nodeExists("b")
+}

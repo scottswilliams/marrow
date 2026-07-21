@@ -1,0 +1,17 @@
+marrow ids v0
+machine-written by marrow; do not edit
+id application . 0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a
+id product Node 0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d
+id field Node.label 0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e
+id field Node.color 2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e
+id root nodes 0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b
+id key nodes.name 0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c
+id root Node.edges 30303030303030303030303030303030
+id key Node.edges.dst 31313131313131313131313131313131
+id field Node.edges.weight 32323232323232323232323232323232
+id product Meta 1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d
+id field Meta.value 1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e
+id root config 1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b
+id key config.key 1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c
+high-water 0
+end
