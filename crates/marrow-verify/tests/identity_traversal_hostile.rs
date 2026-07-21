@@ -19,6 +19,7 @@ const A_PLACEMENT: [u8; 16] = [0x0b; 16];
 const A_PRODUCT: [u8; 16] = [0x0d; 16];
 const A_KEY: [u8; 16] = [0x0c; 16];
 const A_FIELD: [u8; 16] = [0x0e; 16];
+const A_SUBTITLE_FIELD: [u8; 16] = [0x33; 16];
 const A_BRANCH_PLACEMENT: [u8; 16] = [0x30; 16];
 const A_BRANCH_KEY: [u8; 16] = [0x31; 16];
 const A_BRANCH_FIELD: [u8; 16] = [0x32; 16];
@@ -39,22 +40,31 @@ fn spans(code: &[Instr]) -> Vec<SpanEntry> {
         .collect()
 }
 
-/// Build root A ("books", int key, text field, `notes(text)` branch) at RootId 0 and root B
-/// ("tallies", int key, int field) at RootId 1, plus the branch-entry site and the
-/// `List[text]` frozen-key collection a `notes` traversal freezes. Returns the branch site
-/// index and the list-type index.
-fn two_root_branch_draft(draft: &mut ImageDraft) -> (u16, u16) {
+/// Build root A ("books", int key, a required text field and a sparse text field, and a
+/// `notes(text)` branch) at RootId 0 and root B ("tallies", int key, int field) at RootId 1,
+/// plus the branch-entry site, the `List[text]` frozen-key collection a `notes` traversal
+/// freezes, and the sparse field's leaf site. Returns the branch site, the list type, and the
+/// sparse field-leaf site.
+fn two_root_branch_draft(draft: &mut ImageDraft) -> (u16, u16, u16) {
     draft.set_application_identity(LedgerIdBytes::from_bytes(APPLICATION_ID));
 
     let book = draft.intern_string("Book");
     let title = draft.intern_string("title");
+    let subtitle = draft.intern_string("subtitle");
     let a_record = draft.add_record_type(RecordTypeDef {
         name: book,
-        fields: vec![FieldDef {
-            name: title,
-            ty: ImageType::scalar(Scalar::Text),
-            required: true,
-        }],
+        fields: vec![
+            FieldDef {
+                name: title,
+                ty: ImageType::scalar(Scalar::Text),
+                required: true,
+            },
+            FieldDef {
+                name: subtitle,
+                ty: ImageType::scalar(Scalar::Text),
+                required: false,
+            },
+        ],
     });
     let notes = draft.intern_string("notes");
     let notes_qualified = draft.intern_string("Book.notes");
@@ -83,6 +93,11 @@ fn two_root_branch_draft(draft: &mut ImageDraft) -> (u16, u16) {
                 DurableMemberDef::Field {
                     id: LedgerIdBytes::from_bytes(A_FIELD),
                     required: true,
+                    value: DurableValueShape::Scalar(Scalar::Text),
+                },
+                DurableMemberDef::Field {
+                    id: LedgerIdBytes::from_bytes(A_SUBTITLE_FIELD),
+                    required: false,
                     value: DurableValueShape::Scalar(Scalar::Text),
                 },
                 DurableMemberDef::Branch {
@@ -141,7 +156,25 @@ fn two_root_branch_draft(draft: &mut ImageDraft) -> (u16, u16) {
             elem: ImageType::scalar(Scalar::Text),
         })
         .index();
-    (branch_site, list_ty)
+    let subtitle_site = draft
+        .add_site(SiteDef::field_leaf(field_path(A_SUBTITLE_FIELD)))
+        .index();
+    (branch_site, list_ty, subtitle_site)
+}
+
+/// A top-level field-leaf site path on root A: application -> root placement -> field id.
+fn field_path(field_id: [u8; 16]) -> SemanticPath {
+    SemanticPath::from_steps(vec![
+        SemanticStep::new(
+            SemanticStepKind::Application,
+            LedgerIdBytes::from_bytes(APPLICATION_ID),
+        ),
+        SemanticStep::new(
+            SemanticStepKind::Placement,
+            LedgerIdBytes::from_bytes(A_PLACEMENT),
+        ),
+        SemanticStep::new(SemanticStepKind::Field, LedgerIdBytes::from_bytes(field_id)),
+    ])
 }
 
 /// The whole-payload path of root A's `notes` branch entry: application -> root placement
@@ -185,7 +218,7 @@ fn build_export(draft: &mut ImageDraft, code: Vec<Instr>) {
 #[test]
 fn an_identity_ancestor_over_the_traversed_root_verifies() {
     let mut draft = ImageDraft::new();
-    let (branch_site, list_ty) = two_root_branch_draft(&mut draft);
+    let (branch_site, list_ty, _subtitle_site) = two_root_branch_draft(&mut draft);
     let code = vec![
         Instr::LocalGet(0),
         Instr::MakeIdentity { root: 0, cols: 1 },
@@ -215,7 +248,7 @@ fn an_identity_ancestor_over_the_traversed_root_verifies() {
 #[test]
 fn a_cross_root_identity_traversal_ancestor_is_rejected() {
     let mut draft = ImageDraft::new();
-    let (branch_site, list_ty) = two_root_branch_draft(&mut draft);
+    let (branch_site, list_ty, _subtitle_site) = two_root_branch_draft(&mut draft);
     let code = vec![
         Instr::LocalGet(0),
         Instr::MakeIdentity { root: 1, cols: 1 },
@@ -250,7 +283,7 @@ fn a_cross_root_identity_traversal_ancestor_is_rejected() {
 #[test]
 fn a_cross_root_identity_family_probe_ancestor_is_rejected() {
     let mut draft = ImageDraft::new();
-    let (branch_site, _list_ty) = two_root_branch_draft(&mut draft);
+    let (branch_site, _list_ty, _subtitle_site) = two_root_branch_draft(&mut draft);
     let code = vec![
         Instr::LocalGet(0),
         Instr::MakeIdentity { root: 1, cols: 1 },
@@ -276,5 +309,55 @@ fn a_cross_root_identity_family_probe_ancestor_is_rejected() {
     assert_eq!(
         rejection.detail(),
         "an entry identity keys a durable operation on a different store root",
+    );
+}
+
+/// The strict present-entry set sibling: `DurSetSparsePresent` reads its key-path from local
+/// slots rather than the stack, so a forged image stores a foreign-root identity into the key
+/// slot it names. The slot-type re-proof (`slot_keys_column`) rejects the cross-root confusion
+/// during the per-instruction pass — before the flow-phase presence check runs — so a
+/// well-typed but foreign-root identity slot never reaches a durable field write.
+#[test]
+fn a_cross_root_identity_key_slot_in_a_strict_set_is_rejected() {
+    let mut draft = ImageDraft::new();
+    let (_branch_site, _list_ty, subtitle_site) = two_root_branch_draft(&mut draft);
+    let value = draft.intern_text("x");
+    // Mint Id(^tallies, k) into slot 1, then name slot 1 as the strict set's key-path over a
+    // ^books field site. Both roots key on int, so only the identity's root distinguishes them.
+    let code = vec![
+        Instr::LocalGet(0),
+        Instr::MakeIdentity { root: 1, cols: 1 },
+        Instr::IdentityKeyPath(1),
+        Instr::LocalSet(1),
+        Instr::ConstLoad(value.index()),
+        Instr::SomeWrap,
+        Instr::DurSetSparsePresent {
+            site: subtitle_site,
+            key_slots: vec![1],
+        },
+        Instr::Return,
+    ];
+    let src = draft.intern_string("src/main.mw");
+    let name = draft.intern_string("f");
+    let func = draft.add_function(FunctionDef {
+        name,
+        source: src,
+        params: vec![ImageType::scalar(Scalar::Int)],
+        ret: ImageType::Unit,
+        local_count: 2,
+        spans: spans(&code),
+        code,
+    });
+    draft.add_export(ExportId::of_local("", "f"), func);
+    let rejection = verify(&draft.encode().expect("encode").bytes)
+        .expect_err("a foreign-root identity key slot must be rejected");
+    assert_eq!(
+        rejection.phase(),
+        VerifyPhase::Function,
+        "the slot-type re-proof is a per-function stack-effect rejection",
+    );
+    assert_eq!(
+        rejection.detail(),
+        "set-sparse-present key slot has the wrong type",
     );
 }

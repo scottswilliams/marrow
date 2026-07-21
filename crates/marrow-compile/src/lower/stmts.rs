@@ -1776,24 +1776,12 @@ impl<'a> FnLowerer<'a> {
                     // column the traversal ancestor pop re-proves, exactly as the single-emit
                     // forms do.
                     PlaceKey::Identity { expr, root, cols } => {
-                        let Some(captured) =
-                            self.capture_identity_key_slots(expr, root, cols, target.span)
+                        let Some(columns) =
+                            self.capture_identity_key_columns(expr, root, cols, target.span)
                         else {
                             return Flow::Fallthrough;
                         };
-                        #[allow(
-                            clippy::expect_used,
-                            reason = "lowering invariant: an identity operand's RootId names a root in this registry"
-                        )]
-                        let scalars = self
-                            .durable
-                            .root_by_id(root)
-                            .expect("an identity operand's root is registered")
-                            .key
-                            .clone();
-                        for (slot, scalar) in captured.into_iter().zip(scalars) {
-                            slots.push((slot, scalar));
-                        }
+                        slots.extend(columns);
                     }
                 }
             }

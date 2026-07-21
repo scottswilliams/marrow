@@ -838,6 +838,34 @@ impl<'a> FnLowerer<'a> {
         Some(slots)
     }
 
+    /// Capture an entry identity into one pre-evaluated `(slot, scalar)` column per root key
+    /// column (root-first): the slots from [`capture_identity_key_slots`] paired with the
+    /// addressed root's key scalars. The single owner for recording an identity operand as a
+    /// place/traversal key-path, so a place binding and a traversal ancestor spread it
+    /// identically.
+    pub(super) fn capture_identity_key_columns(
+        &mut self,
+        expr: &Expression,
+        root: u16,
+        cols: u16,
+        span: SourceSpan,
+    ) -> Option<Vec<(u16, ScalarType)>> {
+        let slots = self.capture_identity_key_slots(expr, root, cols, span)?;
+        // The RootId was resolved from a root in this registry when the identity column was
+        // built, so it is present here.
+        #[allow(
+            clippy::expect_used,
+            reason = "lowering invariant: an identity operand's RootId names a root in this registry"
+        )]
+        let scalars = self
+            .durable
+            .root_by_id(root)
+            .expect("an identity operand's root is registered")
+            .key
+            .clone();
+        Some(slots.into_iter().zip(scalars).collect())
+    }
+
     /// Materialize a durable operation's whole key-path into one pre-evaluated slot per
     /// physical key column (root-first) — the capture a read-modify-write or an upsert
     /// needs so its several ops key off one evaluation. A `Bound` column reuses the place
@@ -937,27 +965,13 @@ impl<'a> FnLowerer<'a> {
                     key_slots.push((key_slot, column.key_ty));
                 }
                 PlaceKey::Identity { expr, root, cols } => {
-                    let Some(slots) = self.capture_identity_key_slots(expr, root, cols, span)
+                    // The identity spreads into the addressed root's ordered key columns, so
+                    // the place records its whole physical key-path.
+                    let Some(columns) = self.capture_identity_key_columns(expr, root, cols, span)
                     else {
                         return;
                     };
-                    // The identity spreads into the addressed root's ordered key columns;
-                    // recover each column's scalar from that root so the place records its
-                    // whole physical key-path. The RootId was resolved from a root in this
-                    // registry when the identity column was built, so it is present here.
-                    #[allow(
-                        clippy::expect_used,
-                        reason = "lowering invariant: an identity operand's RootId names a root in this registry"
-                    )]
-                    let scalars = self
-                        .durable
-                        .root_by_id(root)
-                        .expect("an identity operand's root is registered")
-                        .key
-                        .clone();
-                    for (slot, scalar) in slots.into_iter().zip(scalars) {
-                        key_slots.push((slot, scalar));
-                    }
+                    key_slots.extend(columns);
                 }
                 PlaceKey::Bound(_) => {
                     self.fail(SourceDiagnostic::at(
