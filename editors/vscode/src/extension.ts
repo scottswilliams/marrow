@@ -33,6 +33,10 @@ const STOP_TIMEOUT_MS = 2000;
 
 let client: LanguageClient | undefined;
 let output: vscode.OutputChannel | undefined;
+// Set synchronously for the whole `start()` await so a re-entrant call (a restart
+// fired while activation's start is still in flight) cannot pass the `client`
+// guard and spawn a second child. This upholds the at-most-one-child invariant.
+let starting = false;
 
 export function activate(context: vscode.ExtensionContext): void {
   output = vscode.window.createOutputChannel("Marrow Language Server");
@@ -70,7 +74,7 @@ function folderCount(): number {
 }
 
 async function startClient(context: vscode.ExtensionContext): Promise<void> {
-  if (client !== undefined) {
+  if (client !== undefined || starting) {
     return;
   }
   if (process.platform !== SUPPORTED_PLATFORM || process.arch !== SUPPORTED_ARCH) {
@@ -100,14 +104,16 @@ async function startClient(context: vscode.ExtensionContext): Promise<void> {
     clientOptions,
   );
 
+  starting = true;
   try {
     await started.start();
+    client = started;
   } catch (error) {
     void vscode.window.showErrorMessage(`Marrow: the language server failed to start: ${error}`);
     await started.stop(STOP_TIMEOUT_MS).catch(() => undefined);
-    return;
+  } finally {
+    starting = false;
   }
-  client = started;
 }
 
 async function stopClient(): Promise<void> {
