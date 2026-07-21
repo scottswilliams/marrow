@@ -104,3 +104,38 @@ jobs:
           name: sbom-cyclonedx
           path: "**/*.cdx.json"
           if-no-files-found: error
+
+  extension-advisory:
+    name: VS Code extension (advisory)
+    runs-on: ubuntu-latest
+    # Non-gating, like stable-advisory and supply-chain-advisory: an extension
+    # toolchain or typecheck regression must never red the required matrix or block a
+    # push. It tracks the editors/vscode host's platform-independent health — a
+    # dependency install under the repo's ignore-scripts policy and a no-emit
+    # TypeScript typecheck.
+    #
+    # Bounded to what ubuntu can prove. The full editors/vscode/gate/verify-vsix.mjs
+    # inventory, single-Mach-O payload, hash-pin, and reproducible-build checks require
+    # a packaged VSIX whose payload is the pinned aarch64-apple-darwin release binary;
+    # that darwin payload is produced and verified in the macOS packaging lane, not
+    # here, so it is the darwin-only remainder this advisory job does not cover.
+    continue-on-error: true
+    defaults:
+      run:
+        working-directory: editors/vscode
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      # ignore-scripts is enforced by editors/vscode/.npmrc, so no dependency
+      # lifecycle script runs during install.
+      - name: Install extension dependencies
+        run: npm ci
+
+      - name: Typecheck (no emit)
+        run: npx tsc --noEmit -p ./
