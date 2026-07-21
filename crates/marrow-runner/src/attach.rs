@@ -12,29 +12,43 @@
 //! The CLI never opens the store: `marrow run … --store` spawns this attached session and
 //! speaks the wire protocol to it, so the lifecycle state lives only behind this crate's
 //! privileged boundary.
+//!
+//! Unlike the storeless [`Service`](crate::Service), the attached session pins the exact
+//! **image identity** ([`VerifiedImage::image_id`]) as its handshake identity rather than the
+//! transfer-graph interface identity. The terminal shares the exact image bytes it spawned
+//! the runner with, so it verifies that identity directly — a stronger binding than interface
+//! shape, and one that works for any program, including one with a non-transferable export
+//! (an entry-identity return, a collection) that has no whole-program wire interface. The
+//! per-call transfer codec still governs each argument and return value, so a call to a
+//! non-transferable export fails closed at encode time rather than being served partially.
 
 use marrow_codes::Code;
 use marrow_lifecycle::OpenStore;
-use marrow_local_wire::{ClientMessage, Json, ServerMessage, Span};
-use marrow_verify::SealedExport;
+use marrow_local_wire::{ClientMessage, Id32, Json, ServerMessage, Span};
+use marrow_verify::{SealedExport, VerifiedImage};
 use marrow_vm::DurableRun;
 
 use crate::channel::Handler;
-use crate::descriptor::Service;
 use crate::transfer;
 
-/// A live attached session: the served program's dispatch facts and the open persistent
-/// store, holding the store's single-owner lock. Built once at attach; each request opens
-/// its own durable session against the store.
+/// A live attached session: the served program image and the open persistent store, holding
+/// the store's single-owner lock. Built once at attach; each request opens its own durable
+/// session against the store.
 pub struct AttachedService {
-    service: Service,
+    image: VerifiedImage,
     open: OpenStore,
 }
 
 impl AttachedService {
-    /// Bind `service`'s image to the already-open `store`.
-    pub fn new(service: Service, open: OpenStore) -> Self {
-        Self { service, open }
+    /// Bind `image` to the already-open `store`.
+    pub fn new(image: VerifiedImage, open: OpenStore) -> Self {
+        Self { image, open }
+    }
+
+    /// The handshake identity the runner proves back: the exact image identity, which the
+    /// terminal independently recomputes from the bytes it spawned the runner with.
+    pub fn identity(&self) -> Id32 {
+        Id32::from_bytes(self.image.image_id().0)
     }
 }
 
@@ -54,8 +68,7 @@ impl Handler for AttachedService {
 impl AttachedService {
     fn handle_request(&mut self, export_id: &[u8; 32], args: &[Json]) -> ServerMessage {
         // Split the disjoint borrows: the image is read while the store is opened mutably.
-        let Self { service, open } = self;
-        let image = service.image();
+        let Self { image, open } = self;
         let Some(export) = find_export(image, export_id) else {
             return reject(Code::RunnerUnknownExport);
         };

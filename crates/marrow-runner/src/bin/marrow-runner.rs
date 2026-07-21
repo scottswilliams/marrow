@@ -183,21 +183,13 @@ fn attach(image_path: &Path, store: &Path) -> ExitCode {
         }
     };
 
-    let service = match Service::build(image) {
-        Ok(service) => service,
-        Err(error) => {
-            eprintln!(
-                "{}: {error}",
-                marrow_codes::Code::CliTransferExcluded.as_str()
-            );
-            return ExitCode::FAILURE;
-        }
-    };
-    let interface = service.interface_id();
-    serve_over_channel(
-        marrow_runner::AttachedService::new(service, opened),
-        interface,
-    )
+    // The attached session pins the exact image identity (not the transfer-graph interface),
+    // so a program with a non-transferable export still serves its transferable exports over
+    // the terminal path; a call to a non-transferable export fails closed at the per-call
+    // transfer codec rather than being refused wholesale here.
+    let attached = marrow_runner::AttachedService::new(image, opened);
+    let identity = attached.identity();
+    serve_over_channel(attached, identity)
 }
 
 /// The shared channel discipline for both serving modes: mint the session secrets, bind a

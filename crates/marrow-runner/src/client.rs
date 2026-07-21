@@ -124,6 +124,14 @@ pub fn attach_and_call(
 
     let (mut companion, descriptor) = spawn_companion(runner_exe, image_bytes, store, nonce)?;
 
+    // The companion must serve exactly the image we spawned it with: its published identity
+    // is the image identity, which we recompute independently. A mismatch means it opened a
+    // different program and we refuse before sending the call.
+    let expected = Id32::from_bytes(image.image_id().0);
+    if descriptor.interface != expected {
+        return Err(ClientError::Handshake);
+    }
+
     let outcome = call_over_socket(image, &descriptor, nonce, export_id, args, deadline);
     // Let the companion observe the client hangup and exit cleanly before the drop guard's
     // kill; the guard still removes the staging directory.

@@ -125,12 +125,6 @@ impl Service {
         self.interface_id
     }
 
-    /// The verified image this service serves. The attached session reads it to dispatch a
-    /// durable export against the native store.
-    pub(crate) fn image(&self) -> &VerifiedImage {
-        &self.image
-    }
-
     /// The dispatch entry for an export identity, if the image carries it.
     pub(crate) fn lookup(&self, id: &[u8; 32]) -> Option<&ServedExport> {
         self.exports.iter().find(|export| &export.id == id)
