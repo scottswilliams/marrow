@@ -615,7 +615,9 @@ impl Coordinator {
                     .uri
             }
             "textDocument/formatting" => {
-                parse::<DocumentFormattingParams>(params?)?.text_document.uri
+                parse::<DocumentFormattingParams>(params?)?
+                    .text_document
+                    .uri
             }
             _ => return None,
         };
@@ -652,8 +654,12 @@ impl Coordinator {
             SemanticAnswer::ContentModified => {
                 self.answer_error(&held.id, CONTENT_MODIFIED, "content modified")
             }
-            SemanticAnswer::BadParams => self.answer_error(&held.id, INVALID_PARAMS, "malformed params"),
-            SemanticAnswer::Internal => self.answer_error(&held.id, INTERNAL_ERROR, "internal error"),
+            SemanticAnswer::BadParams => {
+                self.answer_error(&held.id, INVALID_PARAMS, "malformed params")
+            }
+            SemanticAnswer::Internal => {
+                self.answer_error(&held.id, INTERNAL_ERROR, "internal error")
+            }
         }
     }
 
@@ -732,7 +738,11 @@ impl Coordinator {
         Some((identity, source))
     }
 
-    fn resolve_open_document(&self, root: &SelectedRoot, uri: &str) -> Option<(DocumentKey, String)> {
+    fn resolve_open_document(
+        &self,
+        root: &SelectedRoot,
+        uri: &str,
+    ) -> Option<(DocumentKey, String)> {
         let key = DocumentKey::from_uri(uri, root).ok()?;
         match self.ledger.get(&key) {
             Some(DocumentState::OpenText { text, .. }) => Some((key, text.clone())),
@@ -771,8 +781,13 @@ impl Coordinator {
         if self.lifecycle.phase() != Phase::Running {
             return;
         }
-        let Some(root) = self.root.clone() else { return };
-        let Some(params) = params.as_deref().and_then(parse::<DidOpenTextDocumentParams>) else {
+        let Some(root) = self.root.clone() else {
+            return;
+        };
+        let Some(params) = params
+            .as_deref()
+            .and_then(parse::<DidOpenTextDocumentParams>)
+        else {
             return;
         };
         let document = params.text_document;
@@ -801,8 +816,13 @@ impl Coordinator {
         if self.lifecycle.phase() != Phase::Running {
             return;
         }
-        let Some(root) = self.root.clone() else { return };
-        let Some(params) = params.as_deref().and_then(parse::<DidChangeTextDocumentParams>) else {
+        let Some(root) = self.root.clone() else {
+            return;
+        };
+        let Some(params) = params
+            .as_deref()
+            .and_then(parse::<DidChangeTextDocumentParams>)
+        else {
             return;
         };
         let version = params.text_document.version;
@@ -837,8 +857,13 @@ impl Coordinator {
         if self.lifecycle.phase() != Phase::Running {
             return;
         }
-        let Some(root) = self.root.clone() else { return };
-        let Some(params) = params.as_deref().and_then(parse::<DidCloseTextDocumentParams>) else {
+        let Some(root) = self.root.clone() else {
+            return;
+        };
+        let Some(params) = params
+            .as_deref()
+            .and_then(parse::<DidCloseTextDocumentParams>)
+        else {
             return;
         };
         let Ok(key) = DocumentKey::from_uri(params.text_document.uri.as_str(), &root) else {
@@ -998,7 +1023,8 @@ impl Coordinator {
             let key = DocumentKey::from_identity(identity);
             let source = std::str::from_utf8(module.source()).unwrap_or("");
             let version = self.ledger.get(&key).map(DocumentState::version);
-            if let Ok(params) = facts::diagnostics_for_file(snapshot, &root, identity, source, version)
+            if let Ok(params) =
+                facts::diagnostics_for_file(snapshot, &root, identity, source, version)
             {
                 let has = !params.diagnostics.is_empty();
                 frames.push(Outbound::PublishDiagnostics(Box::new(params)));
@@ -1133,9 +1159,7 @@ impl Coordinator {
         self.outbound_credits.release(credit);
         match owner {
             FrameOwner::Request(id) => self.requests.retire(&id),
-            FrameOwner::Anonymous => {
-                self.anonymous_slots = self.anonymous_slots.saturating_sub(1)
-            }
+            FrameOwner::Anonymous => self.anonymous_slots = self.anonymous_slots.saturating_sub(1),
             FrameOwner::Publication => self.on_publication_receipt(),
             FrameOwner::Initialize => {
                 if self.lifecycle.on_initialize_delivered() {
@@ -1275,7 +1299,10 @@ fn restore_after_rejected_initialize() -> Lifecycle {
     Lifecycle::new()
 }
 
-fn lsp_uri(root: &SelectedRoot, identity: &marrow_project_fs::FileIdentity) -> Option<lsp_types::Uri> {
+fn lsp_uri(
+    root: &SelectedRoot,
+    identity: &marrow_project_fs::FileIdentity,
+) -> Option<lsp_types::Uri> {
     use std::str::FromStr;
     lsp_types::Uri::from_str(&crate::uri::diagnostic_uri(root, identity)).ok()
 }
@@ -1383,7 +1410,10 @@ mod tests {
     }
 
     fn open_body(dir: &Path, version: i64, text: &str) -> String {
-        let escaped = text.replace('\\', "\\\\").replace('\n', "\\n").replace('"', "\\\"");
+        let escaped = text
+            .replace('\\', "\\\\")
+            .replace('\n', "\\n")
+            .replace('"', "\\\"");
         format!(
             r#"{{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{{"textDocument":{{"uri":"{}/src/main.mw","languageId":"marrow","version":{version},"text":"{escaped}"}}}}}}"#,
             root_uri(dir)
@@ -1391,7 +1421,10 @@ mod tests {
     }
 
     fn change_body(dir: &Path, version: i64, text: &str) -> String {
-        let escaped = text.replace('\\', "\\\\").replace('\n', "\\n").replace('"', "\\\"");
+        let escaped = text
+            .replace('\\', "\\\\")
+            .replace('\n', "\\n")
+            .replace('"', "\\\"");
         format!(
             r#"{{"jsonrpc":"2.0","method":"textDocument/didChange","params":{{"textDocument":{{"uri":"{}/src/main.mw","version":{version}}},"contentChanges":[{{"text":"{escaped}"}}]}}}}"#,
             root_uri(dir)
@@ -1439,7 +1472,10 @@ mod tests {
         // analysis job.
         coordinator.on_receipt();
         assert_eq!(coordinator.lifecycle.phase(), Phase::Running);
-        assert!(coordinator.job_out.is_some(), "first analysis enqueued on delivery");
+        assert!(
+            coordinator.job_out.is_some(),
+            "first analysis enqueued on delivery"
+        );
         cleanup(&dir);
     }
 
@@ -1473,9 +1509,16 @@ mod tests {
         // A second request with the same live id consumes no new entry and is a null-id
         // -32600 through the anonymous slot.
         coordinator.on_frame(br#"{"jsonrpc":"2.0","id":7,"method":"noSuchMethod"}"#);
-        assert_eq!(coordinator.requests.entries.len(), 1, "no new entry for a duplicate");
-        assert!(frames(&coordinator).iter().any(|f| f.contains(r#""id":null"#)
-            && f.contains("-32600")));
+        assert_eq!(
+            coordinator.requests.entries.len(),
+            1,
+            "no new entry for a duplicate"
+        );
+        assert!(
+            frames(&coordinator)
+                .iter()
+                .any(|f| f.contains(r#""id":null"#) && f.contains("-32600"))
+        );
     }
 
     #[test]
@@ -1483,18 +1526,31 @@ mod tests {
         // Capacity zero anonymous slots: the first null-id protocol error fail-stops.
         let mut coordinator = Coordinator::with_capacities(4, 0);
         coordinator.on_frame(b"{ not json");
-        assert!(!coordinator.running, "anonymous exhaustion is a fixed terminal");
+        assert!(
+            !coordinator.running,
+            "anonymous exhaustion is a fixed terminal"
+        );
     }
 
     // ---- Law: terminal arbitration ----
 
     #[test]
     fn terminal_classifies_awaiting_delivery_and_abandoned() {
-        let dir = temp_project("term", "module main\n\npub fn f(): int {\n    return 1\n}\n");
+        let dir = temp_project(
+            "term",
+            "module main\n\npub fn f(): int {\n    return 1\n}\n",
+        );
         let mut coordinator = running(&dir);
         // Drop the initial analysis job and its outputs; open a doc so a hover can be held.
         coordinator.job_out = None;
-        coordinator.on_frame(open_body(&dir, 1, "module main\n\npub fn f(): int {\n    return 1\n}\n").as_bytes());
+        coordinator.on_frame(
+            open_body(
+                &dir,
+                1,
+                "module main\n\npub fn f(): int {\n    return 1\n}\n",
+            )
+            .as_bytes(),
+        );
         coordinator.job_out = None; // ignore the recompute job; no snapshot arrives
 
         // A hover with no ready snapshot is held (Live, no frame).
@@ -1576,7 +1632,10 @@ mod tests {
                 }),
             }),
         });
-        assert!(matches!(coordinator.episode, CaptureEpisode::Latched { .. }));
+        assert!(matches!(
+            coordinator.episode,
+            CaptureEpisode::Latched { .. }
+        ));
         let show_count = frames(&coordinator)
             .iter()
             .filter(|f| f.contains("window/showMessage"))
@@ -1661,7 +1720,10 @@ mod tests {
         while coordinator.pending_publication.is_some() {
             coordinator.on_receipt();
         }
-        assert!(coordinator.publication.is_some(), "B builds after A's final receipt");
+        assert!(
+            coordinator.publication.is_some(),
+            "B builds after A's final receipt"
+        );
         cleanup(&dir);
     }
 }
