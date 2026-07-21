@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use marrow_store::{ByteEngine, ReadView, StoreError};
+use marrow_store::{ByteEngine, Cell, ReadView, StoreError};
 
 use super::super::physical;
 use super::super::{
@@ -103,7 +103,7 @@ impl<E: ByteEngine> DurableStore<E> {
     /// only caller; nothing below the kernel can reach it.
     pub fn visit_cells(
         &self,
-        mut per_page: impl FnMut(&[marrow_store::Cell]) -> Result<(), StoreError>,
+        mut per_page: impl FnMut(&[Cell]) -> Result<(), StoreError>,
     ) -> Result<(), StoreError> {
         let view = self.engine.read_view()?;
         let mut cursor: Vec<u8> = Vec::new();
@@ -123,7 +123,7 @@ impl<E: ByteEngine> DurableStore<E> {
     /// durably. The restore half of the backup/restore slice; the same closed
     /// lifecycle-maintenance seam as [`Self::visit_cells`]. An indeterminate or aborted commit
     /// surfaces so the caller can fail the restore rather than report a partial store.
-    pub fn insert_cells(&mut self, cells: &[marrow_store::Cell]) -> Result<(), StoreError> {
+    pub fn insert_cells(&mut self, cells: &[Cell]) -> Result<(), StoreError> {
         use marrow_store::{CommitOutcome, WriteTxn};
         let mut txn = self.engine.begin()?;
         for (key, value) in cells {

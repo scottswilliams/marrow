@@ -74,13 +74,10 @@ impl<E: ByteEngine> SessionHost for DurableStore<E> {
     }
 }
 
-/// A boxed host is itself a host, forwarding through the box. [`mint_ephemeral`] hands the
-/// caller a `Box<EphemeralAttachment>` (the attachment owns a whole store schema and is far
-/// larger than the other variants), so this lets it drive [`run_export`] without an explicit
-/// reborrow.
-///
-/// [`mint_ephemeral`]: ../../../marrow_vm/fn.mint_ephemeral.html
-/// [`run_export`]: ../../../marrow_vm/fn.run_export.html
+/// A boxed host is itself a host, forwarding through the box. `marrow_vm::mint_ephemeral`
+/// hands the caller a `Box<EphemeralAttachment>` (the attachment owns a whole store schema and
+/// is far larger than the other variants), so this lets it drive `run_export` without an
+/// explicit reborrow.
 impl<H: SessionHost> SessionHost for Box<H> {
     type Engine = H::Engine;
 

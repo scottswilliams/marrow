@@ -23,9 +23,10 @@
 //! non-transferable export fails closed at encode time rather than being served partially.
 
 use marrow_codes::Code;
+use marrow_image::ExportId;
 use marrow_lifecycle::OpenStore;
 use marrow_local_wire::{ClientMessage, Id32, Json, ServerMessage, Span};
-use marrow_verify::{SealedExport, VerifiedImage};
+use marrow_verify::VerifiedImage;
 use marrow_vm::DurableRun;
 
 use crate::channel::Handler;
@@ -69,7 +70,7 @@ impl AttachedService {
     fn handle_request(&mut self, export_id: &[u8; 32], args: &[Json]) -> ServerMessage {
         // Split the disjoint borrows: the image is read while the store is opened mutably.
         let Self { image, open } = self;
-        let Some(export) = find_export(image, export_id) else {
+        let Some(export) = image.export_by_id(ExportId::from_bytes(*export_id)) else {
             return reject(Code::RunnerUnknownExport);
         };
         let function = image.function(export.function());
@@ -103,17 +104,6 @@ impl AttachedService {
             },
         }
     }
-}
-
-/// Find the sealed export the request names by its 32-byte identity.
-fn find_export<'a>(
-    image: &'a marrow_verify::VerifiedImage,
-    export_id: &[u8; 32],
-) -> Option<&'a SealedExport> {
-    image
-        .exports()
-        .iter()
-        .find(|export| export.id().bytes() == export_id)
 }
 
 /// Encode a returned value into a `Value` response, downgrading an unencodable value (never

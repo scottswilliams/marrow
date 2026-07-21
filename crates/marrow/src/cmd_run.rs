@@ -473,9 +473,14 @@ fn run_persistent(
         }
     };
 
-    let args = match build_json_args(params, call_args) {
-        Ok(args) => args,
-        Err(code) => return code,
+    // Validate the command-line arguments once, exactly as a storeless run does (text →
+    // `Value`), then project each onto its wire JSON. The terminal never passes a struct.
+    let values = match decode_args(params, call_args) {
+        Ok(values) => values,
+        Err(message) => return usage(&message),
+    };
+    let Some(args) = values.iter().map(value_to_wire).collect::<Option<Vec<_>>>() else {
+        return usage("this export cannot be called from the terminal");
     };
 
     match marrow_runner::attach_and_call(&runner, image, image_bytes, store, export_id, args) {
@@ -525,67 +530,34 @@ fn fault_code(code: &str) -> &'static str {
         .unwrap_or_else(|| marrow_codes::Code::CliCompilerInvariant.as_str())
 }
 
-/// Build the wire JSON arguments for a persistent call from the command-line strings and the
-/// export's parameter types, validating the same way a storeless run does. A record or
-/// optional parameter has no command-line spelling.
-fn build_json_args(
-    params: &[ImageType],
-    args: &[String],
-) -> Result<Vec<marrow_runner::Json>, ExitCode> {
-    if params.len() != args.len() {
-        return Err(usage(&format!(
-            "this export takes {} argument(s), found {}",
-            params.len(),
-            args.len()
-        )));
-    }
-    let mut out = Vec::with_capacity(params.len());
-    for (param, text) in params.iter().zip(args) {
-        match param {
-            ImageType::Scalar {
-                scalar,
-                optional: false,
-            } => out.push(scalar_to_json(*scalar, text).map_err(|message| usage(&message))?),
-            _ => {
-                return Err(usage(
-                    "a struct argument cannot be passed on the command line",
-                ));
-            }
-        }
-    }
-    Ok(out)
+/// Project a validated command-line argument value onto its wire JSON. Total over the scalar
+/// values [`decode_args`] produces (numbers and booleans carry their JSON kind; the
+/// text-shaped scalars travel as their canonical string); a non-scalar — which the terminal
+/// rejects at decode — yields `None`.
+fn value_to_wire(value: &Value) -> Option<marrow_runner::Json> {
+    use marrow_runner::Json;
+    Some(match value {
+        Value::Int(n) => Json::Int(*n),
+        Value::Bool(b) => Json::Bool(*b),
+        Value::Text(text) => Json::Str(text.to_string()),
+        Value::Bytes(bytes) => Json::Str(render_hex_bytes(bytes)),
+        Value::Date(days) => Json::Str(marrow_temporal::format_date(*days)?),
+        Value::Instant(nanos) => Json::Str(marrow_temporal::format_instant(*nanos)?),
+        Value::Duration(nanos) => Json::Str(marrow_temporal::format_duration(*nanos)),
+        _ => return None,
+    })
 }
 
-/// Validate a command-line scalar against its type and produce its wire JSON. Numbers and
-/// booleans carry their JSON kind; the text-shaped scalars (text/bytes/temporal) travel as a
-/// canonical string, validated here so a malformed value is a terminal usage error rather
-/// than a wire rejection.
-fn scalar_to_json(scalar: Scalar, text: &str) -> Result<marrow_runner::Json, String> {
-    use marrow_runner::Json;
-    match scalar {
-        Scalar::Int => text
-            .parse::<i64>()
-            .map(Json::Int)
-            .map_err(|_| format!("`{text}` is not an integer")),
-        Scalar::Bool => match text {
-            "true" => Ok(Json::Bool(true)),
-            "false" => Ok(Json::Bool(false)),
-            _ => Err(format!("`{text}` is not a boolean (true/false)")),
-        },
-        Scalar::Text => Ok(Json::Str(text.to_string())),
-        Scalar::Bytes => decode_hex_bytes(text)
-            .map(|_| Json::Str(text.to_string()))
-            .ok_or_else(|| format!("`{text}` is not `0x`-prefixed lowercase hex")),
-        Scalar::Date => marrow_temporal::parse_date(text.as_bytes())
-            .map(|_| Json::Str(text.to_string()))
-            .ok_or_else(|| format!("`{text}` is not a canonical date `YYYY-MM-DD`")),
-        Scalar::Instant => marrow_temporal::parse_instant(text.as_bytes())
-            .map(|_| Json::Str(text.to_string()))
-            .ok_or_else(|| format!("`{text}` is not a canonical UTC instant")),
-        Scalar::Duration => marrow_temporal::parse_duration(text.as_bytes())
-            .map(|_| Json::Str(text.to_string()))
-            .ok_or_else(|| format!("`{text}` is not a canonical duration `PT<seconds>S`")),
+/// Render bytes as the `0x`-prefixed lowercase-hex string the wire and the CLI both spell a
+/// `bytes` value with.
+fn render_hex_bytes(bytes: &[u8]) -> String {
+    let mut out = String::with_capacity(2 + bytes.len() * 2);
+    out.push_str("0x");
+    for byte in bytes {
+        out.push(char::from_digit(u32::from(byte >> 4), 16).expect("hex nibble"));
+        out.push(char::from_digit(u32::from(byte & 0xf), 16).expect("hex nibble"));
     }
+    out
 }
 
 /// Decode positional CLI arguments against the export's parameter types. A scalar

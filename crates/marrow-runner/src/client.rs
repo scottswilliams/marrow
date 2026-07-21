@@ -13,11 +13,12 @@
 //! proves it in the handshake, and checks the runner proves its session token and served
 //! interface identity back before it sends the call.
 
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{self, BufRead, BufReader, Read, Write};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::time::Duration;
+use std::thread::sleep;
+use std::time::{Duration, Instant};
 
 use marrow_local_wire::{
     ClientMessage, Id32, Json, ServerMessage, WireError, frame_body_len, parse_strict,
@@ -133,17 +134,11 @@ pub fn attach_and_call(
     }
 
     let outcome = call_over_socket(image, &descriptor, nonce, export_id, args, deadline);
-    // Let the companion observe the client hangup and exit cleanly before the drop guard's
-    // kill; the guard still removes the staging directory.
-    drop_stream_and_reap(&mut companion);
-    outcome
-}
-
-/// Reap the companion after the call: it exits when the client hangs up. The drop guard is
-/// the backstop, but waiting here turns the ordinary path into a clean exit rather than a
-/// kill.
-fn drop_stream_and_reap(companion: &mut Companion) {
+    // The call is done and its socket dropped, so the companion has already seen the client
+    // hang up and is exiting; wait for it here so the ordinary path is a clean exit rather
+    // than the drop guard's kill. The guard still removes the staging directory.
     let _ = companion.child.wait();
+    outcome
 }
 
 fn spawn_companion(
@@ -185,11 +180,16 @@ fn spawn_companion(
     Ok((Companion { child, dir }, descriptor))
 }
 
+/// The most bytes the one launch-descriptor line may occupy — bounded before allocation
+/// (law 9) even though the companion is release-verified. The line is a small fixed JSON
+/// object (three 64-hex ids and a socket path).
+const MAX_DESCRIPTOR_BYTES: u64 = 64 * 1024;
+
 /// Read and parse the one launch-descriptor line the runner prints to stdout.
 fn read_descriptor(child: &mut Child) -> Result<Descriptor, ClientError> {
     let stdout = child.stdout.take().ok_or(ClientError::Descriptor)?;
     let mut line = String::new();
-    BufReader::new(stdout)
+    BufReader::new(stdout.take(MAX_DESCRIPTOR_BYTES))
         .read_line(&mut line)
         .map_err(ClientError::Io)?;
     parse_descriptor(&line).ok_or(ClientError::Descriptor)
@@ -222,16 +222,15 @@ fn call_over_socket(
     args: Vec<Json>,
     deadline: Duration,
 ) -> Result<CallOutcome, ClientError> {
+    // Enforce deadlines by non-blocking poll against a monotonic clock, the same discipline
+    // the server's channel uses (a `SO_RCVTIMEO` read timeout is not the portable choice on
+    // `AF_UNIX`), so both ends of one wire share one deadline discipline and a hung companion
+    // never hangs the terminal.
     let mut stream = UnixStream::connect(&descriptor.socket).map_err(ClientError::Io)?;
-    stream
-        .set_read_timeout(Some(deadline))
-        .map_err(ClientError::Io)?;
-    stream
-        .set_write_timeout(Some(deadline))
-        .map_err(ClientError::Io)?;
+    stream.set_nonblocking(true).map_err(ClientError::Io)?;
 
-    write_message(&mut stream, &ClientMessage::Hello { nonce })?;
-    match read_message(&mut stream)? {
+    write_message(&mut stream, &ClientMessage::Hello { nonce }, deadline)?;
+    match read_message(&mut stream, deadline)? {
         ServerMessage::Ready { session, interface }
             if session == descriptor.session && interface == descriptor.interface => {}
         _ => return Err(ClientError::Handshake),
@@ -243,8 +242,9 @@ fn call_over_socket(
             export: Id32::from_bytes(export_id),
             args,
         },
+        deadline,
     )?;
-    match read_message(&mut stream)? {
+    match read_message(&mut stream, deadline)? {
         ServerMessage::Value { data } => decode_reply(image, export_id, &data),
         ServerMessage::Fault { code, span } => Ok(CallOutcome::Fault {
             code,
@@ -280,18 +280,72 @@ fn decode_reply(
     }
 }
 
-fn write_message(stream: &mut UnixStream, message: &ClientMessage) -> Result<(), ClientError> {
+/// The non-blocking poll interval, matching the server channel's.
+const POLL: Duration = Duration::from_millis(1);
+
+fn write_message(
+    stream: &mut UnixStream,
+    message: &ClientMessage,
+    timeout: Duration,
+) -> Result<(), ClientError> {
     let frame = message.encode().map_err(ClientError::Wire)?;
-    stream.write_all(&frame).map_err(ClientError::Io)
+    let deadline = Instant::now() + timeout;
+    let mut buf = frame.as_slice();
+    while !buf.is_empty() {
+        match stream.write(buf) {
+            Ok(0) => return Err(ClientError::Io(io::ErrorKind::WriteZero.into())),
+            Ok(n) => buf = &buf[n..],
+            Err(error) => poll_or_fail(&error, deadline)?,
+        }
+    }
+    Ok(())
 }
 
-fn read_message(stream: &mut UnixStream) -> Result<ServerMessage, ClientError> {
+fn read_message(stream: &mut UnixStream, timeout: Duration) -> Result<ServerMessage, ClientError> {
+    let deadline = Instant::now() + timeout;
     let mut header = [0u8; 4];
-    stream.read_exact(&mut header).map_err(ClientError::Io)?;
+    read_exact_deadline(stream, &mut header, deadline)?;
     let len = frame_body_len(header).map_err(ClientError::Wire)?;
     let mut body = vec![0u8; len];
-    stream.read_exact(&mut body).map_err(ClientError::Io)?;
+    read_exact_deadline(stream, &mut body, deadline)?;
     ServerMessage::decode(&body).map_err(ClientError::Wire)
+}
+
+fn read_exact_deadline(
+    stream: &mut UnixStream,
+    buf: &mut [u8],
+    deadline: Instant,
+) -> Result<(), ClientError> {
+    let mut filled = 0;
+    while filled < buf.len() {
+        match stream.read(&mut buf[filled..]) {
+            Ok(0) => return Err(ClientError::Io(io::ErrorKind::UnexpectedEof.into())),
+            Ok(n) => filled += n,
+            Err(error) => poll_or_fail(&error, deadline)?,
+        }
+    }
+    Ok(())
+}
+
+/// Sleep one poll interval on `WouldBlock` until the deadline, ignore `Interrupted`, and
+/// surface anything else. A deadline reached while the peer is silent is a timed-out I/O
+/// error.
+fn poll_or_fail(error: &io::Error, deadline: Instant) -> Result<(), ClientError> {
+    match error.kind() {
+        io::ErrorKind::WouldBlock => {
+            if Instant::now() >= deadline {
+                Err(ClientError::Io(io::ErrorKind::TimedOut.into()))
+            } else {
+                sleep(POLL);
+                Ok(())
+            }
+        }
+        io::ErrorKind::Interrupted => Ok(()),
+        _ => Err(ClientError::Io(io::Error::new(
+            error.kind(),
+            error.to_string(),
+        ))),
+    }
 }
 
 /// A private staging directory for the temporary image, named from OS entropy so two

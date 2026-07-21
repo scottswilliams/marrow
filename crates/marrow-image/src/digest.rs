@@ -18,13 +18,18 @@ pub struct ImageId(pub [u8; 32]);
 impl ImageId {
     /// The lowercase hex spelling of the digest.
     pub fn to_hex(self) -> String {
-        let mut hex = String::with_capacity(64);
-        for byte in self.0 {
-            hex.push(char::from_digit(u32::from(byte >> 4), 16).expect("hex nibble"));
-            hex.push(char::from_digit(u32::from(byte & 0xf), 16).expect("hex nibble"));
-        }
-        hex
+        hex32(&self.0)
     }
+}
+
+/// The lowercase hex spelling of a 32-byte identity.
+fn hex32(bytes: &[u8; 32]) -> String {
+    let mut hex = String::with_capacity(64);
+    for byte in bytes {
+        hex.push(char::from_digit(u32::from(byte >> 4), 16).expect("hex nibble"));
+        hex.push(char::from_digit(u32::from(byte & 0xf), 16).expect("hex nibble"));
+    }
+    hex
 }
 
 /// Compute the domain-separated image digest over `payload` (every image byte
@@ -52,12 +57,7 @@ pub struct CompanionReleaseId(pub [u8; 32]);
 impl CompanionReleaseId {
     /// The lowercase hex spelling of the identity.
     pub fn to_hex(self) -> String {
-        let mut hex = String::with_capacity(64);
-        for byte in self.0 {
-            hex.push(char::from_digit(u32::from(byte >> 4), 16).expect("hex nibble"));
-            hex.push(char::from_digit(u32::from(byte & 0xf), 16).expect("hex nibble"));
-        }
-        hex
+        hex32(&self.0)
     }
 
     /// Parse a 64-character lowercase-hex spelling, or `None` when it is not exactly 64

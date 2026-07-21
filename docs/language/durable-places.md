@@ -778,9 +778,14 @@ A native store commits with the ordered-byte engine's immediate durability: each
 confirmed commit is flushed to the operating system with `fsync` before the commit
 is reported, and a fresh store's directory entry is flushed so a provisioned store
 survives a crash. On this basis a confirmed commit is durable across **process
-termination and operating-system crash** — measured on the macOS/APFS target by a
-repeated kill-during-commit matrix that recovered every store to a complete
-prior-or-new state with no torn or lost confirmed commit.
+termination and operating-system crash**: the committed bytes are handed to the
+operating system, which retains them across a process exit or an OS crash. This
+durability is a property of the engine's `fsync`-before-report commit and the
+filesystem contract it relies on; the terminal path exercises it end to end, with a
+committed write in one process read back by a separate process after the store is
+closed and reopened, and a kill during a binding-only rebind recovering to a complete
+prior-or-new active binding (the head, the active-binding commit point, is committed
+by an atomic rename before the envelope).
 
 The commit path issues `fsync`, not macOS `F_FULLFSYNC`. `fsync` hands data to the
 kernel but does not force the drive to flush its internal write cache to permanent

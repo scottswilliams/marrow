@@ -528,6 +528,46 @@ fn pure_owners_have_no_filesystem_edge() {
     );
 }
 
+/// The kernel's raw logical-cell maintenance seam (`DurableStore::visit_cells` /
+/// `insert_cells`) is a closed lifecycle-only path: `insert_cells` writes and commits cells
+/// with no session/ceiling/grant check, so it must never be reachable from an ordinary caller
+/// on a live bound store. This absence gate keeps that conspicuous — the only call sites are
+/// the sanctioned backup/restore slice (`marrow-lifecycle/src/slice.rs`). A new caller fails
+/// this test and must justify itself. (The patterns are assembled at runtime so this test file
+/// is not itself a match.)
+#[test]
+fn the_cell_maintenance_seam_has_one_sanctioned_caller() {
+    let root = workspace_root();
+    let mut files = Vec::new();
+    rust_sources(&root.join("crates"), &mut files);
+    assert!(!files.is_empty(), "the crate source scan found no files");
+
+    let call_patterns = [
+        [".", "visit_cells("].concat(),
+        [".", "insert_cells("].concat(),
+    ];
+    let sanctioned = root.join("crates/marrow-lifecycle/src/slice.rs");
+
+    let mut violations: Vec<String> = Vec::new();
+    for path in files {
+        if path == sanctioned {
+            continue;
+        }
+        let contents = std::fs::read_to_string(&path).expect("read a tracked rust source");
+        for pattern in &call_patterns {
+            if contents.contains(pattern.as_str()) {
+                violations.push(format!("{}: {pattern}", path.display()));
+            }
+        }
+    }
+
+    assert!(
+        violations.is_empty(),
+        "the closed cell-maintenance seam gained a caller outside the backup/restore slice:\n{}",
+        violations.join("\n"),
+    );
+}
+
 /// No ambient clock feeds a temporal value: the temporal language path reads no wall
 /// or monotonic clock and depends on no date/time crate. A clock is a later explicit
 /// host effect; the temporal types are constructed only from literals and arguments.
