@@ -65,6 +65,30 @@ When the project cannot be captured â€” for example, a malformed `marrow.toml` â
 semantic request receives a `-32803` response and the failure is surfaced once as an
 error message; no diagnostics are fabricated.
 
+## Installed editor artifact
+
+An installed Visual Studio Code extension packages this server for editor use. It lives
+in the repository at `editors/vscode/`. The extension is a thin host: it registers the
+`marrow` language for the `.mw` extension and starts one bundled `marrow lsp` process
+per window over standard input and output. It contributes no grammar, language
+configuration, snippets, or on-type formatting, and it derives no language meaning of
+its own; diagnostics, formatting, hover, and definition come from the server.
+
+The packaged extension targets macOS on Apple Silicon (`darwin-arm64`) and bundles the
+matching `marrow` release binary; the server is launched from that bundled absolute path
+with the fixed arguments `marrow lsp`, never from a search path, and there is no setting
+to override it. The extension activates when a `.mw` file is opened. It supports a single
+workspace folder or none; two or more folders are refused with a message, matching the
+server's own single-root rule, and recovery is available through a restart command. The
+extension does not activate in untrusted (Restricted Mode) or virtual workspaces, and it
+performs no telemetry, network access, crash reporting, or updates.
+
+The packaging is reproducible: two independent builds of the same base produce an
+identical sorted per-entry (path, hash, executable bit) manifest, the bundled server is
+byte-identical to the canonical release binary of that base, and the package contains
+exactly one native executable (that server). These properties are checked by
+`editors/vscode/gate/verify-vsix.mjs`.
+
 ## Scope
 
 This is the minimal semantic server. It does not provide completion, signature help,
