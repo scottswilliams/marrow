@@ -130,14 +130,32 @@ mod tests {
     #[test]
     fn start_of_source_is_origin() {
         let map = LineMap::new("hello");
-        assert_eq!(map.position_at(0), Position { line: 0, character: 0 });
+        assert_eq!(
+            map.position_at(0),
+            Position {
+                line: 0,
+                character: 0
+            }
+        );
     }
 
     #[test]
     fn counts_lines_and_ascii_columns() {
         let map = LineMap::new("ab\ncd\nef");
-        assert_eq!(map.position_at(4), Position { line: 1, character: 1 });
-        assert_eq!(map.position_at(7), Position { line: 2, character: 1 });
+        assert_eq!(
+            map.position_at(4),
+            Position {
+                line: 1,
+                character: 1
+            }
+        );
+        assert_eq!(
+            map.position_at(7),
+            Position {
+                line: 2,
+                character: 1
+            }
+        );
     }
 
     #[test]
@@ -146,7 +164,13 @@ mod tests {
         let source = "a😀b";
         let map = LineMap::new(source);
         // Offset at 'b' (byte 5): character = 1 (a) + 2 (astral) = 3.
-        assert_eq!(map.position_at(5), Position { line: 0, character: 3 });
+        assert_eq!(
+            map.position_at(5),
+            Position {
+                line: 0,
+                character: 3
+            }
+        );
     }
 
     #[test]
@@ -154,20 +178,38 @@ mod tests {
         // "é" is U+00E9 (2 UTF-8 bytes, 1 UTF-16 unit).
         let source = "é!";
         let map = LineMap::new(source);
-        assert_eq!(map.position_at(2), Position { line: 0, character: 1 });
+        assert_eq!(
+            map.position_at(2),
+            Position {
+                line: 0,
+                character: 1
+            }
+        );
     }
 
     #[test]
     fn offset_past_end_clamps() {
         let map = LineMap::new("ab\ncd");
-        assert_eq!(map.position_at(999), Position { line: 1, character: 2 });
+        assert_eq!(
+            map.position_at(999),
+            Position {
+                line: 1,
+                character: 2
+            }
+        );
     }
 
     #[test]
     fn offset_inside_multibyte_snaps_to_start() {
         // Offset 1 is inside the 4-byte astral char at byte 0.
         let map = LineMap::new("😀x");
-        assert_eq!(map.position_at(1), Position { line: 0, character: 0 });
+        assert_eq!(
+            map.position_at(1),
+            Position {
+                line: 0,
+                character: 0
+            }
+        );
     }
 
     #[test]
@@ -186,21 +228,51 @@ mod tests {
     #[test]
     fn byte_at_clamps_line_and_character() {
         let map = LineMap::new("ab\ncd");
-        assert_eq!(map.byte_at(Position { line: 9, character: 0 }), 5);
-        assert_eq!(map.byte_at(Position { line: 0, character: 99 }), 2);
+        assert_eq!(
+            map.byte_at(Position {
+                line: 9,
+                character: 0
+            }),
+            5
+        );
+        assert_eq!(
+            map.byte_at(Position {
+                line: 0,
+                character: 99
+            }),
+            2
+        );
     }
 
     #[test]
     fn end_position_is_source_end() {
         let map = LineMap::new("ab\ncde");
-        assert_eq!(map.end_position(), Position { line: 1, character: 3 });
+        assert_eq!(
+            map.end_position(),
+            Position {
+                line: 1,
+                character: 3
+            }
+        );
     }
 
     #[test]
     fn range_of_spans_start_and_end() {
         let map = LineMap::new("abc\ndef");
         let range = map.range_of(1, 6);
-        assert_eq!(range.start, Position { line: 0, character: 1 });
-        assert_eq!(range.end, Position { line: 1, character: 2 });
+        assert_eq!(
+            range.start,
+            Position {
+                line: 0,
+                character: 1
+            }
+        );
+        assert_eq!(
+            range.end,
+            Position {
+                line: 1,
+                character: 2
+            }
+        );
     }
 }

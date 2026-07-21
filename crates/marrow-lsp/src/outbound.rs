@@ -109,10 +109,14 @@ pub fn encode(outbound: &Outbound) -> Result<Vec<u8>, EncodeError> {
         Outbound::Definition { id, result } => write_result(&mut sink, id, result),
         Outbound::Formatting { id, result } => write_result(&mut sink, id, result),
         Outbound::Null { id } => write_result(&mut sink, id, &NullResult),
-        Outbound::Error { id, code, message } => write_error(&mut sink, id.as_ref(), *code, message),
-        Outbound::PublishDiagnostics(params) => {
-            write_notification(&mut sink, "textDocument/publishDiagnostics", params.as_ref())
+        Outbound::Error { id, code, message } => {
+            write_error(&mut sink, id.as_ref(), *code, message)
         }
+        Outbound::PublishDiagnostics(params) => write_notification(
+            &mut sink,
+            "textDocument/publishDiagnostics",
+            params.as_ref(),
+        ),
         Outbound::ShowMessage { typ, message } => write_notification(
             &mut sink,
             "window/showMessage",
@@ -237,7 +241,8 @@ fn write_error(
     code: i32,
     message: &str,
 ) -> Result<(), WriteError> {
-    serde_json::to_writer(sink.by_ref(), &ErrorEnvelope { id, code, message }).map_err(map_serde)?;
+    serde_json::to_writer(sink.by_ref(), &ErrorEnvelope { id, code, message })
+        .map_err(map_serde)?;
     sink.check()
 }
 

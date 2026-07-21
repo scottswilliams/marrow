@@ -24,6 +24,7 @@ const RETAINED_MEMBERS: &[&str] = &[
     "marrow-image",
     "marrow-kernel",
     "marrow-local-wire",
+    "marrow-lsp",
     "marrow-project",
     "marrow-project-fs",
     "marrow-runner",
@@ -259,15 +260,16 @@ fn cargo_dag_respects_the_trust_boundaries() {
     // facts, checked formatting) is owned by the compiler, syntax, and pure
     // project-input crates. None may reach a runtime or store crate: analysis is a
     // pure function of captured source, and the downstream LSP consumes its facts
-    // without acquiring an execution or storage edge through them. (The reciprocal
-    // "no analysis owner reaches an LSP transport crate" clause lands with H00a, when
-    // that crate exists; today there is none to name.)
+    // without acquiring an execution or storage edge through them. The reciprocal
+    // clause holds too: no analysis owner reaches the LSP transport crate, so the
+    // compiler/syntax/project owners stay upstream of tooling.
     let runtime_and_store = [
         "marrow-verify",
         "marrow-vm",
         "marrow-kernel",
         "marrow-store",
         "marrow-runner",
+        "marrow-lsp",
     ];
     for owner in ["marrow-compile", "marrow-syntax", "marrow-project"] {
         let package = find(owner);
@@ -277,6 +279,43 @@ fn cargo_dag_respects_the_trust_boundaries() {
                 "{owner} is an analysis owner and must not depend on {forbidden}"
             );
         }
+    }
+
+    // The language server consumes published facts and the physical project adapter
+    // only. It reconstructs no runtime, storage, image, verification, or wire
+    // semantics, so it has no edge into any of those owners. Its allowed production
+    // edges are the fact-surface consumers plus the code registry.
+    let lsp = find("marrow-lsp");
+    const LSP_FORBIDDEN: &[&str] = &[
+        "marrow-kernel",
+        "marrow-store",
+        "marrow-vm",
+        "marrow-image",
+        "marrow-verify",
+        "marrow-local-wire",
+        "marrow-runner",
+    ];
+    for (dep, _) in &lsp.edges {
+        assert!(
+            !LSP_FORBIDDEN.contains(&dep.as_str()),
+            "marrow-lsp reconstructs no semantics and must not depend on {dep}"
+        );
+    }
+    const LSP_ALLOWED: &[&str] = &[
+        "marrow-codes",
+        "marrow-compile",
+        "marrow-project",
+        "marrow-project-fs",
+        "marrow-syntax",
+    ];
+    for (dep, is_dev) in &lsp.edges {
+        if *is_dev {
+            continue;
+        }
+        assert!(
+            LSP_ALLOWED.contains(&dep.as_str()),
+            "marrow-lsp has an unexpected production edge to {dep}"
+        );
     }
 
     // marrow-local-wire is the pure protocol owner: framing, limits, the closed
@@ -314,8 +353,11 @@ fn cargo_dag_respects_the_trust_boundaries() {
             .any(|(dep, is_dev)| dep == "marrow-project-fs" && !is_dev),
         "marrow must consume marrow-project-fs in production"
     );
+    // The CLI and the language server are the two tool consumers of the shared physical
+    // adapter; no other crate may reach it.
+    const PROJECT_FS_CONSUMERS: &[&str] = &["marrow", "marrow-lsp"];
     for package in &packages {
-        if package.name == "marrow" {
+        if PROJECT_FS_CONSUMERS.contains(&package.name.as_str()) {
             continue;
         }
         assert!(

@@ -145,7 +145,9 @@ fn initialize(conn: &mut Connection, dir: &Path) {
     let reply = conn.recv_until(|m| m.get("id").and_then(Value::as_i64) == Some(1));
     assert!(reply.get("result").is_some(), "initialize returns a result");
     assert!(
-        reply["result"]["capabilities"]["hoverProvider"].as_bool().unwrap_or(false),
+        reply["result"]["capabilities"]["hoverProvider"]
+            .as_bool()
+            .unwrap_or(false),
         "advertises hover"
     );
     conn.notify("initialized", serde_json::json!({}));
@@ -167,7 +169,10 @@ fn document_uri(dir: &Path) -> String {
 
 #[test]
 fn handshake_and_clean_shutdown() {
-    let dir = temp_project("handshake", "module main\n\npub fn f(): int {\n    return 1\n}\n");
+    let dir = temp_project(
+        "handshake",
+        "module main\n\npub fn f(): int {\n    return 1\n}\n",
+    );
     let mut conn = Connection::spawn(&dir);
     initialize(&mut conn, &dir);
     conn.request(9, "shutdown", Value::Null);
@@ -180,19 +185,33 @@ fn handshake_and_clean_shutdown() {
 
 #[test]
 fn open_invalid_document_publishes_diagnostics() {
-    let dir = temp_project("diag", "module main\n\npub fn f(): int {\n    return 1\n}\n");
+    let dir = temp_project(
+        "diag",
+        "module main\n\npub fn f(): int {\n    return 1\n}\n",
+    );
     let mut conn = Connection::spawn(&dir);
     initialize(&mut conn, &dir);
     // Open with an invalid overlay body: expect a nonempty diagnostic publication for it.
-    did_open(&mut conn, &dir, "module main\n\npub fn f(): int {\n    return \n}\n", 1);
+    did_open(
+        &mut conn,
+        &dir,
+        "module main\n\npub fn f(): int {\n    return \n}\n",
+        1,
+    );
     let target = document_uri(&dir);
     let publish = conn.recv_until(|m| {
         m.get("method").and_then(Value::as_str) == Some("textDocument/publishDiagnostics")
             && m["params"]["uri"].as_str() == Some(target.as_str())
-            && m["params"]["diagnostics"].as_array().map(|d| !d.is_empty()).unwrap_or(false)
+            && m["params"]["diagnostics"]
+                .as_array()
+                .map(|d| !d.is_empty())
+                .unwrap_or(false)
     });
     let diagnostic = &publish["params"]["diagnostics"][0];
-    assert!(diagnostic.get("range").is_some(), "diagnostic carries a range");
+    assert!(
+        diagnostic.get("range").is_some(),
+        "diagnostic carries a range"
+    );
     assert!(diagnostic["code"].is_string(), "diagnostic carries a code");
     conn.request(9, "shutdown", Value::Null);
     conn.recv_until(|m| m.get("id").and_then(Value::as_i64) == Some(9));
@@ -203,10 +222,18 @@ fn open_invalid_document_publishes_diagnostics() {
 
 #[test]
 fn clean_project_publishes_empty_diagnostics() {
-    let dir = temp_project("clean", "module main\n\npub fn f(): int {\n    return 1\n}\n");
+    let dir = temp_project(
+        "clean",
+        "module main\n\npub fn f(): int {\n    return 1\n}\n",
+    );
     let mut conn = Connection::spawn(&dir);
     initialize(&mut conn, &dir);
-    did_open(&mut conn, &dir, "module main\n\npub fn f(): int {\n    return 1\n}\n", 1);
+    did_open(
+        &mut conn,
+        &dir,
+        "module main\n\npub fn f(): int {\n    return 1\n}\n",
+        1,
+    );
     let target = document_uri(&dir);
     let publish = conn.recv_until(|m| {
         m.get("method").and_then(Value::as_str) == Some("textDocument/publishDiagnostics")
@@ -246,7 +273,9 @@ fn formatting_returns_edits() {
         }),
     );
     let reply = conn.recv_until(|m| m.get("id").and_then(Value::as_i64) == Some(5));
-    let edits = reply["result"].as_array().expect("formatting returns edits");
+    let edits = reply["result"]
+        .as_array()
+        .expect("formatting returns edits");
     assert_eq!(edits.len(), 1, "one whole-document edit");
     conn.request(9, "shutdown", Value::Null);
     conn.recv_until(|m| m.get("id").and_then(Value::as_i64) == Some(9));
@@ -265,14 +294,76 @@ fn eof_without_exit_is_nonzero() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// Measured (not a default gate): edit-to-diagnostic latency over repeated full-document
+/// changes. Run with `--ignored --nocapture`. The instant-response requirement is met
+/// when the median stays well under the A02a diagnostics budget.
+#[test]
+#[ignore = "measured latency probe; run explicitly with --ignored --nocapture"]
+fn measure_edit_to_diagnostic_latency() {
+    let dir = temp_project(
+        "latency",
+        "module main\n\npub fn f(): int {\n    return 1\n}\n",
+    );
+    let mut conn = Connection::spawn(&dir);
+    initialize(&mut conn, &dir);
+    did_open(
+        &mut conn,
+        &dir,
+        "module main\n\npub fn f(): int {\n    return 1\n}\n",
+        1,
+    );
+    let target = document_uri(&dir);
+    conn.recv_until(|m| {
+        m.get("method").and_then(Value::as_str) == Some("textDocument/publishDiagnostics")
+            && m["params"]["uri"].as_str() == Some(target.as_str())
+    });
+    let mut samples = Vec::new();
+    for version in 2..22 {
+        let body = format!("module main\n\npub fn f(): int {{\n    return {version}\n}}\n");
+        let start = std::time::Instant::now();
+        conn.notify(
+            "textDocument/didChange",
+            serde_json::json!({
+                "textDocument": { "uri": target, "version": version },
+                "contentChanges": [ { "text": body } ],
+            }),
+        );
+        conn.recv_until(|m| {
+            m.get("method").and_then(Value::as_str) == Some("textDocument/publishDiagnostics")
+                && m["params"]["uri"].as_str() == Some(target.as_str())
+        });
+        samples.push(start.elapsed());
+    }
+    samples.sort();
+    let median = samples[samples.len() / 2];
+    let max = samples.last().copied().unwrap();
+    println!(
+        "edit-to-diagnostic: median={median:?} max={max:?} over {} edits",
+        samples.len()
+    );
+    assert!(
+        median.as_millis() < 200,
+        "median edit-to-diagnostic under 200ms"
+    );
+    conn.request(9, "shutdown", Value::Null);
+    conn.recv_until(|m| m.get("id").and_then(Value::as_i64) == Some(9));
+    conn.notify("exit", Value::Null);
+    assert_eq!(conn.wait(), 0);
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 #[test]
 fn request_before_initialize_is_server_not_initialized() {
     let dir = temp_project("preinit", "module main\n");
     let mut conn = Connection::spawn(&dir);
-    conn.request(2, "textDocument/formatting", serde_json::json!({
-        "textDocument": { "uri": document_uri(&dir) },
-        "options": { "tabSize": 4, "insertSpaces": true },
-    }));
+    conn.request(
+        2,
+        "textDocument/formatting",
+        serde_json::json!({
+            "textDocument": { "uri": document_uri(&dir) },
+            "options": { "tabSize": 4, "insertSpaces": true },
+        }),
+    );
     let reply = conn.recv_until(|m| m.get("id").and_then(Value::as_i64) == Some(2));
     assert_eq!(reply["error"]["code"].as_i64(), Some(-32002));
     // Now initialize and exit cleanly.

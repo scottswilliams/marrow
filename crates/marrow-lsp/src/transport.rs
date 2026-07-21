@@ -94,7 +94,11 @@ impl<R: BufRead> FrameReader<R> {
         let mut any_byte = false;
         loop {
             let mut line = Vec::new();
-            let read = read_line_bounded(&mut self.reader, &mut line, MAX_HEADER_BLOCK_BYTES - consumed)?;
+            let read = read_line_bounded(
+                &mut self.reader,
+                &mut line,
+                MAX_HEADER_BLOCK_BYTES - consumed,
+            )?;
             match read {
                 LineRead::Eof if !any_byte && line.is_empty() => return Ok(None),
                 LineRead::Eof => return Err(FrameError::Fault(FramingFault::TruncatedFrame)),
@@ -114,17 +118,19 @@ impl<R: BufRead> FrameReader<R> {
                     None => Err(FrameError::Fault(FramingFault::MissingContentLength)),
                 };
             }
-            if let Some(value) = parse_content_length_line(content)? {
-                if content_length.replace(value).is_some() {
-                    return Err(FrameError::Fault(FramingFault::DuplicateContentLength));
-                }
+            if let Some(value) = parse_content_length_line(content)?
+                && content_length.replace(value).is_some()
+            {
+                return Err(FrameError::Fault(FramingFault::DuplicateContentLength));
             }
         }
     }
 
     fn read_body(&mut self, length: usize) -> Result<Vec<u8>, FrameError> {
         if length > MAX_FRAME_BODY_BYTES {
-            return Err(FrameError::Fault(FramingFault::BodyTooLarge { declared: length }));
+            return Err(FrameError::Fault(FramingFault::BodyTooLarge {
+                declared: length,
+            }));
         }
         let mut body = Vec::new();
         body.try_reserve_exact(length)
@@ -241,7 +247,7 @@ mod tests {
                     return out;
                 }
                 other => {
-                    let terminal = matches!(&other, Err(_));
+                    let terminal = other.is_err();
                     out.push(other);
                     if terminal {
                         return out;
@@ -279,7 +285,8 @@ mod tests {
 
     #[test]
     fn accepts_extra_content_type_header() {
-        let frame = "Content-Length: 1\r\nContent-Type: application/vscode-jsonrpc; charset=utf-8\r\n\r\nx";
+        let frame =
+            "Content-Length: 1\r\nContent-Type: application/vscode-jsonrpc; charset=utf-8\r\n\r\nx";
         let mut reader = FrameReader::new(Cursor::new(frame.as_bytes().to_vec()));
         let FrameEvent::Frame(body) = reader.next_frame().unwrap() else {
             panic!();

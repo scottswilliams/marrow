@@ -216,14 +216,20 @@ mod tests {
         let dir = temp_dir("clean");
         write_project(
             &dir,
-            &[("src/main.mw", "module main\n\npub fn add(a: int, b: int): int {\n    return a + b\n}\n")],
+            &[(
+                "src/main.mw",
+                "module main\n\npub fn add(a: int, b: int): int {\n    return a + b\n}\n",
+            )],
         );
         let root = root_for(&dir);
         let outcome = run_analysis(&root, &[], InputRevision::new(1));
         match outcome {
             AnalysisOutcome::Snapshot(snapshot) => {
                 assert_eq!(snapshot.revision(), InputRevision::new(1));
-                assert!(snapshot.diagnostics().is_empty(), "clean project has no diagnostics");
+                assert!(
+                    snapshot.diagnostics().is_empty(),
+                    "clean project has no diagnostics"
+                );
             }
             _ => panic!("expected a snapshot"),
         }
@@ -233,7 +239,13 @@ mod tests {
     #[test]
     fn overlay_replaces_disk_body() {
         let dir = temp_dir("overlay");
-        write_project(&dir, &[("src/main.mw", "module main\n\npub fn f(): int {\n    return 1\n}\n")]);
+        write_project(
+            &dir,
+            &[(
+                "src/main.mw",
+                "module main\n\npub fn f(): int {\n    return 1\n}\n",
+            )],
+        );
         let root = root_for(&dir);
         // Overlay an unparseable body; diagnostics must reflect the overlay, not disk.
         let bad = b"module main\n\npub fn f(): int {\n    return \n}\n";

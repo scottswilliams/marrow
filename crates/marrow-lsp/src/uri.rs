@@ -254,7 +254,12 @@ mod tests {
 
     #[test]
     fn rejects_dot_and_dotdot_and_trailing_separator() {
-        for bad in ["file:///a/./b", "file:///a/../b", "file:///a//b", "file:///a/"] {
+        for bad in [
+            "file:///a/./b",
+            "file:///a/../b",
+            "file:///a//b",
+            "file:///a/",
+        ] {
             assert_eq!(
                 SelectedRoot::from_uri(bad),
                 Err(UriError::NonCanonicalPath),
@@ -265,14 +270,26 @@ mod tests {
 
     #[test]
     fn rejects_encoded_separator_and_control() {
-        assert_eq!(SelectedRoot::from_uri("file:///a%2Fb"), Err(UriError::BadEscape));
-        assert_eq!(SelectedRoot::from_uri("file:///a%00b"), Err(UriError::BadEscape));
+        assert_eq!(
+            SelectedRoot::from_uri("file:///a%2Fb"),
+            Err(UriError::BadEscape)
+        );
+        assert_eq!(
+            SelectedRoot::from_uri("file:///a%00b"),
+            Err(UriError::BadEscape)
+        );
     }
 
     #[test]
     fn rejects_malformed_escape() {
-        assert_eq!(SelectedRoot::from_uri("file:///a%zzb"), Err(UriError::BadEscape));
-        assert_eq!(SelectedRoot::from_uri("file:///a%2"), Err(UriError::BadEscape));
+        assert_eq!(
+            SelectedRoot::from_uri("file:///a%zzb"),
+            Err(UriError::BadEscape)
+        );
+        assert_eq!(
+            SelectedRoot::from_uri("file:///a%2"),
+            Err(UriError::BadEscape)
+        );
     }
 
     #[test]

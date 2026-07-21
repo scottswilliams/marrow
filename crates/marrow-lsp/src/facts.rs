@@ -133,7 +133,9 @@ pub fn definition(
     // target file's source is unavailable, fall back to a zero range at the span start.
     let name_span = target.name_span();
     let range = match target_source(target.file()) {
-        Some(text) => to_lsp_range(LineMap::new(&text).range_of(name_span.start_byte, name_span.end_byte)),
+        Some(text) => {
+            to_lsp_range(LineMap::new(&text).range_of(name_span.start_byte, name_span.end_byte))
+        }
         None => {
             let point = to_lsp_position(Position {
                 line: name_span.line.saturating_sub(1),
@@ -163,10 +165,7 @@ pub fn formatting(
                 return Some(Vec::new());
             }
             let map = LineMap::new(source);
-            let whole = LspRange::new(
-                LspPosition::new(0, 0),
-                to_lsp_position(map.end_position()),
-            );
+            let whole = LspRange::new(LspPosition::new(0, 0), to_lsp_position(map.end_position()));
             Some(vec![TextEdit::new(whole, formatted)])
         }
         Ok(FormatOutcome::Refused(_) | FormatOutcome::TooLarge { .. }) | Err(_) => None,
@@ -216,13 +215,17 @@ mod tests {
         SelectedRoot::from_uri(&uri).unwrap()
     }
 
-    fn analyze_source(tag: &str, main: &str) -> (Arc<AnalysisSnapshot>, SelectedRoot, std::path::PathBuf) {
+    fn analyze_source(
+        tag: &str,
+        main: &str,
+    ) -> (Arc<AnalysisSnapshot>, SelectedRoot, std::path::PathBuf) {
         let (base, root) = temp_project(tag, main);
         let overlay = vec![OverlayInput {
             key: "src/main.mw",
             bytes: main.as_bytes(),
         }];
-        let AnalysisOutcome::Snapshot(snapshot) = run_analysis(&root, &overlay, InputRevision::new(1))
+        let AnalysisOutcome::Snapshot(snapshot) =
+            run_analysis(&root, &overlay, InputRevision::new(1))
         else {
             panic!("expected snapshot");
         };
@@ -234,10 +237,14 @@ mod tests {
         let main = "module main\n\npub fn f(): int {\n    return \n}\n";
         let (snapshot, root, base) = analyze_source("diag", main);
         let params =
-            diagnostics_for_file(&snapshot, &root, &identity("src/main.mw"), main, Some(3)).unwrap();
+            diagnostics_for_file(&snapshot, &root, &identity("src/main.mw"), main, Some(3))
+                .unwrap();
         assert!(!params.diagnostics.is_empty());
         assert_eq!(params.version, Some(3));
-        assert_eq!(params.uri.as_str(), &diagnostic_uri(&root, &identity("src/main.mw")));
+        assert_eq!(
+            params.uri.as_str(),
+            &diagnostic_uri(&root, &identity("src/main.mw"))
+        );
         // Every diagnostic has a real (nonzero-width or positioned) range and a code.
         for diagnostic in &params.diagnostics {
             assert!(matches!(diagnostic.code, Some(NumberOrString::String(_))));
@@ -251,7 +258,8 @@ mod tests {
         let main = "module main\n\npub fn f(): int {\n    return 1\n}\n";
         let (snapshot, root, base) = analyze_source("clean", main);
         let params =
-            diagnostics_for_file(&snapshot, &root, &identity("src/main.mw"), main, Some(1)).unwrap();
+            diagnostics_for_file(&snapshot, &root, &identity("src/main.mw"), main, Some(1))
+                .unwrap();
         assert!(params.diagnostics.is_empty());
         std::fs::remove_dir_all(&base).ok();
     }

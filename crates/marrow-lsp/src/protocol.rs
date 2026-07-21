@@ -390,7 +390,8 @@ mod tests {
 
     #[test]
     fn notification_has_no_id() {
-        let Inbound::Notification { method, .. } = decode(br#"{"method":"initialized","params":{}}"#)
+        let Inbound::Notification { method, .. } =
+            decode(br#"{"method":"initialized","params":{}}"#)
         else {
             panic!("expected notification");
         };

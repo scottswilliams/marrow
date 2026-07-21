@@ -24,9 +24,9 @@ use std::thread::JoinHandle;
 
 use lsp_types::{
     DidChangeTextDocumentParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams,
-    DocumentFormattingParams, GotoDefinitionParams, HoverParams, InitializeParams, InitializeResult,
-    OneOf, ServerCapabilities, ServerInfo, TextDocumentSyncCapability, TextDocumentSyncKind,
-    TextDocumentSyncOptions,
+    DocumentFormattingParams, GotoDefinitionParams, HoverParams, InitializeParams,
+    InitializeResult, OneOf, ServerCapabilities, ServerInfo, TextDocumentSyncCapability,
+    TextDocumentSyncKind, TextDocumentSyncOptions,
 };
 use marrow_compile::{AnalysisSnapshot, InputRevision};
 use std::sync::Arc;
@@ -302,7 +302,12 @@ impl Coordinator {
         }
     }
 
-    fn on_request(&mut self, id: RequestId, method: &str, params: Option<Box<serde_json::value::RawValue>>) {
+    fn on_request(
+        &mut self,
+        id: RequestId,
+        method: &str,
+        params: Option<Box<serde_json::value::RawValue>>,
+    ) {
         // Reserve a live request-ledger entry; exhaustion drops with no response.
         if self.request_entries >= MAX_LIVE_REQUEST_ENTRIES {
             return;
@@ -310,9 +315,9 @@ impl Coordinator {
         match method {
             "initialize" => self.on_initialize(id, params),
             "shutdown" => self.on_shutdown(id),
-            "textDocument/hover"
-            | "textDocument/definition"
-            | "textDocument/formatting" => self.on_semantic_request(id, method, params),
+            "textDocument/hover" | "textDocument/definition" | "textDocument/formatting" => {
+                self.on_semantic_request(id, method, params)
+            }
             _ => match self.lifecycle.gate_request() {
                 RequestGate::NotInitialized => {
                     self.send_error(&id, SERVER_NOT_INITIALIZED, "server not initialized")
@@ -330,13 +335,20 @@ impl Coordinator {
             self.send_error(&id, INVALID_REQUEST, "initialize already handled");
             return;
         }
-        let root = match params.as_ref().and_then(|raw| parse::<InitializeParams>(raw)) {
+        let root = match params
+            .as_ref()
+            .and_then(|raw| parse::<InitializeParams>(raw))
+        {
             Some(params) => match select_root(&params) {
                 Ok(root) => root,
                 Err(RootError::TooMany) => {
                     // A malformed root candidate does not consume initialization.
                     self.rollback_initialize();
-                    self.send_error(&id, INVALID_PARAMS, "at most one workspace root is supported");
+                    self.send_error(
+                        &id,
+                        INVALID_PARAMS,
+                        "at most one workspace root is supported",
+                    );
                     return;
                 }
                 Err(RootError::Malformed) => {
@@ -406,7 +418,7 @@ impl Coordinator {
             self.send_error(&id, REQUEST_FAILED, "project capture unavailable");
             return;
         }
-        let outcome = self.answer_semantic(&snapshot, &root, method, params.as_ref());
+        let outcome = self.answer_semantic(&snapshot, &root, method, params.as_deref());
         match outcome {
             SemanticAnswer::Reply(outbound) => self.send_with_id(id, outbound),
             SemanticAnswer::ContentModified => {
@@ -422,55 +434,54 @@ impl Coordinator {
         snapshot: &AnalysisSnapshot,
         root: &SelectedRoot,
         method: &str,
-        params: Option<&Box<serde_json::value::RawValue>>,
+        params: Option<&serde_json::value::RawValue>,
     ) -> SemanticAnswer {
         match method {
             "textDocument/hover" => {
-                let Some(params) = params.and_then(|raw| parse::<HoverParams>(raw)) else {
+                let Some(params) = params.and_then(parse::<HoverParams>) else {
                     return SemanticAnswer::BadParams;
                 };
                 let position = params.text_document_position_params;
-                let Some((key, source)) = self.resolve_open_document(root, &position.text_document.uri.to_string()) else {
+                let Some((identity, source)) =
+                    self.resolve_document(root, position.text_document.uri.as_str())
+                else {
                     return SemanticAnswer::ContentModified;
-                };
-                let _ = key;
-                let identity = match marrow_project::FileIdentity::validate(&document_relative(root, &position.text_document.uri.to_string())) {
-                    Ok((identity, _)) => identity,
-                    Err(_) => return SemanticAnswer::BadParams,
                 };
                 let hover = facts::hover(snapshot, &identity, &source, position.position);
                 SemanticAnswer::Reply(OutboundBody::Hover(hover))
             }
             "textDocument/definition" => {
-                let Some(params) = params.and_then(|raw| parse::<GotoDefinitionParams>(raw)) else {
+                let Some(params) = params.and_then(parse::<GotoDefinitionParams>) else {
                     return SemanticAnswer::BadParams;
                 };
                 let position = params.text_document_position_params;
-                let uri = position.text_document.uri.to_string();
-                let Some((_, source)) = self.resolve_open_document(root, &uri) else {
+                let Some((identity, source)) =
+                    self.resolve_document(root, position.text_document.uri.as_str())
+                else {
                     return SemanticAnswer::ContentModified;
                 };
-                let identity = match marrow_project::FileIdentity::validate(&document_relative(root, &uri)) {
-                    Ok((identity, _)) => identity,
-                    Err(_) => return SemanticAnswer::BadParams,
-                };
                 let source_lookup = |file: &marrow_project::FileIdentity| self.file_source(file);
-                match facts::definition(snapshot, root, &identity, &source, source_lookup, position.position) {
+                match facts::definition(
+                    snapshot,
+                    root,
+                    &identity,
+                    &source,
+                    source_lookup,
+                    position.position,
+                ) {
                     Ok(location) => SemanticAnswer::Reply(OutboundBody::Definition(location)),
                     Err(_) => SemanticAnswer::Internal,
                 }
             }
             "textDocument/formatting" => {
-                let Some(params) = params.and_then(|raw| parse::<DocumentFormattingParams>(raw)) else {
+                let Some(params) = params.and_then(parse::<DocumentFormattingParams>)
+                else {
                     return SemanticAnswer::BadParams;
                 };
-                let uri = params.text_document.uri.to_string();
-                let Some((_, source)) = self.resolve_open_document(root, &uri) else {
+                let Some((identity, source)) =
+                    self.resolve_document(root, params.text_document.uri.as_str())
+                else {
                     return SemanticAnswer::ContentModified;
-                };
-                let identity = match marrow_project::FileIdentity::validate(&document_relative(root, &uri)) {
-                    Ok((identity, _)) => identity,
-                    Err(_) => return SemanticAnswer::BadParams,
                 };
                 let edits = facts::formatting(snapshot, &identity, &source);
                 SemanticAnswer::Reply(OutboundBody::Formatting(edits))
@@ -479,9 +490,26 @@ impl Coordinator {
         }
     }
 
+    /// The file identity and current open text for a client URI, if it is an open text
+    /// document under the root. The identity derives from the canonical document key, so
+    /// no client URI spelling is echoed.
+    fn resolve_document(
+        &self,
+        root: &SelectedRoot,
+        uri: &str,
+    ) -> Option<(marrow_project::FileIdentity, String)> {
+        let (key, source) = self.resolve_open_document(root, uri)?;
+        let (identity, _) = marrow_project::FileIdentity::validate(key.relative()).ok()?;
+        Some((identity, source))
+    }
+
     /// The current open-document text for a client URI, plus its key, if it is an open
     /// text document under the root.
-    fn resolve_open_document(&self, root: &SelectedRoot, uri: &str) -> Option<(DocumentKey, String)> {
+    fn resolve_open_document(
+        &self,
+        root: &SelectedRoot,
+        uri: &str,
+    ) -> Option<(DocumentKey, String)> {
         let key = DocumentKey::from_uri(uri, root).ok()?;
         match self.ledger.get(&key) {
             Some(DocumentState::OpenText { text, .. }) => Some((key, text.clone())),
@@ -523,12 +551,14 @@ impl Coordinator {
         if self.lifecycle.phase() != crate::lifecycle::Phase::Running {
             return;
         }
-        let Some(root) = self.root.clone() else { return };
-        let Some(params) = params.and_then(|raw| parse::<DidOpenTextDocumentParams>(&raw)) else {
+        let Some(root) = self.root.clone() else {
+            return;
+        };
+        let Some(params) = params.as_deref().and_then(parse::<DidOpenTextDocumentParams>) else {
             return;
         };
         let document = params.text_document;
-        let Ok(key) = DocumentKey::from_uri(&document.uri.to_string(), &root) else {
+        let Ok(key) = DocumentKey::from_uri(document.uri.as_str(), &root) else {
             return;
         };
         if self.ledger.validate_open(&key).is_err() {
@@ -553,13 +583,14 @@ impl Coordinator {
         if self.lifecycle.phase() != crate::lifecycle::Phase::Running {
             return;
         }
-        let Some(root) = self.root.clone() else { return };
-        let Some(params) = params.and_then(|raw| parse::<DidChangeTextDocumentParams>(&raw)) else {
+        let Some(root) = self.root.clone() else {
             return;
         };
-        let uri = params.text_document.uri.to_string();
+        let Some(params) = params.as_deref().and_then(parse::<DidChangeTextDocumentParams>) else {
+            return;
+        };
         let version = params.text_document.version;
-        let Ok(key) = DocumentKey::from_uri(&uri, &root) else {
+        let Ok(key) = DocumentKey::from_uri(params.text_document.uri.as_str(), &root) else {
             return;
         };
         if self.ledger.validate_change(&key, version).is_err() {
@@ -591,11 +622,13 @@ impl Coordinator {
         if self.lifecycle.phase() != crate::lifecycle::Phase::Running {
             return;
         }
-        let Some(root) = self.root.clone() else { return };
-        let Some(params) = params.and_then(|raw| parse::<DidCloseTextDocumentParams>(&raw)) else {
+        let Some(root) = self.root.clone() else {
             return;
         };
-        let Ok(key) = DocumentKey::from_uri(&params.text_document.uri.to_string(), &root) else {
+        let Some(params) = params.as_deref().and_then(parse::<DidCloseTextDocumentParams>) else {
+            return;
+        };
+        let Ok(key) = DocumentKey::from_uri(params.text_document.uri.as_str(), &root) else {
             return;
         };
         if self.ledger.validate_close(&key).is_err() {
@@ -673,21 +706,26 @@ impl Coordinator {
             }
         }
         // Drain a coalesced recompute now that the worker is free.
-        if self.pending_recompute {
-            if let Some(root) = self.root.clone() {
-                self.dispatch_recompute(&root);
-            }
+        if let Some(root) = self.root.clone().filter(|_| self.pending_recompute) {
+            self.dispatch_recompute(&root);
         }
     }
 
     fn on_capture_failure(&mut self, evidence: Option<UnavailableEvidence>) {
-        // Background capture failure: publishes and clears no diagnostics. Surface at
+        // Background capture failure: publishes and clears no diagnostics. Report at
         // most one showMessage (the episode latch is simplified here to a single
         // background notification per failure).
         if let Some(evidence) = evidence {
+            // The exact `<marrow-code>: <operational-message>` body, composed without a
+            // rendering macro so the message is only the code and the facade-written text.
+            let mut message =
+                String::with_capacity(evidence.code.len() + 2 + evidence.message.len());
+            message.push_str(evidence.code);
+            message.push_str(": ");
+            message.push_str(&evidence.message);
             self.send(Outbound::ShowMessage {
                 typ: MessageType::Error,
-                message: format!("{}: {}", evidence.code, evidence.message),
+                message,
             });
         }
     }
@@ -695,7 +733,9 @@ impl Coordinator {
     /// Publish the complete diagnostic set for the current snapshot, plus an empty
     /// tombstone for every previously published file absent from the snapshot.
     fn publish_diagnostics(&mut self, snapshot: &AnalysisSnapshot) {
-        let Some(root) = self.root.clone() else { return };
+        let Some(root) = self.root.clone() else {
+            return;
+        };
         let mut new_published = Vec::new();
         // One publication per snapshot file.
         for module in snapshot.input().modules() {
@@ -703,15 +743,13 @@ impl Coordinator {
             let key = DocumentKey::from_identity(identity);
             let source = std::str::from_utf8(module.source()).unwrap_or("");
             let version = self.version_for(&key);
-            match facts::diagnostics_for_file(snapshot, &root, identity, source, version) {
-                Ok(params) => {
-                    let has = !params.diagnostics.is_empty();
-                    self.send(Outbound::PublishDiagnostics(Box::new(params)));
-                    if has {
-                        new_published.push(key);
-                    }
+            if let Ok(params) = facts::diagnostics_for_file(snapshot, &root, identity, source, version)
+            {
+                let has = !params.diagnostics.is_empty();
+                self.send(Outbound::PublishDiagnostics(Box::new(params)));
+                if has {
+                    new_published.push(key);
                 }
-                Err(_) => {}
             }
         }
         // Tombstones: previously published files no longer in the snapshot.
@@ -723,18 +761,16 @@ impl Coordinator {
             .collect();
         let previously = std::mem::take(&mut self.published);
         for key in &previously {
-            if !snapshot_keys.contains(key) {
-                if let Ok(identity) = marrow_project::FileIdentity::validate(key.relative()) {
-                    let tombstone = lsp_types::PublishDiagnosticsParams {
-                        uri: match lsp_uri(&root, &identity.0) {
-                            Some(uri) => uri,
-                            None => continue,
-                        },
-                        diagnostics: Vec::new(),
-                        version: None,
-                    };
-                    self.send(Outbound::PublishDiagnostics(Box::new(tombstone)));
-                }
+            if !snapshot_keys.contains(key)
+                && let Ok(identity) = marrow_project::FileIdentity::validate(key.relative())
+                && let Some(uri) = lsp_uri(&root, &identity.0)
+            {
+                let tombstone = lsp_types::PublishDiagnosticsParams {
+                    uri,
+                    diagnostics: Vec::new(),
+                    version: None,
+                };
+                self.send(Outbound::PublishDiagnostics(Box::new(tombstone)));
             }
         }
         self.published = new_published;
@@ -843,15 +879,17 @@ fn select_root(params: &InitializeParams) -> Result<Option<SelectedRoot>, RootEr
     if let Some(folders) = &params.workspace_folders {
         match folders.as_slice() {
             [] => {}
-            [folder] => return SelectedRoot::from_uri(&folder.uri.to_string())
-                .map(Some)
-                .map_err(uri_to_root_error),
+            [folder] => {
+                return SelectedRoot::from_uri(folder.uri.as_str())
+                    .map(Some)
+                    .map_err(uri_to_root_error);
+            }
             _ => return Err(RootError::TooMany),
         }
     }
     #[allow(deprecated)]
     match &params.root_uri {
-        Some(uri) => SelectedRoot::from_uri(&uri.to_string())
+        Some(uri) => SelectedRoot::from_uri(uri.as_str())
             .map(Some)
             .map_err(uri_to_root_error),
         None => Ok(None),
@@ -860,12 +898,6 @@ fn select_root(params: &InitializeParams) -> Result<Option<SelectedRoot>, RootEr
 
 fn uri_to_root_error(_: UriError) -> RootError {
     RootError::Malformed
-}
-
-fn document_relative(root: &SelectedRoot, uri: &str) -> String {
-    DocumentKey::from_uri(uri, root)
-        .map(|key| key.relative().to_owned())
-        .unwrap_or_default()
 }
 
 fn lsp_uri(root: &SelectedRoot, identity: &marrow_project::FileIdentity) -> Option<lsp_types::Uri> {

@@ -18,14 +18,12 @@ by hand.
 ";
 
 pub(crate) fn lsp(args: &[String]) -> ExitCode {
-    for arg in args {
-        match arg.as_str() {
-            "--help" | "-h" => {
-                print!("{HELP}");
-                return ExitCode::SUCCESS;
-            }
-            other => return crate::unknown_option("lsp", other),
+    match args.first() {
+        None => ExitCode::from(marrow_lsp::serve()),
+        Some(arg) if arg == "--help" || arg == "-h" => {
+            print!("{HELP}");
+            ExitCode::SUCCESS
         }
+        Some(other) => crate::unknown_option("lsp", other),
     }
-    ExitCode::from(marrow_lsp::serve())
 }

@@ -178,7 +178,14 @@ pub const fn m_owned() -> u64 {
     let outbound = OUTBOUND_CREDITS as u64 * (F_OUT_BYTES + B_RECEIPT_BYTES);
     let fixed = B_SELECTED_ROOT_URI_BYTES + B_FIXED_TERMINAL_BYTES;
 
-    inbound + requests + anonymous + open_docs + snapshots + coordinator + diagnostics + outbound
+    inbound
+        + requests
+        + anonymous
+        + open_docs
+        + snapshots
+        + coordinator
+        + diagnostics
+        + outbound
         + fixed
 }
 
