@@ -1,0 +1,65 @@
+{
+  "name": "marrow",
+  "displayName": "Marrow",
+  "description": "Language support for Marrow (.mw), backed by the bundled marrow language server.",
+  "version": "0.1.0",
+  "license": "Apache-2.0",
+  "publisher": "marrow-project",
+  "icon": "icons/marrow-gallery.png",
+  "engines": {
+    "vscode": "^1.82.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "main": "./out/extension.js",
+  "activationEvents": [
+    "onLanguage:marrow"
+  ],
+  "extensionKind": [
+    "workspace"
+  ],
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": false
+    },
+    "virtualWorkspaces": {
+      "supported": false
+    }
+  },
+  "contributes": {
+    "languages": [
+      {
+        "id": "marrow",
+        "aliases": [
+          "Marrow"
+        ],
+        "extensions": [
+          ".mw"
+        ],
+        "icon": {
+          "light": "./icons/marrow.svg",
+          "dark": "./icons/marrow.svg"
+        }
+      }
+    ],
+    "commands": [
+      {
+        "command": "marrow.restartServer",
+        "title": "Marrow: Restart Language Server"
+      }
+    ]
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "vscode:prepublish": "tsc -p ./"
+  },
+  "dependencies": {
+    "vscode-languageclient": "9.0.1"
+  },
+  "devDependencies": {
+    "@types/vscode": "1.82.0",
+    "@vscode/vsce": "3.6.2",
+    "typescript": "5.9.3"
+  }
+}

@@ -1,0 +1,13 @@
+.gitignore
+.npmrc
+.vscodeignore
+tsconfig.json
+src/**
+gate/**
+AGENTS.md
+node_modules/typescript/**
+node_modules/@types/**
+node_modules/@vscode/**
+node_modules/semver/bin/**
+**/*.map
+**/*.ts
