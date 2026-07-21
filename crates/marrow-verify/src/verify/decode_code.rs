@@ -515,8 +515,9 @@ mod opcode_bijection {
 
     /// One value of every `SealedInstr` variant. Kept complete by the exhaustive match
     /// in [`canonical_bytes`]: a new opcode fails that match to compile, and this list
-    /// gains the matching entry so the round trip covers it.
-    fn samples() -> Vec<SealedInstr> {
+    /// gains the matching entry so the round trip covers it. Reused by the sibling
+    /// `index_site_partition` sweep as the canonical opcode enumeration.
+    pub(super) fn samples() -> Vec<SealedInstr> {
         let optional_int = ImageType::Scalar {
             scalar: Scalar::Int,
             optional: true,
@@ -691,5 +692,348 @@ mod opcode_bijection {
                 );
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod index_site_partition {
+    //! Hostile tidy artifact for the index-site opcode partition in
+    //! [`super::super::flow::apply_durable`]. That partition refuses a forged image
+    //! that aims a managed-index read (`DurIndexScan`/`DurIndexLookup`/`DurIndexExists`)
+    //! at a non-index site, so the mismatch is a typed rejection rather than a
+    //! fall-through to the whole-entry `unreachable!`. The IndexRead operation *class*
+    //! is wider than that index-*site* family: `DurIterateBounded` is IndexRead-class
+    //! yet iterates an *entry* family, so the entry-site guard refuses it over a
+    //! field-leaf site with a different typed detail. The partition therefore cannot
+    //! derive from `durable_op_class`, and a future index-site opcode omitted from the
+    //! `apply_durable` guard would reach the `unreachable!` on a forged image.
+    //!
+    //! This sweep enumerates every opcode from the decode-bijection [`samples()`]
+    //! source of truth, classifies each with the exhaustive [`role`] match (no wildcard
+    //! arm — a new opcode fails to compile until a maintainer classifies it, the
+    //! conspicuous-omission gate), forges each IndexRead-class opcode over a non-index
+    //! field-leaf site, and asserts it rejects *typed* — never a panic — with the
+    //! detail its guard owns.
+
+    use marrow_image::{
+        CollectionTypeDef, DurableMemberDef, DurableValueShape, ExportId, FieldDef, FunctionDef,
+        ImageDraft, ImageType, Instr, KeyColumn, LedgerIdBytes, RecordTypeDef, RootDef,
+        RootIdentity, Scalar, SemanticPath, SemanticStep, SemanticStepKind, SiteDef, SpanEntry,
+    };
+
+    use super::opcode_bijection::samples;
+    use super::*;
+
+    const APPLICATION_ID: [u8; 16] = [0x0a; 16];
+    const PLACEMENT_ID: [u8; 16] = [0x0b; 16];
+    const PRODUCT_ID: [u8; 16] = [0x0d; 16];
+    const KEY_ID: [u8; 16] = [0x0c; 16];
+    const VALUE_FIELD_ID: [u8; 16] = [0x0e; 16];
+    const LABEL_FIELD_ID: [u8; 16] = [0x0f; 16];
+
+    /// The role of an opcode in the index-site partition, decided by an exhaustive
+    /// match over [`SealedInstr`] with no wildcard arm. The forged draft instruction is
+    /// carried in the arm, aimed at the non-index field-leaf `value_site`, so the
+    /// classification and the forged image cannot drift, and a new IndexRead-class
+    /// opcode is handled in exactly one place.
+    enum Role {
+        /// A managed-index read (`DurIndexScan`/`DurIndexLookup`/`DurIndexExists`):
+        /// executable only over a managed-index site. Over a non-index site the
+        /// `apply_durable` managed-index guard refuses it.
+        ManagedIndexRead(Instr),
+        /// An IndexRead-class op that iterates an *entry* family (`DurIterateBounded`):
+        /// not an index-site op. Over a field-leaf site the entry-site guard refuses it.
+        EntryFamilyTraversal(Instr),
+        /// Any opcode outside the IndexRead class — not exercised by this sweep.
+        Unrelated,
+    }
+
+    fn role(instr: &SealedInstr, site: u16, list_ty: u16) -> Role {
+        match instr {
+            SealedInstr::DurIndexScan { .. } => Role::ManagedIndexRead(Instr::DurIndexScan {
+                site,
+                limit: 1,
+                from: false,
+                list_ty,
+            }),
+            SealedInstr::DurIndexLookup(_) => Role::ManagedIndexRead(Instr::DurIndexLookup(site)),
+            SealedInstr::DurIndexExists(_) => Role::ManagedIndexRead(Instr::DurIndexExists(site)),
+            SealedInstr::DurIterateBounded { .. } => {
+                Role::EntryFamilyTraversal(Instr::DurIterateBounded {
+                    site,
+                    limit: 1,
+                    from: false,
+                    list_ty,
+                })
+            }
+            SealedInstr::DurExists(_)
+            | SealedInstr::DurFamilyExists(_)
+            | SealedInstr::DurReadField(_)
+            | SealedInstr::DurReadEntry(_)
+            | SealedInstr::DurReadGroup(_)
+            | SealedInstr::DurSetRequired(_)
+            | SealedInstr::DurSetSparse(_)
+            | SealedInstr::DurSetSparsePresent { .. }
+            | SealedInstr::DurCreateEntry(_)
+            | SealedInstr::DurReplaceEntry(_)
+            | SealedInstr::DurReplaceGroup(_)
+            | SealedInstr::DurEraseField(_)
+            | SealedInstr::DurEraseEntry(_)
+            | SealedInstr::DurEraseGroup(_)
+            | SealedInstr::TxnBegin
+            | SealedInstr::TxnCommit
+            | SealedInstr::ConstLoad(_)
+            | SealedInstr::LocalGet(_)
+            | SealedInstr::LocalSet(_)
+            | SealedInstr::Pop
+            | SealedInstr::Return
+            | SealedInstr::Jump(_)
+            | SealedInstr::JumpIfFalse(_)
+            | SealedInstr::IntAdd
+            | SealedInstr::IntSub
+            | SealedInstr::IntMul
+            | SealedInstr::IntRem
+            | SealedInstr::IntDiv
+            | SealedInstr::IntNeg
+            | SealedInstr::BoolNot
+            | SealedInstr::IntLt
+            | SealedInstr::IntLe
+            | SealedInstr::IntGt
+            | SealedInstr::IntGe
+            | SealedInstr::EqInt
+            | SealedInstr::EqBool
+            | SealedInstr::EqText
+            | SealedInstr::TextConcat
+            | SealedInstr::TextLt
+            | SealedInstr::TextLe
+            | SealedInstr::TextGt
+            | SealedInstr::TextGe
+            | SealedInstr::EqBytes
+            | SealedInstr::BytesLt
+            | SealedInstr::BytesLe
+            | SealedInstr::BytesGt
+            | SealedInstr::BytesGe
+            | SealedInstr::ConvString
+            | SealedInstr::ConvBytesText
+            | SealedInstr::TextIsEmpty
+            | SealedInstr::TextContains
+            | SealedInstr::TextTrim
+            | SealedInstr::TextSplit(_)
+            | SealedInstr::TextLines(_)
+            | SealedInstr::TextJoin
+            | SealedInstr::EqDate
+            | SealedInstr::DateLt
+            | SealedInstr::DateLe
+            | SealedInstr::DateGt
+            | SealedInstr::DateGe
+            | SealedInstr::EqInstant
+            | SealedInstr::InstantLt
+            | SealedInstr::InstantLe
+            | SealedInstr::InstantGt
+            | SealedInstr::InstantGe
+            | SealedInstr::EqDuration
+            | SealedInstr::DurationLt
+            | SealedInstr::DurationLe
+            | SealedInstr::DurationGt
+            | SealedInstr::DurationGe
+            | SealedInstr::DateAddDays
+            | SealedInstr::DateDaysBetween
+            | SealedInstr::DurationAdd
+            | SealedInstr::DurationSub
+            | SealedInstr::InstantAddDuration
+            | SealedInstr::InstantSubDuration
+            | SealedInstr::IntAddChecked(_)
+            | SealedInstr::IntSubChecked(_)
+            | SealedInstr::IntMulChecked(_)
+            | SealedInstr::IntNegChecked(_)
+            | SealedInstr::IntDivChecked(_)
+            | SealedInstr::IntRemChecked(_)
+            | SealedInstr::RangeGuard { .. }
+            | SealedInstr::RecordNew(_)
+            | SealedInstr::FieldGet(_)
+            | SealedInstr::FieldSet(_)
+            | SealedInstr::FieldUnset(_)
+            | SealedInstr::SomeWrap
+            | SealedInstr::VacantLoad(_)
+            | SealedInstr::EnumConstruct { .. }
+            | SealedInstr::EnumTag
+            | SealedInstr::EnumPayloadGet { .. }
+            | SealedInstr::EqEnum
+            | SealedInstr::EqId
+            | SealedInstr::MakeIdentity { .. }
+            | SealedInstr::IdentityKeyPath(_)
+            | SealedInstr::BranchPresent(_)
+            | SealedInstr::Unreachable(_)
+            | SealedInstr::Todo(_)
+            | SealedInstr::Assert
+            | SealedInstr::Call(_)
+            | SealedInstr::ListNew(_)
+            | SealedInstr::ListAppend
+            | SealedInstr::ListLen
+            | SealedInstr::ListGet
+            | SealedInstr::ListIndex
+            | SealedInstr::MapNew(_)
+            | SealedInstr::MapInsert
+            | SealedInstr::MapRemove
+            | SealedInstr::MapGet
+            | SealedInstr::MapLen
+            | SealedInstr::MapKeyAt
+            | SealedInstr::MapValueAt => Role::Unrelated,
+        }
+    }
+
+    fn path(steps: Vec<SemanticStep>) -> SemanticPath {
+        SemanticPath::from_steps(steps)
+    }
+
+    fn root_step() -> Vec<SemanticStep> {
+        vec![
+            SemanticStep::new(
+                SemanticStepKind::Application,
+                LedgerIdBytes::from_bytes(APPLICATION_ID),
+            ),
+            SemanticStep::new(
+                SemanticStepKind::Placement,
+                LedgerIdBytes::from_bytes(PLACEMENT_ID),
+            ),
+        ]
+    }
+
+    /// A minimal single-root durable schema with a whole-entry site and a field-leaf
+    /// (non-index) site, plus a `List[int]` collection type. Mirrors the tracer schema
+    /// the integration hostile suite uses so a forged managed-index or bounded-traversal
+    /// opcode over the field-leaf site reaches the same `apply_durable` guards. Returns
+    /// the draft, the field-leaf (non-index) site index, and the list-type index.
+    fn field_leaf_schema() -> (ImageDraft, u16, u16) {
+        let mut draft = ImageDraft::new();
+        let counter = draft.intern_string("Counter");
+        let value = draft.intern_string("value");
+        let label = draft.intern_string("label");
+        let record = draft.add_record_type(RecordTypeDef {
+            name: counter,
+            fields: vec![
+                FieldDef {
+                    name: value,
+                    ty: ImageType::scalar(Scalar::Int),
+                    required: true,
+                },
+                FieldDef {
+                    name: label,
+                    ty: ImageType::scalar(Scalar::Text),
+                    required: false,
+                },
+            ],
+        });
+        let root = draft.intern_string("counters");
+        draft.set_application_identity(LedgerIdBytes::from_bytes(APPLICATION_ID));
+        draft.add_root(RootDef {
+            name: root,
+            keys: vec![KeyColumn {
+                scalar: Scalar::Text,
+                id: LedgerIdBytes::from_bytes(KEY_ID),
+            }],
+            record,
+            identity: RootIdentity {
+                placement: LedgerIdBytes::from_bytes(PLACEMENT_ID),
+                product: LedgerIdBytes::from_bytes(PRODUCT_ID),
+                indexes: Vec::new(),
+                members: vec![
+                    DurableMemberDef::Field {
+                        id: LedgerIdBytes::from_bytes(VALUE_FIELD_ID),
+                        required: true,
+                        value: DurableValueShape::Scalar(Scalar::Int),
+                    },
+                    DurableMemberDef::Field {
+                        id: LedgerIdBytes::from_bytes(LABEL_FIELD_ID),
+                        required: false,
+                        value: DurableValueShape::Scalar(Scalar::Text),
+                    },
+                ],
+            },
+        });
+        let mut field = root_step();
+        field.push(SemanticStep::new(
+            SemanticStepKind::Field,
+            LedgerIdBytes::from_bytes(VALUE_FIELD_ID),
+        ));
+        draft.add_site(SiteDef::whole_payload(path(root_step())));
+        let value_site = draft.add_site(SiteDef::field_leaf(path(field))).index();
+        let list_ty = draft
+            .add_collection_type(CollectionTypeDef::List {
+                elem: ImageType::scalar(Scalar::Int),
+            })
+            .index();
+        (draft, value_site, list_ty)
+    }
+
+    fn install(draft: &mut ImageDraft, forged: Instr) -> Vec<u8> {
+        let src = draft.intern_string("src/main.mw");
+        let name = draft.intern_string("probe");
+        let code = vec![forged, Instr::Return];
+        let spans = (0..code.len())
+            .map(|index| SpanEntry {
+                instr_index: index as u32,
+                line: 1,
+                column: 1,
+            })
+            .collect();
+        let func = draft.add_function(FunctionDef {
+            name,
+            source: src,
+            params: Vec::new(),
+            ret: ImageType::Unit,
+            local_count: 0,
+            spans,
+            code,
+        });
+        draft.add_export(ExportId::of_local("", "probe"), func);
+        draft.encode().expect("encode a forged image").bytes
+    }
+
+    #[test]
+    fn every_index_read_class_opcode_over_a_non_index_site_rejects_typed() {
+        let mut exercised = 0usize;
+        for sample in samples() {
+            let (mut draft, value_site, list_ty) = field_leaf_schema();
+            let (forged, expected_detail) = match role(&sample, value_site, list_ty) {
+                Role::ManagedIndexRead(forged) => {
+                    (forged, "a managed-index opcode over a non-index site")
+                }
+                Role::EntryFamilyTraversal(forged) => (forged, "operation requires an entry site"),
+                Role::Unrelated => continue,
+            };
+            exercised += 1;
+            let bytes = install(&mut draft, forged);
+            // A reachable `unreachable!` in the partition surfaces as a panic; catch it
+            // so the failure names the offending opcode instead of aborting the sweep.
+            let outcome = std::panic::catch_unwind(|| crate::verify(&bytes));
+            match outcome {
+                Err(_) => panic!(
+                    "IndexRead-class opcode {sample:?} over a non-index site PANICKED (reached a \
+                     `unreachable!`) instead of a typed rejection — the index-site partition in \
+                     `apply_durable` is missing an arm for it",
+                ),
+                Ok(Ok(_)) => panic!(
+                    "IndexRead-class opcode {sample:?} over a non-index site was ACCEPTED — the \
+                     partition failed to reject a forged image",
+                ),
+                Ok(Err(rejection)) => {
+                    assert_eq!(
+                        rejection.code(),
+                        "image.function",
+                        "opcode {sample:?} rejected under the wrong phase",
+                    );
+                    assert_eq!(
+                        rejection.detail(),
+                        expected_detail,
+                        "opcode {sample:?} rejected with the wrong typed detail",
+                    );
+                }
+            }
+        }
+        assert!(
+            exercised >= 1,
+            "the sweep classified no opcode as IndexRead-class — the partition is mis-wired",
+        );
     }
 }
