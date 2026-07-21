@@ -61,9 +61,11 @@ the compiler's UTF-8 source spans.
 
 While a document is open, the server analyzes the project with the open buffer's
 text overlaid on the file on disk, so diagnostics and facts reflect unsaved edits.
-When the project cannot be captured — for example, a malformed `marrow.toml` — a
-semantic request receives a `-32803` response and the failure is surfaced once as an
-error message; no diagnostics are fabricated.
+When a background capture fails — for example, a malformed `marrow.toml` — the failure
+is surfaced once per episode as an error `window/showMessage`, and no diagnostics are
+fabricated; requests are not answered `-32803` on this path. A `-32803` (request failed)
+response is instead keyed to overlay unavailability — an open buffer whose last edit was
+refused by overlay admission — and to analysis resource-limit exhaustion of a held query.
 
 ## Installed editor artifact
 
