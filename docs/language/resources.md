@@ -309,7 +309,7 @@ project type environment is available. They do not use `pub`. A resource name
 may not collide with another declaration or built-in in the same source
 namespace.
 
-Documentation comments beginning with `;;` may precede resource declarations
+Documentation comments beginning with `///` may precede resource declarations
 and members. They do not affect type, path, presence, or runtime value.
 
 ## Project Requirement

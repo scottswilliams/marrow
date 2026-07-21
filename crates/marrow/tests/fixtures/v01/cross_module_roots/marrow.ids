@@ -1,0 +1,9 @@
+marrow ids v0
+machine-written by marrow; do not edit
+id application . a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0
+id product Account a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1
+id field Account.balance a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2
+id root accounts a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3
+id key accounts.id a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4
+high-water 0
+end

@@ -1,0 +1,23 @@
+module bank
+
+/// A durable account balance. The root below is declared in this module and read
+/// and written from the `teller` module, so the fixture pins that a durable root
+/// is project-wide rather than private to its declaring module.
+resource Account {
+    required balance: int
+}
+
+store ^accounts[id: int]: Account
+
+/// Open an account at a zero balance. The declaring module writes the root it owns.
+pub fn openAccount(id: int) {
+    transaction {
+        ^accounts[id] = Account(balance: 0)
+    }
+}
+
+/// Read a balance from the declaring module, so the cross-module round trip can
+/// observe from `bank` what `teller` wrote through the same root.
+pub fn ownerBalance(id: int): int? {
+    return ^accounts[id].balance
+}

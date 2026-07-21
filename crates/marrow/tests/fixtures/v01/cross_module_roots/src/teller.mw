@@ -1,0 +1,18 @@
+module teller
+
+/// Deposit into an account whose root `^accounts` is declared in the `bank`
+/// module. This cross-module read-modify-write is the project-wide-roots law under
+/// test: `teller` both reads and writes a root it does not declare.
+pub fn deposit(id: int, amount: int): int {
+    transaction {
+        place account = ^accounts[id]
+        const updated = (account.balance ?? 0) + amount
+        account.balance = updated
+        return updated
+    }
+}
+
+/// Read a balance from a module other than the one declaring the root.
+pub fn balanceOf(id: int): int {
+    return ^accounts[id].balance ?? 0
+}
