@@ -150,7 +150,7 @@ impl Planner {
     /// A group is part of its entry's payload and carries no marker (its presence is the
     /// entry's), so — unlike [`Self::node_cells`] — a group's footprint is its field
     /// leaves alone. Because every cell derives from `group_stem` (`<marker> 0x28
-    /// esc(group)`), the whole footprint is disjoint from the entry's top-level fields,
+    /// num(group)`), the whole footprint is disjoint from the entry's top-level fields,
     /// its sibling groups, and its branch descendants. The single owner of a group's
     /// footprint enumeration.
     pub(super) fn group_cells(&self, group_stem: &[u8], fields: &[ResolvedField]) -> Vec<Vec<u8>> {

@@ -123,7 +123,7 @@ impl FieldSchema {
 /// A group is part of the entry's materialized value (a nested sub-record), not a keyed
 /// durable node: it carries no marker and no key, and its presence is exactly its
 /// containing entry's presence. Its leaves are stored as the entry's own payload,
-/// namespaced under the group name (`<marker> 0x28 esc(group) 0x10 esc(field)`; see
+/// namespaced under the group's number (`<marker> 0x28 num(group) 0x10 num(field)`; see
 /// [`physical`](self)). A group holding nested groups or branches is not yet part of the
 /// executable graph, so this schema carries fields only.
 #[derive(Debug, Clone, PartialEq, Eq)]
