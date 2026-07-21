@@ -19,6 +19,7 @@ mod export_id;
 mod instr;
 mod interface;
 mod semantic;
+mod store_digest;
 mod ty;
 
 pub use ceiling::{CEILING_KIND, CeilingDescriptor, CeilingId};
@@ -67,6 +68,10 @@ pub use interface::{
 };
 pub use semantic::{
     SemanticNode, SemanticNodeKind, SemanticPath, SemanticStep, SemanticStepKind, SemanticTarget,
+};
+pub use store_digest::{
+    STORE_DATA_KIND, STORE_ENVELOPE_KIND, STORE_HEAD_KIND, StoreDataDigest, StoreEnvelopeDigest,
+    StoreHeadDigest,
 };
 pub use ty::{
     ImageType, OPTIONAL_FLAG, Scalar, TAG_BOOL, TAG_BYTES, TAG_COLLECTION, TAG_DATE, TAG_DURATION,
