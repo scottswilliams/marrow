@@ -4247,6 +4247,58 @@ fn value_type_cycle_through_mixed_records_and_enums_rejects() {
 }
 
 #[test]
+fn enum_payload_with_a_collection_leaf_rejects_at_table() {
+    // A collection tag (`TAG_COLLECTION`, 0x07) is representable in an enum-variant
+    // payload-leaf byte via `ImageType::Collection`, and `encode_enums` writes it
+    // verbatim with an encoder-computed digest. The independent verifier's Table-phase
+    // `decode_bare_payload_type` admits only a bare scalar, record, or enum leaf, so its
+    // `_ =>` arm refuses the collection tag before the COLLTYPES index is even read.
+    // This pins the retained defense-in-depth for the checker's construction/annotation-
+    // site `check.unsupported` refusal of collection-typed generic-enum payloads: a
+    // checker-clean program can never mint this leaf, and a hand-forged image carrying
+    // it is refused at decode rather than at run time.
+    let mut draft = ImageDraft::new();
+    let ename = draft.intern_string("E");
+    let vname = draft.intern_string("hold");
+    draft.add_enum_type(EnumTypeDef {
+        name: ename,
+        variants: vec![VariantDef {
+            name: vname,
+            category: false,
+            payload: vec![ImageType::Collection {
+                idx: 0,
+                optional: false,
+            }],
+        }],
+    });
+    let src = draft.intern_string("src/main.mw");
+    let zero = draft.intern_int(0);
+    let fname = draft.intern_string("f");
+    let code = vec![Instr::ConstLoad(zero.index()), Instr::Return];
+    let func = draft.add_function(FunctionDef {
+        name: fname,
+        source: src,
+        params: Vec::new(),
+        ret: ImageType::scalar(Scalar::Int),
+        local_count: 0,
+        spans: spans(&code),
+        code,
+    });
+    draft.add_export(ExportId::of_local("", "f"), func);
+    let bytes = draft
+        .encode()
+        .expect("encode collection-payload enum")
+        .bytes;
+    let rejection = verify(&bytes).expect_err("a collection enum-payload leaf is refused");
+    assert_eq!(rejection.phase(), VerifyPhase::Table);
+    assert_eq!(rejection.code(), "image.table");
+    assert_eq!(
+        rejection.detail(),
+        "enum payload leaf must be a bare scalar, record, or enum"
+    );
+}
+
+#[test]
 fn deep_acyclic_record_chain_verifies() {
     // A long but acyclic chain Record0 -> Record1 -> ... -> Record(N-1) verifies:
     // depth is not a restriction, only cycles are.
