@@ -11,6 +11,7 @@ authors.workspace = true
 [dependencies]
 marrow-codes = { path = "../marrow-codes" }
 marrow-image = { path = "../marrow-image" }
+marrow-kernel = { path = "../marrow-kernel" }
 
 [lints]
 workspace = true

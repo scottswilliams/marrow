@@ -47,4 +47,51 @@ impl durable::DurableStore<marrow_store::NativeEngine> {
             sites,
         ))
     }
+
+    /// Open (creating if needed) a write-capable native store over a whole multi-root
+    /// schema table, minting the store ceiling from the handle's write capability. The
+    /// persistent-lifecycle composition point: `marrow-lifecycle` provisions and opens a
+    /// store through this constructor rather than depending on the byte engine directly, so
+    /// the path kernel stays the engine's only consumer.
+    pub fn open_native(
+        path: &std::path::Path,
+        schemas: Vec<durable::StoreSchema>,
+        sites: Vec<durable::SiteSpec>,
+    ) -> Result<Self, marrow_store::StoreError> {
+        Ok(Self::from_native(
+            marrow_store::NativeEngine::open(path)?,
+            schemas,
+            sites,
+        ))
+    }
+
+    /// Open an existing multi-root native store read-only, never creating the file. A
+    /// read-only handle mints a read-only ceiling, so no write session opens over it.
+    pub fn open_native_read_only(
+        path: &std::path::Path,
+        schemas: Vec<durable::StoreSchema>,
+        sites: Vec<durable::SiteSpec>,
+    ) -> Result<Self, marrow_store::StoreError> {
+        Ok(Self::from_native(
+            marrow_store::NativeEngine::open_read_only(path)?,
+            schemas,
+            sites,
+        ))
+    }
+
+    /// Build a multi-root store over an already-open native engine, minting the ceiling from
+    /// the engine's write capability (read always admitted; write iff the handle is
+    /// write-capable), so a read-only handle cannot open a write session.
+    fn from_native(
+        engine: marrow_store::NativeEngine,
+        schemas: Vec<durable::StoreSchema>,
+        sites: Vec<durable::SiteSpec>,
+    ) -> Self {
+        use marrow_store::ByteEngine;
+        let ceiling = durable::DemandCoverage {
+            read: true,
+            write: engine.require_write_access("open").is_ok(),
+        };
+        Self::from_schemas_with_ceiling(engine, schemas, sites, ceiling)
+    }
 }

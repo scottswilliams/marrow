@@ -23,9 +23,18 @@ mod envelope;
 mod head;
 mod headmap;
 mod instance;
+mod lock;
+mod provision;
+mod store_dir;
 
 pub use codec::FormatError;
 pub use envelope::{EngineKind, StoreEnvelope};
 pub use head::{ActiveBinding, LogicalHead};
 pub use headmap::{HeadMap, HeadMapEntry, MAX_HEAD_MAP_ENTRIES};
 pub use instance::{EntropyUnavailable, StoreInstanceId};
+pub use lock::{Acquired, LockError, LockOwner, OwnerLock};
+pub use provision::{
+    OpenError, OpenStore, Preflight, ProvisionError, ProvisionRequest, Provisioned, open,
+    preflight, provision,
+};
+pub use store_dir::{ENGINE_FILE, ENVELOPE_FILE, HEAD_FILE, LOCK_FILE};

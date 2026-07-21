@@ -83,6 +83,17 @@ impl<E: ByteEngine> DurableStore<E> {
         }
     }
 
+    /// Run one full engine integrity audit — a complete structural walk verifying every
+    /// stored checksum ([`ByteEngine::audit_integrity`](marrow_store::ByteEngine::audit_integrity)).
+    /// The lifecycle runs this on an unclean open (the crash-recovery path). It covers
+    /// crash-path corruption only: the fast open path does not re-verify page checksums, so
+    /// an externally flipped bit in a cleanly-closed store stays undetected here until the
+    /// FR01 data-root digest is populated at a later full-walk operation. The in-memory
+    /// engine has no durable substrate and passes trivially.
+    pub fn audit(&mut self) -> Result<(), StoreError> {
+        self.engine.audit_integrity()
+    }
+
     /// Refuse a session open on a poisoned handle. An earlier indeterminate commit sets
     /// the latch (its durability is unknown), and the handle then refuses every further
     /// read or write until the store is reopened and the interrupted commit reclassified

@@ -25,9 +25,17 @@ pub use attach::{
 };
 pub use store::{Durable, DurableStore, ReadSession, TxnSession};
 
-use std::num::NonZeroU32;
+/// The engine error the store surfaces, re-exported so a downstream lifecycle owner can
+/// classify a native open/audit failure without a direct dependency on the byte-engine
+/// crate (the path kernel stays the engine's only consumer).
+pub use marrow_store::StoreError;
 
-use marrow_store::StoreError;
+/// A native, redb-backed durable store — the concrete type [`DurableStore::open_native`]
+/// yields. Named as an alias so a downstream lifecycle owner can hold a native store without
+/// naming the byte-engine crate.
+pub type NativeStore = DurableStore<marrow_store::NativeEngine>;
+
+use std::num::NonZeroU32;
 
 use crate::codec::key::KeyScalar;
 use crate::codec::value::{ScalarKind, ValueShape};
