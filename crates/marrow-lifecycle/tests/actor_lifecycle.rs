@@ -221,11 +221,11 @@ fn head_map_numbering_agrees_with_the_kernel_node_for_node() {
     let map = head_map(&image).expect("head map");
     assert_eq!(map.len(), kernel_order.len());
     assert!(
-        kernel_order.iter().any(|k| *k == SemanticNodeKind::Group),
+        kernel_order.contains(&SemanticNodeKind::Group),
         "the fixture must exercise a group",
     );
     assert!(
-        kernel_order.iter().any(|k| *k == SemanticNodeKind::Branch),
+        kernel_order.contains(&SemanticNodeKind::Branch),
         "the fixture must exercise a branch",
     );
     for (i, entry) in map.entries().iter().enumerate() {

@@ -141,7 +141,7 @@ impl HeadMap {
     /// Append the map's canonical bytes: the `u32` high-water, the `u32` entry count, then
     /// per entry the 16-byte ledger id and the `u32` number. Every integer is big-endian;
     /// the number's `u32` width is a frozen durability-contract byte (FR01 §3).
-    pub fn encode(&self, out: &mut Vec<u8>) {
+    pub(crate) fn encode(&self, out: &mut Vec<u8>) {
         put_u32(out, self.next_number);
         put_u32(out, self.entries.len() as u32);
         for entry in &self.entries {
@@ -154,7 +154,7 @@ impl HeadMap {
     /// [`MAX_HEAD_MAP_ENTRIES`] before allocating and enforcing the bijection-and-high-water
     /// invariant, so a hostile head cannot forge a reused number, a reused ledger id, or an
     /// unbounded allocation.
-    pub fn decode(reader: &mut Reader<'_>) -> Result<Self, FormatError> {
+    pub(crate) fn decode(reader: &mut Reader<'_>) -> Result<Self, FormatError> {
         let next_number = reader.u32()?;
         let count = reader.u32()?;
         if count > MAX_HEAD_MAP_ENTRIES {
