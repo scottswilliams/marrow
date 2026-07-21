@@ -960,16 +960,28 @@ impl<'a> DeclParser<'a> {
         // `consume_block` consumed `{` at `start` and the matching `}` at `end - 1`
         // (or ran to end-of-input). The body is everything strictly between them.
         let closed = end > start + 1 && self.tokens[end - 1].kind == TokenKind::RightBrace;
-        let inner_end = if closed { end - 1 } else { end };
-        let body_tokens = &self.tokens[start + 1..inner_end];
-        let end_byte = if closed {
-            self.tokens[end - 1].span.end_byte
-        } else {
-            open.span.end_byte
-        };
+        if !closed {
+            // A body that ran to end of input has no matching `}`: its opening brace
+            // swallowed every following declaration as body content. Report one
+            // diagnostic at the open brace and skip statement parsing over that leaked
+            // tail, so a single missing `}` names the unclosed block instead of
+            // cascading a parse error onto each following declaration.
+            self.report_unclosed_block(open.span);
+            return Block {
+                statements: Vec::new(),
+                comments: Vec::new(),
+                span: SourceSpan {
+                    start_byte: open.span.start_byte,
+                    end_byte: open.span.end_byte,
+                    line: open.span.line,
+                    column: open.span.column,
+                },
+            };
+        }
+        let body_tokens = &self.tokens[start + 1..end - 1];
         let span = SourceSpan {
             start_byte: open.span.start_byte,
-            end_byte,
+            end_byte: self.tokens[end - 1].span.end_byte,
             line: open.span.line,
             column: open.span.column,
         };

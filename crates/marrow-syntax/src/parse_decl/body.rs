@@ -67,9 +67,11 @@ impl<'a> DeclParser<'a> {
         }
     }
 
-    /// Report a `{ … }` declaration body that reached end of input without its
-    /// matching `}`, anchored at the opening brace.
-    fn report_unclosed_block(&mut self, open: SourceSpan) {
+    /// Report a `{ … }` body that reached end of input without its matching `}`,
+    /// anchored at the opening brace. Shared by the declaration-body frame and the
+    /// function/test body parser so a truncated block reports one diagnostic at the
+    /// open site rather than recovering silently or cascading over the leaked tail.
+    pub(super) fn report_unclosed_block(&mut self, open: SourceSpan) {
         self.error_span(
             open,
             ParseDiagnosticReason::Expected(ExpectedSyntax::CloseBrace),

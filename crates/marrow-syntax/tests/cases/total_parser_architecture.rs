@@ -269,29 +269,45 @@ fn valid_programs_yield_no_error_nodes() {
 #[test]
 fn every_error_node_travels_with_a_diagnostic() {
     let mut malformed_seen = false;
-    for block in common::documented_source_blocks() {
-        // Every byte-boundary truncation is a distinct partially-written program.
-        for end in char_boundaries(&block.source) {
-            let ParsedSource { file, diagnostics } = parse_source(&block.source[..end]);
-            let has_error_node = file_has_error(&file);
-            let has_diagnostic = diagnostics.iter().any(|d| d.severity == severity_error());
-            if has_error_node {
-                malformed_seen = true;
-                assert!(
-                    has_diagnostic,
-                    "an error node appeared with no diagnostic for prefix {:?} of {}",
-                    &block.source[..end],
-                    block.path
-                );
-            }
+    let mut check = |source: &str, label: &str| {
+        let ParsedSource { file, diagnostics } = parse_source(source);
+        if file_has_error(&file) {
+            malformed_seen = true;
+            assert!(
+                diagnostics.iter().any(|d| d.severity == severity_error()),
+                "an error node appeared with no diagnostic for {label}: {source:?}",
+            );
         }
+    };
+    for block in common::documented_source_blocks() {
+        // Every byte-boundary truncation is a distinct partially-written program. A
+        // truncation ending inside a block leaves it unclosed, which the parser reports
+        // at the open delimiter with an empty body rather than an error node; the error
+        // nodes this property guards come from malformed-but-balanced statement bodies.
+        for end in char_boundaries(&block.source) {
+            check(&block.source[..end], &block.path);
+        }
+    }
+    // Balanced bodies with a malformed interior statement keep the error-node property
+    // non-vacuous: each yields a `Statement::Error`/`Expression::Error` with a diagnostic.
+    for program in MALFORMED_BALANCED_PROGRAMS {
+        check(program, "malformed-balanced program");
     }
     // A property that never exercised a single error node would be vacuous.
     assert!(
         malformed_seen,
-        "expected some truncation to produce an error node"
+        "expected a malformed program to produce an error node"
     );
 }
+
+/// Syntactically balanced programs whose interior does not structure: each parses to a
+/// tree carrying an error node beside its diagnostic, exercising the soundness invariant
+/// that a truncated (and now cleanly reported) body no longer does.
+const MALFORMED_BALANCED_PROGRAMS: &[&str] = &[
+    "pub fn f(): int {\n    const x = \n}\n",
+    "pub fn f() {\n    @ \n}\n",
+    "pub fn f() {\n    return 1 +\n}\n",
+];
 
 fn char_boundaries(source: &str) -> Vec<usize> {
     (0..=source.len())
