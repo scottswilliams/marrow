@@ -273,6 +273,45 @@ fn definition_on_a_cross_module_generic_call_targets_the_template_file() {
     }
 }
 
+#[test]
+fn hover_on_a_call_to_a_parse_failed_module_is_dependency_unavailable() {
+    let broken = "module broken\n\npub fn helper(: int {\n    return 1\n}\n";
+    let main = "module main\nuse broken\n\npub fn f(): int {\n    return broken::helper()\n}\n";
+    let snapshot = snap(&[("src/broken.mw", broken), ("src/main.mw", main)]);
+    // The callee leaf `helper` targets a module that did not parse.
+    let call_offset = offset_of(main, "broken::helper") + "broken::".len();
+    assert!(matches!(
+        snapshot.hover(&identity("src/main.mw"), call_offset),
+        Ok(Fact::Unavailable(Unavailability::Dependency))
+    ));
+}
+
+#[test]
+fn definition_on_a_call_to_a_parse_failed_module_is_dependency_unavailable() {
+    let broken = "module broken\n\npub fn helper(: int {\n    return 1\n}\n";
+    let main = "module main\nuse broken\n\npub fn f(): int {\n    return broken::helper()\n}\n";
+    let snapshot = snap(&[("src/broken.mw", broken), ("src/main.mw", main)]);
+    let call_offset = offset_of(main, "broken::helper") + "broken::".len();
+    assert!(matches!(
+        snapshot.definition(&identity("src/main.mw"), call_offset),
+        Ok(Fact::Unavailable(Unavailability::Dependency))
+    ));
+}
+
+#[test]
+fn an_unrelated_valid_position_is_absent_not_dependency_unavailable() {
+    // The dependency gap is per-position: with a broken sibling in the project, an
+    // unrelated valid position with no fact is `Absent`, not `Unavailable(Dependency)`.
+    let broken = "module broken\n\npub fn helper(: int {\n    return 1\n}\n";
+    let main = "module main\n\npub fn f(): int {\n    return 1\n}\n";
+    let snapshot = snap(&[("src/broken.mw", broken), ("src/main.mw", main)]);
+    let literal = offset_of(main, "return 1") + "return ".len();
+    assert!(matches!(
+        snapshot.hover(&identity("src/main.mw"), literal),
+        Ok(Fact::Absent)
+    ));
+}
+
 fn label_def(fact: &Result<Fact<Definition>, QueryError>) -> &'static str {
     label(fact)
 }

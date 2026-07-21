@@ -12,6 +12,10 @@ pub(crate) struct FunctionRegistry {
     modules: BTreeSet<String>,
     /// `module -> [(final-segment binding, dotted target module)]`.
     imports: BTreeMap<String, Vec<(String, String)>>,
+    /// The dotted names of project modules that did not parse. A qualified call whose
+    /// target module is one of these is a dependency gap — an editor fact that is
+    /// unavailable because a required owner is invalid, never simply absent.
+    broken_modules: BTreeSet<String>,
 }
 
 pub(crate) struct TemplateProofOutcome {
@@ -23,6 +27,7 @@ impl FunctionRegistry {
     /// Resolve every function's signature in declaration order. The i-th function
     /// takes image index `i`, matching the order [`FnLowerer::lower`] adds them.
     /// `functions` pairs each declaration with its dotted module name.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn build(
         records: &TypeRegistry,
         draft: &mut ImageDraft,
@@ -30,6 +35,7 @@ impl FunctionRegistry {
         functions: &[(FileIdentity, String, &FunctionDecl)],
         modules: BTreeSet<String>,
         imports: BTreeMap<String, Vec<(String, String)>>,
+        broken_modules: BTreeSet<String>,
         diagnostics: &mut Vec<SourceDiagnostic>,
     ) -> Result<Option<Self>, LowerInvariant> {
         let mut sigs = Vec::with_capacity(functions.len());
@@ -104,6 +110,7 @@ impl FunctionRegistry {
             sigs,
             modules,
             imports,
+            broken_modules,
         }))
     }
 
@@ -180,6 +187,25 @@ impl FunctionRegistry {
         } else {
             let dotted = prefix.join(".");
             self.modules.contains(&dotted).then_some(dotted)
+        }
+    }
+
+    /// Whether a qualified call's `prefix` names a project module that did not parse.
+    /// A failed `use` leaves no binding, so a broken dependency presents as a direct
+    /// reference to the broken module name; a surviving binding to a since-broken
+    /// target is resolved through its dotted target.
+    pub(super) fn names_broken_module(&self, current: &str, prefix: &[String]) -> bool {
+        if let [single] = prefix {
+            match self
+                .imports
+                .get(current)
+                .and_then(|bindings| bindings.iter().find(|(seg, _)| seg == single))
+            {
+                Some((_, target)) => self.broken_modules.contains(target),
+                None => self.broken_modules.contains(single),
+            }
+        } else {
+            self.broken_modules.contains(&prefix.join("."))
         }
     }
 }

@@ -1342,6 +1342,14 @@ impl<'a> FnLowerer<'a> {
                 None
             }
             CallResolution::NotFound => {
+                // A qualified call whose target module did not parse is a dependency
+                // gap, not a plain name error: the callee is unavailable because a
+                // required owner is invalid. Record the gap at the callee leaf for
+                // editor queries; the ordinary name diagnostic still reports it.
+                if self.functions.names_broken_module(self.module, prefix) {
+                    let file = self.file.clone();
+                    self.dependency_gaps.push((file, callee_span));
+                }
                 // A qualified generic function is resolved through the same module
                 // scope and monomorphized, after the monomorphic table misses.
                 if let Some(module) = self.functions.resolved_module(self.module, prefix)

@@ -113,6 +113,9 @@ pub struct AnalysisSnapshot {
     /// The identities of input files that did not parse. A hover query in one of these
     /// is [`Unavailability::Syntax`], not `Absent`.
     broken_files: Vec<FileIdentity>,
+    /// `(file, callee span)` for qualified calls whose target module did not parse. A
+    /// query at one of these positions is [`Unavailability::Dependency`], not `Absent`.
+    dependency_gaps: Vec<(FileIdentity, marrow_syntax::SourceSpan)>,
 }
 
 impl AnalysisSnapshot {
@@ -154,11 +157,20 @@ impl AnalysisSnapshot {
             .ok_or(QueryError::UnknownFile)
     }
 
+    /// Whether an offset falls in a dependency-gap span for `file` — a qualified call
+    /// whose target module did not parse, so the fact is unavailable, not absent.
+    fn dependency_gap_at(&self, file: &FileIdentity, offset: u32) -> bool {
+        self.dependency_gaps.iter().any(|(gap_file, span)| {
+            gap_file == file && span.start_byte as u32 <= offset && offset < span.end_byte as u32
+        })
+    }
+
     /// The hover fact at a byte offset in a file: the canonical type display of the
     /// resolved local or parameter use, or the resolved-function signature of a call
     /// callee, spanning the offset. An unknown file or an out-of-range offset is a typed
     /// [`QueryError`]; a position in a module that did not parse is
-    /// [`Unavailability::Syntax`]; a valid position with no fact is `Absent`.
+    /// [`Unavailability::Syntax`]; a call to a module that did not parse is
+    /// [`Unavailability::Dependency`]; a valid position with no fact is `Absent`.
     ///
     /// Floor boundary: positions inside a generic function's body yield `Absent` on this
     /// floor — only monomorphic function and test bodies are collected, so a generic
@@ -173,6 +185,9 @@ impl AnalysisSnapshot {
             return Ok(Fact::Unavailable(Unavailability::Syntax));
         }
         let offset = offset as u32;
+        if self.dependency_gap_at(file, offset) {
+            return Ok(Fact::Unavailable(Unavailability::Dependency));
+        }
         match self.hover_facts.iter().find(|fact| {
             &fact.file == file
                 && fact.span.start_byte as u32 <= offset
@@ -207,6 +222,9 @@ impl AnalysisSnapshot {
             return Ok(Fact::Unavailable(Unavailability::Syntax));
         }
         let offset = offset as u32;
+        if self.dependency_gap_at(file, offset) {
+            return Ok(Fact::Unavailable(Unavailability::Dependency));
+        }
         let target = self.hover_facts.iter().find_map(|fact| {
             if &fact.file == file
                 && fact.span.start_byte as u32 <= offset
@@ -308,6 +326,7 @@ pub fn analyze(
         diagnostics,
         hover_facts: analysis.hover_facts,
         broken_files: analysis.broken_files,
+        dependency_gaps: analysis.dependency_gaps,
     }))
 }
 

@@ -572,6 +572,9 @@ struct Driven {
     /// out of the traversal orthogonally to the semantic outcome; the production
     /// compile's projection ignores them and the analysis snapshot consumes them.
     hover_facts: Vec<crate::analysis::HoverFact>,
+    /// Editor dependency gaps: `(file, callee span)` for qualified calls to modules
+    /// that did not parse. Survive body-lowering failure (threaded, not returned).
+    dependency_gaps: Vec<(FileIdentity, SourceSpan)>,
 }
 
 /// The outcome of the semantic pass over the cleanly-parsed modules: a complete image,
@@ -655,6 +658,20 @@ fn drive(project: &ProjectInput, mode: TestMode) -> Driven {
         }
     }
 
+    // The dotted names of modules that did not parse. A qualified call to one of these
+    // is a dependency gap; the resilient analysis records it as an unavailable fact.
+    let broken_modules: BTreeSet<String> = parsed
+        .iter()
+        .filter(|module| {
+            module
+                .parsed
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.severity == marrow_syntax::Severity::Error)
+        })
+        .map(|module| module.name.clone())
+        .collect();
+
     // Only cleanly-parsed modules enter analysis; a module with a parse error is
     // skipped as a dependent unit (its parse diagnostics are already recorded).
     let clean: Vec<Module> = parsed
@@ -678,12 +695,21 @@ fn drive(project: &ProjectInput, mode: TestMode) -> Driven {
     check_structural_resource_bounds(&clean, &mut structural);
 
     let mut hover_facts = Vec::new();
-    let semantic = run_semantic(&clean, project, mode, &mut hover_facts);
+    let mut dependency_gaps = Vec::new();
+    let semantic = run_semantic(
+        &clean,
+        project,
+        mode,
+        broken_modules,
+        &mut hover_facts,
+        &mut dependency_gaps,
+    );
     Driven {
         parse,
         structural,
         semantic,
         hover_facts,
+        dependency_gaps,
     }
 }
 
@@ -695,9 +721,15 @@ fn run_semantic(
     parsed: &[Module],
     project: &ProjectInput,
     mode: TestMode,
+    broken_modules: BTreeSet<String>,
     hover_facts: &mut Vec<crate::analysis::HoverFact>,
+    dependency_gaps: &mut Vec<(FileIdentity, SourceSpan)>,
 ) -> SemanticOutcome {
     let mut diagnostics = Vec::new();
+    // A generic instance's callee spans duplicate its template's, so its dependency
+    // gaps (like its hover facts) are discarded to keep a generic body's positions
+    // `Absent` on this floor.
+    let mut discarded_gaps: Vec<(FileIdentity, SourceSpan)> = Vec::new();
 
     // The source-root-relative path is the authority for module identity. A file
     // that declares a `module` header is an importable module and must spell the
@@ -897,6 +929,7 @@ fn run_semantic(
         &functions,
         module_names,
         imports,
+        broken_modules,
         &mut diagnostics,
     ) {
         Ok(Some(signatures)) => signatures,
@@ -1018,6 +1051,7 @@ fn run_semantic(
                         &generics,
                         &constants,
                         &mut diagnostics,
+                        dependency_gaps,
                         &module.file,
                         &module.name,
                         function,
@@ -1133,6 +1167,7 @@ fn run_semantic(
                     &generics,
                     &constants,
                     &mut diagnostics,
+                    dependency_gaps,
                     &module.file,
                     &module.name,
                     &test.name,
@@ -1206,6 +1241,7 @@ fn run_semantic(
                 &generics,
                 &constants,
                 &mut diagnostics,
+                &mut discarded_gaps,
                 template,
                 &args,
             ) {
@@ -1318,6 +1354,7 @@ pub(crate) enum Analyzed {
 pub(crate) struct ProjectAnalysis {
     pub(crate) outcome: Analyzed,
     pub(crate) hover_facts: Vec<crate::analysis::HoverFact>,
+    pub(crate) dependency_gaps: Vec<(FileIdentity, SourceSpan)>,
     pub(crate) broken_files: Vec<FileIdentity>,
 }
 
@@ -1331,6 +1368,7 @@ pub(crate) struct ProjectAnalysis {
 pub(crate) fn analyze_project(project: &ProjectInput) -> ProjectAnalysis {
     let driven = drive(project, TestMode::Include);
     let hover_facts = driven.hover_facts;
+    let dependency_gaps = driven.dependency_gaps;
     // A file that contributed a parse-stage diagnostic did not parse cleanly; a fact
     // query in it is syntax-unavailable rather than absent.
     let mut broken_files: Vec<FileIdentity> = Vec::new();
@@ -1343,6 +1381,7 @@ pub(crate) fn analyze_project(project: &ProjectInput) -> ProjectAnalysis {
     ProjectAnalysis {
         outcome,
         hover_facts,
+        dependency_gaps,
         broken_files,
     }
 }
