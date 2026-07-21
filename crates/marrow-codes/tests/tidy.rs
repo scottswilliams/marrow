@@ -255,19 +255,28 @@ fn cargo_dag_respects_the_trust_boundaries() {
         "marrow-vm must not have a production dependency on marrow-image"
     );
 
-    // marrow-compile emits bytes only: no edge of any kind to the verifier, VM,
-    // kernel, or store.
-    let compile = find("marrow-compile");
-    for forbidden in [
+    // The editor analysis floor (revisioned `AnalysisSnapshot`, hover/definition
+    // facts, checked formatting) is owned by the compiler, syntax, and pure
+    // project-input crates. None may reach a runtime or store crate: analysis is a
+    // pure function of captured source, and the downstream LSP consumes its facts
+    // without acquiring an execution or storage edge through them. (The reciprocal
+    // "no analysis owner reaches an LSP transport crate" clause lands with H00a, when
+    // that crate exists; today there is none to name.)
+    let runtime_and_store = [
         "marrow-verify",
         "marrow-vm",
         "marrow-kernel",
         "marrow-store",
-    ] {
-        assert!(
-            !compile.edges.iter().any(|(dep, _)| dep == forbidden),
-            "marrow-compile must not depend on {forbidden}"
-        );
+        "marrow-runner",
+    ];
+    for owner in ["marrow-compile", "marrow-syntax", "marrow-project"] {
+        let package = find(owner);
+        for forbidden in runtime_and_store {
+            assert!(
+                !package.edges.iter().any(|(dep, _)| dep == forbidden),
+                "{owner} is an analysis owner and must not depend on {forbidden}"
+            );
+        }
     }
 
     // marrow-local-wire is the pure protocol owner: framing, limits, the closed

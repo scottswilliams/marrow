@@ -78,7 +78,11 @@ the pure local-wire protocol owner (`marrow-local-wire`) and storeless runner
 
 A small typed program travels the full production path. The storeless compiler
 (`marrow-compile`) checks a growing subset and lowers to a reproducible program
-image (`marrow-image`); it opens no store and cannot mint a verified image. The
+image (`marrow-image`); it opens no store and cannot mint a verified image. One
+dependency-resilient driver also backs an editor analysis floor: a revisioned
+immutable `AnalysisSnapshot` carrying the complete per-file diagnostic set and
+selective hover, definition, and checked-format queries as typed present, absent,
+or syntax/dependency-unavailable facts. The
 independent verifier (`marrow-verify`) is the only image decoder and rejects a
 malformed or hostile image in bounded phases — envelope, table closure,
 per-function structure and types, call/effect closure with all-cycle rejection,
