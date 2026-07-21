@@ -269,6 +269,84 @@ fn a_body_edit_rebinds_and_preserves_committed_data() {
     let _ = std::fs::remove_dir_all(store.parent().expect("parent"));
 }
 
+/// The minimal backup/restore slice round-trips one populated store through the native path:
+/// a store populated over the companion path is backed up to a disposable slice, restored
+/// into a fresh store directory, and the restored store returns the same committed data over
+/// the companion path. The disposable slice makes no digest claim — the restored head's
+/// reserved data-digest slots stay zero (an unsequenced store, FR01 §2).
+#[test]
+fn a_populated_store_round_trips_through_the_backup_slice() {
+    let (image, bytes) = compile_verify();
+    let (schemas, sites) = marrow_vm::derive_store_schemas(&image).expect("flat-executable");
+    let source = scratch();
+    std::fs::create_dir_all(source.parent().expect("parent")).expect("scratch dir");
+    provision(&source, &image);
+    let epoch = marrow_temporal::format_instant(0).expect("epoch instant");
+    let runner = runner_exe();
+
+    // Populate the source store over the companion path.
+    attach_and_call(
+        &runner,
+        &image,
+        &bytes,
+        &source,
+        export_id(&image, "add"),
+        vec![
+            Json::Int(9),
+            Json::Str("T-900".into()),
+            Json::Str("Angle Grinder".into()),
+            Json::Str("power".into()),
+            Json::Str(epoch),
+        ],
+    )
+    .expect("populate source");
+
+    // Back the source up to a disposable slice, then release its lock.
+    let mut slice: Vec<u8> = Vec::new();
+    {
+        let opened = marrow_lifecycle::open(&source, schemas.clone(), sites.clone()).expect("open");
+        marrow_lifecycle::backup_slice(&opened, &mut slice).expect("backup slice");
+    }
+
+    // Restore into a fresh store directory.
+    let dest = scratch();
+    std::fs::create_dir_all(dest.parent().expect("parent")).expect("dest scratch");
+    marrow_lifecycle::restore_slice(&mut slice.as_slice(), &dest, schemas.clone(), sites.clone())
+        .expect("restore slice");
+
+    // The restored store returns the committed data over the companion path.
+    let restored = attach_and_call(
+        &runner,
+        &image,
+        &bytes,
+        &dest,
+        export_id(&image, "assetName"),
+        vec![Json::Int(9)],
+    )
+    .expect("read restored");
+    match restored {
+        CallOutcome::Value(value) => assert_eq!(value, present_name("Angle Grinder")),
+        other => panic!(
+            "restored read did not return the committed name: {}",
+            describe(&other)
+        ),
+    }
+
+    // The disposable slice carries no digest claim: the restored head's reserved data-digest
+    // slots are zero (an unsequenced store).
+    let head = marrow_lifecycle::open(&dest, schemas, sites)
+        .expect("open restored")
+        .head;
+    assert_eq!(
+        head.data_digest, [0u8; 32],
+        "the slice makes no digest claim"
+    );
+    assert_eq!(head.data_digest_position, 0, "the store stays unsequenced");
+
+    let _ = std::fs::remove_dir_all(source.parent().expect("parent"));
+    let _ = std::fs::remove_dir_all(dest.parent().expect("parent"));
+}
+
 fn describe(outcome: &CallOutcome) -> String {
     match outcome {
         CallOutcome::Value(value) => format!("value {value:?}"),

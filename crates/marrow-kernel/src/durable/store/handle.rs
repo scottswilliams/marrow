@@ -94,6 +94,54 @@ impl<E: ByteEngine> DurableStore<E> {
         self.engine.audit_integrity()
     }
 
+    /// Visit every logical cell of the store in bounded scan pages, calling `per_page` for
+    /// each. This is a closed lifecycle-maintenance seam (the backup/restore slice): the
+    /// `ByteEngine` stays crate-private, and the visited cells are the kernel's own id-keyed
+    /// logical cells — never engine pages — so a copy of them is a logical backup, not an
+    /// engine-page copy. Memory is bounded by one scan page (the engine's `scan_after`
+    /// contract), so a whole-store visit never materializes the store. The lifecycle owns the
+    /// only caller; nothing below the kernel can reach it.
+    pub fn visit_cells(
+        &self,
+        mut per_page: impl FnMut(&[marrow_store::Cell]) -> Result<(), StoreError>,
+    ) -> Result<(), StoreError> {
+        let view = self.engine.read_view()?;
+        let mut cursor: Vec<u8> = Vec::new();
+        loop {
+            let page = view.scan_after(&[], &cursor)?;
+            let Some((last_key, _)) = page.last() else {
+                break;
+            };
+            let next_cursor = last_key.clone();
+            per_page(&page)?;
+            cursor = next_cursor;
+        }
+        Ok(())
+    }
+
+    /// Insert a batch of logical cells into the store within one transaction, committing them
+    /// durably. The restore half of the backup/restore slice; the same closed
+    /// lifecycle-maintenance seam as [`Self::visit_cells`]. An indeterminate or aborted commit
+    /// surfaces so the caller can fail the restore rather than report a partial store.
+    pub fn insert_cells(&mut self, cells: &[marrow_store::Cell]) -> Result<(), StoreError> {
+        use marrow_store::{CommitOutcome, WriteTxn};
+        let mut txn = self.engine.begin()?;
+        for (key, value) in cells {
+            txn.put(key, value.clone())?;
+        }
+        match txn.commit() {
+            CommitOutcome::Confirmed => Ok(()),
+            CommitOutcome::Aborted => Err(StoreError::Io {
+                op: "restore_slice.commit",
+                message: "the restore commit aborted".to_string(),
+            }),
+            CommitOutcome::Indeterminate => Err(StoreError::Io {
+                op: "restore_slice.commit",
+                message: "the restore commit was indeterminate".to_string(),
+            }),
+        }
+    }
+
     /// Refuse a session open on a poisoned handle. An earlier indeterminate commit sets
     /// the latch (its durability is unknown), and the handle then refuses every further
     /// read or write until the store is reopened and the interrupted commit reclassified

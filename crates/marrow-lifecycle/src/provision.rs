@@ -310,7 +310,7 @@ fn decode_head(dir: &Path) -> Result<LogicalHead, OpenError> {
 /// destination's own name prefixed with a recognizable marker plus the process id and a
 /// monotonic counter, so concurrent provisioners never collide and a leaked temp (from a
 /// crash before the rename) is identifiable and never mistaken for a published store.
-fn temp_sibling(dest: &Path) -> PathBuf {
+pub(crate) fn temp_sibling(dest: &Path) -> PathBuf {
     use std::sync::atomic::{AtomicU64, Ordering};
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     let counter = COUNTER.fetch_add(1, Ordering::Relaxed);
@@ -326,13 +326,13 @@ fn temp_sibling(dest: &Path) -> PathBuf {
 }
 
 #[cfg(unix)]
-fn create_private_dir(dir: &Path) -> std::io::Result<()> {
+pub(crate) fn create_private_dir(dir: &Path) -> std::io::Result<()> {
     use std::os::unix::fs::DirBuilderExt;
     std::fs::DirBuilder::new().mode(0o700).create(dir)
 }
 
 #[cfg(not(unix))]
-fn create_private_dir(dir: &Path) -> std::io::Result<()> {
+pub(crate) fn create_private_dir(dir: &Path) -> std::io::Result<()> {
     std::fs::DirBuilder::new().create(dir)
 }
 
