@@ -1626,11 +1626,12 @@ impl<'a> FnLowerer<'a> {
             return None;
         };
         let place = self.lookup_place(name)?;
-        let node_kind = place.node_kind;
-        let record = place.record;
-        let entry_site = place.entry_site;
         let identity_keyed = place.identity_keyed;
         let ancestor_keys = place.bound_keys();
+        // The traversed branch is declared beneath the place's node — the same projection a
+        // place field access uses. The node borrows the registry (`'a`), not `&self`, so a
+        // diagnostic may still borrow `self` mutably.
+        let node = self.place_node(place)?;
         // A place bound through an entry identity carries its root as a typed identity
         // column, which the bounded-traversal ancestor pop does not yet accept; refuse it as
         // a traversal base truthfully rather than admitting an image the verifier rejects.
@@ -1644,36 +1645,12 @@ impl<'a> FnLowerer<'a> {
             ));
             return None;
         }
-
-        // The traversed branch is declared beneath the place's node, selected by its
-        // recorded node kind — the same projection a place field access uses. `self.durable`
-        // outlives the `&self` borrow, so the resolved branch is independent of the mutable
-        // calls below.
-        let durable: &'a crate::durable::DurableRegistry = self.durable;
-        let branch = match node_kind {
-            PlaceNodeKind::Branch => durable
-                .branch_by_record(record)
-                .and_then(|branch| branch.branch(layer_name)),
-            PlaceNodeKind::Root => durable
-                .root_by_entry_site(entry_site)
-                .and_then(|root| root.branch(layer_name)),
-        };
-        let Some(branch) = branch else {
-            let container = match node_kind {
-                PlaceNodeKind::Branch => durable
-                    .branch_by_record(record)
-                    .map(|branch| branch.name.clone())
-                    .unwrap_or_default(),
-                PlaceNodeKind::Root => durable
-                    .root_by_entry_site(entry_site)
-                    .map(|root| root.name.clone())
-                    .unwrap_or_default(),
-            };
+        let Some(branch) = node.branch(layer_name) else {
             self.fail(SourceDiagnostic::at(
                 Code::CheckType.as_str(),
                 self.file,
                 layer_span,
-                format!("`{container}` has no keyed branch `{layer_name}`"),
+                node.no_branch_message(layer_name),
             ));
             return None;
         };
@@ -1776,6 +1753,26 @@ impl<'a> FnLowerer<'a> {
             return Flow::Rejected;
         };
 
+        // A traversal's ancestor key-path locates the traversed layer's fixed parent entry.
+        // An entry-identity ancestor column (`^root[Id(…)].branch`, or an identity-keyed
+        // place base) carries its root as a typed identity column that the bounded-traversal
+        // ancestor pop does not yet accept, so admitting it would break the checker-accept ⇒
+        // verify-accept law. Refuse it truthfully for both bindings uniformly; spell the
+        // parent with its key columns (`^root[key].branch`) instead. (A place base bound
+        // through an identity is already refused earlier; this closes the inline form.)
+        if target
+            .ancestor_keys
+            .iter()
+            .any(|column| matches!(column.key, PlaceKey::Identity { .. }))
+        {
+            self.fail(unsupported(
+                self.file,
+                target.span,
+                "bounded traversal under an entry-identity parent key",
+            ));
+            return Flow::Fallthrough;
+        }
+
         // Evaluate the ancestor key-path (root-first) then the inclusive `from` key, so
         // the opcode pops `from` (top) then the ancestor path. Keys are captured once,
         // before any body runs. A two-binding traversal captures the ancestor keys into
@@ -1803,11 +1800,13 @@ impl<'a> FnLowerer<'a> {
                         self.push(Instr::LocalSet(slot), target.span);
                         slot
                     }
+                    // Pre-refused by the entry-identity guard above; kept as a defensive
+                    // refusal so no identity column can ever reach operand emission.
                     PlaceKey::Identity { .. } => {
                         self.fail(unsupported(
                             self.file,
                             target.span,
-                            "a per-iteration address over an identity-keyed traversal parent",
+                            "bounded traversal under an entry-identity parent key",
                         ));
                         return Flow::Fallthrough;
                     }

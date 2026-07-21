@@ -331,3 +331,44 @@ fn a_place_base_bound_through_an_entry_identity_is_not_yet_executable() {
         "check.unsupported",
     );
 }
+
+#[test]
+fn an_inline_identity_parent_branch_traversal_is_not_yet_executable() {
+    // The inline sibling of the identity-keyed place base: `^books[Id(...)].notes` supplies
+    // an entry-identity ancestor column to the branch traversal. The same verifier gap
+    // applies, so the checker refuses it with `check.unsupported` uniformly — the agreement
+    // law holds for the inline form too.
+    assert_rejected(
+        r#"pub fn f(n: int): int {
+    var t = 0
+    for p in ^books[Id(^books, n)].notes at most 5 {
+        t += p
+    } on more {
+        t = -1
+    }
+    return t
+}
+"#,
+        "check.unsupported",
+    );
+}
+
+#[test]
+fn an_inline_identity_parent_two_binding_traversal_is_not_yet_executable() {
+    // The two-binding form of the same inline identity parent: the per-iteration pin over
+    // an identity-keyed parent is refused with `check.unsupported` before any operand is
+    // emitted.
+    assert_rejected(
+        r#"pub fn f(n: int): int {
+    var t = 0
+    for p, note in ^books[Id(^books, n)].notes at most 5 {
+        t += p
+    } on more {
+        t = -1
+    }
+    return t
+}
+"#,
+        "check.unsupported",
+    );
+}

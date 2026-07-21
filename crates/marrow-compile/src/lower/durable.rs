@@ -516,6 +516,22 @@ impl<'a> FnLowerer<'a> {
         self.places.iter().rev().find(|place| place.name == name)
     }
 
+    /// The durable node a `place` addresses — its owning root for a root place, its branch
+    /// record's branch for a branch place — resolved by the place's recorded node kind. The
+    /// one owner that projects a `place` to its [`DurNode`], so field and branch resolution
+    /// through a place share the same navigation (`field`/`branch`, `no_field_message`/
+    /// `no_branch_message`). `None` only on a registry-inconsistent place. The node borrows
+    /// the registry (`'a`), not `&self`, so a diagnostic may still borrow `self` mutably.
+    pub(super) fn place_node(&self, place: &PlaceLocal) -> Option<DurNode<'a>> {
+        let durable: &'a DurableRegistry = self.durable;
+        match place.node_kind {
+            PlaceNodeKind::Root => durable
+                .root_by_entry_site(place.entry_site)
+                .map(DurNode::Root),
+            PlaceNodeKind::Branch => durable.branch_by_record(place.record).map(DurNode::Branch),
+        }
+    }
+
     /// Record that the entry of the `place` addressed by `key_path` (its whole key-path
     /// as pre-evaluated slots, root-first) is known present from here (a dominating guard
     /// or a completed upsert). Idempotent.
@@ -727,50 +743,27 @@ impl<'a> FnLowerer<'a> {
                     return None;
                 };
                 let place = self.lookup_place(name)?;
-                // The field-exact site comes from the node the place addresses, selected by
-                // its recorded node kind: a branch place resolves against its branch record,
-                // a root place against the root that owns its entry site. Copy the key-path
-                // and the scalar facts out before any diagnostic borrow of `self`.
+                // The field-exact site comes from the node the place addresses. Copy the
+                // key-path out and project the node once (borrowing the registry, not `self`)
+                // so a missing-field diagnostic may still borrow `self` mutably.
                 let keys = place.bound_keys();
-                let node_kind = place.node_kind;
-                let record = place.record;
-                let entry_site = place.entry_site;
-                let field = match node_kind {
-                    PlaceNodeKind::Branch => self
-                        .durable
-                        .branch_by_record(record)
-                        .and_then(|branch| branch.field(field_name))
-                        .map(|field| (field.site, GArg::Scalar(field.scalar), field.required)),
-                    PlaceNodeKind::Root => self
-                        .durable
-                        .root_by_entry_site(entry_site)
-                        .and_then(|root| root.field(field_name))
-                        .map(|field| (field.site, field.ty, field.required)),
-                };
-                match field {
-                    Some((site, ty, required)) => Some(DurablePlace {
+                let node = self.place_node(place)?;
+                match node.field(field_name) {
+                    Some(field) => Some(DurablePlace {
                         keys,
-                        target: DurTarget::Field { site, ty, required },
+                        target: DurTarget::Field {
+                            site: field.site,
+                            ty: field.ty,
+                            required: field.required,
+                        },
                         span: *span,
                     }),
                     None => {
-                        let container = match node_kind {
-                            PlaceNodeKind::Branch => self
-                                .durable
-                                .branch_by_record(record)
-                                .map(|branch| branch.name.clone())
-                                .unwrap_or_default(),
-                            PlaceNodeKind::Root => self
-                                .durable
-                                .root_by_entry_site(entry_site)
-                                .map(|root| root.name.clone())
-                                .unwrap_or_default(),
-                        };
                         self.fail(SourceDiagnostic::at(
                             Code::CheckType.as_str(),
                             self.file,
                             *name_span,
-                            format!("`{container}` has no field `{field_name}`"),
+                            node.no_field_message(field_name),
                         ));
                         None
                     }
