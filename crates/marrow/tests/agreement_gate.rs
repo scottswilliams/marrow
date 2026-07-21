@@ -377,6 +377,15 @@ fn matrix() -> Vec<Row> {
                 detail: "a transaction performs no durable operation",
             },
         },
+        // ---- DX05: `exists` over a unique index — the presence half of the lookup. ----
+        // `exists(^books.byIsbn[isbn])` probes the unique index for a matching entry
+        // without materializing its identity: the same complete-key lookup the `if const`
+        // read uses, yielding a bare bool. Driven end to end — a present and an absent isbn.
+        Row {
+            label: "DX05: exists over a unique index / driver test",
+            ops: "pub fn hasIsbn(isbn: string): bool {\n    return exists(^books.byIsbn[isbn])\n}\n\npub fn addBook(id: int, isbn: string) {\n    transaction {\n        ^books[id] = Book(title: \"t\", isbn: isbn)\n    }\n}\n\ntest \"exists over a unique index sees a present and an absent isbn\" {\n    addBook(30, \"i30\")\n    assert hasIsbn(\"i30\")\n    assert not hasIsbn(\"absent-isbn\")\n}",
+            expect: Expect::RoundTrips { run: true },
+        },
         // ---- IDK01: entry-identity operands in every key-path-capturing position. ----
         // An identity operand spreads into the addressed root's key columns at the one
         // capture point a read-modify-write, an upsert, or a `place` binding evaluates its

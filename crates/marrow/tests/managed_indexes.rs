@@ -612,3 +612,33 @@ pub fn find(s: string): Id(^books)? {
          end\n";
     assert!(compile_codes(source, ids).is_empty());
 }
+
+#[test]
+fn an_exists_over_a_unique_index_compiles() {
+    // `exists(^root.uidx[keys])` is a complete-key presence probe over a unique index —
+    // the presence half of the `if const` lookup — and compiles cleanly through the
+    // production pipeline. A nonunique index has no such probe (it is scan-only), so
+    // `exists` over one stays rejected.
+    let source = r#"resource Book {
+    required title: string
+    shelf: string
+    isbn: string
+}
+
+store ^books[id: int]: Book {
+    index byShelf[shelf, id]
+    index byIsbn[isbn] unique
+}
+
+pub fn hasIsbn(isbn: string): bool {
+    return exists(^books.byIsbn[isbn])
+}
+"#;
+    assert!(compile_codes(source, INDEXED_IDS).is_empty());
+
+    let nonunique = source.replace(
+        "return exists(^books.byIsbn[isbn])",
+        "return exists(^books.byShelf[isbn])",
+    );
+    assert_eq!(compile_codes(&nonunique, INDEXED_IDS), vec!["check.type"]);
+}

@@ -80,6 +80,10 @@ pub fn titleByIsbn(isbn: string): string? {
     }
     return absent
 }
+
+pub fn hasIsbn(isbn: string): bool {
+    return exists(^books.byIsbn[isbn])
+}
 "#;
 
 fn compile_verify(source: &str, ids: &str) -> VerifiedImage {
@@ -304,7 +308,37 @@ fn a_unique_lookup_dereferences_the_found_identity() {
     );
 }
 
+#[test]
+fn an_exists_over_a_unique_index_is_present_or_absent() {
+    // `exists(^root.uidx[keys])` completes the presence family over a unique index: the
+    // same complete-key probe as the `if const` lookup, yielding a bare bool without
+    // materializing the found identity.
+    let image = compile_verify(SOURCE, IDS);
+    let mut store = attach(&image);
+    seed(&image, &mut store);
+
+    assert_eq!(
+        run(&image, &mut store, "hasIsbn", vec![s("i2")]),
+        Some(Value::Bool(true))
+    );
+    assert_eq!(
+        run(&image, &mut store, "hasIsbn", vec![s("missing")]),
+        Some(Value::Bool(false))
+    );
+}
+
 // --- Adversarial rejections: unsupported index-read forms. ---
+
+#[test]
+fn an_exists_over_a_nonunique_index_is_rejected() {
+    // `exists` over a nonunique index has no complete-key probe — a nonunique index is
+    // scan-only — so naming one as an `exists` argument is refused, exactly as reading
+    // it as a value is.
+    let diagnostics = compile_errors(
+        "pub fn bad(shelf: string): bool {\n    return exists(^books.byShelf[shelf])\n}\n",
+    );
+    assert!(has_type_error(&diagnostics));
+}
 
 #[test]
 fn scanning_a_unique_index_is_rejected() {
