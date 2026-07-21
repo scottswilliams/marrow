@@ -469,6 +469,30 @@ fn matrix() -> Vec<Row> {
             ops: "pub fn cAddBook(id: int, isbn: string) {\n    transaction {\n        ^books[id] = Book(title: \"t\", isbn: isbn)\n    }\n}\n\npub fn cAddNote(id: int, n: string) {\n    transaction {\n        ^books[id].notes[n] = Book.notes(text: \"x\")\n    }\n}\n\npub fn cCountViaPin(): int {\n    var c = 0\n    for id, book in ^books at most 100 {\n        for noteId in book.notes at most 100 {\n            c += 1\n        } on more {\n            c = -1\n        }\n    } on more {\n        c = -1\n    }\n    return c\n}\n\ntest \"a per-iteration pin is an inner traversal base\" {\n    cAddBook(70, \"i70\")\n    cAddNote(70, \"a\")\n    cAddBook(71, \"i71\")\n    cAddNote(71, \"b\")\n    assert cCountViaPin() == 2\n}",
             expect: Expect::RoundTrips { run: true },
         },
+        // ---- DX06: a named place composes as a base for branch-entry and group-leaf ops. ----
+        // A bound place already addresses an entry; extending it with `.branch[bk]` or
+        // `.group.leaf` composes the same operation an inline `^root(k).branch(bk)` /
+        // `^root(k).group.leaf` does, keying off the place's pre-evaluated slots. Each row
+        // drives a formerly-refused composition end to end, pinning checker-accept ⇒ verify.
+        //
+        // A root place composes a whole branch-entry write and a branch-field read.
+        Row {
+            label: "DX06: root place composes a branch-entry write + branch-field read / driver test",
+            ops: "pub fn dAddBook(id: int) {\n    transaction {\n        ^books[id] = Book(title: \"t\", isbn: \"i\")\n    }\n}\n\npub fn dAddNoteVia(id: int, n: string, t: string) {\n    transaction {\n        place b = ^books[id]\n        b.notes[n] = Book.notes(text: t)\n    }\n}\n\npub fn dNoteVia(id: int, n: string): string? {\n    place b = ^books[id]\n    return b.notes[n].text\n}\n\ntest \"root place composes a branch write then reads it back\" {\n    dAddBook(100)\n    dAddNoteVia(100, \"a\", \"hello\")\n    assert dNoteVia(100, \"a\") ?? \"none\" == \"hello\"\n}",
+            expect: Expect::RoundTrips { run: true },
+        },
+        // A root place composes a group-leaf write and read (whole-group read-modify-write).
+        Row {
+            label: "DX06: root place composes a group-leaf write + read / driver test",
+            ops: "pub fn eAddBook(id: int) {\n    transaction {\n        ^books[id] = Book(title: \"t\", isbn: \"i\")\n    }\n}\n\npub fn eSetPagesVia(id: int, p: int) {\n    transaction {\n        place b = ^books[id]\n        b.details.pages = p\n    }\n}\n\npub fn ePagesVia(id: int): int? {\n    place b = ^books[id]\n    return b.details.pages\n}\n\ntest \"root place composes a group-leaf write then reads it back\" {\n    eAddBook(101)\n    eSetPagesVia(101, 7)\n    assert ePagesVia(101) ?? 0 == 7\n}",
+            expect: Expect::RoundTrips { run: true },
+        },
+        // `exists(place.branch)` is the family-populated probe, not a missing-field error.
+        Row {
+            label: "DX06: exists over a branch family named through a place / driver test",
+            ops: "pub fn fAddBook(id: int, isbn: string) {\n    transaction {\n        ^books[id] = Book(title: \"t\", isbn: isbn)\n    }\n}\n\npub fn fAddNote(id: int, n: string) {\n    transaction {\n        ^books[id].notes[n] = Book.notes(text: \"x\")\n    }\n}\n\npub fn fHasNotesVia(id: int): bool {\n    place b = ^books[id]\n    return exists(b.notes)\n}\n\ntest \"exists over a branch family named through a place\" {\n    fAddBook(102, \"i102\")\n    fAddBook(103, \"i103\")\n    fAddNote(102, \"a\")\n    assert fHasNotesVia(102)\n    assert not fHasNotesVia(103)\n}",
+            expect: Expect::RoundTrips { run: true },
+        },
         // ---- IDTRAV01: an entry-identity parent as a bounded-traversal / family-probe base. ----
         // A traversal or family probe whose fixed parent is addressed through an entry
         // identity (`^root[Id(…)].branch`, or an identity-keyed place base) feeds an identity

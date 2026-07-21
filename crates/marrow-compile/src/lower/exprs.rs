@@ -83,14 +83,12 @@ impl<'a> FnLowerer<'a> {
             ));
             return None;
         }
-        // Inline `^root(key)` addresses and a field projected off a named `place`
-        // read here; a bare place name is a durable designation, handled below.
-        if self.durable_shape_here(expr).is_some() {
-            let place = self.resolve_durable(expr)?;
-            return self.lower_durable_read(place);
-        }
-        if let Expression::Field { base, .. } = expr
-            && self.is_place_name(base)
+        // Inline `^root(key)` addresses read here. A place-rooted composed read — a field,
+        // group, group leaf, or whole branch entry off a named `place`/pin — reads the same
+        // way its inline `^root…` equivalent does. A bare place name is a durable
+        // designation, not a value, and falls through to its own diagnostic below.
+        if self.durable_shape_here(expr).is_some()
+            || (!matches!(expr, Expression::Name { .. }) && self.durable_access(expr).is_some())
         {
             let place = self.resolve_durable(expr)?;
             return self.lower_durable_read(place);

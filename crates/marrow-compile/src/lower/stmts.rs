@@ -1508,11 +1508,33 @@ impl<'a> FnLowerer<'a> {
     pub(super) fn arg_is_family(&self, expr: &Expression) -> bool {
         match expr {
             Expression::SavedRoot { .. } => true,
+            // A keyed branch family, addressed either from an inline entry address
+            // (`^root(k).branch`) or from a named `place`/pin base (`b.notes`): the tail
+            // names a declared branch beneath the resolved parent node. A place base is
+            // recognized here so `exists(b.notes)` routes to the family-populated probe
+            // rather than misreporting the branch as a missing field.
             Expression::Field { base, name, .. } => self
                 .entry_address_node(base)
+                .or_else(|| {
+                    self.is_place_name(base)
+                        .then(|| self.place_base_node(base))
+                        .flatten()
+                })
                 .is_some_and(|parent| parent.branch(name).is_some()),
             _ => false,
         }
+    }
+
+    /// The durable node a bare named `place`/pin base addresses, for the `exists` family
+    /// classifier. `None` when the base is not an in-scope place name. Non-emitting.
+    fn place_base_node(&self, base: &Expression) -> Option<DurNode<'a>> {
+        let Expression::Name { segments, .. } = base else {
+            return None;
+        };
+        let [name] = segments.as_slice() else {
+            return None;
+        };
+        self.place_node(self.lookup_place(name)?)
     }
 
     /// The durable node an entry-address expression addresses, resolved against the named

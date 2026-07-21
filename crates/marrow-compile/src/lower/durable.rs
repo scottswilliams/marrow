@@ -695,33 +695,177 @@ impl<'a> FnLowerer<'a> {
         if let Some(shape) = self.durable_shape_here(expr) {
             return Some(shape);
         }
+        // A place-rooted composed address extends a named `place`/pin with the same field,
+        // group, and branch selectors an inline `^root` address takes. Classification is
+        // non-emitting and mirrors the inline `durable_shape_here` split from
+        // `resolve_durable`: a whole entry (a bare place, or a place extended by branch
+        // hops), or a field cell (a stored field, a whole root-level group, a group leaf,
+        // or a branch field). A projection on a durable field *value* (`p.field.sub`) is not
+        // a durable cell and falls through to ordinary projection, exactly as the inline
+        // form does.
         match expr {
-            Expression::Name { .. } if self.is_place_name(expr) => Some(DurShape::Entry),
-            Expression::Field { base, .. } if self.is_place_name(base) => Some(DurShape::Field),
+            Expression::Name { .. } => self.is_place_name(expr).then_some(DurShape::Entry),
+            // A place-rooted keyed selection `<place>(.branch[bk])+` is a branch entry. It is
+            // classified by place-rootedness, not by resolving the branch, so an unknown
+            // branch reaches the resolver and reports "no keyed branch" — the same message
+            // the inline `^root(k).branch[bk]` form gives — rather than falling through.
+            Expression::Keyed { .. } => self.is_place_rooted(expr).then_some(DurShape::Entry),
+            Expression::Field { base, .. } => (self.place_middle_names_a_group(base)
+                || self.place_entry_target(base).is_some())
+            .then_some(DurShape::Field),
             _ => None,
         }
     }
 
-    /// Resolve a source-local `place` access (`p` whole-entry, or `p.field`) to its
-    /// pre-evaluated address, or `None` when `expr` is not a place access. A missing
-    /// field is a precise diagnostic.
-    fn resolve_place_access<'e>(&mut self, expr: &'e Expression) -> Option<DurablePlace<'e>> {
+    /// Whether the leftmost base of a durable path expression is an in-scope named
+    /// `place`/pin — a bare place name, or a place extended by `.field`, `.group[.leaf]`,
+    /// or `.branch[bk]` hops. Routes such an expression to [`Self::resolve_place_composed`],
+    /// which sources the place's pre-evaluated key columns as the address prefix.
+    fn is_place_rooted(&self, expr: &Expression) -> bool {
         match expr {
-            Expression::Name { segments, span, .. } => {
+            Expression::Name { .. } => self.is_place_name(expr),
+            Expression::Field { base, .. } | Expression::Keyed { base, .. } => {
+                self.is_place_rooted(base)
+            }
+            _ => false,
+        }
+    }
+
+    /// The durable node a place-rooted whole-entry address reaches — a bare place name, or a
+    /// place extended by `.branch[bk]` hops — navigating the place node and each branch hop
+    /// against the registry without emitting. `None` when `expr` is not a place-rooted entry
+    /// address or a branch name does not resolve. The non-emitting twin of
+    /// [`Self::resolve_place_entry_node`] (as `entry_address_node` is for the inline walker),
+    /// borrowing the registry (`'a`), not `&self`.
+    fn place_entry_target(&self, expr: &Expression) -> Option<DurNode<'a>> {
+        match expr {
+            Expression::Name { segments, .. } => {
+                let [name] = segments.as_slice() else {
+                    return None;
+                };
+                self.place_node(self.lookup_place(name)?)
+            }
+            Expression::Keyed { base, .. } => {
+                let Expression::Field {
+                    base: parent, name, ..
+                } = &**base
+                else {
+                    return None;
+                };
+                self.place_entry_target(parent)?
+                    .branch(name)
+                    .map(DurNode::Branch)
+            }
+            _ => None,
+        }
+    }
+
+    /// Whether `expr` is the group address `<place-entry>.group` of a place-rooted group
+    /// leaf — the place twin of [`Self::middle_names_a_group`]. Non-emitting: it distinguishes
+    /// a group leaf `p.group.leaf` (a durable cell) from a projection on a durable struct
+    /// field value `p.field.sub` (ordinary projection), so the classifier routes each the way
+    /// the inline forms are routed.
+    fn place_middle_names_a_group(&self, expr: &Expression) -> bool {
+        let Expression::Field { base, name, .. } = expr else {
+            return false;
+        };
+        matches!(self.place_entry_target(base), Some(DurNode::Root(root)) if root.group(name).is_some())
+    }
+
+    /// Resolve a place-rooted whole-entry address — a bare place name, or a place extended by
+    /// one or more `.branch[bk]` hops — into its key-path (the place's pre-evaluated bound
+    /// columns, then each branch hop's key columns) and the addressed node. `None` when
+    /// `expr` is not a place-rooted entry address; reports a diagnostic and `None` on an
+    /// unknown branch or a wrong branch-key arity. The place base stands in for the `^root`
+    /// leaf of [`Self::resolve_entry_address`], so a branch beneath a place addresses the
+    /// same node — and seals the same operation site — an inline `^root(k).branch(bk)` does.
+    fn resolve_place_entry_node<'e>(
+        &mut self,
+        expr: &'e Expression,
+    ) -> Option<(Vec<DurKey<'e>>, DurNode<'a>)> {
+        match expr {
+            Expression::Name { segments, .. } => {
                 let [name] = segments.as_slice() else {
                     return None;
                 };
                 let place = self.lookup_place(name)?;
+                let keys = place.bound_keys();
+                let node = self.place_node(place)?;
+                Some((keys, node))
+            }
+            Expression::Keyed {
+                base, keys, span, ..
+            } => {
+                let Expression::Field {
+                    base: parent_base,
+                    name: branch_name,
+                    name_span: branch_span,
+                    ..
+                } = &**base
+                else {
+                    return None;
+                };
+                let (mut columns, parent) = self.resolve_place_entry_node(parent_base)?;
+                let Some(branch) = parent.branch(branch_name) else {
+                    self.fail(SourceDiagnostic::at(
+                        Code::CheckType.as_str(),
+                        self.file,
+                        *branch_span,
+                        parent.no_branch_message(branch_name),
+                    ));
+                    return None;
+                };
+                self.push_key_columns(&mut columns, keys, &branch.key, *span)?;
+                Some((columns, DurNode::Branch(branch)))
+            }
+            _ => None,
+        }
+    }
+
+    /// Resolve a place-rooted group address `<place-entry>.group` to its key-path and the
+    /// addressed root-level group, or `None` when `expr` is not one. Only a root node offers
+    /// groups, so a branch-rooted place or a non-group tail resolves cleanly to `None`
+    /// without a diagnostic — the caller falls through to the entry-field forms. The place
+    /// twin of [`Self::resolve_group_address`].
+    fn resolve_place_group_address<'e>(
+        &mut self,
+        expr: &'e Expression,
+    ) -> Option<(Vec<DurKey<'e>>, &'a crate::durable::DurableGroup)> {
+        let Expression::Field { base, name, .. } = expr else {
+            return None;
+        };
+        let (keys, node) = self.resolve_place_entry_node(base)?;
+        let DurNode::Root(root) = node else {
+            return None;
+        };
+        let group = root.group(name)?;
+        Some((keys, group))
+    }
+
+    /// Resolve a place-rooted durable access — a bare place name/pin, or a place extended by
+    /// field, group, group-leaf, or branch selectors — into its pre-evaluated address. The
+    /// place twin of the inline `^root…` resolution in [`Self::resolve_durable`]: the place's
+    /// once-evaluated key columns are the address prefix, and each selector resolves against
+    /// the place's node exactly as the inline forms resolve against the store root, so a
+    /// composed operation seals the identical operation site. A missing field or branch is a
+    /// precise diagnostic.
+    fn resolve_place_composed<'e>(&mut self, expr: &'e Expression) -> Option<DurablePlace<'e>> {
+        match expr {
+            // A bare place name, or a place extended by branch hops: a whole entry.
+            Expression::Name { span, .. } | Expression::Keyed { span, .. } => {
+                let (keys, node) = self.resolve_place_entry_node(expr)?;
                 Some(DurablePlace {
-                    keys: place.bound_keys(),
+                    keys,
                     target: DurTarget::Entry {
-                        entry_site: place.entry_site,
-                        record: place.record,
-                        node_kind: place.node_kind,
+                        entry_site: node.entry_site(),
+                        record: node.record(),
+                        node_kind: node.place_node_kind(),
                     },
                     span: *span,
                 })
             }
+            // A field-exact address, a whole root-level group, or a group-leaf address, each
+            // rooted at a place.
             Expression::Field {
                 base,
                 name: field_name,
@@ -729,20 +873,33 @@ impl<'a> FnLowerer<'a> {
                 span,
                 ..
             } => {
-                let Expression::Name { segments, .. } = &**base else {
-                    return None;
-                };
-                let [name] = segments.as_slice() else {
-                    return None;
-                };
-                let place = self.lookup_place(name)?;
-                // The field-exact site comes from the node the place addresses. Copy the
-                // key-path out and project the node once (borrowing the registry, not `self`)
-                // so a missing-field diagnostic may still borrow `self` mutably.
-                let keys = place.bound_keys();
-                let node = self.place_node(place)?;
-                match node.field(field_name) {
-                    Some(field) => Some(DurablePlace {
+                // A group-leaf address: the base resolves to a root-level group on the place
+                // root, and this selector names one of its leaves. Resolved before the
+                // entry-address forms because its base is a group address, not an entry.
+                if let Some((keys, group)) = self.resolve_place_group_address(base) {
+                    let Some((slot, leaf)) = group.field_index(field_name) else {
+                        self.fail(SourceDiagnostic::at(
+                            Code::CheckType.as_str(),
+                            self.file,
+                            *name_span,
+                            format!("group `{}` has no field `{field_name}`", group.name),
+                        ));
+                        return None;
+                    };
+                    return Some(DurablePlace {
+                        keys,
+                        target: DurTarget::GroupLeaf {
+                            entry_site: group.entry_site,
+                            slot,
+                            ty: leaf.ty,
+                            required: leaf.required,
+                        },
+                        span: *span,
+                    });
+                }
+                let (keys, node) = self.resolve_place_entry_node(base)?;
+                if let Some(field) = node.field(field_name) {
+                    return Some(DurablePlace {
                         keys,
                         target: DurTarget::Field {
                             site: field.site,
@@ -750,17 +907,29 @@ impl<'a> FnLowerer<'a> {
                             required: field.required,
                         },
                         span: *span,
-                    }),
-                    None => {
-                        self.fail(SourceDiagnostic::at(
-                            Code::CheckType.as_str(),
-                            self.file,
-                            *name_span,
-                            node.no_field_message(field_name),
-                        ));
-                        None
-                    }
+                    });
                 }
+                // A whole root-level group address `<place-entry>.group`. Groups are
+                // executable only at the root level, so only a root node offers one.
+                if let DurNode::Root(root) = node
+                    && let Some(group) = root.group(field_name)
+                {
+                    return Some(DurablePlace {
+                        keys,
+                        target: DurTarget::Group {
+                            entry_site: group.entry_site,
+                            record: group.record,
+                        },
+                        span: *span,
+                    });
+                }
+                self.fail(SourceDiagnostic::at(
+                    Code::CheckType.as_str(),
+                    self.file,
+                    *name_span,
+                    node.no_field_message(field_name),
+                ));
+                None
             }
             _ => None,
         }
@@ -1001,14 +1170,10 @@ impl<'a> FnLowerer<'a> {
     /// bad root name, key arity, or field name. The returned place holds no borrow of
     /// the registry.
     pub(super) fn resolve_durable<'e>(&mut self, expr: &'e Expression) -> Option<DurablePlace<'e>> {
-        // A source-local named place resolves through its pre-evaluated address.
-        let is_place_access = match expr {
-            Expression::Name { .. } => self.is_place_name(expr),
-            Expression::Field { base, .. } => self.is_place_name(base),
-            _ => false,
-        };
-        if is_place_access {
-            return self.resolve_place_access(expr);
+        // A place-rooted composed address resolves through the place's pre-evaluated key
+        // columns; an inline `^root…` address resolves against the store root below.
+        if self.is_place_rooted(expr) {
+            return self.resolve_place_composed(expr);
         }
         // A durable access names its store at the `^name` leaf. Resolving it here (rather
         // than assuming one store) selects the addressed root and reports a bad name or a
