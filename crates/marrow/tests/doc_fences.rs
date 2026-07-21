@@ -415,49 +415,61 @@ fn a_source_rejected_fence_is_caught() {
     );
 }
 
-const VERIFIER_REJECTED_DURABLE_BODY: &str = "resource Item {\n    required value: string\n}\n\nstore ^items[id: int]: Item\n\npub fn replace(id: int, value: string): bool {\n    if const current = ^items[id].value {\n        transaction {\n            ^items[id].value = value\n        }\n        return current != value\n    }\n    return false\n}\n";
+// A durable fence rejected only once its store identity is complete: a durable read
+// follows the region's commit, an ownership law caught at check time
+// (`check.durable_after_commit`). The initial compile stops at `check.durable_identity`
+// (no ledger yet), so the rejection surfaces only after the gate mints identities and
+// retries — the boundary this probe exercises. (Before TX02 this same class of fault
+// was reported one layer later, at `image.flow`; the independent verifier still rejects
+// a tampered image there, but a compiler now refuses it first.)
+const POST_MINT_REJECTED_DURABLE_BODY: &str = "resource Item {\n    required value: string\n}\n\nstore ^items[id: int]: Item\n\npub fn setAndGet(id: int, value: string): string? {\n    transaction {\n        ^items[id].value = value\n    }\n    return ^items[id].value\n}\n";
 
-fn assert_verifier_rejected(fence: &DocFence) {
-    let failure = verify_fence(fence).expect_err("rejected image must fail the gate");
+// The gate's `artifact_rejected` branch (a fence that compiles clean but the independent
+// verifier rejects) is no longer reachable through an honest fence: after TX02 the
+// `agreement_gate` enforces that no checker-accepted source is verifier-rejected, so a
+// durable ownership fault is caught at check time. That branch is now exercised only by a
+// forged or tampered image, whose coverage lives in the `marrow-verify` hostiles rather
+// than through this source-level fence gate.
+fn assert_rejected_after_identity_mint(fence: &DocFence) {
+    let failure = verify_fence(fence).expect_err("rejected fence must fail the gate");
     assert!(
         failure.initially_has("diagnostic", "check.durable_identity"),
         "the probe must cross the identity mint/retry boundary, got: {}",
         failure.describe(),
     );
     assert!(
-        failure.has("artifact_rejected", "image.flow"),
-        "the gate must catch a verifier-rejected fence, got: {}",
+        failure.has("diagnostic", "check.durable_after_commit"),
+        "the gate must catch the fence once its identity is minted, got: {}",
         failure.describe(),
     );
 }
 
-/// The gate must fail after a durable project's identity mint when the
-/// independent verifier rejects the compiler's image. A durable read precedes
-/// the transaction that makes the export an owner, so the final verified-path
-/// attempt is rejected with `image.flow`.
+/// The gate must fail after a durable project's identity mint when the retried
+/// compile rejects the source. A durable read follows the region's commit, so the
+/// post-mint attempt is refused with `check.durable_after_commit`.
 #[test]
-fn a_verifier_rejected_fence_is_caught() {
+fn a_fence_rejected_after_identity_mint_is_caught() {
     let broken = DocFence::new(
         "in-test".to_string(),
         1,
-        format!("module broken::verify\n\n{VERIFIER_REJECTED_DURABLE_BODY}"),
+        format!("module broken::verify\n\n{POST_MINT_REJECTED_DURABLE_BODY}"),
     );
 
-    assert_verifier_rejected(&broken);
+    assert_rejected_after_identity_mint(&broken);
 }
 
 /// The moduleless branch must write the same rejected durable source to the
-/// script path before crossing the identity-mint and independent-verifier gates.
+/// script path before crossing the identity-mint and retried-compile gates.
 #[test]
-fn a_moduleless_verifier_rejected_fence_is_caught() {
+fn a_moduleless_fence_rejected_after_identity_mint_is_caught() {
     let broken = DocFence::new(
         "in-test".to_string(),
         1,
-        VERIFIER_REJECTED_DURABLE_BODY.to_string(),
+        POST_MINT_REJECTED_DURABLE_BODY.to_string(),
     );
 
     assert!(matches!(&broken.kind, FenceKind::Script));
-    assert_verifier_rejected(&broken);
+    assert_rejected_after_identity_mint(&broken);
     assert_eq!(broken.source_rel_path(), PathBuf::from("src/main.mw"));
 }
 

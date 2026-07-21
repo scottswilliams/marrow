@@ -46,13 +46,15 @@ for its whole call. It may still open a `transaction` block — a read-only regi
 whose reads are admitted inside it — though it gains nothing by doing so; as in any
 owned region, no durable operation may follow the block's commit.
 
-The contract is enforced in two places, and this reference states where each
-rule is checked today. The compiler enforces the *requires an ambient
-transaction* rule at check time. The ownership lattice — one region begun once,
-committed on every path, with every mutation inside it and no durable operation
-after the commit — is reconstructed from the program image and enforced by the
-independent verifier. A later lane (TX02) may promote parts of the lattice to
-check-time diagnostics; until it lands, the split below is exact.
+The contract is enforced in two places. The compiler enforces every rule below
+at check time, reporting a typed `check.*` diagnostic at the offending source
+construct: the *requires an ambient transaction* rule, and the ownership lattice —
+one region begun once, committed on every path, with every mutation inside it and
+no durable operation after the commit. The independent verifier reconstructs the
+same lattice from the program image alone and remains the boundary: a malformed or
+tampered image that reaches it is rejected with `image.flow` before it can run. A
+program a compiler accepts therefore also verifies; the check-time diagnostics are
+the earlier, source-facing report of the laws the verifier guarantees.
 
 ### Requiring an ambient transaction
 
@@ -126,27 +128,30 @@ pub fn setAndReport(name: string, v: int): int? {
 
 ### Transaction ownership
 
-The ownership lattice is enforced by the independent verifier, which
-reconstructs the mutation closure from the program image alone rather than
-trusting the compiler. An image that violates any rule below — including a
-tampered one — is rejected with `image.flow` before it can run:
+The compiler enforces the ownership lattice at check time, and the independent
+verifier reconstructs the same mutation closure from the program image alone
+rather than trusting the compiler. Each rule below is reported at its source
+construct with a typed `check.*` code; an image that violates the rule — including
+a tampered one — is independently rejected with `image.flow` before it can run:
 
-- an owning export begins its transaction exactly once and commits on every
-  path that returns; its commit sites are the region's exits — each in-region
-  `return` and the closing brace — and only the owning export's returns commit,
-  not a helper's return inside its own frame;
+- an owning export begins its transaction exactly once
+  (`check.transaction_reopened` on a second region) and commits on every path
+  that returns (`check.transaction_uncommitted` on a path that exits without
+  committing); its commit sites are the region's exits — each in-region `return`
+  and the closing brace — and only the owning export's returns commit, not a
+  helper's return inside its own frame;
 - every mutation sits inside the region, and no durable operation — read or
-  write, direct or through a callee — follows the commit on any path;
+  write, direct or through a callee — follows the commit on any path
+  (`check.durable_after_commit`);
 - a `transaction` marker appears only inside the export that owns it: a helper
-  or read-only function that carries one is rejected;
-- a transaction owner is not called by another function, so its region never
-  nests inside a caller's. The one exception is a test body, which drives an
-  owning export as a terminal would, each call its own invocation boundary (see
-  [Tests](tests.md));
-- a `transaction` whose closure performs no durable operation is rejected — *a
-  transaction performs no durable operation* — because it commits nothing and
-  the runtime opens no session for it. A region that only reads carries read
-  demand and is admitted.
+  or `test` body that carries one is rejected (`check.transaction_misplaced`);
+- a transaction owner is not called by another function
+  (`check.transaction_owner_called`), so its region never nests inside a
+  caller's. The one exception is a test body, which drives an owning export as a
+  terminal would, each call its own invocation boundary (see [Tests](tests.md));
+- a `transaction` whose closure performs no durable operation is rejected
+  (`check.transaction_empty`) because it commits nothing and the runtime opens no
+  session for it. A region that only reads carries read demand and is admitted.
 
 ### `try` inside a transaction
 
@@ -163,9 +168,10 @@ writes before it returns. A `try`'s `err` exit is different — it is an implici
 exit, not a spelled `return`, and carries no commit. A `try` may therefore not
 stand on any path that would exit the function from inside the region, nor before
 the region opens while one is owed: its implicit `err` exit would leave the
-transaction uncommitted. The verifier reports this from the image as *a path
-returns without committing the transaction* (`image.flow`); a later lane may
-report it at check time.
+transaction uncommitted. The compiler reports this at check time as
+`check.transaction_uncommitted`, at the `try`; the verifier independently
+reconstructs the same flow from the image and rejects it as *a path returns
+without committing the transaction* (`image.flow`).
 
 To fail a durable change deliberately, spell the exit as a `return`. A guard that
 returns `err` before staging anything commits an empty region and persists no

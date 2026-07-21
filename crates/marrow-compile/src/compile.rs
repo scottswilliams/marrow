@@ -9,7 +9,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use marrow_codes::Code;
-use marrow_image::{EncodedImage, ExportId, ImageBuildError, ImageDraft};
+use marrow_image::{EncodedImage, ExportId, ImageBuildError, ImageDraft, Instr};
 use marrow_project::{FileIdentity, ProjectInput};
 use marrow_syntax::{
     AliasDecl, ConstDecl, Declaration, EnumDecl, FunctionDecl, NominalDecl, ParsedSource,
@@ -21,7 +21,8 @@ use crate::diag::SourceDiagnostic;
 use crate::durable::DurableRegistry;
 use crate::konst::ConstRegistry;
 use crate::lower::{
-    FnLowerer, FunctionRegistry, GenericRegistry, is_reserved_builtin_name, reserved_builtin_name,
+    FnLowerer, FunctionRegistry, GenericRegistry, is_durable_place_op, is_mutation_instr,
+    is_reserved_builtin_name, reserved_builtin_name,
 };
 use crate::types::{GenericInvariant, TypeRegistry};
 
@@ -557,6 +558,10 @@ struct LoweredFn {
     has_direct_durable_op: bool,
     /// Whether this body owns a `transaction` block.
     owns_transaction: bool,
+    /// This body's lowered instruction tape and the parallel full source span of each
+    /// instruction, consumed by the check-time transaction-ownership pass.
+    code: Vec<Instr>,
+    code_spans: Vec<SourceSpan>,
 }
 
 /// Compile a captured project into canonical program-image bytes and its export
@@ -1146,6 +1151,8 @@ fn run_semantic(
                         unwrapped_calls: result.unwrapped_calls,
                         has_direct_durable_op: result.has_direct_durable_op,
                         owns_transaction: result.owns_transaction,
+                        code: result.code,
+                        code_spans: result.code_spans,
                     });
                     if function.public {
                         // The injectivity owner's own guard: every dotted module
@@ -1264,6 +1271,8 @@ fn run_semantic(
                     unwrapped_calls: result.unwrapped_calls,
                     has_direct_durable_op: result.has_direct_durable_op,
                     owns_transaction: result.owns_transaction,
+                    code: result.code,
+                    code_spans: result.code_spans,
                 });
                 let name_id = draft.intern_string(&test.name);
                 draft.add_test_entry(name_id, result.func);
@@ -1329,6 +1338,8 @@ fn run_semantic(
                 unwrapped_calls: result.unwrapped_calls,
                 has_direct_durable_op: result.has_direct_durable_op,
                 owns_transaction: result.owns_transaction,
+                code: result.code,
+                code_spans: result.code_spans,
             });
         }
     }
@@ -1369,6 +1380,19 @@ fn run_semantic(
     // graph is acyclic so the effect fixpoint terminates and indices are aligned.
     if diagnostics.is_empty() {
         reject_missing_transaction(&lowered, &mut diagnostics);
+    }
+
+    // The remaining transaction-ownership laws — exactly one region per mutating export,
+    // committed on every path with no durable operation after the commit; a `transaction`
+    // marker only in the export that owns it; and no call to a transaction owner — are
+    // reconstructed from the lowered tape and reported at the offending source construct.
+    // Reported at check time so the source, not the image, carries the diagnostic; the
+    // verifier reconstructs the same lattice from the image alone and rejects a tampered
+    // image (image.flow) as defense in depth. Run once the call graph is acyclic and no
+    // requires-ambient-transaction report already stands, so the closures converge and a
+    // single mutation cannot cascade into an ownership report.
+    if diagnostics.is_empty() {
+        reject_transaction_ownership(&lowered, &mut diagnostics);
     }
 
     // A test body reaches durable data in one of two disjoint ways — directly, or by
@@ -1660,6 +1684,283 @@ fn reject_missing_transaction(lowered: &[LoweredFn], diagnostics: &mut Vec<Sourc
             }
         }
     }
+}
+
+/// The three-state ownership lattice a mutating export's region walks.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum TxnState {
+    BeforeBegin,
+    InTxn,
+    AfterCommit,
+}
+
+/// The control-flow successors of the instruction at `index`, in tape order. Mirrors
+/// the verifier's flow-successor relation over the same opcode set so the check-time
+/// lattice walks the identical CFG the image verification does.
+fn instr_successors(code: &[Instr], index: usize) -> Vec<usize> {
+    match &code[index] {
+        Instr::Return | Instr::Unreachable(_) | Instr::Todo(_) => Vec::new(),
+        Instr::Jump(target) => vec![*target as usize],
+        Instr::JumpIfFalse(target)
+        | Instr::BranchPresent(target)
+        | Instr::IntAddChecked(target)
+        | Instr::IntSubChecked(target)
+        | Instr::IntMulChecked(target)
+        | Instr::IntNegChecked(target)
+        | Instr::IntDivChecked(target)
+        | Instr::IntRemChecked(target) => vec![*target as usize, index + 1],
+        _ => vec![index + 1],
+    }
+}
+
+/// Report the transaction-ownership lattice laws at check time, at their source spans.
+///
+/// The ownership contract has four remaining laws the verifier reconstructs from the
+/// image (image.flow) and this pass promotes to source-facing `check.*` diagnostics:
+///
+/// - the owner lattice — a mutating export owns exactly one `transaction` region,
+///   begun once and committed on every path, with no durable operation after the
+///   commit and no empty (no-op) region;
+/// - a transaction owner is not called by another function;
+/// - a `transaction` marker sits only in the export that owns it;
+/// - a prefix `try` whose implicit `err` exit would leave an owned region uncommitted
+///   is an uncommitted exit (a `return` is a commit site; a `try` is not).
+///
+/// The pass walks each function's lowered tape — the same instruction sequence the
+/// verifier reconstructs from the image — so a program the checker rejects here is
+/// exactly one the verifier would reject at image.flow: the checker is never stricter
+/// than the boundary. The requires-ambient-transaction pass runs first and already
+/// covers a durable mutation outside any region, so this pass need not restate it.
+fn reject_transaction_ownership(lowered: &[LoweredFn], diagnostics: &mut Vec<SourceDiagnostic>) {
+    let count = lowered.len();
+    let mut by_index: Vec<Option<&LoweredFn>> = vec![None; count];
+    for function in lowered {
+        if (function.index as usize) < count {
+            by_index[function.index as usize] = Some(function);
+        }
+    }
+
+    let has_begin: Vec<bool> = by_index
+        .iter()
+        .map(|entry| entry.is_some_and(|f| f.code.iter().any(|i| matches!(i, Instr::TxnBegin))))
+        .collect();
+    let has_commit: Vec<bool> = by_index
+        .iter()
+        .map(|entry| entry.is_some_and(|f| f.code.iter().any(|i| matches!(i, Instr::TxnCommit))))
+        .collect();
+
+    // `mutates[f]` / `durable[f]`: `f` or a transitive callee stages a mutation / performs
+    // any durable operation. The base case is a direct opcode; the inductive case unions
+    // each callee's closure. Recursion is already rejected, so the monotone boolean
+    // fixpoint over the acyclic graph converges. These mirror the verifier's mutate and
+    // non-empty-atom closures the lattice consumes.
+    let mut mutates: Vec<bool> = by_index
+        .iter()
+        .map(|entry| entry.is_some_and(|f| f.code.iter().any(is_mutation_instr)))
+        .collect();
+    let mut durable: Vec<bool> = by_index
+        .iter()
+        .map(|entry| entry.is_some_and(|f| f.code.iter().any(is_durable_place_op)))
+        .collect();
+    loop {
+        let mut changed = false;
+        for (i, entry) in by_index.iter().enumerate() {
+            let Some(function) = entry else { continue };
+            for &callee in &function.callees {
+                let c = callee as usize;
+                if c >= count {
+                    continue;
+                }
+                if mutates[c] && !mutates[i] {
+                    mutates[i] = true;
+                    changed = true;
+                }
+                if durable[c] && !durable[i] {
+                    durable[i] = true;
+                    changed = true;
+                }
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+
+    for function in lowered {
+        let i = function.index as usize;
+        if i >= count {
+            continue;
+        }
+
+        // A transaction owner may not be called — except from a test body, which drives
+        // an owner as a terminal would, each call its own invocation boundary. Reported at
+        // every call site to an owner; the verifier returns on the first, so a function
+        // that calls an owner is not examined for its own ownership laws besides this.
+        if !function.is_test {
+            let mut reported = false;
+            for (idx, instr) in function.code.iter().enumerate() {
+                let Instr::Call(target) = instr else { continue };
+                let t = *target as usize;
+                if t >= count || !has_begin[t] {
+                    continue;
+                }
+                let name = by_index[t].map(|f| f.name.as_str()).unwrap_or("an export");
+                diagnostics.push(SourceDiagnostic::at(
+                    Code::CheckTransactionOwnerCalled.as_str(),
+                    &function.file,
+                    function.code_spans[idx],
+                    format!(
+                        "calling `{name}` here calls a transaction owner. An export that owns \
+                         a `transaction` block is an invocation boundary and may not be called \
+                         from another function; only a `test` body may drive it. Inline the \
+                         durable work into this export's own `transaction` block, or move it \
+                         into a helper — a function with no `transaction` block — that this \
+                         export calls inside its region."
+                    ),
+                ));
+                reported = true;
+            }
+            if reported {
+                continue;
+            }
+        }
+
+        // A `transaction` whose closure performs no durable operation commits nothing and
+        // opens no session; refuse it at the block.
+        if function.is_export && has_begin[i] && !durable[i] {
+            if let Some(span) = first_marker_span(function) {
+                diagnostics.push(SourceDiagnostic::at(
+                    Code::CheckTransactionEmpty.as_str(),
+                    &function.file,
+                    span,
+                    "this `transaction` block performs no durable operation, so it commits \
+                     nothing and opens no store session. Perform the durable read or write \
+                     the transaction is meant to group, or remove the empty block."
+                        .to_string(),
+                ));
+            }
+            continue;
+        }
+
+        // A mutating (or region-owning) export runs the owner lattice.
+        if function.is_export && (mutates[i] || has_begin[i]) {
+            if let Some((code, span, message)) = owner_lattice_violation(function, &durable, count)
+            {
+                diagnostics.push(SourceDiagnostic::at(code, &function.file, span, message));
+            }
+            continue;
+        }
+
+        // Every other function is a helper or a `test` body; neither owns a region, so a
+        // `transaction` marker in one is misplaced.
+        if has_begin[i] || has_commit[i] {
+            if let Some(span) = first_marker_span(function) {
+                diagnostics.push(SourceDiagnostic::at(
+                    Code::CheckTransactionMisplaced.as_str(),
+                    &function.file,
+                    span,
+                    "a `transaction` block belongs only in the export that owns it. A helper \
+                     runs inside its caller's region and carries no `transaction` block of its \
+                     own, and a `test` body drives owning exports rather than owning a region. \
+                     Move the `transaction` block to the owning export."
+                        .to_string(),
+                ));
+            }
+            continue;
+        }
+    }
+}
+
+/// The source span of a function's first `transaction` marker (its begin, else its
+/// commit), for reporting a region-level ownership violation.
+fn first_marker_span(function: &LoweredFn) -> Option<SourceSpan> {
+    function
+        .code
+        .iter()
+        .position(|instr| matches!(instr, Instr::TxnBegin | Instr::TxnCommit))
+        .map(|idx| function.code_spans[idx])
+}
+
+/// The first owner-lattice violation on `function`'s tape, or `None` when the region is
+/// well formed. Entry states are computed by a CFG fixpoint mirroring the verifier's
+/// lattice, then the tape is scanned in index order so the earliest offending construct
+/// is reported deterministically. A merge whose incoming states disagree is unreachable
+/// on lowered output; first-writer-wins keeps the walk deterministic and can only make
+/// the checker miss a case the verifier still catches, never reject a legal one.
+fn owner_lattice_violation(
+    function: &LoweredFn,
+    durable: &[bool],
+    count: usize,
+) -> Option<(&'static str, SourceSpan, String)> {
+    let code = &function.code;
+    if code.is_empty() {
+        return None;
+    }
+    let mut entry: Vec<Option<TxnState>> = vec![None; code.len()];
+    entry[0] = Some(TxnState::BeforeBegin);
+    let mut worklist = vec![0usize];
+    while let Some(index) = worklist.pop() {
+        // The worklist only enqueues instructions whose entry state is set.
+        let Some(state) = entry[index] else { continue };
+        let next = match &code[index] {
+            Instr::TxnBegin => TxnState::InTxn,
+            Instr::TxnCommit => TxnState::AfterCommit,
+            _ => state,
+        };
+        for successor in instr_successors(code, index) {
+            if successor < code.len() && entry[successor].is_none() {
+                entry[successor] = Some(next);
+                worklist.push(successor);
+            }
+        }
+    }
+
+    for (idx, instr) in code.iter().enumerate() {
+        let Some(state) = entry[idx] else { continue };
+        match instr {
+            Instr::TxnBegin if state != TxnState::BeforeBegin => {
+                return Some((
+                    Code::CheckTransactionReopened.as_str(),
+                    function.code_spans[idx],
+                    "this reopens a `transaction` region the export already owns. A mutating \
+                     export begins its region exactly once and commits it on every path; \
+                     combine the durable work into a single `transaction` block."
+                        .to_string(),
+                ));
+            }
+            Instr::Return if state != TxnState::AfterCommit => {
+                return Some((
+                    Code::CheckTransactionUncommitted.as_str(),
+                    function.code_spans[idx],
+                    "this path leaves the `transaction` region without committing it. A \
+                     region's commit sites are its exits — each `return` inside the block and \
+                     the closing brace — so an exit that bypasses them leaves staged writes \
+                     uncommitted. Spell a deliberate failure as an in-region `return` (a \
+                     commit site), and place a guard that must not commit before the block. A \
+                     prefix `try` is ordinary control flow, not a commit, so its `err` exit \
+                     may not cross a region its own function owns."
+                        .to_string(),
+                ));
+            }
+            _ => {
+                let durable_here = is_durable_place_op(instr)
+                    || matches!(instr, Instr::Call(t) if (*t as usize) < count && durable[*t as usize]);
+                if durable_here && state == TxnState::AfterCommit {
+                    return Some((
+                        Code::CheckDurableAfterCommit.as_str(),
+                        function.code_spans[idx],
+                        "this durable operation runs after the `transaction` region commits. \
+                         The commit consumes the region's store session, so no durable read or \
+                         write may follow it. Move the operation inside the `transaction` \
+                         block, or capture the value into a local before the block closes and \
+                         return the local."
+                            .to_string(),
+                    ));
+                }
+            }
+        }
+    }
+    None
 }
 
 /// Report `check.test_driver_mix` for every `test` body that both performs a durable

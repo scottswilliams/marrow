@@ -240,27 +240,6 @@ fn compile_verify(source: &str) -> VerifiedImage {
     marrow_verify::verify(&compiled.image.bytes).expect("verify")
 }
 
-/// The verifier rejection code for a source that compiles but fails verification,
-/// or `None` if it verifies.
-fn verify_rejection(source: &str) -> Option<String> {
-    let manifest = marrow_project::Manifest::parse("edition = \"2026\"\n").expect("manifest");
-    let files = vec![marrow_project::CapturedFile::new(
-        "src/main.mw".to_string(),
-        source.as_bytes().to_vec(),
-    )];
-    let project = marrow_project::capture(
-        &manifest,
-        files,
-        Some(IDS.as_bytes()),
-        &marrow_project::CaptureLimits::DEFAULT,
-    )
-    .expect("capture");
-    let compiled = marrow_compile::compile(&project).expect("compile");
-    marrow_verify::verify(&compiled.image.bytes)
-        .err()
-        .map(|rejection| rejection.code().to_string())
-}
-
 fn export<'a>(image: &'a VerifiedImage, name: &str) -> &'a SealedExport {
     image
         .exports()
@@ -469,10 +448,12 @@ fn a_required_field_unset_at_commit_rolls_back() {
 }
 
 /// A durable read after the transaction's commit is refused at verify with
-/// `image.flow`: the commit consumes the session's engine transaction, so a mutating
-/// export observes the store inside its region and returns values captured there. A
-/// read into a local before the block closes is the supported form; a read after it
-/// cannot reach a live transaction and is rejected before it could run.
+/// The commit consumes the session's engine transaction, so a mutating export observes
+/// the store inside its region and returns values captured there. A read into a local
+/// before the block closes is the supported form; a read after it cannot reach a live
+/// transaction. TX02 promoted this law to check time: the checker refuses it at the
+/// read's span (`check.durable_after_commit`), so it never reaches the verifier. A
+/// tampered image is still refused at `image.flow` (see the `marrow-verify` hostiles).
 #[test]
 fn a_durable_read_after_commit_is_rejected() {
     let read_after = r#"resource Counter {
@@ -489,7 +470,10 @@ pub fn setAndGet(id: int, v: int): int? {
     return ^counters[id].value
 }
 "#;
-    assert_eq!(verify_rejection(read_after).as_deref(), Some("image.flow"));
+    assert_eq!(
+        compile_error_codes(read_after),
+        vec!["check.durable_after_commit".to_string()],
+    );
 
     // The supported form captures the value inside the region and returns the local.
     let read_inside = r#"resource Counter {
@@ -783,11 +767,13 @@ fn a_return_err_after_staged_writes_commits_them() {
     );
 }
 
-/// DX01 re-pin: prefix `try` still may not cross an owned region. Its implicit `err`
-/// exit carries no commit, so a `try` on a path that returns before the region's
-/// commit is refused at verify with `image.flow` — *a path returns without committing
-/// the transaction* — exactly as before this lane. The sharpened rationale: a spelled
-/// `return` is a visible commit sentence; `try`'s exit is implicit and carries none.
+/// Prefix `try` may not cross an owned region. Its implicit `err` exit carries no
+/// commit, so a `try` on a path that returns before the region's commit leaves the
+/// transaction uncommitted. TX02 promoted this law to check time: the checker refuses
+/// it (`check.transaction_uncommitted`) with the sharpened rationale that a spelled
+/// `return` is a visible commit sentence while `try`'s exit is implicit and carries
+/// none. A tampered image is still refused at verify with `image.flow` — *a path
+/// returns without committing the transaction* (see the `marrow-verify` hostiles).
 #[test]
 fn a_try_crossing_a_region_is_still_rejected() {
     let try_crossing = r#"resource Counter {
@@ -813,8 +799,8 @@ pub fn setChecked(id: int, v: int): Result<int, string> {
 }
 "#;
     assert_eq!(
-        verify_rejection(try_crossing).as_deref(),
-        Some("image.flow")
+        compile_error_codes(try_crossing),
+        vec!["check.transaction_uncommitted".to_string()],
     );
 }
 

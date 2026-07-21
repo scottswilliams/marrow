@@ -171,6 +171,12 @@ pub(crate) struct Lowered {
     /// Whether this body owns a `transaction` block (emits a begin). A test body that
     /// drives such a function mixes invocation boundaries and is refused.
     pub owns_transaction: bool,
+    /// This body's lowered instruction tape, and the full source span of each
+    /// instruction (parallel to `code`). The check-time transaction-ownership pass
+    /// walks this tape — the same instruction sequence the verifier reconstructs from
+    /// the image — to report the ownership-lattice laws at their source spans.
+    pub code: Vec<Instr>,
+    pub code_spans: Vec<SourceSpan>,
     /// Editor facts from this body: `(span, hover display, optional definition target)`
     /// for each resolved local/parameter use and function callee.
     pub hover_facts: Vec<(SourceSpan, String, Option<DefinitionTarget>)>,
@@ -261,6 +267,11 @@ pub(crate) struct FnLowerer<'a> {
     mode: LowerMode,
     code: Vec<Instr>,
     spans: Vec<SpanEntry>,
+    /// Full UTF-8 source span of each emitted instruction, parallel to `code`. The
+    /// image itself keeps only the line/column [`SpanEntry`]; these byte-accurate
+    /// spans stay compiler-local so the check-time transaction-ownership pass can point
+    /// a diagnostic at the exact offending construct. Never enters the image.
+    full_spans: Vec<SourceSpan>,
     /// The image indices of every function this body calls directly, in emission
     /// order. The caller uses these to detect a recursive call cycle at check time.
     calls: Vec<u16>,
@@ -325,6 +336,7 @@ pub(in crate::lower) use self::registry::*;
 pub(in crate::lower) use self::types::*;
 
 pub(crate) use self::builtins::{is_reserved_builtin_name, reserved_builtin_name};
+pub(crate) use self::durable::{is_durable_place_op, is_mutation_instr};
 pub(crate) use self::registry::{FunctionRegistry, GenericRegistry};
 pub(crate) use self::types::parse_int;
 
@@ -364,6 +376,7 @@ impl<'a> FnLowerer<'a> {
             mode: LowerMode::Concrete,
             code: Vec::new(),
             spans: Vec::new(),
+            full_spans: Vec::new(),
             calls: Vec::new(),
             txn_depth: 0,
             unwrapped_mutations: Vec::new(),
@@ -726,6 +739,7 @@ impl<'a> FnLowerer<'a> {
         let source_id = self.draft.intern_string(self.file.as_str());
         let code = std::mem::take(&mut self.code);
         let spans = std::mem::take(&mut self.spans);
+        let code_spans = std::mem::take(&mut self.full_spans);
         let has_direct_durable_op = code.iter().any(is_durable_place_op);
         let owns_transaction = code.iter().any(|instr| matches!(instr, Instr::TxnBegin));
         let func_id = self.draft.add_function(FunctionDef {
@@ -734,7 +748,7 @@ impl<'a> FnLowerer<'a> {
             params,
             ret: ret_ref,
             local_count: self.slot_count,
-            code,
+            code: code.clone(),
             spans,
         });
         Ok(Some(Lowered {
@@ -744,6 +758,8 @@ impl<'a> FnLowerer<'a> {
             unwrapped_calls: std::mem::take(&mut self.unwrapped_calls),
             has_direct_durable_op,
             owns_transaction,
+            code,
+            code_spans,
             hover_facts: std::mem::take(&mut self.hover_facts),
         }))
     }
@@ -769,6 +785,7 @@ impl<'a> FnLowerer<'a> {
             line: span.line.max(1),
             column: span.column.max(1),
         });
+        self.full_spans.push(span);
     }
 
     fn push_jump(&mut self, span: SourceSpan) -> usize {

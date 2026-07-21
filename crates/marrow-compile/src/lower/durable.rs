@@ -290,7 +290,7 @@ pub(super) struct TraversalTarget<'e> {
 /// presence probe, erase, or managed-index access over a `^` place. A `Duration*`
 /// arithmetic opcode is not one. The test-body strict-separation check uses this to
 /// tell a body that touches durable data directly from one that only drives exports.
-pub(super) fn is_durable_place_op(instr: &Instr) -> bool {
+pub(crate) fn is_durable_place_op(instr: &Instr) -> bool {
     matches!(
         instr,
         Instr::DurExists(_)
@@ -320,7 +320,7 @@ pub(super) fn is_durable_place_op(instr: &Instr) -> bool {
 /// same opcode set. The match is exhaustive over `Instr` — the closed complement is
 /// listed rather than elided — so a new opcode fails to compile until it is
 /// classified here, welding this owner to the instruction set.
-pub(super) fn is_mutation_instr(instr: &Instr) -> bool {
+pub(crate) fn is_mutation_instr(instr: &Instr) -> bool {
     match instr {
         Instr::DurSetRequired(_)
         | Instr::DurSetSparse(_)

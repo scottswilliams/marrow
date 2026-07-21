@@ -21,11 +21,11 @@
 //! export, each call its own invocation boundary), D2 (a whole-entry read inside a
 //! read-only region is admitted), and D3 (a whole-entry write through an identity
 //! lookup lowers). DX01 then made a `return` inside an owned region a commit site, so
-//! the return-inside-region row is a round trip too. Their rows are positive controls
-//! now. One divergence remains ledgered — an empty (no-op) `transaction` — which the
-//! verifier refuses but the checker still accepts; it belongs to the by-design checker
-//! false-negative family TX02 promotes to check-time diagnostics. The correct-rollback
-//! journey below locks the invocation-boundary isolation law: a faulting export
+//! the return-inside-region row is a round trip too. TX02 promoted the last divergence —
+//! an empty (no-op) `transaction`, which the verifier refuses — to a check-time
+//! diagnostic, so the checker now rejects it before an image is minted and the
+//! divergence ledger is empty. Its row is a `CheckerRejects` control. The correct-
+//! rollback journey below locks the invocation-boundary isolation law: a faulting export
 //! invocation rolls back without disturbing a prior committed one.
 
 use marrow_verify::{TestKind, VerifiedImage};
@@ -193,10 +193,22 @@ enum Expect {
     /// A recorded checker/verifier divergence: the checker accepts but the
     /// verifier rejects. The exact current code and detail are pinned so a fix
     /// that changes the verdict forces this row to move to `RoundTrips`.
+    ///
+    /// The ledger is empty after TX02 promoted the last divergence (the empty
+    /// transaction) to a check-time diagnostic; the variant is retained as the
+    /// mechanism a future divergence is recorded through, so a regression becomes a
+    /// failing row rather than a review finding.
+    #[allow(dead_code)]
     KnownDivergent {
         code: &'static str,
         detail: &'static str,
     },
+    /// The checker rejects the composition at check time, so it never reaches the
+    /// verifier — checker-accept ⇒ verify holds vacuously and the two agree. The exact
+    /// `check.*` code is pinned so a change to the verdict forces this row to move.
+    /// A former `KnownDivergent` row lands here once its divergence is promoted to a
+    /// source-facing diagnostic (TX02 moved the empty-transaction row here).
+    CheckerRejects { code: &'static str },
 }
 
 struct Row {
@@ -373,15 +385,15 @@ fn matrix() -> Vec<Row> {
             expect: Expect::RoundTrips { run: true },
         },
         // A `transaction` block with no durable operation is a no-op region the runtime
-        // cannot run (it opens no session), refused by the verifier; the checker still
-        // accepts it — the same by-design false-negative family TX02 promotes to check
-        // time. Ledgered so the remaining divergence stays visible.
+        // cannot run (it opens no session). TX02 promoted this law to a check-time
+        // diagnostic, so the checker now refuses it before an image is minted — the
+        // former checker-accept/verify-reject divergence is closed and the checker and
+        // verifier agree (a tampered image is still refused at `image.flow`).
         Row {
-            label: "empty transaction — no durable operation (TX02 promotes to check time)",
+            label: "empty transaction — no durable operation (checker-rejected since TX02)",
             ops: "pub fn emptyRegion() {\n    transaction {\n    }\n}",
-            expect: Expect::KnownDivergent {
-                code: "image.flow",
-                detail: "a transaction performs no durable operation",
+            expect: Expect::CheckerRejects {
+                code: "check.transaction_empty",
             },
         },
         // ---- DX05: `exists` over a unique index — the presence half of the lookup. ----
@@ -599,6 +611,7 @@ fn run_all_tests(label: &str, image: &VerifiedImage) {
 #[test]
 fn checker_acceptance_implies_verification_over_the_composition_matrix() {
     let mut known_divergent = 0usize;
+    let mut checker_rejected = 0usize;
 
     for row in matrix() {
         let stage = pipeline(row.ops);
@@ -639,22 +652,46 @@ fn checker_acceptance_implies_verification_over_the_composition_matrix() {
             ),
             (Expect::KnownDivergent { .. }, Stage::CheckerRejected(code)) => panic!(
                 "`{}` was a checker-accept/verify-reject divergence but the checker now refuses it \
-                 ({code}); re-classify the row.",
+                 ({code}); re-classify the row to Expect::CheckerRejects.",
+                row.label
+            ),
+            (Expect::CheckerRejects { code }, Stage::CheckerRejected(got_code)) => {
+                assert_eq!(*code, got_code, "{}: check-time code drifted", row.label);
+                checker_rejected += 1;
+            }
+            (Expect::CheckerRejects { code }, Stage::Verified(_)) => panic!(
+                "LEDGER STALE — `{}` now verifies; the checker no longer refuses it ({code}). \
+                 A promoted diagnostic regressed — restore the check or move the row.",
+                row.label
+            ),
+            (
+                Expect::CheckerRejects { code },
+                Stage::VerifyRejected {
+                    code: got_code,
+                    detail,
+                },
+            ) => panic!(
+                "`{}` was expected to be refused at check time ({code}) but the checker accepted it \
+                 and the verifier rejected it ({got_code}: {detail}) — the check-time promotion \
+                 regressed into a divergence.",
                 row.label
             ),
         }
     }
 
-    // The divergence set is explicit and bounded. RV01 closed D1/D2/D3, DX01 turned the
-    // return-inside-region row into a round trip, and IDK01 lowered every identity-operand
-    // capturing position (place binding, branch write, group-leaf write/delete, composite-
-    // root place), so the only remaining checker-accept/verify-reject row is the empty
-    // (no-op) transaction TX02 owns. A new divergence added without a ledger row fails an
-    // individual row above; this count fails if the ledgered divergence is silently removed
-    // or an unledgered one appears.
+    // The divergence set is closed. RV01 closed D1/D2/D3, DX01 turned the return-inside-
+    // region row into a round trip, IDK01 lowered every identity-operand capturing position,
+    // and TX02 promoted the last divergence — the empty (no-op) transaction — to a check-time
+    // diagnostic, so the checker-accept/verify-reject ledger is now empty. A new divergence
+    // added without a ledger row fails an individual row above; these counts fail if the
+    // closed empty-transaction row silently changes verdict.
     assert_eq!(
-        known_divergent, 1,
-        "expected exactly the TX02-owned empty-transaction divergence",
+        known_divergent, 0,
+        "the divergence ledger is empty after TX02"
+    );
+    assert_eq!(
+        checker_rejected, 1,
+        "expected exactly the TX02-promoted empty-transaction check-time rejection",
     );
 }
 
