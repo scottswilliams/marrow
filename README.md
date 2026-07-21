@@ -102,7 +102,8 @@ the trustworthy decoupled parts retained.
 | Area | Current implementation |
 |---|---|
 | Front end | Native lexer, parser, and formatter for `.mw` source with typed parse diagnostics |
-| CLI | `marrow init`, `marrow fmt` (a single file or a project directory, `--check`/`--write`), `marrow check` (check a project and describe each export's durable access demand), `marrow run`, `marrow test`, and `marrow client typescript`, plus `--version`/`--help`; the refounding command names (`data`, `doctor`, `evolve`, `serve`, `backup`, `restore`) report `cli.command_unsupported` until they land |
+| CLI | `marrow init`, `marrow fmt` (a single file or a project directory, `--check`/`--write`), `marrow check` (check a project and describe each export's durable access demand), `marrow run`, `marrow test`, `marrow client typescript`, and `marrow lsp` (the language server), plus `--version`/`--help`; the refounding command names (`data`, `doctor`, `evolve`, `serve`, `backup`, `restore`) report `cli.command_unsupported` until they land |
+| Language server | `marrow lsp` runs an in-tree LSP server over stdio, serving diagnostics, whole-document formatting, hover, and definition from the compiler's published analysis facts; it reconstructs no language semantics and opens no store |
 | Compiler pipeline | The storeless compiler, reproducible program image, independent verifier, bytecode VM, and typed path kernel run a narrow, growing language subset end to end; a well-formed construct outside the admitted subset is a typed `check.unsupported` diagnostic |
 | Storage engine | A private ordered-byte engine contract with in-memory and redb backends under one conformance suite, plus the logical key/value/civil-date codecs; the path kernel is the engine's source-language consumer through a narrow byte seam |
 

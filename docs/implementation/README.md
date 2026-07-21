@@ -31,6 +31,7 @@ through which direction.
 | `marrow-store` | Ordered-byte engine contract, memory and redb backends, engine conformance suite | [Storage](storage.md) |
 | `marrow-local-wire` | Pure single owner of the local wire: length-prefixed framing with a maximum size, the protocol version byte, canonical JSON (its own value model, codec, and depth/string bounds), the closed handshake/request/response/fault grammar, and the closed loss classification; depends only on `marrow-codes` | — |
 | `marrow-runner` | Storeless export runner (library plus stock binary): the supervised Unix-domain channel discipline (mode-0700 dir, listener-before-handshake, launch nonce, poll-based deadlines, explicit fail-closed teardown, bounded loop-accept-until-authenticated), the transfer codec between wire JSON and runtime values, and export dispatch that rejects unknown, durable, and mismatched requests; consumes `marrow-verify` and `marrow-vm` | — |
+| `marrow-lsp` | The language server dispatched as `marrow lsp`: a private closed JSON-RPC 2.0 envelope and bounded standard-library stdio transport (no server framework, async runtime, or channel crate), a reader/coordinator/analysis-worker/writer topology over bounded channels and move-only capacity credits, the LSP lifecycle and full-document sync ledger, and diagnostics/formatting/hover/definition projected from `marrow-compile`'s published `AnalysisSnapshot`. Reconstructs no semantics and opens no store; consumes the fact surface plus `marrow-project-fs` | [Language server](../tools/lsp.md) |
 
 ## Guides
 
