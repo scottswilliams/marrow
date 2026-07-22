@@ -98,6 +98,7 @@ const IDS: &str = "marrow ids v0\n\
      id field Tally.count 2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b\n\
      id root assets 3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a\n\
      id key assets.id 3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b\n\
+     id index assets.byTag 5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a\n\
      id root tallies 4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a\n\
      id key tallies.name 4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b\n\
      high-water 0\n\
@@ -116,7 +117,9 @@ const SHAPE: &str = "resource Asset {\n\
     \x20   required count: int\n\
     }\n\
     \n\
-    store ^assets[id: int]: Asset\n\
+    store ^assets[id: int]: Asset {\n\
+    \x20   index byTag[tag] unique\n\
+    }\n\
     store ^tallies[name: string]: Tally\n";
 
 /// The Workshop journey program: cross-root create, reads, a cross-root correction, and a
@@ -160,6 +163,21 @@ fn journey_source() -> String {
         \n\
         pub fn present(id: int): bool {{\n\
         \x20   return exists(^assets[id])\n\
+        }}\n\
+        \n\
+        pub fn findByTag(tag: string): Id(^assets)? {{\n\
+        \x20   return ^assets.byTag[tag]\n\
+        }}\n\
+        \n\
+        pub fn nameByHandle(who: Id(^assets)): string? {{\n\
+        \x20   return ^assets[who].name\n\
+        }}\n\
+        \n\
+        pub fn holders(): Map<string, int> {{\n\
+        \x20   var m: Map<string, int> = Map()\n\
+        \x20   m[\"catalogued\"] = ^tallies[\"catalogued\"].count ?? 0\n\
+        \x20   m[\"moves\"] = ^tallies[\"moves\"].count ?? 0\n\
+        \x20   return m\n\
         }}\n"
     )
 }
@@ -312,6 +330,28 @@ await first.recordMove(1n, "Bay 3");
 ok("location", (await first.location(1n)) === "Bay 3");
 ok("moveCount-1", (await first.moveCount()) === 1n);
 
+// Map return (holders): the two tallies cross as an ordered [key, value] array,
+// never a JS object.
+const show = (x) => JSON.stringify(x, (_, v) => (typeof v === "bigint" ? `${v}n` : v));
+const tallies = await first.holders();
+ok("holders-array", Array.isArray(tallies) && tallies.length === 2, show(tallies));
+ok("holders-catalogued", tallies.some(([k, v]) => k === "catalogued" && v === 1n));
+ok("holders-moves", tallies.some(([k, v]) => k === "moves" && v === 1n));
+
+// Identity return (findByTag): the unique index yields a branded { root, key } handle
+// for the matching asset, or null when absent.
+const handle = await first.findByTag("T-100");
+ok(
+  "findByTag-hit",
+  handle !== null && handle.root === "assets" && handle.key[0] === 1n,
+  show(handle),
+);
+ok("findByTag-miss", (await first.findByTag("NOPE")) === null);
+
+// Identity parameter (nameByHandle): the handle round-trips back to name the asset it
+// identifies, closing the identity codec both directions through the unchanged runner.
+ok("nameByHandle", handle !== null && (await first.nameByHandle(handle)) === "Cordless Drill");
+
 // rollback: an unguarded move on an absent asset faults required-missing and rolls the whole
 // cross-root region back — the moves tally is not advanced by a move that never landed.
 try {
@@ -410,6 +450,170 @@ finish();
     assert_driver_passed(&node(
         &broadened,
         "driver_refuse.mts",
+        &runner,
+        &[("MARROW_STORE", &store)],
+    ));
+}
+
+/// The G00b/G02c term-10 client-drift transcript: a client generated against one
+/// image, launched against a runner serving a newer image whose export surface has
+/// changed, fails TYPED at the handshake — the generated `launch` refuses a served
+/// identity that is not the one the client was generated for — rather than silently
+/// calling a skewed interface. This is the Marrow analogue of the control's
+/// build-time drift failure. The current identity pinning already produces it, so
+/// this proves it rather than building anew; the driver prints the verbatim message.
+#[test]
+#[ignore = "spawns Node + a runner + Unix sockets; run with the sandbox disabled"]
+fn a_stale_client_fails_typed_against_a_newer_image() {
+    let temp = TempDir::new("drift");
+    // Revision A: `report` returns a scalar.
+    let source_a = "pub fn report(): int {\n    return 1\n}\n";
+    // Revision B: the same export now returns a `List<int>` — a changed transfer
+    // signature, so the wire interface identity moves.
+    let source_b = "pub fn report(): List<int> {\n\
+        \x20   var xs: List<int> = List()\n\
+        \x20   xs = append(xs, 1)\n\
+        \x20   return xs\n\
+        }\n";
+    let client_a = prepare(&temp, "va", source_a);
+    let image_b = prepare(&temp, "vb", source_b);
+    let runner = runner_path();
+
+    // Drive revision A's client (its INTERFACE_ID pins revision A) against a runner
+    // serving revision B's image. The storeless launch proves the interface identity.
+    let driver = format!(
+        "{PRELUDE}\n{}",
+        r#"
+try {
+  const stale = await Client.launch({ runner: RUNNER, image: IMAGE });
+  stale.terminate();
+  ok("drift", false, "a stale client launched against a newer image");
+} catch (error) {
+  console.log(`DRIFT-TRANSCRIPT ${error instanceof Error ? error.message : String(error)}`);
+  ok("drift", error instanceof Error && /identity mismatch/.test(error.message), String(error));
+}
+finish();
+"#
+    );
+    write(&client_a.join("driver_drift.mts"), &driver);
+    // Import revision A's client, but point MARROW_IMAGE at revision B (overriding the
+    // default the harness sets), so the runner serves the newer surface.
+    let output = node(
+        &client_a,
+        "driver_drift.mts",
+        &runner,
+        &[("MARROW_IMAGE", &image_b.join("program.image"))],
+    );
+    assert_driver_passed(&output);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let transcript = stdout
+        .lines()
+        .find(|line| line.starts_with("DRIFT-TRANSCRIPT"))
+        .expect("the drift transcript line is printed");
+    assert!(
+        transcript.contains("identity mismatch"),
+        "drift transcript: {transcript}"
+    );
+}
+
+/// Copy a committed `crates/marrow/tests/fixtures/v01/<name>` project into `temp`,
+/// generate its strict TypeScript client, and compile its image beside it, using the
+/// fixture's own minted `marrow.ids`. Returns the prepared project directory.
+fn prepare_fixture(temp: &TempDir, name: &str, src_file: &str) -> PathBuf {
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/v01")
+        .join(name);
+    let project = temp.join(name);
+    let toml = fs::read_to_string(fixture.join("marrow.toml")).expect("fixture manifest");
+    let source = fs::read_to_string(fixture.join("src").join(src_file)).expect("fixture source");
+    let ids = fs::read(fixture.join("marrow.ids")).expect("fixture ids");
+    write(&project.join("marrow.toml"), &toml);
+    write(&project.join("src").join(src_file), &source);
+    fs::write(project.join("marrow.ids"), &ids).expect("write ids");
+
+    let generated = Command::new(MARROW)
+        .args(["client", "typescript", "--out", "gen"])
+        .current_dir(&project)
+        .output()
+        .expect("run marrow client");
+    assert!(
+        generated.status.success(),
+        "client generation failed: {}",
+        String::from_utf8_lossy(&generated.stderr)
+    );
+
+    let manifest = marrow_project::Manifest::parse(&toml).expect("manifest");
+    let files = vec![marrow_project::CapturedFile::new(
+        format!("src/{src_file}"),
+        source.into_bytes(),
+    )];
+    let captured = marrow_project::capture(
+        &manifest,
+        files,
+        Some(&ids),
+        &marrow_project::CaptureLimits::DEFAULT,
+    )
+    .expect("capture");
+    let image = marrow_compile::compile(&captured)
+        .expect("compile")
+        .image
+        .bytes;
+    fs::write(project.join("program.image"), image).expect("write image");
+    project
+}
+
+/// The complete Club Locker client compiles and round-trips through the unchanged
+/// runner over a real persistent store: domain exports over `date`, `int`,
+/// `string?`, `bool`, and `Result` — the already-carried carriers — all survive the
+/// generated client and native attached session unchanged by the transfer extension.
+#[test]
+#[ignore = "spawns Node + a runner + Unix sockets; run with the sandbox disabled"]
+fn the_club_locker_client_round_trips_through_the_trusted_main() {
+    let temp = TempDir::new("clublocker");
+    let project = prepare_fixture(&temp, "club_locker", "clublocker.mw");
+    let store = temp.join("store");
+    let runner = runner_path();
+
+    let driver = format!(
+        "{PRELUDE}\n{}",
+        r#"
+await M.provision({ runner: RUNNER, image: IMAGE, store: STORE });
+const club = await Client.launch({ runner: RUNNER, image: IMAGE, store: STORE });
+
+// registerMember: a `date` argument crosses as canonical text; the member number is
+// allocated gaplessly from the application's own counter.
+ok("member-1", (await club.registerMember("Ada Lovelace", "2024-09-27")) === 1n);
+ok("member-2", (await club.registerMember("Grace Hopper", "2024-09-28")) === 2n);
+
+// string? and bool returns.
+ok("memberName", (await club.memberName(1n)) === "Ada Lovelace");
+ok("memberExists", (await club.memberExists(1n)) === true);
+ok("memberMissing", (await club.memberExists(99n)) === false);
+ok("noEmail", (await club.memberEmail(1n)) === null);
+
+// registerAsset returns a Result sum: `{ member: "ok", payload: [assetId] }`.
+const reg = await club.registerAsset("R-100", "racquets", "Racquet");
+ok("registerAsset-ok", reg.member === "ok" && reg.payload[0] === 1n, JSON.stringify(reg, (_, v) => typeof v === "bigint" ? `${v}n` : v));
+ok("assetTag", (await club.assetTag(1n)) === "R-100");
+
+// checkout returns a Result sum as well; the loan is created for the member/asset.
+const loan = await club.checkout(1n, 1n, "2024-10-01");
+ok("checkout-ok", loan.member === "ok");
+ok("onLoan", (await club.assetOnLoanTo(1n)) === 1n);
+
+// A restart: a fresh attached session reads the committed data back.
+await club.close();
+const again = await Client.launch({ runner: RUNNER, image: IMAGE, store: STORE });
+ok("restart-memberName", (await again.memberName(2n)) === "Grace Hopper");
+await again.close();
+
+finish();
+"#
+    );
+    write(&project.join("driver_club.mts"), &driver);
+    assert_driver_passed(&node(
+        &project,
+        "driver_club.mts",
         &runner,
         &[("MARROW_STORE", &store)],
     ));

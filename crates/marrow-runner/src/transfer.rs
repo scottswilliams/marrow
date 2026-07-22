@@ -177,13 +177,8 @@ fn decode_collection(image: &VerifiedImage, idx: u16, json: &Json) -> Option<Val
 }
 
 /// Decode an entry identity `Id(^root)` argument: a JSON array of the root's
-/// key-column scalars, one per declared column and in declaration order.
-///
-/// An `Id(^root)` parameter is currently trough-absent (the checker rejects an
-/// identity in any parameter position), so no verified image reaches this from an
-/// argument; identity crosses only as a return today. This half keeps the codec
-/// total and symmetric with [`encode_value`]'s identity arm and rejects a hostile
-/// identity-shaped argument rather than trusting it.
+/// key-column scalars, one per declared column and in declaration order. A wrong
+/// arity, or a key that does not match its declared column scalar, is a mismatch.
 fn decode_identity(image: &VerifiedImage, root: u16, json: &Json) -> Option<Value> {
     let Json::Array(items) = json else {
         return None;

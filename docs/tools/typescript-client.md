@@ -37,12 +37,16 @@ The wire carries the closed transfer graph. Its TypeScript projection:
 | `T?` | `T \| null` | `null` when absent |
 | `struct` | inline `{ field: T; sparse?: T }` | object; a vacant sparse field is omitted |
 | `enum` (incl. `Option`/`Result`) | `{ member: "name"; payload: [..] }` union | tagged member and dense payload |
+| `List<T>` | `Array<T>` | JSON array of element values |
+| `Map<K, V>` | `Array<[K, V]>` | JSON array of ordered `[key, value]` pairs (never a JS object), so a non-string key and entry order survive |
+| `Id(^root)` | `{ readonly root: "root"; readonly key: [..] }` | JSON array of the root's key-column scalars; a branded handle the client cannot confuse across roots |
 
-A finite collection (`List`/`Map`) is not yet in the transfer graph; an export
-whose signature reaches one refuses generation with `cli.transfer_excluded`.
-Arguments are validated against the export's verified signature both in the
-client (a `TypeError` before any byte is sent) and authoritatively by the
-runner.
+The transfer graph is closed over every value type, so a verified signature
+always projects. Arguments are validated against the export's verified signature
+both in the client (a `TypeError` before any byte is sent) and authoritatively by
+the runner. (An export signature can still fail projection only if it is too
+complex for the fixed interface budget or names an unknown type row, reported as
+`cli.interface_unbuildable`.)
 
 ## Using the client
 

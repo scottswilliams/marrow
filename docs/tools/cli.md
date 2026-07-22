@@ -167,10 +167,12 @@ into the output directory (default `client`): the generated `client.mts` — one
 named `async` method per exported function with exact transfer types and
 runtime validation — and the pinned Node supervision module
 (`marrow-supervisor.mjs` plus its type declarations). Stable inputs yield
-byte-identical output. An export whose signature reaches a value outside the
-wire transfer graph (a finite collection, until the earned transfer extension)
-refuses the whole generation with `cli.transfer_excluded`. Unlike `run`, the
-generator never mints durable identities. See
+byte-identical output. The wire transfer graph is closed over every value type
+(the seven scalars, records, sums, `List`, `Map`, and entry identities), so a
+verified program's interface always projects; a signature too complex for the
+fixed interface budget or naming an unknown type row refuses the whole generation
+with `cli.interface_unbuildable`. Unlike `run`, the generator never mints durable
+identities. See
 [TypeScript client](typescript-client.md) for the generated API, the
 supervision law, and the loss classification.
 

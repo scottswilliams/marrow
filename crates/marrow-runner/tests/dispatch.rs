@@ -314,6 +314,78 @@ fn a_hostile_map_argument_is_rejected() {
     );
 }
 
+/// A minted identity ledger for the `Id(^assets)` parameter program below.
+const ASSET_IDS: &str = "marrow ids v0\n\
+     machine-written by marrow; do not edit\n\
+     id application . b3af9f5a22196ee6b8c9fce9e79ae9ca\n\
+     id product Asset 92a979ffbe70cf2e7137331e49b30820\n\
+     id field Asset.name b70ebba5779562a8337a1108d8a9b185\n\
+     id field Asset.tag 68d9361920d704294e3ca3b0ccc944dc\n\
+     id root assets 17e4e04d857b5cfb4bb1cab6e3ad9f8f\n\
+     id key assets.id 13b92ecafc9d29ad2fe21d3d9a42505c\n\
+     id index assets.byTag 46bada0700e76dde99799c210ce4441e\n\
+     high-water 0\n\
+     end\n";
+
+/// A storeless export taking an `Id(^assets)` parameter, so the identity codec's
+/// decode half is exercised through the served interface (the argument decodes even
+/// though the body reads no durable data).
+const ID_PARAM: &str = r#"resource Asset {
+    required tag: string
+    required name: string
+}
+
+store ^assets[id: int]: Asset {
+    index byTag[tag] unique
+}
+
+pub fn keyId(who: Id(^assets)): bool {
+    return true
+}
+"#;
+
+#[test]
+fn an_identity_argument_round_trips_and_hostiles_are_rejected() {
+    let (service, ids) = build(ID_PARAM, Some(ASSET_IDS.as_bytes()));
+    // A single-column identity key tuple decodes onto the `Id(^assets)` parameter.
+    assert_eq!(
+        call(
+            &service,
+            id_of(&ids, "keyId"),
+            vec![array(vec![Json::Int(1)])],
+        ),
+        ServerMessage::Value {
+            data: Json::Bool(true)
+        }
+    );
+    let reject = ServerMessage::Reject {
+        code: "runner.arg_mismatch".to_string(),
+    };
+    // Wrong arity: two keys for a single-column root.
+    assert_eq!(
+        call(
+            &service,
+            id_of(&ids, "keyId"),
+            vec![array(vec![Json::Int(1), Json::Int(2)])],
+        ),
+        reject
+    );
+    // Wrong key scalar type: a string where the key column is int.
+    assert_eq!(
+        call(
+            &service,
+            id_of(&ids, "keyId"),
+            vec![array(vec![Json::Str("x".to_string())])],
+        ),
+        reject
+    );
+    // A non-array identity.
+    assert_eq!(
+        call(&service, id_of(&ids, "keyId"), vec![Json::Int(1)]),
+        reject
+    );
+}
+
 #[test]
 fn a_record_with_an_extra_field_is_rejected() {
     let source = r#"struct Point {
