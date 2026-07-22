@@ -110,3 +110,12 @@ second instance focuses the first rather than opening a second store.
 
 Source-only local build; no signing, notarization, DMG/PKG, updater, marketplace, or
 cross-platform packaging in v0.1.
+
+## Known-benign console noise
+
+With DevTools open, Chromium's DevTools front-end logs
+`Request Autofill.enable failed … 'Autofill.enable' wasn't found` (and the
+matching `Autofill.setAddresses` line). Electron does not ship Chrome's
+autofill subsystem, so DevTools' request comes back unimplemented. The lines
+appear in every Electron app while DevTools is open, stop when it closes,
+and touch nothing in this application.
