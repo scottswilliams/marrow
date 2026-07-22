@@ -441,8 +441,14 @@ mod tests {
             r#"{"code":"run.outcome_unknown","kind":"run","outcome":"outcome_unknown"}"#,
         );
         let text = Record::OutcomeUnknown.to_text(&[], &[]);
-        assert!(text.contains("run.outcome_unknown"), "carries the code: {text}");
-        assert!(text.contains("outcome is unknown"), "names the state: {text}");
+        assert!(
+            text.contains("run.outcome_unknown"),
+            "carries the code: {text}"
+        );
+        assert!(
+            text.contains("outcome is unknown"),
+            "names the state: {text}"
+        );
         assert!(
             text.contains("not retried"),
             "states no automatic replay occurred: {text}"

@@ -62,7 +62,10 @@ fn compile(source: &str) -> (VerifiedImage, Vec<u8>) {
     )
     .expect("capture");
     let compiled = marrow_compile::compile(&project).expect("compile");
-    (verify(&compiled.image.bytes).expect("verify"), compiled.image.bytes)
+    (
+        verify(&compiled.image.bytes).expect("verify"),
+        compiled.image.bytes,
+    )
 }
 
 fn provision(store: &Path, image: &VerifiedImage) {

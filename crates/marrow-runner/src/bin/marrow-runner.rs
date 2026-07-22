@@ -211,9 +211,7 @@ fn attach(image_path: &Path, store: &Path) -> ExitCode {
             eprintln!("{}: {refusal}", refusal.code());
             let code = refusal.code();
             let identity = Id32::from_bytes(image.image_id().0);
-            return serve_over_channel(identity, move || {
-                marrow_runner::RefusalService::new(code)
-            });
+            return serve_over_channel(identity, move || marrow_runner::RefusalService::new(code));
         }
         Err(error) => {
             eprintln!("{}: {error}", error.code());

@@ -138,7 +138,10 @@ fn effective_authority_is_demand_ceiling_grant_and_the_reserved_principal_slot()
     let mut opened = match attach_image(&store, &read_only) {
         Ok(AttachOutcome::AlreadyActive(opened)) => opened,
         Ok(AttachOutcome::Rebound { store, .. }) => store,
-        Err(err) => panic!("the covering image must open the store, got: {}", err.code()),
+        Err(err) => panic!(
+            "the covering image must open the store, got: {}",
+            err.code()
+        ),
     };
 
     let read = DemandCoverage {

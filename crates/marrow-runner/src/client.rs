@@ -84,7 +84,10 @@ fn call_over_socket(
     match read_message(&mut stream, deadline) {
         Ok(reply) => reply_to_outcome(image, export_id, reply),
         Err(error) if lost_reply(&error) => {
-            debug_assert_eq!(classify(HandoffStage::Dispatched), LossClass::OutcomeUnknown);
+            debug_assert_eq!(
+                classify(HandoffStage::Dispatched),
+                LossClass::OutcomeUnknown
+            );
             Ok(CallOutcome::OutcomeUnknown)
         }
         Err(error) => Err(error),
@@ -132,7 +135,10 @@ mod tests {
                 "a {kind:?} read failure after dispatch is a lost reply",
             );
         }
-        assert_eq!(classify(HandoffStage::Dispatched), LossClass::OutcomeUnknown);
+        assert_eq!(
+            classify(HandoffStage::Dispatched),
+            LossClass::OutcomeUnknown
+        );
     }
 
     /// A reply that arrives but does not decode is not a lost reply — the call produced a

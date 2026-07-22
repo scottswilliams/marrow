@@ -81,7 +81,10 @@ fn scratch(tag: &str) -> PathBuf {
         .map(|d| d.as_nanos())
         .unwrap_or(0);
     let counter = COUNTER.fetch_add(1, Ordering::Relaxed);
-    std::env::temp_dir().join(format!("marrow-native-kill-{tag}-{}-{nonce}-{counter}", std::process::id()))
+    std::env::temp_dir().join(format!(
+        "marrow-native-kill-{tag}-{}-{nonce}-{counter}",
+        std::process::id()
+    ))
 }
 
 fn provision(store: &Path, image: &VerifiedImage) {
@@ -174,7 +177,11 @@ fn a_native_call_lost_to_runner_death_after_dispatch_is_outcome_unknown() {
     // Handshake, then dispatch a mutating call (`add`).
     let mut stream = UnixStream::connect(&socket).expect("connect");
     stream
-        .write_all(&ClientMessage::Hello { nonce }.encode().expect("encode hello"))
+        .write_all(
+            &ClientMessage::Hello { nonce }
+                .encode()
+                .expect("encode hello"),
+        )
         .expect("send hello");
     let ready = recv(&mut stream);
     assert!(
@@ -208,7 +215,10 @@ fn a_native_call_lost_to_runner_death_after_dispatch_is_outcome_unknown() {
     // tests); the wire loss model classifies the same stage as OutcomeUnknown.
     std::thread::sleep(Duration::from_millis(50));
     let lost = recv(&mut stream);
-    assert!(lost.is_none(), "a killed runner sends no reply, not a value: {lost:?}");
+    assert!(
+        lost.is_none(),
+        "a killed runner sends no reply, not a value: {lost:?}"
+    );
     assert_eq!(
         classify(HandoffStage::Dispatched),
         LossClass::OutcomeUnknown,
