@@ -221,7 +221,11 @@ fn render_roots(roots: &[RootDemand]) -> Option<String> {
         } else if unit_spelled {
             parts.push(format!("{} (+{})", root.root, root.field_count));
         } else {
-            let unit = if root.field_count == 1 { "field" } else { "fields" };
+            let unit = if root.field_count == 1 {
+                "field"
+            } else {
+                "fields"
+            };
             parts.push(format!("{} (+{} {unit})", root.root, root.field_count));
             unit_spelled = true;
         }

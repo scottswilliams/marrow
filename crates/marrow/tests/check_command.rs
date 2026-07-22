@@ -80,7 +80,8 @@ fn check_accepts_an_explicit_project_directory() {
 /// from disturbing that surface.
 #[test]
 fn check_demand_prints_the_full_per_export_sentences() {
-    let output = Project::from_fixture("bookstore").run_cli("bookstore-demand", &["check", "--demand"]);
+    let output =
+        Project::from_fixture("bookstore").run_cli("bookstore-demand", &["check", "--demand"]);
     assert!(output.success(), "{}", output.stderr_text());
     assert_eq!(output.stdout_text(), BOOKSTORE_DEMAND);
 }
@@ -104,22 +105,32 @@ fn check_summary_dedups_collapses_and_rolls_up() {
 
     // Shared demand: the two exports share one header, and neither prints its own entry.
     assert!(report.contains("alpha, beta (2 exports, one shared demand)"));
-    assert!(!report.contains("\n  alpha\n"), "not listed alone: {report}");
+    assert!(
+        !report.contains("\n  alpha\n"),
+        "not listed alone: {report}"
+    );
     assert!(!report.contains("\n  beta\n"), "not listed alone: {report}");
 
     // Root rollup: the summary names roots with a field count, never the child atoms —
     // those stay behind `--demand`.
     assert!(report.contains("^accounts (+2 fields)"));
-    assert!(!report.contains("^accounts.balance"), "atoms hidden: {report}");
+    assert!(
+        !report.contains("^accounts.balance"),
+        "atoms hidden: {report}"
+    );
 
     // A storeless export inside a durable module collapses to one note.
     assert!(report.contains("  storeless: double"));
 
     // The `--demand` form of the same project keeps every atom the summary rolled away.
-    let full = Project::from_fixture("demand_summary").run_cli("demand-summary-full", &["check", "--demand"]);
+    let full = Project::from_fixture("demand_summary")
+        .run_cli("demand-summary-full", &["check", "--demand"]);
     assert!(full.success(), "{}", full.stderr_text());
     let atoms = full.stdout_text();
-    assert!(atoms.contains("ledger.alpha reads ^accounts.balance"), "{atoms}");
+    assert!(
+        atoms.contains("ledger.alpha reads ^accounts.balance"),
+        "{atoms}"
+    );
     assert!(atoms.contains("^accounts.name"), "{atoms}");
 }
 
@@ -212,7 +223,10 @@ fn check_emr_acceptance_summarizes_without_the_wall() {
 
     // The storeless `status` module collapses, and a shared transaction demand groups its
     // writers — the two headline collapses.
-    assert!(report.contains("all storeless"), "no storeless collapse: {report}");
+    assert!(
+        report.contains("all storeless"),
+        "no storeless collapse: {report}"
+    );
     assert!(
         report.contains("one shared demand"),
         "no shared-demand dedup: {report}"
@@ -221,7 +235,10 @@ fn check_emr_acceptance_summarizes_without_the_wall() {
     // The wall is gone: the summary rolls children up to roots, so no line approaches the
     // former per-atom length (the widest atom sentence ran past 600 columns).
     let widest = report.lines().map(str::len).max().unwrap_or(0);
-    assert!(widest < 300, "a demand line is still a wall ({widest} cols): {report}");
+    assert!(
+        widest < 300,
+        "a demand line is still a wall ({widest} cols): {report}"
+    );
 }
 
 /// The EMR application directory, resolved from the crate manifest, or `None` when the

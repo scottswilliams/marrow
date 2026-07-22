@@ -278,8 +278,8 @@ fn the_fixture_tests_pass_through_marrow_test() {
 /// in source spelling and exits 0 for the clean fixture. The sentence bytes are frozen.
 #[test]
 fn check_reports_the_frozen_per_export_demand() {
-    let output =
-        Project::from_fixture("e07_graph_report").run_cli("e07-graph-report-check", &["check", "--demand"]);
+    let output = Project::from_fixture("e07_graph_report")
+        .run_cli("e07-graph-report-check", &["check", "--demand"]);
     assert!(
         output.success(),
         "check must succeed on the clean fixture: {}",

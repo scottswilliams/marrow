@@ -76,8 +76,8 @@ fn a_durable_root_is_read_and_written_across_modules() {
 /// conspicuous.
 #[test]
 fn check_reports_cross_module_root_demand() {
-    let output =
-        Project::from_fixture("cross_module_roots").run_cli("cross-module-check", &["check", "--demand"]);
+    let output = Project::from_fixture("cross_module_roots")
+        .run_cli("cross-module-check", &["check", "--demand"]);
     assert!(
         output.status.success(),
         "check must succeed on the clean cross-module project: {}",
