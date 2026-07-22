@@ -594,6 +594,10 @@ pub enum CommitResult {
     /// sole opaque recovery fact must be consumed by classification or the attached service
     /// retired.
     Indeterminate(CommitRecovery),
+    /// This session no longer owns a live engine transaction because its commit boundary was
+    /// already crossed. This is a caller-protocol fault and makes no claim about the durable
+    /// outcome of the earlier attempt.
+    SessionFinished,
 }
 
 /// A source-mapped, source-uncatchable kernel fault raised during execution.

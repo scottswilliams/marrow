@@ -761,6 +761,13 @@ fn commit_batch<H: SessionHost>(
             recovery,
             committed: *report,
         }),
+        CommitResult::SessionFinished => Err(ImportError::Commit {
+            fault: CommitFault::Incomplete {
+                durable: DurableCommitState::Unknown,
+            },
+            committed: *report,
+        }
+        .into()),
     }
 }
 

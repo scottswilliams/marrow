@@ -91,6 +91,16 @@ fn recv(stream: &mut UnixStream) -> Option<ServerMessage> {
     ServerMessage::decode(&body).ok()
 }
 
+/// Read one server frame while retaining its call-correlation turn.
+fn recv_with_turn(stream: &mut UnixStream) -> Option<(ServerMessage, Option<u32>)> {
+    let mut header = [0u8; 4];
+    read_full(stream, &mut header)?;
+    let len = frame_body_len(header).ok()?;
+    let mut body = vec![0u8; len];
+    read_full(stream, &mut body)?;
+    ServerMessage::decode_with_turn(&body).ok()
+}
+
 fn read_full(stream: &mut UnixStream, buf: &mut [u8]) -> Option<()> {
     let mut filled = 0;
     while filled < buf.len() {
@@ -126,15 +136,14 @@ fn end_to_end_storeless_call() {
         let mut stream = connect(&path);
         send(&mut stream, &ClientMessage::Hello { nonce }).unwrap();
         let ready = recv(&mut stream);
-        send(
-            &mut stream,
-            &ClientMessage::Request {
-                export,
-                args: vec![Json::Int(2), Json::Int(3)],
-            },
-        )
-        .unwrap();
-        let value = recv(&mut stream);
+        let request = ClientMessage::Request {
+            export,
+            args: vec![Json::Int(2), Json::Int(3)],
+        };
+        stream
+            .write_all(&request.encode_with_turn(u32::MAX).expect("encode request"))
+            .unwrap();
+        let value = recv_with_turn(&mut stream);
         (ready, value)
     });
 
@@ -146,7 +155,10 @@ fn end_to_end_storeless_call() {
     channel.teardown();
 
     assert_eq!(ready, Some(ServerMessage::Ready { session, interface }));
-    assert_eq!(value, Some(ServerMessage::Value { data: Json::Int(5) }));
+    assert_eq!(
+        value,
+        Some((ServerMessage::Value { data: Json::Int(5) }, Some(u32::MAX),)),
+    );
 }
 
 struct UnknownIncompleteHandler;

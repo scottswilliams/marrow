@@ -101,7 +101,10 @@ impl<'s, E: ByteEngine + 's> TxnSession<'s, E> {
     }
 
     fn do_commit(&mut self) -> CommitResult {
-        if *self.poisoned || self.txn.is_none() {
+        if self.txn.is_none() {
+            return CommitResult::SessionFinished;
+        }
+        if *self.poisoned {
             return CommitResult::Aborted;
         }
         match self.reconcile() {

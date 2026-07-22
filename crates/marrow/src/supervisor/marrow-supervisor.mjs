@@ -11,7 +11,8 @@
 // `ready`. Requests are served by ONE serial worker over a bounded queue; a lost
 // reply is classified — never replayed — into the closed loss classes
 // `not_started` / `interrupted` / `outcome_unknown` by how far the call had
-// progressed when the runner died.
+// progressed when the runner died. Each request gets one non-reused u32 turn that
+// its sole reply must echo, so a delayed old frame cannot settle a queued call.
 //
 // The wire grammar here mirrors the single Rust wire owner (`marrow-local-wire`):
 // length-prefixed frames with a version byte, and canonical JSON — object keys in
@@ -32,13 +33,14 @@ import process from "node:process";
 // ---------------------------------------------------------------------------
 // Protocol constants (matched with the Rust wire owner).
 
-export const PROTOCOL_VERSION = 2;
+export const PROTOCOL_VERSION = 3;
 export const MAX_FRAME = 1 << 20;
 export const MAX_DEPTH = 64;
 export const MAX_STRING_BYTES = 64 * 1024;
 
 const I64_MIN = -(2n ** 63n);
 const I64_MAX = 2n ** 63n - 1n;
+const WIRE_U32_MAX = 0xffff_ffffn;
 
 const MAX_QUEUE = 64;
 const HANDSHAKE_DEADLINE_MS = 2000;
@@ -648,7 +650,7 @@ function isWireCode(value) {
 }
 
 function isWireU32(value) {
-  return typeof value === "bigint" && value >= 0n && value <= 0xffff_ffffn;
+  return typeof value === "bigint" && value >= 0n && value <= WIRE_U32_MAX;
 }
 
 function isWireSpan(value) {
@@ -1020,6 +1022,8 @@ export class Session {
     this.inFlight = null;
     /** Admitted calls not yet handed to the serial worker. */
     this.queue = [];
+    /** The next request/reply correlation turn; never reused within this session. */
+    this.nextTurn = 0n;
 
     // Explicit fail-closed teardown on process exit — no
     // reliance on implicit cleanup). SIGKILL is safe: the runner holds no state.
@@ -1058,14 +1062,25 @@ export class Session {
   /** Hand the next queued call to the serial worker when it is idle. */
   pump() {
     if (this.dead || this.inFlight !== null) return;
+    if (this.nextTurn > WIRE_U32_MAX) {
+      const exhausted = this.queue;
+      this.queue = [];
+      for (const call of exhausted) {
+        call.reject(new RangeError("marrow session call-turn space is exhausted"));
+      }
+      this.terminate();
+      return;
+    }
     const next = this.queue.shift();
     if (next === undefined) return;
+    const turn = this.nextTurn;
     let frame;
     try {
       frame = encodeFrame({
         args: next.args,
         export: next.exportId,
         kind: "request",
+        turn,
       });
     } catch (error) {
       next.reject(error);
@@ -1073,7 +1088,8 @@ export class Session {
       return;
     }
     // The call is dispatched the moment its bytes are handed to the socket.
-    this.inFlight = next;
+    this.nextTurn += 1n;
+    this.inFlight = { ...next, turn };
     this.replyDeadline = setTimeout(() => this.terminate(), REPLY_DEADLINE_MS);
     this.replyDeadline.unref?.();
     this.socket.write(frame);
@@ -1108,15 +1124,26 @@ export class Session {
       return;
     }
 
+    // A response is valid only for the exact request turn currently in flight. Without this
+    // echo law, an unsolicited duplicate delivered in a later socket data event could settle a
+    // newly dispatched queued call. Turns never wrap or repeat within a session.
+    if (!isWireU32(message?.turn) || message.turn !== pending.turn) {
+      this.inFlight = null;
+      clearTimeout(this.replyDeadline);
+      pending.reject(protocol("reply turn does not match the in-flight request"));
+      this.terminate();
+      return;
+    }
+
     this.inFlight = null;
     clearTimeout(this.replyDeadline);
     if (
-      hasExactKeys(message, ["data", "kind"]) &&
+      hasExactKeys(message, ["data", "kind", "turn"]) &&
       message.kind === "value"
     ) {
       pending.resolve(message.data);
     } else if (
-      hasExactKeys(message, ["code", "kind", "span"]) &&
+      hasExactKeys(message, ["code", "kind", "span", "turn"]) &&
       message.kind === "fault" &&
       isWireCode(message.code) &&
       isWireSpan(message.span)
@@ -1125,7 +1152,7 @@ export class Session {
         new MarrowFault(message.code, message.span.line, message.span.column),
       );
     } else if (
-      hasExactKeys(message, ["code", "durable", "kind", "span"]) &&
+      hasExactKeys(message, ["code", "durable", "kind", "span", "turn"]) &&
       message.kind === "incomplete" &&
       isWireCode(message.code) &&
       (message.durable === DURABLE_STATE.KNOWN_OLD ||
@@ -1147,7 +1174,7 @@ export class Session {
       this.terminate();
       return;
     } else if (
-      hasExactKeys(message, ["code", "kind"]) &&
+      hasExactKeys(message, ["code", "kind", "turn"]) &&
       message.kind === "reject" &&
       isWireCode(message.code)
     ) {

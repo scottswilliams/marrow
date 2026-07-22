@@ -83,7 +83,7 @@ fn call_over_socket(
     // distinct typed outcome, never replayed: a read-only refresh observes the current state.
     match read_message(&mut stream, deadline) {
         Ok(reply) => reply_to_outcome(image, export_id, reply),
-        Err(error) if lost_reply(&error) => {
+        Err(error) if post_dispatch_read_failed(&error) => {
             debug_assert_eq!(
                 classify(HandoffStage::Dispatched),
                 LossClass::OutcomeUnknown
@@ -94,47 +94,52 @@ fn call_over_socket(
     }
 }
 
-/// Whether a read failure after the request was dispatched is a *lost reply* — the runner died
-/// or fell silent past the deadline before its reply arrived — rather than a malformed reply
-/// that did arrive. A lost reply classifies the dispatched call as
+/// Whether the socket read failed after the request was dispatched. Every socket I/O failure at
+/// this boundary loses the reply: the request may have run, regardless of the operating-system
+/// error kind. A lost reply classifies the dispatched call as
 /// [`CallOutcome::OutcomeUnknown`]; a reply that arrives but does not decode stays its own
 /// distinct wire/decode error, since the call demonstrably produced a reply.
-fn lost_reply(error: &ClientError) -> bool {
-    matches!(
-        error,
-        ClientError::Io(io)
-            if matches!(
-                io.kind(),
-                std::io::ErrorKind::UnexpectedEof
-                    | std::io::ErrorKind::BrokenPipe
-                    | std::io::ErrorKind::ConnectionReset
-                    | std::io::ErrorKind::TimedOut
-            )
-    )
+fn post_dispatch_read_failed(error: &ClientError) -> bool {
+    matches!(error, ClientError::Io(_))
 }
 
 #[cfg(test)]
 mod tests {
-    use super::lost_reply;
+    use super::post_dispatch_read_failed;
     use crate::terminal::ClientError;
-    use marrow_local_wire::{HandoffStage, LossClass, classify};
+    use marrow_local_wire::{HandoffStage, LossClass, WireError, classify};
 
     /// A reply lost to peer death after dispatch is classified `OutcomeUnknown`, matching the
     /// wire loss model for a `Dispatched` handoff stage — the native one-shot call is reported
     /// outcome-unknown, never replayed.
     #[test]
-    fn a_lost_reply_after_dispatch_is_outcome_unknown() {
+    fn every_socket_read_io_after_dispatch_is_outcome_unknown() {
         for kind in [
+            std::io::ErrorKind::NotFound,
+            std::io::ErrorKind::PermissionDenied,
+            std::io::ErrorKind::ConnectionRefused,
             std::io::ErrorKind::UnexpectedEof,
             std::io::ErrorKind::BrokenPipe,
             std::io::ErrorKind::ConnectionReset,
+            std::io::ErrorKind::ConnectionAborted,
+            std::io::ErrorKind::NotConnected,
+            std::io::ErrorKind::AddrInUse,
+            std::io::ErrorKind::AddrNotAvailable,
             std::io::ErrorKind::TimedOut,
+            std::io::ErrorKind::WriteZero,
+            std::io::ErrorKind::Interrupted,
+            std::io::ErrorKind::Unsupported,
+            std::io::ErrorKind::OutOfMemory,
+            std::io::ErrorKind::Other,
         ] {
             assert!(
-                lost_reply(&ClientError::Io(std::io::Error::from(kind))),
-                "a {kind:?} read failure after dispatch is a lost reply",
+                post_dispatch_read_failed(&ClientError::Io(std::io::Error::from(kind))),
+                "every {kind:?} socket-read failure after dispatch loses the reply",
             );
         }
+        assert!(post_dispatch_read_failed(&ClientError::Io(
+            std::io::Error::from_raw_os_error(i32::MAX),
+        )));
         assert_eq!(
             classify(HandoffStage::Dispatched),
             LossClass::OutcomeUnknown
@@ -145,8 +150,11 @@ mod tests {
     /// reply, so it stays its own distinct error rather than being reported outcome-unknown.
     #[test]
     fn a_decoded_reply_error_is_not_a_lost_reply() {
-        assert!(!lost_reply(&ClientError::ReplyDecode));
-        assert!(!lost_reply(&ClientError::Handshake));
+        assert!(!post_dispatch_read_failed(&ClientError::ReplyDecode));
+        assert!(!post_dispatch_read_failed(&ClientError::Handshake));
+        assert!(!post_dispatch_read_failed(&ClientError::Wire(
+            WireError::Malformed,
+        )));
         // A before-send failure (a pre-dispatch handshake/connect error) classifies NotStarted,
         // the safe-to-consider-undone class, and never reaches the lost-reply path.
         assert_eq!(classify(HandoffStage::BeforeSend), LossClass::NotStarted);

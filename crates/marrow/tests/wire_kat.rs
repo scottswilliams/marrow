@@ -148,14 +148,20 @@ function driveReply(messages, options = {}) {
     tornDown: false,
   };
   const session = Object.create(M.Session.prototype);
+  const withTurn = messages.map((message) =>
+    options.addTurn === false || message === null || typeof message !== "object" || Array.isArray(message)
+      ? message
+      : { ...message, turn: options.replyTurn ?? 0n },
+  );
   session.frames = {
     buffer: Buffer.alloc(options.trailingBytes ?? 0),
     push() {
-      return messages;
+      return withTurn;
     },
   };
   session.dead = false;
   session.inFlight = options.inFlight === false ? null : {
+    turn: options.pendingTurn ?? 0n,
     resolve(value) {
       observed.current = { kind: "value", value };
     },
@@ -182,6 +188,126 @@ function driveReply(messages, options = {}) {
     options.chunk ?? Buffer.from([0x01]),
   );
   return { observed, session };
+}
+
+{
+  const observed = { first: null, second: null, pump: 0, tornDown: false };
+  let delivered;
+  const session = Object.create(M.Session.prototype);
+  session.frames = {
+    buffer: Buffer.alloc(0),
+    push() {
+      return [delivered];
+    },
+  };
+  session.dead = false;
+  session.inFlight = {
+    turn: 0n,
+    resolve(value) {
+      observed.first = value;
+    },
+    reject(error) {
+      observed.first = error;
+    },
+  };
+  session.queue = [{
+    resolve(value) {
+      observed.second = { kind: "value", value };
+    },
+    reject(error) {
+      observed.second = { kind: "error", error };
+    },
+  }];
+  session.replyDeadline = null;
+  session.exitHook = () => {};
+  session.pump = () => {
+    observed.pump += 1;
+    const next = session.queue.shift();
+    if (next !== undefined) session.inFlight = { ...next, turn: 1n };
+  };
+  session.teardown = () => {
+    session.dead = true;
+    observed.tornDown = true;
+  };
+
+  delivered = { data: 7n, kind: "value", turn: 0n };
+  M.Session.prototype.onData.call(session, Buffer.from([0x01]));
+  delivered = { data: 999n, kind: "value", turn: 0n };
+  M.Session.prototype.onData.call(session, Buffer.from([0x02]));
+
+  ok(
+    "reply-delayed-duplicate-cannot-settle-next-call",
+    observed.first === 7n &&
+      observed.second?.kind === "error" &&
+      observed.second.error instanceof M.WireFormatError &&
+      observed.pump === 1 &&
+      session.dead &&
+      observed.tornDown,
+    `first=${String(observed.first)} pump=${observed.pump} dead=${session.dead}`,
+  );
+}
+
+{
+  const observed = { first: null, second: null, writes: [] };
+  let delivered;
+  const session = Object.create(M.Session.prototype);
+  session.frames = {
+    buffer: Buffer.alloc(0),
+    push() {
+      return [delivered];
+    },
+  };
+  session.dead = false;
+  session.inFlight = null;
+  session.nextTurn = 0xffff_ffffn;
+  session.queue = [
+    {
+      args: [],
+      exportId: "11".repeat(32),
+      resolve(value) {
+        observed.first = value;
+      },
+      reject(error) {
+        observed.first = error;
+      },
+    },
+    {
+      args: [],
+      exportId: "22".repeat(32),
+      resolve(value) {
+        observed.second = value;
+      },
+      reject(error) {
+        observed.second = error;
+      },
+    },
+  ];
+  session.socket = {
+    write(frame) {
+      observed.writes.push(frame);
+    },
+  };
+  session.replyDeadline = null;
+  session.exitHook = () => {};
+  session.teardown = () => {
+    session.dead = true;
+  };
+
+  M.Session.prototype.pump.call(session);
+  const requestReader = new M.__katFrameReader();
+  const request = M.__katDecodeOneFrame(requestReader, observed.writes[0]);
+  delivered = { data: 1n, kind: "value", turn: 0xffff_ffffn };
+  M.Session.prototype.onData.call(session, Buffer.from([0x01]));
+
+  ok(
+    "request-turn-maximum-then-exhaustion-never-wraps",
+    request.turn === 0xffff_ffffn &&
+      session.nextTurn === 0x1_0000_0000n &&
+      observed.first === 1n &&
+      observed.second instanceof RangeError &&
+      observed.writes.length === 1 &&
+      session.dead,
+  );
 }
 
 function malformedReply(label, messages, options = {}) {
@@ -262,6 +388,16 @@ malformedReply(
   [{ data: 1n, kind: "value" }],
   { trailingBytes: 1 },
 );
+malformedReply("turn-missing", [{ data: 1n, kind: "value" }], { addTurn: false });
+malformedReply("turn-negative", [{ data: 1n, kind: "value" }], { replyTurn: -1n });
+malformedReply("turn-number", [{ data: 1n, kind: "value" }], { replyTurn: 0 });
+malformedReply("turn-overflow", [{ data: 1n, kind: "value" }], {
+  replyTurn: 0x1_0000_0000n,
+});
+malformedReply("turn-mismatch", [{ data: 1n, kind: "value" }], {
+  pendingTurn: 1n,
+  replyTurn: 0n,
+});
 
 {
   const { observed, session } = driveReply([], { inFlight: false });
@@ -417,7 +553,7 @@ for (const boundary of [0n, 0xffff_ffffn]) {
     code: "run.boundary",
     kind: "fault",
     span: { column: boundary, line: boundary },
-  }]);
+  }], { pendingTurn: boundary, replyTurn: boundary });
   ok(
     `reply-valid-u32-${boundary}`,
     observed.current?.kind === "error" &&

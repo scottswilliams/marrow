@@ -510,6 +510,36 @@ fn an_indeterminate_commit_poisons_and_every_later_session_open_refuses() {
     ));
 }
 
+/// A transaction's commit boundary is one-shot even though the VM-facing trait takes
+/// `&mut self`: once the engine has returned an indeterminate verdict, the same session
+/// cannot manufacture a later known-old result. The first call retains sole ownership of
+/// the affine recovery fact and the store remains poisoned; the repeated call reports only
+/// that this session has already crossed its terminal boundary.
+#[test]
+fn repeating_an_indeterminate_commit_never_reclassifies_it_as_aborted() {
+    let mode = ModeHandle::new(Mode::IndeterminateDrop);
+    let mut store = unscoped_store(FaultEngine::new(mode));
+    let mut txn = store
+        .txn_session(InvocationGrant::full_store(), write())
+        .expect("txn session");
+    let site = txn.site(0);
+    txn.create_entry(&site, &[KeyScalar::Str("a".into())], entry(1))
+        .expect("create");
+
+    let recovery = match txn.commit() {
+        CommitResult::Indeterminate(recovery) => recovery,
+        other => panic!("expected an indeterminate result, got {other:?}"),
+    };
+    assert!(matches!(txn.commit(), CommitResult::SessionFinished));
+    drop(txn);
+
+    assert!(store.has_unresolved_recovery());
+    assert_eq!(
+        store.resolve_recovery(recovery),
+        DurableCommitState::Unknown,
+    );
+}
+
 /// A custom engine entering through the ordinary public constructor has no persistent
 /// lifecycle provenance. Its affine fact remains truthful — the originating handle is
 /// poisoned and the fact is consumed — but neither the persisted nor dropped half may claim

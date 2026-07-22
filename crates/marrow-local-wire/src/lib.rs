@@ -41,7 +41,7 @@ pub use span::Span;
 /// The protocol version byte carried by every frame. The runner and the generated
 /// client are a matched release pair; a frame with any other version is rejected at
 /// the frame boundary ([`WireError::UnsupportedVersion`]).
-pub const PROTOCOL_VERSION: u8 = 2;
+pub const PROTOCOL_VERSION: u8 = 3;
 
 /// The maximum frame body size (version byte plus canonical JSON), in bytes. A
 /// declared frame length past this is rejected before the body is read.

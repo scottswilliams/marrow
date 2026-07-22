@@ -842,6 +842,15 @@ fn execute_frame<'s>(
                             recovery,
                         ));
                     }
+                    CommitResult::SessionFinished => {
+                        // The verifier admits exactly one commit instruction on a session.
+                        // Preserve uncertainty if that invariant is ever violated rather than
+                        // inventing a known-old result for an already-consumed transaction.
+                        return Err(DurableExecutionFault::classified(
+                            source_fault(function, pc, Code::RunCommit.as_str()),
+                            DurableCommitState::Unknown,
+                        ));
+                    }
                 }
             }
             SealedInstr::DurExists(site) => {

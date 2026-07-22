@@ -11,6 +11,9 @@
 //! The grammar is closed: there is no free-form envelope, no streaming or partial
 //! reply, and no replay/cancellation message. A mutating call whose reply is lost is
 //! classified through [`crate::loss`], never resent.
+//! Every request and call reply carries one exact u32 turn. A serial client assigns a
+//! turn once and the runner channel echoes it on that request's sole response, so a
+//! delayed response from an earlier turn cannot settle a later call.
 
 use crate::error::WireError;
 use crate::id::Id32;
@@ -90,41 +93,65 @@ pub enum ServerMessage {
 }
 
 impl ClientMessage {
-    /// Encode this message as a full frame.
+    /// Encode this message as a full frame. A request uses turn zero; serial clients that
+    /// keep a session open use [`Self::encode_with_turn`] to assign a distinct turn.
     pub fn encode(&self) -> Result<Vec<u8>, WireError> {
-        frame::assemble(json::encode(&self.to_json()).as_bytes())
+        self.encode_with_turn(0)
     }
 
-    /// Decode a client message from a frame body (`version ‖ json`).
+    /// Encode this message as a full frame, assigning `turn` to a request. Handshake and
+    /// provisioning messages have no call turn and therefore ignore the argument.
+    pub fn encode_with_turn(&self, turn: u32) -> Result<Vec<u8>, WireError> {
+        frame::assemble(json::encode(&self.to_json(turn)).as_bytes())
+    }
+
+    /// Decode a client message from a frame body (`version ‖ json`), discarding a request's
+    /// turn. The runner channel uses [`Self::decode_with_turn`] so it can echo that turn on the
+    /// exact response.
     pub fn decode(body: &[u8]) -> Result<Self, WireError> {
+        Self::decode_with_turn(body).map(|(message, _)| message)
+    }
+
+    /// Decode a client message and its call turn. `Some(turn)` is returned exactly for a
+    /// request; handshake and provisioning messages return `None`.
+    pub fn decode_with_turn(body: &[u8]) -> Result<(Self, Option<u32>), WireError> {
         let value = json::parse_strict(frame::body_json(body)?)?;
         let object = Fields::new(&value)?;
         match object.kind()? {
             "hello" => {
                 object.exact(&["kind", "nonce"])?;
-                Ok(ClientMessage::Hello {
-                    nonce: object.id("nonce")?,
-                })
+                Ok((
+                    ClientMessage::Hello {
+                        nonce: object.id("nonce")?,
+                    },
+                    None,
+                ))
             }
             "request" => {
-                object.exact(&["args", "export", "kind"])?;
-                Ok(ClientMessage::Request {
-                    export: object.id("export")?,
-                    args: object.array("args")?.to_vec(),
-                })
+                object.exact(&["args", "export", "kind", "turn"])?;
+                Ok((
+                    ClientMessage::Request {
+                        export: object.id("export")?,
+                        args: object.array("args")?.to_vec(),
+                    },
+                    Some(object.u32("turn")?),
+                ))
             }
             "provision" => {
                 object.exact(&["approval", "kind", "store"])?;
-                Ok(ClientMessage::Provision {
-                    store: object.string("store")?,
-                    approval: object.string("approval")?,
-                })
+                Ok((
+                    ClientMessage::Provision {
+                        store: object.string("store")?,
+                        approval: object.string("approval")?,
+                    },
+                    None,
+                ))
             }
             _ => Err(WireError::Malformed),
         }
     }
 
-    fn to_json(&self) -> Json {
+    fn to_json(&self, turn: u32) -> Json {
         match self {
             ClientMessage::Hello { nonce } => object(vec![
                 ("kind", Json::Str("hello".to_string())),
@@ -134,6 +161,7 @@ impl ClientMessage {
                 ("kind", Json::Str("request".to_string())),
                 ("export", Json::Str(export.to_hex())),
                 ("args", Json::Array(args.clone())),
+                ("turn", Json::Int(i64::from(turn))),
             ]),
             ClientMessage::Provision { store, approval } => object(vec![
                 ("kind", Json::Str("provision".to_string())),
@@ -145,61 +173,93 @@ impl ClientMessage {
 }
 
 impl ServerMessage {
-    /// Encode this message as a full frame.
+    /// Encode this message as a full frame. A call reply uses turn zero; a runner channel uses
+    /// [`Self::encode_with_turn`] to echo the request's distinct turn.
     pub fn encode(&self) -> Result<Vec<u8>, WireError> {
-        frame::assemble(json::encode(&self.to_json()).as_bytes())
+        self.encode_with_turn(0)
     }
 
-    /// Decode a server message from a frame body (`version ‖ json`).
+    /// Encode this message as a full frame, assigning `turn` to a call reply. `Ready` and
+    /// `Provisioned` are not call replies and therefore carry no turn.
+    pub fn encode_with_turn(&self, turn: u32) -> Result<Vec<u8>, WireError> {
+        frame::assemble(json::encode(&self.to_json(turn)).as_bytes())
+    }
+
+    /// Decode a server message from a frame body (`version ‖ json`), discarding a reply's
+    /// correlation turn. Supervisors that keep a session open use [`Self::decode_with_turn`].
     pub fn decode(body: &[u8]) -> Result<Self, WireError> {
+        Self::decode_with_turn(body).map(|(message, _)| message)
+    }
+
+    /// Decode a server message and its call turn. `Some(turn)` is returned exactly for call
+    /// replies; the handshake and provisioning receipt return `None`.
+    pub fn decode_with_turn(body: &[u8]) -> Result<(Self, Option<u32>), WireError> {
         let value = json::parse_strict(frame::body_json(body)?)?;
         let object = Fields::new(&value)?;
         match object.kind()? {
             "ready" => {
                 object.exact(&["interface", "kind", "session"])?;
-                Ok(ServerMessage::Ready {
-                    session: object.id("session")?,
-                    interface: object.id("interface")?,
-                })
+                Ok((
+                    ServerMessage::Ready {
+                        session: object.id("session")?,
+                        interface: object.id("interface")?,
+                    },
+                    None,
+                ))
             }
             "value" => {
-                object.exact(&["data", "kind"])?;
-                Ok(ServerMessage::Value {
-                    data: object.get("data")?.clone(),
-                })
+                object.exact(&["data", "kind", "turn"])?;
+                Ok((
+                    ServerMessage::Value {
+                        data: object.get("data")?.clone(),
+                    },
+                    Some(object.u32("turn")?),
+                ))
             }
             "fault" => {
-                object.exact(&["code", "kind", "span"])?;
-                Ok(ServerMessage::Fault {
-                    code: object.code("code")?,
-                    span: object.span("span")?,
-                })
+                object.exact(&["code", "kind", "span", "turn"])?;
+                Ok((
+                    ServerMessage::Fault {
+                        code: object.code("code")?,
+                        span: object.span("span")?,
+                    },
+                    Some(object.u32("turn")?),
+                ))
             }
             "incomplete" => {
-                object.exact(&["code", "durable", "kind", "span"])?;
-                Ok(ServerMessage::Incomplete {
-                    code: object.code("code")?,
-                    durable: object.durable_state("durable")?,
-                    span: object.span("span")?,
-                })
+                object.exact(&["code", "durable", "kind", "span", "turn"])?;
+                Ok((
+                    ServerMessage::Incomplete {
+                        code: object.code("code")?,
+                        durable: object.durable_state("durable")?,
+                        span: object.span("span")?,
+                    },
+                    Some(object.u32("turn")?),
+                ))
             }
             "reject" => {
-                object.exact(&["code", "kind"])?;
-                Ok(ServerMessage::Reject {
-                    code: object.code("code")?,
-                })
+                object.exact(&["code", "kind", "turn"])?;
+                Ok((
+                    ServerMessage::Reject {
+                        code: object.code("code")?,
+                    },
+                    Some(object.u32("turn")?),
+                ))
             }
             "provisioned" => {
                 object.exact(&["instance", "kind"])?;
-                Ok(ServerMessage::Provisioned {
-                    instance: object.string("instance")?,
-                })
+                Ok((
+                    ServerMessage::Provisioned {
+                        instance: object.string("instance")?,
+                    },
+                    None,
+                ))
             }
             _ => Err(WireError::Malformed),
         }
     }
 
-    fn to_json(&self) -> Json {
+    fn to_json(&self, turn: u32) -> Json {
         match self {
             ServerMessage::Ready { session, interface } => object(vec![
                 ("kind", Json::Str("ready".to_string())),
@@ -209,11 +269,13 @@ impl ServerMessage {
             ServerMessage::Value { data } => object(vec![
                 ("kind", Json::Str("value".to_string())),
                 ("data", data.clone()),
+                ("turn", Json::Int(i64::from(turn))),
             ]),
             ServerMessage::Fault { code, span } => object(vec![
                 ("kind", Json::Str("fault".to_string())),
                 ("code", Json::Str(code.clone())),
                 ("span", span.to_json()),
+                ("turn", Json::Int(i64::from(turn))),
             ]),
             ServerMessage::Incomplete {
                 code,
@@ -224,10 +286,12 @@ impl ServerMessage {
                 ("code", Json::Str(code.clone())),
                 ("durable", Json::Str(durable.as_str().to_string())),
                 ("span", span.to_json()),
+                ("turn", Json::Int(i64::from(turn))),
             ]),
             ServerMessage::Reject { code } => object(vec![
                 ("kind", Json::Str("reject".to_string())),
                 ("code", Json::Str(code.clone())),
+                ("turn", Json::Int(i64::from(turn))),
             ]),
             ServerMessage::Provisioned { instance } => object(vec![
                 ("kind", Json::Str("provisioned".to_string())),
@@ -381,7 +445,7 @@ mod tests {
                 .encode()
                 .unwrap()
             ),
-            r#"{"args":[1,true],"export":"1111111111111111111111111111111111111111111111111111111111111111","kind":"request"}"#
+            r#"{"args":[1,true],"export":"1111111111111111111111111111111111111111111111111111111111111111","kind":"request","turn":0}"#
         );
         assert_eq!(
             json_of(
@@ -402,7 +466,7 @@ mod tests {
                 .encode()
                 .unwrap()
             ),
-            r#"{"data":42,"kind":"value"}"#
+            r#"{"data":42,"kind":"value","turn":0}"#
         );
         assert_eq!(
             json_of(
@@ -413,7 +477,7 @@ mod tests {
                 .encode()
                 .unwrap()
             ),
-            r#"{"code":"run.overflow","kind":"fault","span":{"column":2,"line":7}}"#
+            r#"{"code":"run.overflow","kind":"fault","span":{"column":2,"line":7},"turn":0}"#
         );
         assert_eq!(
             json_of(
@@ -425,7 +489,7 @@ mod tests {
                 .encode()
                 .unwrap()
             ),
-            r#"{"code":"run.commit","durable":"known_new","kind":"incomplete","span":{"column":4,"line":9}}"#
+            r#"{"code":"run.commit","durable":"known_new","kind":"incomplete","span":{"column":4,"line":9},"turn":0}"#
         );
         assert_eq!(
             json_of(
@@ -435,7 +499,7 @@ mod tests {
                 .encode()
                 .unwrap()
             ),
-            r#"{"code":"runner.unknown_export","kind":"reject"}"#
+            r#"{"code":"runner.unknown_export","kind":"reject","turn":0}"#
         );
         assert_eq!(
             json_of(
@@ -513,6 +577,58 @@ mod tests {
         server_round_trip(ServerMessage::Reject {
             code: "runner.arg_mismatch".to_string(),
         });
+    }
+
+    /// A call turn is an exact u32 in both directions. The maximum value round-trips; negative,
+    /// overflowing, non-integer, missing, and extra spellings are refused by the authoritative
+    /// message owner.
+    #[test]
+    fn call_turns_are_exact_u32_values() {
+        let request = ClientMessage::Request {
+            export: Id32::from_bytes([3; 32]),
+            args: vec![],
+        };
+        let frame = request.encode_with_turn(u32::MAX).expect("encode request");
+        let (decoded, turn) = ClientMessage::decode_with_turn(&frame[4..]).expect("decode request");
+        assert_eq!(decoded, request);
+        assert_eq!(turn, Some(u32::MAX));
+
+        let reply = ServerMessage::Value { data: Json::Null };
+        let frame = reply.encode_with_turn(u32::MAX).expect("encode reply");
+        let (decoded, turn) = ServerMessage::decode_with_turn(&frame[4..]).expect("decode reply");
+        assert_eq!(decoded, reply);
+        assert_eq!(turn, Some(u32::MAX));
+
+        for bad in [
+            Json::Int(-1),
+            Json::Int(i64::from(u32::MAX) + 1),
+            Json::Str("0".into()),
+        ] {
+            let encoded = json::encode(&super::object(vec![
+                ("kind", Json::Str("value".to_string())),
+                ("data", Json::Null),
+                ("turn", bad),
+            ]));
+            let body = [&[crate::PROTOCOL_VERSION], encoded.as_bytes()].concat();
+            assert!(ServerMessage::decode_with_turn(&body).is_err());
+        }
+
+        for pairs in [
+            vec![
+                ("kind", Json::Str("value".to_string())),
+                ("data", Json::Null),
+            ],
+            vec![
+                ("kind", Json::Str("value".to_string())),
+                ("data", Json::Null),
+                ("turn", Json::Int(0)),
+                ("extra", Json::Null),
+            ],
+        ] {
+            let encoded = json::encode(&super::object(pairs));
+            let body = [&[crate::PROTOCOL_VERSION], encoded.as_bytes()].concat();
+            assert!(ServerMessage::decode_with_turn(&body).is_err());
+        }
     }
 
     /// A message decoded in the wrong direction is rejected, never confused.

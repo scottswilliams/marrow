@@ -251,21 +251,24 @@ impl Connection {
                     let reject = ServerMessage::Reject {
                         code: wire.code_str().to_string(),
                     };
-                    let _ = self.write_message(&reject, deadlines);
+                    let _ = self.write_message(&reject, None, deadlines);
                     return Ok(());
                 }
                 // A stalled half-frame or peer death ends the session fail-closed.
                 Err(ReadError::Timeout | ReadError::PeerDied) => return Ok(()),
                 Err(ReadError::Io(err)) => return Err(err),
             };
-            let response = match ClientMessage::decode(&body) {
-                Ok(message) => handler.handle(message),
-                Err(wire) => ServerMessage::Reject {
-                    code: wire.code_str().to_string(),
-                },
+            let (response, turn) = match ClientMessage::decode_with_turn(&body) {
+                Ok((message, turn)) => (handler.handle(message), turn),
+                Err(wire) => (
+                    ServerMessage::Reject {
+                        code: wire.code_str().to_string(),
+                    },
+                    None,
+                ),
             };
             let close_after_response = handler.close_after_response();
-            if self.write_message(&response, deadlines).is_err() {
+            if self.write_message(&response, turn, deadlines).is_err() {
                 // The client went away while we replied; end the session.
                 return Ok(());
             }
@@ -298,8 +301,13 @@ impl Connection {
         Ok(Some(body))
     }
 
-    fn write_message(&mut self, message: &ServerMessage, deadlines: &Deadlines) -> io::Result<()> {
-        let frame = encode_response(message);
+    fn write_message(
+        &mut self,
+        message: &ServerMessage,
+        turn: Option<u32>,
+        deadlines: &Deadlines,
+    ) -> io::Result<()> {
+        let frame = encode_response(message, turn);
         let deadline = Instant::now() + deadlines.frame;
         write_all_deadline(&mut self.stream, &frame, deadline, deadlines.poll)
     }
@@ -307,13 +315,17 @@ impl Connection {
 
 /// Encode a response frame, downgrading a value too large to frame into a typed
 /// reject so the runner never emits an over-limit frame.
-fn encode_response(message: &ServerMessage) -> Vec<u8> {
-    match message.encode() {
+fn encode_response(message: &ServerMessage, turn: Option<u32>) -> Vec<u8> {
+    let encode = |message: &ServerMessage| match turn {
+        Some(turn) => message.encode_with_turn(turn),
+        None => message.encode(),
+    };
+    match encode(message) {
         Ok(frame) => frame,
         Err(_) => ServerMessage::Reject {
             code: marrow_codes::Code::WireFrameTooLarge.as_str().to_string(),
         }
-        .encode()
+        .encode_with_turn(turn.unwrap_or(0))
         .expect("a reject frame is within the frame bound"),
     }
 }

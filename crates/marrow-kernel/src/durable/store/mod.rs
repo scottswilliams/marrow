@@ -182,8 +182,10 @@ pub trait Durable {
         site: &AuthorizedSite,
         keys: &[KeyScalar],
     ) -> Result<EraseOutcome, KernelFault>;
-    /// Commit the transaction (a no-op returning [`CommitResult::Committed`] for a
-    /// read-only session, which the verifier guarantees never opens one).
+    /// Commit the transaction once (a no-op returning [`CommitResult::Committed`] for a
+    /// read-only session, which the verifier guarantees never opens one). A transaction
+    /// session no longer owns a commit after this call; a repeated call returns
+    /// [`CommitResult::SessionFinished`] without classifying the earlier attempt.
     fn commit(&mut self) -> CommitResult;
 }
 
