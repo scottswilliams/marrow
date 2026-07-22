@@ -1,6 +1,6 @@
 //! D00 slice 2: the durable-identity ledger through the production path.
 //!
-//! `marrow.ids` is the optional machine-written identity artifact. The compiler
+//! `.marrow/ids` is the optional machine-written identity artifact. The compiler
 //! is the fail-precisely owner: a durable declaration without a complete ledger
 //! identity is a typed `check.durable_identity` diagnostic, and the compiler
 //! never writes the artifact. The one convenience mint action is scoped to
@@ -136,8 +136,8 @@ fn a_durable_declaration_without_ledger_identity_fails_the_ci_path() {
         combined(&output)
     );
     assert!(
-        !temp.join("marrow.ids").exists(),
-        "`marrow test` must never write marrow.ids (CI never mutates the tree)"
+        !temp.join(".marrow/ids").exists(),
+        "`marrow test` must never write .marrow/ids (CI never mutates the tree)"
     );
 }
 
@@ -145,7 +145,7 @@ fn a_durable_declaration_without_ledger_identity_fails_the_ci_path() {
 // when the accepted apply action lands at F03). ---
 
 /// `marrow run` mints the missing identities from OS entropy and publishes a
-/// well-formed `marrow.ids` before the durable export parks in the trough, and a
+/// well-formed `.marrow/ids` before the durable export parks in the trough, and a
 /// second run reuses the artifact byte-for-byte: the mint pass is the only writer
 /// and re-running on a complete ledger is a no-op (mint fires only for a genuinely
 /// new declaration).
@@ -155,14 +155,14 @@ fn run_mints_missing_identities_once_and_reuses_them() {
     project(&temp, COUNTER_SOURCE);
 
     // The durable export parks in the trough, but the mint pre-pass publishes
-    // marrow.ids from OS entropy first.
+    // .marrow/ids from OS entropy first.
     let set = run_in(&temp, &["run", "set", "--", "hits", "5"]);
     assert!(
         combined(&set).contains("cli.durable_unsupported"),
         "a durable run parks in the trough: {}",
         combined(&set)
     );
-    let published = fs::read(temp.join("marrow.ids")).expect("run published marrow.ids");
+    let published = fs::read(temp.join(".marrow/ids")).expect("run published .marrow/ids");
     let text = String::from_utf8(published.clone()).expect("artifact is UTF-8");
     assert!(text.starts_with("marrow ids v0\n"), "header: {text}");
     assert!(text.contains("do not edit"), "notice: {text}");
@@ -179,7 +179,7 @@ fn run_mints_missing_identities_once_and_reuses_them() {
     assert!(text.ends_with("end\n"), "end marker: {text}");
     assert!(
         !temp
-            .join(format!("marrow.ids.tmp.{}", std::process::id()))
+            .join(format!(".marrow/ids.tmp.{}", std::process::id()))
             .exists(),
         "no temp file survives a successful publication"
     );
@@ -194,14 +194,14 @@ fn run_mints_missing_identities_once_and_reuses_them() {
         combined(&get)
     );
     assert_eq!(
-        fs::read(temp.join("marrow.ids")).unwrap(),
+        fs::read(temp.join(".marrow/ids")).unwrap(),
         published,
         "a second run leaves the committed artifact byte-identical"
     );
 }
 
 /// The clone/relocation journeys: a fresh checkout (a byte copy of the project,
-/// committed `marrow.ids` included) at a different location reuses the
+/// committed `.marrow/ids` included) at a different location reuses the
 /// committed ids — nothing re-mints and the artifact stays byte-identical.
 #[test]
 fn a_cloned_and_relocated_checkout_reuses_the_committed_ids() {
@@ -214,9 +214,9 @@ fn a_cloned_and_relocated_checkout_reuses_the_committed_ids() {
         "{}",
         combined(&set)
     );
-    let committed = fs::read(temp.join("marrow.ids")).expect("committed artifact");
+    let committed = fs::read(temp.join(".marrow/ids")).expect("committed artifact");
 
-    // Clone: manifest, source, and marrow.ids — no store, as a checkout would be.
+    // Clone: manifest, source, and .marrow/ids — no store, as a checkout would be.
     let clone = TempDir::new("clone-dst");
     write(
         &clone.join("marrow.toml"),
@@ -226,7 +226,8 @@ fn a_cloned_and_relocated_checkout_reuses_the_committed_ids() {
         &clone.join("src").join("main.mw"),
         &fs::read_to_string(temp.join("src").join("main.mw")).unwrap(),
     );
-    fs::write(clone.join("marrow.ids"), &committed).expect("clone the artifact");
+    fs::create_dir_all(clone.join(".marrow")).expect("create metadata dir");
+    fs::write(clone.join(".marrow/ids"), &committed).expect("clone the artifact");
 
     // The storeless CI path compiles and passes in the clone (identity is
     // complete from the committed artifact alone), and a durable run parks in the
@@ -240,7 +241,7 @@ fn a_cloned_and_relocated_checkout_reuses_the_committed_ids() {
         combined(&run)
     );
     assert_eq!(
-        fs::read(clone.join("marrow.ids")).unwrap(),
+        fs::read(clone.join(".marrow/ids")).unwrap(),
         committed,
         "a relocated checkout neither re-mints nor rewrites the artifact"
     );
@@ -253,18 +254,18 @@ fn a_cloned_and_relocated_checkout_reuses_the_committed_ids() {
 fn conflicted_and_double_minted_artifacts_reject_whole() {
     let temp = TempDir::new("merge-conflict");
     project(&temp, COUNTER_SOURCE);
-    // The durable run parks, but its mint pre-pass seeds a well-formed marrow.ids.
+    // The durable run parks, but its mint pre-pass seeds a well-formed .marrow/ids.
     let seeded = run_in(&temp, &["run", "set", "--", "hits", "1"]);
     assert!(
         combined(&seeded).contains("cli.durable_unsupported"),
         "{}",
         combined(&seeded)
     );
-    let good = fs::read_to_string(temp.join("marrow.ids")).unwrap();
+    let good = fs::read_to_string(temp.join(".marrow/ids")).unwrap();
 
     // Unresolved Git conflict markers.
     let conflicted = good.replace("high-water", "<<<<<<< ours\nhigh-water");
-    fs::write(temp.join("marrow.ids"), &conflicted).unwrap();
+    fs::write(temp.join(".marrow/ids"), &conflicted).unwrap();
     let output = run_in(&temp, &["test"]);
     assert!(!output.status.success());
     let rendered = combined(&output);
@@ -272,7 +273,7 @@ fn conflicted_and_double_minted_artifacts_reject_whole() {
     // The text channel carries the typed message, so a corrupt artifact names the
     // file and the reason rather than only the bare code.
     assert!(
-        rendered.contains("marrow.ids is corrupt")
+        rendered.contains(".marrow/ids is corrupt")
             && rendered.contains("unresolved Git conflict markers"),
         "text output must name the file and reason: {rendered}"
     );
@@ -287,7 +288,7 @@ fn conflicted_and_double_minted_artifacts_reject_whole() {
         &value_row,
         &format!("{value_row}\nid field Counter.value ffffffffffffffffffffffffffffffff"),
     );
-    fs::write(temp.join("marrow.ids"), &doubled).unwrap();
+    fs::write(temp.join(".marrow/ids"), &doubled).unwrap();
     let output = run_in(&temp, &["test"]);
     assert!(!output.status.success());
     assert!(
@@ -296,7 +297,7 @@ fn conflicted_and_double_minted_artifacts_reject_whole() {
         combined(&output)
     );
     assert_eq!(
-        fs::read_to_string(temp.join("marrow.ids")).unwrap(),
+        fs::read_to_string(temp.join(".marrow/ids")).unwrap(),
         doubled,
         "a corrupt artifact is rejected, never repaired or rewritten"
     );
@@ -309,17 +310,17 @@ fn conflicted_and_double_minted_artifacts_reject_whole() {
 fn a_torn_artifact_rejects_whole_and_is_never_reminted_over() {
     let temp = TempDir::new("torn");
     project(&temp, COUNTER_SOURCE);
-    // The durable run parks, but its mint pre-pass seeds a well-formed marrow.ids.
+    // The durable run parks, but its mint pre-pass seeds a well-formed .marrow/ids.
     let seeded = run_in(&temp, &["run", "set", "--", "hits", "1"]);
     assert!(
         combined(&seeded).contains("cli.durable_unsupported"),
         "{}",
         combined(&seeded)
     );
-    let good = fs::read_to_string(temp.join("marrow.ids")).unwrap();
+    let good = fs::read_to_string(temp.join(".marrow/ids")).unwrap();
 
     let torn = good.replace("end\n", "");
-    fs::write(temp.join("marrow.ids"), &torn).unwrap();
+    fs::write(temp.join(".marrow/ids"), &torn).unwrap();
     for command in [&["test"][..], &["run", "get", "--", "hits"][..]] {
         let output = run_in(&temp, command);
         assert!(!output.status.success(), "{output:?}");
@@ -330,7 +331,7 @@ fn a_torn_artifact_rejects_whole_and_is_never_reminted_over() {
         );
     }
     assert_eq!(
-        fs::read_to_string(temp.join("marrow.ids")).unwrap(),
+        fs::read_to_string(temp.join(".marrow/ids")).unwrap(),
         torn,
         "the torn artifact is left for version control to restore"
     );
@@ -356,7 +357,8 @@ fn a_retired_anchor_cannot_be_redeclared_or_reminted() {
                retired root counters 0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b 1\n\
                high-water 1\n\
                end\n";
-    fs::write(temp.join("marrow.ids"), ids).unwrap();
+    fs::create_dir_all(temp.join(".marrow")).unwrap();
+    fs::write(temp.join(".marrow/ids"), ids).unwrap();
 
     for command in [&["test"][..], &["run", "set", "--", "hits", "1"][..]] {
         let output = run_in(&temp, command);
@@ -368,7 +370,7 @@ fn a_retired_anchor_cannot_be_redeclared_or_reminted() {
         );
     }
     assert_eq!(
-        fs::read_to_string(temp.join("marrow.ids")).unwrap(),
+        fs::read_to_string(temp.join(".marrow/ids")).unwrap(),
         ids,
         "a retired anchor is never minted over; the ledger bytes are unchanged"
     );

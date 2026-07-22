@@ -220,7 +220,7 @@ pub fn f(): int {
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(output.status.success(), "{stdout}");
     assert!(stdout.contains(r#""data":0"#), "{stdout}");
-    let ids = std::fs::read_to_string(temp.join("marrow.ids")).expect("marrow.ids written");
+    let ids = std::fs::read_to_string(temp.join(".marrow/ids")).expect(".marrow/ids written");
     assert!(ids.contains("sum Option[string] "), "{ids}");
     assert!(ids.contains("member Option[string].none "), "{ids}");
     assert!(ids.contains("member Option[string].some "), "{ids}");

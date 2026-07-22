@@ -142,14 +142,14 @@ fn d13_unbounded_traversal_names_the_bound_law_at_the_head() {
 // Item 3 — D07: a dropped root reports once, not at every reference.
 // ---------------------------------------------------------------------------
 
-/// One missing `marrow.ids` field row drops `^members` from the durable registry. The
+/// One missing `.marrow/ids` field row drops `^members` from the durable registry. The
 /// primary `check.durable_identity` names the exact fix once; the reference sites are
 /// steered to it a single time, and every dependent read of the dropped root (and of the
 /// bindings it fed) is suppressed — so a one-line fix does not read as a project-wide
 /// failure.
 #[test]
 fn d07_a_dropped_root_reports_one_primary_and_one_steer() {
-    let ids = fixture_file("club_locker", "marrow.ids");
+    let ids = fixture_file("club_locker", ".marrow/ids");
     let stripped = ids
         .lines()
         .filter(|line| !line.contains("id field Member.email"))

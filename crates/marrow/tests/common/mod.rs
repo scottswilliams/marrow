@@ -35,11 +35,11 @@
 //! ```text
 //! fixtures/v01/<name>/
 //!     marrow.toml        (required — the manifest)
-//!     marrow.ids         (optional — the frozen identity ledger; see the trap below)
+//!     .marrow/ids         (optional — the frozen identity ledger; see the trap below)
 //!     src/<module>.mw    (one or more source files, any subtree depth)
 //! ```
 //!
-//! [`Project::from_fixture`] reads `marrow.toml`, reads `marrow.ids` when present,
+//! [`Project::from_fixture`] reads `marrow.toml`, reads `.marrow/ids` when present,
 //! and walks `src/` recursively, keying each file by its `src`-relative canonical
 //! path (`src/bookstore.mw`). The module name a fixture's exports carry is derived
 //! from that path by the production owner, so an export in `src/bookstore.mw` is
@@ -54,7 +54,7 @@
 //! `marrow run`, a durable declaration whose identity ledger is missing a row is a
 //! hard `check.durable_identity` diagnostic at that declaration's span — not a
 //! silent mint. Entropy minting is a `marrow run` convenience only, and it *rewrites
-//! `marrow.ids` from OS entropy*, which would both dirty the repository and make the
+//! `.marrow/ids` from OS entropy*, which would both dirty the repository and make the
 //! fixture nondeterministic.
 //!
 //! So every durable fixture ships a complete, fixed-hex ledger with `high-water 0`
@@ -73,15 +73,15 @@
 //! - each unkeyed `group` namespace.
 //!
 //! Copy the shape of an existing ledger and extend it row by row. The two shipped
-//! fixtures cover the common rows: `fixtures/v01/counter_allocation/marrow.ids`
-//! (`application`/`product`/`field`/`root`/`key`) and `fixtures/v01/bookstore/marrow.ids`
+//! fixtures cover the common rows: `fixtures/v01/counter_allocation/.marrow/ids`
+//! (`application`/`product`/`field`/`root`/`key`) and `fixtures/v01/bookstore/.marrow/ids`
 //! (the same plus an `index` row). For the row kinds neither fixture demonstrates,
 //! copy the exact spelling from a sibling suite in this directory: keyed `branch`
 //! placements and their nested `id root`/`id key`/`id field` rows in
 //! `durable_subtree_purge.rs`, an `id group` namespace in `durable_groups.rs`, and
 //! `id sum`/`id member` enum rows in `durable_field_widening.rs`. A storeless project
 //! needs no ledger; pass [`EMPTY_IDS`] only if a test needs an explicit empty
-//! `marrow.ids` on disk.
+//! `.marrow/ids` on disk.
 //!
 //! # Driving a project and capturing outcomes
 //!
@@ -133,7 +133,7 @@ pub const MARROW_BIN: &str = env!("CARGO_BIN_EXE_marrow");
 pub const DEFAULT_MANIFEST: &str = "edition = \"2026\"\n";
 
 /// An identity ledger declaring no durable anchors, for a storeless project that
-/// still needs an explicit `marrow.ids` on disk.
+/// still needs an explicit `.marrow/ids` on disk.
 pub const EMPTY_IDS: &str =
     "marrow ids v0\nmachine-written by marrow; do not edit\nhigh-water 0\nend\n";
 
@@ -177,16 +177,16 @@ impl Project {
     }
 
     /// Load a project from `crates/marrow/tests/fixtures/v01/<name>/`: `marrow.toml`
-    /// (required), `marrow.ids` (optional), and every file under `src/` keyed by its
+    /// (required), `.marrow/ids` (optional), and every file under `src/` keyed by its
     /// `src`-relative path.
     pub fn from_fixture(name: &str) -> Self {
         let root = fixtures_root().join(name);
         let manifest = fs::read(root.join("marrow.toml"))
             .unwrap_or_else(|error| panic!("read fixture `{name}` marrow.toml: {error}"));
-        let ids = match fs::read(root.join("marrow.ids")) {
+        let ids = match fs::read(root.join(".marrow/ids")) {
             Ok(bytes) => Some(bytes),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
-            Err(error) => panic!("read fixture `{name}` marrow.ids: {error}"),
+            Err(error) => panic!("read fixture `{name}` .marrow/ids: {error}"),
         };
         let mut files = Vec::new();
         let src = root.join("src");
@@ -209,7 +209,7 @@ impl Project {
         self
     }
 
-    /// Set the identity ledger (the `marrow.ids` artifact). See the module doc's
+    /// Set the identity ledger (the `.marrow/ids` artifact). See the module doc's
     /// ids-minting trap: a durable project needs a complete ledger.
     pub fn ids(mut self, ids: &str) -> Self {
         self.ids = Some(ids.as_bytes().to_vec());
@@ -298,7 +298,7 @@ impl Project {
         let root = TempDir::new(label);
         write_file(&root.join("marrow.toml"), &self.manifest);
         if let Some(ids) = &self.ids {
-            write_file(&root.join("marrow.ids"), ids);
+            write_file(&root.join(".marrow/ids"), ids);
         }
         for (path, bytes) in &self.files {
             write_file(&root.join(path), bytes);

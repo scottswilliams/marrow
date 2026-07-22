@@ -31,7 +31,7 @@ fn fixture_dir() -> PathBuf {
 
 fn workshop() -> (Vec<u8>, VerifiedImage) {
     let source = std::fs::read(fixture_dir().join("src/main.mw")).expect("source");
-    let ids = std::fs::read(fixture_dir().join("marrow.ids")).expect("ids");
+    let ids = std::fs::read(fixture_dir().join(".marrow/ids")).expect("ids");
     let manifest = marrow_project::Manifest::parse("edition = \"2026\"\n").expect("manifest");
     let files = vec![marrow_project::CapturedFile::new(
         "src/main.mw".to_string(),
@@ -121,7 +121,7 @@ fn fast_path_costs_are_recorded() {
         let mut src = std::fs::read(fixture_dir().join("src/main.mw")).unwrap();
         src.extend_from_slice(b"\nfn _budgetProbe(): int {\n    return 0\n}\n");
         let manifest = marrow_project::Manifest::parse("edition = \"2026\"\n").unwrap();
-        let ids = std::fs::read(fixture_dir().join("marrow.ids")).unwrap();
+        let ids = std::fs::read(fixture_dir().join(".marrow/ids")).unwrap();
         let files = vec![marrow_project::CapturedFile::new(
             "src/main.mw".to_string(),
             src,

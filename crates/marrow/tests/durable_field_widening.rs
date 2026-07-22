@@ -519,7 +519,7 @@ pub fn label(): string {
 // string>`. The checker prints this type in the canonical angle form in diagnostics,
 // but its *durable* identity is the opaque space-free bracket spelling
 // `Result[Option[int],string]` — note the comma carries no space, so the anchor is a
-// valid `marrow.ids` path. The `Option<int>` reached through the `ok` payload is
+// valid `.marrow/ids` path. The `Option<int>` reached through the `ok` payload is
 // itself durable-reachable and carries its own `Option[int]` sum/member anchors.
 // These bracket bytes are a frozen ledger contract, deliberately independent of the
 // display spelling; this KAT pins them through compile + independent verify.

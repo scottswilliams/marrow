@@ -36,7 +36,7 @@ fn compile_verify() -> (VerifiedImage, Vec<u8>) {
 fn compile_verify_with(extra: &str) -> (VerifiedImage, Vec<u8>) {
     let mut source = std::fs::read(fixture_dir().join("src/main.mw")).expect("read fixture source");
     source.extend_from_slice(extra.as_bytes());
-    let ids = std::fs::read(fixture_dir().join("marrow.ids")).expect("read fixture ledger");
+    let ids = std::fs::read(fixture_dir().join(".marrow/ids")).expect("read fixture ledger");
     let manifest = marrow_project::Manifest::parse("edition = \"2026\"\n").expect("manifest");
     let files = vec![marrow_project::CapturedFile::new(
         "src/main.mw".to_string(),

@@ -769,7 +769,8 @@ fn a_hardlinked_identity_ledger_is_refused_before_formatting() {
     project(&temp, UNFORMATTED_SOURCE);
     let outside = temp.join("outside.ids");
     write(&outside, EMPTY_IDS);
-    fs::hard_link(&outside, temp.join("marrow.ids")).expect("hardlink identity ledger");
+    fs::create_dir_all(temp.join(".marrow")).expect("create metadata dir");
+    fs::hard_link(&outside, temp.join(".marrow/ids")).expect("hardlink identity ledger");
 
     let output = run(&["fmt", "--write", temp.to_str().unwrap()]);
     assert_refused_without_writing(&source_path, UNFORMATTED_SOURCE, &output);
@@ -820,7 +821,8 @@ fn an_identity_ledger_fifo_is_refused_without_waiting_for_its_body() {
     let temp = TempDir::new("ids-fifo");
     let retained = temp.join("src/main.mw");
     project(&temp, UNFORMATTED_SOURCE);
-    let fifo = temp.join("marrow.ids");
+    fs::create_dir_all(temp.join(".marrow")).expect("create metadata dir");
+    let fifo = temp.join(".marrow/ids");
     create_fifo(&fifo);
     let after_open = temp.join("ids.after-open");
 
@@ -846,7 +848,7 @@ fn a_searchable_but_unreadable_root_is_refused_at_physical_admission() {
         "fixture must have no source role"
     );
     assert!(
-        !temp.join("marrow.ids").exists(),
+        !temp.join(".marrow/ids").exists(),
         "fixture must have no identity-ledger role"
     );
     let mut permissions = PermissionGuard::make_searchable_only(&temp);
@@ -892,7 +894,7 @@ fn a_manifest_only_project_with_no_source_root_is_a_silent_noop() {
         "fmt --check must not create a source root or identity ledger"
     );
     assert!(!temp.join("src").exists());
-    assert!(!temp.join("marrow.ids").exists());
+    assert!(!temp.join(".marrow").exists());
 }
 
 #[test]
@@ -900,7 +902,8 @@ fn an_identity_ledger_over_its_byte_bound_keeps_its_exact_refusal() {
     let temp = TempDir::new("ids-byte-bound");
     let source_path = temp.join("src/main.mw");
     project(&temp, UNFORMATTED_SOURCE);
-    let ids_path = temp.join("marrow.ids");
+    fs::create_dir_all(temp.join(".marrow")).expect("create metadata dir");
+    let ids_path = temp.join(".marrow/ids");
     let oversized_bytes = marrow_project::MAX_IDS_BYTES + 1;
     let ids = fs::File::create(&ids_path).expect("create oversized identity ledger");
     ids.set_len(u64::try_from(oversized_bytes).expect("identity bound fits u64"))
@@ -959,7 +962,8 @@ fn a_symlinked_identity_ledger_retains_its_existing_typed_refusal() {
     write(&temp.join("marrow.toml"), VALID_MANIFEST);
     let outside = temp.join("outside.ids");
     write(&outside, EMPTY_IDS);
-    symlink(&outside, temp.join("marrow.ids")).expect("symlink identity ledger");
+    fs::create_dir_all(temp.join(".marrow")).expect("create metadata dir");
+    symlink(&outside, temp.join(".marrow/ids")).expect("symlink identity ledger");
 
     let output = run(&["fmt", "--check", temp.to_str().unwrap()]);
     assert!(
@@ -970,7 +974,7 @@ fn a_symlinked_identity_ledger_retains_its_existing_typed_refusal() {
         String::from_utf8(output.stderr).expect("stderr is UTF-8"),
         format!(
             "project.ids_corrupt: {} is a symlink; the identity artifact must be a real file inside the project\n",
-            temp.join("marrow.ids").display()
+            temp.join(".marrow/ids").display()
         )
     );
 }

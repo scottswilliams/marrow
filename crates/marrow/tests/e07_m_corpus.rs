@@ -122,7 +122,7 @@ fn collect(base: &Path, dir: &Path, out: &mut Vec<CapturedFile>) {
 fn compile_and_size(name: &str) -> (usize, marrow_verify::VerifiedImage) {
     let root = fixture_dir(name);
     let manifest = Manifest::parse(&fs::read_to_string(root.join("marrow.toml")).unwrap()).unwrap();
-    let ids = fs::read(root.join("marrow.ids")).ok();
+    let ids = fs::read(root.join(".marrow/ids")).ok();
     let mut files = Vec::new();
     let src = root.join("src");
     collect(&src, &src, &mut files);

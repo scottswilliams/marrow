@@ -8,7 +8,7 @@
 use marrow_compile::{CompileFailure, compile};
 use marrow_project::{CaptureLimits, CapturedFile, Manifest, ProjectInput};
 
-/// Capture a multi-file project with no `marrow.ids` ledger, so every durable identity is
+/// Capture a multi-file project with no `.marrow/ids` ledger, so every durable identity is
 /// missing and any declared store fails admission.
 fn project(files: &[(&str, &str)]) -> ProjectInput {
     let manifest = Manifest::parse("edition = \"2026\"\n").expect("valid manifest");

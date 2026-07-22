@@ -230,7 +230,7 @@ fn prepare(temp: &TempDir, dir: &str, source: &str) -> PathBuf {
     let project = temp.join(dir);
     write(&project.join("marrow.toml"), "edition = \"2026\"\n");
     write(&project.join("src/main.mw"), source);
-    write(&project.join("marrow.ids"), IDS);
+    write(&project.join(".marrow/ids"), IDS);
 
     let generated = Command::new(MARROW)
         .args(["client", "typescript", "--out", "gen"])
@@ -518,7 +518,7 @@ finish();
 
 /// Copy a committed `crates/marrow/tests/fixtures/v01/<name>` project into `temp`,
 /// generate its strict TypeScript client, and compile its image beside it, using the
-/// fixture's own minted `marrow.ids`. Returns the prepared project directory.
+/// fixture's own minted `.marrow/ids`. Returns the prepared project directory.
 fn prepare_fixture(temp: &TempDir, name: &str, src_file: &str) -> PathBuf {
     let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests/fixtures/v01")
@@ -526,10 +526,11 @@ fn prepare_fixture(temp: &TempDir, name: &str, src_file: &str) -> PathBuf {
     let project = temp.join(name);
     let toml = fs::read_to_string(fixture.join("marrow.toml")).expect("fixture manifest");
     let source = fs::read_to_string(fixture.join("src").join(src_file)).expect("fixture source");
-    let ids = fs::read(fixture.join("marrow.ids")).expect("fixture ids");
+    let ids = fs::read(fixture.join(".marrow/ids")).expect("fixture ids");
     write(&project.join("marrow.toml"), &toml);
     write(&project.join("src").join(src_file), &source);
-    fs::write(project.join("marrow.ids"), &ids).expect("write ids");
+    fs::create_dir_all(project.join(".marrow")).expect("create metadata dir");
+    fs::write(project.join(".marrow/ids"), &ids).expect("write ids");
 
     let generated = Command::new(MARROW)
         .args(["client", "typescript", "--out", "gen"])

@@ -350,7 +350,7 @@ pub fn f(): int {
     assert!(stdout.contains(r#""outcome":"value""#), "{stdout}");
     assert!(stdout.contains(r#""data":0"#), "{stdout}");
     // The enum reachable through the store gained sum and per-member identities.
-    let ids = std::fs::read_to_string(temp.join("marrow.ids")).expect("marrow.ids written");
+    let ids = std::fs::read_to_string(temp.join(".marrow/ids")).expect(".marrow/ids written");
     assert!(ids.contains("sum Color "), "{ids}");
     assert!(ids.contains("member Color.red "), "{ids}");
     assert!(ids.contains("member Color.green "), "{ids}");

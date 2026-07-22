@@ -598,7 +598,7 @@ fn compile_flagship() -> (usize, VerifiedImage) {
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/v01/club_locker");
     let manifest_text = std::fs::read_to_string(root.join("marrow.toml")).expect("read manifest");
     let manifest = Manifest::parse(&manifest_text).expect("parse manifest");
-    let ids = std::fs::read(root.join("marrow.ids")).expect("read ledger");
+    let ids = std::fs::read(root.join(".marrow/ids")).expect("read ledger");
     let source = std::fs::read(root.join("src/clublocker.mw")).expect("read source");
     let files = vec![CapturedFile::new("src/clublocker.mw".to_string(), source)];
     let project = capture(&manifest, files, Some(&ids), &CaptureLimits::DEFAULT).expect("capture");

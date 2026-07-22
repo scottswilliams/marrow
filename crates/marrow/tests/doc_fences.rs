@@ -6,7 +6,7 @@
 //!
 //! A fence is extracted to a correctly-pathed scratch project — module identity
 //! is path-derived, so a `module a::b` header sits at `src/a/b.mw`; a moduleless
-//! script sits at `src/main.mw`. Durable fences need a minted `marrow.ids`; the
+//! script sits at `src/main.mw`. Durable fences need a minted `.marrow/ids`; the
 //! one convenience mint action (`marrow run`) publishes it before the durable
 //! export parks, so a durable fence verifies after the mint pre-pass exactly as a
 //! caller's project would. Contextual fragments and deliberately future examples

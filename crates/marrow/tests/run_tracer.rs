@@ -2176,8 +2176,8 @@ fn a_durable_export_parks_in_the_trough() {
     assert!(out.contains(r#""outcome":"error""#), "{get:?}");
     assert!(out.contains("cli.durable_unsupported"), "{get:?}");
     assert!(
-        temp.join("marrow.ids").exists(),
-        "the mint pre-pass published marrow.ids before parking"
+        temp.join(".marrow/ids").exists(),
+        "the mint pre-pass published .marrow/ids before parking"
     );
 
     // A mutating durable export parks the same way.
@@ -2193,7 +2193,7 @@ fn a_durable_export_parks_in_the_trough() {
 /// usage error (exit 2). It also closes the run-mint window — with a persistent store a
 /// missing durable identity is a precise `check.durable_identity` failure, never the additive
 /// auto-mint the storeless path performs. (The `COUNTER_SOURCE` project has no committed
-/// `marrow.ids`, so a storeless `run` would mint; `--store` refuses and reports the gap.)
+/// `.marrow/ids`, so a storeless `run` would mint; `--store` refuses and reports the gap.)
 #[test]
 fn the_store_flag_is_recognized_and_closes_the_run_mint_window() {
     let temp = TempDir::new("counter-store-flag");
@@ -2210,8 +2210,8 @@ fn the_store_flag_is_recognized_and_closes_the_run_mint_window() {
     );
     // The refusal wrote no ledger: the run-mint window is closed for a persistent store.
     assert!(
-        !temp.join("marrow.ids").exists(),
-        "no marrow.ids may be minted on the persistent path: {output:?}"
+        !temp.join(".marrow/ids").exists(),
+        "no .marrow/ids may be minted on the persistent path: {output:?}"
     );
 }
 
@@ -2237,7 +2237,7 @@ pub fn get(d: duration): int? {
 }
 
 /// The checked-in tracer fixture stays a compile/verify/identity fixture: its
-/// committed `marrow.ids` is complete, so a durable export travels the full
+/// committed `.marrow/ids` is complete, so a durable export travels the full
 /// pipeline and parks in the trough (its runtime journey returns at E01/F02b).
 #[test]
 fn tracer_fixture_compiles_verifies_and_parks() {
@@ -2290,8 +2290,8 @@ fn a_place_binding_export_parks_in_the_trough() {
     assert!(out.contains(r#""outcome":"error""#), "{get:?}");
     assert!(out.contains("cli.durable_unsupported"), "{get:?}");
     assert!(
-        temp.join("marrow.ids").exists(),
-        "the mint pre-pass published marrow.ids before parking"
+        temp.join(".marrow/ids").exists(),
+        "the mint pre-pass published .marrow/ids before parking"
     );
 
     let bump = run_in(&temp, &["run", "bump", "--", "hits", "5"]);
@@ -2302,7 +2302,7 @@ fn a_place_binding_export_parks_in_the_trough() {
     );
 }
 
-/// The checked-in `place_counter` fixture: a complete `marrow.ids`, so a place-based
+/// The checked-in `place_counter` fixture: a complete `.marrow/ids`, so a place-based
 /// durable export travels the full pipeline and parks in the trough.
 #[test]
 fn place_fixture_compiles_verifies_and_parks() {

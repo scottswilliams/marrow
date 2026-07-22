@@ -1,6 +1,6 @@
 //! Black-box harness and access-demand facts for the Workshop catalog fixture.
 //!
-//! The fixture source and its committed `marrow.ids` ledger are read from disk and
+//! The fixture source and its committed `.marrow/ids` ledger are read from disk and
 //! driven through the whole production path — capture -> compile -> verify -> attach
 //! -> VM — the same path `marrow test` and a terminal invocation take. One test
 //! drives add/read/correct-rollback/final-read over a single *persistent* ephemeral
@@ -35,7 +35,7 @@ fn fixture_dir() -> PathBuf {
 
 fn compile_verify() -> VerifiedImage {
     let source = std::fs::read(fixture_dir().join("src/main.mw")).expect("read fixture source");
-    let ids = std::fs::read(fixture_dir().join("marrow.ids")).expect("read fixture ledger");
+    let ids = std::fs::read(fixture_dir().join(".marrow/ids")).expect("read fixture ledger");
     let manifest = marrow_project::Manifest::parse("edition = \"2026\"\n").expect("manifest");
     let files = vec![marrow_project::CapturedFile::new(
         "src/main.mw".to_string(),
