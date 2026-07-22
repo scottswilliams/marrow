@@ -113,21 +113,35 @@ are genuine reachable reds now, not moot.
 (name→`.site` resolution); `marrow-image/src/draft.rs` (`add_site`); `marrow-project/src/ids.rs`
 (`MAX_IDS_ROWS`).
 
-**Proposed representation.**
-1. **Lazy, deduplicating site allocation.** Replace eager per-field emission with an
-   on-demand allocator on the draft/lowering context: a `HashMap<(SemanticPath,
-   SemanticTarget), SiteId>` that mints-or-returns a `SiteId` the first time an instruction
-   references a node/target. The three `emit_field_site` loops and the positional
-   `DurableField.site` wiring are deleted; the lowerer computes a field's `SemanticPath` from
-   its ledger id + parent step chain at reference time (the same data it already holds) and
-   calls `alloc_site(path, FieldLeaf)`. `WholePayload`/`Index*` sites flow through the same
-   allocator (uniform). The SITES table then contains exactly the sites code references, in
-   reference order.
-2. **Raise `MAX_IDS_ROWS`** from 4096 → **8192** (monotone bound widen, matching
-   `MAX_DURABLE_MEMBERS`), leaving `MAX_IDS_BYTES = 1 MiB` as the true allocation bound —
-   the exact pattern the image bounds already follow (`bounds.rs` module header). 8192 rows ×
-   ~60 B ≈ 500 KB < 1 MiB. This makes the full `MAX_RECORD_FIELDS = 4096` field guard
-   reachable (a 4096-field resource → ~4100 rows < 8192).
+**Proposed representation (refined by review touch 1 — see the fold record below).**
+1. **Field-leaf-only lazy, deduplicating site allocation.** Only **field-leaf** sites scale
+   with declared width (the three `emit_field_site` loops); the root whole-payload,
+   group-entry, branch-entry, and index sites are O(graph nodes), already bounded, and — for
+   the root whole-payload site — are a **place-identity handle** (`root_by_entry_site(place.entry_site)`,
+   `lower/durable.rs:518-526`), not merely an operand, so a field-only program that never
+   references the whole-payload site must still mint it. **Therefore keep the non-width-scaled
+   sites eager; lazily dedup only field-leaf sites.** Delete the three `emit_field_site` loops
+   (`durable.rs:1627-1631, 1676-1680, 1715-1719`); **path construction stays in `durable.rs`,
+   the sole `SemanticPath` builder** — it precomputes and stores the field's `SemanticPath`
+   (or full `SiteDef`) on the `DurableField`/branch-field struct in place of the pre-minted
+   `site: u16` (the struct does **not** hold the ledger-id chain today — `durable.rs:116-119` —
+   so the path/identity must be threaded onto it). At field-read/write lowering the lowerers
+   (`lower/durable.rs`, `lower/stmts.rs`) only **trigger** `alloc_site(path, FieldLeaf)`, which
+   mints-or-returns a `SiteId` deduped by the **Copy** key `(LedgerIdBytes, SemanticTarget)`
+   (`node_id()`, the field's globally-unique entropy id — no Vec hashing/cloning; the
+   `type_index`/`fn_index` accelerator pattern). The SITES table then carries the eager
+   non-field sites plus exactly the field-leaf sites code references.
+2. **Raise `MAX_IDS_ROWS`** from 4096 → **8192** (a deliberate row cap tracking the
+   `MAX_DURABLE_MEMBERS = 8192` member-tree bound; the raise is a genuinely monotone
+   reject-guard widen — `MAX_IDS_ROWS` is referenced only at `ids.rs:398`, no array-sizing or
+   modulo keyed to 4096, and the `marrow ids v0` header is unchanged, so an old toolchain
+   meeting a >4096-row file **rejects, never misreads**). This makes the full
+   `MAX_RECORD_FIELDS = 4096` field guard reachable **for a single wide resource** (~4100
+   rows < 8192). Note honestly: the ledger is **per-project** and bounds the whole file, so a
+   project carrying a 4096-field resource *plus* other durable declarations can still exceed
+   8192; sizing for the multi-root wide case is out of this lane's reachable scope. Both
+   `MAX_IDS_ROWS` (8192) and `MAX_IDS_BYTES` (1 MiB ≈ 17k rows) carry headroom at a single
+   4096-field resource — neither is claimed as *the* binder; `MAX_RECORD_FIELDS` is.
 
 **Byte-identity ledger.**
 - *Storeless images*: byte-identical (no sites, no ledger rows).
@@ -139,10 +153,13 @@ are genuine reachable reds now, not moot.
 - *Diagnostics*: unchanged. The `MAX_RECORD_FIELDS` 4096-limit byte-exact tests are about
   field count (member tree / record type), not sites — untouched. `MAX_SITES` refusal bytes
   unchanged (only its reachability changes).
-- The `const _` decoupling assert `MAX_SITES >= MAX_RECORD_FIELDS` (`bounds.rs:266-269`)
-  becomes obsolete — `MAX_SITES` now tracks referenced-op count (bounded by code size), not
-  field width. Replace with `MAX_IDS_ROWS >= MAX_RECORD_FIELDS + overhead` reasoning
-  (project-crate assert/KAT).
+- **Keep** the `const _` decoupling assert `MAX_SITES >= MAX_RECORD_FIELDS` (`bounds.rs:266-269`)
+  — it stays **live and necessary** (review touch 1, soundness #2): a single function that
+  reads all N fields of a wide resource mints N field-leaf sites, so the site table must still
+  admit `MAX_RECORD_FIELDS` in the worst case. The ledger-vs-width invariant is a **separate**
+  bound in a **separate crate** (`marrow-project`), so it is documented/asserted there (a
+  local `MAX_IDS_ROWS` KAT), not folded into `bounds.rs` — `bounds.rs` cannot reference a
+  downstream-crate constant.
 
 **KAT plan.**
 - Rewrite `operation_sites.rs` from "one site per declared field" to "a site per *referenced*
@@ -195,6 +212,15 @@ with the typed `Envelope` refusal (`container.rs:37-38`). A v1-design note recor
 decoder gated on the version byte — a *replacement path* for beyond-u16 programs, never a
 second concurrent format for the same bytes.
 
+**Caution recorded for the future v1 lane (not this lane).** The version byte lives at offset
+4, **outside** the digested payload (`DIGEST_SLOT_END = 37`; payload = `bytes[37..]`), so
+ring-version-laundering defense rests entirely on the version gate (`container.rs:37-39`)
+*plus* the per-version digest kind (a hardcoded const today, `digest.rs:12`). When v1 lands it
+must **select the digest kind by the version byte** (not a hardcoded const), and should
+consider folding the version byte into the digest payload for defense-in-depth. Today's v0
+seam is sound (a version-flip replay fails because the recomputing side uses the other
+version's kind → digest mismatch); this note only fences the v1 implementation.
+
 **The fork the evidence exposes — and why this item STOPs.**
 - The **design** is fully determined (no fork): FR01 §6 + the posture fix the version bump,
   the new digest kind, reject-only, u32 widening. Clean and obvious.
@@ -237,17 +263,28 @@ prefix. Cost `O(templates × overlay)` instead of `O(templates × full size)`.
 draft (`lower/mod.rs:564`); only diagnostics are kept. The overlay reproduces identical
 proof diagnostics.
 
-**KAT plan.** A new op-count gate on proof-clone **cost** (`proof_clone_rows`), not entry
-count (`proof_clones`, already per-template and unchanged): assert the per-template replayed
-row count is O(overlay), not O(all prior rows). The manual report already surfaces
-`proof_clone_rows` (`generic_scaling_counts_tests.rs:334-355`).
+**Simpler alternative to evaluate first (review touch 1, idiom F6).** Before the read-through
+overlay, evaluate **savepoint-truncate**: record `type_insts.len()` / draft high-water marks,
+let the proof append onto the shared owner, then truncate back to the marks — no read-through
+indirection, no per-lookup branch. Sound **only if** the proof provably never mutates a prefix
+row and never early-returns (`?`/panic) past the truncate; `clone_for_generic_check` exists
+precisely to *isolate* the proof, so fall back to the read-only-baseline overlay if that
+isolation cannot be guaranteed cheaply. Never trade soundness for the simpler mechanism.
+
+**KAT plan.** (a) An op-count gate on proof-clone **cost** (`proof_clone_rows`), not entry
+count (`proof_clones`, already per-template and unchanged): the per-template replayed row
+count is O(overlay), not O(all prior rows) (manual report surfaces `proof_clone_rows`,
+`generic_scaling_counts_tests.rs:334-355`). (b) **A diagnostic-identity golden** (before/after)
+over a generic-heavy fixture — this is the real risk fence: byte-identity holds *iff* the
+baseline-then-overlay (or savepoint) resolves every type/index exactly as `draft.clone()`
+would, and a resolution bug surfaces in diagnostics without changing cost.
 
 **Verifier/kernel impact.** None (proof pass is compiler-internal, pre-image).
 
-**Verdict: PROCEED — but a candidate split.** The overlay is the most invasive change
-(`TypeRegistry`/`ImageDraft` read-through seams). Per the phase protocol's "two-or-more
-surviving red families exceeding the effort-L ceiling mint a second serialized row," if CF1's
-overlay + C1 together exceed the lane budget, CF1 splits to a serialized sibling row.
+**Verdict: PROCEED — but a candidate split.** The overlay/savepoint is the most invasive
+change (`TypeRegistry`/`ImageDraft` seams). Per the phase protocol's "two-or-more surviving
+red families exceeding the effort-L ceiling mint a second serialized row," if CF1 + C1
+together exceed the lane budget, **CF1 splits to a serialized sibling row.**
 
 ---
 
@@ -267,7 +304,9 @@ append-only owners, never an authority — `types.rs:972-978`). Presentation out
 
 **KAT plan.** Flip `type_axis_scan_is_linear_field_projection_rebuild_still_quadratic`
 (`generic_scaling_counts_tests.rs:193-237`): the frozen `row_ratio >= 3.5` assertion becomes
-a `~2x linear` assertion **in the same commit** as the repair (the recurrence-KAT law).
+a `~2x linear` assertion **in the same commit** as the repair (the recurrence-KAT law), and
+**rename it** (e.g. `type_axis_and_field_projection_scans_are_linear`) so the frozen-KAT name
+never asserts a defect that no longer exists (review touch 1, idiom F7).
 
 **Verifier/kernel impact.** None (compiler-internal).
 
@@ -319,18 +358,49 @@ soundness incl. hostile ring-version laundering probes on the pinned v0 seam + i
 compile-wall tables; format KATs for every frozen byte (v0 seam); the recurrence KATs flipped
 with their repairs.
 
-## Open risks / questions for review touch 1
-- **R1 (C1 ownership seam).** Moving site minting from graph-build (`durable.rs`) to
-  reference-time (`lower/durable.rs`) — does any consumer besides the durable lowerer read
-  `DurableField.site` before lowering? (Trace says no; confirm under the soundness lens.)
-- **R2 (C1 dedup key).** Is `(SemanticPath, SemanticTarget)` the correct dedup key, or must
-  `WholePayload`/group/index sites keep a distinct allocation discipline? (They are already
-  non-width-scaled; uniform allocation is the simplest, but confirm no ordering invariant in
-  the verifier's per-site sealing depends on declaration-ordered sites.)
-- **R3 (`MAX_IDS_ROWS` value).** 8192 (match `MAX_DURABLE_MEMBERS`) vs a tighter
-  `MAX_RECORD_FIELDS + overhead` — is matching the member-tree bound the right scale-floor
-  choice, or does the multi-root project shape (up to `MAX_ROOTS` roots) argue for more, with
-  `MAX_IDS_BYTES` the true bound?
-- **R4 (C2 STOP framing).** Is deferring v1 with the v0 seam pinned the correct
-  recommendation, or does the "millions of functions" directive warrant building v1 now?
-  (The pre-armed maintainer decision.)
+## Review touch 1 — dual kernel-tier design review (folded)
+
+Two independent reviewers on the detached no-hardlink clone at `7401db21`, neither the author.
+
+**Soundness / format-identity lens — verdict: SOUND to proceed, with the C2 STOP, no blocking
+image/verifier hole.** Verified: C1 preservation laws (a)-(d) hold (verifier reconstructs the
+node set from the descriptor and never requires a node to carry a site; the contract id
+excludes sites; demand is path-keyed and order-independent; the 4096-limit diagnostics are
+field-count, not sites); lazy sites ⊆ eager sites so the sealed-duplicate check still passes;
+the dedup key is collision-free; renumbering is invisible to every persisted/cross-image
+identity (physical cells are keyed by `node_stem` from ledger/record identity, store↔image
+binding is the site-free contract id); C2 ring-version laundering is blocked by the version
+gate + per-version digest kind; CF2/CF3 are zero-byte projections. SHOULD-FIX corrections
+folded: #1 field-leaf-only lazy (root whole-payload is a place handle); #2 keep
+`MAX_SITES >= MAX_RECORD_FIELDS`; #3 thread the identity/path the lowerer lacks today; #4 add a
+CF1 diagnostic golden; #5 state the single-resource `MAX_IDS_ROWS` caveat.
+
+**Idiom / simplicity / scope lens — verdict: proceed at the right altitude, two items to nail
+first.** Folded: F1 keep path construction in `durable.rs` (sole owner), lowerers only trigger
+`alloc_site` — do **not** duplicate the step-chain builder into the lowerers; F2 Copy
+`(LedgerIdBytes, SemanticTarget)` key, not a `Vec`-backed `SemanticPath`; F3 fix the
+`MAX_IDS_ROWS` rationale; F4 the retired site assert stays live (see soundness #2); F6 evaluate
+savepoint-truncate before the overlay; F7 rename the flipped CF2 KAT; F8 CF3 affirmed;
+F9 C2 STOP affirmed (per-image function count, not cross-image total, is what u16 bounds).
+
+**Net effect on the plan:** C1 is field-leaf-only lazy with the path owned by `durable.rs`;
+`MAX_SITES` assert stays; `MAX_IDS_ROWS = 8192` with corrected rationale; CF1 tries
+savepoint-first and adds a diagnostic golden; C2 STOP confirmed sound and pre-armed. No item
+rescoped out; nothing gold-plated. All open risks R1-R4 resolved (below).
+
+## Open risks — resolved by review touch 1
+- **R1 (C1 ownership seam) — RESOLVED.** Path construction stays in `durable.rs` (sole
+  builder); the `SemanticPath`/`SiteDef` is stored on the durable struct (replacing `site:
+  u16`) and the lowerers only trigger `alloc_site`. The identity chain is **not** on the
+  lowering struct today (soundness #3), so it must be threaded on — feasible, contained.
+- **R2 (C1 dedup key) — RESOLVED.** Only **field-leaf** sites are lazily deduped (soundness
+  #1: root whole-payload/group/branch/index stay eager because the root whole-payload site is
+  a place-identity handle). Key: Copy `(LedgerIdBytes, SemanticTarget)` (idiom F2). No verifier
+  ordering invariant depends on declaration-ordered sites (demand is path-keyed, order-free).
+- **R3 (`MAX_IDS_ROWS` value) — RESOLVED.** 8192 (tracking `MAX_DURABLE_MEMBERS`) is
+  right-sized for a single wide resource; multi-root wide is out of reachable scope for this
+  lane (do not size for it). Neither ROWS nor BYTES is *the* binder at one 4096-field
+  resource — `MAX_RECORD_FIELDS` is.
+- **R4 (C2 STOP framing) — RESOLVED (both lenses affirm the STOP).** Defer v1 + pin the v0
+  seam is correct on the evidence; because it collides with the standing "millions of
+  functions" owner directive it is escalated, not decided in-lane. Maintainer decides.
