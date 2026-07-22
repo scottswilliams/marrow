@@ -346,6 +346,51 @@ direction (see [`future/general-purpose-language.md`](../future/general-purpose-
 On the current line every member is a selectable leaf and the checker rejects a
 `category` or nested member as `check.unsupported`.
 
+## `require` Guards
+
+`require <condition> else <value>` rejects unless a boolean precondition holds.
+The condition is a `bool`. The value is the bare failure value: the enclosing
+function must return `Result<T, E>`, and the value types against that exact `E`
+with no implicit conversion — the wrap in `err(...)` and the return are implicit
+under the mark. When the condition is true, control falls through to the next
+statement. When it is false, the function returns `err(<value>)`; the value is
+evaluated only on that failure path.
+
+The statement is pure lowering sugar: `require c else e` compiles to exactly the
+same program as `if not c { return err(e) }`.
+
+```mw
+module docs::require_guard
+
+fn isReserved(name: string): bool {
+    return name == "admin"
+}
+
+pub fn admitName(name: string): Result<string, string> {
+    require not isEmpty(name) else "name is empty"
+    require not isReserved(name) else "name is reserved"
+    return ok(name)
+}
+```
+
+A short `require` is one line. A long failure value breaks inside its own
+parentheses — a constructor lays its arguments one per line — while the
+`require … else` head stays on the statement's first line.
+
+Like prefix `try`, the failure exit is implicit — not a spelled `return` — so it
+carries no transaction commit. A `require` may not stand on a path that would
+exit a `transaction` region its own function owns; the checker reports
+`check.transaction_uncommitted` at the `require`. Inside an owned region the
+guard is spelled `if not c { return err(e) }`, keeping the commit deliberate and
+visible. A helper called inside the region owns no region of its own, so its
+`require` guards stay legal — the failure exit is ordinary control flow into the
+export's committing in-region `return`.
+
+The three guard forms divide by subject: a presence guard takes let-else, a
+boolean guard takes `require`, and a guard inside a region the function owns is
+a spelled `if`/`return` (see [Idioms](idioms.md#the-guard-prelude)). `try`
+propagates an existing `Result` failure; `require` originates one.
+
 ## Prefix `try` And `transaction`
 
 Prefix `try <expr>` propagates a `Result<T, E>` failure. It is written as the

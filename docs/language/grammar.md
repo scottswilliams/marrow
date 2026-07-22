@@ -257,6 +257,7 @@ statement       = const_stmt
                 | break_stmt
                 | continue_stmt
                 | return_stmt
+                | require_stmt
                 | transaction_stmt
                 | expression_stmt ;
 
@@ -279,15 +280,19 @@ delete_stmt     = "delete", path_expr, NEWLINE ;
 break_stmt      = "break", NEWLINE ;
 continue_stmt   = "continue", NEWLINE ;
 return_stmt     = "return", (try_value | expression)?, NEWLINE ;
+require_stmt    = "require", expression, "else", expression, NEWLINE ;
 expression_stmt = (try_value | expression), NEWLINE ;
 
 let_else_tail   = "else", (statement | block) ;
 ```
 
-A `let_else_tail` is the B6 let-else form: a `const`/`var` binding may carry an
+A `let_else_tail` is the let-else form: a `const`/`var` binding may carry an
 `else` clause that runs a diverging statement or block when the bound value is
-absent. It is parsed so the grammar is complete; the checker rejects it as
-`check.unsupported` until the form is adopted.
+absent (see [Control flow](control-flow.md#let-else-bindings)). A `require_stmt`
+is the boolean guard: the first expression is a `bool` condition ending at the
+first top-level `else`, and the second is the bare failure value of the
+enclosing function's `Result` error type (see
+[Control flow](control-flow.md#require-guards)).
 
 ## Conditionals, Loops, And Match
 

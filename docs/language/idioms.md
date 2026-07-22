@@ -51,9 +51,12 @@ with, while `append(xs, extra)` adds one more. A map is constructed empty with
 ## The Guard Prelude
 
 A `pub fn` opens with its preconditions, one per line, before the happy path. Each
-precondition is a diverging guard: an `if` that returns on failure, or a `const`
-binding with a diverging `else`. The guards carry no nesting, so the body that
-follows runs with every checked value already present.
+precondition is a diverging guard, and the guard form follows the subject: a
+boolean precondition takes `require`, a presence check takes a `const` binding
+with a diverging `else`, and a guard inside a `transaction` region the function
+owns is a spelled `if`/`return`, because that return is a commit site and the
+commit stays deliberate. The guards carry no nesting, so the body that follows
+runs with every checked value already present.
 
 ```mw
 module clinic::lookup
@@ -66,9 +69,7 @@ resource Patient {
 store ^patients[pid: int]: Patient
 
 pub fn wardOf(pid: Id(^patients), wards: Map<string, string>): Result<string, string> {
-    if not exists(^patients[pid]) {
-        return err("unknown patient")
-    }
+    require exists(^patients[pid]) else "unknown patient"
     const name = ^patients[pid].name else {
         return err("patient has no name")
     }
@@ -85,7 +86,9 @@ Local and durable presence follow the same shape. A sparse durable read
 the present value past the guard; a map lookup falls back with `??`. The divergence
 of an `else` block is required by the language — a let-else `else` cannot fall
 through (see [Control flow](control-flow.md#let-else-bindings)) — so past the guard
-the name is always in scope with a present value.
+the name is always in scope with a present value. The boolean guard's `require`
+(see [Control flow](control-flow.md#require-guards)) is the same shape without a
+binding: one line per precondition, the bare failure value after `else`.
 
 The prelude works the same inside a mutating export's `transaction` region. An
 in-region `return` commits the region's staged writes before it returns (see
@@ -117,6 +120,77 @@ pub fn assign(bid: int, who: string): Result<int, string> {
 
 Each guard's `return` is a region exit that commits before it returns; a guard that
 returns before staging anything commits an empty region and persists no change.
+
+## The Validation Chain
+
+A domain validator combines the three guard tools: let-else reads the subject and
+rejects absence, `require` states each boolean precondition on its own line, and
+`try` joins a shared guard helper that several validators reuse. The chain below
+is the `updateEncounter` arm of the EMR sample application's `validate()`
+(`apps/emr/src/changeset.mw`), reduced to one resource pair. Guard order is
+rejection order: the first failing line names the rejection the caller sees.
+
+```mw
+module emr::validation
+
+resource Encounter {
+    required revision: int
+    required patientId: int
+    required status: string
+}
+
+resource PatientAggregate {
+    required revision: int
+}
+
+store ^encounters[id: int]: Encounter
+
+store ^patientAggregates[patientId: int]: PatientAggregate
+
+enum Rejection {
+    resourceMissing(kind: string, id: int)
+    staleRevision(kind: string, id: int, expected: int, actual: int)
+    revisionOverflow(kind: string, id: int)
+    unsupportedStatus(kind: string, id: int, status: string)
+    unsupportedTransition(kind: string, id: int, prior: string, intended: string)
+    patientAggregateMissing(patientId: int)
+}
+
+fn encounterStatusValid(s: string): bool {
+    return s == "planned" or s == "in-progress" or s == "finished"
+}
+
+fn encounterTransitionOk(prior: string, intended: string): bool {
+    if prior == "finished" {
+        return intended == "finished"
+    }
+    return true
+}
+
+fn revisionGuards(kind: string, id: int, actual: int, expected: int): Result<bool, Rejection> {
+    require actual == expected else Rejection::staleRevision(kind: kind, id: id, expected: expected, actual: actual)
+    require actual < maxInt else Rejection::revisionOverflow(kind: kind, id: id)
+    return ok(true)
+}
+
+pub fn validateUpdate(id: int, expected: int, s: string): Result<bool, Rejection> {
+    const e = ^encounters[id] else {
+        return err(Rejection::resourceMissing(kind: "encounter", id: id))
+    }
+    try revisionGuards("encounter", id, e.revision, expected)
+    require encounterStatusValid(s) else Rejection::unsupportedStatus(kind: "encounter", id: id, status: s)
+    require encounterTransitionOk(e.status, s) else Rejection::unsupportedTransition(kind: "encounter", id: id, prior: e.status, intended: s)
+    require exists(^patientAggregates[e.patientId]) else Rejection::patientAggregateMissing(patientId: e.patientId)
+    return ok(true)
+}
+```
+
+The chain reads as a precondition table, and it greps as one: `\brequire ` lists
+every boolean precondition in the module, and `\btry ` every point that forwards
+a shared guard's rejection (see
+[The grep contract](surface-laws.md#the-grep-contract)). A validator owns no
+`transaction` region — the mutating export does — so its `require` and `try`
+exits are ordinary control flow into that export's committing in-region `return`.
 
 ## Interpolation For Multi-Part Text, `+` For Accumulation
 

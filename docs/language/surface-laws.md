@@ -21,6 +21,7 @@ nothing in it is ever implied.
 | `at most` / `on more` | a bounded durable traversal and the arm that runs when more keys remain (see [Traversal](traversal-and-indexes.md#bounded-durable-traversal)) |
 | `checked` / `on` | fault-armed integer arithmetic and its diverging fault arms (see [Checked arithmetic](control-flow.md#checked-arithmetic)) |
 | `try` | propagation of a `Result<T, E>` failure out of the enclosing function (see [Prefix `try`](control-flow.md#prefix-try-and-transaction)) |
+| `require` | origination of a `Result` failure from a failed boolean precondition (see [`require` guards](control-flow.md#require-guards)) |
 | `delete` | removal of a durable place (see [Deletion](durable-places.md#deletion)) |
 | `$` | the opener of an interpolated string, `$"…"` (see [Literals](source-and-syntax.md#literals)) |
 
@@ -76,6 +77,7 @@ occurrence.
 | `\^` | every durable-place reference in the module |
 | `transaction {` | every transaction region |
 | `\btry ` | every failure-propagation point |
+| `\brequire ` | every boolean-precondition rejection point — a module's precondition inventory |
 | `at most` | every bounded durable traversal (a store root, a keyed branch, or an index scan) |
 | `\bwhile\b` | every loop with no iteration limit |
 | `\bdelete\b` | every durable deletion |
@@ -95,6 +97,10 @@ Two rows depend on the durable-access rules and are stated precisely:
   rejected (`check.unsupported`): every deletion that checks removes a durable
   place. The direct form is `delete ^…`; a deletion through a place alias is
   `delete <name>`, where `<name>` was bound from a `^` address.
+
+`\btry ` and `\brequire ` split the failure surface exactly: `try` propagates an
+existing `Result` failure and `require` originates one, so the two inventories
+are disjoint and together list every source-spelled failure exit.
 
 Two constructs that mark a *bound* pair with a construct that marks its absence:
 `at most` heads every durable traversal, which is always bounded, while `\bwhile\b`
