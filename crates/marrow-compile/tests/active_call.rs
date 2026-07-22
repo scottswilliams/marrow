@@ -246,6 +246,69 @@ fn active_call_render_bytes_refuses_a_pathological_display() {
 }
 
 #[test]
+fn active_call_render_bytes_boundary_admits_max_and_refuses_one_more() {
+    // The rendered-byte cap is a strict `>`: a display of exactly MAX bytes is admitted,
+    // one byte more refuses — pinning the boundary so an off-by-one to `>=` cannot pass
+    // unnoticed. For a callee `fn NAME(p: ALIAS): int`, the charged bytes are the signature
+    // plus the one parameter label:
+    //   signature = "fn " + NAME + "(" + "p: " + ALIAS + ")" + ": " + "int"
+    //             = 13 + NAME.len() + ALIAS.len()
+    //   label     = "p: " + ALIAS = 3 + ALIAS.len()
+    //   total     = 16 + NAME.len() + 2 * ALIAS.len()
+    // With a two-character name and an alias length chosen to land the total on the cap.
+    let cap = MAX_ACTIVE_CALL_RENDER_BYTES as usize;
+    assert_eq!(
+        (cap - 18) % 2,
+        0,
+        "cap parity admits an exact-boundary alias"
+    );
+    let alias_len = (cap - 16 - 2) / 2;
+    let alias = "a".repeat(alias_len);
+
+    let build = |name: &str| {
+        let mut source = String::from("module app\n\n");
+        source.push_str(&format!("alias {alias} = int\n\n"));
+        source.push_str(&format!(
+            "fn {name}(p: {alias}): int {{\n    return 1\n}}\n\n"
+        ));
+        source.push_str(&format!("fn caller(): int {{\n    return {name}()\n}}\n"));
+        source
+    };
+
+    // A two-character name renders exactly the cap: admitted, never refused.
+    let at_cap = build("ff");
+    let snapshot = snap(&at_cap);
+    let offset = at(&at_cap, "ff()", "ff(".len());
+    match snapshot.active_call(&identity("src/app.mw"), offset) {
+        Ok(ActiveCallOutcome::Ready(Fact::Present(active))) => {
+            assert_eq!(
+                active.signature().len() + active.params()[0].label().len(),
+                cap,
+                "the admitted display is exactly the cap"
+            );
+        }
+        other => panic!(
+            "expected an exactly-cap present display, got {}",
+            describe(&other)
+        ),
+    }
+
+    // A three-character name adds one byte: one past the cap refuses.
+    let over_cap = build("fff");
+    let snapshot = snap(&over_cap);
+    let offset = at(&over_cap, "fff()", "fff(".len());
+    match snapshot.active_call(&identity("src/app.mw"), offset) {
+        Ok(ActiveCallOutcome::Refused(AnalysisResourceLimit::ActiveCallRenderBytes { limit })) => {
+            assert_eq!(limit, MAX_ACTIVE_CALL_RENDER_BYTES);
+        }
+        other => panic!(
+            "expected a render-byte refusal one past the cap, got {}",
+            describe(&other)
+        ),
+    }
+}
+
+#[test]
 fn active_call_unknown_file() {
     let source = "module app\n\nfn f(): int {\n    return 1\n}\n";
     let snapshot = snap(source);
