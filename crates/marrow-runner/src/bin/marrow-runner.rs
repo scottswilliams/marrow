@@ -24,7 +24,9 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use marrow_local_wire::{Json, encode};
-use marrow_runner::{Channel, Deadlines, Id32, LaunchSecrets, Service, mint_id};
+use marrow_runner::{
+    AttachedEphemeralService, Channel, Deadlines, Handler, Id32, LaunchSecrets, Service, mint_id,
+};
 
 /// The bounded number of connection attempts admitted before giving up (the
 /// first-connection-wins bound: a same-uid racer costs one attempt).
@@ -42,6 +44,9 @@ enum Command {
     },
     /// Attach the image to the persistent store at `store` and serve its exports.
     Attach { image: PathBuf, store: PathBuf },
+    /// Attach the image to a fresh process-local in-memory store and serve its exports. The
+    /// store never persists — it is discarded when this process exits.
+    AttachEphemeral { image: PathBuf },
 }
 
 fn main() -> ExitCode {
@@ -53,11 +58,12 @@ fn main() -> ExitCode {
             accept,
         }) => provision_command(&image, &store, accept),
         Some(Command::Attach { image, store }) => attach(&image, &store),
+        Some(Command::AttachEphemeral { image }) => attach_ephemeral(&image),
         None => {
             eprintln!(
                 "usage: marrow-runner --image <path>\n       marrow-runner provision --image \
                  <path> --store <dir> [--yes]\n       marrow-runner attach --image <path> \
-                 --store <dir>"
+                 --store <dir>\n       marrow-runner attach-ephemeral --image <path>"
             );
             ExitCode::from(2)
         }
@@ -149,7 +155,7 @@ fn serve(image_path: &Path) -> ExitCode {
         }
     };
     let interface = service.interface_id();
-    serve_over_channel(service, interface)
+    serve_over_channel(interface, move || service)
 }
 
 /// Attach the image to the persistent store at `store` through the privileged lifecycle
@@ -189,14 +195,37 @@ fn attach(image_path: &Path, store: &Path) -> ExitCode {
     // transfer codec rather than being refused wholesale here.
     let attached = marrow_runner::AttachedService::new(image, opened);
     let identity = attached.identity();
-    serve_over_channel(attached, identity)
+    serve_over_channel(identity, move || attached)
 }
 
-/// The shared channel discipline for both serving modes: mint the session secrets, bind a
-/// private local channel, publish one launch descriptor for the supervisor/terminal, admit
-/// one authenticated client, and serve it until it hangs up, tearing the channel down on
-/// every non-panic path.
-fn serve_over_channel<H: marrow_runner::Handler>(mut handler: H, interface: Id32) -> ExitCode {
+/// Attach the image to a fresh process-local in-memory store and serve its durable and storeless
+/// exports over a private local channel (the `attach-ephemeral` command). Unlike the native
+/// `attach`, no persistent store is opened, no single-owner lock is taken, and no lifecycle
+/// classification runs: the store is minted in RAM and discarded when this process exits. The
+/// handshake identity is the exact image identity, computed here before the channel binds; the
+/// in-memory store itself is opened only *after* a client proves the handshake, since the handler
+/// is constructed after the accept. The CLI never opens a store — it spawns this command and
+/// speaks the wire protocol to it.
+fn attach_ephemeral(image_path: &Path) -> ExitCode {
+    let image = match load_image(image_path) {
+        Ok(image) => image,
+        Err(code) => return code,
+    };
+    // The identity is the image identity, known without opening the in-memory store; the store
+    // is minted inside the handler builder, which runs only after the handshake.
+    let identity = Id32::from_bytes(image.image_id().0);
+    serve_over_channel(identity, move || AttachedEphemeralService::mint(image))
+}
+
+/// The shared channel discipline for every serving mode: mint the session secrets, bind a
+/// private local channel, publish one launch descriptor for the supervisor/terminal, admit one
+/// authenticated client, build the request handler, and serve it until it hangs up, tearing the
+/// channel down on every non-panic path.
+///
+/// `make_handler` is invoked only after the handshake proves the launch nonce, so a resource the
+/// handler opens on construction — the ephemeral-memory store — never opens for an unauthenticated
+/// peer. The eager modes (storeless, native) pass a closure returning an already-built handler.
+fn serve_over_channel<H: Handler>(interface: Id32, make_handler: impl FnOnce() -> H) -> ExitCode {
     let expected_nonce = match nonce_from_env() {
         Ok(nonce) => nonce,
         Err(()) => return ExitCode::FAILURE,
@@ -244,7 +273,25 @@ fn serve_over_channel<H: marrow_runner::Handler>(mut handler: H, interface: Id32
         expected_nonce,
         session,
     };
-    let outcome = run_session_once(&channel, &mut handler, interface, &secrets, &deadlines);
+    // The handler is built only once a client authenticates, so the ephemeral store never opens
+    // for an unauthenticated peer.
+    let outcome = channel
+        .accept_and_serve(
+            &secrets,
+            interface,
+            &deadlines,
+            MAX_ACCEPT_ATTEMPTS,
+            make_handler,
+        )
+        .map_err(|error| {
+            // A session I/O error keeps the read code; a failure to admit a client is a handshake
+            // failure.
+            let code = match error {
+                marrow_runner::AcceptError::Io(_) => marrow_codes::Code::IoRead,
+                _ => marrow_codes::Code::RunnerHandshake,
+            };
+            eprintln!("{}: {error:?}", code.as_str());
+        });
     channel.teardown();
 
     match outcome {
@@ -253,32 +300,15 @@ fn serve_over_channel<H: marrow_runner::Handler>(mut handler: H, interface: Id32
     }
 }
 
-fn run_session_once<H: marrow_runner::Handler>(
-    channel: &Channel,
-    handler: &mut H,
-    interface: Id32,
-    secrets: &LaunchSecrets,
-    deadlines: &Deadlines,
-) -> Result<(), ()> {
-    let mut connection = channel
-        .accept_authenticated(secrets, interface, deadlines, MAX_ACCEPT_ATTEMPTS)
-        .map_err(|error| {
-            eprintln!(
-                "{}: {error:?}",
-                marrow_codes::Code::RunnerHandshake.as_str()
-            )
-        })?;
-    connection
-        .run_session(handler, deadlines)
-        .map_err(|err| eprintln!("{}: {err}", marrow_codes::Code::IoRead.as_str()))
-}
-
 fn parse_args() -> Option<Command> {
     let mut args = std::env::args().skip(1);
     match args.next().as_deref() {
-        // `provision` and `attach` branch before the `--image` serve path.
+        // `provision`, `attach`, and `attach-ephemeral` branch before the `--image` serve path.
+        // Each launch is a distinct keyword mapping to a distinct `Command` variant, so the four
+        // handshakes can never be confused into one another by flag order or a stray flag.
         Some("provision") => parse_provision(args),
         Some("attach") => parse_attach(args),
+        Some("attach-ephemeral") => parse_attach_ephemeral(args),
         Some("--image") => args.next().map(|image| Command::Serve {
             image: PathBuf::from(image),
         }),
@@ -301,6 +331,20 @@ fn parse_attach(mut args: impl Iterator<Item = String>) -> Option<Command> {
         image: image?,
         store: store?,
     })
+}
+
+/// Parse `attach-ephemeral --image <path>` in any flag order. Only `--image` is accepted: an
+/// ephemeral attachment has no store, so a `--store` (or any other flag) is refused rather than
+/// silently treated as a native attach.
+fn parse_attach_ephemeral(mut args: impl Iterator<Item = String>) -> Option<Command> {
+    let mut image: Option<PathBuf> = None;
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--image" => image = Some(PathBuf::from(args.next()?)),
+            _ => return None,
+        }
+    }
+    Some(Command::AttachEphemeral { image: image? })
 }
 
 /// Parse `provision --image <path> --store <dir> [--yes]` in any flag order. Both `--image`
