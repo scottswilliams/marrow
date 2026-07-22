@@ -10,7 +10,9 @@
     "typecheck": "tsc --noEmit -p .",
     "build": "tsc -p . && node tools/stage.mjs",
     "verify-deployment": "node gate/verify-deployment.mjs",
-    "probe": "node gate/probe.mjs"
+    "probe": "node gate/probe.mjs",
+    "setup": "node tools/setup.mjs",
+    "start": "electron ."
   },
   "devDependencies": {
     "@types/node": "22.10.2",

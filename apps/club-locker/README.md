@@ -60,10 +60,21 @@ ceiling), and the `marrow-deployment` manifest binding their identities.
 
 ## Build and run (local, from source)
 
+The interactive path is two commands. `setup` walks the whole pipeline —
+client generation, the image's authority review with an explicit acceptance
+prompt, deployment composition, build, and the deployment gate:
+
 ```sh
 cd apps/club-locker
-npm ci                                   # ignore-scripts: no Electron binary is fetched
+npm ci          # ignore-scripts: no Electron binary is fetched
+npm run setup   # interactive; prints the demand and asks before composing
+npm start
+```
 
+The same pipeline as explicit steps (the scripted/CI form — the acceptance id
+is passed by hand):
+
+```sh
 # 1. generate the strict client from the domain
 marrow client typescript --out gen
 
