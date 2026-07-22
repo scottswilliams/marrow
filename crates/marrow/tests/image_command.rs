@@ -88,14 +88,25 @@ fn image_requires_the_owner_to_accept_the_ceiling() {
 #[test]
 fn image_writes_the_verified_image_on_accepting_the_ceiling() {
     let workspace = project().materialize("image-accepted");
-    let ceiling = ceiling_id_from_unaccepted(&workspace.marrow(&["image", "--out", "d0"]).stderr_text());
+    let ceiling =
+        ceiling_id_from_unaccepted(&workspace.marrow(&["image", "--out", "d0"]).stderr_text());
 
     let outcome = workspace.marrow(&["image", "--out", "deploy", "--accept-ceiling", &ceiling]);
-    assert!(outcome.success(), "accepting the ceiling composes the image: {}", outcome.stderr_text());
+    assert!(
+        outcome.success(),
+        "accepting the ceiling composes the image: {}",
+        outcome.stderr_text()
+    );
 
     let stdout = outcome.stdout_text();
-    assert!(stdout.contains(&format!("ceiling {ceiling}")), "stdout pins the ceiling id: {stdout}");
-    assert!(stdout.lines().any(|l| l.starts_with("image ")), "stdout pins the image id: {stdout}");
+    assert!(
+        stdout.contains(&format!("ceiling {ceiling}")),
+        "stdout pins the ceiling id: {stdout}"
+    );
+    assert!(
+        stdout.lines().any(|l| l.starts_with("image ")),
+        "stdout pins the image id: {stdout}"
+    );
     assert!(
         workspace.path("deploy/program.image").exists(),
         "the verified image is written"
@@ -131,10 +142,19 @@ fn a_wrong_ceiling_id_writes_no_image() {
 #[test]
 fn image_emission_is_byte_deterministic() {
     let workspace = project().materialize("image-deterministic");
-    let ceiling = ceiling_id_from_unaccepted(&workspace.marrow(&["image", "--out", "d0"]).stderr_text());
+    let ceiling =
+        ceiling_id_from_unaccepted(&workspace.marrow(&["image", "--out", "d0"]).stderr_text());
 
-    assert!(workspace.marrow(&["image", "--out", "a", "--accept-ceiling", &ceiling]).success());
-    assert!(workspace.marrow(&["image", "--out", "b", "--accept-ceiling", &ceiling]).success());
+    assert!(
+        workspace
+            .marrow(&["image", "--out", "a", "--accept-ceiling", &ceiling])
+            .success()
+    );
+    assert!(
+        workspace
+            .marrow(&["image", "--out", "b", "--accept-ceiling", &ceiling])
+            .success()
+    );
 
     let a = std::fs::read(workspace.path("a/program.image")).expect("read a");
     let b = std::fs::read(workspace.path("b/program.image")).expect("read b");
