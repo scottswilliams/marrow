@@ -27,18 +27,25 @@ recovery nodes**:
 | Path `Enum::` | after `::`, no segment | `name_expr` → `Error` (1189–1210) | segments-so-far | `EnumPath` |
 | Type annotation `x: ` | type position, no type | TypeExpr parse → error (parse_decl) | annotation site | `TypeAnnotation` |
 
-## Recovery-node representation (fork of record — lock under Stage-2 review)
+## Recovery-node representation (fork RESOLVED — locked)
 
-**Recommended:** extend the one existing placeholder rather than add three top-level variants.
+**Locked:** extend the one existing placeholder rather than add three top-level variants.
 `Expression::Error { span }` → `Expression::Error { span, recovery: Option<Recovery> }` where
 
 ```
 enum Recovery {
-    Member { base: Box<Expression>, optional: bool },   // expr. / expr?.
-    Path   { base: Box<Expression> },                    // Enum::  (base is the Name so far)
+    Member         { base: Box<Expression> },   // expr.
+    OptionalMember { base: Box<Expression> },   // expr?.
+    Path           { base: Box<Expression> },   // Enum::  (base is the Name so far)
 }
 ```
 and, in the type grammar, `TypeExpr` gains one inert `Incomplete { span }` leaf.
+
+**Discriminate `.` from `?.` by variant, not a bool** (both reviews; workspace rule "a boolean that
+changes semantics usually deserves a typed state"). The surrounding AST already splits exactly this
+distinction into two variants — `Expression::Field` vs `Expression::OptionalField` — so `Recovery`
+mirrors that split (`Member` / `OptionalMember`) for local consistency rather than carrying
+`optional: bool`.
 
 Rationale: every semantic match site (builtins/diagnostics/durable/exprs/stmts/format/lib/decl/stmt)
 already handles `Error`; a struct-field addition keeps them compiling and keeps the node **inert and
@@ -66,10 +73,10 @@ char, `CompletionContext`, or raw text (H00c §3). The owner is the checker's on
   or inside a recovered call's arg list. Namespace: `self.locals` (in scope before the offset) +
   `FunctionRegistry` (module fns) + `ConstRegistry` + builtins + imported module names + enum type
   names (`registry.rs`, `builtins.rs`).
-- **`Member`** — offset in a `Recovery::Member` node (or `Field`/`OptionalField` name span). Resolve
-  the base's type via the same expression-typing path that produces hover facts; struct type →
-  declared fields (`TypeRegistry`, `resolve_product_field` exprs.rs 3054); unresolvable base →
-  `Absent`.
+- **`Member`** — offset in a `Recovery::Member` / `Recovery::OptionalMember` node (or a `Field`/
+  `OptionalField` name span). Type the base through the **fail-soft type probe** (see Collection
+  path): a struct type → declared fields (`TypeRegistry`, `resolve_product_field` exprs.rs 3054); any
+  partial, unresolvable, or invalid base → `Absent` (never a lowerer failure arm).
 - **`EnumPath`** — offset in a `Recovery::Path` node whose base resolves to an enum type/path.
   Immediate child members from the enum decl; `category` members marked non-selectable
   (`EnumMember`, ast.rs).
@@ -97,23 +104,43 @@ Computed **per query** over retained checker facts; candidate sets are never ret
 structure at the position; a broken file with a recovered node at the offset still classifies.
 `QueryError::{UnknownFile,OffsetOutOfRange}` reused verbatim. Revision echoed by the snapshot.
 
-## Collection path (SPR01 — analysis only, zero compile-path collection)
+## Collection path (SPR01 — analysis only, zero compile-path collection; forks RESOLVED)
 
 Hover facts are collected during lowering into `Lowered.hover_facts` (lower/mod.rs 183,
-`record_hover` 411) and threaded through `compile.rs` `drive`/`analyze_project` (620–804). CORE-F1
-adds a parallel **analysis-only** pass that, for each recovered node / unresolved name position,
-records the position class + a re-runnable handle to the resolution environment at that point — OR
-computes candidates per query by re-resolving at the offset. Because candidates are per-query (not
-retained), the snapshot retains only enough to *locate* the class and rebuild the namespace; it must
-not enter the compile image or charge the compile path. This path must run over **broken files**
-too (the fork), so it cannot sit behind the `has_errors` gate that guards image emission —
-it is a distinct analysis traversal, gated only by the presence of recovered/unresolved nodes.
+`record_hover` 411) and threaded through `compile.rs` `drive`/`analyze_project` (620–804).
+
+**Per-query re-resolution only — no retained per-position resolution env (locked; both reviews).**
+The "re-runnable handle to the resolution environment" option is **deleted**: a retained handle is
+checker-internal state held on `AnalysisSnapshot` across queries, which is a lifetime/aliasing
+hazard and directly contradicts §96/§4's own law that *candidate sets are never retained per
+position* (and would silently reintroduce the O(N²)/retention pressure SPR01/CORE-F4 fight).
+`completions` computes candidates **per query** over facts the snapshot **already** retains: the
+parsed AST plus the name / type / const / generic registries. The snapshot gains **no** new
+per-position state.
+
+**Read-only traversal that never re-enters the compile-path lowerer/resolver (locked; soundness
+F2).** The compile-path lowerer (`FnLowerer`, `lower/exprs.rs`) assumes post-`has_errors` input:
+its unmatched arm is `other => self.fail(unsupported(...))` (exprs.rs:240) and its resolution paths
+can raise `ResolveError::Invariant` (exprs.rs:1645+); compilation only avoids these on a broken file
+*because* `has_errors()` gates it (compile.rs 711/733/752/774). Completions deliberately runs on
+broken files, so it must **not** drive that lowerer. Instead it is a distinct read-only pass that:
+1. locates the AST node at the byte offset (purely positional);
+2. enumerates the class namespace directly from the retained registries (Function / Const / Type /
+   Generic) plus locals in scope before the offset plus builtins — no lowering;
+3. for `Member` / `EnumPath`, types the base through a **fail-soft type probe** that returns
+   `Absent` on any partial / unresolvable / invalid base instead of entering a `fail`/`Invariant`
+   arm.
+It emits **zero** diagnostics into the snapshot: a partial or malformed base yields an empty/`Absent`
+classification, never an `unsupported`/`Invariant` leak. Gated only by the presence of a
+recovered/unresolved node at the offset, never by `has_errors`.
 
 ## Stage sequence & red-first tests (per form: observe-today → node → byte-identity)
 
-1. `parse_expr` tests: `member_dot_eof_recovers_base`, `path_colon_colon_eof_retains_segments`,
-   type-annotation incomplete test (parse_decl) — each first asserts today's `Error`, then the
-   recovered node.
+1. `parse_expr` tests: `member_dot_eof_recovers_base` (→ `Recovery::Member`),
+   `member_optional_dot_eof_recovers_base` (→ `Recovery::OptionalMember`),
+   `path_colon_colon_eof_retains_segments` (→ `Recovery::Path`), type-annotation incomplete test
+   (parse_decl, → `TypeExpr::Incomplete`) — each first asserts today's `Error`, then the recovered
+   node.
 2. Byte-identity fixture under `fixtures/v01/**`: no-incomplete-form corpus, image+diagnostic bytes
    identical pre/post (agreement-gate style).
 3. `format.rs` refusal test over a recovery node.
@@ -129,4 +156,23 @@ it is a distinct analysis traversal, gated only by the presence of recovered/unr
 STOP if recovery cannot live in the one parser with byte-identical compile behavior; STOP if the
 position class needs a second resolution model; STOP if the LSP would need to read text/parse. None
 hit at MAP time — the `Error`-widening fork keeps recovery inside the one parser, and every class
-derives from the existing `FnLowerer` namespaces.
+derives from the existing `FnLowerer` namespaces (read-only, without re-entering its failing arms).
+
+## Review folds (2026-07-22 dual review of the MAP head)
+
+Both independent reviews returned **NOT INTEGRABLE / NOT CLEAN — no implementation** (the lane head
+changes only this non-shipping note; none of CORE-F1's code deliverables exist). Their design
+findings against this "fork of record" are folded above and now locked:
+
+- **F (idiom) — Recovery bool → variant split.** Folded: `Recovery::Member` / `OptionalMember`
+  mirror `Field` / `OptionalField`; no `optional: bool`.
+- **F (soundness+idiom) — collection-path either/or.** Folded: the retained resolution-env handle is
+  deleted; per-query re-resolution over the already-retained AST + registries only; no new
+  per-position snapshot state.
+- **F (soundness) — broken-file re-entry.** Folded: completions is a read-only traversal that never
+  drives the compile-path lowerer/resolver; a fail-soft type probe returns `Absent` on any partial
+  base; zero diagnostics leak into the snapshot.
+
+**Lane disposition:** this MAP is a non-shipping design note. CORE-F1's code deliverable is
+undelivered and remains a build stage to be executed in a successor packet against this
+fork-resolved spec. The board row must not be marked shipped on the strength of this note.
