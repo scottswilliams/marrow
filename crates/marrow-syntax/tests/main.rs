@@ -10,6 +10,8 @@ mod flip2_bracket_angle;
 mod format;
 #[path = "cases/fuzz.rs"]
 mod fuzz;
+#[path = "cases/grammar_drift.rs"]
+mod grammar_drift;
 #[path = "cases/lexer.rs"]
 mod lexer;
 #[path = "cases/parse_call_arg_order_consistency.rs"]
