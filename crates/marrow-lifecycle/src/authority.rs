@@ -38,9 +38,10 @@ pub struct ExceedingDemand {
     /// exports demand the same exceeding atom, the alphabetically first names it (a stable,
     /// deterministic choice), so the refusal always points at a real caller.
     pub export: String,
-    /// The operation the atom performs, in source vocabulary (`read`, `write`, `presence`,
-    /// `erase`, `iterate`) — the new effect the ceiling does not admit.
-    pub effect: &'static str,
+    /// The operation class the atom performs — the new effect the ceiling does not admit,
+    /// rendered in source vocabulary (`reads`, `writes`, `probes`, `erases`, `iterates`) at
+    /// the display edge.
+    pub effect: OperationClass,
     /// The durable place the atom names, spelled `^root.member`, or `None` when a step of its
     /// path cannot be spelled from the image (a defensive degrade — the export and effect
     /// still name the refused authority).
@@ -92,16 +93,15 @@ impl std::fmt::Display for DemandExceedsCeiling {
 
 impl std::error::Error for DemandExceedsCeiling {}
 
-/// The natural present-tense verb for one effect word in the refusal sentence — `write` reads
-/// as "writes", a presence probe as "probes", an ordered traversal as "iterates".
-fn effect_verb(effect: &str) -> &'static str {
+/// The natural present-tense verb for one operation class in the refusal sentence — a write
+/// reads as "writes", a presence probe as "probes", an ordered traversal as "iterates".
+fn effect_verb(effect: OperationClass) -> &'static str {
     match effect {
-        "read" => "reads",
-        "write" => "writes",
-        "presence" => "probes",
-        "erase" => "erases",
-        "iterate" => "iterates",
-        _ => "accesses",
+        OperationClass::Read => "reads",
+        OperationClass::Write => "writes",
+        OperationClass::Presence => "probes",
+        OperationClass::Erase => "erases",
+        OperationClass::IndexRead => "iterates",
     }
 }
 
@@ -126,14 +126,14 @@ pub fn admit(
         .iter()
         .map(|atom| ExceedingDemand {
             export: export_for(&by_atom, atom),
-            effect: atom.class().word(),
+            effect: atom.class(),
             place: naming.spell(atom),
         })
         .collect();
     exceeding.sort_by(|a, b| {
         a.place
             .cmp(&b.place)
-            .then_with(|| a.effect.cmp(b.effect))
+            .then_with(|| a.effect.cmp(&b.effect))
             .then_with(|| a.export.cmp(&b.export))
     });
     Err(DemandExceedsCeiling { exceeding })

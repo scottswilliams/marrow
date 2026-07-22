@@ -1,7 +1,7 @@
 //! The four-way authority-intersection audit (G03).
 //!
 //! Effective durable authority is `demand ∩ ceiling ∩ grant ∩ principal`, resolved before the
-//! first engine call. This one lane proves the order holds where all four terms meet, each
+//! first engine call. This audit proves the order holds where all four terms meet, each
 //! exercised through its real owner:
 //!
 //! 1. **demand ∩ ceiling** — an image whose verified demand exceeds the store's accepted

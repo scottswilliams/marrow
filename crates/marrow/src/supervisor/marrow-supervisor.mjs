@@ -768,7 +768,8 @@ export function launch(options) {
         if (
           ready.kind !== "ready" ||
           ready.session !== descriptor.session ||
-          typeof ready.interface !== "string"
+          typeof ready.interface !== "string" ||
+          ready.interface !== descriptor.interface
         ) {
           failLaunch("handshake refused");
           return;
@@ -866,7 +867,7 @@ export class Session {
     /** Admitted calls not yet handed to the serial worker. */
     this.queue = [];
 
-    // Explicit fail-closed teardown on process exit (a g02p carry-forward: no
+    // Explicit fail-closed teardown on process exit — no
     // reliance on implicit cleanup). SIGKILL is safe: the runner holds no state.
     this.exitHook = () => this.terminate();
     process.on("exit", this.exitHook);

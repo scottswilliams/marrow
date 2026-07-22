@@ -161,7 +161,8 @@ fn a_broadened_demand_is_refused_naming_the_exceeding_place() {
         refusal
             .exceeding
             .iter()
-            .any(|atom| atom.effect == "write" && atom.place.as_deref() == Some("^counters.label")),
+            .any(|atom| atom.effect == marrow_image::OperationClass::Write
+                && atom.place.as_deref() == Some("^counters.label")),
         "a typed exceeding atom names the write of ^counters.label: {:?}",
         refusal.exceeding,
     );

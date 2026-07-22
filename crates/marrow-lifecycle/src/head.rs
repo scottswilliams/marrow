@@ -129,6 +129,13 @@ impl LogicalHead {
         out.extend_from_slice(&self.data_digest);
         put_u64(&mut out, self.data_digest_position);
         self.head_map.encode(&mut out);
+        // Symmetric with the decode bound: the accepted-ceiling payload the demand union
+        // produces is far below this ceiling, so a payload that would not decode is never
+        // written. Asserted here so the write and read sides stay in lockstep.
+        debug_assert!(
+            self.accepted_ceiling.len() as u64 <= u64::from(MAX_ACCEPTED_CEILING_BYTES),
+            "accepted-ceiling payload exceeds the head bound the decoder enforces",
+        );
         put_u32(&mut out, self.accepted_ceiling.len() as u32);
         out.extend_from_slice(&self.accepted_ceiling);
         out
