@@ -607,7 +607,7 @@ mod tests {
             )
             .expect("seed entry");
         }
-        assert_eq!(txn.commit(), CommitResult::Committed);
+        assert!(matches!(txn.commit(), CommitResult::Committed));
         drop(txn);
         drop(store);
         (schemas, sites)

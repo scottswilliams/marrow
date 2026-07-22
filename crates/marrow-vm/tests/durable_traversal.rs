@@ -581,7 +581,7 @@ fn a_frozen_list_that_exceeds_the_aggregate_ceiling_faults() {
             )
             .expect("create");
         }
-        assert_eq!(txn.commit(), CommitResult::Committed);
+        assert!(matches!(txn.commit(), CommitResult::Committed));
     }
 
     // The kernel freezes every key (well under `MAX_TRAVERSAL_BOUND`), but the VM

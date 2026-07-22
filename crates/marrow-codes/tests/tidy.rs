@@ -608,6 +608,12 @@ fn commit_recovery_has_no_projection_or_replay_machinery() {
     let forbidden_fact_surfaces = [
         ["impl ", "Clone for CommitRecovery"].concat(),
         ["impl ", "Copy for CommitRecovery"].concat(),
+        ["impl ", "PartialEq for CommitRecovery"].concat(),
+        ["impl ", "Eq for CommitRecovery"].concat(),
+        ["impl std::cmp::", "PartialEq for CommitRecovery"].concat(),
+        ["impl std::cmp::", "Eq for CommitRecovery"].concat(),
+        ["impl core::cmp::", "PartialEq for CommitRecovery"].concat(),
+        ["impl core::cmp::", "Eq for CommitRecovery"].concat(),
         ["impl ", "CommitRecovery {"].concat(),
         ["impl From<CommitRecovery", ">"].concat(),
         ["impl From<&CommitRecovery", ">"].concat(),
@@ -625,6 +631,38 @@ fn commit_recovery_has_no_projection_or_replay_machinery() {
         present.is_empty(),
         "CommitRecovery exposes a reusable projection or construction surface: {present:?}",
     );
+
+    let commit_result_start = durable
+        .find("pub enum CommitResult {")
+        .expect("commit-result declaration");
+    let commit_result_item_start = durable[..commit_result_start]
+        .rfind("\n\n")
+        .map_or(0, |offset| offset + 2);
+    for derive in durable[commit_result_item_start..commit_result_start]
+        .lines()
+        .filter(|line| line.trim_start().starts_with("#[derive("))
+    {
+        assert!(
+            !derive.contains("PartialEq")
+                && !derive
+                    .split([',', '(', ')'])
+                    .any(|part| part.trim() == "Eq"),
+            "CommitResult must not derive equality over an affine recovery fact: {derive}",
+        );
+    }
+    for pattern in [
+        ["impl ", "PartialEq for CommitResult"].concat(),
+        ["impl ", "Eq for CommitResult"].concat(),
+        ["impl std::cmp::", "PartialEq for CommitResult"].concat(),
+        ["impl std::cmp::", "Eq for CommitResult"].concat(),
+        ["impl core::cmp::", "PartialEq for CommitResult"].concat(),
+        ["impl core::cmp::", "Eq for CommitResult"].concat(),
+    ] {
+        assert!(
+            !durable.contains(&pattern),
+            "CommitResult exposes equality over an affine recovery fact: {pattern}",
+        );
+    }
 
     let forbidden_machinery = [
         ["struct ", "DeliveryLedger"].concat(),
@@ -698,6 +736,49 @@ fn durable_execution_failure_has_no_generic_collapse_surface() {
         present.is_empty(),
         "durable execution failure exposes a collapse surface: {present:?}",
     );
+
+    for declaration in [
+        "pub struct InvocationIncomplete {",
+        "enum IncompleteDurability {",
+        "pub enum IncompleteDisposition {",
+        "pub enum DurableExecutionFault {",
+    ] {
+        let declaration_start = source
+            .find(declaration)
+            .expect("durable failure declaration");
+        let item_start = source[..declaration_start]
+            .rfind("\n\n")
+            .map_or(0, |offset| offset + 2);
+        for derive in source[item_start..declaration_start]
+            .lines()
+            .filter(|line| line.trim_start().starts_with("#[derive("))
+        {
+            assert!(
+                !derive.contains("PartialEq")
+                    && !derive
+                        .split([',', '(', ')'])
+                        .any(|part| part.trim() == "Eq"),
+                "{declaration} must not derive equality over an affine recovery fact: {derive}",
+            );
+        }
+    }
+
+    for type_name in [
+        "InvocationIncomplete",
+        "IncompleteDurability",
+        "IncompleteDisposition",
+        "DurableExecutionFault",
+    ] {
+        for trait_name in ["PartialEq", "Eq"] {
+            for prefix in ["impl ", "impl std::cmp::", "impl core::cmp::"] {
+                let pattern = format!("{prefix}{trait_name} for {type_name}");
+                assert!(
+                    !source.contains(&pattern),
+                    "{type_name} exposes a non-consuming equality oracle: {pattern}",
+                );
+            }
+        }
+    }
 }
 
 /// Provisioning is the only lifecycle composition that may call the kernel's

@@ -164,7 +164,7 @@ fn iterates_created_keys_in_forward_order() {
             txn.create_entry(&entry, &[KeyScalar::Str(name.into())], value_entry(1))
                 .expect("create");
         }
-        assert_eq!(txn.commit(), CommitResult::Committed);
+        assert!(matches!(txn.commit(), CommitResult::Committed));
     }
     let mut read = store
         .read_session(InvocationGrant::full_store(), read_demand())
@@ -381,7 +381,7 @@ fn a_branch_entry_makes_its_root_descendant_only_and_root_create_preserves_it() 
                 .expect("branch create"),
             CreateOutcome::Created,
         );
-        assert_eq!(txn.commit(), CommitResult::Committed);
+        assert!(matches!(txn.commit(), CommitResult::Committed));
     }
 
     // The root `a` is descendant-only: no payload marker, so a whole read is
@@ -426,7 +426,7 @@ fn a_branch_entry_makes_its_root_descendant_only_and_root_create_preserves_it() 
                 .expect("root replace"),
             ReplaceOutcome::Missing,
         );
-        assert_eq!(txn.commit(), CommitResult::Committed);
+        assert!(matches!(txn.commit(), CommitResult::Committed));
     }
 
     // Create the root `a` payload over the descendant-only slot: this writes the
@@ -447,7 +447,7 @@ fn a_branch_entry_makes_its_root_descendant_only_and_root_create_preserves_it() 
                 .expect("root create"),
             CreateOutcome::Created,
         );
-        assert_eq!(txn.commit(), CommitResult::Committed);
+        assert!(matches!(txn.commit(), CommitResult::Committed));
     }
 
     // The root now has a payload and the branch descendant survived the create.
@@ -794,7 +794,7 @@ fn a_field_exact_branch_set_writes_one_leaf_regardless_of_branch_width() {
             },
         )
         .expect("branch create");
-        assert_eq!(txn.commit(), CommitResult::Committed);
+        assert!(matches!(txn.commit(), CommitResult::Committed));
     }
     let before = all_cells(&store);
 
@@ -810,7 +810,7 @@ fn a_field_exact_branch_set_writes_one_leaf_regardless_of_branch_width() {
             Some(ValueDomain::Scalar(RuntimeScalar::Int(42))),
         )
         .expect("field-exact set");
-        assert_eq!(txn.commit(), CommitResult::Committed);
+        assert!(matches!(txn.commit(), CommitResult::Committed));
     }
     let after = all_cells(&store);
 
@@ -855,7 +855,7 @@ fn a_field_exact_required_branch_set_reconcile_creates_the_branch_marker() {
             ValueDomain::Scalar(RuntimeScalar::Str("made".into())),
         )
         .expect("required branch set");
-        assert_eq!(txn.commit(), CommitResult::Committed);
+        assert!(matches!(txn.commit(), CommitResult::Committed));
     }
 
     let cells = all_cells(&store);
@@ -919,7 +919,7 @@ fn seed_root(store: &mut DurableStore<MemoryEngine>, names: &[&str]) {
         txn.create_entry(&entry, &[KeyScalar::Str((*name).into())], value_entry(1))
             .expect("create");
     }
-    assert_eq!(txn.commit(), CommitResult::Committed);
+    assert!(matches!(txn.commit(), CommitResult::Committed));
 }
 
 /// Freeze up to `n` root keys of the `counters` store, starting inclusively at
@@ -1155,7 +1155,7 @@ fn bounded_acquisition_skips_a_large_descendant_fan_out_in_one_seek() {
             )
             .expect("note create");
         }
-        assert_eq!(txn.commit(), CommitResult::Committed);
+        assert!(matches!(txn.commit(), CommitResult::Committed));
     }
     let mut read = store
         .read_session(InvocationGrant::full_store(), read_demand())
@@ -1227,7 +1227,7 @@ fn bounded_acquisition_traverses_a_branch_layer_under_a_fixed_root_key() {
             decoy,
         )
         .expect("decoy create");
-        assert_eq!(txn.commit(), CommitResult::Committed);
+        assert!(matches!(txn.commit(), CommitResult::Committed));
     }
     let mut read = store
         .read_session(InvocationGrant::full_store(), read_demand())
@@ -1317,7 +1317,7 @@ fn family_populated_answers_whether_a_branch_family_has_a_child() {
             text,
         )
         .expect("note create");
-        assert_eq!(txn.commit(), CommitResult::Committed);
+        assert!(matches!(txn.commit(), CommitResult::Committed));
     }
     let mut read = store
         .read_session(InvocationGrant::full_store(), read_demand())
@@ -1376,7 +1376,7 @@ fn family_populated_skips_descendant_only_children_and_empty_families() {
             text,
         )
         .expect("note create");
-        assert_eq!(txn.commit(), CommitResult::Committed);
+        assert!(matches!(txn.commit(), CommitResult::Committed));
     }
     let mut read = store
         .read_session(InvocationGrant::full_store(), read_demand())
@@ -1610,7 +1610,7 @@ fn create_at(
         .expect("create"),
         CreateOutcome::Created,
     );
-    assert_eq!(txn.commit(), CommitResult::Committed);
+    assert!(matches!(txn.commit(), CommitResult::Committed));
 }
 
 /// A whole-entry create at a level-2 (tags) node writes its marker and own field
@@ -1753,7 +1753,7 @@ fn a_replace_of_a_branch_entry_erases_omitted_fields_and_preserves_its_sub_branc
             .expect("replace"),
             ReplaceOutcome::Replaced,
         );
-        assert_eq!(txn.commit(), CommitResult::Committed);
+        assert!(matches!(txn.commit(), CommitResult::Committed));
     }
 
     let after = all_cells(&store);
@@ -1813,7 +1813,7 @@ fn an_erase_of_a_branch_entry_removes_its_own_cells_and_preserves_its_sub_branch
             txn.erase_entry(&notes, &note).expect("erase"),
             EraseOutcome::Erased,
         );
-        assert_eq!(txn.commit(), CommitResult::Committed);
+        assert!(matches!(txn.commit(), CommitResult::Committed));
     }
 
     let after = all_cells(&store);
@@ -1877,7 +1877,7 @@ fn a_root_erase_preserves_the_whole_nested_branch_subtree() {
             txn.erase_entry(&root, &book).expect("erase"),
             EraseOutcome::Erased,
         );
-        assert_eq!(txn.commit(), CommitResult::Committed);
+        assert!(matches!(txn.commit(), CommitResult::Committed));
     }
 
     let after = all_cells(&store);
@@ -1953,7 +1953,7 @@ fn a_field_exact_set_on_a_sub_branch_node_reconciles_at_its_own_stem() {
             ValueDomain::Scalar(RuntimeScalar::Str("home".into())),
         )
         .expect("required set");
-        assert_eq!(txn.commit(), CommitResult::Committed);
+        assert!(matches!(txn.commit(), CommitResult::Committed));
     }
     let cells = all_cells(&store);
     assert!(
@@ -2095,7 +2095,7 @@ fn a_composite_key_root_addresses_entries_by_the_ordered_tuple() {
             },
         )
         .expect("create");
-        assert_eq!(txn.commit(), CommitResult::Committed);
+        assert!(matches!(txn.commit(), CommitResult::Committed));
     }
     let mut read = store
         .read_session(InvocationGrant::full_store(), read_demand())
@@ -2212,7 +2212,7 @@ fn iterate_a_single_column_branch_under_a_composite_root_consumes_multi_column_a
             },
         )
         .expect("create sibling cell");
-        assert_eq!(txn.commit(), CommitResult::Committed);
+        assert!(matches!(txn.commit(), CommitResult::Committed));
     }
     let mut read = store
         .read_session(InvocationGrant::full_store(), read_demand())
@@ -2375,7 +2375,7 @@ mod read {
         txn.create_entry(&e, &[ks("a")], ent(1, Some("x"))).unwrap();
         txn.create_entry(&e, &[ks("b")], ent(2, Some("x"))).unwrap();
         txn.create_entry(&e, &[ks("c")], ent(3, Some("y"))).unwrap();
-        assert_eq!(txn.commit(), CommitResult::Committed);
+        assert!(matches!(txn.commit(), CommitResult::Committed));
         store
     }
 
@@ -2579,7 +2579,7 @@ fn create_adds_a_row_to_every_index() {
             txn.create_entry(&e, &[ks("a")], ent(1, Some("x"))).unwrap(),
             CreateOutcome::Created,
         );
-        assert_eq!(txn.commit(), CommitResult::Committed);
+        assert!(matches!(txn.commit(), CommitResult::Committed));
     }
     assert_eq!(
         index_cells(&store),
@@ -2606,7 +2606,7 @@ fn changing_a_projected_field_moves_only_its_index_row() {
             Some(ValueDomain::Scalar(RuntimeScalar::Str("y".into()))),
         )
         .unwrap();
-        assert_eq!(txn.commit(), CommitResult::Committed);
+        assert!(matches!(txn.commit(), CommitResult::Committed));
     }
     assert_eq!(
         index_cells(&store),
@@ -2630,7 +2630,7 @@ fn erasing_one_entry_leaves_a_siblings_rows_intact() {
             txn.erase_entry(&e, &[ks("a")]).unwrap(),
             EraseOutcome::Erased
         );
-        assert_eq!(txn.commit(), CommitResult::Committed);
+        assert!(matches!(txn.commit(), CommitResult::Committed));
     }
     assert_eq!(
         index_cells(&store),
@@ -2651,7 +2651,7 @@ fn clearing_a_projected_field_removes_its_row() {
         let label = txn.site(2);
         txn.create_entry(&e, &[ks("a")], ent(1, Some("x"))).unwrap();
         txn.set_sparse(&label, &[ks("a")], None).unwrap();
-        assert_eq!(txn.commit(), CommitResult::Committed);
+        assert!(matches!(txn.commit(), CommitResult::Committed));
     }
     // Only the unique byValue row survives; byLabel has no row for an absent label.
     assert_eq!(index_cells(&store), sorted(vec![value_cell("a", 1)]));
@@ -2672,7 +2672,7 @@ fn replacing_an_entry_rewrites_its_rows() {
                 .unwrap(),
             ReplaceOutcome::Replaced,
         );
-        assert_eq!(txn.commit(), CommitResult::Committed);
+        assert!(matches!(txn.commit(), CommitResult::Committed));
     }
     assert_eq!(
         index_cells(&store),
@@ -2692,7 +2692,7 @@ fn a_unique_collision_faults_and_rolls_back_without_poisoning() {
             .unwrap();
         let e = txn.site(0);
         txn.create_entry(&e, &[ks("a")], ent(1, Some("x"))).unwrap();
-        assert_eq!(txn.commit(), CommitResult::Committed);
+        assert!(matches!(txn.commit(), CommitResult::Committed));
     }
     {
         let mut txn = store
@@ -2718,7 +2718,7 @@ fn a_unique_collision_faults_and_rolls_back_without_poisoning() {
             .unwrap();
         let e = txn.site(0);
         txn.create_entry(&e, &[ks("c")], ent(2, Some("z"))).unwrap();
-        assert_eq!(txn.commit(), CommitResult::Committed);
+        assert!(matches!(txn.commit(), CommitResult::Committed));
     }
     assert_eq!(
         index_cells(&store),
@@ -2751,7 +2751,7 @@ fn setting_an_absent_projected_field_adds_a_row() {
             Some(ValueDomain::Scalar(RuntimeScalar::Str("x".into()))),
         )
         .unwrap();
-        assert_eq!(txn.commit(), CommitResult::Committed);
+        assert!(matches!(txn.commit(), CommitResult::Committed));
     }
     assert_eq!(
         index_cells(&store),
@@ -2802,7 +2802,7 @@ fn a_corrupt_projected_leaf_faults_corruption() {
             .unwrap();
         let e = txn.site(0);
         txn.create_entry(&e, &[ks("a")], ent(1, Some("x"))).unwrap();
-        assert_eq!(txn.commit(), CommitResult::Committed);
+        assert!(matches!(txn.commit(), CommitResult::Committed));
     }
     // Tamper the `label` leaf of entry "a" with bytes no value decodes.
     let marker = physical::marker_key(0, &[ks("a")]);
@@ -2848,7 +2848,7 @@ fn index_maintenance_agrees_across_engines() {
         )
         .unwrap();
         txn.erase_entry(&e, &[ks("b")]).unwrap();
-        assert_eq!(txn.commit(), CommitResult::Committed);
+        assert!(matches!(txn.commit(), CommitResult::Committed));
     }
     let mut mem = DurableStore::from_engine(MemoryEngine::new(), indexed_schema(), sites());
     replay(&mut mem);
@@ -3012,7 +3012,7 @@ fn a_group_write_never_disturbs_siblings() {
             },
         )
         .expect("create note");
-        assert_eq!(txn.commit(), CommitResult::Committed);
+        assert!(matches!(txn.commit(), CommitResult::Committed));
     }
 
     let prefix = details_prefix("a");
@@ -3040,7 +3040,7 @@ fn a_group_write_never_disturbs_siblings() {
             .expect("replace details"),
             ReplaceOutcome::Replaced,
         );
-        assert_eq!(txn.commit(), CommitResult::Committed);
+        assert!(matches!(txn.commit(), CommitResult::Committed));
     }
     assert_eq!(
         entry_siblings(&store, "a", &prefix),
@@ -3071,7 +3071,7 @@ fn a_group_write_never_disturbs_siblings() {
             txn.erase_group(&details, &book).expect("erase details"),
             EraseOutcome::Erased,
         );
-        assert_eq!(txn.commit(), CommitResult::Committed);
+        assert!(matches!(txn.commit(), CommitResult::Committed));
     }
     assert_eq!(
         entry_siblings(&store, "a", &prefix),
@@ -3132,7 +3132,7 @@ fn read_group_follows_entry_presence_and_replace_requires_the_entry() {
             .expect("replace"),
             ReplaceOutcome::Missing,
         );
-        assert_eq!(txn.commit(), CommitResult::Committed);
+        assert!(matches!(txn.commit(), CommitResult::Committed));
     }
     let entry = physical::marker_key(0, &[ks("a")]);
     assert!(
@@ -3155,7 +3155,7 @@ fn read_group_follows_entry_presence_and_replace_requires_the_entry() {
             },
         )
         .expect("create");
-        assert_eq!(txn.commit(), CommitResult::Committed);
+        assert!(matches!(txn.commit(), CommitResult::Committed));
     }
     {
         let mut read = store
@@ -3379,7 +3379,7 @@ fn a_whole_entry_create_writes_and_reads_back_its_groups() {
             },
         )
         .expect("create");
-        assert_eq!(txn.commit(), CommitResult::Committed);
+        assert!(matches!(txn.commit(), CommitResult::Committed));
     }
 
     let mut read = store
@@ -3456,7 +3456,7 @@ fn a_whole_entry_erase_sweeps_group_leaves_and_preserves_branches() {
             },
         )
         .expect("create note");
-        assert_eq!(txn.commit(), CommitResult::Committed);
+        assert!(matches!(txn.commit(), CommitResult::Committed));
     }
     assert!(
         all_cells(&store)
@@ -3474,7 +3474,7 @@ fn a_whole_entry_erase_sweeps_group_leaves_and_preserves_branches() {
             txn.erase_entry(&root, &book).expect("erase entry"),
             EraseOutcome::Erased,
         );
-        assert_eq!(txn.commit(), CommitResult::Committed);
+        assert!(matches!(txn.commit(), CommitResult::Committed));
     }
 
     let entry = physical::marker_key(0, &[ks("a")]);
@@ -3525,7 +3525,7 @@ fn a_whole_entry_replace_drops_omitted_group_leaves() {
             },
         )
         .expect("create");
-        assert_eq!(txn.commit(), CommitResult::Committed);
+        assert!(matches!(txn.commit(), CommitResult::Committed));
     }
 
     // Replace the whole entry: `details.language` and `credits.author` omitted.
@@ -3555,7 +3555,7 @@ fn a_whole_entry_replace_drops_omitted_group_leaves() {
             .expect("replace"),
             ReplaceOutcome::Replaced,
         );
-        assert_eq!(txn.commit(), CommitResult::Committed);
+        assert!(matches!(txn.commit(), CommitResult::Committed));
     }
 
     let mut read = store

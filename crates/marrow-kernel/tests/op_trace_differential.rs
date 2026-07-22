@@ -316,7 +316,7 @@ fn set_sparse_present_agrees_across_engines() {
             txn.create_entry(&e, &[key("q")], entry(8, Some("x")))
                 .unwrap();
             txn.set_sparse_present(&label, &[key("q")], None).unwrap();
-            assert_eq!(txn.commit(), CommitResult::Committed);
+            assert!(matches!(txn.commit(), CommitResult::Committed));
         }
         let mut reader = store
             .read_session(InvocationGrant::full_store(), read())
@@ -464,7 +464,7 @@ fn a_replaced_entry_drops_unlisted_sparse_leaves() {
                 txn.replace_entry(&e, &[key("k")], entry(2, None)).unwrap(),
                 ReplaceOutcome::Replaced
             );
-            assert_eq!(txn.commit(), CommitResult::Committed);
+            assert!(matches!(txn.commit(), CommitResult::Committed));
         }
         let mut reader = store
             .read_session(InvocationGrant::full_store(), read())

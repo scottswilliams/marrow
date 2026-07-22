@@ -550,6 +550,13 @@ impl CommitRecoveryScope {
 ///     let _copy: CommitRecovery = fact.clone();
 /// }
 /// ```
+///
+/// ```compile_fail
+/// use marrow_kernel::durable::CommitRecovery;
+/// fn compare(left: &CommitRecovery, right: &CommitRecovery) {
+///     let _same = left == right;
+/// }
+/// ```
 #[must_use = "an indeterminate commit recovery fact must be classified or its attached service retired"]
 pub struct CommitRecovery {
     pub(super) scope: Option<CommitRecoveryScope>,
@@ -563,17 +570,17 @@ impl std::fmt::Debug for CommitRecovery {
     }
 }
 
-impl PartialEq for CommitRecovery {
-    fn eq(&self, other: &Self) -> bool {
-        self.scope == other.scope && self.before == other.before && self.after == other.after
-    }
-}
-
-impl Eq for CommitRecovery {}
-
 /// The result of committing a transaction.
+///
+/// ```compile_fail
+/// use marrow_kernel::durable::CommitResult;
+/// fn require_partial_eq<T: PartialEq>() {}
+/// fn main() {
+///     require_partial_eq::<CommitResult>();
+/// }
+/// ```
 #[must_use = "a transaction commit outcome must be handled"]
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug)]
 pub enum CommitResult {
     /// The engine confirmed the commit.
     Committed,

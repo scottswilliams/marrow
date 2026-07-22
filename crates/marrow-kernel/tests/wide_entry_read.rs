@@ -102,7 +102,7 @@ fn measure_whole_entry(declared: usize, populated: usize) -> Measured {
             .expect("create"),
             CreateOutcome::Created,
         );
-        assert_eq!(txn.commit(), CommitResult::Committed);
+        assert!(matches!(txn.commit(), CommitResult::Committed));
     }
 
     // Measure only the whole-entry read. The counting engine tallies reads through a
@@ -283,7 +283,7 @@ fn measure_group_entry(
                 .expect("create"),
             CreateOutcome::Created,
         );
-        assert_eq!(txn.commit(), CommitResult::Committed);
+        assert!(matches!(txn.commit(), CommitResult::Committed));
     }
 
     // Read session: value correctness (its engine reads are uncounted).

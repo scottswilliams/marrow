@@ -554,15 +554,15 @@ fn vm_preserves_confirmed_aborted_and_pending_commit_outcomes() {
     let mut confirmed_session = confirmed
         .txn_session(InvocationGrant::full_store(), demand)
         .expect("confirmed transaction session");
-    assert_eq!(
+    assert!(matches!(
         run_durable(
             &image,
             export.function(),
             Vec::new(),
             &mut confirmed_session,
         ),
-        Ok(None),
-    );
+        Ok(None)
+    ));
     drop(confirmed_session);
     assert!(!confirmed.has_unresolved_recovery());
 
@@ -634,7 +634,7 @@ fn vm_preserves_staging_reconcile_and_witness_failures_without_poisoning() {
         assert!(!store.has_unresolved_recovery());
 
         write_fault.set(None);
-        assert_eq!(run_vm_write(&mut store, &image), Ok(None));
+        assert!(matches!(run_vm_write(&mut store, &image), Ok(None)));
     }
 
     // The third create write is the witness cell. Its failure aborts before the engine
@@ -661,7 +661,7 @@ fn vm_preserves_staging_reconcile_and_witness_failures_without_poisoning() {
         assert!(!store.has_unresolved_recovery());
 
         write_fault.set(None);
-        assert_eq!(run_vm_write(&mut store, &image), Ok(None));
+        assert!(matches!(run_vm_write(&mut store, &image), Ok(None)));
     }
 
     // A required-field write produces a markerless staged entry. Reconcile's second write
@@ -688,7 +688,7 @@ fn vm_preserves_staging_reconcile_and_witness_failures_without_poisoning() {
         assert!(!store.has_unresolved_recovery());
 
         write_fault.set(None);
-        assert_eq!(run_vm_write(&mut store, &image), Ok(None));
+        assert!(matches!(run_vm_write(&mut store, &image), Ok(None)));
     }
 }
 
@@ -701,14 +701,13 @@ fn a_clean_abort_faults_without_poisoning() {
     let mut store = unscoped_store(FaultEngine::new(mode.clone()));
 
     let aborted = commit_one(&mut store, "a", 1);
-    assert_eq!(aborted, CommitResult::Aborted);
+    assert!(matches!(aborted, CommitResult::Aborted));
 
     // Not poisoned: a later commit succeeds where a poisoned store would have faulted.
     mode.set(Mode::Confirm);
     let next = commit_one(&mut store, "b", 2);
-    assert_eq!(
-        next,
-        CommitResult::Committed,
+    assert!(
+        matches!(next, CommitResult::Committed),
         "a clean abort leaves the store usable"
     );
 
@@ -751,7 +750,7 @@ fn a_witness_put_failure_is_known_old_and_leaves_the_handle_usable() {
     let mut store = unscoped_store(FaultEngine::with_write_fault(mode, write_fault.clone()));
 
     let seeded = commit_one(&mut store, "a", 1);
-    assert_eq!(seeded, CommitResult::Committed);
+    assert!(matches!(seeded, CommitResult::Committed));
     // Prior state is present on the healthy handle, before the poisoning fault.
     assert_eq!(
         read_value(&mut store, "a"),
@@ -762,12 +761,15 @@ fn a_witness_put_failure_is_known_old_and_leaves_the_handle_usable() {
     // witness put. Fail the witness put.
     write_fault.set(Some(3));
     let faulted = commit_one(&mut store, "b", 2);
-    assert_eq!(faulted, CommitResult::Aborted);
+    assert!(matches!(faulted, CommitResult::Aborted));
 
     // The witness put failed before the engine commit, so dropping the transaction proves
     // known-old and the handle remains usable.
     write_fault.set(None);
-    assert_eq!(commit_one(&mut store, "c", 3), CommitResult::Committed);
+    assert!(matches!(
+        commit_one(&mut store, "c", 3),
+        CommitResult::Committed
+    ));
     assert_eq!(read_value(&mut store, "b"), None);
 }
 
@@ -783,7 +785,7 @@ fn a_reconcile_marker_put_failure_is_known_old_and_leaves_the_handle_usable() {
     let mut store = unscoped_store(FaultEngine::with_write_fault(mode, write_fault.clone()));
 
     let seeded = commit_one(&mut store, "a", 1);
-    assert_eq!(seeded, CommitResult::Committed);
+    assert!(matches!(seeded, CommitResult::Committed));
 
     // Write 1 = the value-leaf put; write 2 = reconcile's marker put for the markerless
     // entry. Fail the marker put.
@@ -801,12 +803,15 @@ fn a_reconcile_marker_put_failure_is_known_old_and_leaves_the_handle_usable() {
         .expect("stage required field");
         txn.commit()
     };
-    assert_eq!(faulted, CommitResult::Aborted);
+    assert!(matches!(faulted, CommitResult::Aborted));
 
     // The reconcile write failed before commit, so dropping the transaction proves known-old
     // and a later session may proceed.
     write_fault.set(None);
-    assert_eq!(commit_one(&mut store, "c", 3), CommitResult::Committed);
+    assert!(matches!(
+        commit_one(&mut store, "c", 3),
+        CommitResult::Committed
+    ));
     assert_eq!(read_value(&mut store, "b"), None);
 }
 
@@ -824,7 +829,7 @@ fn an_apply_write_fault_faults_and_the_store_stays_abortable() {
         let write_fault = WriteFaultHandle::inert();
         let mut store = unscoped_store(FaultEngine::with_write_fault(mode, write_fault.clone()));
         let seeded = commit_one(&mut store, "a", 1);
-        assert_eq!(seeded, CommitResult::Committed);
+        assert!(matches!(seeded, CommitResult::Committed));
 
         write_fault.set(Some(2));
         {
@@ -845,9 +850,8 @@ fn an_apply_write_fault_faults_and_the_store_stays_abortable() {
         // prior entry is intact, and the partly-created entry never landed.
         write_fault.set(None);
         let next = commit_one(&mut store, "c", 3);
-        assert_eq!(
-            next,
-            CommitResult::Committed,
+        assert!(
+            matches!(next, CommitResult::Committed),
             "an aborted apply leaves the store usable"
         );
         assert_eq!(
@@ -868,7 +872,7 @@ fn an_apply_write_fault_faults_and_the_store_stays_abortable() {
         let write_fault = WriteFaultHandle::inert();
         let mut store = unscoped_store(FaultEngine::with_write_fault(mode, write_fault.clone()));
         let seeded = commit_one(&mut store, "a", 1);
-        assert_eq!(seeded, CommitResult::Committed);
+        assert!(matches!(seeded, CommitResult::Committed));
 
         write_fault.set(Some(2));
         {

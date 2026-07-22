@@ -475,7 +475,7 @@ mod tests {
             let mut store = scoped_store("/test/legacy");
             seed_witness(&mut store, legacy.to_vec());
 
-            assert_eq!(commit_empty(&mut store), CommitResult::Committed);
+            assert!(matches!(commit_empty(&mut store), CommitResult::Committed));
             assert_eq!(current_witness(&store), Some(witness(0)));
             assert_eq!(current_witness(&store).expect("witness").len(), 17);
         }
@@ -486,7 +486,7 @@ mod tests {
         let mut store = scoped_store("/test/exhaustion");
         seed_witness(&mut store, witness(u128::MAX - 1));
 
-        assert_eq!(commit_empty(&mut store), CommitResult::Committed);
+        assert!(matches!(commit_empty(&mut store), CommitResult::Committed));
         assert_eq!(current_witness(&store), Some(witness(u128::MAX)));
 
         let error = match store.txn_session(
@@ -575,7 +575,10 @@ mod tests {
             reopened.resolve_recovery(dropped),
             DurableCommitState::KnownOld,
         );
-        assert_eq!(commit_empty(&mut reopened), CommitResult::Committed);
+        assert!(matches!(
+            commit_empty(&mut reopened),
+            CommitResult::Committed
+        ));
         assert_eq!(current_witness(&reopened), Some(witness(0)));
     }
 
@@ -598,7 +601,7 @@ mod tests {
             "dropping before commit must not publish the proposed generation",
         );
 
-        assert_eq!(commit_empty(&mut store), CommitResult::Committed);
+        assert!(matches!(commit_empty(&mut store), CommitResult::Committed));
         assert_eq!(
             current_witness(&store),
             Some(witness(0)),

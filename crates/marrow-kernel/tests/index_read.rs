@@ -114,10 +114,10 @@ fn seeded(distinct: usize, fanout: usize) -> (DurableStore<CountingEngine>, Coun
             id += 1;
         }
     }
-    assert_eq!(
+    assert!(matches!(
         txn.commit(),
         marrow_kernel::durable::CommitResult::Committed
-    );
+    ));
     (store, counters)
 }
 

@@ -74,14 +74,22 @@ impl std::error::Error for RuntimeFault {}
 /// indeterminate commit initially owns a private affine recovery fact; only the
 /// attached-store lifecycle may consume that fact and replace it with a
 /// classified state.
+///
+/// ```compile_fail
+/// use marrow_vm::InvocationIncomplete;
+/// fn require_partial_eq<T: PartialEq>() {}
+/// fn main() {
+///     require_partial_eq::<InvocationIncomplete>();
+/// }
+/// ```
 #[must_use = "an incomplete invocation and any pending commit recovery must be handled"]
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug)]
 pub struct InvocationIncomplete {
     fault: RuntimeFault,
     durability: IncompleteDurability,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug)]
 enum IncompleteDurability {
     Classified(DurableCommitState),
     Pending(Box<CommitRecovery>),
@@ -90,8 +98,16 @@ enum IncompleteDurability {
 /// The consuming projection of an incomplete invocation. Product hosts must
 /// exhaustively preserve either the already classified durable state or the sole
 /// opaque recovery fact; no callback can forge a classification inside the VM.
+///
+/// ```compile_fail
+/// use marrow_vm::IncompleteDisposition;
+/// fn require_partial_eq<T: PartialEq>() {}
+/// fn main() {
+///     require_partial_eq::<IncompleteDisposition>();
+/// }
+/// ```
 #[must_use = "an incomplete invocation disposition must be projected or its attached service retired"]
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug)]
 pub enum IncompleteDisposition {
     Classified {
         fault: RuntimeFault,
@@ -151,8 +167,16 @@ impl InvocationIncomplete {
 /// Failure of durable execution. A plain runtime fault means no transaction was
 /// confirmed by this invocation. `Incomplete` means bytecode did not complete
 /// and durable state must be reported separately from the fault.
+///
+/// ```compile_fail
+/// use marrow_vm::DurableExecutionFault;
+/// fn require_partial_eq<T: PartialEq>() {}
+/// fn main() {
+///     require_partial_eq::<DurableExecutionFault>();
+/// }
+/// ```
 #[must_use]
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug)]
 pub enum DurableExecutionFault {
     Runtime(RuntimeFault),
     Incomplete(InvocationIncomplete),
