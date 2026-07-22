@@ -24,7 +24,9 @@ test "apply: patient, encounter, observation in one bundle" {
             assert applied.touchedPatients == 1
             assert applied.firstAuditId == 1
         }
-        err(e) => assert false
+        err(e) => {
+            assert false
+        }
     }
     assert chart::patientExists(1)
     assert chart::patientRevision(1) == 1
@@ -45,8 +47,12 @@ test "apply: reference satisfied by a same-bundle create, any order" {
     b = append(b, Change::createEncounter(id: 10, patientId: 1, status: "in_progress", reason: "Z00"))
     b = append(b, Change::createPatient(id: 1, status: "active", display: "Grace Hopper"))
     match changeset::applyChangeSet(b) {
-        ok(applied) => assert applied.explicitMutations == 3
-        err(e) => assert false
+        ok(applied) => {
+            assert applied.explicitMutations == 3
+        }
+        err(e) => {
+            assert false
+        }
     }
     assert chart::countObservations(1) == 1
     assert chart::countEncounters(1) == 1
@@ -59,7 +65,9 @@ test "apply: update advances revision and aggregate" {
     b1 = append(b1, Change::createPatient(id: 1, status: "active", display: "Ada"))
     match changeset::applyChangeSet(b1) {
         ok(a) => {}
-        err(e) => assert false
+        err(e) => {
+            assert false
+        }
     }
     assert chart::patientRevision(1) == 1
     assert chart::aggregateRevision(1) == 1
@@ -67,7 +75,9 @@ test "apply: update advances revision and aggregate" {
     b2 = append(b2, Change::updatePatient(id: 1, expectedRevision: 1, status: "inactive", display: "Ada L"))
     match changeset::applyChangeSet(b2) {
         ok(a) => {}
-        err(e) => assert false
+        err(e) => {
+            assert false
+        }
     }
     assert chart::patientRevision(1) == 2
     assert chart::aggregateRevision(1) == 2
@@ -81,8 +91,12 @@ test "reject: duplicate subject" {
     b = append(b, Change::createPatient(id: 1, status: "active", display: "A"))
     b = append(b, Change::createPatient(id: 1, status: "inactive", display: "B"))
     match changeset::applyChangeSet(b) {
-        ok(a) => assert false
-        err(e) => assert changeset::rejectionCode(e) == "duplicateSubject"
+        ok(a) => {
+            assert false
+        }
+        err(e) => {
+            assert changeset::rejectionCode(e) == "duplicateSubject"
+        }
     }
     assert not chart::patientExists(1)
 }
@@ -94,13 +108,19 @@ test "reject: stale revision" {
     b1 = append(b1, Change::createPatient(id: 1, status: "active", display: "A"))
     match changeset::applyChangeSet(b1) {
         ok(a) => {}
-        err(e) => assert false
+        err(e) => {
+            assert false
+        }
     }
     var b2: List<Change> = List()
     b2 = append(b2, Change::updatePatient(id: 1, expectedRevision: 5, status: "inactive", display: "A"))
     match changeset::applyChangeSet(b2) {
-        ok(a) => assert false
-        err(e) => assert changeset::rejectionCode(e) == "staleRevision"
+        ok(a) => {
+            assert false
+        }
+        err(e) => {
+            assert changeset::rejectionCode(e) == "staleRevision"
+        }
     }
     assert chart::patientRevision(1) == 1
 }
@@ -113,8 +133,12 @@ test "reject: missing reference is atomic" {
     b = append(b, Change::createPatient(id: 1, status: "active", display: "A"))
     b = append(b, Change::createEncounter(id: 10, patientId: 999, status: "planned", reason: "A00"))
     match changeset::applyChangeSet(b) {
-        ok(a) => assert false
-        err(e) => assert changeset::rejectionCode(e) == "patientMissing"
+        ok(a) => {
+            assert false
+        }
+        err(e) => {
+            assert changeset::rejectionCode(e) == "patientMissing"
+        }
     }
     assert not chart::patientExists(1)
     assert chart::countEncounters(1) == 0
@@ -128,8 +152,12 @@ test "apply: active medication supersession" {
     b1 = append(b1, Change::createPatient(id: 1, status: "active", display: "A"))
     b1 = append(b1, Change::createMedicationOrder(id: 50, patientId: 1, code: "RX", status: "active", dose: 10))
     match changeset::applyChangeSet(b1) {
-        ok(a) => assert a.explicitMutations == 2
-        err(e) => assert false
+        ok(a) => {
+            assert a.explicitMutations == 2
+        }
+        err(e) => {
+            assert false
+        }
     }
     assert chart::activeMedicationOrder(1, "RX") == 50
     assert chart::countActiveMedications(1) == 1
@@ -141,7 +169,9 @@ test "apply: active medication supersession" {
             assert a.explicitMutations == 1
             assert a.implicitMutations == 1
         }
-        err(e) => assert false
+        err(e) => {
+            assert false
+        }
     }
     assert chart::activeMedicationOrder(1, "RX") == 51
     assert chart::countActiveMedications(1) == 1
@@ -155,8 +185,12 @@ test "reject: active medication collision" {
     b = append(b, Change::createMedicationOrder(id: 50, patientId: 1, code: "RX", status: "active", dose: 10))
     b = append(b, Change::createMedicationOrder(id: 51, patientId: 1, code: "RX", status: "active", dose: 20))
     match changeset::applyChangeSet(b) {
-        ok(a) => assert false
-        err(e) => assert changeset::rejectionCode(e) == "activeMedicationCollision"
+        ok(a) => {
+            assert false
+        }
+        err(e) => {
+            assert changeset::rejectionCode(e) == "activeMedicationCollision"
+        }
     }
     assert not chart::patientExists(1)
 }
@@ -165,8 +199,12 @@ test "reject: active medication collision" {
 test "reject: empty bundle" {
     changeset::initStore()
     match changeset::applyChangeSet(bundle0()) {
-        ok(a) => assert false
-        err(e) => assert changeset::rejectionCode(e) == "emptyBundle"
+        ok(a) => {
+            assert false
+        }
+        err(e) => {
+            assert changeset::rejectionCode(e) == "emptyBundle"
+        }
     }
 }
 
@@ -179,7 +217,9 @@ test "read: audit history pages by two" {
     b = append(b, Change::createEncounter(id: 11, patientId: 1, status: "planned", reason: "A01"))
     match changeset::applyChangeSet(b) {
         ok(a) => {}
-        err(e) => assert false
+        err(e) => {
+            assert false
+        }
     }
     // three audit links for patient 1 (one per mutation) at audit IDs 1,2,3: a
     // full first page {1,2}, then the next page from 3 (last seen + 1) is {3}.

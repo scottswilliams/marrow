@@ -7,7 +7,11 @@ pub enum Status {
 
 pub fn marker(s: a::b::c::Status): int {
     match s {
-        active => return 0
-        archived => return 9
+        active => {
+            return 0
+        }
+        archived => {
+            return 9
+        }
     }
 }

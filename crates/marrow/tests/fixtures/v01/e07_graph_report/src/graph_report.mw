@@ -8,7 +8,7 @@
 //
 // Durable shape:
 // - `^nodes[name]` holds one node per name, with a required `label` and a sparse
-//   `color`, and a keyed `edges[dst]` branch of weighted out-edges.
+// `color`, and a keyed `edges[dst]` branch of weighted out-edges.
 // - `^config["root"]` names the reachability root, so the report reads two roots.
 //
 // All durable iteration is over a single-column keyed layer in ascending key order,
@@ -52,18 +52,32 @@ fn getOr<V>(m: Map<string, V>, key: string, fallback: V): V {
 }
 
 fn classifyRole(outDegree: int, inDegree: int): Role {
-    if outDegree == 0 and inDegree == 0 { return Role::isolated }
-    if inDegree == 0 { return Role::source }
-    if outDegree == 0 { return Role::sink }
+    if outDegree == 0 and inDegree == 0 {
+        return Role::isolated
+    }
+    if inDegree == 0 {
+        return Role::source
+    }
+    if outDegree == 0 {
+        return Role::sink
+    }
     return Role::internal
 }
 
 fn roleName(r: Role): string {
     match r {
-        source => return "source"
-        sink => return "sink"
-        internal => return "internal"
-        isolated => return "isolated"
+        source => {
+            return "source"
+        }
+        sink => {
+            return "sink"
+        }
+        internal => {
+            return "internal"
+        }
+        isolated => {
+            return "isolated"
+        }
     }
 }
 
@@ -246,8 +260,12 @@ fn renderEdges(edges: List<Edge>): string {
 
 // The reachability section body.
 fn renderReachable(g: Graph, hasRoot: bool, root: string, nodeCount: int): string {
-    if not hasRoot { return "  (no root)" }
-    if not getOr(g.nodes, root, false) { return "  root " + root + " is not a node" }
+    if not hasRoot {
+        return "  (no root)"
+    }
+    if not getOr(g.nodes, root, false) {
+        return "  root " + root + " is not a node"
+    }
     const reached = reachableFrom(g.edges, root, nodeCount)
     var names: List<string> = List()
     var reachedCount: int = 0
@@ -428,11 +446,11 @@ test "an isolated node is reported and a root naming no node is flagged" {
 test "a guarded color set updates a present node and is a no-op on an absent one" {
     addNode("a", "Alpha")
     setColor("a", "green")
-    assert (colorOf("a") ?? "") == "green"
+    assert colorOf("a") ?? "" == "green"
     // The node "b" was never added, so the guarded set writes nothing and does not fault.
     setColor("b", "blue")
     assert not nodeExists("b")
-    assert (colorOf("b") ?? "unset") == "unset"
+    assert colorOf("b") ?? "unset" == "unset"
 }
 
 test "adding an edge materializes both endpoints and records the weight" {
@@ -441,7 +459,7 @@ test "adding an edge materializes both endpoints and records the weight" {
     assert nodeExists("y")
     assert outDegree("x") == 1
     assert outDegree("y") == 0
-    assert (edgeWeight("x", "y") ?? 0) == 42
+    assert edgeWeight("x", "y") ?? 0 == 42
 }
 
 test "removing an edge drops it from the out-degree and the weight read" {
@@ -450,8 +468,8 @@ test "removing an edge drops it from the out-degree and the weight read" {
     assert outDegree("a") == 2
     removeEdge("a", "b")
     assert outDegree("a") == 1
-    assert (edgeWeight("a", "b") ?? -1) == -1
-    assert (edgeWeight("a", "c") ?? 0) == 4
+    assert edgeWeight("a", "b") ?? -1 == -1
+    assert edgeWeight("a", "c") ?? 0 == 4
     // The endpoint node survives an edge removal; only the edge is gone.
     assert nodeExists("b")
 }

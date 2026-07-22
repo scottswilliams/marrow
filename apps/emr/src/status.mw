@@ -16,8 +16,12 @@ pub fn patientStatusValid(s: string): bool {
 // Patient creates admit active or inactive; updates admit active->{active,inactive}
 // and inactive->inactive.
 pub fn patientTransitionOk(prior: string, intended: string): bool {
-    if prior == "active" { return intended == "active" or intended == "inactive" }
-    if prior == "inactive" { return intended == "inactive" }
+    if prior == "active" {
+        return intended == "active" or intended == "inactive"
+    }
+    if prior == "inactive" {
+        return intended == "inactive"
+    }
     return false
 }
 
@@ -39,8 +43,12 @@ pub fn encounterTransitionOk(prior: string, intended: string): bool {
     if prior == "in_progress" {
         return intended == "in_progress" or intended == "finished" or intended == "cancelled"
     }
-    if prior == "finished" { return intended == "finished" }
-    if prior == "cancelled" { return intended == "cancelled" }
+    if prior == "finished" {
+        return intended == "finished"
+    }
+    if prior == "cancelled" {
+        return intended == "cancelled"
+    }
     return false
 }
 
@@ -59,8 +67,12 @@ pub fn observationTransitionOk(prior: string, intended: string): bool {
     if prior == "preliminary" {
         return intended == "preliminary" or intended == "final" or intended == "entered_in_error"
     }
-    if prior == "final" { return intended == "final" or intended == "entered_in_error" }
-    if prior == "entered_in_error" { return intended == "entered_in_error" }
+    if prior == "final" {
+        return intended == "final" or intended == "entered_in_error"
+    }
+    if prior == "entered_in_error" {
+        return intended == "entered_in_error"
+    }
     return false
 }
 
@@ -83,8 +95,14 @@ pub fn medicationTransitionOk(prior: string, intended: string): bool {
     if prior == "active" {
         return intended == "active" or intended == "completed" or intended == "cancelled"
     }
-    if prior == "completed" { return intended == "completed" }
-    if prior == "cancelled" { return intended == "cancelled" }
-    if prior == "superseded" { return intended == "superseded" }
+    if prior == "completed" {
+        return intended == "completed"
+    }
+    if prior == "cancelled" {
+        return intended == "cancelled"
+    }
+    if prior == "superseded" {
+        return intended == "superseded"
+    }
     return false
 }

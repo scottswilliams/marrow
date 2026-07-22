@@ -41,23 +41,37 @@ struct AuditDraft {
 // Canonical mutation order over drafts: (ResourceKind, resource id, MutationKind).
 
 fn kindRank(kind: string): int {
-    if kind == "patient" { return 0 }
-    if kind == "encounter" { return 1 }
-    if kind == "observation" { return 2 }
+    if kind == "patient" {
+        return 0
+    }
+    if kind == "encounter" {
+        return 1
+    }
+    if kind == "observation" {
+        return 2
+    }
     return 3
 }
 
 fn mutationRank(mutation: string): int {
-    if mutation == "explicitCreate" { return 0 }
-    if mutation == "explicitUpdate" { return 1 }
+    if mutation == "explicitCreate" {
+        return 0
+    }
+    if mutation == "explicitUpdate" {
+        return 1
+    }
     return 2
 }
 
 fn draftBefore(a: AuditDraft, b: AuditDraft): bool {
     const ka = kindRank(a.subjectKind)
     const kb = kindRank(b.subjectKind)
-    if ka != kb { return ka < kb }
-    if a.subjectId != b.subjectId { return a.subjectId < b.subjectId }
+    if ka != kb {
+        return ka < kb
+    }
+    if a.subjectId != b.subjectId {
+        return a.subjectId < b.subjectId
+    }
     return mutationRank(a.mutationKind) < mutationRank(b.mutationKind)
 }
 
@@ -86,27 +100,59 @@ fn sortDrafts(drafts: List<AuditDraft>): List<AuditDraft> {
 
 fn changeKind(c: Change): string {
     match c {
-        createPatient(id, s, d) => return "patient"
-        updatePatient(id, r, s, d) => return "patient"
-        createEncounter(id, p, s, r) => return "encounter"
-        updateEncounter(id, r, s, rs) => return "encounter"
-        createObservation(id, p, e, s, c2, v) => return "observation"
-        updateObservation(id, r, p, e, s, c2, v) => return "observation"
-        createMedicationOrder(id, p, c2, s, d) => return "medicationOrder"
-        updateMedicationOrder(id, r, p, c2, s, d) => return "medicationOrder"
+        createPatient(id, s, d) => {
+            return "patient"
+        }
+        updatePatient(id, r, s, d) => {
+            return "patient"
+        }
+        createEncounter(id, p, s, r) => {
+            return "encounter"
+        }
+        updateEncounter(id, r, s, rs) => {
+            return "encounter"
+        }
+        createObservation(id, p, e, s, c2, v) => {
+            return "observation"
+        }
+        updateObservation(id, r, p, e, s, c2, v) => {
+            return "observation"
+        }
+        createMedicationOrder(id, p, c2, s, d) => {
+            return "medicationOrder"
+        }
+        updateMedicationOrder(id, r, p, c2, s, d) => {
+            return "medicationOrder"
+        }
     }
 }
 
 fn changeId(c: Change): int {
     match c {
-        createPatient(id, s, d) => return id
-        updatePatient(id, r, s, d) => return id
-        createEncounter(id, p, s, r) => return id
-        updateEncounter(id, r, s, rs) => return id
-        createObservation(id, p, e, s, c2, v) => return id
-        updateObservation(id, r, p, e, s, c2, v) => return id
-        createMedicationOrder(id, p, c2, s, d) => return id
-        updateMedicationOrder(id, r, p, c2, s, d) => return id
+        createPatient(id, s, d) => {
+            return id
+        }
+        updatePatient(id, r, s, d) => {
+            return id
+        }
+        createEncounter(id, p, s, r) => {
+            return id
+        }
+        updateEncounter(id, r, s, rs) => {
+            return id
+        }
+        createObservation(id, p, e, s, c2, v) => {
+            return id
+        }
+        updateObservation(id, r, p, e, s, c2, v) => {
+            return id
+        }
+        createMedicationOrder(id, p, c2, s, d) => {
+            return id
+        }
+        updateMedicationOrder(id, r, p, c2, s, d) => {
+            return id
+        }
     }
 }
 
@@ -118,22 +164,48 @@ fn subjectKey(c: Change): string {
 // single exhaustive place that names every closed rejection reason.
 pub fn rejectionCode(e: Rejection): string {
     match e {
-        emptyBundle => return "emptyBundle"
-        duplicateSubject(kind, id) => return "duplicateSubject"
-        resourceAlreadyExists(kind, id) => return "resourceAlreadyExists"
-        resourceMissing(kind, id) => return "resourceMissing"
-        staleRevision(kind, id, expected, actual) => return "staleRevision"
-        revisionOverflow(kind, id) => return "revisionOverflow"
-        unsupportedStatus(kind, id, s) => return "unsupportedStatus"
-        unsupportedTransition(kind, id, prior, intended) => return "unsupportedTransition"
-        patientMissing(patientId, rk, ri) => return "patientMissing"
-        encounterMissing(encounterId, obs) => return "encounterMissing"
-        observationPatientMismatch(obsId, op, ep) => return "observationPatientMismatch"
+        emptyBundle => {
+            return "emptyBundle"
+        }
+        duplicateSubject(kind, id) => {
+            return "duplicateSubject"
+        }
+        resourceAlreadyExists(kind, id) => {
+            return "resourceAlreadyExists"
+        }
+        resourceMissing(kind, id) => {
+            return "resourceMissing"
+        }
+        staleRevision(kind, id, expected, actual) => {
+            return "staleRevision"
+        }
+        revisionOverflow(kind, id) => {
+            return "revisionOverflow"
+        }
+        unsupportedStatus(kind, id, s) => {
+            return "unsupportedStatus"
+        }
+        unsupportedTransition(kind, id, prior, intended) => {
+            return "unsupportedTransition"
+        }
+        patientMissing(patientId, rk, ri) => {
+            return "patientMissing"
+        }
+        encounterMissing(encounterId, obs) => {
+            return "encounterMissing"
+        }
+        observationPatientMismatch(obsId, op, ep) => {
+            return "observationPatientMismatch"
+        }
         activeMedicationCollision(patientId, code, first, second) => {
             return "activeMedicationCollision"
         }
-        patientAggregateMissing(patientId) => return "patientAggregateMissing"
-        auditCounterMissing => return "auditCounterMissing"
+        patientAggregateMissing(patientId) => {
+            return "patientAggregateMissing"
+        }
+        auditCounterMissing => {
+            return "auditCounterMissing"
+        }
     }
 }
 
@@ -158,7 +230,9 @@ pub fn initStore() {
 // stay non-`pub`: a `pub` export owns its own transaction.
 fn applyBundle(changes: List<Change>): Result<ChangeSetApplied, Rejection> {
     const n = length(changes)
-    if n == 0 { return err(Rejection::emptyBundle) }
+    if n == 0 {
+        return err(Rejection::emptyBundle)
+    }
 
     // Pass 1 — canonical maps: duplicate detection and same-bundle create sets.
     var seen: Map<string, bool> = Map()
@@ -173,9 +247,13 @@ fn applyBundle(changes: List<Change>): Result<ChangeSetApplied, Rejection> {
         }
         seen[key] = true
         match c {
-            createPatient(id, s, d) => createdPatients[id] = true
+            createPatient(id, s, d) => {
+                createdPatients[id] = true
+            }
             updatePatient(id, r, s, d) => {}
-            createEncounter(id, p, s, r) => createdEncounters[id] = p
+            createEncounter(id, p, s, r) => {
+                createdEncounters[id] = p
+            }
             updateEncounter(id, r, s, rs) => {}
             createObservation(id, p, e, s, c2, v) => {}
             updateObservation(id, r, p, e, s, c2, v) => {}
@@ -199,14 +277,18 @@ fn applyBundle(changes: List<Change>): Result<ChangeSetApplied, Rejection> {
     for c in changes {
         match validate(c, createdPatients, createdEncounters, activeFirst, activeSecond) {
             ok(v) => {}
-            err(e) => return err(e)
+            err(e) => {
+                return err(e)
+            }
         }
     }
 
     // The audit counter must be established (by `initStore`) before any
     // change-set: audit allocation depends on it. This is checked here, before
     // any write, so a missing counter rolls nothing back.
-    if not exists(^auditCounter[AUDIT_COUNTER_NAME]) { return err(Rejection::auditCounterMissing) }
+    if not exists(^auditCounter[AUDIT_COUNTER_NAME]) {
+        return err(Rejection::auditCounterMissing)
+    }
 
     // Pass 3 — apply primaries and active-medication state, recording drafts.
     var drafts: List<AuditDraft> = List()
@@ -294,7 +376,9 @@ fn render(id: int, kind: string, r: Result<ChangeSetApplied, Rejection>): string
         ok(a) => {
             return $"ok: {kind} {id} applied ({a.explicitMutations} explicit, {a.implicitMutations} implicit, audit from {a.firstAuditId})"
         }
-        err(e) => return $"rejected: {rejectionCode(e)}"
+        err(e) => {
+            return $"rejected: {rejectionCode(e)}"
+        }
     }
 }
 
@@ -615,7 +699,9 @@ fn applyPrimary(c: Change, drafts: List<AuditDraft>, seen: Map<string, bool>): L
 fn supersedeIncumbent(patientId: int, code: string, drafts: List<AuditDraft>, seen: Map<string, bool>): List<AuditDraft> {
     if const a = ^activeMedications[patientId].byCode[code] {
         const incId = a.orderId
-        if seen["medicationOrder:" + string(incId)] ?? false { return drafts }
+        if seen["medicationOrder:" + string(incId)] ?? false {
+            return drafts
+        }
         if const im = ^medicationOrders[incId] {
             const prior = im.revision
             const nr = prior + 1

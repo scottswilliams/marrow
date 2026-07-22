@@ -43,7 +43,9 @@ fn getOr<V>(m: Map<string, V>, key: string, fallback: V): V {
 // splits on the prefix and checks that the first piece is empty with a separator
 // present.
 fn startsWith(s: string, prefix: string): bool {
-    if isEmpty(prefix) { return true }
+    if isEmpty(prefix) {
+        return true
+    }
     const parts = split(s, prefix)
     var idx: int = 0
     var firstEmpty: bool = false
@@ -75,23 +77,39 @@ fn parsePair(s: string, sep: string): Option<Pair> {
         }
         idx += 1
     }
-    if idx == 2 { return some(Pair(left: left, right: right)) }
+    if idx == 2 {
+        return some(Pair(left: left, right: right))
+    }
     return none
 }
 
 fn classifyRole(outDegree: int, inDegree: int): Role {
-    if outDegree == 0 and inDegree == 0 { return Role::isolated }
-    if inDegree == 0 { return Role::source }
-    if outDegree == 0 { return Role::sink }
+    if outDegree == 0 and inDegree == 0 {
+        return Role::isolated
+    }
+    if inDegree == 0 {
+        return Role::source
+    }
+    if outDegree == 0 {
+        return Role::sink
+    }
     return Role::internal
 }
 
 fn roleName(r: Role): string {
     match r {
-        source => return "source"
-        sink => return "sink"
-        internal => return "internal"
-        isolated => return "isolated"
+        source => {
+            return "source"
+        }
+        sink => {
+            return "sink"
+        }
+        internal => {
+            return "internal"
+        }
+        isolated => {
+            return "isolated"
+        }
     }
 }
 
@@ -207,8 +225,12 @@ fn renderDegrees(nodes: Map<string, bool>, outDeg: Map<string, int>, inDeg: Map<
 
 // The reachability section body.
 fn renderReachable(edges: List<Edge>, nodes: Map<string, bool>, hasRoot: bool, root: string, nodeCount: int): string {
-    if not hasRoot { return "  (no root)" }
-    if not getOr(nodes, root, false) { return "  root " + root + " is not a node" }
+    if not hasRoot {
+        return "  (no root)"
+    }
+    if not getOr(nodes, root, false) {
+        return "  root " + root + " is not a node"
+    }
     const reached = reachableFrom(edges, root, nodeCount)
     var names: List<string> = List()
     var reachedCount: int = 0
@@ -233,8 +255,12 @@ pub fn report(input: string): string {
 
     for rawLine in lines(input) {
         const line = trim(rawLine)
-        if isEmpty(line) { continue }
-        if startsWith(line, "#") { continue }
+        if isEmpty(line) {
+            continue
+        }
+        if startsWith(line, "#") {
+            continue
+        }
         if contains(line, "->") {
             match parsePair(line, "->") {
                 some(pr) => {
@@ -260,7 +286,9 @@ pub fn report(input: string): string {
                         }
                     }
                 }
-                none => malformed += 1
+                none => {
+                    malformed += 1
+                }
             }
         } else {
             nodes[line] = true
@@ -384,10 +412,16 @@ test "parsePair splits exactly two sides or reports none" {
             assert pr.left == "a"
             assert pr.right == "b"
         }
-        none => assert false
+        none => {
+            assert false
+        }
     }
     match parsePair("a -> b -> c", "->") {
-        some(pr) => assert false
-        none => assert true
+        some(pr) => {
+            assert false
+        }
+        none => {
+            assert true
+        }
     }
 }

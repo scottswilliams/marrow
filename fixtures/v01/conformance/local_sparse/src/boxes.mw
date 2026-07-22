@@ -60,8 +60,12 @@ pub fn classifyTag(mode: int): string {
     }
     if const t = b.tag {
         match t {
-            none => return "present-none"
-            some(v) => return v
+            none => {
+                return "present-none"
+            }
+            some(v) => {
+                return v
+            }
         }
     }
     return "absent"

@@ -7,7 +7,11 @@ pub enum Status {
 
 pub fn rank(s: grade::Status): int {
     match s {
-        open => return 0
-        closed => return 1
+        open => {
+            return 0
+        }
+        closed => {
+            return 1
+        }
     }
 }

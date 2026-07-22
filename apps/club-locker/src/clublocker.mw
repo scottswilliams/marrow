@@ -80,7 +80,9 @@ pub fn registerMember(name: string, joined: date): int {
 
 pub fn registerAsset(tag: string, category: string, name: string): Result<int, string> {
     transaction {
-        if exists(^assets.byTag[tag]) { return err("tag already registered") }
+        if exists(^assets.byTag[tag]) {
+            return err("tag already registered")
+        }
         place seq = ^idseq["asset"]
         const next = (seq.value ?? 0) + 1
         seq.value = next
@@ -130,9 +132,15 @@ pub fn reinstateMember(memberId: int) {
 
 pub fn checkout(memberId: int, assetId: int, onDay: date): Result<int, string> {
     transaction {
-        const member = ^members[memberId] else return err("unknown member")
-        if member.standing == Standing::suspended { return err("member is suspended") }
-        const asset = ^assets[assetId] else return err("unknown asset")
+        const member = ^members[memberId] else {
+            return err("unknown member")
+        }
+        if member.standing == Standing::suspended {
+            return err("member is suspended")
+        }
+        const asset = ^assets[assetId] else {
+            return err("unknown asset")
+        }
         // `asset` is a materialized value, so its sparse `onLoanTo` is tested by
         // binding rather than `exists` (which takes a durable path). A present
         // binding means the asset is already out.
@@ -156,8 +164,12 @@ pub fn checkout(memberId: int, assetId: int, onDay: date): Result<int, string> {
 
 pub fn returnAsset(memberId: int, assetId: int, onDay: date): Result<int, string> {
     transaction {
-        const loan = ^members[memberId].activeLoans[assetId] else return err("no active loan")
-        const member = ^members[memberId] else return err("unknown member")
+        const loan = ^members[memberId].activeLoans[assetId] else {
+            return err("no active loan")
+        }
+        const member = ^members[memberId] else {
+            return err("unknown member")
+        }
 
         ^assets[assetId].onLoanTo = absent
         delete ^members[memberId].activeLoans[assetId]
@@ -205,7 +217,9 @@ pub fn retireMemberBatch(memberId: int): Result<bool, string> {
         } on more {
             more = true
         }
-        if more { return ok(false) }
+        if more {
+            return ok(false)
+        }
         delete ^members[memberId]
         return ok(true)
     }

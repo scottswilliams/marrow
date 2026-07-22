@@ -2129,10 +2129,18 @@ pub fn systolicOf(mrn: int): int? {
 // Presence prelude: several sparse preconditions, each a diverging guard, so the
 // body runs only once every measurement it needs is present.
 pub fn bpSummary(mrn: int): Result<string, string> {
-    if not exists(^charts[mrn]) { return err("unknown chart") }
-    const name = ^charts[mrn].name else return err("chart has no name")
-    const sys = ^charts[mrn].vitals.systolic else return err($"{name} has no systolic")
-    const dia = ^charts[mrn].vitals.diastolic else return err($"{name} has no diastolic")
+    if not exists(^charts[mrn]) {
+        return err("unknown chart")
+    }
+    const name = ^charts[mrn].name else {
+        return err("chart has no name")
+    }
+    const sys = ^charts[mrn].vitals.systolic else {
+        return err($"{name} has no systolic")
+    }
+    const dia = ^charts[mrn].vitals.diastolic else {
+        return err($"{name} has no diastolic")
+    }
     return ok($"{name} {sys}/{dia}")
 }
 
@@ -2143,24 +2151,40 @@ pub fn bpSummary(mrn: int): Result<string, string> {
 // A decimal type would remove the gram/millimetre unit choice, the *10 scale, and
 // the half-add rounding; this records where the int floor is felt.
 pub fn bmiTimesTen(mrn: int): Result<int, string> {
-    const grams = ^charts[mrn].weightG else return err("no weight")
-    const mm = ^charts[mrn].heightMm else return err("no height")
-    if mm <= 0 { return err("nonpositive height") }
+    const grams = ^charts[mrn].weightG else {
+        return err("no weight")
+    }
+    const mm = ^charts[mrn].heightMm else {
+        return err("no height")
+    }
+    if mm <= 0 {
+        return err("nonpositive height")
+    }
     const areaMm2 = checked mm * mm
-        on out_of_range return err("height overflow")
-    if areaMm2 <= 0 { return err("height overflow") }
+        on out_of_range {
+            return err("height overflow")
+        }
+    if areaMm2 <= 0 {
+        return err("height overflow")
+    }
     // weight(kg)/height(m)^2 at the fixed x10 scale. With weight in grams and height
     // in millimetres this simplifies to grams * 10000 / areaMm2, and the half-add
     // (+ areaMm2/2) rounds the truncating integer divide to nearest.
     const scaled = checked grams * 10000
-        on out_of_range return err("weight overflow")
+        on out_of_range {
+            return err("weight overflow")
+        }
     const half = areaMm2 / 2
     const numerator = checked scaled + half
-        on out_of_range return err("scale overflow")
+        on out_of_range {
+            return err("scale overflow")
+        }
     const bmi10 = checked numerator / areaMm2
         on out_of_range {
             return err("bmi overflow")
-        } on zero_divisor return err("zero area")
+        } on zero_divisor {
+            return err("zero area")
+        }
     return ok(bmi10)
 }
 
@@ -2169,8 +2193,12 @@ pub fn bmiTimesTen(mrn: int): Result<int, string> {
 pub fn glucoseState(mrn: int): string {
     if const stored = ^charts[mrn].glucoseReading {
         match stored {
-            some(v) => return "measured"
-            none => return "unmeasurable"
+            some(v) => {
+                return "measured"
+            }
+            none => {
+                return "unmeasurable"
+            }
         }
     }
     return "unrecorded"
@@ -2209,7 +2237,9 @@ pub fn observationTotal(mrn: int): int {
         if const got = ob {
             total += got.value ?? 0
         }
-    } on more return -1
+    } on more {
+        return -1
+    }
     return total
 }
 
@@ -2218,7 +2248,9 @@ pub fn observationCount(mrn: int): int {
     place chart = ^charts[mrn]
     for seq in chart.observations at most 1000 {
         count += 1
-    } on more return -1
+    } on more {
+        return -1
+    }
     return count
 }
 
@@ -2239,6 +2271,8 @@ pub fn diagnosisCount(mrn: int): int {
     place chart = ^charts[mrn]
     for pos in chart.diagnoses at most 1000 {
         count += 1
-    } on more return -1
+    } on more {
+        return -1
+    }
     return count
 }

@@ -87,8 +87,12 @@ pub fn makeTagged(): Tagged {
 
 pub fn tintName(t: Tagged): string {
     match t.tint {
-        plain => return "plain"
-        bright => return "bright"
+        plain => {
+            return "plain"
+        }
+        bright => {
+            return "bright"
+        }
     }
 }
 

@@ -12,8 +12,12 @@ pub fn firstEvenOver(n: int): int {
     var i = 0
     while true {
         i += 1
-        if i <= n { continue }
-        if i % 2 != 0 { continue }
+        if i <= n {
+            continue
+        }
+        if i % 2 != 0 {
+            continue
+        }
         break
     }
     return i
@@ -22,5 +26,9 @@ pub fn firstEvenOver(n: int): int {
 pub fn sign(a: int): int {
     if a > 0 {
         return 1
-    } else if a == 0 { return 0 } else return -1
+    } else if a == 0 {
+        return 0
+    } else {
+        return -1
+    }
 }

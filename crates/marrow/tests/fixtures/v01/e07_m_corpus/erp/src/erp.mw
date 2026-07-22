@@ -71,13 +71,19 @@ pub fn priceOf(sku: string): int? {
 // every field it omits.
 pub fn applyMarkupPercent(sku: string, percent: int): Result<int, string> {
     transaction {
-        const current = ^items[sku] else return err("no such item")
+        const current = ^items[sku] else {
+            return err("no such item")
+        }
         const base = current.priceCents ?? 0
         const delta = checked base * percent
-            on out_of_range return err("markup overflow")
+            on out_of_range {
+                return err("markup overflow")
+            }
         const bump = delta / 100
         const raised = checked base + bump
-            on out_of_range return err("price overflow")
+            on out_of_range {
+                return err("price overflow")
+            }
         var next = current
         next.priceCents = raised
         ^items[sku] = next
@@ -90,17 +96,25 @@ pub fn applyMarkupPercent(sku: string, percent: int): Result<int, string> {
 // because a nominal type has no value accessor and money*money / money+money are
 // not expressible, so the line total is accumulated in plain int.
 pub fn extendedPriceCents(unitCents: int, qty: int): Result<int, string> {
-    const unit = Cents.checked(unitCents) else return err("unit price out of fixed-scale range")
-    if qty < 0 { return err("negative quantity") }
+    const unit = Cents.checked(unitCents) else {
+        return err("unit price out of fixed-scale range")
+    }
+    if qty < 0 {
+        return err("negative quantity")
+    }
     const base = unit - Cents(0)
     const total = checked base * qty
-        on out_of_range return err("line total overflow")
+        on out_of_range {
+            return err("line total overflow")
+        }
     return ok(total)
 }
 
 pub fn placeOrder(customer: string, at: instant): Result<int, string> {
     transaction {
-        if customer == "" { return err("missing customer") }
+        if customer == "" {
+            return err("missing customer")
+        }
         place seq = ^idseq["order"]
         const next = (seq.value ?? 0) + 1
         seq.value = next
@@ -111,8 +125,12 @@ pub fn placeOrder(customer: string, at: instant): Result<int, string> {
 
 pub fn addLine(orderId: int, lineNo: int, sku: string, qty: int): Result<int, string> {
     transaction {
-        if qty <= 0 { return err("nonpositive quantity") }
-        const price = ^items[sku].priceCents else return err("item has no price")
+        if qty <= 0 {
+            return err("nonpositive quantity")
+        }
+        const price = ^items[sku].priceCents else {
+            return err("item has no price")
+        }
         ^orders[orderId].lines[lineNo] = Order.lines(sku: sku, qty: qty, unitPriceCents: price)
         return ok(lineNo)
     }
@@ -130,7 +148,9 @@ pub fn orderTotalCents(orderId: int): int {
             const unit = got.unitPriceCents ?? 0
             total += unit * qty
         }
-    } on more return -1
+    } on more {
+        return -1
+    }
     return total
 }
 
@@ -145,7 +165,9 @@ pub fn catalogValueOfTwo(catA: string, catB: string): int {
             if const item = ^items[sku] {
                 total += item.priceCents ?? 0
             }
-        } on more return -1
+        } on more {
+            return -1
+        }
     }
     return total
 }

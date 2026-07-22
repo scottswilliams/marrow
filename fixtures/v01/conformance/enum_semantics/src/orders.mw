@@ -27,9 +27,15 @@ pub fn matchLabel(): string {
     seed()
     if const state = ^orders[1].state {
         match state {
-            active => return "A"
-            archived => return "R"
-            banned => return "B"
+            active => {
+                return "A"
+            }
+            archived => {
+                return "R"
+            }
+            banned => {
+                return "B"
+            }
         }
     }
     return "missing"
@@ -40,8 +46,12 @@ pub fn matchLabel(): string {
 pub fn equalsSeededMember(): string {
     seed()
     if const state = ^orders[1].state {
-        if state == Status::archived { return "yes" }
-        if state == Status::active { return "no" }
+        if state == Status::archived {
+            return "yes"
+        }
+        if state == Status::active {
+            return "no"
+        }
     }
     return "missing"
 }

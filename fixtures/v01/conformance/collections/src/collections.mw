@@ -349,7 +349,9 @@ pub fn overflowJoin(): int {
         appended += 1
     }
     const whole = join(xs, "")
-    if isEmpty(whole) { return 0 }
+    if isEmpty(whole) {
+        return 0
+    }
     return 1
 }
 
@@ -361,8 +363,12 @@ test "a list of enum values iterates by value" {
     var reds: int = 0
     for c in cs {
         match c {
-            red => reds += 1
-            green => reds += 0
+            red => {
+                reds += 1
+            }
+            green => {
+                reds += 0
+            }
         }
     }
     assert reds == 2

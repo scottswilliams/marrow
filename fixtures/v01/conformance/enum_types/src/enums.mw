@@ -24,25 +24,43 @@ enum Shape {
 
 pub fn colorCode(c: Color): int {
     match c {
-        red => return 1
-        green => return 2
-        blue => return 3
+        red => {
+            return 1
+        }
+        green => {
+            return 2
+        }
+        blue => {
+            return 3
+        }
     }
 }
 
 pub fn area(s: Shape): int {
     match s {
-        dot => return 0
-        circle(r) => return r * r
-        rect(w, h) => return w * h
+        dot => {
+            return 0
+        }
+        circle(r) => {
+            return r * r
+        }
+        rect(w, h) => {
+            return w * h
+        }
     }
 }
 
 pub fn isRound(s: Shape): bool {
     match s {
-        dot => return false
-        circle => return true
-        rect => return false
+        dot => {
+            return false
+        }
+        circle => {
+            return true
+        }
+        rect => {
+            return false
+        }
     }
 }
 

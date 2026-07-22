@@ -57,7 +57,9 @@ store ^tallies[name: string]: Tally
 // all commit together, or — on any fault before the commit — roll back together.
 pub fn add(id: int, tag: string, name: string, category: string, at: instant): bool {
     transaction {
-        if exists(^assets[id]) { return false }
+        if exists(^assets[id]) {
+            return false
+        }
         ^assets[id] = Asset(tag: tag, name: name, category: category)
         ^assets[id].log[1] = Asset.log(text: "catalogued", at: at)
         const priorCatalogued = ^tallies["catalogued"].count ?? 0
@@ -68,7 +70,9 @@ pub fn add(id: int, tag: string, name: string, category: string, at: instant): b
 
 pub fn replace(id: int, tag: string, name: string, category: string): bool {
     transaction {
-        if not exists(^assets[id]) { return false }
+        if not exists(^assets[id]) {
+            return false
+        }
         ^assets[id] = Asset(tag: tag, name: name, category: category)
     }
     return true
@@ -76,7 +80,9 @@ pub fn replace(id: int, tag: string, name: string, category: string): bool {
 
 pub fn erase(id: int): bool {
     transaction {
-        if not exists(^assets[id]) { return false }
+        if not exists(^assets[id]) {
+            return false
+        }
         delete ^assets[id]
     }
     return true
@@ -121,7 +127,9 @@ pub fn recordMove(id: int, location: string) {
 pub fn setLocation(id: int, location: string): bool {
     transaction {
         place slot = ^assets[id]
-        if not exists(slot) { return false }
+        if not exists(slot) {
+            return false
+        }
         slot.location = location
     }
     return true
@@ -132,7 +140,9 @@ pub fn setLocation(id: int, location: string): bool {
 pub fn setCondition(id: int, note: string): bool {
     transaction {
         place slot = ^assets[id]
-        if not exists(slot) { return false }
+        if not exists(slot) {
+            return false
+        }
         slot.conditionNote = note
     }
     return true
@@ -141,7 +151,9 @@ pub fn setCondition(id: int, note: string): bool {
 pub fn checkout(id: int, holder: string): bool {
     transaction {
         place slot = ^assets[id]
-        if not exists(slot) { return false }
+        if not exists(slot) {
+            return false
+        }
         slot.checkedOutTo = holder
     }
     return true
@@ -150,7 +162,9 @@ pub fn checkout(id: int, holder: string): bool {
 pub fn checkin(id: int): bool {
     transaction {
         place slot = ^assets[id]
-        if not exists(slot) { return false }
+        if not exists(slot) {
+            return false
+        }
         slot.checkedOutTo = absent
     }
     return true
@@ -174,7 +188,9 @@ fn withName(asset: Asset, name: string): Asset {
 
 pub fn relocate(id: int, location: string): bool {
     transaction {
-        const current = ^assets[id] else return false
+        const current = ^assets[id] else {
+            return false
+        }
         ^assets[id] = withLocation(current, location)
     }
     return true
@@ -185,8 +201,12 @@ pub fn relocate(id: int, location: string): bool {
 // renames it — preserving the log branch through the payload-only write.
 pub fn renameByTag(tag: string, name: string): bool {
     transaction {
-        const found = ^assets.byTag[tag] else return false
-        const current = ^assets[found] else return false
+        const found = ^assets.byTag[tag] else {
+            return false
+        }
+        const current = ^assets[found] else {
+            return false
+        }
         ^assets[found] = withName(current, name)
     }
     return true
@@ -221,7 +241,9 @@ pub fn label(id: int): string {
 
 pub fn addNote(id: int, seq: int, text: string, at: instant): bool {
     transaction {
-        if not exists(^assets[id]) { return false }
+        if not exists(^assets[id]) {
+            return false
+        }
         ^assets[id].log[seq] = Asset.log(text: text, at: at)
     }
     return true
@@ -229,7 +251,9 @@ pub fn addNote(id: int, seq: int, text: string, at: instant): bool {
 
 pub fn pinNote(id: int, seq: int, text: string, at: instant): bool {
     transaction {
-        if not exists(^assets[id]) { return false }
+        if not exists(^assets[id]) {
+            return false
+        }
         ^assets[id].log[seq] = Asset.log(text: text, at: at, pinned: true)
     }
     return true
@@ -261,9 +285,13 @@ pub fn pinnedCount(): int {
                         total += 1
                     }
                 }
-            } on more return -1
+            } on more {
+                return -1
+            }
         }
-    } on more return -1
+    } on more {
+        return -1
+    }
     return total
 }
 
@@ -273,7 +301,9 @@ pub fn countInCategory(category: string): int {
         if exists(^assets[assetId]) {
             count += 1
         }
-    } on more return -1
+    } on more {
+        return -1
+    }
     return count
 }
 

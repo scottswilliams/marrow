@@ -23,8 +23,12 @@ pub fn storedStatusName(): string {
     }
     if const state = ^statusOrders[1].state {
         match state {
-            active => return "active"
-            archived => return "archived"
+            active => {
+                return "active"
+            }
+            archived => {
+                return "archived"
+            }
         }
     }
     return "missing"

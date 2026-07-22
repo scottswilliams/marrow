@@ -26,7 +26,9 @@ fn swapped<T>(a: T, b: T): List<T> {
 // call site revalidates that the concrete type actually supports equality.
 fn hasMember<T supports equality>(xs: List<T>, target: T): bool {
     for x in xs {
-        if x == target { return true }
+        if x == target {
+            return true
+        }
     }
     return false
 }
@@ -34,7 +36,9 @@ fn hasMember<T supports equality>(xs: List<T>, target: T): bool {
 // `supports order` licenses `<`/`>` over the type parameter.
 fn firstBigger<T supports order>(xs: List<T>, threshold: T): T? {
     for x in xs {
-        if x > threshold { return x }
+        if x > threshold {
+            return x
+        }
     }
     return absent
 }

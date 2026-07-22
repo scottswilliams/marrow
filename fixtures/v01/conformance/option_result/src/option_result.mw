@@ -6,15 +6,23 @@ module option_result
 // still absent-or-present, while an `Option<T>` value is `none` or `some(v)`.
 
 pub fn firstEven(a: int, b: int): Option<int> {
-    if a % 2 == 0 { return some(a) }
-    if b % 2 == 0 { return some(b) }
+    if a % 2 == 0 {
+        return some(a)
+    }
+    if b % 2 == 0 {
+        return some(b)
+    }
     return none
 }
 
 pub fn describe(o: Option<int>): string {
     match o {
-        some(v) => return "some"
-        none => return "none"
+        some(v) => {
+            return "some"
+        }
+        none => {
+            return "none"
+        }
     }
 }
 
@@ -22,18 +30,26 @@ pub fn describe(o: Option<int>): string {
 // three different values of `Option<Option<int>>`.
 pub fn depth(o: Option<Option<int>>): int {
     match o {
-        none => return 0
+        none => {
+            return 0
+        }
         some(inner) => {
             match inner {
-                none => return 1
-                some(v) => return 2
+                none => {
+                    return 1
+                }
+                some(v) => {
+                    return 2
+                }
             }
         }
     }
 }
 
 pub fn checkPositive(n: int): Result<int, string> {
-    if n <= 0 { return err("not positive") }
+    if n <= 0 {
+        return err("not positive")
+    }
     return ok(n)
 }
 
@@ -46,8 +62,12 @@ pub fn addChecked(a: int, b: int): Result<int, string> {
 
 pub fn okOr(r: Result<int, string>, fallback: int): int {
     match r {
-        ok(v) => return v
-        err(e) => return fallback
+        ok(v) => {
+            return v
+        }
+        err(e) => {
+            return fallback
+        }
     }
 }
 
