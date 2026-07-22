@@ -466,7 +466,10 @@ fn signature_help_inside_call_marks_active_parameter() {
         .expect("signature help returns signatures");
     assert_eq!(signatures.len(), 1, "one active signature");
     assert!(
-        signatures[0]["label"].as_str().unwrap_or("").contains("getOr"),
+        signatures[0]["label"]
+            .as_str()
+            .unwrap_or("")
+            .contains("getOr"),
         "the callee signature is `getOr`"
     );
     assert_eq!(
@@ -501,7 +504,10 @@ fn document_symbol_returns_declaration_outline() {
         .filter_map(|symbol| symbol["name"].as_str())
         .collect();
     for name in ["Pair", "Edge", "Role", "getOr", "classifyRole", "report"] {
-        assert!(names.contains(&name), "top-level declaration {name} present");
+        assert!(
+            names.contains(&name),
+            "top-level declaration {name} present"
+        );
     }
     // The enum carries its members as nested children.
     let role = symbols
@@ -561,6 +567,85 @@ fn advertises_completion_signature_and_symbol() {
         "no completionItem/resolve"
     );
     conn.notify("initialized", serde_json::json!({}));
+    conn.request(9, "shutdown", Value::Null);
+    conn.recv_until(|m| m.get("id").and_then(Value::as_i64) == Some(9));
+    conn.notify("exit", Value::Null);
+    assert_eq!(conn.wait(), 0);
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// Measured (not a default gate): ready-snapshot latency for the three H00c methods over
+/// the Graph Report probe positions. Run with `--ignored --nocapture`. The frozen budgets
+/// are median <= 5 ms and p95 <= 25 ms per query on an already-ready snapshot.
+#[test]
+#[ignore = "measured latency probe; run explicitly with --ignored --nocapture"]
+fn measure_earned_facts_latency() {
+    // The incomplete-edit overlay so completion returns the enum members; document symbols
+    // and signature help are unaffected by the single recovered path.
+    let editing = GRAPH_REPORT.replacen("return Role::isolated", "return Role::", 1);
+    let dir = temp_project("latency-facts", &editing);
+    let mut conn = Connection::spawn(&dir);
+    initialize(&mut conn, &dir);
+    did_open(&mut conn, &dir, &editing, 1);
+    let target = document_uri(&dir);
+    conn.recv_until(|m| {
+        m.get("method").and_then(Value::as_str) == Some("textDocument/publishDiagnostics")
+            && m["params"]["uri"].as_str() == Some(target.as_str())
+    });
+
+    let (comp_line, comp_char) = lsp_position(&editing, after(&editing, "return Role::"));
+    let (sig_line, sig_char) = lsp_position(&editing, after(&editing, "getOr(reached, "));
+
+    let cases: [(&str, &str, serde_json::Value); 3] = [
+        (
+            "completion",
+            "textDocument/completion",
+            serde_json::json!({
+                "textDocument": { "uri": target },
+                "position": { "line": comp_line, "character": comp_char },
+            }),
+        ),
+        (
+            "signatureHelp",
+            "textDocument/signatureHelp",
+            serde_json::json!({
+                "textDocument": { "uri": target },
+                "position": { "line": sig_line, "character": sig_char },
+            }),
+        ),
+        (
+            "documentSymbol",
+            "textDocument/documentSymbol",
+            serde_json::json!({ "textDocument": { "uri": target } }),
+        ),
+    ];
+
+    for (name, method, params) in cases {
+        let mut samples = Vec::new();
+        for iteration in 0..50 {
+            let id = 1000 + iteration;
+            let start = std::time::Instant::now();
+            conn.request(id, method, params.clone());
+            conn.recv_until(|m| m.get("id").and_then(Value::as_i64) == Some(id));
+            samples.push(start.elapsed());
+        }
+        samples.sort();
+        let median = samples[samples.len() / 2];
+        let p95 = samples[(samples.len() * 95) / 100];
+        println!(
+            "{name}: median={median:?} p95={p95:?} over {} queries",
+            samples.len()
+        );
+        assert!(
+            median.as_millis() <= 5,
+            "{name} median {median:?} exceeds the 5ms budget"
+        );
+        assert!(
+            p95.as_millis() <= 25,
+            "{name} p95 {p95:?} exceeds the 25ms budget"
+        );
+    }
+
     conn.request(9, "shutdown", Value::Null);
     conn.recv_until(|m| m.get("id").and_then(Value::as_i64) == Some(9));
     conn.notify("exit", Value::Null);

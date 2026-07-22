@@ -5,10 +5,11 @@ speaks JSON-RPC 2.0 with Language Server Protocol (LSP) message framing and serv
 editor features from the compiler's published analysis facts. It is normally
 launched by an editor, not run by hand.
 
-The server reconstructs no language semantics. Diagnostics, formatting, hover, and
-definition come only from the compiler's editor-analysis fact floor (the revisioned
-`AnalysisSnapshot`) and the shared physical project adapter; the server derives no
-types, paths, or diagnostics of its own and opens no store.
+The server reconstructs no language semantics. Diagnostics, formatting, hover,
+definition, completion, signature help, and document symbols come only from the
+compiler's editor-analysis fact floor (the revisioned `AnalysisSnapshot`) and the
+shared physical project adapter; the server derives no types, paths, or diagnostics of
+its own and opens no store.
 
 ## Transport
 
@@ -53,9 +54,30 @@ In normal operation the server advertises:
 - **Definition** — `textDocument/definition` returns the source location of a
   resolved function callee. A call to a generic function targets its source
   template.
+- **Completion** — `textDocument/completion` returns the complete in-scope candidate
+  set for the position class the checker resolves: expression names (locals,
+  parameters, module functions, consts, built-ins, imported modules, and enum type
+  names), struct fields after `.`, enum members after `::`, or type names in a type
+  annotation. The set is a complete list the editor filters; the server applies no
+  prefix or fuzzy filter, ranking, sort key, snippet, or commit character, and offers
+  no `completionItem/resolve`. The position class is derived purely from the checker's
+  resolution model — never from the trigger character or a scan of the document text.
+  An in-progress edit that does not yet parse (a bare `Enum::`, a `receiver.`, an open
+  call argument) still classifies, through the parser's bounded recovery.
+- **Signature help** — `textDocument/signatureHelp` returns the innermost enclosing
+  call's callee signature, its parameter pieces, and the active argument index. A call
+  to a generic function presents its source template signature. The active parameter
+  and the parameter pieces come from the compiler, so no consumer searches the rendered
+  signature text.
+- **Document symbols** — `textDocument/documentSymbol` returns the file's declaration
+  hierarchy: its top-level declarations in source order, each enum's members nested
+  beneath it. It is a projection of the parsed declarations, computed for every
+  parseable file.
 
 Positions are exchanged in the LSP UTF-16 encoding; the server maps them to and from
-the compiler's UTF-8 source spans.
+the compiler's UTF-8 source spans. Advertised completion and signature-help trigger
+characters (`.`, `:`, `(`, `,`) are an editor-ergonomics hint only; classification is
+positional in the checker and never inspects the trigger character.
 
 ## Documents and overlays
 
@@ -65,7 +87,10 @@ When a background capture fails — for example, a malformed `marrow.toml` — t
 is surfaced once per episode as an error `window/showMessage`, and no diagnostics are
 fabricated; requests are not answered `-32803` on this path. A `-32803` (request failed)
 response is instead keyed to overlay unavailability — an open buffer whose last edit was
-refused by overlay admission — and to analysis resource-limit exhaustion of a held query.
+refused by overlay admission — and to analysis resource-limit exhaustion, whether a held
+query's whole snapshot exceeded its bounds or a completion or signature-help query's
+in-scope candidate set or rendered display exceeded its per-query cap. A capped query is
+refused whole, never returned as a truncated candidate list or signature.
 
 ## Installed editor artifact
 
@@ -74,7 +99,8 @@ in the repository at `editors/vscode/`. The extension is a thin host: it registe
 `marrow` language for the `.mw` extension and starts one bundled `marrow lsp` process
 per window over standard input and output. It contributes no grammar, language
 configuration, snippets, or on-type formatting, and it derives no language meaning of
-its own; diagnostics, formatting, hover, and definition come from the server.
+its own; diagnostics, formatting, hover, definition, completion, signature help, and
+document symbols come from the server.
 
 The packaged extension targets macOS on Apple Silicon (`darwin-arm64`) and bundles the
 matching `marrow` release binary; the server is launched from that bundled absolute path
@@ -93,8 +119,9 @@ exactly one native executable (that server). These properties are checked by
 
 ## Scope
 
-This is the minimal semantic server. It does not provide completion, signature help,
-document symbols, references, rename, workspace symbols, a data browser, or any
-durable place, effect, or authority facts; those are future editor capabilities that
-depend on compiler facts not yet published. The server owns no telemetry, network
-client, or updater.
+This is a focused semantic server. It does not provide references, rename, workspace
+symbols, semantic tokens, inlay hints, code actions, a data browser, or any durable
+place, effect, or authority facts; those are future editor capabilities that depend on
+compiler facts not yet published. Completion offers no keyword candidates: the syntax
+owner publishes no enumerable keyword inventory, and the server reconstructs none. The
+server owns no telemetry, network client, or updater.

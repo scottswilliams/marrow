@@ -18,8 +18,8 @@ use lsp_types::{
 };
 use marrow_codes::{Code, SeverityClass};
 use marrow_compile::{
-    ActiveCall, ActiveCallOutcome, AnalysisSnapshot, Candidate, CandidateKind, Completions,
-    CompletionOutcome, DeclKind, DeclSymbol, Fact, FormatOutcome,
+    ActiveCall, ActiveCallOutcome, AnalysisSnapshot, Candidate, CandidateKind, CompletionOutcome,
+    Completions, DeclKind, DeclSymbol, Fact, FormatOutcome,
 };
 use marrow_project_fs::FileIdentity;
 use marrow_syntax::SourceSpan;
@@ -344,6 +344,77 @@ fn symbol_kind(kind: DeclKind) -> SymbolKind {
         DeclKind::Function | DeclKind::Test => SymbolKind::FUNCTION,
         DeclKind::Enum => SymbolKind::ENUM,
         DeclKind::EnumMember => SymbolKind::ENUM_MEMBER,
+    }
+}
+
+/// The absence gate over the completion/signature surface: the language server projects
+/// the compiler's complete candidate set verbatim and never reconstructs syntax or ranks.
+/// The forbidden construction tokens are the field setters that would introduce a
+/// server-side prefix/fuzzy filter, ranking, snippet, commit character, text edit beyond
+/// the label, or `completionItem/resolve` — every unearned surface the design refuses.
+/// Enforced over the crate's own analysis/wiring sources so a reintroduction is a build
+/// failure, not a review miss.
+#[cfg(test)]
+const ABSENCE_SCAN_SOURCES: &[&str] = &[
+    include_str!("facts.rs"),
+    include_str!("server.rs"),
+    include_str!("outbound.rs"),
+];
+
+#[cfg(test)]
+mod absence_gate {
+    use super::ABSENCE_SCAN_SOURCES;
+
+    /// Field setters (lsp-types snake_case) that would enable a refused behavior. Present
+    /// only as the refused capability names in comments (camelCase), never as an actual
+    /// assignment here.
+    const FORBIDDEN_FIELD_SETTERS: &[&str] = &[
+        "sort_text",
+        "filter_text",
+        "commit_characters",
+        "insert_text_format",
+        "additional_text_edits",
+        "resolve_provider",
+    ];
+
+    /// Reconstruction-leak tokens: no regex/scan over document text, no completion-context
+    /// (and thus no trigger-character) classification, no keyword inventory. Advertising
+    /// `trigger_characters` in the capability is editor ergonomics and stays allowed; only
+    /// reading the request `CompletionContext` to classify is a leak.
+    const FORBIDDEN_RECONSTRUCTION: &[&str] = &["regex", "Regex", "CompletionContext", "keyword"];
+
+    /// A line the gate ignores: an explanatory comment (`//` …) or a bare string-literal
+    /// list entry (this gate's own token names, `"…"`). A real forbidden use is a struct
+    /// field set or path — never a line whose first non-whitespace is `//` or `"`.
+    fn is_ignored(line: &str) -> bool {
+        let trimmed = line.trim_start();
+        trimmed.starts_with("//") || trimmed.starts_with('"')
+    }
+
+    fn scan(needles: &[&str]) {
+        for source in ABSENCE_SCAN_SOURCES {
+            for line in source.lines() {
+                if is_ignored(line) {
+                    continue;
+                }
+                for needle in needles {
+                    assert!(
+                        !line.contains(needle),
+                        "forbidden token `{needle}` appears in server code: {line}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn no_ranking_snippet_commit_or_resolve_surface() {
+        scan(FORBIDDEN_FIELD_SETTERS);
+    }
+
+    #[test]
+    fn no_reconstruction_leak() {
+        scan(FORBIDDEN_RECONSTRUCTION);
     }
 }
 

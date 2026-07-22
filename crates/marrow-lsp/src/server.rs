@@ -25,10 +25,10 @@ use std::thread::JoinHandle;
 
 use lsp_types::{
     CompletionOptions, CompletionParams, DidChangeTextDocumentParams, DidCloseTextDocumentParams,
-    DidOpenTextDocumentParams, DocumentFormattingParams, DocumentSymbolParams, GotoDefinitionParams,
-    HoverParams, InitializeParams, InitializeResult, OneOf, ServerCapabilities, ServerInfo,
-    SignatureHelpOptions, SignatureHelpParams, TextDocumentSyncCapability, TextDocumentSyncKind,
-    TextDocumentSyncOptions,
+    DidOpenTextDocumentParams, DocumentFormattingParams, DocumentSymbolParams,
+    GotoDefinitionParams, HoverParams, InitializeParams, InitializeResult, OneOf,
+    ServerCapabilities, ServerInfo, SignatureHelpOptions, SignatureHelpParams,
+    TextDocumentSyncCapability, TextDocumentSyncKind, TextDocumentSyncOptions,
 };
 use marrow_compile::{AnalysisSnapshot, InputRevision};
 
@@ -1548,6 +1548,20 @@ mod tests {
     use std::fs;
     use std::path::{Path, PathBuf};
 
+    /// The advertised server capabilities, pinned exactly. A change to the advertised
+    /// surface — a new provider, a trigger character, or an unearned `resolveProvider`,
+    /// commit-character, or work-done option — must update this pinned JSON, making the
+    /// wire contract a reviewed decision rather than an incidental serialization.
+    #[test]
+    fn capabilities_advertisement_is_pinned() {
+        let capabilities = initialize_result().capabilities;
+        let json = serde_json::to_string(&capabilities).unwrap();
+        assert_eq!(
+            json,
+            r#"{"textDocumentSync":{"openClose":true,"change":1},"hoverProvider":true,"completionProvider":{"triggerCharacters":[".",":","(",","]},"signatureHelpProvider":{"triggerCharacters":["(",","]},"definitionProvider":true,"documentSymbolProvider":true,"documentFormattingProvider":true}"#
+        );
+    }
+
     // ---- test scaffolding: drive the pure coordinator with deterministic events ----
 
     fn temp_project(tag: &str, main: &str) -> PathBuf {
@@ -1643,6 +1657,13 @@ mod tests {
     fn hover_body(dir: &Path, id: i64, line: u32, character: u32) -> String {
         format!(
             r#"{{"jsonrpc":"2.0","id":{id},"method":"textDocument/hover","params":{{"textDocument":{{"uri":"{}/src/main.mw"}},"position":{{"line":{line},"character":{character}}}}}}}"#,
+            root_uri(dir)
+        )
+    }
+
+    fn completion_body(dir: &Path, id: i64, line: u32, character: u32) -> String {
+        format!(
+            r#"{{"jsonrpc":"2.0","id":{id},"method":"textDocument/completion","params":{{"textDocument":{{"uri":"{}/src/main.mw"}},"position":{{"line":{line},"character":{character}}}}}}}"#,
             root_uri(dir)
         )
     }
@@ -1813,6 +1834,39 @@ mod tests {
                 .iter()
                 .any(|f| f.contains(r#""id":20"#) && f.contains("-32801")),
             "the held query is answered with ContentModified"
+        );
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn completion_held_across_edit_is_content_modified() {
+        let main1 = "module main\n\npub fn f(): int {\n    return 1\n}\n";
+        let main2 = "module main\n\npub fn f(): int {\n    return 2\n}\n";
+        let dir = temp_project("cm-completion", main1);
+        let mut coordinator = running(&dir);
+        coordinator.job_out = None;
+        coordinator.on_frame(open_body(&dir, 1, main1).as_bytes());
+        coordinator.job_out = None;
+        let rev_open = coordinator.current_revision;
+
+        // Completion with no snapshot yet: held at rev_open, version 1.
+        coordinator.on_frame(completion_body(&dir, 21, 3, 12).as_bytes());
+        assert_eq!(coordinator.held_queries.len(), 1);
+
+        // An edit advances the revision before the snapshot lands.
+        coordinator.on_frame(change_body(&dir, 2, main2).as_bytes());
+        assert_ne!(coordinator.current_revision, rev_open);
+        coordinator.job_out = None;
+
+        // The new revision's snapshot arrives; the held completion reauthorizes against the
+        // stale revision and is replaced with -32801, never a fact for the wrong text.
+        let snapshot = snapshot_at(&dir, main2, coordinator.current_revision);
+        coordinator.on_worker_result(AnalysisOutcome::Snapshot(snapshot));
+        assert!(
+            frames(&coordinator)
+                .iter()
+                .any(|f| f.contains(r#""id":21"#) && f.contains("-32801")),
+            "the held completion is answered with ContentModified"
         );
         cleanup(&dir);
     }
