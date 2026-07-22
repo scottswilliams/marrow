@@ -9,11 +9,13 @@
 //! is one probe: the scan-step count equals the mint-attempt count and doubles ~2x across
 //! a doubled axis. The mint/resolution directory is reused across a pass and extended for
 //! the newly appended rows, so classifying a growing instantiation population is linear
-//! (`nested_type_mint_directory_is_linear_in_instantiation_count`). Two owners remain
-//! super-linear on this domain and are asserted here as the recurrence gate for a
-//! follow-on lane that narrows them: the per-field-projection presentation directory
-//! rebuild (exercised by the `.value.value` accesses on the type axis) and the
-//! per-template proof clone.
+//! (`nested_type_mint_directory_is_linear_in_instantiation_count`). The per-template proof
+//! pass likewise reads that shared directory inside a savepoint rather than replaying the
+//! population into a clone, so its row cost is the template body's own mint count, constant
+//! as the population grows (`proof_clone_cost_is_independent_of_instantiation_population`).
+//! One owner remains super-linear on this domain and is asserted here as the recurrence gate
+//! for a follow-on lane that narrows it: the per-field-projection presentation directory
+//! rebuild (exercised by the `.value.value` accesses on the type axis).
 //!
 //! Counts are observed through the private `super::capture_scaling_counts` window;
 //! they are neither a public hook nor a canonical fact.
@@ -84,6 +86,53 @@ fn fn_axis_fixture(v: usize) -> String {
     }
     source.push_str("    return sink\n}\n");
     source
+}
+
+/// Proof-cost axis: `v` distinct `Held<Nk>` instantiations minted at declare/fill time (in
+/// the fields of `Uses`, so the settled instantiation population is `v` before the
+/// template-proof loop runs), plus one generic function template `leaf` whose once-checked
+/// proof pass mints exactly one instantiation of its own (`Held<T>` over the abstract
+/// parameter). The pre-existing population and the proof's own work are thus separable: the
+/// proof's row cost is `1` at every `v`, while a per-template full clone replayed all `v`
+/// settled rows.
+fn proof_cost_fixture(v: usize) -> String {
+    let mut source =
+        String::from("module main\n\nfn leaf<T>(x: T): Held<T> { return Held(value: x) }\n\n");
+    source.push_str("struct Held<T> { value: T }\n\n");
+    seed_structs(&mut source, v);
+    source.push_str("\nstruct Uses {\n");
+    for seed in 0..v {
+        writeln!(source, "    f{seed}: Held<N{seed}>").expect("write held field");
+    }
+    source.push_str("}\n\npub fn driver(): int {\n    return 0\n}\n");
+    source
+}
+
+/// The once-checked template proof pass runs directly on the in-progress registry inside a
+/// savepoint, reading the shared already-built metadata directory instead of replaying the
+/// settled instantiation population into a per-template clone. So its row cost is the number
+/// of rows the template body itself mints — constant as the pre-existing population doubles.
+/// Before this repair the proof cloned the whole registry and replayed every settled row, so
+/// `proof_clone_rows` was the population size (`16 -> 32 -> 64` on this fixture); after it the
+/// count is the template's own mint (`1`) at every width. The entry count stays one proof per
+/// template (`proof_clones`), independent of instantiation count.
+#[test]
+fn proof_clone_cost_is_independent_of_instantiation_population() {
+    let a = counts_for(proof_cost_fixture(16));
+    let b = counts_for(proof_cost_fixture(32));
+    let c = counts_for(proof_cost_fixture(64));
+
+    assert_eq!(
+        (a.proof_clones, b.proof_clones, c.proof_clones),
+        (1, 1, 1),
+        "one generic template proves once, regardless of instantiation population"
+    );
+    assert_eq!(
+        (a.proof_clone_rows, b.proof_clone_rows, c.proof_clone_rows),
+        (1, 1, 1),
+        "the proof classifies only the rows its own body mints, not the settled population; \
+         a per-template replay would grow this to the population size (16 / 32 / 64)"
+    );
 }
 
 /// Collection axis: `v` distinct `List<Nk>` instantiations, one per seed struct, each in a

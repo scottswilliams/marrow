@@ -1043,7 +1043,7 @@ fn run_semantic(
     // other constraint violation, is caught here rather than per instantiation.
     for template in generics.templates() {
         let outcome = match FnLowerer::check_template(
-            &draft,
+            &mut draft,
             &records,
             &durable,
             &signatures,

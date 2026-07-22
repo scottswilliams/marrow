@@ -518,7 +518,7 @@ impl<'a> FnLowerer<'a> {
     /// discarded.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn check_template(
-        draft: &ImageDraft,
+        draft: &mut ImageDraft,
         records: &TypeRegistry,
         durable: &DurableRegistry,
         functions: &FunctionRegistry,
@@ -529,12 +529,16 @@ impl<'a> FnLowerer<'a> {
     ) -> Result<TemplateProofOutcome, LowerInvariant> {
         let file = &template.file;
         let module = &template.module;
-        // Clone the registry and the in-progress draft together so the template body
-        // sees every already-minted type at its real index (a concrete callee's
-        // signature stays consistent), while abstract-parameter instantiations and
-        // the emitted code land only in the discarded clones.
-        let check_records = records.clone_for_generic_check()?;
-        let mut throwaway = draft.clone();
+        // Prove the body directly on the in-progress registry and draft — so it sees every
+        // already-minted type at its real index (a concrete callee's signature stays
+        // consistent) — inside a savepoint that erases the abstract-parameter instantiations
+        // and throwaway emitted code the pass appends. A fill batch never mutates a settled
+        // prefix row, so rewinding the appended suffix restores the exact pre-proof state;
+        // only the taken diagnostics cross back. The savepoint is restored on every path,
+        // including a lowering invariant, so a failed proof leaks nothing.
+        let draft_savepoint = draft.savepoint();
+        let proof =
+            records.enter_template_proof(draft.record_type_count(), draft.enum_type_count())?;
         let mut diagnostics = Vec::new();
         // Each parameter's position in this vector is its abstract `LTy::Param`
         // index, and its constraint is read back from here by `constraint_at`.
@@ -547,9 +551,9 @@ impl<'a> FnLowerer<'a> {
             })
             .collect::<Vec<_>>();
         let mut dependency_gaps = Vec::new();
-        FnLowerer::lower_with_env(
-            &mut throwaway,
-            &check_records,
+        let lowered = FnLowerer::lower_with_env(
+            draft,
+            records,
             durable,
             functions,
             generics,
@@ -562,15 +566,19 @@ impl<'a> FnLowerer<'a> {
             template.decl,
             type_env,
             LowerMode::Template,
-            // The template proof pass runs on a throwaway draft and discards its emitted
-            // code and facts; render no hover displays.
+            // The template proof pass discards its emitted code and facts; render no hover
+            // displays.
             false,
-        )?;
-        let generic = check_records.take_generic_diagnostics();
-        Ok(TemplateProofOutcome {
+        );
+        // Take the proof's diagnostics before restoring: `take_generic_diagnostics` drains
+        // the swapped-in buffer and limit owner that `exit_template_proof` then re-seats.
+        let outcome = lowered.map(|_| TemplateProofOutcome {
             diagnostics,
-            generic,
-        })
+            generic: records.take_generic_diagnostics(),
+        });
+        records.exit_template_proof(proof);
+        draft.rewind_to(draft_savepoint);
+        outcome
     }
 
     /// The shared driver for an ordinary function, a generic instance, and the

@@ -730,6 +730,25 @@ enum ArgumentDomain {
     TemplateProof,
 }
 
+/// State captured before an isolated generic-template proof pass runs directly on the
+/// registry, consumed by [`TypeRegistry::exit_template_proof`] to erase every effect the
+/// pass leaves. It records the append-only lengths of the instantiation owners (whose
+/// suffixes the proof appends and truncation drops), the swapped argument domain and
+/// ordered-diagnostic buffer, and the draft record/enum id ceilings the reused metadata
+/// directory rolls back to. The settled prefix is immutable across a fill batch, so these
+/// lengths and swapped owners are a complete description of what the pass can change.
+#[must_use = "a template-proof savepoint must be restored through exit_template_proof"]
+pub(crate) struct RegistryProofSavepoint {
+    type_insts: usize,
+    collections: usize,
+    fn_insts: usize,
+    fn_queue: usize,
+    prior_argument_domain: ArgumentDomain,
+    prior_payloads: Vec<SourceDiagnostic>,
+    entry_records: usize,
+    entry_enums: usize,
+}
+
 /// One owner-ordered transfer from an isolated generic proof pass: the optional
 /// terminal limit first, followed by payload diagnostics gathered before it.
 #[must_use = "generic diagnostics must be adopted or reported as one ordered outcome"]
@@ -1042,6 +1061,14 @@ impl RowDirectory {
     fn extend(&mut self, view: &TypeMetadataView<'_>) -> Result<(), GenericInvariant> {
         let type_insts = view.generics.type_insts.len();
         for row in self.built_type_insts..type_insts {
+            // During an isolated template proof the reused directory already classifies the
+            // whole settled population, so extension only reaches the rows the proof body
+            // itself mints. Counting them here is the proof's per-template row cost — the
+            // owner-decoupled successor to the discarded clone's whole-population replay.
+            #[cfg(test)]
+            if view.generics.argument_domain == ArgumentDomain::TemplateProof {
+                bump_scaling(|counts| counts.proof_clone_rows += 1);
+            }
             let id = view.generics.type_insts[row].id;
             place_generic_row(&mut self.scratch.records, &mut self.scratch.enums, row, id)?;
         }
@@ -1059,6 +1086,21 @@ impl RowDirectory {
         }
         self.built_collections = collections;
         Ok(())
+    }
+
+    /// Discard the classification of every row and collection appended during a
+    /// generic-template proof pass, restoring the directory to the pre-proof image so the
+    /// cache stays reusable without a full rebuild and holds no truncated-row identity a
+    /// later real mint would collide with. The image record/enum id ceilings shrink to the
+    /// pre-proof draft counts (`records`/`enums`) — every proof row reserved an id at or
+    /// above them — and the watermarks return to the pre-proof instantiation and collection
+    /// counts. The per-walk marks are re-sized on the next probe by `reset_marks`.
+    fn rewind_to(&mut self, records: usize, enums: usize, type_insts: usize, collections: usize) {
+        self.scratch.records.truncate(records);
+        self.scratch.enums.truncate(enums);
+        self.scratch.collection_generic_targets.truncate(collections);
+        self.built_type_insts = type_insts;
+        self.built_collections = collections;
     }
 
     /// Reset the per-walk visitation marks to cover every current row and collection.
@@ -4745,6 +4787,115 @@ impl TypeRegistry {
             row_directory: RefCell::default(),
         };
         Ok(clone)
+    }
+
+    /// Admit an isolated generic-template proof pass to run directly on this registry, and
+    /// capture the state needed to erase its effects. The pass mints type instantiations and
+    /// collections and reports diagnostics against the abstract type parameters; on exit
+    /// [`Self::exit_template_proof`] truncates the appended rows and re-seats the swapped
+    /// owners, so nothing the proof appended survives and only the diagnostics the caller
+    /// takes cross back.
+    ///
+    /// A fill batch mutates only `type_insts[start..]` — settlement, staging, and dependency
+    /// edges never touch a settled prefix row (a dependent is recorded only for a `Filling`
+    /// row, and settlement clears and commits only the active suffix). The proof's batches
+    /// all open at or above the length captured here, so the settled prefix is immutable
+    /// across the pass and truncation is its exact inverse. Admission requires that settled
+    /// state: no fill in progress, no provisional or still-referenced row, no recorded build
+    /// fault, and the shared instantiation-limit owner open.
+    ///
+    /// `entry_records`/`entry_enums` are the draft's record/enum id ceilings at entry, used
+    /// to roll the reused metadata directory back to the pre-proof image.
+    pub(crate) fn enter_template_proof(
+        &self,
+        entry_records: usize,
+        entry_enums: usize,
+    ) -> Result<RegistryProofSavepoint, GenericInvariant> {
+        let mut generics = self
+            .generics
+            .try_borrow_mut()
+            .map_err(|_| GenericInvariant::ProofClone(ProofCloneError::UnstableFillState))?;
+        let has_unstable_row = generics.type_insts.iter().any(|inst| {
+            matches!(inst.state, TypeInstState::Filling { .. }) || !inst.dependents.is_empty()
+        });
+        if generics.fill_batch_start.is_some()
+            || !generics.fill_rows.is_empty()
+            || !generics.fill_stack.is_empty()
+            || !generics.fill_failures.is_empty()
+            || has_unstable_row
+            || generics.build_invariant.is_some()
+        {
+            return Err(GenericInvariant::ProofClone(
+                ProofCloneError::UnstableFillState,
+            ));
+        }
+        if !matches!(generics.limit, LimitState::Open) {
+            return Err(GenericInvariant::ProofClone(
+                ProofCloneError::LimitOwnerNotOpen,
+            ));
+        }
+        #[cfg(test)]
+        bump_scaling(|counts| counts.proof_clones += 1);
+        let savepoint = RegistryProofSavepoint {
+            type_insts: generics.type_insts.len(),
+            collections: self.collections.borrow().len(),
+            fn_insts: generics.fn_insts.len(),
+            fn_queue: generics.fn_queue.len(),
+            prior_argument_domain: generics.argument_domain,
+            prior_payloads: std::mem::take(&mut generics.collection_payloads),
+            entry_records,
+            entry_enums,
+        };
+        generics.argument_domain = ArgumentDomain::TemplateProof;
+        Ok(savepoint)
+    }
+
+    /// Restore the registry to the exact state captured by `savepoint`, erasing every effect
+    /// of the proof pass. Appended type instantiations and collections are truncated and
+    /// their lockstep secondary-index keys removed (a purge proportional to the appended
+    /// rows, never the settled population); the transient fill state — empty around a settled
+    /// batch, but possibly dirty after a proof that failed mid-fill — is reset; and the
+    /// argument domain, ordered-diagnostic buffer, and instantiation-limit owner are
+    /// re-seated. The reused metadata directory is rolled back to the pre-proof image.
+    pub(crate) fn exit_template_proof(&self, savepoint: RegistryProofSavepoint) {
+        let RegistryProofSavepoint {
+            type_insts,
+            collections,
+            fn_insts,
+            fn_queue,
+            prior_argument_domain,
+            prior_payloads,
+            entry_records,
+            entry_enums,
+        } = savepoint;
+        {
+            let mut generics = self.generics.borrow_mut();
+            for inst in generics.type_insts.split_off(type_insts) {
+                generics.type_index.remove(&(inst.template, inst.args));
+            }
+            for inst in generics.fn_insts.split_off(fn_insts) {
+                generics.fn_index.remove(&(inst.template, inst.args));
+            }
+            generics.fn_queue.truncate(fn_queue);
+            generics.fill_batch_start = None;
+            generics.fill_rows.clear();
+            generics.fill_stack.clear();
+            generics.fill_failures.clear();
+            generics.limit = LimitState::Open;
+            generics.build_invariant = None;
+            generics.argument_domain = prior_argument_domain;
+            generics.collection_payloads = prior_payloads;
+        }
+        {
+            let mut colls = self.collections.borrow_mut();
+            let mut index = self.collection_index.borrow_mut();
+            for spec in colls.split_off(collections) {
+                index.remove(&spec);
+            }
+        }
+        if let Some(directory) = self.row_directory.borrow_mut().as_mut() {
+            directory.rewind_to(entry_records, entry_enums, type_insts, collections);
+        }
     }
 }
 

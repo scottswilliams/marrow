@@ -403,6 +403,28 @@ pub struct ImageDraft {
     test_entries: Vec<TestEntryDef>,
 }
 
+/// The append-only lengths of every [`ImageDraft`] owner at one instant, plus the
+/// application-identity slot. Recorded before an isolated generic-template proof pass and
+/// consumed by [`ImageDraft::rewind_to`] to erase everything that pass appended. A proof
+/// pass only appends new entries and fills freshly-reserved records/enums (never a
+/// pre-existing index), so truncating each owner back to its recorded length restores the
+/// draft to the exact bytes it held before the pass.
+#[derive(Clone)]
+#[must_use]
+pub struct DraftSavepoint {
+    strings: usize,
+    consts: usize,
+    types: usize,
+    enums: usize,
+    colls: usize,
+    roots: usize,
+    sites: usize,
+    functions: usize,
+    exports: usize,
+    test_entries: usize,
+    application: Option<LedgerIdBytes>,
+}
+
 impl ImageDraft {
     pub fn new() -> Self {
         Self::default()
@@ -565,6 +587,56 @@ impl ImageDraft {
     /// encoder sorts entries by their final name-string index.
     pub fn add_test_entry(&mut self, name: StrId, func: FuncId) {
         self.test_entries.push(TestEntryDef { name, func });
+    }
+
+    /// The number of record types (image `TypeId` ceiling) currently reserved.
+    pub fn record_type_count(&self) -> usize {
+        self.types.len()
+    }
+
+    /// The number of enum types (image `EnumId` ceiling) currently reserved.
+    pub fn enum_type_count(&self) -> usize {
+        self.enums.len()
+    }
+
+    /// Capture the current append-only lengths so a later [`Self::rewind_to`] can discard
+    /// every entry appended after this point. See [`DraftSavepoint`].
+    pub fn savepoint(&self) -> DraftSavepoint {
+        DraftSavepoint {
+            strings: self.strings.len(),
+            consts: self.consts.len(),
+            types: self.types.len(),
+            enums: self.enums.len(),
+            colls: self.colls.len(),
+            roots: self.roots.len(),
+            sites: self.sites.len(),
+            functions: self.functions.len(),
+            exports: self.exports.len(),
+            test_entries: self.test_entries.len(),
+            application: self.application,
+        }
+    }
+
+    /// Discard every entry appended since `savepoint`, restoring the draft to its recorded
+    /// state. Each owner is truncated back to its recorded length; the `site_index`
+    /// secondary map drops exactly the keys of the truncated sites (reconstructed from the
+    /// removed rows, so the purge is proportional to the appended sites, never the whole
+    /// table). The append-only discipline of the proof pass — reserve-then-fill confined to
+    /// freshly-appended indices — makes this a total inverse.
+    pub fn rewind_to(&mut self, savepoint: DraftSavepoint) {
+        for site in self.sites.drain(savepoint.sites..) {
+            self.site_index.remove(&(site.path.node_id(), site.target));
+        }
+        self.strings.truncate(savepoint.strings);
+        self.consts.truncate(savepoint.consts);
+        self.types.truncate(savepoint.types);
+        self.enums.truncate(savepoint.enums);
+        self.colls.truncate(savepoint.colls);
+        self.roots.truncate(savepoint.roots);
+        self.functions.truncate(savepoint.functions);
+        self.exports.truncate(savepoint.exports);
+        self.test_entries.truncate(savepoint.test_entries);
+        self.application = savepoint.application;
     }
 
     // --- accessors used by the encoder ---

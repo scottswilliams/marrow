@@ -32,8 +32,8 @@ pub use digest::{
     image_id,
 };
 pub use draft::{
-    CollTypeId, CollectionTypeDef, ConstId, DurableMemberDef, EnumId, EnumTypeDef, FieldDef,
-    FuncId, FunctionDef, ImageBuildError, ImageDraft, KeyColumn, RecordTypeDef, RootDef,
+    CollTypeId, CollectionTypeDef, ConstId, DraftSavepoint, DurableMemberDef, EnumId, EnumTypeDef,
+    FieldDef, FuncId, FunctionDef, ImageBuildError, ImageDraft, KeyColumn, RecordTypeDef, RootDef,
     RootIdentity, SiteDef, SiteId, SpanEntry, StrId, TypeId, VariantDef,
 };
 pub use durable_id::{
