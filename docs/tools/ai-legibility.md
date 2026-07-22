@@ -44,8 +44,8 @@ lexer will not treat it as an identifier.
 ```text
 absent alias and assert bool break bytes checked const continue date decimal
 declassify delete duration else enum Error ErrorCode false fn for Id if in index
-instant int is journal lock match merge module not or place pub reads required
-require resource return sensitive store string struct supports test transaction
+instant int is journal lock match merge module not or place pub reads require
+required resource return sensitive store string struct supports test transaction
 true try type unique unknown unset use var while writes
 ```
 <!-- END reserved-words -->

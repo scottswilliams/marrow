@@ -157,14 +157,23 @@ enum Rejection {
 }
 
 fn encounterStatusValid(s: string): bool {
-    return s == "planned" or s == "in-progress" or s == "finished"
+    return s == "planned" or s == "in_progress" or s == "finished" or s == "cancelled"
 }
 
 fn encounterTransitionOk(prior: string, intended: string): bool {
+    if prior == "planned" {
+        return intended == "planned" or intended == "in_progress" or intended == "cancelled"
+    }
+    if prior == "in_progress" {
+        return intended == "in_progress" or intended == "finished" or intended == "cancelled"
+    }
     if prior == "finished" {
         return intended == "finished"
     }
-    return true
+    if prior == "cancelled" {
+        return intended == "cancelled"
+    }
+    return false
 }
 
 fn revisionGuards(kind: string, id: int, actual: int, expected: int): Result<bool, Rejection> {

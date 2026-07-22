@@ -98,9 +98,11 @@ Two rows depend on the durable-access rules and are stated precisely:
   place. The direct form is `delete ^…`; a deletion through a place alias is
   `delete <name>`, where `<name>` was bound from a `^` address.
 
-`\btry ` and `\brequire ` split the failure surface exactly: `try` propagates an
-existing `Result` failure and `require` originates one, so the two inventories
-are disjoint and together list every source-spelled failure exit.
+`\btry ` and `\brequire ` split the implicit failure surface exactly: `try`
+propagates an existing `Result` failure and `require` originates one, so the two
+inventories are disjoint and together list every implicit failure exit. A
+deliberate `return err(...)` — a let-else tail or an in-region rejection —
+remains an ordinary spelled return outside both inventories.
 
 Two constructs that mark a *bound* pair with a construct that marks its absence:
 `at most` heads every durable traversal, which is always bounded, while `\bwhile\b`
