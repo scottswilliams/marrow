@@ -9,10 +9,10 @@
 //! `InterfaceId` unchanged; any signature change moves it.
 
 use marrow_image::{
-    EnumShape, ExportSignature, FieldShape, ImageType, Interface, InterfaceError, InterfaceId,
-    RecordShape, VariantShape,
+    CollectionShape, EnumShape, ExportSignature, FieldShape, ImageType, Interface, InterfaceError,
+    InterfaceId, RecordShape, RootShape, TransferType, VariantShape,
 };
-use marrow_verify::{RetShape, VerifiedImage};
+use marrow_verify::{RetShape, SealedCollectionType, VerifiedImage};
 
 /// Compile and verify one `src/main.mw` through the production path.
 fn compile_verify(source: &str) -> VerifiedImage {
@@ -93,7 +93,23 @@ fn interface_of(image: &VerifiedImage) -> Result<Interface, InterfaceError> {
             }
         })
         .collect();
-    Interface::build(exports, &records, &enums)
+    let collections: Vec<CollectionShape> = image
+        .collections()
+        .iter()
+        .map(|collection| match *collection {
+            SealedCollectionType::List { elem } => CollectionShape::List { elem },
+            SealedCollectionType::Map { key, value } => CollectionShape::Map { key, value },
+        })
+        .collect();
+    let roots: Vec<RootShape> = image
+        .roots()
+        .iter()
+        .map(|root| RootShape {
+            name: root.name().to_string(),
+            keys: root.keys().to_vec(),
+        })
+        .collect();
+    Interface::build(exports, &records, &enums, &collections, &roots)
 }
 
 fn interface_id(source: &str) -> InterfaceId {
@@ -198,16 +214,24 @@ pub fn shift(p: Point, dz: int): Point {
     assert_ne!(base, interface_id(renamed));
 }
 
-/// A signature reaching a collection is rejected with a typed exclusion, observed
-/// through the production path: collections are not yet in the transfer graph.
+/// A signature reaching a collection projects into the transfer graph through the
+/// production path: the earned `List<int>` carrier resolves to `TransferType::List`.
 #[test]
-fn a_collection_returning_export_is_excluded() {
+fn a_collection_returning_export_projects() {
     let source = r#"pub fn items(): List<int> {
     var xs: List<int> = List()
     return xs
 }
 "#;
     let image = compile_verify(source);
-    let error = interface_of(&image).expect_err("a collection return is excluded");
-    assert!(matches!(error, InterfaceError::TransferTypeExcluded { .. }));
+    let interface = interface_of(&image).expect("a collection return projects");
+    let items = interface
+        .descriptors()
+        .iter()
+        .find(|d| matches!(d.ret(), TransferType::List(_)))
+        .expect("the items export returns a list");
+    assert!(matches!(
+        items.ret(),
+        TransferType::List(inner) if matches!(**inner, TransferType::Scalar(marrow_image::Scalar::Int))
+    ));
 }

@@ -18,8 +18,8 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use marrow_image::{
-    EnumShape, ExportSignature, FieldShape, ImageType, Interface, InterfaceError, RecordShape,
-    VariantShape,
+    CollectionShape, EnumShape, ExportSignature, FieldShape, ImageType, Interface, InterfaceError,
+    RecordShape, RootShape, VariantShape,
 };
 use marrow_verify::{RetShape, VerifiedImage};
 
@@ -93,7 +93,7 @@ pub(crate) fn client(rest: &[String]) -> ExitCode {
         Ok(interface) => interface,
         Err(error) => {
             crate::report_simple_error(
-                marrow_codes::Code::CliTransferExcluded.as_str(),
+                marrow_codes::Code::CliInterfaceUnbuildable.as_str(),
                 &render_interface_error(&error, &compiled.exports),
             );
             return ExitCode::FAILURE;
@@ -169,6 +169,16 @@ fn interface_of(image: &VerifiedImage) -> Result<Interface, InterfaceError> {
                 .collect(),
         })
         .collect();
+    let collections: Vec<CollectionShape> =
+        image.collections().iter().map(collection_shape).collect();
+    let roots: Vec<RootShape> = image
+        .roots()
+        .iter()
+        .map(|root| RootShape {
+            name: root.name().to_string(),
+            keys: root.keys().to_vec(),
+        })
+        .collect();
     let exports: Vec<ExportSignature> = image
         .exports()
         .iter()
@@ -182,7 +192,17 @@ fn interface_of(image: &VerifiedImage) -> Result<Interface, InterfaceError> {
             }
         })
         .collect();
-    Interface::build(exports, &records, &enums)
+    Interface::build(exports, &records, &enums, &collections, &roots)
+}
+
+/// Project a sealed collection type into the interface builder's [`CollectionShape`].
+fn collection_shape(collection: &marrow_verify::SealedCollectionType) -> CollectionShape {
+    match *collection {
+        marrow_verify::SealedCollectionType::List { elem } => CollectionShape::List { elem },
+        marrow_verify::SealedCollectionType::Map { key, value } => {
+            CollectionShape::Map { key, value }
+        }
+    }
 }
 
 fn ret_to_image(ret: RetShape) -> ImageType {
@@ -203,8 +223,7 @@ fn render_interface_error(
     directory: &[marrow_compile::ExportEntry],
 ) -> String {
     let export = match error {
-        InterfaceError::TransferTypeExcluded { export, .. }
-        | InterfaceError::SignatureTooComplex { export }
+        InterfaceError::SignatureTooComplex { export }
         | InterfaceError::TypeIndexOutOfRange { export } => export,
     };
     let name = directory

@@ -9,11 +9,11 @@
 //! dispatches on a verified id alone.
 
 use marrow_image::{
-    EnumShape, ExportSignature, FieldShape, ImageType, Interface, InterfaceError, RecordShape,
-    VariantShape,
+    CollectionShape, EnumShape, ExportSignature, FieldShape, ImageType, Interface, InterfaceError,
+    RecordShape, RootShape, VariantShape,
 };
 use marrow_local_wire::Id32;
-use marrow_verify::{FunctionIndex, RetShape, VerifiedImage};
+use marrow_verify::{FunctionIndex, RetShape, SealedCollectionType, VerifiedImage};
 
 /// Reconstruct the wire interface from a verified image using only its public
 /// accessors. The identity, transfer-graph law, and canonical encoding live in
@@ -50,6 +50,22 @@ pub fn interface_of(image: &VerifiedImage) -> Result<Interface, InterfaceError> 
                 .collect(),
         })
         .collect();
+    let collections: Vec<CollectionShape> = image
+        .collections()
+        .iter()
+        .map(|collection| match *collection {
+            SealedCollectionType::List { elem } => CollectionShape::List { elem },
+            SealedCollectionType::Map { key, value } => CollectionShape::Map { key, value },
+        })
+        .collect();
+    let roots: Vec<RootShape> = image
+        .roots()
+        .iter()
+        .map(|root| RootShape {
+            name: root.name().to_string(),
+            keys: root.keys().to_vec(),
+        })
+        .collect();
     let exports: Vec<ExportSignature> = image
         .exports()
         .iter()
@@ -63,7 +79,7 @@ pub fn interface_of(image: &VerifiedImage) -> Result<Interface, InterfaceError> 
             }
         })
         .collect();
-    Interface::build(exports, &records, &enums)
+    Interface::build(exports, &records, &enums, &collections, &roots)
 }
 
 /// Map a function's return shape to the bare-or-optional [`ImageType`] the interface

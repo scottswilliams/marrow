@@ -68,9 +68,9 @@ pub use instr::{
     OP_TEXT_TRIM, OP_TODO, OP_TXN_BEGIN, OP_TXN_COMMIT, OP_UNREACHABLE, OP_VACANT_LOAD,
 };
 pub use interface::{
-    EnumShape, ExcludedKind, ExportSignature, FieldShape, FunctionDescriptor, INTERFACE_ID_KIND,
-    Interface, InterfaceError, InterfaceId, RecordShape, SignaturePosition, TransferField,
-    TransferType, TransferVariant, VariantShape,
+    CollectionShape, EnumShape, ExportSignature, FieldShape, FunctionDescriptor, INTERFACE_ID_KIND,
+    Interface, InterfaceError, InterfaceId, RecordShape, RootShape, TransferField, TransferType,
+    TransferVariant, VariantShape,
 };
 pub use semantic::{
     SemanticNode, SemanticNodeKind, SemanticPath, SemanticStep, SemanticStepKind, SemanticTarget,

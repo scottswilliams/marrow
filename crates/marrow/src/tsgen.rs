@@ -21,6 +21,9 @@
 //! | `T?` | `T \| null` |
 //! | product | inline `{ field: T; sparse?: T }` |
 //! | sum | inline `{ member: "name"; payload: [..] } \| ...` union |
+//! | `List<T>` | `Array<T>` |
+//! | `Map<K, V>` | `Array<[K, V]>` (ordered pairs, never a JS object) |
+//! | `Id(^root)` | `{ readonly root: "root"; readonly key: [..] }` (branded handle) |
 //!
 //! Method names come from the compiler's export directory: the bare item name
 //! when it is unique, `module_item` (with `::` and `.` folded to `_`) when two
@@ -266,6 +269,21 @@ fn ts_type(ty: &TransferType) -> String {
             })
             .collect::<Vec<_>>()
             .join(" | "),
+        TransferType::List(elem) => format!("Array<{}>", ts_type(elem)),
+        // An ordered map crosses as an array of `[key, value]` pairs, never a JS
+        // object, so a non-string key and entry order both survive.
+        TransferType::Map(key, value) => {
+            format!("Array<[{}, {}]>", ts_type(key), ts_type(value))
+        }
+        // An entry identity is a branded handle carrying its root name and key tuple,
+        // so the client cannot pass an `Id(^a)` where an `Id(^b)` is expected.
+        TransferType::Identity { root, keys } => {
+            let key_tuple: Vec<&str> = keys.iter().map(|s| scalar_ts(*s)).collect();
+            format!(
+                "{{ readonly root: \"{root}\"; readonly key: [{}] }}",
+                key_tuple.join(", ")
+            )
+        }
     }
 }
 
@@ -318,6 +336,14 @@ fn encoder(ty: &TransferType) -> String {
                 .collect();
             format!("M.eSum([{}])", rows.join(", "))
         }
+        TransferType::List(elem) => format!("M.eList({})", encoder(elem)),
+        TransferType::Map(key, value) => {
+            format!("M.eMap({}, {})", encoder(key), encoder(value))
+        }
+        TransferType::Identity { root, keys } => {
+            let key_codecs: Vec<String> = keys.iter().map(|s| scalar_codec("e", *s)).collect();
+            format!("M.eId(\"{root}\", [{}])", key_codecs.join(", "))
+        }
     }
 }
 
@@ -350,6 +376,14 @@ fn decoder(ty: &TransferType) -> String {
                 })
                 .collect();
             format!("M.dSum([{}])", rows.join(", "))
+        }
+        TransferType::List(elem) => format!("M.dList({})", decoder(elem)),
+        TransferType::Map(key, value) => {
+            format!("M.dMap({}, {})", decoder(key), decoder(value))
+        }
+        TransferType::Identity { root, keys } => {
+            let key_codecs: Vec<String> = keys.iter().map(|s| scalar_codec("d", *s)).collect();
+            format!("M.dId(\"{root}\", [{}])", key_codecs.join(", "))
         }
     }
 }

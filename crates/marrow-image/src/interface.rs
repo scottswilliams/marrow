@@ -17,15 +17,15 @@
 //! that changes no signature and no demand leaves the `InterfaceId` unchanged while
 //! changing the [`ImageId`](crate::ImageId); any signature or demand change moves it.
 //!
-//! The **transfer graph** is the closed set of value types that may cross the wire
-//! at G00a: `unit`, the seven scalars (a nominal type erases to its scalar, so it is
-//! already covered), a product (`struct`/record), and a sum (a user `enum`, or a
-//! built-in `Option`/`Result`, both represented as image enums). Finite collections
-//! (`List`/`Map`) are deliberately excluded until the earned transfer extension
-//! (G00b); a signature that reaches one is rejected with a typed
-//! [`InterfaceError::TransferTypeExcluded`]. Because a record field or enum payload
-//! may itself be a record or enum, a signature is expanded structurally under a node
-//! budget ([`bounds::MAX_INTERFACE_TRANSFER_NODES`](crate::bounds::MAX_INTERFACE_TRANSFER_NODES)),
+//! The **transfer graph** is the closed set of value types that may cross the wire:
+//! `unit`, the seven scalars (a nominal type erases to its scalar, so it is already
+//! covered), a product (`struct`/record), a sum (a user `enum`, or a built-in
+//! `Option`/`Result`, both represented as image enums), a finite `List<T>`, a finite
+//! ordered `Map<K, V>`, and an entry identity `Id(^root)` (the earned transfer
+//! extension, G00b). The graph is closed over every [`ImageType`], so a verified
+//! signature always projects. Because a record field, enum payload, list element, or
+//! map key/value may itself be a composite type, a signature is expanded structurally
+//! under a node budget ([`bounds::MAX_INTERFACE_TRANSFER_NODES`](crate::bounds::MAX_INTERFACE_TRANSFER_NODES)),
 //! so a verified-but-adversarial diamond of many-fielded records cannot drive an
 //! exponential expansion.
 //!
@@ -40,6 +40,9 @@
 //!              | 0x02 ‖ ttype                           optional wrapper
 //!              | 0x03 ‖ u16_be(n) ‖ field*              product (record)
 //!              | 0x04 ‖ u16_be(n) ‖ variant*            sum (enum / Option / Result)
+//!              | 0x05 ‖ ttype                           list (element type)
+//!              | 0x06 ‖ ttype ‖ ttype                   map (key type, value type)
+//!              | 0x07 ‖ LP(root) ‖ u16_be(k) ‖ u8(scalar_tag)*  identity (root name, key columns)
 //!   field      = LP(name) ‖ u8(required) ‖ ttype
 //!   variant    = LP(name) ‖ u8(category) ‖ u16_be(m) ‖ ttype*
 //!   LP(b)      = u64_be(b.len()) ‖ b
@@ -70,9 +73,9 @@ pub const INTERFACE_ID_KIND: &[u8; 16] = b"marrow.interf.v0";
 const LOCAL_ROOT_LINEAGE: &[u8] = &[0x00];
 
 /// A resolved transfer type: the structural shape of one value that may cross the
-/// wire, expanded from an [`ImageType`] against the record and enum tables. The
-/// closed set at G00a; a finite collection is not a transfer type and is rejected
-/// before a descriptor is built.
+/// wire, expanded from an [`ImageType`] against the record, enum, collection, and
+/// root tables. The set is closed over every `ImageType`, so a verified signature
+/// always projects.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TransferType {
     Unit,
@@ -84,6 +87,19 @@ pub enum TransferType {
     /// A sum (a user `enum`, or a built-in `Option`/`Result`): its variants in
     /// declaration order.
     Sum(Vec<TransferVariant>),
+    /// A finite `List<T>`: its element transfer type.
+    List(Box<TransferType>),
+    /// A finite ordered `Map<K, V>`: its key transfer type then its value transfer
+    /// type. The wire form is an ordered array of key/value pairs, so a non-string
+    /// key and entry order both survive.
+    Map(Box<TransferType>, Box<TransferType>),
+    /// An entry identity `Id(^root)`: the root's declared name (a rename is an
+    /// observable signature change) and its ordered key-column scalars. The value it
+    /// stands for is that key tuple against the named root.
+    Identity {
+        root: String,
+        keys: Vec<Scalar>,
+    },
 }
 
 /// One field of a product transfer type: its declared name, whether it is required
@@ -139,6 +155,23 @@ impl TransferType {
                     }
                 }
             }
+            TransferType::List(elem) => {
+                out.push(0x05);
+                elem.encode(out);
+            }
+            TransferType::Map(key, value) => {
+                out.push(0x06);
+                key.encode(out);
+                value.encode(out);
+            }
+            TransferType::Identity { root, keys } => {
+                out.push(0x07);
+                push_lp(out, root.as_bytes());
+                out.extend_from_slice(&(keys.len() as u16).to_be_bytes());
+                for key in keys {
+                    out.push(key.tag());
+                }
+            }
         }
     }
 }
@@ -173,6 +206,23 @@ pub struct VariantShape {
     pub name: String,
     pub category: bool,
     pub payload: Vec<ImageType>,
+}
+
+/// A collection type's structural shape for interface projection, populated from a
+/// verified image's COLLTYPES table. Mirrors the verifier's `SealedCollectionType`.
+#[derive(Debug, Clone)]
+pub enum CollectionShape {
+    List { elem: ImageType },
+    Map { key: ImageType, value: ImageType },
+}
+
+/// A store root's shape for interface projection of an entry identity: the root's
+/// declared name and its ordered key-column scalars, populated from a verified
+/// image's ROOTS table. A singleton root has no key columns.
+#[derive(Debug, Clone)]
+pub struct RootShape {
+    pub name: String,
+    pub keys: Vec<Scalar>,
 }
 
 /// One export's wire signature as a caller supplies it: the export's id, its
@@ -233,63 +283,22 @@ pub struct Interface {
     descriptors: Vec<FunctionDescriptor>,
 }
 
-/// Where in an export's signature a rejected type appears.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SignaturePosition {
-    /// The zero-based parameter position.
-    Param(u16),
-    /// The return type.
-    Return,
-}
-
-/// A value kind that is not in the G00a transfer graph.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ExcludedKind {
-    /// A finite `List`/`Map`. Collections join the transfer graph at G00b.
-    Collection,
-    /// An entry identity `Id(^root)`. An identity references a store root and is a
-    /// runtime/lookup value, not a self-describing transferable value on this line.
-    Identity,
-}
-
 /// Why an interface could not be reconstructed from a signature set. Each is a typed
-/// fact about one export, not rendered prose.
+/// fact about one export, not rendered prose. The transfer graph is closed over every
+/// [`ImageType`], so neither variant is reachable from a verified image; both defend a
+/// caller-assembled signature set.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InterfaceError {
-    /// An export signature reaches a value type outside the transfer graph.
-    TransferTypeExcluded {
-        export: ExportId,
-        position: SignaturePosition,
-        kind: ExcludedKind,
-    },
     /// An export signature expands to more transfer nodes than the budget admits.
     SignatureTooComplex { export: ExportId },
-    /// A record or enum reference in a signature names no table row. Unreachable from
-    /// a verified image; a defense for a caller-assembled signature set.
+    /// A record, enum, collection, or root reference in a signature names no table
+    /// row.
     TypeIndexOutOfRange { export: ExportId },
 }
 
 impl std::fmt::Display for InterfaceError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            InterfaceError::TransferTypeExcluded {
-                position,
-                kind: ExcludedKind::Collection,
-                ..
-            } => write!(
-                f,
-                "{} uses a collection, which cannot cross the wire yet",
-                position_word(*position)
-            ),
-            InterfaceError::TransferTypeExcluded {
-                position,
-                kind: ExcludedKind::Identity,
-                ..
-            } => write!(
-                f,
-                "{} uses an entry identity, which cannot cross the wire yet",
-                position_word(*position)
-            ),
             InterfaceError::SignatureTooComplex { .. } => {
                 write!(f, "an export signature is too complex to describe")
             }
@@ -301,13 +310,6 @@ impl std::fmt::Display for InterfaceError {
 }
 
 impl std::error::Error for InterfaceError {}
-
-fn position_word(position: SignaturePosition) -> String {
-    match position {
-        SignaturePosition::Param(index) => format!("parameter {index}"),
-        SignaturePosition::Return => "the return type".to_string(),
-    }
-}
 
 impl Interface {
     /// Reconstruct the interface from the export signatures and the record/enum
@@ -321,30 +323,23 @@ impl Interface {
         exports: impl IntoIterator<Item = ExportSignature>,
         records: &[RecordShape],
         enums: &[EnumShape],
+        collections: &[CollectionShape],
+        roots: &[RootShape],
     ) -> Result<Self, InterfaceError> {
+        let tables = Tables {
+            records,
+            enums,
+            collections,
+            roots,
+        };
         let mut descriptors = Vec::new();
         for export in exports {
             let mut budget = MAX_INTERFACE_TRANSFER_NODES;
             let mut params = Vec::with_capacity(export.params.len());
-            for (index, param) in export.params.iter().enumerate() {
-                let position = SignaturePosition::Param(index as u16);
-                params.push(resolve(
-                    *param,
-                    records,
-                    enums,
-                    export.id,
-                    position,
-                    &mut budget,
-                )?);
+            for param in &export.params {
+                params.push(resolve(*param, &tables, export.id, &mut budget)?);
             }
-            let ret = resolve(
-                export.ret,
-                records,
-                enums,
-                export.id,
-                SignaturePosition::Return,
-                &mut budget,
-            )?;
+            let ret = resolve(export.ret, &tables, export.id, &mut budget)?;
             descriptors.push(FunctionDescriptor {
                 id: export.id,
                 params,
@@ -378,15 +373,25 @@ impl Interface {
     }
 }
 
-/// Project one [`ImageType`] into the transfer graph, resolving record/enum
-/// references against the tables and rejecting a collection or an over-budget
-/// expansion. `budget` is decremented once per produced [`TransferType`] node.
+/// The verified image's structural tables, borrowed together so [`resolve`] carries
+/// one reference instead of four positional slices.
+struct Tables<'a> {
+    records: &'a [RecordShape],
+    enums: &'a [EnumShape],
+    collections: &'a [CollectionShape],
+    roots: &'a [RootShape],
+}
+
+/// Project one [`ImageType`] into the transfer graph, resolving record/enum/
+/// collection/root references against the tables and rejecting an over-budget
+/// expansion or an out-of-range reference. `budget` is decremented once per produced
+/// [`TransferType`] node. The graph is closed over every [`ImageType`], so a
+/// verified signature always projects; the errors are defenses for a
+/// caller-assembled signature set.
 fn resolve(
     ty: ImageType,
-    records: &[RecordShape],
-    enums: &[EnumShape],
+    tables: &Tables<'_>,
     export: ExportId,
-    position: SignaturePosition,
     budget: &mut usize,
 ) -> Result<TransferType, InterfaceError> {
     if *budget == 0 {
@@ -397,7 +402,8 @@ fn resolve(
         ImageType::Unit => Ok(TransferType::Unit),
         ImageType::Scalar { scalar, optional } => Ok(wrap(optional, TransferType::Scalar(scalar))),
         ImageType::Record { idx, optional } => {
-            let record = records
+            let record = tables
+                .records
                 .get(idx as usize)
                 .ok_or(InterfaceError::TypeIndexOutOfRange { export })?;
             let mut fields = Vec::with_capacity(record.fields.len());
@@ -405,20 +411,21 @@ fn resolve(
                 fields.push(TransferField {
                     name: field.name.clone(),
                     required: field.required,
-                    ty: resolve(field.ty, records, enums, export, position, budget)?,
+                    ty: resolve(field.ty, tables, export, budget)?,
                 });
             }
             Ok(wrap(optional, TransferType::Product(fields)))
         }
         ImageType::Enum { idx, optional } => {
-            let enum_shape = enums
+            let enum_shape = tables
+                .enums
                 .get(idx as usize)
                 .ok_or(InterfaceError::TypeIndexOutOfRange { export })?;
             let mut variants = Vec::with_capacity(enum_shape.variants.len());
             for variant in &enum_shape.variants {
                 let mut payload = Vec::with_capacity(variant.payload.len());
                 for leaf in &variant.payload {
-                    payload.push(resolve(*leaf, records, enums, export, position, budget)?);
+                    payload.push(resolve(*leaf, tables, export, budget)?);
                 }
                 variants.push(TransferVariant {
                     name: variant.name.clone(),
@@ -428,16 +435,35 @@ fn resolve(
             }
             Ok(wrap(optional, TransferType::Sum(variants)))
         }
-        ImageType::Collection { .. } => Err(InterfaceError::TransferTypeExcluded {
-            export,
-            position,
-            kind: ExcludedKind::Collection,
-        }),
-        ImageType::Identity { .. } => Err(InterfaceError::TransferTypeExcluded {
-            export,
-            position,
-            kind: ExcludedKind::Identity,
-        }),
+        ImageType::Collection { idx, optional } => {
+            let collection = tables
+                .collections
+                .get(idx as usize)
+                .ok_or(InterfaceError::TypeIndexOutOfRange { export })?;
+            let carrier = match collection {
+                CollectionShape::List { elem } => {
+                    TransferType::List(Box::new(resolve(*elem, tables, export, budget)?))
+                }
+                CollectionShape::Map { key, value } => TransferType::Map(
+                    Box::new(resolve(*key, tables, export, budget)?),
+                    Box::new(resolve(*value, tables, export, budget)?),
+                ),
+            };
+            Ok(wrap(optional, carrier))
+        }
+        ImageType::Identity { root, optional } => {
+            let root_shape = tables
+                .roots
+                .get(root as usize)
+                .ok_or(InterfaceError::TypeIndexOutOfRange { export })?;
+            Ok(wrap(
+                optional,
+                TransferType::Identity {
+                    root: root_shape.name.clone(),
+                    keys: root_shape.keys.clone(),
+                },
+            ))
+        }
     }
 }
 
@@ -492,9 +518,9 @@ fn push_lp(out: &mut Vec<u8>, bytes: &[u8]) {
 #[cfg(test)]
 mod tests {
     use super::{
-        EnumShape, ExcludedKind, ExportSignature, FieldShape, INTERFACE_ID_KIND, Interface,
-        InterfaceError, LOCAL_ROOT_LINEAGE, RecordShape, SignaturePosition, TransferType,
-        VariantShape, push_lp,
+        CollectionShape, EnumShape, ExportSignature, FieldShape, INTERFACE_ID_KIND, Interface,
+        InterfaceError, LOCAL_ROOT_LINEAGE, RecordShape, RootShape, TransferType, VariantShape,
+        push_lp,
     };
     use crate::bounds::MAX_INTERFACE_TRANSFER_NODES;
     use crate::demand::{DemandAtom, ExportDemand, OperationClass};
@@ -559,7 +585,7 @@ mod tests {
             },
             demand_id: demand_a(),
         };
-        Interface::build([add, lookup], &[point], &[])
+        Interface::build([add, lookup], &[point], &[], &[], &[])
     }
 
     #[test]
@@ -626,6 +652,24 @@ mod tests {
                         for leaf in &variant.payload {
                             enc_ttype(leaf, out);
                         }
+                    }
+                }
+                TransferType::List(elem) => {
+                    out.push(0x05);
+                    enc_ttype(elem, out);
+                }
+                TransferType::Map(key, value) => {
+                    out.push(0x06);
+                    enc_ttype(key, out);
+                    enc_ttype(value, out);
+                }
+                TransferType::Identity { root, keys } => {
+                    out.push(0x07);
+                    out.extend_from_slice(&(root.len() as u64).to_be_bytes());
+                    out.extend_from_slice(root.as_bytes());
+                    out.extend_from_slice(&(keys.len() as u16).to_be_bytes());
+                    for key in keys {
+                        out.push(key.tag());
                     }
                 }
             }
@@ -702,7 +746,7 @@ mod tests {
             },
             demand_id: demand_a(),
         };
-        let reversed = Interface::build([lookup, add], &[point], &[]).expect("builds");
+        let reversed = Interface::build([lookup, add], &[point], &[], &[], &[]).expect("builds");
         assert_eq!(iface.interface_id(), reversed.interface_id());
     }
 
@@ -752,6 +796,8 @@ mod tests {
             [add_wider, lookup.clone()],
             std::slice::from_ref(&point),
             &[],
+            &[],
+            &[],
         )
         .expect("builds");
         assert_ne!(base, retyped.interface_id());
@@ -780,8 +826,14 @@ mod tests {
             ret: ImageType::scalar(Scalar::Int),
             demand_id: empty_demand(),
         };
-        let renamed_field =
-            Interface::build([add.clone(), lookup.clone()], &[point_renamed], &[]).expect("builds");
+        let renamed_field = Interface::build(
+            [add.clone(), lookup.clone()],
+            &[point_renamed],
+            &[],
+            &[],
+            &[],
+        )
+        .expect("builds");
         assert_ne!(base, renamed_field.interface_id());
 
         // A changed demand (same signatures) moves the id.
@@ -808,18 +860,25 @@ mod tests {
             ..lookup
         };
         let redemanded =
-            Interface::build([add, lookup_more_demand], &[point], &[]).expect("builds");
+            Interface::build([add, lookup_more_demand], &[point], &[], &[], &[]).expect("builds");
         assert_ne!(base, redemanded.interface_id());
     }
 
-    /// A signature reaching a collection is rejected with a typed, positioned error.
+    /// The three earned carriers (G00b) project into the transfer graph rather than
+    /// being excluded: a `List<T>` return, a `Map<K, V>` return, and an `Id(^root)`
+    /// return each build, including a collection reached through a record field, and
+    /// a rename of the projected root moves the id.
     #[test]
-    fn a_collection_in_a_signature_is_rejected() {
-        let id = ExportId::of_local("main", "listy");
-        let err = Interface::build(
+    fn the_earned_carriers_project_into_the_transfer_graph() {
+        // A List<int> return builds and projects to TransferType::List.
+        let list_int = CollectionShape::List {
+            elem: ImageType::scalar(Scalar::Int),
+        };
+        let listy = ExportId::of_local("main", "listy");
+        let iface = Interface::build(
             [ExportSignature {
-                id,
-                params: vec![ImageType::scalar(Scalar::Int)],
+                id: listy,
+                params: vec![],
                 ret: ImageType::Collection {
                     idx: 0,
                     optional: false,
@@ -828,19 +887,21 @@ mod tests {
             }],
             &[],
             &[],
+            std::slice::from_ref(&list_int),
+            &[],
         )
-        .expect_err("a collection return is not a transfer type");
-        assert_eq!(
-            err,
-            InterfaceError::TransferTypeExcluded {
-                export: id,
-                position: SignaturePosition::Return,
-                kind: ExcludedKind::Collection,
-            }
-        );
+        .expect("a list return projects");
+        assert!(matches!(
+            iface.descriptors()[0].ret(),
+            TransferType::List(inner) if matches!(**inner, TransferType::Scalar(Scalar::Int))
+        ));
 
-        // A collection nested inside a record field is rejected just as a top-level
-        // collection is — reachability, not only the outermost type, is checked.
+        // A collection reached through a record field projects, too — reachability is
+        // resolved, not only the outermost type.
+        let map_si = CollectionShape::Map {
+            key: ImageType::scalar(Scalar::Text),
+            value: ImageType::scalar(Scalar::Int),
+        };
         let holder = RecordShape {
             fields: vec![FieldShape {
                 name: "items".to_string(),
@@ -851,10 +912,9 @@ mod tests {
                 required: true,
             }],
         };
-        let id2 = ExportId::of_local("main", "holds");
-        let err2 = Interface::build(
+        Interface::build(
             [ExportSignature {
-                id: id2,
+                id: ExportId::of_local("main", "holds"),
                 params: vec![ImageType::Record {
                     idx: 0,
                     optional: false,
@@ -864,16 +924,42 @@ mod tests {
             }],
             &[holder],
             &[],
+            std::slice::from_ref(&map_si),
+            &[],
         )
-        .expect_err("a collection reached through a record is excluded");
-        assert!(matches!(
-            err2,
-            InterfaceError::TransferTypeExcluded {
-                position: SignaturePosition::Param(0),
-                kind: ExcludedKind::Collection,
-                ..
-            }
-        ));
+        .expect("a map reached through a record projects");
+
+        // An Id(^assets) return projects to a branded identity carrying the root name
+        // and key scalars; renaming the root moves the interface id.
+        let assets = RootShape {
+            name: "assets".to_string(),
+            keys: vec![Scalar::Int],
+        };
+        let build_id = |root_name: &str| {
+            Interface::build(
+                [ExportSignature {
+                    id: ExportId::of_local("main", "findByTag"),
+                    params: vec![ImageType::scalar(Scalar::Text)],
+                    ret: ImageType::Identity {
+                        root: 0,
+                        optional: true,
+                    },
+                    demand_id: empty_demand(),
+                }],
+                &[],
+                &[],
+                &[],
+                &[RootShape {
+                    name: root_name.to_string(),
+                    keys: vec![Scalar::Int],
+                }],
+            )
+            .expect("an identity return projects")
+            .interface_id()
+        };
+        let base = build_id(&assets.name);
+        assert_eq!(base, build_id("assets"));
+        assert_ne!(base, build_id("members"));
     }
 
     /// A signature whose structural expansion exceeds the node budget is rejected,
@@ -919,6 +1005,8 @@ mod tests {
             }],
             &records,
             &[],
+            &[],
+            &[],
         )
         .expect_err("the expansion exceeds the node budget");
         assert_eq!(err, InterfaceError::SignatureTooComplex { export: id });
@@ -958,6 +1046,8 @@ mod tests {
                 }],
                 &[],
                 std::slice::from_ref(shape),
+                &[],
+                &[],
             )
             .expect("builds")
             .interface_id()
@@ -1023,8 +1113,8 @@ mod tests {
     /// A random bare type referencing only records with index `> after_record` and
     /// enums with index `> after_enum`, so the value graph is acyclic and the
     /// structural expansion always terminates. `allow_collection` occasionally emits a
-    /// collection (a top-level signature type may, a nested leaf may not) to exercise
-    /// the rejection path.
+    /// reference into [`fuzz_collections`] (a top-level signature type may, a nested
+    /// leaf may not) to exercise the list/map carriers.
     fn random_type(
         rng: &mut Rng,
         record_count: usize,
@@ -1060,11 +1150,27 @@ mod tests {
                 idx: (after_enum + 1 + rng.below(enum_room)) as u16,
                 optional,
             },
+            // A reference into the fixed two-entry `fuzz_collections` table (0 = a
+            // List<int>, 1 = a Map<string, int>), both acyclic scalar-leaf carriers.
             _ => ImageType::Collection {
-                idx: 0,
-                optional: false,
+                idx: (rng.next() % 2) as u16,
+                optional,
             },
         }
+    }
+
+    /// The fixed collection table the fuzz signatures reference: a `List<int>` at
+    /// index 0 and a `Map<string, int>` at index 1.
+    fn fuzz_collections() -> Vec<CollectionShape> {
+        vec![
+            CollectionShape::List {
+                elem: ImageType::scalar(Scalar::Int),
+            },
+            CollectionShape::Map {
+                key: ImageType::scalar(Scalar::Text),
+                value: ImageType::scalar(Scalar::Int),
+            },
+        ]
     }
 
     /// Build random acyclic record and enum tables plus a small export set, then
@@ -1154,8 +1260,9 @@ mod tests {
                 })
                 .collect();
 
-            let first = Interface::build(signatures.clone(), &records, &enums);
-            let second = Interface::build(signatures.clone(), &records, &enums);
+            let collections = fuzz_collections();
+            let first = Interface::build(signatures.clone(), &records, &enums, &collections, &[]);
+            let second = Interface::build(signatures.clone(), &records, &enums, &collections, &[]);
             match (&first, &second) {
                 (Ok(a), Ok(b)) => {
                     // Deterministic id.
@@ -1165,8 +1272,8 @@ mod tests {
                     // Reordering the supplied exports does not change the id.
                     let mut reversed = signatures.clone();
                     reversed.reverse();
-                    let reordered =
-                        Interface::build(reversed, &records, &enums).expect("reorder builds");
+                    let reordered = Interface::build(reversed, &records, &enums, &collections, &[])
+                        .expect("reorder builds");
                     assert_eq!(a.interface_id(), reordered.interface_id());
                 }
                 (Err(a), Err(b)) => assert_eq!(a, b),

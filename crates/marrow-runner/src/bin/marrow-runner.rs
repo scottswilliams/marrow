@@ -167,7 +167,7 @@ fn serve(image_path: &Path) -> ExitCode {
         Err(error) => {
             eprintln!(
                 "{}: {error}",
-                marrow_codes::Code::CliTransferExcluded.as_str()
+                marrow_codes::Code::CliInterfaceUnbuildable.as_str()
             );
             return ExitCode::FAILURE;
         }

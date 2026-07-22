@@ -21,9 +21,10 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 use marrow_image::{
-    EnumShape, ExportSignature, FieldShape, ImageType, Interface, RecordShape, VariantShape,
+    CollectionShape, EnumShape, ExportSignature, FieldShape, ImageType, Interface, RecordShape,
+    RootShape, VariantShape,
 };
-use marrow_verify::RetShape;
+use marrow_verify::{RetShape, SealedCollectionType};
 
 const MARROW: &str = env!("CARGO_BIN_EXE_marrow");
 
@@ -296,17 +297,34 @@ fn reconstruct_interface_id() -> String {
             }
         })
         .collect();
-    Interface::build(exports, &records, &enums)
+    let collections: Vec<CollectionShape> = image
+        .collections()
+        .iter()
+        .map(|collection| match *collection {
+            SealedCollectionType::List { elem } => CollectionShape::List { elem },
+            SealedCollectionType::Map { key, value } => CollectionShape::Map { key, value },
+        })
+        .collect();
+    let roots: Vec<RootShape> = image
+        .roots()
+        .iter()
+        .map(|root| RootShape {
+            name: root.name().to_string(),
+            keys: root.keys().to_vec(),
+        })
+        .collect();
+    Interface::build(exports, &records, &enums, &collections, &roots)
         .expect("interface")
         .interface_id()
         .to_hex()
 }
 
-/// A collection-touching export refuses the whole generation with the typed
-/// `cli.transfer_excluded` code naming the export.
+/// A collection-touching export now generates: the earned `List<int>` carrier
+/// projects into the transfer graph, so the client is written with an `Array<bigint>`
+/// return typed through the list decoder.
 #[test]
-fn a_collection_export_refuses_generation() {
-    let temp = TempDir::new("excluded");
+fn a_collection_export_generates() {
+    let temp = TempDir::new("list");
     let project = temp.join("app");
     write(&project.join("marrow.toml"), "edition = \"2026\"\n");
     write(
@@ -318,13 +336,16 @@ fn a_collection_export_refuses_generation() {
 "#,
     );
     let output = run_in(&project, &["client", "typescript", "--out", "gen"]);
-    assert!(!output.status.success());
-    let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("cli.transfer_excluded") && stderr.contains("main.items"),
-        "expected a typed exclusion naming the export, got: {stderr}"
+        output.status.success(),
+        "generation failed: {}",
+        String::from_utf8_lossy(&output.stderr)
     );
-    assert!(!project.join("gen").join("client.mts").exists());
+    let client = std::fs::read_to_string(project.join("gen").join("client.mts")).expect("client");
+    assert!(
+        client.contains("Promise<Array<bigint>>") && client.contains("M.dList(M.dInt)"),
+        "expected a list-returning method, got:\n{client}"
+    );
 }
 
 /// Wire containment: one grammar, one local transport.

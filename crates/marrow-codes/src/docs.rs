@@ -152,7 +152,7 @@ execution is in the trough.
             .to_string(),
         rows(&[
             Code::CliCommandUnsupported,
-            Code::CliTransferExcluded,
+            Code::CliInterfaceUnbuildable,
             Code::CliDurableUnsupported,
             Code::CliInstallationDamaged,
             Code::CliCompilerResourceLimit,
