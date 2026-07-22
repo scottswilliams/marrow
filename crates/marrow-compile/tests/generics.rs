@@ -1958,3 +1958,103 @@ pub fn run(): int {
 "#,
     );
 }
+
+/// A generic-heavy program that settles many instantiations at declare time and then runs
+/// several once-checked template proofs over that population: the proofs now run directly on
+/// the in-progress registry and draft inside a savepoint (BND03), not on a per-template
+/// clone. This is the accepted-program byte-identity fence for that path — the encoded image
+/// bytes are frozen, so any perturbation of the proof pass that leaked into the real image
+/// turns this red. The digest is a hash of the full encoded image; a single changed byte
+/// changes it.
+#[test]
+fn a_generic_heavy_program_has_frozen_image_bytes() {
+    let compiled = compile_ok(
+        r#"module main
+
+struct Held<T> { value: T }
+struct Pair<T> {
+    a: T
+    b: T
+}
+
+fn identity<T>(x: T): T { return x }
+fn firstOf<T>(p: Pair<T>): T { return p.a }
+fn boxed<T>(x: T): Held<T> { return Held(value: x) }
+
+struct Records {
+    i: Held<int>
+    s: Held<string>
+    b: Held<bool>
+    pi: Pair<int>
+    ps: Pair<string>
+}
+
+pub fn driver(): int {
+    const a = identity(1)
+    const b = identity(true)
+    const c = firstOf(Pair(a: 1, b: 2))
+    const d = boxed("x")
+    return a + c
+}
+"#,
+    );
+    let bytes = compiled.image.bytes;
+    let hex: String = marrow_image::image_id(&bytes)
+        .0
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    assert_eq!(
+        hex,
+        "f126a012d3538bb198a9b3ca6a7896ad8f3f2e1506cce501c3c9e320b5a33f54",
+        "generic-heavy image bytes changed; the template-proof savepoint must not perturb the \
+         accepted image (encoded {} bytes)",
+        bytes.len(),
+    );
+}
+
+/// A generic-heavy program whose one failing template proof (`<` on an equality-only
+/// parameter) sits beside good templates and a settled instantiation population. The failed
+/// proof rolls back through the savepoint, so it corrupts neither the sibling templates'
+/// proofs nor the concrete work: the diagnostic set is exactly the one located failure. This
+/// is the diagnostic-identity fence for the failing-proof path.
+#[test]
+fn a_failing_template_proof_is_contained_beside_generic_heavy_work() {
+    let diagnostics = compile_err(
+        r#"module main
+
+struct Held<T> { value: T }
+
+fn identity<T>(x: T): T { return x }
+fn boxed<T>(x: T): Held<T> { return Held(value: x) }
+fn bad<T supports equality>(a: T, b: T): bool { return a < b }
+
+struct Records {
+    i: Held<int>
+    s: Held<string>
+    b: Held<bool>
+}
+
+pub fn driver(): int {
+    const a = identity(1)
+    const d = boxed("x")
+    return a
+}
+"#,
+    );
+    assert_eq!(
+        diagnostics.len(),
+        1,
+        "the failed proof must not cascade into sibling templates or concrete work: {diagnostics:#?}"
+    );
+    assert_eq!(diagnostics[0].code, "check.type");
+    assert!(
+        diagnostics[0].message.contains("supports order"),
+        "{diagnostics:#?}"
+    );
+    assert_eq!(
+        (diagnostics[0].line(), diagnostics[0].column()),
+        (7, 60),
+        "the located failure points at the `<` in the bad template body: {diagnostics:#?}"
+    );
+}
