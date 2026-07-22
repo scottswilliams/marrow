@@ -113,6 +113,7 @@ impl Terminal {
             CallOutcome::Value(value) => value,
             CallOutcome::Fault { code, .. } => panic!("`{name}` faulted: {code}"),
             CallOutcome::Reject { code } => panic!("`{name}` rejected: {code}"),
+            CallOutcome::OutcomeUnknown => panic!("`{name}` outcome unknown"),
         }
     }
 
@@ -121,6 +122,7 @@ impl Terminal {
             CallOutcome::Fault { code, .. } => code,
             CallOutcome::Value(_) => panic!("`{name}` did not fault"),
             CallOutcome::Reject { code } => panic!("`{name}` rejected: {code}"),
+            CallOutcome::OutcomeUnknown => panic!("`{name}` outcome unknown"),
         }
     }
 }
@@ -352,6 +354,7 @@ fn describe(outcome: &CallOutcome) -> String {
         CallOutcome::Value(value) => format!("value {value:?}"),
         CallOutcome::Fault { code, .. } => format!("fault {code}"),
         CallOutcome::Reject { code } => format!("reject {code}"),
+        CallOutcome::OutcomeUnknown => "outcome unknown".to_string(),
     }
 }
 

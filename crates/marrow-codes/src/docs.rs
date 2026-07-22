@@ -216,8 +216,9 @@ verified program: checked-arithmetic overflow, a zero division or remainder
 divisor, a text bound, a reached `unreachable` invariant or `todo` deferral, call depth, an
 execution budget, a nominal-interval violation, a temporal-domain overflow, an
 authority denial, a required field left unset at commit, a unique-index
-collision, an unconfirmed commit, and durable corruption. These are not
-catchable inside the program.
+collision, an unconfirmed commit, a call whose reply was lost to the attached
+runner's death (outcome unknown, never retried), and durable corruption. These
+are not catchable inside the program.
 
 | Code | Meaning |
 |---|---|"#
@@ -236,6 +237,7 @@ catchable inside the program.
             Code::RunRequiredMissing,
             Code::RunUniqueIndex,
             Code::RunCommit,
+            Code::RunOutcomeUnknown,
             Code::RunCorruption,
             Code::RunCollectionLimit,
             Code::RunTemporalOverflow,

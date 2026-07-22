@@ -518,6 +518,10 @@ fn call_outcome_to_record(outcome: marrow_runner::CallOutcome) -> Record {
             },
             detail: None,
         },
+        // A dispatched call whose reply was lost to the runner's death: a distinct typed
+        // outcome, never a generic timeout. The store may or may not have changed; the call
+        // was not retried; a read-only refresh observes the current state.
+        marrow_runner::CallOutcome::OutcomeUnknown => Record::OutcomeUnknown,
     }
 }
 

@@ -170,8 +170,9 @@ verified program: checked-arithmetic overflow, a zero division or remainder
 divisor, a text bound, a reached `unreachable` invariant or `todo` deferral, call depth, an
 execution budget, a nominal-interval violation, a temporal-domain overflow, an
 authority denial, a required field left unset at commit, a unique-index
-collision, an unconfirmed commit, and durable corruption. These are not
-catchable inside the program.
+collision, an unconfirmed commit, a call whose reply was lost to the attached
+runner's death (outcome unknown, never retried), and durable corruption. These
+are not catchable inside the program.
 
 | Code | Meaning |
 |---|---|
@@ -188,6 +189,7 @@ catchable inside the program.
 | `run.required_missing` | A durable transaction reached its commit with an entry it created or staged that still leaves a required field unset. The transaction rolls back rather than committing a partial entry, and the fault is mapped to the transaction's source span. Not catchable inside the program. |
 | `run.unique_index` | A durable write would place two distinct entries into one `unique` managed index — two rows whose unique projection is equal but which name different store identities. Managed-index maintenance detects the collision when it stages the row and faults, rolling the whole transaction back without poisoning the store. The fault is mapped to the operation's source span and is not catchable inside the program. |
 | `run.commit` | A durable transaction commit did not confirm. The store handle is poisoned and every later operation fails; the process must exit and reopen, where the recorded witness classifies whether the commit completed. The fault is mapped to the transaction's source span and is not catchable inside the program. |
+| `run.outcome_unknown` | A durable call was dispatched to the attached runner, but the runner died before its reply arrived, so the call's outcome is unknowable from the caller's side: it may have run, wholly or partly. The call is reported as outcome-unknown and is never automatically retried — a mutating call whose outcome is unknown must not run twice. Run a read-only export to observe the store's current state before deciding whether to act again. This is distinct from a timed-out I/O read and from a runtime fault, which produced no such dispatch. |
 | `run.corruption` | A verified program hit an internally inconsistent artifact and failed closed rather than reading past it. The path kernel found the durable store inconsistent — a field leaf with no entry marker (an orphan leaf), a cell it could not decode as its typed value, or a stored schema descriptor that does not match the program image — or a bytecode positional collection read (a list element or a map key/value at an index) addressed a position past the collection's length. The compiler keeps every positional read in bounds, so an ordinary compiled program never reaches the collection case; it guards a hand-built or corrupted image whose index the verifier's type check does not bound. The fault is mapped to the operation's source span and is not catchable inside the program. |
 | `run.collection_limit` | A `List` append or `Map` insert would grow a collection past a fixed representational bound: more than 65536 elements, or an aggregate value size over 1 MiB. The operation faults rather than allocating unboundedly, mapped to its source span, and is not catchable inside the program. |
 | `run.temporal_overflow` | A temporal operation produced a result outside its supported domain at runtime: `addDays` or `instant +/- duration` left the supported calendar range (years 0001-9999), or `duration +/- duration` overflowed the signed-nanosecond `i128` range. The fault is mapped to the source span of the operation and is not catchable inside the program. Every `.mw` temporal path shares this 0001-9999 / `i128` envelope, so an out-of-range value never escapes into a stored value or key. |

@@ -87,6 +87,7 @@ impl<'a> Session<'a> {
             CallOutcome::Value(value) => value,
             CallOutcome::Fault { code, .. } => panic!("`{name}` faulted: {code}"),
             CallOutcome::Reject { code } => panic!("`{name}` rejected: {code}"),
+            CallOutcome::OutcomeUnknown => panic!("`{name}` outcome unknown"),
         }
     }
 
@@ -95,6 +96,7 @@ impl<'a> Session<'a> {
             CallOutcome::Fault { code, .. } => code,
             CallOutcome::Value(_) => panic!("`{name}` did not fault"),
             CallOutcome::Reject { code } => panic!("`{name}` rejected: {code}"),
+            CallOutcome::OutcomeUnknown => panic!("`{name}` outcome unknown"),
         }
     }
 }

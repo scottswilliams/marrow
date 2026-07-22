@@ -17,7 +17,7 @@
 use std::path::Path;
 use std::time::Duration;
 
-use marrow_local_wire::{ClientMessage, Id32, Json};
+use marrow_local_wire::{ClientMessage, HandoffStage, Id32, Json, LossClass, classify};
 use marrow_verify::VerifiedImage;
 
 use crate::terminal::{
@@ -65,6 +65,9 @@ fn call_over_socket(
     args: Vec<Json>,
     deadline: Duration,
 ) -> Result<CallOutcome, ClientError> {
+    // Before the request is on the wire, a connect/handshake or write failure means the call
+    // provably did not start (`LossClass::NotStarted`): it surfaces as a `ClientError` the
+    // caller may treat as undone, and is never replayed.
     let mut stream = connect_and_handshake(descriptor, nonce, deadline)?;
     write_message(
         &mut stream,
@@ -74,5 +77,72 @@ fn call_over_socket(
         },
         deadline,
     )?;
-    reply_to_outcome(image, export_id, read_message(&mut stream, deadline)?)
+    // The request is dispatched. If the runner now dies (or falls silent past the deadline)
+    // before its reply arrives, the call may have run — wholly or partly — and its durable
+    // outcome is unknowable from this side (`LossClass::OutcomeUnknown`). It is reported as a
+    // distinct typed outcome, never replayed: a read-only refresh observes the current state.
+    match read_message(&mut stream, deadline) {
+        Ok(reply) => reply_to_outcome(image, export_id, reply),
+        Err(error) if lost_reply(&error) => {
+            debug_assert_eq!(classify(HandoffStage::Dispatched), LossClass::OutcomeUnknown);
+            Ok(CallOutcome::OutcomeUnknown)
+        }
+        Err(error) => Err(error),
+    }
+}
+
+/// Whether a read failure after the request was dispatched is a *lost reply* — the runner died
+/// or fell silent past the deadline before its reply arrived — rather than a malformed reply
+/// that did arrive. A lost reply classifies the dispatched call as
+/// [`CallOutcome::OutcomeUnknown`]; a reply that arrives but does not decode stays its own
+/// distinct wire/decode error, since the call demonstrably produced a reply.
+fn lost_reply(error: &ClientError) -> bool {
+    matches!(
+        error,
+        ClientError::Io(io)
+            if matches!(
+                io.kind(),
+                std::io::ErrorKind::UnexpectedEof
+                    | std::io::ErrorKind::BrokenPipe
+                    | std::io::ErrorKind::ConnectionReset
+                    | std::io::ErrorKind::TimedOut
+            )
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::lost_reply;
+    use crate::terminal::ClientError;
+    use marrow_local_wire::{HandoffStage, LossClass, classify};
+
+    /// A reply lost to peer death after dispatch is classified `OutcomeUnknown`, matching the
+    /// wire loss model for a `Dispatched` handoff stage — the native one-shot call is reported
+    /// outcome-unknown, never replayed.
+    #[test]
+    fn a_lost_reply_after_dispatch_is_outcome_unknown() {
+        for kind in [
+            std::io::ErrorKind::UnexpectedEof,
+            std::io::ErrorKind::BrokenPipe,
+            std::io::ErrorKind::ConnectionReset,
+            std::io::ErrorKind::TimedOut,
+        ] {
+            assert!(
+                lost_reply(&ClientError::Io(std::io::Error::from(kind))),
+                "a {kind:?} read failure after dispatch is a lost reply",
+            );
+        }
+        assert_eq!(classify(HandoffStage::Dispatched), LossClass::OutcomeUnknown);
+    }
+
+    /// A reply that arrives but does not decode is not a lost reply — the call produced a
+    /// reply, so it stays its own distinct error rather than being reported outcome-unknown.
+    #[test]
+    fn a_decoded_reply_error_is_not_a_lost_reply() {
+        assert!(!lost_reply(&ClientError::ReplyDecode));
+        assert!(!lost_reply(&ClientError::Handshake));
+        // A before-send failure (a pre-dispatch handshake/connect error) classifies NotStarted,
+        // the safe-to-consider-undone class, and never reaches the lost-reply path.
+        assert_eq!(classify(HandoffStage::BeforeSend), LossClass::NotStarted);
+    }
 }

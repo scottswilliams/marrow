@@ -43,6 +43,11 @@ pub(crate) enum Record {
         code: &'static str,
         detail: Option<String>,
     },
+    /// A durable call was dispatched to the attached runner but its reply was lost to the
+    /// runner's death, so its outcome is unknowable from this side. A distinct typed outcome —
+    /// not a runtime fault (no typed reply) and not a generic operational error — that never
+    /// implies a retry: a read-only refresh observes the store's current state.
+    OutcomeUnknown,
     /// Family 4 specialization: an aggregate compiler resource-limit outcome. Unlike a
     /// bare operational error it carries the typed kind detail — which fixed bound was
     /// exhausted — so a caller (or a bound-raise audit) can bisect which limit fired
@@ -75,6 +80,12 @@ impl Record {
                 Some(text) => format!("{code}: {text}"),
                 None => code.to_string(),
             },
+            Record::OutcomeUnknown => format!(
+                "{}: the call was dispatched but the runner died before replying, so its \
+                 outcome is unknown and it was not retried; run a read-only export to observe \
+                 the store's current state",
+                marrow_codes::Code::RunOutcomeUnknown.as_str()
+            ),
             Record::CompilerResourceLimit { kind_detail } => format!(
                 "{}: {kind_detail}",
                 marrow_codes::Code::CliCompilerResourceLimit.as_str()
@@ -113,6 +124,10 @@ impl Record {
             Record::OperationalError { code, .. } => format!(
                 r#"{{"code":{},"kind":"run","outcome":"error"}}"#,
                 json_string(code)
+            ),
+            Record::OutcomeUnknown => format!(
+                r#"{{"code":{},"kind":"run","outcome":"outcome_unknown"}}"#,
+                json_string(marrow_codes::Code::RunOutcomeUnknown.as_str())
             ),
             Record::CompilerResourceLimit { kind_detail } => format!(
                 r#"{{"code":{},"kind":"run","kind_detail":{},"outcome":"error"}}"#,
