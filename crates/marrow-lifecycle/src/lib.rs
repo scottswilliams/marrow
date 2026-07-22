@@ -48,6 +48,10 @@ pub use import::{
 };
 pub use instance::{EntropyUnavailable, StoreInstanceId};
 pub use lock::{Acquired, LockError, LockOwner, OwnerLock};
+// The invocation grant `import_jsonl` requires. It is a kernel type, re-exported here so a
+// privileged caller (the companion runner's `import` command) can name and mint the full-store
+// grant a trusted bulk import runs under without depending on the kernel directly.
+pub use marrow_kernel::durable::InvocationGrant;
 pub use provision::{
     OpenError, OpenStore, Preflight, ProvisionError, ProvisionRequest, Provisioned, open,
     preflight, provision,

@@ -47,6 +47,15 @@ enum Command {
     /// Attach the image to a fresh process-local in-memory store and serve its exports. The
     /// store never persists — it is discarded when this process exits.
     AttachEphemeral { image: PathBuf },
+    /// Populate the store at `store` from a flat-scalar JSONL corpus through the trusted
+    /// importer. Provisions the store first when it does not yet exist.
+    Import {
+        image: PathBuf,
+        store: PathBuf,
+        jsonl: PathBuf,
+        root: String,
+        keys: Vec<String>,
+    },
 }
 
 fn main() -> ExitCode {
@@ -59,11 +68,20 @@ fn main() -> ExitCode {
         }) => provision_command(&image, &store, accept),
         Some(Command::Attach { image, store }) => attach(&image, &store),
         Some(Command::AttachEphemeral { image }) => attach_ephemeral(&image),
+        Some(Command::Import {
+            image,
+            store,
+            jsonl,
+            root,
+            keys,
+        }) => import_command(&image, &store, &jsonl, &root, &keys),
         None => {
             eprintln!(
                 "usage: marrow-runner --image <path>\n       marrow-runner provision --image \
                  <path> --store <dir> [--yes]\n       marrow-runner attach --image <path> \
-                 --store <dir>\n       marrow-runner attach-ephemeral --image <path>"
+                 --store <dir>\n       marrow-runner attach-ephemeral --image \
+                 <path>\n       marrow-runner import --image <path> --store <dir> \
+                 --jsonl <path> --root <name> --keys <col,...>"
             );
             ExitCode::from(2)
         }
@@ -309,6 +327,7 @@ fn parse_args() -> Option<Command> {
         Some("provision") => parse_provision(args),
         Some("attach") => parse_attach(args),
         Some("attach-ephemeral") => parse_attach_ephemeral(args),
+        Some("import") => parse_import(args),
         Some("--image") => args.next().map(|image| Command::Serve {
             image: PathBuf::from(image),
         }),
@@ -367,6 +386,146 @@ fn parse_provision(args: impl Iterator<Item = String>) -> Option<Command> {
         store: store?,
         accept,
     })
+}
+
+/// Parse `import --image <path> --store <dir> --jsonl <path> --root <name> --keys <col,...>`
+/// in any flag order. All flags except `--keys` are required; `--keys` defaults to a single
+/// `id` column (the common single-key primary root).
+fn parse_import(mut args: impl Iterator<Item = String>) -> Option<Command> {
+    let mut image: Option<PathBuf> = None;
+    let mut store: Option<PathBuf> = None;
+    let mut jsonl: Option<PathBuf> = None;
+    let mut root: Option<String> = None;
+    let mut keys: Vec<String> = Vec::new();
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--image" => image = Some(PathBuf::from(args.next()?)),
+            "--store" => store = Some(PathBuf::from(args.next()?)),
+            "--jsonl" => jsonl = Some(PathBuf::from(args.next()?)),
+            "--root" => root = Some(args.next()?),
+            "--keys" => keys = args.next()?.split(',').map(str::to_owned).collect(),
+            _ => return None,
+        }
+    }
+    if keys.is_empty() {
+        keys.push("id".to_string());
+    }
+    Some(Command::Import {
+        image: image?,
+        store: store?,
+        jsonl: jsonl?,
+        root: root?,
+        keys,
+    })
+}
+
+/// Populate the store from a flat-scalar JSONL corpus through the trusted importer.
+///
+/// The store shape is derived from the verified image (its single owner), so the corpus is
+/// validated against exactly the program's declared types. When no store exists yet, it is
+/// provisioned first from the same image (a trusted bulk import is an explicit first-population
+/// action). Every row is created through the path kernel by `import_jsonl`; no raw key, engine
+/// handle, or transaction is exposed here.
+fn import_command(
+    image_path: &Path,
+    store: &Path,
+    jsonl: &Path,
+    root_name: &str,
+    keys: &[String],
+) -> ExitCode {
+    let image = match load_image(image_path) {
+        Ok(image) => image,
+        Err(code) => return code,
+    };
+    let Some((schemas, sites)) = marrow_vm::derive_store_schemas(&image) else {
+        eprintln!(
+            "{}: the program's durable shape is not yet executable by the store, so it cannot \
+             be imported into",
+            marrow_codes::Code::CliDurableUnsupported.as_str()
+        );
+        return ExitCode::FAILURE;
+    };
+
+    let Some(root_index) = schemas
+        .iter()
+        .position(|schema| schema.root_name == root_name)
+    else {
+        eprintln!(
+            "{}: no store root named `{root_name}` in this program",
+            marrow_codes::Code::ConfigInvalid.as_str()
+        );
+        return ExitCode::FAILURE;
+    };
+
+    // Provision on first import; an existing complete store is imported into as-is.
+    match marrow_lifecycle::preflight(store) {
+        marrow_lifecycle::Preflight::Complete => {}
+        marrow_lifecycle::Preflight::Incomplete => {
+            eprintln!(
+                "{}: a partially formed store exists at the destination; remove it and retry",
+                marrow_codes::Code::StoreIo.as_str()
+            );
+            return ExitCode::FAILURE;
+        }
+        marrow_lifecycle::Preflight::Absent => {
+            let report = marrow_lifecycle::ProvisionReport::new(store, &image, &schemas);
+            let approval = marrow_lifecycle::ProvisionApproval::accept(&report);
+            match marrow_lifecycle::provision_image(
+                store,
+                &image,
+                schemas.clone(),
+                sites,
+                &approval,
+            ) {
+                Ok(_) => eprintln!("provisioned a fresh store at {}", store.display()),
+                Err(error) => {
+                    eprintln!("{}: {error}", error.code());
+                    return ExitCode::FAILURE;
+                }
+            }
+        }
+    }
+
+    let file = match std::fs::File::open(jsonl) {
+        Ok(file) => file,
+        Err(err) => {
+            eprintln!("{}: {err}", marrow_codes::Code::IoRead.as_str());
+            return ExitCode::FAILURE;
+        }
+    };
+    let target = marrow_lifecycle::ImportTarget {
+        root: root_index as u16,
+        key_columns: keys.to_vec(),
+    };
+    match marrow_lifecycle::import_jsonl(
+        store,
+        schemas,
+        target,
+        std::io::BufReader::new(file),
+        marrow_lifecycle::InvocationGrant::full_store(),
+        marrow_lifecycle::ImportLimits::DEFAULT,
+    ) {
+        Ok(report) => {
+            println!(
+                "{}",
+                encode(&Json::Object(vec![
+                    (
+                        "rows_imported".to_string(),
+                        Json::Int(report.rows_imported as i64),
+                    ),
+                    (
+                        "batches_committed".to_string(),
+                        Json::Int(report.batches_committed as i64),
+                    ),
+                ]))
+            );
+            ExitCode::SUCCESS
+        }
+        Err(error) => {
+            eprintln!("{}: {error}", error.code());
+            ExitCode::FAILURE
+        }
+    }
 }
 
 fn nonce_from_env() -> Result<Option<Id32>, ()> {

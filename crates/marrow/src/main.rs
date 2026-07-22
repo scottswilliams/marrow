@@ -7,6 +7,7 @@ use crate::term_style::{Stream, Style};
 mod cmd_check;
 mod cmd_client;
 mod cmd_fmt;
+mod cmd_import;
 mod cmd_init;
 mod cmd_lsp;
 mod cmd_run;
@@ -25,6 +26,7 @@ Usage:
   marrow fmt [--check | --write] <file.mw | projectdir>
   marrow check [projectdir]
   marrow run <export> [--format jsonl] [-- <args>...]
+  marrow import --store <dir> --jsonl <path> --root <name> [--keys <col,...>]
   marrow test [--format text|jsonl] [--filter <substring>]
   marrow client typescript [--out <dir>]
   marrow lsp
@@ -38,7 +40,10 @@ captures and checks a project, reporting each diagnostic with its span and, when
 clean, each exported function's durable access demand in source spelling. `run`
 compiles the project at the working directory, verifies the program image, and
 runs an exported function. `test` discovers `test \"name\"` declarations, runs
-each storeless through the verified image, and reports pass/fail/error. `client
+each storeless through the verified image, and reports pass/fail/error. `import`
+compiles and verifies the project, then populates a native store from a
+flat-scalar JSONL corpus through the release-verified companion runner's trusted
+importer, provisioning the store on first use. `client
 typescript` compiles and verifies the project, then emits the generated strict
 TypeScript client and the pinned Node supervision module. `lsp` runs the in-tree
 language server over stdio, serving diagnostics, formatting, hover, and definition
@@ -97,6 +102,7 @@ fn dispatch(command: &str, rest: &[String]) -> ExitCode {
         "fmt" => cmd_fmt::fmt(rest),
         "init" => cmd_init::init(rest),
         "run" => cmd_run::run(rest),
+        "import" => cmd_import::import(rest),
         "test" => cmd_test::test(rest),
         "client" => cmd_client::client(rest),
         "lsp" => cmd_lsp::lsp(rest),
