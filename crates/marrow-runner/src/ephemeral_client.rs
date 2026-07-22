@@ -225,6 +225,33 @@ mod tests {
         responder.join().expect("responder");
     }
 
+    /// A transport write failure — the send half is shut down before the request is written —
+    /// is `NotStarted`: the frame provably never reaches the runner, so the call did not run, and
+    /// the session is retired. This exercises the real failing-write arm (an `Io` error from the
+    /// socket), not the pre-set `dead` flag.
+    #[test]
+    fn a_failed_write_is_not_started() {
+        use std::net::Shutdown;
+
+        let image = marrow_verify::verify(&echo_bytes()).expect("verify");
+        let export = echo_export(&image);
+        let (mut session, _peer) = paired(&image);
+        session
+            .stream
+            .shutdown(Shutdown::Write)
+            .expect("shut down the send half");
+
+        match session.call(export, vec![]).expect("call") {
+            EphemeralCall::Lost(LossClass::NotStarted) => {}
+            _ => panic!("a failed write must classify NotStarted"),
+        }
+        // The session is retired: a later call still never starts and is never replayed.
+        match session.call(export, vec![]).expect("second call") {
+            EphemeralCall::Lost(LossClass::NotStarted) => {}
+            _ => panic!("a call after a failed write must remain NotStarted"),
+        }
+    }
+
     /// The runner dying after the request is dispatched — no reply frame — resolves as
     /// `OutcomeUnknown`. The peer reads the whole request (so the write completed and the call is
     /// genuinely dispatched) and then drops without replying.
