@@ -144,8 +144,12 @@ pub enum ImportError {
         reason: String,
         committed: ImportReport,
     },
-    /// Reading the source failed.
-    Io(std::io::Error),
+    /// Reading the source failed. The batches committed before the read error stay in the
+    /// store.
+    Io {
+        error: std::io::Error,
+        committed: ImportReport,
+    },
 }
 
 impl ImportError {
@@ -158,23 +162,22 @@ impl ImportError {
             ImportError::Denied => Code::RunAuthority.as_str(),
             ImportError::Row { .. } => Code::ConfigInvalid.as_str(),
             ImportError::Commit { .. } => Code::RunCommit.as_str(),
-            ImportError::Io(_) => Code::IoRead.as_str(),
+            ImportError::Io { .. } => Code::IoRead.as_str(),
         }
     }
 
     /// The rows committed before this error, or a zero report for failures that wrote nothing.
     pub fn committed(&self) -> ImportReport {
         match self {
-            ImportError::Row { committed, .. } | ImportError::Commit { committed, .. } => {
-                *committed
+            ImportError::Row { committed, .. }
+            | ImportError::Commit { committed, .. }
+            | ImportError::Io { committed, .. } => *committed,
+            ImportError::Open(_) | ImportError::UnsupportedShape { .. } | ImportError::Denied => {
+                ImportReport {
+                    rows_imported: 0,
+                    batches_committed: 0,
+                }
             }
-            ImportError::Open(_)
-            | ImportError::UnsupportedShape { .. }
-            | ImportError::Denied
-            | ImportError::Io(_) => ImportReport {
-                rows_imported: 0,
-                batches_committed: 0,
-            },
         }
     }
 }
@@ -204,7 +207,11 @@ impl std::fmt::Display for ImportError {
                 "a batch commit failed: {reason} ({} row(s) already committed)",
                 committed.rows_imported
             ),
-            ImportError::Io(error) => write!(f, "reading the import source failed: {error}"),
+            ImportError::Io { error, committed } => write!(
+                f,
+                "reading the import source failed: {error} ({} row(s) already committed)",
+                committed.rows_imported
+            ),
         }
     }
 }
@@ -424,8 +431,13 @@ pub(crate) fn import_rows_into(
 
     loop {
         buf.clear();
-        let read = read_line_bounded(&mut source, &mut buf, limits.max_line_bytes)
-            .map_err(map_read_error(report))?;
+        let read =
+            read_line_bounded(&mut source, &mut buf, limits.max_line_bytes).map_err(|error| {
+                ImportError::Io {
+                    error,
+                    committed: report,
+                }
+            })?;
         if read == LineRead::Eof {
             break;
         }
@@ -942,12 +954,6 @@ fn enforce_limit(len: usize, limit: usize) -> std::io::Result<()> {
     } else {
         Ok(())
     }
-}
-
-/// Map a read error into an [`ImportError::Io`], preserving the committed prefix in the message
-/// contract (the prefix itself is reported by [`ImportError::committed`]).
-fn map_read_error(_committed: ImportReport) -> impl FnOnce(std::io::Error) -> ImportError {
-    ImportError::Io
 }
 
 #[cfg(test)]
