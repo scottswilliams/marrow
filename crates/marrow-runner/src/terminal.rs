@@ -52,13 +52,14 @@ pub enum CallOutcome {
     },
     /// The runner declined the request with a typed code.
     Reject { code: String },
-    /// The request was dispatched to the runner, but the reply was lost to the runner's
-    /// death before it arrived, so the call's durable outcome is unknowable from this side
+    /// The request was dispatched to the runner, but no complete reply could be read after a
+    /// socket I/O failure, so the call's durable outcome is unknowable from this side
     /// ([`LossClass::OutcomeUnknown`](marrow_local_wire::LossClass::OutcomeUnknown)). It is
     /// **not** replayed — a mutating call whose outcome is unknown must never run twice — and
-    /// a read-only refresh observes the store's current state. Distinct from a runtime fault
-    /// (the call produced no typed reply) and from a pre-dispatch [`ClientError`] (which is
-    /// safe to consider undone): the call may have run, wholly or partly.
+    /// a read-only refresh observes the store's current state. Distinct from an arrived but
+    /// malformed reply, a runtime fault (which is a typed reply), and a pre-dispatch
+    /// [`ClientError`] (which is safe to consider undone): the call may have run, wholly or
+    /// partly.
     OutcomeUnknown,
 }
 

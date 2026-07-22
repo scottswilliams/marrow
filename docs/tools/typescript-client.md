@@ -73,7 +73,8 @@ A call resolves with the export's value, or rejects with:
 - `MarrowReject` — the runner refused the request (`runner.unknown_export`,
   `runner.arg_mismatch`, `runner.durable_unsupported`);
 - `WireFormatError` — a wire-grammar violation (`wire.*` codes);
-- `MarrowLossError` — the runner died before the reply arrived (below).
+- `MarrowLossError` — the session failed while the call was outstanding or no
+  complete reply became available after dispatch (below).
 
 `MarrowIncomplete` never contains a return value or a recovery witness.
 `known_old` proves that the interrupted commit did not change durable state;
@@ -101,7 +102,7 @@ streaming, replay, cancellation, or pagination.
 
 ## Loss classification
 
-When the runner dies with calls outstanding, each call rejects with a
+When the session fails with calls outstanding, each call rejects with a
 `MarrowLossError` carrying one of exactly three classes, decided by how far the
 call had progressed — never by retrying it:
 

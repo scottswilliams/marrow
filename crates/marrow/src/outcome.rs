@@ -98,7 +98,7 @@ impl Record {
                 None => code.to_string(),
             },
             Record::OutcomeUnknown => format!(
-                "{}: the call was dispatched but the runner died before replying, so its \
+                "{}: the call was dispatched but no complete reply could be read, so its \
                  outcome is unknown and it was not retried; run a read-only export to observe \
                  the store's current state",
                 marrow_codes::Code::RunOutcomeUnknown.as_str()

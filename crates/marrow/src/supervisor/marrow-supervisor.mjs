@@ -11,8 +11,9 @@
 // `ready`. Requests are served by ONE serial worker over a bounded queue; a lost
 // reply is classified — never replayed — into the closed loss classes
 // `not_started` / `interrupted` / `outcome_unknown` by how far the call had
-// progressed when the runner died. Each request gets one non-reused u32 turn that
-// its sole reply must echo, so a delayed old frame cannot settle a queued call.
+// progressed when the session failed or its reply became unavailable. Each request
+// gets one non-reused u32 turn that its sole reply must echo, so a delayed old frame
+// cannot settle a queued call.
 //
 // The wire grammar here mirrors the single Rust wire owner (`marrow-local-wire`):
 // length-prefixed frames with a version byte, and canonical JSON — object keys in

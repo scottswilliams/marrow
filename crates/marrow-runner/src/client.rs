@@ -109,9 +109,9 @@ mod tests {
     use crate::terminal::ClientError;
     use marrow_local_wire::{HandoffStage, LossClass, WireError, classify};
 
-    /// A reply lost to peer death after dispatch is classified `OutcomeUnknown`, matching the
-    /// wire loss model for a `Dispatched` handoff stage — the native one-shot call is reported
-    /// outcome-unknown, never replayed.
+    /// A reply lost to any socket-read I/O failure after dispatch is classified
+    /// `OutcomeUnknown`, matching the wire loss model for a `Dispatched` handoff stage — the
+    /// native one-shot call is reported outcome-unknown, never replayed.
     #[test]
     fn every_socket_read_io_after_dispatch_is_outcome_unknown() {
         for kind in [
