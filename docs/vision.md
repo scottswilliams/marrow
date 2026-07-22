@@ -118,27 +118,45 @@ Runtime access should be the intersection of verified demand, an exact accepted
 candidate, a separately owned maximum ceiling, and invocation attenuation at
 one path kernel.
 
-## Product progression
+## Purchasable horizons
 
-The v0.1 beta should establish two independent acceptance programs:
+Marrow's product progression is a sequence of horizons an adopter can rely on in
+turn. Each is a complete, usable capability rather than a checkpoint toward one
+distant release, and each keeps the same language semantics and durable data
+model, so reaching the next horizon does not rewrite the program. General-purpose
+here is a trajectory the design commits to, not a floor already reached: the near
+horizons are honest about their bounds, and no design may assume the program,
+data, team, or deployment stays small.
 
-- a useful storeless command-line program exercises the ordinary language,
-  package workflow, compiled image, verifier, VM, formatter, and editor facts;
-- a personal local application exercises durable values, transactions, ordered
-  trees, narrow managed indexes, executable/store binding, recovery, backup, and
-  restore. Its durable model is proven terminal-first, and its release gate is
-  invocation through a generated strict TypeScript client supervised by an
-  Electron/Node application whose end user installs neither Rust nor a database.
+- **A storeless command-line program.** A useful command-line program exercises
+  the ordinary language, package workflow, compiled image, verifier, VM,
+  formatter, and editor facts, with no store.
+- **A personal local application.** A durable application exercises durable
+  values, transactions, ordered trees, narrow managed indexes, executable/store
+  binding, recovery, backup, and restore. Its durable model is proven
+  terminal-first. The generated strict TypeScript client is its adoption
+  architecture rather than a later addition: the application is an ordinary
+  TypeScript/Electron program whose end user installs neither Rust nor a database,
+  and only its durable core is Marrow, reached through named typed exports over the
+  generated client. This horizon is the v0.1 beta release gate.
+- **A small served multi-terminal system.** The named mid-horizon is a small
+  served line-of-business system — a handful of terminals sharing one durable
+  store — running the same images, durable declarations, and ordinary business
+  functions under authenticated principal and client invocations. Becoming served
+  must not require a CRUD service layer or a second data model. The served-tier
+  posture is to match, not reinvent: concurrent execution, principal policy,
+  public paths, online evolution, replication, and high availability are met with
+  established designs rather than novel ones, and each is a separate later problem.
 
-The later served profile should run the same images, durable declarations, and
-ordinary business functions under authenticated principal/client invocations.
-Becoming served must not require a CRUD service layer or a second data model.
-Concurrent execution, principal policy, public paths, online evolution,
-replication, and high availability are separate later problems.
-
-Candidate domains include inventory, scheduling, work orders, case management,
-terminal systems, and clinical or administrative software. Naming those domains
-does not establish production, compliance, or institutional readiness.
+The far horizon is a scale shape, not a target the beta claims. Systems on the
+scale of a large clinical deployment — Epic-class hospital software, built on the
+same hierarchical durable lineage as MUMPS, is the reference point — show what
+direct hierarchical durable programming has to sustain in the largest cases. That
+shape informs which representations are permissible now; citing it establishes no
+production, compliance, or institutional readiness. Candidate domains include
+inventory, scheduling, work orders, case management, terminal systems, and
+clinical or administrative software, and naming a domain establishes nothing about
+readiness in it.
 
 ## Boundaries
 
