@@ -63,9 +63,7 @@ pub(crate) fn generate_client(
     );
     out.push_str("  static async launch(options: M.LaunchOptions): Promise<Client> {\n");
     out.push_str("    const session = await M.launch(options);\n");
-    out.push_str(
-        "    const expected = options.store === undefined ? INTERFACE_ID : IMAGE_ID;\n",
-    );
+    out.push_str("    const expected = options.store === undefined ? INTERFACE_ID : IMAGE_ID;\n");
     out.push_str("    if (session.interfaceId !== expected) {\n");
     out.push_str("      session.terminate();\n");
     out.push_str(
@@ -97,9 +95,7 @@ fn header(out: &mut String, id: InterfaceId, image_id: [u8; 32]) {
         "export const INTERFACE_ID = \"{}\";\n\n",
         id.to_hex()
     ));
-    out.push_str(
-        "/** The exact image identity a native attached-session launch proves back. */\n",
-    );
+    out.push_str("/** The exact image identity a native attached-session launch proves back. */\n");
     let image_hex: String = image_id.iter().map(|b| format!("{b:02x}")).collect();
     out.push_str(&format!("export const IMAGE_ID = \"{image_hex}\";\n\n"));
 }
