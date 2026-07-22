@@ -654,6 +654,11 @@ export function dSum(variants) {
  * options:
  * - `runner`: path to the `marrow-runner` executable;
  * - `image`: path to the compiled program image the runner serves;
+ * - `store` (optional): path to a provisioned persistent store directory. When
+ *   present, the runner is spawned as a native attached session over that store
+ *   (`attach --image <image> --store <store>`); when absent, a storeless session
+ *   (`--image <image>`). The store path is chosen by this trusted-main config,
+ *   never by the calling renderer.
  * - `log` (optional): `(chunk: Buffer) => void` receiving drained runner
  *   stderr/extra-stdout bytes (byte-clean; never interleaved with protocol).
  *
@@ -664,7 +669,14 @@ export function launch(options) {
   return new Promise((resolve, reject) => {
     const nonce = randomBytes(32).toString("hex");
     const log = options.log ?? (() => {});
-    const child = spawn(options.runner, ["--image", options.image], {
+    // The store, when set, selects the native attached-session launch. Both
+    // launches pass the image by `--image`; neither exposes a shell, an
+    // environment beyond the nonce, or a data path to the renderer.
+    const argv =
+      options.store === undefined
+        ? ["--image", options.image]
+        : ["attach", "--image", options.image, "--store", options.store];
+    const child = spawn(options.runner, argv, {
       shell: false,
       stdio: ["ignore", "pipe", "pipe"],
       env: { ...process.env, MARROW_RUNNER_NONCE: nonce },
@@ -773,6 +785,69 @@ export function launch(options) {
         if (!settled) failLaunch("socket closed during the handshake");
       });
     };
+  });
+}
+
+/**
+ * Provision a fresh persistent store for an image, one-shot.
+ *
+ * options:
+ * - `runner`: path to the `marrow-runner` executable;
+ * - `image`: path to the compiled program image to provision the store for;
+ * - `store`: the destination store directory (must not already exist);
+ * - `log` (optional): receives the runner's provision report (its stderr bytes).
+ *
+ * Spawns `provision --image <image> --store <store> --yes` without a shell, with
+ * the child's stdin closed, accepting the exact provision report and publishing
+ * the store. Resolves the parsed one-line JSON receipt (`{ instance, store }`)
+ * the runner prints on a clean exit, or rejects with a `LaunchError` on a
+ * non-zero exit or a spawn failure. This is a one-shot lifecycle action, not a
+ * `Session`: no channel is bound and no call is served. The destination is
+ * chosen by this trusted-main config, never by a calling renderer.
+ */
+export function provision(options) {
+  return new Promise((resolve, reject) => {
+    const log = options.log ?? (() => {});
+    const child = spawn(
+      options.runner,
+      ["provision", "--image", options.image, "--store", options.store, "--yes"],
+      { shell: false, stdio: ["ignore", "pipe", "pipe"], env: { ...process.env } },
+    );
+    let stdout = Buffer.alloc(0);
+    let settled = false;
+    const fail = (detail) => {
+      if (settled) return;
+      settled = true;
+      reject(new LaunchError(detail));
+    };
+    child.on("error", (error) => fail(`provision spawn failed: ${error.message}`));
+    child.stderr.on("data", log);
+    child.stdout.on("data", (chunk) => {
+      stdout = Buffer.concat([stdout, chunk]);
+    });
+    child.on("exit", (code) => {
+      if (settled) return;
+      if (code !== 0) {
+        fail(`provision exited with code ${code}`);
+        return;
+      }
+      // The receipt is the one canonical JSON line the runner prints on stdout;
+      // the human-readable report went to stderr (the `log`).
+      const line = stdout.toString("utf8").split("\n").filter((l) => l.length > 0).pop();
+      if (line === undefined) {
+        fail("provision printed no receipt");
+        return;
+      }
+      let receipt;
+      try {
+        receipt = parseCanonical(Buffer.from(line, "utf8"));
+      } catch (error) {
+        fail(`bad provision receipt: ${error.message}`);
+        return;
+      }
+      settled = true;
+      resolve(receipt);
+    });
   });
 }
 

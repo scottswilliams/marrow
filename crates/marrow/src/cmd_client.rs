@@ -109,7 +109,7 @@ pub(crate) fn client(rest: &[String]) -> ExitCode {
             item: entry.item.clone(),
         })
         .collect();
-    let client_source = tsgen::generate_client(&interface, &names);
+    let client_source = tsgen::generate_client(&interface, &names, image.image_id().0);
 
     if let Err(error) = std::fs::create_dir_all(&args.out) {
         crate::report_simple_error(

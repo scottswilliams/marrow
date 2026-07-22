@@ -2,12 +2,16 @@
 //
 // One named method per export; every value crossing the wire is validated
 // against the export's verified signature here and again by the runner.
-// This client and its runner are a matched pair, pinned by INTERFACE_ID.
+// This client and its runner are a matched pair, pinned by INTERFACE_ID
+// (storeless) and IMAGE_ID (the native attached-session `--store` launch).
 
 import * as M from "./marrow-supervisor.mjs";
 
 /** The identity of the wire interface this client was generated for. */
 export const INTERFACE_ID = "1b7824af5eca288fa9aeb8f92b69c9cb5111bdba79aebe61b002ff63a72cad6f";
+
+/** The exact image identity a native attached-session launch proves back. */
+export const IMAGE_ID = "090b9ae94f4bbbd84754121e672730a98d35db7b16a3c29c1f88a89aed84f20f";
 
 export class Client {
   private readonly session: M.Session;
@@ -17,12 +21,15 @@ export class Client {
   }
 
   /** Launch the runner and open one authenticated session; refuses a runner
-   * whose served interface is not the one this client was generated for. */
+   * whose served identity is not the one this client was generated for. A
+   * storeless launch proves the interface identity; a native attached-session
+   * launch (`options.store` set) proves the exact image identity. */
   static async launch(options: M.LaunchOptions): Promise<Client> {
     const session = await M.launch(options);
-    if (session.interfaceId !== INTERFACE_ID) {
+    const expected = options.store === undefined ? INTERFACE_ID : IMAGE_ID;
+    if (session.interfaceId !== expected) {
       session.terminate();
-      throw new Error(`interface mismatch: runner serves ${session.interfaceId}`);
+      throw new Error(`identity mismatch: runner serves ${session.interfaceId}`);
     }
     return new Client(session);
   }

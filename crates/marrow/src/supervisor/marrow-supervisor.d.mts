@@ -87,8 +87,31 @@ export interface LaunchOptions {
   runner: string;
   /** Path to the compiled program image the runner serves. */
   image: string;
+  /**
+   * Path to a provisioned persistent store directory. When present, the runner
+   * is spawned as a native attached session over that store; when absent, a
+   * storeless session. Chosen by trusted-main config, never by a renderer.
+   */
+  store?: string;
   /** Receives drained runner stderr/extra-stdout bytes. */
   log?: (chunk: Uint8Array) => void;
+}
+
+export interface ProvisionOptions {
+  /** Path to the `marrow-runner` executable. */
+  runner: string;
+  /** Path to the compiled program image to provision the store for. */
+  image: string;
+  /** The destination store directory (must not already exist). */
+  store: string;
+  /** Receives the runner's provision report (its stderr bytes). */
+  log?: (chunk: Uint8Array) => void;
+}
+
+/** The one-line receipt a clean provision prints: the store instance and path. */
+export interface ProvisionReceipt {
+  instance: string;
+  store: string;
 }
 
 export class Session {
@@ -99,3 +122,5 @@ export class Session {
 }
 
 export function launch(options: LaunchOptions): Promise<Session>;
+
+export function provision(options: ProvisionOptions): Promise<ProvisionReceipt>;
