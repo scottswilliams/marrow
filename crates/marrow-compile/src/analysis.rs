@@ -230,10 +230,9 @@ impl AnalysisSnapshot {
     /// [`Unavailability::Syntax`]; a call to a module that did not parse is
     /// [`Unavailability::Dependency`]; a valid position with no fact is `Absent`.
     ///
-    /// Floor boundary: positions inside a generic function's body yield `Absent` on this
-    /// floor — only monomorphic function and test bodies are collected, so a generic
-    /// template's per-position facts are future work with a named trigger (the H00c
-    /// breadth row).
+    /// A position inside a generic function's template body carries facts too: they are
+    /// collected once at the template (never per instance), and a template-parameter use
+    /// renders by its declared spelling.
     pub fn hover(&self, file: &FileIdentity, offset: usize) -> Result<Fact<Hover>, QueryError> {
         let source = self.source_of(file)?;
         if offset > source.len() {
@@ -264,9 +263,9 @@ impl AnalysisSnapshot {
     /// position in a module that did not parse is [`Unavailability::Syntax`]; a position
     /// with no callee fact (a local use, a literal, whitespace) is `Absent`.
     ///
-    /// Floor boundary: definition covers source-defined function callees only, and a
-    /// generic call targets its source template — not the local/parameter, type, import,
-    /// or field definitions deferred past this floor.
+    /// Definition covers source-defined function callees, including a call inside a generic
+    /// template body (collected once at the template); a generic call targets its source
+    /// template. Local/parameter, type, import, and field definitions are not covered.
     pub fn definition(
         &self,
         file: &FileIdentity,

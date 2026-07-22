@@ -334,18 +334,18 @@ fn fn_axis_scan_is_linear() {
     );
 }
 
-/// Editor hover facts are rendered only for the monomorphic bodies the editor queries;
-/// a generic instance's use-site spans duplicate its template's, so its facts are
-/// discarded and its use-site type spellings are never rendered. On a divergent
-/// monomorphization (`wrap` called at `Optionᵏ<int>` for growing `k`), the pre-repair
-/// per-instance render made the total spelling work `Σ O(k) = O(instances²)`; the repair
-/// holds `hover_spelling_chars` to the driver's monomorphic baseline — one constant-width
-/// signature display per generic call, so it grows ~linearly (2x per axis doubling) and
-/// stays under a linear ceiling. Before the repair the same measurements quadruple per
-/// doubling and blow past the ceiling (this is the recurrence gate: a future eager
-/// per-instance render fails here instead of silently reinflating the warm suite).
+/// Editor hover facts are rendered once per body the editor can query: each monomorphic
+/// body, and each generic template body (collected once at its template proof). A generic
+/// *instance* never re-renders — its use-site spans duplicate its template's — so the
+/// retained spelling work is linear in the number of source bodies, never in the
+/// instantiation multiplicity. The `w0..w_depth` chain grows one template per level, so
+/// `hover_spelling_chars` grows ~linearly (2x per axis doubling) under a linear ceiling.
+/// The recurrence gate: the pre-repair per-instance render on a divergent monomorphization
+/// (`w{level}` instantiated at `Optionᵏ<int>` for growing `k`) made the total
+/// `Σ O(k) = O(instances²)`, quadrupling per doubling and blowing past the ceiling. A
+/// future eager per-instance render fails here instead of silently reinflating the suite.
 #[test]
-fn instance_hover_spelling_is_not_rendered_so_the_axis_is_linear() {
+fn instance_hover_spelling_is_linear_in_template_count_not_quadratic_in_depth() {
     let a = counts_for(divergent_hover_fixture(64));
     let b = counts_for(divergent_hover_fixture(128));
     let c = counts_for(divergent_hover_fixture(256));
@@ -354,20 +354,21 @@ fn instance_hover_spelling_is_not_rendered_so_the_axis_is_linear() {
         let spelling_ratio = ratio(hi.hover_spelling_chars, lo.hover_spelling_chars);
         assert!(
             spelling_ratio <= 2.3,
-            "hover spelling work is the monomorphic driver baseline, not super-linear in \
-             the instantiation depth; chars {} -> {} ratio {spelling_ratio:.2} \
+            "hover spelling work is linear in the template count, not super-linear in the \
+             instantiation depth; chars {} -> {} ratio {spelling_ratio:.2} \
              (a per-instance render quadruples per doubling)",
             lo.hover_spelling_chars,
             hi.hover_spelling_chars,
         );
     }
 
-    // Absolute ceiling: the retained work is the driver's single generic call, so it is a
-    // small constant independent of the chain depth. A per-instance deep-type render
-    // (`Σ = O(depth²)`, ~3·256² ≈ 200k chars at depth=256) blows past this.
+    // Absolute linear ceiling: each of the `depth + 1` template bodies renders a bounded
+    // constant (its one parameter use and one constant-width generic-call signature), so
+    // the retained work is `O(depth)`. A per-instance deep-type render (`Σ = O(depth²)`,
+    // ~3·256² ≈ 200k chars at depth=256) blows past this.
     assert!(
-        c.hover_spelling_chars < 256,
-        "hover spelling work is the constant monomorphic baseline, not quadratic in the \
+        c.hover_spelling_chars < 64 * (256 + 1),
+        "hover spelling work is linear in the template count, not quadratic in the \
          instantiation depth: {} chars at depth=256",
         c.hover_spelling_chars,
     );

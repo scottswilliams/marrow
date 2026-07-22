@@ -421,6 +421,25 @@ impl<'a> FnLowerer<'a> {
         self.hover_facts.push((span, display, definition));
     }
 
+    /// The hover display of a local or parameter's value type. A bare template type
+    /// parameter renders by its declared spelling from the type-parameter environment
+    /// (`T`) rather than the positional `type parameter #N` form, so a hover inside a
+    /// generic template body reads the source name; every other type, and a monomorphic
+    /// body (whose environment is empty and whose types are never [`LTy::Param`]), defers
+    /// to the canonical spelling unchanged.
+    fn hover_type_display(&self, ty: LTy) -> String {
+        if let LTy::Param { index, optional } = ty
+            && let Some(slot) = self.type_env.get(index as usize)
+        {
+            return if optional {
+                format!("{}?", slot.name)
+            } else {
+                slot.name.clone()
+            };
+        }
+        ty.spelling(self.records)
+    }
+
     /// Lower `function` and add it to the draft, returning its assigned [`FuncId`]
     /// and the indices of the functions it calls directly. Export minting is the
     /// caller's job: it holds the dotted module name needed to compute the export's
@@ -567,15 +586,23 @@ impl<'a> FnLowerer<'a> {
             template.decl,
             type_env,
             LowerMode::Template,
-            // The template proof pass discards its emitted code and facts; render no hover
-            // displays.
-            false,
-        );
-        // Take the proof's diagnostics before the scope drops: `take_generic_diagnostics`
-        // drains the swapped-in buffer and limit owner that the guard then re-seats.
-        lowered.map(|_| TemplateProofOutcome {
+            // Collect editor facts once, at the template: the template body is checked
+            // exactly once (never per instance), so a template-parameter use renders by its
+            // declared spelling and no divergent-monomorphization O(N²) rendering occurs.
+            true,
+        )?;
+        // Take the proof's editor facts and diagnostics before the scope drops:
+        // `take_generic_diagnostics` drains the swapped-in buffer and limit owner that the
+        // guard then re-seats. The facts are owned data, materialized before the throwaway
+        // draft and registry clone are rewound.
+        let hover_facts = lowered
+            .map(|lowered| lowered.hover_facts)
+            .unwrap_or_default();
+        Ok(TemplateProofOutcome {
             diagnostics,
             generic: records.take_generic_diagnostics(),
+            hover_facts,
+            dependency_gaps,
         })
     }
 

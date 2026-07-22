@@ -812,8 +812,9 @@ fn drive(project: &ProjectInput, mode: TestMode) -> Driven {
 
 /// Analyze the cleanly-parsed modules: build the named types and function signatures,
 /// lower every body, and validate the whole, or return the accumulated failure tagged
-/// with the stage that produced it. Editor hover facts from each monomorphic function
-/// and test body are collected into `hover_facts` as they are lowered.
+/// with the stage that produced it. Editor hover facts from each monomorphic function and
+/// test body are collected into `hover_facts` as they are lowered, and each generic
+/// template body's facts once at its template proof.
 fn run_semantic(
     parsed: &[Module],
     project: &ProjectInput,
@@ -826,9 +827,9 @@ fn run_semantic(
     // Store roots whose durable identity failed admission, steered to their identity
     // reports once each across the whole compile rather than at every reference.
     let mut admission_steered: BTreeSet<String> = BTreeSet::new();
-    // A generic instance's callee spans duplicate its template's, so its dependency
-    // gaps (like its hover facts) are discarded to keep a generic body's positions
-    // `Absent` on this floor.
+    // A generic instance's callee spans duplicate its template's, whose facts are already
+    // collected once at the template proof, so an instance's dependency gaps (like its
+    // hover facts) are discarded rather than duplicated per instance.
     let mut discarded_gaps: Vec<(FileIdentity, SourceSpan)> = Vec::new();
 
     // The source-root-relative path is the authority for module identity. A file
@@ -1103,6 +1104,19 @@ fn run_semantic(
         };
         diagnostics.extend(outcome.diagnostics);
         records.adopt_generic_diagnostics(outcome.generic);
+        // Adopt the template body's editor facts, collected once at the template. A
+        // generic instance never re-collects these (its use-site spans duplicate the
+        // template's), so a position inside a generic body resolves to the template's fact
+        // and the divergent-monomorphization render stays off the O(N²) path.
+        for (span, display, definition) in outcome.hover_facts {
+            hover_facts.push(crate::analysis::HoverFact {
+                file: template.source_file().clone(),
+                span,
+                display,
+                definition,
+            });
+        }
+        dependency_gaps.extend(outcome.dependency_gaps);
         if records.has_instantiation_limit() {
             break;
         }

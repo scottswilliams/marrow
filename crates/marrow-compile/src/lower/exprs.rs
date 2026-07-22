@@ -118,7 +118,7 @@ impl<'a> FnLowerer<'a> {
                         // monomorphization would otherwise render it for each of O(N)
                         // discarded instances (Σ = O(N²)).
                         if self.collect_hover {
-                            let display = ty.spelling(self.records);
+                            let display = self.hover_type_display(ty);
                             self.record_hover(*span, display, None);
                         }
                         self.push(Instr::LocalGet(slot), *span);

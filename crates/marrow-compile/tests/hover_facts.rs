@@ -146,18 +146,40 @@ fn hover_on_a_cross_module_call_shows_the_resolved_signature() {
 }
 
 #[test]
-fn hover_inside_a_generic_body_is_absent_on_this_floor() {
-    // Only monomorphic function and test bodies are collected; a position inside a
-    // generic function's body is honestly `Absent` on this floor. A future change to
-    // this boundary must be a deliberate red here, not silent drift.
+fn hover_inside_a_generic_body_shows_the_template_parameter_spelling() {
+    // A position inside a generic function's template body carries a hover fact, collected
+    // once at the template. A template-parameter use renders by its declared spelling
+    // (`T`), not the positional `type parameter #0` form.
     let source = "pub fn id<T>(x: T): T {\n    return x\n}\n\n\
                   pub fn f(): int {\n    return id(1)\n}\n";
     let snapshot = snap(&[("src/main.mw", source)]);
     let use_offset = offset_of(source, "return x") + "return ".len();
-    assert!(matches!(
-        snapshot.hover(&identity("src/main.mw"), use_offset),
-        Ok(Fact::Absent)
-    ));
+    match snapshot.hover(&identity("src/main.mw"), use_offset) {
+        Ok(Fact::Present(hover)) => assert_eq!(hover.display(), "T"),
+        other => panic!(
+            "expected the template-parameter spelling, got {}",
+            label(&other)
+        ),
+    }
+}
+
+#[test]
+fn definition_inside_a_generic_body_targets_a_called_helper() {
+    // A call inside a generic template body resolves to its callee's declaration, collected
+    // once at the template.
+    let source = "pub fn helper(n: int): int {\n    return n\n}\n\n\
+                  pub fn wrap<T>(x: T): int {\n    return helper(1)\n}\n\n\
+                  pub fn f(): int {\n    return wrap(1)\n}\n";
+    let snapshot = snap(&[("src/main.mw", source)]);
+    let call_offset = offset_of(source, "return helper(1)") + "return ".len();
+    match snapshot.definition(&identity("src/main.mw"), call_offset) {
+        Ok(Fact::Present(def)) => {
+            let name = &source[def.name_span().start_byte..def.name_span().end_byte];
+            assert_eq!(name, "helper");
+            assert_eq!(def.name_span().start_byte, offset_of(source, "helper"));
+        }
+        other => panic!("expected the helper definition, got {}", label_def(&other)),
+    }
 }
 
 #[test]
@@ -346,6 +368,21 @@ fn a_call_to_a_non_utf8_module_is_dependency_unavailable() {
         snapshot.hover(&main_id, literal),
         Ok(Fact::Absent)
     ));
+}
+
+#[test]
+fn analysis_floor_boundary_comments_are_gone() {
+    // CORE-F4 closed the generic-template-body floor: hover and definition now cover
+    // positions inside a generic template body. The two "Floor boundary" comments that
+    // named that deferral must be gone so a stale timeline cannot contradict the behavior
+    // the tests above pin.
+    let analysis = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/analysis.rs"))
+        .expect("analysis.rs is readable");
+    assert!(
+        !analysis.contains("Floor boundary"),
+        "the stale `Floor boundary` comments must be deleted once generic-template-body \
+         facts are collected",
+    );
 }
 
 fn label_def(fact: &Result<Fact<Definition>, QueryError>) -> &'static str {
