@@ -26,10 +26,9 @@ pub use ast::{
     EnumPayloadField, Expression, FieldDecl, ForBinding, ForName, FunctionDecl, GroupDecl,
     IdentityTypeExpr, IfConstBinding, IndexDecl, InterpolationPart, KeyParam, LiteralKind,
     LoopOrder, MatchArm, ModuleDecl, NominalDecl, ParamDecl, ParsedSource, RangeExpr, Recovery,
-    ResourceDecl,
-    ResourceMember, SavedRoot, SourceFile, Statement, StoreDecl, StructDecl, SupportSpelling,
-    TestDecl, TraversalBound, TypeConstraint, TypeExpr, TypeParamDecl, UnaryOp, UseDecl,
-    range_expr,
+    ResourceDecl, ResourceMember, SavedRoot, SourceFile, Statement, StoreDecl, StructDecl,
+    SupportSpelling, TestDecl, TraversalBound, TypeConstraint, TypeExpr, TypeParamDecl, UnaryOp,
+    UseDecl, range_expr,
 };
 pub use diagnostic::{
     Diagnose, Diagnostic, DiagnosticReason, ExpectedSyntax, LexerDiagnosticReason,

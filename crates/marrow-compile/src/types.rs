@@ -2374,9 +2374,9 @@ impl TypeMetadataView<'_> {
                         pending.push((expected, *actual));
                     }
                 }
-                TypeExpr::Optional { .. }
-                | TypeExpr::Identity(_)
-                | TypeExpr::Incomplete { .. } => return Ok(false),
+                TypeExpr::Optional { .. } | TypeExpr::Identity(_) | TypeExpr::Incomplete { .. } => {
+                    return Ok(false);
+                }
             }
         }
         Ok(true)
@@ -10674,9 +10674,7 @@ mod instantiation_state_tests {
                     current = args.pop().expect("each List has one argument");
                 }
                 TypeExpr::Name { .. } => break,
-                TypeExpr::Optional { .. }
-                | TypeExpr::Identity(_)
-                | TypeExpr::Incomplete { .. } => {
+                TypeExpr::Optional { .. } | TypeExpr::Identity(_) | TypeExpr::Incomplete { .. } => {
                     panic!("the deep matcher fixture contains only List and T")
                 }
             }

@@ -251,7 +251,7 @@ pub(super) fn find_top_level_compound_assign(tokens: &[Token]) -> Option<usize> 
 }
 /// The zero-width gap position just after `anchor`, where a missing operand that
 /// follows a `=`/keyword/operator is reported.
-fn gap_after(anchor: SourceSpan) -> SourceSpan {
+pub(super) fn gap_after(anchor: SourceSpan) -> SourceSpan {
     SourceSpan {
         start_byte: anchor.end_byte,
         end_byte: anchor.end_byte,

@@ -25,6 +25,49 @@ fn const_value(source: &str) -> Expression {
 }
 
 #[test]
+fn recovery_slot_is_populated_only_by_incomplete_forms() {
+    // Agreement gate for the recovery widening: a well-formed program never
+    // populates the recovery slot or the incomplete-type leaf, so its parsed shape
+    // — and therefore its compiled image and diagnostics — is byte-identical to
+    // before the widening. Every recovery node and every `TypeExpr::Incomplete`
+    // travels with a parse diagnostic, so `has_errors` is the sound proxy: the whole
+    // documented corpus parses clean, hence carries neither. The non-vacuous half
+    // below shows the incomplete forms do produce them.
+    for block in common::documented_source_blocks() {
+        let parsed = parse_source(&block.source);
+        assert!(
+            !parsed.has_errors(),
+            "documented block {} must parse clean, so it populates no recovery slot: {:#?}",
+            block.path,
+            parsed.diagnostics
+        );
+    }
+
+    // Non-vacuous: each incomplete surface form does populate the slot / leaf.
+    assert!(matches!(
+        const_value("const X = book.\n"),
+        Expression::Error {
+            recovery: Some(Recovery::Member { .. }),
+            ..
+        }
+    ));
+    assert!(matches!(
+        const_value("const X = book?.\n"),
+        Expression::Error {
+            recovery: Some(Recovery::OptionalMember { .. }),
+            ..
+        }
+    ));
+    assert!(matches!(
+        const_value("const X = Role::\n"),
+        Expression::Error {
+            recovery: Some(Recovery::Path { .. }),
+            ..
+        }
+    ));
+}
+
+#[test]
 fn member_dot_eof_recovers_base() {
     // `book.` with no field name is the incomplete member-access form. The parser
     // structures a recovery node that preserves the receiver `book` so a position

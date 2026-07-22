@@ -13,8 +13,8 @@ use crate::{
     Argument, BinaryOp, CompoundAssignOp, Diagnostic, DiagnosticReason, ExpectedSyntax, Expression,
     InterpolationPart, Keyword, LiteralKind, NESTING_DEPTH_LIMIT, NESTING_LIMIT, PARSE_SYNTAX,
     ParseDiagnosticReason, Recovery, Severity, SourceSpan, Token, TokenKind, UnaryOp,
-    UnsupportedSyntax,
-    duration_unit_seconds, is_expression_callable_keyword, is_expression_path_segment_keyword,
+    UnsupportedSyntax, duration_unit_seconds, is_expression_callable_keyword,
+    is_expression_path_segment_keyword,
 };
 
 /// The remedy shared by the comparison and equality non-associative levels: the
@@ -112,7 +112,13 @@ impl<'a> ExprParser<'a> {
         // kept in the tree so position analysis can classify it, unlike a bare error
         // for which the caller substitutes its own placeholder. Its diagnostic is
         // already reported, so the slice still counts as having errors.
-        let has_recovery = matches!(&expr, Expression::Error { recovery: Some(_), .. });
+        let has_recovery = matches!(
+            &expr,
+            Expression::Error {
+                recovery: Some(_),
+                ..
+            }
+        );
         let result = if expr.is_error() && !has_recovery {
             ParseComplete::Reported
         } else if self.report_stray_assignment_operator() {
@@ -749,63 +755,57 @@ impl<'a> ExprParser<'a> {
                         span,
                     };
                 }
-                Some(TokenKind::Dot) => {
-                    match self.field_segment() {
-                        FieldSegment::Named {
+                Some(TokenKind::Dot) => match self.field_segment() {
+                    FieldSegment::Named {
+                        name,
+                        quoted,
+                        name_span,
+                    } => {
+                        let span = join_spans(expr.span(), name_span);
+                        expr = Expression::Field {
+                            base: Box::new(expr),
                             name,
-                            quoted,
                             name_span,
-                        } => {
-                            let span = join_spans(expr.span(), name_span);
-                            expr = Expression::Field {
-                                base: Box::new(expr),
-                                name,
-                                name_span,
-                                quoted,
-                                span,
-                            };
-                        }
-                        FieldSegment::Missing { gap } => {
-                            self.leave_chain(levels);
-                            return recovery_node(expr, gap, |base| Recovery::Member { base });
-                        }
-                        FieldSegment::Reported(error) => {
-                            self.leave_chain(levels);
-                            return error;
-                        }
+                            quoted,
+                            span,
+                        };
                     }
-                }
+                    FieldSegment::Missing { gap } => {
+                        self.leave_chain(levels);
+                        return recovery_node(expr, gap, |base| Recovery::Member { base });
+                    }
+                    FieldSegment::Reported(error) => {
+                        self.leave_chain(levels);
+                        return error;
+                    }
+                },
                 // `base?.name`: the same field segment as `.`, but the read
                 // short-circuits to absent rather than failing if the base or field
                 // is missing.
-                Some(TokenKind::QuestionDot) => {
-                    match self.field_segment() {
-                        FieldSegment::Named {
+                Some(TokenKind::QuestionDot) => match self.field_segment() {
+                    FieldSegment::Named {
+                        name,
+                        quoted,
+                        name_span,
+                    } => {
+                        let span = join_spans(expr.span(), name_span);
+                        expr = Expression::OptionalField {
+                            base: Box::new(expr),
                             name,
-                            quoted,
                             name_span,
-                        } => {
-                            let span = join_spans(expr.span(), name_span);
-                            expr = Expression::OptionalField {
-                                base: Box::new(expr),
-                                name,
-                                name_span,
-                                quoted,
-                                span,
-                            };
-                        }
-                        FieldSegment::Missing { gap } => {
-                            self.leave_chain(levels);
-                            return recovery_node(expr, gap, |base| Recovery::OptionalMember {
-                                base,
-                            });
-                        }
-                        FieldSegment::Reported(error) => {
-                            self.leave_chain(levels);
-                            return error;
-                        }
+                            quoted,
+                            span,
+                        };
                     }
-                }
+                    FieldSegment::Missing { gap } => {
+                        self.leave_chain(levels);
+                        return recovery_node(expr, gap, |base| Recovery::OptionalMember { base });
+                    }
+                    FieldSegment::Reported(error) => {
+                        self.leave_chain(levels);
+                        return error;
+                    }
+                },
                 _ => break,
             }
         }

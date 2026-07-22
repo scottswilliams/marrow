@@ -7,8 +7,8 @@ use super::head::{parse_enum_head, parse_resource_head, parse_store_head, parse_
 use super::params::parse_function_head;
 use super::stmt::StmtParser;
 use super::tokens::{
-    PathNameError, comment_from_token, doc_comment_text, find_top_level_equal, import_name,
-    line_span_or, module_name, parse_type,
+    PathNameError, comment_from_token, doc_comment_text, find_top_level_equal, gap_after,
+    import_name, line_span_or, module_name, parse_type,
 };
 use crate::ast::{
     AliasDecl, Block, Comment, CommentMarker, CommentPlacement, ConstDecl, Declaration, EnumDecl,
@@ -457,7 +457,14 @@ impl<'a> DeclParser<'a> {
                 ParseDiagnosticReason::Expected(ExpectedSyntax::ConstType),
                 "expected const type annotation",
             );
-            None
+            // `Name: ` with a `:` but no type spelling is the incomplete type
+            // annotation form. Keep an inert leaf at the gap after the `:` so the
+            // annotation site stays addressable for editor position classification;
+            // the diagnostic above already reported it, so the file stays broken.
+            let gap = colon
+                .and_then(|index| head.get(index))
+                .map_or(span, |token| gap_after(token.span));
+            Some(TypeExpr::Incomplete { span: gap })
         });
         (name, ty)
     }

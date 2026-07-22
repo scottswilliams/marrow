@@ -2,10 +2,10 @@
 //! source order, and the reference sample's declaration shape.
 
 use crate::common;
-use common::{lexer_reason, parse_reason, reason_count};
+use common::{has_reason, lexer_reason, parse_reason, reason_count};
 use marrow_syntax::{
     Declaration, ExpectedSyntax, LexerDiagnosticReason, PARSE_SYNTAX, ParseDiagnosticReason,
-    ResourceMember, parse_source,
+    ResourceMember, TypeExpr, parse_source,
 };
 
 /// Corpus smoke test (one owner): every fenced `mw` block is a complete source
@@ -664,4 +664,30 @@ fn rejects_tabs_because_marrow_blocks_are_space_indented() {
         lexer_reason(LexerDiagnosticReason::TabIndentation),
     );
     assert_eq!(tab_reports, 1, "{:#?}", parsed.diagnostics);
+}
+
+#[test]
+fn const_colon_with_no_type_recovers_incomplete_annotation() {
+    // `const Bad: = 5` has a `:` introducing a type annotation but no type spelling
+    // after it. The parser keeps an inert `TypeExpr::Incomplete` leaf so the
+    // annotation site stays addressable, rather than dropping the annotation, and
+    // still reports the missing-type diagnostic so the file stays honestly broken.
+    let parsed = parse_source("const Bad: = 5\n");
+    assert!(parsed.has_errors(), "{:#?}", parsed.diagnostics);
+    assert!(
+        has_reason(
+            &parsed.diagnostics,
+            parse_reason(ParseDiagnosticReason::Expected(ExpectedSyntax::ConstType))
+        ),
+        "expected the missing const-type diagnostic: {:#?}",
+        parsed.diagnostics
+    );
+    let Declaration::Const(decl) = &parsed.file.declarations[0] else {
+        panic!("expected a const declaration");
+    };
+    assert!(
+        matches!(decl.ty, Some(TypeExpr::Incomplete { .. })),
+        "expected an incomplete type annotation, got {:?}",
+        decl.ty
+    );
 }

@@ -1074,3 +1074,32 @@ fn check_format_is_the_one_owned_format_policy() {
         other => panic!("expected ParseInvalid, got {other:?}"),
     }
 }
+
+#[test]
+fn check_format_refuses_sources_carrying_recovery_nodes() {
+    use marrow_syntax::{FormatRefusal, check_format};
+
+    // A parser-owned recovery node (`base.`, `Enum::`) or an incomplete type
+    // annotation always travels with its parse diagnostic, so `has_errors` is true
+    // and the one format policy refuses before any node reaches the formatter's node
+    // dispatch. No recovery-aware refusal logic lives in the formatter itself; the
+    // existing `has_errors` gate is the sole guard.
+    for source in [
+        "pub fn f() {\n    return book.\n}\n",  // Recovery::Member
+        "pub fn f() {\n    return book?.\n}\n", // Recovery::OptionalMember
+        "pub fn f() {\n    return Role::\n}\n", // Recovery::Path
+        "const Bad: = 5\n",                     // TypeExpr::Incomplete
+    ] {
+        assert!(
+            parse_source(source).has_errors(),
+            "expected a recovery-bearing source to have errors: {source:?}"
+        );
+        match check_format(source) {
+            Err(FormatRefusal::ParseInvalid(diagnostics)) => assert!(
+                !diagnostics.is_empty(),
+                "refusal must carry the parse diagnostics: {source:?}"
+            ),
+            other => panic!("expected ParseInvalid for {source:?}, got {other:?}"),
+        }
+    }
+}
