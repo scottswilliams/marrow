@@ -11,6 +11,69 @@ use marrow_image::{
 };
 use std::rc::Rc;
 
+#[cfg(test)]
+mod table_scaling_tests;
+
+struct DecodedTable<T> {
+    rows: T,
+    name_checks: usize,
+    name_count: usize,
+}
+
+impl<T> DecodedTable<T> {
+    fn within_linear_budget(self, detail: &'static str) -> Result<T, VerifyRejection> {
+        if self.name_checks != self.name_count {
+            return Err(reject(VerifyPhase::Table, detail));
+        }
+        Ok(self.rows)
+    }
+}
+
+struct NameMarks {
+    generations: Vec<u16>,
+    generation: u16,
+    name_checks: usize,
+    name_count: usize,
+}
+
+impl NameMarks {
+    fn new(name_count: usize) -> Self {
+        Self {
+            generations: vec![0; name_count],
+            generation: 0,
+            name_checks: 0,
+            name_count: 0,
+        }
+    }
+
+    fn begin_row(&mut self, name_count: usize) {
+        self.generation = self
+            .generation
+            .checked_add(1)
+            .expect("table row count is bounded below u16::MAX");
+        self.name_count = self
+            .name_count
+            .checked_add(name_count)
+            .expect("table byte bounds cap member occurrences below usize::MAX");
+    }
+
+    fn insert(&mut self, name: u16) -> bool {
+        self.name_checks += 1;
+        let mark = &mut self.generations[name as usize];
+        let duplicate = *mark == self.generation;
+        *mark = self.generation;
+        duplicate
+    }
+
+    fn finish<T>(self, rows: T) -> DecodedTable<T> {
+        DecodedTable {
+            rows,
+            name_checks: self.name_checks,
+            name_count: self.name_count,
+        }
+    }
+}
+
 /// Decode the TEST-ENTRY table (section 0x08): a count, then each `u16 name index
 /// ‖ u16 function index` entry in strictly ascending, unique name-index order. The
 /// name index resolves a report label; the function index a storeless test body.
@@ -126,6 +189,14 @@ pub(super) fn decode_types(
     body: &[u8],
     string_count: usize,
 ) -> Result<Vec<DecodedRecordType>, VerifyRejection> {
+    decode_types_with_work(body, string_count)?
+        .within_linear_budget("record duplicate-name projection exceeds its linear work budget")
+}
+
+fn decode_types_with_work(
+    body: &[u8],
+    string_count: usize,
+) -> Result<DecodedTable<Vec<DecodedRecordType>>, VerifyRejection> {
     let mut reader = Reader::new(body);
     let count = reader
         .u16()
@@ -134,6 +205,7 @@ pub(super) fn decode_types(
         return Err(reject(VerifyPhase::Table, "too many record types"));
     }
     let mut types = Vec::with_capacity(count);
+    let mut names = NameMarks::new(string_count);
     for _ in 0..count {
         let name = reader
             .u16()
@@ -148,8 +220,8 @@ pub(super) fn decode_types(
         if field_count > marrow_image::bounds::MAX_RECORD_FIELDS {
             return Err(reject(VerifyPhase::Table, "too many fields"));
         }
+        names.begin_row(field_count);
         let mut fields = Vec::with_capacity(field_count);
-        let mut seen_names: Vec<u16> = Vec::with_capacity(field_count);
         for _ in 0..field_count {
             let fname = reader
                 .u16()
@@ -157,10 +229,9 @@ pub(super) fn decode_types(
             if fname as usize >= string_count {
                 return Err(reject(VerifyPhase::Table, "field name index out of range"));
             }
-            if seen_names.contains(&fname) {
+            if names.insert(fname) {
                 return Err(reject(VerifyPhase::Table, "duplicate field name in record"));
             }
-            seen_names.push(fname);
             let tag = reader
                 .u8()
                 .ok_or(reject(VerifyPhase::Table, "short field type"))?;
@@ -189,7 +260,7 @@ pub(super) fn decode_types(
     if !reader.is_empty() {
         return Err(reject(VerifyPhase::Table, "trailing bytes in type table"));
     }
-    Ok(types)
+    Ok(names.finish(types))
 }
 
 /// Decode the ENUMS table (section 0x09): a count, then per enum its name string
@@ -204,6 +275,15 @@ pub(super) fn decode_enums(
     string_count: usize,
     type_count: usize,
 ) -> Result<Vec<DecodedEnum>, VerifyRejection> {
+    decode_enums_with_work(body, string_count, type_count)?
+        .within_linear_budget("enum duplicate-name projection exceeds its linear work budget")
+}
+
+fn decode_enums_with_work(
+    body: &[u8],
+    string_count: usize,
+    type_count: usize,
+) -> Result<DecodedTable<Vec<DecodedEnum>>, VerifyRejection> {
     let mut reader = Reader::new(body);
     let count = reader
         .u16()
@@ -212,6 +292,7 @@ pub(super) fn decode_enums(
         return Err(reject(VerifyPhase::Table, "too many enums"));
     }
     let mut enums = Vec::with_capacity(count);
+    let mut names = NameMarks::new(string_count);
     for _ in 0..count {
         let name = reader
             .u16()
@@ -226,8 +307,8 @@ pub(super) fn decode_enums(
         if variant_count > marrow_image::bounds::MAX_VARIANTS {
             return Err(reject(VerifyPhase::Table, "too many enum variants"));
         }
+        names.begin_row(variant_count);
         let mut variants = Vec::with_capacity(variant_count);
-        let mut seen_names: Vec<u16> = Vec::with_capacity(variant_count);
         for _ in 0..variant_count {
             let vname = reader
                 .u16()
@@ -238,10 +319,9 @@ pub(super) fn decode_enums(
                     "variant name index out of range",
                 ));
             }
-            if seen_names.contains(&vname) {
+            if names.insert(vname) {
                 return Err(reject(VerifyPhase::Table, "duplicate variant name in enum"));
             }
-            seen_names.push(vname);
             let category_byte = reader
                 .u8()
                 .ok_or(reject(VerifyPhase::Table, "short variant category flag"))?;
@@ -285,7 +365,7 @@ pub(super) fn decode_enums(
     if !reader.is_empty() {
         return Err(reject(VerifyPhase::Table, "trailing bytes in enum table"));
     }
-    Ok(enums)
+    Ok(names.finish(enums))
 }
 
 /// Decode the COLLTYPES table (section 0x0A): a count, then per collection type a
