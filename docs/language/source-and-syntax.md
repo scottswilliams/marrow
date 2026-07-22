@@ -45,7 +45,7 @@ these reserved or contextual words:
 module use pub const var fn return alias type supports resource struct required store index unique test assert
 enum category match is
 if else while for in reversed by at most from on more
-break continue transaction place checked try delete unset
+break continue transaction place checked try require delete unset
 and or not true false absent
 int bool string bytes decimal date instant duration unknown Error ErrorCode Id
 ```
