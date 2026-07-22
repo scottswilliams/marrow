@@ -24,7 +24,7 @@
     },
     "keywords": {
       "patterns": [
-        { "name": "keyword.other.marrow", "match": "\\b(transaction|declassify|ErrorCode|sensitive|continue|duration|required|resource|supports|checked|decimal|instant|journal|unknown|absent|assert|delete|module|return|string|struct|unique|writes|Error|alias|break|bytes|const|false|index|match|merge|place|reads|store|unset|while|bool|date|else|enum|lock|test|true|type|and|for|int|not|pub|try|use|var|Id|fn|if|in|is|or)\\b" }
+        { "name": "keyword.other.marrow", "match": "\\b(transaction|declassify|ErrorCode|sensitive|continue|duration|required|resource|supports|checked|decimal|instant|journal|require|unknown|absent|assert|delete|module|return|string|struct|unique|writes|Error|alias|break|bytes|const|false|index|match|merge|place|reads|store|unset|while|bool|date|else|enum|lock|test|true|type|and|for|int|not|pub|try|use|var|Id|fn|if|in|is|or)\\b" }
       ]
     },
     "numbers": {

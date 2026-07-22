@@ -823,6 +823,18 @@ pub enum Statement {
         else_block: Block,
         span: SourceSpan,
     },
+    /// `require <condition> else <value>`: a boolean guard statement. The
+    /// condition is a `bool`; the value is the bare failure value of the
+    /// enclosing function's `Result` error type, evaluated only on the failure
+    /// path. Pure lowering sugar for `if not <condition> { return err(<value>) }`;
+    /// like prefix `try`, its implicit failure exit carries no transaction
+    /// commit, so the checker rejects it on a path that would exit a region its
+    /// own function owns.
+    Require {
+        condition: Expression,
+        value: Expression,
+        span: SourceSpan,
+    },
     While {
         condition: Expression,
         body: Block,
@@ -998,6 +1010,7 @@ impl Statement {
             | Self::IfConst { span, .. }
             | Self::IfConstChain { span, .. }
             | Self::LetElse { span, .. }
+            | Self::Require { span, .. }
             | Self::While { span, .. }
             | Self::For { span, .. }
             | Self::Transaction { span, .. }

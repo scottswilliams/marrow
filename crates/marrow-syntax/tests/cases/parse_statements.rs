@@ -926,3 +926,88 @@ fn place_binding_formats_idempotently() {
     assert!(once.contains("place book = ^books[id]"), "{once}");
     assert!(parse_source(&once).diagnostics.is_empty());
 }
+
+// ---------------------------------------------------------------------------
+// `require <condition> else <value>`
+// ---------------------------------------------------------------------------
+
+#[test]
+fn parses_a_require_guard() {
+    let parsed = parse_source(
+        "module app\nfn main(n: int): Result<int, string> {\n    require n > 0 else \"not positive\"\n    return ok(n)\n}\n",
+    );
+    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    let main = parsed.file.function("main").expect("main function");
+    assert!(
+        matches!(
+            &main.body.statements[0],
+            Statement::Require { condition: Expression::Binary { .. }, value: Expression::Literal { .. }, .. }
+        ),
+        "stmt 0: {:?}",
+        main.body.statements[0]
+    );
+}
+
+/// The `else` split is top-level only: an `else` inside brackets (a nested call
+/// or key group) does not end the condition, and the failure value may itself
+/// carry parenthesized structure.
+#[test]
+fn require_splits_on_the_top_level_else_only() {
+    let parsed = parse_source(
+        "module app\nfn main(n: int): Result<int, string> {\n    require check(n) else render(n, \"low\")\n    return ok(n)\n}\n",
+    );
+    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    let main = parsed.file.function("main").expect("main function");
+    assert!(
+        matches!(
+            &main.body.statements[0],
+            Statement::Require { condition: Expression::Call { .. }, value: Expression::Call { .. }, .. }
+        ),
+        "stmt 0: {:?}",
+        main.body.statements[0]
+    );
+}
+
+/// A `require` without its mandatory `else <value>` tail is one bounded parse
+/// error, and the line is dropped without cascading.
+#[test]
+fn a_require_without_else_is_one_parse_error() {
+    let parsed = parse_source("module app\nfn main(n: int) {\n    require n > 0\n    return\n}\n");
+    assert!(
+        has_reason(
+            &parsed.diagnostics,
+            parse_reason(ParseDiagnosticReason::Expected(ExpectedSyntax::RequireElse)),
+        ),
+        "{:#?}",
+        parsed.diagnostics
+    );
+    assert_eq!(parsed.diagnostics.len(), 1, "{:#?}", parsed.diagnostics);
+}
+
+/// `require` is a reserved word: it cannot stand as a binding name, and a bare
+/// `require` line missing both operands is a bounded error.
+#[test]
+fn require_is_reserved_and_rejected_as_an_identifier() {
+    let as_const_name = parse_source("module app\nfn main() {\n    const require = 1\n}\n");
+    assert!(!as_const_name.diagnostics.is_empty(), "const-name position");
+
+    let as_fn_name = parse_source("module app\nfn require() {\n}\n");
+    assert!(!as_fn_name.diagnostics.is_empty(), "fn-name position");
+
+    let as_expression = parse_source("module app\nfn main() {\n    const x = require\n}\n");
+    assert!(!as_expression.diagnostics.is_empty(), "expression position");
+
+    let bare = parse_source("module app\nfn main() {\n    require\n}\n");
+    assert!(!bare.diagnostics.is_empty(), "bare keyword line");
+}
+
+/// A short `require` formats on one line and is a formatting fixed point.
+#[test]
+fn require_formats_idempotently() {
+    let source = "module app\nfn main(n: int): Result<int, string> {\n    require n > 0 else \"not positive\"\n    return ok(n)\n}\n";
+    let once = format_source(source);
+    let twice = format_source(&once);
+    assert_eq!(once, twice, "formatting is a fixed point:\n{once}");
+    assert!(once.contains("require n > 0 else \"not positive\""), "{once}");
+    assert!(parse_source(&once).diagnostics.is_empty());
+}

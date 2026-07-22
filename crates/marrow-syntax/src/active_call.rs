@@ -612,6 +612,7 @@ fn collect_statement_type_refs(statement: &Statement, type_refs: &mut ByteRanges
         | Statement::Continue { .. }
         | Statement::Assert { .. }
         | Statement::Expr { .. }
+        | Statement::Require { .. }
         | Statement::Error { .. } => {}
     }
 }

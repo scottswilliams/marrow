@@ -1361,6 +1361,10 @@ mod completion {
                 .and_then(|value| locate_expression(value, offset)),
             Statement::Assert { value, .. } => locate_expression(value, offset),
             Statement::Expr { value, .. } => locate_expression(value, offset),
+            Statement::Require {
+                condition, value, ..
+            } => locate_expression(condition, offset)
+                .or_else(|| locate_expression(value, offset)),
             Statement::If {
                 condition,
                 then_block,
@@ -2145,6 +2149,12 @@ mod active_call {
             }
             Statement::Assert { value, .. } | Statement::Expr { value, .. } => {
                 collect_expression_calls(value, sink)
+            }
+            Statement::Require {
+                condition, value, ..
+            } => {
+                collect_expression_calls(condition, sink);
+                collect_expression_calls(value, sink);
             }
             Statement::If {
                 condition,

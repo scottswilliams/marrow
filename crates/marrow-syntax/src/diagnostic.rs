@@ -146,6 +146,8 @@ pub enum ExpectedSyntax {
     NominalSupports,
     ParameterName,
     ParameterType,
+    /// A `require` statement without its mandatory `else <value>` tail.
+    RequireElse,
     ResourceBody,
     ResourceHeader,
     ResourceMemberName,

@@ -228,6 +228,9 @@ fn stmt_has_error(stmt: &Statement) -> bool {
         Statement::LetElse {
             value, else_block, ..
         } => expr_has_error(value) || block_has_error(else_block),
+        Statement::Require {
+            condition, value, ..
+        } => expr_has_error(condition) || expr_has_error(value),
         Statement::Break { .. } | Statement::Continue { .. } => false,
     }
 }

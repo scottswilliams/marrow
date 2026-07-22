@@ -1166,6 +1166,16 @@ fn format_statement_with_comments(
             format!("{pad}assert {}", format_expression_at(value, level))
         }
         Statement::Expr { value, .. } => format!("{pad}{}", format_expression_at(value, level)),
+        // `require <condition> else <value>` renders on one line; a long failure
+        // value breaks inside its constructor's parentheses (the multiline
+        // argument layout the constructor already has), never after `else`.
+        Statement::Require {
+            condition, value, ..
+        } => format!(
+            "{pad}require {} else {}",
+            format_expression_at(condition, level),
+            format_expression_at(value, level)
+        ),
         Statement::If {
             condition,
             then_block,

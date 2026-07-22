@@ -246,6 +246,7 @@ impl<'a> StmtParser<'a> {
                 return None;
             }
             TokenKind::Keyword(Keyword::Try) => return self.try_statement(),
+            TokenKind::Keyword(Keyword::Require) => return Some(self.require_stmt()),
             TokenKind::Keyword(Keyword::Match) => return Some(self.match_stmt()),
             TokenKind::Keyword(Keyword::Assert) => return Some(self.assert_stmt()),
             TokenKind::Keyword(keyword) if is_stray_block_clause_keyword(keyword) => {
@@ -810,6 +811,53 @@ impl<'a> StmtParser<'a> {
             value,
             span: join_spans(start, else_block.span),
             else_block,
+        }
+    }
+
+    /// Parse `require <condition> else <value>`: the header keyword, a bool
+    /// condition up to the first top-level `else`, and the bare failure value
+    /// running to the end of the line. The value is an expression, never a
+    /// statement — the wrap in `err(...)` and the return are implicit under the
+    /// mark — and the checker types it against the enclosing function's `Result`
+    /// error type.
+    fn require_stmt(&mut self) -> Statement {
+        let keyword = self.advance(); // `require`
+        let line = self.take_line();
+        let error_span = line_span_or(line, keyword.span);
+        let Some(else_offset) = find_top_level_else(line) else {
+            self.error_span_reason(
+                error_span,
+                ParseDiagnosticReason::Expected(ExpectedSyntax::RequireElse),
+                "a `require` guard is `require <condition> else <value>`",
+            );
+            return Statement::Error { span: error_span };
+        };
+        let condition = expr_of_after(
+            self.source,
+            &line[..else_offset],
+            keyword.span,
+            &mut self.diagnostics,
+        )
+        .unwrap_or(Expression::Error {
+            span: line_span_or(&line[..else_offset], keyword.span),
+            recovery: None,
+        });
+        let else_span = line[else_offset].span;
+        let value = expr_of_after(
+            self.source,
+            &line[else_offset + 1..],
+            else_span,
+            &mut self.diagnostics,
+        )
+        .unwrap_or(Expression::Error {
+            span: line_span_or(&line[else_offset + 1..], else_span),
+            recovery: None,
+        });
+        let span = join_spans(keyword.span, value.span());
+        Statement::Require {
+            condition,
+            value,
+            span,
         }
     }
 
