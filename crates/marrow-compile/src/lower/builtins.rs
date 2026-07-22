@@ -169,6 +169,37 @@ pub(crate) fn is_reserved_builtin_name(name: &str) -> bool {
     Builtin::from_name(name).is_some()
 }
 
+/// The closed set of value-level built-in spellings, in a stable order, for the editor
+/// completion namespace. This is the same set [`Builtin::from_name`] classifies; the
+/// single owner exposes it here so the completion enumerator does not restate the list.
+pub(crate) fn builtin_value_names() -> &'static [&'static str] {
+    &[
+        "none", "some", "ok", "err", "exists", "unreachable", "todo", "isEmpty", "contains",
+        "trim", "split", "lines", "join", "addDays", "daysBetween", "List", "Map", "Id",
+    ]
+}
+
+#[cfg(test)]
+mod builtin_name_tests {
+    use super::{Builtin, builtin_value_names};
+
+    /// The exposed completion list is exactly the set the classifier recognizes: every
+    /// listed name classifies, and the two counts agree, so a new built-in cannot be added
+    /// to the classifier without appearing in the completion namespace.
+    #[test]
+    fn completion_names_match_the_classifier() {
+        for name in builtin_value_names() {
+            assert!(
+                Builtin::from_name(name).is_some(),
+                "`{name}` is offered for completion but is not a classified built-in",
+            );
+        }
+        // `none`/`some`/`ok`/`err` are the four constructor built-ins; the classifier folds
+        // them into `Builtin`, so the count is the full `from_name` arm count.
+        assert_eq!(builtin_value_names().len(), 18);
+    }
+}
+
 /// The diagnostic for a value declaration whose name is a reserved built-in.
 pub(crate) fn reserved_builtin_name(
     file: &FileIdentity,
