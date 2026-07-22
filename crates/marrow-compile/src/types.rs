@@ -1491,6 +1491,50 @@ pub(crate) fn capture_scaling_counts<T>(run: impl FnOnce() -> T) -> (T, ScalingC
     (result, counts)
 }
 
+/// Deterministic work counts for alias-cycle classification. These observe the
+/// real alias-table owner only in ordinary test builds and cannot affect graph
+/// state, diagnostics, or accepted programs.
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct AliasCycleCounts {
+    target_visits: usize,
+    resolved_edges: usize,
+    node_entries: usize,
+    edge_inspections: usize,
+    cyclic_aliases: usize,
+}
+
+#[cfg(test)]
+thread_local! {
+    static ALIAS_CYCLE_COUNTS: Cell<AliasCycleCounts> = const {
+        Cell::new(AliasCycleCounts {
+            target_visits: 0,
+            resolved_edges: 0,
+            node_entries: 0,
+            edge_inspections: 0,
+            cyclic_aliases: 0,
+        })
+    };
+}
+
+#[cfg(test)]
+fn bump_alias_cycle(update: impl FnOnce(&mut AliasCycleCounts)) {
+    ALIAS_CYCLE_COUNTS.with(|cell| {
+        let mut counts = cell.get();
+        update(&mut counts);
+        cell.set(counts);
+    });
+}
+
+#[cfg(test)]
+fn capture_alias_cycle_counts<T>(run: impl FnOnce() -> T) -> (T, AliasCycleCounts) {
+    let previous = ALIAS_CYCLE_COUNTS.with(|cell| cell.replace(AliasCycleCounts::default()));
+    let result = run();
+    let counts = ALIAS_CYCLE_COUNTS.with(Cell::get);
+    ALIAS_CYCLE_COUNTS.with(|cell| cell.set(previous));
+    (result, counts)
+}
+
 /// One durable-validation walk over all resource leaves. These marks are separate
 /// from metadata preflight: preflight may visit a generic argument or collection
 /// before the durable walk expands that value's body.
@@ -5218,13 +5262,16 @@ fn build_alias_table(
         raw.insert(decl.name.clone(), ty.clone());
     }
 
-    // Reject every alias that can reach itself through the names its target
-    // mentions. Reported per alias on the cycle, at its declaration.
+    // Report every member of a cyclic component in the existing sorted alias
+    // order, at its declaration.
+    let cyclic_membership = alias_cycle_membership(&raw);
     let cyclic: Vec<String> = raw
         .keys()
-        .filter(|name| reaches_itself(name, &raw))
-        .cloned()
+        .zip(cyclic_membership)
+        .filter_map(|(name, cyclic)| cyclic.then_some(name.clone()))
         .collect();
+    #[cfg(test)]
+    bump_alias_cycle(|counts| counts.cyclic_aliases += cyclic.len());
     for name in &cyclic {
         #[expect(
             clippy::expect_used,
@@ -5251,37 +5298,115 @@ fn build_alias_table(
     expanded
 }
 
-/// Whether alias `start` can reach itself by following alias-name references.
-fn reaches_itself(start: &str, table: &BTreeMap<String, TypeExpr>) -> bool {
-    let mut stack: Vec<&str> = Vec::new();
-    referenced_names(&table[start], &mut |name| {
-        if table.contains_key(name) {
-            stack.push(name);
-        }
-    });
-    let mut visited: Vec<&str> = Vec::new();
-    while let Some(node) = stack.pop() {
-        if node == start {
-            return true;
-        }
-        if visited.contains(&node) {
+/// Classify cyclic aliases with two iterative graph passes. Node indices follow
+/// the alias table's sorted key order; graph order never owns diagnostics.
+fn alias_cycle_membership(table: &BTreeMap<String, TypeExpr>) -> Vec<bool> {
+    let node_count = table.len();
+    let node_by_name: BTreeMap<&str, usize> = table
+        .keys()
+        .enumerate()
+        .map(|(node, name)| (name.as_str(), node))
+        .collect();
+    let mut adjacency = vec![Vec::new(); node_count];
+    let mut reverse = vec![Vec::new(); node_count];
+    let mut self_edges = vec![false; node_count];
+
+    for (source, target) in table.values().enumerate() {
+        referenced_names(target, &mut |name| {
+            let Some(&destination) = node_by_name.get(name) else {
+                return;
+            };
+            adjacency[source].push(destination);
+            reverse[destination].push(source);
+            self_edges[source] |= source == destination;
+            #[cfg(test)]
+            bump_alias_cycle(|counts| counts.resolved_edges += 1);
+        });
+    }
+
+    let finishing_order = alias_graph_finishing_order(&adjacency);
+    let mut assigned = vec![false; node_count];
+    let mut cyclic = vec![false; node_count];
+    let mut stack = Vec::new();
+    let mut component = Vec::new();
+
+    for root in finishing_order.into_iter().rev() {
+        if assigned[root] {
             continue;
         }
-        visited.push(node);
-        if let Some(target) = table.get(node) {
-            referenced_names(target, &mut |name| {
-                if table.contains_key(name) {
-                    stack.push(name);
+        assigned[root] = true;
+        stack.push(root);
+        #[cfg(test)]
+        bump_alias_cycle(|counts| counts.node_entries += 1);
+
+        while let Some(node) = stack.pop() {
+            component.push(node);
+            for &next in &reverse[node] {
+                #[cfg(test)]
+                bump_alias_cycle(|counts| counts.edge_inspections += 1);
+                if !assigned[next] {
+                    assigned[next] = true;
+                    stack.push(next);
+                    #[cfg(test)]
+                    bump_alias_cycle(|counts| counts.node_entries += 1);
                 }
-            });
+            }
+        }
+
+        let component_is_cyclic = component.len() > 1 || self_edges[component[0]];
+        if component_is_cyclic {
+            for node in component.drain(..) {
+                cyclic[node] = true;
+            }
+        } else {
+            component.clear();
         }
     }
-    false
+
+    cyclic
+}
+
+/// Iterative depth-first postorder for the first Kosaraju pass.
+fn alias_graph_finishing_order(adjacency: &[Vec<usize>]) -> Vec<usize> {
+    let mut entered = vec![false; adjacency.len()];
+    let mut order = Vec::with_capacity(adjacency.len());
+    let mut stack: Vec<(usize, usize)> = Vec::new();
+
+    for root in 0..adjacency.len() {
+        if entered[root] {
+            continue;
+        }
+        entered[root] = true;
+        stack.push((root, 0));
+        #[cfg(test)]
+        bump_alias_cycle(|counts| counts.node_entries += 1);
+
+        while let Some((node, next_edge)) = stack.last_mut() {
+            let Some(&next) = adjacency[*node].get(*next_edge) else {
+                order.push(*node);
+                stack.pop();
+                continue;
+            };
+            *next_edge += 1;
+            #[cfg(test)]
+            bump_alias_cycle(|counts| counts.edge_inspections += 1);
+            if !entered[next] {
+                entered[next] = true;
+                stack.push((next, 0));
+                #[cfg(test)]
+                bump_alias_cycle(|counts| counts.node_entries += 1);
+            }
+        }
+    }
+
+    order
 }
 
 /// Visit every type name a target mentions. `referenced_names` and `expand_in`
 /// walk the same structure; keeping the traversal here keeps them aligned.
 fn referenced_names<'t>(ty: &'t TypeExpr, visit: &mut impl FnMut(&'t str)) {
+    #[cfg(test)]
+    bump_alias_cycle(|counts| counts.target_visits += 1);
     match ty {
         TypeExpr::Name { text, .. } => visit(text),
         TypeExpr::Optional { inner, .. } => referenced_names(inner, visit),
@@ -7373,6 +7498,10 @@ mod types_metadata_successor_tests;
 #[cfg(test)]
 #[path = "generic_scaling_counts_tests.rs"]
 mod generic_scaling_counts_tests;
+
+#[cfg(test)]
+#[path = "types/alias_cycle_scaling_tests.rs"]
+mod alias_cycle_scaling_tests;
 
 #[cfg(test)]
 mod instantiation_state_tests {

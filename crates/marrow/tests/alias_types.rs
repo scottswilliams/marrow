@@ -8,6 +8,9 @@ use std::ops::Deref;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
+use marrow_compile::{CompileFailure, SourceDiagnostic, compile};
+use marrow_project::{CaptureLimits, CapturedFile, Manifest, ProjectInput};
+
 const MARROW: &str = env!("CARGO_BIN_EXE_marrow");
 
 struct TempDir {
@@ -67,6 +70,24 @@ fn fixture_dir() -> PathBuf {
         .nth(2)
         .expect("workspace root two levels above the crate manifest")
         .join("fixtures/v01/conformance/alias_types")
+}
+
+fn captured_source(source: &str) -> ProjectInput {
+    let manifest = Manifest::parse("edition = \"2026\"\n").expect("valid manifest");
+    let files = vec![CapturedFile::new(
+        "src/main.mw".to_string(),
+        source.as_bytes().to_vec(),
+    )];
+    marrow_project::capture(&manifest, files, None, &CaptureLimits::DEFAULT)
+        .expect("capture source")
+}
+
+fn source_diagnostics(source: &str) -> Vec<SourceDiagnostic> {
+    match compile(&captured_source(source)) {
+        Err(CompileFailure::Diagnostics(diagnostics)) => diagnostics.into_vec(),
+        Err(other) => panic!("expected source diagnostics, got {other:?}"),
+        Ok(_) => panic!("expected source diagnostics, got a compiled image"),
+    }
 }
 
 /// The alias conformance fixture passes end to end: every `test` declaration
@@ -252,4 +273,82 @@ fn a_keyword_alias_name_is_a_parse_error() {
         "a keyword name must fail: {stdout}"
     );
     assert!(stdout.contains("parse.syntax"), "{stdout}");
+}
+
+/// SCC membership is independent of reachability into a cycle. Generic
+/// application heads are not alias references; only their arguments are.
+#[test]
+fn alias_cycle_membership_order_and_spans_follow_the_alias_owner() {
+    let diagnostics = source_diagnostics(
+        r#"alias Zed = Alpha
+
+alias Alpha = Zed
+
+alias Self = Self?
+
+alias Tail = Alpha
+
+alias Plain = int
+
+alias PlainAlias = Plain
+
+alias Head = Wrapped
+
+alias Wrapped = Head<int>
+
+pub fn f(value: PlainAlias): PlainAlias {
+    return value
+}
+"#,
+    );
+    let observed: Vec<_> = diagnostics
+        .iter()
+        .map(|diagnostic| {
+            let span = diagnostic.span();
+            (
+                diagnostic.code,
+                span.start_byte,
+                span.end_byte,
+                span.line,
+                span.column,
+            )
+        })
+        .collect();
+    assert_eq!(
+        observed,
+        vec![
+            ("check.recursion", 25, 30, 3, 7),
+            ("check.recursion", 44, 48, 5, 7),
+            ("check.recursion", 6, 9, 1, 7),
+            ("check.type", 58, 76, 7, 1),
+            ("check.unsupported", 123, 143, 13, 1),
+            ("check.unsupported", 145, 170, 15, 1),
+        ],
+        "observed diagnostics: {diagnostics:#?}"
+    );
+}
+
+/// A small accepted alias chain freezes the pre-repair canonical image bytes by
+/// their domain-separated image identity and exact encoded length.
+#[test]
+fn accepted_alias_image_bytes_remain_frozen() {
+    let compiled = compile(&captured_source(
+        r#"alias Count = int
+
+alias OtherCount = Count
+
+pub fn identity(value: OtherCount): Count {
+    return value
+}
+"#,
+    ))
+    .expect("accepted alias fixture compiles");
+    assert_eq!(
+        (compiled.image.bytes.len(), compiled.image.image_id.to_hex()),
+        (
+            240,
+            "1eed2c79352f2e8cceb830c7115a248d63f3f93df2019a5d6a102ed50de92585".to_string(),
+        ),
+        "accepted alias fixture image identity changed"
+    );
 }
