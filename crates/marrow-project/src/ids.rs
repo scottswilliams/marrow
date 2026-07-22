@@ -33,12 +33,36 @@ const IDS_NOTICE: &str = "machine-written by marrow; do not edit";
 const IDS_END: &str = "end";
 
 /// The fixed artifact bounds: total bytes and total rows (entries plus
-/// tombstones). Both are far above any real project and guard the reader
-/// against an unbounded or hostile file.
+/// tombstones). Both guard the reader against an unbounded or hostile file, and
+/// like every Marrow decode bound they are monotone reject-guards, not
+/// stored-format bytes — the `marrow ids v0` header is unchanged, so an older
+/// toolchain meeting a larger artifact rejects it rather than misreading it.
+///
+/// The row cap tracks the durable member-tree scale so the full record-field
+/// width guard is reachable for a single wide resource: a resource of
+/// `marrow-image`'s `MAX_RECORD_FIELDS` (4096) declared fields anchors one `Field`
+/// row per field plus a small fixed overhead (application, product, root
+/// placement, and its key columns), ~4100 rows — past the former 4096 cap. The
+/// value matches `marrow-image`'s `MAX_DURABLE_MEMBERS` (8192, the member-tree
+/// total) as the one obvious ceiling; `MAX_IDS_BYTES` carries a single wide
+/// resource with headroom (~4100 rows ≈ 250 KB « 1 MiB) but is not the binder at
+/// this width — the field-count guard is. A multi-root project carrying several
+/// wide resources can still exceed this row cap; sizing for that is a separate
+/// future widen.
 pub const MAX_IDS_BYTES: usize = 1 << 20;
-pub const MAX_IDS_ROWS: usize = 4096;
+pub const MAX_IDS_ROWS: usize = 8192;
 /// The longest anchor path a row may carry.
 const MAX_PATH_BYTES: usize = 512;
+
+// The ledger row cap must admit a full record-field-width resource plus its fixed
+// placement overhead, or the durable width guard would be unreachable through the
+// ledger. `marrow-image`'s `MAX_RECORD_FIELDS` is 4096; this crate does not depend on
+// `marrow-image`, so the width is stated as the documented cross-crate invariant here
+// and `marrow-image::bounds` carries the image-side half.
+const _: () = assert!(
+    MAX_IDS_ROWS >= 4096 + 16,
+    "the ledger row cap must admit a full MAX_RECORD_FIELDS-width resource plus overhead",
+);
 
 /// The kind of durable identity a ledger row anchors. A `Root` (placement)
 /// anchors either a `store` root or a keyed `branch` — both are keyed placements
@@ -831,6 +855,25 @@ mod tests {
         assert_eq!(
             IdentityLedger::parse(&huge).unwrap_err().kind,
             IdsErrorKind::Bound
+        );
+    }
+
+    /// The row cap holds its chosen value (8192, tracking `marrow-image`'s member-tree
+    /// total) so the full 4096 record-field width is reachable for a single wide resource.
+    /// The `MAX_IDS_ROWS >= 4096 + overhead` decoupling invariant is enforced at compile
+    /// time by the `const _` block. An artifact one row past the cap rejects as `Bound`.
+    #[test]
+    fn row_cap_holds_its_widened_value_and_rejects_one_past_it() {
+        assert_eq!(super::MAX_IDS_ROWS, 8192, "durable-identity row cap");
+        let mut out = String::from("marrow ids v0\nmachine-written by marrow; do not edit\n");
+        for row in 0..=super::MAX_IDS_ROWS {
+            out.push_str(&format!("id field R.f{row} {:032x}\n", row + 1));
+        }
+        out.push_str("high-water 0\nend\n");
+        assert_eq!(
+            IdentityLedger::parse(out.as_bytes()).unwrap_err().kind,
+            IdsErrorKind::Bound,
+            "one row past the cap rejects",
         );
     }
 

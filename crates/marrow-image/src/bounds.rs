@@ -49,17 +49,16 @@ pub const MAX_STRING_BYTES: usize = 4 * 1024;
 /// ([`MAX_INDEX_COMPONENTS`]): neither scales with the record field width.
 ///
 /// This width is the count guard; [`MAX_IMAGE_BYTES`] is the binding ceiling for a
-/// *durable* resource. Because the compiler emits one operation site per stored
-/// field, a durable root costs ~84 image bytes per declared field (measured 83.82
-/// bytes/field, stable across 2000–4091 fields), so the 512 KiB whole-image ceiling
-/// admits ~6200 durable fields — comfortable headroom over this width guard. The
-/// widest durable resource that actually compiles is bounded first by the durable
-/// identity ledger (`marrow_project::ids::MAX_IDS_ROWS` = 4096 anchor rows): a
-/// resource of ~4091 fields uses ~4095 ledger rows and encodes to ~343 KB, admitted
-/// with headroom. A bare record *type* with no durable root (no per-field sites)
-/// reaches the full 4096 field width far below the byte ceiling. The per-field image
-/// cost — eager per-field site emission — is the coupling a later representation lane
-/// can retire to lift the durable ceiling further.
+/// *durable* resource. Because the compiler emits one field-leaf operation site per
+/// stored field, a durable root costs ~84 image bytes per declared field (measured
+/// 83.82 bytes/field, stable across 2000–4091 fields), so the 512 KiB whole-image
+/// ceiling admits ~6200 durable fields — comfortable headroom over this width guard.
+/// The durable-identity ledger
+/// (`marrow_project::ids::MAX_IDS_ROWS` = 8192 anchor rows) admits the full 4096 field
+/// width for a single wide resource (~4100 rows: one `Field` per field plus
+/// application/product/root/key overhead) with headroom, so the binder at the full
+/// guard is this field-count width itself, not the ledger. A bare record *type* with no
+/// durable root reaches the full 4096 field width far below the byte ceiling.
 pub const MAX_TYPES: usize = 4096;
 pub const MAX_RECORD_FIELDS: usize = 4096;
 

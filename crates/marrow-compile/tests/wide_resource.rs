@@ -107,10 +107,26 @@ fn an_in_bounds_program_has_frozen_image_bytes() {
     );
 }
 
-/// A durable resource near the record-field width — the widest the durable identity
-/// ledger admits at ~4090 sparse fields — encodes to ~343 KB. That exceeds the v0
-/// 256 KiB image ceiling and fits the widened 512 KiB one, so it pins
-/// [`marrow_image::bounds::MAX_IMAGE_BYTES`] as the load-bearing bound for a
+/// The full field guard is reachable: a durable resource declaring the complete
+/// [`marrow_image::bounds::MAX_RECORD_FIELDS`] width (4096 fields — the required `tag`
+/// plus 4095 sparse fields) compiles cleanly. This width anchors ~4100 durable-identity
+/// ledger rows (one `Field` per field plus application/product/root/key overhead), so it
+/// was previously refused by the 4096-row ledger cap; the widened `MAX_IDS_ROWS` admits
+/// the full guard for a single wide resource. The binder at this width is now the
+/// field-count guard, not the ledger row cap.
+#[test]
+fn the_full_field_guard_width_durable_resource_compiles() {
+    // 4095 sparse + the required `tag` = MAX_RECORD_FIELDS (4096) declared fields.
+    let compiled = compile_ok(marrow_image::bounds::MAX_RECORD_FIELDS - 1);
+    assert!(
+        !compiled.image.bytes.is_empty(),
+        "the full-width resource lowers to a non-empty image",
+    );
+}
+
+/// A durable resource near the record-field width at ~4090 sparse fields encodes to
+/// ~343 KB. That exceeds the v0 256 KiB image ceiling and fits the widened 512 KiB one,
+/// so it pins [`marrow_image::bounds::MAX_IMAGE_BYTES`] as the load-bearing bound for a
 /// wide durable resource rather than the field-count guard.
 #[test]
 fn a_near_max_width_durable_resource_needs_the_widened_image_ceiling() {
