@@ -63,9 +63,10 @@ local index), as a big-endian `u16`. The hard ceiling of this representation is
 65,535 entries per table. The shipped decode bounds sit far below it (record
 types, enum types, functions, and collection types at 4,096; the operation-site,
 durable-member, and string tables at 8,192), and the whole-image byte ceiling
-(512 KiB) binds first — at roughly 6,200 declared durable fields, or roughly
-17,000 once eager per-field operation-site emission is retired. No compilable
-program can therefore populate a table past `u16`. Raising any single bound
+(512 KiB) binds first — field-leaf operation sites are emitted only for
+referenced fields, so a program's image cost tracks the fields it addresses, and
+a table's entry count stays far under 65,535 for any compilable program. No
+compilable program can therefore populate a table past `u16`. Raising any single bound
 toward 65,535 is a monotone decode-guard widen with no format change: an image a
 narrower bound accepted a wider one still accepts byte-for-byte, and an older
 toolchain meeting a larger image refuses it with a typed bound rejection rather

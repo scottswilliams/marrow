@@ -1301,6 +1301,11 @@ pub(crate) struct ScalingCounts {
     /// Elements examined by the `(template, args)` primary-key scan in
     /// `reserve_fn_instance` (function-mint reuse).
     pub(crate) fn_inst_scan_steps: usize,
+    /// Reuse probes performed by `instantiate_collection` (collection-mint dedup). With
+    /// the keyed index this is one keyed lookup per instantiation attempt, so the count is
+    /// the mint-attempt count and grows linearly with the collection population — the
+    /// former linear spec scan made per-attempt work O(collections), i.e. O(collections²).
+    pub(crate) coll_inst_probe_steps: usize,
     /// Value-graph edges traversed across every `cycle_through` start.
     pub(crate) cycle_walk_steps: usize,
     /// `clone_for_generic_check` invocations (proof forks).
@@ -1324,6 +1329,7 @@ thread_local! {
         directory_row_visits: 0,
         type_inst_scan_steps: 0,
         fn_inst_scan_steps: 0,
+        coll_inst_probe_steps: 0,
         cycle_walk_steps: 0,
         proof_clones: 0,
         proof_clone_rows: 0,
@@ -4477,6 +4483,8 @@ impl TypeRegistry {
         // Mint-dedup reuse probe: a keyed lookup into the append-only secondary index.
         // The reused row's index is read from `collections` (the authority); a row that
         // does not carry the looked-up spec is drift.
+        #[cfg(test)]
+        bump_scaling(|counts| counts.coll_inst_probe_steps += 1);
         if let Some(&index) = self.collection_index.borrow().get(&spec) {
             if collections.get(index as usize) != Some(&spec) {
                 return Err(

@@ -86,6 +86,25 @@ fn fn_axis_fixture(v: usize) -> String {
     source
 }
 
+/// Collection axis: `v` distinct `List<Nk>` instantiations, one per seed struct, each in a
+/// distinct function signature (so the axis is bounded by the type/function population, not
+/// by `MAX_LOCALS`). Resolving each `use{k}` param type mints its `List<Nk>`, one
+/// collection-mint attempt, so the keyed dedup index is probed once per attempt.
+fn collection_axis_fixture(v: usize) -> String {
+    let mut source = String::from("module main\n\n");
+    seed_structs(&mut source, v);
+    source.push('\n');
+    for seed in 0..v {
+        writeln!(
+            source,
+            "fn use{seed}(xs: List<N{seed}>): int {{ return 0 }}"
+        )
+        .expect("write list-param fn");
+    }
+    source.push_str("\npub fn driver(): int {\n    return 0\n}\n");
+    source
+}
+
 /// A chain of `n + 1` structs `C0..Cn`, each holding the next by value and ending in
 /// a scalar leaf. The value-containment graph is an acyclic path of `n + 1` nodes:
 /// the former per-start reachability walk cost Σ(n − i) = O(n²) edge steps across the
@@ -354,6 +373,37 @@ fn generic_scaling_report() {
             top.proof_clone_rows,
         );
     }
+}
+
+/// The `instantiate_collection` reuse probe is a keyed lookup into the collection dedup
+/// index (CF3) — one keyed probe per collection-mint attempt — so its probe-step count is
+/// the number of distinct collection instantiations and doubles ~2x across a doubled axis.
+/// The former linear spec scan made per-attempt work O(collections), i.e. O(collections²)
+/// over a compile; this pins the repaired keyed-lookup linearity so a regression is
+/// conspicuous.
+#[test]
+fn collection_axis_dedup_probe_is_linear() {
+    let a = counts_for(collection_axis_fixture(256));
+    let b = counts_for(collection_axis_fixture(512));
+    let c = counts_for(collection_axis_fixture(1024));
+    for (lo, hi) in [(&a, &b), (&b, &c)] {
+        let ratio = ratio(hi.coll_inst_probe_steps, lo.coll_inst_probe_steps);
+        assert!(
+            (1.7..=2.3).contains(&ratio),
+            "collection dedup probe is a keyed lookup, linear in mint attempts; \
+             steps {} -> {} ratio {ratio:.2}",
+            lo.coll_inst_probe_steps,
+            hi.coll_inst_probe_steps,
+        );
+    }
+    // A constant number of keyed probes per distinct collection (the param type is
+    // resolved in both the check and lower passes), so the total is proportional to the
+    // collection population — linear, not the former O(collections²) scan.
+    assert_eq!(
+        c.coll_inst_probe_steps,
+        2 * 1024,
+        "keyed probes are a small constant per distinct collection mint at v=1024",
+    );
 }
 
 /// The value-cycle audit walks the value-containment graph once at build time, so its

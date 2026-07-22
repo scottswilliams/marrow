@@ -165,8 +165,9 @@ fn counted_watch_clinical_2000_fields() {
         bytes < MAX_IMAGE_BYTES,
         "image {bytes} bytes clears the {MAX_IMAGE_BYTES}-byte image bound",
     );
-    // The counted watch does not red at 2000 fields: both bounds hold at roughly a
-    // quarter (sites) and two fifths (bytes) of budget.
+    // The counted watch does not red at 2000 fields: with lazy field-leaf emission the
+    // site count (27) and image size are a small fraction of budget — declared width no
+    // longer drives either.
     assert!(
         bytes < MAX_IMAGE_BYTES / 2,
         "image byte size stays well under budget"
