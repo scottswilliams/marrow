@@ -38,8 +38,8 @@ use std::path::Path;
 use marrow_kernel::codec::key::KeyScalar;
 use marrow_kernel::codec::value::{RuntimeScalar, ScalarKind, ValueShape};
 use marrow_kernel::durable::{
-    CommitResult, CreateOutcome, DemandCoverage, Durable, EntryValue, InvocationGrant, NativeStore,
-    SessionError, SiteSpec, SiteTarget, StoreSchema,
+    CommitResult, CreateOutcome, DemandCoverage, Durable, EntryValue, InvocationGrant, KernelFault,
+    NativeStore, SessionError, SiteSpec, SiteTarget, StoreSchema,
 };
 use marrow_kernel::equality::ValueDomain;
 
@@ -77,36 +77,19 @@ impl Default for ImportLimits {
     }
 }
 
-/// One key column of the target root, named for row lookup and typed for the key it mints.
-/// The store schema records key *kinds* but not their source names, so the caller — which
-/// derived the schema from the verified image — supplies the names the JSONL members are read
-/// by.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct KeyColumn {
-    pub name: String,
-    pub kind: ScalarKind,
-}
-
-impl KeyColumn {
-    /// A key column from a source name and its scalar kind.
-    pub fn new(name: impl Into<String>, kind: ScalarKind) -> Self {
-        Self {
-            name: name.into(),
-            kind,
-        }
-    }
-}
-
 /// The target of an import: which declared root to populate and the source names of its key
-/// columns. The root's fields (names, shapes, required flags) are read from its
-/// [`StoreSchema`]; the importer refuses a root whose shape it cannot map (see
-/// [`ImportError::UnsupportedShape`]).
+/// columns, in key order. The store schema records key *kinds* but not their source names, so
+/// the caller — which derived the schema from the verified image — supplies the names the JSONL
+/// members are read by; the kinds come from the schema, its single owner. The root's fields
+/// (names, shapes, required flags) are read from its [`StoreSchema`]; the importer refuses a
+/// root whose shape it cannot map (see [`ImportError::UnsupportedShape`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ImportTarget {
     /// The target root's declaration index into the store's schema table.
     pub root: u16,
-    /// The root's ordered key columns, by source name and kind.
-    pub key_columns: Vec<KeyColumn>,
+    /// The root's key column source names, in key-declaration order (one per column of the
+    /// schema's key tuple).
+    pub key_columns: Vec<String>,
 }
 
 /// The confirmed outcome of an import: how many rows were created and committed, and in how
@@ -118,34 +101,192 @@ pub struct ImportReport {
     pub batches_committed: u64,
 }
 
+/// Why a target root cannot be mapped by the flat importer. Raised before any store write.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ShapeFault {
+    /// The root index is beyond the declared root table.
+    RootOutOfRange { root: u16, declared: usize },
+    /// The root declares groups or keyed branches; the flat importer populates scalar-field
+    /// roots only.
+    HasGroupsOrBranches { root: String },
+    /// The named key columns do not match the root's key arity.
+    KeyArity {
+        root: String,
+        declared: usize,
+        named: usize,
+    },
+    /// A key column's scalar kind is not importable (`int`, `bool`, `string` only).
+    KeyScalarUnsupported { column: String, kind: ScalarKind },
+    /// A field is not a scalar (a product or sum shape).
+    FieldNotScalar { field: String },
+    /// A field's scalar kind is not importable.
+    FieldScalarUnsupported { field: String, kind: ScalarKind },
+}
+
+impl std::fmt::Display for ShapeFault {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ShapeFault::RootOutOfRange { root, declared } => {
+                write!(
+                    f,
+                    "root index {root} is out of range ({declared} declared root(s))"
+                )
+            }
+            ShapeFault::HasGroupsOrBranches { root } => write!(
+                f,
+                "root `{root}` declares groups or keyed branches; the importer populates flat \
+                 scalar roots only"
+            ),
+            ShapeFault::KeyArity {
+                root,
+                declared,
+                named,
+            } => write!(
+                f,
+                "root `{root}` has {declared} key column(s) but {named} were named"
+            ),
+            ShapeFault::KeyScalarUnsupported { column, kind } => write!(
+                f,
+                "key column `{column}` is {} (import maps int, bool, and string)",
+                kind.name()
+            ),
+            ShapeFault::FieldNotScalar { field } => write!(
+                f,
+                "field `{field}` is not a scalar; the importer maps scalar fields only"
+            ),
+            ShapeFault::FieldScalarUnsupported { field, kind } => write!(
+                f,
+                "field `{field}` is {} (import maps int, bool, and string)",
+                kind.name()
+            ),
+        }
+    }
+}
+
+/// Why a source row could not be decoded or mapped to the target. A typed fact so a caller (or
+/// test) asserts the category rather than parsing prose; the malformed-JSON detail is retained
+/// as text because it is inherently free-form.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RowFault {
+    /// The line was not a valid flat-scalar JSON object; carries the decoder's detail.
+    Malformed(String),
+    /// A key column is absent from the row.
+    MissingKey { column: String },
+    /// A key column is present but `null`.
+    NullKey { column: String },
+    /// A key column's value type does not match its declared scalar kind.
+    KeyType {
+        column: String,
+        expected: ScalarKind,
+        found: &'static str,
+    },
+    /// A required field is absent or `null`.
+    MissingRequiredField { field: String },
+    /// A field's value type does not match its declared scalar kind.
+    FieldType {
+        field: String,
+        expected: ScalarKind,
+        found: &'static str,
+    },
+    /// A member matched neither a key column nor a declared field.
+    UnrecognizedMember { name: String },
+    /// A durable entry with this row's key already exists (create yielded already-present).
+    DuplicateKey,
+}
+
+impl std::fmt::Display for RowFault {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RowFault::Malformed(detail) => write!(f, "{detail}"),
+            RowFault::MissingKey { column } => write!(f, "missing key column `{column}`"),
+            RowFault::NullKey { column } => write!(f, "key column `{column}` is null"),
+            RowFault::KeyType {
+                column,
+                expected,
+                found,
+            } => write!(
+                f,
+                "key column `{column}`: expected {}, found {found}",
+                expected.name()
+            ),
+            RowFault::MissingRequiredField { field } => {
+                write!(f, "required field `{field}` is absent or null")
+            }
+            RowFault::FieldType {
+                field,
+                expected,
+                found,
+            } => write!(
+                f,
+                "field `{field}`: expected {}, found {found}",
+                expected.name()
+            ),
+            RowFault::UnrecognizedMember { name } => write!(f, "unrecognized member `{name}`"),
+            RowFault::DuplicateKey => {
+                write!(f, "a durable entry with this key already exists")
+            }
+        }
+    }
+}
+
+/// Why a batch commit did not confirm — an operational fault, distinct from a row-data fault.
+#[derive(Debug)]
+pub enum CommitFault {
+    /// The store handle was poisoned by an earlier interrupted commit.
+    Poisoned,
+    /// The engine could not open or complete the transaction.
+    Engine(marrow_kernel::durable::StoreError),
+    /// A staged entry left a required field unset (a defense-in-depth reconcile fault; the
+    /// mapper normally rejects such a row before staging).
+    RequiredMissing { field: String },
+    /// The commit did not confirm.
+    NotConfirmed,
+}
+
+impl std::fmt::Display for CommitFault {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            CommitFault::Poisoned => {
+                write!(
+                    f,
+                    "the store handle is poisoned by an earlier interrupted commit"
+                )
+            }
+            CommitFault::Engine(error) => write!(f, "the engine transaction failed: {error}"),
+            CommitFault::RequiredMissing { field } => {
+                write!(f, "a staged entry left required field `{field}` unset")
+            }
+            CommitFault::NotConfirmed => write!(f, "the batch commit did not confirm"),
+        }
+    }
+}
+
 /// Why an import failed. A row fault names the 1-based line so the source can be corrected; the
 /// [`committed`](ImportError::committed) prefix is intact and the caller may discard the store.
 #[derive(Debug)]
 pub enum ImportError {
-    /// The store could not be opened (not provisioned, incomplete, held, or corrupt).
+    /// The store could not be opened (not provisioned, incomplete, held, or corrupt). No store
+    /// write occurred.
     Open(OpenError),
-    /// The target root's shape is not importable from flat scalar rows: the root index is out
-    /// of range, or the root declares groups or keyed branches, or a key column or field is not
-    /// an importable scalar (`int`, `bool`, or `string`). No store write occurred.
-    UnsupportedShape { reason: String },
+    /// The target root's shape is not importable from flat scalar rows. No store write occurred.
+    UnsupportedShape(ShapeFault),
     /// Effective authority denied the write: the store's ceiling intersected with the import
     /// grant does not cover a durable write. No store write occurred.
     Denied,
-    /// A source line did not decode or map to the target row. Names the 1-based line and the
-    /// reason; the batches committed before it stay in the store.
+    /// A source row did not decode or map to the target. Names the 1-based line; the batches
+    /// committed before it stay in the store.
     Row {
         line: u64,
-        reason: String,
+        fault: RowFault,
         committed: ImportReport,
     },
-    /// A batch commit did not confirm. The store holds the earlier committed batches; this
-    /// batch rolled back.
+    /// A batch commit did not confirm. The store holds the earlier committed batches; this batch
+    /// rolled back.
     Commit {
-        reason: String,
+        fault: CommitFault,
         committed: ImportReport,
     },
-    /// Reading the source failed. The batches committed before the read error stay in the
-    /// store.
+    /// Reading the source failed. The batches committed before the read error stay in the store.
     Io {
         error: std::io::Error,
         committed: ImportReport,
@@ -158,7 +299,7 @@ impl ImportError {
         use marrow_codes::Code;
         match self {
             ImportError::Open(error) => error.code(),
-            ImportError::UnsupportedShape { .. } => Code::CliDurableUnsupported.as_str(),
+            ImportError::UnsupportedShape(_) => Code::CliDurableUnsupported.as_str(),
             ImportError::Denied => Code::RunAuthority.as_str(),
             ImportError::Row { .. } => Code::ConfigInvalid.as_str(),
             ImportError::Commit { .. } => Code::RunCommit.as_str(),
@@ -172,7 +313,7 @@ impl ImportError {
             ImportError::Row { committed, .. }
             | ImportError::Commit { committed, .. }
             | ImportError::Io { committed, .. } => *committed,
-            ImportError::Open(_) | ImportError::UnsupportedShape { .. } | ImportError::Denied => {
+            ImportError::Open(_) | ImportError::UnsupportedShape(_) | ImportError::Denied => {
                 ImportReport {
                     rows_imported: 0,
                     batches_committed: 0,
@@ -186,8 +327,8 @@ impl std::fmt::Display for ImportError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             ImportError::Open(error) => write!(f, "{error}"),
-            ImportError::UnsupportedShape { reason } => {
-                write!(f, "the target root is not importable: {reason}")
+            ImportError::UnsupportedShape(fault) => {
+                write!(f, "the target root is not importable: {fault}")
             }
             ImportError::Denied => write!(
                 f,
@@ -195,16 +336,16 @@ impl std::fmt::Display for ImportError {
             ),
             ImportError::Row {
                 line,
-                reason,
+                fault,
                 committed,
             } => write!(
                 f,
-                "line {line}: {reason} ({} row(s) already committed)",
+                "line {line}: {fault} ({} row(s) already committed)",
                 committed.rows_imported
             ),
-            ImportError::Commit { reason, committed } => write!(
+            ImportError::Commit { fault, committed } => write!(
                 f,
-                "a batch commit failed: {reason} ({} row(s) already committed)",
+                "a batch commit failed: {fault} ({} row(s) already committed)",
                 committed.rows_imported
             ),
             ImportError::Io { error, committed } => write!(
@@ -241,7 +382,7 @@ pub fn import_jsonl(
     grant: InvocationGrant,
     limits: ImportLimits,
 ) -> Result<ImportReport, ImportError> {
-    let plan = RowPlan::resolve(&schemas, &target)?;
+    let plan = RowPlan::resolve(&schemas, &target).map_err(ImportError::UnsupportedShape)?;
 
     // Open with the importer's own site table: one whole-payload create site on the target
     // root. Sites are supplied per open and never persisted, so the import site is independent
@@ -257,15 +398,23 @@ pub fn import_jsonl(
 }
 
 /// The resolved plan for mapping a row to the target root's whole-payload write: the key
-/// columns and one slot descriptor per top-level field, checked once so the per-row loop maps
-/// without re-inspecting the schema. Refuses a shape the flat importer cannot represent.
-pub(crate) struct RowPlan {
-    key_columns: Vec<KeyColumn>,
+/// columns (name paired with the kind the schema owns) and one slot descriptor per top-level
+/// field, checked once so the per-row loop maps without re-inspecting the schema. Refuses a
+/// shape the flat importer cannot represent.
+struct RowPlan {
+    key_columns: Vec<KeyColumnPlan>,
     fields: Vec<FieldSlot>,
 }
 
-/// One importable top-level field: its source name, scalar kind, and required flag, plus its
-/// position in the entry's field record (its schema-declaration index).
+/// One resolved key column: its source name (for row lookup) and the scalar kind the schema
+/// declares for it.
+struct KeyColumnPlan {
+    name: String,
+    kind: ScalarKind,
+}
+
+/// One importable top-level field, in schema-declaration order: its source name, scalar kind,
+/// and required flag.
 struct FieldSlot {
     name: String,
     kind: ScalarKind,
@@ -273,70 +422,54 @@ struct FieldSlot {
 }
 
 impl RowPlan {
-    pub(crate) fn resolve(
-        schemas: &[StoreSchema],
-        target: &ImportTarget,
-    ) -> Result<Self, ImportError> {
-        let schema =
-            schemas
-                .get(target.root as usize)
-                .ok_or_else(|| ImportError::UnsupportedShape {
-                    reason: format!(
-                        "root index {} is out of range ({} declared root(s))",
-                        target.root,
-                        schemas.len()
-                    ),
-                })?;
+    fn resolve(schemas: &[StoreSchema], target: &ImportTarget) -> Result<Self, ShapeFault> {
+        let schema = schemas
+            .get(target.root as usize)
+            .ok_or(ShapeFault::RootOutOfRange {
+                root: target.root,
+                declared: schemas.len(),
+            })?;
 
         if !schema.groups.is_empty() || !schema.branches.is_empty() {
-            return Err(ImportError::UnsupportedShape {
-                reason: format!(
-                    "root `{}` declares groups or keyed branches; the importer populates \
-                     flat scalar roots only",
-                    schema.root_name
-                ),
+            return Err(ShapeFault::HasGroupsOrBranches {
+                root: schema.root_name.clone(),
             });
         }
 
         if schema.key.len() != target.key_columns.len() {
-            return Err(ImportError::UnsupportedShape {
-                reason: format!(
-                    "root `{}` has {} key column(s) but {} were named",
-                    schema.root_name,
-                    schema.key.len(),
-                    target.key_columns.len()
-                ),
+            return Err(ShapeFault::KeyArity {
+                root: schema.root_name.clone(),
+                declared: schema.key.len(),
+                named: target.key_columns.len(),
             });
         }
-        for (column, kind) in target.key_columns.iter().zip(&schema.key) {
-            importable_scalar(*kind).map_err(|reason| ImportError::UnsupportedShape {
-                reason: format!("key column `{}`: {reason}", column.name),
-            })?;
-            if column.kind != *kind {
-                return Err(ImportError::UnsupportedShape {
-                    reason: format!(
-                        "key column `{}` is declared {} but named {}",
-                        column.name,
-                        kind.name(),
-                        column.kind.name()
-                    ),
+        let mut key_columns = Vec::with_capacity(schema.key.len());
+        for (name, kind) in target.key_columns.iter().zip(&schema.key) {
+            if !importable_scalar(*kind) {
+                return Err(ShapeFault::KeyScalarUnsupported {
+                    column: name.clone(),
+                    kind: *kind,
                 });
             }
+            key_columns.push(KeyColumnPlan {
+                name: name.clone(),
+                kind: *kind,
+            });
         }
 
         let mut fields = Vec::with_capacity(schema.fields.len());
         for field in &schema.fields {
             let ValueShape::Scalar(kind) = &field.shape else {
-                return Err(ImportError::UnsupportedShape {
-                    reason: format!(
-                        "field `{}` is not a scalar; the importer maps scalar fields only",
-                        field.name
-                    ),
+                return Err(ShapeFault::FieldNotScalar {
+                    field: field.name.clone(),
                 });
             };
-            importable_scalar(*kind).map_err(|reason| ImportError::UnsupportedShape {
-                reason: format!("field `{}`: {reason}", field.name),
-            })?;
+            if !importable_scalar(*kind) {
+                return Err(ShapeFault::FieldScalarUnsupported {
+                    field: field.name.clone(),
+                    kind: *kind,
+                });
+            }
             fields.push(FieldSlot {
                 name: field.name.clone(),
                 kind: *kind,
@@ -345,7 +478,7 @@ impl RowPlan {
         }
 
         Ok(Self {
-            key_columns: target.key_columns.clone(),
+            key_columns,
             fields,
         })
     }
@@ -353,19 +486,25 @@ impl RowPlan {
     /// Map one decoded row object to its key-path and whole-entry payload, in schema order.
     /// A member is consumed by exactly one column or field; a leftover member is an
     /// unrecognized column and rejects the row.
-    fn map_row(&self, mut object: RowObject) -> Result<(Vec<KeyScalar>, EntryValue), String> {
+    fn map_row(&self, mut object: RowObject) -> Result<(Vec<KeyScalar>, EntryValue), RowFault> {
         let mut keys = Vec::with_capacity(self.key_columns.len());
         for column in &self.key_columns {
             let value = object
                 .take(&column.name)
-                .ok_or_else(|| format!("missing key column `{}`", column.name))?;
-            let scalar = match value {
-                JsonScalar::Null => {
-                    return Err(format!("key column `{}` is null", column.name));
-                }
-                other => key_scalar(column.kind, other)
-                    .map_err(|reason| format!("key column `{}`: {reason}", column.name))?,
-            };
+                .ok_or_else(|| RowFault::MissingKey {
+                    column: column.name.clone(),
+                })?;
+            if value == JsonScalar::Null {
+                return Err(RowFault::NullKey {
+                    column: column.name.clone(),
+                });
+            }
+            let found = value.describe();
+            let scalar = key_scalar(column.kind, value).ok_or_else(|| RowFault::KeyType {
+                column: column.name.clone(),
+                expected: column.kind,
+                found,
+            })?;
             keys.push(scalar);
         }
 
@@ -374,20 +513,30 @@ impl RowPlan {
             let slot_value = match object.take(&slot.name) {
                 None | Some(JsonScalar::Null) => {
                     if slot.required {
-                        return Err(format!("required field `{}` is absent or null", slot.name));
+                        return Err(RowFault::MissingRequiredField {
+                            field: slot.name.clone(),
+                        });
                     }
                     None
                 }
-                Some(value) => Some(
-                    value_domain(slot.kind, value)
-                        .map_err(|reason| format!("field `{}`: {reason}", slot.name))?,
-                ),
+                Some(value) => {
+                    let found = value.describe();
+                    Some(
+                        value_domain(slot.kind, value).ok_or_else(|| RowFault::FieldType {
+                            field: slot.name.clone(),
+                            expected: slot.kind,
+                            found,
+                        })?,
+                    )
+                }
             };
             fields.push(slot_value);
         }
 
         if let Some(extra) = object.remaining_name() {
-            return Err(format!("unrecognized member `{extra}`"));
+            return Err(RowFault::UnrecognizedMember {
+                name: extra.to_string(),
+            });
         }
 
         Ok((
@@ -400,12 +549,12 @@ impl RowPlan {
     }
 }
 
-/// The engine-generic import core: stream `source`, mapping each line through `plan` and
-/// creating it through the path kernel in bounded batches. Crate-private; the persistent path
-/// [`import_jsonl`] wraps it over an opened native store, and the tests drive it over an
-/// in-memory store. Every write is a kernel [`create_entry`](Durable::create_entry) — authority
-/// resolved, site resolved, planner-mediated, indexes maintained.
-pub(crate) fn import_rows_into(
+/// The import core: stream `source`, mapping each line through `plan` and creating it through
+/// the path kernel in bounded batches. Crate-private, with one caller ([`import_jsonl`]); the
+/// split keeps `import_jsonl` a thin lock-guarded open plus site setup and isolates the bounded
+/// streaming loop here. Every write is a kernel [`create_entry`](Durable::create_entry) —
+/// authority resolved, site resolved, planner-mediated, indexes maintained.
+fn import_rows_into(
     store: &mut NativeStore,
     plan: &RowPlan,
     mut source: impl BufRead,
@@ -424,10 +573,11 @@ pub(crate) fn import_rows_into(
     let mut line_no: u64 = 0;
     let mut buf: Vec<u8> = Vec::new();
 
-    // The batch accumulates fully-mapped rows before a single transaction stages and commits
-    // them, so a decode/map fault never leaves a half-open transaction and the memory footprint
-    // is one batch.
-    let mut batch: Vec<(Vec<KeyScalar>, EntryValue)> = Vec::new();
+    // The batch accumulates fully-mapped rows — each tagged with its source line so a staging
+    // fault names the offending row, not the batch boundary — before a single transaction
+    // stages and commits them, so a decode/map fault never leaves a half-open transaction and
+    // the memory footprint is one batch.
+    let mut batch: Batch = Vec::new();
 
     loop {
         buf.clear();
@@ -447,72 +597,82 @@ pub(crate) fn import_rows_into(
             continue; // JSONL tolerates blank separator lines.
         }
 
-        let object = parse_row_object(&buf, &limits).map_err(|reason| ImportError::Row {
+        let object = parse_row_object(&buf, &limits).map_err(|fault| ImportError::Row {
             line: line_no,
-            reason,
+            fault,
             committed: report,
         })?;
-        let mapped = plan.map_row(object).map_err(|reason| ImportError::Row {
+        let (keys, entry) = plan.map_row(object).map_err(|fault| ImportError::Row {
             line: line_no,
-            reason,
+            fault,
             committed: report,
         })?;
-        batch.push(mapped);
+        batch.push((line_no, keys, entry));
 
         if batch.len() >= limits.batch_rows {
-            commit_batch(store, grant, write_demand, &mut batch, &mut report, line_no)?;
+            commit_batch(store, grant, write_demand, &mut batch, &mut report)?;
         }
     }
 
     if !batch.is_empty() {
-        commit_batch(store, grant, write_demand, &mut batch, &mut report, line_no)?;
+        commit_batch(store, grant, write_demand, &mut batch, &mut report)?;
     }
 
     Ok(report)
 }
 
+/// One batch of fully-mapped rows awaiting commit: each is its source line, key-path, and
+/// whole-entry payload.
+type Batch = Vec<(u64, Vec<KeyScalar>, EntryValue)>;
+
 /// Stage and commit one batch of mapped rows in a single kernel transaction. Drains `batch`;
-/// advances `report` only on a confirmed commit. A denied session, a duplicate key, or a
-/// non-confirming commit is a typed error carrying the committed prefix.
+/// advances `report` only on a confirmed commit. A denied session, a duplicate key (named at
+/// its own source line), or a non-confirming commit is a typed error carrying the committed
+/// prefix.
 fn commit_batch(
     store: &mut NativeStore,
     grant: InvocationGrant,
     demand: DemandCoverage,
-    batch: &mut Vec<(Vec<KeyScalar>, EntryValue)>,
+    batch: &mut Batch,
     report: &mut ImportReport,
-    line_no: u64,
 ) -> Result<(), ImportError> {
     let mut txn = store
         .txn_session(grant, demand)
         .map_err(|error| match error {
             SessionError::Denied => ImportError::Denied,
             SessionError::Poisoned => ImportError::Commit {
-                reason: "the store handle is poisoned by an earlier interrupted commit".to_string(),
+                fault: CommitFault::Poisoned,
                 committed: *report,
             },
             SessionError::Engine(engine) => ImportError::Commit {
-                reason: format!("the engine could not open a transaction: {engine}"),
+                fault: CommitFault::Engine(engine),
                 committed: *report,
             },
         })?;
 
     let site = txn.site(0);
     let staged = batch.len() as u64;
-    for (keys, entry) in batch.drain(..) {
+    for (line, keys, entry) in batch.drain(..) {
         match txn.create_entry(&site, &keys, entry) {
             Ok(CreateOutcome::Created) => {}
             Ok(CreateOutcome::AlreadyPresent) => {
-                // The transaction drops un-committed (rolls back this batch).
+                // The transaction drops un-committed (rolls back this batch). The fault names
+                // the offending row's own source line, not the batch boundary.
                 return Err(ImportError::Row {
-                    line: line_no,
-                    reason: "duplicate key: an entry with this key was already imported"
-                        .to_string(),
+                    line,
+                    fault: RowFault::DuplicateKey,
                     committed: *report,
                 });
             }
             Err(fault) => {
                 return Err(ImportError::Commit {
-                    reason: format!("a durable write faulted: {}", fault.code()),
+                    fault: CommitFault::Engine(match fault {
+                        KernelFault::Engine(engine) => engine,
+                        other => marrow_kernel::durable::StoreError::Io {
+                            op: "import.create_entry",
+                            message: format!("a durable write faulted: {}", other.code()),
+                        },
+                    }),
                     committed: *report,
                 });
             }
@@ -526,58 +686,42 @@ fn commit_batch(
             Ok(())
         }
         CommitResult::RequiredMissing { field, .. } => Err(ImportError::Commit {
-            reason: format!("a staged entry left required field `{field}` unset"),
+            fault: CommitFault::RequiredMissing { field },
             committed: *report,
         }),
         CommitResult::CommitFault => Err(ImportError::Commit {
-            reason: "the batch commit did not confirm".to_string(),
+            fault: CommitFault::NotConfirmed,
             committed: *report,
         }),
     }
 }
 
-/// The scalar kinds the flat importer maps. `int`, `bool`, and `string` are the runtime domain
-/// the kernel exercises; a temporal, byte, or other scalar has no unambiguous JSON form here and
-/// is refused rather than guessed.
-fn importable_scalar(kind: ScalarKind) -> Result<(), String> {
-    match kind {
-        ScalarKind::Int | ScalarKind::Bool | ScalarKind::Str => Ok(()),
-        other => Err(format!(
-            "{} is not an importable scalar (import maps int, bool, and string)",
-            other.name()
-        )),
-    }
+/// Whether the flat importer maps a scalar kind. `int`, `bool`, and `string` are the runtime
+/// domain the kernel exercises; a temporal, byte, or other scalar has no unambiguous JSON form
+/// here and is refused rather than guessed.
+fn importable_scalar(kind: ScalarKind) -> bool {
+    matches!(kind, ScalarKind::Int | ScalarKind::Bool | ScalarKind::Str)
 }
 
-/// Mint the key scalar of `kind` from a JSON value, refusing a type mismatch (no coercion).
-fn key_scalar(kind: ScalarKind, value: JsonScalar) -> Result<KeyScalar, String> {
-    match (kind, value) {
-        (ScalarKind::Int, JsonScalar::Int(n)) => Ok(KeyScalar::Int(n)),
-        (ScalarKind::Bool, JsonScalar::Bool(b)) => Ok(KeyScalar::Bool(b)),
-        (ScalarKind::Str, JsonScalar::Str(s)) => Ok(KeyScalar::Str(s)),
-        (expected, actual) => Err(format!(
-            "expected {}, found {}",
-            expected.name(),
-            actual.describe()
-        )),
-    }
+/// Mint the key scalar of `kind` from a JSON value, or `None` on a type mismatch (no coercion).
+fn key_scalar(kind: ScalarKind, value: JsonScalar) -> Option<KeyScalar> {
+    Some(match (kind, value) {
+        (ScalarKind::Int, JsonScalar::Int(n)) => KeyScalar::Int(n),
+        (ScalarKind::Bool, JsonScalar::Bool(b)) => KeyScalar::Bool(b),
+        (ScalarKind::Str, JsonScalar::Str(s)) => KeyScalar::Str(s),
+        _ => return None,
+    })
 }
 
-/// Build the value domain of `kind` from a JSON scalar, refusing a type mismatch.
-fn value_domain(kind: ScalarKind, value: JsonScalar) -> Result<ValueDomain, String> {
+/// Build the value domain of `kind` from a JSON scalar, or `None` on a type mismatch.
+fn value_domain(kind: ScalarKind, value: JsonScalar) -> Option<ValueDomain> {
     let scalar = match (kind, value) {
         (ScalarKind::Int, JsonScalar::Int(n)) => RuntimeScalar::Int(n),
         (ScalarKind::Bool, JsonScalar::Bool(b)) => RuntimeScalar::Bool(b),
         (ScalarKind::Str, JsonScalar::Str(s)) => RuntimeScalar::Str(s),
-        (expected, actual) => {
-            return Err(format!(
-                "expected {}, found {}",
-                expected.name(),
-                actual.describe()
-            ));
-        }
+        _ => return None,
     };
-    Ok(ValueDomain::Scalar(scalar))
+    Some(ValueDomain::Scalar(scalar))
 }
 
 // ---------------------------------------------------------------------------
@@ -629,10 +773,24 @@ fn is_blank(line: &[u8]) -> bool {
     line.iter().all(|b| b.is_ascii_whitespace())
 }
 
-/// Parse a bounded flat JSON object of scalar members. Rejects nesting, arrays, non-integer
-/// numbers, duplicate keys, an over-limit member count, and trailing content. Bounded by
-/// `limits` throughout; the input slice is already bounded by the line limit.
-fn parse_row_object(line: &[u8], limits: &ImportLimits) -> Result<RowObject, String> {
+/// Parse a bounded flat JSON object of scalar members, rejecting a non-UTF-8 line and mapping a
+/// decode failure to a typed [`RowFault::Malformed`] carrying the decoder's detail. The UTF-8
+/// check up front lets the decoder pass raw string bytes through without re-validating each
+/// continuation byte.
+fn parse_row_object(line: &[u8], limits: &ImportLimits) -> Result<RowObject, RowFault> {
+    if std::str::from_utf8(line).is_err() {
+        return Err(RowFault::Malformed(
+            "the line is not valid UTF-8".to_string(),
+        ));
+    }
+    decode_object(line, limits).map_err(RowFault::Malformed)
+}
+
+/// Decode a bounded flat JSON object of scalar members from a UTF-8-validated line. Rejects
+/// nesting, arrays, non-integer numbers, duplicate keys, an over-limit member count, and
+/// trailing content. Bounded by `limits` throughout; the input slice is already bounded by the
+/// line limit.
+fn decode_object(line: &[u8], limits: &ImportLimits) -> Result<RowObject, String> {
     let mut parser = JsonLine {
         bytes: line,
         pos: 0,
@@ -799,7 +957,9 @@ impl JsonLine<'_> {
     /// `max_string_bytes`; a raw control byte or a lone/invalid escape is a typed refusal.
     fn parse_string(&mut self) -> Result<String, String> {
         self.expect(b'"')?;
-        let mut out = String::new();
+        // Accumulate bytes: pass-through bytes come from a UTF-8-validated line, and each escape
+        // produces a valid scalar's bytes, so the whole is valid UTF-8 (checked once at the end).
+        let mut out: Vec<u8> = Vec::new();
         loop {
             let byte = self.next_byte().ok_or("unterminated string")?;
             match byte {
@@ -807,15 +967,19 @@ impl JsonLine<'_> {
                 b'\\' => {
                     let escape = self.next_byte().ok_or("unterminated escape")?;
                     match escape {
-                        b'"' => out.push('"'),
-                        b'\\' => out.push('\\'),
-                        b'/' => out.push('/'),
-                        b'b' => out.push('\u{0008}'),
-                        b'f' => out.push('\u{000C}'),
-                        b'n' => out.push('\n'),
-                        b'r' => out.push('\r'),
-                        b't' => out.push('\t'),
-                        b'u' => out.push(self.parse_unicode_escape()?),
+                        b'"' => out.push(b'"'),
+                        b'\\' => out.push(b'\\'),
+                        b'/' => out.push(b'/'),
+                        b'b' => out.push(0x08),
+                        b'f' => out.push(0x0C),
+                        b'n' => out.push(b'\n'),
+                        b'r' => out.push(b'\r'),
+                        b't' => out.push(b'\t'),
+                        b'u' => {
+                            let ch = self.parse_unicode_escape()?;
+                            let mut encoded = [0u8; 4];
+                            out.extend_from_slice(ch.encode_utf8(&mut encoded).as_bytes());
+                        }
                         other => {
                             return Err(format!("invalid string escape `\\{}`", other as char));
                         }
@@ -823,8 +987,9 @@ impl JsonLine<'_> {
                 }
                 // A raw control character is invalid JSON inside a string.
                 0x00..=0x1F => return Err("a raw control character in a string".to_string()),
-                // An ASCII byte passes through; a UTF-8 lead byte gathers its continuation.
-                _ => self.push_utf8(byte, &mut out)?,
+                // Any other byte passes through verbatim: an ASCII byte, or a byte of a multibyte
+                // sequence the line-level UTF-8 validation already accepted.
+                _ => out.push(byte),
             }
             if out.len() > self.max_string_bytes {
                 return Err(format!(
@@ -833,27 +998,7 @@ impl JsonLine<'_> {
                 ));
             }
         }
-        Ok(out)
-    }
-
-    /// Push a UTF-8 scalar starting at `lead` (already consumed), gathering continuation bytes.
-    fn push_utf8(&mut self, lead: u8, out: &mut String) -> Result<(), String> {
-        let width = utf8_width(lead).ok_or("an invalid UTF-8 lead byte in a string")?;
-        let mut bytes = [0u8; 4];
-        bytes[0] = lead;
-        for slot in bytes.iter_mut().take(width).skip(1) {
-            let cont = self
-                .next_byte()
-                .ok_or("a truncated UTF-8 sequence in a string")?;
-            if cont & 0xC0 != 0x80 {
-                return Err("an invalid UTF-8 continuation byte in a string".to_string());
-            }
-            *slot = cont;
-        }
-        let text = std::str::from_utf8(&bytes[..width])
-            .map_err(|_| "an invalid UTF-8 sequence in a string".to_string())?;
-        out.push_str(text);
-        Ok(())
+        String::from_utf8(out).map_err(|_| "an invalid UTF-8 sequence in a string".to_string())
     }
 
     /// Parse the four hex digits after a `\u`, decoding a UTF-16 unit and pairing a high
@@ -891,18 +1036,6 @@ impl JsonLine<'_> {
             value = (value << 4) | u16::from(nibble);
         }
         Ok(value)
-    }
-}
-
-/// The byte width of a UTF-8 sequence from its lead byte, or `None` for a continuation or
-/// invalid lead byte.
-fn utf8_width(lead: u8) -> Option<usize> {
-    match lead {
-        0x00..=0x7F => Some(1),
-        0xC2..=0xDF => Some(2),
-        0xE0..=0xEF => Some(3),
-        0xF0..=0xF4 => Some(4),
-        _ => None,
     }
 }
 
@@ -999,7 +1132,10 @@ mod tests {
     #[test]
     fn a_row_maps_keys_and_sparse_fields() {
         let plan = RowPlan {
-            key_columns: vec![KeyColumn::new("id", ScalarKind::Int)],
+            key_columns: vec![KeyColumnPlan {
+                name: "id".into(),
+                kind: ScalarKind::Int,
+            }],
             fields: vec![
                 FieldSlot {
                     name: "value".into(),
@@ -1025,27 +1161,40 @@ mod tests {
     #[test]
     fn a_missing_required_field_or_key_is_a_row_error() {
         let plan = RowPlan {
-            key_columns: vec![KeyColumn::new("id", ScalarKind::Int)],
+            key_columns: vec![KeyColumnPlan {
+                name: "id".into(),
+                kind: ScalarKind::Int,
+            }],
             fields: vec![FieldSlot {
                 name: "value".into(),
                 kind: ScalarKind::Int,
                 required: true,
             }],
         };
-        // Missing required field.
-        let object = parse_row_object(br#"{"id": 1}"#, &ImportLimits::DEFAULT).expect("parse");
-        assert!(plan.map_row(object).is_err());
-        // Missing key column.
-        let object = parse_row_object(br#"{"value": 1}"#, &ImportLimits::DEFAULT).expect("parse");
-        assert!(plan.map_row(object).is_err());
-        // Unrecognized member.
-        let object = parse_row_object(br#"{"id": 1, "value": 2, "x": 3}"#, &ImportLimits::DEFAULT)
-            .expect("parse");
-        assert!(plan.map_row(object).is_err());
-        // Type mismatch on the key.
-        let object = parse_row_object(br#"{"id": "not-int", "value": 2}"#, &ImportLimits::DEFAULT)
-            .expect("parse");
-        assert!(plan.map_row(object).is_err());
+        let map = |json: &[u8]| {
+            plan.map_row(parse_row_object(json, &ImportLimits::DEFAULT).expect("parse"))
+                .expect_err("map should fail")
+        };
+        assert!(matches!(
+            map(br#"{"id": 1}"#),
+            RowFault::MissingRequiredField { .. }
+        ));
+        assert!(matches!(
+            map(br#"{"value": 1}"#),
+            RowFault::MissingKey { .. }
+        ));
+        assert!(matches!(
+            map(br#"{"id": 1, "value": 2, "x": 3}"#),
+            RowFault::UnrecognizedMember { .. }
+        ));
+        assert!(matches!(
+            map(br#"{"id": "not-int", "value": 2}"#),
+            RowFault::KeyType { .. }
+        ));
+        assert!(matches!(
+            map(br#"{"id": null, "value": 2}"#),
+            RowFault::NullKey { .. }
+        ));
     }
 
     #[test]

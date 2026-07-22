@@ -8,15 +8,16 @@ use std::io::Cursor;
 use std::path::{Path, PathBuf};
 
 use marrow_kernel::codec::key::KeyScalar;
-use marrow_kernel::codec::value::{RuntimeScalar, ScalarKind};
+use marrow_kernel::codec::value::RuntimeScalar;
 use marrow_kernel::durable::{
     DemandCoverage, Durable, EntryValue, InvocationGrant, Presence, SiteSpec, SiteTarget,
     StoreSchema,
 };
 use marrow_kernel::equality::ValueDomain;
 use marrow_lifecycle::{
-    EngineKind, ImportError, ImportLimits, ImportTarget, KeyColumn, LogicalHead, ProvisionRequest,
-    StoreEnvelope, StoreInstanceId, active_binding, head_map, import_jsonl, open, provision,
+    EngineKind, ImportError, ImportLimits, ImportTarget, LogicalHead, ProvisionRequest, RowFault,
+    ShapeFault, StoreEnvelope, StoreInstanceId, active_binding, head_map, import_jsonl, open,
+    provision,
 };
 use marrow_verify::{VerifiedImage, verify};
 
@@ -163,7 +164,7 @@ fn provision_from(dir: &Path, image: &VerifiedImage) {
 fn counter_target() -> ImportTarget {
     ImportTarget {
         root: 0,
-        key_columns: vec![KeyColumn::new("id", ScalarKind::Int)],
+        key_columns: vec!["id".to_string()],
     }
 }
 
@@ -377,9 +378,10 @@ fn a_duplicate_key_is_a_row_fault() {
         InvocationGrant::full_store(),
         ImportLimits::DEFAULT,
     ) {
-        Err(ImportError::Row { reason, .. }) => {
-            assert!(reason.contains("duplicate key"), "reason: {reason}");
-        }
+        Err(ImportError::Row {
+            fault: RowFault::DuplicateKey,
+            ..
+        }) => {}
         other => panic!("expected a duplicate-key row fault, got {other:?}"),
     }
 }
@@ -398,18 +400,13 @@ fn a_nested_root_shape_is_refused() {
         schemas_of(&image),
         ImportTarget {
             root: 0,
-            key_columns: vec![KeyColumn::new("id", ScalarKind::Int)],
+            key_columns: vec!["id".to_string()],
         },
         Cursor::new(jsonl.as_bytes().to_vec()),
         InvocationGrant::full_store(),
         ImportLimits::DEFAULT,
     ) {
-        Err(ImportError::UnsupportedShape { reason }) => {
-            assert!(
-                reason.contains("groups or keyed branches"),
-                "reason: {reason}"
-            );
-        }
+        Err(ImportError::UnsupportedShape(ShapeFault::HasGroupsOrBranches { .. })) => {}
         other => panic!("a nested-shape root must be refused, got {other:?}"),
     }
 }
