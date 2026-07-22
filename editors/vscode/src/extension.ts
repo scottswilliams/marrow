@@ -4,7 +4,6 @@ import {
   LanguageClient,
   LanguageClientOptions,
   ServerOptions,
-  TransportKind,
 } from "vscode-languageclient/node";
 
 // The Marrow extension is a thin host: it starts exactly one bundled `marrow lsp`
@@ -86,10 +85,13 @@ async function startClient(context: vscode.ExtensionContext): Promise<void> {
     return;
   }
 
+  // No `transport` field: for an Executable, naming TransportKind.stdio makes the
+  // client append a `--stdio` argument, which the server's exact-argument law
+  // refuses (exit 2). Omitting it uses stdio without altering the fixed ["lsp"]
+  // arguments. Found live by the H00b installed human gate.
   const executable: Executable = {
     command: context.asAbsolutePath("server/marrow"),
     args: ["lsp"],
-    transport: TransportKind.stdio,
   };
   const serverOptions: ServerOptions = { run: executable, debug: executable };
   const clientOptions: LanguageClientOptions = {
