@@ -5,8 +5,8 @@ usage failures (exit `2`). `marrow --help` prints the syntax implemented by the
 current binary; `marrow --version` prints the package version.
 
 The beta line's CLI is deliberately thin. `init`, `fmt`, `check`, `run`, `test`,
-`client typescript`, `lsp`, `--help`, and `--version` are the available commands;
-every other recognized
+`import`, `client typescript`, `image`, `lsp`, `--help`, and `--version` are the
+available commands; every other recognized
 command name belongs to a capability being refounded and reports the typed code
 `cli.command_unsupported` with exit `1`, so a script never mistakes absence for
 success. [Project status](../status.md) states what returns through which
@@ -19,8 +19,9 @@ direction.
 | `init` | Create a new project directory (this page). |
 | `fmt` | Format a `.mw` file or every captured source file in a project (this page). |
 | `check` | Check a project and describe each export's durable access demand (this page). |
-| `run` | Compile, verify, and run an exported function (this page). |
+| `run` | Compile, verify, and run an exported function, storeless or against a provisioned store (this page). |
 | `test` | Discover and run `test` declarations (this page; see [tests](tests.md)). |
+| `import` | Populate and provision a native store from a flat-scalar JSONL corpus (this page). |
 | `client typescript` | Generate the strict TypeScript client and the pinned Node supervision module (this page; see [TypeScript client](typescript-client.md)). |
 | `image` | Emit the verified program image a deployment ships, against an accepted ceiling id (this page). |
 | `lsp` | Run the language server over stdio (this page; see [language server](lsp.md)). |
@@ -94,7 +95,7 @@ that touches no durable data is reported as reading or writing no durable data.
 ## `marrow run`
 
 ```text
-marrow run <export> [--format text | jsonl] [-- <args>...]
+marrow run <export> [--store <dir>] [--format text | jsonl] [-- <args>...]
 ```
 
 Runs one exported (`pub fn`) function of the [project](projects.md) at the
@@ -104,14 +105,16 @@ export; the compiler opens no store and cannot mint a verified image. Arguments
 after `--` are decoded positionally against the export's scalar parameter types
 (`int`, `bool`, `string`).
 
-Only a storeless export runs. A durable export — one whose verified demand reads
-or writes durable data — compiles, verifies, and completes its durable identity,
-but persistent execution is in the trough: the CLI no longer opens a store in
-process, so a durable `run` reports the typed `cli.durable_unsupported` outcome
-(exit `1`) rather than executing. Durable execution has returned for source tests
-against a fresh ephemeral attachment (see [`marrow test`](#marrow-test)); the
-persistent `run` path waits for the companion runner; see
-[Project status](../status.md).
+A storeless export runs directly. A durable export — one whose verified demand
+reads or writes durable data — runs against a provisioned store named with
+`--store <dir>`: the terminal never opens the store itself but runs the verified
+image in a release-verified companion runner attached to the store, submits the
+call, and renders the result. The companion runner and its release manifest must be
+installed beside `marrow` (the stock install layout); a missing or altered
+companion is reported as `cli.installation_damaged`. A durable export run **without**
+`--store` has no store to act on and reports the typed `cli.durable_unsupported`
+outcome (exit `1`). Durable execution also runs under source tests against a fresh
+ephemeral attachment, needing no store or companion (see [`marrow test`](#marrow-test)).
 
 When a fresh durable declaration has no identity in the project's
 [identity ledger](projects.md#the-identity-ledger), `run` still mints one from OS
@@ -155,6 +158,28 @@ or, with `--format jsonl`, one `kind: "test"` object per test and a final
 `kind: "summary"` object. The command exits `0` when every selected test passes,
 `1` when any fails or errors, and `2` on a usage error. See
 [Tests](tests.md) for the report grammar and the `test`/`assert` language.
+
+## `marrow import`
+
+```text
+marrow import --store <dir> --jsonl <path> --root <name> [--keys <col,...>]
+```
+
+Populates a native store from a flat-scalar JSONL corpus through the trusted
+importer, provisioning the store on first use. The project at the working directory
+is compiled and independently verified first; import is not a mint path, so a
+missing durable identity is reported and the developer runs `marrow check` before
+importing. Like `marrow run --store`, the terminal never opens the store: it hands
+the verified image and the corpus to the release-verified companion runner, which
+is the sole opener of the store, so the stock install layout is required.
+
+The corpus is one JSON object per line, each member a scalar (string, integer, or
+boolean) named exactly as a key column (`--keys`) or a field of the target
+`--root`; a member may be `null` or absent for a sparse field. Every row is created
+through the path kernel — no command receives a raw storage key, engine handle, or
+transaction object — and a store that denies writes refuses the import. The command
+reports the store provisioning (on first use) and a final `rows_imported` count;
+input is read and committed in bounded batches rather than materialized whole.
 
 ## `marrow client`
 

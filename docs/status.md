@@ -152,10 +152,12 @@ journey written through ordinary functions. An optional resource behaves like an
 optional record; only a resource composed under a generic (`Option<Book>`,
 `List<Book>`) is refused, since a resource is not a value argument to a built-in
 generic. Persistent
-execution is still in the trough: T01's in-process store open died at D00, so
-`marrow run` no longer opens a store and reports a durable export with the typed
-`cli.durable_unsupported` outcome until the persistent terminal path lands over a
-companion runner (F02b); the CLI never opens a store again. A store root is a
+execution runs over a companion runner: `marrow run <export> --store <dir>` runs a
+durable export against a provisioned store by launching a release-verified
+companion runner attached to the store, and `marrow import` populates and
+provisions a store the same way; the CLI itself never opens a store. A durable
+`run` without `--store` has no store to act on and reports the typed
+`cli.durable_unsupported` outcome. A store root is a
 singleton (no key), a single-column keyed root, or a composite keyed tuple of up
 to eight ordered columns; each key column is a scalar in the closed orderable
 durable-key set (`int`, `string`, `bool`, `bytes`, `date`, `instant`). Every

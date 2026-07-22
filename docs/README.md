@@ -6,7 +6,12 @@ revision; Marrow is unreleased and on a v0.1 beta line.
 
 ## Start here
 
+- [What Marrow is and is not](what-marrow-is.md) states the scope in one page.
+- [Quickstart](quickstart.md) goes from a source checkout to a running durable
+  program.
 - [Install Marrow](install.md) from the source tree.
+- [The durable model, narrated](walkthrough.md) reads a complete durable
+  application line by line.
 - [Language tour](language/) introduces the programming model in one page.
 - [Project status](status.md) separates current behavior from future
   direction and lists what was deleted at B00.
@@ -35,6 +40,8 @@ It is organized for lookup rather than sequential reading:
   families return through their refounding lanes.
 - [Operations](operations/) holds the place for the refounded durable
   lifecycle; there are no supported operational procedures yet.
+- [Machine-readable language facts](tools/ai-legibility.md) index the structured
+  facts a tool consumes, with the drift-checked reserved-word and token-kind lists.
 - [Error codes](error-codes.md) is generated from the current toolchain registry.
 - [Compatibility](compatibility.md) states what an unreleased revision does
   and does not promise.

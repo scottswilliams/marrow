@@ -32,9 +32,9 @@ gaps are honest waypoints on that path, not the design bar.
 
 ## Example
 
-This example shows the durable model. It checks on the beta line; durable
-execution runs through the ephemeral attachment `marrow test` provides, while the
-durable path of `marrow run` is still being refounded.
+This example shows the durable model. It checks on the beta line, runs under
+`marrow test` through a fresh ephemeral attachment, and — against a provisioned
+store with the companion runner installed — runs under `marrow run --store`.
 
 ```mw
 module app::tasks
@@ -166,8 +166,10 @@ evidence rather than asserted in the README.
 ## Build and documentation
 
 Installation currently requires the pinned Rust toolchain and a source build.
-Start with [Installation](docs/install.md).
+Start with [Installation](docs/install.md), then the
+[Quickstart](docs/quickstart.md) — checkout to a running durable program.
 
+- [What Marrow is and is not](docs/what-marrow-is.md) states the scope in one page.
 - [Documentation map](docs/) explains authority and navigation.
 - [Language reference](docs/language/) defines current `.mw` behavior.
 - [Tool reference](docs/tools/) and [Operations](docs/operations/) document the
