@@ -437,3 +437,55 @@ fn a_rename_with_a_moved_anchor_preserves_the_contract_id() {
         "a field made sparse changes the durable identity"
     );
 }
+
+// --- The ledger's one home (`.marrow/ids`) and the retired root path. ---
+
+/// A ledger at the retired project-root path `marrow.ids` is refused before any
+/// read with the typed location fault and its one-line move steer; files at
+/// both paths fail closed with the reconcile steer. Never two live copies.
+#[test]
+fn a_ledger_at_the_retired_root_path_is_refused_with_a_move_steer() {
+    let temp = TempDir::new("legacy-ledger");
+    project(&temp, COUNTER_SOURCE);
+    let set = run_in(&temp, &["run", "set", "--", "hits", "5"]);
+    assert!(
+        combined(&set).contains("cli.durable_unsupported"),
+        "{}",
+        combined(&set)
+    );
+    let ids = fs::read(temp.join(".marrow/ids")).expect("published ledger");
+    fs::write(temp.join("marrow.ids"), &ids).expect("plant the legacy copy");
+    fs::remove_file(temp.join(".marrow/ids")).expect("vacate the home");
+
+    let output = run_in(&temp, &["test"]);
+    assert!(!output.status.success(), "{output:?}");
+    let text = combined(&output);
+    assert!(text.contains("project.ids_location"), "{text}");
+    assert!(text.contains("git mv marrow.ids .marrow/ids"), "{text}");
+
+    fs::write(temp.join(".marrow/ids"), &ids).expect("occupy the home too");
+    let output = run_in(&temp, &["test"]);
+    assert!(!output.status.success(), "{output:?}");
+    let text = combined(&output);
+    assert!(text.contains("project.ids_location"), "{text}");
+    assert!(text.contains("exactly one ledger"), "{text}");
+}
+
+/// A mint inside a Git repository whose index lacks the ledger prints the
+/// one-line commit steer on stderr; the published artifact and records are
+/// unaffected. (Outside a repository — every other test here — it is silent.)
+#[test]
+fn a_mint_inside_a_git_repository_steers_toward_committing_the_ledger() {
+    let temp = TempDir::new("mint-steer");
+    project(&temp, COUNTER_SOURCE);
+    fs::create_dir_all(temp.join(".git")).expect("fake repository");
+
+    let set = run_in(&temp, &["run", "set", "--", "hits", "5"]);
+    let stderr = String::from_utf8_lossy(&set.stderr).to_string();
+    assert!(stderr.contains(".marrow/ids"), "{stderr}");
+    assert!(stderr.contains("not tracked by Git"), "{stderr}");
+    assert!(
+        temp.join(".marrow/ids").exists(),
+        "the steer never blocks the publish"
+    );
+}
