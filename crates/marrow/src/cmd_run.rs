@@ -450,19 +450,25 @@ fn draw_entropy_id() -> std::io::Result<DurableIdentityId> {
     ))
 }
 
-/// Publish `.marrow/ids` atomically: create the project-metadata directory,
-/// write a sibling temp file, then rename it over the artifact, so a reader
+/// Publish `.marrow/ids` atomically and durably: create the project-metadata
+/// directory, sweep temp debris a crashed earlier publish left behind, write a
+/// sibling temp file and sync its data to disk, rename it over the artifact,
+/// then sync the directory so the rename itself survives power loss. A reader
 /// observes either the old complete artifact or the new one — never a torn
-/// write. The temp file is removed on failure.
+/// write — and the data sync before the rename keeps that true across power
+/// loss (an unsynced rename can be journaled ahead of the data blocks). The
+/// temp file is removed on failure.
 fn publish_ids(root: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    std::fs::create_dir_all(root.join(marrow_project::META_DIR))?;
+    let meta = root.join(marrow_project::META_DIR);
+    std::fs::create_dir_all(&meta)?;
+    sweep_stale_publish_temps(&meta);
     let target = root.join(marrow_project::IDS_FILE);
     let temp = root.join(format!(
         "{}.tmp.{}",
         marrow_project::IDS_FILE,
         std::process::id()
     ));
-    if let Err(error) = std::fs::write(&temp, bytes) {
+    if let Err(error) = write_synced(&temp, bytes) {
         let _ = std::fs::remove_file(&temp);
         return Err(error);
     }
@@ -470,7 +476,47 @@ fn publish_ids(root: &Path, bytes: &[u8]) -> std::io::Result<()> {
         let _ = std::fs::remove_file(&temp);
         return Err(error);
     }
+    sync_directory(&meta)
+}
+
+/// Write `bytes` to `path` and sync the file's data to disk before returning,
+/// so a rename that follows never becomes visible ahead of the content.
+fn write_synced(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write as _;
+    let mut file = std::fs::File::create(path)?;
+    file.write_all(bytes)?;
+    file.sync_all()
+}
+
+/// Sync a directory so a completed rename inside it survives power loss.
+/// Directory handles are only opennable for sync on Unix; the mint path is
+/// already Unix-gated by the entropy source.
+fn sync_directory(dir: &Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    std::fs::File::open(dir)?.sync_all()?;
+    #[cfg(not(unix))]
+    let _ = dir;
     Ok(())
+}
+
+/// Remove `ids.tmp.*` siblings a crashed earlier publish left behind. A crash
+/// between temp write and rename leaves the mint gap open, so the next durable
+/// run republishes and lands here: the committed metadata directory never
+/// accumulates debris. Removal is best-effort — publication must not fail over
+/// housekeeping.
+fn sweep_stale_publish_temps(meta: &Path) {
+    let Ok(entries) = std::fs::read_dir(meta) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        if entry
+            .file_name()
+            .to_str()
+            .is_some_and(|name| name.starts_with("ids.tmp."))
+        {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
 }
 
 /// Resolve a caller-supplied export path to its [`ExportId`] through the compiler's

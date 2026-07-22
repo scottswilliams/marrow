@@ -489,3 +489,39 @@ fn a_mint_inside_a_git_repository_steers_toward_committing_the_ledger() {
         "the steer never blocks the publish"
     );
 }
+
+/// A stale publish temp left by a crashed earlier run is swept by the next
+/// publish. A crash between temp write and rename leaves the mint gap open
+/// (the rename never happened), so the next durable run mints again and its
+/// publish removes the debris: the committed metadata directory holds only
+/// the ledger.
+#[test]
+fn a_stale_publish_temp_from_a_crashed_run_is_swept_on_the_next_publish() {
+    let temp = TempDir::new("stale-temp-sweep");
+    project(&temp, COUNTER_SOURCE);
+    fs::create_dir_all(temp.join(".marrow")).expect("metadata directory");
+    fs::write(temp.join(".marrow/ids.tmp.99999"), b"debris from a crash").expect("stale temp");
+
+    let set = run_in(&temp, &["run", "set", "--", "hits", "5"]);
+    assert!(
+        combined(&set).contains("cli.durable_unsupported"),
+        "{}",
+        combined(&set)
+    );
+    let mut entries: Vec<String> = fs::read_dir(temp.join(".marrow"))
+        .expect("metadata directory listing")
+        .map(|entry| {
+            entry
+                .expect("entry")
+                .file_name()
+                .to_string_lossy()
+                .into_owned()
+        })
+        .collect();
+    entries.sort();
+    assert_eq!(
+        entries,
+        vec!["ids".to_string()],
+        "publish sweeps stale temp siblings"
+    );
+}
