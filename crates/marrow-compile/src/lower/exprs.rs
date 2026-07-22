@@ -1053,7 +1053,7 @@ impl<'a> FnLowerer<'a> {
         let int = LTy::bare_scalar(ScalarType::Int);
         // The value is evaluated once; both bound tests read it from the slot.
         self.lower_as(value, int)?;
-        let value_slot = self.alloc_slot();
+        let value_slot = self.alloc_slot(span)?;
         self.push(Instr::LocalSet(value_slot), span);
 
         // lo <= value
@@ -1780,7 +1780,7 @@ impl<'a> FnLowerer<'a> {
     ) -> Option<LTy> {
         let value = self.single_nominal_arg(id, args, span)?;
         self.lower_as(value, LTy::bare_scalar(ScalarType::Int))?;
-        let slot = self.alloc_slot();
+        let slot = self.alloc_slot(span)?;
         self.push(Instr::LocalSet(slot), span);
         let (lo, hi) = {
             let info = self.records.nominal(id);
@@ -2969,7 +2969,7 @@ impl<'a> FnLowerer<'a> {
             ));
             return None;
         }
-        let slot = self.alloc_slot();
+        let slot = self.alloc_slot(span)?;
         self.push(Instr::LocalSet(slot), span);
         self.push(Instr::LocalGet(slot), span);
         self.push(Instr::EnumTag, span);

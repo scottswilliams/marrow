@@ -8,8 +8,11 @@
 //! key-column bound reported as `check.unsupported`, and an unprechecked branch
 //! key tuple reaching the synthetic image-bound diagnostic.
 
-use marrow_compile::{CompileFailure, compile};
+use std::panic::{AssertUnwindSafe, catch_unwind};
+
+use marrow_compile::{CompileFailure, SourceDiagnostic, compile};
 use marrow_project::{CaptureLimits, CapturedFile, Manifest, ProjectInput};
+use marrow_syntax::SourceSpan;
 
 fn project(source: &str, ids: Option<&[u8]>) -> ProjectInput {
     let manifest = Manifest::parse("edition = \"2026\"\n").expect("valid manifest");
@@ -67,6 +70,143 @@ fn ledger(anchors: &[String]) -> Vec<u8> {
     }
     out.push_str("high-water 0\nend\n");
     out.into_bytes()
+}
+
+// ---- Per-function source precheck: total local-slot allocation.
+
+/// One unit function containing `binding_count` explicit bindings. Reusing the
+/// spelling is intentional: shadowing still consumes a fresh monotone frame slot,
+/// and the short line keeps the 65,537-binding totality case below the 1 MiB source
+/// capture bound. The returned span is the 257th initializer when present.
+fn local_binding_program(binding_count: usize) -> (String, Option<SourceSpan>) {
+    let mut source = String::from("module main\n\npub fn locals() {\n");
+    let mut first_rejected = None;
+    for index in 0..binding_count {
+        source.push_str("    const x=");
+        let start_byte = source.len();
+        if index == marrow_image::bounds::MAX_LOCALS {
+            first_rejected = Some(SourceSpan {
+                start_byte,
+                end_byte: start_byte + 1,
+                line: source.bytes().filter(|byte| *byte == b'\n').count() as u32 + 1,
+                column: 13,
+            });
+        }
+        source.push_str("0\n");
+    }
+    source.push_str("}\n");
+    (source, first_rejected)
+}
+
+/// A function whose sixteen parameters and `binding_count` explicit bindings share
+/// the same frame allocator. An optional empty range loop asks for the next
+/// compiler-generated counter slot; the returned span covers that whole loop.
+fn parameter_local_program(binding_count: usize, with_loop: bool) -> (String, Option<SourceSpan>) {
+    let params: Vec<String> = (0..16).map(|index| format!("p{index}: int")).collect();
+    let mut source = format!("module main\n\npub fn locals({}) {{\n", params.join(", "));
+    for _ in 0..binding_count {
+        source.push_str("    const x = 0\n");
+    }
+    let loop_span = with_loop.then(|| {
+        source.push_str("    ");
+        let start_byte = source.len();
+        let text = "for i in 0..1 {}";
+        let span = SourceSpan {
+            start_byte,
+            end_byte: start_byte + text.len(),
+            line: source.bytes().filter(|byte| *byte == b'\n').count() as u32 + 1,
+            column: 5,
+        };
+        source.push_str(text);
+        source.push('\n');
+        span
+    });
+    source.push_str("}\n");
+    (source, loop_span)
+}
+
+fn assert_exact_local_limit(
+    result: Result<marrow_compile::Compiled, CompileFailure>,
+    span: SourceSpan,
+) {
+    let diagnostics = match result {
+        Err(CompileFailure::Diagnostics(diagnostics)) => diagnostics,
+        Ok(compiled) => panic!("expected the local limit, compiled: {compiled:?}"),
+        Err(other) => panic!("expected one source-located local limit, got {other:?}"),
+    };
+    let diagnostics = diagnostics.as_slice();
+    assert_eq!(
+        diagnostics.len(),
+        1,
+        "the first rejected slot request emits exactly one diagnostic: {diagnostics:#?}",
+    );
+    let diagnostic: &SourceDiagnostic = &diagnostics[0];
+    assert_eq!(diagnostic.code, "check.resource_limit");
+    assert_eq!(diagnostic.file().as_str(), "src/main.mw");
+    assert_eq!(diagnostic.span(), span);
+}
+
+/// The complete frame is accepted and its image bytes stay frozen, so adding the
+/// rejection path cannot perturb an already-admitted function.
+#[test]
+fn exactly_256_explicit_bindings_compile_with_stable_image_bytes() {
+    let (source, rejected) = local_binding_program(marrow_image::bounds::MAX_LOCALS);
+    assert!(rejected.is_none());
+    let compiled = compile(&project(&source, None))
+        .unwrap_or_else(|failure| panic!("the complete 256-slot frame must compile: {failure:?}"));
+    let hex: String = marrow_image::image_id(&compiled.image.bytes)
+        .0
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    assert_eq!(
+        hex, "5237454e742ecf77261a087622408dfa22d48d30e6388319ed53324fea8022bf",
+        "the accepted 256-slot frame's encoded image changed"
+    );
+}
+
+/// Request 257 is refused at its initializer before the image builder sees an
+/// over-wide frame; the former locationless aggregate `Locals` outcome is forbidden.
+#[test]
+fn the_257th_explicit_binding_is_one_source_limited_diagnostic() {
+    let (source, rejected) = local_binding_program(marrow_image::bounds::MAX_LOCALS + 1);
+    assert_exact_local_limit(
+        compile(&project(&source, None)),
+        rejected.expect("the 257th initializer span"),
+    );
+}
+
+/// Parameters, source locals, and generated loop temporaries consume one allocator:
+/// 16 + 240 is accepted, then the range loop's counter request is refused at the
+/// loop's exact real span.
+#[test]
+fn parameters_locals_and_generated_temporaries_share_the_bound() {
+    let (accepted, no_loop) = parameter_local_program(240, false);
+    assert!(no_loop.is_none());
+    compile(&project(&accepted, None)).unwrap_or_else(|failure| {
+        panic!("16 parameters plus 240 locals fill the frame exactly: {failure:?}")
+    });
+
+    let (rejected, loop_span) = parameter_local_program(240, true);
+    assert_exact_local_limit(
+        compile(&project(&rejected, None)),
+        loop_span.expect("generated-counter request span"),
+    );
+}
+
+/// A legal sub-1-MiB source can ask for enough locals to overflow the backing `u16`.
+/// Compilation must stop at request 257 with the typed source refusal, never unwind,
+/// wrap, or continue through the remaining 65,280 requests.
+#[test]
+fn sixty_five_thousand_local_requests_are_total_and_fail_stop() {
+    let (source, rejected) = local_binding_program(65_537);
+    assert!(source.len() < CaptureLimits::DEFAULT.max_file_bytes());
+    let outcome = catch_unwind(AssertUnwindSafe(|| compile(&project(&source, None))));
+    let result = outcome.expect("local allocation must not panic or overflow");
+    assert_exact_local_limit(
+        result,
+        rejected.expect("the first rejected initializer span"),
+    );
 }
 
 // ---- Defect 1: a finite acyclic over-deep durable value silently drops its root.

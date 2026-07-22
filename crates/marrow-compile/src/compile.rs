@@ -189,9 +189,6 @@ pub enum ResourceLimitKind {
     /// segment), so it surfaces as a locationless resource limit rather than the
     /// synthetic diagnostic it once produced.
     StringBytes,
-    /// One function frame's local count over the per-frame bound. Known only after
-    /// lowering, so it has no pre-mutation source precheck.
-    Locals,
     /// One function's encoded bytecode over the per-function byte bound. Known only
     /// after lowering.
     CodeBytes,
@@ -231,7 +228,6 @@ impl ResourceLimitKind {
             ResourceLimitKind::TestEntries => "TestEntries",
             ResourceLimitKind::ImageBytes => "ImageBytes",
             ResourceLimitKind::StringBytes => "StringBytes",
-            ResourceLimitKind::Locals => "Locals",
             ResourceLimitKind::CodeBytes => "CodeBytes",
             ResourceLimitKind::IndexComponents => "IndexComponents",
             ResourceLimitKind::DurableDepth => "DurableDepth",
@@ -468,13 +464,12 @@ fn image_build_outcome(error: ImageBuildError) -> SemanticOutcome {
         ImageBuildError::ImageTooLarge => {
             aggregate(ResourceLimitKind::ImageBytes, bounds::MAX_IMAGE_BYTES)
         }
-        // Per-construct bounds knowable only after lowering, or reachable through a
-        // path no pre-mutation source precheck yet covers: an honest locationless
-        // resource limit, never the synthetic diagnostic.
+        // Per-construct bounds reachable through a path no pre-mutation source
+        // precheck yet covers: an honest locationless resource limit, never the
+        // synthetic diagnostic.
         ImageBuildError::StringTooLong => {
             aggregate(ResourceLimitKind::StringBytes, bounds::MAX_STRING_BYTES)
         }
-        ImageBuildError::TooManyLocals => aggregate(ResourceLimitKind::Locals, bounds::MAX_LOCALS),
         ImageBuildError::CodeTooLong => {
             aggregate(ResourceLimitKind::CodeBytes, bounds::MAX_CODE_BYTES)
         }
@@ -497,6 +492,7 @@ fn image_build_outcome(error: ImageBuildError) -> SemanticOutcome {
         | ImageBuildError::TooManyKeyColumns
         | ImageBuildError::DurableValueTooDeep
         | ImageBuildError::TooManyParams
+        | ImageBuildError::TooManyLocals
         | ImageBuildError::SitePathTooShort
         | ImageBuildError::SitePathTooDeep
         | ImageBuildError::LocalCountBelowParams
@@ -2430,7 +2426,6 @@ mod tests {
             (TestEntries, "TestEntries"),
             (ImageBytes, "ImageBytes"),
             (StringBytes, "StringBytes"),
-            (Locals, "Locals"),
             (CodeBytes, "CodeBytes"),
             (IndexComponents, "IndexComponents"),
             (DurableDepth, "DurableDepth"),
@@ -2543,12 +2538,46 @@ mod tests {
         };
         assert_eq!(limit.kind(), super::ResourceLimitKind::Functions);
 
+        let prechecked = super::image_build_outcome(marrow_image::ImageBuildError::TooManyLocals);
+        assert!(
+            matches!(prechecked, super::SemanticOutcome::Invariant(_, _)),
+            "a compiler draft past the source-prechecked local bound is an opaque invariant"
+        );
+
         let contradiction =
             super::image_build_outcome(marrow_image::ImageBuildError::InvalidReference("x"));
         assert!(
             matches!(contradiction, super::SemanticOutcome::Invariant(_, _)),
             "a producer-state contradiction is an opaque invariant, not a diagnostic"
         );
+    }
+
+    #[test]
+    fn a_hostile_image_draft_retains_the_direct_too_many_locals_error() {
+        let mut draft = marrow_image::ImageDraft::new();
+        let name = draft.intern_string("hostile");
+        let source = draft.intern_string("src/main.mw");
+        let Ok(local_count) = u16::try_from(marrow_image::bounds::MAX_LOCALS + 1) else {
+            panic!("the current image local bound has a representable hostile successor")
+        };
+        draft.add_function(marrow_image::FunctionDef {
+            name,
+            source,
+            params: Vec::new(),
+            ret: marrow_image::ImageType::Unit,
+            local_count,
+            code: vec![marrow_image::Instr::Return],
+            spans: vec![marrow_image::SpanEntry {
+                instr_index: 0,
+                line: 1,
+                column: 1,
+            }],
+        });
+
+        assert!(matches!(
+            draft.encode(),
+            Err(marrow_image::ImageBuildError::TooManyLocals)
+        ));
     }
 }
 

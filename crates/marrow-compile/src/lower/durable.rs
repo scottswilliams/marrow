@@ -1015,7 +1015,7 @@ impl<'a> FnLowerer<'a> {
         // pop into slots from the last column back so each slot holds its own column.
         let mut slots = vec![0u16; cols];
         for column in (0..cols).rev() {
-            let slot = self.alloc_slot();
+            let slot = self.alloc_slot(expr.span())?;
             self.push(Instr::LocalSet(slot), span);
             slots[column] = slot;
         }
@@ -1062,8 +1062,8 @@ impl<'a> FnLowerer<'a> {
         for column in keys {
             match column.key {
                 PlaceKey::Bound(slot) => slots.push(slot),
-                PlaceKey::Expr(_) => {
-                    let slot = self.alloc_slot();
+                PlaceKey::Expr(expr) => {
+                    let slot = self.alloc_slot(expr.span())?;
                     self.emit_key(column.key, column.key_ty, span)?;
                     self.push(Instr::LocalSet(slot), span);
                     slots.push(slot);
@@ -1148,7 +1148,7 @@ impl<'a> FnLowerer<'a> {
         for column in place.keys {
             match column.key {
                 PlaceKey::Expr(key_expr) => {
-                    let key_slot = self.alloc_slot();
+                    let key_slot = self.alloc_slot(key_expr.span())?;
                     self.lower_as(key_expr, LTy::bare_scalar(column.key_ty))?;
                     self.push(Instr::LocalSet(key_slot), span);
                     key_slots.push((key_slot, column.key_ty));
@@ -1920,7 +1920,7 @@ impl<'a> FnLowerer<'a> {
             return None;
         };
         let mut slots = Vec::with_capacity(args.len());
-        let first_slot = self.alloc_slot();
+        let first_slot = self.alloc_slot(first.value.span())?;
         self.push(Instr::LocalSet(first_slot), span);
         slots.push(first_slot);
         for arg in rest {
@@ -1934,7 +1934,7 @@ impl<'a> FnLowerer<'a> {
                 return None;
             }
             self.lower_as(&arg.value, elem)?;
-            let slot = self.alloc_slot();
+            let slot = self.alloc_slot(arg.value.span())?;
             self.push(Instr::LocalSet(slot), span);
             slots.push(slot);
         }
@@ -2767,7 +2767,7 @@ impl<'a> FnLowerer<'a> {
         // record is on top of the stack when the leaf op runs.
         let value_slot = match &edit {
             GroupLeafEdit::Set { value, ty } => {
-                let value_slot = self.alloc_slot();
+                let value_slot = self.alloc_slot(span)?;
                 self.lower_as(value, garg_to_lty(*ty))?;
                 self.push(Instr::LocalSet(value_slot), span);
                 Some(value_slot)
@@ -2797,7 +2797,7 @@ impl<'a> FnLowerer<'a> {
                 self.push(Instr::FieldUnset(slot), span);
             }
         }
-        let rec_slot = self.alloc_slot();
+        let rec_slot = self.alloc_slot(span)?;
         self.push(Instr::LocalSet(rec_slot), span);
         self.emit_slots(&key_slots, span);
         self.push(Instr::LocalGet(rec_slot), span);
@@ -2828,7 +2828,7 @@ impl<'a> FnLowerer<'a> {
         // evaluation whether the whole-entry address is a root (identity or per-column) or
         // a branch below an identity-keyed root.
         let key_slots: Vec<u16> = self.capture_key_slots(keys, span)?;
-        let rec_slot = self.alloc_slot();
+        let rec_slot = self.alloc_slot(span)?;
         self.lower_as(
             value,
             LTy::Record {

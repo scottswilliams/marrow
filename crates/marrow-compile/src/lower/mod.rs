@@ -66,7 +66,7 @@ use crate::types::{
 };
 
 /// Whether control continues past a statement or block, leaves it (via `return`,
-/// `break`, or `continue`), or is rejected by the shared instantiation-limit owner.
+/// `break`, or `continue`), or is terminally rejected by a lowering owner.
 /// `Rejected` is propagated by every nested control owner, so later branches and
 /// structural checks cannot observe a partially lowered body.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -77,7 +77,7 @@ enum Flow {
 }
 
 /// The only two outcomes of a finite positional walk: completed lowering with its
-/// deferred `break` jumps, or terminal rejection by the shared generic owner.
+/// deferred `break` jumps, or terminal rejection by a lowering owner.
 enum PositionalWalkOutcome {
     Complete(Vec<usize>),
     Rejected,
@@ -306,6 +306,10 @@ pub(crate) struct FnLowerer<'a> {
     loops: Vec<LoopCtx>,
     /// Monotonic slot allocator; never decreases, so slots are never reused.
     slot_count: u16,
+    /// The frame's first over-bound request is a source-located terminal refusal.
+    /// Keeping this state distinct from `failed` suppresses duplicate reports and
+    /// makes every nested flow owner stop before it can use a missing slot.
+    local_limit_reached: bool,
     ret: RetType,
     /// Whether this is a function or a test body; gates the owned `assert`.
     body_kind: BodyKind,
@@ -398,6 +402,7 @@ impl<'a> FnLowerer<'a> {
             present_places: Vec::new(),
             loops: Vec::new(),
             slot_count: 0,
+            local_limit_reached: false,
             ret,
             body_kind,
             hover_facts: Vec::new(),
@@ -688,7 +693,9 @@ impl<'a> FnLowerer<'a> {
                 }
                 continue;
             };
-            let slot = lowerer.alloc_slot();
+            let Some(slot) = lowerer.alloc_slot(param.ty.span()) else {
+                return lowerer.finish(&function.name, Vec::new(), ImageType::Unit);
+            };
             lowerer.locals.push(Local {
                 name: param.name.clone(),
                 ty,
@@ -901,10 +908,38 @@ impl<'a> FnLowerer<'a> {
         }
     }
 
-    fn alloc_slot(&mut self) -> u16 {
+    fn alloc_slot(&mut self, request_span: SourceSpan) -> Option<u16> {
+        const _: () = assert!(marrow_image::bounds::MAX_LOCALS <= u16::MAX as usize);
+
+        if self.local_limit_reached {
+            return None;
+        }
+        if usize::from(self.slot_count) >= marrow_image::bounds::MAX_LOCALS {
+            self.local_limit_reached = true;
+            self.failed = true;
+            self.diagnostics.push(SourceDiagnostic::at(
+                Code::CheckResourceLimit.as_str(),
+                self.file,
+                request_span,
+                format!(
+                    "a function frame cannot allocate another local slot; the fixed limit is {}",
+                    marrow_image::bounds::MAX_LOCALS
+                ),
+            ));
+            return None;
+        }
+
         let slot = self.slot_count;
-        self.slot_count += 1;
-        slot
+        #[expect(
+            clippy::expect_used,
+            reason = "MAX_LOCALS is statically no greater than u16::MAX and the precheck excludes every over-bound count"
+        )]
+        let next = self
+            .slot_count
+            .checked_add(1)
+            .expect("an admitted local-slot count fits u16");
+        self.slot_count = next;
+        Some(slot)
     }
 
     fn fail(&mut self, diagnostic: SourceDiagnostic) {
@@ -928,10 +963,12 @@ impl<'a> FnLowerer<'a> {
     }
 
     /// Whether lowering must stop before any later handler, interning, patching, or
-    /// emission. Both the shared instantiation limit and the first private generic
-    /// invariant are terminal for the current body.
+    /// emission. The shared instantiation limit, the frame's first over-bound local
+    /// request, and the first private generic invariant are terminal for this body.
     fn terminal_rejection(&self) -> bool {
-        self.records.has_instantiation_limit() || self.invariant.is_some()
+        self.records.has_instantiation_limit()
+            || self.local_limit_reached
+            || self.invariant.is_some()
     }
 
     fn accept_resolution<T>(
@@ -1331,6 +1368,69 @@ mod generic_cache_boundary_tests {
             BodyKind::Function,
             true,
         )
+    }
+
+    #[test]
+    fn local_slot_limit_rejection_is_atomic_and_reported_once() {
+        let mut draft = ImageDraft::new();
+        let records = generic_enum_registry(&mut draft);
+        let before = draft.encode().expect("empty draft encodes");
+        let durable = DurableRegistry::default();
+        let functions = FunctionRegistry::default();
+        let generics = GenericRegistry::default();
+        let consts = ConstRegistry::default();
+        let mut diagnostics = Vec::new();
+        let mut dependency_gaps = Vec::new();
+        let request_span = SourceSpan {
+            start_byte: 40,
+            end_byte: 41,
+            line: 3,
+            column: 15,
+        };
+        let mut lowerer = lowerer(
+            &mut draft,
+            &records,
+            &durable,
+            &functions,
+            &generics,
+            &consts,
+            &mut diagnostics,
+            &mut dependency_gaps,
+        );
+
+        for expected in 0..marrow_image::bounds::MAX_LOCALS {
+            assert_eq!(
+                lowerer.alloc_slot(request_span).map(usize::from),
+                Some(expected)
+            );
+        }
+        assert_eq!(
+            usize::from(lowerer.slot_count),
+            marrow_image::bounds::MAX_LOCALS
+        );
+        assert!(lowerer.alloc_slot(request_span).is_none());
+        assert_eq!(
+            usize::from(lowerer.slot_count),
+            marrow_image::bounds::MAX_LOCALS,
+            "a rejected request does not mutate the admitted count"
+        );
+        assert!(lowerer.alloc_slot(request_span).is_none());
+        assert!(lowerer.terminal_rejection());
+        assert_eq!(lowerer.diagnostics.len(), 1);
+        assert_eq!(
+            lowerer.diagnostics[0].code,
+            Code::CheckResourceLimit.as_str()
+        );
+        assert_eq!(lowerer.diagnostics[0].span(), request_span);
+        assert!(matches!(
+            lowerer.finish("rejected", Vec::new(), ImageType::Unit),
+            Ok(None)
+        ));
+
+        let after = draft.encode().expect("rejected draft still encodes");
+        assert_eq!(after.bytes, before.bytes);
+        assert_eq!(after.image_id, before.image_id);
+        assert_eq!(diagnostics.len(), 1);
     }
 
     fn orphan_enum_and_struct(draft: &mut ImageDraft) -> (EnumId, TypeId) {

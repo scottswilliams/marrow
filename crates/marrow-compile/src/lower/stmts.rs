@@ -305,7 +305,9 @@ impl<'a> FnLowerer<'a> {
             };
             ty
         };
-        let slot = self.alloc_slot();
+        let Some(slot) = self.alloc_slot(value.span()) else {
+            return;
+        };
         self.push(Instr::LocalSet(slot), value.span());
         self.locals.push(Local {
             name: name.to_string(),
@@ -984,7 +986,7 @@ impl<'a> FnLowerer<'a> {
             // Present edge falls through with the unwrapped bare value; absent edge
             // jumps to the shared tail.
             fail_jumps.push(self.push_branch_present(value.span()));
-            let slot = self.alloc_slot();
+            let slot = self.alloc_slot(value.span())?;
             self.push(Instr::LocalSet(slot), value.span());
             self.locals.push(Local {
                 name: name.to_string(),
@@ -1161,7 +1163,9 @@ impl<'a> FnLowerer<'a> {
             .map(|(name, payload)| (name, payload.into_iter().map(garg_to_lty).collect()))
             .collect();
 
-        let scrut_slot = self.alloc_slot();
+        let Some(scrut_slot) = self.alloc_slot(span) else {
+            return Flow::Rejected;
+        };
         self.push(Instr::LocalSet(scrut_slot), span);
 
         let mut covered = vec![false; variants.len()];
@@ -1231,7 +1235,9 @@ impl<'a> FnLowerer<'a> {
             // Bind the payload positionally into fresh locals scoped to the arm.
             let mark = self.locals.len();
             for (field, (binding, leaf_ty)) in arm.bindings.iter().zip(&payload).enumerate() {
-                let slot = self.alloc_slot();
+                let Some(slot) = self.alloc_slot(binding.span) else {
+                    return Flow::Rejected;
+                };
                 self.push(Instr::LocalGet(scrut_slot), binding.span);
                 self.push(
                     Instr::EnumPayloadGet {
@@ -1464,13 +1470,17 @@ impl<'a> FnLowerer<'a> {
         if self.lower_as(lo, int).is_none() {
             return Flow::Fallthrough;
         }
-        let counter_slot = self.alloc_slot();
+        let Some(counter_slot) = self.alloc_slot(span) else {
+            return Flow::Rejected;
+        };
         self.push(Instr::LocalSet(counter_slot), span);
         // hi is evaluated once and held for the guard.
         if self.lower_as(hi, int).is_none() {
             return Flow::Fallthrough;
         }
-        let hi_slot = self.alloc_slot();
+        let Some(hi_slot) = self.alloc_slot(span) else {
+            return Flow::Rejected;
+        };
         self.push(Instr::LocalSet(hi_slot), span);
         let step_const = self.draft.intern_int(stride);
 
@@ -1874,7 +1884,9 @@ impl<'a> FnLowerer<'a> {
                     // An inline `^root(k)….branch` base evaluates each ancestor key once here
                     // into a fresh slot, so the pin and the opcode read one evaluation.
                     PlaceKey::Expr(key_expr) => {
-                        let slot = self.alloc_slot();
+                        let Some(slot) = self.alloc_slot(key_expr.span()) else {
+                            return Flow::Rejected;
+                        };
                         if self
                             .lower_as(key_expr, LTy::bare_scalar(column.key_ty))
                             .is_none()
@@ -1928,9 +1940,13 @@ impl<'a> FnLowerer<'a> {
             span,
         );
         // Bind the on-more bit and the frozen list into fresh slots.
-        let more_slot = self.alloc_slot();
+        let Some(more_slot) = self.alloc_slot(span) else {
+            return Flow::Rejected;
+        };
         self.push(Instr::LocalSet(more_slot), span);
-        let coll_slot = self.alloc_slot();
+        let Some(coll_slot) = self.alloc_slot(span) else {
+            return Flow::Rejected;
+        };
         self.push(Instr::LocalSet(coll_slot), span);
 
         // A positional walk over the frozen `List[K]` binds `k` per position.
@@ -1947,7 +1963,7 @@ impl<'a> FnLowerer<'a> {
             body,
             span,
             move |lower, index_slot| {
-                let key_slot = lower.alloc_slot();
+                let key_slot = lower.alloc_slot(var.span)?;
                 lower.push(Instr::LocalGet(coll_slot), span);
                 lower.push(Instr::LocalGet(index_slot), span);
                 lower.push(Instr::ListGet, span);
@@ -1981,6 +1997,7 @@ impl<'a> FnLowerer<'a> {
                         node_kind,
                     });
                 }
+                Some(())
             },
         ) {
             PositionalWalkOutcome::Complete(break_jumps) => break_jumps,
@@ -2126,9 +2143,13 @@ impl<'a> FnLowerer<'a> {
             },
             span,
         );
-        let more_slot = self.alloc_slot();
+        let Some(more_slot) = self.alloc_slot(span) else {
+            return Flow::Rejected;
+        };
         self.push(Instr::LocalSet(more_slot), span);
-        let coll_slot = self.alloc_slot();
+        let Some(coll_slot) = self.alloc_slot(span) else {
+            return Flow::Rejected;
+        };
         self.push(Instr::LocalSet(coll_slot), span);
 
         // A positional walk over the frozen `List[K]`: each raw identity key is wrapped
@@ -2141,7 +2162,7 @@ impl<'a> FnLowerer<'a> {
             body,
             span,
             move |lower, index_slot| {
-                let id_slot = lower.alloc_slot();
+                let id_slot = lower.alloc_slot(var.span)?;
                 lower.push(Instr::LocalGet(coll_slot), span);
                 lower.push(Instr::LocalGet(index_slot), span);
                 lower.push(Instr::ListGet, span);
@@ -2162,6 +2183,7 @@ impl<'a> FnLowerer<'a> {
                     mutable: false,
                     slot: id_slot,
                 });
+                Some(())
             },
         ) {
             PositionalWalkOutcome::Complete(break_jumps) => break_jumps,
@@ -2291,7 +2313,9 @@ impl<'a> FnLowerer<'a> {
         };
 
         // The collection value is on the stack; keep it in a local to index it.
-        let coll_slot = self.alloc_slot();
+        let Some(coll_slot) = self.alloc_slot(span) else {
+            return Flow::Rejected;
+        };
         self.push(Instr::LocalSet(coll_slot), span);
         let len_instr = match self.records.collection_spec(idx) {
             CollSpec::List { .. } => Instr::ListLen,
@@ -2305,8 +2329,13 @@ impl<'a> FnLowerer<'a> {
             span,
             |lower, index_slot| {
                 // Bind the loop variable(s) from the current position.
-                let bind_var = |lower: &mut Self, name: &str, ty: LTy, at: Instr| {
-                    let slot = lower.alloc_slot();
+                let bind_var = |lower: &mut Self,
+                                name: &str,
+                                name_span: SourceSpan,
+                                ty: LTy,
+                                at: Instr|
+                 -> Option<()> {
+                    let slot = lower.alloc_slot(name_span)?;
                     lower.push(Instr::LocalGet(coll_slot), span);
                     lower.push(Instr::LocalGet(index_slot), span);
                     lower.push(at, span);
@@ -2317,19 +2346,45 @@ impl<'a> FnLowerer<'a> {
                         mutable: false,
                         slot,
                     });
+                    Some(())
                 };
                 match bind {
                     Bind::List { elem } => {
-                        bind_var(lower, &binding.names[0].name, elem, Instr::ListGet);
+                        bind_var(
+                            lower,
+                            &binding.names[0].name,
+                            binding.names[0].span,
+                            elem,
+                            Instr::ListGet,
+                        )?;
                     }
                     Bind::MapKey { key } => {
-                        bind_var(lower, &binding.names[0].name, key, Instr::MapKeyAt);
+                        bind_var(
+                            lower,
+                            &binding.names[0].name,
+                            binding.names[0].span,
+                            key,
+                            Instr::MapKeyAt,
+                        )?;
                     }
                     Bind::MapKeyValue { key, value } => {
-                        bind_var(lower, &binding.names[0].name, key, Instr::MapKeyAt);
-                        bind_var(lower, &binding.names[1].name, value, Instr::MapValueAt);
+                        bind_var(
+                            lower,
+                            &binding.names[0].name,
+                            binding.names[0].span,
+                            key,
+                            Instr::MapKeyAt,
+                        )?;
+                        bind_var(
+                            lower,
+                            &binding.names[1].name,
+                            binding.names[1].span,
+                            value,
+                            Instr::MapValueAt,
+                        )?;
                     }
                 }
+                Some(())
             },
         ) {
             PositionalWalkOutcome::Complete(break_jumps) => break_jumps,
@@ -2358,14 +2413,16 @@ impl<'a> FnLowerer<'a> {
         len_instr: Instr,
         body: &Block,
         span: SourceSpan,
-        bind: impl FnOnce(&mut Self, u16),
+        bind: impl FnOnce(&mut Self, u16) -> Option<()>,
     ) -> PositionalWalkOutcome {
         if self.terminal_rejection() {
             return PositionalWalkOutcome::Rejected;
         }
         // The cursor starts at -1 so the increment at the loop top reaches 0 first,
         // which lets `continue` jump to that increment and always make progress.
-        let index_slot = self.alloc_slot();
+        let Some(index_slot) = self.alloc_slot(span) else {
+            return PositionalWalkOutcome::Rejected;
+        };
         let neg_one = self.draft.intern_int(-1);
         self.push(Instr::ConstLoad(neg_one.index()), span);
         self.push(Instr::LocalSet(index_slot), span);
@@ -2386,7 +2443,11 @@ impl<'a> FnLowerer<'a> {
 
         let mark = self.locals.len();
         let place_mark = self.places.len();
-        bind(self, index_slot);
+        if bind(self, index_slot).is_none() {
+            self.locals.truncate(mark);
+            self.places.truncate(place_mark);
+            return PositionalWalkOutcome::Rejected;
+        }
         self.loops.push(LoopCtx {
             continue_target: top,
             break_jumps: Vec::new(),
@@ -2541,7 +2602,9 @@ impl<'a> FnLowerer<'a> {
 
         let int = LTy::bare_scalar(ScalarType::Int);
         // Evaluate the operands into fresh locals.
-        let la = self.alloc_slot();
+        let Some(la) = self.alloc_slot(span) else {
+            return Flow::Rejected;
+        };
         let (checked, lb) = match wrapped {
             Wrapped::Binary(bop, left, right) => {
                 if self.lower_as(left, int).is_none() {
@@ -2552,7 +2615,9 @@ impl<'a> FnLowerer<'a> {
                     };
                 }
                 self.push(Instr::LocalSet(la), span);
-                let lb = self.alloc_slot();
+                let Some(lb) = self.alloc_slot(span) else {
+                    return Flow::Rejected;
+                };
                 if self.lower_as(right, int).is_none() {
                     return if self.terminal_rejection() {
                         Flow::Rejected
@@ -2676,7 +2741,7 @@ impl<'a> FnLowerer<'a> {
             CheckedBind::Const { name, ty } | CheckedBind::Var { name, ty } => {
                 let mutable = matches!(bind, CheckedBind::Var { .. });
                 let target = self.coerce_int_result(ty.as_ref(), int, span)?;
-                let slot = self.alloc_slot();
+                let slot = self.alloc_slot(span)?;
                 self.push(Instr::LocalSet(slot), span);
                 Some(Local {
                     name: name.clone(),
