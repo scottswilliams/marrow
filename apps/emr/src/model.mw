@@ -1,0 +1,180 @@
+module model
+
+// EMR change-set workload — durable model.
+//
+// This is the A00-designated dogfood tool, ported from the syntax stress study's
+// EMR change-set workload (a bounded, order-independent, atomic bundle applier
+// inspired by FHIR R4 transaction processing — atomic, entry-order-independent,
+// same-bundle references satisfiable). It is not FHIR and accepts no FHIR
+// resources; `revision` is an internal study counter, not a FHIR versionId.
+//
+// Faithful narrowings forced by the stock beta surface are recorded in README.md
+// (typed resource IDs are plain `int`; statuses are stored as `string` so the
+// trusted importer can populate primaries; the study's hand-maintained resource
+// projections are managed indexes here). The change-set semantics — revision
+// discipline, reference closure, status-transition law, active-medication
+// supersession, per-patient aggregate revision, contiguous audit allocation, and
+// the audit trail — are preserved.
+
+// change-set input ----------------------------------------------------------
+//
+// A bundle is a `List<Change>`. Entry order has no semantic effect: the applier
+// canonicalizes by (kind, id) and rejects the smallest duplicated subject. Each
+// create/update carries the flat scalar data of its resource. Statuses arrive as
+// strings already validated at the boundary; the applier re-checks them.
+
+enum Change {
+    createPatient(id: int, status: string, display: string)
+    updatePatient(id: int, expectedRevision: int, status: string, display: string)
+
+    createEncounter(id: int, patientId: int, status: string, reason: string)
+    updateEncounter(id: int, expectedRevision: int, status: string, reason: string)
+
+    createObservation(id: int, patientId: int, encounterId: int, status: string, code: string, value: int)
+    updateObservation(id: int, expectedRevision: int, patientId: int, encounterId: int, status: string, code: string, value: int)
+
+    createMedicationOrder(id: int, patientId: int, code: string, status: string, dose: int)
+    updateMedicationOrder(id: int, expectedRevision: int, patientId: int, code: string, status: string, dose: int)
+}
+
+// closed rejection reasons --------------------------------------------------
+//
+// Every domain rejection rolls the whole bundle back. Runtime/store faults are a
+// separate uncatchable channel and are never one of these.
+
+// A subject is carried as its kind name plus numeric id (a stock-beta enum payload
+// field cannot itself be a user enum). `kind` is one of "patient", "encounter",
+// "observation", or "medicationOrder".
+enum Rejection {
+    emptyBundle
+    duplicateSubject(kind: string, id: int)
+    resourceAlreadyExists(kind: string, id: int)
+    resourceMissing(kind: string, id: int)
+    staleRevision(kind: string, id: int, expected: int, actual: int)
+    revisionOverflow(kind: string, id: int)
+    unsupportedStatus(kind: string, id: int, status: string)
+    unsupportedTransition(kind: string, id: int, prior: string, intended: string)
+    immutableEncounterPatient(id: int, prior: int, intended: int)
+    patientMissing(patientId: int, referencedByKind: string, referencedById: int)
+    encounterMissing(encounterId: int, referencedByObservation: int)
+    observationPatientMismatch(observationId: int, observationPatient: int, encounterPatient: int)
+    activeMedicationCollision(patientId: int, code: string, first: int, second: int)
+    patientAggregateMissing(patientId: int)
+    auditCounterMissing
+}
+
+// success value -------------------------------------------------------------
+
+struct ChangeSetApplied {
+    explicitMutations: int
+    implicitMutations: int
+    firstAuditId: int
+    touchedPatients: int
+}
+
+// durable primaries (flat, importable) --------------------------------------
+
+resource Patient {
+    required revision: int
+    required status: string
+    required display: string
+}
+
+resource Encounter {
+    required revision: int
+    required patientId: int
+    required status: string
+    required reason: string
+}
+
+resource Observation {
+    required revision: int
+    required patientId: int
+    required encounterId: int
+    required status: string
+    required code: string
+    required value: int
+}
+
+resource MedicationOrder {
+    required revision: int
+    required patientId: int
+    required code: string
+    required status: string
+    required dose: int
+}
+
+store ^patients[id: int]: Patient
+
+store ^encounters[id: int]: Encounter {
+    index byPatient[patientId, id]
+}
+
+store ^observations[id: int]: Observation {
+    index byPatient[patientId, id]
+    index byEncounter[encounterId, id]
+}
+
+store ^medicationOrders[id: int]: MedicationOrder {
+    index byPatient[patientId, id]
+}
+
+// durable derived state (maintained by the change-set, never imported) -------
+
+// One aggregate-revision counter per existing patient. Advances exactly once for
+// every patient a bundle touches.
+resource PatientAggregate {
+    required revision: int
+}
+
+store ^patientAggregates[patient: int]: PatientAggregate
+
+// Active-medication uniqueness: at most one active order occupies a (patient,
+// code) key. Kept under a per-patient node with a single-column `byCode` branch so
+// a patient's active medications can be listed by bounded traversal.
+resource ActiveMedications {
+    marker: int
+    byCode[code: string] {
+        required orderId: int
+        required orderRevision: int
+    }
+}
+
+store ^activeMedications[patient: int]: ActiveMedications
+
+// The globally allocatable audit identity, keyed by a constant name (a singleton
+// store root is declared-only in stock beta; a name-keyed root is executable).
+resource AuditCounter {
+    required nextId: int
+}
+
+store ^auditCounter[name: string]: AuditCounter
+
+// One global audit event per mutation, in contiguous allocation order.
+resource AuditEvent {
+    required subjectKind: string
+    required subjectId: int
+    required mutationKind: string
+    required priorRevision: int
+    required newRevision: int
+    required patientId: int
+}
+
+store ^auditEvents[audit: int]: AuditEvent {
+    index byPatient[patientId, audit]
+}
+
+// Per-patient audit projection: links a patient to each audit event that touched
+// them, pageable in ascending audit-ID order (the read-your-writes audit journey).
+resource PatientAudits {
+    marker: int
+    events[audit: int] {
+        required subjectKind: string
+        required subjectId: int
+        required mutationKind: string
+        required resourceRevision: int
+        required patientRevision: int
+    }
+}
+
+store ^patientAudits[patient: int]: PatientAudits

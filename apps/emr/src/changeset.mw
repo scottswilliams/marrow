@@ -1,0 +1,579 @@
+module changeset
+
+use model
+use status
+
+// The atomic EMR change-set applier.
+//
+// `applyChangeSet` applies one bounded, heterogeneous bundle of resource
+// creates/updates in exactly one transaction: either every primary, active-
+// medication, aggregate-revision, and audit change commits, or none does. Entry
+// order does not change the committed state (a bundle is accepted only when every
+// entry is valid, and the writes are the same in any order); references may be
+// satisfied by resources created in the same bundle.
+//
+// Because a `return` inside a Marrow transaction commits the staged writes, the
+// applier validates the whole bundle first (reads only) and only then applies it.
+// Every domain rejection is returned before any write, so a rejected bundle leaves
+// the store byte-for-byte unchanged. Runtime/store faults are the separate
+// uncatchable channel and roll the transaction back.
+
+const MAX_REVISION: int = 9223372036854775807
+
+const INITIAL_REVISION: int = 1
+
+const AUDIT_COUNTER_NAME: string = "global"
+
+const FIRST_AUDIT_ID: int = 1
+
+// One recorded mutation awaiting contiguous audit-ID allocation. `patientB` is 0
+// for a single-patient mutation.
+struct AuditDraft {
+    subjectKind: string
+    subjectId: int
+    mutationKind: string
+    priorRevision: int
+    newRevision: int
+    patientA: int
+    patientB: int
+}
+
+// canonical subject naming --------------------------------------------------
+
+fn changeKind(c: Change): string {
+    match c {
+        createPatient(id, s, d) => return "patient"
+        updatePatient(id, r, s, d) => return "patient"
+        createEncounter(id, p, s, r) => return "encounter"
+        updateEncounter(id, r, s, rs) => return "encounter"
+        createObservation(id, p, e, s, c2, v) => return "observation"
+        updateObservation(id, r, p, e, s, c2, v) => return "observation"
+        createMedicationOrder(id, p, c2, s, d) => return "medicationOrder"
+        updateMedicationOrder(id, r, p, c2, s, d) => return "medicationOrder"
+    }
+}
+
+fn changeId(c: Change): int {
+    match c {
+        createPatient(id, s, d) => return id
+        updatePatient(id, r, s, d) => return id
+        createEncounter(id, p, s, r) => return id
+        updateEncounter(id, r, s, rs) => return id
+        createObservation(id, p, e, s, c2, v) => return id
+        updateObservation(id, r, p, e, s, c2, v) => return id
+        createMedicationOrder(id, p, c2, s, d) => return id
+        updateMedicationOrder(id, r, p, c2, s, d) => return id
+    }
+}
+
+fn subjectKey(c: Change): string {
+    return changeKind(c) + ":" + string(changeId(c))
+}
+
+// The stable code name of a rejection — the terminal-facing rendering and the
+// single exhaustive place that names every closed rejection reason.
+pub fn rejectionCode(e: Rejection): string {
+    match e {
+        emptyBundle => return "emptyBundle"
+        duplicateSubject(kind, id) => return "duplicateSubject"
+        resourceAlreadyExists(kind, id) => return "resourceAlreadyExists"
+        resourceMissing(kind, id) => return "resourceMissing"
+        staleRevision(kind, id, expected, actual) => return "staleRevision"
+        revisionOverflow(kind, id) => return "revisionOverflow"
+        unsupportedStatus(kind, id, s) => return "unsupportedStatus"
+        unsupportedTransition(kind, id, prior, intended) => return "unsupportedTransition"
+        immutableEncounterPatient(id, prior, intended) => return "immutableEncounterPatient"
+        patientMissing(patientId, rk, ri) => return "patientMissing"
+        encounterMissing(encounterId, obs) => return "encounterMissing"
+        observationPatientMismatch(obsId, op, ep) => return "observationPatientMismatch"
+        activeMedicationCollision(patientId, code, first, second) => {
+            return "activeMedicationCollision"
+        }
+        patientAggregateMissing(patientId) => return "patientAggregateMissing"
+        auditCounterMissing => return "auditCounterMissing"
+    }
+}
+
+// public entry --------------------------------------------------------------
+
+// Establish the singleton audit counter. Run once, right after the store is
+// provisioned and before the first change-set. Idempotent: it leaves an existing
+// counter untouched.
+pub fn initStore() {
+    transaction {
+        if not exists(^auditCounter[AUDIT_COUNTER_NAME]) {
+            ^auditCounter[AUDIT_COUNTER_NAME] = AuditCounter(nextId: FIRST_AUDIT_ID)
+        }
+    }
+}
+
+// Apply a whole bundle, requiring an ambient transaction. This is where the
+// change-set logic lives, so both the bundle export (`applyChangeSet`) and the
+// single-resource terminal commands own the one transaction and join this helper.
+// It stages no write until every entry is validated, so an early `err` return
+// leaves the owner's transaction empty and commits nothing. A mutating helper must
+// stay non-`pub`: a `pub` export owns its own transaction.
+fn applyBundle(changes: List<Change>): Result<ChangeSetApplied, Rejection> {
+    const n = length(changes)
+    if n == 0 { return err(Rejection::emptyBundle) }
+
+    // Pass 1 — canonical maps: duplicate detection and same-bundle create sets.
+    var seen: Map<string, bool> = Map()
+    var createdPatients: Map<int, bool> = Map()
+    var createdEncounters: Map<int, int> = Map()
+    var activeFirst: Map<string, int> = Map()
+    var activeSecond: Map<string, int> = Map()
+    for c in changes {
+        const key = subjectKey(c)
+        if seen[key] ?? false {
+            return err(Rejection::duplicateSubject(kind: changeKind(c), id: changeId(c)))
+        }
+        seen[key] = true
+        match c {
+            createPatient(id, s, d) => createdPatients[id] = true
+            updatePatient(id, r, s, d) => {}
+            createEncounter(id, p, s, r) => createdEncounters[id] = p
+            updateEncounter(id, r, s, rs) => {}
+            createObservation(id, p, e, s, c2, v) => {}
+            updateObservation(id, r, p, e, s, c2, v) => {}
+            createMedicationOrder(id, p, c2, s, d) => {
+                if s == "active" {
+                    const ak = string(p) + ":" + c2
+                    if activeFirst[ak] ?? 0 == 0 {
+                        activeFirst[ak] = id
+                    } else {
+                        if activeSecond[ak] ?? 0 == 0 {
+                            activeSecond[ak] = id
+                        }
+                    }
+                }
+            }
+            updateMedicationOrder(id, r, p, c2, s, d) => {}
+        }
+    }
+
+    // Pass 2 — validate every entry against the store and the bundle.
+    for c in changes {
+        match validate(c, createdPatients, createdEncounters, activeFirst, activeSecond) {
+            ok(v) => {}
+            err(e) => return err(e)
+        }
+    }
+
+    // The audit counter must be established (by `initStore`) before any
+    // change-set: audit allocation depends on it. This is checked here, before
+    // any write, so a missing counter rolls nothing back.
+    if not exists(^auditCounter[AUDIT_COUNTER_NAME]) { return err(Rejection::auditCounterMissing) }
+
+    // Pass 3 — apply primaries and active-medication state, recording drafts.
+    var drafts: List<AuditDraft> = List()
+    for c in changes {
+        drafts = applyPrimary(c, drafts)
+    }
+
+    // Pass 4 — advance each touched patient's aggregate revision once.
+    var touched: Map<int, bool> = Map()
+    for d in drafts {
+        touched[d.patientA] = true
+        if d.patientB != 0 {
+            touched[d.patientB] = true
+        }
+    }
+    for p in touched {
+        if createdPatients[p] ?? false {
+            ^patientAggregates[p] = PatientAggregate(revision: INITIAL_REVISION)
+        } else {
+            const cur = ^patientAggregates[p].revision ?? 0
+            ^patientAggregates[p] = PatientAggregate(revision: cur + 1)
+        }
+    }
+
+    // Pass 5 — allocate contiguous audit IDs and write the audit trail.
+    const firstAudit = ^auditCounter[AUDIT_COUNTER_NAME].nextId ?? FIRST_AUDIT_ID
+    var auditId = firstAudit
+    for d in drafts {
+        ^auditEvents[auditId] = AuditEvent(
+            subjectKind: d.subjectKind,
+            subjectId: d.subjectId,
+            mutationKind: d.mutationKind,
+            priorRevision: d.priorRevision,
+            newRevision: d.newRevision,
+            patientId: d.patientA,
+        )
+        writeLink(d.patientA, auditId, d)
+        if d.patientB != 0 {
+            writeLink(d.patientB, auditId, d)
+        }
+        auditId += 1
+    }
+    ^auditCounter[AUDIT_COUNTER_NAME] = AuditCounter(nextId: auditId)
+
+    const explicit = n
+    const implicit = length(drafts) - n
+    return ok(
+        ChangeSetApplied(
+            explicitMutations: explicit,
+            implicitMutations: implicit,
+            firstAuditId: firstAudit,
+            touchedPatients: length(touched),
+        ),
+    )
+}
+
+// Apply a heterogeneous change-set as one atomic transaction. Tests and the
+// generated client call this directly; the terminal single-resource commands wrap
+// their own bundles.
+pub fn applyChangeSet(changes: List<Change>): Result<ChangeSetApplied, Rejection> {
+    transaction {
+        return applyBundle(changes)
+    }
+}
+
+// terminal-first single-resource commands -----------------------------------
+//
+// A terminal passes scalar arguments, not a `List<Change>`, so these commands wrap
+// one change in a one-entry bundle and apply it in their own transaction through
+// the shared `applyBundle`. Each returns a one-line result string.
+
+fn applyOne(c: Change): Result<ChangeSetApplied, Rejection> {
+    var b: List<Change> = List()
+    b = append(b, c)
+    return applyBundle(b)
+}
+
+fn render(id: int, kind: string, r: Result<ChangeSetApplied, Rejection>): string {
+    match r {
+        ok(a) => {
+            return $"ok: {kind} {id} applied ({a.explicitMutations} explicit, {a.implicitMutations} implicit, audit from {a.firstAuditId})"
+        }
+        err(e) => return $"rejected: {rejectionCode(e)}"
+    }
+}
+
+pub fn admitPatient(id: int, status: string, display: string): string {
+    transaction {
+        return render(id, "patient", applyOne(Change::createPatient(id: id, status: status, display: display)))
+    }
+}
+
+pub fn revisePatient(id: int, expectedRevision: int, status: string, display: string): string {
+    transaction {
+        return render(id, "patient", applyOne(Change::updatePatient(id: id, expectedRevision: expectedRevision, status: status, display: display)))
+    }
+}
+
+pub fn recordEncounter(id: int, patientId: int, status: string, reason: string): string {
+    transaction {
+        return render(id, "encounter", applyOne(Change::createEncounter(id: id, patientId: patientId, status: status, reason: reason)))
+    }
+}
+
+pub fn recordObservation(id: int, patientId: int, encounterId: int, status: string, code: string, value: int): string {
+    transaction {
+        return render(id, "observation", applyOne(Change::createObservation(id: id, patientId: patientId, encounterId: encounterId, status: status, code: code, value: value)))
+    }
+}
+
+pub fn orderMedication(id: int, patientId: int, code: string, status: string, dose: int): string {
+    transaction {
+        return render(id, "medicationOrder", applyOne(Change::createMedicationOrder(id: id, patientId: patientId, code: code, status: status, dose: dose)))
+    }
+}
+
+// Write one patient-audit link at the patient's resulting aggregate revision.
+fn writeLink(patient: int, auditId: int, d: AuditDraft) {
+    const pr = ^patientAggregates[patient].revision ?? 0
+    ^patientAudits[patient].marker = 1
+    ^patientAudits[patient].events[auditId] = PatientAudits.events(
+        subjectKind: d.subjectKind,
+        subjectId: d.subjectId,
+        mutationKind: d.mutationKind,
+        resourceRevision: d.newRevision,
+        patientRevision: pr,
+    )
+}
+
+// reference helpers ---------------------------------------------------------
+
+fn patientReachable(patientId: int, createdPatients: Map<int, bool>): bool {
+    return exists(^patients[patientId]) or createdPatients[patientId] ?? false
+}
+
+// The patient a referenced encounter belongs to: from the store, or from a
+// same-bundle create. Returns 0 when the encounter is unreachable.
+fn encounterPatient(encounterId: int, createdEncounters: Map<int, int>): int {
+    if const e = ^encounters[encounterId] {
+        return e.patientId
+    }
+    return createdEncounters[encounterId] ?? 0
+}
+
+fn encounterReachable(encounterId: int, createdEncounters: Map<int, int>): bool {
+    return exists(^encounters[encounterId]) or createdEncounters[encounterId] ?? 0 != 0
+}
+
+// validation ----------------------------------------------------------------
+
+fn validate(c: Change, createdPatients: Map<int, bool>, createdEncounters: Map<int, int>, activeFirst: Map<string, int>, activeSecond: Map<string, int>): Result<bool, Rejection> {
+    match c {
+        createPatient(id, s, d) => {
+            if exists(^patients[id]) {
+                return err(Rejection::resourceAlreadyExists(kind: "patient", id: id))
+            }
+            if not status::patientStatusValid(s) {
+                return err(Rejection::unsupportedStatus(kind: "patient", id: id, status: s))
+            }
+            return ok(true)
+        }
+        updatePatient(id, expected, s, d) => {
+            const p = ^patients[id] else {
+                return err(Rejection::resourceMissing(kind: "patient", id: id))
+            }
+            if p.revision != expected {
+                return err(Rejection::staleRevision(kind: "patient", id: id, expected: expected, actual: p.revision))
+            }
+            if p.revision >= MAX_REVISION {
+                return err(Rejection::revisionOverflow(kind: "patient", id: id))
+            }
+            if not status::patientStatusValid(s) {
+                return err(Rejection::unsupportedStatus(kind: "patient", id: id, status: s))
+            }
+            if not status::patientTransitionOk(p.status, s) {
+                return err(Rejection::unsupportedTransition(kind: "patient", id: id, prior: p.status, intended: s))
+            }
+            if not exists(^patientAggregates[id]) {
+                return err(Rejection::patientAggregateMissing(patientId: id))
+            }
+            return ok(true)
+        }
+        createEncounter(id, patientId, s, reason) => {
+            if exists(^encounters[id]) {
+                return err(Rejection::resourceAlreadyExists(kind: "encounter", id: id))
+            }
+            if not status::encounterStatusValid(s) {
+                return err(Rejection::unsupportedStatus(kind: "encounter", id: id, status: s))
+            }
+            if not status::encounterCreateOk(s) {
+                return err(Rejection::unsupportedStatus(kind: "encounter", id: id, status: s))
+            }
+            if not patientReachable(patientId, createdPatients) {
+                return err(Rejection::patientMissing(patientId: patientId, referencedByKind: "encounter", referencedById: id))
+            }
+            return ok(true)
+        }
+        updateEncounter(id, expected, s, reason) => {
+            const e = ^encounters[id] else {
+                return err(Rejection::resourceMissing(kind: "encounter", id: id))
+            }
+            if e.revision != expected {
+                return err(Rejection::staleRevision(kind: "encounter", id: id, expected: expected, actual: e.revision))
+            }
+            if e.revision >= MAX_REVISION {
+                return err(Rejection::revisionOverflow(kind: "encounter", id: id))
+            }
+            if not status::encounterStatusValid(s) {
+                return err(Rejection::unsupportedStatus(kind: "encounter", id: id, status: s))
+            }
+            if not status::encounterTransitionOk(e.status, s) {
+                return err(Rejection::unsupportedTransition(kind: "encounter", id: id, prior: e.status, intended: s))
+            }
+            if not exists(^patientAggregates[e.patientId]) {
+                return err(Rejection::patientAggregateMissing(patientId: e.patientId))
+            }
+            return ok(true)
+        }
+        createObservation(id, patientId, encounterId, s, code, value) => {
+            if exists(^observations[id]) {
+                return err(Rejection::resourceAlreadyExists(kind: "observation", id: id))
+            }
+            if not status::observationStatusValid(s) {
+                return err(Rejection::unsupportedStatus(kind: "observation", id: id, status: s))
+            }
+            if not status::observationCreateOk(s) {
+                return err(Rejection::unsupportedStatus(kind: "observation", id: id, status: s))
+            }
+            if not patientReachable(patientId, createdPatients) {
+                return err(Rejection::patientMissing(patientId: patientId, referencedByKind: "observation", referencedById: id))
+            }
+            if not encounterReachable(encounterId, createdEncounters) {
+                return err(Rejection::encounterMissing(encounterId: encounterId, referencedByObservation: id))
+            }
+            const ep = encounterPatient(encounterId, createdEncounters)
+            if ep != patientId {
+                return err(Rejection::observationPatientMismatch(observationId: id, observationPatient: patientId, encounterPatient: ep))
+            }
+            return ok(true)
+        }
+        updateObservation(id, expected, patientId, encounterId, s, code, value) => {
+            const o = ^observations[id] else {
+                return err(Rejection::resourceMissing(kind: "observation", id: id))
+            }
+            if o.revision != expected {
+                return err(Rejection::staleRevision(kind: "observation", id: id, expected: expected, actual: o.revision))
+            }
+            if o.revision >= MAX_REVISION {
+                return err(Rejection::revisionOverflow(kind: "observation", id: id))
+            }
+            if not status::observationStatusValid(s) {
+                return err(Rejection::unsupportedStatus(kind: "observation", id: id, status: s))
+            }
+            if not status::observationTransitionOk(o.status, s) {
+                return err(Rejection::unsupportedTransition(kind: "observation", id: id, prior: o.status, intended: s))
+            }
+            if not patientReachable(patientId, createdPatients) {
+                return err(Rejection::patientMissing(patientId: patientId, referencedByKind: "observation", referencedById: id))
+            }
+            if not encounterReachable(encounterId, createdEncounters) {
+                return err(Rejection::encounterMissing(encounterId: encounterId, referencedByObservation: id))
+            }
+            const ep = encounterPatient(encounterId, createdEncounters)
+            if ep != patientId {
+                return err(Rejection::observationPatientMismatch(observationId: id, observationPatient: patientId, encounterPatient: ep))
+            }
+            if not exists(^patientAggregates[o.patientId]) {
+                return err(Rejection::patientAggregateMissing(patientId: o.patientId))
+            }
+            if not patientReachable(patientId, createdPatients) {
+                return err(Rejection::patientMissing(patientId: patientId, referencedByKind: "observation", referencedById: id))
+            }
+            return ok(true)
+        }
+        createMedicationOrder(id, patientId, code, s, dose) => {
+            if exists(^medicationOrders[id]) {
+                return err(Rejection::resourceAlreadyExists(kind: "medicationOrder", id: id))
+            }
+            if not status::medicationStatusValid(s) {
+                return err(Rejection::unsupportedStatus(kind: "medicationOrder", id: id, status: s))
+            }
+            if not status::medicationCreateOk(s) {
+                return err(Rejection::unsupportedStatus(kind: "medicationOrder", id: id, status: s))
+            }
+            if not patientReachable(patientId, createdPatients) {
+                return err(Rejection::patientMissing(patientId: patientId, referencedByKind: "medicationOrder", referencedById: id))
+            }
+            if s == "active" {
+                const ak = string(patientId) + ":" + code
+                const second = activeSecond[ak] ?? 0
+                if second != 0 {
+                    return err(Rejection::activeMedicationCollision(patientId: patientId, code: code, first: activeFirst[ak] ?? 0, second: second))
+                }
+            }
+            return ok(true)
+        }
+        updateMedicationOrder(id, expected, patientId, code, s, dose) => {
+            const m = ^medicationOrders[id] else {
+                return err(Rejection::resourceMissing(kind: "medicationOrder", id: id))
+            }
+            if m.revision != expected {
+                return err(Rejection::staleRevision(kind: "medicationOrder", id: id, expected: expected, actual: m.revision))
+            }
+            if m.revision >= MAX_REVISION {
+                return err(Rejection::revisionOverflow(kind: "medicationOrder", id: id))
+            }
+            if not status::medicationStatusValid(s) {
+                return err(Rejection::unsupportedStatus(kind: "medicationOrder", id: id, status: s))
+            }
+            if not status::medicationTransitionOk(m.status, s) {
+                return err(Rejection::unsupportedTransition(kind: "medicationOrder", id: id, prior: m.status, intended: s))
+            }
+            if not patientReachable(patientId, createdPatients) {
+                return err(Rejection::patientMissing(patientId: patientId, referencedByKind: "medicationOrder", referencedById: id))
+            }
+            if not exists(^patientAggregates[m.patientId]) {
+                return err(Rejection::patientAggregateMissing(patientId: m.patientId))
+            }
+            if s == "active" {
+                if const a = ^activeMedications[patientId].byCode[code] {
+                    if a.orderId != id {
+                        return err(Rejection::activeMedicationCollision(patientId: patientId, code: code, first: a.orderId, second: id))
+                    }
+                }
+            }
+            return ok(true)
+        }
+    }
+}
+
+// application ----------------------------------------------------------------
+
+fn applyPrimary(c: Change, drafts: List<AuditDraft>): List<AuditDraft> {
+    match c {
+        createPatient(id, s, d) => {
+            ^patients[id] = Patient(revision: INITIAL_REVISION, status: s, display: d)
+            return append(drafts, AuditDraft(subjectKind: "patient", subjectId: id, mutationKind: "explicitCreate", priorRevision: 0, newRevision: INITIAL_REVISION, patientA: id, patientB: 0))
+        }
+        updatePatient(id, expected, s, d) => {
+            const prior = ^patients[id].revision ?? 0
+            const nr = prior + 1
+            ^patients[id] = Patient(revision: nr, status: s, display: d)
+            return append(drafts, AuditDraft(subjectKind: "patient", subjectId: id, mutationKind: "explicitUpdate", priorRevision: prior, newRevision: nr, patientA: id, patientB: 0))
+        }
+        createEncounter(id, patientId, s, reason) => {
+            ^encounters[id] = Encounter(revision: INITIAL_REVISION, patientId: patientId, status: s, reason: reason)
+            return append(drafts, AuditDraft(subjectKind: "encounter", subjectId: id, mutationKind: "explicitCreate", priorRevision: 0, newRevision: INITIAL_REVISION, patientA: patientId, patientB: 0))
+        }
+        updateEncounter(id, expected, s, reason) => {
+            const owner = ^encounters[id].patientId ?? 0
+            const prior = ^encounters[id].revision ?? 0
+            const nr = prior + 1
+            ^encounters[id] = Encounter(revision: nr, patientId: owner, status: s, reason: reason)
+            return append(drafts, AuditDraft(subjectKind: "encounter", subjectId: id, mutationKind: "explicitUpdate", priorRevision: prior, newRevision: nr, patientA: owner, patientB: 0))
+        }
+        createObservation(id, patientId, encounterId, s, code, value) => {
+            ^observations[id] = Observation(revision: INITIAL_REVISION, patientId: patientId, encounterId: encounterId, status: s, code: code, value: value)
+            return append(drafts, AuditDraft(subjectKind: "observation", subjectId: id, mutationKind: "explicitCreate", priorRevision: 0, newRevision: INITIAL_REVISION, patientA: patientId, patientB: 0))
+        }
+        updateObservation(id, expected, patientId, encounterId, s, code, value) => {
+            const owner = ^observations[id].patientId ?? 0
+            const prior = ^observations[id].revision ?? 0
+            const nr = prior + 1
+            ^observations[id] = Observation(revision: nr, patientId: patientId, encounterId: encounterId, status: s, code: code, value: value)
+            var second = 0
+            if patientId != owner {
+                second = patientId
+            }
+            return append(drafts, AuditDraft(subjectKind: "observation", subjectId: id, mutationKind: "explicitUpdate", priorRevision: prior, newRevision: nr, patientA: owner, patientB: second))
+        }
+        createMedicationOrder(id, patientId, code, s, dose) => {
+            ^medicationOrders[id] = MedicationOrder(revision: INITIAL_REVISION, patientId: patientId, code: code, status: s, dose: dose)
+            var out = append(drafts, AuditDraft(subjectKind: "medicationOrder", subjectId: id, mutationKind: "explicitCreate", priorRevision: 0, newRevision: INITIAL_REVISION, patientA: patientId, patientB: 0))
+            if s == "active" {
+                out = supersedeIncumbent(patientId, code, out)
+                ^activeMedications[patientId].marker = 1
+                ^activeMedications[patientId].byCode[code] = ActiveMedications.byCode(orderId: id, orderRevision: INITIAL_REVISION)
+            }
+            return out
+        }
+        updateMedicationOrder(id, expected, patientId, code, s, dose) => {
+            const prior = ^medicationOrders[id].revision ?? 0
+            const nr = prior + 1
+            ^medicationOrders[id] = MedicationOrder(revision: nr, patientId: patientId, code: code, status: s, dose: dose)
+            if s == "active" {
+                ^activeMedications[patientId].marker = 1
+                ^activeMedications[patientId].byCode[code] = ActiveMedications.byCode(orderId: id, orderRevision: nr)
+            } else {
+                if const a = ^activeMedications[patientId].byCode[code] {
+                    if a.orderId == id {
+                        delete ^activeMedications[patientId].byCode[code]
+                    }
+                }
+            }
+            return append(drafts, AuditDraft(subjectKind: "medicationOrder", subjectId: id, mutationKind: "explicitUpdate", priorRevision: prior, newRevision: nr, patientA: patientId, patientB: 0))
+        }
+    }
+}
+
+// Displace the current active incumbent at (patient, code), if any, with one
+// implicit `active -> superseded` mutation, and record its draft.
+fn supersedeIncumbent(patientId: int, code: string, drafts: List<AuditDraft>): List<AuditDraft> {
+    if const a = ^activeMedications[patientId].byCode[code] {
+        const incId = a.orderId
+        if const im = ^medicationOrders[incId] {
+            const prior = im.revision
+            const nr = prior + 1
+            ^medicationOrders[incId] = MedicationOrder(revision: nr, patientId: im.patientId, code: im.code, status: "superseded", dose: im.dose)
+            return append(drafts, AuditDraft(subjectKind: "medicationOrder", subjectId: incId, mutationKind: "implicitSupersession", priorRevision: prior, newRevision: nr, patientA: im.patientId, patientB: 0))
+        }
+    }
+    return drafts
+}

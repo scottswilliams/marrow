@@ -1,0 +1,133 @@
+module chart
+
+// Read-only chart journeys — the terminal-first "look at a patient" surface.
+//
+// Every export here is a read-only export: it opens no transaction and observes
+// one coherent snapshot. Derived views (a patient's encounters, observations, and
+// medications) are read through the managed indexes declared on the primaries, and
+// a patient's audit history is paged in ascending audit-ID order. No page token,
+// cursor, or continuation escapes an export: paging is the `at most N from key`
+// loop with the caller supplying the next start key.
+
+// existence and revisions ---------------------------------------------------
+
+pub fn patientExists(id: int): bool {
+    return exists(^patients[id])
+}
+
+pub fn patientRevision(id: int): int {
+    return ^patients[id].revision ?? 0
+}
+
+pub fn patientStatus(id: int): string {
+    return ^patients[id].status ?? "absent"
+}
+
+pub fn aggregateRevision(id: int): int {
+    return ^patientAggregates[id].revision ?? 0
+}
+
+// derived views through the managed indexes ---------------------------------
+
+pub fn countEncounters(patientId: int): int {
+    var n = 0
+    for encId in ^encounters.byPatient[patientId] at most 4096 {
+        n += 1
+    } on more {
+        n = -1
+    }
+    return n
+}
+
+pub fn countObservations(patientId: int): int {
+    var n = 0
+    for obsId in ^observations.byPatient[patientId] at most 4096 {
+        n += 1
+    } on more {
+        n = -1
+    }
+    return n
+}
+
+pub fn countEncounterObservations(encounterId: int): int {
+    var n = 0
+    for obsId in ^observations.byEncounter[encounterId] at most 4096 {
+        n += 1
+    } on more {
+        n = -1
+    }
+    return n
+}
+
+pub fn countActiveMedications(patientId: int): int {
+    var n = 0
+    for code, pin in ^activeMedications[patientId].byCode at most 4096 {
+        n += 1
+    } on more {
+        n = -1
+    }
+    return n
+}
+
+// The active medication order currently occupying a (patient, code) key, or 0.
+pub fn activeMedicationOrder(patientId: int, code: string): int {
+    if const a = ^activeMedications[patientId].byCode[code] {
+        return a.orderId
+    }
+    return 0
+}
+
+// audit history -------------------------------------------------------------
+
+// Count a patient's audit links on one page of size 2, starting at `fromKey`
+// (0 = from the beginning; otherwise an inclusive audit-ID start). Returns the
+// number of links on the page; a full page (2) means more may remain, and the
+// next page starts at the last seen ID plus one.
+pub fn countAuditPage(patientId: int, fromKey: int): int {
+    var n = 0
+    if fromKey == 0 {
+        for audit, pin in ^patientAudits[patientId].events at most 2 {
+            n += 1
+        } on more {
+            n = 2
+        }
+    } else {
+        for audit, pin in ^patientAudits[patientId].events at most 2 from fromKey {
+            n += 1
+        } on more {
+            n = 2
+        }
+    }
+    return n
+}
+
+// Total audit links for a patient (bounded full traversal).
+pub fn countAllAudits(patientId: int): int {
+    var n = 0
+    for audit, pin in ^patientAudits[patientId].events at most 4096 {
+        n += 1
+    } on more {
+        n = -1
+    }
+    return n
+}
+
+// The audit counter's next allocatable ID (1 before any change-set is applied).
+pub fn nextAuditId(): int {
+    return ^auditCounter["global"].nextId ?? 1
+}
+
+// one-line chart summary ----------------------------------------------------
+
+pub fn patientChart(id: int): string {
+    if not exists(^patients[id]) { return $"patient {id}: absent" }
+    const rev = ^patients[id].revision ?? 0
+    const st = ^patients[id].status ?? "?"
+    const display = ^patients[id].display ?? "?"
+    const agg = aggregateRevision(id)
+    const encs = countEncounters(id)
+    const obs = countObservations(id)
+    const meds = countActiveMedications(id)
+    const audits = countAllAudits(id)
+    return $"patient {id} [{display}] status={st} rev={rev} aggregate={agg}: {encs} encounters, {obs} observations, {meds} active meds, {audits} audit links"
+}

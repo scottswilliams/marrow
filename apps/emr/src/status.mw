@@ -1,0 +1,90 @@
+module status
+
+// Status families and the create/transition law.
+//
+// Primaries store status as a `string`. These predicates encode the workload's
+// status families, admitted create statuses, and admitted status transitions. A
+// status outside its family is `unsupportedStatus`; a disallowed transition is
+// `unsupportedTransition`.
+
+// patient -------------------------------------------------------------------
+
+pub fn patientStatusValid(s: string): bool {
+    return s == "active" or s == "inactive"
+}
+
+// Patient creates admit active or inactive; updates admit active->{active,inactive}
+// and inactive->inactive.
+pub fn patientTransitionOk(prior: string, intended: string): bool {
+    if prior == "active" { return intended == "active" or intended == "inactive" }
+    if prior == "inactive" { return intended == "inactive" }
+    return false
+}
+
+// encounter -----------------------------------------------------------------
+
+pub fn encounterStatusValid(s: string): bool {
+    return s == "planned" or s == "in_progress" or s == "finished" or s == "cancelled"
+}
+
+// Encounter creates admit planned or in_progress only.
+pub fn encounterCreateOk(s: string): bool {
+    return s == "planned" or s == "in_progress"
+}
+
+pub fn encounterTransitionOk(prior: string, intended: string): bool {
+    if prior == "planned" {
+        return intended == "planned" or intended == "in_progress" or intended == "cancelled"
+    }
+    if prior == "in_progress" {
+        return intended == "in_progress" or intended == "finished" or intended == "cancelled"
+    }
+    if prior == "finished" { return intended == "finished" }
+    if prior == "cancelled" { return intended == "cancelled" }
+    return false
+}
+
+// observation ---------------------------------------------------------------
+
+pub fn observationStatusValid(s: string): bool {
+    return s == "preliminary" or s == "final" or s == "entered_in_error"
+}
+
+// Observation creates admit preliminary or final only.
+pub fn observationCreateOk(s: string): bool {
+    return s == "preliminary" or s == "final"
+}
+
+pub fn observationTransitionOk(prior: string, intended: string): bool {
+    if prior == "preliminary" {
+        return intended == "preliminary" or intended == "final" or intended == "entered_in_error"
+    }
+    if prior == "final" { return intended == "final" or intended == "entered_in_error" }
+    if prior == "entered_in_error" { return intended == "entered_in_error" }
+    return false
+}
+
+// medication order ----------------------------------------------------------
+
+pub fn medicationStatusValid(s: string): bool {
+    return s == "draft" or s == "active" or s == "completed" or s == "cancelled" or s == "superseded"
+}
+
+// Medication creates admit draft or active only; only an implicit supersession may
+// reach `superseded`.
+pub fn medicationCreateOk(s: string): bool {
+    return s == "draft" or s == "active"
+}
+
+pub fn medicationTransitionOk(prior: string, intended: string): bool {
+    if prior == "draft" {
+        return intended == "draft" or intended == "active" or intended == "cancelled"
+    }
+    if prior == "active" {
+        return intended == "active" or intended == "completed" or intended == "cancelled"
+    }
+    if prior == "completed" { return intended == "completed" }
+    if prior == "cancelled" { return intended == "cancelled" }
+    if prior == "superseded" { return intended == "superseded" }
+    return false
+}
