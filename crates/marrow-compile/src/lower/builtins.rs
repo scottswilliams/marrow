@@ -130,28 +130,62 @@ pub(super) enum Builtin {
 }
 
 impl Builtin {
+    /// Every built-in variant, in declaration order. This is the single registry the
+    /// classifier ([`Builtin::from_name`]) and the editor completion namespace
+    /// ([`builtin_value_names`]) both derive from, so the two can never disagree about
+    /// which names are built-in. A new built-in is added here and given a
+    /// [`Builtin::spelling`]; the exhaustive spelling match rejects a variant that is
+    /// added to the enum without a spelling.
+    const ALL: [Builtin; 18] = [
+        Builtin::None,
+        Builtin::Some,
+        Builtin::Ok,
+        Builtin::Err,
+        Builtin::Exists,
+        Builtin::Unreachable,
+        Builtin::Todo,
+        Builtin::IsEmpty,
+        Builtin::Contains,
+        Builtin::Trim,
+        Builtin::Split,
+        Builtin::Lines,
+        Builtin::Join,
+        Builtin::DateAddDays,
+        Builtin::DateDaysBetween,
+        Builtin::List,
+        Builtin::Map,
+        Builtin::Id,
+    ];
+
+    /// The reserved source spelling of this built-in. The exhaustive match makes a new
+    /// variant a compile error here until it declares its spelling.
+    pub(super) fn spelling(self) -> &'static str {
+        match self {
+            Builtin::None => "none",
+            Builtin::Some => "some",
+            Builtin::Ok => "ok",
+            Builtin::Err => "err",
+            Builtin::Exists => "exists",
+            Builtin::Unreachable => "unreachable",
+            Builtin::Todo => "todo",
+            Builtin::IsEmpty => "isEmpty",
+            Builtin::Contains => "contains",
+            Builtin::Trim => "trim",
+            Builtin::Split => "split",
+            Builtin::Lines => "lines",
+            Builtin::Join => "join",
+            Builtin::DateAddDays => "addDays",
+            Builtin::DateDaysBetween => "daysBetween",
+            Builtin::List => "List",
+            Builtin::Map => "Map",
+            Builtin::Id => "Id",
+        }
+    }
+
     pub(super) fn from_name(name: &str) -> Option<Self> {
-        Some(match name {
-            "none" => Builtin::None,
-            "some" => Builtin::Some,
-            "ok" => Builtin::Ok,
-            "err" => Builtin::Err,
-            "exists" => Builtin::Exists,
-            "unreachable" => Builtin::Unreachable,
-            "todo" => Builtin::Todo,
-            "isEmpty" => Builtin::IsEmpty,
-            "contains" => Builtin::Contains,
-            "trim" => Builtin::Trim,
-            "split" => Builtin::Split,
-            "lines" => Builtin::Lines,
-            "join" => Builtin::Join,
-            "addDays" => Builtin::DateAddDays,
-            "daysBetween" => Builtin::DateDaysBetween,
-            "List" => Builtin::List,
-            "Map" => Builtin::Map,
-            "Id" => Builtin::Id,
-            _ => return None,
-        })
+        Builtin::ALL
+            .into_iter()
+            .find(|builtin| builtin.spelling() == name)
     }
 }
 
@@ -169,30 +203,14 @@ pub(crate) fn is_reserved_builtin_name(name: &str) -> bool {
     Builtin::from_name(name).is_some()
 }
 
-/// The closed set of value-level built-in spellings, in a stable order, for the editor
-/// completion namespace. This is the same set [`Builtin::from_name`] classifies; the
-/// single owner exposes it here so the completion enumerator does not restate the list.
-pub(crate) fn builtin_value_names() -> &'static [&'static str] {
-    &[
-        "none",
-        "some",
-        "ok",
-        "err",
-        "exists",
-        "unreachable",
-        "todo",
-        "isEmpty",
-        "contains",
-        "trim",
-        "split",
-        "lines",
-        "join",
-        "addDays",
-        "daysBetween",
-        "List",
-        "Map",
-        "Id",
-    ]
+/// The value-level built-in spellings, in declaration order, for the editor completion
+/// namespace. Derived from the single [`Builtin::ALL`] registry the classifier also uses,
+/// so the completion namespace is exactly the set [`Builtin::from_name`] recognizes.
+pub(crate) fn builtin_value_names() -> Vec<&'static str> {
+    Builtin::ALL
+        .into_iter()
+        .map(|builtin| builtin.spelling())
+        .collect()
 }
 
 /// The diagnostic for a value declaration whose name is a reserved built-in.
@@ -293,17 +311,28 @@ pub(super) fn branch_ctor_display(resource: &str, path: &[&str]) -> String {
 mod tests {
     use super::{Builtin, builtin_value_names};
 
-    /// The editor completion namespace is exactly the set the classifier recognizes: every
-    /// listed name classifies, so a new built-in cannot be added to the classifier without
-    /// appearing in the completion namespace.
+    /// The editor completion namespace is exactly the set the classifier recognizes, in
+    /// both directions: both derive from the single [`Builtin::ALL`] registry, so neither
+    /// can gain (or lose) a name the other lacks. Every registry name classifies and
+    /// round-trips through `spelling`/`from_name`; adding a variant is a compile error in
+    /// `spelling` until it is named, and it then joins both consumers at once.
     #[test]
     fn completion_names_match_the_classifier() {
-        for name in builtin_value_names() {
-            assert!(
-                Builtin::from_name(name).is_some(),
-                "`{name}` is offered for completion but is not a classified built-in",
+        for builtin in Builtin::ALL {
+            let name = builtin.spelling();
+            let classified = Builtin::from_name(name)
+                .expect("a registry spelling must classify as a built-in");
+            assert_eq!(
+                classified.spelling(),
+                name,
+                "`{name}` must round-trip to the same built-in",
             );
         }
-        assert_eq!(builtin_value_names().len(), 18);
+        let offered = builtin_value_names();
+        let registry: Vec<&str> = Builtin::ALL.iter().map(|b| b.spelling()).collect();
+        assert_eq!(
+            offered, registry,
+            "the completion namespace is exactly the classifier registry",
+        );
     }
 }

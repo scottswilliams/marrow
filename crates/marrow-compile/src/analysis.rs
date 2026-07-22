@@ -943,7 +943,7 @@ pub enum CompletionOutcome {
 mod completion {
     use marrow_syntax::{
         Block, Declaration, EnumDecl, EnumMember, Expression, FunctionDecl, Recovery,
-        ResourceMember, SourceFile, SourceSpan, Statement, StructDecl, TypeExpr,
+        ResourceMember, SourceFile, SourceSpan, Statement, TypeExpr,
     };
 
     use crate::lower::builtin_value_names;
@@ -954,12 +954,13 @@ mod completion {
         Completions, Fact, MAX_COMPLETION_CANDIDATES, MAX_COMPLETION_RENDER_BYTES, PositionClass,
     };
 
-    /// One in-scope binding: its spelling and, when annotated, its declared type spelling.
-    /// The type spelling doubles as the fail-soft type-probe key — a bare struct-name
-    /// spelling resolves to that struct's fields; anything else resolves to no fields.
-    struct Binding {
+    /// One in-scope binding: its spelling and, when annotated, its declared type node
+    /// borrowed from the retained tree. The type node is the fail-soft type-probe: a
+    /// bare struct-name annotation (a single-segment [`TypeExpr::Name`]) resolves to that
+    /// struct's fields; any other type shape resolves to no fields.
+    struct Binding<'a> {
         name: String,
-        ty: Option<String>,
+        ty: Option<&'a TypeExpr>,
     }
 
     /// The lexical scope accumulated while descending to the offset: the enclosing
@@ -967,10 +968,10 @@ mod completion {
     /// before the offset. A superset is never built — only bindings that precede the
     /// offset on the path to it are added.
     #[derive(Default)]
-    struct Scope {
+    struct Scope<'a> {
         type_params: Vec<String>,
-        params: Vec<Binding>,
-        locals: Vec<Binding>,
+        params: Vec<Binding<'a>>,
+        locals: Vec<Binding<'a>>,
     }
 
     /// The positional classification of the offset, with the base receiver borrowed for a
@@ -1056,7 +1057,7 @@ mod completion {
     fn locate_file<'a>(
         file: &'a SourceFile,
         offset: u32,
-        scope: &mut Scope,
+        scope: &mut Scope<'a>,
     ) -> Option<Located<'a>> {
         let declaration = file
             .declarations
@@ -1068,7 +1069,7 @@ mod completion {
     fn locate_declaration<'a>(
         declaration: &'a Declaration,
         offset: u32,
-        scope: &mut Scope,
+        scope: &mut Scope<'a>,
     ) -> Option<Located<'a>> {
         match declaration {
             Declaration::Function(function) => locate_function(function, offset, scope),
@@ -1088,7 +1089,7 @@ mod completion {
             Declaration::Nominal(nominal) => type_position(nominal.base.as_ref(), offset),
             Declaration::Struct(item) => {
                 scope.type_params = item.type_params.iter().map(|p| p.name.clone()).collect();
-                locate_struct_field_type(item, offset)
+                members_type_position(&item.members, offset)
             }
             Declaration::Resource(resource) => members_type_position(&resource.members, offset),
             Declaration::Enum(item) => {
@@ -1104,10 +1105,6 @@ mod completion {
             Some(ty) if contains(ty.span(), offset) => Some(Located::TypeAnnotation),
             _ => None,
         }
-    }
-
-    fn locate_struct_field_type(item: &StructDecl, offset: u32) -> Option<Located<'static>> {
-        members_type_position(&item.members, offset)
     }
 
     fn members_type_position(members: &[ResourceMember], offset: u32) -> Option<Located<'static>> {
@@ -1145,7 +1142,7 @@ mod completion {
     fn locate_function<'a>(
         function: &'a FunctionDecl,
         offset: u32,
-        scope: &mut Scope,
+        scope: &mut Scope<'a>,
     ) -> Option<Located<'a>> {
         scope.type_params = function
             .type_params
@@ -1158,7 +1155,7 @@ mod completion {
             }
             scope.params.push(Binding {
                 name: param.name.clone(),
-                ty: Some(param.ty.to_string()),
+                ty: Some(&param.ty),
             });
         }
         if let Some(return_type) = &function.return_type
@@ -1169,7 +1166,11 @@ mod completion {
         locate_block(&function.body, offset, scope)
     }
 
-    fn locate_block<'a>(block: &'a Block, offset: u32, scope: &mut Scope) -> Option<Located<'a>> {
+    fn locate_block<'a>(
+        block: &'a Block,
+        offset: u32,
+        scope: &mut Scope<'a>,
+    ) -> Option<Located<'a>> {
         for statement in &block.statements {
             let span = statement.span();
             if contains(span, offset) {
@@ -1187,11 +1188,11 @@ mod completion {
     /// The binding a statement introduces into the *following* scope (a `const`/`var`
     /// declaration and the like). Control-flow statements bind only inside their own
     /// blocks and introduce nothing here.
-    fn following_binding(statement: &Statement) -> Option<Binding> {
+    fn following_binding(statement: &Statement) -> Option<Binding<'_>> {
         match statement {
             Statement::Const { name, ty, .. } | Statement::Var { name, ty, .. } => Some(Binding {
                 name: name.clone(),
-                ty: ty.as_ref().map(TypeExpr::to_string),
+                ty: ty.as_ref(),
             }),
             Statement::PlaceBinding { name, .. } => Some(Binding {
                 name: name.clone(),
@@ -1199,13 +1200,13 @@ mod completion {
             }),
             Statement::LetElse { name, ty, .. } => Some(Binding {
                 name: name.clone(),
-                ty: ty.as_ref().map(TypeExpr::to_string),
+                ty: ty.as_ref(),
             }),
             Statement::Checked { bind, .. } => match bind {
                 marrow_syntax::CheckedBind::Const { name, ty }
                 | marrow_syntax::CheckedBind::Var { name, ty } => Some(Binding {
                     name: name.clone(),
-                    ty: ty.as_ref().map(TypeExpr::to_string),
+                    ty: ty.as_ref(),
                 }),
                 marrow_syntax::CheckedBind::Return => None,
             },
@@ -1216,7 +1217,7 @@ mod completion {
     fn locate_statement<'a>(
         statement: &'a Statement,
         offset: u32,
-        scope: &mut Scope,
+        scope: &mut Scope<'a>,
     ) -> Option<Located<'a>> {
         match statement {
             Statement::Const { ty, value, .. } => {
@@ -1297,7 +1298,7 @@ mod completion {
                 if contains(then_block.span, offset) {
                     scope.locals.push(Binding {
                         name: name.clone(),
-                        ty: ty.as_ref().map(TypeExpr::to_string),
+                        ty: ty.as_ref(),
                     });
                     return locate_block(then_block, offset, scope);
                 }
@@ -1448,7 +1449,7 @@ mod completion {
                     for binding in bindings {
                         scope.locals.push(Binding {
                             name: binding.name.clone(),
-                            ty: binding.ty.as_ref().map(TypeExpr::to_string),
+                            ty: binding.ty.as_ref(),
                         });
                     }
                     return locate_block(then_block, offset, scope);
@@ -1500,7 +1501,17 @@ mod completion {
                 })
                 .collect(),
             Expression::Try { inner, .. } => vec![inner.as_ref()],
-            _ => Vec::new(),
+            // Leaves carry no sub-expression; `Name`, `Field`, `OptionalField`, and
+            // `Error` carry a completion class of their own and are matched before this
+            // helper is reached. The match stays exhaustive so a new child-bearing
+            // `Expression` variant is a compile error here rather than a silent gap.
+            Expression::Literal { .. }
+            | Expression::Name { .. }
+            | Expression::SavedRoot { .. }
+            | Expression::Absent { .. }
+            | Expression::Field { .. }
+            | Expression::OptionalField { .. }
+            | Expression::Error { .. } => Vec::new(),
         }
     }
 
@@ -1548,20 +1559,20 @@ mod completion {
         None
     }
 
-    fn expression_name_candidates(file: &SourceFile, scope: &Scope) -> Vec<Candidate> {
+    fn expression_name_candidates(file: &SourceFile, scope: &Scope<'_>) -> Vec<Candidate> {
         let mut candidates = Vec::new();
         for local in &scope.locals {
             candidates.push(Candidate {
                 label: local.name.clone(),
                 kind: CandidateKind::Local,
-                detail: local.ty.clone().unwrap_or_default(),
+                detail: local.ty.map(TypeExpr::to_string).unwrap_or_default(),
             });
         }
         for param in &scope.params {
             candidates.push(Candidate {
                 label: param.name.clone(),
                 kind: CandidateKind::Param,
-                detail: param.ty.clone().unwrap_or_default(),
+                detail: param.ty.map(TypeExpr::to_string).unwrap_or_default(),
             });
         }
         for declaration in &file.declarations {
@@ -1610,7 +1621,7 @@ mod completion {
         candidates
     }
 
-    fn member_candidates(file: &SourceFile, scope: &Scope, base: &Expression) -> Vec<Candidate> {
+    fn member_candidates(file: &SourceFile, scope: &Scope<'_>, base: &Expression) -> Vec<Candidate> {
         let Some(type_name) = base_type_name(scope, base) else {
             return Vec::new();
         };
@@ -1641,24 +1652,29 @@ mod completion {
         candidates
     }
 
-    /// The fail-soft type probe: the struct-type spelling of a single-segment name that
-    /// resolves to a local or parameter with a bare struct-name annotation. Any partial,
-    /// unannotated, generic, optional, or otherwise non-bare base yields `None` — never a
-    /// resolver failure.
-    fn base_type_name(scope: &Scope, base: &Expression) -> Option<String> {
+    /// The fail-soft type probe: the struct-type name of a single-segment base that
+    /// resolves to a local or parameter annotated with a bare struct name (a
+    /// single-segment [`TypeExpr::Name`]). Any partial, unannotated, generic, optional,
+    /// identity, or otherwise non-bare annotation yields `None` — never a resolver
+    /// failure. The name is read from the type node structurally, not from a rendered
+    /// display string.
+    fn base_type_name<'a>(scope: &Scope<'a>, base: &Expression) -> Option<&'a str> {
         let Expression::Name { segments, .. } = base else {
             return None;
         };
         let [name] = segments.as_slice() else {
             return None;
         };
-        scope
+        let binding = scope
             .locals
             .iter()
             .rev()
             .chain(scope.params.iter())
-            .find(|binding| &binding.name == name)
-            .and_then(|binding| binding.ty.clone())
+            .find(|binding| &binding.name == name)?;
+        match binding.ty? {
+            TypeExpr::Name { text, .. } => Some(text.as_str()),
+            _ => None,
+        }
     }
 
     fn enum_path_candidates(file: &SourceFile, base: &Expression) -> Vec<Candidate> {
@@ -1704,7 +1720,7 @@ mod completion {
         Some(members)
     }
 
-    fn type_annotation_candidates(file: &SourceFile, scope: &Scope) -> Vec<Candidate> {
+    fn type_annotation_candidates(file: &SourceFile, scope: &Scope<'_>) -> Vec<Candidate> {
         let mut candidates = Vec::new();
         for declaration in &file.declarations {
             let name = match declaration {
@@ -1739,7 +1755,9 @@ mod completion {
     }
 
     /// The built-in type-name namespace: the language scalar spellings (routed through the
-    /// scalar owner) plus the reserved toolchain generics and the identity type.
+    /// scalar owner), the reserved toolchain generics (routed through their type-system
+    /// owner so the completion set cannot drift from the redeclaration gate), and the `Id`
+    /// identity-type keyword.
     fn builtin_type_names() -> Vec<&'static str> {
         let mut names: Vec<&'static str> = [
             ScalarType::Int,
@@ -1753,7 +1771,8 @@ mod completion {
         .into_iter()
         .map(ScalarType::spelling)
         .collect();
-        names.extend(["Option", "Result", "List", "Map", "Id"]);
+        names.extend(crate::types::RESERVED_GENERIC_TYPE_NAMES);
+        names.push("Id");
         names
     }
 

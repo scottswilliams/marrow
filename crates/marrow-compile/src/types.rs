@@ -363,11 +363,16 @@ struct PendingRefusal {
     refusal: ResolveRefusal,
 }
 
-/// Whether `name` is a reserved generic type name the user cannot redeclare. The
-/// toolchain owns `Option`/`Result` (as generic enums) and `List`/`Map` (as
-/// compiler collections).
+/// The reserved generic type names the user cannot redeclare, in a stable order. The
+/// toolchain owns `Option`/`Result` (as generic enums) and `List`/`Map` (as compiler
+/// collections). This is the single source both the redeclaration gate
+/// ([`is_reserved_type_name`]) and the editor type-completion namespace derive from, so
+/// the two cannot drift.
+pub(crate) const RESERVED_GENERIC_TYPE_NAMES: [&str; 4] = ["Option", "Result", "List", "Map"];
+
+/// Whether `name` is a reserved generic type name the user cannot redeclare.
 pub(crate) fn is_reserved_type_name(name: &str) -> bool {
-    matches!(name, "Option" | "Result" | "List" | "Map")
+    RESERVED_GENERIC_TYPE_NAMES.contains(&name)
 }
 
 /// Which reserved toolchain generic a template is. `Option` and `Result` are
