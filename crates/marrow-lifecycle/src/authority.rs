@@ -125,7 +125,7 @@ pub fn admit(
     let mut exceeding: Vec<ExceedingDemand> = exceeding_atoms
         .iter()
         .map(|atom| ExceedingDemand {
-            export: naming.export_for(&by_atom, atom),
+            export: export_for(&by_atom, atom),
             effect: atom.class().word(),
             place: naming.spell(atom),
         })
@@ -249,24 +249,20 @@ impl Naming {
         (!out.is_empty()).then_some(out)
     }
 
-    /// The export that names this exceeding atom: the alphabetically first of the exports the
-    /// incidence records for it (a stable deterministic choice), or a placeholder when none is
-    /// recorded (which does not happen for a reconstructed demand).
-    fn export_for(
-        &self,
-        by_atom: &HashMap<(SemanticPath, OperationClass), Vec<String>>,
-        atom: &DemandAtom,
-    ) -> String {
-        let _ = self;
-        match by_atom.get(&(atom.path().clone(), atom.class())) {
-            Some(names) if !names.is_empty() => names
-                .iter()
-                .min()
-                .cloned()
-                .unwrap_or_else(|| "an export".to_string()),
-            _ => "an export".to_string(),
-        }
-    }
+}
+
+/// The export that names an exceeding atom: the alphabetically first of the exports the
+/// incidence records for it (a stable deterministic choice), or a placeholder when none is
+/// recorded (which does not happen for a demand reconstructed from the image's own exports).
+fn export_for(
+    by_atom: &HashMap<(SemanticPath, OperationClass), Vec<String>>,
+    atom: &DemandAtom,
+) -> String {
+    by_atom
+        .get(&(atom.path().clone(), atom.class()))
+        .and_then(|names| names.iter().min())
+        .cloned()
+        .unwrap_or_else(|| "an export".to_string())
 }
 
 /// The named members of a durable node in the sealed structure, split by kind so each is
