@@ -1046,12 +1046,13 @@ pub(crate) struct TypeRegistry {
     /// lookup; a row that does not carry the looked-up spec is index/authority drift,
     /// reported as the shared `MintIndexDrift` coherence failure rather than trusted.
     collection_index: RefCell<HashMap<CollSpec, u16>>,
-    /// A metadata directory reused across the mint/dedup probes of one monomorphization
-    /// pass. Type instantiations and collections are appended in strict image order, so
-    /// the directory maps image identity to row and is extended for the newly appended
-    /// rows rather than rebuilt over every prior row on each probe. It is a projection of
-    /// the append-only owners, never a mint/dedup authority; a caller that mutates an
-    /// already-classified row out of the append order must invalidate it.
+    /// A metadata directory reused across every probe of one monomorphization pass — the
+    /// mint/dedup probes and the presentation projections (field access, spelling, durable
+    /// walks) alike. Type instantiations and collections are appended in strict image
+    /// order, so the directory maps image identity to row and is extended for the newly
+    /// appended rows rather than rebuilt over every prior row on each probe. It is a
+    /// projection of the append-only owners, never a mint/dedup authority; a caller that
+    /// mutates an already-classified row out of the append order must invalidate it.
     row_directory: RefCell<Option<RowDirectory>>,
 }
 
@@ -1192,6 +1193,29 @@ impl RowDirectoryGuard<'_> {
     }
 }
 
+impl std::ops::Deref for RowDirectoryGuard<'_> {
+    type Target = MetadataScratch;
+
+    #[expect(
+        clippy::expect_used,
+        reason = "the directory is Some from construction until Drop takes it; no other \
+                  path clears it, so this guard cannot observe None"
+    )]
+    fn deref(&self) -> &MetadataScratch {
+        &self
+            .directory
+            .as_ref()
+            .expect("directory is present until drop")
+            .scratch
+    }
+}
+
+impl std::ops::DerefMut for RowDirectoryGuard<'_> {
+    fn deref_mut(&mut self) -> &mut MetadataScratch {
+        self.scratch()
+    }
+}
+
 impl Drop for RowDirectoryGuard<'_> {
     fn drop(&mut self) {
         if let Some(directory) = self.directory.take() {
@@ -1221,9 +1245,10 @@ enum MetadataTask {
     },
 }
 
-/// Dense, validation-local lookup and visitation state. The directory is rebuilt
-/// from immutable registry rows for one metadata walk and is dropped before any
-/// cache or image mutation; it is not a persistent mint/dedup index.
+/// Dense, validation-local lookup and visitation state. The directory is classified
+/// from immutable registry rows, reused across the probes of one pass and extended for
+/// newly appended rows, and invalidated before any out-of-order owner mutation; it is a
+/// projection of the append-only owners, not a mint/dedup authority.
 #[derive(Clone, Copy)]
 enum RecordMetadataOwner {
     ResourceRecord(usize),
@@ -1260,7 +1285,7 @@ struct MetadataScratch {
 /// every later projection, so partially marked traversal state is never reused.
 pub(crate) struct TypeMetadataSession<'a> {
     view: TypeMetadataView<'a>,
-    metadata: MetadataScratch,
+    metadata: RowDirectoryGuard<'a>,
     display: DisplayScratch,
     failure: Option<GenericInvariant>,
 }
@@ -2954,7 +2979,7 @@ impl TypeRegistry {
         E: From<GenericInvariant>,
     {
         let view = self.metadata_view();
-        let metadata = MetadataScratch::try_new(&view).map_err(E::from)?;
+        let metadata = self.row_directory(&view).map_err(E::from)?;
         let mut session = TypeMetadataSession {
             display: DisplayScratch::for_view(&view),
             view,
@@ -3024,11 +3049,14 @@ impl TypeRegistry {
         }
     }
 
-    /// A metadata directory for one mint/dedup probe. The directory is reused across the
-    /// pass's probes and extended for the rows appended since the previous probe, so
-    /// minting a deeply nested type classifies each row once instead of rescanning every
-    /// prior row per level. A row appended after the previous probe is classified now;
-    /// rows below the watermark were classified before.
+    /// A metadata directory for one mint/dedup probe or presentation projection. The
+    /// directory is reused across the pass's probes and extended for the rows appended
+    /// since the previous probe, so minting a deeply nested type — or projecting a field
+    /// over a growing instantiation population — classifies each row once instead of
+    /// rescanning every prior row per probe. A row appended after the previous probe is
+    /// classified now; rows below the watermark were classified before. A metadata session
+    /// borrows this same directory, so an out-of-line projection reuses the pass
+    /// classification rather than rebuilding a fresh one.
     fn row_directory(
         &self,
         view: &TypeMetadataView<'_>,
@@ -8398,6 +8426,9 @@ mod instantiation_state_tests {
             .expect("generic record mints ready");
         record_registry.generics.borrow_mut().type_insts[0].id =
             TypeInstId::Record(declared_record);
+        // The row identity was corrupted out of the append order, so the classified
+        // directory must be discarded before a probe reclassifies the owners.
+        record_registry.invalidate_row_directory();
         let record_expected =
             GenericInvariant::TypeIdentityCollision(TypeInstId::Record(declared_record));
         let record_before = stable_snapshot(&record_registry);
@@ -8452,6 +8483,9 @@ mod instantiation_state_tests {
             )
             .expect("generic enum mints ready");
         enum_registry.generics.borrow_mut().type_insts[0].id = TypeInstId::Enum(declared_enum);
+        // The row identity was corrupted out of the append order, so the classified
+        // directory must be discarded before a probe reclassifies the owners.
+        enum_registry.invalidate_row_directory();
         let enum_expected =
             GenericInvariant::TypeIdentityCollision(TypeInstId::Enum(declared_enum));
         let enum_before = stable_snapshot(&enum_registry);
@@ -9445,8 +9479,9 @@ mod instantiation_state_tests {
         });
         assert_eq!(blocked, (true, true));
         assert_eq!(
-            session_builds, 1,
-            "an out-of-line metadata session builds its own fresh directory"
+            session_builds, 0,
+            "an out-of-line metadata session reuses the pass directory the append-only mint \
+             path already built, extending it in place rather than rebuilding"
         );
         assert!(registry.generics.try_borrow_mut().is_ok());
         assert!(registry.collections.try_borrow_mut().is_ok());
@@ -9457,8 +9492,8 @@ mod instantiation_state_tests {
                 GArg::Scalar(ScalarType::Int),
                 GArg::Scalar(ScalarType::Text),
             )
-            .expect("dropping the session permits a later metadata mutation");
-        let (observed, post_mutation_builds) = count_metadata_directory_builds(|| {
+            .expect("dropping the session permits a later metadata append");
+        let (observed, post_append_builds) = count_metadata_directory_builds(|| {
             registry.with_metadata_session(|metadata| metadata.collection_spec(map))
         });
         assert_eq!(
@@ -9469,8 +9504,9 @@ mod instantiation_state_tests {
             })
         );
         assert_eq!(
-            post_mutation_builds, 1,
-            "a later session read builds one fresh directory after a metadata mutation"
+            post_append_builds, 0,
+            "appending a collection extends the reused directory; a later session read \
+             classifies only the appended row and never rebuilds"
         );
     }
 
@@ -9579,6 +9615,10 @@ mod instantiation_state_tests {
             generics.type_insts[1].args = first_args;
             generics.type_insts[1].state = first_state;
         }
+        // The duplicate key was written onto an already-classified settled row, out of the
+        // append order the reused directory projects; the contract requires discarding that
+        // classification so the next probe rebuilds and the cold semantic-key scan runs.
+        registry.invalidate_row_directory();
         let expected = GenericInvariant::TypeInstantiationKeyCollision { first, duplicate };
         let owner_before = stable_snapshot(&registry);
         let draft_before = draft_snapshot(&draft);
@@ -9639,7 +9679,11 @@ mod instantiation_state_tests {
                 )),
             ))
         );
-        assert_eq!(builds, 1);
+        assert_eq!(
+            builds, 0,
+            "one session classifies both reserved families by reusing the directory the \
+             mint path already built for their rows"
+        );
     }
 
     #[test]
@@ -10545,6 +10589,10 @@ mod instantiation_state_tests {
             assert!(matches!(body, Err(found) if found == expected));
             assert_eq!(builds, 1);
 
+            // The preceding projection rebuilt and cached a directory over the corrupted
+            // owners; discard it so the mint path reclassifies from the owners itself and
+            // this boundary's one-build cost stays independent of the earlier probe.
+            registry.invalidate_row_directory();
             let (replayed, builds) = count_metadata_directory_builds(|| {
                 registry.mint_type_instance(
                     &mut draft,

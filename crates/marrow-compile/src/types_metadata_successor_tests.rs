@@ -532,7 +532,11 @@ store ^second[id: int]: Second
         )
     });
 
-    assert_eq!(builds, 1, "one metadata session spans the complete build");
+    assert_eq!(
+        builds, 0,
+        "the durable build reuses the directory the type-registry build already classified \
+         across every store and repeated enum anchor; it never rebuilds"
+    );
     let durable = outcome.expect("valid durable registry builds");
     assert!(diagnostics.is_empty(), "{diagnostics:#?}");
     for root_name in ["first", "second"] {

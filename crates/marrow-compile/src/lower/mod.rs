@@ -1110,18 +1110,18 @@ mod generic_cache_boundary_tests {
         let sentinel = vec![Some(GArg::Scalar(ScalarType::Bool))];
 
         assert_eq!(records.validate_type_arguments(&[arg]), Err(expected));
-        for (name, optional) in [
-            ("int", false),
-            ("MissingType", false),
-            ("MissingType", true),
-        ] {
-            let annotation = TypeExpr::Name {
-                text: name.to_string(),
-                span: span(),
-            };
-            let mut subst = sentinel.clone();
-            let (result, builds) = count_metadata_directory_builds(|| {
-                unify_type_param(
+        let (_, builds) = count_metadata_directory_builds(|| {
+            for (name, optional) in [
+                ("int", false),
+                ("MissingType", false),
+                ("MissingType", true),
+            ] {
+                let annotation = TypeExpr::Name {
+                    text: name.to_string(),
+                    span: span(),
+                };
+                let mut subst = sentinel.clone();
+                let result = unify_type_param(
                     &records,
                     &type_params,
                     &annotation,
@@ -1130,16 +1130,20 @@ mod generic_cache_boundary_tests {
                         optional,
                     },
                     &mut subst,
-                )
-            });
+                );
 
-            assert!(matches!(
-                result,
-                Err(UnifyError::Invariant(found)) if found == expected
-            ));
-            assert_eq!(builds, 1, "one session owns the hostile preflight");
-            assert_eq!(subst, sentinel);
-        }
+                assert!(matches!(
+                    result,
+                    Err(UnifyError::Invariant(found)) if found == expected
+                ));
+                assert_eq!(subst, sentinel);
+            }
+        });
+        assert_eq!(
+            builds, 1,
+            "the hostile preflight builds the shared directory once and reuses it across \
+             every inferred-metadata check rather than rebuilding per argument"
+        );
         assert_eq!(records.validate_type_arguments(&[arg]), Err(expected));
         let draft_after = draft.encode().expect("rejected draft still encodes");
         assert_eq!(draft_after.bytes, draft_before.bytes);

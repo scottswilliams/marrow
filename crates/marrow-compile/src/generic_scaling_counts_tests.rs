@@ -13,9 +13,9 @@
 //! pass likewise reads that shared directory inside a savepoint rather than replaying the
 //! population into a clone, so its row cost is the template body's own mint count, constant
 //! as the population grows (`proof_clone_cost_is_independent_of_instantiation_population`).
-//! One owner remains super-linear on this domain and is asserted here as the recurrence gate
-//! for a follow-on lane that narrows it: the per-field-projection presentation directory
-//! rebuild (exercised by the `.value.value` accesses on the type axis).
+//! The per-field-projection presentation path (exercised by the `.value.value` accesses on
+//! the type axis) now reuses that same pass directory, so its row work is linear in the
+//! instantiation count as well (`type_axis_scan_and_field_projection_rebuild_are_linear`).
 //!
 //! Counts are observed through the private `super::capture_scaling_counts` window;
 //! they are neither a public hook nor a canonical fact.
@@ -251,21 +251,22 @@ const MAX_INSTANTIATIONS: usize = super::MAX_INSTANTIATIONS;
 /// count equals the mint-attempt count and doubles ~2x across a doubled type axis —
 /// proven directly at the now-reachable 512→1024 and 1024→2048 doubling points. The
 /// mint/resolution directory is reused and extended (see
-/// `nested_type_mint_directory_is_linear_in_instantiation_count`), but this fixture also
-/// projects two struct fields per seed (`.value.value`), and each field-projection
-/// session builds a fresh directory over every prior row. That presentation/projection
-/// rebuild remains super-linear here (row work roughly quadruples per doubling, build
-/// count ~linear) and is the recurrence gate for a follow-on lane. (The type axis reaches
-/// ~`MAX_TYPES / 2` because each instantiation costs its seed plus its `Held` record; the
-/// near-4096 point is exercised on the fn axis, which reaches ~`MAX_FUNCTIONS − 1`.)
+/// `nested_type_mint_directory_is_linear_in_instantiation_count`), and this fixture also
+/// projects two struct fields per seed (`.value.value`). Each field-projection session
+/// now reuses that same pass directory and classifies only the rows appended since the
+/// previous probe, so classifying a growing instantiation population through the
+/// projection path is linear: row work doubles ~2x per doubling rather than quadrupling.
+/// (The type axis reaches ~`MAX_TYPES / 2` because each instantiation costs its seed plus
+/// its `Held` record; the near-4096 point is exercised on the fn axis, which reaches
+/// ~`MAX_FUNCTIONS − 1`.)
 #[test]
-fn type_axis_scan_is_linear_field_projection_rebuild_still_quadratic() {
+fn type_axis_scan_and_field_projection_rebuild_are_linear() {
     let a = counts_for(type_axis_fixture(512));
     let b = counts_for(type_axis_fixture(1024));
     let c = counts_for(type_axis_fixture(2048));
 
-    // Repaired: one keyed probe per mint attempt, so the scan count is the axis width
-    // and each doubling is ~2x.
+    // One keyed probe per mint attempt, so the scan count is the axis width and each
+    // doubling is ~2x.
     for (lo, hi) in [(&a, &b), (&b, &c)] {
         let scan_ratio = ratio(hi.type_inst_scan_steps, lo.type_inst_scan_steps);
         assert!(
@@ -281,27 +282,19 @@ fn type_axis_scan_is_linear_field_projection_rebuild_still_quadratic() {
         "one keyed probe per mint attempt at v=2048"
     );
 
-    // Frozen: the per-field-projection directory rebuild is super-linear — each of the
-    // two field projections per seed builds a fresh directory over every prior row, so
-    // row work roughly quadruples per doubling — awaiting a follow-on lane.
+    // Repaired: the field-projection path reuses the pass directory and classifies each
+    // appended row once, so total row work is linear in the instantiation count — each
+    // doubling is ~2x rather than the former ~4x rebuild-over-every-prior-row.
     for (lo, hi) in [(&a, &b), (&b, &c)] {
         let row_ratio = ratio(hi.directory_row_visits, lo.directory_row_visits);
         assert!(
-            row_ratio >= 3.5,
-            "field-projection directory rebuild is still super-linear; \
-             row visits {} -> {} ratio {row_ratio:.2}",
+            (1.7..=2.3).contains(&row_ratio),
+            "field-projection directory reuse classifies each row once, linear in the \
+             instantiation count; row visits {} -> {} ratio {row_ratio:.2}",
             lo.directory_row_visits,
             hi.directory_row_visits,
         );
     }
-    // The directory-build COUNT stays ~linear (one rebuild per field projection).
-    let build_ratio = ratio(c.directory_builds, b.directory_builds);
-    assert!(
-        (1.7..=2.3).contains(&build_ratio),
-        "directory build count is ~linear; builds {} -> {} ratio {build_ratio:.2}",
-        b.directory_builds,
-        c.directory_builds,
-    );
 }
 
 /// The `reserve_fn_instance` reuse probe is a keyed lookup — one probe per reserve
