@@ -22,6 +22,7 @@ direction.
 | `run` | Compile, verify, and run an exported function (this page). |
 | `test` | Discover and run `test` declarations (this page; see [tests](tests.md)). |
 | `client typescript` | Generate the strict TypeScript client and the pinned Node supervision module (this page; see [TypeScript client](typescript-client.md)). |
+| `image` | Emit the verified program image a deployment ships, against an accepted ceiling id (this page). |
 | `lsp` | Run the language server over stdio (this page; see [language server](lsp.md)). |
 | `data`, `doctor`, `evolve`, `serve`, `backup`, `restore` | Recognized; report `cli.command_unsupported` until their refounding lanes land. |
 
@@ -175,6 +176,29 @@ with `cli.interface_unbuildable`. Unlike `run`, the generator never mints durabl
 identities. See
 [TypeScript client](typescript-client.md) for the generated API, the
 supervision law, and the loss classification.
+
+## `marrow image`
+
+```text
+marrow image --out <dir> --accept-ceiling <id>
+```
+
+Compiles and independently verifies the [project](projects.md) at the working
+directory and writes the verified `program.image` into the output directory — the
+durable artifact a packaged application's deployment pins beside its
+release-verified runner. Unlike `run`, `image` never mints durable identities and
+opens no store.
+
+An image's exports have a durable **demand**, and the store an application
+provisions under the image records the union of that demand as the maximum authority
+it will ever admit — its deployment ceiling (see
+[the demand a `check` prints](cli.md#marrow-check) and the ceiling identity). So the
+command renders each export's demand and requires the owner to name the accepted
+ceiling id: `--accept-ceiling` must equal the image's own demand-union ceiling id
+before any image is written. When the argument is absent or names a different id, no
+image is written and the command reports `cli.ceiling_unaccepted` with the actual
+ceiling id to accept, so a deployment's durable authority is named deliberately and
+never widened or narrowed by accident. Stable inputs yield a byte-identical image.
 
 ## `marrow lsp`
 
