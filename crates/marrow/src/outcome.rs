@@ -430,6 +430,33 @@ mod tests {
         );
     }
 
+    /// A lost-reply outcome renders as a distinct typed state (term 13): a distinct JSONL
+    /// outcome tag, a stable code, and text that tells the user the outcome is unknown, that
+    /// it was not retried, and that a read-only refresh observes the current state — never a
+    /// generic timeout and never a replay/exactly-once claim.
+    #[test]
+    fn outcome_unknown_is_a_distinct_typed_state() {
+        assert_eq!(
+            Record::OutcomeUnknown.to_jsonl(&[], &[]),
+            r#"{"code":"run.outcome_unknown","kind":"run","outcome":"outcome_unknown"}"#,
+        );
+        let text = Record::OutcomeUnknown.to_text(&[], &[]);
+        assert!(text.contains("run.outcome_unknown"), "carries the code: {text}");
+        assert!(text.contains("outcome is unknown"), "names the state: {text}");
+        assert!(
+            text.contains("not retried"),
+            "states no automatic replay occurred: {text}"
+        );
+        assert!(
+            text.contains("read-only"),
+            "points at a read-only refresh: {text}"
+        );
+        assert!(
+            !text.to_lowercase().contains("timed out") && !text.to_lowercase().contains("timeout"),
+            "is not a generic timeout: {text}"
+        );
+    }
+
     #[test]
     fn each_family_projects_a_distinct_outcome() {
         assert!(
