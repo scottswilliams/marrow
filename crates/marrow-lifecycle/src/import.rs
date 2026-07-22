@@ -192,6 +192,8 @@ pub enum RowFault {
     UnrecognizedMember { name: String },
     /// A durable entry with this row's key already exists (create yielded already-present).
     DuplicateKey,
+    /// This row's value for a `unique` managed index collides with another row's.
+    UniqueIndexCollision,
 }
 
 impl std::fmt::Display for RowFault {
@@ -225,6 +227,9 @@ impl std::fmt::Display for RowFault {
             RowFault::DuplicateKey => {
                 write!(f, "a durable entry with this key already exists")
             }
+            RowFault::UniqueIndexCollision => {
+                write!(f, "this row collides with another on a unique index")
+            }
         }
     }
 }
@@ -236,6 +241,9 @@ pub enum CommitFault {
     Poisoned,
     /// The engine could not open or complete the transaction.
     Engine(marrow_kernel::durable::StoreError),
+    /// A non-engine kernel fault surfaced during a write (corruption, value range, or poison),
+    /// carried as its stable dotted code.
+    Kernel { code: &'static str },
     /// A staged entry left a required field unset (a defense-in-depth reconcile fault; the
     /// mapper normally rejects such a row before staging).
     RequiredMissing { field: String },
@@ -253,6 +261,7 @@ impl std::fmt::Display for CommitFault {
                 )
             }
             CommitFault::Engine(error) => write!(f, "the engine transaction failed: {error}"),
+            CommitFault::Kernel { code } => write!(f, "a durable write faulted ({code})"),
             CommitFault::RequiredMissing { field } => {
                 write!(f, "a staged entry left required field `{field}` unset")
             }
@@ -664,15 +673,26 @@ fn commit_batch(
                     committed: *report,
                 });
             }
-            Err(fault) => {
+            // A unique-index collision is a row-data fault: two source rows carry the same
+            // value for a `unique` index. Name the offending row; the batch rolls back on drop.
+            Err(KernelFault::UniqueIndexViolation) => {
+                return Err(ImportError::Row {
+                    line,
+                    fault: RowFault::UniqueIndexCollision,
+                    committed: *report,
+                });
+            }
+            // Any other kernel fault is operational (engine, corruption, poison, value range),
+            // not a correctable row.
+            Err(KernelFault::Engine(engine)) => {
                 return Err(ImportError::Commit {
-                    fault: CommitFault::Engine(match fault {
-                        KernelFault::Engine(engine) => engine,
-                        other => marrow_kernel::durable::StoreError::Io {
-                            op: "import.create_entry",
-                            message: format!("a durable write faulted: {}", other.code()),
-                        },
-                    }),
+                    fault: CommitFault::Engine(engine),
+                    committed: *report,
+                });
+            }
+            Err(other) => {
+                return Err(ImportError::Commit {
+                    fault: CommitFault::Kernel { code: other.code() },
                     committed: *report,
                 });
             }

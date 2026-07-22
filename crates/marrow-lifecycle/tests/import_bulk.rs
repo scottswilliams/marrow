@@ -82,6 +82,34 @@ const NESTED_IDS: &str = "marrow ids v0\n\
      high-water 0\n\
      end\n";
 
+/// A `people` root with a `unique` managed index on `email` — a flat scalar root the importer
+/// supports, exercising the unique-index-collision row fault.
+const INDEXED_SOURCE: &str = r#"resource Person {
+    required email: string
+    name: string
+}
+
+store ^people[id: int]: Person {
+    index byEmail[email] unique
+}
+
+pub fn readName(id: int): string {
+    return ^people[id].name ?? "?"
+}
+"#;
+
+const INDEXED_IDS: &str = "marrow ids v0\n\
+     machine-written by marrow; do not edit\n\
+     id application . 2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a\n\
+     id product Person 2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d\n\
+     id field Person.email 2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e\n\
+     id field Person.name 2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f\n\
+     id root people 2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b\n\
+     id key people.id 2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c\n\
+     id index people.byEmail 29292929292929292929292929292929\n\
+     high-water 0\n\
+     end\n";
+
 fn compile(source: &str, ids: &str) -> VerifiedImage {
     let manifest = marrow_project::Manifest::parse("edition = \"2026\"\n").expect("manifest");
     let files = vec![marrow_project::CapturedFile::new(
@@ -383,6 +411,44 @@ fn a_duplicate_key_is_a_row_fault() {
             ..
         }) => {}
         other => panic!("expected a duplicate-key row fault, got {other:?}"),
+    }
+}
+
+/// A unique-index collision is a located row-data fault, not an operational commit fault: two
+/// rows sharing an indexed value fault at the second row, which names its own line, and the
+/// first row stays committed. Proves index maintenance runs through the kernel on import.
+#[test]
+fn a_unique_index_collision_is_a_located_row_fault() {
+    let scratch = Scratch::new("uidx");
+    let image = compile(INDEXED_SOURCE, INDEXED_IDS);
+    provision_from(scratch.dir(), &image);
+
+    let jsonl = "{\"id\": 1, \"email\": \"a@x\", \"name\": \"A\"}\n\
+                 {\"id\": 2, \"email\": \"a@x\", \"name\": \"B\"}\n";
+    let limits = ImportLimits {
+        batch_rows: 1,
+        ..ImportLimits::DEFAULT
+    };
+    match import_jsonl(
+        scratch.dir(),
+        schemas_of(&image),
+        ImportTarget {
+            root: 0,
+            key_columns: vec!["id".to_string()],
+        },
+        Cursor::new(jsonl.as_bytes().to_vec()),
+        InvocationGrant::full_store(),
+        limits,
+    ) {
+        Err(ImportError::Row {
+            line,
+            fault: RowFault::UniqueIndexCollision,
+            committed,
+        }) => {
+            assert_eq!(line, 2, "the collision names the offending row");
+            assert_eq!(committed.rows_imported, 1, "the first row committed");
+        }
+        other => panic!("expected a unique-index row fault, got {other:?}"),
     }
 }
 
