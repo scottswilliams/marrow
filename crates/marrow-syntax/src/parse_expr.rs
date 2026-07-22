@@ -884,6 +884,21 @@ impl<'a> ExprParser<'a> {
                 trailing_comma: false,
             });
         }
+        // An argument list opening on a call-list terminator (the end of the enclosing
+        // block, `}`, or end of input) is an incomplete call being typed (`f(` with the
+        // cursor and nothing yet after it). Recover with no arguments so the caller mints a
+        // recovered call node — the enclosing-call context signature help needs — and
+        // reports the missing delimiter at the gap. A token that merely cannot cleanly
+        // start an expression but that expression parsing still consumes and diagnoses
+        // (`[` for a bracket literal) is left to that path. Compile behavior is unchanged:
+        // the node still travels with a `parse.syntax` error, so semantic processing stays
+        // gated off.
+        if terminates_argument_list(self.peek()) {
+            return Ok(ParsedArguments {
+                args,
+                trailing_comma: false,
+            });
+        }
         let mut seen_named = false;
         let mut trailing_comma = false;
         loop {
@@ -907,6 +922,15 @@ impl<'a> ExprParser<'a> {
             }
             self.advance();
             if matches!(self.peek(), Some(TokenKind::RightParen)) {
+                trailing_comma = true;
+                break;
+            }
+            // A comma followed by a call-list terminator is an incomplete call being typed
+            // (`f(a, ` with the cursor after the comma, at the end of the enclosing block).
+            // Stop with the arguments parsed so far so the caller mints a recovered call
+            // node; the caller reports the missing delimiter at the gap. As above, the
+            // recovered node carries a parse error, so compile behavior is unchanged.
+            if terminates_argument_list(self.peek()) {
                 trailing_comma = true;
                 break;
             }
@@ -1329,6 +1353,15 @@ struct ParsedArguments {
 
 struct ParsedKeys {
     keys: Vec<Expression>,
+}
+
+/// Whether the token where an argument was expected terminates the argument list of an
+/// incomplete call being typed: the end of the enclosing block (`}`) or end of input.
+/// Recovery mints a call node with the arguments parsed so far so the enclosing-call
+/// context stays available to editor signature help; a token that ordinary expression
+/// parsing would still consume and diagnose is not a terminator.
+fn terminates_argument_list(peek: Option<TokenKind>) -> bool {
+    matches!(peek, None | Some(TokenKind::RightBrace))
 }
 
 fn starts_expression(kind: TokenKind) -> bool {

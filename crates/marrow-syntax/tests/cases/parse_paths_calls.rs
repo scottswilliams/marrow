@@ -124,6 +124,48 @@ fn path_colon_colon_eof_retains_segments() {
 }
 
 #[test]
+fn incomplete_call_empty_arg_list_recovers_call() {
+    // `f(` with the cursor and nothing yet after it is the just-opened call form. The
+    // parser structures a recovered `Call` node with no arguments — the enclosing-call
+    // context editor signature help needs — rather than collapsing the whole read to a
+    // bare error. The node stays honestly broken (a missing-delimiter diagnostic).
+    let value = const_value("const X = getOr(\n");
+    let Expression::Call { callee, args, .. } = &value else {
+        panic!("expected a recovered Call node, got {value:?}");
+    };
+    assert!(
+        matches!(callee.as_ref(), Expression::Name { segments, .. } if segments == &["getOr"]),
+        "expected the callee `getOr`, got {callee:?}"
+    );
+    assert!(args.is_empty(), "expected no arguments, got {args:?}");
+}
+
+#[test]
+fn incomplete_call_trailing_comma_recovers_call() {
+    // `f(a, ` with the cursor after the comma is the just-typed-comma call form. The
+    // parser structures a recovered `Call` node retaining the arguments parsed so far, so
+    // the active-argument position stays available to editor signature help.
+    let value = const_value("const X = getOr(reached, \n");
+    let Expression::Call { callee, args, .. } = &value else {
+        panic!("expected a recovered Call node, got {value:?}");
+    };
+    assert!(
+        matches!(callee.as_ref(), Expression::Name { segments, .. } if segments == &["getOr"]),
+        "expected the callee `getOr`, got {callee:?}"
+    );
+    assert_eq!(
+        args.len(),
+        1,
+        "expected the one parsed argument, got {args:?}"
+    );
+    assert!(
+        matches!(&args[0].value, Expression::Name { segments, .. } if segments == &["reached"]),
+        "expected the retained argument `reached`, got {:?}",
+        args[0].value
+    );
+}
+
+#[test]
 fn incomplete_member_recovery_still_reports_its_diagnostic() {
     // A recovery node stays honestly broken: it always travels with its
     // Error-severity parse diagnostic, so the file still fails to compile.

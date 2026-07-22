@@ -92,6 +92,37 @@ fn active_call_inside_a_complete_call_marks_the_argument() {
 }
 
 #[test]
+fn active_call_at_the_open_paren_marks_the_first_parameter() {
+    // The just-opened `f(` moment: a recovered incomplete call with no arguments yet still
+    // resolves and marks the first parameter.
+    let source = "module app\n\n\
+        fn getOr(m: int, key: int): int {\n    return m\n}\n\n\
+        fn caller(): int {\n    return getOr(\n}\n";
+    let snapshot = snap(source);
+    let offset = at(source, "return getOr(\n}", "return getOr(".len());
+    let active = present(&snapshot, offset);
+    assert_eq!(active.signature(), "fn getOr(m: int, key: int): int");
+    assert_eq!(active.active(), Some(0));
+}
+
+#[test]
+fn active_call_after_a_trailing_comma_marks_the_next_parameter() {
+    // The just-typed-comma moment `getOr(reached, ` — the production-red position. A
+    // recovered incomplete call marks the second parameter even across the trailing space.
+    let source = "module app\n\n\
+        fn getOr(m: int, key: int, fallback: int): int {\n    return fallback\n}\n\n\
+        fn caller(): int {\n    const reached = 1\n    return getOr(reached, \n}\n";
+    let snapshot = snap(source);
+    let offset = at(source, "getOr(reached, \n}", "getOr(reached, ".len());
+    let active = present(&snapshot, offset);
+    assert_eq!(
+        active.signature(),
+        "fn getOr(m: int, key: int, fallback: int): int"
+    );
+    assert_eq!(active.active(), Some(1));
+}
+
+#[test]
 fn active_call_broken_file_still_resolves() {
     // A recovered incomplete call (a second argument typed, no closing paren) makes the
     // file broken (a parse.syntax error), yet the active-call fact resolves — the point of
