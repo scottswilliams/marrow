@@ -25,6 +25,7 @@ mod envelope;
 mod head;
 mod headmap;
 mod image;
+mod import;
 mod instance;
 mod lock;
 mod provision;
@@ -41,6 +42,9 @@ pub use envelope::{EngineKind, StoreEnvelope};
 pub use head::{ActiveBinding, LogicalHead};
 pub use headmap::{HeadMap, HeadMapEntry, MAX_HEAD_MAP_ENTRIES};
 pub use image::{active_binding, head_map, head_map_node_order};
+pub use import::{
+    ImportError, ImportLimits, ImportReport, ImportTarget, KeyColumn, import_jsonl,
+};
 pub use instance::{EntropyUnavailable, StoreInstanceId};
 pub use lock::{Acquired, LockError, LockOwner, OwnerLock};
 pub use provision::{
