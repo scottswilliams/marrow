@@ -55,6 +55,39 @@ A compact bytecode and reference VM are the chosen direction for the beta.
 Native code generation, a JIT, an optimizer program, a stable binary package
 ABI, and compiler self-hosting are not required.
 
+## Table-count representation and the u32 ring
+
+**Current.** Each image table encodes its actual entry count, and each
+cross-table reference in the bytecode (a function, type, field, site, enum, or
+local index), as a big-endian `u16`. The hard ceiling of this representation is
+65,535 entries per table. The shipped decode bounds sit far below it (record
+types, enum types, functions, and collection types at 4,096; the operation-site,
+durable-member, and string tables at 8,192), and the whole-image byte ceiling
+(512 KiB) binds first — at roughly 6,200 declared durable fields, or roughly
+17,000 once eager per-field operation-site emission is retired. No compilable
+program can therefore populate a table past `u16`. Raising any single bound
+toward 65,535 is a monotone decode-guard widen with no format change: an image a
+narrower bound accepted a wider one still accepts byte-for-byte, and an older
+toolchain meeting a larger image refuses it with a typed bound rejection rather
+than misreading it.
+
+**Future.** Crossing `u16` — a program whose type, function, or enum population
+alone exceeds 65,535 entries in one image — is the versioned format decision.
+It is deferred until a lane first has such a reachable program, and re-checked
+at the durable-floor freeze (Q02), because building a second encoding exercised
+by no reachable program would be unused machinery. When it lands it is image
+version 1: the container version byte becomes `0x01`, the digest domain kind
+becomes `marrow.image.v1` (selected by the version byte, not a fixed constant),
+and the table counts and cross-table bytecode operands widen to `u32` (or a
+length-delimited varint). The evolution is reject-only: a toolchain reads
+exactly its own image version, with no read-old shim, because the image is
+exact-toolchain-private and is regenerated and rebound from source across a
+toolchain update. A version-1 digest can never validate version-0 bytes (or the
+reverse), because the digest kind is domain-separated per version. The `u16`
+ceiling is a per-image, per-table bound; a program family spanning millions of
+functions across many images and toolchains never reaches version 1 on that
+count alone — only a single image whose one table exceeds 65,535 does.
+
 ## Evidence target
 
 Storeless and durable acceptance programs must execute only after decode and

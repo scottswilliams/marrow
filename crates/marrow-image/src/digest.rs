@@ -102,8 +102,15 @@ mod tests {
         image_id,
     };
 
+    /// The frozen v0 image seam identity. The domain-separation kind is exactly
+    /// `marrow.image.v0`; the container version byte a future ring would bump is `0x00`
+    /// (see `docs/future/compiled-programs.md`, the u32-ring decision of record). A v1
+    /// mints a new kind `marrow.image.v1` selected by the version byte, so a v0 digest can
+    /// never validate v1 bytes. The version gate itself is exercised by
+    /// `marrow-verify`'s `rehashed_bad_version_rejects_at_envelope` hostile.
     #[test]
-    fn digest_kind_is_fifteen_bytes() {
+    fn image_seam_identity_is_frozen_v0() {
+        assert_eq!(IMAGE_DIGEST_KIND, b"marrow.image.v0");
         assert_eq!(IMAGE_DIGEST_KIND.len(), 15);
     }
 
