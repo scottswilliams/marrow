@@ -1105,3 +1105,56 @@ fn check_format_refuses_sources_carrying_recovery_nodes() {
         }
     }
 }
+
+// ---- the require guard ----
+
+/// A `require` renders on one line — `require <condition> else <value>` — and the
+/// spelling is a formatting fixed point. The `require`/`else` head never breaks.
+#[test]
+fn a_short_require_renders_on_one_line() {
+    let source = "module app\nfn check(n: int): Result<int, string> {\n    require n > 0 else \"not positive\"\n    return ok(n)\n}\n";
+    let once = format_source(source);
+    assert_eq!(format_source(&once), once, "fixed point:\n{once}");
+    assert!(
+        once.contains("    require n > 0 else \"not positive\"\n"),
+        "one line:\n{once}"
+    );
+}
+
+/// A long failure value breaks inside its constructor's parentheses — the
+/// multiline argument layout the constructor already has, one argument per line
+/// with a trailing comma — while the `require … else Ctor(` head stays on the
+/// statement's first line. This is the recorded REQ01 layout rule: the wrap
+/// point is the value's own parentheses, never after `else`.
+#[test]
+fn a_long_require_value_breaks_inside_its_constructor() {
+    let source = "module app\nenum Rejection {\n    staleRevision(kind: string, id: int, expected: int, actual: int)\n}\nfn check(kind: string, id: int, actual: int, expected: int): Result<bool, Rejection> {\n    require actual == expected else Rejection::staleRevision(\n        kind: kind,\n        id: id,\n        expected: expected,\n        actual: actual,\n    )\n    return ok(true)\n}\n";
+    let once = format_source(source);
+    assert_eq!(format_source(&once), once, "fixed point:\n{once}");
+    assert!(
+        once.contains("require actual == expected else Rejection::staleRevision(\n"),
+        "the head stays on one line and the value opens its multiline parens:\n{once}"
+    );
+    assert!(
+        once.contains("        kind: kind,\n"),
+        "constructor arguments sit one per line:\n{once}"
+    );
+    assert!(
+        parse_source(&once).diagnostics.is_empty(),
+        "the wrapped form re-parses clean:\n{once}"
+    );
+}
+
+/// The inline spelling of the same multiline constructor normalizes to itself
+/// (the multiline flag is the author's layout choice and round-trips), and both
+/// spellings parse to equivalent guards.
+#[test]
+fn require_inline_constructor_value_is_a_fixed_point() {
+    let source = "module app\nenum Rejection {\n    tooSmall(id: int)\n}\nfn check(id: int): Result<bool, Rejection> {\n    require id > 0 else Rejection::tooSmall(id: id)\n    return ok(true)\n}\n";
+    let once = format_source(source);
+    assert_eq!(format_source(&once), once, "fixed point:\n{once}");
+    assert!(
+        once.contains("    require id > 0 else Rejection::tooSmall(id: id)\n"),
+        "inline stays inline:\n{once}"
+    );
+}
