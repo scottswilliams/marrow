@@ -191,8 +191,8 @@ opens no store.
 
 An image's exports have a durable **demand**, and the store an application
 provisions under the image records the union of that demand as the maximum authority
-it will ever admit — its deployment ceiling (see
-[the demand a `check` prints](cli.md#marrow-check) and the ceiling identity). So the
+it will ever admit — its deployment ceiling (the `marrow check` section above
+describes the demand it prints, and the ceiling identity). So the
 command renders each export's demand and requires the owner to name the accepted
 ceiling id: `--accept-ceiling` must equal the image's own demand-union ceiling id
 before any image is written. When the argument is absent or names a different id, no
