@@ -155,6 +155,7 @@ execution is in the trough.
             Code::CliInterfaceUnbuildable,
             Code::CliDurableUnsupported,
             Code::CliInstallationDamaged,
+            Code::CliCeilingUnaccepted,
             Code::CliCompilerResourceLimit,
         ]),
         r#"
