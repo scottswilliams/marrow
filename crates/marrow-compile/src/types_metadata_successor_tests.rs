@@ -1002,30 +1002,35 @@ fn nested_non_ready_generic_targets_are_rejected_without_outer_publication() {
 }
 
 #[test]
-fn proof_clone_parameter_remains_local_to_the_discarded_owner() {
+fn template_proof_parameter_stays_local_to_the_savepoint() {
     let registry = test_registry(vec![struct_template("Box", &["T"])]);
-    let draft = ImageDraft::new();
+    let mut draft = ImageDraft::new();
     let registry_before = owner_snapshot(&registry);
+    let draft_savepoint = draft.savepoint();
     let draft_before = draft_fingerprint(&draft);
-    let clone = registry
-        .clone_for_generic_check()
-        .expect("stable registry clones for template proof");
-    let mut clone_draft = draft.clone();
-    let id = clone
-        .mint_type_instance(&mut clone_draft, 0, &[GArg::Param(0)], site())
-        .expect("proof-only parameter is legal");
-    let clone_rows = clone.generics.borrow();
-    let cloned = clone_rows
-        .type_insts
-        .iter()
-        .find(|inst| inst.id == id)
-        .expect("proof row exists");
 
-    let body = match &cloned.state {
-        TypeInstState::Ready(body) => body_snapshot(body),
-        TypeInstState::Filling { .. } | TypeInstState::Rejected(_) => {
-            panic!("proof row must be Ready")
-        }
+    // The abstract parameter argument is legal only inside the proof pass, minted directly on
+    // the real registry and draft.
+    let proof = registry
+        .enter_template_proof(draft.record_type_count(), draft.enum_type_count())
+        .expect("stable registry admits the proof pass");
+    let id = registry
+        .mint_type_instance(&mut draft, 0, &[GArg::Param(0)], site())
+        .expect("proof-only parameter is legal");
+    let (args, body) = {
+        let generics = registry.generics.borrow();
+        let proof_row = generics
+            .type_insts
+            .iter()
+            .find(|inst| inst.id == id)
+            .expect("proof row exists");
+        let body = match &proof_row.state {
+            TypeInstState::Ready(body) => body_snapshot(body),
+            TypeInstState::Filling { .. } | TypeInstState::Rejected(_) => {
+                panic!("proof row must be Ready")
+            }
+        };
+        (proof_row.args.clone(), body)
     };
 
     let mut expected = ImageDraft::new();
@@ -1040,16 +1045,18 @@ fn proof_clone_parameter_remains_local_to_the_discarded_owner() {
         }],
     });
 
-    assert_eq!(cloned.args, vec![GArg::Param(0)]);
+    assert_eq!(args, vec![GArg::Param(0)]);
     assert_eq!(
         body,
         BodySnapshot::Struct(vec![("t".to_string(), GArg::Param(0))])
     );
     assert_eq!(id, TypeInstId::Record(expected_box));
-    assert_eq!(
-        draft_fingerprint(&clone_draft),
-        draft_fingerprint(&expected)
-    );
+    assert_eq!(draft_fingerprint(&draft), draft_fingerprint(&expected));
+
+    // The savepoint erases the parameter row and its throwaway image; the settled owner and
+    // the draft are exactly what they were before the pass.
+    registry.exit_template_proof(proof);
+    draft.rewind_to(draft_savepoint);
     assert_eq!(owner_snapshot(&registry), registry_before);
     assert_eq!(draft_fingerprint(&draft), draft_before);
 }

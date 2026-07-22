@@ -721,8 +721,9 @@ enum LimitState {
 }
 
 /// Which argument domain one generic owner may admit. Concrete compilation never
-/// carries an abstract parameter into a published image; only the isolated proof
-/// clone may use `Param` while checking one generic template body.
+/// carries an abstract parameter into a published image; only an isolated template-proof
+/// pass (entered through `enter_template_proof`) may use `Param` while checking one generic
+/// template body.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 enum ArgumentDomain {
     #[default]
@@ -775,9 +776,11 @@ impl GenericDiagnostics {
 /// resolution and body lowering. Type instantiations mint their image record/enum
 /// eagerly (declare-then-fill, so a self-referential instantiation terminates and
 /// the containment-cycle check rejects it); function instantiations reserve an image
-/// index and enqueue their body for the driver to drain in mint order. The explicit
-/// [`TypeRegistry::clone_for_generic_check`] boundary is the only supported way to
-/// copy stable owner state into an isolated proof pass.
+/// index and enqueue their body for the driver to drain in mint order. An isolated
+/// generic-template proof pass runs directly on this owner inside a
+/// [`TypeRegistry::enter_template_proof`]/[`TypeRegistry::exit_template_proof`] savepoint,
+/// which truncates the rows the pass appends; a fill batch never mutates the settled prefix,
+/// so that suffix truncation restores the exact pre-proof state.
 #[derive(Default)]
 struct Monomorph {
     type_insts: Vec<TypeInst>,
@@ -1098,7 +1101,9 @@ impl RowDirectory {
     fn rewind_to(&mut self, records: usize, enums: usize, type_insts: usize, collections: usize) {
         self.scratch.records.truncate(records);
         self.scratch.enums.truncate(enums);
-        self.scratch.collection_generic_targets.truncate(collections);
+        self.scratch
+            .collection_generic_targets
+            .truncate(collections);
         self.built_type_insts = type_insts;
         self.built_collections = collections;
     }
@@ -1350,10 +1355,12 @@ pub(crate) struct ScalingCounts {
     pub(crate) coll_inst_probe_steps: usize,
     /// Value-graph edges traversed across every `cycle_through` start.
     pub(crate) cycle_walk_steps: usize,
-    /// `clone_for_generic_check` invocations (proof forks).
+    /// `enter_template_proof` admissions (one isolated proof pass per generic template).
     pub(crate) proof_clones: usize,
-    /// Type-inst rows replayed across every proof fork (`proof_clones *
-    /// type_insts.len()`).
+    /// Type-inst rows the proof pass classifies into the shared metadata directory — the
+    /// rows its own body mints, extended onto the already-built population directory rather
+    /// than replayed over the whole settled population. Constant per template, decoupled from
+    /// the instantiation count.
     pub(crate) proof_clone_rows: usize,
     /// Characters rendered into editor hover displays across the whole compile
     /// (`ty.spelling`/signature displays). A monomorphized instance body's facts are
@@ -4708,87 +4715,6 @@ impl TypeRegistry {
         self.generics.borrow().build_invariant
     }
 
-    /// A stable semantic copy of this registry, including the collection and
-    /// built-in-generic instantiation tables. The once-checked template pass of a generic function
-    /// runs against this clone paired with a clone of the in-progress
-    /// [`ImageDraft`], so it sees every already-minted collection/enum at the same
-    /// index the real image records. Stable type rows and function reservations are
-    /// copied without reindexing, so the shared bound has the same headroom; any new
-    /// type instantiation over abstract parameters lands only in the discarded clone.
-    /// The clone starts a fresh diagnostic/fill owner, and the pass discards its
-    /// emitted code, so nothing crosses back except the consumed diagnostic outcome.
-    pub(crate) fn clone_for_generic_check(&self) -> Result<Self, GenericInvariant> {
-        let generics = self
-            .generics
-            .try_borrow()
-            .map_err(|_| GenericInvariant::ProofClone(ProofCloneError::UnstableFillState))?;
-        let collections = self
-            .collections
-            .try_borrow()
-            .map_err(|_| GenericInvariant::ProofClone(ProofCloneError::UnstableFillState))?;
-        let has_unstable_row = generics.type_insts.iter().any(|inst| {
-            matches!(inst.state, TypeInstState::Filling { .. }) || !inst.dependents.is_empty()
-        });
-        if generics.fill_batch_start.is_some()
-            || !generics.fill_rows.is_empty()
-            || !generics.fill_stack.is_empty()
-            || !generics.fill_failures.is_empty()
-            || has_unstable_row
-            || generics.build_invariant.is_some()
-        {
-            return Err(GenericInvariant::ProofClone(
-                ProofCloneError::UnstableFillState,
-            ));
-        }
-        if !matches!(generics.limit, LimitState::Open) {
-            return Err(GenericInvariant::ProofClone(
-                ProofCloneError::LimitOwnerNotOpen,
-            ));
-        }
-        let view = TypeMetadataView {
-            registry: self,
-            generics: Ref::clone(&generics),
-            collections: Ref::clone(&collections),
-        };
-        #[cfg(test)]
-        bump_scaling(|counts| counts.proof_clones += 1);
-        let mut scratch = MetadataScratch::try_new(&view)?;
-        for inst in &generics.type_insts {
-            #[cfg(test)]
-            bump_scaling(|counts| counts.proof_clone_rows += 1);
-            view.ready_inst_body_with(inst, &mut scratch)?;
-        }
-        drop(view);
-        let clone = Self {
-            aliases: self.aliases.clone(),
-            nominals: self.nominals.clone(),
-            structs: self.structs.clone(),
-            enums: self.enums.clone(),
-            records: self.records.clone(),
-            type_templates: self.type_templates.clone(),
-            generics: RefCell::new(Monomorph {
-                type_insts: generics.type_insts.clone(),
-                type_index: generics.type_index.clone(),
-                fn_base: generics.fn_base,
-                fn_insts: generics.fn_insts.clone(),
-                fn_index: generics.fn_index.clone(),
-                fn_queue: generics.fn_queue.clone(),
-                fill_batch_start: None,
-                fill_rows: BTreeMap::new(),
-                fill_stack: Vec::new(),
-                fill_failures: Vec::new(),
-                limit: LimitState::Open,
-                collection_payloads: Vec::new(),
-                build_invariant: None,
-                argument_domain: ArgumentDomain::TemplateProof,
-            }),
-            collections: RefCell::new(collections.clone()),
-            collection_index: RefCell::new(self.collection_index.borrow().clone()),
-            row_directory: RefCell::default(),
-        };
-        Ok(clone)
-    }
-
     /// Admit an isolated generic-template proof pass to run directly on this registry, and
     /// capture the state needed to erase its effects. The pass mints type instantiations and
     /// collections and reports diagnostics against the abstract type parameters; on exit
@@ -4834,11 +4760,18 @@ impl TypeRegistry {
                 ProofCloneError::LimitOwnerNotOpen,
             ));
         }
+        // Contention on the collection owner is a coherence failure, not a RefCell unwind;
+        // read its length before any mutation so a conflict leaves the registry untouched.
+        let collections = self
+            .collections
+            .try_borrow()
+            .map_err(|_| GenericInvariant::ProofClone(ProofCloneError::UnstableFillState))?
+            .len();
         #[cfg(test)]
         bump_scaling(|counts| counts.proof_clones += 1);
         let savepoint = RegistryProofSavepoint {
             type_insts: generics.type_insts.len(),
-            collections: self.collections.borrow().len(),
+            collections,
             fn_insts: generics.fn_insts.len(),
             fn_queue: generics.fn_queue.len(),
             prior_argument_domain: generics.argument_domain,
@@ -7571,6 +7504,21 @@ mod instantiation_state_tests {
         (encoded.bytes, encoded.image_id)
     }
 
+    /// Replay the coherence validation a template proof relies on over every settled row:
+    /// build the full identity directory and revalidate each ready instantiation body. The
+    /// production proof path reuses the shared directory the mint path already built, so this
+    /// drives the same machinery (`MetadataScratch::try_new` + `ready_inst_body_with`)
+    /// directly to assert it still rejects a corrupted owner. It is read-only, mirroring the
+    /// pass's admission check.
+    fn validate_ready_metadata(registry: &TypeRegistry) -> Result<(), GenericInvariant> {
+        let view = registry.metadata_view();
+        let mut scratch = MetadataScratch::try_new(&view)?;
+        for inst in &view.generics.type_insts {
+            view.ready_inst_body_with(inst, &mut scratch)?;
+        }
+        Ok(())
+    }
+
     fn add_declared_struct(
         registry: &mut TypeRegistry,
         draft: &mut ImageDraft,
@@ -8107,7 +8055,7 @@ mod instantiation_state_tests {
         assert!(registry.enum_variants(enum_id).unwrap().is_none());
         assert!(registry.enum_anchor_spelling(enum_id).unwrap().is_none());
         assert!(matches!(
-            registry.clone_for_generic_check(),
+            registry.enter_template_proof(0, 0),
             Err(GenericInvariant::ProofClone(
                 ProofCloneError::UnstableFillState
             ))
@@ -8115,7 +8063,7 @@ mod instantiation_state_tests {
     }
 
     #[test]
-    fn proof_clone_is_stable_isolated_and_transfers_once() {
+    fn template_proof_savepoint_isolates_a_failed_proof_and_transfers_once() {
         let registry = registry(vec![
             template("Leaf", vec![("value", name("T"))]),
             enum_template("Choice", apply("Leaf", vec![name("T")])),
@@ -8196,63 +8144,71 @@ mod instantiation_state_tests {
         assert_eq!(before.fn_base, 37);
         assert_eq!(before.functions, vec![(7, vec![scalar], reserved)]);
         assert_eq!(before.queue, vec![(7, vec![scalar], reserved)]);
-        let draft_before = draft.encode().expect("stable draft encodes");
-        let clone = registry
-            .clone_for_generic_check()
-            .expect("stable open registry clones");
-        assert_eq!(stable_snapshot(&clone), before);
-        assert_eq!(
-            clone.reserve_fn_instance(7, vec![scalar], site(6)),
-            Ok(reserved),
-            "the clone reuses the exact nonzero function reservation"
-        );
-        assert_eq!(stable_snapshot(&clone), before);
+        let draft_savepoint = draft.savepoint();
+        let draft_before = draft_snapshot(&draft);
 
-        let mut local_draft = draft.clone();
-        let local_before = local_draft.encode().expect("proof draft clone encodes");
-        assert_eq!(local_before.bytes, draft_before.bytes);
-        assert_eq!(local_before.image_id, draft_before.image_id);
-        let local_id = clone
-            .mint_type_instance(
-                &mut local_draft,
-                0,
-                &[GArg::Scalar(ScalarType::Text)],
-                site(28),
-            )
-            .expect("the clone mints a new isolated row");
-        let TypeInstId::Record(local_record) = local_id else {
-            panic!("Leaf is a struct template")
-        };
-        let clone_rows = stable_snapshot(&clone).rows;
-        assert_eq!(clone_rows.len(), before.rows.len() + 1);
-        assert_eq!(clone_rows[before.rows.len()].id, local_id);
-        let marker_name = local_draft.intern_string("after-proof-clone");
-        let after_local = local_draft.add_record_type(RecordTypeDef {
-            name: marker_name,
+        let proof = registry
+            .enter_template_proof(draft.record_type_count(), draft.enum_type_count())
+            .expect("a settled open registry admits the proof pass");
+
+        // The proof pass mints and diagnoses directly on the real registry and draft.
+        let text = GArg::Scalar(ScalarType::Text);
+        let proof_row = registry
+            .mint_type_instance(&mut draft, 0, &[text], site(28))
+            .expect("the proof mints a new isolated row on the real registry");
+        assert!(matches!(proof_row, TypeInstId::Record(_)));
+        let marker = draft.intern_string("during-proof");
+        draft.add_record_type(RecordTypeDef {
+            name: marker,
             fields: Vec::new(),
         });
-        assert_eq!(after_local.index(), local_record.index() + 1);
-
-        let local_collection = clone
-            .instantiate_list(&mut local_draft, GArg::Scalar(ScalarType::Text))
-            .expect("aligned proof-clone collection owners mint");
+        let proof_collection = registry
+            .instantiate_list(&mut draft, text)
+            .expect("the proof mints a distinct collection on the real registry");
         assert_eq!(
-            stable_snapshot(&clone).collections,
-            vec![
-                CollSpec::List { elem: scalar },
-                CollSpec::List {
-                    elem: GArg::Scalar(ScalarType::Text),
-                },
-            ],
-            "the proof clone gains a distinct collection without mutating the real registry",
+            registry.collections.borrow().len(),
+            2,
+            "the proof appended its own collection row",
         );
-        clone.record_collection_payload_rejection(site(29), "Payload", "value", local_collection);
-        clone.record_limit(site(30), "the proof clone reached its local bound");
-        let outcome = clone.take_generic_diagnostics();
-        assert_eq!(stable_snapshot(&registry), before);
-        let draft_after = draft.encode().expect("real draft still encodes");
-        assert_eq!(draft_after.bytes, draft_before.bytes);
-        assert_eq!(draft_after.image_id, draft_before.image_id);
+        registry.record_collection_payload_rejection(
+            site(29),
+            "Payload",
+            "value",
+            proof_collection,
+        );
+        registry.record_limit(site(30), "the proof reached its local bound");
+
+        // Simulate a proof that failed mid-fill, leaving the transient batch state dirty: the
+        // savepoint must still restore the settled owner exactly. The dirty edges reference
+        // only the appended row, which truncation drops.
+        {
+            let mut generics = registry.generics.borrow_mut();
+            let dirty_row = generics.type_insts.len() - 1;
+            let key = TypeInstKey::from(generics.type_insts[dirty_row].id);
+            generics.fill_batch_start = Some(dirty_row);
+            generics.fill_rows.insert(key, dirty_row);
+            generics.fill_stack.push(dirty_row);
+            generics.type_insts[dirty_row].dependents.push(dirty_row);
+        }
+
+        let outcome = registry.take_generic_diagnostics();
+        registry.exit_template_proof(proof);
+        draft.rewind_to(draft_savepoint);
+
+        // The failed proof leaked nothing: the settled registry and the draft bytes are
+        // exactly what they were before the pass.
+        assert_eq!(
+            stable_snapshot(&registry),
+            before,
+            "a failed proof leaves the settled registry structurally identical",
+        );
+        assert_eq!(
+            draft_snapshot(&draft),
+            draft_before,
+            "a failed proof leaves the draft byte-identical",
+        );
+
+        // Only the proof's diagnostics cross back, transferred once in owner order.
         registry.adopt_generic_diagnostics(outcome);
         let adopted = registry.take_generic_diagnostics().into_ordered();
         assert_eq!(adopted.len(), 2);
@@ -8290,7 +8246,7 @@ mod instantiation_state_tests {
         let draft_before = draft_snapshot(&draft);
 
         assert!(matches!(
-            registry.clone_for_generic_check(),
+            validate_ready_metadata(&registry),
             Err(found) if found == expected
         ));
         assert!(matches!(
@@ -8338,7 +8294,7 @@ mod instantiation_state_tests {
         let draft_before = draft_snapshot(&draft);
 
         assert!(matches!(
-            registry.clone_for_generic_check(),
+            validate_ready_metadata(&registry),
             Err(found) if found == expected
         ));
         assert!(matches!(
@@ -8383,7 +8339,7 @@ mod instantiation_state_tests {
         let record_draft_before = draft_snapshot(&record_draft);
 
         assert!(matches!(
-            record_registry.clone_for_generic_check(),
+            validate_ready_metadata(&record_registry),
             Err(found) if found == record_expected
         ));
         let (record_body, builds) = count_metadata_directory_builds(|| {
@@ -8437,7 +8393,7 @@ mod instantiation_state_tests {
         let enum_draft_before = draft_snapshot(&enum_draft);
 
         assert!(matches!(
-            enum_registry.clone_for_generic_check(),
+            validate_ready_metadata(&enum_registry),
             Err(found) if found == enum_expected
         ));
         let (variants, builds) =
@@ -8481,7 +8437,7 @@ mod instantiation_state_tests {
         let draft_before = draft_snapshot(&draft);
 
         assert!(matches!(
-            registry.clone_for_generic_check(),
+            validate_ready_metadata(&registry),
             Err(found) if found == expected
         ));
         assert_metadata_unchanged(&registry, &draft, &owner_before, &draft_before);
@@ -8541,7 +8497,7 @@ mod instantiation_state_tests {
         let draft_before = draft_snapshot(&struct_draft);
 
         assert!(matches!(
-            struct_registry.clone_for_generic_check(),
+            validate_ready_metadata(&struct_registry),
             Err(found) if found == expected
         ));
         assert_metadata_unchanged(
@@ -8626,7 +8582,7 @@ mod instantiation_state_tests {
         let draft_before = draft_snapshot(&group_draft);
 
         assert!(matches!(
-            group_registry.clone_for_generic_check(),
+            validate_ready_metadata(&group_registry),
             Err(found) if found == expected
         ));
         assert_metadata_unchanged(&group_registry, &group_draft, &owner_before, &draft_before);
@@ -8704,7 +8660,7 @@ mod instantiation_state_tests {
         let draft_before = draft_snapshot(&draft);
 
         assert!(matches!(
-            registry.clone_for_generic_check(),
+            validate_ready_metadata(&registry),
             Err(found) if found == expected
         ));
         assert_eq!(registry.inst_spelling(inner), None);
@@ -8830,7 +8786,7 @@ mod instantiation_state_tests {
             assert_metadata_unchanged(&registry, &draft, &owner_before, &draft_before);
         }
         assert!(matches!(
-            registry.clone_for_generic_check(),
+            validate_ready_metadata(&registry),
             Err(found) if found == expected
         ));
         assert_metadata_unchanged(&registry, &draft, &owner_before, &draft_before);
@@ -8902,7 +8858,7 @@ mod instantiation_state_tests {
             );
             assert_metadata_unchanged(&registry, &draft, &owner_before, &draft_before);
             assert!(matches!(
-                registry.clone_for_generic_check(),
+                validate_ready_metadata(&registry),
                 Err(GenericInvariant::TypeArgumentTargetMissing(GArg::Collection(found)))
                     if found == missing
             ));
@@ -9118,7 +9074,7 @@ mod instantiation_state_tests {
         registry.generics.get_mut().build_invariant = Some(GenericInvariant::ReadyBodyMissing(id));
         let before = stable_snapshot(&registry);
         assert!(matches!(
-            registry.clone_for_generic_check(),
+            registry.enter_template_proof(0, 0),
             Err(GenericInvariant::ProofClone(
                 ProofCloneError::UnstableFillState
             ))
@@ -9129,7 +9085,7 @@ mod instantiation_state_tests {
         registry.generics.borrow_mut().fill_batch_start = Some(0);
         let before = stable_snapshot(&registry);
         assert!(matches!(
-            registry.clone_for_generic_check(),
+            registry.enter_template_proof(0, 0),
             Err(GenericInvariant::ProofClone(
                 ProofCloneError::UnstableFillState
             ))
@@ -9141,7 +9097,7 @@ mod instantiation_state_tests {
         registry.generics.borrow_mut().fill_rows.insert(key, 0);
         let before = stable_snapshot(&registry);
         assert!(matches!(
-            registry.clone_for_generic_check(),
+            registry.enter_template_proof(0, 0),
             Err(GenericInvariant::ProofClone(
                 ProofCloneError::UnstableFillState
             ))
@@ -9152,7 +9108,7 @@ mod instantiation_state_tests {
         registry.generics.borrow_mut().fill_stack.push(0);
         let before = stable_snapshot(&registry);
         assert!(matches!(
-            registry.clone_for_generic_check(),
+            registry.enter_template_proof(0, 0),
             Err(GenericInvariant::ProofClone(
                 ProofCloneError::UnstableFillState
             ))
@@ -9167,7 +9123,7 @@ mod instantiation_state_tests {
             .push((0, ResolveRefusal::Unsupported));
         let before = stable_snapshot(&registry);
         assert!(matches!(
-            registry.clone_for_generic_check(),
+            registry.enter_template_proof(0, 0),
             Err(GenericInvariant::ProofClone(
                 ProofCloneError::UnstableFillState
             ))
@@ -9180,7 +9136,7 @@ mod instantiation_state_tests {
             .push(0);
         let before = stable_snapshot(&registry);
         assert!(matches!(
-            registry.clone_for_generic_check(),
+            registry.enter_template_proof(0, 0),
             Err(GenericInvariant::ProofClone(
                 ProofCloneError::UnstableFillState
             ))
@@ -9193,7 +9149,7 @@ mod instantiation_state_tests {
         registry.record_limit(site(9), "the real owner is no longer open");
         let pending = stable_snapshot(&registry);
         assert!(matches!(
-            registry.clone_for_generic_check(),
+            registry.enter_template_proof(0, 0),
             Err(GenericInvariant::ProofClone(
                 ProofCloneError::LimitOwnerNotOpen
             ))
@@ -9202,7 +9158,7 @@ mod instantiation_state_tests {
         let _ = registry.take_generic_diagnostics();
         let reported = stable_snapshot(&registry);
         assert!(matches!(
-            registry.clone_for_generic_check(),
+            registry.enter_template_proof(0, 0),
             Err(GenericInvariant::ProofClone(
                 ProofCloneError::LimitOwnerNotOpen
             ))
@@ -9227,7 +9183,7 @@ mod instantiation_state_tests {
             TypeInstState::Filling { staged: Some(body) };
         let before = stable_snapshot(&registry);
         assert!(matches!(
-            registry.clone_for_generic_check(),
+            registry.enter_template_proof(0, 0),
             Err(GenericInvariant::ProofClone(
                 ProofCloneError::UnstableFillState
             ))
@@ -9242,7 +9198,7 @@ mod instantiation_state_tests {
         let registry = registry(Vec::new());
         let before = stable_snapshot(&registry);
         let guard = registry.generics.borrow_mut();
-        let result = registry.clone_for_generic_check();
+        let result = registry.enter_template_proof(0, 0);
         drop(guard);
 
         assert!(matches!(
@@ -9261,7 +9217,7 @@ mod instantiation_state_tests {
         let registry = registry(Vec::new());
         let before = stable_snapshot(&registry);
         let guard = registry.collections.borrow_mut();
-        let result = registry.clone_for_generic_check();
+        let result = registry.enter_template_proof(0, 0);
         drop(guard);
 
         assert!(matches!(
@@ -10250,7 +10206,7 @@ mod instantiation_state_tests {
         assert_eq!(registry.inst_anchor_spelling(id), Err(expected));
         assert!(matches!(ValueGraph::build(&registry), Err(found) if found == expected));
         assert!(matches!(
-            registry.clone_for_generic_check(),
+            validate_ready_metadata(&registry),
             Err(found) if found == expected
         ));
         assert_eq!(
@@ -10301,7 +10257,7 @@ mod instantiation_state_tests {
         );
         assert!(matches!(ValueGraph::build(&registry), Err(found) if found == expected));
         assert!(matches!(
-            registry.clone_for_generic_check(),
+            validate_ready_metadata(&registry),
             Err(found) if found == expected
         ));
         assert_eq!(
@@ -10385,7 +10341,7 @@ mod instantiation_state_tests {
             Err(found) if found == expected
         ));
         assert!(matches!(
-            registry.clone_for_generic_check(),
+            validate_ready_metadata(&registry),
             Err(found) if found == expected
         ));
         assert!(matches!(
@@ -10450,7 +10406,7 @@ mod instantiation_state_tests {
                 )
                 .expect("Ready body back edges are admitted after settlement");
             assert!(recursive.type_inst_body(root).unwrap().is_some());
-            assert!(recursive.clone_for_generic_check().is_ok());
+            assert!(validate_ready_metadata(&recursive).is_ok());
         }
     }
 
@@ -10536,7 +10492,7 @@ mod instantiation_state_tests {
             assert_eq!(builds, 1);
 
             let (cloned, builds) =
-                count_metadata_directory_builds(|| registry.clone_for_generic_check());
+                count_metadata_directory_builds(|| validate_ready_metadata(&registry));
             assert!(matches!(cloned, Err(found) if found == expected));
             assert_eq!(builds, 1);
 
@@ -10679,7 +10635,7 @@ mod instantiation_state_tests {
             Err(found) if found == expected
         ));
         assert!(matches!(
-            registry.clone_for_generic_check(),
+            validate_ready_metadata(&registry),
             Err(found) if found == expected
         ));
         assert!(matches!(
@@ -10707,7 +10663,7 @@ mod instantiation_state_tests {
 
         assert_eq!(registry.as_option(enum_id), Err(expected));
         assert!(matches!(
-            registry.clone_for_generic_check(),
+            validate_ready_metadata(&registry),
             Err(found) if found == expected
         ));
         assert_eq!(stable_snapshot(&registry), before);
