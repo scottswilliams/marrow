@@ -1,0 +1,101 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "Marrow",
+  "scopeName": "source.marrow",
+  "patterns": [
+    { "include": "#comments" },
+    { "include": "#expression" }
+  ],
+  "repository": {
+    "expression": {
+      "patterns": [
+        { "include": "#strings" },
+        { "include": "#numbers" },
+        { "include": "#durable-root" },
+        { "include": "#keywords" },
+        { "include": "#namespace" }
+      ]
+    },
+    "comments": {
+      "patterns": [
+        { "name": "comment.line.documentation.marrow", "match": "///.*$" },
+        { "name": "comment.line.double-slash.marrow", "match": "//.*$" }
+      ]
+    },
+    "keywords": {
+      "patterns": [
+        { "name": "keyword.other.marrow", "match": "\\b(transaction|declassify|ErrorCode|sensitive|continue|duration|required|resource|supports|checked|decimal|instant|journal|unknown|absent|assert|delete|module|return|string|struct|unique|writes|Error|alias|break|bytes|const|false|index|match|merge|place|reads|store|unset|while|bool|date|else|enum|lock|test|true|type|and|for|int|not|pub|try|use|var|Id|fn|if|in|is|or)\\b" }
+      ]
+    },
+    "numbers": {
+      "patterns": [
+        { "name": "constant.numeric.decimal.marrow", "match": "\\b[0-9]+\\.[0-9]+\\b" },
+        { "name": "constant.numeric.integer.marrow", "match": "\\b[0-9]+\\b" }
+      ]
+    },
+    "durable-root": {
+      "patterns": [
+        {
+          "match": "(\\^)([A-Za-z_][A-Za-z0-9_]*)",
+          "captures": {
+            "1": { "name": "punctuation.definition.variable.marrow" },
+            "2": { "name": "variable.other.durable.marrow" }
+          }
+        }
+      ]
+    },
+    "namespace": {
+      "patterns": [
+        { "name": "punctuation.separator.namespace.marrow", "match": "::" }
+      ]
+    },
+    "escape": {
+      "patterns": [
+        { "name": "constant.character.escape.marrow", "match": "\\\\(u\\{[0-9A-Fa-f]{1,6}\\}|[\\\\\"nrt])" }
+      ]
+    },
+    "strings": {
+      "patterns": [
+        { "include": "#interpolation" },
+        { "include": "#bytes-string" },
+        { "include": "#double-string" }
+      ]
+    },
+    "double-string": {
+      "name": "string.quoted.double.marrow",
+      "begin": "\"",
+      "beginCaptures": { "0": { "name": "punctuation.definition.string.begin.marrow" } },
+      "end": "\"|(?=$)",
+      "endCaptures": { "0": { "name": "punctuation.definition.string.end.marrow" } },
+      "patterns": [ { "include": "#escape" } ]
+    },
+    "bytes-string": {
+      "name": "string.quoted.binary.marrow",
+      "begin": "b\"",
+      "beginCaptures": { "0": { "name": "punctuation.definition.string.begin.marrow" } },
+      "end": "\"|(?=$)",
+      "endCaptures": { "0": { "name": "punctuation.definition.string.end.marrow" } },
+      "patterns": [ { "include": "#escape" } ]
+    },
+    "interpolation": {
+      "name": "string.interpolated.marrow",
+      "begin": "\\$\"",
+      "beginCaptures": { "0": { "name": "punctuation.definition.string.begin.marrow" } },
+      "end": "\"|(?=$)",
+      "endCaptures": { "0": { "name": "punctuation.definition.string.end.marrow" } },
+      "patterns": [
+        { "name": "constant.character.escape.marrow", "match": "\\{\\{|\\}\\}" },
+        { "include": "#escape" },
+        { "include": "#interpolation-hole" }
+      ]
+    },
+    "interpolation-hole": {
+      "name": "meta.embedded.line.marrow",
+      "begin": "\\{",
+      "beginCaptures": { "0": { "name": "punctuation.section.embedded.begin.marrow" } },
+      "end": "\\}",
+      "endCaptures": { "0": { "name": "punctuation.section.embedded.end.marrow" } },
+      "patterns": [ { "include": "#expression" } ]
+    }
+  }
+}

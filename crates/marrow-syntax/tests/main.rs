@@ -44,3 +44,5 @@ mod roundtrip;
 mod total_parser_architecture;
 #[path = "cases/type_expr_architecture.rs"]
 mod type_expr_architecture;
+#[path = "cases/vscode_grammar.rs"]
+mod vscode_grammar;
