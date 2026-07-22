@@ -12,7 +12,8 @@ use crate::token::{is_trivia, is_unfixed_duration_unit};
 use crate::{
     Argument, BinaryOp, CompoundAssignOp, Diagnostic, DiagnosticReason, ExpectedSyntax, Expression,
     InterpolationPart, Keyword, LiteralKind, NESTING_DEPTH_LIMIT, NESTING_LIMIT, PARSE_SYNTAX,
-    ParseDiagnosticReason, Severity, SourceSpan, Token, TokenKind, UnaryOp, UnsupportedSyntax,
+    ParseDiagnosticReason, Recovery, Severity, SourceSpan, Token, TokenKind, UnaryOp,
+    UnsupportedSyntax,
     duration_unit_seconds, is_expression_callable_keyword, is_expression_path_segment_keyword,
 };
 
@@ -33,6 +34,38 @@ pub(crate) enum ParseComplete {
     /// diagnostic was reported; the span names the first trailing token so the
     /// caller reports the failure in its own context (a statement, a header).
     Incomplete(SourceSpan),
+}
+
+/// The outcome of parsing the field name after `.`/`?.`.
+enum FieldSegment {
+    /// A well-formed field name.
+    Named {
+        name: String,
+        quoted: bool,
+        name_span: SourceSpan,
+    },
+    /// `.`/`?.` reached with no following token: the incomplete member-access form.
+    /// The missing-name diagnostic is already emitted; `gap` anchors the recovery.
+    Missing { gap: SourceSpan },
+    /// A structurally malformed segment already collapsed to a reported error node,
+    /// with no receiver worth preserving.
+    Reported(Expression),
+}
+
+/// Build a recovery error node that preserves `base` for the incomplete surface
+/// form `make` names, spanning from the base start to the `gap` where the missing
+/// segment was expected. It always follows an already-emitted parse diagnostic, so
+/// the node stays honestly broken while retaining the receiver for classification.
+fn recovery_node(
+    base: Expression,
+    gap: SourceSpan,
+    make: impl FnOnce(Box<Expression>) -> Recovery,
+) -> Expression {
+    let span = join_spans(base.span(), gap);
+    Expression::Error {
+        span,
+        recovery: Some(make(Box::new(base))),
+    }
 }
 
 pub(crate) struct ExprParser<'a> {
@@ -75,7 +108,12 @@ impl<'a> ExprParser<'a> {
     /// caller's vec and classifying the outcome.
     pub(crate) fn parse_complete(mut self, diagnostics: &mut Vec<Diagnostic>) -> ParseComplete {
         let expr = self.expression();
-        let result = if expr.is_error() {
+        // A recovery node is a structured incomplete form (`base.`, `Enum::`); it is
+        // kept in the tree so position analysis can classify it, unlike a bare error
+        // for which the caller substitutes its own placeholder. Its diagnostic is
+        // already reported, so the slice still counts as having errors.
+        let has_recovery = matches!(&expr, Expression::Error { recovery: Some(_), .. });
+        let result = if expr.is_error() && !has_recovery {
             ParseComplete::Reported
         } else if self.report_stray_assignment_operator() {
             // A `=` left where the expression should have ended is the `=`-for-`==`
@@ -712,41 +750,61 @@ impl<'a> ExprParser<'a> {
                     };
                 }
                 Some(TokenKind::Dot) => {
-                    let (name, quoted, name_span) = match self.field_segment() {
-                        Ok(segment) => segment,
-                        Err(error) => {
+                    match self.field_segment() {
+                        FieldSegment::Named {
+                            name,
+                            quoted,
+                            name_span,
+                        } => {
+                            let span = join_spans(expr.span(), name_span);
+                            expr = Expression::Field {
+                                base: Box::new(expr),
+                                name,
+                                name_span,
+                                quoted,
+                                span,
+                            };
+                        }
+                        FieldSegment::Missing { gap } => {
+                            self.leave_chain(levels);
+                            return recovery_node(expr, gap, |base| Recovery::Member { base });
+                        }
+                        FieldSegment::Reported(error) => {
                             self.leave_chain(levels);
                             return error;
                         }
-                    };
-                    let span = join_spans(expr.span(), name_span);
-                    expr = Expression::Field {
-                        base: Box::new(expr),
-                        name,
-                        name_span,
-                        quoted,
-                        span,
-                    };
+                    }
                 }
                 // `base?.name`: the same field segment as `.`, but the read
                 // short-circuits to absent rather than failing if the base or field
                 // is missing.
                 Some(TokenKind::QuestionDot) => {
-                    let (name, quoted, name_span) = match self.field_segment() {
-                        Ok(segment) => segment,
-                        Err(error) => {
+                    match self.field_segment() {
+                        FieldSegment::Named {
+                            name,
+                            quoted,
+                            name_span,
+                        } => {
+                            let span = join_spans(expr.span(), name_span);
+                            expr = Expression::OptionalField {
+                                base: Box::new(expr),
+                                name,
+                                name_span,
+                                quoted,
+                                span,
+                            };
+                        }
+                        FieldSegment::Missing { gap } => {
+                            self.leave_chain(levels);
+                            return recovery_node(expr, gap, |base| Recovery::OptionalMember {
+                                base,
+                            });
+                        }
+                        FieldSegment::Reported(error) => {
                             self.leave_chain(levels);
                             return error;
                         }
-                    };
-                    let span = join_spans(expr.span(), name_span);
-                    expr = Expression::OptionalField {
-                        base: Box::new(expr),
-                        name,
-                        name_span,
-                        quoted,
-                        span,
-                    };
+                    }
                 }
                 _ => break,
             }
@@ -755,17 +813,23 @@ impl<'a> ExprParser<'a> {
         expr
     }
 
-    /// Parse the identifier segment after `.` or `?.`, consuming both tokens.
-    /// `Err(error)` collapses a malformed segment into the reported error node.
-    fn field_segment(&mut self) -> Result<(String, bool, SourceSpan), Expression> {
+    /// Parse the identifier segment after `.` or `?.`, consuming both tokens. The
+    /// three outcomes distinguish a well-formed field, the incomplete form the
+    /// caller recovers with its base, and an already-reported malformed segment.
+    fn field_segment(&mut self) -> FieldSegment {
         let op = self.advance();
         let Some(segment) = self.tokens.get(self.pos).copied() else {
-            return Err(self.error_expr(
-                self.gap_span(),
+            // `.`/`?.` with no following token is the incomplete member-access form.
+            // Report the missing name here (the diagnostic is unchanged) and let the
+            // postfix caller wrap the receiver into a recovery node.
+            let gap = self.gap_span();
+            self.error(
+                gap,
                 ParseDiagnosticReason::Expected(ExpectedSyntax::Expression),
                 "expected a field name".to_string(),
                 None,
-            ));
+            );
+            return FieldSegment::Missing { gap };
         };
         let text = segment.text(self.source);
         let (name, quoted) = match segment.kind {
@@ -776,7 +840,7 @@ impl<'a> ExprParser<'a> {
             // checker rule.
             TokenKind::Keyword(Keyword::Checked) => (text.to_string(), false),
             TokenKind::String => {
-                return Err(self.error_expr(
+                return FieldSegment::Reported(self.error_expr(
                     join_spans(op.span, segment.span),
                     ParseDiagnosticReason::Unsupported(UnsupportedSyntax::QuotedFieldSegments),
                     "quoted field segments are not part of expression grammar".to_string(),
@@ -786,7 +850,7 @@ impl<'a> ExprParser<'a> {
             // A reserved word is never a valid field name; report it with both
             // tokens in view.
             TokenKind::Keyword(_) => {
-                return Err(self.error_expr(
+                return FieldSegment::Reported(self.error_expr(
                     join_spans(op.span, segment.span),
                     ParseDiagnosticReason::KeywordFieldName,
                     format!("`{text}` is a keyword and cannot be used as a field name"),
@@ -794,7 +858,7 @@ impl<'a> ExprParser<'a> {
                 ));
             }
             _ => {
-                return Err(self.error_expr(
+                return FieldSegment::Reported(self.error_expr(
                     segment.span,
                     ParseDiagnosticReason::Expected(ExpectedSyntax::Expression),
                     "expected a field name".to_string(),
@@ -803,7 +867,11 @@ impl<'a> ExprParser<'a> {
             }
         };
         self.advance();
-        Ok((name, quoted, segment.span))
+        FieldSegment::Named {
+            name,
+            quoted,
+            name_span: segment.span,
+        }
     }
 
     /// Parse a comma-separated argument list up to the closing `)`. `Err(error)`
@@ -1195,12 +1263,22 @@ impl<'a> ExprParser<'a> {
         while matches!(self.peek(), Some(TokenKind::DoubleColon)) {
             self.advance();
             let Some(segment) = self.tokens.get(self.pos).copied() else {
-                return self.error_expr(
-                    self.gap_span(),
+                // `::` with no following token is the incomplete path form. Report
+                // the missing segment (the diagnostic is unchanged) and retain the
+                // name parsed so far as the recovery base for path classification.
+                let gap = self.gap_span();
+                self.error(
+                    gap,
                     ParseDiagnosticReason::Expected(ExpectedSyntax::Expression),
                     "expected a name segment after `::`".to_string(),
                     None,
                 );
+                let base = Expression::Name {
+                    segments,
+                    segment_spans,
+                    span: join_spans(first.span, end),
+                };
+                return recovery_node(base, gap, |base| Recovery::Path { base });
             };
             // A path segment is an identifier or a reserved type word used as a
             // name, such as the `bytes` in a `std::bytes::…` path.

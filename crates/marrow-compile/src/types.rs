@@ -10674,7 +10674,9 @@ mod instantiation_state_tests {
                     current = args.pop().expect("each List has one argument");
                 }
                 TypeExpr::Name { .. } => break,
-                TypeExpr::Optional { .. } | TypeExpr::Identity(_) => {
+                TypeExpr::Optional { .. }
+                | TypeExpr::Identity(_)
+                | TypeExpr::Incomplete { .. } => {
                     panic!("the deep matcher fixture contains only List and T")
                 }
             }

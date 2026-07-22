@@ -5,8 +5,96 @@ use crate::common;
 use common::{has_reason, lexer_reason, parse_reason};
 use marrow_syntax::{
     BinaryOp, Declaration, Diagnose, ExpectedSyntax, Expression, InterpolationPart,
-    LexerDiagnosticReason, ParseDiagnosticReason, UnsupportedSyntax, parse_source,
+    LexerDiagnosticReason, ParseDiagnosticReason, Recovery, UnsupportedSyntax, parse_source,
 };
+
+/// The value expression of a single top-level `const Name = <value>` source, for
+/// exercising the incomplete-form recovery nodes the parser structures for editor
+/// analysis. The source is expected to carry a parse error.
+fn const_value(source: &str) -> Expression {
+    let parsed = parse_source(source);
+    assert!(
+        parsed.has_errors(),
+        "expected {source:?} to carry a parse error: {:#?}",
+        parsed.diagnostics
+    );
+    let Declaration::Const(decl) = &parsed.file.declarations[0] else {
+        panic!("expected a const declaration in {source:?}");
+    };
+    decl.value.clone().expect("const value")
+}
+
+#[test]
+fn member_dot_eof_recovers_base() {
+    // `book.` with no field name is the incomplete member-access form. The parser
+    // structures a recovery node that preserves the receiver `book` so a position
+    // classifier can type it, rather than collapsing the whole read to a bare error.
+    let value = const_value("const X = book.\n");
+    let Expression::Error {
+        recovery: Some(Recovery::Member { base }),
+        ..
+    } = &value
+    else {
+        panic!("expected a Member recovery node, got {value:?}");
+    };
+    assert!(
+        matches!(base.as_ref(), Expression::Name { segments, .. } if segments == &["book"]),
+        "expected the recovered base to be the receiver `book`, got {base:?}"
+    );
+}
+
+#[test]
+fn member_optional_dot_eof_recovers_base() {
+    // `book?.` mirrors `book.` but through the short-circuiting `?.` operator; the
+    // recovery variant records the operator so the classifier need not re-read source.
+    let value = const_value("const X = book?.\n");
+    let Expression::Error {
+        recovery: Some(Recovery::OptionalMember { base }),
+        ..
+    } = &value
+    else {
+        panic!("expected an OptionalMember recovery node, got {value:?}");
+    };
+    assert!(
+        matches!(base.as_ref(), Expression::Name { segments, .. } if segments == &["book"]),
+        "expected the recovered base to be the receiver `book`, got {base:?}"
+    );
+}
+
+#[test]
+fn path_colon_colon_eof_retains_segments() {
+    // `Role::` with no member is the incomplete path form. The recovery node retains
+    // the name parsed so far (`Role`) as its base so the classifier can resolve the
+    // enum path, rather than dropping every segment.
+    let value = const_value("const X = Role::\n");
+    let Expression::Error {
+        recovery: Some(Recovery::Path { base }),
+        ..
+    } = &value
+    else {
+        panic!("expected a Path recovery node, got {value:?}");
+    };
+    assert!(
+        matches!(base.as_ref(), Expression::Name { segments, .. } if segments == &["Role"]),
+        "expected the recovered base to retain the segment `Role`, got {base:?}"
+    );
+}
+
+#[test]
+fn incomplete_member_recovery_still_reports_its_diagnostic() {
+    // A recovery node stays honestly broken: it always travels with its
+    // Error-severity parse diagnostic, so the file still fails to compile.
+    let parsed = parse_source("const X = book.\n");
+    assert!(parsed.has_errors());
+    assert!(
+        has_reason(
+            &parsed.diagnostics,
+            parse_reason(ParseDiagnosticReason::Expected(ExpectedSyntax::Expression))
+        ),
+        "expected the missing-field-name diagnostic: {:#?}",
+        parsed.diagnostics
+    );
+}
 
 #[test]
 fn parses_top_level_multi_line_const_value() {
