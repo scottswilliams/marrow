@@ -9,10 +9,9 @@
 // form; this wrapper is interactive-only and refuses to run without a TTY.
 
 import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { closeSync, existsSync, mkdtempSync, openSync, readSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { createInterface } from "node:readline/promises";
 import { fileURLToPath } from "node:url";
 
 const APP = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -23,8 +22,29 @@ function fail(message) {
 }
 
 function which(name) {
-  const found = spawnSync("command", ["-v", name], { shell: true, encoding: "utf8" });
+  const found = spawnSync("/usr/bin/which", [name], { encoding: "utf8" });
   return found.status === 0 ? found.stdout.trim() : null;
+}
+
+// Read one line from the controlling terminal itself. Immune to whatever state
+// earlier inherited-stdio children left process.stdin in (the readline-based
+// prompt self-answered under `npm run`).
+function askTty(prompt) {
+  process.stdout.write(prompt);
+  const tty = openSync("/dev/tty", "r");
+  try {
+    const buf = Buffer.alloc(256);
+    let line = "";
+    for (;;) {
+      const n = readSync(tty, buf, 0, buf.length, null);
+      if (n <= 0) return line;
+      line += buf.toString("utf8", 0, n);
+      const nl = line.indexOf("\n");
+      if (nl >= 0) return line.slice(0, nl);
+    }
+  } finally {
+    closeSync(tty);
+  }
 }
 
 if (!process.stdin.isTTY) {
@@ -57,14 +77,11 @@ const demand = reviewText
 console.log(demand);
 console.log(`\nceiling id: ${ceiling}`);
 
-const rl = createInterface({ input: process.stdin, output: process.stdout });
 let answer = "";
 try {
-  answer = (await rl.question("accept this deployment ceiling? [y/N] ")).trim().toLowerCase();
+  answer = askTty("accept this deployment ceiling? [y/N] ").trim().toLowerCase();
 } catch {
-  answer = ""; // closed stdin / interrupt = not accepted
-} finally {
-  rl.close();
+  answer = ""; // no controlling terminal = not accepted
 }
 if (answer !== "y" && answer !== "yes") {
   rmSync(scratch, { recursive: true, force: true });
