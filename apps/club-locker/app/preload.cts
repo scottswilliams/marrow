@@ -7,7 +7,9 @@
 // calls, and the main re-validates the name against its own allowlist and the sender
 // frame before anything runs.
 
-import { contextBridge, ipcRenderer } from "electron";
+// CommonJS on purpose: a sandboxed preload cannot be an ES module.
+import electron = require("electron");
+const { contextBridge, ipcRenderer } = electron;
 
 const IPC_CHANNEL = "club:call";
 

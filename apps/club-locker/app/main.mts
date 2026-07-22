@@ -31,7 +31,7 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 // renderer at `<app>/out/renderer/`.
 const DEPLOYMENT_DIR = join(HERE, "..", "..", "deploy");
 const RENDERER_HTML = join(HERE, "..", "renderer", "index.html");
-const PRELOAD = join(HERE, "preload.mjs");
+const PRELOAD = join(HERE, "preload.cjs");
 const RENDERER_URL = pathToFileURL(RENDERER_HTML).toString();
 
 const IPC_CHANNEL = "club:call";

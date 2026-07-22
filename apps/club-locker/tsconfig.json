@@ -20,5 +20,5 @@
     "outDir": "out",
     "types": ["node"]
   },
-  "include": ["app/**/*.mts", "renderer/**/*.mts", "gen/client.mts"]
+  "include": ["app/**/*.mts", "app/**/*.cts", "renderer/**/*.mts", "gen/client.mts"]
 }

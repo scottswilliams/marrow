@@ -3,7 +3,7 @@
 // through the trusted main, which runs it against the local store; this file only
 // collects domain arguments, renders replies, and logs activity.
 
-import type { ClubApi, CallResult } from "../app/preload.mts";
+import type { ClubApi, CallResult } from "../app/preload.cts";
 
 declare global {
   interface Window {
