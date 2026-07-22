@@ -201,6 +201,20 @@ fn attach(image_path: &Path, store: &Path) -> ExitCode {
         // unchanged; the store is open on the new image. The receipt is confirmed-commit
         // evidence, consumed here rather than echoed to the client (the spawn is invisible).
         Ok(marrow_lifecycle::AttachOutcome::Rebound { store, .. }) => store,
+        // A demand-exceeds-ceiling authority refusal happens before the store is opened (zero
+        // engine calls). Rather than exit — which the terminal would see only as a spawn
+        // failure — serve a typed refusal over the channel so the terminal renders a
+        // `CallOutcome::Reject`; the full source-vocabulary sentence goes to stderr, the
+        // byte-log pipe the trusted main owns. Binding the channel and proving the handshake
+        // open no store, so the refusal path stays zero-engine-call.
+        Err(marrow_lifecycle::LifecycleError::DemandExceedsCeiling(refusal)) => {
+            eprintln!("{}: {refusal}", refusal.code());
+            let code = refusal.code();
+            let identity = Id32::from_bytes(image.image_id().0);
+            return serve_over_channel(identity, move || {
+                marrow_runner::RefusalService::new(code)
+            });
+        }
         Err(error) => {
             eprintln!("{}: {error}", error.code());
             return ExitCode::FAILURE;
