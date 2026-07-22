@@ -2,6 +2,7 @@ use marrow_kernel::durable::{CommitRecovery, DurableCommitState};
 use marrow_lifecycle::{
     ENGINE_FILE, OpenError, OpenStore, ProvisionApproval, ProvisionReport, open, provision_image,
 };
+use std::sync::atomic::{AtomicU64, Ordering};
 
 const IDS: &str = "marrow ids v0\n\
      machine-written by marrow; do not edit\n\
@@ -26,6 +27,8 @@ pub fn readValue(id: int): int? {
 
 struct Scratch(std::path::PathBuf);
 
+static NEXT_SCRATCH: AtomicU64 = AtomicU64::new(0);
+
 impl Scratch {
     fn new() -> Self {
         let nonce = std::time::SystemTime::now()
@@ -33,10 +36,11 @@ impl Scratch {
             .map(|elapsed| elapsed.as_nanos())
             .unwrap_or(0);
         let dir = std::env::temp_dir().join(format!(
-            "marrow-commit-outcome-{}-{nonce}",
-            std::process::id()
+            "marrow-commit-outcome-{}-{nonce}-{}",
+            std::process::id(),
+            NEXT_SCRATCH.fetch_add(1, Ordering::Relaxed),
         ));
-        std::fs::create_dir_all(&dir).expect("scratch directory");
+        std::fs::create_dir(&dir).expect("unique scratch directory");
         Self(dir)
     }
 }
