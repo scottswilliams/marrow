@@ -109,6 +109,15 @@ impl<'a> FnLowerer<'a> {
                     None
                 }
                 [name] => {
+                    // An integer-bound value built-in (`maxInt`/`minInt`) folds to a
+                    // constant `int` load. It is reserved, so no local, parameter, or
+                    // constant can shadow it; resolving it first keeps a bare use of the
+                    // bound unambiguous.
+                    if let Some(value) = builtin_const_int(name) {
+                        let const_id = self.draft.intern_int(value);
+                        self.push(Instr::ConstLoad(const_id.index()), *span);
+                        return Some(LTy::bare_scalar(ScalarType::Int));
+                    }
                     if let Some(local) = self.lookup(name) {
                         let (slot, ty) = (local.slot, local.ty);
                         // Record the resolved local/parameter type at this use site for
@@ -1269,6 +1278,16 @@ impl<'a> FnLowerer<'a> {
                         span,
                         "`none` takes no arguments; write `none` where an Option is expected"
                             .to_string(),
+                    ));
+                    None
+                }
+                // The integer bounds are argument-free values; a call form has no meaning.
+                Builtin::MaxInt | Builtin::MinInt => {
+                    self.fail(SourceDiagnostic::at(
+                        Code::CheckType.as_str(),
+                        self.file,
+                        span,
+                        format!("`{name}` takes no arguments; write `{name}` for the int bound"),
                     ));
                     None
                 }

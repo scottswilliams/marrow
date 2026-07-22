@@ -7,7 +7,8 @@ uses ordinary project-module resolution. An absent module or function reports
 ambient library.
 
 Compiler-owned built-ins and constructors are available without module imports.
-[Built-ins](builtins.md) documents the current callable forms, and
+[Built-ins](builtins.md) documents the current callable forms and the value
+built-ins `maxInt`/`minInt` (the `int` domain bounds), and
 [Types and values](types-and-values.md) defines their value boundaries.
 
 A source-defined standard library is future direction recorded in

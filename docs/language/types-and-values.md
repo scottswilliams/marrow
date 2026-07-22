@@ -22,6 +22,11 @@ types `date`, `instant`, and `duration` (see [Temporal Types](#temporal-types)).
 `decimal` is recorded here as direction and is not yet accepted by the compiler; a
 program that uses it reports `check.unsupported` until its lane lands.
 
+The bounds of the `int` domain are named by the value built-ins `maxInt`
+(`9223372036854775807`) and `minInt` (`-9223372036854775808`); see
+[Numeric bounds](builtins.md#numeric-bounds). Source spells the bound by name
+rather than as a 64-bit literal.
+
 ## Type Aliases
 
 `alias Name = Type` declares a transparent alias: the name denotes exactly its

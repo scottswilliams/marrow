@@ -203,6 +203,15 @@ fn literal_value(
                 None
             }
         },
+        // An integer-bound value built-in (`maxInt`/`minInt`) is a compile-time `int`
+        // value, so `const CAP = maxInt` folds to that bound. Only these bare names are
+        // admitted; every other name stays a non-literal that a later
+        // constant-expression lane will handle.
+        Expression::Name { segments, .. }
+            if segments.len() == 1 && crate::lower::builtin_const_int(&segments[0]).is_some() =>
+        {
+            crate::lower::builtin_const_int(&segments[0]).map(ConstScalar::Int)
+        }
         other => {
             diagnostics.push(SourceDiagnostic::at(
                 Code::CheckUnsupported.as_str(),

@@ -54,6 +54,30 @@ accepts a `string` (the text floor form below).
 Additional collection projections and scalar-length operations are not current
 built-ins.
 
+## Numeric Bounds
+
+`maxInt` and `minInt` are argument-free value built-ins that name the inclusive
+bounds of the `int` domain: `maxInt` is `9223372036854775807` (2^63 - 1) and
+`minInt` is `-9223372036854775808` (-2^63). They are ordinary `int` values — used
+in arithmetic, comparison, a constant, or any value position — so no source spells
+the 64-bit bound as a literal.
+
+```mw
+module docs::numeric_bounds
+
+const CAPACITY = maxInt
+
+pub fn atCeiling(n: int): bool {
+    return n == maxInt
+}
+```
+
+A bound is a value, not a call: it takes no arguments, and `maxInt(...)` is
+rejected. Both names are reserved, so a `fn`, `const`, parameter, or local binding
+may not redeclare them; a bare `maxInt`/`minInt` always resolves to the bound. A
+constant may fold a bound (`const CAPACITY = maxInt`) even though a constant is
+otherwise restricted to a scalar literal.
+
 ## Text
 
 A small closed set of pure text built-ins is available without `use`. This is the
