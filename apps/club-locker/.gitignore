@@ -1,0 +1,8 @@
+node_modules/
+out/
+# Generated at build time by `marrow client typescript`.
+gen/
+# Composed at build time by tools/compose-deployment.mjs (binary + image + manifest).
+deploy/
+# Probe scratch stores.
+.probe-tmp/

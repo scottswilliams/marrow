@@ -1,0 +1,300 @@
+module clublocker
+
+// shape ---------------------------------------------------------------------
+
+/// A member's standing in the club: an active member may hold loans, a
+/// suspended one may not.
+enum Standing {
+    active
+    suspended
+}
+
+/// A monotonic allocation counter. One entry per named sequence (member,
+/// asset, loan) keeps human-facing numbering gapless.
+resource Counter {
+    required value: int
+}
+
+/// A club member. Contact fields are sparse: most members leave them unset.
+/// `historyCount` gives each member its own gapless event sequence.
+resource Member {
+    required name: string
+    required joined: date
+    required standing: Standing
+    email: string
+    phone: string
+    historyCount: int
+
+    /// The member's active loans (member -> asset), kept consistent with the
+    /// asset's own on-loan state in the same transaction as every checkout.
+    activeLoans[assetId: int] {
+        required loanNo: int
+        required since: date
+    }
+
+    /// The member's append-only event log, keyed by the member's own sequence.
+    history[seq: int] {
+        required action: string
+        required assetId: int
+        required at: date
+    }
+}
+
+/// A lendable asset in one category, carrying a club-unique tag. `onLoanTo`
+/// holds the borrowing member while the asset is out and is absent otherwise.
+resource Asset {
+    required tag: string
+    required category: string
+    required name: string
+    onLoanTo: int
+
+    /// Maintenance notes that survive an erase of the asset's own payload.
+    serviceLog[seq: int] {
+        required note: string
+        required at: date
+    }
+}
+
+// places --------------------------------------------------------------------
+
+store ^idseq[name: string]: Counter
+
+store ^members[memberId: int]: Member
+
+store ^assets[assetId: int]: Asset {
+    index byTag[tag] unique
+    index byCategory[category, assetId]
+}
+
+// acts: registration --------------------------------------------------------
+
+pub fn registerMember(name: string, joined: date): int {
+    transaction {
+        place seq = ^idseq["member"]
+        const next = (seq.value ?? 0) + 1
+        seq.value = next
+        ^members[next] = Member(name: name, joined: joined, standing: Standing::active)
+        return next
+    }
+}
+
+pub fn registerAsset(tag: string, category: string, name: string): Result<int, string> {
+    transaction {
+        if exists(^assets.byTag[tag]) { return err("tag already registered") }
+        place seq = ^idseq["asset"]
+        const next = (seq.value ?? 0) + 1
+        seq.value = next
+        ^assets[next] = Asset(tag: tag, category: category, name: name)
+        return ok(next)
+    }
+}
+
+// acts: contact fields (sparse) ---------------------------------------------
+
+pub fn setEmail(memberId: int, email: string) {
+    transaction {
+        place member = ^members[memberId]
+        if exists(member) {
+            member.email = email
+        }
+    }
+}
+
+pub fn clearEmail(memberId: int) {
+    transaction {
+        ^members[memberId].email = absent
+    }
+}
+
+// acts: standing (widened enum field) ---------------------------------------
+
+pub fn suspendMember(memberId: int) {
+    transaction {
+        place member = ^members[memberId]
+        if exists(member) {
+            member.standing = Standing::suspended
+        }
+    }
+}
+
+pub fn reinstateMember(memberId: int) {
+    transaction {
+        place member = ^members[memberId]
+        if exists(member) {
+            member.standing = Standing::active
+        }
+    }
+}
+
+// acts: the loan lifecycle --------------------------------------------------
+
+pub fn checkout(memberId: int, assetId: int, onDay: date): Result<int, string> {
+    transaction {
+        const member = ^members[memberId] else return err("unknown member")
+        if member.standing == Standing::suspended { return err("member is suspended") }
+        const asset = ^assets[assetId] else return err("unknown asset")
+        // `asset` is a materialized value, so its sparse `onLoanTo` is tested by
+        // binding rather than `exists` (which takes a durable path). A present
+        // binding means the asset is already out.
+        if const holder = asset.onLoanTo {
+            return err("asset is already on loan")
+        }
+
+        place seq = ^idseq["loan"]
+        const loanNo = (seq.value ?? 0) + 1
+        seq.value = loanNo
+
+        ^assets[assetId].onLoanTo = memberId
+        ^members[memberId].activeLoans[assetId] = Member.activeLoans(loanNo: loanNo, since: onDay)
+
+        const nextSeq = (member.historyCount ?? 0) + 1
+        ^members[memberId].historyCount = nextSeq
+        ^members[memberId].history[nextSeq] = Member.history(action: "checkout", assetId: assetId, at: onDay)
+        return ok(loanNo)
+    }
+}
+
+pub fn returnAsset(memberId: int, assetId: int, onDay: date): Result<int, string> {
+    transaction {
+        const loan = ^members[memberId].activeLoans[assetId] else return err("no active loan")
+        const member = ^members[memberId] else return err("unknown member")
+
+        ^assets[assetId].onLoanTo = absent
+        delete ^members[memberId].activeLoans[assetId]
+
+        const nextSeq = (member.historyCount ?? 0) + 1
+        ^members[memberId].historyCount = nextSeq
+        ^members[memberId].history[nextSeq] = Member.history(action: "return", assetId: assetId, at: onDay)
+        return ok(loan.loanNo)
+    }
+}
+
+// acts: service log and payload erase ---------------------------------------
+
+pub fn addServiceLog(assetId: int, seq: int, note: string, at: date) {
+    transaction {
+        ^assets[assetId].serviceLog[seq] = Asset.serviceLog(note: note, at: at)
+    }
+}
+
+pub fn eraseAssetPayload(assetId: int) {
+    transaction {
+        delete ^assets[assetId]
+    }
+}
+
+// acts: bounded multi-batch member retirement -------------------------------
+
+/// Remove one member's subtree in transaction-bounded batches. Each call erases
+/// up to a bounded number of active loans and history events; when a batch drains
+/// both branches it erases the member's own payload and reports done. Progress is
+/// the durable store state, so a repeated call after a restart resumes where the
+/// last committed batch left off and never double-removes. The per-batch bound is
+/// deliberately small so a large subtree is removed over several bounded commits
+/// rather than one unbounded transaction; a deployment tunes it to its store.
+pub fn retireMemberBatch(memberId: int): Result<bool, string> {
+    transaction {
+        var more = false
+        for assetId, pin in ^members[memberId].activeLoans at most 2 {
+            delete pin
+        } on more {
+            more = true
+        }
+        for seq, pin in ^members[memberId].history at most 2 {
+            delete pin
+        } on more {
+            more = true
+        }
+        if more { return ok(false) }
+        delete ^members[memberId]
+        return ok(true)
+    }
+}
+
+// acts: reads ---------------------------------------------------------------
+
+pub fn memberExists(memberId: int): bool {
+    return exists(^members[memberId])
+}
+
+pub fn memberName(memberId: int): string? {
+    return ^members[memberId].name
+}
+
+pub fn memberEmail(memberId: int): string? {
+    return ^members[memberId].email
+}
+
+pub fn memberIsActive(memberId: int): bool {
+    if const member = ^members[memberId] {
+        return member.standing == Standing::active
+    }
+    return false
+}
+
+pub fn assetExists(assetId: int): bool {
+    return exists(^assets[assetId])
+}
+
+pub fn assetTag(assetId: int): string? {
+    return ^assets[assetId].tag
+}
+
+pub fn assetOnLoanTo(assetId: int): int? {
+    return ^assets[assetId].onLoanTo
+}
+
+pub fn loanNoFor(memberId: int, assetId: int): int? {
+    return ^members[memberId].activeLoans[assetId].loanNo
+}
+
+pub fn tagTaken(tag: string): bool {
+    return exists(^assets.byTag[tag])
+}
+
+pub fn assetNameByTag(tag: string): string? {
+    if const found = ^assets.byTag[tag] {
+        return ^assets[found].name
+    }
+    return absent
+}
+
+pub fn serviceLogCount(assetId: int): int {
+    var count = 0
+    for seq in ^assets[assetId].serviceLog at most 100 {
+        count += 1
+    } on more {
+        count = -1
+    }
+    return count
+}
+
+// acts: bounded reports -----------------------------------------------------
+
+/// The member's event log, newest keys last, capped at a small bound so an
+/// over-long history exercises the overflow arm.
+pub fn memberHistory(memberId: int): string {
+    var out = ""
+    for seq, event in ^members[memberId].history at most 3 {
+        if const e = event {
+            out = out + e.action + ";"
+        }
+    } on more {
+        out += "+more"
+    }
+    return out
+}
+
+/// Every asset tag in one category, read through the non-unique ordered
+/// projection with the category as a bracket prefix.
+pub fn assetsByCategory(category: string): string {
+    var out = ""
+    for assetId in ^assets.byCategory[category] at most 100 {
+        if const a = ^assets[assetId] {
+            out = out + a.tag + ";"
+        }
+    } on more {
+        out += "+more"
+    }
+    return out
+}

@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; font-src 'self'; connect-src 'none'; object-src 'none'; frame-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'"
+    />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Club Locker</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <header>
+      <h1>Club Locker</h1>
+      <p class="subtitle">Members, assets, and the loan desk — over a local Marrow store.</p>
+    </header>
+
+    <main>
+      <section class="panel" aria-labelledby="members-h">
+        <h2 id="members-h">Members</h2>
+        <form id="register-member">
+          <label>Name <input name="name" required autocomplete="off" /></label>
+          <label>Joined <input name="joined" type="date" required /></label>
+          <button type="submit">Register member</button>
+        </form>
+        <form id="lookup-member">
+          <label>Member # <input name="memberId" inputmode="numeric" required autocomplete="off" /></label>
+          <button type="submit">Open</button>
+        </form>
+        <div id="member-card" class="card" hidden>
+          <h3 id="member-card-title"></h3>
+          <dl>
+            <dt>Standing</dt><dd id="member-standing"></dd>
+            <dt>Email</dt><dd id="member-email"></dd>
+            <dt>Recent history</dt><dd id="member-history"></dd>
+          </dl>
+          <form id="member-email-form">
+            <label>Set email <input name="email" type="text" autocomplete="off" /></label>
+            <button type="submit">Save</button>
+          </form>
+        </div>
+      </section>
+
+      <section class="panel" aria-labelledby="assets-h">
+        <h2 id="assets-h">Assets</h2>
+        <form id="register-asset">
+          <label>Tag <input name="tag" required autocomplete="off" /></label>
+          <label>Category <input name="category" required autocomplete="off" /></label>
+          <label>Name <input name="name" required autocomplete="off" /></label>
+          <button type="submit">Register asset</button>
+        </form>
+        <form id="lookup-category">
+          <label>Category <input name="category" required autocomplete="off" /></label>
+          <button type="submit">List tags</button>
+        </form>
+        <div id="category-list" class="card" hidden></div>
+      </section>
+
+      <section class="panel" aria-labelledby="desk-h">
+        <h2 id="desk-h">Loan desk</h2>
+        <form id="checkout">
+          <label>Member # <input name="memberId" inputmode="numeric" required autocomplete="off" /></label>
+          <label>Asset # <input name="assetId" inputmode="numeric" required autocomplete="off" /></label>
+          <label>Day <input name="onDay" type="date" required /></label>
+          <button type="submit">Check out</button>
+        </form>
+        <form id="return">
+          <label>Member # <input name="memberId" inputmode="numeric" required autocomplete="off" /></label>
+          <label>Asset # <input name="assetId" inputmode="numeric" required autocomplete="off" /></label>
+          <label>Day <input name="onDay" type="date" required /></label>
+          <button type="submit">Return</button>
+        </form>
+      </section>
+    </main>
+
+    <aside class="log" aria-live="polite">
+      <h2>Activity</h2>
+      <ol id="log"></ol>
+    </aside>
+
+    <script type="module" src="./renderer.mjs"></script>
+  </body>
+</html>
