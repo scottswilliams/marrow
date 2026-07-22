@@ -353,6 +353,37 @@ impl InvocationGrant {
     }
 }
 
+/// The reserved fourth term of the authority intersection: a typed predicate a future
+/// authenticated principal further intersects with the effective authority, after
+/// `demand ∩ ceiling ∩ grant` is resolved. Reserving the *place* in the order is a
+/// cross-cutting invariant (the kernel authority law): the intersection is
+/// `demand ∩ ceiling ∩ grant ∩ principal`, resolved before the first engine call.
+///
+/// [`Any`](Self::Any) is the only variant today — the ⊤ predicate that narrows nothing, so
+/// the reserved term is the identity of the intersection (`X ∩ ⊤ = X`) and adds no authority.
+/// A future authenticated-principal design adds only *narrowing* variants: a principal
+/// predicate can restrict the effective authority to a subset, never widen it, and never adds
+/// an atom the earlier three terms did not already permit. This is a reserved slot, not a
+/// compatibility promise; no principal system exists yet (no framework on credit).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PrincipalPredicate {
+    /// The reserved ⊤: admits exactly what `demand ∩ ceiling ∩ grant` already permits, adding
+    /// nothing and removing nothing.
+    Any,
+}
+
+impl PrincipalPredicate {
+    /// Narrow the already-resolved effective authority by this principal predicate — the fourth
+    /// and last intersection term. [`Any`](Self::Any) returns the effective authority unchanged
+    /// (⊤ ∩ X = X): the reserved term never adds authority and, today, removes none. A future
+    /// narrowing variant can only clear bits, never set them.
+    pub fn narrow(self, effective: DemandCoverage) -> DemandCoverage {
+        match self {
+            PrincipalPredicate::Any => effective,
+        }
+    }
+}
+
 /// A pre-execution authority denial: the export's demand is not covered by the
 /// deployment ceiling intersected with the invocation grant. Source-uncatchable.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
