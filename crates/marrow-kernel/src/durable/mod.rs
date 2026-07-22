@@ -354,10 +354,14 @@ impl InvocationGrant {
 }
 
 /// The reserved fourth term of the authority intersection: a typed predicate a future
-/// authenticated principal further intersects with the effective authority, after
+/// authenticated principal would further intersect with the effective authority, after
 /// `demand ∩ ceiling ∩ grant` is resolved. Reserving the *place* in the order is a
-/// cross-cutting invariant (the kernel authority law): the intersection is
-/// `demand ∩ ceiling ∩ grant ∩ principal`, resolved before the first engine call.
+/// cross-cutting invariant (the kernel authority law): the full intersection order is
+/// `demand ∩ ceiling ∩ grant ∩ principal`, with the first three resolved before the first
+/// engine call. This fourth term is a reserved *position*, not yet applied on the live
+/// session path ([`Self::narrow`] exists but is not called by `resolve_authority` today);
+/// because the only variant is ⊤ it would narrow nothing, so leaving it unapplied changes
+/// no authority.
 ///
 /// [`Any`](Self::Any) is the only variant today — the ⊤ predicate that narrows nothing, so
 /// the reserved term is the identity of the intersection (`X ∩ ⊤ = X`) and adds no authority.

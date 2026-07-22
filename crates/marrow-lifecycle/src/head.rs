@@ -254,8 +254,11 @@ mod tests {
     }
 
     /// A tampered accepted-ceiling byte breaks the sealing digest: the head is digest-sealed
-    /// over the whole body including the ceiling payload, so authority cannot be silently
-    /// widened by editing the persisted ceiling.
+    /// over the whole body including the ceiling payload, so an accidentally altered or torn
+    /// ceiling payload cannot pass as a valid wider ceiling. The unkeyed digest guards
+    /// corruption, not an owner who can rewrite and reseal the head file — but such an actor
+    /// already controls the store bytes wholesale, and any image they then attach is still
+    /// bounded by whatever ceiling the head carries.
     #[test]
     fn a_tampered_accepted_ceiling_breaks_the_digest() {
         let head = head();

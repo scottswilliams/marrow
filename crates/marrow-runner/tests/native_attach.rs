@@ -305,8 +305,17 @@ fn a_populated_store_round_trips_through_the_backup_slice() {
 
     // Back the source up to a disposable slice, then release its lock.
     let mut slice: Vec<u8> = Vec::new();
+    let source_ceiling;
     {
         let opened = marrow_lifecycle::open(&source, schemas.clone(), sites.clone()).expect("open");
+        // The accepted deployment ceiling the source was provisioned under; the slice must
+        // round-trip it verbatim (head v1) so a restored store admits exactly the same
+        // authority — a broadened image is refused before and after a restore alike.
+        source_ceiling = opened.head.accepted_ceiling.clone();
+        assert!(
+            !source_ceiling.is_empty(),
+            "the provisioned head carries a non-empty accepted ceiling",
+        );
         marrow_lifecycle::backup_slice(&opened, &mut slice).expect("backup slice");
     }
 
@@ -344,6 +353,14 @@ fn a_populated_store_round_trips_through_the_backup_slice() {
         "the slice makes no digest claim"
     );
     assert_eq!(head.data_digest_position, 0, "the store stays unsequenced");
+    // The head-v1 accepted deployment ceiling survives the backup/restore round-trip verbatim,
+    // so the restored store enforces the same authority ceiling as the source (a head-format
+    // regression that dropped or reset it would refuse a legitimate image or admit a broadened
+    // one after a restore).
+    assert_eq!(
+        head.accepted_ceiling, source_ceiling,
+        "the backup slice round-trips the accepted deployment ceiling",
+    );
 
     let _ = std::fs::remove_dir_all(source.parent().expect("parent"));
     let _ = std::fs::remove_dir_all(dest.parent().expect("parent"));
