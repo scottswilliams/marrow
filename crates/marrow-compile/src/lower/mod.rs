@@ -344,7 +344,7 @@ pub(in crate::lower) use self::registry::*;
 pub(in crate::lower) use self::types::*;
 
 pub(crate) use self::builtins::{
-    builtin_value_names, is_reserved_builtin_name, reserved_builtin_name,
+    builtin_const_int, builtin_value_names, is_reserved_builtin_name, reserved_builtin_name,
 };
 pub(crate) use self::durable::{is_durable_place_op, is_mutation_instr};
 pub(crate) use self::registry::{FunctionRegistry, GenericRegistry};

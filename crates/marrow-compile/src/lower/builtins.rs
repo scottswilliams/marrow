@@ -127,6 +127,14 @@ pub(super) enum Builtin {
     /// declaration is rejected; the leading `^root` argument is a saved-root reference,
     /// not an ordinary value, so it is dispatched to its own lowering.
     Id,
+    /// The integer-domain bounds `maxInt` (`i64::MAX`) and `minInt` (`i64::MIN`). The
+    /// owner ruling is that no source spells `9223372036854775807`; the language names
+    /// the bound instead. Unlike every other variant these are argument-free *values*,
+    /// not calls: a bare use folds to a constant `int` load ([`Builtin::const_int_value`]),
+    /// and a call form is rejected. They are reserved (blocking a colliding declaration)
+    /// so a bare `maxInt`/`minInt` is always the bound.
+    MaxInt,
+    MinInt,
 }
 
 impl Builtin {
@@ -136,7 +144,7 @@ impl Builtin {
     /// which names are built-in. A new built-in is added here and given a
     /// [`Builtin::spelling`]; the exhaustive spelling match rejects a variant that is
     /// added to the enum without a spelling.
-    const ALL: [Builtin; 18] = [
+    const ALL: [Builtin; 20] = [
         Builtin::None,
         Builtin::Some,
         Builtin::Ok,
@@ -155,6 +163,8 @@ impl Builtin {
         Builtin::List,
         Builtin::Map,
         Builtin::Id,
+        Builtin::MaxInt,
+        Builtin::MinInt,
     ];
 
     /// The reserved source spelling of this built-in. The exhaustive match makes a new
@@ -179,6 +189,8 @@ impl Builtin {
             Builtin::List => "List",
             Builtin::Map => "Map",
             Builtin::Id => "Id",
+            Builtin::MaxInt => "maxInt",
+            Builtin::MinInt => "minInt",
         }
     }
 
@@ -186,6 +198,18 @@ impl Builtin {
         Builtin::ALL
             .into_iter()
             .find(|builtin| builtin.spelling() == name)
+    }
+
+    /// The `i64` an argument-free integer-bound built-in denotes, or `None` for a
+    /// built-in that is a call or constructor rather than a value bound. A bare use in
+    /// value position folds to a constant load of this value, and a constant
+    /// initializer folds to the same; no source spells the literal.
+    pub(super) fn const_int_value(self) -> Option<i64> {
+        match self {
+            Builtin::MaxInt => Some(i64::MAX),
+            Builtin::MinInt => Some(i64::MIN),
+            _ => None,
+        }
     }
 }
 
@@ -211,6 +235,13 @@ pub(crate) fn builtin_value_names() -> Vec<&'static str> {
         .into_iter()
         .map(|builtin| builtin.spelling())
         .collect()
+}
+
+/// The `i64` the bare name denotes as an integer-bound value built-in (`maxInt`/
+/// `minInt`), or `None` for any other name. The one classifier the value-position
+/// lowering and the constant folder share, so the two admit exactly the same bounds.
+pub(crate) fn builtin_const_int(name: &str) -> Option<i64> {
+    Builtin::from_name(name).and_then(Builtin::const_int_value)
 }
 
 /// The diagnostic for a value declaration whose name is a reserved built-in.
@@ -309,7 +340,22 @@ pub(super) fn branch_ctor_display(resource: &str, path: &[&str]) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{Builtin, builtin_value_names};
+    use super::{Builtin, builtin_const_int, builtin_value_names};
+
+    /// The integer bounds classify as value built-ins carrying exactly the `i64`
+    /// domain edges, and a built-in that is a call or constructor carries no bound
+    /// value, so only `maxInt`/`minInt` fold in value or constant position.
+    #[test]
+    fn the_integer_bounds_carry_the_domain_edges() {
+        assert_eq!(builtin_const_int("maxInt"), Some(i64::MAX));
+        assert_eq!(builtin_const_int("minInt"), Some(i64::MIN));
+        assert_eq!(Builtin::MaxInt.const_int_value(), Some(i64::MAX));
+        assert_eq!(Builtin::MinInt.const_int_value(), Some(i64::MIN));
+        assert_eq!(Builtin::Trim.const_int_value(), None);
+        assert_eq!(Builtin::None.const_int_value(), None);
+        assert_eq!(builtin_const_int("trim"), None);
+        assert_eq!(builtin_const_int("length"), None);
+    }
 
     /// The editor completion namespace is exactly the set the classifier recognizes, in
     /// both directions: both derive from the single [`Builtin::ALL`] registry, so neither
