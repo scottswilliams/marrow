@@ -53,7 +53,7 @@ export class Client {
   /** `main.nums` */
   async nums(): Promise<Array<bigint>> {
     const data = await this.session.call("2e62191135b8e739febe0f864342fac7a1bad8647fe87f1b9debfa44b5897f63", []);
-    return M.dList(M.dInt)(data) as Array<bigint>;
+    return M.dList(M.dInt)(data);
   }
 
   /** `main.add` */
@@ -83,7 +83,7 @@ export class Client {
   /** `main.tally` */
   async tally(): Promise<Array<[string, bigint]>> {
     const data = await this.session.call("9d8ff883d17868c7f60144fd227a235d15286a0dc7a7cf8b46443b44ca3d63bd", []);
-    return M.dMap(M.dText, M.dInt)(data) as Array<[string, bigint]>;
+    return M.dMap(M.dText, M.dInt)(data);
   }
 
   /** `main.total` */

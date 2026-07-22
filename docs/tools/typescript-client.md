@@ -41,6 +41,9 @@ The wire carries the closed transfer graph. Its TypeScript projection:
 | `Map<K, V>` | `Array<[K, V]>` | JSON array of ordered `[key, value]` pairs (never a JS object), so a non-string key and entry order survive |
 | `Id(^root)` | `{ readonly root: "root"; readonly key: [..] }` | JSON array of the root's key-column scalars; a branded handle the client cannot confuse across roots |
 
+A returned `Map<K, V>` is an ordered `[key, value]` array; convert it with
+`new Map(result)` (any key type) or `Object.fromEntries(result)` (string keys).
+
 The transfer graph is closed over every value type, so a verified signature
 always projects. Arguments are validated against the export's verified signature
 both in the client (a `TypeError` before any byte is sent) and authoritatively by

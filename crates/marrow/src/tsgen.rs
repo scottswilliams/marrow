@@ -388,16 +388,29 @@ fn decoder(ty: &TransferType) -> String {
     }
 }
 
-/// The full decode expression for a return value. A structural decoder returns
-/// `unknown`, so a product/sum return is cast to its exact structural type; a
-/// scalar decoder is already exact.
+/// Whether a decoder already returns exactly its `ts_type`, so the `as` cast is
+/// redundant. A structural product/sum decoder returns `unknown` and the identity
+/// decoder returns a loosely-typed `{ root; key }`, so those need the cast; a scalar,
+/// unit, and any optional/list/map composed only of precise decoders are already
+/// exact (the generic `dOpt`/`dList`/`dMap` combinators carry their element types).
+fn decoder_is_precise(ty: &TransferType) -> bool {
+    match ty {
+        TransferType::Unit | TransferType::Scalar(_) => true,
+        TransferType::Optional(inner) => decoder_is_precise(inner),
+        TransferType::List(elem) => decoder_is_precise(elem),
+        TransferType::Map(key, value) => decoder_is_precise(key) && decoder_is_precise(value),
+        TransferType::Product(_) | TransferType::Sum(_) | TransferType::Identity { .. } => false,
+    }
+}
+
+/// The full decode expression for a return value. A precise decoder is emitted bare;
+/// one that returns `unknown` (or the loosely-typed identity handle) is cast to its
+/// exact structural type.
 fn decode_expr(ret: &TransferType, data: &str, ret_ts: &str) -> String {
-    match ret {
-        TransferType::Unit | TransferType::Scalar(_) => format!("{}({data})", decoder(ret)),
-        TransferType::Optional(inner) if matches!(**inner, TransferType::Scalar(_)) => {
-            format!("{}({data})", decoder(ret))
-        }
-        _ => format!("{}({data}) as {ret_ts}", decoder(ret)),
+    if decoder_is_precise(ret) {
+        format!("{}({data})", decoder(ret))
+    } else {
+        format!("{}({data}) as {ret_ts}", decoder(ret))
     }
 }
 

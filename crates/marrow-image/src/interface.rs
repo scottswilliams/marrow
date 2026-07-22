@@ -168,6 +168,12 @@ impl TransferType {
                 out.push(0x07);
                 push_lp(out, root.as_bytes());
                 out.extend_from_slice(&(keys.len() as u16).to_be_bytes());
+                // Only the root name and the ordered key-column *scalar tags* are
+                // encoded, not the column names: an identity crosses the wire as a
+                // positional key tuple, so a key-column rename is not an observable
+                // wire change and intentionally does not move the id (unlike a record
+                // field, whose name *is* on the wire). A root rename or a key-column
+                // type change does move it.
                 for key in keys {
                     out.push(key.tag());
                 }
