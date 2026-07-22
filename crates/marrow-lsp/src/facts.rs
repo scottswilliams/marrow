@@ -365,9 +365,9 @@ const ABSENCE_SCAN_SOURCES: &[&str] = &[
 mod absence_gate {
     use super::ABSENCE_SCAN_SOURCES;
 
-    /// Field setters (lsp-types snake_case) that would enable a refused behavior. Present
-    /// only as the refused capability names in comments (camelCase), never as an actual
-    /// assignment here.
+    /// Field setters (lsp-types snake_case) that would enable a refused behavior. These
+    /// names appear legitimately in this gate's own lists and in test code; the scan
+    /// covers only production code (see [`scan`]).
     const FORBIDDEN_FIELD_SETTERS: &[&str] = &[
         "sort_text",
         "filter_text",
@@ -383,24 +383,32 @@ mod absence_gate {
     /// reading the request `CompletionContext` to classify is a leak.
     const FORBIDDEN_RECONSTRUCTION: &[&str] = &["regex", "Regex", "CompletionContext", "keyword"];
 
-    /// A line the gate ignores: an explanatory comment (`//` …) or a bare string-literal
-    /// list entry (this gate's own token names, `"…"`). A real forbidden use is a struct
-    /// field set or path — never a line whose first non-whitespace is `//` or `"`.
-    fn is_ignored(line: &str) -> bool {
-        let trimmed = line.trim_start();
-        trimmed.starts_with("//") || trimmed.starts_with('"')
+    /// The production region of a source file: everything before its first `#[cfg(test)]`
+    /// attribute. Test code and this gate's own token lists live below that line and
+    /// legitimately name the forbidden surface; only production wiring is scanned.
+    fn production_region(source: &str) -> &str {
+        match source.find("#[cfg(test)]") {
+            Some(cut) => &source[..cut],
+            None => source,
+        }
+    }
+
+    /// A line the gate ignores: an explanatory comment (`//` …). A real forbidden use is a
+    /// struct field set or path in production code, never a comment.
+    fn is_comment(line: &str) -> bool {
+        line.trim_start().starts_with("//")
     }
 
     fn scan(needles: &[&str]) {
         for source in ABSENCE_SCAN_SOURCES {
-            for line in source.lines() {
-                if is_ignored(line) {
+            for line in production_region(source).lines() {
+                if is_comment(line) {
                     continue;
                 }
                 for needle in needles {
                     assert!(
                         !line.contains(needle),
-                        "forbidden token `{needle}` appears in server code: {line}"
+                        "forbidden token `{needle}` appears in production server code: {line}"
                     );
                 }
             }
