@@ -147,7 +147,7 @@ ephemeral attachment, needing no store or companion (see [`marrow test`](#marrow
 
 When a fresh durable declaration has no identity in the project's
 [identity ledger](projects.md#the-identity-ledger), `run` still mints one from OS
-entropy and publishes the updated `marrow.ids` atomically before compiling
+entropy and publishes the updated `.marrow/ids` atomically before compiling
 again — commit that file — and then parks the durable export. Because an identity
 is durable once minted, `run` mints and persists it even when the program still
 has unrelated errors: the mint is not gated on an otherwise-clean compile, and

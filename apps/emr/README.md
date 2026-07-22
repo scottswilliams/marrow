@@ -60,9 +60,9 @@ marrow test             # runs the source tests (storeless/ephemeral)
 marrow fmt --check .
 ```
 
-`marrow.ids` is the committed, machine-written identity ledger; commit it with the
+`.marrow/ids` is the committed, machine-written identity ledger; commit it with the
 source. If you change a durable declaration, run a storeless `marrow run` once to
-mint the new identities, then commit the updated `marrow.ids`.
+mint the new identities, then commit the updated `.marrow/ids`.
 
 ## Run against a native store
 

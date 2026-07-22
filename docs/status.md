@@ -163,7 +163,7 @@ singleton (no key), a single-column keyed root, or a composite keyed tuple of up
 to eight ordered columns; each key column is a scalar in the closed orderable
 durable-key set (`int`, `string`, `bool`, `bytes`, `date`, `instant`). Every
 root — and each of its key columns — is a distinct durable graph node with a
-complete entropy-minted identity in the committed machine-written `marrow.ids`
+complete entropy-minted identity in the committed machine-written `.marrow/ids`
 ledger (minted by `marrow run`, required by every path, tombstoned on
 retirement), and the program's durable graph carries a stable 32-byte
 durable-contract identity computed over those ledger ids and the graph shape

@@ -240,7 +240,7 @@ it may not collide with either or with another index. An index requires a keyed 
 a singleton store admits none.
 
 Each index carries its own stable durable identity in the machine-written
-`marrow.ids` ledger (an `index` anchor at `<root>.<index name>`), distinct from every
+`.marrow/ids` ledger (an `index` anchor at `<root>.<index name>`), distinct from every
 other durable identity; renaming an index preserves it, and a retired index name is
 never reused. The compiler maintains every index — assignment, clearing, whole
 replacement, and deletion keep the affected indexes coherent; source has no

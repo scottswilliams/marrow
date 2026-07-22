@@ -177,7 +177,7 @@ each keyed `branch` placement together with its own key components and fields, a
 each closed `enum` reachable through a durable field (its sum identity and one
 member identity per variant) — has its own durable
 identity: an opaque 128-bit id minted once from OS entropy and recorded in the
-project's committed identity ledger, `marrow.ids` (see
+project's committed identity ledger, `.marrow/ids` (see
 [Projects](../tools/projects.md#the-identity-ledger)). The ledger is machine
 written and machine read; developers never edit, copy, or cite ids. In ordinary
 development it is invisible: the first `marrow run` over a fresh durable

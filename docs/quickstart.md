@@ -141,7 +141,7 @@ test "add and read back" {
 ```
 
 A durable declaration has a stable identity recorded in a machine-written ledger
-(`marrow.ids`). The first storeless `marrow run` mints any missing identities and
+(`.marrow/ids`). The first storeless `marrow run` mints any missing identities and
 writes the ledger; commit that file with the source. Mint the identities by
 running any export once:
 
@@ -153,7 +153,7 @@ marrow run add -- 1 x
 cli.durable_unsupported
 ```
 
-This first run mints `marrow.ids` (commit it) and then reports
+This first run mints `.marrow/ids` (commit it) and then reports
 `cli.durable_unsupported`, because a durable export run without a store has no
 store to act on. With the ledger in place, `marrow check` is clean and prints
 each export's durable demand:

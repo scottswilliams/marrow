@@ -11,9 +11,9 @@ compiler-owned `DurableNaming` join. It opens no store and runs no code; the
 sentence describes access and never grants it.
 `marrow run
 <export>` drives the production path: capture the project at the working
-directory (including the machine-written `marrow.ids` identity ledger), compile
+directory (including the machine-written `.marrow/ids` identity ledger), compile
 it to canonical image bytes — minting missing durable identities from OS
-entropy into `marrow.ids` first (a `run`-only convenience; every other path
+entropy into `.marrow/ids` first (a `run`-only convenience; every other path
 fails precisely, and the accepted apply action supersedes it), verify them into
 a sealed image, open a store in-process when the export's verified demand is
 nonempty (`--store <path>`; an interim seam that dies with the durable-run

@@ -3,7 +3,7 @@
 This crate is the pure project-input owner: the closed `marrow.toml` manifest
 schema, deterministic contained discovery over caller-supplied file listings and
 bytes, root-relative canonical file identities, path-derived module names, the
-`marrow.ids` durable-identity ledger (entropy-minted ids, `(kind, path)`
+`.marrow/ids` durable-identity ledger (entropy-minted ids, `(kind, path)`
 anchors, tombstones, and the canonical machine-written artifact), and the
 immutable `ProjectInput`. It is the one owner of that boundary. The ledger
 model here is pure: entropy is drawn and the artifact is published only by the
