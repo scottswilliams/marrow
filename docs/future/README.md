@@ -13,6 +13,7 @@ queue, or an execution schedule.
 - [Admission and activation](admission-and-activation.md)
 - [Source standard library](source-standard-library.md)
 - [Local applications](local-applications.md)
+- [Data coexistence](data-coexistence.md)
 - [Public paths](public-paths.md)
 - [Served execution](served-execution.md)
 - [Threat posture](threat-posture.md)
