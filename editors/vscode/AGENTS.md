@@ -19,12 +19,14 @@ The package contributes exactly two static, editor-only files:
 
 - `syntaxes/marrow.tmLanguage.json` — a TextMate grammar for syntax highlighting.
   It is **generated, never hand-edited**: `crates/marrow-syntax/tests/cases/vscode_grammar.rs`
-  renders it from the parser-owned reserved-word inventory (read from the
-  drift-checked `reserved-words` block in `docs/tools/ai-legibility.md`) plus a fixed
-  set of lexer-owned lexical forms, and byte-diffs the committed file. Regenerate with
+  renders it directly from the parser-owned `Keyword`, `TokenKind`, and
+  `LexicalClass` facts plus the lexer-owned fixed-duration inventory, and byte-diffs
+  the committed file. The documentation drift test consumes those same facts but is
+  never generator input. Regenerate with
   `cargo test -p marrow-syntax regenerate_vscode_grammar -- --ignored` in the same
   change as any parser/keyword change; do not edit the JSON by hand. It scopes only
-  forms the lexer owns — no speculative function/type/member coloring.
+  forms and categories the lexer owns; ordinary identifiers remain explicitly
+  unscoped, with no speculative function/type/member coloring.
 - `language-configuration.json` — `//` comment toggling and bracket/quote pairing,
   derived from the same verified forms. It carries no indentation rules and no
   `onEnter` rules; newline classification stays with the compiler.
