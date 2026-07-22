@@ -968,6 +968,14 @@ pub(crate) struct TypeRegistry {
     /// order. Interior-mutable so a shared `&TypeRegistry` can mint one on first use
     /// of a concrete `List`/`Map`, deduping by source element/key/value types.
     collections: RefCell<Vec<CollSpec>>,
+    /// Lookup-only secondary index `CollSpec -> row in collections`, appended in lockstep
+    /// with `collections` and carrying the same authority discipline as the type/function
+    /// instantiation indexes: `collections` stays the sole COLLTYPES-order authority, and
+    /// the reused row's index is always read from the vector, never invented from this map.
+    /// It only accelerates the mint-dedup reuse probe from a linear spec scan to a keyed
+    /// lookup; a row that does not carry the looked-up spec is index/authority drift,
+    /// reported as the shared `MintIndexDrift` coherence failure rather than trusted.
+    collection_index: RefCell<HashMap<CollSpec, u16>>,
     /// A metadata directory reused across the mint/dedup probes of one monomorphization
     /// pass. Type instantiations and collections are appended in strict image order, so
     /// the directory maps image identity to row and is extended for the newly appended
@@ -4466,8 +4474,16 @@ impl TypeRegistry {
                 },
             ));
         }
-        if let Some(index) = collections.iter().position(|candidate| *candidate == spec) {
-            return Ok(index as u16);
+        // Mint-dedup reuse probe: a keyed lookup into the append-only secondary index.
+        // The reused row's index is read from `collections` (the authority); a row that
+        // does not carry the looked-up spec is drift.
+        if let Some(&index) = self.collection_index.borrow().get(&spec) {
+            if collections.get(index as usize) != Some(&spec) {
+                return Err(
+                    GenericInvariant::CacheState(GenericCacheInvariant::MintIndexDrift).into(),
+                );
+            }
+            return Ok(index);
         }
         drop(collections);
 
@@ -4476,6 +4492,7 @@ impl TypeRegistry {
         let mut collections = self.collections.borrow_mut();
         debug_assert_eq!(collections.len(), cache_index);
         collections.push(spec);
+        self.collection_index.borrow_mut().insert(spec, id.index());
         Ok(id.index())
     }
 
@@ -4582,6 +4599,7 @@ impl TypeRegistry {
             type_templates: reserved_templates(),
             generics: RefCell::default(),
             collections: RefCell::default(),
+            collection_index: RefCell::default(),
             row_directory: RefCell::default(),
         };
         registry.nominals =
@@ -4715,6 +4733,7 @@ impl TypeRegistry {
                 argument_domain: ArgumentDomain::TemplateProof,
             }),
             collections: RefCell::new(collections.clone()),
+            collection_index: RefCell::new(self.collection_index.borrow().clone()),
             row_directory: RefCell::default(),
         };
         Ok(clone)
@@ -7238,6 +7257,7 @@ mod instantiation_state_tests {
             type_templates: templates,
             generics: RefCell::default(),
             collections: RefCell::default(),
+            collection_index: RefCell::default(),
             row_directory: RefCell::default(),
         }
     }

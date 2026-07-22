@@ -57,6 +57,7 @@ fn test_registry(templates: Vec<TypeTemplate>) -> TypeRegistry {
         type_templates: templates,
         generics: RefCell::default(),
         collections: RefCell::default(),
+        collection_index: RefCell::default(),
         row_directory: RefCell::default(),
     }
 }
