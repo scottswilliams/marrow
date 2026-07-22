@@ -9,7 +9,8 @@ use std::sync::Arc;
 
 use marrow_compile::{
     AnalysisResourceLimit, AnalysisSnapshot, CandidateKind, CompletionOutcome, Fact, InputRevision,
-    MAX_COMPLETION_CANDIDATES, PositionClass, QueryError, Unavailability, analyze,
+    MAX_COMPLETION_CANDIDATES, MAX_COMPLETION_RENDER_BYTES, PositionClass, QueryError,
+    Unavailability, analyze,
 };
 use marrow_project::{CaptureLimits, CapturedFile, FileIdentity, Manifest, ProjectInput};
 
@@ -233,6 +234,70 @@ fn completions_over_cap_refuses() {
             "expected a candidate-count refusal, got {}",
             describe(&other)
         ),
+    }
+}
+
+/// A struct with `field_count` fields (each named `f<index>` zero-padded to
+/// `name_width` characters, typed `int`) and a `fn f(p: Big): int { return p. }` whose
+/// trailing `p.` member position offers exactly one candidate per field.
+fn member_source(field_count: usize, name_width: usize) -> String {
+    let mut source = String::from("module app\n\nstruct Big {\n");
+    for index in 0..field_count {
+        source.push_str(&format!("    f{index:0>name_width$}: int\n"));
+    }
+    source.push_str("}\n\nfn f(p: Big): int {\n    return p.\n}\n");
+    source
+}
+
+fn member_outcome(source: &str) -> Result<CompletionOutcome, QueryError> {
+    let snapshot = snap(source);
+    let offset = at(source, "return p.\n", "return p.".len());
+    snapshot.completions(&identity("src/app.mw"), offset)
+}
+
+#[test]
+fn completions_candidate_count_boundary_admits_max_and_refuses_one_more() {
+    // Exactly the cap is admitted; one past it refuses. A struct member position offers
+    // exactly one candidate per field with no builtins folded in, so the count is the
+    // field count precisely — pinning the `> MAX` boundary so an off-by-one to `>=`
+    // cannot pass unnoticed.
+    let cap = MAX_COMPLETION_CANDIDATES as usize;
+
+    match member_outcome(&member_source(cap, 3)) {
+        Ok(CompletionOutcome::Ready(Fact::Present(completions))) => {
+            assert_eq!(
+                completions.candidates().len(),
+                cap,
+                "exactly MAX_COMPLETION_CANDIDATES candidates are present",
+            );
+        }
+        other => panic!("expected exactly-cap Present, got {}", describe(&other)),
+    }
+
+    match member_outcome(&member_source(cap + 1, 3)) {
+        Ok(CompletionOutcome::Refused(AnalysisResourceLimit::CompletionCandidateCount {
+            limit,
+        })) => assert_eq!(limit, MAX_COMPLETION_CANDIDATES),
+        other => panic!(
+            "expected a candidate-count refusal one past the cap, got {}",
+            describe(&other)
+        ),
+    }
+}
+
+#[test]
+fn completions_render_bytes_refuses_when_labels_exceed_the_budget() {
+    // A candidate set within the count cap whose rendered label+detail bytes exceed the
+    // render budget refuses on the byte arm, not the count arm. MAX field names of a
+    // length that overshoots the budget exercise the otherwise-uncovered
+    // `CompletionRenderBytes` refusal.
+    let cap = MAX_COMPLETION_CANDIDATES as usize;
+    let name_width = (MAX_COMPLETION_RENDER_BYTES as usize / cap) + 4;
+    match member_outcome(&member_source(cap, name_width)) {
+        Ok(CompletionOutcome::Refused(AnalysisResourceLimit::CompletionRenderBytes { limit })) => {
+            assert_eq!(limit, MAX_COMPLETION_RENDER_BYTES);
+        }
+        other => panic!("expected a render-byte refusal, got {}", describe(&other)),
     }
 }
 

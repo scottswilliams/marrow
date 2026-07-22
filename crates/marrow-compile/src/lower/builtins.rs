@@ -320,8 +320,8 @@ mod tests {
     fn completion_names_match_the_classifier() {
         for builtin in Builtin::ALL {
             let name = builtin.spelling();
-            let classified = Builtin::from_name(name)
-                .expect("a registry spelling must classify as a built-in");
+            let classified =
+                Builtin::from_name(name).expect("a registry spelling must classify as a built-in");
             assert_eq!(
                 classified.spelling(),
                 name,

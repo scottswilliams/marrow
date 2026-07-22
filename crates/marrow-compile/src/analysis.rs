@@ -1621,7 +1621,11 @@ mod completion {
         candidates
     }
 
-    fn member_candidates(file: &SourceFile, scope: &Scope<'_>, base: &Expression) -> Vec<Candidate> {
+    fn member_candidates(
+        file: &SourceFile,
+        scope: &Scope<'_>,
+        base: &Expression,
+    ) -> Vec<Candidate> {
         let Some(type_name) = base_type_name(scope, base) else {
             return Vec::new();
         };
