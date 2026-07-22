@@ -298,10 +298,7 @@ impl AnalysisSnapshot {
     /// This is a pure projection: it reclassifies nothing and reads no resolved semantic
     /// identity. The outline is retained per snapshot and bounded per file by
     /// [`MAX_DOCUMENT_SYMBOLS_PER_FILE`] and [`MAX_SYMBOL_DEPTH`] at snapshot admission.
-    pub fn document_symbols(
-        &self,
-        file: &FileIdentity,
-    ) -> Result<Fact<&[DeclSymbol]>, QueryError> {
+    pub fn document_symbols(&self, file: &FileIdentity) -> Result<Fact<&[DeclSymbol]>, QueryError> {
         self.source_of(file)?;
         if self.broken_files.iter().any(|broken| broken == file) {
             return Ok(Fact::Unavailable(Unavailability::Syntax));
@@ -659,9 +656,12 @@ impl SymbolProjection {
             }
         };
         let symbol = match declaration {
-            Declaration::Alias(alias) => {
-                leaf(alias.name.clone(), DeclKind::Alias, alias.name_span, alias.span)
-            }
+            Declaration::Alias(alias) => leaf(
+                alias.name.clone(),
+                DeclKind::Alias,
+                alias.name_span,
+                alias.span,
+            ),
             Declaration::Nominal(nominal) => leaf(
                 nominal.name.clone(),
                 DeclKind::Nominal,
@@ -679,9 +679,12 @@ impl SymbolProjection {
                 resource.name_span,
                 resource.span,
             ),
-            Declaration::Struct(item) => {
-                leaf(item.name.clone(), DeclKind::Struct, item.name_span, item.span)
-            }
+            Declaration::Struct(item) => leaf(
+                item.name.clone(),
+                DeclKind::Struct,
+                item.name_span,
+                item.span,
+            ),
             // A store's declared name is its saved-root spelling; its name span covers
             // the `^root` sigiled root.
             Declaration::Store(store) => leaf(

@@ -90,7 +90,15 @@ fn projects_every_top_level_declaration_kind_in_source_order() {
     assert_eq!(
         names,
         vec![
-            "Meters", "Age", "LIMIT", "Point", "Color", "Book", "books", "area", "area works",
+            "Meters",
+            "Age",
+            "LIMIT",
+            "Point",
+            "Color",
+            "Book",
+            "books",
+            "area",
+            "area works",
         ],
     );
 
@@ -150,7 +158,10 @@ fn enum_members_nest_as_children() {
 #[test]
 fn each_module_projects_its_own_tree() {
     let files = &[
-        ("src/a.mw", "module a\n\npub fn fa(): int {\n    return 0\n}\n"),
+        (
+            "src/a.mw",
+            "module a\n\npub fn fa(): int {\n    return 0\n}\n",
+        ),
         ("src/b.mw", "module b\n\nstruct Sb {\n    x: int\n}\n"),
     ];
     let snapshot = snap(files);
@@ -173,7 +184,10 @@ fn a_broken_file_is_syntax_unavailable_while_a_sibling_stays_present() {
             "src/broken.mw",
             "module broken\n\npub fn g(: int {\n    return 1\n}\n",
         ),
-        ("src/valid.mw", "module valid\n\npub fn h(): int {\n    return 0\n}\n"),
+        (
+            "src/valid.mw",
+            "module valid\n\npub fn h(): int {\n    return 0\n}\n",
+        ),
     ];
     let snapshot = snap(files);
     assert!(matches!(
@@ -198,7 +212,10 @@ fn an_unknown_file_is_a_query_error() {
 fn a_declaration_free_module_is_present_and_empty() {
     let snapshot = snap(&[("src/main.mw", "// only a comment, no declarations\n")]);
     let symbols = present(&snapshot, "src/main.mw");
-    assert!(symbols.is_empty(), "a truthful empty outline, not an absence");
+    assert!(
+        symbols.is_empty(),
+        "a truthful empty outline, not an absence"
+    );
 }
 
 /// Flat enums, each within `MAX_VARIANTS`, that together publish more symbols than one
@@ -222,9 +239,12 @@ fn many_symbols_source() -> String {
 #[test]
 fn per_file_symbol_count_overflow_refuses_the_snapshot() {
     let source = many_symbols_source();
-    let failure = analyze(Arc::new(project(&[("src/app.mw", &source)])), InputRevision::new(3))
-        .err()
-        .expect("a symbol-count overflow produces no snapshot");
+    let failure = analyze(
+        Arc::new(project(&[("src/app.mw", &source)])),
+        InputRevision::new(3),
+    )
+    .err()
+    .expect("a symbol-count overflow produces no snapshot");
     assert!(
         matches!(
             failure,
@@ -271,9 +291,12 @@ fn deeply_nested_enum_source() -> String {
 #[test]
 fn per_file_symbol_depth_overflow_refuses_the_snapshot() {
     let source = deeply_nested_enum_source();
-    let failure = analyze(Arc::new(project(&[("src/app.mw", &source)])), InputRevision::new(5))
-        .err()
-        .expect("a symbol-depth overflow produces no snapshot");
+    let failure = analyze(
+        Arc::new(project(&[("src/app.mw", &source)])),
+        InputRevision::new(5),
+    )
+    .err()
+    .expect("a symbol-depth overflow produces no snapshot");
     assert!(
         matches!(
             failure,
