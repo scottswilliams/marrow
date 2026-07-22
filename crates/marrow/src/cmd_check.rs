@@ -19,6 +19,7 @@ use marrow_compile::{
 };
 use marrow_verify::VerifiedImage;
 
+use crate::demand::{DemandNamingError, demand_lines};
 use crate::project::capture_project;
 use crate::report_simple_error;
 use crate::term_style::{Stream, Style};
@@ -104,24 +105,26 @@ fn describe_exports(
     naming: &DurableNaming,
     image: &VerifiedImage,
 ) -> ExitCode {
-    let mut ordered: Vec<&ExportEntry> = exports.iter().collect();
-    ordered.sort_by(|a, b| (&a.module, &a.item).cmp(&(&b.module, &b.item)));
-    for entry in ordered {
-        let Some(export) = image.export_by_id(entry.id) else {
+    match demand_lines(exports, naming, image) {
+        Ok(lines) => {
+            for line in lines {
+                println!("{line}");
+            }
+            ExitCode::SUCCESS
+        }
+        Err(DemandNamingError::DirectoryImageDisagree) => {
             // The directory named an id the verified image does not carry: a compiler
             // bug, since the same compilation produced both.
             eprintln!("internal error: export directory and image disagree");
-            return ExitCode::FAILURE;
-        };
-        let Some(sentence) = naming.demand_sentence(export.demand()) else {
+            ExitCode::FAILURE
+        }
+        Err(DemandNamingError::UnnameablePlace) => {
             // Every demanded node of an admitted graph is nameable, so an unspellable
             // demand is a compiler-coherence failure, not a user error.
             eprintln!("internal error: an export demands an unnameable durable place");
-            return ExitCode::FAILURE;
-        };
-        println!("{}.{} {sentence}", entry.module, entry.item);
+            ExitCode::FAILURE
+        }
     }
-    ExitCode::SUCCESS
 }
 
 /// One diagnostic rendered as `file:line:column: code: message`, painted for a terminal.

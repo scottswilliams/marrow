@@ -7,12 +7,14 @@ use crate::term_style::{Stream, Style};
 mod cmd_check;
 mod cmd_client;
 mod cmd_fmt;
+mod cmd_image;
 mod cmd_import;
 mod cmd_init;
 mod cmd_lsp;
 mod cmd_run;
 mod cmd_test;
 mod companion;
+mod demand;
 mod outcome;
 mod project;
 mod term_style;
@@ -29,6 +31,7 @@ Usage:
   marrow import --store <dir> --jsonl <path> --root <name> [--keys <col,...>]
   marrow test [--format text|jsonl] [--filter <substring>]
   marrow client typescript [--out <dir>]
+  marrow image --out <dir> --accept-ceiling <id>
   marrow lsp
   marrow --version
   marrow --help
@@ -45,7 +48,9 @@ compiles and verifies the project, then populates a native store from a
 flat-scalar JSONL corpus through the release-verified companion runner's trusted
 importer, provisioning the store on first use. `client
 typescript` compiles and verifies the project, then emits the generated strict
-TypeScript client and the pinned Node supervision module. `lsp` runs the in-tree
+TypeScript client and the pinned Node supervision module. `image` compiles and
+verifies the project and writes the verified program.image a deployment ships,
+requiring the owner to accept the image's deployment ceiling id. `lsp` runs the in-tree
 language server over stdio, serving diagnostics, formatting, hover, and definition
 to an editor from the compiler's published analysis facts. The data, doctor,
 evolve, serve, backup, and restore commands are being refounded and return
@@ -105,6 +110,7 @@ fn dispatch(command: &str, rest: &[String]) -> ExitCode {
         "import" => cmd_import::import(rest),
         "test" => cmd_test::test(rest),
         "client" => cmd_client::client(rest),
+        "image" => cmd_image::image(rest),
         "lsp" => cmd_lsp::lsp(rest),
         "--help" | "-h" | "help" => {
             print!("{}", term_style::render_help(Stream::Stdout, HELP));
