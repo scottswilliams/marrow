@@ -65,7 +65,15 @@ const suppliedRunnerId = companionReleaseId(readFileSync(runner));
 const registryPath = join(dirname(marrow), "marrow-companions");
 if (existsSync(registryPath)) {
   const registry = readFileSync(registryPath, "utf8");
-  const line = registry.split("\n").find((l) => l.startsWith("runner "));
+  const lines = registry.split("\n");
+  const registryRelease = lines.find((l) => l.startsWith("release "))?.slice("release ".length);
+  if (registryRelease !== release) {
+    console.error(
+      `compose: the companion registry names release ${registryRelease}, not the toolchain's ${release}`,
+    );
+    process.exit(1);
+  }
+  const line = lines.find((l) => l.startsWith("runner "));
   const recordedId = line?.split(" ")[2];
   if (recordedId !== suppliedRunnerId) {
     console.error(

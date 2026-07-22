@@ -182,6 +182,15 @@ function probeDeploymentIntegrity() {
   rmSync(join(nm, "marrow-deployment"));
   expectThrowsSync("a missing manifest is refused", () => resolveDeployment(nm, EXPECTED_RELEASE), "manifest_missing");
 
+  // A manifest that is a symlink (no-follow refuses it as not a regular file).
+  const sm = copyDeploy("symlink-manifest");
+  const smPath = join(sm, "marrow-deployment");
+  const smElsewhere = join(scratch, "elsewhere-manifest");
+  cpSync(join(DEPLOY, "marrow-deployment"), smElsewhere);
+  rmSync(smPath);
+  symlinkSync(smElsewhere, smPath);
+  expectThrowsSync("a symlinked manifest is refused", () => resolveDeployment(sm, EXPECTED_RELEASE), "manifest_malformed");
+
   // A release that is not the app's.
   const rel = copyDeploy("release-skew");
   patchManifest(rel, (m) => m.replace(`release ${EXPECTED_RELEASE}`, "release 9.9.9"));

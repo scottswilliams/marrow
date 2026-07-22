@@ -132,11 +132,13 @@ async function handleCall(event: IpcMainInvokeEvent, payload: unknown): Promise<
   }
 }
 
-/** Map a call error to a path-free string safe to hand the renderer. */
+/** Map a call error to a path-free string safe to hand the renderer. Total over any
+ * thrown value, including a non-object throw, so the handler never fails open. */
 function safeCallError(error: unknown): string {
   if (error instanceof CallRefused) return "call refused";
-  if (typeof (error as { code?: unknown }).code === "string") {
-    return (error as { code: string }).code;
+  if (typeof error === "object" && error !== null) {
+    const code = (error as { code?: unknown }).code;
+    if (typeof code === "string") return code;
   }
   return "call failed";
 }
