@@ -38,4 +38,4 @@ pub use descriptor::{Service, interface_of};
 pub use ephemeral_client::{EphemeralCall, EphemeralSession};
 pub use marrow_local_wire::{DurableState, Id32, Json, LossClass};
 pub use refusal::RefusalService;
-pub use terminal::{CallOutcome, ClientError};
+pub use terminal::{CallOutcome, ClientError, OutcomeUnknownCause};

@@ -116,7 +116,7 @@ impl Terminal {
                 panic!("`{name}` was incomplete: {code} ({durable:?})")
             }
             CallOutcome::Reject { code } => panic!("`{name}` rejected: {code}"),
-            CallOutcome::OutcomeUnknown => panic!("`{name}` outcome unknown"),
+            CallOutcome::OutcomeUnknown { .. } => panic!("`{name}` outcome unknown"),
         }
     }
 
@@ -126,7 +126,7 @@ impl Terminal {
             CallOutcome::Value(_) => panic!("`{name}` completed"),
             CallOutcome::Fault { code, .. } => panic!("`{name}` faulted ordinarily: {code}"),
             CallOutcome::Reject { code } => panic!("`{name}` rejected: {code}"),
-            CallOutcome::OutcomeUnknown => panic!("`{name}` outcome unknown"),
+            CallOutcome::OutcomeUnknown { .. } => panic!("`{name}` outcome unknown"),
         }
     }
 }
@@ -286,7 +286,7 @@ fn describe(outcome: &CallOutcome) -> String {
             format!("incomplete {code} ({durable:?})")
         }
         CallOutcome::Reject { code } => format!("reject {code}"),
-        CallOutcome::OutcomeUnknown => "outcome unknown".to_string(),
+        CallOutcome::OutcomeUnknown { .. } => "outcome unknown".to_string(),
     }
 }
 

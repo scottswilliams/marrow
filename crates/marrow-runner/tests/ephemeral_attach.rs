@@ -79,6 +79,9 @@ impl<'a> Session<'a> {
         {
             EphemeralCall::Replied(outcome) => outcome,
             EphemeralCall::Lost(class) => panic!("call `{name}` lost the session: {class:?}"),
+            EphemeralCall::OutcomeUnknown(cause) => {
+                panic!("call `{name}` outcome unknown: {cause:?}")
+            }
         }
     }
 
@@ -90,7 +93,7 @@ impl<'a> Session<'a> {
                 panic!("`{name}` was incomplete: {code} ({durable:?})")
             }
             CallOutcome::Reject { code } => panic!("`{name}` rejected: {code}"),
-            CallOutcome::OutcomeUnknown => panic!("`{name}` outcome unknown"),
+            CallOutcome::OutcomeUnknown { .. } => panic!("`{name}` outcome unknown"),
         }
     }
 
@@ -100,7 +103,7 @@ impl<'a> Session<'a> {
             CallOutcome::Value(_) => panic!("`{name}` completed"),
             CallOutcome::Fault { code, .. } => panic!("`{name}` faulted ordinarily: {code}"),
             CallOutcome::Reject { code } => panic!("`{name}` rejected: {code}"),
-            CallOutcome::OutcomeUnknown => panic!("`{name}` outcome unknown"),
+            CallOutcome::OutcomeUnknown { .. } => panic!("`{name}` outcome unknown"),
         }
     }
 }

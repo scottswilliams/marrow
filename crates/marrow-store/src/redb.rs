@@ -51,9 +51,11 @@ use std::ops::Bound;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
 
+#[cfg(test)]
+use redb::ReadOnlyDatabase;
 use redb::{
-    Database, DatabaseError, Durability, ReadOnlyDatabase, ReadTransaction, ReadableDatabase,
-    ReadableTable, StorageError, TableDefinition, WriteTransaction,
+    Database, DatabaseError, Durability, ReadTransaction, ReadableDatabase, ReadableTable,
+    StorageError, TableDefinition, WriteTransaction,
 };
 
 use crate::engine::{ByteEngine, Cell, CommitOutcome, ReadView, WriteTxn, check_cell_limits};
@@ -89,13 +91,14 @@ impl<'a> traversal::ScanEntry
 }
 
 /// A redb-backed native ordered-byte engine, durable across processes.
-pub struct NativeEngine {
+pub(crate) struct NativeEngine {
     db: Option<DatabaseHandle>,
     contain_drop_panic: bool,
 }
 
 enum DatabaseHandle {
     ReadWrite(Database),
+    #[cfg(test)]
     ReadOnly(ReadOnlyDatabase),
 }
 
@@ -103,6 +106,7 @@ impl DatabaseHandle {
     fn begin_read(&self, op: &'static str) -> Result<ReadTransaction, StoreError> {
         match self {
             Self::ReadWrite(db) => db.begin_read().map_err(io(op)),
+            #[cfg(test)]
             Self::ReadOnly(db) => db.begin_read().map_err(io(op)),
         }
     }
@@ -114,14 +118,16 @@ impl DatabaseHandle {
                 pin_write_durability(&mut write, op)?;
                 Ok(write)
             }
+            #[cfg(test)]
             Self::ReadOnly(_) => Err(StoreError::ReadOnly { op }),
         }
     }
 
-    fn require_write_access(&self, op: &'static str) -> Result<(), StoreError> {
+    fn require_write_access(&self, _op: &'static str) -> Result<(), StoreError> {
         match self {
             Self::ReadWrite(_) => Ok(()),
-            Self::ReadOnly(_) => Err(StoreError::ReadOnly { op }),
+            #[cfg(test)]
+            Self::ReadOnly(_) => Err(StoreError::ReadOnly { op: _op }),
         }
     }
 }
@@ -583,7 +589,28 @@ impl NativeEngine {
     /// The single owner of the value; a store's persisted-envelope engine tuple (FR01 R2)
     /// records it from here rather than mirroring the literal, so provenance cannot drift from
     /// what the engine actually wrote.
-    pub const FORMAT_VERSION: u32 = FORMAT_VERSION;
+    pub(crate) const FORMAT_VERSION: u32 = FORMAT_VERSION;
+
+    /// Create and stamp exactly one new native store file. Unlike redb's
+    /// create-or-open primitive, this refuses an existing path before opening
+    /// it, so provisioning can never adopt or restamp an existing body.
+    pub(crate) fn create_new(path: &Path) -> Result<Self, StoreError> {
+        contain_panic("provision", || {
+            guard_regular_store_file(path)?;
+            let Some(created_path) = prepare_new_store_file(path)? else {
+                return Err(StoreError::Io {
+                    op: "provision",
+                    message: "the native store file already exists".into(),
+                });
+            };
+            let db = open_write_capable(path, || Database::create(path))?;
+            stamp_or_verify_format_version(Some(&created_path), &db)?;
+            Ok(Self {
+                db: Some(DatabaseHandle::ReadWrite(db)),
+                contain_drop_panic: false,
+            })
+        })
+    }
 
     /// Open the redb-backed store at `path`, creating the file if needed. A
     /// concurrent read-only or read-write holder is rejected as
@@ -592,7 +619,8 @@ impl NativeEngine {
     /// current format version; an existing complete store is verified. A malformed
     /// body surfaces redb's own open error as a typed [`StoreError`] through
     /// [`map_open_error`].
-    pub fn open(path: &Path) -> Result<Self, StoreError> {
+    #[cfg(test)]
+    pub(crate) fn open(path: &Path) -> Result<Self, StoreError> {
         contain_panic("open", || {
             guard_regular_store_file(path)?;
             let sync_parent_after_commit = prepare_new_store_file(path)?;
@@ -609,7 +637,7 @@ impl NativeEngine {
     /// this operation never creates a file or stamps a database: the complete
     /// Marrow metadata and data tables must already be present. A missing,
     /// malformed, foreign, or unstamped file is refused without modification.
-    pub fn open_existing(path: &Path) -> Result<Self, StoreError> {
+    pub(crate) fn open_existing(path: &Path) -> Result<Self, StoreError> {
         contain_panic("open", || {
             let db = open_tolerating_creation_race(path, || {
                 guard_regular_store_file(path)?;
@@ -629,7 +657,8 @@ impl NativeEngine {
     /// than stamping it; write-capability operations fail before any write
     /// transaction begins. A malformed body surfaces redb's own open error as a
     /// typed [`StoreError`] through [`map_open_error`].
-    pub fn open_read_only(path: &Path) -> Result<Self, StoreError> {
+    #[cfg(test)]
+    pub(crate) fn open_read_only(path: &Path) -> Result<Self, StoreError> {
         contain_panic("open", || {
             let db = open_tolerating_creation_race(path, || {
                 guard_regular_store_file(path)?;
@@ -685,6 +714,7 @@ impl ByteEngine for NativeEngine {
                     Err(error) => Err(error),
                 }
             }),
+            #[cfg(test)]
             DatabaseHandle::ReadOnly(_) => Err(StoreError::ReadOnly { op: "audit" }),
         };
         if result.is_err() {
@@ -697,7 +727,7 @@ impl ByteEngine for NativeEngine {
 /// A coherent read view over a redb read transaction — a stable version whose
 /// reads are unaffected by later commits. Bound to the engine borrow that
 /// produced it, so no write can interleave for its life.
-pub struct RedbView<'a> {
+pub(crate) struct RedbView<'a> {
     read: ReadTransaction,
     _engine: PhantomData<&'a NativeEngine>,
 }
@@ -724,7 +754,7 @@ impl ReadView for RedbView<'_> {
 /// A redb write transaction. Reads observe its own staged writes; it commits
 /// durably or, on drop, aborts. Borrows the engine mutably, so a second
 /// transaction cannot be named while it is live.
-pub struct RedbTxn<'a> {
+pub(crate) struct RedbTxn<'a> {
     write: Option<WriteTransaction>,
     _engine: PhantomData<&'a mut NativeEngine>,
 }

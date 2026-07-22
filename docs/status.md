@@ -172,9 +172,10 @@ separate from commit state: an invocation that does not return can report
 `known_old`, `known_new`, or `unknown` without becoming a value or an ordinary
 retryable fault. An already classified known outcome leaves the owner usable; a
 known result from indeterminate-commit recovery returns a freshly opened usable
-owner. Unknown retires the owner after the typed reply, leaves its descriptor
-unclean, and retains the advisory lock until process exit. Losing the opaque
-recovery fact takes the same quarantine path. No path replays application code. A store root is a
+owner only inside that process. Recovery quarantine is irreversible: dropping a
+known owner, reaching unknown, or losing the opaque recovery fact leaves the
+descriptor unclean and retains the advisory lock until process exit. No path
+replays application code. A store root is a
 singleton (no key), a single-column keyed root, or a composite keyed tuple of up
 to eight ordered columns; each key column is a scalar in the closed orderable
 durable-key set (`int`, `string`, `bool`, `bytes`, `date`, `instant`). Every
@@ -225,7 +226,9 @@ replay. An incomplete reply carries the source condition and the separate closed
 runner (`marrow-runner`) serves storeless, ephemeral-durable, and native-durable exports over a
 private Unix socket under the supervised-channel law (mode-0700 directory,
 listener bound before the handshake, launch nonce, poll-based deadlines,
-explicit fail-closed teardown). A durable shape not yet supported by the path
+exact monotonically increasing request/reply turns without wrap, and explicit
+fail-closed teardown). After dispatch, every failure to accept one exact valid
+reply is outcome-unknown with a distinct typed cause. A durable shape not yet supported by the path
 kernel is rejected with `runner.durable_unsupported`. `marrow client typescript`
 emits the generated strict client and the pinned Node supervision module; see
 [TypeScript client](tools/typescript-client.md).

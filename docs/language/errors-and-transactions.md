@@ -252,14 +252,17 @@ adopted and yields `unknown`. An exact after-state is `known_new`; the exact
 before-state is `known_old`; a different or malformed state, scope mismatch,
 read failure, reopen failure, or audit failure is `unknown`.
 
-A known recovery classification returns a fresh usable store owner, but bytecode
-is not resumed and the interrupted invocation remains incomplete. `unknown`
-retires the attached owner, leaves its descriptor unclean, and retains the owner
-lock until process exit. Dropping the opaque fact without classification takes
-the same quarantine path. The wire reports the code,
+A known recovery classification returns a fresh usable store owner inside the
+same dedicated process, but quarantine is irreversible: dropping that owner
+still retains the nonempty descriptor and advisory lock until process exit.
+Bytecode is not resumed and the interrupted invocation remains incomplete.
+`unknown` retires the attached owner under the same quarantine. Dropping the
+opaque fact without classification does likewise. The wire reports the code,
 source span, and durable state without exposing witness bytes. A client that
-loses the reply observes only `run.outcome_unknown`, regardless of any internal
-classification. No path retries or replays application code. Local variable
+cannot accept one exact valid correlated reply after dispatch observes
+`run.outcome_unknown`, regardless of any internal classification, together with
+the distinct transport, wire, turn, unsolicited-message, or value-decode cause.
+No path retries or replays application code. Local variable
 assignments are ordinary state and are not rewound by durable rollback.
 
 The owner lock excludes cooperating Marrow processes but does not authenticate

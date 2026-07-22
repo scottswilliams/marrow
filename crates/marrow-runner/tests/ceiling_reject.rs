@@ -133,7 +133,7 @@ fn a_broadened_image_is_rejected_end_to_end_through_the_native_path() {
         CallOutcome::Incomplete { code, durable, .. } => {
             panic!("expected a reject, got incomplete {code} ({durable:?})")
         }
-        CallOutcome::OutcomeUnknown => panic!("expected a reject, got outcome-unknown"),
+        CallOutcome::OutcomeUnknown { .. } => panic!("expected a reject, got outcome-unknown"),
     }
 
     // Zero engine calls: the head is byte-unchanged, and the prior read-only program still runs.
@@ -161,7 +161,7 @@ fn a_broadened_image_is_rejected_end_to_end_through_the_native_path() {
         CallOutcome::Incomplete { code, durable, .. } => {
             panic!("the prior program was incomplete: {code} ({durable:?})")
         }
-        CallOutcome::OutcomeUnknown => panic!("the prior program outcome was unknown"),
+        CallOutcome::OutcomeUnknown { .. } => panic!("the prior program outcome was unknown"),
     }
 
     let _ = std::fs::remove_dir_all(store.parent().expect("parent"));

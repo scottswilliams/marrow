@@ -15,7 +15,7 @@ use marrow_kernel::durable::{
     ReplaceOutcome, SiteSpec, SiteTarget, StoreSchema,
 };
 use marrow_kernel::equality::ValueDomain;
-use marrow_store::{ByteEngine, MemoryEngine, NativeEngine};
+use marrow_store::{ByteEngine, MemoryEngine, NativeEngineOwner};
 
 /// Enumerate every immediate key of a root layer through one bounded acquisition whose
 /// limit exceeds the fixture size, so the whole logical state dumps in ascending order.
@@ -53,11 +53,20 @@ impl TempDir {
             std::process::id()
         ));
         std::fs::create_dir_all(&root).expect("create temp dir");
+        std::fs::create_dir(root.join("store")).expect("create store dir");
         TempDir { root }
     }
     fn store(&self) -> std::path::PathBuf {
         self.root.join("store")
     }
+}
+
+fn native_owner(path: &std::path::Path) -> NativeEngineOwner {
+    NativeEngineOwner::provision(path).expect("provision native");
+    NativeEngineOwner::open_existing_admitted(path, [0x32; 16], || {
+        Ok::<_, std::convert::Infallible>(())
+    })
+    .expect("open native")
 }
 
 impl Drop for TempDir {
@@ -250,7 +259,7 @@ fn memory_and_redb_agree_on_the_operation_trace() {
     ));
 
     let temp = TempDir::new("optrace");
-    let native = NativeEngine::open(&temp.store()).expect("open native");
+    let native = native_owner(&temp.store());
     let (redb_transcript, redb_dump) = replay(DurableStore::from_engine(native, schema(), sites()));
 
     assert_eq!(
@@ -356,7 +365,7 @@ fn set_sparse_present_agrees_across_engines() {
         sites(),
     ));
     let temp = TempDir::new("strict");
-    let native = NativeEngine::open(&temp.store()).expect("open native");
+    let native = native_owner(&temp.store());
     let (redb_presence, redb_dump) = probe(DurableStore::from_engine(native, schema(), sites()));
 
     assert_eq!(mem_presence, redb_presence);
@@ -416,7 +425,7 @@ fn rollback_discards_staged_writes_on_both_backends() {
         Presence::Absent
     );
     let temp = TempDir::new("rollback");
-    let native = NativeEngine::open(&temp.store()).expect("open native");
+    let native = native_owner(&temp.store());
     assert_eq!(
         probe(DurableStore::from_engine(native, schema(), sites())),
         Presence::Absent
@@ -445,7 +454,7 @@ fn required_missing_commit_agrees_on_both_backends() {
         sites()
     )));
     let temp = TempDir::new("required-missing");
-    let native = NativeEngine::open(&temp.store()).expect("open native");
+    let native = native_owner(&temp.store());
     assert!(probe(DurableStore::from_engine(native, schema(), sites())));
 }
 
@@ -487,7 +496,7 @@ fn a_replaced_entry_drops_unlisted_sparse_leaves() {
         None
     );
     let temp = TempDir::new("replace-drops");
-    let native = NativeEngine::open(&temp.store()).expect("open native");
+    let native = native_owner(&temp.store());
     assert_eq!(
         probe(DurableStore::from_engine(native, schema(), sites())),
         None
@@ -626,7 +635,7 @@ fn memory_and_redb_agree_on_the_group_operation_trace() {
     ));
 
     let temp = TempDir::new("optrace-groups");
-    let native = NativeEngine::open(&temp.store()).expect("open native");
+    let native = native_owner(&temp.store());
     let (redb_transcript, redb_reads) = replay_groups(DurableStore::from_engine(
         native,
         group_schema(),

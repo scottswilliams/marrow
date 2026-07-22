@@ -1,6 +1,6 @@
-//! The closed loss classification for a call whose reply never arrived.
+//! The closed loss classification for a call that cannot be completed normally.
 //!
-//! When the runner process dies, the client's verdict about an outstanding call is
+//! When a runner session fails, the client's verdict about an outstanding call is
 //! one of exactly three classes. The class is a function of how far the request had
 //! progressed at the boundary the peer died on — not of any reply, which by
 //! definition did not arrive — so a supervisor that tracks the [`HandoffStage`] of
@@ -8,7 +8,7 @@
 //! reply is reported, never replayed, because a mutating call whose outcome is
 //! unknown must not run twice.
 
-/// A caller's verdict about a call whose reply was lost to peer death.
+/// A caller's verdict about a call the session could not complete normally.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LossClass {
     /// The call provably never ran: the connection or handshake failed, or the
@@ -19,13 +19,13 @@ pub enum LossClass {
     /// began executing the call. The call did not start; it is reported, not
     /// resubmitted.
     Interrupted,
-    /// The request had been dispatched to the worker when the peer died, so the
-    /// call may have run — wholly or partly — and its outcome is unknowable from
-    /// this side. Never replayed.
+    /// The request had been dispatched, so any missing, malformed, mismatched, or
+    /// otherwise unacceptable reply leaves the call possibly run and its outcome
+    /// unknowable from this side. Never replayed.
     OutcomeUnknown,
 }
 
-/// How far a request had progressed when the peer died. A supervisor advances a
+/// How far a request had progressed when the session failed. A supervisor advances a
 /// call through these stages and reads its [`LossClass`] from the last one reached.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HandoffStage {
@@ -39,7 +39,7 @@ pub enum HandoffStage {
     Dispatched,
 }
 
-/// The loss class for a peer death at `stage`.
+/// The loss class for a session failure at `stage`.
 pub const fn classify(stage: HandoffStage) -> LossClass {
     match stage {
         HandoffStage::BeforeSend => LossClass::NotStarted,

@@ -21,8 +21,9 @@ use marrow_local_wire::{ClientMessage, HandoffStage, Id32, Json, LossClass, clas
 use marrow_verify::VerifiedImage;
 
 use crate::terminal::{
-    self, CALL_DEADLINE, CallOutcome, ClientError, connect_and_handshake, read_message,
-    reply_to_outcome, require_interface, spawn_companion, write_message,
+    self, CALL_DEADLINE, CallOutcome, ClientError, connect_and_handshake, post_dispatch_cause,
+    read_message_with_turn, reply_to_outcome, require_interface, require_reply_turn,
+    spawn_companion, write_message_with_turn,
 };
 
 /// Spawn the verified companion at `runner_exe`, attach it to the persistent store at `store`,
@@ -69,44 +70,45 @@ fn call_over_socket(
     // provably did not start (`LossClass::NotStarted`): it surfaces as a `ClientError` the
     // caller may treat as undone, and is never replayed.
     let mut stream = connect_and_handshake(descriptor, nonce, deadline)?;
-    write_message(
+    const TURN: u32 = 0;
+    write_message_with_turn(
         &mut stream,
         &ClientMessage::Request {
             export: Id32::from_bytes(export_id),
             args,
         },
+        TURN,
         deadline,
     )?;
     // The request is dispatched. If the runner now dies (or falls silent past the deadline)
-    // before its reply arrives, the call may have run — wholly or partly — and its durable
-    // outcome is unknowable from this side (`LossClass::OutcomeUnknown`). It is reported as a
-    // distinct typed outcome, never replayed: a read-only refresh observes the current state.
-    match read_message(&mut stream, deadline) {
-        Ok(reply) => reply_to_outcome(image, export_id, reply),
-        Err(error) if post_dispatch_read_failed(&error) => {
+    // before one exact valid correlated reply is accepted, the call may have run — wholly or
+    // partly — and its durable outcome is unknowable from this side. Transport, wire,
+    // correlation, unsolicited-message, and value-decode causes remain typed evidence under
+    // that outcome. It is never replayed.
+    let result = match read_message_with_turn(&mut stream, deadline) {
+        Ok((reply, received)) => require_reply_turn(TURN, received)
+            .and_then(|()| reply_to_outcome(image, export_id, reply).map_err(post_dispatch_cause)),
+        Err(error) => Err(post_dispatch_cause(error)),
+    };
+    match result {
+        Ok(outcome) => Ok(outcome),
+        Err(cause) => {
             debug_assert_eq!(
                 classify(HandoffStage::Dispatched),
                 LossClass::OutcomeUnknown
             );
-            Ok(CallOutcome::OutcomeUnknown)
+            Ok(CallOutcome::OutcomeUnknown { cause })
         }
-        Err(error) => Err(error),
     }
 }
 
-/// Whether the socket read failed after the request was dispatched. Every socket I/O failure at
-/// this boundary loses the reply: the request may have run, regardless of the operating-system
-/// error kind. A lost reply classifies the dispatched call as
-/// [`CallOutcome::OutcomeUnknown`]; a reply that arrives but does not decode stays its own
-/// distinct wire/decode error, since the call demonstrably produced a reply.
-fn post_dispatch_read_failed(error: &ClientError) -> bool {
-    matches!(error, ClientError::Io(_))
-}
-
+/// Every socket-read cause after dispatch remains orthogonal evidence beneath
+/// [`CallOutcome::OutcomeUnknown`]; accepting a reply requires exact framing, turn correlation,
+/// message schema, and value decoding.
 #[cfg(test)]
 mod tests {
-    use super::post_dispatch_read_failed;
-    use crate::terminal::ClientError;
+    use crate::OutcomeUnknownCause;
+    use crate::terminal::{ClientError, post_dispatch_cause, require_reply_turn};
     use marrow_local_wire::{HandoffStage, LossClass, WireError, classify};
 
     /// A reply lost to any socket-read I/O failure after dispatch is classified
@@ -132,29 +134,67 @@ mod tests {
             std::io::ErrorKind::OutOfMemory,
             std::io::ErrorKind::Other,
         ] {
-            assert!(
-                post_dispatch_read_failed(&ClientError::Io(std::io::Error::from(kind))),
-                "every {kind:?} socket-read failure after dispatch loses the reply",
-            );
+            assert!(matches!(
+                post_dispatch_cause(ClientError::Io(std::io::Error::from(kind))),
+                OutcomeUnknownCause::Io(_),
+            ));
         }
-        assert!(post_dispatch_read_failed(&ClientError::Io(
-            std::io::Error::from_raw_os_error(i32::MAX),
-        )));
+        assert!(matches!(
+            post_dispatch_cause(ClientError::Io(
+                std::io::Error::from_raw_os_error(i32::MAX,)
+            )),
+            OutcomeUnknownCause::Io(_),
+        ));
         assert_eq!(
             classify(HandoffStage::Dispatched),
             LossClass::OutcomeUnknown
         );
     }
 
-    /// A reply that arrives but does not decode is not a lost reply — the call produced a
-    /// reply, so it stays its own distinct error rather than being reported outcome-unknown.
+    /// Every invalid post-write reply retains its distinct cause without replacing
+    /// the dispatched call's outcome-unknown disposition.
     #[test]
-    fn a_decoded_reply_error_is_not_a_lost_reply() {
-        assert!(!post_dispatch_read_failed(&ClientError::ReplyDecode));
-        assert!(!post_dispatch_read_failed(&ClientError::Handshake));
-        assert!(!post_dispatch_read_failed(&ClientError::Wire(
-            WireError::Malformed,
-        )));
+    fn invalid_replies_keep_typed_causes_under_outcome_unknown() {
+        assert!(matches!(
+            post_dispatch_cause(ClientError::ReplyDecode),
+            OutcomeUnknownCause::ReplyDecode,
+        ));
+        assert!(require_reply_turn(0, Some(0)).is_ok());
+        assert!(matches!(
+            require_reply_turn(1, Some(0)),
+            Err(OutcomeUnknownCause::TurnMismatch {
+                expected: 1,
+                received: 0,
+            }),
+        ));
+        assert!(matches!(
+            require_reply_turn(0, None),
+            Err(OutcomeUnknownCause::UnsolicitedMessage),
+        ));
+        assert!(matches!(
+            post_dispatch_cause(ClientError::Handshake),
+            OutcomeUnknownCause::UnsolicitedMessage,
+        ));
+        assert!(matches!(
+            post_dispatch_cause(ClientError::Wire(WireError::Malformed)),
+            OutcomeUnknownCause::Wire(WireError::Malformed),
+        ));
+        assert_eq!(
+            OutcomeUnknownCause::TurnMismatch {
+                expected: 1,
+                received: 0,
+            }
+            .code(),
+            "wire.malformed",
+        );
+        assert_eq!(
+            OutcomeUnknownCause::UnsolicitedMessage.code(),
+            "wire.malformed",
+        );
+        assert_eq!(
+            OutcomeUnknownCause::ReplyDecode.code(),
+            "runner.reply_encode",
+        );
         // A before-send failure (a pre-dispatch handshake/connect error) classifies NotStarted,
         // the safe-to-consider-undone class, and never reaches the lost-reply path.
         assert_eq!(classify(HandoffStage::BeforeSend), LossClass::NotStarted);

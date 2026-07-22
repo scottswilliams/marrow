@@ -96,7 +96,7 @@ reports a `store.*` code:
 `store.transaction`, `store.read_only`, and `store.contract_changed`.
 `store.limit` reports an exhausted finite representation bound: a store framing
 length/count that does not fit its `u32` field, a record/problem/index count
-overflow, or exhaustion of the `u64` commit-ID sequence.
+overflow, or exhaustion of the tagged `u128` commit-witness generation.
 
 A command run against a project whose `marrow.toml` is unreadable reports
 `io.read`; an invalid `marrow.toml` reports `config.invalid`, and a
@@ -217,8 +217,8 @@ verified program: checked-arithmetic overflow, a zero division or remainder
 divisor, a text bound, a reached `unreachable` invariant or `todo` deferral, call depth, an
 execution budget, a nominal-interval violation, a temporal-domain overflow, an
 authority denial, a required field left unset at commit, a unique-index
-collision, an unconfirmed commit, a call whose reply was lost to the attached
-runner's death (outcome unknown, never retried), and durable corruption. These
+collision, an unconfirmed commit, a dispatched call for which no exact valid
+reply could be accepted (outcome unknown with a typed cause, never retried), and durable corruption. These
 are not catchable inside the program.
 
 | Code | Meaning |

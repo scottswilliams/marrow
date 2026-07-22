@@ -51,11 +51,13 @@ pub(crate) enum Record {
         code: &'static str,
         detail: Option<String>,
     },
-    /// A durable call was dispatched to the attached runner but its reply was lost to the
-    /// runner's death, so its outcome is unknowable from this side. A distinct typed outcome —
-    /// not a runtime fault (no typed reply) and not a generic operational error — that never
-    /// implies a retry: a read-only refresh observes the store's current state.
-    OutcomeUnknown,
+    /// A durable call was dispatched but no exact valid correlated reply could
+    /// be accepted. The cause kind and its stable diagnostic code remain
+    /// orthogonal to this outcome and never imply a retry.
+    OutcomeUnknown {
+        cause: &'static str,
+        cause_code: &'static str,
+    },
     /// Family 4 specialization: an aggregate compiler resource-limit outcome. Unlike a
     /// bare operational error it carries the typed kind detail — which fixed bound was
     /// exhausted — so a caller (or a bound-raise audit) can bisect which limit fired
@@ -97,11 +99,11 @@ impl Record {
                 Some(text) => format!("{code}: {text}"),
                 None => code.to_string(),
             },
-            Record::OutcomeUnknown => format!(
-                "{}: the call was dispatched but no complete reply could be read, so its \
+            Record::OutcomeUnknown { cause, cause_code } => format!(
+                "{}: the call was dispatched but no exact valid reply could be accepted, so its \
                  outcome is unknown and it was not retried; run a read-only export to observe \
-                 the store's current state",
-                marrow_codes::Code::RunOutcomeUnknown.as_str()
+                 the store's current state (cause: {cause}, {cause_code})",
+                marrow_codes::Code::RunOutcomeUnknown.as_str(),
             ),
             Record::CompilerResourceLimit { kind_detail } => format!(
                 "{}: {kind_detail}",
@@ -153,9 +155,11 @@ impl Record {
                 r#"{{"code":{},"kind":"run","outcome":"error"}}"#,
                 json_string(code)
             ),
-            Record::OutcomeUnknown => format!(
-                r#"{{"code":{},"kind":"run","outcome":"outcome_unknown"}}"#,
-                json_string(marrow_codes::Code::RunOutcomeUnknown.as_str())
+            Record::OutcomeUnknown { cause, cause_code } => format!(
+                r#"{{"cause":{},"cause_code":{},"code":{},"kind":"run","outcome":"outcome_unknown"}}"#,
+                json_string(cause),
+                json_string(cause_code),
+                json_string(marrow_codes::Code::RunOutcomeUnknown.as_str()),
             ),
             Record::CompilerResourceLimit { kind_detail } => format!(
                 r#"{{"code":{},"kind":"run","kind_detail":{},"outcome":"error"}}"#,
@@ -502,14 +506,23 @@ mod tests {
     #[test]
     fn outcome_unknown_is_a_distinct_typed_state() {
         assert_eq!(
-            Record::OutcomeUnknown.to_jsonl(&[], &[]),
-            r#"{"code":"run.outcome_unknown","kind":"run","outcome":"outcome_unknown"}"#,
+            Record::OutcomeUnknown {
+                cause: "wire",
+                cause_code: "wire.malformed",
+            }
+            .to_jsonl(&[], &[]),
+            r#"{"cause":"wire","cause_code":"wire.malformed","code":"run.outcome_unknown","kind":"run","outcome":"outcome_unknown"}"#,
         );
-        let text = Record::OutcomeUnknown.to_text(&[], &[]);
+        let text = Record::OutcomeUnknown {
+            cause: "wire",
+            cause_code: "wire.malformed",
+        }
+        .to_text(&[], &[]);
         assert!(
             text.contains("run.outcome_unknown"),
             "carries the code: {text}"
         );
+        assert!(text.contains("wire.malformed"));
         assert!(
             text.contains("outcome is unknown"),
             "names the state: {text}"

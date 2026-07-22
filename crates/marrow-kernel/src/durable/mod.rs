@@ -16,6 +16,7 @@
 //! parked until their owners land them.
 
 mod attach;
+mod native_owner;
 mod physical;
 mod plan;
 mod session_host;
@@ -24,23 +25,27 @@ mod store;
 pub use attach::{
     AttachError, AttachmentId, CeilingIdToken, DeploymentCeiling, EphemeralAttachment,
 };
+pub use native_owner::NativeStoreOwner;
 pub use session_host::SessionHost;
 pub use store::{Durable, DurableStore, ReadSession, TxnSession};
 
 /// The engine error the store surfaces, re-exported so a downstream lifecycle owner can
 /// classify a native open/audit failure without a direct dependency on the byte-engine
 /// crate (the path kernel stays the engine's only consumer).
-pub use marrow_store::StoreError;
+pub use marrow_store::{
+    NATIVE_ENGINE_FILE, NATIVE_LOCK_FILE, NativeLockError, NativeLockOwner, NativeOwnerOpenError,
+    StoreError,
+};
 
 /// A native, redb-backed durable store — the concrete type [`DurableStore::open_native`]
 /// yields. Named as an alias so a downstream lifecycle owner can hold a native store without
 /// naming the byte-engine crate.
-pub type NativeStore = DurableStore<marrow_store::NativeEngine>;
+pub type NativeStore = NativeStoreOwner;
 
 /// The native engine's on-disk format version, re-exported so a downstream lifecycle owner
 /// records the engine tuple (FR01 R2) from the engine's single owner rather than a mirrored
 /// literal — without a direct dependency on the byte-engine crate.
-pub const NATIVE_ENGINE_FORMAT_VERSION: u32 = marrow_store::NativeEngine::FORMAT_VERSION;
+pub const NATIVE_ENGINE_FORMAT_VERSION: u32 = marrow_store::NATIVE_ENGINE_FORMAT_VERSION;
 
 use std::num::NonZeroU32;
 

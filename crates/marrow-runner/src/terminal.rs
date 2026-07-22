@@ -52,15 +52,83 @@ pub enum CallOutcome {
     },
     /// The runner declined the request with a typed code.
     Reject { code: String },
-    /// The request was dispatched to the runner, but no complete reply could be read after a
-    /// socket I/O failure, so the call's durable outcome is unknowable from this side
+    /// The request was dispatched to the runner, but no exact valid correlated reply could be
+    /// accepted, so the call's durable outcome is unknowable from this side
     /// ([`LossClass::OutcomeUnknown`](marrow_local_wire::LossClass::OutcomeUnknown)). It is
     /// **not** replayed — a mutating call whose outcome is unknown must never run twice — and
-    /// a read-only refresh observes the store's current state. Distinct from an arrived but
-    /// malformed reply, a runtime fault (which is a typed reply), and a pre-dispatch
-    /// [`ClientError`] (which is safe to consider undone): the call may have run, wholly or
-    /// partly.
-    OutcomeUnknown,
+    /// a read-only refresh observes the store's current state. The orthogonal cause records
+    /// transport, wire, correlation, unsolicited-message, or value-decode failure. A valid
+    /// runtime-fault reply and a pre-dispatch [`ClientError`] remain distinct.
+    OutcomeUnknown { cause: OutcomeUnknownCause },
+}
+
+/// Orthogonal evidence explaining why no exact valid reply could be accepted
+/// after a request was completely written. The call outcome remains unknown for
+/// every variant; the cause never downgrades it to an ordinary client error.
+#[derive(Debug)]
+pub enum OutcomeUnknownCause {
+    /// Socket I/O failed or timed out while reading the reply.
+    Io(std::io::Error),
+    /// The reply frame or message violated the local-wire grammar.
+    Wire(WireError),
+    /// The reply carried a call turn other than the dispatched turn.
+    TurnMismatch { expected: u32, received: u32 },
+    /// A complete non-call message arrived while a call reply was required.
+    UnsolicitedMessage,
+    /// A value reply did not decode against the export's sealed return type.
+    ReplyDecode,
+}
+
+impl OutcomeUnknownCause {
+    /// The stable cause discriminator, independent of its diagnostic code.
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Self::Io(_) => "io",
+            Self::Wire(_) => "wire",
+            Self::TurnMismatch { .. } => "turn_mismatch",
+            Self::UnsolicitedMessage => "unsolicited_message",
+            Self::ReplyDecode => "reply_decode",
+        }
+    }
+
+    /// The stable code for the distinct post-dispatch cause.
+    pub fn code(&self) -> &'static str {
+        use marrow_codes::Code;
+        match self {
+            Self::Io(_) => Code::IoRead.as_str(),
+            Self::Wire(error) => error.code_str(),
+            Self::TurnMismatch { .. } | Self::UnsolicitedMessage => Code::WireMalformed.as_str(),
+            Self::ReplyDecode => Code::RunnerReplyEncode.as_str(),
+        }
+    }
+}
+
+/// Require the one call-reply turn corresponding to a completely written
+/// request. A non-call message is unsolicited; another call turn is a
+/// correlation mismatch.
+pub(crate) fn require_reply_turn(
+    expected: u32,
+    received: Option<u32>,
+) -> Result<(), OutcomeUnknownCause> {
+    match received {
+        Some(received) if received == expected => Ok(()),
+        Some(received) => Err(OutcomeUnknownCause::TurnMismatch { expected, received }),
+        None => Err(OutcomeUnknownCause::UnsolicitedMessage),
+    }
+}
+
+/// Preserve the typed reason a post-dispatch operation failed while the public
+/// call disposition remains outcome-unknown.
+pub(crate) fn post_dispatch_cause(error: ClientError) -> OutcomeUnknownCause {
+    match error {
+        ClientError::Io(error) => OutcomeUnknownCause::Io(error),
+        ClientError::Wire(error) => OutcomeUnknownCause::Wire(error),
+        ClientError::ReplyDecode => OutcomeUnknownCause::ReplyDecode,
+        ClientError::Handshake
+        | ClientError::ImageStage(_)
+        | ClientError::Spawn(_)
+        | ClientError::Descriptor => OutcomeUnknownCause::UnsolicitedMessage,
+    }
 }
 
 /// Why a companion call could not complete. These are the terminal's own operational errors —
@@ -242,8 +310,8 @@ pub(crate) fn connect_and_handshake(
     stream.set_nonblocking(true).map_err(ClientError::Io)?;
 
     write_message(&mut stream, &ClientMessage::Hello { nonce }, deadline)?;
-    match read_message(&mut stream, deadline)? {
-        ServerMessage::Ready { session, interface }
+    match read_message_with_turn(&mut stream, deadline)? {
+        (ServerMessage::Ready { session, interface }, None)
             if session == descriptor.session && interface == descriptor.interface => {}
         _ => return Err(ClientError::Handshake),
     }
@@ -312,7 +380,16 @@ pub(crate) fn write_message(
     message: &ClientMessage,
     timeout: Duration,
 ) -> Result<(), ClientError> {
-    let frame = message.encode().map_err(ClientError::Wire)?;
+    write_message_with_turn(stream, message, 0, timeout)
+}
+
+pub(crate) fn write_message_with_turn(
+    stream: &mut UnixStream,
+    message: &ClientMessage,
+    turn: u32,
+    timeout: Duration,
+) -> Result<(), ClientError> {
+    let frame = message.encode_with_turn(turn).map_err(ClientError::Wire)?;
     let deadline = Instant::now() + timeout;
     let mut buf = frame.as_slice();
     while !buf.is_empty() {
@@ -325,17 +402,17 @@ pub(crate) fn write_message(
     Ok(())
 }
 
-pub(crate) fn read_message(
+pub(crate) fn read_message_with_turn(
     stream: &mut UnixStream,
     timeout: Duration,
-) -> Result<ServerMessage, ClientError> {
+) -> Result<(ServerMessage, Option<u32>), ClientError> {
     let deadline = Instant::now() + timeout;
     let mut header = [0u8; 4];
     read_exact_deadline(stream, &mut header, deadline)?;
     let len = frame_body_len(header).map_err(ClientError::Wire)?;
     let mut body = vec![0u8; len];
     read_exact_deadline(stream, &mut body, deadline)?;
-    ServerMessage::decode(&body).map_err(ClientError::Wire)
+    ServerMessage::decode_with_turn(&body).map_err(ClientError::Wire)
 }
 
 fn read_exact_deadline(

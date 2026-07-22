@@ -158,7 +158,8 @@ lands; a retired identity is never minted over.
 
 Output is text by default — the returned value, or `absent` for a vacant
 optional. `--format jsonl` prints one canonical JSON object: an outcome of
-`value`, `diagnostic`, `artifact_rejected`, `fault`, `incomplete`, or `error`,
+`value`, `diagnostic`, `artifact_rejected`, `fault`, `incomplete`,
+`outcome_unknown`, or `error`,
 keeping the failure families distinct. A source diagnostic (`check.*`,
 `parse.*`), an image rejection (`image.*`), a source-mapped runtime fault
 (`run.*`), and an operational error (`store.*`, `io.*`) never collapse into one
@@ -167,6 +168,12 @@ separate `durable` field: `known_old`, `known_new`, or `unknown`. It says the
 invocation did not return; the durable field says only whether its proposed
 commit is proven absent, proven installed, or unclassified. No form supplies a
 return value or triggers an automatic retry.
+
+An `outcome_unknown` run means the request was completely dispatched but no
+exact valid correlated reply could be accepted. Its `cause` field distinguishes
+transport, wire, turn mismatch, unsolicited message, and value decode; the
+associated `cause_code` retains the stable diagnostic code. The call is never
+retried automatically.
 
 Exit `0` carries the value; exit `1` is any failure family (including a durable
 export parked in the trough); exit `2` is a usage error (an unknown export or a

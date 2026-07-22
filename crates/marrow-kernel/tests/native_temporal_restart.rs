@@ -13,7 +13,7 @@
 //! (`marrow-runner/tests/native_attach.rs`).
 
 use marrow_kernel::codec::key::{KeyScalar, encode_key_value};
-use marrow_store::{ByteEngine, NativeEngine, ReadView, WriteTxn};
+use marrow_store::{ByteEngine, NativeEngineOwner, ReadView, WriteTxn};
 
 fn scratch(tag: &str) -> std::path::PathBuf {
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -28,7 +28,7 @@ fn scratch(tag: &str) -> std::path::PathBuf {
         std::process::id()
     ));
     std::fs::create_dir_all(&dir).expect("scratch dir");
-    dir.join("store.redb")
+    dir
 }
 
 /// Write each key scalar (scrambled from language order) as a cell whose value echoes the
@@ -36,8 +36,12 @@ fn scratch(tag: &str) -> std::path::PathBuf {
 /// engine's ascending scan order.
 fn round_trip(tag: &str, scrambled: &[KeyScalar]) -> Vec<(Vec<u8>, Vec<u8>)> {
     let path = scratch(tag);
+    NativeEngineOwner::provision(&path).expect("provision native store");
     {
-        let mut engine = NativeEngine::open(&path).expect("open native store");
+        let mut engine = NativeEngineOwner::open_existing_admitted(&path, [0x33; 16], || {
+            Ok::<_, std::convert::Infallible>(())
+        })
+        .expect("open native store");
         let mut txn = engine.begin().expect("begin");
         for key in scrambled {
             let encoded = encode_key_value(key);
@@ -52,10 +56,13 @@ fn round_trip(tag: &str, scrambled: &[KeyScalar]) -> Vec<(Vec<u8>, Vec<u8>)> {
         // Dropping `engine` closes the file: the next open is a genuine restart.
     }
 
-    let engine = NativeEngine::open(&path).expect("reopen native store");
+    let engine = NativeEngineOwner::open_existing_admitted(&path, [0x33; 16], || {
+        Ok::<_, std::convert::Infallible>(())
+    })
+    .expect("reopen native store");
     let view = engine.read_view().expect("read view");
     let cells = view.scan_after(&[], &[]).expect("scan");
-    let _ = std::fs::remove_dir_all(path.parent().expect("parent"));
+    let _ = std::fs::remove_dir_all(&path);
     cells
 }
 

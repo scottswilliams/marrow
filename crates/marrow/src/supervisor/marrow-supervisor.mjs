@@ -66,10 +66,11 @@ export const DURABLE_STATE = Object.freeze({
 
 /** A call was lost to runner death; `loss` is one of the `LOSS` classes. */
 export class MarrowLossError extends Error {
-  constructor(loss) {
+  constructor(loss, cause = undefined) {
     super(`marrow call lost: ${loss}`);
     this.name = "MarrowLossError";
     this.loss = loss;
+    this.cause = cause;
   }
 }
 
@@ -1031,7 +1032,7 @@ export class Session {
     this.exitHook = () => this.terminate();
     process.on("exit", this.exitHook);
 
-    const die = () => this.fail();
+    const die = (cause) => this.fail(cause instanceof Error ? cause : undefined);
     this.socket.on("data", (chunk) => this.onData(chunk));
     this.socket.on("close", die);
     this.socket.on("error", die);
@@ -1107,11 +1108,16 @@ export class Session {
     try {
       message = decodeOneFrame(this.frames, chunk);
     } catch (error) {
-      // The reply stream is no longer trustworthy: fail the in-flight call with
-      // the wire rejection and close fail-closed.
+      // A complete request was dispatched, so a malformed reply cannot replace
+      // its outcome-unknown disposition. Retain the exact wire cause alongside it.
       const pending = this.inFlight;
       this.inFlight = null;
-      if (pending !== null) pending.reject(error);
+      const cause = error instanceof WireFormatError
+        ? error
+        : protocol("invalid reply frame");
+      if (pending !== null) {
+        pending.reject(new MarrowLossError(LOSS.OUTCOME_UNKNOWN, cause));
+      }
       this.terminate();
       return;
     }
@@ -1131,7 +1137,10 @@ export class Session {
     if (!isWireU32(message?.turn) || message.turn !== pending.turn) {
       this.inFlight = null;
       clearTimeout(this.replyDeadline);
-      pending.reject(protocol("reply turn does not match the in-flight request"));
+      pending.reject(new MarrowLossError(
+        LOSS.OUTCOME_UNKNOWN,
+        protocol("reply turn does not match the in-flight request"),
+      ));
       this.terminate();
       return;
     }
@@ -1181,7 +1190,10 @@ export class Session {
     ) {
       pending.reject(new MarrowReject(message.code));
     } else {
-      pending.reject(protocol("invalid reply schema"));
+      pending.reject(new MarrowLossError(
+        LOSS.OUTCOME_UNKNOWN,
+        protocol("invalid reply schema"),
+      ));
       this.terminate();
       return;
     }
@@ -1189,7 +1201,7 @@ export class Session {
   }
 
   /** Classify and fail every outstanding call after runner/socket death. */
-  fail() {
+  fail(cause = undefined) {
     if (this.dead) return;
     this.dead = true;
     clearTimeout(this.replyDeadline);
@@ -1198,7 +1210,7 @@ export class Session {
     this.inFlight = null;
     this.queue = [];
     if (inFlight !== null) {
-      inFlight.reject(new MarrowLossError(LOSS.OUTCOME_UNKNOWN));
+      inFlight.reject(new MarrowLossError(LOSS.OUTCOME_UNKNOWN, cause));
     }
     for (const call of queued) {
       call.reject(new MarrowLossError(LOSS.INTERRUPTED));

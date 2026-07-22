@@ -34,7 +34,9 @@ export const DURABLE_STATE: Readonly<{
 export type DurableState = "known_old" | "known_new" | "unknown";
 
 export class MarrowLossError extends Error {
+  constructor(loss: LossClass, cause?: Error);
   readonly loss: LossClass;
+  readonly cause?: Error;
 }
 
 export class MarrowFault extends Error {

@@ -1,8 +1,8 @@
 //! Marrow's ordered-byte storage engine.
 //!
 //! This crate defines the narrow byte-oriented engine contract ([`ByteEngine`])
-//! and its two implementors — an in-memory engine ([`MemoryEngine`]) and a
-//! redb-backed native engine ([`NativeEngine`]) — under one conformance suite. It
+//! and its two implementors — an in-memory engine ([`MemoryEngine`]) and an
+//! opaque redb-backed owner ([`NativeEngineOwner`]) — under one conformance suite. It
 //! orders opaque bytes: it does not parse `.mw`, resolve schemas, assign language
 //! identity, or interpret key or value bytes. The logical key and value codecs
 //! that give those bytes meaning are owned by the path kernel (`marrow-kernel`).
@@ -13,10 +13,20 @@
 //! construction. There is no rich scan family, prefix delete, transaction
 //! nesting, or snapshot pin/unpin pair, and no raw public store handle or backend
 //! registry.
+//!
+//! Native storage cannot be opened without its process owner lock. The raw
+//! engine is intentionally not part of this crate's public surface:
+//!
+//! ```compile_fail
+//! use marrow_store::NativeEngine;
+//! let _ = NativeEngine::open(std::path::Path::new("store.redb"));
+//! ```
 
 mod engine;
 mod error;
 mod mem;
+#[cfg(feature = "native")]
+mod native_owner;
 #[cfg(feature = "native")]
 mod redb;
 mod traversal;
@@ -30,7 +40,10 @@ pub use engine::{ByteEngine, Cell, CommitOutcome, ReadView, WriteTxn};
 pub use error::StoreError;
 pub use mem::MemoryEngine;
 #[cfg(feature = "native")]
-pub use redb::NativeEngine;
+pub use native_owner::{
+    NATIVE_ENGINE_FILE, NATIVE_ENGINE_FORMAT_VERSION, NATIVE_LOCK_FILE, NativeEngineOwner,
+    NativeLockError, NativeLockOwner, NativeOwnerOpenError, NativeOwnerTxn, NativeOwnerView,
+};
 
 /// Freezes the crate's public surface against removal and rename: every `pub`
 /// export named in `lib.rs` appears below, so deleting or renaming one fails to
@@ -67,12 +80,11 @@ mod public_surface_audit {
 
         #[cfg(feature = "native")]
         {
-            let _open: fn(&std::path::Path) -> Result<NativeEngine, StoreError> =
-                NativeEngine::open;
-            let _open_existing: fn(&std::path::Path) -> Result<NativeEngine, StoreError> =
-                NativeEngine::open_existing;
-            let _open_ro: fn(&std::path::Path) -> Result<NativeEngine, StoreError> =
-                NativeEngine::open_read_only;
+            fn native_engine<E: ByteEngine>() {}
+            let _owner = native_engine::<NativeEngineOwner>;
+            let _format = NATIVE_ENGINE_FORMAT_VERSION;
+            let _engine_file = NATIVE_ENGINE_FILE;
+            let _lock_file = NATIVE_LOCK_FILE;
         }
     }
 }

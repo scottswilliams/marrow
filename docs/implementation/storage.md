@@ -27,10 +27,11 @@ the workspace DAG gate). The conformance suite keeps the memory and redb
 implementations aligned on the same byte-level laws, including the documented
 filesystem envelope (fsync-based durability; see the crate docs).
 
-The native backend has separate create-capable and existing-only constructors.
-Provisioning is the sole lifecycle path that uses creation and stamps the engine
-format. Ordinary open and commit recovery use the same write-capable
-existing-only operation. A missing file remains absent; an empty, malformed,
+The native backend exposes no raw engine constructor. Its lower opaque owner
+derives `lock` and `store.redb` from one canonical store directory and keeps the
+real advisory lock inseparable from the engine. Provisioning alone calls a
+non-returning create-only operation that stamps the engine format. Ordinary
+open and commit recovery use existing-only operations. A missing file remains absent; an empty, malformed,
 unstamped, foreign, dangling, or unreadable file is refused rather than created
 or adopted.
 
@@ -52,17 +53,17 @@ opaque affine recovery fact owning the exact before state, proposed-after state,
 and the persistent lifecycle's store-instance/path scope. The fact has no public
 constructor, clone, byte accessor, or serialization.
 
-The native lifecycle resolves that fact while retaining the same advisory owner
-lock. It first revokes clean-on-drop, closes the indeterminate engine, freshly
-opens the existing engine file at the retained path, performs a full integrity
-audit, and asks the kernel to consume and compare the fact. Exact equality with
+The lower native owner quarantines its advisory lock before returning an
+indeterminate commit verdict. The kernel's opaque native semantic owner resolves
+the fact while retaining that same lower owner: it closes the indeterminate
+engine, freshly opens the existing engine file at the retained path, performs a
+full integrity audit, and privately consumes and compares the fact. Exact equality with
 the proposed state is known new; equality with the captured before state is known
 old. A third value, scope mismatch, malformed cell, failed read, failed open, or
-failed audit is unknown. Only a known result re-arms clean close and returns the
-fresh store owner. Unknown retires it, leaves the descriptor unclean, and retains
-the advisory lock until process exit so no later session in the same process can
-cross the unresolved boundary. Losing the affine fact and dropping its poisoned
-owner takes the same quarantine path.
+failed audit is unknown. A known result returns a usable owner only in that same
+dedicated process. Quarantine is irreversible: dropping a known owner, losing
+the affine fact, or reaching unknown all retain the nonempty descriptor and
+advisory lock until process exit. No public re-arm operation exists.
 `OpenStore` keeps that engine and its owner lock private and implements only the
 session-opening capability, so safe callers cannot detach a raw engine handle
 from the lock. Classification never replays application bytecode and never

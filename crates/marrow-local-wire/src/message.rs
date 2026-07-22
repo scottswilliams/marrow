@@ -665,6 +665,7 @@ mod tests {
         let extra = json::encode(&super::object(vec![
             ("kind", Json::Str("value".to_string())),
             ("data", Json::Int(1)),
+            ("turn", Json::Int(0)),
             ("extra", Json::Int(2)),
         ]));
         let body = [&[crate::PROTOCOL_VERSION], extra.as_bytes()].concat();
@@ -674,6 +675,7 @@ mod tests {
             ("kind", Json::Str("incomplete".to_string())),
             ("code", Json::Str("run.commit".to_string())),
             ("durable", Json::Str("maybe_new".to_string())),
+            ("turn", Json::Int(0)),
             (
                 "span",
                 super::object(vec![("line", Json::Int(1)), ("column", Json::Int(1))]),

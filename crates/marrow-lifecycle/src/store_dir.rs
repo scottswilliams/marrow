@@ -17,13 +17,13 @@
 use std::path::{Path, PathBuf};
 
 /// The engine database file name within a store directory.
-pub const ENGINE_FILE: &str = "store.redb";
+pub const ENGINE_FILE: &str = marrow_kernel::durable::NATIVE_ENGINE_FILE;
 /// The persisted envelope file name within a store directory.
 pub const ENVELOPE_FILE: &str = "envelope";
 /// The logical-head file name within a store directory.
 pub const HEAD_FILE: &str = "head";
 /// The owner lock file name within a store directory.
-pub const LOCK_FILE: &str = "lock";
+pub const LOCK_FILE: &str = marrow_kernel::durable::NATIVE_LOCK_FILE;
 
 /// The engine database path within `dir`.
 pub fn engine_path(dir: &Path) -> PathBuf {
@@ -41,6 +41,7 @@ pub fn head_path(dir: &Path) -> PathBuf {
 }
 
 /// The owner lock file path within `dir`.
+#[cfg(test)]
 pub fn lock_path(dir: &Path) -> PathBuf {
     dir.join(LOCK_FILE)
 }

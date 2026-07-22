@@ -22,8 +22,9 @@ use std::path::{Path, PathBuf};
 
 use marrow_codes::Code;
 use marrow_kernel::durable::{
-    CommitRecovery, DemandCoverage, DurableCommitState, InvocationGrant, NativeStore, ReadSession,
-    SessionError, SessionHost, SiteSpec, StoreError, StoreSchema, TxnSession,
+    CommitRecovery, DemandCoverage, DurableCommitState, InvocationGrant, NativeOwnerOpenError,
+    NativeStore, ReadSession, SessionError, SessionHost, SiteSpec, StoreError, StoreSchema,
+    TxnSession,
 };
 
 use crate::codec::FormatError;
@@ -31,7 +32,7 @@ use crate::durable_fs::{sync_dir, write_file};
 use crate::envelope::StoreEnvelope;
 use crate::head::LogicalHead;
 use crate::instance::StoreInstanceId;
-use crate::lock::{LockError, OwnerLock};
+use crate::lock::LockError;
 use crate::store_dir;
 
 /// A non-creating classification of a store directory.
@@ -166,16 +167,9 @@ pub fn provision(dest: &Path, request: ProvisionRequest) -> Result<Provisioned, 
 fn build_in_temp(temp: &Path, request: &ProvisionRequest) -> Result<(), ProvisionError> {
     create_private_dir(temp).map_err(ProvisionError::Io)?;
 
-    // Create the engine database through the kernel (the path kernel is the engine's only
-    // consumer). Opening creates and stamps an empty store; dropping it closes the file,
-    // which persists.
-    let store = NativeStore::open_native(
-        &store_dir::engine_path(temp),
-        request.schemas.clone(),
-        request.sites.clone(),
-    )
-    .map_err(ProvisionError::Store)?;
-    drop(store);
+    // Provisioning is the sole create/stamp path. It returns no engine or store
+    // capability, so the newly created body cannot escape without an owner lock.
+    NativeStore::provision(temp).map_err(ProvisionError::Store)?;
 
     write_file(&store_dir::envelope_path(temp), &request.envelope.encode())
         .map_err(ProvisionError::Io)?;
@@ -197,33 +191,10 @@ fn build_in_temp(temp: &Path, request: &ProvisionRequest) -> Result<(), Provisio
 ///     let _lock = opened.lock;
 /// }
 /// ```
-struct LockedNativeStore {
-    store: Option<NativeStore>,
-    lock: OwnerLock,
-}
-
-impl Drop for LockedNativeStore {
-    fn drop(&mut self) {
-        // An indeterminate engine verdict poisons the kernel handle before its affine
-        // recovery fact leaves the transaction. If safe code loses that fact or drops the
-        // owner without resolving it, the owner lock must not record a clean shutdown.
-        if self
-            .store
-            .as_ref()
-            .is_some_and(NativeStore::has_unresolved_recovery)
-        {
-            self.lock.quarantine_until_process_exit();
-        }
-    }
-}
-
 pub struct OpenStore {
-    owner: LockedNativeStore,
+    owner: NativeStore,
     pub envelope: StoreEnvelope,
     pub head: LogicalHead,
-    dir: PathBuf,
-    schemas: Vec<StoreSchema>,
-    sites: Vec<SiteSpec>,
 }
 
 impl SessionHost for OpenStore {
@@ -234,11 +205,7 @@ impl SessionHost for OpenStore {
         grant: InvocationGrant,
         demand: DemandCoverage,
     ) -> Result<ReadSession<'_, Self::Engine>, SessionError> {
-        self.owner
-            .store
-            .as_mut()
-            .expect("a live owner retains its native store")
-            .read_session(grant, demand)
+        self.owner.read_session(grant, demand)
     }
 
     fn txn_session(
@@ -246,57 +213,32 @@ impl SessionHost for OpenStore {
         grant: InvocationGrant,
         demand: DemandCoverage,
     ) -> Result<TxnSession<'_, Self::Engine>, SessionError> {
-        self.owner
-            .store
-            .as_mut()
-            .expect("a live owner retains its native store")
-            .txn_session(grant, demand)
+        self.owner.txn_session(grant, demand)
     }
 }
 
 impl OpenStore {
     /// Consume an indeterminate commit's sole affine fact while retaining the
     /// same owner lock across old-engine close, fresh reopen, full integrity
-    /// audit, and exact witness comparison. A known result re-arms clean close
-    /// and returns the freshly opened owner for later independent invocations;
-    /// unknown retires it and leaves the descriptor unclean.
-    pub fn resolve_recovery(
-        mut self,
-        recovery: CommitRecovery,
-    ) -> (DurableCommitState, Option<Self>) {
-        self.owner.lock.mark_unclean();
-        drop(
-            self.owner
-                .store
-                .take()
-                .expect("recovery consumes the original native store"),
-        );
-
-        let engine_path = store_dir::engine_path(&self.dir);
-        let mut reopened = match NativeStore::open_native_with_recovery_scope(
-            &engine_path,
-            self.schemas.clone(),
-            self.sites.clone(),
-            *self.envelope.instance.bytes(),
-        ) {
-            Ok(store) => store,
-            Err(_) => {
-                self.owner.lock.quarantine_until_process_exit();
-                return (DurableCommitState::Unknown, None);
-            }
-        };
-        if reopened.audit().is_err() {
-            self.owner.lock.quarantine_until_process_exit();
-            return (DurableCommitState::Unknown, None);
-        }
-        let state = reopened.resolve_recovery(recovery);
-        if state == DurableCommitState::Unknown {
-            self.owner.lock.quarantine_until_process_exit();
-            return (state, None);
-        }
-        self.owner.store = Some(reopened);
-        self.owner.lock.mark_clean();
-        (state, Some(self))
+    /// audit, and exact witness comparison. A known result returns the freshly
+    /// opened owner for later invocations in this process, but quarantine stays
+    /// irreversible and its drop cannot release the lock. Unknown retires the
+    /// owner under the same process-lifetime quarantine.
+    pub fn resolve_recovery(self, recovery: CommitRecovery) -> (DurableCommitState, Option<Self>) {
+        let Self {
+            owner,
+            envelope,
+            head,
+        } = self;
+        let (state, owner) = owner.resolve_recovery(recovery);
+        (
+            state,
+            owner.map(|owner| Self {
+                owner,
+                envelope,
+                head,
+            }),
+        )
     }
 }
 
@@ -413,52 +355,41 @@ pub(crate) fn open_admitted<R>(
     }
 
     let envelope = decode_envelope(&dir).map_err(AdmitError::Open)?;
-    let head = decode_head(&dir).map_err(AdmitError::Open)?;
+    let mut admitted_head = None;
 
-    // Take the single-owner lock before opening the engine; a second owner is named here.
-    let acquired = OwnerLock::acquire(&dir, envelope.instance)
-        .map_err(|error| AdmitError::Open(OpenError::Lock(error)))?;
-
-    // Admission runs after the lock and before any engine open: a refusal drops the lock on
-    // return and touches no engine, so a refused image never opens the store.
-    admit(&head).map_err(AdmitError::Refused)?;
-
-    let mut acquired = acquired;
-    let mut store = NativeStore::open_native_with_recovery_scope(
-        &store_dir::engine_path(&dir),
-        schemas.clone(),
-        sites.clone(),
+    // The kernel capsule composes lock, admission, existing-only engine open,
+    // and any required unclean-open audit without exposing its lower owner.
+    let owner = NativeStore::open_existing_admitted(
+        &dir,
         *envelope.instance.bytes(),
-    )
-    .map_err(|error| AdmitError::Open(OpenError::Store(error)))?;
-
-    // Unclean prior shutdown: run the crash-path integrity audit. (See the module note — this
-    // covers crash-path corruption only; it makes no claim about an externally flipped bit in
-    // a cleanly-closed store.) On audit failure the lock drops un-marked, so the uncleanness
-    // persists and the next open audits again rather than skipping the check.
-    if acquired.prior_unclean {
-        store.audit().map_err(|error| match error {
-            StoreError::Corruption { message } => {
-                AdmitError::Open(OpenError::Corruption { message })
-            }
-            other => AdmitError::Open(OpenError::Store(other)),
-        })?;
-    }
-
-    // The open is healthy: record it so a clean close truncates the lock body to the clean
-    // signal. Until this point a drop preserves the unclean descriptor.
-    acquired.lock.mark_clean();
-
-    Ok(OpenStore {
-        owner: LockedNativeStore {
-            store: Some(store),
-            lock: acquired.lock,
-        },
-        envelope,
-        head,
-        dir,
         schemas,
         sites,
+        || {
+            // Read and admit the mutable logical head only after the physical
+            // owner lock is held. The callback receives no store capability.
+            let head = decode_head(&dir).map_err(Ok)?;
+            admit(&head).map_err(Err)?;
+            admitted_head = Some(head);
+            Ok::<(), Result<OpenError, R>>(())
+        },
+    )
+    .map_err(|error| match error {
+        NativeOwnerOpenError::Io(error) => AdmitError::Open(OpenError::Io(error)),
+        NativeOwnerOpenError::Lock(error) => {
+            AdmitError::Open(OpenError::Lock(LockError::from(error)))
+        }
+        NativeOwnerOpenError::Refused(Ok(error)) => AdmitError::Open(error),
+        NativeOwnerOpenError::Refused(Err(refusal)) => AdmitError::Refused(refusal),
+        NativeOwnerOpenError::Store(StoreError::Corruption { message }) => {
+            AdmitError::Open(OpenError::Corruption { message })
+        }
+        NativeOwnerOpenError::Store(error) => AdmitError::Open(OpenError::Store(error)),
+    })?;
+
+    Ok(OpenStore {
+        owner,
+        envelope,
+        head: admitted_head.expect("a successful open completed head admission"),
     })
 }
 
@@ -505,10 +436,6 @@ pub(crate) fn create_private_dir(dir: &Path) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use marrow_kernel::codec::key::KeyScalar;
-    use marrow_kernel::codec::value::{RuntimeScalar, ScalarKind};
-    use marrow_kernel::durable::{CommitResult, Durable, EntryValue, FieldSchema, SiteTarget};
-    use marrow_kernel::equality::ValueDomain;
 
     struct ScratchDir(std::path::PathBuf);
 
@@ -564,307 +491,33 @@ mod tests {
         let _ = std::fs::remove_dir_all(&base);
     }
 
-    fn create_empty_native_store(dir: &Path) {
-        let store = NativeStore::open_native(&store_dir::engine_path(dir), Vec::new(), Vec::new())
-            .expect("create native engine through the provisioning constructor");
-        drop(store);
-    }
-
-    fn create_seeded_native_store(dir: &Path) -> (Vec<StoreSchema>, Vec<SiteSpec>) {
-        let schemas = vec![StoreSchema {
-            root_name: "audit".into(),
-            key: vec![ScalarKind::Str],
-            fields: vec![FieldSchema::scalar("value", ScalarKind::Int, true)],
-            groups: Vec::new(),
-            branches: Vec::new(),
-            indexes: Vec::new(),
-        }];
-        let sites = vec![SiteSpec {
-            root: 0,
-            target: SiteTarget::WholePayload,
-        }];
-        let mut store =
-            NativeStore::open_native(&store_dir::engine_path(dir), schemas.clone(), sites.clone())
-                .expect("create seeded native engine");
-        let mut txn = store
-            .txn_session(
-                InvocationGrant::full_store(),
-                DemandCoverage {
-                    read: true,
-                    write: true,
-                },
-            )
-            .expect("seed transaction");
-        let site = txn.site(0);
-        for index in 0..64 {
-            txn.create_entry(
-                &site,
-                &[KeyScalar::Str(format!("k{index:03}"))],
-                EntryValue {
-                    groups: Vec::new(),
-                    fields: vec![Some(ValueDomain::Scalar(RuntimeScalar::Int(index)))],
-                },
-            )
-            .expect("seed entry");
-        }
-        assert!(matches!(txn.commit(), CommitResult::Committed));
-        drop(txn);
-        drop(store);
-        (schemas, sites)
-    }
-
-    #[cfg(unix)]
-    fn assert_child_lock_probe(dir: &Path, instance: StoreInstanceId, expected: &str) {
-        let status = std::process::Command::new(std::env::current_exe().expect("current test exe"))
-            .args([
-                "--exact",
-                "provision::tests::owner_lock_probe_helper",
-                "--ignored",
-                "--nocapture",
-            ])
-            .env("MARROW_COMMIT01_LOCK_DIR", dir)
-            .env("MARROW_COMMIT01_LOCK_INSTANCE", instance.to_hex())
-            .env("MARROW_COMMIT01_LOCK_EXPECTED", expected)
-            .status()
-            .expect("spawn competing owner probe");
-        assert!(status.success(), "competing owner probe failed: {status}");
-    }
-
-    /// A subprocess-only helper for the owner-local recovery KATs. A normal unit-test run
-    /// skips it; a broad ignored run without the coordination environment is a no-op.
-    #[cfg(unix)]
     #[test]
-    #[ignore = "child-process helper for owner-lock recovery fixtures"]
-    fn owner_lock_probe_helper() {
-        let Ok(dir) = std::env::var("MARROW_COMMIT01_LOCK_DIR") else {
-            return;
-        };
-        let spelling = std::env::var("MARROW_COMMIT01_LOCK_INSTANCE").expect("probe instance");
-        assert_eq!(spelling.len(), 32, "probe instance width");
-        let mut bytes = [0u8; 16];
-        for (index, byte) in bytes.iter_mut().enumerate() {
-            *byte = u8::from_str_radix(&spelling[index * 2..index * 2 + 2], 16)
-                .expect("decode probe instance");
-        }
-        let instance = StoreInstanceId::from_bytes(bytes);
-        let expected = std::env::var("MARROW_COMMIT01_LOCK_EXPECTED").expect("probe expectation");
-        match (
-            expected.as_str(),
-            OwnerLock::acquire(Path::new(&dir), instance),
-        ) {
-            ("locked", Err(LockError::StoreInUse { .. })) => {}
-            ("available", Ok(mut acquired)) => {
-                acquired.lock.mark_clean();
-            }
-            (expected, _) => {
-                panic!("owner-lock probe did not observe expected state {expected}");
-            }
-        }
-    }
-
-    /// Recovery keeps the same real advisory lock while the old engine is closed, the
-    /// existing file is reopened, and its complete integrity audit runs. Only after those
-    /// fallible steps succeed may the lifecycle owner restore clean-on-drop.
-    #[cfg(unix)]
-    #[test]
-    fn recovery_reopen_and_audit_keep_a_competing_process_excluded() {
-        let scratch = ScratchDir::new("commit-recovery-owner");
-        let instance = StoreInstanceId::from_bytes([0x51; 16]);
-        create_empty_native_store(&scratch.0);
-
-        let mut acquired = OwnerLock::acquire(&scratch.0, instance).expect("take owner lock");
-        acquired.lock.mark_clean();
-        acquired.lock.mark_unclean();
-        assert_child_lock_probe(&scratch.0, instance, "locked");
-
-        let mut reopened = NativeStore::open_native_with_recovery_scope(
-            &store_dir::engine_path(&scratch.0),
+    fn opaque_native_owner_holds_exclusion_and_clean_drop_releases_it() {
+        let scratch = ScratchDir::new("opaque-owner");
+        NativeStore::provision(&scratch.0).expect("provision native engine");
+        let owner = NativeStore::open_existing_admitted(
+            &scratch.0,
+            [0x51; 16],
             Vec::new(),
             Vec::new(),
-            *instance.bytes(),
+            || Ok::<_, std::convert::Infallible>(()),
         )
-        .expect("existing-only recovery reopen");
-        assert_child_lock_probe(&scratch.0, instance, "locked");
-
-        reopened.audit().expect("full recovery audit");
-        assert_child_lock_probe(&scratch.0, instance, "locked");
-        assert_ne!(
-            std::fs::metadata(store_dir::lock_path(&scratch.0))
-                .expect("unclean owner descriptor")
-                .len(),
-            0,
-            "the owner descriptor stays unclean throughout recovery",
-        );
-
-        drop(reopened);
-        acquired.lock.mark_clean();
-        drop(acquired.lock);
-        assert_child_lock_probe(&scratch.0, instance, "available");
-    }
-
-    /// Once recovery starts, a missing engine cannot be recreated and the lock remains in
-    /// process-lifetime quarantine after the failed existing-only reopen.
-    #[cfg(unix)]
-    #[test]
-    fn missing_engine_during_recovery_is_not_recreated_and_quarantines_the_owner() {
-        let scratch = ScratchDir::new("commit-recovery-missing");
-        let instance = StoreInstanceId::from_bytes([0x52; 16]);
-        let engine = store_dir::engine_path(&scratch.0);
-        create_empty_native_store(&scratch.0);
-
-        let mut lock = OwnerLock::acquire(&scratch.0, instance)
-            .expect("take owner lock")
-            .lock;
-        lock.mark_clean();
-        lock.mark_unclean();
-        std::fs::remove_file(&engine).expect("remove engine during recovery");
-
-        assert!(
-            NativeStore::open_native_with_recovery_scope(
-                &engine,
+        .expect("open owner");
+        assert!(matches!(
+            NativeStore::open_existing_admitted(
+                &scratch.0,
+                [0x52; 16],
                 Vec::new(),
                 Vec::new(),
-                *instance.bytes(),
-            )
-            .is_err(),
-            "recovery must refuse a missing engine",
-        );
-        assert!(!engine.exists(), "recovery must not recreate the engine");
-        drop(lock);
-        assert_child_lock_probe(&scratch.0, instance, "locked");
-        assert_ne!(
-            std::fs::metadata(store_dir::lock_path(&scratch.0))
-                .expect("quarantined owner descriptor")
-                .len(),
-            0,
-            "failed recovery must retain the unclean descriptor",
-        );
-    }
-
-    /// A malformed replacement is neither stamped nor adopted during recovery, and the
-    /// fail-stop lock remains held after the owner drops.
-    #[cfg(unix)]
-    #[test]
-    fn malformed_replacement_during_recovery_is_unchanged_and_quarantines_the_owner() {
-        let scratch = ScratchDir::new("commit-recovery-malformed");
-        let instance = StoreInstanceId::from_bytes([0x53; 16]);
-        let engine = store_dir::engine_path(&scratch.0);
-        create_empty_native_store(&scratch.0);
-
-        let mut lock = OwnerLock::acquire(&scratch.0, instance)
-            .expect("take owner lock")
-            .lock;
-        lock.mark_clean();
-        lock.mark_unclean();
-        std::fs::remove_file(&engine).expect("remove original engine");
-        let replacement = b"not a Marrow redb store";
-        std::fs::write(&engine, replacement).expect("install malformed replacement");
-
-        assert!(
-            NativeStore::open_native_with_recovery_scope(
-                &engine,
-                Vec::new(),
-                Vec::new(),
-                *instance.bytes(),
-            )
-            .is_err(),
-            "recovery must refuse a malformed replacement",
-        );
-        assert_eq!(
-            std::fs::read(&engine).expect("read replacement"),
-            replacement,
-            "recovery must not stamp or rewrite a malformed replacement",
-        );
-        drop(lock);
-        assert_child_lock_probe(&scratch.0, instance, "locked");
-        assert_ne!(
-            std::fs::metadata(store_dir::lock_path(&scratch.0))
-                .expect("quarantined owner descriptor")
-                .len(),
-            0,
-            "failed recovery must retain the unclean descriptor",
-        );
-    }
-
-    /// A valid existing reopen that later fails its full integrity audit is also fail-stop:
-    /// no clean marker is armed, and dropping the recovery owner retains cross-process
-    /// exclusion until this process exits.
-    #[cfg(unix)]
-    #[test]
-    fn failed_recovery_audit_quarantines_the_owner_and_keeps_the_marker_unclean() {
-        use std::io::{Read, Seek, SeekFrom, Write};
-
-        let scratch = ScratchDir::new("commit-recovery-audit-failure");
-        let instance = StoreInstanceId::from_bytes([0x55; 16]);
-        let engine = store_dir::engine_path(&scratch.0);
-        let (schemas, sites) = create_seeded_native_store(&scratch.0);
-
-        let mut lock = OwnerLock::acquire(&scratch.0, instance)
-            .expect("take owner lock")
-            .lock;
-        lock.mark_clean();
-        lock.mark_unclean();
-        let mut reopened = NativeStore::open_native_with_recovery_scope(
-            &engine,
-            schemas,
-            sites,
-            *instance.bytes(),
-        )
-        .expect("existing-only recovery reopen");
-        assert_child_lock_probe(&scratch.0, instance, "locked");
-
-        // Mutate a spread of persisted bytes while the valid existing handle is open. The
-        // storage adapter contains redb's response and the full audit must return a typed
-        // failure rather than accepting the changed body or panicking out of this boundary.
-        let mut file = std::fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .open(&engine)
-            .expect("open engine body for hostile mutation");
-        let mut bytes = Vec::new();
-        file.read_to_end(&mut bytes).expect("read engine body");
-        for offset in (0..bytes.len()).step_by(97) {
-            bytes[offset] ^= 0xFF;
-        }
-        file.seek(SeekFrom::Start(0)).expect("rewind engine body");
-        file.write_all(&bytes).expect("write hostile mutation");
-        file.sync_all().expect("sync hostile mutation");
-        drop(file);
-
-        assert!(
-            reopened.audit().is_err(),
-            "a corrupted body must fail audit"
-        );
-        drop(reopened);
-        drop(lock);
-        assert_child_lock_probe(&scratch.0, instance, "locked");
-        assert_ne!(
-            std::fs::metadata(store_dir::lock_path(&scratch.0))
-                .expect("quarantined owner descriptor")
-                .len(),
-            0,
-            "an audit failure must retain the unclean descriptor",
-        );
-    }
-
-    /// A failure before recovery quarantine preserves the unclean marker but releases the
-    /// advisory lock, allowing a later audited owner to retry.
-    #[cfg(unix)]
-    #[test]
-    fn ordinary_failed_open_before_quarantine_releases_the_lock_unclean() {
-        let scratch = ScratchDir::new("ordinary-open-release");
-        let instance = StoreInstanceId::from_bytes([0x54; 16]);
-
-        let acquired = OwnerLock::acquire(&scratch.0, instance).expect("take owner lock");
-        drop(acquired.lock);
-
-        let retry = OwnerLock::acquire(&scratch.0, instance).expect("retry owner lock");
-        assert!(
-            retry.prior_unclean,
-            "the failed ordinary open must leave the next owner an audit obligation",
-        );
-        drop(retry.lock);
-        assert_child_lock_probe(&scratch.0, instance, "available");
+                || Ok::<_, std::convert::Infallible>(()),
+            ),
+            Err(NativeOwnerOpenError::Lock(_)),
+        ));
+        drop(owner);
+        NativeStore::open_existing_admitted(&scratch.0, [0x52; 16], Vec::new(), Vec::new(), || {
+            Ok::<_, std::convert::Infallible>(())
+        })
+        .expect("clean drop releases exclusion");
     }
 
     fn read_dir_names(dir: &Path) -> Vec<String> {

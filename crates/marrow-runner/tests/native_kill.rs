@@ -199,7 +199,7 @@ fn call_value(
             panic!("post-crash `{name}` was incomplete: {code} ({durable:?})")
         }
         CallOutcome::Reject { code } => panic!("post-crash `{name}` was rejected: {code}"),
-        CallOutcome::OutcomeUnknown => panic!("post-crash `{name}` lost its reply"),
+        CallOutcome::OutcomeUnknown { .. } => panic!("post-crash `{name}` lost its reply"),
     }
 }
 

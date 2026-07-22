@@ -72,9 +72,10 @@ A call resolves with the export's value, or rejects with:
   `known_old`, `known_new`, or `unknown`;
 - `MarrowReject` — the runner refused the request (`runner.unknown_export`,
   `runner.arg_mismatch`, `runner.durable_unsupported`);
-- `WireFormatError` — a wire-grammar violation (`wire.*` codes);
+- `WireFormatError` — a wire-grammar violation (`wire.*` codes), including the
+  `cause` retained by a post-dispatch loss;
 - `MarrowLossError` — the session failed while the call was outstanding or no
-  complete reply became available after dispatch (below).
+  exact valid correlated reply could be accepted after dispatch (below).
 
 `MarrowIncomplete` never contains a return value or a recovery witness.
 `known_old` proves that the interrupted commit did not change durable state;
@@ -82,8 +83,10 @@ A call resolves with the export's value, or rejects with:
 runner could not establish either. The supervisor conservatively terminates the
 session after any incomplete reply. Calls already queued reject as `interrupted`,
 and later calls reject as `not_started`; none is dispatched or retried. A caller
-that lost the reply receives `MarrowLossError("outcome_unknown")` instead and
-cannot infer an internal durable classification.
+that cannot accept the reply receives `MarrowLossError("outcome_unknown")`
+instead and cannot infer an internal durable classification. Protocol, schema,
+and turn failures retain their `WireFormatError` in `cause`; the protocol cause
+does not replace the outcome-unknown disposition.
 
 ## Supervision and the local channel
 
@@ -110,7 +113,7 @@ call had progressed — never by retrying it:
 |---|---|
 | `not_started` | The call provably never ran: launch failed, or the call was made after the session died. |
 | `interrupted` | The call was queued but never handed to the serial worker; it did not start. |
-| `outcome_unknown` | The call had been dispatched to the runner; it may have run, and its outcome is unknowable from this side. |
+| `outcome_unknown` | The call had been dispatched to the runner; it may have run, and its outcome is unknowable from this side. Transport failure, malformed wire, a mismatched turn, an unsolicited message, or reply-value decode failure remains an orthogonal typed cause. |
 
 No class is ever replayed automatically: a mutating call whose outcome is
 unknown must not run twice. The caller decides how to proceed.

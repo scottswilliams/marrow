@@ -466,8 +466,8 @@ const FORBIDDEN_CLOCK_APIS: &[&str] = &[
 /// The production source roots on the temporal language path: the temporal domain
 /// owner, the compiler, the image container, the verifier, the VM, the parser, and
 /// the kernel's logical codecs. The kernel's durable *store substrate* is excluded:
-/// its witness-token nonce legitimately mixes the wall clock for cross-process
-/// distinctness, which is a physical-substrate concern, not a temporal value.
+/// storage ownership may record host time as forensic process metadata, which is
+/// a physical-substrate concern and never feeds a language temporal value.
 const TEMPORAL_PATH_SRC: &[&str] = &[
     "crates/marrow-temporal/src",
     "crates/marrow-compile/src",
@@ -781,40 +781,46 @@ fn durable_execution_failure_has_no_generic_collapse_surface() {
     }
 }
 
-/// Provisioning is the only lifecycle composition that may call the kernel's
-/// create-capable native constructor. Ordinary and recovery opens share the one
-/// existing-only scoped constructor, and `OpenStore` exposes no raw engine or
-/// owner-lock extraction seam.
+/// Native access is a two-layer opaque owner: the storage layer owns the real
+/// lock plus engine, the kernel owns the scoped semantic store, and lifecycle
+/// can only provision, open, delegate sessions, or consume recovery.
 #[test]
 fn native_lifecycle_open_is_existing_only_and_owner_inseparable() {
     let root = workspace_root();
     let lifecycle = std::fs::read_to_string(root.join("crates/marrow-lifecycle/src/provision.rs"))
         .expect("read lifecycle open owner");
     let lifecycle_lock = std::fs::read_to_string(root.join("crates/marrow-lifecycle/src/lock.rs"))
-        .expect("read lifecycle lock owner");
+        .expect("read lifecycle lock facade");
     let lifecycle_root = std::fs::read_to_string(root.join("crates/marrow-lifecycle/src/lib.rs"))
         .expect("read lifecycle public surface");
-    let kernel = std::fs::read_to_string(root.join("crates/marrow-kernel/src/lib.rs"))
-        .expect("read native constructor owner");
+    let kernel_owner =
+        std::fs::read_to_string(root.join("crates/marrow-kernel/src/durable/native_owner.rs"))
+            .expect("read kernel native owner");
     let handle =
         std::fs::read_to_string(root.join("crates/marrow-kernel/src/durable/store/handle.rs"))
             .expect("read generic store constructor owner");
+    let store_root = std::fs::read_to_string(root.join("crates/marrow-store/src/lib.rs"))
+        .expect("read store public surface");
+    let lower_owner = std::fs::read_to_string(root.join("crates/marrow-store/src/native_owner.rs"))
+        .expect("read lower native owner");
+    let raw_engine = std::fs::read_to_string(root.join("crates/marrow-store/src/redb.rs"))
+        .expect("read private raw engine");
     let lifecycle_product = lifecycle
         .split("\n#[cfg(test)]\nmod tests")
         .next()
         .expect("lifecycle product source");
 
-    let create_call = ["NativeStore::", "open_native("].concat();
+    let provision_call = ["NativeStore::", "provision("].concat();
     assert_eq!(
-        lifecycle_product.match_indices(&create_call).count(),
+        lifecycle_product.match_indices(&provision_call).count(),
         1,
-        "only provisioning may call the create-capable native constructor",
+        "lifecycle provisioning must call the one non-returning create operation once",
     );
     let build = lifecycle_product
         .find("fn build_in_temp(")
         .expect("provision build owner exists");
     let create = lifecycle_product
-        .find(&create_call)
+        .find(&provision_call)
         .expect("provision create call exists");
     let ordinary = lifecycle_product
         .find("fn open_admitted<")
@@ -824,55 +830,32 @@ fn native_lifecycle_open_is_existing_only_and_owner_inseparable() {
         "the sole create-capable call must remain inside provisioning",
     );
 
-    let scoped_existing = ["NativeStore::", "open_native_with_recovery_scope("].concat();
-    let mut scoped_callers = Vec::new();
-    for path in tracked_files(&root) {
-        let relative = path
-            .strip_prefix(&root)
-            .expect("tracked path is beneath root")
-            .display()
-            .to_string();
-        if path.extension().is_some_and(|extension| extension == "rs")
-            && relative.starts_with("crates/")
-            && relative.contains("/src/")
-            && path.is_file()
-        {
-            let source = std::fs::read_to_string(&path).expect("read tracked Rust source");
-            let source = source
-                .split("\n#[cfg(test)]\nmod tests")
-                .next()
-                .expect("product source prefix");
-            let count = source.match_indices(&scoped_existing).count();
-            if count != 0 {
-                scoped_callers.push((relative, count));
-            }
-        }
-    }
     assert_eq!(
-        scoped_callers,
-        [("crates/marrow-lifecycle/src/provision.rs".to_string(), 2)],
-        "lifecycle ordinary open and recovery reopen must be the specialized constructor's sole callers",
+        lifecycle_product
+            .match_indices("NativeStore::open_existing_admitted(")
+            .count(),
+        1,
+        "ordinary lifecycle open enters only through the opaque kernel owner",
     );
     assert!(
-        kernel.contains("marrow_store::NativeEngine::open_existing(path)?"),
-        "the scoped native constructor must delegate to the storage owner's existing-only open",
+        lifecycle_product.contains("owner.resolve_recovery(recovery)")
+            && !lifecycle_product.contains("reopen_existing_and_audit")
+            && !lifecycle_product.contains("marrow_store"),
+        "lifecycle recovery must consume the upper owner without reaching the lower store",
     );
+
     for forbidden in [
         "pub fn from_engine_with_recovery_scope(",
         "pub fn from_schemas_with_ceiling_and_recovery_scope(",
+        "pub fn classify_recovery(",
+        "pub fn audit(",
+        "pub fn has_unresolved_recovery(",
     ] {
         assert!(
-            !kernel.contains(forbidden) && !handle.contains(forbidden),
-            "the kernel exposes a generic scoped recovery constructor: {forbidden}",
+            !handle.contains(forbidden),
+            "the generic store exposes persistent recovery authority: {forbidden}",
         );
     }
-    assert!(
-        !handle.contains("#[cfg(test)]\n    pub fn from_engine_with_recovery_scope(")
-            && !handle.contains(
-                "#[cfg(test)]\n    pub fn from_schemas_with_ceiling_and_recovery_scope(",
-            ),
-        "the kernel exposes a cfg(test) scoped recovery constructor seam",
-    );
     let durable = std::fs::read_to_string(root.join("crates/marrow-kernel/src/durable/mod.rs"))
         .expect("read recovery-fact owner");
     assert!(
@@ -880,41 +863,71 @@ fn native_lifecycle_open_is_existing_only_and_owner_inseparable() {
             && !durable.contains("pub fn persistent("),
         "the lifecycle recovery scope must not be publicly constructible or nameable",
     );
+
     assert!(
-        lifecycle.contains("impl Drop for LockedNativeStore")
-            && lifecycle.contains("NativeStore::has_unresolved_recovery")
-            && lifecycle.contains("quarantine_until_process_exit"),
-        "dropping a poisoned OpenStore must quarantine its unclean owner lock until process exit",
+        kernel_owner.contains("store: Option<DurableStore<NativeEngineOwner>>")
+            && kernel_owner.contains("store.into_engine().reopen_existing_and_audit()")
+            && kernel_owner.contains("reopened.classify_recovery(recovery)"),
+        "the upper owner must keep semantic recovery inside the lower locked owner",
     );
     assert!(
-        lifecycle.contains("std::fs::canonicalize(dir)"),
-        "ordinary open must pin a stable absolute store path before recovery can retain it",
+        !kernel_owner.contains("pub store:")
+            && !kernel_owner.contains("pub fn store(")
+            && !kernel_owner.contains("pub fn store_mut(")
+            && !kernel_owner.contains("pub fn into_store("),
+        "the upper owner exposes a semantic-store detachment seam",
+    );
+
+    assert!(
+        lower_owner.contains("engine: Option<NativeEngine>")
+            && lower_owner.contains("lock: OwnerLock")
+            && lower_owner.contains("file.try_lock()")
+            && lower_owner.contains("NativeEngine::open_existing")
+            && lower_owner.contains("lock.quarantine()"),
+        "the lower capsule must own the real lock, engine, existing-open, and quarantine",
     );
     assert!(
-        lifecycle_lock.contains("pub(crate) struct OwnerLock")
-            && lifecycle_lock.contains("pub(crate) struct Acquired")
-            && lifecycle_lock.contains("pub(crate) fn acquire(")
-            && lifecycle_lock.contains("pub(crate) fn mark_clean("),
-        "only the lifecycle composition owner may acquire or clean the owner lock",
+        !lower_owner.contains("pub engine:")
+            && !lower_owner.contains("pub lock:")
+            && !lower_owner.contains("pub fn engine(")
+            && !lower_owner.contains("pub fn engine_mut(")
+            && !lower_owner.contains("pub fn mark_clean(")
+            && !lower_owner.contains("pub fn rearm"),
+        "the lower owner exposes a detach or quarantine re-arm seam",
     );
-    assert!(
-        !lifecycle_root.contains("OwnerLock") && !lifecycle_root.contains("Acquired"),
-        "the lifecycle public surface must not export raw owner-lock capabilities",
-    );
-    let owner_write = lifecycle_lock
-        .find("write_owner(&mut file, &owner)")
+
+    let owner_write = lower_owner
+        .find("write_owner(&mut file, owner)")
         .expect("owner descriptor write exists");
-    let directory_sync = lifecycle_lock
-        .find("sync_dir(dir).map_err(LockError::Io)?")
+    let directory_sync = lower_owner
+        .find("sync_dir(dir).map_err(NativeLockError::Io)?")
         .expect("owner-lock directory sync exists");
     assert!(
         owner_write < directory_sync,
         "owner-lock acquisition must durably publish the lock-file directory entry before returning",
     );
 
+    assert!(
+        !store_root.contains("pub use redb::NativeEngine")
+            && raw_engine.contains("pub(crate) struct NativeEngine")
+            && raw_engine.contains("pub(crate) fn create_new(")
+            && raw_engine.contains("pub(crate) fn open_existing("),
+        "raw native construction must stay private behind the lower owner",
+    );
+    assert!(
+        !lifecycle_lock.contains("try_lock(")
+            && !lifecycle_lock.contains("struct OwnerLock")
+            && lifecycle_lock.contains("impl From<NativeLockError> for LockError"),
+        "lifecycle lock.rs must be a diagnostic facade, not a second physical lock owner",
+    );
+    assert!(
+        !lifecycle_root.contains("OwnerLock") && !lifecycle_root.contains("Acquired"),
+        "the lifecycle public surface must not export raw owner-lock capabilities",
+    );
+
     for forbidden in [
         "pub store: NativeStore",
-        "pub lock: OwnerLock",
+        "pub owner: NativeStore",
         "pub fn store(",
         "pub fn store_mut(",
         "pub fn into_store(",

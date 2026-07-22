@@ -440,8 +440,13 @@ fn scoped_native_reopen_leaves_a_missing_engine_path_absent() {
     std::fs::create_dir_all(&dir).expect("scratch directory");
     let path = dir.join("store.redb");
     assert!(
-        NativeStore::open_native_with_recovery_scope(&path, vec![schema()], sites(), [0x61; 16],)
-            .is_err(),
+        NativeStore::open_existing_admitted(&dir, [0x61; 16], vec![schema()], sites(), || Ok::<
+            _,
+            std::convert::Infallible,
+        >(
+            ()
+        ),)
+        .is_err(),
         "a scoped lifecycle reopen must refuse a missing engine",
     );
     assert!(
@@ -475,11 +480,6 @@ fn an_indeterminate_commit_poisons_and_every_later_session_open_refuses() {
         CommitResult::Indeterminate(recovery) => recovery,
         other => panic!("expected an indeterminate result, got {other:?}"),
     };
-    assert!(
-        store.has_unresolved_recovery(),
-        "the lifecycle-visible poison latch must be set before the affine fact can be lost",
-    );
-
     // A "retry" would be a fresh, well-formed transaction. Even with the double flipped to
     // confirm, the latch consulted at open refuses the transaction session outright — no
     // replay, only a reopen — and a read session is refused for the same reason: the
@@ -499,11 +499,7 @@ fn an_indeterminate_commit_poisons_and_every_later_session_open_refuses() {
         ),
         "a poisoned handle refuses a later read open until a reopen reclassifies",
     );
-    assert_eq!(
-        store.resolve_recovery(recovery),
-        DurableCommitState::Unknown,
-        "the poisoned engine itself is not a fresh durable observation",
-    );
+    drop(recovery);
     assert!(matches!(
         store.read_session(InvocationGrant::full_store(), write()),
         Err(SessionError::Poisoned),
@@ -533,11 +529,11 @@ fn repeating_an_indeterminate_commit_never_reclassifies_it_as_aborted() {
     assert!(matches!(txn.commit(), CommitResult::SessionFinished));
     drop(txn);
 
-    assert!(store.has_unresolved_recovery());
-    assert_eq!(
-        store.resolve_recovery(recovery),
-        DurableCommitState::Unknown,
-    );
+    drop(recovery);
+    assert!(matches!(
+        store.read_session(InvocationGrant::full_store(), write()),
+        Err(SessionError::Poisoned),
+    ));
 }
 
 /// A custom engine entering through the ordinary public constructor has no persistent
@@ -545,7 +541,7 @@ fn repeating_an_indeterminate_commit_never_reclassifies_it_as_aborted() {
 /// poisoned and the fact is consumed — but neither the persisted nor dropped half may claim
 /// `KnownNew` or `KnownOld` against a later public handle.
 #[test]
-fn unscoped_indeterminate_facts_never_claim_persistent_classification() {
+fn unscoped_indeterminate_facts_expose_no_persistent_classifier() {
     for mode in [Mode::IndeterminatePersist, Mode::IndeterminateDrop] {
         let backing = FaultEngine::new(ModeHandle::new(mode));
         let mut store = unscoped_store(backing.clone());
@@ -553,19 +549,13 @@ fn unscoped_indeterminate_facts_never_claim_persistent_classification() {
             CommitResult::Indeterminate(recovery) => recovery,
             other => panic!("expected an indeterminate result, got {other:?}"),
         };
-        assert!(store.has_unresolved_recovery());
         drop(store);
 
         let mut reopened = unscoped_store(backing);
-        assert_eq!(
-            reopened.resolve_recovery(recovery),
-            DurableCommitState::Unknown,
-            "an unscoped custom-engine fact must not claim persistent provenance",
-        );
-        assert!(matches!(
-            reopened.read_session(InvocationGrant::full_store(), write()),
-            Err(SessionError::Poisoned),
-        ));
+        drop(recovery);
+        reopened
+            .read_session(InvocationGrant::full_store(), write())
+            .expect("a fresh generic handle is unscoped and has no classifier");
     }
 }
 
@@ -594,7 +584,9 @@ fn vm_preserves_confirmed_aborted_and_pending_commit_outcomes() {
         Ok(None)
     ));
     drop(confirmed_session);
-    assert!(!confirmed.has_unresolved_recovery());
+    confirmed
+        .read_session(InvocationGrant::full_store(), demand)
+        .expect("confirmed handle remains usable");
 
     let mut aborted = unscoped_store(FaultEngine::new(ModeHandle::new(Mode::Abort)));
     let mut aborted_session = aborted
@@ -615,7 +607,9 @@ fn vm_preserves_confirmed_aborted_and_pending_commit_outcomes() {
             panic!("an aborted engine commit must not mint a recovery fact");
         }
     }
-    assert!(!aborted.has_unresolved_recovery());
+    aborted
+        .read_session(InvocationGrant::full_store(), demand)
+        .expect("aborted handle remains usable");
 
     for mode in [Mode::IndeterminatePersist, Mode::IndeterminateDrop] {
         let mut pending = unscoped_store(FaultEngine::new(ModeHandle::new(mode)));
@@ -632,7 +626,10 @@ fn vm_preserves_confirmed_aborted_and_pending_commit_outcomes() {
         match pending_incomplete.into_disposition() {
             IncompleteDisposition::Pending { fault, recovery } => {
                 assert_eq!(fault.code(), "run.commit");
-                assert!(pending.has_unresolved_recovery());
+                assert!(matches!(
+                    pending.read_session(InvocationGrant::full_store(), demand),
+                    Err(SessionError::Poisoned),
+                ));
                 drop(recovery);
             }
             IncompleteDisposition::Classified { .. } => {
@@ -661,7 +658,9 @@ fn vm_preserves_staging_reconcile_and_witness_failures_without_poisoning() {
             panic!("a pre-commit stage failure became invocation-incomplete");
         };
         assert_eq!(fault.code(), "store.io");
-        assert!(!store.has_unresolved_recovery());
+        store
+            .read_session(InvocationGrant::full_store(), write())
+            .expect("a staging fault does not poison the handle");
 
         write_fault.set(None);
         assert!(matches!(run_vm_write(&mut store, &image), Ok(None)));
@@ -688,7 +687,9 @@ fn vm_preserves_staging_reconcile_and_witness_failures_without_poisoning() {
                 panic!("a pre-engine witness-put failure minted a recovery fact");
             }
         }
-        assert!(!store.has_unresolved_recovery());
+        store
+            .read_session(InvocationGrant::full_store(), write())
+            .expect("a witness-put failure does not poison the handle");
 
         write_fault.set(None);
         assert!(matches!(run_vm_write(&mut store, &image), Ok(None)));
@@ -715,7 +716,9 @@ fn vm_preserves_staging_reconcile_and_witness_failures_without_poisoning() {
                 panic!("a pre-engine reconcile failure minted a recovery fact");
             }
         }
-        assert!(!store.has_unresolved_recovery());
+        store
+            .read_session(InvocationGrant::full_store(), write())
+            .expect("a reconcile failure does not poison the handle");
 
         write_fault.set(None);
         assert!(matches!(run_vm_write(&mut store, &image), Ok(None)));

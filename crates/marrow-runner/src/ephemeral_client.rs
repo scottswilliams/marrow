@@ -9,10 +9,9 @@
 //!
 //! **A lost reply is classified, never replayed.** Each call advances through the handoff stages
 //! [`HandoffStage`] tracks: before the request is written it is `BeforeSend`; once written it is
-//! `Dispatched`. If the runner dies, the call's verdict is [`classify`]'d from the last stage it
-//! reached — `NotStarted` when the request was never delivered, `OutcomeUnknown` when it was and
-//! may have run. A mutating call whose reply is lost is reported as `OutcomeUnknown` and is *not*
-//! resubmitted: the session marks itself dead and every later call is `NotStarted` without
+//! `Dispatched`. A before-send failure is `NotStarted`; after dispatch, every failure to accept
+//! one exact valid reply is `OutcomeUnknown` with its typed cause because the call may have run.
+//! Such a call is *not* resubmitted: the session marks itself dead and every later call is `NotStarted` without
 //! touching the wire, so no request is ever silently sent twice. There is no delivery ledger and
 //! no replay path — a lost outcome is unknowable from this side, and for an ephemeral store the
 //! store died with the runner regardless.
@@ -24,8 +23,9 @@ use marrow_local_wire::{ClientMessage, HandoffStage, Id32, Json, LossClass, clas
 use marrow_verify::VerifiedImage;
 
 use crate::terminal::{
-    self, CALL_DEADLINE, CallOutcome, ClientError, Companion, connect_and_handshake, read_message,
-    reply_to_outcome, require_interface, spawn_companion, write_message,
+    self, CALL_DEADLINE, CallOutcome, ClientError, Companion, OutcomeUnknownCause,
+    connect_and_handshake, post_dispatch_cause, read_message_with_turn, reply_to_outcome,
+    require_interface, require_reply_turn, spawn_companion, write_message_with_turn,
 };
 
 /// The result of one call over an ephemeral session.
@@ -33,11 +33,13 @@ pub enum EphemeralCall {
     /// The runner replied: the ordinary call outcome (a value, a fault, or a typed reject). This
     /// is the post-reply boundary — the outcome is known exactly.
     Replied(CallOutcome),
-    /// The runner died before its reply arrived. The class is derived from how far the request
-    /// got: [`LossClass::NotStarted`] (the request was never delivered, so it provably did not
-    /// run) or [`LossClass::OutcomeUnknown`] (it was dispatched and may have run). Never
-    /// replayed.
+    /// The request did not start, normally because its write failed or the session
+    /// had already retired. Post-dispatch loss uses [`Self::OutcomeUnknown`].
     Lost(LossClass),
+    /// The request was completely written, but no exact valid reply for its
+    /// dispatched turn could be accepted. The cause remains available without
+    /// replacing the outcome-unknown disposition.
+    OutcomeUnknown(OutcomeUnknownCause),
 }
 
 /// A live ephemeral-memory session: the spawned runner, the handshaken socket, and the served
@@ -52,9 +54,12 @@ pub struct EphemeralSession<'a> {
     // directory. `None` only for the in-crate unit tests, which drive `call` over a socket pair
     // without a spawned process; the production `open` path always holds a companion.
     _companion: Option<Companion>,
-    // Set once a call detects the runner's death (or a broken reply). A dead session never writes
+    // Set once a call detects a post-write failure (or an earlier transport loss). A dead session never writes
     // to the wire again, so a call on it provably never starts.
     dead: bool,
+    // The next exact request/reply correlation turn. `None` means the maximum
+    // turn was dispatched and this session is retired without wrapping.
+    next_turn: Option<u32>,
 }
 
 impl<'a> EphemeralSession<'a> {
@@ -81,22 +86,26 @@ impl<'a> EphemeralSession<'a> {
             stream,
             _companion: Some(companion),
             dead: false,
+            next_turn: Some(0),
         })
     }
 
     /// Submit one call to `export_id` with `args` against this session's store and resolve its
-    /// outcome. A returned reply is [`EphemeralCall::Replied`]; a runner death is
-    /// [`EphemeralCall::Lost`] with the class derived from how far the request got. The call is
-    /// never retried, and a lost outcome is never resubmitted.
+    /// outcome. A returned exact reply is [`EphemeralCall::Replied`]; a before-send loss is
+    /// [`EphemeralCall::Lost`], and an invalid or unavailable post-write reply is
+    /// [`EphemeralCall::OutcomeUnknown`]. The call is never retried.
     pub fn call(
         &mut self,
         export_id: [u8; 32],
         args: Vec<Json>,
     ) -> Result<EphemeralCall, ClientError> {
         // A known-dead session delivered nothing: this request never started.
-        if self.dead {
+        if self.dead || self.next_turn.is_none() {
             return Ok(EphemeralCall::Lost(classify(HandoffStage::BeforeSend)));
         }
+        let turn = self
+            .next_turn
+            .expect("a non-retired session has one next turn");
 
         let request = ClientMessage::Request {
             export: Id32::from_bytes(export_id),
@@ -106,7 +115,8 @@ impl<'a> EphemeralSession<'a> {
         // the runner and is not a death — the session stays usable and the caller sees the real
         // error. A transport failure means the frame was not fully delivered (the runner never
         // decodes a whole request frame), so the call provably did not run and the session dies.
-        if let Err(error) = write_message(&mut self.stream, &request, CALL_DEADLINE) {
+        if let Err(error) = write_message_with_turn(&mut self.stream, &request, turn, CALL_DEADLINE)
+        {
             return match error {
                 ClientError::Wire(_) => Err(error),
                 _ => {
@@ -115,24 +125,31 @@ impl<'a> EphemeralSession<'a> {
                 }
             };
         }
+        self.next_turn = turn.checked_add(1);
 
         // The request is now dispatched to the serial worker; from here a lost reply is
         // `OutcomeUnknown` — the call may have run, wholly or partly, and its outcome is
         // unknowable from this side. It is reported, never replayed.
-        match read_message(&mut self.stream, CALL_DEADLINE) {
-            Ok(message) => Ok(EphemeralCall::Replied(reply_to_outcome(
-                self.image, export_id, message,
-            )?)),
-            Err(ClientError::Io(_)) | Err(ClientError::Wire(_)) => {
-                self.dead = true;
-                Ok(EphemeralCall::Lost(classify(HandoffStage::Dispatched)))
+        let result = match read_message_with_turn(&mut self.stream, CALL_DEADLINE) {
+            Ok((message, received)) => require_reply_turn(turn, received).and_then(|()| {
+                reply_to_outcome(self.image, export_id, message).map_err(post_dispatch_cause)
+            }),
+            Err(error) => Err(post_dispatch_cause(error)),
+        };
+        match result {
+            Ok(outcome) => {
+                if self.next_turn.is_none() {
+                    self.dead = true;
+                }
+                Ok(EphemeralCall::Replied(outcome))
             }
-            // A decoded-but-mismatched reply or an out-of-protocol message is a protocol fault the
-            // reply *did* carry, not a lost outcome; but a session that observed it is untrustworthy
-            // and is retired so no further request is written to it.
-            Err(other) => {
+            Err(cause) => {
                 self.dead = true;
-                Err(other)
+                debug_assert_eq!(
+                    classify(HandoffStage::Dispatched),
+                    LossClass::OutcomeUnknown
+                );
+                Ok(EphemeralCall::OutcomeUnknown(cause))
             }
         }
     }
@@ -145,6 +162,7 @@ mod tests {
     use std::thread;
     use std::time::Duration;
 
+    use crate::OutcomeUnknownCause;
     use marrow_local_wire::{ServerMessage, frame_body_len};
 
     /// Build a session over one end of a socket pair, with no spawned companion. The peer end is
@@ -157,6 +175,7 @@ mod tests {
             stream: client,
             _companion: None,
             dead: false,
+            next_turn: Some(0),
         };
         (session, peer)
     }
@@ -225,6 +244,156 @@ mod tests {
         responder.join().expect("responder");
     }
 
+    #[test]
+    fn long_lived_calls_advance_and_require_the_exact_echoed_turn() {
+        let image = marrow_verify::verify(&echo_bytes()).expect("verify");
+        let export = echo_export(&image);
+        let (mut session, mut peer) = paired(&image);
+
+        let responder = thread::spawn(move || {
+            for expected in [0, 1] {
+                let body = read_frame(&mut peer).expect("request frame");
+                let (_, turn) = ClientMessage::decode_with_turn(&body).expect("decode request");
+                assert_eq!(turn, Some(expected));
+                let reply = ServerMessage::Value { data: Json::Int(7) }
+                    .encode_with_turn(expected)
+                    .expect("encode reply");
+                peer.write_all(&reply).expect("write reply");
+            }
+        });
+
+        for _ in 0..2 {
+            assert!(matches!(
+                session.call(export, vec![]).expect("call"),
+                EphemeralCall::Replied(CallOutcome::Value(Some(marrow_vm::Value::Int(7)))),
+            ));
+        }
+        responder.join().expect("responder");
+    }
+
+    #[test]
+    fn a_delayed_old_reply_cannot_settle_the_next_turn() {
+        let image = marrow_verify::verify(&echo_bytes()).expect("verify");
+        let export = echo_export(&image);
+        let (mut session, mut peer) = paired(&image);
+
+        let responder = thread::spawn(move || {
+            let _first = read_frame(&mut peer).expect("first request");
+            peer.write_all(
+                &ServerMessage::Value { data: Json::Int(7) }
+                    .encode_with_turn(0)
+                    .expect("first reply"),
+            )
+            .expect("write first reply");
+            let _second = read_frame(&mut peer).expect("second request");
+            peer.write_all(
+                &ServerMessage::Value { data: Json::Int(7) }
+                    .encode_with_turn(0)
+                    .expect("delayed old reply"),
+            )
+            .expect("write delayed reply");
+        });
+
+        assert!(matches!(
+            session.call(export, vec![]).expect("first call"),
+            EphemeralCall::Replied(_),
+        ));
+        assert!(matches!(
+            session.call(export, vec![]).expect("second call"),
+            EphemeralCall::OutcomeUnknown(OutcomeUnknownCause::TurnMismatch {
+                expected: 1,
+                received: 0,
+            }),
+        ));
+        assert!(matches!(
+            session.call(export, vec![]).expect("retired call"),
+            EphemeralCall::Lost(LossClass::NotStarted),
+        ));
+        responder.join().expect("responder");
+    }
+
+    #[test]
+    fn maximum_turn_is_used_once_then_the_session_retires_without_wrapping() {
+        let image = marrow_verify::verify(&echo_bytes()).expect("verify");
+        let export = echo_export(&image);
+        let (mut session, mut peer) = paired(&image);
+        session.next_turn = Some(u32::MAX);
+
+        let responder = thread::spawn(move || {
+            let body = read_frame(&mut peer).expect("maximum-turn request");
+            let (_, turn) = ClientMessage::decode_with_turn(&body).expect("decode request");
+            assert_eq!(turn, Some(u32::MAX));
+            peer.write_all(
+                &ServerMessage::Value { data: Json::Int(7) }
+                    .encode_with_turn(u32::MAX)
+                    .expect("maximum-turn reply"),
+            )
+            .expect("write reply");
+            peer.set_read_timeout(Some(Duration::from_millis(50)))
+                .expect("read timeout");
+            let mut byte = [0; 1];
+            assert!(
+                peer.read(&mut byte).is_err(),
+                "retirement sends no wrapped turn"
+            );
+        });
+
+        assert!(matches!(
+            session.call(export, vec![]).expect("maximum call"),
+            EphemeralCall::Replied(_),
+        ));
+        assert!(matches!(
+            session.call(export, vec![]).expect("exhausted call"),
+            EphemeralCall::Lost(LossClass::NotStarted),
+        ));
+        responder.join().expect("responder");
+    }
+
+    #[test]
+    fn malformed_unsolicited_and_value_decode_failures_are_typed_unknown_causes() {
+        fn run_case(image: &VerifiedImage, export: [u8; 32], reply: Vec<u8>) -> EphemeralCall {
+            let (mut session, mut peer) = paired(image);
+            let responder = thread::spawn(move || {
+                let _request = read_frame(&mut peer).expect("request");
+                peer.write_all(&reply).expect("reply");
+            });
+            let outcome = session.call(export, vec![]).expect("call");
+            responder.join().expect("responder");
+            outcome
+        }
+
+        let image = marrow_verify::verify(&echo_bytes()).expect("verify");
+        let export = echo_export(&image);
+        let malformed_body = [marrow_local_wire::PROTOCOL_VERSION, b'{'];
+        let mut malformed = Vec::from((malformed_body.len() as u32).to_be_bytes());
+        malformed.extend_from_slice(&malformed_body);
+        assert!(matches!(
+            run_case(&image, export, malformed),
+            EphemeralCall::OutcomeUnknown(OutcomeUnknownCause::Wire(_)),
+        ));
+
+        let unsolicited = ServerMessage::Ready {
+            session: Id32::from_bytes([1; 32]),
+            interface: Id32::from_bytes([2; 32]),
+        }
+        .encode()
+        .expect("unsolicited ready");
+        assert!(matches!(
+            run_case(&image, export, unsolicited),
+            EphemeralCall::OutcomeUnknown(OutcomeUnknownCause::UnsolicitedMessage),
+        ));
+
+        let wrong_value = ServerMessage::Value {
+            data: Json::Str("not an int".into()),
+        }
+        .encode_with_turn(0)
+        .expect("wrong value");
+        assert!(matches!(
+            run_case(&image, export, wrong_value),
+            EphemeralCall::OutcomeUnknown(OutcomeUnknownCause::ReplyDecode),
+        ));
+    }
+
     /// A transport write failure — the send half is shut down before the request is written —
     /// is `NotStarted`: the frame provably never reaches the runner, so the call did not run, and
     /// the session is retired. This exercises the real failing-write arm (an `Io` error from the
@@ -267,7 +436,7 @@ mod tests {
         });
 
         match session.call(export, vec![]).expect("call") {
-            EphemeralCall::Lost(LossClass::OutcomeUnknown) => {}
+            EphemeralCall::OutcomeUnknown(OutcomeUnknownCause::Io(_)) => {}
             _ => panic!("expected OutcomeUnknown after a lost reply"),
         }
         killer.join().expect("killer");
@@ -286,8 +455,10 @@ mod tests {
     /// compile time, so a replay path cannot reappear unnoticed.
     #[test]
     fn the_session_admits_no_replay_or_delivery_ledger() {
-        match EphemeralCall::Lost(LossClass::OutcomeUnknown) {
-            EphemeralCall::Replied(_) | EphemeralCall::Lost(_) => {}
+        match EphemeralCall::OutcomeUnknown(OutcomeUnknownCause::ReplyDecode) {
+            EphemeralCall::Replied(_)
+            | EphemeralCall::Lost(_)
+            | EphemeralCall::OutcomeUnknown(_) => {}
         }
         match LossClass::NotStarted {
             LossClass::NotStarted | LossClass::Interrupted | LossClass::OutcomeUnknown => {}
@@ -299,6 +470,7 @@ mod tests {
             stream: _,
             _companion: _,
             dead: _,
+            next_turn: _,
         } = session;
     }
 

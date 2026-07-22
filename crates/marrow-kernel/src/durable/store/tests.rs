@@ -1,4 +1,6 @@
-use marrow_store::{ByteEngine, CommitOutcome, MemoryEngine, NativeEngine, ReadView, WriteTxn};
+use marrow_store::{
+    ByteEngine, CommitOutcome, MemoryEngine, NativeEngineOwner, ReadView, WriteTxn,
+};
 
 use super::super::physical;
 use super::super::{
@@ -2298,9 +2300,13 @@ fn sorted(mut cells: Vec<(Vec<u8>, Vec<u8>)>) -> Vec<(Vec<u8>, Vec<u8>)> {
 
 /// A fresh redb-backed store over the indexed schema, in a temp dir kept alive by the
 /// returned guard.
-fn native_indexed() -> (DurableStore<NativeEngine>, TempDir) {
+fn native_indexed() -> (DurableStore<NativeEngineOwner>, TempDir) {
     let temp = TempDir::new("index-maint");
-    let engine = NativeEngine::open(&temp.store()).expect("open native");
+    NativeEngineOwner::provision(&temp.store()).expect("provision native");
+    let engine = NativeEngineOwner::open_existing_admitted(&temp.store(), [0x31; 16], || {
+        Ok::<_, std::convert::Infallible>(())
+    })
+    .expect("open native");
     (
         DurableStore::from_engine(engine, indexed_schema(), sites()),
         temp,
@@ -2319,6 +2325,7 @@ impl TempDir {
         let root =
             std::env::temp_dir().join(format!("marrow-{name}-{}-{nanos}", std::process::id()));
         std::fs::create_dir_all(&root).expect("create temp dir");
+        std::fs::create_dir(root.join("store")).expect("create store dir");
         TempDir { root }
     }
     fn store(&self) -> std::path::PathBuf {

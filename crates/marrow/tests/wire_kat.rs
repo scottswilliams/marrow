@@ -239,7 +239,9 @@ function driveReply(messages, options = {}) {
     "reply-delayed-duplicate-cannot-settle-next-call",
     observed.first === 7n &&
       observed.second?.kind === "error" &&
-      observed.second.error instanceof M.WireFormatError &&
+      observed.second.error instanceof M.MarrowLossError &&
+      observed.second.error.loss === M.LOSS.OUTCOME_UNKNOWN &&
+      observed.second.error.cause instanceof M.WireFormatError &&
       observed.pump === 1 &&
       session.dead &&
       observed.tornDown,
@@ -315,8 +317,10 @@ function malformedReply(label, messages, options = {}) {
   ok(
     `reply-${label}`,
     observed.current?.kind === "error" &&
-      observed.current.error instanceof M.WireFormatError &&
-      observed.current.error.code === "wire.malformed" &&
+      observed.current.error instanceof M.MarrowLossError &&
+      observed.current.error.loss === M.LOSS.OUTCOME_UNKNOWN &&
+      observed.current.error.cause instanceof M.WireFormatError &&
+      observed.current.error.cause.code === "wire.malformed" &&
       observed.queued instanceof M.MarrowLossError &&
       observed.queued.loss === M.LOSS.INTERRUPTED &&
       observed.pump === 0 &&

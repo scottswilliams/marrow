@@ -42,6 +42,25 @@ pub struct DurableStore<E: ByteEngine> {
     poisoned: bool,
 }
 
+/// Generic unscoped stores expose sessions but no persistent recovery
+/// classifier, semantic audit, or poison-state projection.
+///
+/// ```compile_fail
+/// use marrow_kernel::durable::{CommitRecovery, DurableStore};
+/// use marrow_store::MemoryEngine;
+/// fn classify(mut store: DurableStore<MemoryEngine>, fact: CommitRecovery) {
+///     let _ = store.resolve_recovery(fact);
+/// }
+/// ```
+///
+/// ```compile_fail
+/// use marrow_kernel::durable::DurableStore;
+/// use marrow_store::MemoryEngine;
+/// fn inspect(mut store: DurableStore<MemoryEngine>) {
+///     let _ = store.audit();
+///     let _ = store.has_unresolved_recovery();
+/// }
+/// ```
 impl<E: ByteEngine> DurableStore<E> {
     /// Build a single-root store over an already-open engine, minting the store ceiling
     /// from the handle's write capability. The native/tracer caller; an ephemeral
@@ -110,7 +129,7 @@ impl<E: ByteEngine> DurableStore<E> {
     /// Equality with the proposed after-state proves `KnownNew`; equality with the captured
     /// before-state proves `KnownOld`. A scope mismatch, third state, or read failure is
     /// `Unknown`. No witness bytes escape this owner.
-    pub fn resolve_recovery(&mut self, recovery: CommitRecovery) -> DurableCommitState {
+    pub(crate) fn classify_recovery(&mut self, recovery: CommitRecovery) -> DurableCommitState {
         // The engine verdict was indeterminate on the poisoned handle itself. Only a newly
         // opened handle can provide an independent durable observation; consulting the old
         // engine could merely read its cached post-commit view and mistake it for persistence.
@@ -143,23 +162,10 @@ impl<E: ByteEngine> DurableStore<E> {
         state
     }
 
-    /// Run one full engine integrity audit — a complete structural walk verifying every
-    /// stored checksum ([`ByteEngine::audit_integrity`](marrow_store::ByteEngine::audit_integrity)).
-    /// The lifecycle runs this on an unclean open (the crash-recovery path). It covers
-    /// crash-path corruption only: the fast open path does not re-verify page checksums, so
-    /// an externally flipped bit in a cleanly-closed store stays undetected here until the
-    /// FR01 data-root digest is populated at a later full-walk operation. The in-memory
-    /// engine has no durable substrate and passes trivially.
-    pub fn audit(&mut self) -> Result<(), StoreError> {
-        self.engine.audit_integrity()
-    }
-
-    /// Whether an indeterminate commit still poisons this handle. Lifecycle owners use
-    /// this read-only latch when their inseparable owner lock drops: losing the affine
-    /// recovery fact must preserve the durable unclean marker rather than record a clean
-    /// shutdown. It exposes no witness material and grants no recovery authority.
-    pub fn has_unresolved_recovery(&self) -> bool {
-        self.poisoned
+    /// Consume this semantic handle and return its engine to the enclosing
+    /// kernel-owned native capsule. This is never public outside the kernel.
+    pub(crate) fn into_engine(self) -> E {
+        self.engine
     }
 
     /// Refuse a session open on a poisoned handle. An earlier indeterminate commit sets
@@ -555,7 +561,7 @@ mod tests {
                 before: Some(before.clone()),
                 after: after.clone(),
             };
-            assert_eq!(store.resolve_recovery(fact), expected);
+            assert_eq!(store.classify_recovery(fact), expected);
             assert_eq!(store.poisoned, expected == DurableCommitState::Unknown);
         }
     }
@@ -572,7 +578,7 @@ mod tests {
         };
 
         assert_eq!(
-            reopened.resolve_recovery(dropped),
+            reopened.classify_recovery(dropped),
             DurableCommitState::KnownOld,
         );
         assert!(matches!(
@@ -658,7 +664,7 @@ mod tests {
             before: Some(witness(30)),
             after: witness(31),
         };
-        assert_eq!(store.resolve_recovery(fact), DurableCommitState::Unknown,);
+        assert_eq!(store.classify_recovery(fact), DurableCommitState::Unknown,);
         assert!(store.poisoned);
     }
 
@@ -674,7 +680,7 @@ mod tests {
             after: witness(11),
         };
         assert_eq!(
-            stale_store.resolve_recovery(stale),
+            stale_store.classify_recovery(stale),
             DurableCommitState::Unknown
         );
         assert!(matches!(
@@ -699,7 +705,7 @@ mod tests {
             after: witness(1),
         };
         assert_eq!(
-            wrong_store.resolve_recovery(wrong_scope),
+            wrong_store.classify_recovery(wrong_scope),
             DurableCommitState::Unknown
         );
         assert!(matches!(
