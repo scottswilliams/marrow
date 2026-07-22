@@ -20,26 +20,37 @@ use crate::headmap::HeadMap;
 const IMAGE_FORMAT_VERSION: u8 = 0;
 
 /// Derive the active binding a store records for `image`: the active image's byte identity
-/// plus the binding facts a binding-only rebind compares (the durable contract, the
-/// interface fingerprint over the exported call surface, and the deployment ceiling over the
-/// demand union). The interface fingerprint is a runner-free digest over the image's export
-/// declaration identities (see [`interface_fingerprint`]); the durable contract and ceiling
-/// independently catch every durable-graph and demand/effect change, so the three facts
-/// together are a conservative, sound binding-identity for the rebind classifier.
+/// plus the binding facts a binding-only rebind compares (the durable contract and the
+/// interface fingerprint over the exported call surface). The interface fingerprint is a
+/// runner-free digest over the image's export declaration identities (see
+/// [`interface_fingerprint`]); the durable contract independently catches every durable-graph
+/// change. Authority is *not* a binding fact — the accepted deployment ceiling is a
+/// separately owned standing maximum recorded once at provision (see [`accepted_ceiling`])
+/// and enforced atom-granularly at attach, so a demand change within the ceiling is not a
+/// rebind delta and a demand change beyond it is a distinct, more actionable refusal.
 pub fn active_binding(image: &VerifiedImage) -> ActiveBinding {
     let export_ids: Vec<[u8; 32]> = image
         .exports()
         .iter()
         .map(|export| *export.id().bytes())
         .collect();
-    let ceiling = CeilingDescriptor::from_demand_union(image.demand_union());
     ActiveBinding {
         image_format_version: IMAGE_FORMAT_VERSION,
         image_id: image.image_id().0,
         durable_contract: *image.durable_contract().bytes(),
         interface: interface_fingerprint(&export_ids),
-        ceiling: *ceiling.ceiling_id().bytes(),
     }
+}
+
+/// The accepted deployment ceiling a store records for `image` at provision: the canonical
+/// atom-set payload of the ceiling over the image's whole-program demand union — the
+/// separately owned standing maximum authority the store admits. Persisted verbatim in the
+/// head ([`crate::LogicalHead::accepted_ceiling`]) and reconstructed at attach with
+/// [`marrow_image::CeilingDescriptor::from_payload`] for the atom-granular admission check.
+/// The compiler describes demand; provision accepts it as the ceiling; neither grants — the
+/// attach check intersects the presented image's demand with this bound.
+pub fn accepted_ceiling(image: &VerifiedImage) -> Vec<u8> {
+    CeilingDescriptor::from_demand_union(image.demand_union()).atom_set_payload()
 }
 
 /// Build the head identity map for `image`: the ledger-id ↔ cell-number bijection (FR01 §3),

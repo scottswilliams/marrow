@@ -278,6 +278,7 @@ closed with a typed code — never a process crash: a truncated or torn body is
             Code::StoreTransaction,
             Code::StoreReadOnly,
             Code::StoreContractChanged,
+            Code::StoreDemandExceedsCeiling,
         ]),
         r#"
 ### `io.*` — kind `io`

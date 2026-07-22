@@ -248,6 +248,16 @@ impl std::fmt::Display for OpenError {
 
 impl std::error::Error for OpenError {}
 
+/// A failure to open a store under an admission gate: either the ordinary open failed, or the
+/// gate refused the presented image after the lock was taken and before any engine call. The
+/// `R` is the caller's refusal type (the lifecycle actor's demand-exceeds-ceiling refusal).
+pub(crate) enum AdmitError<R> {
+    /// The store could not be opened (see [`OpenError`]).
+    Open(OpenError),
+    /// The admission gate refused the image with zero engine calls; the lock was released.
+    Refused(R),
+}
+
 /// Open the complete store at `dir` under `schemas`/`sites`, taking the single-owner lock. A
 /// non-complete directory is refused without opening; a store held by another owner returns
 /// [`OpenError::Lock`] naming the owner. When the prior shutdown was unclean (a stale lock
@@ -258,20 +268,47 @@ pub fn open(
     schemas: Vec<StoreSchema>,
     sites: Vec<SiteSpec>,
 ) -> Result<OpenStore, OpenError> {
+    open_admitted(dir, schemas, sites, |_| Ok::<(), std::convert::Infallible>(())).map_err(
+        |error| match error {
+            AdmitError::Open(open) => open,
+            // The no-op admit never refuses.
+            AdmitError::Refused(never) => match never {},
+        },
+    )
+}
+
+/// Open the complete store at `dir`, running `admit` against the persisted head **after** the
+/// single-owner lock is taken and **before** any engine call, so a refusal makes zero engine
+/// calls and releases the lock on return. The lifecycle actor supplies an `admit` that
+/// reconstructs the store's accepted deployment ceiling from the head and intersects it with
+/// the presented image's demand; a refusal is surfaced as [`AdmitError::Refused`]. The plain
+/// [`open`] passes a no-op admit.
+pub(crate) fn open_admitted<R>(
+    dir: &Path,
+    schemas: Vec<StoreSchema>,
+    sites: Vec<SiteSpec>,
+    admit: impl FnOnce(&LogicalHead) -> Result<(), R>,
+) -> Result<OpenStore, AdmitError<R>> {
     match preflight(dir) {
-        Preflight::Absent => return Err(OpenError::NotProvisioned),
-        Preflight::Incomplete => return Err(OpenError::Incomplete),
+        Preflight::Absent => return Err(AdmitError::Open(OpenError::NotProvisioned)),
+        Preflight::Incomplete => return Err(AdmitError::Open(OpenError::Incomplete)),
         Preflight::Complete => {}
     }
 
-    let envelope = decode_envelope(dir)?;
-    let head = decode_head(dir)?;
+    let envelope = decode_envelope(dir).map_err(AdmitError::Open)?;
+    let head = decode_head(dir).map_err(AdmitError::Open)?;
 
     // Take the single-owner lock before opening the engine; a second owner is named here.
-    let mut acquired = OwnerLock::acquire(dir, envelope.instance).map_err(OpenError::Lock)?;
+    let acquired = OwnerLock::acquire(dir, envelope.instance)
+        .map_err(|error| AdmitError::Open(OpenError::Lock(error)))?;
 
+    // Admission runs after the lock and before any engine open: a refusal drops the lock on
+    // return and touches no engine, so a refused image never opens the store.
+    admit(&head).map_err(AdmitError::Refused)?;
+
+    let mut acquired = acquired;
     let mut store = NativeStore::open_native(&store_dir::engine_path(dir), schemas, sites)
-        .map_err(OpenError::Store)?;
+        .map_err(|error| AdmitError::Open(OpenError::Store(error)))?;
 
     // Unclean prior shutdown: run the crash-path integrity audit. (See the module note — this
     // covers crash-path corruption only; it makes no claim about an externally flipped bit in
@@ -279,8 +316,10 @@ pub fn open(
     // persists and the next open audits again rather than skipping the check.
     if acquired.prior_unclean {
         store.audit().map_err(|error| match error {
-            StoreError::Corruption { message } => OpenError::Corruption { message },
-            other => OpenError::Store(other),
+            StoreError::Corruption { message } => {
+                AdmitError::Open(OpenError::Corruption { message })
+            }
+            other => AdmitError::Open(OpenError::Store(other)),
         })?;
     }
 

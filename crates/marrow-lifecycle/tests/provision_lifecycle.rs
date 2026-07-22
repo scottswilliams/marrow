@@ -79,11 +79,10 @@ fn request(instance: StoreInstanceId) -> ProvisionRequest {
         image_id: [0x11; 32],
         durable_contract: [0x22; 32],
         interface: [0x33; 32],
-        ceiling: [0x44; 32],
     };
     ProvisionRequest {
         envelope,
-        head: LogicalHead::provision(binding, head_map),
+        head: LogicalHead::provision(binding, vec![0x44, 0x45], head_map),
         schemas: schemas(),
         sites: sites(),
     }

@@ -111,7 +111,11 @@ fn provision_from(dir: &Path, image: &VerifiedImage) -> StoreInstanceId {
         engine_kind: EngineKind::Redb,
         engine_format_version: 1,
     };
-    let head = LogicalHead::provision(active_binding(image), head_map(image).expect("head map"));
+    let head = LogicalHead::provision(
+        active_binding(image),
+        marrow_lifecycle::accepted_ceiling(image),
+        head_map(image).expect("head map"),
+    );
     provision(
         dir,
         ProvisionRequest {
@@ -132,8 +136,9 @@ fn active_binding_and_head_map_derive_from_the_image() {
     // The binding facts are the image's real identities, not placeholders.
     assert_ne!(binding.durable_contract, [0u8; 32]);
     assert_ne!(binding.interface, [0u8; 32]);
-    assert_ne!(binding.ceiling, [0u8; 32]);
     assert_ne!(binding.image_id, [0u8; 32]);
+    // The accepted ceiling is a non-empty atom-set payload derived from the image demand.
+    assert!(!marrow_lifecycle::accepted_ceiling(&image).is_empty());
 
     // The head map numbers the three cell-key nodes: the `counters` root and its two fields.
     let map = head_map(&image).expect("head map");

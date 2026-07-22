@@ -210,6 +210,7 @@ pub fn provision_image(
     };
     let head = LogicalHead::provision(
         active_binding(image),
+        crate::image::accepted_ceiling(image),
         head_map(image).map_err(ProvisionImageError::Head)?,
     );
 

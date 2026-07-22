@@ -176,7 +176,11 @@ fn provision_from(dir: &Path, image: &VerifiedImage) {
         engine_kind: EngineKind::Redb,
         engine_format_version: 1,
     };
-    let head = LogicalHead::provision(active_binding(image), head_map(image).expect("head map"));
+    let head = LogicalHead::provision(
+        active_binding(image),
+        marrow_lifecycle::accepted_ceiling(image),
+        head_map(image).expect("head map"),
+    );
     provision(
         dir,
         ProvisionRequest {

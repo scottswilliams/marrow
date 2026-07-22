@@ -6,16 +6,22 @@
 //!
 //! - **Already active** — the image is byte-identical to the active binding; the store opens
 //!   with no write.
-//! - **Binding-only rebind** — the durable contract, interface, and ceiling are all unchanged
-//!   and only the image's code (its byte identity) differs. The actor atomically rewrites the
-//!   envelope and head to the new image and issues a receipt *after* the commit confirms. The
-//!   receipt claims only that the code was updated with the durable contract unchanged — never
-//!   that program meaning is preserved.
-//! - **Contract changed** — any binding fact differs (an evolution of the durable contract,
-//!   the interface, or the ceiling). This is a typed refusal, *not* corruption: the store is
-//!   intact and the prior program remains usable. It names the changed fact category and
-//!   points at `marrow apply`, which owns the typed change review (F03a) that names the exact
-//!   changed source places; F02a names the category.
+//! - **Demand exceeds ceiling** — the presented image demands durable authority the store's
+//!   accepted ceiling (its separately owned standing maximum, recorded at provision) does not
+//!   admit. Checked first, after the lock and before any engine call, so a broadened effect
+//!   is refused with zero engine calls, naming the exceeding export, effect, and place in
+//!   source vocabulary (`authority::admit`). Not corruption: the store is intact.
+//! - **Binding-only rebind** — the durable contract and interface are unchanged and only the
+//!   image's code (its byte identity) differs. The actor atomically rewrites the envelope and
+//!   head to the new image and issues a receipt *after* the commit confirms. The receipt
+//!   claims only that the code was updated with the durable contract unchanged — never that
+//!   program meaning is preserved. The accepted ceiling is preserved verbatim across the
+//!   rebind (a standing maximum is expanded only by conscious re-acceptance).
+//! - **Contract changed** — a binding fact differs (an evolution of the durable contract or
+//!   the interface). This is a typed refusal, *not* corruption: the store is intact and the
+//!   prior program remains usable. It names the changed fact category and points at `marrow
+//!   apply`, which owns the typed change review (F03a) that names the exact changed source
+//!   places; F02a names the category.
 //!
 //! The actor is the sole constructor of a lifecycle transition: it returns a live
 //! [`OpenStore`] holding the store's owner lock, which is non-`Clone` and non-serializable, so
@@ -26,13 +32,25 @@
 use std::path::Path;
 
 use marrow_codes::Code;
+use marrow_image::CeilingDescriptor;
 use marrow_kernel::durable::{SiteSpec, StoreSchema};
 use marrow_verify::VerifiedImage;
 
+use crate::authority::{self, DemandExceedsCeiling};
 use crate::head::{ActiveBinding, LogicalHead};
 use crate::image::active_binding;
-use crate::provision::{OpenError, OpenStore, open};
+use crate::provision::{AdmitError, OpenError, OpenStore, open_admitted};
 use crate::store_dir;
+
+/// The two ways the attach admission gate can decline before any engine call: the presented
+/// image demands authority beyond the accepted ceiling, or the persisted ceiling payload is
+/// itself corrupt. Kept private to the actor; each maps to a distinct [`LifecycleError`].
+enum AdmissionRefusal {
+    /// The image's demand exceeds the accepted ceiling — a typed authority refusal.
+    Exceeds(DemandExceedsCeiling),
+    /// The persisted accepted-ceiling payload did not decode — store corruption.
+    CeilingCorrupt,
+}
 
 /// The result of a successful attach.
 pub enum AttachOutcome {
@@ -58,15 +76,15 @@ pub struct RebindReceipt {
 
 /// Which binding fact differs — the category a contract-changed refusal names. The exact
 /// changed source places are `marrow apply`'s typed change review (F03a); F02a names the
-/// category so the developer knows which kind of change to review.
+/// category so the developer knows which kind of change to review. Authority is not a binding
+/// fact: a demand change that exceeds the accepted ceiling is the distinct, more actionable
+/// [`DemandExceedsCeiling`] refusal, and a demand change within it is admitted.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChangedFact {
     /// The durable contract — the durable graph over ledger ids — changed (an evolution).
     DurableContract,
     /// The exported interface — the call surface — changed.
     Interface,
-    /// The authority ceiling over the demand union changed.
-    Ceiling,
 }
 
 impl ChangedFact {
@@ -74,7 +92,6 @@ impl ChangedFact {
         match self {
             ChangedFact::DurableContract => "the durable contract",
             ChangedFact::Interface => "the exported interface",
-            ChangedFact::Ceiling => "the authority ceiling",
         }
     }
 }
@@ -112,6 +129,10 @@ pub enum LifecycleError {
     /// The store could not be opened (not provisioned, incomplete, held by another owner, or
     /// corrupt).
     Open(OpenError),
+    /// The presented image's verified demand exceeds the store's accepted authority ceiling
+    /// — a typed refusal naming the exceeding export, effect, and place, with zero engine
+    /// calls, never corruption. The owner must consciously expand the accepted ceiling.
+    DemandExceedsCeiling(DemandExceedsCeiling),
     /// The image is not a binding-only code update — a typed refusal pointing at `marrow
     /// apply`, never corruption.
     ContractChanged(ContractChanged),
@@ -124,6 +145,7 @@ impl LifecycleError {
     pub fn code(&self) -> &'static str {
         match self {
             LifecycleError::Open(error) => error.code(),
+            LifecycleError::DemandExceedsCeiling(refusal) => refusal.code(),
             LifecycleError::ContractChanged(refusal) => refusal.code(),
             LifecycleError::Io(_) => Code::StoreIo.as_str(),
         }
@@ -134,6 +156,7 @@ impl std::fmt::Display for LifecycleError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             LifecycleError::Open(error) => write!(f, "{error}"),
+            LifecycleError::DemandExceedsCeiling(refusal) => write!(f, "{refusal}"),
             LifecycleError::ContractChanged(refusal) => write!(f, "{refusal}"),
             LifecycleError::Io(error) => write!(f, "the rebind could not be committed: {error}"),
         }
@@ -154,7 +177,28 @@ pub fn attach(
     schemas: Vec<StoreSchema>,
     sites: Vec<SiteSpec>,
 ) -> Result<AttachOutcome, LifecycleError> {
-    let mut opened = open(dir, schemas, sites).map_err(LifecycleError::Open)?;
+    // The admission gate runs after the single-owner lock and before any engine call, so an
+    // image whose demand exceeds the store's accepted ceiling is refused with zero engine
+    // calls. The gate reconstructs the accepted ceiling from the persisted head and intersects
+    // it with the presented image's whole-program demand (see `authority::admit`). A ceiling
+    // payload that does not decode is store corruption, not a demand refusal.
+    let admit = |head: &LogicalHead| -> Result<(), AdmissionRefusal> {
+        let accepted = CeilingDescriptor::from_payload(&head.accepted_ceiling)
+            .map_err(|_| AdmissionRefusal::CeilingCorrupt)?;
+        authority::admit(image, &accepted).map_err(AdmissionRefusal::Exceeds)
+    };
+    let mut opened = match open_admitted(dir, schemas, sites, admit) {
+        Ok(opened) => opened,
+        Err(AdmitError::Open(error)) => return Err(LifecycleError::Open(error)),
+        Err(AdmitError::Refused(AdmissionRefusal::Exceeds(refusal))) => {
+            return Err(LifecycleError::DemandExceedsCeiling(refusal));
+        }
+        Err(AdmitError::Refused(AdmissionRefusal::CeilingCorrupt)) => {
+            return Err(LifecycleError::Open(OpenError::Corruption {
+                message: "the persisted accepted authority ceiling did not decode".to_string(),
+            }));
+        }
+    };
 
     let incoming = active_binding(image);
     let stored = opened.head.binding;
@@ -197,15 +241,13 @@ pub fn attach(
 }
 
 /// The binding fact that differs between the store's active binding and the incoming image,
-/// checked in a fixed order (durable contract, interface, ceiling). At least one differs
-/// because the caller has established `!facts_equal`.
+/// checked in a fixed order (durable contract, then interface). At least one differs because
+/// the caller has established `!facts_equal`.
 fn classify_delta(stored: &ActiveBinding, incoming: &ActiveBinding) -> ChangedFact {
     if stored.durable_contract != incoming.durable_contract {
         ChangedFact::DurableContract
-    } else if stored.interface != incoming.interface {
-        ChangedFact::Interface
     } else {
-        ChangedFact::Ceiling
+        ChangedFact::Interface
     }
 }
 

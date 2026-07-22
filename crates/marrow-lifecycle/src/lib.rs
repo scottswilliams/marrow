@@ -19,6 +19,7 @@
 //! identity-framing owner, so this crate composes them without a hash dependency of its own.
 
 mod actor;
+mod authority;
 mod codec;
 mod durable_fs;
 mod envelope;
@@ -37,11 +38,12 @@ mod store_dir;
 pub use actor::{
     AttachOutcome, ChangedFact, ContractChanged, LifecycleError, RebindReceipt, attach,
 };
+pub use authority::{DemandExceedsCeiling, ExceedingDemand};
 pub use codec::FormatError;
 pub use envelope::{EngineKind, StoreEnvelope};
 pub use head::{ActiveBinding, LogicalHead};
 pub use headmap::{HeadMap, HeadMapEntry, MAX_HEAD_MAP_ENTRIES};
-pub use image::{active_binding, head_map, head_map_node_order};
+pub use image::{accepted_ceiling, active_binding, head_map, head_map_node_order};
 pub use import::{
     CommitFault, ImportError, ImportLimits, ImportReport, ImportTarget, RowFault, ShapeFault,
     import_jsonl,
