@@ -24,10 +24,11 @@ use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
 use std::thread::JoinHandle;
 
 use lsp_types::{
-    DidChangeTextDocumentParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams,
-    DocumentFormattingParams, GotoDefinitionParams, HoverParams, InitializeParams,
-    InitializeResult, OneOf, ServerCapabilities, ServerInfo, TextDocumentSyncCapability,
-    TextDocumentSyncKind, TextDocumentSyncOptions,
+    CompletionOptions, CompletionParams, DidChangeTextDocumentParams, DidCloseTextDocumentParams,
+    DidOpenTextDocumentParams, DocumentFormattingParams, DocumentSymbolParams, GotoDefinitionParams,
+    HoverParams, InitializeParams, InitializeResult, OneOf, ServerCapabilities, ServerInfo,
+    SignatureHelpOptions, SignatureHelpParams, TextDocumentSyncCapability, TextDocumentSyncKind,
+    TextDocumentSyncOptions,
 };
 use marrow_compile::{AnalysisSnapshot, InputRevision};
 
@@ -323,6 +324,9 @@ enum HeldKind {
     Hover(lsp_types::Position),
     Definition(lsp_types::Position),
     Formatting,
+    Completion(lsp_types::Position),
+    SignatureHelp(lsp_types::Position),
+    DocumentSymbol,
 }
 
 /// A semantic request held until the analysis snapshot for its revision is ready. It is
@@ -508,9 +512,12 @@ impl Coordinator {
         match method {
             "initialize" => self.on_initialize(id, params),
             "shutdown" => self.on_shutdown(id),
-            "textDocument/hover" | "textDocument/definition" | "textDocument/formatting" => {
-                self.on_semantic_request(id, method, params)
-            }
+            "textDocument/hover"
+            | "textDocument/definition"
+            | "textDocument/formatting"
+            | "textDocument/completion"
+            | "textDocument/signatureHelp"
+            | "textDocument/documentSymbol" => self.on_semantic_request(id, method, params),
             _ => match self.lifecycle.gate_request() {
                 RequestGate::NotInitialized => {
                     self.answer_error(&id, SERVER_NOT_INITIALIZED, "server not initialized")
@@ -650,6 +657,9 @@ impl Coordinator {
             SemanticAnswer::ContentModified => {
                 self.answer_error(&held.id, CONTENT_MODIFIED, "content modified")
             }
+            SemanticAnswer::ResourceLimit => {
+                self.answer_error(&held.id, REQUEST_FAILED, "analysis resource limit")
+            }
             SemanticAnswer::Internal => {
                 self.answer_error(&held.id, INTERNAL_ERROR, "internal error")
             }
@@ -689,6 +699,21 @@ impl Coordinator {
             }
             HeldKind::Formatting => SemanticAnswer::Reply(OutboundBody::Formatting(
                 facts::formatting(snapshot, &identity, &source),
+            )),
+            HeldKind::Completion(position) => {
+                match facts::completion(snapshot, &identity, &source, *position) {
+                    Ok(result) => SemanticAnswer::Reply(OutboundBody::Completion(result)),
+                    Err(facts::ResourceLimited) => SemanticAnswer::ResourceLimit,
+                }
+            }
+            HeldKind::SignatureHelp(position) => {
+                match facts::signature_help(snapshot, &identity, &source, *position) {
+                    Ok(result) => SemanticAnswer::Reply(OutboundBody::SignatureHelp(result)),
+                    Err(facts::ResourceLimited) => SemanticAnswer::ResourceLimit,
+                }
+            }
+            HeldKind::DocumentSymbol => SemanticAnswer::Reply(OutboundBody::DocumentSymbol(
+                facts::document_symbols(snapshot, &identity, &source),
             )),
         }
     }
@@ -1338,6 +1363,9 @@ enum OutboundBody {
     Hover(Option<lsp_types::Hover>),
     Definition(Option<lsp_types::Location>),
     Formatting(Option<Vec<lsp_types::TextEdit>>),
+    Completion(Option<lsp_types::CompletionResponse>),
+    SignatureHelp(Option<lsp_types::SignatureHelp>),
+    DocumentSymbol(Option<lsp_types::DocumentSymbolResponse>),
 }
 
 impl OutboundBody {
@@ -1346,6 +1374,9 @@ impl OutboundBody {
             OutboundBody::Hover(result) => Outbound::Hover { id, result },
             OutboundBody::Definition(result) => Outbound::Definition { id, result },
             OutboundBody::Formatting(result) => Outbound::Formatting { id, result },
+            OutboundBody::Completion(result) => Outbound::Completion { id, result },
+            OutboundBody::SignatureHelp(result) => Outbound::SignatureHelp { id, result },
+            OutboundBody::DocumentSymbol(result) => Outbound::DocumentSymbol { id, result },
         }
     }
 }
@@ -1353,6 +1384,9 @@ impl OutboundBody {
 enum SemanticAnswer {
     Reply(OutboundBody),
     ContentModified,
+    /// A query-local analysis resource refusal (an over-cap candidate set or rendered
+    /// display), mapped to the recoverable `-32803` law — never a truncated result.
+    ResourceLimit,
     Internal,
 }
 
@@ -1378,6 +1412,24 @@ fn parse_semantic(
         "textDocument/formatting" => {
             let params = parse::<DocumentFormattingParams>(params?)?;
             (HeldKind::Formatting, params.text_document.uri)
+        }
+        "textDocument/completion" => {
+            let params = parse::<CompletionParams>(params?)?.text_document_position;
+            (
+                HeldKind::Completion(params.position),
+                params.text_document.uri,
+            )
+        }
+        "textDocument/signatureHelp" => {
+            let params = parse::<SignatureHelpParams>(params?)?.text_document_position_params;
+            (
+                HeldKind::SignatureHelp(params.position),
+                params.text_document.uri,
+            )
+        }
+        "textDocument/documentSymbol" => {
+            let params = parse::<DocumentSymbolParams>(params?)?;
+            (HeldKind::DocumentSymbol, params.text_document.uri)
         }
         _ => return None,
     };
@@ -1462,6 +1514,25 @@ fn initialize_result() -> InitializeResult {
             hover_provider: Some(lsp_types::HoverProviderCapability::Simple(true)),
             definition_provider: Some(OneOf::Left(true)),
             document_formatting_provider: Some(OneOf::Left(true)),
+            // Trigger characters are editor ergonomics only: the checker classifies the
+            // position purely, never from the trigger character. No `resolveProvider`,
+            // no `allCommitCharacters` — the completion surface is a complete list the
+            // client filters.
+            completion_provider: Some(CompletionOptions {
+                trigger_characters: Some(vec![
+                    ".".to_owned(),
+                    ":".to_owned(),
+                    "(".to_owned(),
+                    ",".to_owned(),
+                ]),
+                ..Default::default()
+            }),
+            signature_help_provider: Some(SignatureHelpOptions {
+                trigger_characters: Some(vec!["(".to_owned(), ",".to_owned()]),
+                retrigger_characters: None,
+                work_done_progress_options: Default::default(),
+            }),
+            document_symbol_provider: Some(OneOf::Left(true)),
             ..Default::default()
         },
         server_info: Some(ServerInfo {

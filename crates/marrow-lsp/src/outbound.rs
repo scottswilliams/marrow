@@ -9,7 +9,10 @@
 
 use std::io::{self, Write};
 
-use lsp_types::{InitializeResult, Location, PublishDiagnosticsParams, TextEdit};
+use lsp_types::{
+    CompletionResponse, DocumentSymbolResponse, InitializeResult, Location,
+    PublishDiagnosticsParams, SignatureHelp, TextEdit,
+};
 use serde::Serialize;
 use serde::ser::{SerializeStruct, Serializer};
 
@@ -63,6 +66,27 @@ pub enum Outbound {
         /// The edits, or `None` for a null result.
         result: Option<Vec<TextEdit>>,
     },
+    /// A completion result (a complete candidate list, or null).
+    Completion {
+        /// The request id.
+        id: RequestId,
+        /// The completion payload, or `None` for a null result.
+        result: Option<CompletionResponse>,
+    },
+    /// A signature-help result (or null).
+    SignatureHelp {
+        /// The request id.
+        id: RequestId,
+        /// The signature-help payload, or `None` for a null result.
+        result: Option<SignatureHelp>,
+    },
+    /// A document-symbol result (a declaration outline, or null).
+    DocumentSymbol {
+        /// The request id.
+        id: RequestId,
+        /// The document-symbol payload, or `None` for a null result.
+        result: Option<DocumentSymbolResponse>,
+    },
     /// A null result (a `shutdown` acknowledgement).
     Null {
         /// The request id.
@@ -108,6 +132,9 @@ pub fn encode(outbound: &Outbound) -> Result<Vec<u8>, EncodeError> {
         Outbound::Hover { id, result } => write_result(&mut sink, id, result),
         Outbound::Definition { id, result } => write_result(&mut sink, id, result),
         Outbound::Formatting { id, result } => write_result(&mut sink, id, result),
+        Outbound::Completion { id, result } => write_result(&mut sink, id, result),
+        Outbound::SignatureHelp { id, result } => write_result(&mut sink, id, result),
+        Outbound::DocumentSymbol { id, result } => write_result(&mut sink, id, result),
         Outbound::Null { id } => write_result(&mut sink, id, &NullResult),
         Outbound::Error { id, code, message } => {
             write_error(&mut sink, id.as_ref(), *code, message)

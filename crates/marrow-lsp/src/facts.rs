@@ -10,13 +10,19 @@
 use std::str::FromStr;
 
 use lsp_types::{
-    Diagnostic, DiagnosticSeverity, Hover, HoverContents, Location, MarkupContent, MarkupKind,
-    NumberOrString, Position as LspPosition, PublishDiagnosticsParams, Range as LspRange, TextEdit,
-    Uri,
+    CompletionItem, CompletionItemKind, CompletionResponse, Diagnostic, DiagnosticSeverity,
+    DocumentSymbol, DocumentSymbolResponse, Hover, HoverContents, Location, MarkupContent,
+    MarkupKind, NumberOrString, ParameterInformation, ParameterLabel, Position as LspPosition,
+    PublishDiagnosticsParams, Range as LspRange, SignatureHelp, SignatureInformation, SymbolKind,
+    TextEdit, Uri,
 };
 use marrow_codes::{Code, SeverityClass};
-use marrow_compile::{AnalysisSnapshot, Fact, FormatOutcome};
+use marrow_compile::{
+    ActiveCall, ActiveCallOutcome, AnalysisSnapshot, Candidate, CandidateKind, Completions,
+    CompletionOutcome, DeclKind, DeclSymbol, Fact, FormatOutcome,
+};
 use marrow_project_fs::FileIdentity;
+use marrow_syntax::SourceSpan;
 
 use crate::position::{LineMap, Position, Range};
 use crate::uri::{SelectedRoot, diagnostic_uri};
@@ -169,6 +175,175 @@ pub fn formatting(
             Some(vec![TextEdit::new(whole, formatted)])
         }
         Ok(FormatOutcome::Refused(_) | FormatOutcome::TooLarge { .. }) | Err(_) => None,
+    }
+}
+
+/// A query-local analysis resource refusal: the in-scope candidate set or rendered
+/// display exceeded a per-query bound. The server maps it to the recoverable `-32803`
+/// law — never a truncated prefix or display.
+pub struct ResourceLimited;
+
+/// The completion payload at an LSP position. `Ok(None)` covers a legitimately absent
+/// classification, an unavailable (syntax) owner, and an unknown/out-of-range position —
+/// the LSP `null` completion result. `Err(ResourceLimited)` is an over-cap candidate set.
+/// Every candidate is projected verbatim from the compiler's fact; the set is the
+/// complete in-scope namespace, never filtered, ranked, or truncated here.
+pub fn completion(
+    snapshot: &AnalysisSnapshot,
+    file: &FileIdentity,
+    source: &str,
+    position: LspPosition,
+) -> Result<Option<CompletionResponse>, ResourceLimited> {
+    let offset = LineMap::new(source).byte_at(Position {
+        line: position.line,
+        character: position.character,
+    });
+    match snapshot.completions(file, offset) {
+        Ok(CompletionOutcome::Ready(Fact::Present(completions))) => {
+            Ok(Some(to_completion_response(&completions)))
+        }
+        Ok(CompletionOutcome::Ready(Fact::Absent | Fact::Unavailable(_))) | Err(_) => Ok(None),
+        Ok(CompletionOutcome::Refused(_)) => Err(ResourceLimited),
+    }
+}
+
+/// The complete in-scope candidate set as a non-incomplete completion list. No server-side
+/// prefix/fuzzy filter, ranking, sort key, or commit character is applied: the client
+/// filters over this bounded set.
+fn to_completion_response(completions: &Completions) -> CompletionResponse {
+    let items = completions
+        .candidates()
+        .iter()
+        .map(to_completion_item)
+        .collect();
+    CompletionResponse::Array(items)
+}
+
+fn to_completion_item(candidate: &Candidate) -> CompletionItem {
+    let detail = candidate.detail();
+    CompletionItem {
+        label: candidate.label().to_owned(),
+        kind: Some(completion_item_kind(candidate.kind())),
+        detail: (!detail.is_empty()).then(|| detail.to_owned()),
+        ..Default::default()
+    }
+}
+
+/// Map a compiler candidate kind to its editor symbol category. A closed match: a new
+/// candidate kind forces a decision here.
+fn completion_item_kind(kind: CandidateKind) -> CompletionItemKind {
+    match kind {
+        CandidateKind::Function | CandidateKind::Builtin => CompletionItemKind::FUNCTION,
+        CandidateKind::Local | CandidateKind::Param => CompletionItemKind::VARIABLE,
+        CandidateKind::Const => CompletionItemKind::CONSTANT,
+        CandidateKind::Field => CompletionItemKind::FIELD,
+        CandidateKind::EnumMember { .. } => CompletionItemKind::ENUM_MEMBER,
+        CandidateKind::Type => CompletionItemKind::CLASS,
+        CandidateKind::TypeParam => CompletionItemKind::TYPE_PARAMETER,
+        CandidateKind::Module => CompletionItemKind::MODULE,
+    }
+}
+
+/// The signature-help payload at an LSP position, or `None` (LSP `null`) for a position in
+/// no resolvable call. `Err(ResourceLimited)` is an over-cap rendered display. The active
+/// parameter and the parameter pieces come verbatim from the compiler, so no consumer
+/// substring-searches the rendered signature.
+pub fn signature_help(
+    snapshot: &AnalysisSnapshot,
+    file: &FileIdentity,
+    source: &str,
+    position: LspPosition,
+) -> Result<Option<SignatureHelp>, ResourceLimited> {
+    let offset = LineMap::new(source).byte_at(Position {
+        line: position.line,
+        character: position.character,
+    });
+    match snapshot.active_call(file, offset) {
+        Ok(ActiveCallOutcome::Ready(Fact::Present(active))) => Ok(Some(to_signature_help(&active))),
+        Ok(ActiveCallOutcome::Ready(Fact::Absent | Fact::Unavailable(_))) | Err(_) => Ok(None),
+        Ok(ActiveCallOutcome::Refused(_)) => Err(ResourceLimited),
+    }
+}
+
+fn to_signature_help(active: &ActiveCall) -> SignatureHelp {
+    let active_parameter = active.active().map(u32::from);
+    let parameters = active
+        .params()
+        .iter()
+        .map(|piece| ParameterInformation {
+            label: ParameterLabel::Simple(piece.label().to_owned()),
+            documentation: None,
+        })
+        .collect();
+    let signature = SignatureInformation {
+        label: active.signature().to_owned(),
+        documentation: None,
+        parameters: Some(parameters),
+        active_parameter,
+    };
+    SignatureHelp {
+        signatures: vec![signature],
+        active_signature: Some(0),
+        active_parameter,
+    }
+}
+
+/// The declaration-hierarchy outline of a document, or `None` (LSP `null`) for an
+/// unavailable (unparseable) or unknown file. A pure projection of the compiler's
+/// document-symbol fact; the per-file count/depth bounds are enforced at snapshot
+/// admission, so a query here carries no resource refusal.
+pub fn document_symbols(
+    snapshot: &AnalysisSnapshot,
+    file: &FileIdentity,
+    source: &str,
+) -> Option<DocumentSymbolResponse> {
+    let map = LineMap::new(source);
+    match snapshot.document_symbols(file) {
+        Ok(Fact::Present(symbols)) => Some(DocumentSymbolResponse::Nested(
+            symbols
+                .iter()
+                .map(|symbol| to_document_symbol(symbol, &map))
+                .collect(),
+        )),
+        Ok(Fact::Absent | Fact::Unavailable(_)) | Err(_) => None,
+    }
+}
+
+fn span_range(span: SourceSpan, map: &LineMap) -> LspRange {
+    to_lsp_range(map.range_of(span.start_byte, span.end_byte))
+}
+
+#[allow(deprecated)]
+fn to_document_symbol(symbol: &DeclSymbol, map: &LineMap) -> DocumentSymbol {
+    let children: Vec<DocumentSymbol> = symbol
+        .children()
+        .iter()
+        .map(|child| to_document_symbol(child, map))
+        .collect();
+    DocumentSymbol {
+        name: symbol.name().to_owned(),
+        detail: None,
+        kind: symbol_kind(symbol.kind()),
+        tags: None,
+        deprecated: None,
+        range: span_range(symbol.full_range(), map),
+        selection_range: span_range(symbol.name_span(), map),
+        children: (!children.is_empty()).then_some(children),
+    }
+}
+
+/// Map a compiler declaration kind to its editor symbol category. A closed match: a new
+/// declaration kind forces a decision here.
+fn symbol_kind(kind: DeclKind) -> SymbolKind {
+    match kind {
+        DeclKind::Alias => SymbolKind::INTERFACE,
+        DeclKind::Nominal => SymbolKind::CLASS,
+        DeclKind::Const => SymbolKind::CONSTANT,
+        DeclKind::Resource | DeclKind::Struct => SymbolKind::STRUCT,
+        DeclKind::Store => SymbolKind::OBJECT,
+        DeclKind::Function | DeclKind::Test => SymbolKind::FUNCTION,
+        DeclKind::Enum => SymbolKind::ENUM,
+        DeclKind::EnumMember => SymbolKind::ENUM_MEMBER,
     }
 }
 

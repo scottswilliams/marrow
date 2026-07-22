@@ -105,6 +105,40 @@ impl Connection {
     }
 }
 
+/// The Graph Report conformance fixture source: a single 393-line module (structs, an
+/// enum with members, a generic helper, monomorphic helpers, and tests) — the earning
+/// caller for completion, signature help, and document symbols.
+const GRAPH_REPORT: &str =
+    include_str!("../../../fixtures/v01/conformance/graph_report/src/graph_report.mw");
+
+/// The zero-based LSP position (line, UTF-16 character) of a UTF-8 byte offset in a
+/// source string. Mirrors the server's own UTF-16 owner so the probe addresses the exact
+/// position the checker classifies.
+fn lsp_position(source: &str, byte: usize) -> (i64, i64) {
+    let clamped = byte.min(source.len());
+    let mut line = 0i64;
+    let mut line_start = 0usize;
+    for (index, ch) in source.as_bytes()[..clamped].iter().enumerate() {
+        if *ch == b'\n' {
+            line += 1;
+            line_start = index + 1;
+        }
+    }
+    let mut character = 0i64;
+    for (index, ch) in source[line_start..].char_indices() {
+        if line_start + index + ch.len_utf8() > clamped {
+            break;
+        }
+        character += ch.len_utf16() as i64;
+    }
+    (line, character)
+}
+
+/// The byte offset immediately after `needle`'s first occurrence in `source`.
+fn after(source: &str, needle: &str) -> usize {
+    source.find(needle).expect("needle present") + needle.len()
+}
+
 fn root_uri(dir: &Path) -> String {
     let mut uri = String::from("file://");
     for component in dir.components() {
@@ -345,6 +379,188 @@ fn measure_edit_to_diagnostic_latency() {
         median.as_millis() < 200,
         "median edit-to-diagnostic under 200ms"
     );
+    conn.request(9, "shutdown", Value::Null);
+    conn.recv_until(|m| m.get("id").and_then(Value::as_i64) == Some(9));
+    conn.notify("exit", Value::Null);
+    assert_eq!(conn.wait(), 0);
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// Open the Graph Report fixture as the project's `main.mw` and drain its initial
+/// diagnostic publication, leaving a ready snapshot for a follow-up semantic query.
+fn open_graph_report(conn: &mut Connection, dir: &Path) {
+    did_open(conn, dir, GRAPH_REPORT, 1);
+    let target = document_uri(dir);
+    conn.recv_until(|m| {
+        m.get("method").and_then(Value::as_str) == Some("textDocument/publishDiagnostics")
+            && m["params"]["uri"].as_str() == Some(target.as_str())
+    });
+}
+
+#[test]
+fn completion_at_enum_path_returns_members() {
+    // The in-progress edit state the feature serves: the developer has typed `Role::` in
+    // `classifyRole` and not yet the member. The incomplete path does not parse; the
+    // bounded parser recovery still classifies the enum-path position.
+    let editing = GRAPH_REPORT.replacen("return Role::isolated", "return Role::", 1);
+    let dir = temp_project("completion", &editing);
+    let mut conn = Connection::spawn(&dir);
+    initialize(&mut conn, &dir);
+    did_open(&mut conn, &dir, &editing, 1);
+    let target = document_uri(&dir);
+    conn.recv_until(|m| {
+        m.get("method").and_then(Value::as_str) == Some("textDocument/publishDiagnostics")
+            && m["params"]["uri"].as_str() == Some(target.as_str())
+    });
+    // Just past the typed `Role::` — an enum-path position whose namespace is the enum's
+    // members.
+    let (line, character) = lsp_position(&editing, after(&editing, "return Role::"));
+    conn.request(
+        30,
+        "textDocument/completion",
+        serde_json::json!({
+            "textDocument": { "uri": document_uri(&dir) },
+            "position": { "line": line, "character": character },
+        }),
+    );
+    let reply = conn.recv_until(|m| m.get("id").and_then(Value::as_i64) == Some(30));
+    // A `CompletionList` object or a bare items array; normalize to the items array.
+    let items = reply["result"]
+        .get("items")
+        .and_then(Value::as_array)
+        .or_else(|| reply["result"].as_array())
+        .expect("completion returns items");
+    let labels: Vec<&str> = items
+        .iter()
+        .filter_map(|item| item["label"].as_str())
+        .collect();
+    for member in ["source", "sink", "internal", "isolated"] {
+        assert!(labels.contains(&member), "enum member {member} offered");
+    }
+    conn.request(9, "shutdown", Value::Null);
+    conn.recv_until(|m| m.get("id").and_then(Value::as_i64) == Some(9));
+    conn.notify("exit", Value::Null);
+    assert_eq!(conn.wait(), 0);
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn signature_help_inside_call_marks_active_parameter() {
+    let dir = temp_project("sighelp", GRAPH_REPORT);
+    let mut conn = Connection::spawn(&dir);
+    initialize(&mut conn, &dir);
+    open_graph_report(&mut conn, &dir);
+    // Inside `getOr(reached, e.src, false)` at the second argument slot.
+    let (line, character) = lsp_position(GRAPH_REPORT, after(GRAPH_REPORT, "getOr(reached, "));
+    conn.request(
+        31,
+        "textDocument/signatureHelp",
+        serde_json::json!({
+            "textDocument": { "uri": document_uri(&dir) },
+            "position": { "line": line, "character": character },
+        }),
+    );
+    let reply = conn.recv_until(|m| m.get("id").and_then(Value::as_i64) == Some(31));
+    let signatures = reply["result"]["signatures"]
+        .as_array()
+        .expect("signature help returns signatures");
+    assert_eq!(signatures.len(), 1, "one active signature");
+    assert!(
+        signatures[0]["label"].as_str().unwrap_or("").contains("getOr"),
+        "the callee signature is `getOr`"
+    );
+    assert_eq!(
+        reply["result"]["activeParameter"].as_i64(),
+        Some(1),
+        "the cursor sits at the second parameter"
+    );
+    conn.request(9, "shutdown", Value::Null);
+    conn.recv_until(|m| m.get("id").and_then(Value::as_i64) == Some(9));
+    conn.notify("exit", Value::Null);
+    assert_eq!(conn.wait(), 0);
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn document_symbol_returns_declaration_outline() {
+    let dir = temp_project("symbols", GRAPH_REPORT);
+    let mut conn = Connection::spawn(&dir);
+    initialize(&mut conn, &dir);
+    open_graph_report(&mut conn, &dir);
+    conn.request(
+        32,
+        "textDocument/documentSymbol",
+        serde_json::json!({
+            "textDocument": { "uri": document_uri(&dir) },
+        }),
+    );
+    let reply = conn.recv_until(|m| m.get("id").and_then(Value::as_i64) == Some(32));
+    let symbols = reply["result"].as_array().expect("a symbol array");
+    let names: Vec<&str> = symbols
+        .iter()
+        .filter_map(|symbol| symbol["name"].as_str())
+        .collect();
+    for name in ["Pair", "Edge", "Role", "getOr", "classifyRole", "report"] {
+        assert!(names.contains(&name), "top-level declaration {name} present");
+    }
+    // The enum carries its members as nested children.
+    let role = symbols
+        .iter()
+        .find(|symbol| symbol["name"].as_str() == Some("Role"))
+        .expect("Role symbol");
+    let members: Vec<&str> = role["children"]
+        .as_array()
+        .expect("enum children")
+        .iter()
+        .filter_map(|child| child["name"].as_str())
+        .collect();
+    for member in ["source", "sink", "internal", "isolated"] {
+        assert!(members.contains(&member), "enum member {member} nested");
+    }
+    conn.request(9, "shutdown", Value::Null);
+    conn.recv_until(|m| m.get("id").and_then(Value::as_i64) == Some(9));
+    conn.notify("exit", Value::Null);
+    assert_eq!(conn.wait(), 0);
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn advertises_completion_signature_and_symbol() {
+    let dir = temp_project("caps", GRAPH_REPORT);
+    let mut conn = Connection::spawn(&dir);
+    conn.request(
+        1,
+        "initialize",
+        serde_json::json!({
+            "processId": Value::Null,
+            "rootUri": root_uri(&dir),
+            "capabilities": {},
+        }),
+    );
+    let reply = conn.recv_until(|m| m.get("id").and_then(Value::as_i64) == Some(1));
+    let caps = &reply["result"]["capabilities"];
+    assert!(
+        caps["completionProvider"].is_object(),
+        "advertises completion"
+    );
+    assert!(
+        caps["signatureHelpProvider"].is_object(),
+        "advertises signature help"
+    );
+    assert_eq!(
+        caps["documentSymbolProvider"].as_bool(),
+        Some(true),
+        "advertises document symbols"
+    );
+    // The refused surface is never advertised.
+    assert!(
+        caps["completionProvider"]["resolveProvider"]
+            .as_bool()
+            .unwrap_or(false)
+            == false,
+        "no completionItem/resolve"
+    );
+    conn.notify("initialized", serde_json::json!({}));
     conn.request(9, "shutdown", Value::Null);
     conn.recv_until(|m| m.get("id").and_then(Value::as_i64) == Some(9));
     conn.notify("exit", Value::Null);
