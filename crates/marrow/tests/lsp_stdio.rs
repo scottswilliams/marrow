@@ -560,10 +560,9 @@ fn advertises_completion_signature_and_symbol() {
     );
     // The refused surface is never advertised.
     assert!(
-        caps["completionProvider"]["resolveProvider"]
+        !caps["completionProvider"]["resolveProvider"]
             .as_bool()
-            .unwrap_or(false)
-            == false,
+            .unwrap_or(false),
         "no completionItem/resolve"
     );
     conn.notify("initialized", serde_json::json!({}));
