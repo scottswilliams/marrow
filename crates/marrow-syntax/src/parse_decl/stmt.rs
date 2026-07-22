@@ -466,8 +466,12 @@ impl<'a> StmtParser<'a> {
             return None;
         }
         let error_span = line_span_or(header, start);
-        let inner = expr_of_after(self.source, header, start, &mut self.diagnostics)
-            .unwrap_or(Expression::Error { span: error_span });
+        let inner = expr_of_after(self.source, header, start, &mut self.diagnostics).unwrap_or(
+            Expression::Error {
+                span: error_span,
+                recovery: None,
+            },
+        );
         let span = join_spans(start, inner.span());
         Some(Statement::Expr {
             value: Expression::Try {
@@ -784,13 +788,19 @@ impl<'a> StmtParser<'a> {
                 true,
                 name,
                 ty,
-                value.unwrap_or(Expression::Error { span: start }),
+                value.unwrap_or(Expression::Error {
+                    span: start,
+                    recovery: None,
+                }),
             ),
             _ => (
                 false,
                 String::new(),
                 None,
-                Expression::Error { span: start },
+                Expression::Error {
+                    span: start,
+                    recovery: None,
+                },
             ),
         };
         Statement::LetElse {
@@ -821,6 +831,7 @@ impl<'a> StmtParser<'a> {
         let op = expr_of_after(self.source, op_tokens, checked_span, &mut self.diagnostics)
             .unwrap_or(Expression::Error {
                 span: op_error_span,
+                recovery: None,
             });
         let (out_of_range, zero_divisor, end) = self.checked_arms(start);
         Statement::Checked {
@@ -931,7 +942,10 @@ impl<'a> StmtParser<'a> {
         let expr = expr_of_after(self.source, line, keyword, &mut self.diagnostics);
         // A failed header reported its own missing-expression diagnostic; the error
         // node stands in for the condition so the statement still parses.
-        expr.unwrap_or(Expression::Error { span: error_span })
+        expr.unwrap_or(Expression::Error {
+            span: error_span,
+            recovery: None,
+        })
     }
 
     fn if_head(&mut self, keyword: SourceSpan) -> IfHead {
@@ -953,7 +967,10 @@ impl<'a> StmtParser<'a> {
         } else {
             expr_of_after(self.source, line, keyword, &mut self.diagnostics).map(IfHead::Expr)
         };
-        head.unwrap_or(IfHead::Expr(Expression::Error { span: error_span }))
+        head.unwrap_or(IfHead::Expr(Expression::Error {
+            span: error_span,
+            recovery: None,
+        }))
     }
 
     /// Parse a B5 `if const` chain head: parts split on top-level `and`, where each

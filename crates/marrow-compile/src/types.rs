@@ -2374,7 +2374,9 @@ impl TypeMetadataView<'_> {
                         pending.push((expected, *actual));
                     }
                 }
-                TypeExpr::Optional { .. } | TypeExpr::Identity(_) => return Ok(false),
+                TypeExpr::Optional { .. }
+                | TypeExpr::Identity(_)
+                | TypeExpr::Incomplete { .. } => return Ok(false),
             }
         }
         Ok(true)
@@ -4694,7 +4696,7 @@ impl TypeRegistry {
                 args: args.iter().map(|arg| self.expand(arg)).collect(),
                 span: *span,
             },
-            TypeExpr::Identity(_) => ty.clone(),
+            TypeExpr::Identity(_) | TypeExpr::Incomplete { .. } => ty.clone(),
         }
     }
 
@@ -5283,7 +5285,7 @@ fn referenced_names<'t>(ty: &'t TypeExpr, visit: &mut impl FnMut(&'t str)) {
                 referenced_names(arg, visit);
             }
         }
-        TypeExpr::Identity(_) => {}
+        TypeExpr::Identity(_) | TypeExpr::Incomplete { .. } => {}
     }
 }
 
@@ -5304,7 +5306,7 @@ fn expand_in(table: &BTreeMap<String, TypeExpr>, ty: &TypeExpr) -> TypeExpr {
             args: args.iter().map(|arg| expand_in(table, arg)).collect(),
             span: *span,
         },
-        TypeExpr::Identity(_) => ty.clone(),
+        TypeExpr::Identity(_) | TypeExpr::Incomplete { .. } => ty.clone(),
     }
 }
 

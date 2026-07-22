@@ -196,6 +196,10 @@ fn resolve_expanded(
                 optional: false,
             })
         }
+        // A parse-recovery leaf for a missing type annotation. Resolution runs only
+        // on a `!has_errors` tree, so this is unreachable here; fail closed rather
+        // than invent a type.
+        TypeExpr::Incomplete { .. } => Err(ResolveError::Refusal(ResolveRefusal::Unsupported)),
     }
 }
 

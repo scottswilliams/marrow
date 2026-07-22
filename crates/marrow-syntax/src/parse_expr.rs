@@ -152,7 +152,10 @@ impl<'a> ExprParser<'a> {
         help: Option<String>,
     ) -> Expression {
         self.error(span, reason, message, help);
-        Expression::Error { span }
+        Expression::Error {
+            span,
+            recovery: None,
+        }
     }
 
     /// The zero-width position where a missing operand should be reported: just
@@ -265,7 +268,10 @@ impl<'a> ExprParser<'a> {
             help: None,
             span,
         });
-        Expression::Error { span }
+        Expression::Error {
+            span,
+            recovery: None,
+        }
     }
 
     /// Parse a left-associated chain of one operator precedence: an `operand`, then
@@ -1014,11 +1020,13 @@ impl<'a> ExprParser<'a> {
                     // operator rather than as an unstructured group.
                     Expression::Error {
                         span: self.tokens[self.pos].span,
+                        recovery: None,
                     }
                 } else {
                     self.expected_delimiter_at_gap(ExpectedSyntax::CloseParen, "expected `)`");
                     Expression::Error {
                         span: self.gap_span(),
+                        recovery: None,
                     }
                 }
             }

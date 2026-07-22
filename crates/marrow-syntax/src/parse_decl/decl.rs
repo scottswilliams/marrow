@@ -1039,7 +1039,10 @@ impl<'a> DeclParser<'a> {
                 ParseDiagnosticReason::Expected(ExpectedSyntax::Expression),
                 "expected an expression",
             )
-            .unwrap_or(Expression::Error { span }),
+            .unwrap_or(Expression::Error {
+                span,
+                recovery: None,
+            }),
         )
     }
 }

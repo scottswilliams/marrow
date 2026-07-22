@@ -260,7 +260,33 @@ pub enum Expression {
     /// produces a tree; it always travels with a `parse.syntax` diagnostic at its
     /// span, and semantic processing is gated on `!ParsedSource::has_errors`, so a
     /// checker or runtime never resolves an `Error`.
-    Error { span: SourceSpan },
+    ///
+    /// `recovery` is `None` for an ordinary dropped operand and `Some` only for the
+    /// bounded incomplete surface forms the parser structures for editor analysis
+    /// (`base.`, `base?.`, `base::`). The recovered base is retained so a position
+    /// classifier can type the receiver; the node stays inert in the compile path
+    /// exactly like a bare error, and its diagnostic is unchanged either way.
+    Error {
+        span: SourceSpan,
+        recovery: Option<Recovery>,
+    },
+}
+
+/// The well-formed left context a recovery node preserves for the incomplete
+/// surface form the parser was structuring when the segment after the operator
+/// was missing. The variant records which operator introduced the gap — mirroring
+/// the surrounding [`Expression::Field`]/[`Expression::OptionalField`] split rather
+/// than carrying a boolean — so a position classifier distinguishes `.`, `?.`, and
+/// `::` without re-reading source. Each variant is inert in the compile path; only
+/// the recovery-aware analysis pass inspects it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Recovery {
+    /// `base.` with no field name yet; `base` is the receiver.
+    Member { base: Box<Expression> },
+    /// `base?.` with no field name yet; `base` is the receiver.
+    OptionalMember { base: Box<Expression> },
+    /// `base::` with no path segment yet; `base` is the name parsed so far.
+    Path { base: Box<Expression> },
 }
 
 impl Expression {
@@ -280,7 +306,7 @@ impl Expression {
             | Self::Membership { span, .. }
             | Self::Interpolation { span, .. }
             | Self::Try { span, .. }
-            | Self::Error { span } => *span,
+            | Self::Error { span, .. } => *span,
         }
     }
 
@@ -1032,6 +1058,13 @@ pub enum TypeExpr {
         args: Vec<TypeExpr>,
         span: SourceSpan,
     },
+    /// A type position the parser reached with no type spelling to structure
+    /// (`x: ` with nothing after the `:`). The inert leaf keeps the annotation site
+    /// addressable for editor position classification; like [`Expression::Error`] it
+    /// always travels with a `parse.syntax` diagnostic at its span, and semantic
+    /// processing is gated on `!ParsedSource::has_errors`, so no resolver ever
+    /// reaches it.
+    Incomplete { span: SourceSpan },
 }
 
 /// The parts of an `Id(^root)` identity annotation, spans included so tooling can
@@ -1056,7 +1089,8 @@ impl TypeExpr {
         match self {
             TypeExpr::Name { span, .. }
             | TypeExpr::Optional { span, .. }
-            | TypeExpr::Apply { span, .. } => *span,
+            | TypeExpr::Apply { span, .. }
+            | TypeExpr::Incomplete { span } => *span,
             TypeExpr::Identity(identity) => identity.span,
         }
     }
@@ -1085,6 +1119,10 @@ impl fmt::Display for TypeExpr {
                 }
                 f.write_str(">")
             }
+            // Reachable only in a best-effort render over input that failed to parse
+            // (emission is gated on `!has_errors`). The leaf names no type, so it
+            // renders empty, mirroring `Expression::Error`.
+            TypeExpr::Incomplete { .. } => Ok(()),
         }
     }
 }
