@@ -686,18 +686,19 @@ fn build_one(
         })
         .collect();
 
-    // Emit the complete operation-site set for the whole durable graph now: one
-    // whole-payload site per keyed placement (this root and every nested
-    // `branch`) and one field-leaf site per stored field (top-level, group-scoped,
-    // and branch-scoped, including a widened-field leaf). A site names its target
-    // node by the node's semantic path — the chain of kind-tagged ledger ids from
-    // the application down — so it follows the graph's ledger ids. The verifier
-    // re-derives every site from its own reconstructed node set, so this path is a
-    // producer claim, not a trusted address: a nested site completes its identity
-    // and seals even though the flat-root kernel cannot execute over it yet. Sites
-    // are emitted from the graph, not per operation, so the site table scales with
-    // the graph rather than with operation count. The flat executable root's entry
-    // and top-level-field sites are captured here for the lowerer.
+    // Emit the eager, bounded per-node sites for the durable graph now: one
+    // whole-payload site per keyed placement (this root and every nested `branch`)
+    // and one whole-group site per static `group`. A site names its target node by
+    // the node's semantic path — the chain of kind-tagged ledger ids from the
+    // application down — so it follows the graph's ledger ids. The verifier re-derives
+    // every site from its own reconstructed node set, so this path is a producer
+    // claim, not a trusted address. Field-leaf sites are NOT emitted here: they are
+    // the per-declared-field width driver, so the lowerer allocates (and
+    // deduplicates) one lazily on the first instruction that addresses a field
+    // (`ImageDraft::alloc_site`). The graph therefore captures each stored field's
+    // stable `SemanticPath` (below), and the site table scales with *referenced*
+    // fields, not with declared width — an untouched field mints no site. The flat
+    // executable root's whole-payload entry site is captured here for the lowerer.
     let root_steps = vec![
         SemanticStep::new(SemanticStepKind::Application, application),
         SemanticStep::new(SemanticStepKind::Placement, placement),

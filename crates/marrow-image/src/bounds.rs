@@ -48,17 +48,17 @@ pub const MAX_STRING_BYTES: usize = 4 * 1024;
 /// leaf count ([`MAX_STRUCT_LEAVES`]) and the index projection width
 /// ([`MAX_INDEX_COMPONENTS`]): neither scales with the record field width.
 ///
-/// This width is the count guard; [`MAX_IMAGE_BYTES`] is the binding ceiling for a
-/// *durable* resource. Because the compiler emits one field-leaf operation site per
-/// stored field, a durable root costs ~84 image bytes per declared field (measured
-/// 83.82 bytes/field, stable across 2000–4091 fields), so the 512 KiB whole-image
-/// ceiling admits ~6200 durable fields — comfortable headroom over this width guard.
-/// The durable-identity ledger
+/// This width is the count guard. Field-leaf operation sites are emitted lazily — one
+/// per field the code actually addresses — so a durable resource's image cost tracks its
+/// *referenced* fields, not its declared width: a wide, mostly-sparse resource whose code
+/// touches a handful of fields encodes a handful of field sites (each ~52 bytes). Declared
+/// width therefore no longer drives image bytes, and [`MAX_IMAGE_BYTES`] is not the binder
+/// at the full field guard. The durable-identity ledger
 /// (`marrow_project::ids::MAX_IDS_ROWS` = 8192 anchor rows) admits the full 4096 field
 /// width for a single wide resource (~4100 rows: one `Field` per field plus
-/// application/product/root/key overhead) with headroom, so the binder at the full
-/// guard is this field-count width itself, not the ledger. A bare record *type* with no
-/// durable root reaches the full 4096 field width far below the byte ceiling.
+/// application/product/root/key overhead) with headroom, so the binder at the full guard
+/// is this field-count width itself, not the ledger or the byte ceiling. A bare record
+/// *type* with no durable root reaches the full 4096 field width trivially.
 pub const MAX_TYPES: usize = 4096;
 pub const MAX_RECORD_FIELDS: usize = 4096;
 
@@ -105,13 +105,14 @@ pub const MAX_COLLECTIONS: usize = 4096;
 /// bytes before it allocates the root vector, so a hostile image claiming more roots is
 /// refused with a typed bound rejection, not misread.
 ///
-/// The site table is emitted from the durable graph, not per operation: one
-/// whole-payload site per keyed placement and one field-leaf site per stored field (plus
-/// group, branch, and index sites), so it scales with the graph's field width rather
-/// than with code. A wide resource therefore mints a site per declared field, so
-/// [`MAX_SITES`] must admit at least a wide resource's field set ([`MAX_RECORD_FIELDS`])
-/// plus its group, branch, and index sites. The value carries that with headroom;
-/// [`MAX_IMAGE_BYTES`] remains the true byte bound on the emitted site paths.
+/// The site table holds the eager per-node sites — one whole-payload site per keyed
+/// placement plus group and index sites — and one field-leaf site per field the code
+/// *references* (field-leaf sites are allocated lazily and deduplicated). Its size
+/// therefore tracks referenced fields, not declared width. [`MAX_SITES`] is a conservative
+/// worst-case ceiling that still admits a program addressing a wide resource's whole field
+/// set ([`MAX_RECORD_FIELDS`]) plus its group, branch, and index sites; a program touching
+/// few fields uses far fewer. [`MAX_IMAGE_BYTES`] remains the true byte bound on the
+/// emitted site paths.
 pub const MAX_ROOTS: usize = 4096;
 pub const MAX_SITES: usize = 8192;
 
@@ -264,7 +265,8 @@ const _: () = {
     );
     assert!(
         MAX_SITES >= MAX_RECORD_FIELDS,
-        "every stored field mints a site; the site table must admit a wide field set",
+        "a program may reference every field of a wide resource, minting a leaf site each; \
+         the site table must admit a wide field set as its worst case",
     );
     assert!(
         MAX_STRINGS > MAX_RECORD_FIELDS,
