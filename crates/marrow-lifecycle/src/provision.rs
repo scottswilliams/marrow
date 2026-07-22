@@ -268,13 +268,14 @@ pub fn open(
     schemas: Vec<StoreSchema>,
     sites: Vec<SiteSpec>,
 ) -> Result<OpenStore, OpenError> {
-    open_admitted(dir, schemas, sites, |_| Ok::<(), std::convert::Infallible>(())).map_err(
-        |error| match error {
-            AdmitError::Open(open) => open,
-            // The no-op admit never refuses.
-            AdmitError::Refused(never) => match never {},
-        },
-    )
+    open_admitted(dir, schemas, sites, |_| {
+        Ok::<(), std::convert::Infallible>(())
+    })
+    .map_err(|error| match error {
+        AdmitError::Open(open) => open,
+        // The no-op admit never refuses.
+        AdmitError::Refused(never) => match never {},
+    })
 }
 
 /// Open the complete store at `dir`, running `admit` against the persisted head **after** the

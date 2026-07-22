@@ -248,7 +248,9 @@ impl ExportDemand {
     /// body (path + class), the same key the identity payload and canonical order use.
     pub fn contains(&self, atom: &DemandAtom) -> bool {
         let body = atom.encode_body();
-        self.atoms.iter().any(|candidate| candidate.encode_body() == body)
+        self.atoms
+            .iter()
+            .any(|candidate| candidate.encode_body() == body)
     }
 
     /// The atoms of `self` that `ceiling` does not admit — the set difference
@@ -371,7 +373,10 @@ impl<'a> AtomCursor<'a> {
     }
 
     fn take(&mut self, n: usize) -> Result<&'a [u8], CeilingDecodeError> {
-        let end = self.pos.checked_add(n).ok_or(CeilingDecodeError::Truncated)?;
+        let end = self
+            .pos
+            .checked_add(n)
+            .ok_or(CeilingDecodeError::Truncated)?;
         let slice = self
             .bytes
             .get(self.pos..end)
@@ -403,7 +408,10 @@ impl<'a> AtomCursor<'a> {
     }
 
     fn array16(&mut self) -> Result<[u8; 16], CeilingDecodeError> {
-        Ok(self.take(16)?.try_into().expect("took exactly sixteen bytes"))
+        Ok(self
+            .take(16)?
+            .try_into()
+            .expect("took exactly sixteen bytes"))
     }
 
     /// A length-prefixed slice `u64_be(len) ‖ bytes`; the length is bounded against the
@@ -755,16 +763,12 @@ mod tests {
     /// and the empty ceiling admits nothing.
     #[test]
     fn not_admitted_by_is_the_subset_check() {
-        let ceiling = ExportDemand::from_atoms([DemandAtom::new(
-            field_path(0x0e),
-            OperationClass::Read,
-        )]);
+        let ceiling =
+            ExportDemand::from_atoms([DemandAtom::new(field_path(0x0e), OperationClass::Read)]);
 
         // A demand equal to the ceiling: nothing exceeds.
-        let within = ExportDemand::from_atoms([DemandAtom::new(
-            field_path(0x0e),
-            OperationClass::Read,
-        )]);
+        let within =
+            ExportDemand::from_atoms([DemandAtom::new(field_path(0x0e), OperationClass::Read)]);
         assert!(within.not_admitted_by(&ceiling).is_empty());
         assert!(ceiling.contains(&DemandAtom::new(field_path(0x0e), OperationClass::Read)));
 

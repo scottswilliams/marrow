@@ -266,7 +266,10 @@ mod tests {
         // digest start minus the ceiling length; simplest: flip the byte just before the digest.
         let ceiling_last = bytes.len() - 32 - 1;
         bytes[ceiling_last] ^= 0xFF;
-        assert_eq!(LogicalHead::decode(&bytes), Err(FormatError::DigestMismatch));
+        assert_eq!(
+            LogicalHead::decode(&bytes),
+            Err(FormatError::DigestMismatch)
+        );
     }
 
     /// The FR01 reserved slots are zero at provision: the commit position, the data digest,

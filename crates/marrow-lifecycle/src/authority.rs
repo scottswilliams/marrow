@@ -248,7 +248,6 @@ impl Naming {
         }
         (!out.is_empty()).then_some(out)
     }
-
 }
 
 /// The export that names an exceeding atom: the alphabetically first of the exports the
@@ -346,7 +345,10 @@ fn walk_members(
     let key = nodes[node_index].path.steps().to_vec();
     let kids = children.get(&key).cloned().unwrap_or_default();
     let kids_of = |kind: SemanticNodeKind| -> Vec<usize> {
-        kids.iter().copied().filter(|&i| nodes[i].kind == kind).collect()
+        kids.iter()
+            .copied()
+            .filter(|&i| nodes[i].kind == kind)
+            .collect()
     };
 
     let field_nodes = kids_of(SemanticNodeKind::Field);

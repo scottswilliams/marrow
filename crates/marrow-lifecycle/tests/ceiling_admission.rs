@@ -41,9 +41,7 @@ store ^counters[id: int]: Counter
 /// Variant A: a read-only export. Its demand union is the accepted ceiling a store
 /// provisioned under it records: it reads `^counters.value` and nothing more.
 fn source_read_only() -> String {
-    format!(
-        "{SHAPE}\npub fn readValue(n: int): int {{\n    return ^counters[n].value ?? 0\n}}\n"
-    )
+    format!("{SHAPE}\npub fn readValue(n: int): int {{\n    return ^counters[n].value ?? 0\n}}\n")
 }
 
 /// Variant B: the same export, same signature, broadened to also mutate — it now stamps the
@@ -163,8 +161,7 @@ fn a_broadened_demand_is_refused_naming_the_exceeding_place() {
         refusal
             .exceeding
             .iter()
-            .any(|atom| atom.effect == "write"
-                && atom.place.as_deref() == Some("^counters.label")),
+            .any(|atom| atom.effect == "write" && atom.place.as_deref() == Some("^counters.label")),
         "a typed exceeding atom names the write of ^counters.label: {:?}",
         refusal.exceeding,
     );
