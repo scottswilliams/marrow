@@ -16,10 +16,16 @@
 //!
 //! Only lexical forms the lexer actually owns are scoped: line and doc comments
 //! (`//`, `///`), the three string kinds (`"…"`, `b"…"`, `$"…"`) with the exact
-//! five escapes plus `\u{…}`, integer and decimal number literals, the durable
+//! escapes each owner recognizes — text and interpolation strings decode the five
+//! escapes plus `\u{…}`, byte strings the same five plus `\xNN` hex and not
+//! `\u{…}` (`literal.rs`) — integer and decimal number literals, the durable
 //! `^root` sigil, the `::` path separator, and the reserved words (one keyword
 //! scope, because the parser publishes no finer keyword classification). No
 //! speculative scopes — no guessed function, type-annotation, or member colors.
+//! Duration-unit suffixes (`1.day`) are deliberately left unscoped: coloring the
+//! unit would require a `duration-units` inventory derived from the lexer the way
+//! reserved words are, not a hand-written unit list that would become a second
+//! authority for a lexical form the parser owns.
 //!
 //! To regenerate after an intended change:
 //!   cargo test -p marrow-syntax regenerate_vscode_grammar -- --ignored
@@ -86,6 +92,11 @@ const GRAMMAR_TEMPLATE: &str = r##"{
         { "name": "constant.character.escape.marrow", "match": "\\\\(u\\{[0-9A-Fa-f]{1,6}\\}|[\\\\\"nrt])" }
       ]
     },
+    "bytes-escape": {
+      "patterns": [
+        { "name": "constant.character.escape.marrow", "match": "\\\\(x[0-9A-Fa-f]{2}|[\\\\\"nrt])" }
+      ]
+    },
     "strings": {
       "patterns": [
         { "include": "#interpolation" },
@@ -107,7 +118,7 @@ const GRAMMAR_TEMPLATE: &str = r##"{
       "beginCaptures": { "0": { "name": "punctuation.definition.string.begin.marrow" } },
       "end": "\"|(?=$)",
       "endCaptures": { "0": { "name": "punctuation.definition.string.end.marrow" } },
-      "patterns": [ { "include": "#escape" } ]
+      "patterns": [ { "include": "#bytes-escape" } ]
     },
     "interpolation": {
       "name": "string.interpolated.marrow",

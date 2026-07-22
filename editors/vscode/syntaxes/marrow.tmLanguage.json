@@ -54,6 +54,11 @@
         { "name": "constant.character.escape.marrow", "match": "\\\\(u\\{[0-9A-Fa-f]{1,6}\\}|[\\\\\"nrt])" }
       ]
     },
+    "bytes-escape": {
+      "patterns": [
+        { "name": "constant.character.escape.marrow", "match": "\\\\(x[0-9A-Fa-f]{2}|[\\\\\"nrt])" }
+      ]
+    },
     "strings": {
       "patterns": [
         { "include": "#interpolation" },
@@ -75,7 +80,7 @@
       "beginCaptures": { "0": { "name": "punctuation.definition.string.begin.marrow" } },
       "end": "\"|(?=$)",
       "endCaptures": { "0": { "name": "punctuation.definition.string.end.marrow" } },
-      "patterns": [ { "include": "#escape" } ]
+      "patterns": [ { "include": "#bytes-escape" } ]
     },
     "interpolation": {
       "name": "string.interpolated.marrow",
