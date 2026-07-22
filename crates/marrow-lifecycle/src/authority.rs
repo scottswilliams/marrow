@@ -219,7 +219,6 @@ impl Naming {
                     (Sigil::Root, sealed.name().to_string()),
                 );
                 walk_members(
-                    image,
                     &nodes,
                     &children,
                     node_index,
@@ -335,7 +334,6 @@ fn branch_members(image: &VerifiedImage, branch: &SealedBranch) -> BranchMembers
 /// name, recursing into groups and branches. A count mismatch at a level degrades that level
 /// (no name recorded), so a misaligned walk never invents a wrong name.
 fn walk_members(
-    image: &VerifiedImage,
     nodes: &[marrow_image::SemanticNode],
     children: &HashMap<Vec<SemanticStep>, Vec<usize>>,
     node_index: usize,
@@ -367,7 +365,7 @@ fn walk_members(
                 groups: Vec::new(),
                 branches: Vec::new(),
             };
-            walk_members(image, nodes, children, gi, group_members, by_id);
+            walk_members(nodes, children, gi, group_members, by_id);
         }
     }
 
@@ -375,7 +373,7 @@ fn walk_members(
     if branch_nodes.len() == members.branches.len() {
         for (&bi, branch) in branch_nodes.iter().zip(members.branches) {
             by_id.insert(nodes[bi].path.node_id(), (Sigil::Child, branch.name));
-            walk_members(image, nodes, children, bi, branch.members, by_id);
+            walk_members(nodes, children, bi, branch.members, by_id);
         }
     }
 }
