@@ -21,8 +21,8 @@ use marrow_local_wire::{ClientMessage, Id32, Json};
 use marrow_verify::VerifiedImage;
 
 use crate::terminal::{
-    self, CallOutcome, ClientError, connect_and_handshake, read_message, reply_to_outcome,
-    spawn_companion, write_message,
+    self, CALL_DEADLINE, CallOutcome, ClientError, connect_and_handshake, read_message,
+    reply_to_outcome, require_interface, spawn_companion, write_message,
 };
 
 /// Spawn the verified companion at `runner_exe`, attach it to the persistent store at `store`,
@@ -37,19 +37,15 @@ pub fn attach_and_call(
     export_id: [u8; 32],
     args: Vec<Json>,
 ) -> Result<CallOutcome, ClientError> {
-    let deadline = Duration::from_secs(10);
+    let deadline = CALL_DEADLINE;
     let nonce = terminal::mint_nonce()?;
 
     let (mut companion, descriptor) =
         spawn_companion(runner_exe, "attach", image_bytes, Some(store), nonce)?;
 
-    // The companion must serve exactly the image we spawned it with: its published identity is
-    // the image identity, which we recompute independently. A mismatch means it opened a
-    // different program and we refuse before sending the call.
-    let expected = Id32::from_bytes(image.image_id().0);
-    if descriptor.interface != expected {
-        return Err(ClientError::Handshake);
-    }
+    // The companion must serve exactly the image we spawned it with, or we refuse before sending
+    // the call.
+    require_interface(&descriptor, image)?;
 
     let outcome = call_over_socket(image, &descriptor, nonce, export_id, args, deadline);
     // The call is done and its socket dropped, so the companion has already seen the client hang

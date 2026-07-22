@@ -19,19 +19,14 @@
 
 use std::os::unix::net::UnixStream;
 use std::path::Path;
-use std::time::Duration;
 
 use marrow_local_wire::{ClientMessage, HandoffStage, Id32, Json, LossClass, classify};
 use marrow_verify::VerifiedImage;
 
 use crate::terminal::{
-    self, CallOutcome, ClientError, Companion, connect_and_handshake, read_message,
-    reply_to_outcome, spawn_companion, write_message,
+    self, CALL_DEADLINE, CallOutcome, ClientError, Companion, connect_and_handshake, read_message,
+    reply_to_outcome, require_interface, spawn_companion, write_message,
 };
-
-/// The default per-call deadline: a call blocks at most this long for its reply before the wire
-/// I/O times out and the call resolves as a lost reply.
-const CALL_DEADLINE: Duration = Duration::from_secs(10);
 
 /// The result of one call over an ephemeral session.
 pub enum EphemeralCall {
@@ -57,9 +52,8 @@ pub struct EphemeralSession<'a> {
     // directory. `None` only for the in-crate unit tests, which drive `call` over a socket pair
     // without a spawned process; the production `open` path always holds a companion.
     _companion: Option<Companion>,
-    deadline: Duration,
-    // Set once a call detects the runner's death. A dead session never writes to the wire again,
-    // so a call on it provably never starts.
+    // Set once a call detects the runner's death (or a broken reply). A dead session never writes
+    // to the wire again, so a call on it provably never starts.
     dead: bool,
 }
 
@@ -77,20 +71,15 @@ impl<'a> EphemeralSession<'a> {
         let (companion, descriptor) =
             spawn_companion(runner_exe, "attach-ephemeral", image_bytes, None, nonce)?;
 
-        // The companion must serve exactly the image we spawned it with: its published identity
-        // is the image identity, which we recompute independently. A mismatch means it opened a
-        // different program and we refuse before any call.
-        let expected = Id32::from_bytes(image.image_id().0);
-        if descriptor.interface != expected {
-            return Err(ClientError::Handshake);
-        }
+        // The companion must serve exactly the image we spawned it with, or we refuse before any
+        // call.
+        require_interface(&descriptor, image)?;
 
         let stream = connect_and_handshake(&descriptor, nonce, CALL_DEADLINE)?;
         Ok(Self {
             image,
             stream,
             _companion: Some(companion),
-            deadline: CALL_DEADLINE,
             dead: false,
         })
     }
@@ -113,17 +102,24 @@ impl<'a> EphemeralSession<'a> {
             export: Id32::from_bytes(export_id),
             args,
         };
-        // Before the request is written it is `BeforeSend`: a failed (even partial) write means
-        // the runner never decoded a whole request frame, so the call provably did not run.
-        if write_message(&mut self.stream, &request, self.deadline).is_err() {
-            self.dead = true;
-            return Ok(EphemeralCall::Lost(classify(HandoffStage::BeforeSend)));
+        // Before the request is written it is `BeforeSend`. A local encode failure never reached
+        // the runner and is not a death — the session stays usable and the caller sees the real
+        // error. A transport failure means the frame was not fully delivered (the runner never
+        // decodes a whole request frame), so the call provably did not run and the session dies.
+        if let Err(error) = write_message(&mut self.stream, &request, CALL_DEADLINE) {
+            return match error {
+                ClientError::Wire(_) => Err(error),
+                _ => {
+                    self.dead = true;
+                    Ok(EphemeralCall::Lost(classify(HandoffStage::BeforeSend)))
+                }
+            };
         }
 
         // The request is now dispatched to the serial worker; from here a lost reply is
         // `OutcomeUnknown` — the call may have run, wholly or partly, and its outcome is
         // unknowable from this side. It is reported, never replayed.
-        match read_message(&mut self.stream, self.deadline) {
+        match read_message(&mut self.stream, CALL_DEADLINE) {
             Ok(message) => Ok(EphemeralCall::Replied(reply_to_outcome(
                 self.image, export_id, message,
             )?)),
@@ -131,9 +127,13 @@ impl<'a> EphemeralSession<'a> {
                 self.dead = true;
                 Ok(EphemeralCall::Lost(classify(HandoffStage::Dispatched)))
             }
-            // A decoded-but-mismatched reply or an out-of-protocol message is a protocol fault
-            // the reply *did* carry, not a lost outcome.
-            Err(other) => Err(other),
+            // A decoded-but-mismatched reply or an out-of-protocol message is a protocol fault the
+            // reply *did* carry, not a lost outcome; but a session that observed it is untrustworthy
+            // and is retired so no further request is written to it.
+            Err(other) => {
+                self.dead = true;
+                Err(other)
+            }
         }
     }
 }
@@ -143,6 +143,7 @@ mod tests {
     use super::*;
     use std::io::{Read, Write};
     use std::thread;
+    use std::time::Duration;
 
     use marrow_local_wire::{ServerMessage, frame_body_len};
 
@@ -155,13 +156,15 @@ mod tests {
             image,
             stream: client,
             _companion: None,
-            deadline: Duration::from_secs(2),
             dead: false,
         };
         (session, peer)
     }
 
-    fn tiny_image() -> VerifiedImage {
+    /// The compiled-and-verified bytes of a trivial storeless image. Obtaining the image is the
+    /// sanctioned `bytes → verify` path, spelled inline at each call site (no alternate factory
+    /// that returns a `VerifiedImage`).
+    fn echo_bytes() -> Vec<u8> {
         let manifest = marrow_project::Manifest::parse("edition = \"2026\"\n").expect("manifest");
         let files = vec![marrow_project::CapturedFile::new(
             "src/main.mw".to_string(),
@@ -174,8 +177,10 @@ mod tests {
             &marrow_project::CaptureLimits::DEFAULT,
         )
         .expect("capture");
-        let compiled = marrow_compile::compile(&project).expect("compile");
-        marrow_verify::verify(&compiled.image.bytes).expect("verify")
+        marrow_compile::compile(&project)
+            .expect("compile")
+            .image
+            .bytes
     }
 
     fn echo_export(image: &VerifiedImage) -> [u8; 32] {
@@ -201,7 +206,7 @@ mod tests {
     /// A reply that arrives resolves as `Replied`, decoded against the export's return type.
     #[test]
     fn a_reply_resolves_as_replied() {
-        let image = tiny_image();
+        let image = marrow_verify::verify(&echo_bytes()).expect("verify");
         let export = echo_export(&image);
         let (mut session, mut peer) = paired(&image);
 
@@ -225,7 +230,7 @@ mod tests {
     /// genuinely dispatched) and then drops without replying.
     #[test]
     fn a_death_after_dispatch_is_outcome_unknown() {
-        let image = tiny_image();
+        let image = marrow_verify::verify(&echo_bytes()).expect("verify");
         let export = echo_export(&image);
         let (mut session, mut peer) = paired(&image);
 
@@ -260,13 +265,12 @@ mod tests {
         match LossClass::NotStarted {
             LossClass::NotStarted | LossClass::Interrupted | LossClass::OutcomeUnknown => {}
         }
-        let image = tiny_image();
+        let image = marrow_verify::verify(&echo_bytes()).expect("verify");
         let (session, _peer) = paired(&image);
         let EphemeralSession {
             image: _,
             stream: _,
             _companion: _,
-            deadline: _,
             dead: _,
         } = session;
     }
@@ -274,7 +278,7 @@ mod tests {
     /// A lost reply is never a replay: once dead, the session sends nothing further on the wire.
     #[test]
     fn a_dead_session_never_touches_the_wire() {
-        let image = tiny_image();
+        let image = marrow_verify::verify(&echo_bytes()).expect("verify");
         let export = echo_export(&image);
         let (mut session, mut peer) = paired(&image);
         session.dead = true;

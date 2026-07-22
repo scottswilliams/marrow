@@ -83,11 +83,35 @@ impl ClientError {
     }
 }
 
+/// The per-call deadline shared by both terminals: a request/reply exchange blocks at most this
+/// long before the wire I/O times out.
+pub(crate) const CALL_DEADLINE: Duration = Duration::from_secs(10);
+
 /// Draw a fresh launch nonce from OS entropy, mapping an entropy failure to a terminal I/O
 /// error. The terminal sets this nonce in the runner's environment and proves it in the
 /// handshake.
 pub(crate) fn mint_nonce() -> Result<Id32, ClientError> {
     mint_id().map_err(ClientError::Io)
+}
+
+/// The wire identity of a verified image: the exact image identity a runner proves back and a
+/// terminal recomputes independently. One owner of the `image_id → wire Id32` projection.
+pub(crate) fn image_identity(image: &VerifiedImage) -> Id32 {
+    Id32::from_bytes(image.image_id().0)
+}
+
+/// Require that the runner's published interface is exactly the image the terminal spawned it
+/// with. A mismatch means the runner opened a different program, and the terminal refuses before
+/// sending any call.
+pub(crate) fn require_interface(
+    descriptor: &Descriptor,
+    image: &VerifiedImage,
+) -> Result<(), ClientError> {
+    if descriptor.interface == image_identity(image) {
+        Ok(())
+    } else {
+        Err(ClientError::Handshake)
+    }
 }
 
 /// The launch descriptor the runner publishes: the interface it serves, its session token, and
