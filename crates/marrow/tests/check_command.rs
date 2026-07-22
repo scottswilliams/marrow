@@ -26,31 +26,31 @@ const BOOKSTORE_DEMAND: &str = "bookstore.lookup reads ^books and ^books.byIsbn\
 
 /// The default summary for the bookstore fixture: the module header, one entry per
 /// export, and each demand rolled up to its roots. The read-only `lookup` reads the
-/// entry and its one index (rolled to `^books (+1 field)`); `put` reads and writes the
+/// entry and its one index (rolled to `^books (+1 place)`); `put` reads and writes the
 /// whole entry.
 const BOOKSTORE_SUMMARY: &str = "2 exports across 1 module\n\
      \n\
      bookstore: 2 exports\n\
      \x20 lookup\n\
-     \x20   reads ^books (+1 field)\n\
+     \x20   reads ^books (+1 place)\n\
      \x20 put\n\
      \x20   reads ^books\n\
      \x20   writes ^books\n";
 
 /// The default summary for the `demand_summary` fixture, which exercises every collapse:
 /// an all-storeless module folds to its header line, two exports that share a demand are
-/// listed once, a root with several touched fields rolls up to a field count, and a
-/// storeless export in a durable module collapses to one note.
+/// listed once, a root with several touched child places rolls up to a child-place count,
+/// and a storeless export in a durable module collapses to one note.
 const DEMAND_SUMMARY_REPORT: &str = "6 exports across 2 modules\n\
      \n\
      checks: 2 exports, all storeless\n\
      \n\
      ledger: 4 exports\n\
      \x20 accountBalance\n\
-     \x20   reads ^accounts (+1 field)\n\
+     \x20   reads ^accounts (+1 place)\n\
      \x20 alpha, beta (2 exports, one shared demand)\n\
-     \x20   reads ^accounts (+2 fields), ^events\n\
-     \x20   writes ^accounts (+2 fields), ^events\n\
+     \x20   reads ^accounts (+2 places), ^events\n\
+     \x20   writes ^accounts (+2 places), ^events\n\
      \x20 storeless: double\n";
 
 /// The default `check` prints the module-grouped demand summary and exits 0 on a clean
@@ -111,9 +111,9 @@ fn check_summary_dedups_collapses_and_rolls_up() {
     );
     assert!(!report.contains("\n  beta\n"), "not listed alone: {report}");
 
-    // Root rollup: the summary names roots with a field count, never the child atoms —
-    // those stay behind `--demand`.
-    assert!(report.contains("^accounts (+2 fields)"));
+    // Root rollup: the summary names roots with a child-place count, never the child
+    // atoms — those stay behind `--demand`.
+    assert!(report.contains("^accounts (+2 places)"));
     assert!(
         !report.contains("^accounts.balance"),
         "atoms hidden: {report}"

@@ -89,16 +89,17 @@ output is byte-stable across runs.
 
 bookstore: 2 exports
   lookup
-    reads ^books (+1 field)
+    reads ^books (+1 place)
   put
     reads ^books
     writes ^books
 ```
 
-A count such as `(+1 field)` is the number of distinct child places — stored fields,
+A count such as `(+1 place)` is the number of distinct child places — stored fields,
 managed indexes, static groups, or keyed branches — the export touches under that
-root; the child unit is spelled on the first root that carries a count and abbreviated
-to `(+N)` after. A root a read-modify-write export both reads and writes appears under
+root; here `lookup`'s one place is the `^books.byIsbn` index the `--demand` form names
+exactly. The unit is spelled on the first root that carries a count and abbreviated to
+`(+N)` after. A root a read-modify-write export both reads and writes appears under
 both `reads` and `writes`.
 
 ### `marrow check --demand`

@@ -206,9 +206,12 @@ fn group_by_demand<'a>(records: &[&'a ExportRecord]) -> Vec<Vec<&'a ExportRecord
     groups.into_iter().map(|(_, members)| members).collect()
 }
 
-/// Render one coverage's roots as `^a (+2 fields), ^b (+1), ^c`, or `None` for no roots.
-/// The child-place unit is spelled on the first root that carries a count and abbreviated
-/// after, so a reader learns the unit once without repeating it down a long list.
+/// Render one coverage's roots as `^a (+2 places), ^b (+1), ^c`, or `None` for no roots.
+/// The count is distinct child places under the root — stored fields, managed indexes,
+/// static groups, or keyed branches — so the kind-neutral noun "place" is used rather than
+/// "field", which the full `--demand` form names exactly (`^root.index`). The unit is
+/// spelled on the first root that carries a count and abbreviated after, so a reader learns
+/// it once without repeating it down a long list.
 fn render_roots(roots: &[RootDemand]) -> Option<String> {
     if roots.is_empty() {
         return None;
@@ -216,17 +219,17 @@ fn render_roots(roots: &[RootDemand]) -> Option<String> {
     let mut unit_spelled = false;
     let mut parts = Vec::with_capacity(roots.len());
     for root in roots {
-        if root.field_count == 0 {
+        if root.child_count == 0 {
             parts.push(root.root.clone());
         } else if unit_spelled {
-            parts.push(format!("{} (+{})", root.root, root.field_count));
+            parts.push(format!("{} (+{})", root.root, root.child_count));
         } else {
-            let unit = if root.field_count == 1 {
-                "field"
+            let unit = if root.child_count == 1 {
+                "place"
             } else {
-                "fields"
+                "places"
             };
-            parts.push(format!("{} (+{} {unit})", root.root, root.field_count));
+            parts.push(format!("{} (+{} {unit})", root.root, root.child_count));
             unit_spelled = true;
         }
     }

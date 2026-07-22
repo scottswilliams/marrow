@@ -128,7 +128,7 @@ impl DurableNaming {
     /// Collect one coverage's atoms into per-root [`RootDemand`]s: the roots this export
     /// reads (or writes) in spelling order, each carrying the count of distinct child
     /// places it touches under that root with that coverage. A root touched only as a
-    /// whole entry carries a zero field count.
+    /// whole entry carries a zero child count.
     fn roll_up(&self, demand: &ExportDemand, mutating: bool) -> Option<Vec<RootDemand>> {
         // Root spelling -> the distinct child extensions touched under it. The child key
         // is the atom's spelled remainder below the root (e.g. `.revision`), so two atoms
@@ -150,7 +150,7 @@ impl DurableNaming {
                 .into_iter()
                 .map(|(root, children)| RootDemand {
                     root,
-                    field_count: children.len(),
+                    child_count: children.len(),
                 })
                 .collect(),
         )
@@ -190,7 +190,7 @@ pub struct RootDemand {
     /// Distinct demanded child places under this root with this coverage — stored
     /// fields, managed indexes, static groups, or keyed branches. Zero when the export
     /// touches only the root's whole entry.
-    pub field_count: usize,
+    pub child_count: usize,
 }
 
 /// An export's durable demand projected to roots, split by read/write coverage. The same
@@ -349,10 +349,10 @@ mod tests {
     }
 
     #[test]
-    fn demand_summary_rolls_child_reads_up_to_their_root_with_a_field_count() {
+    fn demand_summary_rolls_child_reads_up_to_their_root_with_a_child_count() {
         // A whole-entry read plus two field reads under the same root roll up to one
-        // read root carrying a field count of two; the index read under `books` also
-        // counts as a child. The projection uses the same coverage split as the sentence.
+        // read root; the index read under `books` also counts as a child place, so the
+        // child count is three. The projection uses the same coverage split as the sentence.
         let summary = naming()
             .demand_summary(&ExportDemand::from_atoms(vec![
                 DemandAtom::new(root_path(), OperationClass::Read),
@@ -365,7 +365,7 @@ mod tests {
             summary.reads,
             vec![RootDemand {
                 root: "^books".to_string(),
-                field_count: 3,
+                child_count: 3,
             }],
         );
         assert!(summary.writes.is_empty());
@@ -385,14 +385,14 @@ mod tests {
             summary.reads,
             vec![RootDemand {
                 root: "^books".to_string(),
-                field_count: 1,
+                child_count: 1,
             }],
         );
         assert_eq!(
             summary.writes,
             vec![RootDemand {
                 root: "^books".to_string(),
-                field_count: 1,
+                child_count: 1,
             }],
         );
     }
@@ -409,7 +409,7 @@ mod tests {
             summary.writes,
             vec![RootDemand {
                 root: "^books".to_string(),
-                field_count: 0,
+                child_count: 0,
             }],
         );
     }
@@ -428,7 +428,7 @@ mod tests {
             summary.reads,
             vec![RootDemand {
                 root: "^books".to_string(),
-                field_count: 1,
+                child_count: 1,
             }],
         );
     }
