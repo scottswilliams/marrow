@@ -98,7 +98,19 @@ fn run(
     args: Vec<Value>,
 ) -> Result<Option<Value>, RuntimeFault> {
     match run_export(image, attachment, export(image, name), args) {
-        DurableRun::Ran(result) => result,
+        DurableRun::Ran(Ok(value)) => Ok(value),
+        DurableRun::Ran(Err(marrow_vm::DurableExecutionFault::Runtime(fault))) => Err(fault),
+        DurableRun::Ran(Err(marrow_vm::DurableExecutionFault::Incomplete(incomplete))) => {
+            match incomplete.into_disposition() {
+                marrow_vm::IncompleteDisposition::Classified { durable, .. } => {
+                    panic!("{name} was incomplete ({durable:?})")
+                }
+                marrow_vm::IncompleteDisposition::Pending { recovery, .. } => {
+                    drop(recovery);
+                    panic!("{name} reached pending commit recovery")
+                }
+            }
+        }
         DurableRun::Parked => panic!("{name} parked"),
         DurableRun::Failed(code) => panic!("{name} failed before execution: {code}"),
     }

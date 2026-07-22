@@ -74,11 +74,17 @@ fn assert_driver_passed(output: &Output) {
 /// The driver loads the mirror by path and checks it against both fixtures.
 const DRIVER: &str = r##"
 import process from "node:process";
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { join } from "node:path";
 
-const M = await import(pathToFileURL(process.env.MARROW_SUPERVISOR).href);
+const instrumented = join(process.cwd(), "marrow-supervisor-kat.mjs");
+const supervisorSource = readFileSync(process.env.MARROW_SUPERVISOR, "utf8");
+writeFileSync(
+  instrumented,
+  `${supervisorSource}\nexport { FrameReader as __katFrameReader, decodeOneFrame as __katDecodeOneFrame, isLaunchDescriptor as __katIsLaunchDescriptor, isReady as __katIsReady };\n`,
+);
+const M = await import(pathToFileURL(instrumented).href);
 const DIR = process.env.MARROW_KAT_DIR;
 
 let failures = 0;
@@ -132,6 +138,295 @@ for (const line of lines("noncanonical_kat.tsv")) {
       String(error),
     );
   }
+}
+
+function driveReply(messages, options = {}) {
+  const observed = {
+    current: null,
+    queued: null,
+    pump: 0,
+    tornDown: false,
+  };
+  const session = Object.create(M.Session.prototype);
+  session.frames = {
+    buffer: Buffer.alloc(options.trailingBytes ?? 0),
+    push() {
+      return messages;
+    },
+  };
+  session.dead = false;
+  session.inFlight = options.inFlight === false ? null : {
+    resolve(value) {
+      observed.current = { kind: "value", value };
+    },
+    reject(error) {
+      observed.current = { kind: "error", error };
+    },
+  };
+  session.queue = [{
+    reject(error) {
+      observed.queued = error;
+    },
+  }];
+  session.replyDeadline = null;
+  session.exitHook = () => {};
+  session.pump = () => {
+    observed.pump += 1;
+  };
+  session.teardown = () => {
+    session.dead = true;
+    observed.tornDown = true;
+  };
+  M.Session.prototype.onData.call(
+    session,
+    options.chunk ?? Buffer.from([0x01]),
+  );
+  return { observed, session };
+}
+
+function malformedReply(label, messages, options = {}) {
+  const { observed, session } = driveReply(messages, options);
+  ok(
+    `reply-${label}`,
+    observed.current?.kind === "error" &&
+      observed.current.error instanceof M.WireFormatError &&
+      observed.current.error.code === "wire.malformed" &&
+      observed.queued instanceof M.MarrowLossError &&
+      observed.queued.loss === M.LOSS.INTERRUPTED &&
+      observed.pump === 0 &&
+      session.dead &&
+      observed.tornDown,
+    String(observed.current?.error),
+  );
+}
+
+const span = { column: 2n, line: 1n };
+for (const [label, message] of [
+  ["null", null],
+  ["primitive", 1n],
+  ["array", []],
+  ["value-missing", { kind: "value" }],
+  ["value-extra", { data: null, extra: null, kind: "value" }],
+  ["fault-empty-code", { code: "", kind: "fault", span }],
+  ["fault-uppercase-code", { code: "Run.commit", kind: "fault", span }],
+  ["fault-array-span", { code: "run.commit", kind: "fault", span: [] }],
+  ["fault-extra-span", {
+    code: "run.commit",
+    kind: "fault",
+    span: { column: 2n, extra: 0n, line: 1n },
+  }],
+  ["fault-negative-line", {
+    code: "run.commit",
+    kind: "fault",
+    span: { column: 2n, line: -1n },
+  }],
+  ["fault-overflow-column", {
+    code: "run.commit",
+    kind: "fault",
+    span: { column: 0x1_0000_0000n, line: 1n },
+  }],
+  ["fault-number-line", {
+    code: "run.commit",
+    kind: "fault",
+    span: { column: 2n, line: 1 },
+  }],
+  ["incomplete-durable", {
+    code: "run.commit",
+    durable: "maybe",
+    kind: "incomplete",
+    span,
+  }],
+  ["incomplete-extra", {
+    code: "run.commit",
+    durable: M.DURABLE_STATE.UNKNOWN,
+    extra: null,
+    kind: "incomplete",
+    span,
+  }],
+  ["reject-code", { code: "runner-bad", kind: "reject" }],
+  ["ready-after-handshake", {
+    interface: "11".repeat(32),
+    kind: "ready",
+    session: "22".repeat(32),
+  }],
+]) {
+  malformedReply(label, [message]);
+}
+
+malformedReply(
+  "two-frames",
+  [{ data: 1n, kind: "value" }, { data: 2n, kind: "value" }],
+);
+malformedReply(
+  "trailing-partial-frame",
+  [{ data: 1n, kind: "value" }],
+  { trailingBytes: 1 },
+);
+
+{
+  const { observed, session } = driveReply([], { inFlight: false });
+  ok(
+    "reply-idle-partial-unsolicited",
+    observed.current === null &&
+      observed.queued instanceof M.MarrowLossError &&
+      observed.queued.loss === M.LOSS.INTERRUPTED &&
+      observed.pump === 0 &&
+      session.dead,
+  );
+}
+
+{
+  const { observed, session } = driveReply([{ data: 7n, kind: "value" }]);
+  ok(
+    "reply-valid-value",
+    observed.current?.kind === "value" &&
+      observed.current.value === 7n &&
+      observed.pump === 1 &&
+      !session.dead,
+  );
+}
+{
+  const { observed, session } = driveReply([
+    { code: "run.commit", kind: "fault", span },
+  ]);
+  ok(
+    "reply-valid-fault",
+    observed.current?.kind === "error" &&
+      observed.current.error instanceof M.MarrowFault &&
+      observed.current.error.line === 1n &&
+      observed.current.error.column === 2n &&
+      observed.pump === 1 &&
+      !session.dead,
+  );
+}
+{
+  const { observed, session } = driveReply([
+    { code: "runner.unknown_export", kind: "reject" },
+  ]);
+  ok(
+    "reply-valid-reject",
+    observed.current?.kind === "error" &&
+      observed.current.error instanceof M.MarrowReject &&
+      observed.pump === 1 &&
+      !session.dead,
+  );
+}
+for (const durable of Object.values(M.DURABLE_STATE)) {
+  const { observed, session } = driveReply([{
+    code: "run.commit",
+    durable,
+    kind: "incomplete",
+    span,
+  }]);
+  ok(
+    `reply-valid-incomplete-${durable}-retires`,
+    observed.current?.kind === "error" &&
+      observed.current.error instanceof M.MarrowIncomplete &&
+      observed.current.error.durable === durable &&
+      observed.queued instanceof M.MarrowLossError &&
+      observed.queued.loss === M.LOSS.INTERRUPTED &&
+      observed.pump === 0 &&
+      session.dead,
+  );
+}
+
+const validSession = "ab".repeat(32);
+const validInterface = "cd".repeat(32);
+const validReady = {
+  interface: validInterface,
+  kind: "ready",
+  session: validSession,
+};
+for (const [label, ready, accepted] of [
+  ["valid", validReady, true],
+  ["null", null, false],
+  ["primitive", 1n, false],
+  ["missing", { interface: validInterface, kind: "ready" }, false],
+  ["extra", { ...validReady, extra: null }, false],
+  ["wrong-kind", { ...validReady, kind: "value" }, false],
+  ["uppercase-session", { ...validReady, session: validSession.toUpperCase() }, false],
+  ["nonhex-interface", { ...validReady, interface: `${"cd".repeat(31)}cg` }, false],
+  ["short-interface", { ...validReady, interface: "c".repeat(63) }, false],
+  ["long-interface", { ...validReady, interface: "c".repeat(65) }, false],
+]) {
+  ok(`ready-schema-${label}`, M.__katIsReady(ready) === accepted);
+}
+
+for (const [label, descriptor, accepted] of [
+  ["valid", { interface: validInterface, session: validSession, socket: "/tmp/s" }, true],
+  ["null", null, false],
+  ["extra", {
+    extra: null,
+    interface: validInterface,
+    session: validSession,
+    socket: "/tmp/s",
+  }, false],
+  ["uppercase", {
+    interface: validInterface.toUpperCase(),
+    session: validSession,
+    socket: "/tmp/s",
+  }, false],
+]) {
+  ok(
+    `descriptor-schema-${label}`,
+    M.__katIsLaunchDescriptor(descriptor) === accepted,
+  );
+}
+
+const readyFrame = M.encodeFrame(validReady);
+{
+  const reader = new M.__katFrameReader();
+  const ready = M.__katDecodeOneFrame(reader, readyFrame);
+  ok(
+    "ready-exactly-one-frame",
+    M.__katIsReady(ready) && reader.buffer.length === 0,
+  );
+}
+for (const [label, bytes] of [
+  ["two-frames", Buffer.concat([readyFrame, readyFrame])],
+  ["trailing-partial", Buffer.concat([readyFrame, Buffer.from([0x00])])],
+]) {
+  const reader = new M.__katFrameReader();
+  try {
+    M.__katDecodeOneFrame(reader, bytes);
+    ok(`ready-${label}`, false, "accepted more than one complete frame");
+  } catch (error) {
+    ok(
+      `ready-${label}`,
+      error instanceof M.WireFormatError && error.code === "wire.malformed",
+      String(error),
+    );
+  }
+}
+{
+  const reader = new M.__katFrameReader();
+  const waiting = M.__katDecodeOneFrame(reader, readyFrame.subarray(0, 3));
+  ok(
+    "ready-partial-current-frame-waits",
+    waiting === undefined && reader.buffer.length === 3,
+  );
+  const ready = M.__katDecodeOneFrame(reader, readyFrame.subarray(3));
+  ok(
+    "ready-split-frame-completes-exactly-once",
+    M.__katIsReady(ready) && reader.buffer.length === 0,
+  );
+}
+
+for (const boundary of [0n, 0xffff_ffffn]) {
+  const { observed, session } = driveReply([{
+    code: "run.boundary",
+    kind: "fault",
+    span: { column: boundary, line: boundary },
+  }]);
+  ok(
+    `reply-valid-u32-${boundary}`,
+    observed.current?.kind === "error" &&
+      observed.current.error instanceof M.MarrowFault &&
+      observed.current.error.line === boundary &&
+      observed.current.error.column === boundary &&
+      observed.pump === 1 &&
+      !session.dead,
+  );
 }
 
 if (failures === 0) console.log("DRIVER: all passed");

@@ -25,7 +25,7 @@ use marrow_verify::{
     SealedIndexComponent, SealedSite, SealedSiteTarget, SealedTestEntry, VerifiedImage,
 };
 
-use crate::fault::RuntimeFault;
+use crate::fault::{DurableExecutionFault, RuntimeFault};
 use crate::run::{DriverDispatch, run_driver, run_durable, run_in_session};
 use crate::value::Value;
 
@@ -33,7 +33,7 @@ use crate::value::Value;
 /// attachment.
 pub enum DurableRun {
     /// The test ran; the inner result is its VM value or source-mapped fault.
-    Ran(Result<Option<Value>, RuntimeFault>),
+    Ran(Result<Option<Value>, DurableExecutionFault>),
     /// The image's durable shape is not yet executable by the ephemeral read kernel
     /// (a singleton root, a group, or a nominal-typed field). Composite keys and
     /// field-only keyed branches nested to any depth are executable.
@@ -123,7 +123,7 @@ impl DriverDispatch for TestDriver<'_> {
         args: Vec<Value>,
         depth: u32,
         budget: &mut u64,
-    ) -> Result<Option<Value>, RuntimeFault> {
+    ) -> Result<Option<Value>, DurableExecutionFault> {
         let demand = self.image.function_demand(func);
         // A storeless callee needs no session.
         if demand.is_empty() {
@@ -159,9 +159,9 @@ impl DriverDispatch for TestDriver<'_> {
 /// is a subset of the test-image union the ceiling is minted from, so a well-formed
 /// image never reaches this; it is mapped to a source-positioned `run.authority`
 /// fault rather than a panic.
-fn session_open_fault(image: &VerifiedImage, func: FunctionIndex) -> RuntimeFault {
+fn session_open_fault(image: &VerifiedImage, func: FunctionIndex) -> DurableExecutionFault {
     let (line, column) = image.function(func).span_at(0).unwrap_or((1, 1));
-    RuntimeFault::new(marrow_codes::Code::RunAuthority.as_str(), line, column)
+    RuntimeFault::new(marrow_codes::Code::RunAuthority.as_str(), line, column).into()
 }
 
 /// Derive the deployment ceiling a fresh attachment is bounded by from a demand

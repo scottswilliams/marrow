@@ -819,7 +819,7 @@ fn a_field_exact_branch_set_writes_one_leaf_regardless_of_branch_width() {
         before.len() + 1,
         "a field-exact set on a 7-field branch record writes exactly one new leaf",
     );
-    // Every pre-existing cell is byte-identical, except the per-commit witness token
+    // Every pre-existing cell is byte-identical, except the per-commit witness generation
     // (commit metadata, not application data): the write touched only the one leaf.
     let witness = physical::meta_key(super::handle::WITNESS);
     for (key, value) in &before {

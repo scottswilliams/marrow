@@ -90,7 +90,8 @@ impl<'a> traversal::ScanEntry
 
 /// A redb-backed native ordered-byte engine, durable across processes.
 pub struct NativeEngine {
-    db: DatabaseHandle,
+    db: Option<DatabaseHandle>,
+    contain_drop_panic: bool,
 }
 
 enum DatabaseHandle {
@@ -121,6 +122,38 @@ impl DatabaseHandle {
         match self {
             Self::ReadWrite(_) => Ok(()),
             Self::ReadOnly(_) => Err(StoreError::ReadOnly { op }),
+        }
+    }
+}
+
+impl NativeEngine {
+    fn db(&self) -> &DatabaseHandle {
+        self.db
+            .as_ref()
+            .expect("a live native engine retains its database handle")
+    }
+
+    fn db_mut(&mut self) -> &mut DatabaseHandle {
+        self.db
+            .as_mut()
+            .expect("a live native engine retains its database handle")
+    }
+}
+
+impl Drop for NativeEngine {
+    fn drop(&mut self) {
+        let Some(db) = self.db.take() else {
+            return;
+        };
+        if self.contain_drop_panic {
+            // A failed integrity audit can leave redb's live handle traversing corrupt
+            // allocator metadata again from `Database::drop`. Keep the adapter boundary
+            // fail-closed by containing that second dependency unwind. The persistent
+            // recovery caller separately quarantines its owner lock before auditing; this
+            // adapter containment does not itself authorize or classify later use.
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| drop(db)));
+        } else {
+            drop(db);
         }
     }
 }
@@ -566,7 +599,27 @@ impl NativeEngine {
             let db = open_write_capable(path, || Database::create(path))?;
             stamp_or_verify_format_version(sync_parent_after_commit.as_deref(), &db)?;
             Ok(Self {
-                db: DatabaseHandle::ReadWrite(db),
+                db: Some(DatabaseHandle::ReadWrite(db)),
+                contain_drop_panic: false,
+            })
+        })
+    }
+
+    /// Open an existing store with write capability. Unlike [`open`](Self::open),
+    /// this operation never creates a file or stamps a database: the complete
+    /// Marrow metadata and data tables must already be present. A missing,
+    /// malformed, foreign, or unstamped file is refused without modification.
+    pub fn open_existing(path: &Path) -> Result<Self, StoreError> {
+        contain_panic("open", || {
+            let db = open_tolerating_creation_race(path, || {
+                guard_regular_store_file(path)?;
+                let db = open_write_capable(path, || Database::open(path))?;
+                verify_existing_store_shape(&db)?;
+                Ok(DatabaseHandle::ReadWrite(db))
+            })?;
+            Ok(Self {
+                db: Some(db),
+                contain_drop_panic: false,
             })
         })
     }
@@ -585,7 +638,10 @@ impl NativeEngine {
                 verify_existing_store_shape(&db)?;
                 Ok(DatabaseHandle::ReadOnly(db))
             })?;
-            Ok(Self { db })
+            Ok(Self {
+                db: Some(db),
+                contain_drop_panic: false,
+            })
         })
     }
 }
@@ -596,24 +652,24 @@ impl ByteEngine for NativeEngine {
 
     fn read_view(&self) -> Result<RedbView<'_>, StoreError> {
         Ok(RedbView {
-            read: self.db.begin_read("read_view")?,
+            read: self.db().begin_read("read_view")?,
             _engine: PhantomData,
         })
     }
 
     fn begin(&mut self) -> Result<RedbTxn<'_>, StoreError> {
         Ok(RedbTxn {
-            write: Some(self.db.begin_write("begin")?),
+            write: Some(self.db().begin_write("begin")?),
             _engine: PhantomData,
         })
     }
 
     fn require_write_access(&self, op: &'static str) -> Result<(), StoreError> {
-        self.db.require_write_access(op)
+        self.db().require_write_access(op)
     }
 
     fn audit_integrity(&mut self) -> Result<(), StoreError> {
-        match &mut self.db {
+        let result = match self.db_mut() {
             DatabaseHandle::ReadWrite(db) => contain_panic("audit", || {
                 match db
                     .check_integrity()
@@ -630,7 +686,11 @@ impl ByteEngine for NativeEngine {
                 }
             }),
             DatabaseHandle::ReadOnly(_) => Err(StoreError::ReadOnly { op: "audit" }),
+        };
+        if result.is_err() {
+            self.contain_drop_panic = true;
         }
+        result
     }
 }
 
@@ -859,6 +919,7 @@ mod tests {
 
         for result in [
             NativeEngine::open(&path).map(|_| ()),
+            NativeEngine::open_existing(&path).map(|_| ()),
             NativeEngine::open_read_only(&path).map(|_| ()),
         ] {
             match result {
@@ -904,12 +965,20 @@ mod tests {
         // A symlink loop is rejected before any handle opens, on every open path.
         expect_io(NativeEngine::open(&loop_a).map(|_| ()), "loop open");
         expect_io(
+            NativeEngine::open_existing(&loop_a).map(|_| ()),
+            "loop existing",
+        );
+        expect_io(
             NativeEngine::open_read_only(&loop_a).map(|_| ()),
             "loop read-only",
         );
 
-        // A dangling target is a missing store to the read-only open; `open`
-        // creates the target, so only inspection surfaces the fault.
+        // A dangling target is a missing store to both existing-only opens; `open`
+        // creates the target, so only the non-creating paths surface the fault.
+        expect_io(
+            NativeEngine::open_existing(&dangling).map(|_| ()),
+            "dangling existing",
+        );
         expect_io(
             NativeEngine::open_read_only(&dangling).map(|_| ()),
             "dangling read-only",
@@ -987,18 +1056,18 @@ mod tests {
 
         let dir = TempDir::new("marrow-store-redb-audit").expect("temp dir");
         let path = dir.path().join("audit.redb");
+        let mut store = NativeEngine::open(&path).expect("open fresh");
         {
-            let mut store = NativeEngine::open(&path).expect("open fresh");
             let mut txn = store.begin().expect("begin");
             for n in 0..64u32 {
                 txn.put(format!("k{n:03}").as_bytes(), vec![n as u8; 32])
                     .expect("put");
             }
             assert_eq!(txn.commit(), CommitOutcome::Confirmed);
-            store
-                .audit_integrity()
-                .expect("a fresh store passes its audit");
         }
+        store
+            .audit_integrity()
+            .expect("a fresh store passes its audit");
 
         // Flip a spread of live bytes in the store body out from under redb.
         let mut file = std::fs::OpenOptions::new()
@@ -1016,12 +1085,14 @@ mod tests {
         file.sync_all().expect("sync mutated body");
         drop(file);
 
-        // Opening and auditing a corrupted body must fail closed with a typed
-        // error, never a process panic.
-        let audited = std::panic::catch_unwind(|| match NativeEngine::open(&path) {
-            Ok(mut store) => store.audit_integrity(),
-            Err(error) => Err(error),
-        });
+        // Auditing the externally corrupted live handle must fail closed with a typed
+        // error, and the adapter must also contain redb's second traversal from
+        // `Database::drop` rather than letting it unwind across the storage boundary.
+        let audited = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let result = store.audit_integrity();
+            drop(store);
+            result
+        }));
         match audited {
             Ok(Err(_)) => {}
             Ok(Ok(())) => panic!("a byte-mutated store must not pass the integrity audit"),
@@ -1276,11 +1347,65 @@ mod tests {
             write.commit().expect("commit foreign db");
         }
 
-        match NativeEngine::open(&path) {
-            Err(StoreError::Corruption { .. }) => {}
-            Err(other) => panic!("expected corruption for a meta-less file, got {other:?}"),
-            Ok(_) => panic!("a meta-less file must not be adopted as a Marrow store"),
+        for result in [
+            NativeEngine::open(&path),
+            NativeEngine::open_existing(&path),
+            NativeEngine::open_read_only(&path),
+        ] {
+            match result {
+                Err(StoreError::Corruption { .. }) => {}
+                Err(other) => panic!("expected corruption for a meta-less file, got {other:?}"),
+                Ok(_) => panic!("a meta-less file must not be adopted as a Marrow store"),
+            }
         }
+
+        let db = Database::open(&path).expect("reopen foreign database");
+        let read = db.begin_read().expect("read foreign database");
+        assert!(
+            matches!(
+                read.open_table(META),
+                Err(redb::TableError::TableDoesNotExist(_))
+            ),
+            "an existing-only open must not stamp the foreign database",
+        );
+    }
+
+    #[test]
+    fn existing_only_open_refuses_empty_malformed_and_unstamped_files_without_adopting_them() {
+        let dir = TempDir::new("marrow-store-redb-invalid-existing").expect("temp dir");
+
+        for (name, bytes) in [
+            ("empty.redb", b"".as_slice()),
+            ("malformed.redb", b"not redb"),
+        ] {
+            let path = dir.path().join(name);
+            std::fs::write(&path, bytes).expect("write invalid body");
+            assert!(
+                NativeEngine::open_existing(&path).is_err(),
+                "{name} must be refused",
+            );
+            assert_eq!(
+                std::fs::read(&path).expect("read invalid body"),
+                bytes,
+                "{name} must not be rewritten or stamped",
+            );
+        }
+
+        let unstamped = dir.path().join("unstamped.redb");
+        drop(Database::create(&unstamped).expect("create valid unstamped redb database"));
+        assert!(
+            NativeEngine::open_existing(&unstamped).is_err(),
+            "a valid but unstamped redb database is not a Marrow store",
+        );
+        let db = Database::open(&unstamped).expect("reopen unstamped database");
+        let read = db.begin_read().expect("read unstamped database");
+        assert!(
+            matches!(
+                read.open_table(META),
+                Err(redb::TableError::TableDoesNotExist(_))
+            ),
+            "the existing-only open must not adopt or stamp an empty redb database",
+        );
     }
 
     #[test]
@@ -1305,6 +1430,7 @@ mod tests {
 
         for result in [
             NativeEngine::open(&path),
+            NativeEngine::open_existing(&path),
             NativeEngine::open_read_only(&path),
         ] {
             let error = match result {
@@ -1345,6 +1471,41 @@ mod tests {
         );
     }
 
+    /// The lifecycle open primitive is existing-only and write-capable: it must
+    /// leave a missing path absent, yet permit ordinary transactions after a
+    /// provisioner has created and stamped the store.
+    #[test]
+    fn existing_only_open_never_creates_and_remains_write_capable() {
+        let dir = TempDir::new("marrow-store-redb-existing-only").expect("temp dir");
+        let path = dir.path().join("store.redb");
+
+        assert!(
+            NativeEngine::open_existing(&path).is_err(),
+            "a missing store cannot be opened existing-only",
+        );
+        assert!(
+            !path.exists(),
+            "an existing-only open must leave a missing path absent",
+        );
+
+        drop(NativeEngine::open(&path).expect("provisioner creates and stamps store"));
+        {
+            let mut store = NativeEngine::open_existing(&path).expect("open existing writable");
+            let mut txn = store.begin().expect("begin writable transaction");
+            txn.put(b"k", b"v".to_vec()).expect("stage value");
+            assert_eq!(txn.commit(), CommitOutcome::Confirmed);
+        }
+        let store = NativeEngine::open_existing(&path).expect("reopen existing writable");
+        assert_eq!(
+            store
+                .read_view()
+                .expect("read view")
+                .get(b"k")
+                .expect("read value"),
+            Some(b"v".to_vec()),
+        );
+    }
+
     /// A store path that is a FIFO (or any other non-regular file) must fail closed
     /// with a typed corruption diagnostic on every open path rather than blocking
     /// forever in the `open()` syscall waiting for a writer. The open runs on a worker
@@ -1363,12 +1524,13 @@ mod tests {
             .expect("spawn mkfifo");
         assert!(status.success(), "mkfifo failed");
 
-        for label in ["open", "open_read_only"] {
+        for label in ["open", "open_existing", "open_read_only"] {
             let path = path.clone();
             let (sender, receiver) = mpsc::channel();
             std::thread::spawn(move || {
                 let result = match label {
                     "open" => NativeEngine::open(&path),
+                    "open_existing" => NativeEngine::open_existing(&path),
                     _ => NativeEngine::open_read_only(&path),
                 };
                 let _ = sender.send(result.map(|_| ()));

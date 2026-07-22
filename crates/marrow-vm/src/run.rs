@@ -11,14 +11,16 @@ use std::rc::Rc;
 use marrow_codes::Code;
 use marrow_kernel::codec::key::KeyScalar;
 use marrow_kernel::codec::value::RuntimeScalar;
-use marrow_kernel::durable::{BoundedLimit, CommitResult, Durable, EntryValue, Presence};
+use marrow_kernel::durable::{
+    BoundedLimit, CommitResult, Durable, DurableCommitState, EntryValue, Presence,
+};
 use marrow_kernel::equality::ValueDomain;
 use marrow_verify::{
     FunctionIndex, SealedConst, SealedFunction, SealedInstr, SealedSite, SealedSiteTarget,
     VerifiedImage,
 };
 
-use crate::fault::RuntimeFault;
+use crate::fault::{DurableExecutionFault, RuntimeFault};
 use crate::value::{Value, key_bytes, list_bytes};
 
 // The VM is the sole owner of one invocation's dynamic limits. They are private
@@ -47,6 +49,14 @@ const MAX_TEXT_BYTES: usize = 64 * 1024;
 const MAX_COLLECTION_LEN: usize = 65_536;
 const MAX_AGGREGATE_BYTES: usize = 1 << 20;
 
+/// Mutable facts shared by every helper frame in one invocation. Grouping the
+/// instruction budget and confirmed-commit latch keeps frame dispatch small while
+/// preserving one budget and one durable boundary across the whole call tree.
+struct ExecutionState<'a> {
+    budget: &'a mut u64,
+    commit_confirmed: bool,
+}
+
 /// Run a storeless function at `func_index` with `args`, returning its value (or
 /// `None` for a Unit return) or a source-mapped runtime fault. Rejected for a
 /// durable export (its demand is nonempty); use [`run_durable`].
@@ -56,7 +66,17 @@ pub fn run(
     args: Vec<Value>,
 ) -> Result<Option<Value>, RuntimeFault> {
     let mut budget = INSTRUCTION_BUDGET;
-    execute(image, func_index, args, 0, &mut budget, None, None)
+    let mut state = ExecutionState {
+        budget: &mut budget,
+        commit_confirmed: false,
+    };
+    match execute(image, func_index, args, 0, &mut state, None, None) {
+        Ok(value) => Ok(value),
+        Err(DurableExecutionFault::Runtime(fault)) => Err(fault),
+        Err(DurableExecutionFault::Incomplete(_)) => {
+            unreachable!("a verified storeless function cannot execute a durable commit")
+        }
+    }
 }
 
 /// Run a durable function at `func_index`, driving `session` for every durable
@@ -67,9 +87,13 @@ pub fn run_durable(
     func_index: FunctionIndex,
     args: Vec<Value>,
     session: &mut dyn Durable,
-) -> Result<Option<Value>, RuntimeFault> {
+) -> Result<Option<Value>, DurableExecutionFault> {
     let mut budget = INSTRUCTION_BUDGET;
-    execute(image, func_index, args, 0, &mut budget, Some(session), None)
+    let mut state = ExecutionState {
+        budget: &mut budget,
+        commit_confirmed: false,
+    };
+    execute(image, func_index, args, 0, &mut state, Some(session), None)
 }
 
 /// A test-body driver: it turns each durable-touching call the driver frame makes
@@ -85,7 +109,7 @@ pub(crate) trait DriverDispatch {
         args: Vec<Value>,
         depth: u32,
         budget: &mut u64,
-    ) -> Result<Option<Value>, RuntimeFault>;
+    ) -> Result<Option<Value>, DurableExecutionFault>;
 }
 
 /// Run `func_index` as a test-body driver frame: it holds no session of its own and
@@ -95,9 +119,13 @@ pub(crate) fn run_driver(
     func_index: FunctionIndex,
     args: Vec<Value>,
     driver: &mut dyn DriverDispatch,
-) -> Result<Option<Value>, RuntimeFault> {
+) -> Result<Option<Value>, DurableExecutionFault> {
     let mut budget = INSTRUCTION_BUDGET;
-    execute(image, func_index, args, 0, &mut budget, None, Some(driver))
+    let mut state = ExecutionState {
+        budget: &mut budget,
+        commit_confirmed: false,
+    };
+    execute(image, func_index, args, 0, &mut state, None, Some(driver))
 }
 
 /// Run `func_index` at `depth` sharing `budget`, driving `session` for its durable
@@ -110,11 +138,15 @@ pub(crate) fn run_in_session(
     depth: u32,
     budget: &mut u64,
     session: Option<&mut dyn Durable>,
-) -> Result<Option<Value>, RuntimeFault> {
-    execute(image, func_index, args, depth, budget, session, None)
+) -> Result<Option<Value>, DurableExecutionFault> {
+    let mut state = ExecutionState {
+        budget,
+        commit_confirmed: false,
+    };
+    execute(image, func_index, args, depth, &mut state, session, None)
 }
 
-/// Execute one frame. `depth` is the current call depth and `budget` is shared
+/// Execute one frame. `depth` is the current call depth and `state` is shared
 /// across the whole call tree so total work stays bounded. `session` drives durable
 /// operations; it is `None` for a storeless call tree. `driver` is present only for a
 /// test-body driver frame, where each call becomes its own session-scoped invocation.
@@ -123,10 +155,31 @@ fn execute<'s>(
     func_index: FunctionIndex,
     args: Vec<Value>,
     depth: u32,
-    budget: &mut u64,
+    state: &mut ExecutionState<'_>,
+    session: Option<&mut (dyn Durable + 's)>,
+    driver: Option<&mut dyn DriverDispatch>,
+) -> Result<Option<Value>, DurableExecutionFault> {
+    let result = execute_frame(image, func_index, args, depth, state, session, driver);
+    match result {
+        Err(DurableExecutionFault::Runtime(fault)) if state.commit_confirmed => Err(
+            DurableExecutionFault::classified(fault, DurableCommitState::KnownNew),
+        ),
+        result => result,
+    }
+}
+
+/// Execute one frame while sharing the invocation's confirmed-commit fact across
+/// helper calls. The outer wrapper converts any later runtime fault into an
+/// incomplete invocation with known-new durable state.
+fn execute_frame<'s>(
+    image: &VerifiedImage,
+    func_index: FunctionIndex,
+    args: Vec<Value>,
+    depth: u32,
+    state: &mut ExecutionState<'_>,
     mut session: Option<&mut (dyn Durable + 's)>,
     mut driver: Option<&mut dyn DriverDispatch>,
-) -> Result<Option<Value>, RuntimeFault> {
+) -> Result<Option<Value>, DurableExecutionFault> {
     let function = image.function(func_index);
     let mut locals: Vec<Option<Value>> = Vec::with_capacity(function.local_count() as usize);
     for arg in args {
@@ -138,10 +191,10 @@ fn execute<'s>(
     let mut pc = 0usize;
 
     loop {
-        if *budget == 0 {
+        if *state.budget == 0 {
             return Err(fault(function, pc, Code::RunBudget.as_str()));
         }
-        *budget -= 1;
+        *state.budget -= 1;
 
         match &function.instrs()[pc] {
             SealedInstr::ConstLoad(idx) => {
@@ -696,7 +749,8 @@ fn execute<'s>(
                     line,
                     column,
                     text,
-                ));
+                )
+                .into());
             }
             SealedInstr::Todo(idx) => {
                 let text = match &image.consts()[*idx as usize] {
@@ -704,12 +758,9 @@ fn execute<'s>(
                     _ => unreachable!("verifier proved a text const operand"),
                 };
                 let (line, column) = function.span_at(pc).unwrap_or((1, 1));
-                return Err(RuntimeFault::with_detail(
-                    Code::RunTodo.as_str(),
-                    line,
-                    column,
-                    text,
-                ));
+                return Err(
+                    RuntimeFault::with_detail(Code::RunTodo.as_str(), line, column, text).into(),
+                );
             }
             SealedInstr::Assert => {
                 // A test assertion: on a false condition the running test fails with a
@@ -735,13 +786,15 @@ fn execute<'s>(
                 // Otherwise the call joins this frame's session (a helper inside its
                 // owner's transaction) or runs storeless.
                 let returned = match driver.as_deref_mut() {
-                    Some(driver) => driver.invoke(callee, call_args, depth + 1, budget)?,
+                    Some(driver) => {
+                        driver.invoke(callee, call_args, depth + 1, &mut *state.budget)?
+                    }
                     None => execute(
                         image,
                         callee,
                         call_args,
                         depth + 1,
-                        budget,
+                        state,
                         session.as_deref_mut(),
                         None,
                     )?,
@@ -761,12 +814,33 @@ fn execute<'s>(
                     .as_deref_mut()
                     .expect("verifier proved a mutating export runs with a session");
                 match durable.commit() {
-                    CommitResult::Committed => pc += 1,
-                    CommitResult::RequiredMissing { .. } => {
-                        return Err(fault(function, pc, Code::RunRequiredMissing.as_str()));
+                    CommitResult::Committed => {
+                        // A read-only transaction marker closes a coherent read session but
+                        // performs no engine commit and advances no witness. The verifier-owned
+                        // mutation-closure fact distinguishes it from a confirmed writer, so a
+                        // later pure fault is not falsely reported as durable KnownNew.
+                        if function.is_mutating() {
+                            state.commit_confirmed = true;
+                        }
+                        pc += 1;
                     }
-                    CommitResult::CommitFault => {
-                        return Err(fault(function, pc, Code::RunCommit.as_str()));
+                    CommitResult::RequiredMissing { .. } => {
+                        return Err(DurableExecutionFault::classified(
+                            source_fault(function, pc, Code::RunRequiredMissing.as_str()),
+                            DurableCommitState::KnownOld,
+                        ));
+                    }
+                    CommitResult::Aborted => {
+                        return Err(DurableExecutionFault::classified(
+                            source_fault(function, pc, Code::RunCommit.as_str()),
+                            DurableCommitState::KnownOld,
+                        ));
+                    }
+                    CommitResult::Indeterminate(recovery) => {
+                        return Err(DurableExecutionFault::pending(
+                            source_fault(function, pc, Code::RunCommit.as_str()),
+                            recovery,
+                        ));
                     }
                 }
             }
@@ -1374,9 +1448,13 @@ fn const_value(value: &SealedConst) -> Value {
 /// Build a runtime fault at the source position mapped to `pc`. Every instruction
 /// has a span mapping, so a location always exists; a missing one is a verifier
 /// invariant breach and defaults to the function's own start.
-fn fault(function: &SealedFunction, pc: usize, code: &'static str) -> RuntimeFault {
+fn source_fault(function: &SealedFunction, pc: usize, code: &'static str) -> RuntimeFault {
     let (line, column) = function.span_at(pc).unwrap_or((1, 1));
     RuntimeFault::new(code, line, column)
+}
+
+fn fault(function: &SealedFunction, pc: usize, code: &'static str) -> DurableExecutionFault {
+    source_fault(function, pc, code).into()
 }
 
 /// Map a kernel fault to a source-mapped runtime fault at `pc`.
@@ -1384,7 +1462,7 @@ fn kernel_fault(
     function: &SealedFunction,
     pc: usize,
     kernel: &marrow_kernel::durable::KernelFault,
-) -> RuntimeFault {
+) -> DurableExecutionFault {
     fault(function, pc, kernel.code())
 }
 

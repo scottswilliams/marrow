@@ -218,6 +218,13 @@ impl Drop for Channel {
 pub trait Handler {
     /// Produce the response to one client message.
     fn handle(&mut self, message: ClientMessage) -> ServerMessage;
+
+    /// Whether the just-produced response is the final response for this session. An
+    /// incomplete durable invocation whose state remains unknown closes only after its
+    /// typed response is written, so no later request can enter the retired owner.
+    fn close_after_response(&self) -> bool {
+        false
+    }
 }
 
 /// An authenticated connection: the byte stream after a proven handshake.
@@ -257,8 +264,12 @@ impl Connection {
                     code: wire.code_str().to_string(),
                 },
             };
+            let close_after_response = handler.close_after_response();
             if self.write_message(&response, deadlines).is_err() {
                 // The client went away while we replied; end the session.
+                return Ok(());
+            }
+            if close_after_response {
                 return Ok(());
             }
         }

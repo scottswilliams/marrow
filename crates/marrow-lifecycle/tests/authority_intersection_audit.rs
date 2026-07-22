@@ -23,7 +23,9 @@
 
 use std::path::{Path, PathBuf};
 
-use marrow_kernel::durable::{DemandCoverage, InvocationGrant, PrincipalPredicate, SessionError};
+use marrow_kernel::durable::{
+    DemandCoverage, InvocationGrant, PrincipalPredicate, SessionError, SessionHost,
+};
 use marrow_lifecycle::{
     AttachOutcome, LifecycleError, ProvisionApproval, ProvisionReport, attach, provision_image,
 };
@@ -161,7 +163,7 @@ fn effective_authority_is_demand_ceiling_grant_and_the_reserved_principal_slot()
     };
     assert!(
         matches!(
-            opened.store.txn_session(read_only_grant, write),
+            opened.txn_session(read_only_grant, write),
             Err(SessionError::Denied)
         ),
         "term 2: a read-only grant must deny a mutating demand at session open",
@@ -184,8 +186,7 @@ fn effective_authority_is_demand_ceiling_grant_and_the_reserved_principal_slot()
     // read session that observes the store.
     let full = InvocationGrant::full_store();
     assert!(
-        PrincipalPredicate::Any.narrow(read) == read
-            && opened.store.read_session(full, read).is_ok(),
+        PrincipalPredicate::Any.narrow(read) == read && opened.read_session(full, read).is_ok(),
         "term 4: when all four terms admit, the session opens and observes the store",
     );
 

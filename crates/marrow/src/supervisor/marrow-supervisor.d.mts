@@ -25,12 +25,27 @@ export const LOSS: Readonly<{
 
 export type LossClass = "not_started" | "interrupted" | "outcome_unknown";
 
+export const DURABLE_STATE: Readonly<{
+  KNOWN_OLD: "known_old";
+  KNOWN_NEW: "known_new";
+  UNKNOWN: "unknown";
+}>;
+
+export type DurableState = "known_old" | "known_new" | "unknown";
+
 export class MarrowLossError extends Error {
   readonly loss: LossClass;
 }
 
 export class MarrowFault extends Error {
   readonly code: string;
+  readonly line: bigint;
+  readonly column: bigint;
+}
+
+export class MarrowIncomplete extends Error {
+  readonly code: string;
+  readonly durable: DurableState;
   readonly line: bigint;
   readonly column: bigint;
 }

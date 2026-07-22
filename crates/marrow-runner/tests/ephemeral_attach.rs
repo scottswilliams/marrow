@@ -86,15 +86,19 @@ impl<'a> Session<'a> {
         match self.call(name, args) {
             CallOutcome::Value(value) => value,
             CallOutcome::Fault { code, .. } => panic!("`{name}` faulted: {code}"),
+            CallOutcome::Incomplete { code, durable, .. } => {
+                panic!("`{name}` was incomplete: {code} ({durable:?})")
+            }
             CallOutcome::Reject { code } => panic!("`{name}` rejected: {code}"),
             CallOutcome::OutcomeUnknown => panic!("`{name}` outcome unknown"),
         }
     }
 
-    fn fault(&mut self, name: &str, args: Vec<Json>) -> String {
+    fn incomplete(&mut self, name: &str, args: Vec<Json>) -> (String, marrow_runner::DurableState) {
         match self.call(name, args) {
-            CallOutcome::Fault { code, .. } => code,
-            CallOutcome::Value(_) => panic!("`{name}` did not fault"),
+            CallOutcome::Incomplete { code, durable, .. } => (code, durable),
+            CallOutcome::Value(_) => panic!("`{name}` completed"),
+            CallOutcome::Fault { code, .. } => panic!("`{name}` faulted ordinarily: {code}"),
             CallOutcome::Reject { code } => panic!("`{name}` rejected: {code}"),
             CallOutcome::OutcomeUnknown => panic!("`{name}` outcome unknown"),
         }
@@ -149,8 +153,11 @@ fn workshop_journey_over_one_ephemeral_session() {
     // Cross-root rollback: a move on an absent asset faults required-missing and rolls the whole
     // staged region back across both roots.
     assert_eq!(
-        session.fault("recordMove", vec![Json::Int(2), Json::Str("Bay 9".into())]),
-        "run.required_missing",
+        session.incomplete("recordMove", vec![Json::Int(2), Json::Str("Bay 9".into())]),
+        (
+            "run.required_missing".to_string(),
+            marrow_runner::DurableState::KnownOld,
+        ),
     );
 
     // Every root stands at its prior committed value after the rolled-back fault.

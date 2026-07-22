@@ -14,9 +14,12 @@ marrow-store = { path = "../marrow-store", features = ["native"] }
 marrow-temporal = { path = "../marrow-temporal" }
 
 [dev-dependencies]
+marrow-image = { path = "../marrow-image" }
 # Already a normal in-workspace dependency; also needed by name in the widened-value
 # differential integration test for the canonical instant year-range bounds.
 marrow-temporal = { path = "../marrow-temporal" }
+marrow-verify = { path = "../marrow-verify" }
+marrow-vm = { path = "../marrow-vm" }
 
 [lints]
 workspace = true

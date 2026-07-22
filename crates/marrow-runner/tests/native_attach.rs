@@ -112,15 +112,19 @@ impl Terminal {
         match self.call(name, args) {
             CallOutcome::Value(value) => value,
             CallOutcome::Fault { code, .. } => panic!("`{name}` faulted: {code}"),
+            CallOutcome::Incomplete { code, durable, .. } => {
+                panic!("`{name}` was incomplete: {code} ({durable:?})")
+            }
             CallOutcome::Reject { code } => panic!("`{name}` rejected: {code}"),
             CallOutcome::OutcomeUnknown => panic!("`{name}` outcome unknown"),
         }
     }
 
-    fn fault(&self, name: &str, args: Vec<Json>) -> String {
+    fn incomplete(&self, name: &str, args: Vec<Json>) -> (String, marrow_runner::DurableState) {
         match self.call(name, args) {
-            CallOutcome::Fault { code, .. } => code,
-            CallOutcome::Value(_) => panic!("`{name}` did not fault"),
+            CallOutcome::Incomplete { code, durable, .. } => (code, durable),
+            CallOutcome::Value(_) => panic!("`{name}` completed"),
+            CallOutcome::Fault { code, .. } => panic!("`{name}` faulted ordinarily: {code}"),
             CallOutcome::Reject { code } => panic!("`{name}` rejected: {code}"),
             CallOutcome::OutcomeUnknown => panic!("`{name}` outcome unknown"),
         }
@@ -182,8 +186,11 @@ fn workshop_journey_over_the_companion_path() {
     // Cross-root rollback: a move on an absent asset faults required-missing and rolls the
     // whole staged region back across both roots.
     assert_eq!(
-        terminal.fault("recordMove", vec![Json::Int(2), Json::Str("Bay 9".into())],),
-        "run.required_missing",
+        terminal.incomplete("recordMove", vec![Json::Int(2), Json::Str("Bay 9".into())],),
+        (
+            "run.required_missing".to_string(),
+            marrow_runner::DurableState::KnownOld,
+        ),
     );
 
     // Every root stands at its prior committed value after the rolled-back fault — proven by
@@ -271,105 +278,13 @@ fn a_body_edit_rebinds_and_preserves_committed_data() {
     let _ = std::fs::remove_dir_all(store.parent().expect("parent"));
 }
 
-/// The minimal backup/restore slice round-trips one populated store through the native path:
-/// a store populated over the companion path is backed up to a disposable slice, restored
-/// into a fresh store directory, and the restored store returns the same committed data over
-/// the companion path. The disposable slice makes no digest claim — the restored head's
-/// reserved data-digest slots stay zero (an unsequenced store, FR01 §2).
-#[test]
-fn a_populated_store_round_trips_through_the_backup_slice() {
-    let (image, bytes) = compile_verify();
-    let (schemas, sites) = marrow_vm::derive_store_schemas(&image).expect("flat-executable");
-    let source = scratch();
-    std::fs::create_dir_all(source.parent().expect("parent")).expect("scratch dir");
-    provision(&source, &image);
-    let epoch = marrow_temporal::format_instant(0).expect("epoch instant");
-    let runner = runner_exe();
-
-    // Populate the source store over the companion path.
-    attach_and_call(
-        &runner,
-        &image,
-        &bytes,
-        &source,
-        export_id(&image, "add"),
-        vec![
-            Json::Int(9),
-            Json::Str("T-900".into()),
-            Json::Str("Angle Grinder".into()),
-            Json::Str("power".into()),
-            Json::Str(epoch),
-        ],
-    )
-    .expect("populate source");
-
-    // Back the source up to a disposable slice, then release its lock.
-    let mut slice: Vec<u8> = Vec::new();
-    let source_ceiling;
-    {
-        let opened = marrow_lifecycle::open(&source, schemas.clone(), sites.clone()).expect("open");
-        // The accepted deployment ceiling the source was provisioned under; the slice must
-        // round-trip it verbatim (head v1) so a restored store admits exactly the same
-        // authority — a broadened image is refused before and after a restore alike.
-        source_ceiling = opened.head.accepted_ceiling.clone();
-        assert!(
-            !source_ceiling.is_empty(),
-            "the provisioned head carries a non-empty accepted ceiling",
-        );
-        marrow_lifecycle::backup_slice(&opened, &mut slice).expect("backup slice");
-    }
-
-    // Restore into a fresh store directory.
-    let dest = scratch();
-    std::fs::create_dir_all(dest.parent().expect("parent")).expect("dest scratch");
-    marrow_lifecycle::restore_slice(&mut slice.as_slice(), &dest, schemas.clone(), sites.clone())
-        .expect("restore slice");
-
-    // The restored store returns the committed data over the companion path.
-    let restored = attach_and_call(
-        &runner,
-        &image,
-        &bytes,
-        &dest,
-        export_id(&image, "assetName"),
-        vec![Json::Int(9)],
-    )
-    .expect("read restored");
-    match restored {
-        CallOutcome::Value(value) => assert_eq!(value, present_name("Angle Grinder")),
-        other => panic!(
-            "restored read did not return the committed name: {}",
-            describe(&other)
-        ),
-    }
-
-    // The disposable slice carries no digest claim: the restored head's reserved data-digest
-    // slots are zero (an unsequenced store).
-    let head = marrow_lifecycle::open(&dest, schemas, sites)
-        .expect("open restored")
-        .head;
-    assert_eq!(
-        head.data_digest, [0u8; 32],
-        "the slice makes no digest claim"
-    );
-    assert_eq!(head.data_digest_position, 0, "the store stays unsequenced");
-    // The head-v1 accepted deployment ceiling survives the backup/restore round-trip verbatim,
-    // so the restored store enforces the same authority ceiling as the source (a head-format
-    // regression that dropped or reset it would refuse a legitimate image or admit a broadened
-    // one after a restore).
-    assert_eq!(
-        head.accepted_ceiling, source_ceiling,
-        "the backup slice round-trips the accepted deployment ceiling",
-    );
-
-    let _ = std::fs::remove_dir_all(source.parent().expect("parent"));
-    let _ = std::fs::remove_dir_all(dest.parent().expect("parent"));
-}
-
 fn describe(outcome: &CallOutcome) -> String {
     match outcome {
         CallOutcome::Value(value) => format!("value {value:?}"),
         CallOutcome::Fault { code, .. } => format!("fault {code}"),
+        CallOutcome::Incomplete { code, durable, .. } => {
+            format!("incomplete {code} ({durable:?})")
+        }
         CallOutcome::Reject { code } => format!("reject {code}"),
         CallOutcome::OutcomeUnknown => "outcome unknown".to_string(),
     }

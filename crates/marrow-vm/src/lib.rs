@@ -18,7 +18,8 @@ pub use attach::{
     DurableRun, Ephemeral, derive_store_schemas, mint_ephemeral, run_driver_test, run_durable_test,
     run_export,
 };
-pub use fault::RuntimeFault;
+pub use fault::{DurableExecutionFault, IncompleteDisposition, InvocationIncomplete, RuntimeFault};
+pub use marrow_kernel::durable::DurableCommitState;
 pub use run::{run, run_durable};
 pub use value::Value;
 // The key-scalar type a `Value::Map` entry and a `Value::Id` key tuple carry. It

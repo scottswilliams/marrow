@@ -622,6 +622,21 @@ fn call_outcome_to_record(outcome: marrow_runner::CallOutcome) -> Record {
             column,
             detail: None,
         },
+        marrow_runner::CallOutcome::Incomplete {
+            code,
+            durable,
+            line,
+            column,
+        } => Record::Incomplete {
+            code: fault_code(&code),
+            durable: match durable {
+                marrow_runner::DurableState::KnownOld => marrow_vm::DurableCommitState::KnownOld,
+                marrow_runner::DurableState::KnownNew => marrow_vm::DurableCommitState::KnownNew,
+                marrow_runner::DurableState::Unknown => marrow_vm::DurableCommitState::Unknown,
+            },
+            line,
+            column,
+        },
         marrow_runner::CallOutcome::Reject { code } => Record::OperationalError {
             code: if code == marrow_codes::Code::RunnerDurableUnsupported.as_str() {
                 marrow_codes::Code::CliDurableUnsupported.as_str()

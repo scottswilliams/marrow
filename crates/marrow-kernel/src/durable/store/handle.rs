@@ -1,16 +1,15 @@
 //! The durable store handle: session opening over a coherent read view or a write
-//! transaction after resolving effective authority, plus witness-token minting.
+//! transaction after resolving effective authority, plus checked witness-generation minting.
 
 use std::collections::BTreeMap;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{SystemTime, UNIX_EPOCH};
 
-use marrow_store::{ByteEngine, Cell, ReadView, StoreError};
+use marrow_store::{ByteEngine, ReadView, StoreError};
 
 use super::super::physical;
 use super::super::{
-    AuthorizedSite, DemandCoverage, Denied, IndexSchema, InvocationGrant, Reopen, RootNumbering,
-    SessionError, SiteSpec, StoreSchema, number_store,
+    AuthorizedSite, CommitRecovery, CommitRecoveryScope, DemandCoverage, Denied,
+    DurableCommitState, IndexSchema, InvocationGrant, RootNumbering, SessionError, SiteSpec,
+    StoreSchema, number_store,
 };
 use super::resolve::resolve_site;
 use super::{ReadSession, TxnSession};
@@ -35,6 +34,11 @@ pub struct DurableStore<E: ByteEngine> {
     /// attachment supplies an explicit coverage bounded by its image demand union,
     /// so a read-only union cannot open a write session even over a writable engine.
     ceiling: DemandCoverage,
+    /// The lifecycle-owned identity/path scope of a persistent attachment. Direct test and
+    /// ephemeral handles are unscoped; because the memory engine never reports an
+    /// indeterminate commit, they never need cross-reopen classification. An unscoped fact
+    /// resolves only to `Unknown` rather than being allowed to classify another handle.
+    recovery_scope: Option<CommitRecoveryScope>,
     poisoned: bool,
 }
 
@@ -63,6 +67,33 @@ impl<E: ByteEngine> DurableStore<E> {
         sites: Vec<SiteSpec>,
         ceiling: DemandCoverage,
     ) -> Self {
+        Self::from_schemas_with_optional_recovery_scope(engine, schemas, sites, ceiling, None)
+    }
+
+    /// Build a persistent store handle bound to the lifecycle-owned recovery scope.
+    pub(crate) fn from_schemas_with_ceiling_and_recovery_scope(
+        engine: E,
+        schemas: Vec<StoreSchema>,
+        sites: Vec<SiteSpec>,
+        ceiling: DemandCoverage,
+        recovery_scope: CommitRecoveryScope,
+    ) -> Self {
+        Self::from_schemas_with_optional_recovery_scope(
+            engine,
+            schemas,
+            sites,
+            ceiling,
+            Some(recovery_scope),
+        )
+    }
+
+    fn from_schemas_with_optional_recovery_scope(
+        engine: E,
+        schemas: Vec<StoreSchema>,
+        sites: Vec<SiteSpec>,
+        ceiling: DemandCoverage,
+        recovery_scope: Option<CommitRecoveryScope>,
+    ) -> Self {
         let numbering = number_store(&schemas);
         Self {
             engine,
@@ -70,17 +101,46 @@ impl<E: ByteEngine> DurableStore<E> {
             numbering,
             sites,
             ceiling,
+            recovery_scope,
             poisoned: false,
         }
     }
 
-    /// The witness classification after reopening: whether the recorded witness cell
-    /// holds `token` (the commit completed) or not (it did not).
-    pub fn classify(&self, token: [u8; 16]) -> Result<Reopen, StoreError> {
-        match self.engine.read_view()?.get(&physical::meta_key(WITNESS))? {
-            Some(w) if w == token => Ok(Reopen::CompleteNew),
-            _ => Ok(Reopen::CompleteOld),
+    /// Consume the sole recovery fact and classify this handle's exact witness-cell state.
+    /// Equality with the proposed after-state proves `KnownNew`; equality with the captured
+    /// before-state proves `KnownOld`. A scope mismatch, third state, or read failure is
+    /// `Unknown`. No witness bytes escape this owner.
+    pub fn resolve_recovery(&mut self, recovery: CommitRecovery) -> DurableCommitState {
+        // The engine verdict was indeterminate on the poisoned handle itself. Only a newly
+        // opened handle can provide an independent durable observation; consulting the old
+        // engine could merely read its cached post-commit view and mistake it for persistence.
+        if self.poisoned {
+            return DurableCommitState::Unknown;
         }
+        if self.recovery_scope.is_none() || self.recovery_scope != recovery.scope {
+            self.poisoned = true;
+            return DurableCommitState::Unknown;
+        }
+        let current = match self
+            .engine
+            .read_view()
+            .and_then(|view| view.get(&physical::meta_key(WITNESS)))
+        {
+            Ok(current) => current,
+            Err(_) => {
+                self.poisoned = true;
+                return DurableCommitState::Unknown;
+            }
+        };
+        let state = if current.as_ref() == Some(&recovery.after) {
+            DurableCommitState::KnownNew
+        } else if current == recovery.before {
+            DurableCommitState::KnownOld
+        } else {
+            DurableCommitState::Unknown
+        };
+        self.poisoned = state == DurableCommitState::Unknown;
+        state
     }
 
     /// Run one full engine integrity audit — a complete structural walk verifying every
@@ -94,62 +154,22 @@ impl<E: ByteEngine> DurableStore<E> {
         self.engine.audit_integrity()
     }
 
-    /// Visit every logical cell of the store in bounded scan pages, calling `per_page` for
-    /// each. This is a closed lifecycle-maintenance seam (the backup/restore slice): the
-    /// `ByteEngine` stays crate-private, and the visited cells are the kernel's own id-keyed
-    /// logical cells — never engine pages — so a copy of them is a logical backup, not an
-    /// engine-page copy. Memory is bounded by one scan page (the engine's `scan_after`
-    /// contract), so a whole-store visit never materializes the store. The lifecycle owns the
-    /// only caller; nothing below the kernel can reach it.
-    pub fn visit_cells(
-        &self,
-        mut per_page: impl FnMut(&[Cell]) -> Result<(), StoreError>,
-    ) -> Result<(), StoreError> {
-        let view = self.engine.read_view()?;
-        let mut cursor: Vec<u8> = Vec::new();
-        loop {
-            let page = view.scan_after(&[], &cursor)?;
-            let Some((last_key, _)) = page.last() else {
-                break;
-            };
-            let next_cursor = last_key.clone();
-            per_page(&page)?;
-            cursor = next_cursor;
-        }
-        Ok(())
-    }
-
-    /// Insert a batch of logical cells into the store within one transaction, committing them
-    /// durably. The restore half of the backup/restore slice; the same closed
-    /// lifecycle-maintenance seam as [`Self::visit_cells`]. An indeterminate or aborted commit
-    /// surfaces so the caller can fail the restore rather than report a partial store.
-    pub fn insert_cells(&mut self, cells: &[Cell]) -> Result<(), StoreError> {
-        use marrow_store::{CommitOutcome, WriteTxn};
-        let mut txn = self.engine.begin()?;
-        for (key, value) in cells {
-            txn.put(key, value.clone())?;
-        }
-        match txn.commit() {
-            CommitOutcome::Confirmed => Ok(()),
-            CommitOutcome::Aborted => Err(StoreError::Io {
-                op: "restore_slice.commit",
-                message: "the restore commit aborted".to_string(),
-            }),
-            CommitOutcome::Indeterminate => Err(StoreError::Io {
-                op: "restore_slice.commit",
-                message: "the restore commit was indeterminate".to_string(),
-            }),
-        }
+    /// Whether an indeterminate commit still poisons this handle. Lifecycle owners use
+    /// this read-only latch when their inseparable owner lock drops: losing the affine
+    /// recovery fact must preserve the durable unclean marker rather than record a clean
+    /// shutdown. It exposes no witness material and grants no recovery authority.
+    pub fn has_unresolved_recovery(&self) -> bool {
+        self.poisoned
     }
 
     /// Refuse a session open on a poisoned handle. An earlier indeterminate commit sets
     /// the latch (its durability is unknown), and the handle then refuses every further
-    /// read or write until the store is reopened and the interrupted commit reclassified
-    /// (complete-old vs complete-new via [`Self::classify`]). Consulted at open on both
-    /// session paths so a poisoned handle never opens a view or a transaction that would
-    /// observe an indeterminate state. Reachable only on a native handle whose engine can
-    /// report [`CommitOutcome::Indeterminate`](marrow_store::CommitOutcome); the ephemeral
-    /// memory engine always confirms, so its handle is never poisoned.
+    /// read or write until the opaque recovery fact is resolved against a freshly opened
+    /// store. Consulted at open on both session paths so a poisoned handle never opens a
+    /// view or transaction that would observe an indeterminate state. Reachable only on a
+    /// native handle whose engine can report
+    /// [`CommitOutcome::Indeterminate`](marrow_store::CommitOutcome); the ephemeral memory
+    /// engine always confirms, so its handle is never poisoned.
     fn check_poison(&self) -> Result<(), SessionError> {
         if self.poisoned {
             Err(SessionError::Poisoned)
@@ -215,8 +235,18 @@ impl<E: ByteEngine> DurableStore<E> {
             .iter()
             .map(|schema| schema.indexes.clone())
             .collect();
+        // Capture the exact before-state and derive the next tagged generation before
+        // beginning the write transaction. `&mut self` plus the lifecycle's owner lock means
+        // no other session can advance the witness between this read and `begin`.
+        let before = self
+            .engine
+            .read_view()
+            .and_then(|view| view.get(&physical::meta_key(WITNESS)))
+            .map_err(SessionError::Engine)?;
+        let after = next_witness(&before).map_err(SessionError::Engine)?;
         // Split the store's fields into disjoint borrows: the transaction borrows the
         // engine mutably while the session still writes the poison flag.
+        let recovery_scope = self.recovery_scope.clone();
         let Self {
             engine, poisoned, ..
         } = self;
@@ -225,7 +255,11 @@ impl<E: ByteEngine> DurableStore<E> {
             txn: Some(txn),
             poisoned,
             auth,
-            token: mint_token(),
+            recovery: Some(super::txn_session::RecoveryIntent {
+                scope: recovery_scope,
+                before,
+                after,
+            }),
             indexes,
             pending: BTreeMap::new(),
         })
@@ -252,29 +286,54 @@ fn resolve_authority(
     }
 }
 
-/// Mint a 16-byte witness token distinct within and across processes: the wall
-/// clock mixed with a process id and a monotonic counter. Not cryptographic — its
-/// only contract is distinctness so a reopen can classify complete-old vs
-/// complete-new.
-fn mint_token() -> [u8; 16] {
-    static COUNTER: AtomicU64 = AtomicU64::new(0);
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0u128, |elapsed| elapsed.as_nanos());
-    let counter = COUNTER.fetch_add(1, Ordering::Relaxed) as u128;
-    let pid = u128::from(std::process::id());
-    (nanos ^ counter.rotate_left(64) ^ pid.rotate_left(32)).to_be_bytes()
+/// The new witness domain is one byte longer than every legacy 16-byte token. The tag
+/// selects the checked big-endian generation encoding; no legacy bytes are interpreted as
+/// an integer.
+const WITNESS_VERSION: u8 = 0x01;
+const WITNESS_V1_BYTES: usize = 1 + std::mem::size_of::<u128>();
+
+fn next_witness(before: &Option<Vec<u8>>) -> Result<Vec<u8>, StoreError> {
+    let generation = match before.as_deref() {
+        None => 0,
+        // Every exact 16-byte value belongs to the legacy opaque domain. Migration starts
+        // the tagged domain at zero while retaining those exact bytes as the before-state.
+        Some(bytes) if bytes.len() == std::mem::size_of::<u128>() => 0,
+        Some(bytes) if bytes.len() == WITNESS_V1_BYTES && bytes[0] == WITNESS_VERSION => {
+            let current = u128::from_be_bytes(
+                bytes[1..]
+                    .try_into()
+                    .expect("the exact v1 witness length was checked"),
+            );
+            current.checked_add(1).ok_or(StoreError::LimitExceeded {
+                limit: "commit witness generation",
+            })?
+        }
+        Some(_) => {
+            return Err(StoreError::Corruption {
+                message: "the commit witness cell has an unknown encoding".to_string(),
+            });
+        }
+    };
+    let mut witness = Vec::with_capacity(WITNESS_V1_BYTES);
+    witness.push(WITNESS_VERSION);
+    witness.extend_from_slice(&generation.to_be_bytes());
+    Ok(witness)
 }
 
 #[cfg(test)]
 mod tests {
-    use marrow_store::MemoryEngine;
+    use std::cell::Cell as Flag;
+    use std::rc::Rc;
+
+    use marrow_store::{ByteEngine, CommitOutcome, MemoryEngine, StoreError, WriteTxn};
 
     use super::*;
     use crate::codec::value::ScalarKind;
-    use crate::durable::{FieldSchema, InvocationGrant, SiteSpec, SiteTarget};
+    use crate::durable::{
+        CommitResult, Durable, FieldSchema, InvocationGrant, SiteSpec, SiteTarget,
+    };
 
-    fn store() -> DurableStore<MemoryEngine> {
+    fn store_with_engine<E: ByteEngine>(engine: E) -> DurableStore<E> {
         let schema = StoreSchema {
             root_name: "counters".into(),
             key: vec![ScalarKind::Int],
@@ -288,7 +347,7 @@ mod tests {
             target: SiteTarget::WholePayload,
         }];
         DurableStore::from_schemas_with_ceiling(
-            MemoryEngine::new(),
+            engine,
             vec![schema],
             sites,
             DemandCoverage {
@@ -296,6 +355,52 @@ mod tests {
                 write: true,
             },
         )
+    }
+
+    fn store() -> DurableStore<MemoryEngine> {
+        store_with_engine(MemoryEngine::new())
+    }
+
+    fn scoped_store(path: &str) -> DurableStore<MemoryEngine> {
+        let mut store = store();
+        store.recovery_scope = Some(CommitRecoveryScope::persistent([0x41; 16], path));
+        store
+    }
+
+    fn witness(generation: u128) -> Vec<u8> {
+        let mut bytes = Vec::with_capacity(WITNESS_V1_BYTES);
+        bytes.push(WITNESS_VERSION);
+        bytes.extend_from_slice(&generation.to_be_bytes());
+        bytes
+    }
+
+    fn seed_witness<E: ByteEngine>(store: &mut DurableStore<E>, value: Vec<u8>) {
+        let mut txn = store.engine.begin().expect("begin seed");
+        txn.put(&physical::meta_key(WITNESS), value)
+            .expect("put seed");
+        assert_eq!(txn.commit(), CommitOutcome::Confirmed);
+    }
+
+    fn current_witness<E: ByteEngine>(store: &DurableStore<E>) -> Option<Vec<u8>> {
+        store
+            .engine
+            .read_view()
+            .expect("read view")
+            .get(&physical::meta_key(WITNESS))
+            .expect("get witness")
+    }
+
+    fn commit_empty<E: ByteEngine>(store: &mut DurableStore<E>) -> CommitResult {
+        let mut txn = store
+            .txn_session(
+                InvocationGrant::full_store(),
+                DemandCoverage {
+                    read: true,
+                    write: true,
+                },
+            )
+            .expect("transaction session");
+        txn.commit()
     }
 
     /// The E02 poison-latch consult at session open: a poisoned handle refuses every
@@ -362,5 +467,247 @@ mod tests {
                 .expect("get witness"),
             None,
         );
+    }
+
+    #[test]
+    fn every_legacy_token_migrates_to_the_disjoint_zero_generation() {
+        for legacy in [[0x00; 16], [u8::MAX; 16], [0x01; 16]] {
+            let mut store = scoped_store("/test/legacy");
+            seed_witness(&mut store, legacy.to_vec());
+
+            assert_eq!(commit_empty(&mut store), CommitResult::Committed);
+            assert_eq!(current_witness(&store), Some(witness(0)));
+            assert_eq!(current_witness(&store).expect("witness").len(), 17);
+        }
+    }
+
+    #[test]
+    fn generations_advance_exactly_and_exhaust_before_opening_a_transaction() {
+        let mut store = scoped_store("/test/exhaustion");
+        seed_witness(&mut store, witness(u128::MAX - 1));
+
+        assert_eq!(commit_empty(&mut store), CommitResult::Committed);
+        assert_eq!(current_witness(&store), Some(witness(u128::MAX)));
+
+        let error = match store.txn_session(
+            InvocationGrant::full_store(),
+            DemandCoverage {
+                read: true,
+                write: true,
+            },
+        ) {
+            Err(error) => error,
+            Ok(_) => panic!("the exhausted generation must refuse before begin"),
+        };
+        assert!(matches!(
+            error,
+            SessionError::Engine(StoreError::LimitExceeded {
+                limit: "commit witness generation"
+            })
+        ));
+        assert_eq!(current_witness(&store), Some(witness(u128::MAX)));
+    }
+
+    #[test]
+    fn malformed_or_unknown_witness_encodings_refuse_without_rewriting_them() {
+        let malformed = [vec![0x01; 15], vec![0x01; 18], {
+            let mut bytes = witness(7);
+            bytes[0] = 0x02;
+            bytes
+        }];
+        for bytes in malformed {
+            let mut store = scoped_store("/test/malformed");
+            seed_witness(&mut store, bytes.clone());
+            let error = match store.txn_session(
+                InvocationGrant::full_store(),
+                DemandCoverage {
+                    read: true,
+                    write: true,
+                },
+            ) {
+                Err(error) => error,
+                Ok(_) => panic!("a malformed witness must refuse"),
+            };
+            assert!(matches!(
+                error,
+                SessionError::Engine(StoreError::Corruption { .. })
+            ));
+            assert_eq!(current_witness(&store), Some(bytes));
+        }
+    }
+
+    #[test]
+    fn exact_before_after_and_third_states_classify_without_approximation() {
+        let path = "/test/exact-classification";
+        let scope = CommitRecoveryScope::persistent([0x41; 16], path);
+        let before = witness(20);
+        let after = witness(21);
+
+        for (current, expected) in [
+            (before.clone(), DurableCommitState::KnownOld),
+            (after.clone(), DurableCommitState::KnownNew),
+            (witness(22), DurableCommitState::Unknown),
+        ] {
+            let mut store = scoped_store(path);
+            seed_witness(&mut store, current);
+            let fact = CommitRecovery {
+                scope: Some(scope.clone()),
+                before: Some(before.clone()),
+                after: after.clone(),
+            };
+            assert_eq!(store.resolve_recovery(fact), expected);
+            assert_eq!(store.poisoned, expected == DurableCommitState::Unknown);
+        }
+    }
+
+    #[test]
+    fn a_dropped_intent_generation_is_reused_only_after_its_fact_is_consumed() {
+        let path = "/test/dropped-intent";
+        let scope = CommitRecoveryScope::persistent([0x41; 16], path);
+        let mut reopened = scoped_store(path);
+        let dropped = CommitRecovery {
+            scope: Some(scope),
+            before: None,
+            after: witness(0),
+        };
+
+        assert_eq!(
+            reopened.resolve_recovery(dropped),
+            DurableCommitState::KnownOld,
+        );
+        assert_eq!(commit_empty(&mut reopened), CommitResult::Committed);
+        assert_eq!(current_witness(&reopened), Some(witness(0)));
+    }
+
+    #[test]
+    fn dropping_an_uncommitted_intent_allows_the_same_next_generation() {
+        let mut store = scoped_store("/test/dropped-transaction");
+        let intent = store
+            .txn_session(
+                InvocationGrant::full_store(),
+                DemandCoverage {
+                    read: true,
+                    write: true,
+                },
+            )
+            .expect("derive first recovery intent");
+        drop(intent);
+        assert_eq!(
+            current_witness(&store),
+            None,
+            "dropping before commit must not publish the proposed generation",
+        );
+
+        assert_eq!(commit_empty(&mut store), CommitResult::Committed);
+        assert_eq!(
+            current_witness(&store),
+            Some(witness(0)),
+            "the next transaction may reuse the uncommitted generation",
+        );
+    }
+
+    struct ReadFailureEngine {
+        inner: MemoryEngine,
+        fail_reads: Rc<Flag<bool>>,
+    }
+
+    impl ByteEngine for ReadFailureEngine {
+        type View<'a> = <MemoryEngine as ByteEngine>::View<'a>;
+        type Txn<'a> = <MemoryEngine as ByteEngine>::Txn<'a>;
+
+        fn read_view(&self) -> Result<Self::View<'_>, StoreError> {
+            if self.fail_reads.get() {
+                return Err(StoreError::Io {
+                    op: "recovery_read",
+                    message: "injected recovery-state read failure".into(),
+                });
+            }
+            self.inner.read_view()
+        }
+
+        fn begin(&mut self) -> Result<Self::Txn<'_>, StoreError> {
+            self.inner.begin()
+        }
+
+        fn require_write_access(&self, op: &'static str) -> Result<(), StoreError> {
+            self.inner.require_write_access(op)
+        }
+
+        fn audit_integrity(&mut self) -> Result<(), StoreError> {
+            self.inner.audit_integrity()
+        }
+    }
+
+    #[test]
+    fn recovery_state_read_failure_is_unknown_and_poisons_the_reopened_handle() {
+        let fail_reads = Rc::new(Flag::new(false));
+        let mut store = store_with_engine(ReadFailureEngine {
+            inner: MemoryEngine::new(),
+            fail_reads: Rc::clone(&fail_reads),
+        });
+        let scope = CommitRecoveryScope::persistent([0x41; 16], "/test/read-failure");
+        store.recovery_scope = Some(scope.clone());
+        seed_witness(&mut store, witness(31));
+        fail_reads.set(true);
+
+        let fact = CommitRecovery {
+            scope: Some(scope),
+            before: Some(witness(30)),
+            after: witness(31),
+        };
+        assert_eq!(store.resolve_recovery(fact), DurableCommitState::Unknown,);
+        assert!(store.poisoned);
+    }
+
+    #[test]
+    fn a_stale_or_wrong_scope_fact_is_unknown_never_old_or_new() {
+        let scope = CommitRecoveryScope::persistent([0x41; 16], "/test/stale");
+        let mut stale_store = store();
+        stale_store.recovery_scope = Some(scope.clone());
+        seed_witness(&mut stale_store, witness(12));
+        let stale = CommitRecovery {
+            scope: Some(scope),
+            before: Some(witness(10)),
+            after: witness(11),
+        };
+        assert_eq!(
+            stale_store.resolve_recovery(stale),
+            DurableCommitState::Unknown
+        );
+        assert!(matches!(
+            stale_store.read_session(
+                InvocationGrant::full_store(),
+                DemandCoverage {
+                    read: true,
+                    write: false,
+                },
+            ),
+            Err(SessionError::Poisoned),
+        ));
+
+        let mut wrong_store = scoped_store("/test/wrong-store");
+        seed_witness(&mut wrong_store, witness(1));
+        let wrong_scope = CommitRecovery {
+            scope: Some(CommitRecoveryScope::persistent(
+                [0x41; 16],
+                "/test/right-store",
+            )),
+            before: Some(witness(0)),
+            after: witness(1),
+        };
+        assert_eq!(
+            wrong_store.resolve_recovery(wrong_scope),
+            DurableCommitState::Unknown
+        );
+        assert!(matches!(
+            wrong_store.read_session(
+                InvocationGrant::full_store(),
+                DemandCoverage {
+                    read: true,
+                    write: false,
+                },
+            ),
+            Err(SessionError::Poisoned),
+        ));
     }
 }

@@ -528,33 +528,35 @@ fn pure_owners_have_no_filesystem_edge() {
     );
 }
 
-/// The kernel's raw logical-cell maintenance seam (`DurableStore::visit_cells` /
-/// `insert_cells`) is a closed lifecycle-only path: `insert_cells` writes and commits cells
-/// with no session/ceiling/grant check, so it must never be reachable from an ordinary caller
-/// on a live bound store. This absence gate keeps that conspicuous — the only call sites are
-/// the sanctioned backup/restore slice (`marrow-lifecycle/src/slice.rs`). A new caller fails
-/// this test and must justify itself. (The patterns are assembled at runtime so this test file
-/// is not itself a match.)
+/// The raw logical-cell maintenance escape is absent. Such a seam can clone the
+/// witness lineage and bypass session authority, so neither its former read nor
+/// write call shape may reappear anywhere in production or tests.
 #[test]
-fn the_cell_maintenance_seam_has_one_sanctioned_caller() {
+fn the_raw_cell_maintenance_seam_is_absent() {
     let root = workspace_root();
     let mut files = Vec::new();
     rust_sources(&root.join("crates"), &mut files);
     assert!(!files.is_empty(), "the crate source scan found no files");
 
-    let call_patterns = [
+    let forbidden_patterns = [
+        ["fn ", "visit_cells"].concat(),
         [".", "visit_cells("].concat(),
+        ["::", "visit_cells"].concat(),
+        ["fn ", "insert_cells"].concat(),
         [".", "insert_cells("].concat(),
+        ["::", "insert_cells"].concat(),
+        ["backup", "_slice"].concat(),
+        ["restore", "_slice"].concat(),
+        ["Slice", "Error"].concat(),
+        ["reopen", "_and_classify"].concat(),
+        ["RawCell", "Archive"].concat(),
+        ["CellSlice", "Archive"].concat(),
+        ["Replacement", "Archive"].concat(),
     ];
-    let sanctioned = root.join("crates/marrow-lifecycle/src/slice.rs");
-
     let mut violations: Vec<String> = Vec::new();
     for path in files {
-        if path == sanctioned {
-            continue;
-        }
         let contents = std::fs::read_to_string(&path).expect("read a tracked rust source");
-        for pattern in &call_patterns {
+        for pattern in &forbidden_patterns {
             if contents.contains(pattern.as_str()) {
                 violations.push(format!("{}: {pattern}", path.display()));
             }
@@ -563,9 +565,287 @@ fn the_cell_maintenance_seam_has_one_sanctioned_caller() {
 
     assert!(
         violations.is_empty(),
-        "the closed cell-maintenance seam gained a caller outside the backup/restore slice:\n{}",
+        "a raw cell-maintenance seam reappeared:\n{}",
         violations.join("\n"),
     );
+}
+
+/// The indeterminate-commit fact remains an opaque affine value, and the product has no
+/// replay, resubmission, delivery-ledger, or commit-recovery-ledger machinery. Classification
+/// consumes the one fact; no public byte projection can turn it into reusable authority.
+#[test]
+fn commit_recovery_has_no_projection_or_replay_machinery() {
+    let root = workspace_root();
+    let durable = std::fs::read_to_string(root.join("crates/marrow-kernel/src/durable/mod.rs"))
+        .expect("read commit-recovery owner");
+    let declaration_start = durable
+        .find("pub struct CommitRecovery {")
+        .expect("commit-recovery declaration");
+    let declaration_tail = &durable[declaration_start..];
+    let declaration_end = declaration_tail
+        .find("\n}")
+        .map(|offset| offset + 2)
+        .expect("commit-recovery declaration end");
+    let declaration = &declaration_tail[..declaration_end];
+    for field in declaration
+        .lines()
+        .skip(1)
+        .filter(|line| line.contains(':'))
+    {
+        assert!(
+            field.trim_start().starts_with("pub(super) "),
+            "CommitRecovery gained a publicly projectable field: {field}",
+        );
+    }
+    let attribute_start = durable[..declaration_start]
+        .rfind("#[must_use")
+        .expect("commit-recovery must-use attribute");
+    assert!(
+        !durable[attribute_start..declaration_start].contains("#[derive"),
+        "CommitRecovery must not derive clone, copy, or serialization traits",
+    );
+
+    let forbidden_fact_surfaces = [
+        ["impl ", "Clone for CommitRecovery"].concat(),
+        ["impl ", "Copy for CommitRecovery"].concat(),
+        ["impl ", "CommitRecovery {"].concat(),
+        ["impl From<CommitRecovery", ">"].concat(),
+        ["impl From<&CommitRecovery", ">"].concat(),
+        ["impl TryFrom<CommitRecovery", ">"].concat(),
+        ["impl AsRef<[u8]> for ", "CommitRecovery"].concat(),
+        ["impl serde::Serialize for ", "CommitRecovery"].concat(),
+        ["impl serde::Deserialize", "CommitRecovery"].concat(),
+    ];
+    let present: Vec<&str> = forbidden_fact_surfaces
+        .iter()
+        .filter(|pattern| durable.contains(pattern.as_str()))
+        .map(String::as_str)
+        .collect();
+    assert!(
+        present.is_empty(),
+        "CommitRecovery exposes a reusable projection or construction surface: {present:?}",
+    );
+
+    let forbidden_machinery = [
+        ["struct ", "DeliveryLedger"].concat(),
+        ["struct ", "CommitRecoveryLedger"].concat(),
+        ["enum ", "ReplayOutcome"].concat(),
+        ["fn ", "replay_commit("].concat(),
+        ["fn ", "replay_invocation("].concat(),
+        ["fn ", "resume_invocation("].concat(),
+        ["fn ", "resume_bytecode("].concat(),
+        ["fn ", "resubmit("].concat(),
+        ["delivery", "_ledger:"].concat(),
+        ["replay", "_buffer:"].concat(),
+        ["recovery", "_ledger:"].concat(),
+        ["delivery", "Ledger:"].concat(),
+        ["replay", "Buffer:"].concat(),
+        ["recovery", "Ledger:"].concat(),
+    ];
+    let mut violations = Vec::new();
+    for path in tracked_files(&root) {
+        let relative = path
+            .strip_prefix(&root)
+            .expect("tracked path beneath workspace")
+            .display()
+            .to_string();
+        if !relative.starts_with("crates/") || !relative.contains("/src/") {
+            continue;
+        }
+        if !path.is_file() {
+            continue;
+        }
+        let extension = path.extension().and_then(|extension| extension.to_str());
+        if !matches!(extension, Some("rs" | "mjs" | "mts" | "ts")) {
+            continue;
+        }
+        let source = std::fs::read_to_string(&path).expect("read product source");
+        for pattern in &forbidden_machinery {
+            if source.contains(pattern.as_str()) {
+                violations.push(format!("{relative}: {pattern}"));
+            }
+        }
+    }
+    assert!(
+        violations.is_empty(),
+        "replay or commit-outcome ledger machinery appeared:\n{}",
+        violations.join("\n"),
+    );
+}
+
+/// A durable execution failure cannot be implicitly collapsed to its runtime
+/// fault. The explicit typed inspectors and consuming incomplete disposition are
+/// the only projections; generic formatting/error traits or conversion impls
+/// could otherwise erase an affine pending recovery fact.
+#[test]
+fn durable_execution_failure_has_no_generic_collapse_surface() {
+    let source = std::fs::read_to_string(workspace_root().join("crates/marrow-vm/src/fault.rs"))
+        .expect("read durable fault owner");
+    let forbidden = [
+        ["impl std::ops::", "Deref for DurableExecutionFault"].concat(),
+        ["impl std::fmt::", "Display for DurableExecutionFault"].concat(),
+        ["impl std::error::", "Error for DurableExecutionFault"].concat(),
+        ["impl From<DurableExecutionFault> for ", "RuntimeFault"].concat(),
+        ["impl From<&DurableExecutionFault> for ", "RuntimeFault"].concat(),
+        ["impl AsRef<RuntimeFault> for ", "DurableExecutionFault"].concat(),
+    ];
+    let present: Vec<&str> = forbidden
+        .iter()
+        .filter(|pattern| source.contains(pattern.as_str()))
+        .map(String::as_str)
+        .collect();
+    assert!(
+        present.is_empty(),
+        "durable execution failure exposes a collapse surface: {present:?}",
+    );
+}
+
+/// Provisioning is the only lifecycle composition that may call the kernel's
+/// create-capable native constructor. Ordinary and recovery opens share the one
+/// existing-only scoped constructor, and `OpenStore` exposes no raw engine or
+/// owner-lock extraction seam.
+#[test]
+fn native_lifecycle_open_is_existing_only_and_owner_inseparable() {
+    let root = workspace_root();
+    let lifecycle = std::fs::read_to_string(root.join("crates/marrow-lifecycle/src/provision.rs"))
+        .expect("read lifecycle open owner");
+    let lifecycle_lock = std::fs::read_to_string(root.join("crates/marrow-lifecycle/src/lock.rs"))
+        .expect("read lifecycle lock owner");
+    let lifecycle_root = std::fs::read_to_string(root.join("crates/marrow-lifecycle/src/lib.rs"))
+        .expect("read lifecycle public surface");
+    let kernel = std::fs::read_to_string(root.join("crates/marrow-kernel/src/lib.rs"))
+        .expect("read native constructor owner");
+    let handle =
+        std::fs::read_to_string(root.join("crates/marrow-kernel/src/durable/store/handle.rs"))
+            .expect("read generic store constructor owner");
+    let lifecycle_product = lifecycle
+        .split("\n#[cfg(test)]\nmod tests")
+        .next()
+        .expect("lifecycle product source");
+
+    let create_call = ["NativeStore::", "open_native("].concat();
+    assert_eq!(
+        lifecycle_product.match_indices(&create_call).count(),
+        1,
+        "only provisioning may call the create-capable native constructor",
+    );
+    let build = lifecycle_product
+        .find("fn build_in_temp(")
+        .expect("provision build owner exists");
+    let create = lifecycle_product
+        .find(&create_call)
+        .expect("provision create call exists");
+    let ordinary = lifecycle_product
+        .find("fn open_admitted<")
+        .expect("ordinary open owner exists");
+    assert!(
+        build < create && create < ordinary,
+        "the sole create-capable call must remain inside provisioning",
+    );
+
+    let scoped_existing = ["NativeStore::", "open_native_with_recovery_scope("].concat();
+    let mut scoped_callers = Vec::new();
+    for path in tracked_files(&root) {
+        let relative = path
+            .strip_prefix(&root)
+            .expect("tracked path is beneath root")
+            .display()
+            .to_string();
+        if path.extension().is_some_and(|extension| extension == "rs")
+            && relative.starts_with("crates/")
+            && relative.contains("/src/")
+            && path.is_file()
+        {
+            let source = std::fs::read_to_string(&path).expect("read tracked Rust source");
+            let source = source
+                .split("\n#[cfg(test)]\nmod tests")
+                .next()
+                .expect("product source prefix");
+            let count = source.match_indices(&scoped_existing).count();
+            if count != 0 {
+                scoped_callers.push((relative, count));
+            }
+        }
+    }
+    assert_eq!(
+        scoped_callers,
+        [("crates/marrow-lifecycle/src/provision.rs".to_string(), 2)],
+        "lifecycle ordinary open and recovery reopen must be the specialized constructor's sole callers",
+    );
+    assert!(
+        kernel.contains("marrow_store::NativeEngine::open_existing(path)?"),
+        "the scoped native constructor must delegate to the storage owner's existing-only open",
+    );
+    for forbidden in [
+        "pub fn from_engine_with_recovery_scope(",
+        "pub fn from_schemas_with_ceiling_and_recovery_scope(",
+    ] {
+        assert!(
+            !kernel.contains(forbidden) && !handle.contains(forbidden),
+            "the kernel exposes a generic scoped recovery constructor: {forbidden}",
+        );
+    }
+    assert!(
+        !handle.contains("#[cfg(test)]\n    pub fn from_engine_with_recovery_scope(")
+            && !handle.contains(
+                "#[cfg(test)]\n    pub fn from_schemas_with_ceiling_and_recovery_scope(",
+            ),
+        "the kernel exposes a cfg(test) scoped recovery constructor seam",
+    );
+    let durable = std::fs::read_to_string(root.join("crates/marrow-kernel/src/durable/mod.rs"))
+        .expect("read recovery-fact owner");
+    assert!(
+        !durable.contains("pub struct CommitRecoveryScope")
+            && !durable.contains("pub fn persistent("),
+        "the lifecycle recovery scope must not be publicly constructible or nameable",
+    );
+    assert!(
+        lifecycle.contains("impl Drop for LockedNativeStore")
+            && lifecycle.contains("NativeStore::has_unresolved_recovery")
+            && lifecycle.contains("quarantine_until_process_exit"),
+        "dropping a poisoned OpenStore must quarantine its unclean owner lock until process exit",
+    );
+    assert!(
+        lifecycle.contains("std::fs::canonicalize(dir)"),
+        "ordinary open must pin a stable absolute store path before recovery can retain it",
+    );
+    assert!(
+        lifecycle_lock.contains("pub(crate) struct OwnerLock")
+            && lifecycle_lock.contains("pub(crate) struct Acquired")
+            && lifecycle_lock.contains("pub(crate) fn acquire(")
+            && lifecycle_lock.contains("pub(crate) fn mark_clean("),
+        "only the lifecycle composition owner may acquire or clean the owner lock",
+    );
+    assert!(
+        !lifecycle_root.contains("OwnerLock") && !lifecycle_root.contains("Acquired"),
+        "the lifecycle public surface must not export raw owner-lock capabilities",
+    );
+    let owner_write = lifecycle_lock
+        .find("write_owner(&mut file, &owner)")
+        .expect("owner descriptor write exists");
+    let directory_sync = lifecycle_lock
+        .find("sync_dir(dir).map_err(LockError::Io)?")
+        .expect("owner-lock directory sync exists");
+    assert!(
+        owner_write < directory_sync,
+        "owner-lock acquisition must durably publish the lock-file directory entry before returning",
+    );
+
+    for forbidden in [
+        "pub store: NativeStore",
+        "pub lock: OwnerLock",
+        "pub fn store(",
+        "pub fn store_mut(",
+        "pub fn into_store(",
+        "pub fn take_store(",
+        "pub fn replace_store(",
+        "pub fn with_store(",
+    ] {
+        assert!(
+            !lifecycle.contains(forbidden),
+            "OpenStore exposes a raw owner-separation seam: {forbidden}",
+        );
+    }
 }
 
 /// No ambient clock feeds a temporal value: the temporal language path reads no wall

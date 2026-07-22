@@ -10,8 +10,8 @@ use std::path::{Path, PathBuf};
 use marrow_kernel::codec::key::KeyScalar;
 use marrow_kernel::codec::value::RuntimeScalar;
 use marrow_kernel::durable::{
-    DemandCoverage, Durable, EntryValue, InvocationGrant, Presence, SiteSpec, SiteTarget,
-    StoreSchema,
+    DemandCoverage, Durable, EntryValue, InvocationGrant, Presence, SessionHost, SiteSpec,
+    SiteTarget, StoreSchema,
 };
 use marrow_kernel::equality::ValueDomain;
 use marrow_lifecycle::{
@@ -209,7 +209,6 @@ fn read_entry(dir: &Path, image: &VerifiedImage, id: i64) -> Option<EntryValue> 
     }];
     let mut opened = open(dir, schemas_of(image), read_sites).expect("open for read-back");
     let mut read = opened
-        .store
         .read_session(
             InvocationGrant::full_store(),
             DemandCoverage {
@@ -302,7 +301,6 @@ fn a_realistic_corpus_populates_the_store_through_the_kernel() {
     }];
     let mut opened = open(scratch.dir(), schemas_of(&image), read_sites).expect("open");
     let mut read = opened
-        .store
         .read_session(
             InvocationGrant::full_store(),
             DemandCoverage {

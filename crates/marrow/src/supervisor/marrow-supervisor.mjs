@@ -32,7 +32,7 @@ import process from "node:process";
 // ---------------------------------------------------------------------------
 // Protocol constants (matched with the Rust wire owner).
 
-export const PROTOCOL_VERSION = 1;
+export const PROTOCOL_VERSION = 2;
 export const MAX_FRAME = 1 << 20;
 export const MAX_DEPTH = 64;
 export const MAX_STRING_BYTES = 64 * 1024;
@@ -54,6 +54,13 @@ export const LOSS = Object.freeze({
   OUTCOME_UNKNOWN: "outcome_unknown",
 });
 
+/** The closed durable-state classification of an incomplete invocation. */
+export const DURABLE_STATE = Object.freeze({
+  KNOWN_OLD: "known_old",
+  KNOWN_NEW: "known_new",
+  UNKNOWN: "unknown",
+});
+
 /** A call was lost to runner death; `loss` is one of the `LOSS` classes. */
 export class MarrowLossError extends Error {
   constructor(loss) {
@@ -69,6 +76,18 @@ export class MarrowFault extends Error {
     super(`${code} at ${line}:${column}`);
     this.name = "MarrowFault";
     this.code = code;
+    this.line = line;
+    this.column = column;
+  }
+}
+
+/** An invocation that stopped without returning, with orthogonal durable state. */
+export class MarrowIncomplete extends Error {
+  constructor(code, durable, line, column) {
+    super(`${code} at ${line}:${column}: invocation incomplete (${durable})`);
+    this.name = "MarrowIncomplete";
+    this.code = code;
+    this.durable = durable;
     this.line = line;
     this.column = column;
   }
@@ -454,6 +473,15 @@ class FrameReader {
   }
 }
 
+function decodeOneFrame(frames, chunk) {
+  const messages = frames.push(chunk);
+  if (messages.length === 0) return undefined;
+  if (messages.length !== 1 || frames.buffer.length !== 0) {
+    throw protocol("message must contain exactly one complete frame");
+  }
+  return messages[0];
+}
+
 // ---------------------------------------------------------------------------
 // Transfer-value combinators. The generated client composes these into one
 // encoder and one decoder per export signature; each mirrors the runner's typed
@@ -602,6 +630,55 @@ export function eSum(variants) {
 
 function protocol(detail) {
   return new WireFormatError("wire.malformed", detail);
+}
+
+function hasExactKeys(value, expected) {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    return false;
+  }
+  const actual = Object.keys(value);
+  return (
+    actual.length === expected.length &&
+    expected.every((key) => Object.prototype.hasOwnProperty.call(value, key))
+  );
+}
+
+function isWireCode(value) {
+  return typeof value === "string" && /^[a-z0-9._]+$/.test(value);
+}
+
+function isWireU32(value) {
+  return typeof value === "bigint" && value >= 0n && value <= 0xffff_ffffn;
+}
+
+function isWireSpan(value) {
+  return (
+    hasExactKeys(value, ["column", "line"]) &&
+    isWireU32(value.column) &&
+    isWireU32(value.line)
+  );
+}
+
+function isId32(value) {
+  return typeof value === "string" && /^[0-9a-f]{64}$/.test(value);
+}
+
+function isLaunchDescriptor(value) {
+  return (
+    hasExactKeys(value, ["interface", "session", "socket"]) &&
+    isId32(value.interface) &&
+    isId32(value.session) &&
+    typeof value.socket === "string"
+  );
+}
+
+function isReady(value) {
+  return (
+    hasExactKeys(value, ["interface", "kind", "session"]) &&
+    value.kind === "ready" &&
+    isId32(value.interface) &&
+    isId32(value.session)
+  );
 }
 
 export function dUnit(d) {
@@ -808,7 +885,12 @@ export function launch(options) {
       const line = stdoutBuffer.subarray(0, newline);
       const rest = stdoutBuffer.subarray(newline + 1);
       try {
-        descriptor = parseCanonical(Buffer.from(line));
+        const parsed = parseCanonical(Buffer.from(line));
+        if (!isLaunchDescriptor(parsed)) {
+          failLaunch("invalid launch descriptor schema");
+          return;
+        }
+        descriptor = parsed;
       } catch (error) {
         failLaunch(`bad launch descriptor: ${error.message}`);
         return;
@@ -818,11 +900,7 @@ export function launch(options) {
     });
 
     const connect = () => {
-      if (
-        typeof descriptor.socket !== "string" ||
-        typeof descriptor.session !== "string" ||
-        typeof descriptor.interface !== "string"
-      ) {
+      if (!isLaunchDescriptor(descriptor)) {
         failLaunch("incomplete launch descriptor");
         return;
       }
@@ -834,19 +912,17 @@ export function launch(options) {
       });
       socket.on("data", (chunk) => {
         if (settled) return;
-        let messages;
+        let ready;
         try {
-          messages = frames.push(chunk);
+          ready = decodeOneFrame(frames, chunk);
         } catch (error) {
           failLaunch(`bad ready frame: ${error.message}`);
           return;
         }
-        if (messages.length === 0) return;
-        const ready = messages[0];
+        if (ready === undefined) return;
         if (
-          ready.kind !== "ready" ||
+          !isReady(ready) ||
           ready.session !== descriptor.session ||
-          typeof ready.interface !== "string" ||
           ready.interface !== descriptor.interface
         ) {
           failLaunch("handshake refused");
@@ -962,7 +1038,7 @@ export class Session {
   /**
    * Invoke `exportId` (64 lowercase hex) with already-encoded wire arguments.
    * Resolves with the reply's `data`, or rejects with `MarrowFault`,
-   * `MarrowReject`, `WireFormatError`, or `MarrowLossError`.
+   * `MarrowIncomplete`, `MarrowReject`, `WireFormatError`, or `MarrowLossError`.
    */
   call(exportId, args) {
     return new Promise((resolve, reject) => {
@@ -1004,9 +1080,15 @@ export class Session {
   }
 
   onData(chunk) {
-    let messages;
+    if (this.inFlight === null) {
+      // No reply is legal before a request is dispatched. Reject even a partial frame now;
+      // retaining its prefix could make a later request consume an unsolicited reply.
+      if (chunk.length !== 0) this.terminate();
+      return;
+    }
+    let message;
     try {
-      messages = this.frames.push(chunk);
+      message = decodeOneFrame(this.frames, chunk);
     } catch (error) {
       // The reply stream is no longer trustworthy: fail the in-flight call with
       // the wire rejection and close fail-closed.
@@ -1016,29 +1098,66 @@ export class Session {
       this.terminate();
       return;
     }
-    for (const message of messages) {
-      const pending = this.inFlight;
-      if (pending === null) continue; // an unsolicited frame; nothing to settle
+    if (message === undefined) return;
+
+    const pending = this.inFlight;
+    if (pending === null) {
       this.inFlight = null;
       clearTimeout(this.replyDeadline);
-      if (message.kind === "value") {
-        pending.resolve(message.data);
-      } else if (
-        message.kind === "fault" &&
-        typeof message.code === "string" &&
-        message.span !== null &&
-        typeof message.span === "object"
-      ) {
-        pending.reject(
-          new MarrowFault(message.code, message.span.line, message.span.column),
-        );
-      } else if (message.kind === "reject" && typeof message.code === "string") {
-        pending.reject(new MarrowReject(message.code));
-      } else {
-        pending.reject(protocol("unknown reply kind"));
-      }
-      this.pump();
+      this.terminate();
+      return;
     }
+
+    this.inFlight = null;
+    clearTimeout(this.replyDeadline);
+    if (
+      hasExactKeys(message, ["data", "kind"]) &&
+      message.kind === "value"
+    ) {
+      pending.resolve(message.data);
+    } else if (
+      hasExactKeys(message, ["code", "kind", "span"]) &&
+      message.kind === "fault" &&
+      isWireCode(message.code) &&
+      isWireSpan(message.span)
+    ) {
+      pending.reject(
+        new MarrowFault(message.code, message.span.line, message.span.column),
+      );
+    } else if (
+      hasExactKeys(message, ["code", "durable", "kind", "span"]) &&
+      message.kind === "incomplete" &&
+      isWireCode(message.code) &&
+      (message.durable === DURABLE_STATE.KNOWN_OLD ||
+        message.durable === DURABLE_STATE.KNOWN_NEW ||
+        message.durable === DURABLE_STATE.UNKNOWN) &&
+      isWireSpan(message.span)
+    ) {
+      pending.reject(
+        new MarrowIncomplete(
+          message.code,
+          message.durable,
+          message.span.line,
+          message.span.column,
+        ),
+      );
+      // The Node supervisor conservatively retires its session after any incomplete
+      // response. Queued calls are interrupted and later calls are not-started;
+      // never dispatch another request.
+      this.terminate();
+      return;
+    } else if (
+      hasExactKeys(message, ["code", "kind"]) &&
+      message.kind === "reject" &&
+      isWireCode(message.code)
+    ) {
+      pending.reject(new MarrowReject(message.code));
+    } else {
+      pending.reject(protocol("invalid reply schema"));
+      this.terminate();
+      return;
+    }
+    this.pump();
   }
 
   /** Classify and fail every outstanding call after runner/socket death. */

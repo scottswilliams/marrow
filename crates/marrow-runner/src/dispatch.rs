@@ -12,9 +12,11 @@
 
 use marrow_codes::Code;
 use marrow_image::ExportId;
-use marrow_local_wire::{Json, ServerMessage, Span};
+use marrow_local_wire::{DurableState, Json, ServerMessage, Span};
 use marrow_verify::{SealedExport, VerifiedImage};
-use marrow_vm::{DurableRun, Value};
+use marrow_vm::{
+    DurableCommitState, DurableExecutionFault, DurableRun, IncompleteDisposition, Value,
+};
 
 use crate::transfer;
 
@@ -61,15 +63,45 @@ pub(crate) fn run_storeless(
 /// Project a durable run outcome onto a wire response. A verified durable export whose shape the
 /// attachment cannot serve, or a session that could not open, is a typed reject — never a
 /// partial reply.
-pub(crate) fn project_durable_run(image: &VerifiedImage, run: DurableRun) -> ServerMessage {
-    match run {
+#[must_use = "a retirement projection must close its attached service after replying"]
+pub(crate) enum RunProjection {
+    Reply(ServerMessage),
+    RetireAfter(ServerMessage),
+}
+
+pub(crate) fn project_durable_run(image: &VerifiedImage, run: DurableRun) -> RunProjection {
+    let response = match run {
         DurableRun::Ran(Ok(value)) => value_message(image, value.as_ref()),
-        DurableRun::Ran(Err(fault)) => fault_message(&fault),
+        DurableRun::Ran(Err(DurableExecutionFault::Runtime(fault))) => fault_message(&fault),
+        DurableRun::Ran(Err(DurableExecutionFault::Incomplete(incomplete))) => {
+            return match incomplete.into_disposition() {
+                IncompleteDisposition::Classified { fault, durable } => {
+                    let response = incomplete_message(&fault, durable);
+                    if durable == DurableCommitState::Unknown {
+                        RunProjection::RetireAfter(response)
+                    } else {
+                        RunProjection::Reply(response)
+                    }
+                }
+                IncompleteDisposition::Pending { fault, recovery } => {
+                    // Only the memory-backed attachment reaches this generic projector.
+                    // Its engine never returns an indeterminate commit; if that invariant
+                    // changes, consuming the fact is paired with an explicit retirement
+                    // projection rather than dropping it into an ordinary fault.
+                    drop(recovery);
+                    RunProjection::RetireAfter(incomplete_message(
+                        &fault,
+                        DurableCommitState::Unknown,
+                    ))
+                }
+            };
+        }
         DurableRun::Parked => reject(Code::RunnerDurableUnsupported),
         DurableRun::Failed(code) => ServerMessage::Reject {
             code: code.to_string(),
         },
-    }
+    };
+    RunProjection::Reply(response)
 }
 
 /// Encode a returned value into a `Value` response, downgrading an unencodable value (never
@@ -89,6 +121,25 @@ fn value_message(image: &VerifiedImage, value: Option<&Value>) -> ServerMessage 
 fn fault_message(fault: &marrow_vm::RuntimeFault) -> ServerMessage {
     ServerMessage::Fault {
         code: fault.code().to_string(),
+        span: Span {
+            line: fault.line(),
+            column: fault.column(),
+        },
+    }
+}
+
+pub(crate) fn incomplete_message(
+    fault: &marrow_vm::RuntimeFault,
+    durable: DurableCommitState,
+) -> ServerMessage {
+    let durable = match durable {
+        DurableCommitState::KnownOld => DurableState::KnownOld,
+        DurableCommitState::KnownNew => DurableState::KnownNew,
+        DurableCommitState::Unknown => DurableState::Unknown,
+    };
+    ServerMessage::Incomplete {
+        code: fault.code().to_string(),
+        durable,
         span: Span {
             line: fault.line(),
             column: fault.column(),

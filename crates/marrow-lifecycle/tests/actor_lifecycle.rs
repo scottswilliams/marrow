@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use marrow_lifecycle::{
     AttachOutcome, ChangedFact, EngineKind, HEAD_FILE, LifecycleError, LogicalHead,
     ProvisionRequest, StoreEnvelope, StoreInstanceId, active_binding, attach, head_map, open,
-    provision, reopen_and_classify,
+    provision,
 };
 use marrow_verify::{VerifiedImage, verify};
 
@@ -431,19 +431,4 @@ fn changing_the_durable_contract_is_a_typed_refusal() {
         ),
         Ok(_) => panic!("a durable-contract change must be refused, but attach succeeded"),
     }
-}
-
-#[test]
-fn reopen_classifies_an_uncommitted_token_as_complete_old() {
-    let scratch = Scratch::new("reopen");
-    let image = compile(BASE_SOURCE, BASE_IDS);
-    provision_from(scratch.dir(), &image);
-
-    // A token that never landed as a witness classifies complete-old: the interrupted commit
-    // did not complete. (A complete-new classification requires a committed write session,
-    // exercised on the terminal companion path at F02b.)
-    let (schemas, sites) = schemas_of(&image);
-    let classification =
-        reopen_and_classify(scratch.dir(), [0x55; 16], schemas, sites).expect("reopen");
-    assert_eq!(classification, marrow_kernel::durable::Reopen::CompleteOld);
 }

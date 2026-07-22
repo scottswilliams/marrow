@@ -26,6 +26,7 @@ use marrow_codes::Code;
 use marrow_lifecycle::OpenStore;
 use marrow_local_wire::{ClientMessage, Id32, Json, ServerMessage};
 use marrow_verify::VerifiedImage;
+use marrow_vm::{DurableExecutionFault, DurableRun, IncompleteDisposition};
 
 use crate::channel::Handler;
 use crate::dispatch;
@@ -35,13 +36,18 @@ use crate::dispatch;
 /// session against the store.
 pub struct AttachedService {
     image: VerifiedImage,
-    open: OpenStore,
+    open: Option<OpenStore>,
+    close_after_response: bool,
 }
 
 impl AttachedService {
     /// Bind `image` to the already-open `store`.
     pub fn new(image: VerifiedImage, open: OpenStore) -> Self {
-        Self { image, open }
+        Self {
+            image,
+            open: Some(open),
+            close_after_response: false,
+        }
     }
 
     /// The handshake identity the runner proves back: the exact image identity, which the
@@ -62,24 +68,60 @@ impl Handler for AttachedService {
             ClientMessage::Request { export, args } => self.handle_request(export.bytes(), &args),
         }
     }
+
+    fn close_after_response(&self) -> bool {
+        self.close_after_response
+    }
 }
 
 impl AttachedService {
     fn handle_request(&mut self, export_id: &[u8; 32], args: &[Json]) -> ServerMessage {
-        // Split the disjoint borrows: the image is read while the store is opened mutably.
-        let Self { image, open } = self;
-        let (export, values) = match dispatch::decode_request(image, export_id, args) {
+        let (export, values) = match dispatch::decode_request(&self.image, export_id, args) {
             Ok(decoded) => decoded,
             Err(reject) => return reject,
         };
         // A storeless export needs no session; a durable one runs against the native store
         // through the same session machinery the ephemeral attachment uses.
         if export.demand().is_empty() {
-            return dispatch::run_storeless(image, export, values);
+            return dispatch::run_storeless(&self.image, export, values);
         }
-        dispatch::project_durable_run(
-            image,
-            marrow_vm::run_export(image, &mut open.store, export, values),
-        )
+        let run = {
+            let open = self
+                .open
+                .as_mut()
+                .expect("a live attached session retains its store owner");
+            marrow_vm::run_export(&self.image, open, export, values)
+        };
+        match run {
+            DurableRun::Ran(Err(DurableExecutionFault::Incomplete(incomplete))) => match incomplete
+                .into_disposition()
+            {
+                IncompleteDisposition::Classified { fault, durable } => {
+                    if durable == marrow_vm::DurableCommitState::Unknown {
+                        self.open.take();
+                        self.close_after_response = true;
+                    }
+                    dispatch::incomplete_message(&fault, durable)
+                }
+                IncompleteDisposition::Pending { fault, recovery } => {
+                    let open = self
+                        .open
+                        .take()
+                        .expect("pending recovery owns the live attached store");
+                    let (durable, recovered_open) = open.resolve_recovery(recovery);
+                    self.open = recovered_open;
+                    self.close_after_response = durable == marrow_vm::DurableCommitState::Unknown;
+                    dispatch::incomplete_message(&fault, durable)
+                }
+            },
+            run => match dispatch::project_durable_run(&self.image, run) {
+                dispatch::RunProjection::Reply(response) => response,
+                dispatch::RunProjection::RetireAfter(response) => {
+                    self.open.take();
+                    self.close_after_response = true;
+                    response
+                }
+            },
+        }
     }
 }

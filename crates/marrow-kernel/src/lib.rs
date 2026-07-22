@@ -65,6 +65,33 @@ impl durable::DurableStore<marrow_store::NativeEngine> {
         ))
     }
 
+    /// Open an existing, write-capable persistent multi-root native store bound
+    /// to its lifecycle-owned recovery scope. This constructor never creates or
+    /// stamps a store; provisioning is the sole caller of the create-capable
+    /// [`open_native`](Self::open_native). The scope is descriptive store/path
+    /// identity used only to refuse classification through a different attachment.
+    pub fn open_native_with_recovery_scope(
+        path: &std::path::Path,
+        schemas: Vec<durable::StoreSchema>,
+        sites: Vec<durable::SiteSpec>,
+        instance: [u8; 16],
+    ) -> Result<Self, marrow_store::StoreError> {
+        let engine = marrow_store::NativeEngine::open_existing(path)?;
+        use marrow_store::ByteEngine;
+        let ceiling = durable::DemandCoverage {
+            read: true,
+            write: engine.require_write_access("open").is_ok(),
+        };
+        let recovery_scope = durable::CommitRecoveryScope::persistent(instance, path);
+        Ok(Self::from_schemas_with_ceiling_and_recovery_scope(
+            engine,
+            schemas,
+            sites,
+            ceiling,
+            recovery_scope,
+        ))
+    }
+
     /// Open an existing multi-root native store read-only, never creating the file. A
     /// read-only handle mints a read-only ceiling, so no write session opens over it.
     pub fn open_native_read_only(

@@ -30,9 +30,7 @@ mod import;
 mod instance;
 mod lock;
 mod provision;
-mod reopen;
 mod report;
-mod slice;
 mod store_dir;
 
 pub use actor::{
@@ -49,7 +47,7 @@ pub use import::{
     import_jsonl,
 };
 pub use instance::{EntropyUnavailable, StoreInstanceId};
-pub use lock::{Acquired, LockError, LockOwner, OwnerLock};
+pub use lock::{LockError, LockOwner};
 // The invocation grant `import_jsonl` requires. It is a kernel type, re-exported here so a
 // privileged caller (the companion runner's `import` command) can name and mint the full-store
 // grant a trusted bulk import runs under without depending on the kernel directly.
@@ -58,7 +56,5 @@ pub use provision::{
     OpenError, OpenStore, Preflight, ProvisionError, ProvisionRequest, Provisioned, open,
     preflight, provision,
 };
-pub use reopen::reopen_and_classify;
 pub use report::{ProvisionApproval, ProvisionImageError, ProvisionReport, provision_image};
-pub use slice::{SliceError, backup_slice, restore_slice};
 pub use store_dir::{ENGINE_FILE, ENVELOPE_FILE, HEAD_FILE, LOCK_FILE};

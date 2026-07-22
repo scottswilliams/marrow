@@ -130,6 +130,9 @@ fn a_broadened_image_is_rejected_end_to_end_through_the_native_path() {
         ),
         CallOutcome::Value(_) => panic!("the broadened image must be rejected, not run"),
         CallOutcome::Fault { code, .. } => panic!("expected a reject, got fault {code}"),
+        CallOutcome::Incomplete { code, durable, .. } => {
+            panic!("expected a reject, got incomplete {code} ({durable:?})")
+        }
         CallOutcome::OutcomeUnknown => panic!("expected a reject, got outcome-unknown"),
     }
 
@@ -155,6 +158,9 @@ fn a_broadened_image_is_rejected_end_to_end_through_the_native_path() {
         }
         CallOutcome::Reject { code } => panic!("the prior program was rejected: {code}"),
         CallOutcome::Fault { code, .. } => panic!("the prior program faulted: {code}"),
+        CallOutcome::Incomplete { code, durable, .. } => {
+            panic!("the prior program was incomplete: {code} ({durable:?})")
+        }
         CallOutcome::OutcomeUnknown => panic!("the prior program outcome was unknown"),
     }
 

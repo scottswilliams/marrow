@@ -158,10 +158,15 @@ lands; a retired identity is never minted over.
 
 Output is text by default — the returned value, or `absent` for a vacant
 optional. `--format jsonl` prints one canonical JSON object: an outcome of
-`value`, `diagnostic`, `artifact_rejected`, `fault`, or `error`, keeping the
-four failure families distinct. A source diagnostic (`check.*`, `parse.*`), an
-image rejection (`image.*`), a source-mapped runtime fault (`run.*`), and an
-operational error (`store.*`, `io.*`) never collapse into one another.
+`value`, `diagnostic`, `artifact_rejected`, `fault`, `incomplete`, or `error`,
+keeping the failure families distinct. A source diagnostic (`check.*`,
+`parse.*`), an image rejection (`image.*`), a source-mapped runtime fault
+(`run.*`), and an operational error (`store.*`, `io.*`) never collapse into one
+another. An `incomplete` run carries the source-mapped `run.*` code plus a
+separate `durable` field: `known_old`, `known_new`, or `unknown`. It says the
+invocation did not return; the durable field says only whether its proposed
+commit is proven absent, proven installed, or unclassified. No form supplies a
+return value or triggers an automatic retry.
 
 Exit `0` carries the value; exit `1` is any failure family (including a durable
 export parked in the trough); exit `2` is a usage error (an unknown export or a
@@ -180,6 +185,9 @@ whose every `assert` holds passes; a false `assert` (`run.assert`) fails it; any
 other runtime fault errors it. A test that touches no durable data runs storeless;
 a test that reads or writes durable data runs against its own fresh ephemeral
 attachment, so no test opens a persistent store or observes another test's writes.
+If a driven export reaches a commit boundary but the enclosing test does not
+complete, JSONL reports `outcome: "incomplete"` and the same closed `durable`
+classification as `run`; the test counts as errored, never passed.
 
 `--filter` selects tests whose name contains the given substring and fails when
 none match. Output is human text by default — one line per test and a summary —
@@ -209,6 +217,11 @@ through the path kernel — no command receives a raw storage key, engine handle
 transaction object — and a store that denies writes refuses the import. The command
 reports the store provisioning (on first use) and a final `rows_imported` count;
 input is read and committed in bounded batches rather than materialized whole.
+An engine-aborted batch is known not to have landed. An indeterminate batch is
+classified from the store witness under the continuously held owner lock and
+reported as incomplete with `known_old`, `known_new`, or `unknown`; earlier
+confirmed batches remain counted, and the importer never retries the uncertain
+batch.
 
 ## `marrow client`
 

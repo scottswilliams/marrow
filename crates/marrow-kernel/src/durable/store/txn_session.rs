@@ -8,9 +8,9 @@ use marrow_store::{ByteEngine, CommitOutcome, WriteTxn};
 use super::super::physical;
 use super::super::plan::{CellWrite, IndexOp, Planner};
 use super::super::{
-    AuthTarget, AuthorizedSite, BoundedKeys, BoundedLimit, CommitResult, CreateOutcome, EntryValue,
-    EraseOutcome, IndexComponent, IndexSchema, KernelFault, Presence, ReplaceOutcome,
-    ResolvedField,
+    AuthTarget, AuthorizedSite, BoundedKeys, BoundedLimit, CommitRecovery, CommitRecoveryScope,
+    CommitResult, CreateOutcome, EntryValue, EraseOutcome, IndexComponent, IndexSchema,
+    KernelFault, Presence, ReplaceOutcome, ResolvedField,
 };
 use super::Durable;
 use super::address::{
@@ -41,7 +41,9 @@ where
     /// reclassifies.
     pub(super) poisoned: &'s mut bool,
     pub(super) auth: Vec<AuthorizedSite>,
-    pub(super) token: [u8; 16],
+    /// The exact before/proposed-after witness states and lifecycle scope. Present until the
+    /// commit resolves; moved into the sole affine fact only for an indeterminate verdict.
+    pub(super) recovery: Option<RecoveryIntent>,
     /// Each root's managed indexes, in stable declaration order, indexed by the root's
     /// declaration position (aligned to the store's schema table). A root-level write to
     /// root R keeps `indexes[R]` coherent as a consequence of the source write; a root
@@ -65,6 +67,14 @@ pub(super) struct PendingNode {
     key: KeyScalar,
 }
 
+/// The recovery material staged for this one transaction. It is private to the kernel and
+/// cannot escape unless the engine reports an indeterminate commit.
+pub(super) struct RecoveryIntent {
+    pub(super) scope: Option<CommitRecoveryScope>,
+    pub(super) before: Option<Vec<u8>>,
+    pub(super) after: Vec<u8>,
+}
+
 /// The pre-write state a root field write captures for index maintenance: the exact indexes
 /// projecting the written field, their projected field values before the write, and the
 /// written field's record position. The new projected state is the old with that one
@@ -76,12 +86,6 @@ struct FieldMaintenance {
 }
 
 impl<'s, E: ByteEngine + 's> TxnSession<'s, E> {
-    /// The witness token this session commits, so a caller can classify a later
-    /// reopen after an indeterminate commit.
-    pub fn token(&self) -> [u8; 16] {
-        self.token
-    }
-
     /// The live engine transaction. Present until commit consumes it; the verifier
     /// proves no durable op runs after commit.
     fn txn(&self) -> &E::Txn<'s> {
@@ -98,7 +102,7 @@ impl<'s, E: ByteEngine + 's> TxnSession<'s, E> {
 
     fn do_commit(&mut self) -> CommitResult {
         if *self.poisoned || self.txn.is_none() {
-            return CommitResult::CommitFault;
+            return CommitResult::Aborted;
         }
         match self.reconcile() {
             Ok(()) => {}
@@ -108,29 +112,45 @@ impl<'s, E: ByteEngine + 's> TxnSession<'s, E> {
             }
             Err(_) => {
                 self.txn = None;
-                *self.poisoned = true;
-                return CommitResult::CommitFault;
+                return CommitResult::Aborted;
             }
         }
         // The witness rides in the same engine transaction as the staged data.
-        let witness = self.token.to_vec();
+        let witness = self
+            .recovery
+            .as_ref()
+            .expect("a live transaction retains its recovery intent")
+            .after
+            .clone();
         if self
             .txn_mut()
             .put(&physical::meta_key(WITNESS), witness)
             .is_err()
         {
             self.txn = None;
-            *self.poisoned = true;
-            return CommitResult::CommitFault;
+            return CommitResult::Aborted;
         }
         match self.txn.take().expect("checked live above").commit() {
-            CommitOutcome::Confirmed => CommitResult::Committed,
-            // A clean abort left the store unchanged; an indeterminate commit
-            // leaves durability unknown and poisons the store for reclassification.
-            CommitOutcome::Aborted => CommitResult::CommitFault,
+            CommitOutcome::Confirmed => {
+                self.recovery = None;
+                CommitResult::Committed
+            }
+            // A clean abort left the store unchanged and consumes no recovery fact.
+            CommitOutcome::Aborted => {
+                self.recovery = None;
+                CommitResult::Aborted
+            }
             CommitOutcome::Indeterminate => {
                 *self.poisoned = true;
-                CommitResult::CommitFault
+                let intent = self
+                    .recovery
+                    .take()
+                    .expect("an indeterminate commit retains its recovery intent");
+                CommitResult::Indeterminate(CommitRecovery {
+                    scope: intent.scope,
+                    before: intent.before,
+                    after: intent.after,
+                })
             }
         }
     }
@@ -147,14 +167,14 @@ impl<'s, E: ByteEngine + 's> TxnSession<'s, E> {
         let pending = std::mem::take(&mut self.pending);
         for (stem, node) in &pending {
             let marker_present = read_raw(self.txn(), stem)
-                .map_err(|_| CommitResult::CommitFault)?
+                .map_err(|_| CommitResult::Aborted)?
                 .is_some();
             let mut any_leaf = false;
             let mut missing_required: Option<String> = None;
             for field in &node.fields {
                 let leaf = physical::stem_field_leaf(stem, field.number);
                 let present = read_raw(self.txn(), &leaf)
-                    .map_err(|_| CommitResult::CommitFault)?
+                    .map_err(|_| CommitResult::Aborted)?
                     .is_some();
                 any_leaf |= present;
                 if field.required && !present && missing_required.is_none() {
@@ -173,7 +193,7 @@ impl<'s, E: ByteEngine + 's> TxnSession<'s, E> {
             if !marker_present {
                 self.txn_mut()
                     .put(stem, physical::MARKER_VALUE.to_vec())
-                    .map_err(|_| CommitResult::CommitFault)?;
+                    .map_err(|_| CommitResult::Aborted)?;
             }
         }
         Ok(())

@@ -7,6 +7,8 @@
 
 use std::rc::Rc;
 
+use marrow_kernel::durable::{CommitRecovery, DurableCommitState};
+
 /// A runtime fault, mapped to the source position of the faulting instruction.
 /// `detail` carries the static author text of an `unreachable("...")` fault; every
 /// other fault has none. It is presentation-only: the stable typed fault surface is
@@ -64,3 +66,144 @@ impl std::fmt::Display for RuntimeFault {
 }
 
 impl std::error::Error for RuntimeFault {}
+
+/// A durable invocation that stopped without completing its bytecode path.
+///
+/// The runtime fault remains available for source reporting, while the durable
+/// state records what is known about the transaction independently. An
+/// indeterminate commit initially owns a private affine recovery fact; only the
+/// attached-store lifecycle may consume that fact and replace it with a
+/// classified state.
+#[must_use = "an incomplete invocation and any pending commit recovery must be handled"]
+#[derive(Debug, PartialEq, Eq)]
+pub struct InvocationIncomplete {
+    fault: RuntimeFault,
+    durability: IncompleteDurability,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum IncompleteDurability {
+    Classified(DurableCommitState),
+    Pending(Box<CommitRecovery>),
+}
+
+/// The consuming projection of an incomplete invocation. Product hosts must
+/// exhaustively preserve either the already classified durable state or the sole
+/// opaque recovery fact; no callback can forge a classification inside the VM.
+#[must_use = "an incomplete invocation disposition must be projected or its attached service retired"]
+#[derive(Debug, PartialEq, Eq)]
+pub enum IncompleteDisposition {
+    Classified {
+        fault: RuntimeFault,
+        durable: DurableCommitState,
+    },
+    Pending {
+        fault: RuntimeFault,
+        recovery: CommitRecovery,
+    },
+}
+
+impl InvocationIncomplete {
+    pub(crate) fn classified(fault: RuntimeFault, state: DurableCommitState) -> Self {
+        Self {
+            fault,
+            durability: IncompleteDurability::Classified(state),
+        }
+    }
+
+    pub(crate) fn pending(fault: RuntimeFault, recovery: CommitRecovery) -> Self {
+        Self {
+            fault,
+            durability: IncompleteDurability::Pending(Box::new(recovery)),
+        }
+    }
+
+    /// The classified durable state, or `None` while the attached lifecycle
+    /// still owns an unresolved commit recovery.
+    pub fn durable_state(&self) -> Option<DurableCommitState> {
+        match &self.durability {
+            IncompleteDurability::Classified(state) => Some(*state),
+            IncompleteDurability::Pending(_) => None,
+        }
+    }
+
+    /// Consume this incomplete invocation into its closed host disposition. A pending
+    /// branch moves the sole affine recovery fact; the VM never accepts a caller-supplied
+    /// durable classification.
+    pub fn into_disposition(self) -> IncompleteDisposition {
+        let Self { fault, durability } = self;
+        match durability {
+            IncompleteDurability::Classified(durable) => {
+                IncompleteDisposition::Classified { fault, durable }
+            }
+            IncompleteDurability::Pending(recovery) => IncompleteDisposition::Pending {
+                fault,
+                recovery: *recovery,
+            },
+        }
+    }
+
+    pub fn runtime_fault(&self) -> &RuntimeFault {
+        &self.fault
+    }
+}
+
+/// Failure of durable execution. A plain runtime fault means no transaction was
+/// confirmed by this invocation. `Incomplete` means bytecode did not complete
+/// and durable state must be reported separately from the fault.
+#[must_use]
+#[derive(Debug, PartialEq, Eq)]
+pub enum DurableExecutionFault {
+    Runtime(RuntimeFault),
+    Incomplete(InvocationIncomplete),
+}
+
+impl DurableExecutionFault {
+    pub(crate) fn classified(fault: RuntimeFault, state: DurableCommitState) -> Self {
+        Self::Incomplete(InvocationIncomplete::classified(fault, state))
+    }
+
+    pub(crate) fn pending(fault: RuntimeFault, recovery: CommitRecovery) -> Self {
+        Self::Incomplete(InvocationIncomplete::pending(fault, recovery))
+    }
+
+    pub fn code(&self) -> &'static str {
+        self.runtime_fault().code()
+    }
+
+    pub fn line(&self) -> u32 {
+        self.runtime_fault().line()
+    }
+
+    pub fn column(&self) -> u32 {
+        self.runtime_fault().column()
+    }
+
+    pub fn detail(&self) -> Option<&str> {
+        self.runtime_fault().detail()
+    }
+
+    pub fn durable_state(&self) -> Option<DurableCommitState> {
+        match self {
+            Self::Runtime(_) => None,
+            Self::Incomplete(incomplete) => incomplete.durable_state(),
+        }
+    }
+
+    pub fn is_incomplete(&self) -> bool {
+        matches!(self, Self::Incomplete(_))
+    }
+
+    pub fn runtime_fault(&self) -> &RuntimeFault {
+        match self {
+            Self::Runtime(fault) => fault,
+            Self::Incomplete(incomplete) => incomplete.runtime_fault(),
+        }
+    }
+}
+
+impl From<RuntimeFault> for DurableExecutionFault {
+    fn from(fault: RuntimeFault) -> Self {
+        Self::Runtime(fault)
+    }
+}

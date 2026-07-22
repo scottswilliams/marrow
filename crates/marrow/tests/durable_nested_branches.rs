@@ -10,7 +10,7 @@
 //! attachment, so a committed write is observable by a later read invocation.
 
 use marrow_verify::{SealedExport, VerifiedImage};
-use marrow_vm::{DurableRun, Ephemeral, RuntimeFault, Value, mint_ephemeral, run_export};
+use marrow_vm::{DurableRun, Ephemeral, Value, mint_ephemeral, run_export};
 
 // application, product, the top-level `title` field, the root and its key, then the
 // `notes` branch (a `root` placement) with its key and required `text`, then the nested
@@ -211,7 +211,7 @@ fn run_fault(
     args: Vec<Value>,
 ) -> &'static str {
     match run_export(image, attachment, export(image, name), args) {
-        DurableRun::Ran(Err(fault)) => RuntimeFault::code(&fault),
+        DurableRun::Ran(Err(fault)) => fault.code(),
         other => panic!("{name} did not fault as expected: {:?}", DebugRun(&other)),
     }
 }

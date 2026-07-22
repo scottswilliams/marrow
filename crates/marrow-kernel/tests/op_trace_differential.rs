@@ -12,7 +12,7 @@ use marrow_kernel::codec::value::{RuntimeScalar, ScalarKind};
 use marrow_kernel::durable::{
     AuthorizedSite, BoundedLimit, CommitResult, CreateOutcome, DemandCoverage, Durable,
     DurableStore, EntryValue, EraseOutcome, FieldSchema, GroupSchema, InvocationGrant, Presence,
-    Reopen, ReplaceOutcome, SiteSpec, SiteTarget, StoreSchema,
+    ReplaceOutcome, SiteSpec, SiteTarget, StoreSchema,
 };
 use marrow_kernel::equality::ValueDomain;
 use marrow_store::{ByteEngine, MemoryEngine, NativeEngine};
@@ -447,30 +447,6 @@ fn required_missing_commit_agrees_on_both_backends() {
     let temp = TempDir::new("required-missing");
     let native = NativeEngine::open(&temp.store()).expect("open native");
     assert!(probe(DurableStore::from_engine(native, schema(), sites())));
-}
-
-#[test]
-fn witness_classifies_a_reopen_as_complete_new() {
-    // A committed transaction records its witness; reopening with that token
-    // classifies the store as complete-new, and any other token as complete-old.
-    let temp = TempDir::new("witness");
-    let token = {
-        let native = NativeEngine::open(&temp.store()).expect("open native");
-        let mut store = DurableStore::from_engine(native, schema(), sites());
-        let mut txn = store
-            .txn_session(InvocationGrant::full_store(), write())
-            .expect("txn");
-        let e = txn.site(ENTRY);
-        txn.create_entry(&e, &[key("k")], entry(1, None)).unwrap();
-        let token = txn.token();
-        assert_eq!(txn.commit(), CommitResult::Committed);
-        token
-    };
-    // Reopen in a fresh handle and classify.
-    let native = NativeEngine::open(&temp.store()).expect("reopen native");
-    let store = DurableStore::from_engine(native, schema(), sites());
-    assert_eq!(store.classify(token).unwrap(), Reopen::CompleteNew);
-    assert_eq!(store.classify([0u8; 16]).unwrap(), Reopen::CompleteOld);
 }
 
 #[test]

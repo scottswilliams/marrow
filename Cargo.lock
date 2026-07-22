@@ -142,8 +142,11 @@ name = "marrow-kernel"
 version = "0.1.0"
 dependencies = [
  "marrow-codes",
+ "marrow-image",
  "marrow-store",
  "marrow-temporal",
+ "marrow-verify",
+ "marrow-vm",
 ]
 
 [[package]]

@@ -123,9 +123,10 @@ pub(crate) fn test(rest: &[String]) -> ExitCode {
         // durable shape the ephemeral kernel does not yet execute is reported as the
         // trough.
         let outcome = match entry.kind() {
-            marrow_verify::TestKind::Storeless => {
-                classify(marrow_vm::run(&image, entry.func(), Vec::new()))
-            }
+            marrow_verify::TestKind::Storeless => classify(
+                marrow_vm::run(&image, entry.func(), Vec::new())
+                    .map_err(marrow_vm::DurableExecutionFault::from),
+            ),
             marrow_verify::TestKind::DirectDurable => {
                 durable_outcome(marrow_vm::run_durable_test(&image, entry), meta)
             }
@@ -136,7 +137,7 @@ pub(crate) fn test(rest: &[String]) -> ExitCode {
         match &outcome {
             TestOutcome::Passed => passed += 1,
             TestOutcome::Failed { .. } => failed += 1,
-            TestOutcome::Errored { .. } => errored += 1,
+            TestOutcome::Errored { .. } | TestOutcome::Incomplete { .. } => errored += 1,
         }
         records.push(TestRecord {
             name: entry.name().to_string(),
@@ -205,19 +206,43 @@ fn durable_outcome(run: marrow_vm::DurableRun, meta: &marrow_compile::TestEntry)
 /// Classify a VM run result into a test outcome: a value or unit return passes, a
 /// false `assert` (`run.assert`) fails, and any other source-mapped runtime fault
 /// errors.
-fn classify(result: Result<Option<marrow_vm::Value>, marrow_vm::RuntimeFault>) -> TestOutcome {
+fn classify(
+    result: Result<Option<marrow_vm::Value>, marrow_vm::DurableExecutionFault>,
+) -> TestOutcome {
     match result {
         Ok(_) => TestOutcome::Passed,
-        Err(fault) if fault.code() == Code::RunAssert.as_str() => TestOutcome::Failed {
+        Err(marrow_vm::DurableExecutionFault::Runtime(fault))
+            if fault.code() == Code::RunAssert.as_str() =>
+        {
+            TestOutcome::Failed {
+                code: fault.code(),
+                line: fault.line(),
+                column: fault.column(),
+            }
+        }
+        Err(marrow_vm::DurableExecutionFault::Runtime(fault)) => TestOutcome::Errored {
             code: fault.code(),
             line: fault.line(),
             column: fault.column(),
         },
-        Err(fault) => TestOutcome::Errored {
-            code: fault.code(),
-            line: fault.line(),
-            column: fault.column(),
-        },
+        Err(marrow_vm::DurableExecutionFault::Incomplete(incomplete)) => {
+            let (fault, durable) = match incomplete.into_disposition() {
+                marrow_vm::IncompleteDisposition::Classified { fault, durable } => (fault, durable),
+                marrow_vm::IncompleteDisposition::Pending { fault, recovery } => {
+                    // A source test owns one disposable in-memory attachment. Its engine
+                    // cannot report an indeterminate commit; if that changes, discarding the
+                    // test attachment is the required retirement before reporting Unknown.
+                    drop(recovery);
+                    (fault, marrow_vm::DurableCommitState::Unknown)
+                }
+            };
+            TestOutcome::Incomplete {
+                code: fault.code(),
+                durable,
+                line: fault.line(),
+                column: fault.column(),
+            }
+        }
     }
 }
 

@@ -6,7 +6,9 @@
 //! boundaries are re-proven through the generated client, with the queued
 //! `interrupted` class exercised for real (one call in flight, one queued, then a
 //! fail-closed terminate in the same synchronous turn — the reply cannot have
-//! been processed, so the classification is deterministic).
+//! been processed, so the classification is deterministic). A native durable
+//! required-field failure also proves the byte-frozen incomplete reply reaches
+//! `MarrowIncomplete` and retires the Node session without dispatching its queue.
 //!
 //! Each test spawns Node and Unix-socket traffic, which the command sandbox
 //! denies, so each is `#[ignore]`d and run explicitly with the sandbox disabled:
@@ -127,6 +129,35 @@ pub fn echoDuration(u: duration): duration {
 }
 "#;
 
+const DURABLE_IDS: &str = "marrow ids v0\n\
+     machine-written by marrow; do not edit\n\
+     id application . 0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a\n\
+     id product Counter 0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d\n\
+     id field Counter.value 0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e\n\
+     id field Counter.label 0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f\n\
+     id root counters 0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b\n\
+     id key counters.id 0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c\n\
+     high-water 0\n\
+     end\n";
+
+const DURABLE_FIXTURE: &str = r#"resource Counter {
+    required value: int
+    label: string
+}
+
+store ^counters[id: int]: Counter
+
+pub fn labelOnly(id: int, text: string) {
+    transaction {
+        ^counters[id].label = text
+    }
+}
+
+pub fn two(): int {
+    return 2
+}
+"#;
+
 /// Build the project, generate the client, compile the image to a file, and
 /// return the project directory.
 fn prepare(temp: &TempDir) -> PathBuf {
@@ -164,12 +195,66 @@ fn prepare(temp: &TempDir) -> PathBuf {
     project
 }
 
+/// Generate and provision the native fixture whose label-only write reaches the
+/// required-field commit reconciliation boundary.
+fn prepare_durable(temp: &TempDir) -> PathBuf {
+    let project = temp.join("app");
+    write(&project.join("marrow.toml"), "edition = \"2026\"\n");
+    write(&project.join("src/main.mw"), DURABLE_FIXTURE);
+    write(&project.join(".marrow/ids"), DURABLE_IDS);
+
+    let generated = Command::new(MARROW)
+        .args(["client", "typescript", "--out", "gen"])
+        .current_dir(&project)
+        .output()
+        .expect("run marrow");
+    assert!(
+        generated.status.success(),
+        "generation failed: {}",
+        String::from_utf8_lossy(&generated.stderr)
+    );
+
+    let manifest = marrow_project::Manifest::parse("edition = \"2026\"\n").expect("manifest");
+    let files = vec![marrow_project::CapturedFile::new(
+        "src/main.mw".to_string(),
+        DURABLE_FIXTURE.as_bytes().to_vec(),
+    )];
+    let captured = marrow_project::capture(
+        &manifest,
+        files,
+        Some(DURABLE_IDS.as_bytes()),
+        &marrow_project::CaptureLimits::DEFAULT,
+    )
+    .expect("capture");
+    let compiled = marrow_compile::compile(&captured).expect("compile");
+    fs::write(project.join("program.image"), &compiled.image.bytes).expect("write image");
+
+    let provisioned = Command::new(runner_path())
+        .args([
+            "provision",
+            "--image",
+            project.join("program.image").to_str().expect("image path"),
+            "--store",
+            project.join("store").to_str().expect("store path"),
+            "--yes",
+        ])
+        .output()
+        .expect("run provision companion");
+    assert!(
+        provisioned.status.success(),
+        "provision failed: {}",
+        String::from_utf8_lossy(&provisioned.stderr)
+    );
+    project
+}
+
 /// Run a driver script with Node and return its output.
 fn node(project: &Path, driver: &str) -> Output {
     Command::new("node")
         .arg(driver)
         .env("MARROW_RUNNER", runner_path())
         .env("MARROW_IMAGE", project.join("program.image"))
+        .env("MARROW_STORE", project.join("store"))
         .current_dir(project)
         .output()
         .expect("node not found: the e2e exit gate needs Node v23.6+ on PATH")
@@ -195,6 +280,7 @@ import * as M from "./gen/marrow-supervisor.mjs";
 
 const RUNNER = process.env.MARROW_RUNNER!;
 const IMAGE = process.env.MARROW_IMAGE!;
+const STORE = process.env.MARROW_STORE!;
 
 let failures = 0;
 function ok(label: string, cond: boolean, detail?: string) {
@@ -210,6 +296,66 @@ function finish() {
   process.exit(failures === 0 ? 0 : 1);
 }
 "#;
+
+/// The generated Node mirror consumes the authoritative incomplete wire arm,
+/// preserves its durable-state classification, and conservatively retires the
+/// session without dispatching an already queued call.
+#[test]
+#[ignore = "spawns Node + Unix sockets; run with the sandbox disabled"]
+fn durable_incomplete_is_typed_and_retires_the_node_session() {
+    let temp = TempDir::new("incomplete");
+    let project = prepare_durable(&temp);
+    let driver = format!(
+        "{PRELUDE}\n{}",
+        r#"
+const client = await Client.launch({ runner: RUNNER, image: IMAGE, store: STORE });
+
+const incomplete = client.labelOnly(1n, "orphan");
+const queued = client.two();
+
+try {
+  await incomplete;
+  ok("incomplete", false, "required-missing returned");
+} catch (error) {
+  ok(
+    "incomplete",
+    error instanceof M.MarrowIncomplete &&
+      error.code === "run.required_missing" &&
+      error.durable === M.DURABLE_STATE.KNOWN_OLD &&
+      error.line > 0n &&
+      error.column > 0n,
+    String(error),
+  );
+}
+
+try {
+  await queued;
+  ok("queued-after-incomplete", false, "queued call was dispatched");
+} catch (error) {
+  ok(
+    "queued-after-incomplete",
+    error instanceof M.MarrowLossError && error.loss === M.LOSS.INTERRUPTED,
+    String(error),
+  );
+}
+
+try {
+  await client.two();
+  ok("later-after-incomplete", false, "retired session accepted a call");
+} catch (error) {
+  ok(
+    "later-after-incomplete",
+    error instanceof M.MarrowLossError && error.loss === M.LOSS.NOT_STARTED,
+    String(error),
+  );
+}
+
+finish();
+"#
+    );
+    write(&project.join("driver_incomplete.mts"), &driver);
+    assert_driver_passed(&node(&project, "driver_incomplete.mts"));
+}
 
 /// The happy path: launch per the channel law, every export shape round-trips,
 /// a runtime fault arrives typed and source-mapped, and close is clean.

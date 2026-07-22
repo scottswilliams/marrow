@@ -35,13 +35,13 @@ pub use frame::frame_body_len;
 pub use id::Id32;
 pub use json::{Json, encode, parse_strict};
 pub use loss::{HandoffStage, LossClass, classify};
-pub use message::{ClientMessage, ServerMessage};
+pub use message::{ClientMessage, DurableState, ServerMessage};
 pub use span::Span;
 
 /// The protocol version byte carried by every frame. The runner and the generated
 /// client are a matched release pair; a frame with any other version is rejected at
 /// the frame boundary ([`WireError::UnsupportedVersion`]).
-pub const PROTOCOL_VERSION: u8 = 1;
+pub const PROTOCOL_VERSION: u8 = 2;
 
 /// The maximum frame body size (version byte plus canonical JSON), in bytes. A
 /// declared frame length past this is rejected before the body is read.

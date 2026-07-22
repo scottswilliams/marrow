@@ -17,6 +17,35 @@ use crate::id::Id32;
 use crate::json::{self, Json};
 use crate::{frame, span::Span};
 
+/// What is known about durable state after an invocation stopped without
+/// completing. This is independent of the source-mapped fault and carries no
+/// recovery witness.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DurableState {
+    KnownOld,
+    KnownNew,
+    Unknown,
+}
+
+impl DurableState {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::KnownOld => "known_old",
+            Self::KnownNew => "known_new",
+            Self::Unknown => "unknown",
+        }
+    }
+
+    fn parse(value: &str) -> Option<Self> {
+        match value {
+            "known_old" => Some(Self::KnownOld),
+            "known_new" => Some(Self::KnownNew),
+            "unknown" => Some(Self::Unknown),
+            _ => None,
+        }
+    }
+}
+
 /// A message from the caller to the runner.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ClientMessage {
@@ -43,6 +72,14 @@ pub enum ServerMessage {
     Value { data: Json },
     /// A source-mapped runtime fault raised while running the export.
     Fault { code: String, span: Span },
+    /// The invocation stopped without returning. Its durable state is reported
+    /// independently of the source-mapped fault; no recovery witness crosses
+    /// the wire.
+    Incomplete {
+        code: String,
+        durable: DurableState,
+        span: Span,
+    },
     /// The request could not be admitted or run (an unknown export, an argument
     /// mismatch, or a durable export the stock runner will not execute). The
     /// `code` is the runner's typed reason.
@@ -138,6 +175,14 @@ impl ServerMessage {
                     span: object.span("span")?,
                 })
             }
+            "incomplete" => {
+                object.exact(&["code", "durable", "kind", "span"])?;
+                Ok(ServerMessage::Incomplete {
+                    code: object.code("code")?,
+                    durable: object.durable_state("durable")?,
+                    span: object.span("span")?,
+                })
+            }
             "reject" => {
                 object.exact(&["code", "kind"])?;
                 Ok(ServerMessage::Reject {
@@ -168,6 +213,16 @@ impl ServerMessage {
             ServerMessage::Fault { code, span } => object(vec![
                 ("kind", Json::Str("fault".to_string())),
                 ("code", Json::Str(code.clone())),
+                ("span", span.to_json()),
+            ]),
+            ServerMessage::Incomplete {
+                code,
+                durable,
+                span,
+            } => object(vec![
+                ("kind", Json::Str("incomplete".to_string())),
+                ("code", Json::Str(code.clone())),
+                ("durable", Json::Str(durable.as_str().to_string())),
                 ("span", span.to_json()),
             ]),
             ServerMessage::Reject { code } => object(vec![
@@ -277,6 +332,13 @@ impl<'a> Fields<'a> {
         })
     }
 
+    fn durable_state(&self, key: &str) -> Result<DurableState, WireError> {
+        match self.get(key)? {
+            Json::Str(value) => DurableState::parse(value).ok_or(WireError::Malformed),
+            _ => Err(WireError::Malformed),
+        }
+    }
+
     fn u32(&self, key: &str) -> Result<u32, WireError> {
         match self.get(key)? {
             Json::Int(n) if *n >= 0 && *n <= i64::from(u32::MAX) => Ok(*n as u32),
@@ -287,7 +349,7 @@ impl<'a> Fields<'a> {
 
 #[cfg(test)]
 mod tests {
-    use super::{ClientMessage, ServerMessage};
+    use super::{ClientMessage, DurableState, ServerMessage};
     use crate::id::Id32;
     use crate::json::{self, Json};
     use crate::span::Span;
@@ -323,6 +385,17 @@ mod tests {
         );
         assert_eq!(
             json_of(
+                &ServerMessage::Ready {
+                    session: Id32::from_bytes([0x11; 32]),
+                    interface: Id32::from_bytes([0x22; 32]),
+                }
+                .encode()
+                .unwrap()
+            ),
+            r#"{"interface":"2222222222222222222222222222222222222222222222222222222222222222","kind":"ready","session":"1111111111111111111111111111111111111111111111111111111111111111"}"#
+        );
+        assert_eq!(
+            json_of(
                 &ServerMessage::Value {
                     data: Json::Int(42)
                 }
@@ -341,6 +414,18 @@ mod tests {
                 .unwrap()
             ),
             r#"{"code":"run.overflow","kind":"fault","span":{"column":2,"line":7}}"#
+        );
+        assert_eq!(
+            json_of(
+                &ServerMessage::Incomplete {
+                    code: "run.commit".to_string(),
+                    durable: DurableState::KnownNew,
+                    span: Span { line: 9, column: 4 },
+                }
+                .encode()
+                .unwrap()
+            ),
+            r#"{"code":"run.commit","durable":"known_new","kind":"incomplete","span":{"column":4,"line":9}}"#
         );
         assert_eq!(
             json_of(
@@ -414,6 +499,17 @@ mod tests {
             code: "run.budget".to_string(),
             span: Span { line: 1, column: 1 },
         });
+        for durable in [
+            DurableState::KnownOld,
+            DurableState::KnownNew,
+            DurableState::Unknown,
+        ] {
+            server_round_trip(ServerMessage::Incomplete {
+                code: "run.commit".to_string(),
+                durable,
+                span: Span { line: 2, column: 3 },
+            });
+        }
         server_round_trip(ServerMessage::Reject {
             code: "runner.arg_mismatch".to_string(),
         });
@@ -457,5 +553,20 @@ mod tests {
         ]));
         let body = [&[crate::PROTOCOL_VERSION], extra.as_bytes()].concat();
         assert!(ServerMessage::decode(&body).is_err());
+
+        let bad_durable = json::encode(&super::object(vec![
+            ("kind", Json::Str("incomplete".to_string())),
+            ("code", Json::Str("run.commit".to_string())),
+            ("durable", Json::Str("maybe_new".to_string())),
+            (
+                "span",
+                super::object(vec![("line", Json::Int(1)), ("column", Json::Int(1))]),
+            ),
+        ]));
+        let body = [&[crate::PROTOCOL_VERSION], bad_durable.as_bytes()].concat();
+        assert!(
+            ServerMessage::decode(&body).is_err(),
+            "the durable-state vocabulary is closed",
+        );
     }
 }

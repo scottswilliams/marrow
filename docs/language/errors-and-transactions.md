@@ -2,9 +2,11 @@
 
 Marrow keeps failure kinds distinct and groups durable changes under one
 transaction that commits or rolls back as a unit. The current language has no
-throwable error value and no exception channel: a runtime fault stops the
-operation and is reported with a typed code and a source span. A recoverable
-failure a program handles is an ordinary `Result<T, E>` value (see
+throwable error value and no exception channel: a runtime condition stops the
+operation and is reported with a typed code and a source span. When a durable
+invocation did not return and a commit boundary matters, the outcome also carries
+an independent durable-state classification; that classification is not a return
+value. A recoverable failure a program handles is an ordinary `Result<T, E>` value (see
 [Types and values](types-and-values.md)), returned explicitly and propagated
 with prefix `try`; the language `Result` is none of the four failure kinds
 below.
@@ -20,15 +22,19 @@ channel:
   image (an `image.*` code). A compiler cannot mint a verified image; only
   verification produces one, so a malformed or tampered image is rejected before
   the VM runs it.
-- **Runtime faults** occur while a verified program runs. Each carries a `run.*`
+- **Runtime conditions** occur while a verified program runs. Each carries a `run.*`
   code and is mapped to the source span of the operation that faulted — a checked
   arithmetic overflow (`run.overflow`), a zero remainder divisor
   (`run.divide_by_zero`), an exceeded text bound (`run.text_limit`), an exhausted
   execution budget (`run.budget`), a denied durable demand (`run.authority`), a
-  commit that leaves a required field unset (`run.required_missing`), an
-  unconfirmed commit (`run.commit`), or a store the kernel finds internally
-  inconsistent (`run.corruption`). A runtime fault is **not catchable inside the
-  program**; it stops the current operation.
+  commit that leaves a required field unset (`run.required_missing`), a commit
+  that does not complete normally (`run.commit`), or a store the kernel finds
+  internally inconsistent (`run.corruption`). An ordinary runtime fault says no
+  commit was confirmed by that invocation. If a commit boundary was reached or a
+  prior commit in the same invocation was confirmed, the outcome is instead
+  **incomplete** and pairs the code and span with `known_old`, `known_new`, or
+  `unknown` durable state. Neither form is catchable inside the program; both stop
+  the current operation.
 - **Operational errors** are owner-local failures of the command or store itself
   (a missing project, an I/O failure, a `store.*` condition). They are not
   program values.
@@ -93,10 +99,11 @@ pub fn bump(name: string) {
 
 The block stages durable writes; reads in the same transaction observe earlier
 staged writes. When the block finishes, the transaction commits all staged
-changes together. A required field left unset when a staged entry commits rolls
-the transaction back with `run.required_missing` rather than committing a
-partial entry — so several required fields may be populated across separate
-statements in one transaction and validated together at commit.
+changes together. A required field left unset at commit is detected before the
+engine transaction commits, so the invocation reports `run.required_missing`
+with durable state `known_old` rather than committing a partial entry. Several
+required fields may therefore be populated across separate statements in one
+transaction and validated together at commit.
 
 A mutating export observes durable data *inside* its transaction, where reads see
 the staged writes. A region's commit sites are its exits: each `return` written
@@ -208,10 +215,13 @@ before the mutation, as above, to leave nothing staged on the failure path.
 
 ### Rollback and isolation
 
-A runtime fault raised inside a transaction — a checked arithmetic fault, an
-authority denial, a required-field violation at commit, or any other `run.*`
-fault — rolls the whole region back before the fault reaches the caller. No
-staged write of that region survives.
+A runtime fault raised before a commit is confirmed — a checked arithmetic
+fault, an authority denial, or another `run.*` fault — rolls the region back
+before the fault reaches the caller. A required-field violation and a confirmed
+engine abort are likewise `known_old`; no staged write of that region survives.
+Once a commit is confirmed, a later pure instruction or helper fault cannot make
+the invocation complete or undo that durable change. It reports an incomplete
+invocation with `known_new`, retaining the later fault's code and source span.
 
 Each invocation is its own boundary. A faulting invocation rolls back only its
 own region and leaves every earlier committed invocation intact: after one
@@ -221,15 +231,42 @@ committed-only state. This isolation is what lets a test drive several exports
 against one attachment and see each commit or rollback independently (see
 [Tests](tests.md)).
 
-## Indeterminate Commit
+## Incomplete Invocation And Commit Recovery
 
-A pre-commit fault or a confirmed abort rolls the whole transaction back. A
-commit that does not confirm is *indeterminate*: the store handle is poisoned,
-every later operation fails with `run.commit`, and the process must exit and
-reopen the store. On reopen a recorded commit witness classifies the store as
-complete-new (the commit landed) or complete-old (it did not); the result is
-reported, never retried. Local variable assignments are ordinary state and are
-not rewound by durable rollback.
+Invocation completion and durable state are independent. `known_old` proves that
+the interrupted transaction did not change durable state. `known_new` proves
+that its proposed durable state was installed. `unknown` means neither state
+could be established. None means the function returned, and none supplies a
+return value.
+
+A required-field or other commit-reconciliation failure, or a confirmed engine
+abort, leaves the transaction known old. An ordinary runtime fault before the
+commit boundary instead rolls the staged transaction back without producing an
+incomplete outcome. If the engine cannot say whether a commit landed, the active handle is poisoned
+and creates one opaque, non-copyable recovery fact containing the exact before
+and proposed-after witness states. The lifecycle keeps the store's owner lock,
+marks its descriptor unclean, closes the engine, freshly reopens the existing
+engine file at the retained path, and audits it before consuming that fact. A
+missing, malformed, unstamped, or unreadable engine file is never created or
+adopted and yields `unknown`. An exact after-state is `known_new`; the exact
+before-state is `known_old`; a different or malformed state, scope mismatch,
+read failure, reopen failure, or audit failure is `unknown`.
+
+A known recovery classification returns a fresh usable store owner, but bytecode
+is not resumed and the interrupted invocation remains incomplete. `unknown`
+retires the attached owner, leaves its descriptor unclean, and retains the owner
+lock until process exit. Dropping the opaque fact without classification takes
+the same quarantine path. The wire reports the code,
+source span, and durable state without exposing witness bytes. A client that
+loses the reply observes only `run.outcome_unknown`, regardless of any internal
+classification. No path retries or replays application code. Local variable
+assignments are ordinary state and are not rewound by durable rollback.
+
+The owner lock excludes cooperating Marrow processes but does not authenticate
+the engine file against out-of-band replacement. A structurally valid foreign
+store or exact prior snapshot substituted at the retained path is not currently
+distinguishable at this boundary. No file-metadata approximation is treated as a
+proof; substitution and rollback detection is not a current guarantee.
 
 ## Transaction Scope
 
@@ -253,7 +290,8 @@ write today.
 - Read coherence and concurrent-execution properties — snapshot scope under
   concurrency, serialization conflicts, retryability, and idempotency — are
   future direction. The current line runs one attempt with no automatic retry
-  and, on an unconfirmed commit, poisons the handle and reconciles on reopen (see
-  [Indeterminate commit](#indeterminate-commit)). The broader served-execution
+  and resolves an indeterminate commit from the current witness under the
+  continuously held owner lock (see
+  [Incomplete invocation and commit recovery](#incomplete-invocation-and-commit-recovery)). The broader served-execution
   and durable-programming direction is recorded under
   [`future/`](../future/served-execution.md).

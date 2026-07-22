@@ -15,14 +15,15 @@ refounded lane by lane; a feature is absent until its lane lands it.
 
 ## Current
 
-The beta workspace is fifteen crates: the retained diagnostic-code registry
+The beta workspace is sixteen crates: the retained diagnostic-code registry
 (`marrow-codes`), syntax owner (`marrow-syntax`), ordered-byte storage engine
 (`marrow-store`), pure project-input owner (`marrow-project`), bounded physical
 project-input adapter (`marrow-project-fs`), and temporal-domain owner
 (`marrow-temporal`); the refounded compiler pipeline (`marrow-compile`,
 `marrow-image`, `marrow-verify`, `marrow-vm`) and path kernel (`marrow-kernel`);
-the pure local-wire protocol owner (`marrow-local-wire`) and storeless runner
-(`marrow-runner`); the language server (`marrow-lsp`); and the `marrow` CLI. The
+the native store lifecycle owner (`marrow-lifecycle`), pure local-wire protocol
+owner (`marrow-local-wire`), and attached runner (`marrow-runner`); the language
+server (`marrow-lsp`); and the `marrow` CLI. The
 [implementation map](implementation/README.md) describes each.
 
 ### Language and tooling
@@ -46,10 +47,11 @@ the pure local-wire protocol owner (`marrow-local-wire`) and storeless runner
 - `marrow init` creates a new project; `marrow fmt` formats a single `.mw` file
   or every captured source file in a project directory (`--check`/`--write`);
   `marrow check` checks a project and describes each export's durable access
-  demand in source spelling; `marrow client typescript` generates the strict
+  demand in source spelling; `run`, `test`, `import`, `image`, and `lsp` drive
+  their current bounded paths; `marrow client typescript` generates the strict
   TypeScript client and the pinned Node supervision module; `marrow --version`
-  and `marrow --help`. Every other command name is recognized but reports
-  `cli.command_unsupported` until its refounding lane lands.
+  and `marrow --help`. Other recognized command names report
+  `cli.command_unsupported` until their refounding lanes land.
 - The formatter canonicalizes a left-anchored self-update to compound assignment
   (`x = x + e` becomes `x += e`) and owns the `use` block (sorted, deduplicated,
   one import per line); it never reorders declarations.
@@ -90,11 +92,18 @@ malformed or hostile image in bounded phases — envelope, table closure,
 per-function structure and types, call/effect closure with all-cycle rejection,
 and transaction-flow validation — before sealing a `VerifiedImage`. The stack VM
 (`marrow-vm`) runs only a sealed image, with source-mapped runtime faults under
-private bounds. Durable operations pass the stub path kernel (`marrow-kernel`),
+private bounds. Durable operations pass the narrow path kernel (`marrow-kernel`),
 which resolves effective authority (verifier-derived demand intersected with a
 deployment ceiling and an invocation grant, before the first engine call),
 carries the durable operation algebra, and drives the ordered-byte engine over a
-versioned store profile with an in-transaction commit witness.
+versioned store profile with an in-transaction checked-generation commit
+witness. An indeterminate engine commit produces one opaque affine recovery fact
+containing the exact before/proposed-after witness states and lifecycle scope;
+classification consumes it after a fresh open and full audit under the
+continuously held store-owner lock. Provisioning is the only create-and-stamp
+path. Ordinary and recovery opens are existing-only and write-capable; missing or
+invalid engine files are refused without creation or adoption. The open native
+engine and owner lock remain one private session-host capability.
 
 A function that mutates durable state carries a checked requires-ambient-transaction
 effect: the compiler refuses a durable mutation, or a call to a mutating function,
@@ -158,7 +167,14 @@ durable export against a provisioned store by launching a release-verified
 companion runner attached to the store, and `marrow import` populates and
 provisions a store the same way; the CLI itself never opens a store. A durable
 `run` without `--store` has no store to act on and reports the typed
-`cli.durable_unsupported` outcome. A store root is a
+`cli.durable_unsupported` outcome. Durable execution keeps function completion
+separate from commit state: an invocation that does not return can report
+`known_old`, `known_new`, or `unknown` without becoming a value or an ordinary
+retryable fault. An already classified known outcome leaves the owner usable; a
+known result from indeterminate-commit recovery returns a freshly opened usable
+owner. Unknown retires the owner after the typed reply, leaves its descriptor
+unclean, and retains the advisory lock until process exit. Losing the opaque
+recovery fact takes the same quarantine path. No path replays application code. A store root is a
 singleton (no key), a single-column keyed root, or a composite keyed tuple of up
 to eight ordered columns; each key column is a scalar in the closed orderable
 durable-key set (`int`, `string`, `bool`, `bytes`, `date`, `instant`). Every
@@ -202,15 +218,17 @@ from the verified image (never serialized into it), with a deterministic
 scalars, optionals, products, and sums, and excludes finite collections until
 the earned transfer extension. One pure wire owner (`marrow-local-wire`)
 defines the framed protocol — bounded frames, canonical JSON, a closed
-handshake/request/response/fault grammar, and the closed
+handshake/request/response/fault/incomplete grammar, and the closed
 `not_started`/`interrupted`/`outcome_unknown` loss classification with no
-replay. The stock runner (`marrow-runner`) serves storeless exports over a
+replay. An incomplete reply carries the source condition and the separate closed
+`known_old`/`known_new`/`unknown` durable state, never witness bytes. The stock
+runner (`marrow-runner`) serves storeless, ephemeral-durable, and native-durable exports over a
 private Unix socket under the supervised-channel law (mode-0700 directory,
 listener bound before the handshake, launch nonce, poll-based deadlines,
-explicit fail-closed teardown); a durable export is rejected with
-`runner.durable_unsupported` until the attachment lanes land. `marrow client
-typescript` emits the generated strict client and the pinned Node supervision
-module; see [TypeScript client](tools/typescript-client.md).
+explicit fail-closed teardown). A durable shape not yet supported by the path
+kernel is rejected with `runner.durable_unsupported`. `marrow client typescript`
+emits the generated strict client and the pinned Node supervision module; see
+[TypeScript client](tools/typescript-client.md).
 
 ### Deleted at B00
 
@@ -268,14 +286,23 @@ third-party packages, executable/store binding,
 online schema evolution, logical backup and restore, a supported packaged
 desktop application, public path publication, a supported served profile,
 concurrent multi-writer deployment, replication, high availability, signed
-releases, or institutional protocol/compliance evidence. The compiler, program
-image, verifier, VM, and path kernel are present but early: their admitted
-language subset is narrow and their durable identity, lifecycle, and authority
-attenuation are stubs with named refounding points.
+releases, exact detection of out-of-band engine substitution or rollback, or
+institutional protocol/compliance evidence. The compiler, program image,
+verifier, VM, and path kernel are present but early, and their admitted language
+subset is narrow. Persistent identity, provision/open/import, the local
+commit-recovery slice, and execution-time demand/ceiling/grant attenuation are
+implemented for the documented local profile. Broader executable/store
+admission and activation, evolution, backup/restore, and authority administration
+remain stubs with named refounding points.
 
 ## Current trust boundaries
 
 - Filesystem permissions and the host process protect local store files.
+- Commit recovery assumes that no structurally valid foreign store or prior
+  snapshot is substituted out of band while the advisory owner lock is held.
+  The current redb boundary cannot establish engine-file identity; path or file
+  metadata approximations are not used. Adversarial substitution and rollback
+  detection remains a release veto, not a current guarantee.
 - Checksums and structural checks detect selected corruption; they do not
   authenticate hostile storage or prove full application validity.
 - Encryption at rest is delegated to the filesystem or substrate.

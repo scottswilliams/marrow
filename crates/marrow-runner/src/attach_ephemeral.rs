@@ -33,6 +33,7 @@ use crate::dispatch;
 pub struct AttachedEphemeralService {
     image: VerifiedImage,
     attachment: Ephemeral,
+    close_after_response: bool,
 }
 
 impl AttachedEphemeralService {
@@ -42,7 +43,11 @@ impl AttachedEphemeralService {
     /// rejects every durable request typed while still running the image's storeless exports.
     pub fn mint(image: VerifiedImage) -> Self {
         let attachment = marrow_vm::mint_ephemeral(&image);
-        Self { image, attachment }
+        Self {
+            image,
+            attachment,
+            close_after_response: false,
+        }
     }
 
     /// The handshake identity the runner proves back: the exact image identity, which the client
@@ -63,12 +68,20 @@ impl Handler for AttachedEphemeralService {
             ClientMessage::Request { export, args } => self.handle_request(export.bytes(), &args),
         }
     }
+
+    fn close_after_response(&self) -> bool {
+        self.close_after_response
+    }
 }
 
 impl AttachedEphemeralService {
     fn handle_request(&mut self, export_id: &[u8; 32], args: &[Json]) -> ServerMessage {
         // Split the disjoint borrows: the image is read while the attachment opens a session.
-        let Self { image, attachment } = self;
+        let Self {
+            image,
+            attachment,
+            close_after_response,
+        } = self;
         let (export, values) = match dispatch::decode_request(image, export_id, args) {
             Ok(decoded) => decoded,
             Err(reject) => return reject,
@@ -78,17 +91,26 @@ impl AttachedEphemeralService {
         if export.demand().is_empty() {
             return dispatch::run_storeless(image, export, values);
         }
-        match attachment {
+        let projection = match attachment {
             Ephemeral::Ready(store) => dispatch::project_durable_run(
                 image,
                 marrow_vm::run_export(image, store, export, values),
             ),
             // A durable request against an image whose shape is not yet executable, or whose
             // attachment could not be minted, is a typed reject — never a partial reply.
-            Ephemeral::Parked => dispatch::reject(Code::RunnerDurableUnsupported),
-            Ephemeral::Failed(code) => ServerMessage::Reject {
+            Ephemeral::Parked => {
+                dispatch::RunProjection::Reply(dispatch::reject(Code::RunnerDurableUnsupported))
+            }
+            Ephemeral::Failed(code) => dispatch::RunProjection::Reply(ServerMessage::Reject {
                 code: code.to_string(),
-            },
+            }),
+        };
+        match projection {
+            dispatch::RunProjection::Reply(response) => response,
+            dispatch::RunProjection::RetireAfter(response) => {
+                *close_after_response = true;
+                response
+            }
         }
     }
 }

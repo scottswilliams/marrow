@@ -399,12 +399,12 @@ pub enum SessionError {
     /// The export's demand exceeds ceiling ∩ grant (`run.authority`).
     Denied,
     /// The handle was poisoned by an earlier indeterminate commit: its durability is
-    /// unknown, so no further session may open on it until the store is reopened and the
-    /// commit reclassified (complete-old vs complete-new). Consulted at session open so a
-    /// read or write against a poisoned handle refuses rather than observing an
-    /// indeterminate state. Reachable only on a native handle whose engine can report an
-    /// indeterminate commit; the ephemeral memory engine always confirms, so its handle is
-    /// never poisoned. Renders `run.commit`, matching the execution-time
+    /// unknown, so no further session may open on it until the opaque recovery fact is
+    /// resolved against a freshly opened store. Consulted at session open so a read or
+    /// write against a poisoned handle refuses rather than observing an indeterminate
+    /// state. Reachable only on a native handle whose engine can report an indeterminate
+    /// commit; the ephemeral memory engine always confirms, so its handle is never
+    /// poisoned. Renders `run.commit`, matching the execution-time
     /// [`KernelFault::Poisoned`] the same latch drives at commit.
     Poisoned,
     /// The ordered-byte engine failed while setting up the session.
@@ -497,16 +497,96 @@ pub struct BoundedKeys {
     pub more: bool,
 }
 
-/// The result of committing a transaction.
+/// The durable state of an invocation that did not complete. This is independent of
+/// whether the function returned: a commit can be known to have left the store old or
+/// new even though instructions after the commit and the function return never ran.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DurableCommitState {
+    /// The interrupted commit is proven not to have changed durable state.
+    KnownOld,
+    /// The interrupted commit is proven to have installed its proposed durable state.
+    KnownNew,
+    /// The durable state cannot be classified.
+    Unknown,
+}
+
+/// The lifecycle scope of one attached store. It is not authority: it only prevents a
+/// recovery fact minted for one store instance and retained path from classifying another
+/// store. The fields stay private and no byte projection exists.
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CommitRecoveryScope {
+    instance: [u8; 16],
+    path: std::path::PathBuf,
+}
+
+impl CommitRecoveryScope {
+    /// Bind recovery to the lifecycle-owned store instance and the exact path retained by
+    /// that open. A lifecycle recovery reuses this value while continuously holding the
+    /// store's owner lock.
+    pub(crate) fn persistent(instance: [u8; 16], path: impl Into<std::path::PathBuf>) -> Self {
+        Self {
+            instance,
+            path: path.into(),
+        }
+    }
+}
+
+/// The one opaque affine fact created by an indeterminate engine commit. It owns the exact
+/// before and proposed-after witness-cell states plus the attached store's lifecycle scope.
+/// There is deliberately no constructor, clone, copy, byte accessor, or serialization API;
+/// only the kernel can mint it and classification consumes it.
+///
+/// ```compile_fail
+/// use marrow_kernel::durable::CommitRecovery;
+/// fn duplicate(fact: CommitRecovery) {
+///     let copy = fact;
+///     drop((fact, copy));
+/// }
+/// ```
+///
+/// ```compile_fail
+/// use marrow_kernel::durable::CommitRecovery;
+/// fn clone_fact(fact: CommitRecovery) {
+///     let _copy: CommitRecovery = fact.clone();
+/// }
+/// ```
+#[must_use = "an indeterminate commit recovery fact must be classified or its attached service retired"]
+pub struct CommitRecovery {
+    pub(super) scope: Option<CommitRecoveryScope>,
+    pub(super) before: Option<Vec<u8>>,
+    pub(super) after: Vec<u8>,
+}
+
+impl std::fmt::Debug for CommitRecovery {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("CommitRecovery { .. }")
+    }
+}
+
+impl PartialEq for CommitRecovery {
+    fn eq(&self, other: &Self) -> bool {
+        self.scope == other.scope && self.before == other.before && self.after == other.after
+    }
+}
+
+impl Eq for CommitRecovery {}
+
+/// The result of committing a transaction.
+#[must_use = "a transaction commit outcome must be handled"]
+#[derive(Debug, PartialEq, Eq)]
 pub enum CommitResult {
     /// The engine confirmed the commit.
     Committed,
     /// An entry the transaction created or staged still leaves a required field
     /// unset; the transaction rolled back instead of committing a partial entry.
     RequiredMissing { key: KeyScalar, field: String },
-    /// The commit did not confirm; the handle is poisoned and must be reopened.
-    CommitFault,
+    /// The transaction is proven not to have committed: a pre-commit operation failed or
+    /// the engine explicitly reported an abort. The handle remains usable.
+    Aborted,
+    /// The engine could not say whether the commit landed. The handle is poisoned and the
+    /// sole opaque recovery fact must be consumed by classification or the attached service
+    /// retired.
+    Indeterminate(CommitRecovery),
 }
 
 /// A source-mapped, source-uncatchable kernel fault raised during execution.
@@ -537,17 +617,6 @@ impl KernelFault {
             KernelFault::Engine(error) => error.code(),
         }
     }
-}
-
-/// The classification of a store after reopening it following an indeterminate
-/// commit: the witness cell holds the intended token (the commit completed) or does
-/// not (it did not).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Reopen {
-    /// The witness matches the intended token: the commit completed.
-    CompleteNew,
-    /// The witness is absent or a different token: the commit did not complete.
-    CompleteOld,
 }
 
 /// An opaque authorized site: a kernel-minted token carrying a site's full shape,

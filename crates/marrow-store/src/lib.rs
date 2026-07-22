@@ -69,6 +69,8 @@ mod public_surface_audit {
         {
             let _open: fn(&std::path::Path) -> Result<NativeEngine, StoreError> =
                 NativeEngine::open;
+            let _open_existing: fn(&std::path::Path) -> Result<NativeEngine, StoreError> =
+                NativeEngine::open_existing;
             let _open_ro: fn(&std::path::Path) -> Result<NativeEngine, StoreError> =
                 NativeEngine::open_read_only;
         }

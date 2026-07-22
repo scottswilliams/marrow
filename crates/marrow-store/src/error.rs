@@ -20,10 +20,10 @@ pub enum StoreError {
     FormatVersion { found: u32, supported: u32 },
     /// The persistent store or a tree-cell payload is corrupt.
     Corruption { message: String },
-    /// The store was not shut down cleanly, so a read-only open is refused until a
-    /// write-capable open replays the interrupted commit. The replay is attempted, not
-    /// guaranteed: it reports whether the store opened, and a store damaged beyond
-    /// replay surfaces [`Corruption`](Self::Corruption) instead.
+    /// The redb engine found unclean state that its read-only opener cannot repair. A
+    /// write-capable engine open may perform redb's internal log recovery; this never
+    /// replays Marrow bytecode or retries an invocation. A store that cannot be opened
+    /// after engine recovery surfaces [`Corruption`](Self::Corruption) instead.
     RecoveryRequired,
     /// An operation exhausted a fixed representation bound, including a key or value
     /// beyond its length limit and framing lengths, counts, or commit-ID allocation.
@@ -71,10 +71,10 @@ impl std::fmt::Display for StoreError {
             Self::Corruption { message } => write!(f, "the store is corrupt: {message}"),
             Self::RecoveryRequired => write!(
                 f,
-                "the store was not shut down cleanly and needs a write-capable recovery before \
-                 a read-only open. Run `marrow data recover` so a write open can replay the \
-                 interrupted commit; it reports whether the store opened, and a store damaged \
-                 beyond replay surfaces store.corruption"
+                "the redb engine found unclean state that this read-only open cannot repair; \
+                 reopen the store through its normal write-capable lifecycle so redb can \
+                 perform internal log recovery. This does not replay Marrow bytecode or retry \
+                 an invocation; an unrecoverable store surfaces store.corruption"
             ),
             Self::LimitExceeded { limit } => write!(f, "a storage limit was exceeded: {limit}"),
             Self::ReadOnly { op } => write!(f, "cannot {op} through a read-only store handle"),

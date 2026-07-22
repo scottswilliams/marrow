@@ -20,7 +20,7 @@ use std::thread::sleep;
 use std::time::{Duration, Instant};
 
 use marrow_local_wire::{
-    ClientMessage, Id32, Json, ServerMessage, WireError, frame_body_len, parse_strict,
+    ClientMessage, DurableState, Id32, Json, ServerMessage, WireError, frame_body_len, parse_strict,
 };
 use marrow_verify::VerifiedImage;
 use marrow_vm::Value;
@@ -39,6 +39,14 @@ pub enum CallOutcome {
     /// A source-mapped runtime fault.
     Fault {
         code: String,
+        line: u32,
+        column: u32,
+    },
+    /// The export did not return. The source fault and classified durable state
+    /// are orthogonal; no recovery witness is exposed to the terminal.
+    Incomplete {
+        code: String,
+        durable: DurableState,
         line: u32,
         column: u32,
     },
@@ -252,6 +260,16 @@ pub(crate) fn reply_to_outcome(
         ServerMessage::Value { data } => decode_reply(image, export_id, &data),
         ServerMessage::Fault { code, span } => Ok(CallOutcome::Fault {
             code,
+            line: span.line,
+            column: span.column,
+        }),
+        ServerMessage::Incomplete {
+            code,
+            durable,
+            span,
+        } => Ok(CallOutcome::Incomplete {
+            code,
+            durable,
             line: span.line,
             column: span.column,
         }),

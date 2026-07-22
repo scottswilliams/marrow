@@ -19,6 +19,7 @@ use std::path::Path;
 
 use marrow_codes::Code;
 
+use crate::durable_fs::sync_dir;
 use crate::instance::StoreInstanceId;
 use crate::store_dir;
 
@@ -72,27 +73,40 @@ impl LockOwner {
     }
 }
 
-/// A held owner lock. Dropping it releases the advisory lock; it truncates the lock body to
-/// empty (the clean-shutdown signal) *only* once [`OwnerLock::mark_clean`] has recorded that a
-/// healthy open completed. A lock dropped before that — an open that acquired the lock but
-/// then failed its integrity audit or engine open — leaves the descriptor in place, so the
-/// uncleanness persists and the next open audits again rather than skipping the check.
-pub struct OwnerLock {
-    file: File,
-    /// Whether a healthy open completed under this lock. Set by [`OwnerLock::mark_clean`] on
-    /// the open success path; only then does [`Drop`] truncate the body to the clean signal.
-    clean_on_drop: bool,
+/// A held owner lock. Dropping it normally releases the advisory lock; it truncates the lock
+/// body to empty (the clean-shutdown signal) *only* once [`OwnerLock::mark_clean`] has recorded
+/// that a healthy open completed. A lock dropped before that — an open that acquired the lock
+/// but then failed its integrity audit or engine open — leaves the descriptor in place, so the
+/// uncleanness persists and the next open audits again rather than skipping the check. Losing
+/// an indeterminate-commit recovery fact instead retires the lock until process exit, because
+/// no later session in that process may proceed without the affine fact.
+pub(crate) struct OwnerLock {
+    file: Option<File>,
+    drop_disposition: DropDisposition,
+}
+
+/// What dropping an owner lock may do with its descriptor and advisory lock.
+///
+/// A failed ordinary open preserves the nonempty crash marker but releases exclusion so a
+/// later audited open can retry. A healthy owner clears the marker and releases exclusion.
+/// Once indeterminate-commit recovery begins, neither unwinding nor an early return may admit
+/// another session in the same process, so the descriptor is quarantined until process exit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DropDisposition {
+    PreserveUnclean,
+    Clean,
+    Quarantine,
 }
 
 /// The result of acquiring an owner lock: the held lock and whether the prior shutdown was
 /// unclean (the lock body carried a stale owner descriptor, meaning a previous owner crashed
 /// without truncating it). The open path runs an integrity audit when the prior shutdown was
 /// unclean.
-pub struct Acquired {
+pub(crate) struct Acquired {
     /// The held lock.
-    pub lock: OwnerLock,
+    pub(crate) lock: OwnerLock,
     /// Whether a previous owner left a stale owner descriptor (an unclean prior shutdown).
-    pub prior_unclean: bool,
+    pub(crate) prior_unclean: bool,
 }
 
 /// Why acquiring an owner lock failed.
@@ -143,7 +157,7 @@ impl OwnerLock {
     /// unclean, or [`LockError::StoreInUse`] naming the live owner. The lock file is created
     /// if absent and never unlinked; the advisory lock — not the file's presence — is the
     /// exclusion.
-    pub fn acquire(dir: &Path, instance: StoreInstanceId) -> Result<Acquired, LockError> {
+    pub(crate) fn acquire(dir: &Path, instance: StoreInstanceId) -> Result<Acquired, LockError> {
         let path = store_dir::lock_path(dir);
         let mut file = OpenOptions::new()
             .read(true)
@@ -164,10 +178,10 @@ impl OwnerLock {
             Err(std::fs::TryLockError::Error(error)) => return Err(LockError::Io(error)),
         }
 
-        // We hold the lock. A non-empty prior body means the previous owner crashed without
-        // truncating it — an unclean prior shutdown.
-        let prior = read_owner(&mut file).map_err(LockError::Io)?;
-        let prior_unclean = prior.is_some();
+        // We hold the lock. Body presence, not successful descriptor decoding, is the
+        // durable clean/unclean bit: a crash during descriptor overwrite may leave fixed-
+        // length malformed bytes, and those must still force the next integrity audit.
+        let prior_unclean = file.metadata().map_err(LockError::Io)?.len() != 0;
 
         // Record this owner: truncate, write the descriptor, and flush to disk.
         let owner = LockOwner {
@@ -176,11 +190,16 @@ impl OwnerLock {
             acquired_unix_secs: now_unix_secs(),
         };
         write_owner(&mut file, &owner).map_err(LockError::Io)?;
+        // The descriptor's fsync does not make creation of `<dir>/lock` durable. Sync the
+        // parent directory before admitting the owner so a machine failure cannot erase the
+        // only persisted unclean marker. Doing this for an existing lock file is harmless
+        // and keeps the acquisition path independent of a racy pre-open existence check.
+        sync_dir(dir).map_err(LockError::Io)?;
 
         Ok(Acquired {
             lock: OwnerLock {
-                file,
-                clean_on_drop: false,
+                file: Some(file),
+                drop_disposition: DropDisposition::PreserveUnclean,
             },
             prior_unclean,
         })
@@ -191,42 +210,77 @@ impl OwnerLock {
     /// after any unclean-open integrity audit has passed. Until it is called, dropping the
     /// lock preserves the owner descriptor, so an open that fails after acquiring the lock
     /// leaves the store unclean and the next open re-runs the audit.
-    pub fn mark_clean(&mut self) {
-        self.clean_on_drop = true;
+    pub(crate) fn mark_clean(&mut self) {
+        self.drop_disposition = DropDisposition::Clean;
     }
 
-    /// The owner descriptor currently written in the held lock body (this process).
-    pub fn owner(&mut self) -> std::io::Result<Option<LockOwner>> {
-        read_owner(&mut self.file)
+    /// Enter fail-stop quarantine before indeterminate-commit recovery performs any
+    /// fallible work. The already-flushed owner descriptor remains in the lock body, and
+    /// dropping this value — including during unwinding — retains the advisory lock until
+    /// process exit. Only a successful classification may call [`Self::mark_clean`] later.
+    pub(crate) fn mark_unclean(&mut self) {
+        self.drop_disposition = DropDisposition::Quarantine;
+    }
+
+    /// Retain this advisory lock until the operating system closes the process's file
+    /// descriptors. This is the fail-stop path for a lost affine recovery fact: the owner
+    /// descriptor remains nonempty, and neither this process nor another can start a later
+    /// session over the unclassified store. The attached runner exits immediately after this
+    /// path; retaining the one descriptor is deliberate process-lifetime quarantine, not a
+    /// recovery ledger.
+    pub(crate) fn quarantine_until_process_exit(&mut self) {
+        self.drop_disposition = DropDisposition::Quarantine;
     }
 }
 
 impl Drop for OwnerLock {
     fn drop(&mut self) {
-        // Release the advisory lock by closing the file. Truncate the body to the clean signal
-        // only when a healthy open completed (`mark_clean`); otherwise the owner descriptor
-        // stays so the next acquirer still sees an unclean prior shutdown and audits. Truncate
-        // is best-effort — a failure degrades only to an extra audit next time, never to lost
-        // exclusion.
-        if self.clean_on_drop {
-            let _ = self.file.set_len(0);
-            let _ = self.file.sync_all();
+        match self.drop_disposition {
+            DropDisposition::PreserveUnclean => {
+                // Closing releases exclusion but leaves the descriptor nonempty, so the next
+                // ordinary owner must audit before it can mark the store clean.
+            }
+            DropDisposition::Clean => {
+                // Truncation is best-effort: failure degrades to an extra audit, never to lost
+                // exclusion. The file closes normally after this arm.
+                if let Some(file) = &self.file {
+                    let _ = file.set_len(0);
+                    let _ = file.sync_all();
+                }
+            }
+            DropDisposition::Quarantine => {
+                // Leaking this one descriptor is deliberate: the operating system closes it at
+                // process exit. Taking it before `forget` makes a second Drop path impossible.
+                if let Some(file) = self.file.take() {
+                    std::mem::forget(file);
+                }
+            }
         }
     }
 }
 
-/// Read and decode the owner descriptor from the lock body, or `None` when the body is empty
-/// or not a well-formed descriptor.
+/// Read and decode the fixed owner descriptor, or `None` when the body is empty, partial,
+/// overlong, or malformed. The raw nonempty bit is read separately for crash detection; this
+/// function is only the best-effort live-owner naming path and never allocates from file size.
 fn read_owner(file: &mut File) -> std::io::Result<Option<LockOwner>> {
+    if file.metadata()?.len() != OWNER_BYTES as u64 {
+        return Ok(None);
+    }
     file.seek(SeekFrom::Start(0))?;
-    let mut bytes = Vec::new();
-    file.read_to_end(&mut bytes)?;
+    let mut bytes = [0u8; OWNER_BYTES];
+    file.read_exact(&mut bytes)?;
     Ok(LockOwner::decode(&bytes))
 }
 
-/// Truncate the lock body and write `owner`'s descriptor, flushing to disk.
+/// Reserve the full nonempty body before overwriting it, then flush the descriptor. A crash
+/// before or during the write therefore leaves either the previous nonempty body or a
+/// fixed-length partial body; it never creates the empty clean signal. Only clean `Drop`
+/// truncates to zero.
 fn write_owner(file: &mut File, owner: &LockOwner) -> std::io::Result<()> {
-    file.set_len(0)?;
+    file.set_len(OWNER_BYTES as u64)?;
+    // Persist the nonempty reservation before overwriting its bytes. A process or machine
+    // failure after this point can leave malformed contents, but not the empty clean marker.
+    file.sync_all()?;
     file.seek(SeekFrom::Start(0))?;
     file.write_all(&owner.encode())?;
     file.sync_all()
@@ -319,5 +373,66 @@ mod tests {
         let mut bad_magic = bytes.clone();
         bad_magic[0] = b'X';
         assert_eq!(LockOwner::decode(&bad_magic), None);
+    }
+
+    #[test]
+    fn every_nonempty_or_partial_prior_body_is_unclean() {
+        for (tag, bytes) in [
+            ("one-byte", vec![0xA5]),
+            ("reserved", vec![0; OWNER_BYTES]),
+            ("overlong", vec![0x5A; OWNER_BYTES + 1]),
+        ] {
+            let dir = scratch_dir(tag);
+            std::fs::write(store_dir::lock_path(&dir), bytes).expect("seed malformed lock body");
+            let acquired = OwnerLock::acquire(&dir, StoreInstanceId::from_bytes([0x19; 16]))
+                .expect("acquire malformed prior");
+            assert!(
+                acquired.prior_unclean,
+                "a {tag} nonempty body must force the integrity audit",
+            );
+            let mut lock = acquired.lock;
+            assert!(
+                read_owner(
+                    lock.file
+                        .as_mut()
+                        .expect("a live owner lock retains its descriptor"),
+                )
+                .expect("read current owner")
+                .is_some(),
+                "acquisition must replace the partial body with a complete descriptor",
+            );
+            lock.mark_clean();
+            drop(lock);
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn quarantined_owner_blocks_same_process_reopen_until_exit() {
+        let dir = scratch_dir("quarantined-owner");
+        let instance = StoreInstanceId::from_bytes([0x2A; 16]);
+        let mut lock = OwnerLock::acquire(&dir, instance)
+            .expect("first owner")
+            .lock;
+        lock.mark_clean();
+        lock.mark_unclean();
+        drop(lock);
+
+        assert!(matches!(
+            OwnerLock::acquire(&dir, instance),
+            Err(LockError::StoreInUse { .. })
+        ));
+        assert_ne!(
+            std::fs::metadata(store_dir::lock_path(&dir))
+                .expect("quarantined descriptor")
+                .len(),
+            0,
+            "quarantine must preserve the durable unclean marker",
+        );
+
+        // Unix permits unlinking the path while the deliberately leaked descriptor retains
+        // its lock on the now-unlinked inode; the OS closes that descriptor at process exit.
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

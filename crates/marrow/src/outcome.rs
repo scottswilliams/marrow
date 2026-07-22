@@ -35,6 +35,14 @@ pub(crate) enum Record {
         column: u32,
         detail: Option<String>,
     },
+    /// The invocation did not return. The source-mapped fault and durable
+    /// commit state are orthogonal typed facts.
+    Incomplete {
+        code: &'static str,
+        durable: marrow_vm::DurableCommitState,
+        line: u32,
+        column: u32,
+    },
     /// Family 4: an owner-local operational error (CLI/store/io). `detail` is the
     /// typed human message (e.g. the file and reason a `.marrow/ids` read was
     /// rejected), surfaced in text output only; the KAT-frozen JSONL surface stays
@@ -75,6 +83,15 @@ impl Record {
                 Some(text) => format!("{code} at {line}:{column}: {text}"),
                 None => format!("{code} at {line}:{column}"),
             },
+            Record::Incomplete {
+                code,
+                durable,
+                line,
+                column,
+            } => format!(
+                "{code} at {line}:{column}: invocation incomplete; durable state {}",
+                durable_state_name(*durable),
+            ),
             Record::ArtifactRejected { code } => code.to_string(),
             Record::OperationalError { code, detail } => match detail {
                 Some(text) => format!("{code}: {text}"),
@@ -121,6 +138,17 @@ impl Record {
                 json_string(code),
                 span_object(*line, *column)
             ),
+            Record::Incomplete {
+                code,
+                durable,
+                line,
+                column,
+            } => format!(
+                r#"{{"code":{},"durable":{},"kind":"run","outcome":"incomplete","span":{}}}"#,
+                json_string(code),
+                json_string(durable_state_name(*durable)),
+                span_object(*line, *column),
+            ),
             Record::OperationalError { code, .. } => format!(
                 r#"{{"code":{},"kind":"run","outcome":"error"}}"#,
                 json_string(code)
@@ -155,6 +183,12 @@ pub(crate) enum TestOutcome {
         line: u32,
         column: u32,
     },
+    Incomplete {
+        code: &'static str,
+        durable: marrow_vm::DurableCommitState,
+        line: u32,
+        column: u32,
+    },
 }
 
 /// One reported test: its report name, the source file it lives in, its
@@ -186,6 +220,19 @@ impl TestRecord {
             TestOutcome::Errored { code, line, column } => {
                 self.fault_jsonl("errored", code, *line, *column)
             }
+            TestOutcome::Incomplete {
+                code,
+                durable,
+                line,
+                column,
+            } => format!(
+                r#"{{"code":{},"durable":{},"file":{},"kind":"test","name":{},"outcome":"incomplete","span":{}}}"#,
+                json_string(code),
+                json_string(durable_state_name(*durable)),
+                json_string(&self.file),
+                json_string(&self.name),
+                span_object(*line, *column),
+            ),
         }
     }
 
@@ -209,6 +256,16 @@ impl TestRecord {
             TestOutcome::Errored { code, line, column } => {
                 format!("ERROR {} ({code} at {line}:{column})", self.name)
             }
+            TestOutcome::Incomplete {
+                code,
+                durable,
+                line,
+                column,
+            } => format!(
+                "ERROR {} ({code} at {line}:{column}; incomplete, durable {})",
+                self.name,
+                durable_state_name(*durable),
+            ),
         }
     }
 }
@@ -255,6 +312,14 @@ impl TestSummary {
 
 fn span_object(line: u32, column: u32) -> String {
     format!(r#"{{"column":{column},"line":{line}}}"#)
+}
+
+fn durable_state_name(state: marrow_vm::DurableCommitState) -> &'static str {
+    match state {
+        marrow_vm::DurableCommitState::KnownOld => "known_old",
+        marrow_vm::DurableCommitState::KnownNew => "known_new",
+        marrow_vm::DurableCommitState::Unknown => "unknown",
+    }
 }
 
 /// The canonical text of a returned value. `run` delegates to
@@ -490,6 +555,16 @@ mod tests {
             }
             .to_jsonl(&[], &[])
             .contains(r#""outcome":"fault""#)
+        );
+        assert_eq!(
+            Record::Incomplete {
+                code: "run.commit",
+                durable: marrow_vm::DurableCommitState::KnownOld,
+                line: 7,
+                column: 9,
+            }
+            .to_jsonl(&[], &[]),
+            r#"{"code":"run.commit","durable":"known_old","kind":"run","outcome":"incomplete","span":{"column":9,"line":7}}"#,
         );
         assert!(
             Record::OperationalError {

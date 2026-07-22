@@ -358,16 +358,26 @@ try {
   await first.recordMove(2n, "Bay 9");
   ok("rollback", false, "a move on an absent asset did not fault");
 } catch (error) {
-  ok("rollback", error instanceof M.MarrowFault && error.code === "run.required_missing", String(error));
+  ok(
+    "rollback",
+    error instanceof M.MarrowIncomplete &&
+      error.code === "run.required_missing" &&
+      error.durable === M.DURABLE_STATE.KNOWN_OLD,
+    String(error),
+  );
 }
-ok("rollback-location", (await first.location(1n)) === "Bay 3");
-ok("rollback-moveCount", (await first.moveCount()) === 1n);
-ok("rollback-absent", (await first.present(2n)) === false);
-ok("rollback-catalogued", (await first.catalogued()) === 1n);
+
+// An incomplete reply retires the Node session. A fresh attachment proves the exact
+// known-old rollback state before the independent restart/persistence proof below.
+const rollbackReadback = await Client.launch({ runner: RUNNER, image: IMAGE, store: STORE });
+ok("rollback-location", (await rollbackReadback.location(1n)) === "Bay 3");
+ok("rollback-moveCount", (await rollbackReadback.moveCount()) === 1n);
+ok("rollback-absent", (await rollbackReadback.present(2n)) === false);
+ok("rollback-catalogued", (await rollbackReadback.catalogued()) === 1n);
 
 // restart: close the session, then open a FRESH attached session (a separate runner process
 // over the persisted store) and read the committed data back.
-await first.close();
+await rollbackReadback.close();
 
 const second = await Client.launch({ runner: RUNNER, image: IMAGE, store: STORE });
 ok("restart-assetName", (await second.assetName(1n)) === "Cordless Drill");

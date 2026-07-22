@@ -67,10 +67,22 @@ await client.close();
 A call resolves with the export's value, or rejects with:
 
 - `MarrowFault` — a source-mapped runtime fault (`code`, `line`, `column`);
+- `MarrowIncomplete` — the invocation did not return; carries the source-mapped
+  condition (`code`, `line`, `column`) and its independent `durable` state,
+  `known_old`, `known_new`, or `unknown`;
 - `MarrowReject` — the runner refused the request (`runner.unknown_export`,
   `runner.arg_mismatch`, `runner.durable_unsupported`);
 - `WireFormatError` — a wire-grammar violation (`wire.*` codes);
 - `MarrowLossError` — the runner died before the reply arrived (below).
+
+`MarrowIncomplete` never contains a return value or a recovery witness.
+`known_old` proves that the interrupted commit did not change durable state;
+`known_new` proves that its proposed state was installed; `unknown` means the
+runner could not establish either. The supervisor conservatively terminates the
+session after any incomplete reply. Calls already queued reject as `interrupted`,
+and later calls reject as `not_started`; none is dispatched or retried. A caller
+that lost the reply receives `MarrowLossError("outcome_unknown")` instead and
+cannot infer an internal durable classification.
 
 ## Supervision and the local channel
 

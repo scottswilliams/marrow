@@ -19,13 +19,15 @@
 use std::io::{Read, Write};
 use std::os::unix::net::UnixStream;
 use std::path::Path;
+use std::sync::mpsc::{Receiver, Sender, channel as mpsc_channel};
 use std::thread;
 use std::time::Duration;
 
 use marrow_local_wire::{
-    ClientMessage, HandoffStage, Id32, Json, LossClass, ServerMessage, classify, frame_body_len,
+    ClientMessage, DurableState, HandoffStage, Id32, Json, LossClass, ServerMessage, Span,
+    classify, frame_body_len,
 };
-use marrow_runner::{Channel, Deadlines, LaunchSecrets, Service, mint_id};
+use marrow_runner::{Channel, Deadlines, Handler, LaunchSecrets, Service, mint_id};
 
 const ADD: &str = "pub fn add(a: int, b: int): int {\n    return a + b\n}\n";
 
@@ -145,6 +147,143 @@ fn end_to_end_storeless_call() {
 
     assert_eq!(ready, Some(ServerMessage::Ready { session, interface }));
     assert_eq!(value, Some(ServerMessage::Value { data: Json::Int(5) }));
+}
+
+struct UnknownIncompleteHandler;
+
+impl Handler for UnknownIncompleteHandler {
+    fn handle(&mut self, _message: ClientMessage) -> ServerMessage {
+        ServerMessage::Incomplete {
+            code: "run.commit".to_string(),
+            durable: DurableState::Unknown,
+            span: Span { line: 4, column: 2 },
+        }
+    }
+
+    fn close_after_response(&self) -> bool {
+        true
+    }
+}
+
+#[test]
+#[ignore = "binds a Unix socket; run with the sandbox disabled"]
+fn unknown_incomplete_is_written_once_then_the_session_closes() {
+    let channel = Channel::bind().expect("bind");
+    let path = channel.socket_path().to_path_buf();
+    let nonce = mint_id().unwrap();
+    let session = mint_id().unwrap();
+    let interface = Id32::from_bytes([0x44; 32]);
+
+    let client = thread::spawn(move || {
+        let mut stream = connect(&path);
+        send(&mut stream, &ClientMessage::Hello { nonce }).unwrap();
+        let ready = recv(&mut stream);
+        send(
+            &mut stream,
+            &ClientMessage::Request {
+                export: Id32::from_bytes([0x55; 32]),
+                args: Vec::new(),
+            },
+        )
+        .unwrap();
+        let incomplete = recv(&mut stream);
+        let _ = send(
+            &mut stream,
+            &ClientMessage::Request {
+                export: Id32::from_bytes([0x66; 32]),
+                args: Vec::new(),
+            },
+        );
+        let later = recv(&mut stream);
+        (ready, incomplete, later)
+    });
+
+    let mut conn = channel
+        .accept_authenticated(&secrets(nonce, session), interface, &quick(), 16)
+        .expect("accept");
+    conn.run_session(&mut UnknownIncompleteHandler, &quick())
+        .expect("serve");
+    drop(conn);
+    let (ready, incomplete, later) = client.join().unwrap();
+    channel.teardown();
+
+    assert_eq!(ready, Some(ServerMessage::Ready { session, interface }));
+    assert!(matches!(
+        incomplete,
+        Some(ServerMessage::Incomplete {
+            durable: DurableState::Unknown,
+            ..
+        })
+    ));
+    assert_eq!(later, None, "no later request receives a reply");
+}
+
+struct ClassifiedBeforeReplyHandler {
+    classified: Sender<()>,
+    release: Receiver<()>,
+}
+
+impl Handler for ClassifiedBeforeReplyHandler {
+    fn handle(&mut self, _message: ClientMessage) -> ServerMessage {
+        self.classified.send(()).expect("signal classification");
+        self.release.recv().expect("release response");
+        ServerMessage::Incomplete {
+            code: "run.commit".to_string(),
+            durable: DurableState::KnownNew,
+            span: Span { line: 7, column: 3 },
+        }
+    }
+}
+
+/// Losing the transport after the invocation has been classified but before the reply can be
+/// written gives the caller no internal durable-state fact. The request is already dispatched,
+/// so the only caller-side classification is `OutcomeUnknown`; the typed `KnownNew` reply is not
+/// partially delivered or retried.
+#[test]
+#[ignore = "binds a Unix socket; run with the sandbox disabled"]
+fn loss_after_classification_before_reply_is_outcome_unknown() {
+    let channel = Channel::bind().expect("bind");
+    let path = channel.socket_path().to_path_buf();
+    let nonce = mint_id().unwrap();
+    let session = mint_id().unwrap();
+    let interface = Id32::from_bytes([0x73; 32]);
+    let (classified_tx, classified_rx) = mpsc_channel();
+    let (release_tx, release_rx) = mpsc_channel();
+
+    let client = thread::spawn(move || {
+        let mut stream = connect(&path);
+        send(&mut stream, &ClientMessage::Hello { nonce }).unwrap();
+        assert!(matches!(
+            recv(&mut stream),
+            Some(ServerMessage::Ready { .. })
+        ));
+        send(
+            &mut stream,
+            &ClientMessage::Request {
+                export: Id32::from_bytes([0x74; 32]),
+                args: Vec::new(),
+            },
+        )
+        .unwrap();
+        classified_rx.recv().expect("classified");
+        stream
+            .shutdown(std::net::Shutdown::Both)
+            .expect("drop reply transport");
+        release_tx.send(()).expect("release handler");
+        assert_eq!(recv(&mut stream), None, "no typed reply reached the caller");
+        classify(HandoffStage::Dispatched)
+    });
+
+    let mut handler = ClassifiedBeforeReplyHandler {
+        classified: classified_tx,
+        release: release_rx,
+    };
+    let mut conn = channel
+        .accept_authenticated(&secrets(nonce, session), interface, &quick(), 16)
+        .expect("accept");
+    conn.run_session(&mut handler, &quick()).expect("serve");
+    assert_eq!(client.join().expect("client"), LossClass::OutcomeUnknown);
+    channel.teardown();
 }
 
 /// First-connection-wins is bounded: a same-uid racer that connects first with a

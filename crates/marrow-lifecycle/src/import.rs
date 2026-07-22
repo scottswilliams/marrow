@@ -9,15 +9,14 @@
 //! resolved (`demand ∩ ceiling ∩ grant`), the site is resolved from the store schema, the
 //! consequence planner writes the entry marker and field leaves, and managed indexes are
 //! maintained. It never opens the byte engine, mints a raw cell key, or holds a transaction
-//! handle. This is the structural difference from the backup/restore slice
-//! ([`insert_cells`](marrow_kernel::durable::DurableStore) replays the kernel's *own* logical
-//! cells for a round trip): external, untyped rows have no valid cell form until the kernel
-//! places them, so import goes through the full write algebra, not a byte copy.
+//! handle. External, untyped rows have no valid cell form until the kernel places them, so
+//! import goes through the full write algebra, not a byte copy.
 //!
 //! # The closed lifecycle boundary
 //!
-//! [`import_jsonl`] opens the persistent store through [`open`](crate::open), which takes the
-//! store's single-owner lock ([`OwnerLock`](crate::OwnerLock) — non-`Clone`, non-serializable).
+//! [`import_jsonl`] opens the persistent store through [`open`](crate::open), which internally
+//! retains the non-cloneable, non-serializable single-owner lock for the store's entire open
+//! lifetime.
 //! Nothing below this crate depends on `marrow-lifecycle` (the Cargo trust boundary: only the
 //! privileged CLI host does), so no bytecode, client-wire, or host-adapter path can enter the
 //! import mode. The engine-generic core is crate-private and adds no privilege a caller with
@@ -38,8 +37,9 @@ use std::path::Path;
 use marrow_kernel::codec::key::KeyScalar;
 use marrow_kernel::codec::value::{RuntimeScalar, ScalarKind, ValueShape};
 use marrow_kernel::durable::{
-    CommitResult, CreateOutcome, DemandCoverage, Durable, EntryValue, InvocationGrant, KernelFault,
-    NativeStore, SessionError, SiteSpec, SiteTarget, StoreSchema,
+    CommitRecovery, CommitResult, CreateOutcome, DemandCoverage, Durable, DurableCommitState,
+    EntryValue, InvocationGrant, KernelFault, SessionError, SessionHost, SiteSpec, SiteTarget,
+    StoreSchema,
 };
 use marrow_kernel::equality::ValueDomain;
 
@@ -247,8 +247,11 @@ pub enum CommitFault {
     /// A staged entry left a required field unset (a defense-in-depth reconcile fault; the
     /// mapper normally rejects such a row before staging).
     RequiredMissing { field: String },
-    /// The commit did not confirm.
-    NotConfirmed,
+    /// The engine confirmed that the batch did not commit.
+    Aborted,
+    /// The batch invocation did not complete; recovery classified whether its
+    /// staged durable state is known old, known new, or unknown.
+    Incomplete { durable: DurableCommitState },
 }
 
 impl std::fmt::Display for CommitFault {
@@ -265,7 +268,15 @@ impl std::fmt::Display for CommitFault {
             CommitFault::RequiredMissing { field } => {
                 write!(f, "a staged entry left required field `{field}` unset")
             }
-            CommitFault::NotConfirmed => write!(f, "the batch commit did not confirm"),
+            CommitFault::Aborted => write!(f, "the batch commit aborted"),
+            CommitFault::Incomplete { durable } => {
+                let state = match durable {
+                    DurableCommitState::KnownOld => "known_old",
+                    DurableCommitState::KnownNew => "known_new",
+                    DurableCommitState::Unknown => "unknown",
+                };
+                write!(f, "the batch invocation was incomplete ({state})")
+            }
         }
     }
 }
@@ -289,8 +300,9 @@ pub enum ImportError {
         fault: RowFault,
         committed: ImportReport,
     },
-    /// A batch commit did not confirm. The store holds the earlier committed batches; this batch
-    /// rolled back.
+    /// A batch invocation did not complete. The store holds the earlier committed batches;
+    /// [`CommitFault`] says whether this batch is known not to have landed or whether recovery
+    /// classified its durable state separately.
     Commit {
         fault: CommitFault,
         committed: ImportReport,
@@ -402,8 +414,34 @@ pub fn import_jsonl(
     }];
     let mut opened = open(dir, schemas, sites).map_err(ImportError::Open)?;
 
-    import_rows_into(&mut opened.store, &plan, source, grant, limits)
-    // `opened` drops here, releasing the single-owner lock.
+    match import_rows_into(&mut opened, &plan, source, grant, limits) {
+        Ok(report) => Ok(report),
+        Err(ImportRunError::Reported(error)) => Err(error),
+        Err(ImportRunError::Indeterminate {
+            recovery,
+            committed,
+        }) => {
+            let (durable, _reopened) = opened.resolve_recovery(recovery);
+            Err(ImportError::Commit {
+                fault: CommitFault::Incomplete { durable },
+                committed,
+            })
+        }
+    }
+}
+
+enum ImportRunError {
+    Reported(ImportError),
+    Indeterminate {
+        recovery: CommitRecovery,
+        committed: ImportReport,
+    },
+}
+
+impl From<ImportError> for ImportRunError {
+    fn from(error: ImportError) -> Self {
+        Self::Reported(error)
+    }
 }
 
 /// The resolved plan for mapping a row to the target root's whole-payload write: the key
@@ -563,13 +601,13 @@ impl RowPlan {
 /// split keeps `import_jsonl` a thin lock-guarded open plus site setup and isolates the bounded
 /// streaming loop here. Every write is a kernel [`create_entry`](Durable::create_entry) —
 /// authority resolved, site resolved, planner-mediated, indexes maintained.
-fn import_rows_into(
-    store: &mut NativeStore,
+fn import_rows_into<H: SessionHost>(
+    store: &mut H,
     plan: &RowPlan,
     mut source: impl BufRead,
     grant: InvocationGrant,
     limits: ImportLimits,
-) -> Result<ImportReport, ImportError> {
+) -> Result<ImportReport, ImportRunError> {
     let write_demand = DemandCoverage {
         read: false,
         write: true,
@@ -638,13 +676,13 @@ type Batch = Vec<(u64, Vec<KeyScalar>, EntryValue)>;
 /// advances `report` only on a confirmed commit. A denied session, a duplicate key (named at
 /// its own source line), or a non-confirming commit is a typed error carrying the committed
 /// prefix.
-fn commit_batch(
-    store: &mut NativeStore,
+fn commit_batch<H: SessionHost>(
+    store: &mut H,
     grant: InvocationGrant,
     demand: DemandCoverage,
     batch: &mut Batch,
     report: &mut ImportReport,
-) -> Result<(), ImportError> {
+) -> Result<(), ImportRunError> {
     let mut txn = store
         .txn_session(grant, demand)
         .map_err(|error| match error {
@@ -671,7 +709,8 @@ fn commit_batch(
                     line,
                     fault: RowFault::DuplicateKey,
                     committed: *report,
-                });
+                }
+                .into());
             }
             // A unique-index collision is a row-data fault: two source rows carry the same
             // value for a `unique` index. Name the offending row; the batch rolls back on drop.
@@ -680,7 +719,8 @@ fn commit_batch(
                     line,
                     fault: RowFault::UniqueIndexCollision,
                     committed: *report,
-                });
+                }
+                .into());
             }
             // Any other kernel fault is operational (engine, corruption, poison, value range),
             // not a correctable row.
@@ -688,13 +728,15 @@ fn commit_batch(
                 return Err(ImportError::Commit {
                     fault: CommitFault::Engine(engine),
                     committed: *report,
-                });
+                }
+                .into());
             }
             Err(other) => {
                 return Err(ImportError::Commit {
                     fault: CommitFault::Kernel { code: other.code() },
                     committed: *report,
-                });
+                }
+                .into());
             }
         }
     }
@@ -708,9 +750,15 @@ fn commit_batch(
         CommitResult::RequiredMissing { field, .. } => Err(ImportError::Commit {
             fault: CommitFault::RequiredMissing { field },
             committed: *report,
-        }),
-        CommitResult::CommitFault => Err(ImportError::Commit {
-            fault: CommitFault::NotConfirmed,
+        }
+        .into()),
+        CommitResult::Aborted => Err(ImportError::Commit {
+            fault: CommitFault::Aborted,
+            committed: *report,
+        }
+        .into()),
+        CommitResult::Indeterminate(recovery) => Err(ImportRunError::Indeterminate {
+            recovery,
             committed: *report,
         }),
     }
