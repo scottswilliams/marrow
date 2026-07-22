@@ -16,7 +16,7 @@ import { setTimeout as delay } from "node:timers/promises";
 
 import { Client } from "../gen/client.mts";
 import { provision } from "../gen/marrow-supervisor.mjs";
-import type { Deployment } from "./deployment.mts";
+import { type Deployment, resolveDeployment } from "./deployment.mts";
 import { isDomainExport } from "./security.mts";
 
 /** The fixed store directory name under the app's data directory. */
@@ -42,12 +42,21 @@ export class ClubLockerApp {
   }
 
   /**
-   * Open the app over a verified `deployment`, keeping its store under `dataDir`.
-   * Provisions the store once on first use behind a single-winner lock, then opens a
-   * native attached session. The store path is derived from `dataDir` here; no
-   * caller above passes a store path in.
+   * Open the app over the deployment in `deploymentDir` (verified against
+   * `expectedRelease`), keeping its store under `dataDir`. The deployment is
+   * resolved here, immediately before it is used to provision and launch, so the
+   * bytes that are verified are the bytes that are spawned — the verify→use window is
+   * this method, not a caller above. Provisions the store once on first use behind a
+   * single-winner lock, then opens a native attached session. The store path is
+   * derived from `dataDir`; no caller passes a store path in. A `DeploymentFault`
+   * propagates when verification fails, and no session is opened.
    */
-  static async open(deployment: Deployment, dataDir: string): Promise<ClubLockerApp> {
+  static async open(
+    deploymentDir: string,
+    dataDir: string,
+    expectedRelease: string,
+  ): Promise<ClubLockerApp> {
+    const deployment = resolveDeployment(deploymentDir, expectedRelease);
     mkdirSync(dataDir, { recursive: true });
     const store = join(dataDir, STORE_DIR);
     await ensureProvisioned(deployment, dataDir, store);

@@ -17,8 +17,8 @@ import type { IpcMainInvokeEvent } from "electron";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { dirname, join } from "node:path";
 
-import { ClubLockerApp } from "./core.mts";
-import { resolveDeployment, DeploymentFault } from "./deployment.mts";
+import { CallRefused, ClubLockerApp } from "./core.mts";
+import { DeploymentFault } from "./deployment.mts";
 import { EXPECTED_RELEASE } from "./release.mts";
 import {
   CONTENT_SECURITY_POLICY,
@@ -40,18 +40,31 @@ const IPC_CHANNEL = "club:call";
 let clubApp: ClubLockerApp | null = null;
 
 /** Ensure only one instance owns the data directory; a second launch focuses the
- * first rather than provisioning or attaching a second time. */
+ * first rather than provisioning or attaching a second time. Losing the lock halts
+ * this instance entirely — it registers no startup, so it never touches the store. */
 if (!app.requestSingleInstanceLock()) {
   app.quit();
-}
+} else {
+  app.on("second-instance", () => {
+    const [win] = BrowserWindow.getAllWindows();
+    if (win) {
+      if (win.isMinimized()) win.restore();
+      win.focus();
+    }
+  });
 
-app.on("second-instance", () => {
-  const [win] = BrowserWindow.getAllWindows();
-  if (win) {
-    if (win.isMinimized()) win.restore();
-    win.focus();
-  }
-});
+  app.whenReady().then(() => startup().catch(reportFatal), reportFatal);
+
+  app.on("window-all-closed", () => {
+    void shutdown().finally(() => app.quit());
+  });
+
+  app.on("activate", () => {
+    if (BrowserWindow.getAllWindows().length === 0 && clubApp !== null) {
+      createWindow();
+    }
+  });
+}
 
 /** Deny every renderer-initiated permission request (camera, geolocation, ...): the
  * app needs none. */
@@ -111,33 +124,30 @@ async function handleCall(event: IpcMainInvokeEvent, payload: unknown): Promise<
     const value = await clubApp.call(name, args);
     return { ok: true, value };
   } catch (error) {
-    return { ok: false, error: error instanceof Error ? error.message : String(error) };
+    // Only a typed, path-free code crosses back to the untrusted renderer. A domain
+    // fault or reject carries its `code` (source vocabulary, no filesystem paths); a
+    // refused export names itself; anything else is a generic failure. Raw error
+    // messages — which can embed absolute paths — never reach the page.
+    return { ok: false, error: safeCallError(error) };
   }
+}
+
+/** Map a call error to a path-free string safe to hand the renderer. */
+function safeCallError(error: unknown): string {
+  if (error instanceof CallRefused) return "call refused";
+  if (typeof (error as { code?: unknown }).code === "string") {
+    return (error as { code: string }).code;
+  }
+  return "call failed";
 }
 
 async function startup(): Promise<void> {
   lockDownSession();
-  const deployment = resolveDeployment(DEPLOYMENT_DIR, EXPECTED_RELEASE);
   const dataDir = join(app.getPath("userData"), "club-locker-data");
-  clubApp = await ClubLockerApp.open(deployment, dataDir);
+  clubApp = await ClubLockerApp.open(DEPLOYMENT_DIR, dataDir, EXPECTED_RELEASE);
   ipcMain.handle(IPC_CHANNEL, handleCall);
   createWindow();
 }
-
-app.whenReady().then(
-  () => startup().catch(reportFatal),
-  reportFatal,
-);
-
-app.on("window-all-closed", () => {
-  void shutdown().finally(() => app.quit());
-});
-
-app.on("activate", () => {
-  if (BrowserWindow.getAllWindows().length === 0 && clubApp !== null) {
-    createWindow();
-  }
-});
 
 async function shutdown(): Promise<void> {
   const open = clubApp;

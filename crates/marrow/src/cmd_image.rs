@@ -27,7 +27,7 @@ use std::process::ExitCode;
 
 use marrow_verify::{CeilingDescriptor, VerifiedImage};
 
-use crate::demand::{DemandNamingError, demand_lines};
+use crate::demand::demand_lines;
 
 struct ImageArgs {
     out: PathBuf,
@@ -166,12 +166,7 @@ fn render_demand(compiled: &marrow_compile::Compiled, image: &VerifiedImage) {
                 eprintln!("{line}");
             }
         }
-        Err(DemandNamingError::DirectoryImageDisagree) => {
-            eprintln!("internal error: export directory and image disagree");
-        }
-        Err(DemandNamingError::UnnameablePlace) => {
-            eprintln!("internal error: an export demands an unnameable durable place");
-        }
+        Err(error) => eprintln!("{}", error.internal_message()),
     }
 }
 

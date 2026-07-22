@@ -25,6 +25,7 @@ import {
   readFileSync,
   readdirSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -70,6 +71,14 @@ async function expectThrows(label, fn, kind) {
   } catch (error) {
     const gotKind = error instanceof DeploymentFault ? error.kind : error?.name;
     ok(label, kind === undefined || gotKind === kind, `threw ${gotKind}`);
+  }
+}
+function expectResolves(label, fn) {
+  try {
+    fn();
+    ok(label, true);
+  } catch (error) {
+    ok(label, false, `threw ${error?.name ?? error}`);
   }
 }
 function tempStore(name) {
@@ -132,14 +141,7 @@ function probeSecurityFloor() {
 
 function probeDeploymentIntegrity() {
   section("deployment integrity refuses tampering and ambient discovery");
-  ok("a clean deployment resolves", (() => {
-    try {
-      resolveDeployment(DEPLOY, EXPECTED_RELEASE);
-      return true;
-    } catch {
-      return false;
-    }
-  })());
+  expectResolves("a clean deployment resolves", () => resolveDeployment(DEPLOY, EXPECTED_RELEASE));
 
   // A runner whose bytes changed after the manifest recorded its identity.
   const rt = copyDeploy("tamper-runner");
@@ -159,6 +161,21 @@ function probeDeploymentIntegrity() {
   const trav = copyDeploy("traverse");
   patchManifest(trav, (m) => m.replace("runner marrow-runner", "runner ../evil"));
   expectThrowsSync("a traversing runner name is refused", () => resolveDeployment(trav, EXPECTED_RELEASE), "runner_missing");
+
+  // A manifest naming an absolute runner path.
+  const absName = copyDeploy("absolute-runner");
+  patchManifest(absName, (m) => m.replace("runner marrow-runner", "runner /bin/sh"));
+  expectThrowsSync("an absolute runner name is refused", () => resolveDeployment(absName, EXPECTED_RELEASE), "runner_missing");
+
+  // A runner that is a SYMLINK out of the deployment, even under a plain component
+  // name: no-follow resolution refuses it rather than spawning the link target.
+  const sym = copyDeploy("symlink-runner");
+  const symRunner = join(sym, "marrow-runner");
+  const elsewhere = join(scratch, "elsewhere-runner");
+  cpSync(join(DEPLOY, "marrow-runner"), elsewhere);
+  rmSync(symRunner);
+  symlinkSync(elsewhere, symRunner);
+  expectThrowsSync("a symlinked runner is refused", () => resolveDeployment(sym, EXPECTED_RELEASE), "runner_missing");
 
   // A missing manifest.
   const nm = copyDeploy("no-manifest");
@@ -187,7 +204,6 @@ function patchManifest(dir, edit) {
 
 async function probeConcurrentFirstLaunch() {
   section("concurrent first launches prove one destination owner");
-  const deployment = resolveDeployment(DEPLOY, EXPECTED_RELEASE);
   const dataDir = tempStore("concurrent-data");
 
   // Two launches race against an absent destination. The single-winner provision
@@ -195,8 +211,8 @@ async function probeConcurrentFirstLaunch() {
   // store is single-writer, so exactly one launch attaches and the other is refused —
   // one destination, one owner, no second store.
   const settled = await Promise.allSettled([
-    ClubLockerApp.open(deployment, dataDir),
-    ClubLockerApp.open(deployment, dataDir),
+    ClubLockerApp.open(DEPLOY, dataDir, EXPECTED_RELEASE),
+    ClubLockerApp.open(DEPLOY, dataDir, EXPECTED_RELEASE),
   ]);
   const fulfilled = settled.filter((s) => s.status === "fulfilled");
   ok("exactly one launch owns the destination", fulfilled.length === 1, `${fulfilled.length} succeeded`);
@@ -217,8 +233,7 @@ async function probeConcurrentFirstLaunch() {
 
 async function probeRendererCannotSelect() {
   section("the renderer cannot choose identity/executable/store/path/maintenance");
-  const deployment = resolveDeployment(DEPLOY, EXPECTED_RELEASE);
-  const app = await ClubLockerApp.open(deployment, tempStore("select-data"));
+  const app = await ClubLockerApp.open(DEPLOY, tempStore("select-data"), EXPECTED_RELEASE);
   for (const name of ["close", "launch", "terminate", "provision", "__proto__", "notAnExport"]) {
     await expectThrows(`call \`${name}\` is refused`, () => app.call(name, []), "CallRefused");
   }
@@ -237,8 +252,9 @@ async function probeStagedBuildLaunches() {
   }
   const core = await import(outCore);
   const dep = await import(outDeploy);
-  const deployment = dep.resolveDeployment(DEPLOY, EXPECTED_RELEASE);
-  const app = await core.ClubLockerApp.open(deployment, tempStore("staged-data"));
+  // The compiled deployment resolver verifies, and the compiled core opens over it.
+  dep.resolveDeployment(DEPLOY, EXPECTED_RELEASE);
+  const app = await core.ClubLockerApp.open(DEPLOY, tempStore("staged-data"), EXPECTED_RELEASE);
   const id = await app.call("registerMember", ["Katherine Johnson", "2024-09-29"]);
   ok("the compiled core provisions and calls", id === 1n, String(id));
   await app.close();
@@ -261,7 +277,7 @@ async function probeTerminalMatchesTypescript() {
   );
 
   const dataDir = tempStore("identity-data");
-  const app = await ClubLockerApp.open(deployment, dataDir);
+  const app = await ClubLockerApp.open(DEPLOY, dataDir, EXPECTED_RELEASE);
   const member = await app.call("registerMember", ["Ada Lovelace", "2024-09-27"]);
   await app.call("registerAsset", ["R-100", "racquets", "Racquet"]);
   await app.call("checkout", [member, 1n, "2024-10-01"]);

@@ -18,9 +18,9 @@
 // digest and the manifest, so a tampered image is refused before launch; the runner
 // re-verifies the image semantically when it serves it.
 
-import { readFileSync, statSync } from "node:fs";
+import { lstatSync, readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 
 /** The fixed manifest filename inside a deployment directory. */
 const MANIFEST_NAME = "marrow-deployment";
@@ -35,7 +35,9 @@ const COMPANION_RELEASE_KIND = Buffer.from("marrow.release.companion", "ascii");
 const IMAGE_DIGEST_KIND = Buffer.from("marrow.image.v0", "ascii"); // 15 bytes
 const IMAGE_MAGIC = Buffer.from([0x4d, 0x57, 0x49, 0x00]); // "MWI\0"
 const IMAGE_VERSION = 0x00;
-const IMAGE_HEADER_LEN = 4 + 1 + 32; // magic ‖ version ‖ digest
+/** Offset of the embedded 32-byte digest: magic(4) ‖ version(1). */
+const IMAGE_DIGEST_OFFSET = 5;
+const IMAGE_HEADER_LEN = IMAGE_DIGEST_OFFSET + 32; // magic ‖ version ‖ digest
 
 const HEX64 = /^[0-9a-f]{64}$/;
 
@@ -138,7 +140,7 @@ export function resolveDeployment(deploymentDir: string, expectedRelease: string
   const image = resolveComponent(deploymentDir, manifest.imageName, "image");
   const imageBytes = readBounded(image, MAX_IMAGE_BYTES, "image_missing");
   const imageId = imageIdOf(imageBytes);
-  const embedded = imageBytes.subarray(5, IMAGE_HEADER_LEN).toString("hex");
+  const embedded = imageBytes.subarray(IMAGE_DIGEST_OFFSET, IMAGE_HEADER_LEN).toString("hex");
   if (imageId !== embedded) {
     throw new DeploymentFault("image_mismatch", "image digest does not match its own bytes");
   }
@@ -157,17 +159,19 @@ export function resolveDeployment(deploymentDir: string, expectedRelease: string
 
 function readManifest(dir: string): Manifest {
   const path = join(dir, MANIFEST_NAME);
-  let size: number;
+  let stat;
   try {
-    size = statSync(path).size;
+    stat = lstatSync(path); // no-follow: a symlinked manifest is not the pinned file
   } catch {
-    throw new DeploymentFault("manifest_missing", `no ${MANIFEST_NAME} in ${dir}`);
+    throw new DeploymentFault("manifest_missing", `no ${MANIFEST_NAME} in the deployment`);
   }
-  if (size > MAX_MANIFEST_BYTES) {
+  if (!stat.isFile()) {
+    throw new DeploymentFault("manifest_malformed", "manifest is not a regular file");
+  }
+  if (stat.size > MAX_MANIFEST_BYTES) {
     throw new DeploymentFault("manifest_malformed", "manifest is oversized");
   }
-  const text = readFileSync(path, "utf8");
-  return parseManifest(text);
+  return parseManifest(readFileSync(path, "utf8"));
 }
 
 /** Parse the fixed line-oriented manifest:
@@ -219,8 +223,11 @@ function pair(rest: string): [string, string] {
 
 /**
  * Resolve a manifest-named component to a path inside `dir`, refusing any name that
- * is not a single plain path component — a separator, a parent reference, an
- * absolute path, or a drive could escape the deployment directory. This is the
+ * is not a single plain relative path component. A separator (POSIX `/` or Windows
+ * `\`), a parent/current reference, a NUL, an absolute path, or a Windows
+ * drive-relative name (`C:foo`) could escape the deployment directory. `readBounded`
+ * then rejects a symlinked component (no-follow), so the resolved path is only ever a
+ * regular file that is a direct child of the deployment directory — the
  * ambient-discovery defense: the runner is only ever the pinned file beside the
  * manifest.
  */
@@ -230,9 +237,11 @@ export function resolveComponent(dir: string, name: string, what: "runner" | "im
     name.length === 0 ||
     name.includes("/") ||
     name.includes("\\") ||
+    name.includes("\0") ||
+    name.includes(":") || // a Windows drive/stream specifier is not a plain component
     name === "." ||
     name === ".." ||
-    name.includes("\0")
+    isAbsolute(name)
   ) {
     throw new DeploymentFault(missing, `unsafe ${what} name`);
   }
@@ -240,16 +249,19 @@ export function resolveComponent(dir: string, name: string, what: "runner" | "im
 }
 
 function readBounded(path: string, max: number, missing: DeploymentFaultKind): Buffer {
-  let size: number;
+  let stat;
   try {
-    const st = statSync(path);
-    if (!st.isFile()) throw new Error("not a file");
-    size = st.size;
+    // No-follow: a symlink at the component path is not the pinned file, even when its
+    // name is a plain component. Only a regular file beside the manifest is admitted.
+    stat = lstatSync(path);
   } catch {
-    throw new DeploymentFault(missing, `component missing at ${path}`);
+    throw new DeploymentFault(missing, "a deployment component is missing");
   }
-  if (size > max) {
-    throw new DeploymentFault(missing, `component at ${path} is oversized`);
+  if (!stat.isFile()) {
+    throw new DeploymentFault(missing, "a deployment component is not a regular file");
+  }
+  if (stat.size > max) {
+    throw new DeploymentFault(missing, "a deployment component is oversized");
   }
   return readFileSync(path);
 }

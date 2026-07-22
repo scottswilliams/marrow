@@ -7,14 +7,20 @@
 //
 // The step emits the verified image through the stock `marrow image` command (which
 // itself refuses to write unless the owner accepts the image's own deployment
-// ceiling), copies the release runner beside it, recomputes both identities with the
+// ceiling), copies the supplied runner beside it, recomputes both identities with the
 // same constructions the runtime uses, and writes the `marrow-deployment` manifest.
-// It refuses to compose against a toolchain whose release is not the one the app
-// expects, so a deployment can never pin a mismatched runner. Run explicitly; never
-// an npm lifecycle script.
+//
+// Two acceptance gates bound what a composed deployment can pin: the toolchain's
+// release must be the one the app expects (`EXPECTED_RELEASE`), and — when the
+// toolchain ships a `marrow-companions` release registry beside it — the supplied
+// `--runner` must be exactly the runner that registry records for this release.
+// Without that registry the runner is pinned as supplied and the owner is
+// responsible for supplying the release runner; the manifest self-agrees by
+// construction, so `resolveDeployment` alone cannot catch a wrong-but-consistent
+// runner. Run explicitly; never an npm lifecycle script.
 
 import { execFileSync } from "node:child_process";
-import { copyFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -52,17 +58,42 @@ if (release !== EXPECTED_RELEASE) {
   process.exit(1);
 }
 
+// 1b. When the toolchain ships a companion registry beside it, the supplied runner
+//     must be exactly the runner it records for this release — so an arbitrary,
+//     stale, or foreign runner cannot be pinned into the deployment.
+const suppliedRunnerId = companionReleaseId(readFileSync(runner));
+const registryPath = join(dirname(marrow), "marrow-companions");
+if (existsSync(registryPath)) {
+  const registry = readFileSync(registryPath, "utf8");
+  const line = registry.split("\n").find((l) => l.startsWith("runner "));
+  const recordedId = line?.split(" ")[2];
+  if (recordedId !== suppliedRunnerId) {
+    console.error(
+      "compose: the supplied --runner is not the one the toolchain's companion registry records; " +
+        "supply the release runner beside the toolchain",
+    );
+    process.exit(1);
+  }
+} else {
+  console.warn(
+    "compose: no companion registry beside the toolchain; pinning the supplied runner as-is " +
+      "(the owner is responsible for supplying the release runner)",
+  );
+}
+
 // 2. Emit the verified image through the stock command with the owner's acceptance.
 //    `marrow image` writes program.image only if the accepted ceiling matches.
 const imageOut = execFileSync(marrow, ["image", "--out", deployDir, "--accept-ceiling", acceptCeiling], {
   cwd: APP,
   encoding: "utf8",
 });
+// Read only the two identity facts by key; the command also prints the written path,
+// which is not a fact line and is ignored (a path may itself contain a space).
 const facts = Object.fromEntries(
   imageOut
     .split("\n")
     .map((line) => line.split(" "))
-    .filter((parts) => parts.length === 2)
+    .filter((parts) => parts.length === 2 && (parts[0] === "image" || parts[0] === "ceiling"))
     .map(([k, v]) => [k, v]),
 );
 const ceilingId = facts.ceiling;
@@ -76,6 +107,10 @@ if (ceilingId !== acceptCeiling) {
 const runnerName = "marrow-runner";
 copyFileSync(runner, join(deployDir, runnerName));
 const runnerId = companionReleaseId(readFileSync(join(deployDir, runnerName)));
+if (runnerId !== suppliedRunnerId) {
+  console.error("compose: the runner changed between verification and copy");
+  process.exit(1);
+}
 
 const imageName = "program.image";
 const imageId = imageIdOf(readFileSync(join(deployDir, imageName)));

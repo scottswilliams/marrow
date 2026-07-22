@@ -20,6 +20,21 @@ pub(crate) enum DemandNamingError {
     UnnameablePlace,
 }
 
+impl DemandNamingError {
+    /// The terse internal-error line every consumer prints, so the failure
+    /// projection has one owner alongside the lines themselves.
+    pub(crate) fn internal_message(&self) -> &'static str {
+        match self {
+            DemandNamingError::DirectoryImageDisagree => {
+                "internal error: export directory and image disagree"
+            }
+            DemandNamingError::UnnameablePlace => {
+                "internal error: an export demands an unnameable durable place"
+            }
+        }
+    }
+}
+
 /// Build one `module.item <demand sentence>` line per export, in `module.item`
 /// order, so a reader sees the whole program's durable footprint export by export.
 pub(crate) fn demand_lines(

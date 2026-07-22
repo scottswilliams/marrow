@@ -19,6 +19,8 @@ import { DeploymentFault, resolveDeployment } from "../app/deployment.mts";
 const RUNNER_ENTRY = "marrow-runner";
 const IMAGE_ENTRY = "program.image";
 const EXPECTED_ENTRIES = new Set(["marrow-deployment", RUNNER_ENTRY, IMAGE_ENTRY]);
+/** Law-9: even a build-time gate reads nothing unbounded. A stock runner is a few MB. */
+const MAX_ENTRY_BYTES = 1 << 30;
 
 function sha256(buf) {
   return createHash("sha256").update(buf).digest("hex");
@@ -69,6 +71,10 @@ function verifyOne(deployDir) {
   walk(deployDir, deployDir, files);
   const machoEntries = [];
   for (const file of files) {
+    if (statSync(file.abs).size > MAX_ENTRY_BYTES) {
+      failures.push(`entry ${file.path} is oversized`);
+      continue;
+    }
     const data = readFileSync(file.abs);
     const hash = sha256(data);
     manifestOut.push({ path: file.path, sha256: hash, mode: file.mode });

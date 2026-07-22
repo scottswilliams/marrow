@@ -48,22 +48,21 @@ export const CONTENT_SECURITY_POLICY = [
 ].join("; ");
 
 /**
- * The closed set of export names the renderer may ask the trusted main to invoke.
- * Every other export — and any attempt to name a store, image, runner, path, grant,
- * or ceiling — is refused. The main dispatches an incoming name only if it is in
- * this set, so the renderer's reach is exactly these domain functions.
+ * The closed set of export names the renderer may ask the trusted main to invoke —
+ * exactly the domain surface the preload bridges, and nothing more. Every other
+ * export, and any attempt to name a store, image, runner, path, grant, or ceiling,
+ * is refused. The main dispatches an incoming name only if it is in this set, so the
+ * renderer's reach is exactly these domain functions.
  */
 export const DOMAIN_EXPORTS = Object.freeze([
   // acts
   "registerMember",
   "registerAsset",
   "setEmail",
-  "clearEmail",
   "suspendMember",
   "reinstateMember",
   "checkout",
   "returnAsset",
-  "addServiceLog",
   // reads
   "memberExists",
   "memberName",
@@ -75,7 +74,6 @@ export const DOMAIN_EXPORTS = Object.freeze([
   "loanNoFor",
   "tagTaken",
   "assetNameByTag",
-  "serviceLogCount",
   "memberHistory",
   "assetsByCategory",
 ] as const);

@@ -50,6 +50,19 @@ lane-local and narrow the workspace rules; they do not override them.
   probes. Clauses needing a live Chromium/GUI or a truly clean machine are printed
   PENDING-HUMAN; the B6 unaided ceiling-expansion walkthrough is BLOCKED-ON-F03b.
 
+## Trust boundary (accepted limitation)
+
+The deployment integrity checks refuse partial tampering: altered runner bytes, an
+altered image, a missing/malformed manifest, a symlinked or traversing/absolute
+component, and a plain release-string skew all fail closed. They do NOT, on their
+own, catch a wholesale re-compose — an actor who can write the deployment directory
+can substitute a runner and a fully self-consistent manifest (matching identities
+and release). That is inherent to a source-only, unsigned distribution (no signing
+apparatus exists in v0.1) and is outside the renderer threat model: write access to
+the bundle already implies the ability to patch the app's own code. Bundle integrity
+is the responsibility of the OS install/permissions, not this app. `resolveDeployment`
+is a tamper check over an authentic bundle, not an authenticator of an untrusted one.
+
 ## Downstream of Marrow semantics
 
 A missing capability is added to Marrow first. This app reconstructs no types,

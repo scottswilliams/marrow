@@ -19,7 +19,7 @@ use marrow_compile::{
 };
 use marrow_verify::VerifiedImage;
 
-use crate::demand::{DemandNamingError, demand_lines};
+use crate::demand::demand_lines;
 use crate::project::capture_project;
 use crate::report_simple_error;
 use crate::term_style::{Stream, Style};
@@ -112,16 +112,10 @@ fn describe_exports(
             }
             ExitCode::SUCCESS
         }
-        Err(DemandNamingError::DirectoryImageDisagree) => {
-            // The directory named an id the verified image does not carry: a compiler
-            // bug, since the same compilation produced both.
-            eprintln!("internal error: export directory and image disagree");
-            ExitCode::FAILURE
-        }
-        Err(DemandNamingError::UnnameablePlace) => {
-            // Every demanded node of an admitted graph is nameable, so an unspellable
-            // demand is a compiler-coherence failure, not a user error.
-            eprintln!("internal error: an export demands an unnameable durable place");
+        // Both arms are compiler-coherence failures, not user errors: the same
+        // compilation produced the export directory and the verified image.
+        Err(error) => {
+            eprintln!("{}", error.internal_message());
             ExitCode::FAILURE
         }
     }
