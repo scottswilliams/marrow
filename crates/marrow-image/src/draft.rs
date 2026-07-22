@@ -12,6 +12,8 @@
 //! rechecks every bound against the received bytes; the draft's checks are a
 //! producer-side guard, not the trust boundary.
 
+use std::collections::HashMap;
+
 use crate::durable_id::{DurableIndexShape, DurableValueShape, LedgerIdBytes};
 use crate::export_id::ExportId;
 use crate::instr::Instr;
@@ -388,6 +390,14 @@ pub struct ImageDraft {
     roots: Vec<RootDef>,
     application: Option<LedgerIdBytes>,
     sites: Vec<SiteDef>,
+    /// Deduplicating index for lazily-allocated operation sites, keyed by the addressed
+    /// node's entropy-minted ledger id and the operation target. The `sites` vector stays
+    /// the sole site-table authority and emission order; this index only lets a repeated
+    /// reference to one `(node, target)` return the site already minted, so the table
+    /// carries a site per *referenced* node rather than one per declared graph node. The
+    /// node id is globally unique (the verifier enforces pairwise-distinct ledger ids), so
+    /// the key identifies exactly one site.
+    site_index: HashMap<(LedgerIdBytes, SemanticTarget), SiteId>,
     functions: Vec<FunctionDef>,
     exports: Vec<ExportDef>,
     test_entries: Vec<TestEntryDef>,
@@ -517,6 +527,23 @@ impl ImageDraft {
     pub fn add_site(&mut self, def: SiteDef) -> SiteId {
         let id = SiteId(self.sites.len() as u16);
         self.sites.push(def);
+        id
+    }
+
+    /// Mint-or-return the operation site for `def`, deduplicated by the addressed node's
+    /// ledger id and target. The first reference to a `(node, target)` appends a site; a
+    /// later reference to the same one returns the existing index. Field-leaf sites are
+    /// allocated this way at lowering time, so the site table carries a leaf site per
+    /// *referenced* field rather than one per declared field. Non-deduplicated bounded
+    /// sites (whole-payload, group-entry, index) are emitted eagerly through
+    /// [`Self::add_site`]; they are unique per graph node and never re-minted.
+    pub fn alloc_site(&mut self, def: SiteDef) -> SiteId {
+        let key = (def.path.node_id(), def.target);
+        if let Some(existing) = self.site_index.get(&key) {
+            return *existing;
+        }
+        let id = self.add_site(def);
+        self.site_index.insert(key, id);
         id
     }
 

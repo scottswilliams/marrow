@@ -581,12 +581,15 @@ fn flagship_bound_watches_are_counted_and_within_ceiling() {
 }
 
 /// The frozen operation-site count. The flagship has 6 keyed placements (the 3 store
-/// roots plus the 3 keyed branches), 18 stored fields, and 2 managed indexes — 26
-/// nodes, each sealed as its own site (no root-level groups are declared).
-const FLAGSHIP_SITES: usize = 26;
+/// roots plus the 3 keyed branches) and 2 managed indexes, all sealed eagerly, plus one
+/// field-leaf site per field the code actually addresses (field-leaf emission is lazy, so
+/// declared-but-untouched fields mint no site). With BND02 C1 the count dropped from the
+/// former 26 (one site per declared node) to 17: the eager placement/index sites plus the
+/// referenced field leaves only.
+const FLAGSHIP_SITES: usize = 17;
 
-/// The frozen encoded image size in bytes.
-const FLAGSHIP_IMAGE_BYTES: usize = 13162;
+/// The frozen encoded image size in bytes (shrunk with lazy field-leaf sites, BND02 C1).
+const FLAGSHIP_IMAGE_BYTES: usize = 12583;
 
 /// Capture and compile the on-disk flagship fixture through the production path,
 /// returning the encoded image byte length and the verified image.

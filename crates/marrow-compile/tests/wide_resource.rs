@@ -84,12 +84,14 @@ fn a_narrow_resource_compiles() {
     compile_ok(10);
 }
 
-/// Monotone-widen byte-identity law: an image representational bound is a decode-time
-/// allocation guard, never a stored-format byte, so widening a bound must never change
-/// the encoded image of a program already within the old bounds. This pins, by content
-/// hash frozen at this head, the encoded bytes of a small durable resource that sits
-/// well within the former 64-type / 256 KiB caps. Any future edit that serializes a
-/// bound constant, or otherwise perturbs an in-bounds program's bytes, turns this red.
+/// Monotone-widen byte-identity law: an image representational *bound* is a decode-time
+/// allocation guard, never a stored-format byte, so widening a bound must never change the
+/// encoded image of a program already within the old bounds. This pins, by content hash,
+/// the encoded bytes of a small durable resource; any future edit that serializes a bound
+/// constant, or otherwise perturbs an in-bounds program's bytes, turns this red. The hash
+/// was re-baselined once — deliberately, not by a bound widen — when field-leaf operation
+/// sites became lazy (BND02 C1): this resource's `noop` addresses no field, so its former
+/// per-field sites are gone and the image shrank. From this baseline the guard continues.
 #[test]
 fn an_in_bounds_program_has_frozen_image_bytes() {
     let bytes = compile_ok(10).image.bytes;
@@ -100,7 +102,7 @@ fn an_in_bounds_program_has_frozen_image_bytes() {
         .collect();
     assert_eq!(
         hex,
-        "f1500613d311c58ae7652b3048d13390dc07cab740793f517b63e43185ef3397",
+        "6f1ffb854fe70b94e0d85a6a5d9833203a3e58b1505c354ed8fa1b99ae6ead95",
         "in-bounds image bytes changed; the monotone-widen law forbids this \
          (encoded {} bytes)",
         bytes.len(),
@@ -124,20 +126,26 @@ fn the_full_field_guard_width_durable_resource_compiles() {
     );
 }
 
-/// A durable resource near the record-field width at ~4090 sparse fields encodes to
-/// ~343 KB. That exceeds the v0 256 KiB image ceiling and fits the widened 512 KiB one,
-/// so it pins [`marrow_image::bounds::MAX_IMAGE_BYTES`] as the load-bearing bound for a
-/// wide durable resource rather than the field-count guard.
+/// Durable width is decoupled from image bytes (BND02 C1): a resource near the full
+/// record-field width (4090 sparse fields) whose code addresses no field encodes far below
+/// the eager per-field cost. Under eager per-field site emission this resource cost
+/// ~84 B/field (~343 KB, past the v0 256 KiB ceiling and needing the widened 512 KiB one);
+/// with lazy field-leaf sites it emits no field site — only its member tree, record type,
+/// and interned names — so it fits well under 256 KiB (~126 KB). This pins that a wide
+/// resource's image no longer scales with its declared width when its code does not touch
+/// every field (the owner's sparse-at-scale shape), so [`marrow_image::bounds::MAX_IMAGE_BYTES`]
+/// is no longer the durable-width binder.
 #[test]
-fn a_near_max_width_durable_resource_needs_the_widened_image_ceiling() {
+fn a_wide_resource_image_is_decoupled_from_declared_width() {
     let bytes = compile_ok(4090).image.bytes.len();
     assert!(
-        bytes > 256 * 1024,
-        "the near-max-width durable resource exceeds the v0 256 KiB ceiling: {bytes} bytes",
+        bytes < 256 * 1024,
+        "a wide resource whose code touches no field must fit far under the eager \
+         ~84 B/field cost now that field-leaf sites are lazy: {bytes} bytes",
     );
     assert!(
         bytes <= marrow_image::bounds::MAX_IMAGE_BYTES,
-        "it must fit the widened image ceiling ({} bytes): {bytes} bytes",
+        "it fits the image ceiling ({} bytes): {bytes} bytes",
         marrow_image::bounds::MAX_IMAGE_BYTES,
     );
 }

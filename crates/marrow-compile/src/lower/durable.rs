@@ -193,7 +193,10 @@ pub(super) enum DurNode<'a> {
 /// The pieces of one resolved durable field a [`DurTarget::Field`] needs, projected from a
 /// root field or a branch field uniformly.
 struct DurFieldRef {
-    site: u16,
+    /// The field's stable field-leaf path. The caller allocates (and deduplicates) its
+    /// operation site through the draft when it builds the field target, so an untouched
+    /// field mints no site.
+    path: SemanticPath,
     /// The field's value type: a root field's widened value set, or a branch field's
     /// scalar (branch fields are currently scalar-only) lifted to `GArg::Scalar`.
     ty: GArg,
@@ -234,12 +237,12 @@ impl<'a> DurNode<'a> {
     fn field(&self, name: &str) -> Option<DurFieldRef> {
         match self {
             DurNode::Root(root) => root.field(name).map(|field| DurFieldRef {
-                site: field.site,
+                path: field.path.clone(),
                 ty: field.ty,
                 required: field.required,
             }),
             DurNode::Branch(branch) => branch.field(name).map(|field| DurFieldRef {
-                site: field.site,
+                path: field.path.clone(),
                 ty: GArg::Scalar(field.scalar),
                 required: field.required,
             }),
@@ -907,10 +910,14 @@ impl<'a> FnLowerer<'a> {
                 }
                 let (keys, node) = self.resolve_place_entry_node(base)?;
                 if let Some(field) = node.field(field_name) {
+                    let site = self
+                        .draft
+                        .alloc_site(SiteDef::field_leaf(field.path))
+                        .index();
                     return Some(DurablePlace {
                         keys,
                         target: DurTarget::Field {
-                            site: field.site,
+                            site,
                             ty: field.ty,
                             required: field.required,
                         },
@@ -1237,10 +1244,14 @@ impl<'a> FnLowerer<'a> {
                 }
                 let (keys, node) = self.resolve_entry_address(root, base)?;
                 if let Some(field) = node.field(field_name) {
+                    let site = self
+                        .draft
+                        .alloc_site(SiteDef::field_leaf(field.path))
+                        .index();
                     return Some(DurablePlace {
                         keys,
                         target: DurTarget::Field {
-                            site: field.site,
+                            site,
                             ty: field.ty,
                             required: field.required,
                         },

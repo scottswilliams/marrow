@@ -43,7 +43,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use marrow_codes::Code;
 use marrow_image::{
-    EnumId, FuncId, FunctionDef, ImageDraft, ImageType, Instr, Scalar, SpanEntry, TypeId,
+    EnumId, FuncId, FunctionDef, ImageDraft, ImageType, Instr, Scalar, SemanticPath, SiteDef,
+    SpanEntry, TypeId,
 };
 use marrow_project::FileIdentity;
 use marrow_syntax::{

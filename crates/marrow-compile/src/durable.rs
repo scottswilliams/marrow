@@ -112,10 +112,14 @@ fn orderable_key_scalar(value: &DurableValueShape) -> Option<ScalarType> {
     }
 }
 
-/// One resolved durable field site.
+/// One resolved durable field. The field-leaf operation site is not pre-minted: the
+/// field carries its stable [`SemanticPath`], and the lowerer allocates (and
+/// deduplicates) a field-leaf site through the draft the first time an instruction
+/// addresses it, so the image carries a leaf site per *referenced* field rather than
+/// one per declared field.
 pub(crate) struct DurableField {
     pub(crate) name: String,
-    pub(crate) site: u16,
+    pub(crate) path: SemanticPath,
     /// The field's resolved value type: a scalar, or a widened composite (a dense
     /// `struct`, or a closed `enum`/`Option`/`Result`). The lowerer builds the read
     /// result and written-value type from it.
@@ -124,15 +128,15 @@ pub(crate) struct DurableField {
 }
 
 /// One resolved scalar field of an executable branch entry: its source name, value
-/// scalar, required flag, and field-leaf operation site. The whole-payload
-/// create/replace flows through the branch's materialized record; `site` is the
+/// scalar, required flag, and stable field-leaf [`SemanticPath`]. The whole-payload
+/// create/replace flows through the branch's materialized record; `path` names the
 /// field-exact leaf a `^root(k).branch(bk).field` read or write addresses directly, one
-/// level below the root.
+/// level below the root, whose site the lowerer allocates on first reference.
 pub(crate) struct DurableBranchField {
     pub(crate) name: String,
     pub(crate) scalar: ScalarType,
     pub(crate) required: bool,
-    pub(crate) site: u16,
+    pub(crate) path: SemanticPath,
 }
 
 /// One scalar/widened leaf of an executable root-level `group`: its source name, value
@@ -703,7 +707,7 @@ fn build_one(
             root_steps.clone(),
         )))
         .index();
-    let (top_field_sites, top_groups, top_branches) =
+    let (top_field_paths, top_groups, top_branches) =
         emit_root_member_sites(draft, &root_steps, &members);
     // One read site per managed index: a nonunique index is a progressive-prefix
     // scan, a unique index a complete-key exact lookup. There is deliberately no
@@ -790,17 +794,18 @@ fn build_one(
             naming,
         }));
     }
-    // A flat root's top-level fields map positionally to `top_field_sites`, so
-    // `top_field_sites[i]` is the field-leaf site of `record.fields[i]` (both in
+    // A flat root's top-level fields map positionally to `top_field_paths`, so
+    // `top_field_paths[i]` is the stable field-leaf path of `record.fields[i]` (both in
     // member/record order). Each field carries its resolved value type (a scalar or a
-    // widened composite), from which the lowerer builds the read/written value type.
+    // widened composite), from which the lowerer builds the read/written value type; its
+    // field-leaf site is allocated lazily when an instruction first addresses it.
     let fields = record
         .fields
         .iter()
-        .enumerate()
-        .map(|(index, field)| DurableField {
+        .zip(top_field_paths)
+        .map(|(field, path)| DurableField {
             name: field.name.clone(),
-            site: top_field_sites[index],
+            path,
             ty: field.ty,
             required: field.required,
         })
@@ -1568,7 +1573,10 @@ impl<'a> IdentityResolver<'a> {
 /// respectively; a non-flat root parks them and consumes neither.
 struct BranchSites {
     entry: u16,
-    fields: Vec<u16>,
+    /// The stable field-leaf paths of this branch's direct fields, in declaration order.
+    /// The leaf sites are allocated lazily at lowering time, so the branch carries paths
+    /// rather than pre-minted site indices.
+    fields: Vec<SemanticPath>,
     record: marrow_image::TypeId,
     /// The captured sites of this branch's own nested branches, in declaration order, so a
     /// nested-branch lowerer resolves a deeper `^root(k).b(bk).s(sk)` path level by level.
@@ -1586,16 +1594,11 @@ fn child_steps(
     steps
 }
 
-/// Emit one stored field's field-leaf site under `parent_steps`, returning its index.
-fn emit_field_site(
-    draft: &mut ImageDraft,
-    parent_steps: &[SemanticStep],
-    id: LedgerIdBytes,
-) -> u16 {
-    let steps = child_steps(parent_steps, SemanticStepKind::Field, id);
-    draft
-        .add_site(SiteDef::field_leaf(SemanticPath::from_steps(steps)))
-        .index()
+/// The stable field-leaf [`SemanticPath`] of one stored field under `parent_steps`. The
+/// leaf site is not emitted here: the lowerer allocates it lazily on first reference, so
+/// an untouched field mints no site.
+fn field_leaf_path(parent_steps: &[SemanticStep], id: LedgerIdBytes) -> SemanticPath {
+    SemanticPath::from_steps(child_steps(parent_steps, SemanticStepKind::Field, id))
 }
 
 /// Emit one keyed placement's whole-payload site at `steps`, returning its index.
@@ -1607,37 +1610,36 @@ fn emit_placement_site(draft: &mut ImageDraft, steps: &[SemanticStep]) -> u16 {
         .index()
 }
 
-/// Emit the operation sites of the root's whole member tree under `root_steps`,
-/// capturing the root's direct field-leaf sites, each root-level group's `GroupEntry`
-/// site (in declaration order), and each top-level branch's captured sites (recursively)
-/// for the flat executable lowerer. A root-level group emits one `GroupEntry` site over
-/// the group node and its leaf field-leaf sites (parked, for identity completeness); a
-/// group leaf is never executed through its own site, so only the group's entry site is
-/// captured. The emission order is pre-order, a placement or group node before its
-/// members, mirroring [`marrow_image::DurableContractDescriptor::semantic_nodes`] so every
-/// site resolves against the verifier's independently reconstructed node set.
+/// Emit the eager (bounded, per-node) operation sites of the root's member tree under
+/// `root_steps` and capture what the flat executable lowerer needs: each root-level
+/// group's `GroupEntry` site (in declaration order), each top-level branch's whole-payload
+/// entry site (recursively), and the stable field-leaf *paths* of the root's direct fields.
+/// Field-leaf sites are not emitted here — the lowerer allocates one lazily on first
+/// reference — so a wide resource's site table scales with referenced fields, not declared
+/// width. A group is a namespace whose leaves are addressed through its whole-group site, so
+/// no per-leaf site is emitted. The eager sites are emitted pre-order, a placement or group
+/// node before its members, mirroring
+/// [`marrow_image::DurableContractDescriptor::semantic_nodes`] so every emitted site
+/// resolves against the verifier's independently reconstructed node set.
 fn emit_root_member_sites(
     draft: &mut ImageDraft,
     root_steps: &[SemanticStep],
     members: &[DurableMemberDef],
-) -> (Vec<u16>, Vec<u16>, Vec<BranchSites>) {
-    let mut top_field_sites = Vec::new();
+) -> (Vec<SemanticPath>, Vec<u16>, Vec<BranchSites>) {
+    let mut top_field_paths = Vec::new();
     let mut top_group_sites = Vec::new();
     let mut top_branches = Vec::new();
     for member in members {
         match member {
             DurableMemberDef::Field { id, .. } => {
-                top_field_sites.push(emit_field_site(draft, root_steps, *id));
+                top_field_paths.push(field_leaf_path(root_steps, *id));
             }
-            DurableMemberDef::Group { id, members } => {
+            DurableMemberDef::Group { id, .. } => {
                 let steps = child_steps(root_steps, SemanticStepKind::Group, *id);
                 let entry = draft
-                    .add_site(SiteDef::group_entry(SemanticPath::from_steps(
-                        steps.clone(),
-                    )))
+                    .add_site(SiteDef::group_entry(SemanticPath::from_steps(steps)))
                     .index();
                 top_group_sites.push(entry);
-                emit_subtree_sites(draft, &steps, members);
             }
             DurableMemberDef::Branch {
                 placement,
@@ -1651,17 +1653,17 @@ fn emit_root_member_sites(
             }
         }
     }
-    (top_field_sites, top_group_sites, top_branches)
+    (top_field_paths, top_group_sites, top_branches)
 }
 
-/// Emit one keyed branch's sites under `parent_steps` and capture them recursively: its
-/// whole-payload entry site, its direct field-leaf sites in declaration order, and each
-/// nested branch's captured sites. A static `group` inside a branch parks the whole root
-/// (`member_keeps_root_flat` refuses it), so on the executable path only fields and nested
-/// branches occur; a group is still emitted without capture for identity completeness. The
-/// direct field order is the branch's materialized-record order — the leaf the verifier
-/// seals as `BranchField(field)` — and the nested-branch order indexes the sealed branch
-/// tree, so the compiler's and verifier's independent resolutions agree.
+/// Emit one keyed branch's eager whole-payload entry site under `parent_steps` and capture
+/// it recursively with its direct field-leaf *paths* (leaf sites allocated lazily on
+/// reference) and each nested branch's captured sites. A static `group` inside a branch
+/// parks the whole root (`member_keeps_root_flat` refuses it), so on the executable path
+/// only fields and nested branches occur. The direct field order is the branch's
+/// materialized-record order — the leaf the verifier seals as `BranchField(field)` — and
+/// the nested-branch order indexes the sealed branch tree, so the compiler's and verifier's
+/// independent resolutions agree.
 fn emit_branch_sites(
     draft: &mut ImageDraft,
     parent_steps: &[SemanticStep],
@@ -1676,12 +1678,9 @@ fn emit_branch_sites(
     for inner in members {
         match inner {
             DurableMemberDef::Field { id, .. } => {
-                fields.push(emit_field_site(draft, &steps, *id));
+                fields.push(field_leaf_path(&steps, *id));
             }
-            DurableMemberDef::Group { id, members } => {
-                let steps = child_steps(&steps, SemanticStepKind::Group, *id);
-                emit_subtree_sites(draft, &steps, members);
-            }
+            DurableMemberDef::Group { .. } => {}
             DurableMemberDef::Branch {
                 placement,
                 members,
@@ -1699,36 +1698,6 @@ fn emit_branch_sites(
         fields,
         record,
         branches,
-    }
-}
-
-/// Emit the field-leaf and whole-payload sites of every node in a member subtree under
-/// `parent_steps`, without capturing indices: a stored field yields a field-leaf site,
-/// a static `group` recurses (a namespace, no site of its own), and a keyed `branch`
-/// yields a whole-payload site and recurses. The single recursive site emitter for
-/// parked nested content, reached from [`emit_root_member_sites`].
-fn emit_subtree_sites(
-    draft: &mut ImageDraft,
-    parent_steps: &[SemanticStep],
-    members: &[DurableMemberDef],
-) {
-    for member in members {
-        match member {
-            DurableMemberDef::Field { id, .. } => {
-                emit_field_site(draft, parent_steps, *id);
-            }
-            DurableMemberDef::Group { id, members } => {
-                let steps = child_steps(parent_steps, SemanticStepKind::Group, *id);
-                emit_subtree_sites(draft, &steps, members);
-            }
-            DurableMemberDef::Branch {
-                placement, members, ..
-            } => {
-                let steps = child_steps(parent_steps, SemanticStepKind::Placement, *placement);
-                emit_placement_site(draft, &steps);
-                emit_subtree_sites(draft, &steps, members);
-            }
-        }
     }
 }
 
@@ -1851,7 +1820,7 @@ fn build_branches(
                     _ => None,
                 })
                 .zip(&sites.fields)
-                .map(|(field, &site)| {
+                .map(|(field, path)| {
                     #[expect(
                         clippy::expect_used,
                         reason = "checker-classified type: fields admitted to an executable branch were classified as scalars during checking, so expansion yields a scalar"
@@ -1862,7 +1831,7 @@ fn build_branches(
                         name: field.name.clone(),
                         scalar,
                         required: field.required,
-                        site,
+                        path: path.clone(),
                     }
                 })
                 .collect();

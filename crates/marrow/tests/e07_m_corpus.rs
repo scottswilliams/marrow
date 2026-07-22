@@ -134,25 +134,26 @@ fn compile_and_size(name: &str) -> (usize, marrow_verify::VerifiedImage) {
     (bytes, image)
 }
 
-/// The M-shaped counted watch. Freezing the exact site count pins the eager
-/// per-field site emission — one field-leaf site per stored field plus the group,
-/// branch, and placement sites — and asserts it clears `MAX_SITES` with headroom.
-/// The image byte size is recorded and asserted under `MAX_IMAGE_BYTES`.
+/// The M-shaped counted watch. With lazy field-leaf emission (BND02 C1) the site count
+/// is the eager per-node sites (placements and whole-group sites) plus one field-leaf site
+/// per field the code actually addresses — not one per declared field. This is the
+/// sparse-at-scale win: a 2000-field resource whose code touches a handful of fields emits
+/// a handful of field sites, so the site count and image size collapse. The count is frozen
+/// so a regression back to eager per-declared-field emission is conspicuous.
 #[test]
 fn counted_watch_clinical_2000_fields() {
     let (bytes, image) = compile_and_size("e07_m_corpus/clinical");
     let sites = image.sites().len();
 
-    // Recorded freeze count (2026-07-21): 2028 operation sites. 2000 field-leaf
-    // sites (100 top-level + 1900 group-scoped) + 20 whole-group sites + 1 root
-    // placement + 2 branch placements (observations, diagnoses) + 5 branch field-leaf
-    // (4 observations + 1 diagnoses) = 2028. Field type does not affect the site
-    // count: the two `Option<int>` fields (`glucoseReading`, `lactateReading`) each
-    // remain one field-leaf site while sharing one enum durable identity. The emitted
-    // image is 199_506 bytes.
+    // Recorded freeze count (BND02 C1 re-baseline): 27 operation sites — the eager
+    // per-node sites (1 root placement + 2 branch placements + 20 whole-group sites) plus
+    // one field-leaf site per field the clinical code addresses. Former eager emission was
+    // 2028 (one leaf per declared field); lazy emission drops it ~98% because the fixture
+    // touches only a handful of its 2000 declared fields, so declared-but-untouched fields
+    // mint no site. The emitted image shrank correspondingly.
     assert_eq!(
-        sites, 2028,
-        "clinical operation-site count is frozen at 2028"
+        sites, 27,
+        "clinical operation-site count is frozen at 27 (lazy field-leaf emission)"
     );
     assert_eq!(image.roots().len(), 1, "one top-level store root");
 

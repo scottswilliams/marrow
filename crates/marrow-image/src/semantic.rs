@@ -85,7 +85,7 @@ impl SemanticStepKind {
 /// `IndexScan`, and a unique index admits `IndexLookup` — so the two together name a
 /// site. There is no index *write* target: managed-index maintenance is compiler-owned
 /// with no application opcode.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SemanticTarget {
     WholePayload,
     FieldLeaf,
