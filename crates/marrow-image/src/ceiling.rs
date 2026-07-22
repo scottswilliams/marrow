@@ -27,7 +27,7 @@
 //! as a ceiling identity that would widen authority. The attachment mint binds the
 //! ceiling id, so the store carries the exact ceiling it was minted under.
 
-use crate::demand::{ExportDemand, frame_id};
+use crate::demand::{CeilingDecodeError, DemandAtom, ExportDemand, frame_id};
 
 /// The domain-separation tag for the deployment-ceiling identity. Distinct from every
 /// other Marrow identity's `kind`, so a `CeilingId` can never collide with a
@@ -73,6 +73,35 @@ impl CeilingDescriptor {
     /// [`CEILING_KIND`].
     pub fn ceiling_id(&self) -> CeilingId {
         CeilingId(frame_id(CEILING_KIND, &self.atoms.atom_set_payload()))
+    }
+
+    /// The canonical atom-set payload this ceiling admits — the persisted form of the
+    /// deployment's accepted maximum authority. A store records these bytes at
+    /// provision and reconstructs the ceiling from them at attach with
+    /// [`Self::from_payload`].
+    pub fn atom_set_payload(&self) -> Vec<u8> {
+        self.atoms.atom_set_payload()
+    }
+
+    /// Reconstruct a ceiling from its persisted [`Self::atom_set_payload`] bytes.
+    /// Strict: a hostile or torn payload rejects typed (see
+    /// [`ExportDemand::decode_atom_set`]) rather than yielding a forged wider ceiling.
+    pub fn from_payload(bytes: &[u8]) -> Result<Self, CeilingDecodeError> {
+        Ok(Self {
+            atoms: ExportDemand::decode_atom_set(bytes)?,
+        })
+    }
+
+    /// The atom set this ceiling admits, as an [`ExportDemand`] — the input to the
+    /// atom-granular admission check ([`ExportDemand::not_admitted_by`]).
+    pub fn demand(&self) -> &ExportDemand {
+        &self.atoms
+    }
+
+    /// Whether this ceiling admits `atom` — its canonical body is one the ceiling's
+    /// atom set contains. An input to the authority check, never a grant.
+    pub fn admits(&self, atom: &DemandAtom) -> bool {
+        self.atoms.contains(atom)
     }
 }
 

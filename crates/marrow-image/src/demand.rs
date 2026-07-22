@@ -46,7 +46,7 @@
 
 use sha2::{Digest, Sha256};
 
-use crate::semantic::SemanticPath;
+use crate::semantic::{SemanticPath, SemanticStepKind};
 
 /// The domain-separation tag for the demand-set identity. Distinct from every other
 /// Marrow identity's `kind`, so a `DemandSetId` can never collide with an `ImageId`,
@@ -226,8 +226,10 @@ impl ExportDemand {
     /// over the sorted, deduplicated atoms. This is the single owner of the atom-set
     /// byte spelling; both the [`DemandSetId`] and the deployment
     /// [`CeilingId`](crate::CeilingId) frame it under their own domain-separation
-    /// `kind`, so the two identities can never collide over the same atom set.
-    pub(crate) fn atom_set_payload(&self) -> Vec<u8> {
+    /// `kind`, so the two identities can never collide over the same atom set. It is
+    /// also the persisted form of a store's accepted deployment ceiling (the
+    /// "separately owned maximum ceiling"), decoded back by [`Self::decode_atom_set`].
+    pub fn atom_set_payload(&self) -> Vec<u8> {
         let mut payload: Vec<u8> = Vec::new();
         push_lp(&mut payload, LOCAL_ROOT_LINEAGE);
         payload.extend_from_slice(&(self.atoms.len() as u32).to_be_bytes());
@@ -240,6 +242,179 @@ impl ExportDemand {
     /// The stable 32-byte identity of this demand set.
     pub fn demand_set_id(&self) -> DemandSetId {
         DemandSetId(frame_id(DEMAND_SET_KIND, &self.atom_set_payload()))
+    }
+
+    /// Whether this demand contains `atom` — an exact match on the atom's canonical
+    /// body (path + class), the same key the identity payload and canonical order use.
+    pub fn contains(&self, atom: &DemandAtom) -> bool {
+        let body = atom.encode_body();
+        self.atoms.iter().any(|candidate| candidate.encode_body() == body)
+    }
+
+    /// The atoms of `self` that `ceiling` does not admit — the set difference
+    /// `self \ ceiling` by canonical atom body, in `self`'s canonical order. Empty iff
+    /// `self ⊆ ceiling`. This is the atom-granular admission check a deployment ceiling
+    /// performs: an export whose reconstructed demand yields a nonempty result demands
+    /// access beyond the accepted ceiling and is refused, and every returned atom names
+    /// a durable place and operation class the ceiling must be consciously expanded to
+    /// admit. Demand never grants; this only checks.
+    pub fn not_admitted_by(&self, ceiling: &ExportDemand) -> Vec<DemandAtom> {
+        let admitted: std::collections::BTreeSet<Vec<u8>> =
+            ceiling.atoms.iter().map(DemandAtom::encode_body).collect();
+        self.atoms
+            .iter()
+            .filter(|atom| !admitted.contains(&atom.encode_body()))
+            .cloned()
+            .collect()
+    }
+
+    /// Decode a canonical atom-set payload (as [`Self::atom_set_payload`] produces it)
+    /// back into an [`ExportDemand`]. Strict: it validates every length and count
+    /// against the remaining input before allocating (campaign law 9), rejects an
+    /// unknown lineage, an unknown operation-class tag, an unknown path step kind, an
+    /// empty path, a count past its fixed bound, a truncated body, and trailing bytes.
+    /// This decodes a store's persisted accepted deployment ceiling; a hostile or torn
+    /// payload rejects typed rather than yielding a partial or forged demand.
+    pub fn decode_atom_set(bytes: &[u8]) -> Result<ExportDemand, CeilingDecodeError> {
+        let mut cur = AtomCursor::new(bytes);
+        let lineage = cur.lp()?;
+        if lineage != LOCAL_ROOT_LINEAGE {
+            return Err(CeilingDecodeError::UnknownLineage);
+        }
+        let atom_count = cur.u32()? as usize;
+        if atom_count > MAX_CEILING_ATOMS {
+            return Err(CeilingDecodeError::AtomCountOverflow);
+        }
+        let mut atoms = Vec::with_capacity(atom_count);
+        for _ in 0..atom_count {
+            let body = cur.lp()?;
+            atoms.push(decode_atom_body(body)?);
+        }
+        if !cur.at_end() {
+            return Err(CeilingDecodeError::TrailingBytes);
+        }
+        Ok(ExportDemand::from_atoms(atoms))
+    }
+}
+
+/// A fixed upper bound on the number of atoms a decoded ceiling payload may carry,
+/// validated before any allocation (campaign law 9). Comfortably above any real
+/// program's whole-demand union and far below memory exhaustion.
+pub const MAX_CEILING_ATOMS: usize = 65_536;
+
+/// A fixed upper bound on the step count of one decoded atom's path — the durable
+/// graph depth bound — validated before allocation.
+const MAX_ATOM_STEPS: usize = 64;
+
+/// Why a persisted atom-set payload (a store's accepted deployment ceiling) failed to
+/// decode. A decode rejection means the persisted bytes are not a well-formed ceiling
+/// this build accepts — the "artifact decode/verify rejection" failure family — never a
+/// best-effort partial demand.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CeilingDecodeError {
+    /// The bytes end before a field the grammar requires.
+    Truncated,
+    /// Bytes remain after the last atom — a canonical payload is consumed exactly.
+    TrailingBytes,
+    /// The lineage prefix is not the local project root; a dependency lineage is a
+    /// later phase.
+    UnknownLineage,
+    /// The atom count exceeds [`MAX_CEILING_ATOMS`].
+    AtomCountOverflow,
+    /// An atom's path step count exceeds [`MAX_ATOM_STEPS`].
+    StepCountOverflow,
+    /// An atom carries an empty path; every atom names at least the application step.
+    EmptyPath,
+    /// An atom's class tag is outside the closed [`OperationClass`] set.
+    UnknownClass,
+    /// A path step's kind byte is outside the frozen ledger kind space.
+    UnknownStepKind,
+}
+
+/// Decode one atom body `u8(class_tag) ‖ u16_be(step_count) ‖ step*`, validating the
+/// class tag, each step kind, the step count, and exact consumption.
+fn decode_atom_body(body: &[u8]) -> Result<DemandAtom, CeilingDecodeError> {
+    let mut cur = AtomCursor::new(body);
+    let tag = cur.u8()?;
+    let class = OperationClass::from_tag(tag).ok_or(CeilingDecodeError::UnknownClass)?;
+    let step_count = cur.u16()? as usize;
+    if step_count == 0 {
+        return Err(CeilingDecodeError::EmptyPath);
+    }
+    if step_count > MAX_ATOM_STEPS {
+        return Err(CeilingDecodeError::StepCountOverflow);
+    }
+    let mut steps = Vec::with_capacity(step_count);
+    for _ in 0..step_count {
+        let kind = SemanticStepKind::from_ledger_kind(cur.u8()?)
+            .ok_or(CeilingDecodeError::UnknownStepKind)?;
+        let id = crate::durable_id::LedgerIdBytes::from_bytes(cur.array16()?);
+        steps.push(crate::semantic::SemanticStep::new(kind, id));
+    }
+    if !cur.at_end() {
+        return Err(CeilingDecodeError::TrailingBytes);
+    }
+    Ok(DemandAtom::new(SemanticPath::from_steps(steps), class))
+}
+
+/// A bounded forward reader over an atom-set payload: every read validates the
+/// remaining input before it borrows, so a truncated payload rejects rather than
+/// panicking, and a length can never drive an unbounded reservation.
+struct AtomCursor<'a> {
+    bytes: &'a [u8],
+    pos: usize,
+}
+
+impl<'a> AtomCursor<'a> {
+    fn new(bytes: &'a [u8]) -> Self {
+        Self { bytes, pos: 0 }
+    }
+
+    fn take(&mut self, n: usize) -> Result<&'a [u8], CeilingDecodeError> {
+        let end = self.pos.checked_add(n).ok_or(CeilingDecodeError::Truncated)?;
+        let slice = self
+            .bytes
+            .get(self.pos..end)
+            .ok_or(CeilingDecodeError::Truncated)?;
+        self.pos = end;
+        Ok(slice)
+    }
+
+    fn u8(&mut self) -> Result<u8, CeilingDecodeError> {
+        Ok(self.take(1)?[0])
+    }
+
+    fn u16(&mut self) -> Result<u16, CeilingDecodeError> {
+        Ok(u16::from_be_bytes(
+            self.take(2)?.try_into().expect("took exactly two bytes"),
+        ))
+    }
+
+    fn u32(&mut self) -> Result<u32, CeilingDecodeError> {
+        Ok(u32::from_be_bytes(
+            self.take(4)?.try_into().expect("took exactly four bytes"),
+        ))
+    }
+
+    fn u64(&mut self) -> Result<u64, CeilingDecodeError> {
+        Ok(u64::from_be_bytes(
+            self.take(8)?.try_into().expect("took exactly eight bytes"),
+        ))
+    }
+
+    fn array16(&mut self) -> Result<[u8; 16], CeilingDecodeError> {
+        Ok(self.take(16)?.try_into().expect("took exactly sixteen bytes"))
+    }
+
+    /// A length-prefixed slice `u64_be(len) ‖ bytes`; the length is bounded against the
+    /// remaining input by [`Self::take`], so it can never over-reserve.
+    fn lp(&mut self) -> Result<&'a [u8], CeilingDecodeError> {
+        let len = usize::try_from(self.u64()?).map_err(|_| CeilingDecodeError::Truncated)?;
+        self.take(len)
+    }
+
+    fn at_end(&self) -> bool {
+        self.pos == self.bytes.len()
     }
 }
 
@@ -298,7 +473,8 @@ fn push_lp(out: &mut Vec<u8>, bytes: &[u8]) {
 #[cfg(test)]
 mod tests {
     use super::{
-        DEMAND_SET_KIND, DemandAtom, ExportDemand, LOCAL_ROOT_LINEAGE, OperationClass, push_lp,
+        CeilingDecodeError, DEMAND_SET_KIND, DemandAtom, ExportDemand, LOCAL_ROOT_LINEAGE,
+        OperationClass, push_lp,
     };
     use crate::durable_id::LedgerIdBytes;
     use crate::semantic::{SemanticPath, SemanticStep, SemanticStepKind};
@@ -496,5 +672,113 @@ mod tests {
             ExportDemand::union([&a1, &a2]).demand_set_id(),
             ExportDemand::union([&b1, &b2]).demand_set_id(),
         );
+    }
+
+    /// The atom-set payload round-trips through [`ExportDemand::decode_atom_set`]: the
+    /// decoded demand equals the original, so a store's persisted accepted ceiling
+    /// reconstructs exactly.
+    #[test]
+    fn atom_set_payload_round_trips() {
+        let demand = sample_demand();
+        let decoded =
+            ExportDemand::decode_atom_set(&demand.atom_set_payload()).expect("decode round trip");
+        assert_eq!(decoded, demand);
+        assert_eq!(decoded.demand_set_id(), demand.demand_set_id());
+    }
+
+    /// Decode rejects a hostile or torn payload typed, before allocating on a hostile
+    /// length: truncation, trailing bytes, an unknown class tag, an unknown step kind,
+    /// and an empty path each reject.
+    #[test]
+    fn decode_atom_set_rejects_hostile_bytes() {
+        let good = sample_demand().atom_set_payload();
+
+        // Truncation: drop the last byte.
+        assert_eq!(
+            ExportDemand::decode_atom_set(&good[..good.len() - 1]),
+            Err(CeilingDecodeError::Truncated),
+        );
+
+        // Trailing bytes: append one.
+        let mut trailing = good.clone();
+        trailing.push(0x00);
+        assert_eq!(
+            ExportDemand::decode_atom_set(&trailing),
+            Err(CeilingDecodeError::TrailingBytes),
+        );
+
+        // An unknown lineage prefix.
+        let mut bad_lineage = good.clone();
+        bad_lineage[8] = 0x7f; // the single lineage byte after its u64 length
+        assert_eq!(
+            ExportDemand::decode_atom_set(&bad_lineage),
+            Err(CeilingDecodeError::UnknownLineage),
+        );
+
+        // An empty payload is truncated (no room for the lineage length).
+        assert_eq!(
+            ExportDemand::decode_atom_set(&[]),
+            Err(CeilingDecodeError::Truncated),
+        );
+    }
+
+    /// A single-atom payload with a forged unknown class tag rejects; likewise an
+    /// unknown step kind. Built by hand so the forged byte is exact.
+    #[test]
+    fn decode_atom_set_rejects_unknown_class_and_step_kind() {
+        // One atom: read of `[application 0x0a, root 0x0b]`.
+        let atom = DemandAtom::new(root_path(), OperationClass::Read);
+        let base = ExportDemand::from_atoms([atom]).atom_set_payload();
+
+        // The class tag is the first byte of the atom body, which begins after
+        // LP(lineage)=9 bytes + u32 atom_count=4 + u64 body_len=8 = offset 21.
+        let class_off = 8 + 1 + 4 + 8;
+        let mut bad_class = base.clone();
+        bad_class[class_off] = 0x7f;
+        assert_eq!(
+            ExportDemand::decode_atom_set(&bad_class),
+            Err(CeilingDecodeError::UnknownClass),
+        );
+
+        // The first step kind byte follows the class tag (1) and the u16 step count (2).
+        let step_kind_off = class_off + 1 + 2;
+        let mut bad_step = base;
+        bad_step[step_kind_off] = 0x7f;
+        assert_eq!(
+            ExportDemand::decode_atom_set(&bad_step),
+            Err(CeilingDecodeError::UnknownStepKind),
+        );
+    }
+
+    /// `not_admitted_by` is the atom-granular subset check: a demand within the ceiling
+    /// yields no exceeding atoms, a demand that adds a write yields exactly that atom,
+    /// and the empty ceiling admits nothing.
+    #[test]
+    fn not_admitted_by_is_the_subset_check() {
+        let ceiling = ExportDemand::from_atoms([DemandAtom::new(
+            field_path(0x0e),
+            OperationClass::Read,
+        )]);
+
+        // A demand equal to the ceiling: nothing exceeds.
+        let within = ExportDemand::from_atoms([DemandAtom::new(
+            field_path(0x0e),
+            OperationClass::Read,
+        )]);
+        assert!(within.not_admitted_by(&ceiling).is_empty());
+        assert!(ceiling.contains(&DemandAtom::new(field_path(0x0e), OperationClass::Read)));
+
+        // A demand that also writes the field: the write atom exceeds, the read does not.
+        let broadened = ExportDemand::from_atoms([
+            DemandAtom::new(field_path(0x0e), OperationClass::Read),
+            DemandAtom::new(field_path(0x0e), OperationClass::Write),
+        ]);
+        let exceeding = broadened.not_admitted_by(&ceiling);
+        assert_eq!(exceeding.len(), 1);
+        assert_eq!(exceeding[0].class(), OperationClass::Write);
+
+        // The empty ceiling admits nothing: every atom exceeds.
+        let empty = ExportDemand::from_atoms([]);
+        assert_eq!(broadened.not_admitted_by(&empty).len(), 2);
     }
 }

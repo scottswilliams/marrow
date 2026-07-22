@@ -23,7 +23,10 @@ mod store_digest;
 mod ty;
 
 pub use ceiling::{CEILING_KIND, CeilingDescriptor, CeilingId};
-pub use demand::{DEMAND_SET_KIND, DemandAtom, DemandSetId, ExportDemand, OperationClass};
+pub use demand::{
+    CeilingDecodeError, DEMAND_SET_KIND, DemandAtom, DemandSetId, ExportDemand, MAX_CEILING_ATOMS,
+    OperationClass,
+};
 pub use digest::{
     COMPANION_RELEASE_KIND, CompanionReleaseId, IMAGE_DIGEST_KIND, ImageId, companion_release_id,
     image_id,
