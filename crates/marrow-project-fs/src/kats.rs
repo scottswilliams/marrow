@@ -25,7 +25,7 @@ use marrow_project::{CaptureLimits, CapturedFile, Manifest};
 
 use crate::capture::capture_project_with_limits;
 use crate::failure::{
-    CaptureFailure, CaptureFailureKind, LinkPosition, PhysicalBound, PhysicalFailure,
+    CaptureFailure, CaptureFailureKind, LedgerHome, LinkPosition, PhysicalBound, PhysicalFailure,
     PhysicalIoError, PhysicalKind, PhysicalOperation, PhysicalRefusal, PhysicalRole,
 };
 use crate::limits::AdapterLimits;
@@ -127,7 +127,7 @@ fn identity_ledger_symlink_renders_ids_corrupt() {
     let failure = physical(
         PhysicalRole::IdentityLedger,
         PhysicalOperation::Inspect,
-        "marrow.ids",
+        ".marrow/ids",
         PhysicalRefusal::Link {
             position: LinkPosition::Terminal,
         },
@@ -138,7 +138,49 @@ fn identity_ledger_symlink_renders_ids_corrupt() {
     );
     assert_eq!(
         cli_message(&failure),
-        "/proj/marrow.ids is a symlink; the identity artifact must be a real file inside the project"
+        "/proj/.marrow/ids is a symlink; the identity artifact must be a real file inside the project"
+    );
+}
+
+#[test]
+fn ledger_at_retired_root_path_renders_ids_location_with_a_move_steer() {
+    let failure = physical(
+        PhysicalRole::IdentityLedger,
+        PhysicalOperation::Inspect,
+        "marrow.ids",
+        PhysicalRefusal::LegacyLedgerPath {
+            home: LedgerHome::Vacant,
+        },
+    );
+    assert_eq!(
+        present(&failure, Path::new(ROOT)).code(),
+        Code::ProjectIdsLocation
+    );
+    assert_eq!(
+        cli_message(&failure),
+        "/proj/marrow.ids is at the ledger's retired root location; its home is `.marrow/ids` — \
+         move it (`git mv marrow.ids .marrow/ids`) and commit the move"
+    );
+}
+
+#[test]
+fn ledger_at_both_paths_renders_ids_location_with_a_reconcile_steer() {
+    let failure = physical(
+        PhysicalRole::IdentityLedger,
+        PhysicalOperation::Inspect,
+        "marrow.ids",
+        PhysicalRefusal::LegacyLedgerPath {
+            home: LedgerHome::Occupied,
+        },
+    );
+    assert_eq!(
+        present(&failure, Path::new(ROOT)).code(),
+        Code::ProjectIdsLocation
+    );
+    assert_eq!(
+        cli_message(&failure),
+        "/proj/marrow.ids also exists beside `.marrow/ids`; a project has exactly one ledger — \
+         keep the correct `.marrow/ids` and delete the root `marrow.ids`"
     );
 }
 
@@ -147,7 +189,7 @@ fn identity_ledger_byte_bound_renders_ids_corrupt() {
     let failure = physical(
         PhysicalRole::IdentityLedger,
         PhysicalOperation::Retain,
-        "marrow.ids",
+        ".marrow/ids",
         PhysicalRefusal::Bound {
             bound: PhysicalBound::IdentityLedgerBytes,
             limit: 1_048_576,
@@ -160,7 +202,7 @@ fn identity_ledger_byte_bound_renders_ids_corrupt() {
     );
     assert_eq!(
         cli_message(&failure),
-        "/proj/marrow.ids is 1048577 bytes, over the 1048576-byte identity-artifact bound"
+        "/proj/.marrow/ids is 1048577 bytes, over the 1048576-byte identity-artifact bound"
     );
 }
 
@@ -1140,7 +1182,7 @@ fn stage_a_missing_manifest_is_the_only_reported_role() {
     // Control: no source or ledger role is inspected after the manifest refuses.
     let temp = TempDir::new("stage-a-order");
     temp.write("src/main.mw", b"pub fn main()\n");
-    temp.write("marrow.ids", b"garbage");
+    temp.write(".marrow/ids", b"garbage");
     let failure =
         capture_project_with_limits(temp.path(), OverlaySnapshot::empty(), &base_limits())
             .expect_err("a missing manifest refuses");
@@ -1151,6 +1193,46 @@ fn stage_a_missing_manifest_is_the_only_reported_role() {
     assert!(matches!(
         physical.refusal(),
         PhysicalRefusal::Io { .. } | PhysicalRefusal::Missing { .. }
+    ));
+}
+
+#[test]
+fn a_ledger_at_the_retired_root_path_fails_closed_before_any_ledger_read() {
+    // The ledger has one home. A file at the retired root path refuses with the
+    // typed location fault and is never read — even valid artifact bytes there
+    // change nothing.
+    let temp = TempDir::new("legacy-ledger-vacant");
+    valid_project(&temp);
+    temp.write("marrow.ids", b"garbage never read");
+    let failure =
+        capture_project_with_limits(temp.path(), OverlaySnapshot::empty(), &base_limits())
+            .expect_err("a root-path ledger refuses");
+    let physical = as_physical(&failure);
+    assert_eq!(physical.role(), PhysicalRole::IdentityLedger);
+    assert!(matches!(
+        physical.refusal(),
+        PhysicalRefusal::LegacyLedgerPath {
+            home: LedgerHome::Vacant
+        }
+    ));
+}
+
+#[test]
+fn a_ledger_at_both_paths_fails_closed_as_a_reconcile_fault() {
+    let temp = TempDir::new("legacy-ledger-occupied");
+    valid_project(&temp);
+    temp.write("marrow.ids", b"stale copy");
+    temp.write(".marrow/ids", b"home copy");
+    let failure =
+        capture_project_with_limits(temp.path(), OverlaySnapshot::empty(), &base_limits())
+            .expect_err("two ledger locations refuse");
+    let physical = as_physical(&failure);
+    assert_eq!(physical.role(), PhysicalRole::IdentityLedger);
+    assert!(matches!(
+        physical.refusal(),
+        PhysicalRefusal::LegacyLedgerPath {
+            home: LedgerHome::Occupied
+        }
     ));
 }
 

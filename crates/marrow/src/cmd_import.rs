@@ -37,7 +37,7 @@ pub(crate) fn import(rest: &[String]) -> ExitCode {
     };
 
     // Compile without opening a store. A durable project must already carry its committed
-    // `marrow.ids`; import is not a mint path, so an identity or type error points the developer
+    // `.marrow/ids`; import is not a mint path, so an identity or type error points the developer
     // at `marrow check` rather than auto-minting here.
     let compiled = match compile(&project) {
         Ok(compiled) => compiled,

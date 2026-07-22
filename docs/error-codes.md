@@ -146,7 +146,7 @@ Static errors found while checking source.
 | `check.match_arm` | A `match` arm is not well-formed against its scrutinee enum: it names a member the enum does not declare, repeats a member another arm already covers, binds a number of payload names that does not match the member's payload, or the scrutinee is not an enum value. The message names the offending arm. |
 | `check.instantiation_limit` | Monomorphizing a program requires more distinct generic instantiations, or deeper generic type nesting, than the fixed limit. A well-typed program with acyclic call and value-containment graphs mints finitely many instances; this bound (campaign law 9) fails a divergent monomorphization — a generic function that calls itself, or a generic type that nests inside itself, over an ever-growing type — with a typed error before the instantiation worklist or the minting recursion grows unboundedly. |
 | `check.resource_limit` | One source construct crosses a fixed compiler-owned resource bound that the program image cannot represent: a declaration wider, a stored value or member tree deeper, a key tuple or index projection longer, or a function body or interned string larger than the image admits. Reported at the offending construct's span, before the construct enters the image, so the source carries the diagnostic. Reduce that construct below the bound. An aggregate exhaustion with no single construct at fault is `cli.compiler_resource_limit` instead. |
-| `check.durable_identity` | A durable declaration lacks its complete ledger identity: the store root, key column, stored resource, one of its fields, or the application itself has no matching entry in the machine-written `marrow.ids` identity artifact — or its `(kind, path)` names a retired identity that can never be reused. The message names the identity kind and path. `marrow run` mints missing identities into `marrow.ids` (commit that file); a retired path stays refused. `marrow.ids` is machine-written only and is never edited by hand. |
+| `check.durable_identity` | A durable declaration lacks its complete ledger identity: the store root, key column, stored resource, one of its fields, or the application itself has no matching entry in the machine-written `.marrow/ids` identity artifact — or its `(kind, path)` names a retired identity that can never be reused. The message names the identity kind and path. `marrow run` mints missing identities into `.marrow/ids` (commit that file); a retired path stays refused. `.marrow/ids` is machine-written only and is never edited by hand. |
 
 ### `image.*` — kind `artifact`
 
@@ -256,17 +256,18 @@ a non-UTF-8 command argument.
 ### `project.*` — kind `tooling`
 
 Project-capture faults raised while discovering a project's source under `src`
-and reading its committed `marrow.ids` identity artifact: an invalid contained
-path, a module-identity collision, an exceeded capture bound, a corrupt
-identity artifact, or a failed identity mint.
+and reading its committed `.marrow/ids` identity artifact: an invalid contained
+path, a module-identity collision, an exceeded capture bound, a corrupt or
+misplaced identity artifact, or a failed identity mint.
 
 | Code | Meaning |
 |---|---|
 | `project.source_path` | A captured source file path is not a valid contained module identity: it is absolute, escapes the source root with `..`, is not a canonical forward-slash path, contains a NUL or ASCII control character, lives outside the fixed `src` source root, is not a `.mw` file with a non-empty name, or exceeds the 4096-byte canonical-identity limit. A project whose `src` root is itself a symlink is refused with this code before discovery. |
 | `project.module_collision` | Two captured source files collide on module identity: they derive the same module name, or their paths differ only in case and would name the same file on a case-insensitive filesystem. The message names both files. |
 | `project.capture_limit` | A project capture exceeded a fixed bound: too many source files, one source file too large, or the source files together too large. The bound guards the compiler against an unbounded project tree. |
-| `project.ids_corrupt` | The committed `marrow.ids` identity artifact is corrupt and is rejected whole, never half-read: unresolved Git conflict markers, a malformed or duplicate row, two rows claiming one `(kind, path)` anchor or one id (the signature of a conflicting double-mint on parallel branches), a retired id reissued by a live row, an inconsistent retirement high-water, a truncated (torn) file missing its end marker, or a size past the fixed artifact bound. `marrow.ids` is machine-written only: restore it from version control rather than editing it. |
-| `project.ids_mint` | `marrow run` could not mint a missing durable identity: the OS entropy source was unavailable, or a freshly drawn id collided with an existing or retired one (minting never retries a draw). The `marrow.ids` artifact is left byte-for-byte unchanged; rerun to draw fresh entropy. |
+| `project.ids_corrupt` | The committed `.marrow/ids` identity artifact is corrupt and is rejected whole, never half-read: unresolved Git conflict markers, a malformed or duplicate row, two rows claiming one `(kind, path)` anchor or one id (the signature of a conflicting double-mint on parallel branches), a retired id reissued by a live row, an inconsistent retirement high-water, a truncated (torn) file missing its end marker, or a size past the fixed artifact bound. `.marrow/ids` is machine-written only: restore it from version control rather than editing it. |
+| `project.ids_mint` | `marrow run` could not mint a missing durable identity: the OS entropy source was unavailable, or a freshly drawn id collided with an existing or retired one (minting never retries a draw). The `.marrow/ids` artifact is left byte-for-byte unchanged; rerun to draw fresh entropy. |
+| `project.ids_location` | The durable-identity ledger was found at its retired project-root path `marrow.ids`. The ledger's home is `.marrow/ids`: move the file (`git mv marrow.ids .marrow/ids`) and commit the move. When files exist at both paths, keep the correct ledger at `.marrow/ids` and delete the root `marrow.ids` — a project has exactly one ledger, and capture fails closed rather than choosing between two. |
 
 ### `wire.*` — kind `tooling`
 

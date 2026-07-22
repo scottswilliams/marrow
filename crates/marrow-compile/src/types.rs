@@ -4332,7 +4332,7 @@ impl TypeRegistry {
     /// The durable-ledger anchor spelling of an enum value: a concrete user `enum`
     /// by its declared name, and a generic enum instantiation (`Option`, `Result`, a
     /// user generic) by its space-free `Name[arg,...]` spelling. Space-free so the
-    /// result is a valid `marrow.ids` anchor path (printable ASCII, no spaces). The
+    /// result is a valid `.marrow/ids` anchor path (printable ASCII, no spaces). The
     /// spelling is stable across appending an enum member, so an append preserves the
     /// sum anchor while minting only the new member.
     ///

@@ -76,8 +76,8 @@ mod kats;
 
 pub use capture::capture_project;
 pub use failure::{
-    CaptureFailure, LinkPosition, PhysicalBound, PhysicalFailure, PhysicalIoError, PhysicalKind,
-    PhysicalOperation, PhysicalRefusal, PhysicalRole,
+    CaptureFailure, LedgerHome, LinkPosition, PhysicalBound, PhysicalFailure, PhysicalIoError,
+    PhysicalKind, PhysicalOperation, PhysicalRefusal, PhysicalRole,
 };
 pub use overlay::{
     OverlayBound, OverlayEntry, OverlayEntryIndex, OverlayFailure, OverlayReason, OverlaySnapshot,

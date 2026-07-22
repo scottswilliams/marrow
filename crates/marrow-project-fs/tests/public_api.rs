@@ -7,10 +7,10 @@
 //! matched from here.
 
 use marrow_project_fs::{
-    CaptureError, CaptureFailure, CapturePresentation, Code, LinkPosition, ManifestError,
-    OverlayBound, OverlayEntry, OverlayFailure, OverlayReason, OverlaySnapshot, PhysicalBound,
-    PhysicalFailure, PhysicalIoError, PhysicalKind, PhysicalOperation, PhysicalRefusal,
-    PhysicalRole, Position, ProjectInput,
+    CaptureError, CaptureFailure, CapturePresentation, Code, LedgerHome, LinkPosition,
+    ManifestError, OverlayBound, OverlayEntry, OverlayFailure, OverlayReason, OverlaySnapshot,
+    PhysicalBound, PhysicalFailure, PhysicalIoError, PhysicalKind, PhysicalOperation,
+    PhysicalRefusal, PhysicalRole, Position, ProjectInput,
 };
 
 fn name<T>() {}
@@ -57,6 +57,9 @@ fn match_physical_refusal(refusal: PhysicalRefusal) {
         | PhysicalRefusal::InvalidPathEncoding
         | PhysicalRefusal::Changed
         | PhysicalRefusal::UnsupportedPlatform => {}
+        PhysicalRefusal::LegacyLedgerPath { home } => match home {
+            LedgerHome::Vacant | LedgerHome::Occupied => {}
+        },
         PhysicalRefusal::Bound {
             bound,
             limit,

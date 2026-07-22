@@ -149,7 +149,7 @@ impl ProjectInput {
     }
 
     /// The parsed durable-identity ledger, when the project committed a
-    /// `marrow.ids` artifact. `None` means the artifact is absent — the normal
+    /// `.marrow/ids` artifact. `None` means the artifact is absent — the normal
     /// state of a storeless project, equivalent to an empty ledger.
     pub fn identity_ledger(&self) -> Option<&IdentityLedger> {
         self.ledger.as_ref()
@@ -157,7 +157,7 @@ impl ProjectInput {
 }
 
 /// Capture a validated [`Manifest`], a caller-supplied source listing, and the
-/// optional `marrow.ids` identity-artifact bytes into an immutable
+/// optional `.marrow/ids` identity-artifact bytes into an immutable
 /// [`ProjectInput`].
 ///
 /// Checks apply in a fixed precedence so the reported fault is deterministic
@@ -339,7 +339,7 @@ pub enum CaptureErrorKind {
         limit: usize,
         actual: usize,
     },
-    /// The committed `marrow.ids` identity artifact is corrupt (rejected whole).
+    /// The committed `.marrow/ids` identity artifact is corrupt (rejected whole).
     IdsCorrupt { error: IdsError },
 }
 
@@ -445,8 +445,9 @@ impl CaptureError {
     }
 
     fn ids(error: IdsError) -> Self {
-        let message = format!("marrow.ids is corrupt: {}", error.message);
-        let code = Code::from_code(error.code).expect("marrow.ids fault carries a registered code");
+        let message = format!(".marrow/ids is corrupt: {}", error.message);
+        let code =
+            Code::from_code(error.code).expect(".marrow/ids fault carries a registered code");
         Self {
             code,
             kind: CaptureErrorKind::IdsCorrupt { error },

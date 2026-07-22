@@ -1,4 +1,4 @@
-//! The durable-identity ledger and its committed artifact, `marrow.ids`.
+//! The durable-identity ledger and its committed artifact, `.marrow/ids`.
 //!
 //! The ledger is the source-side authority for entropy-minted durable identity:
 //! each row binds a `(kind, path)` anchor to a random 128-bit id, and the
@@ -9,7 +9,7 @@
 //! identities: they are minted once from OS entropy (by the CLI; this owner is
 //! pure and only validates candidate draws) and never derived from content.
 //!
-//! `marrow.ids` is machine-written only. Developers never edit, copy, or cite
+//! The artifact is machine-written only. Developers never edit, copy, or cite
 //! ids; the artifact is committed and line-diffable so parallel branches merge
 //! textually, and a conflicting double-mint (two rows claiming one anchor or
 //! one id) is rejected whole as [`IdsError`] — the artifact is never half-read.
@@ -22,8 +22,20 @@ use std::fmt;
 
 use marrow_codes::Code;
 
-/// The identity artifact's file name at the project root.
-pub const IDS_FILE: &str = "marrow.ids";
+/// The behind-the-scenes project-metadata directory at the project root. It
+/// holds committed machine-written project artifacts only (today: the identity
+/// ledger). Caches, stores, and other uncommitted state never live here — the
+/// directory travels with the source, committed by convention like `.github`.
+pub const META_DIR: &str = ".marrow";
+
+/// The identity artifact's root-relative path: the ledger's one home, inside
+/// the committed project-metadata directory.
+pub const IDS_FILE: &str = ".marrow/ids";
+
+/// The ledger's retired pre-relocation path at the project root. Nothing reads
+/// it: capture refuses a file here with a one-line steer to the ledger's home,
+/// so a project never has two live ledger locations.
+pub const LEGACY_IDS_FILE: &str = "marrow.ids";
 
 /// The artifact header line. The version is part of the frozen line grammar.
 const IDS_HEADER: &str = "marrow ids v0";
@@ -551,7 +563,7 @@ fn malformed_line(line: &str) -> IdsError {
     IdsError::new(IdsErrorKind::Malformed, format!("malformed row `{shown}`"))
 }
 
-/// Why a `marrow.ids` artifact was rejected whole.
+/// Why a `.marrow/ids` artifact was rejected whole.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum IdsErrorKind {
     /// A bad or missing header or machine-written notice.
@@ -575,7 +587,7 @@ pub enum IdsErrorKind {
     Bound,
 }
 
-/// A corrupt `marrow.ids` artifact: the stable `project.ids_corrupt` code, a
+/// A corrupt `.marrow/ids` artifact: the stable `project.ids_corrupt` code, a
 /// typed reason, and a human message. The artifact is rejected whole; nothing
 /// is half-read.
 #[derive(Clone, PartialEq, Eq, Debug)]

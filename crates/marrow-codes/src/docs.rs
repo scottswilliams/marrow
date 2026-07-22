@@ -309,9 +309,9 @@ a non-UTF-8 command argument.
 ### `project.*` — kind `tooling`
 
 Project-capture faults raised while discovering a project's source under `src`
-and reading its committed `marrow.ids` identity artifact: an invalid contained
-path, a module-identity collision, an exceeded capture bound, a corrupt
-identity artifact, or a failed identity mint.
+and reading its committed `.marrow/ids` identity artifact: an invalid contained
+path, a module-identity collision, an exceeded capture bound, a corrupt or
+misplaced identity artifact, or a failed identity mint.
 
 | Code | Meaning |
 |---|---|"#
@@ -322,6 +322,7 @@ identity artifact, or a failed identity mint.
             Code::ProjectCaptureLimit,
             Code::ProjectIdsCorrupt,
             Code::ProjectIdsMint,
+            Code::ProjectIdsLocation,
         ]),
         r#"
 ### `wire.*` — kind `tooling`

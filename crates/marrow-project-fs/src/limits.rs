@@ -13,7 +13,7 @@ use marrow_project::CaptureLimits;
 pub(crate) struct AdapterLimits {
     /// Bounded `marrow.toml` bytes, read at limit + 1.
     pub(crate) manifest_bytes: usize,
-    /// Bounded `marrow.ids` bytes, read at limit + 1.
+    /// Bounded `.marrow/ids` bytes, read at limit + 1.
     pub(crate) identity_ledger_bytes: usize,
     /// Total directory entries visited below `src`, including ignored entries.
     pub(crate) visited_entries: usize,

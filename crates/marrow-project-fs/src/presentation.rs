@@ -15,8 +15,8 @@ use marrow_codes::Code;
 use marrow_project::Position;
 
 use crate::failure::{
-    CaptureFailure, CaptureFailureKind, LinkPosition, PhysicalBound, PhysicalFailure, PhysicalKind,
-    PhysicalRefusal, PhysicalRole,
+    CaptureFailure, CaptureFailureKind, LedgerHome, LinkPosition, PhysicalBound, PhysicalFailure,
+    PhysicalKind, PhysicalRefusal, PhysicalRole,
 };
 use crate::overlay::{OverlayBound, OverlayReason};
 use crate::path::OperationalPath;
@@ -146,6 +146,19 @@ impl<'a> CapturePresentation<'a> {
             PhysicalRefusal::Changed => {
                 self.write_subject(sink, failure)?;
                 sink.write_str(" changed during capture")
+            }
+            PhysicalRefusal::LegacyLedgerPath { home } => {
+                self.write_joined(sink, failure.path())?;
+                sink.write_str(match home {
+                    LedgerHome::Vacant => {
+                        " is at the ledger's retired root location; its home is `.marrow/ids` — \
+                         move it (`git mv marrow.ids .marrow/ids`) and commit the move"
+                    }
+                    LedgerHome::Occupied => {
+                        " also exists beside `.marrow/ids`; a project has exactly one ledger — \
+                         keep the correct `.marrow/ids` and delete the root `marrow.ids`"
+                    }
+                })
             }
             PhysicalRefusal::UnsupportedPlatform => Ok(()),
         }
@@ -321,6 +334,7 @@ fn physical_code(failure: &PhysicalFailure) -> Code {
             | PhysicalBound::PathWorkUnits => Code::IoRead,
         },
         PhysicalRefusal::InvalidPathEncoding => Code::ProjectSourcePath,
+        PhysicalRefusal::LegacyLedgerPath { .. } => Code::ProjectIdsLocation,
         PhysicalRefusal::UnexpectedKind { .. }
         | PhysicalRefusal::Hardlink
         | PhysicalRefusal::Changed

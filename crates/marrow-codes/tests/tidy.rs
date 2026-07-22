@@ -495,7 +495,7 @@ fn rust_sources(dir: &Path, out: &mut Vec<PathBuf>) {
 /// The pure owners have no filesystem edge: `marrow-project` (the project-input
 /// and identity-ledger owner) and `marrow-compile` (a read-only ledger
 /// consumer) never touch `std::fs`. This is the D00 absence gate for compiler
-/// ledger mutation — minting and publishing `marrow.ids` live only in the CLI's
+/// ledger mutation — minting and publishing `.marrow/ids` live only in the CLI's
 /// `marrow run` convenience action (and in the accepted apply action when it
 /// lands), so the compiler can never write identity. OS entropy is likewise a
 /// CLI concern; these crates draw none.

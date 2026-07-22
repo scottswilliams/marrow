@@ -27,7 +27,7 @@ pub enum PhysicalRole {
     Root,
     /// The required `marrow.toml` manifest.
     Manifest,
-    /// The optional `marrow.ids` identity ledger.
+    /// The optional `.marrow/ids` identity ledger.
     IdentityLedger,
     /// The optional `src` source root.
     SourceRoot,
@@ -81,7 +81,7 @@ pub enum LinkPosition {
 pub enum PhysicalBound {
     /// Bounded `marrow.toml` bytes.
     ManifestBytes,
-    /// Bounded `marrow.ids` bytes.
+    /// Bounded `.marrow/ids` bytes.
     IdentityLedgerBytes,
     /// Total directory entries visited below `src`, including ignored entries.
     VisitedEntries,
@@ -176,8 +176,26 @@ pub enum PhysicalRefusal {
         /// Observed amount at refusal.
         actual: usize,
     },
+    /// The identity ledger was found at its retired project-root path
+    /// (`marrow.ids`) instead of its home (`.marrow/ids`).
+    LegacyLedgerPath {
+        /// Whether the ledger's home path also holds a file.
+        home: LedgerHome,
+    },
     /// The target platform has no admitted physical-capture implementation.
     UnsupportedPlatform,
+}
+
+/// Whether the ledger's home path (`.marrow/ids`) also holds a file when its
+/// retired project-root path is occupied. The two states carry different
+/// remedies: a vacant home is a one-command move; an occupied home must be
+/// reconciled by hand before the root copy is deleted.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LedgerHome {
+    /// `.marrow/ids` is absent; the ledger lives only at the retired root path.
+    Vacant,
+    /// `.marrow/ids` also holds a file; a project has exactly one ledger.
+    Occupied,
 }
 
 /// A physical admission failure: the role, the operation active at refusal, the

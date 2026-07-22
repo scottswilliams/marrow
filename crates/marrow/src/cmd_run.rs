@@ -70,7 +70,7 @@ pub(crate) fn run(rest: &[String]) -> ExitCode {
 
     // Family 1: source diagnostics. When compilation fails *only* because fresh
     // durable declarations lack ledger identities, storeless `run` — and only storeless
-    // `run` — mints them into `marrow.ids` and compiles again; any other failure reports
+    // `run` — mints them into `.marrow/ids` and compiles again; any other failure reports
     // as-is. The run-mint window is closed for a persistent store (`--store`): once a store
     // is bindable, a fresh anchor is a precise `check.durable_identity` failure the developer
     // resolves deliberately, never an additive auto-mint that could readopt an orphaned id or
@@ -298,11 +298,11 @@ fn compiler_resource_limit_record(limit: marrow_compile::CompileResourceLimit) -
 /// What the `run` mint pre-pass did with a compile failure.
 enum MintOutcome {
     /// Every diagnostic was a mintable identity gap; fresh identities were
-    /// drawn and `marrow.ids` was published atomically.
+    /// drawn and `.marrow/ids` was published atomically.
     Minted,
     /// The failure is not (only) missing mintable identity; report it as-is.
     NotApplicable,
-    /// Minting itself failed; `marrow.ids` is unchanged.
+    /// Minting itself failed; `.marrow/ids` is unchanged.
     Failed(&'static str),
 }
 
@@ -363,9 +363,73 @@ fn mint_missing_identities(
         Err(_) => return MintOutcome::Failed(marrow_codes::Code::ProjectIdsMint.as_str()),
     };
     match publish_ids(Path::new("."), &minted.to_bytes()) {
-        Ok(()) => MintOutcome::Minted,
+        Ok(()) => {
+            emit_commit_steer(Path::new("."));
+            MintOutcome::Minted
+        }
         Err(_) => MintOutcome::Failed(marrow_codes::Code::IoWrite.as_str()),
     }
+}
+
+/// After a mint publishes the ledger, steer the developer to commit it: when the
+/// project sits inside a Git repository whose index lacks `.marrow/ids` (the file
+/// is untracked or ignored), print a one-line stderr notice. Informational only —
+/// it never affects records, exit codes, or the published artifact.
+fn emit_commit_steer(root: &Path) {
+    if ledger_absent_from_git_index(root) == Some(true) {
+        eprintln!(
+            "note: {} is not tracked by Git; commit it — durable identity travels with the source",
+            marrow_project::IDS_FILE
+        );
+    }
+}
+
+/// Whether a surrounding Git repository's index lacks the ledger path.
+/// `None` means no repository was found or the probe was not cheap (no notice
+/// either way). The probe is dependency-free: walk up to the nearest `.git`,
+/// resolve a worktree's `gitdir:` file, and scan the binary index once for the
+/// ledger's path bytes. Index entries store paths literally in versions 2 and 3
+/// (Git's defaults); a prefix-compressed v4 index may miss the path and repeat
+/// the notice, which is acceptable for a one-line steer.
+fn ledger_absent_from_git_index(root: &Path) -> Option<bool> {
+    /// Directory levels searched above the project root before giving up.
+    const MAX_ASCENT: usize = 64;
+    /// Largest index read for the probe; a bigger index skips the notice.
+    const MAX_INDEX_BYTES: u64 = 64 << 20;
+    let mut dir = root.canonicalize().ok()?;
+    for _ in 0..MAX_ASCENT {
+        let dot_git = dir.join(".git");
+        let git_dir = if dot_git.is_dir() {
+            Some(dot_git.clone())
+        } else if dot_git.is_file() {
+            // A linked worktree: `.git` is a file `gitdir: <path>`.
+            let text = std::fs::read_to_string(&dot_git).ok()?;
+            let target = text.strip_prefix("gitdir:")?.trim();
+            let target = Path::new(target);
+            Some(if target.is_absolute() {
+                target.to_path_buf()
+            } else {
+                dir.join(target)
+            })
+        } else {
+            None
+        };
+        if let Some(git_dir) = git_dir {
+            let index = git_dir.join("index");
+            let Ok(metadata) = std::fs::metadata(&index) else {
+                // A repository with no index tracks nothing yet.
+                return Some(true);
+            };
+            if metadata.len() > MAX_INDEX_BYTES {
+                return None;
+            }
+            let bytes = std::fs::read(&index).ok()?;
+            let needle = marrow_project::IDS_FILE.as_bytes();
+            return Some(!bytes.windows(needle.len()).any(|window| window == needle));
+        }
+        dir = dir.parent()?.to_path_buf();
+    }
+    None
 }
 
 /// One 128-bit id drawn from the OS entropy source. No clock, hash, provider,
@@ -386,10 +450,12 @@ fn draw_entropy_id() -> std::io::Result<DurableIdentityId> {
     ))
 }
 
-/// Publish `marrow.ids` atomically: write a sibling temp file, then rename it
-/// over the artifact, so a reader observes either the old complete artifact or
-/// the new one — never a torn write. The temp file is removed on failure.
+/// Publish `.marrow/ids` atomically: create the project-metadata directory,
+/// write a sibling temp file, then rename it over the artifact, so a reader
+/// observes either the old complete artifact or the new one — never a torn
+/// write. The temp file is removed on failure.
 fn publish_ids(root: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    std::fs::create_dir_all(root.join(marrow_project::META_DIR))?;
     let target = root.join(marrow_project::IDS_FILE);
     let temp = root.join(format!(
         "{}.tmp.{}",

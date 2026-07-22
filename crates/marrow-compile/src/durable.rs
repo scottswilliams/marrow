@@ -396,7 +396,7 @@ impl DurableRegistry {
     /// store — and so does a durable graph whose identity is incomplete: every durable
     /// declaration (the application, the root placement, its product, each key column,
     /// each stored field, each group namespace, and each nested branch placement and key
-    /// column) must have a live row in the committed `marrow.ids` ledger, or the
+    /// column) must have a live row in the committed `.marrow/ids` ledger, or the
     /// declaration fails precisely with `check.durable_identity`. A store that fails
     /// validation contributes only its diagnostic; the other stores' roots stand, so one
     /// store's gap never erases the whole registry. The compiler only *reads* the ledger;
@@ -1867,15 +1867,15 @@ fn identity_gap(
 ) -> SourceDiagnostic {
     let message = if retired {
         format!(
-            "durable identity for {} `{}` was retired in marrow.ids and can never be reused; \
+            "durable identity for {} `{}` was retired in .marrow/ids and can never be reused; \
              declare a fresh name",
             kind.keyword(),
             path
         )
     } else {
         format!(
-            "durable identity for {} `{}` is missing from marrow.ids; \
-             `marrow run` mints missing identities (commit the updated marrow.ids)",
+            "durable identity for {} `{}` is missing from .marrow/ids; \
+             `marrow run` mints missing identities (commit the updated .marrow/ids)",
             kind.keyword(),
             path
         )

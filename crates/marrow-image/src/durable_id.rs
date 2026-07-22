@@ -3,7 +3,7 @@
 //! A [`DurableContractId`] is the stable 32-byte identity of a program's whole
 //! durable graph — the application, the roots, their key columns, and each root
 //! record's stored field profile — computed over the graph's **ledger ids**, the
-//! entropy-minted identities the committed `marrow.ids` artifact binds to each
+//! entropy-minted identities the committed `.marrow/ids` artifact binds to each
 //! durable declaration. Because the payload carries ids rather than names, a
 //! rename (which moves a ledger anchor while its id stays) preserves the
 //! contract identity, while every semantic graph change — a retyped key, a field

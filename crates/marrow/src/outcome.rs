@@ -36,7 +36,7 @@ pub(crate) enum Record {
         detail: Option<String>,
     },
     /// Family 4: an owner-local operational error (CLI/store/io). `detail` is the
-    /// typed human message (e.g. the file and reason a `marrow.ids` read was
+    /// typed human message (e.g. the file and reason a `.marrow/ids` read was
     /// rejected), surfaced in text output only; the KAT-frozen JSONL surface stays
     /// the code alone.
     OperationalError {
@@ -507,11 +507,11 @@ mod tests {
     fn operational_detail_is_text_only() {
         let record = Record::OperationalError {
             code: "project.ids_corrupt",
-            detail: Some("marrow.ids: unresolved Git conflict markers".to_string()),
+            detail: Some(".marrow/ids: unresolved Git conflict markers".to_string()),
         };
         assert_eq!(
             record.to_text(&[], &[]),
-            "project.ids_corrupt: marrow.ids: unresolved Git conflict markers"
+            "project.ids_corrupt: .marrow/ids: unresolved Git conflict markers"
         );
         assert_eq!(
             record.to_jsonl(&[], &[]),

@@ -9,8 +9,8 @@ use std::path::{Component, Path, PathBuf};
 use marrow_project::{CapturedFile, FileIdentity, Manifest, ProjectInput};
 
 use crate::failure::{
-    CaptureFailure, LinkPosition, PhysicalBound, PhysicalFailure, PhysicalIoError, PhysicalKind,
-    PhysicalOperation, PhysicalRefusal, PhysicalRole,
+    CaptureFailure, LedgerHome, LinkPosition, PhysicalBound, PhysicalFailure, PhysicalIoError,
+    PhysicalKind, PhysicalOperation, PhysicalRefusal, PhysicalRole,
 };
 use crate::limits::AdapterLimits;
 use crate::overlay::OverlaySnapshot;
@@ -95,7 +95,26 @@ fn ledger_stage(
     overlay: &mut OverlaySnapshot<'_>,
 ) -> Result<Option<Vec<u8>>, CaptureFailure> {
     overlay.mark_wrong_role(marrow_project::IDS_FILE);
-    if optional_absent(&canonical.join(marrow_project::IDS_FILE)) {
+    overlay.mark_wrong_role(marrow_project::LEGACY_IDS_FILE);
+    let home_present = !optional_absent(&canonical.join(marrow_project::IDS_FILE));
+    // The ledger has one home. A file at the retired root path is refused with
+    // a one-line steer rather than read, so two live ledger locations are
+    // unrepresentable and no second read path exists.
+    if !optional_absent(&canonical.join(marrow_project::LEGACY_IDS_FILE)) {
+        return Err(physical(
+            PhysicalRole::IdentityLedger,
+            PhysicalOperation::Inspect,
+            OperationalPath::new(PathBuf::from(marrow_project::LEGACY_IDS_FILE)),
+            PhysicalRefusal::LegacyLedgerPath {
+                home: if home_present {
+                    LedgerHome::Occupied
+                } else {
+                    LedgerHome::Vacant
+                },
+            },
+        ));
+    }
+    if !home_present {
         return Ok(None);
     }
     let live = reserve_fixed(
