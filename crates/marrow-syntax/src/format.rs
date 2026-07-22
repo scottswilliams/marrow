@@ -56,11 +56,6 @@ const PREC_MEMBERSHIP: u8 = 5;
 
 const INDENT: &str = "    ";
 
-/// Column past which an eligible single-statement clause or match-arm body is
-/// expanded to a braced block rather than rendered inline (the B4/A1/T6 fit test).
-/// The bound is on the rendered line's char count, indentation included.
-const MAX_LINE_WIDTH: usize = 100;
-
 /// Format a whole `.mw` source file to canonical Marrow. The module
 /// declaration, the `use` block, and each top-level declaration are separated by
 /// a single blank line, and the result ends with a newline. Inside a body, a
@@ -1022,74 +1017,9 @@ fn append_braced_body(out: &mut String, pad: &str, body: &str, empty: EmptyBody)
     out.push('}');
 }
 
-/// The visual width of the last, still-open line of `out`: its char count after
-/// the final newline. Used to test whether a cuddled clause body still fits the
-/// line before rendering it inline.
-fn current_line_width(out: &str) -> usize {
-    let start = out.rfind('\n').map_or(0, |nl| nl + 1);
-    out[start..].chars().count()
-}
-
-/// Whether a statement diverges — control leaves the enclosing block. The checker
-/// requires `else`/`on more`/checked-arm bodies to diverge, so these are the forms
-/// the formatter renders inline after a cuddled clause keyword (B4/A1/B6).
-fn is_diverging(statement: &Statement) -> bool {
-    matches!(
-        statement,
-        Statement::Return { .. } | Statement::Break { .. } | Statement::Continue { .. }
-    )
-}
-
-/// Whether a statement is a simple (non-compound, non-error) statement that renders
-/// on one line and so may stand inline as a clause or match-arm body. Compound
-/// statements carry their own block, and the parse-only/error forms echo source
-/// verbatim, so neither is inlined.
-fn is_inline_eligible(statement: &Statement) -> bool {
-    matches!(
-        statement,
-        Statement::Const { .. }
-            | Statement::Var { .. }
-            | Statement::Assign { .. }
-            | Statement::CompoundAssign { .. }
-            | Statement::Delete { .. }
-            | Statement::PlaceBinding { .. }
-            | Statement::Unset { .. }
-            | Statement::Return { .. }
-            | Statement::Break { .. }
-            | Statement::Continue { .. }
-            | Statement::Assert { .. }
-            | Statement::Expr { .. }
-    )
-}
-
-/// Render a clause block as a single inline statement when eligible: exactly one
-/// comment-free, inline-eligible statement that renders on one physical line.
-/// `require_diverging` gates the trailing-clause forms the checker requires to
-/// diverge (`else`, `on more`, checked arms); a match arm passes `false`. Returns
-/// the rendered statement without indentation, or `None` to render a braced block.
-fn inline_clause_statement(source: &str, block: &Block, require_diverging: bool) -> Option<String> {
-    if !block.comments.is_empty() {
-        return None;
-    }
-    let [statement] = &block.statements[..] else {
-        return None;
-    };
-    if !is_inline_eligible(statement) {
-        return None;
-    }
-    if require_diverging && !is_diverging(statement) {
-        return None;
-    }
-    let rendered = format_statement_with_comments(source, statement, &[], 0);
-    if rendered.contains('\n') {
-        return None;
-    }
-    Some(rendered)
-}
-
 /// Emit a trailing clause keyword, cuddling it to the preceding block's `}` (`}
-/// else {`, `} on more …`) or, when the preceding body was inline or absent,
-/// dropping to a fresh line at `pad`.
+/// else {`, `} on more {`) or, when there is no preceding block (a `checked`
+/// header carries none), dropping to a fresh line at `pad`.
 fn push_clause_keyword(out: &mut String, pad: &str, keyword: &str) {
     if out.ends_with('}') {
         out.push(' ');
@@ -1100,57 +1030,17 @@ fn push_clause_keyword(out: &mut String, pad: &str, keyword: &str) {
     out.push_str(keyword);
 }
 
-/// Append a clause body after its already-emitted keyword: an inline single
-/// statement when it is eligible and fits the line; otherwise a braced block. A
-/// comment on the clause is owned by the block (the parser records it inside), so it
-/// flows through `format_block` and blocks the inline form by being present.
+/// Append a clause, arm, or then-branch body as a braced block after its
+/// already-emitted keyword or `=>` head. Every statement block renders multiline:
+/// the header line ends with `{`, the body's statements sit one per line at
+/// `level + 1`, and the closing `}` stands on its own line at `pad`. An empty body
+/// renders `{}` (the mandatory-block rule). A comment on the clause is owned by the
+/// block (the parser records it inside), so it flows through `format_block`.
 ///
-/// `allow_inline` is `false` for any clause a sibling clause follows in the same
-/// cuddled chain (`else if`, `else`, `on <fault>`): an inline body carries no `}` for
-/// the successor keyword to cuddle, so the successor would drop to a non-cuddled fresh
-/// line the parser cannot read. Only the final clause of a chain may render inline.
-fn append_clause_or_block(
-    out: &mut String,
-    source: &str,
-    pad: &str,
-    block: &Block,
-    level: usize,
-    require_diverging: bool,
-    allow_inline: bool,
-) {
-    if allow_inline
-        && let Some(rendered) = inline_clause_statement(source, block, require_diverging)
-        && current_line_width(out) + 1 + rendered.chars().count() <= MAX_LINE_WIDTH
-    {
-        out.push(' ');
-        out.push_str(&rendered);
-        return;
-    }
-    append_braced_body(
-        out,
-        pad,
-        &format_block(source, block, level + 1),
-        EmptyBody::Braces,
-    );
-}
-
-/// Append an `else if` then-branch after its already-emitted keyword. Unlike a bare
-/// clause keyword (`else`, `on more`, `on <fault>`), whose diverging body may render
-/// braceless, an `if`/`else if` then-branch keeps its braces even inline: the
-/// braceless spelling `else if c return` is not legal grammar — the parser expects a
-/// block — so it would not re-parse. An eligible comment-free diverging single
-/// statement renders inline as `{ stmt }` when it fits (B4), otherwise a braced block.
-/// The closing `}` always follows, so a later clause cuddles it with no final-clause
-/// gate.
-fn append_then_branch(out: &mut String, source: &str, pad: &str, block: &Block, level: usize) {
-    if let Some(rendered) = inline_clause_statement(source, block, true)
-        && current_line_width(out) + " {  }".len() + rendered.chars().count() <= MAX_LINE_WIDTH
-    {
-        out.push_str(" { ");
-        out.push_str(&rendered);
-        out.push_str(" }");
-        return;
-    }
+/// Because every rendered block ends with a `}`, a following clause keyword always
+/// has a brace to cuddle (`} else {`, `} on zero_divisor {`), so no clause needs a
+/// final-position gate.
+fn append_clause_block(out: &mut String, source: &str, pad: &str, block: &Block, level: usize) {
     append_braced_body(
         out,
         pad,
@@ -1457,18 +1347,6 @@ fn format_if(
 ) -> String {
     let pad = INDENT.repeat(ctx.level);
     let header = format!("{pad}if {}", format_expression_at(condition, ctx.level));
-    // A1 leading guard: a comment-free `if` with no `else` and a single diverging
-    // then-statement that fits renders inline as `if cond { stmt }`.
-    if else_ifs.is_empty()
-        && else_block.is_none()
-        && ctx.comments.is_empty()
-        && let Some(rendered) = inline_clause_statement(ctx.source, then_block, true)
-    {
-        let candidate = format!("{header} {{ {rendered} }}");
-        if candidate.chars().count() <= MAX_LINE_WIDTH {
-            return candidate;
-        }
-    }
     let mut out = header;
     append_braced_body(
         &mut out,
@@ -1544,7 +1422,7 @@ fn format_if_const_chain(
 }
 
 /// Render a B6 let-else: the `const`/`var` binding, then a cuddled `else` whose body
-/// is the inline diverging form (`const x = e else return -1`) or a braced block.
+/// is a braced block.
 fn format_let_else(
     ctx: StatementFormatContext<'_, '_>,
     is_var: bool,
@@ -1561,15 +1439,13 @@ fn format_let_else(
         format_expression_at(value, ctx.level)
     );
     out.push_str(" else");
-    append_clause_or_block(
-        &mut out, ctx.source, &pad, else_block, ctx.level, true, true,
-    );
+    append_clause_block(&mut out, ctx.source, &pad, else_block, ctx.level);
     out
 }
 
 /// Append the `else if` chain and optional trailing `else` block shared by both
 /// `if` forms. Each clause cuddles the preceding block's `}` (`} else {`) and takes
-/// the inline-diverging or braced body form.
+/// the braced multiline body form.
 fn format_else_chain(
     ctx: StatementFormatContext<'_, '_>,
     out: &mut String,
@@ -1580,11 +1456,11 @@ fn format_else_chain(
     for else_if in else_ifs {
         let condition = format_expression_at(&else_if.condition, ctx.level);
         push_clause_keyword(out, &pad, &format!("else if {condition}"));
-        append_then_branch(out, ctx.source, &pad, &else_if.block, ctx.level);
+        append_clause_block(out, ctx.source, &pad, &else_if.block, ctx.level);
     }
     if let Some(else_block) = else_block {
         push_clause_keyword(out, &pad, "else");
-        append_clause_or_block(out, ctx.source, &pad, else_block, ctx.level, true, true);
+        append_clause_block(out, ctx.source, &pad, else_block, ctx.level);
     }
 }
 
@@ -1640,7 +1516,7 @@ fn format_for(
         return format_header_block(ctx, header, body);
     };
     // A bounded traversal's `on more` clause cuddles the loop body's `}` and takes
-    // the inline-diverging or braced form, like `else`.
+    // the braced multiline body form, like `else`.
     let mut out = header;
     append_braced_body(
         &mut out,
@@ -1649,8 +1525,7 @@ fn format_for(
         EmptyBody::Braces,
     );
     push_clause_keyword(&mut out, &pad, "on more");
-    // `on more` is the sole trailing clause of a bounded loop; it may inline.
-    append_clause_or_block(&mut out, ctx.source, &pad, on_more, ctx.level, true, true);
+    append_clause_block(&mut out, ctx.source, &pad, on_more, ctx.level);
     out
 }
 
@@ -1708,18 +1583,8 @@ fn format_match(
         let head = format!("{arm_pad}{}{bindings} =>", arm.path.join("::"));
         out.push('\n');
         out.push_str(&head);
-        // T6: an arm whose body is a single statement that fits renders inline
-        // (`circle(r) => return r * r`); otherwise a braced block cuddled after `=>`.
-        // Arms are newline-separated, not cuddled, so each may inline independently.
-        append_clause_or_block(
-            &mut out,
-            ctx.source,
-            &arm_pad,
-            &arm.block,
-            ctx.level + 1,
-            false,
-            true,
-        );
+        // An arm body is a braced multiline block cuddled after `=>`.
+        append_clause_block(&mut out, ctx.source, &arm_pad, &arm.block, ctx.level + 1);
     }
     for comment in comments {
         out.push('\n');
@@ -1766,10 +1631,9 @@ fn format_checked(
     // end of the header line, before the first arm on the next line.
     append_trailing_comment_between(&mut out, ctx.comments, span.start_byte, first_arm_start);
     let arm_pad = INDENT.repeat(ctx.level + 1);
-    // Each `on <fault>` arm cuddles the previous arm's `}` (`} on zero_divisor {`) or,
-    // after an inline arm or the header, opens on its own line; body is inline
-    // diverging or a braced block. Only the last present arm may inline, so an
-    // earlier arm always leaves a `}` for the next `on` keyword to cuddle.
+    // Each `on <fault>` arm cuddles the previous arm's braced `}` (`} on zero_divisor
+    // {`), or opens on its own line after the block-less header. Its body is a braced
+    // multiline block.
     let present: Vec<(&str, &Block)> = [
         ("out_of_range", out_of_range),
         ("zero_divisor", zero_divisor),
@@ -1777,19 +1641,9 @@ fn format_checked(
     .into_iter()
     .filter_map(|(kind, block)| block.map(|block| (kind, block)))
     .collect();
-    let last = present.len();
-    for (index, (kind, block)) in present.into_iter().enumerate() {
+    for (kind, block) in present {
         push_clause_keyword(&mut out, &arm_pad, &format!("on {kind}"));
-        let is_final = index + 1 == last;
-        append_clause_or_block(
-            &mut out,
-            ctx.source,
-            &arm_pad,
-            block,
-            ctx.level + 1,
-            true,
-            is_final,
-        );
+        append_clause_block(&mut out, ctx.source, &arm_pad, block, ctx.level + 1);
     }
     out
 }

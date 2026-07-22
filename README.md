@@ -61,7 +61,9 @@ pub fn add(id: Id(^tasks), title: string): Id(^tasks) {
 
 pub fn complete(id: Id(^tasks)): bool {
     transaction {
-        if not exists(^tasks[id]) { return false }
+        if not exists(^tasks[id]) {
+            return false
+        }
         ^tasks[id].status = Status::done
         return true
     }

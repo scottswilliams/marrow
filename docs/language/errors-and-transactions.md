@@ -188,7 +188,9 @@ store ^counters[name: string]: Counter
 
 pub fn setPositive(name: string, v: int): Result<int, string> {
     transaction {
-        if v <= 0 { return err("value must be positive") }
+        if v <= 0 {
+            return err("value must be positive")
+        }
         ^counters[name] = Counter(value: v)
     }
     return ok(v)

@@ -24,7 +24,9 @@ bare binding when the result is present; the else branch runs for `absent`.
 module docs::conditional
 
 fn maybeName(enabled: bool): string? {
-    if enabled { return "Marrow" }
+    if enabled {
+        return "Marrow"
+    }
     return absent
 }
 
@@ -50,12 +52,16 @@ condition is false.
 module docs::conditional_chain
 
 fn maybeName(id: int): string? {
-    if id > 0 { return "Marrow" }
+    if id > 0 {
+        return "Marrow"
+    }
     return absent
 }
 
 fn maybeAge(id: int): int? {
-    if id > 0 { return 21 }
+    if id > 0 {
+        return 21
+    }
     return absent
 }
 
@@ -77,7 +83,9 @@ binding the name is always in scope with the present value.
 module docs::let_else
 
 fn maybeName(id: int): string? {
-    if id > 0 { return "Marrow" }
+    if id > 0 {
+        return "Marrow"
+    }
     return absent
 }
 
@@ -153,10 +161,16 @@ fn hasNote(wanted: string): bool {
     for id in ^books at most 100 {
         for pos in ^books[id].notes at most 100 {
             if const note = ^books[id].notes[pos] {
-                if note.text == wanted { return true }
+                if note.text == wanted {
+                    return true
+                }
             }
-        } on more return false
-    } on more return false
+        } on more {
+            return false
+        }
+    } on more {
+        return false
+    }
     return false
 }
 
@@ -188,9 +202,15 @@ every real case, without a spurious "not all paths return a value" error.
 module docs::invariant
 
 pub fn sign(n: int): int {
-    if n > 0 { return 1 }
-    if n < 0 { return -1 }
-    if n == 0 { return 0 }
+    if n > 0 {
+        return 1
+    }
+    if n < 0 {
+        return -1
+    }
+    if n == 0 {
+        return 0
+    }
     unreachable("every int is positive, negative, or zero")
 }
 ```
@@ -212,7 +232,9 @@ so `todo(` is the complete worklist of deferred paths in a module.
 module docs::deferral
 
 pub fn describe(n: int): string {
-    if n > 0 { return "positive" }
+    if n > 0 {
+        return "positive"
+    }
     todo("classify zero and negative inputs")
 }
 ```
@@ -232,12 +254,16 @@ pub fn safeDivide(a: int, b: int): int {
     return checked a / b
         on out_of_range {
             return -1
-        } on zero_divisor return 0
+        } on zero_divisor {
+            return 0
+        }
 }
 
 pub fn product(a: int, b: int): int? {
     const p: int = checked a * b
-        on out_of_range return absent
+        on out_of_range {
+            return absent
+        }
     return p
 }
 ```
@@ -274,9 +300,15 @@ enum Shape {
 
 fn area(s: Shape): int {
     match s {
-        dot => return 0
-        circle(r) => return r * r
-        rect(w, h) => return w * h
+        dot => {
+            return 0
+        }
+        circle(r) => {
+            return r * r
+        }
+        rect(w, h) => {
+            return w * h
+        }
     }
 }
 
@@ -328,7 +360,9 @@ is no implicit error conversion.
 module docs::propagation
 
 fn checkPort(n: int): Result<int, string> {
-    if n < 0 { return err("negative port") }
+    if n < 0 {
+        return err("negative port")
+    }
     return ok(n)
 }
 

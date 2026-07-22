@@ -24,12 +24,16 @@ resolve any optional value:
 module docs::builtins_presence
 
 fn maybeNumber(enabled: bool): int? {
-    if enabled { return 4 }
+    if enabled {
+        return 4
+    }
     return absent
 }
 
 pub fn number(enabled: bool): int {
-    if const n = maybeNumber(enabled) { return n }
+    if const n = maybeNumber(enabled) {
+        return n
+    }
     return maybeNumber(enabled) ?? 0
 }
 ```

@@ -1,9 +1,11 @@
 //! Formatter goldens over the brace grammar. These exercise the public
 //! `format_source`/`format_expression` path and own the exact canonical rendering of
-//! each construct: `{ … }` blocks, cuddled and inline clauses, `=>` match arms,
-//! bracket keys, angle generics, `//`/`///` comments, and the empty-body rule. The
-//! comment-ownership invariants (MSY01) are pinned in `comment_ownership.rs`; here the
-//! rendered text is the contract.
+//! each construct: `{ … }` blocks, cuddled clauses, `=>` match arms, bracket keys,
+//! angle generics, `//`/`///` comments, and the empty-body rule. Every braced
+//! statement block renders multiline — the header on its own line, one statement per
+//! indented line, the closing `}` on its own line — and only an empty body renders
+//! `{}` inline. The comment-ownership invariants (MSY01) are pinned in
+//! `comment_ownership.rs`; here the rendered text is the contract.
 
 use crate::common;
 use marrow_syntax::{
@@ -365,25 +367,23 @@ fn formats_transaction_and_prefix_try() {
 #[test]
 fn formats_a_match_with_bare_member_arms() {
     let source = "module app\nfn label(s: Status) {\n    match s {\n        active => print(\"a\")\n        archived => print(\"b\")\n    }\n}\n";
-    let expected =
-        "    match s {\n        active => print(\"a\")\n        archived => print(\"b\")\n    }";
+    let expected = "    match s {\n        active => {\n            print(\"a\")\n        }\n        archived => {\n            print(\"b\")\n        }\n    }";
     assert_eq!(format_function_body(source), expected);
 }
 
 #[test]
 fn formats_a_match_with_qualified_member_path_arms() {
     let source = "module app\nfn label(c: Cat) {\n    match c {\n        tiger::bengal => print(\"a\")\n        lion => print(\"b\")\n    }\n}\n";
-    let expected =
-        "    match c {\n        tiger::bengal => print(\"a\")\n        lion => print(\"b\")\n    }";
+    let expected = "    match c {\n        tiger::bengal => {\n            print(\"a\")\n        }\n        lion => {\n            print(\"b\")\n        }\n    }";
     assert_eq!(format_function_body(source), expected);
 }
 
-/// A braced arm body with several statements stays braced; a single-statement arm
-/// renders inline after `=>`.
+/// Every match arm body renders as a braced multiline block after `=>`, whether it
+/// holds one statement or several.
 #[test]
-fn formats_a_match_with_inline_and_braced_arms() {
+fn formats_a_match_with_braced_arms() {
     let source = "module app\nfn area(s: Shape): int {\n    match s {\n        dot => return 0\n        circle(r) => {\n            log(r)\n            return r\n        }\n    }\n}\n";
-    let expected = "    match s {\n        dot => return 0\n        circle(r) => {\n            log(r)\n            return r\n        }\n    }";
+    let expected = "    match s {\n        dot => {\n            return 0\n        }\n        circle(r) => {\n            log(r)\n            return r\n        }\n    }";
     assert_eq!(format_function_body(source), expected);
 }
 
@@ -393,7 +393,7 @@ fn formats_a_match_with_inline_and_braced_arms() {
 #[test]
 fn preserves_grouping_blank_between_match_arms() {
     let source = "module app\nfn label(s: Status) {\n    match s {\n        active => print(\"a\")\n\n        archived => print(\"b\")\n        deleted => print(\"c\")\n    }\n}\n";
-    let expected = "    match s {\n        active => print(\"a\")\n\n        archived => print(\"b\")\n        deleted => print(\"c\")\n    }";
+    let expected = "    match s {\n        active => {\n            print(\"a\")\n        }\n\n        archived => {\n            print(\"b\")\n        }\n        deleted => {\n            print(\"c\")\n        }\n    }";
     assert_eq!(format_function_body(source), expected);
     let once = format_source(source);
     assert_eq!(
@@ -403,25 +403,23 @@ fn preserves_grouping_blank_between_match_arms() {
     );
 }
 
-// ---- inline-diverging cuddle integrity ----
+// ---- multiline cuddle integrity ----
 
-/// An `if`/`else if` then-branch always keeps its braces, even inline: the braceless
-/// spelling `else if c return` is not legal grammar and would not re-parse. An
-/// eligible diverging single statement renders braced-inline (`{ return }`), never
-/// braceless; a bare `else` keeps its braceless-inline form. Because the braced-inline
-/// form still carries a closing `}`, every clause — including a terminal `else if`
-/// with no trailing `else` — cuddles a following keyword and re-parses.
+/// An `if`/`else if` chain renders every branch as a braced multiline block, and each
+/// trailing clause cuddles the preceding block's closing `}` (`} else if c {`). Because
+/// every branch ends with a `}`, a following keyword always has a brace to cuddle and
+/// the chain re-parses.
 #[test]
-fn an_else_if_then_branch_keeps_its_braces() {
+fn an_else_if_chain_renders_multiline() {
     let source = "module app\nfn run(a: int): int {\n    if a > 0 {\n        return 1\n    } else if a == 0 {\n        return 0\n    } else if a == 1 {\n        return 2\n    }\n}\n";
     let once = format_source(source);
     assert!(
-        once.contains("} else if a == 0 { return 0 }"),
-        "a middle else-if renders braced-inline:\n{once}"
+        once.contains("} else if a == 0 {\n        return 0\n    }"),
+        "a middle else-if renders multiline:\n{once}"
     );
     assert!(
-        once.contains("} else if a == 1 { return 2 }"),
-        "a terminal else-if keeps its braces rather than going braceless:\n{once}"
+        once.contains("} else if a == 1 {\n        return 2\n    }"),
+        "a terminal else-if renders multiline:\n{once}"
     );
     assert!(
         !parse_source(&once).has_errors(),
@@ -434,16 +432,20 @@ fn an_else_if_then_branch_keeps_its_braces() {
     );
 }
 
-/// The same cuddle rule governs `checked` arms: an `on out_of_range` arm followed by
-/// an `on zero_divisor` arm may not inline, or the second `on` keyword has no `}` to
-/// cuddle and the render does not re-parse.
+/// A `checked` form renders each present arm as a braced multiline block. The second
+/// arm cuddles the first arm's closing `}` (`} on zero_divisor {`), so the render
+/// re-parses.
 #[test]
-fn a_non_final_checked_arm_never_inlines() {
+fn checked_arms_render_multiline() {
     let source = "module app\nfn run(a: int, b: int): int {\n    return checked a / b\n    on out_of_range {\n        return 0\n    }\n    on zero_divisor {\n        return -1\n    }\n}\n";
     let once = format_source(source);
     assert!(
-        once.contains("on out_of_range {"),
-        "the non-final checked arm keeps its braced body:\n{once}"
+        once.contains("on out_of_range {\n            return 0\n        }"),
+        "the first checked arm renders multiline:\n{once}"
+    );
+    assert!(
+        once.contains("} on zero_divisor {\n            return -1\n        }"),
+        "the second checked arm cuddles the first arm's brace:\n{once}"
     );
     assert!(
         !parse_source(&once).has_errors(),
@@ -607,22 +609,22 @@ fn formats_if_const_chain_canonically() {
     assert_eq!(bindings.len(), 2);
 }
 
-/// A B6 let-else renders inline when its else body is a single diverging statement,
-/// and braced otherwise; both are fixed points.
+/// A B6 let-else renders its `else` body as a braced multiline block, whether it holds
+/// one statement or several; both are fixed points.
 #[test]
 fn formats_let_else_canonically() {
-    let inline =
+    let single =
         "module app\nfn run(): int {\n    const x = ^c[1].v else return -1\n    return x\n}\n";
     assert_eq!(
-        format_function_body(inline),
-        "    const x = ^c[1].v else return -1\n    return x"
+        format_function_body(single),
+        "    const x = ^c[1].v else {\n        return -1\n    }\n    return x"
     );
     let braced = "module app\nfn run(): int {\n    const x = ^c[1].v else {\n        log(\"x\")\n        return -1\n    }\n    return x\n}\n";
     assert_eq!(
         format_function_body(braced),
         "    const x = ^c[1].v else {\n        log(\"x\")\n        return -1\n    }\n    return x"
     );
-    for source in [inline, braced] {
+    for source in [single, braced] {
         let once = format_source(source);
         assert_eq!(format_source(&once), once);
         let Statement::LetElse { .. } = &reparsed_run_body(source).statements[0] else {
@@ -998,12 +1000,12 @@ fn preserves_trailing_comments_on_prefix_try_statements() {
     assert_eq!(format_source(&once), once);
 }
 
-/// A comment trailing a match-arm body statement stays on that statement; the inline
-/// arm expands to a braced block so the comment has a home, and it is a fixed point.
+/// A comment trailing a match-arm body statement stays on that statement inside the
+/// arm's braced multiline block, and it is a fixed point.
 #[test]
 fn preserves_trailing_comments_on_match_arm_bodies() {
     let source = "module app\nfn run() {\n    match status {\n        active => return // active rationale\n        inactive => return\n    }\n}\n";
-    let expected = "module app\n\nfn run() {\n    match status {\n        active => {\n            return // active rationale\n        }\n        inactive => return\n    }\n}\n";
+    let expected = "module app\n\nfn run() {\n    match status {\n        active => {\n            return // active rationale\n        }\n        inactive => {\n            return\n        }\n    }\n}\n";
     assert_eq!(format_source(source), expected);
     let once = format_source(source);
     assert_eq!(format_source(&once), once);

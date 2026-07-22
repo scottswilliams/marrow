@@ -85,8 +85,15 @@ if condition {
 ```
 
 A trailing clause cuddles the closing brace of the block before it — `} else {`,
-`} else if c {`, `} on more { ... }`. A trailing comma is allowed in multiline
+`} else if c {`, `} on more {`. A trailing comma is allowed in multiline
 argument lists, key groups, and constructors.
+
+The formatter renders every braced statement block across multiple lines: the
+header ends the line with `{`, each body statement sits on its own indented line,
+and the closing `}` stands on its own line. A single-statement body is written
+the same way, and only an empty body renders as `{}` on the header line. The
+grammar still accepts a single statement written inline, but the formatter
+normalizes it to the multiline form.
 
 ## Line Continuation
 
@@ -103,15 +110,11 @@ inside `(` continues the line — and break a long condition after `and` or `or`
 module docs::continuation
 
 pub fn score(a: int, b: int, c: int): int {
-    return (a * 100 +
-        b * 10 +
-        c)
+    return a * 100 + b * 10 + c
 }
 
 pub fn eligible(active: bool, verified: bool, member: bool): bool {
-    return active and
-        verified and
-        member
+    return active and verified and member
 }
 ```
 

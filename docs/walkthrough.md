@@ -83,7 +83,9 @@ root together:
 ```text
 pub fn add(id: int, tag: string, name: string, category: string, at: instant): bool {
     transaction {
-        if exists(^assets[id]) { return false }
+        if exists(^assets[id]) {
+            return false
+        }
         ^assets[id] = Asset(tag: tag, name: name, category: category)
         ^assets[id].log[1] = Asset.log(text: "catalogued", at: at)
         const priorCatalogued = ^tallies["catalogued"].count ?? 0
@@ -142,7 +144,9 @@ record:
 pub fn setLocation(id: int, location: string): bool {
     transaction {
         place slot = ^assets[id]
-        if not exists(slot) { return false }
+        if not exists(slot) {
+            return false
+        }
         slot.location = location
     }
     return true
@@ -168,15 +172,17 @@ fn withLocation(asset: Asset, location: string): Asset {
 
 pub fn relocate(id: int, location: string): bool {
     transaction {
-        const current = ^assets[id] else return false
+        const current = ^assets[id] else {
+            return false
+        }
         ^assets[id] = withLocation(current, location)
     }
     return true
 }
 ```
 
-`const current = ^assets[id] else return false` binds the whole entry and diverges
-when it is absent. `withLocation` is an ordinary function over an ordinary value —
+`const current = ^assets[id] else { return false }` binds the whole entry and
+diverges when it is absent. `withLocation` is an ordinary function over an ordinary value —
 no durable place is involved inside it, and the copy is by value, so it cannot
 reach back into the store. The read carried every field, so writing the reworked
 copy back preserves the fields the change did not touch. The payload-only
@@ -190,8 +196,12 @@ whole-entry write:
 ```text
 pub fn renameByTag(tag: string, name: string): bool {
     transaction {
-        const found = ^assets.byTag[tag] else return false
-        const current = ^assets[found] else return false
+        const found = ^assets.byTag[tag] else {
+            return false
+        }
+        const current = ^assets[found] else {
+            return false
+        }
         ^assets[found] = withName(current, name)
     }
     return true
@@ -221,9 +231,13 @@ pub fn pinnedCount(): int {
                         total += 1
                     }
                 }
-            } on more return -1
+            } on more {
+                return -1
+            }
         }
-    } on more return -1
+    } on more {
+        return -1
+    }
     return total
 }
 ```
@@ -241,7 +255,9 @@ pub fn countInCategory(category: string): int {
         if exists(^assets[assetId]) {
             count += 1
         }
-    } on more return -1
+    } on more {
+        return -1
+    }
     return count
 }
 ```

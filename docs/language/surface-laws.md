@@ -40,7 +40,9 @@ has a consequence to signal.
 module main
 
 fn checkPositive(n: int): Result<int, string> {
-    if n < 0 { return err("value is negative") }
+    if n < 0 {
+        return err("value is negative")
+    }
     return ok(n)
 }
 
@@ -48,7 +50,9 @@ fn perShare(total: int, shares: int): int {
     return checked total / shares
         on out_of_range {
             return 0
-        } on zero_divisor return 0
+        } on zero_divisor {
+            return 0
+        }
 }
 
 pub fn shareOfDouble(total: int, shares: int): Result<int, string> {

@@ -33,7 +33,7 @@ a `src/main.mw` starter script.
 ```text
 hello/
   marrow.toml      edition = "2026"
-  src/main.mw      pub fn main() { return }
+  src/main.mw      a pub fn main() starter script
 ```
 
 Source lives under `src`. A file's name is derived from its path
@@ -110,7 +110,9 @@ store ^notes[id: int]: Note
 
 pub fn add(id: int, text: string): bool {
     transaction {
-        if exists(^notes[id]) { return false }
+        if exists(^notes[id]) {
+            return false
+        }
         ^notes[id].text = text
     }
     return true
@@ -119,7 +121,9 @@ pub fn add(id: int, text: string): bool {
 pub fn pin(id: int): bool {
     transaction {
         place slot = ^notes[id]
-        if not exists(slot) { return false }
+        if not exists(slot) {
+            return false
+        }
         slot.pinned = true
     }
     return true

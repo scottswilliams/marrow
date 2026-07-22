@@ -329,8 +329,8 @@ more `and`-joined existence bindings followed by an optional trailing condition
 — is parsed so the grammar is complete but rejected by the checker
 (`check.unsupported`) until adopted. A `match` arm is a member pattern, an
 optional positional binding group, `=>`, and then one statement or a braced
-block; the formatter renders a single fitting statement inline and any other body
-as a cuddled block. `by`, `at most`, `from`, and the trailing `on more` are
+block; the formatter renders every arm body as a braced multiline block cuddled
+after `=>`. `by`, `at most`, `from`, and the trailing `on more` are
 contextual in a `for` head and its bounded durable-traversal clause. `category`
 is contextual in an enum body.
 

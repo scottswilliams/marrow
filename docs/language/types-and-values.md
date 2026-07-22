@@ -38,7 +38,9 @@ alias Count = int
 alias MaybeCount = Count?
 
 fn maybe(present: bool): MaybeCount {
-    if present { return 1 }
+    if present {
+        return 1
+    }
     return absent
 }
 
@@ -347,7 +349,9 @@ Four constructs consume them:
 module docs::optionals
 
 fn maybeLabel(enabled: bool): string? {
-    if enabled { return "enabled" }
+    if enabled {
+        return "enabled"
+    }
     return absent
 }
 
@@ -431,15 +435,23 @@ members exactly, binding the payload positionally:
 module docs::optionvalue
 
 fn firstEven(a: int, b: int): Option<int> {
-    if a % 2 == 0 { return some(a) }
-    if b % 2 == 0 { return some(b) }
+    if a % 2 == 0 {
+        return some(a)
+    }
+    if b % 2 == 0 {
+        return some(b)
+    }
     return none
 }
 
 pub fn describe(o: Option<int>): string {
     match o {
-        some(v) => return "some"
-        none => return "none"
+        some(v) => {
+            return "some"
+        }
+        none => {
+            return "none"
+        }
     }
 }
 ```
@@ -480,8 +492,12 @@ pub fn describe(): string {
     const r = Reading(measured: some(7))
     if const stored = r.measured {
         match stored {
-            some(v) => return "measured"
-            none => return "recorded as unmeasurable"
+            some(v) => {
+                return "measured"
+            }
+            none => {
+                return "recorded as unmeasurable"
+            }
         }
     }
     return "not recorded"

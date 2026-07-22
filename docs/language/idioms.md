@@ -66,9 +66,15 @@ resource Patient {
 store ^patients[pid: int]: Patient
 
 pub fn wardOf(pid: Id(^patients), wards: Map<string, string>): Result<string, string> {
-    if not exists(^patients[pid]) { return err("unknown patient") }
-    const name = ^patients[pid].name else return err("patient has no name")
-    const code = ^patients[pid].wardCode else return err($"{name} has no ward")
+    if not exists(^patients[pid]) {
+        return err("unknown patient")
+    }
+    const name = ^patients[pid].name else {
+        return err("patient has no name")
+    }
+    const code = ^patients[pid].wardCode else {
+        return err($"{name} has no ward")
+    }
     const ward = wards[code] ?? "(unassigned)"
     return ok(ward)
 }
@@ -100,7 +106,9 @@ store ^beds[bid: int]: Bed
 pub fn assign(bid: int, who: string): Result<int, string> {
     transaction {
         place slot = ^beds[bid]
-        if not exists(slot) { return err("no such bed") }
+        if not exists(slot) {
+            return err("no such bed")
+        }
         slot.patient = who
     }
     return ok(bid)
@@ -166,12 +174,16 @@ pub fn perDayCents(totalCents: int, days: int): int {
     return checked totalCents / days
         on out_of_range {
             return 0
-        } on zero_divisor return 0
+        } on zero_divisor {
+            return 0
+        }
 }
 
 pub fn sumCents(a: int, b: int): int? {
     const total: int = checked a + b
-        on out_of_range return absent
+        on out_of_range {
+            return absent
+        }
     return total
 }
 ```
@@ -305,7 +317,9 @@ pub fn setCharge(id: Id(^visits), cents: int) {
 }
 
 pub fn chargeOf(id: Id(^visits)): int {
-    if not exists(^visits[id]) { return 0 }
+    if not exists(^visits[id]) {
+        return 0
+    }
     return ^visits[id].chargeCents ?? 0
 }
 

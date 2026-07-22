@@ -60,7 +60,9 @@ pub fn moveToShelf(id: Id(^books), shelf: string, changedAt: instant): bool {
 
 pub fn addNote(id: Id(^books), noteId: string, text: string): bool {
     transaction {
-        if not exists(^books[id]) { return false }
+        if not exists(^books[id]) {
+            return false
+        }
         ^books[id].notes[noteId].text = text
         return true
     }
@@ -76,7 +78,9 @@ pub fn shelfCount(shelf: string): int {
     var found: int = 0
     for id in ^books.byShelf[shelf] at most 100 {
         found += 1
-    } on more return found
+    } on more {
+        return found
+    }
     return found
 }
 

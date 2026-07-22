@@ -59,7 +59,9 @@ path-derived name even though the script is not importable.
 module docs::functions
 
 fn maybeTitle(show: bool): string? {
-    if show { return "Marrow" }
+    if show {
+        return "Marrow"
+    }
     return absent
 }
 
@@ -124,14 +126,18 @@ module docs::constrained
 
 fn includes<T supports equality>(xs: List<T>, target: T): bool {
     for x in xs {
-        if x == target { return true }
+        if x == target {
+            return true
+        }
     }
     return false
 }
 
 fn firstBigger<T supports order>(xs: List<T>, threshold: T): T? {
     for x in xs {
-        if x > threshold { return x }
+        if x > threshold {
+            return x
+        }
     }
     return absent
 }
