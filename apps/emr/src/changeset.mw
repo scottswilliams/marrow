@@ -18,13 +18,11 @@ use status
 // the store byte-for-byte unchanged. Runtime/store faults are the separate
 // uncatchable channel and roll the transaction back.
 
-const MAX_REVISION: int = 9223372036854775807
+const initialRevision: int = 1
 
-const INITIAL_REVISION: int = 1
+const auditCounterName: string = "global"
 
-const AUDIT_COUNTER_NAME: string = "global"
-
-const FIRST_AUDIT_ID: int = 1
+const firstAuditId: int = 1
 
 // One recorded mutation awaiting contiguous audit-ID allocation. `patientB` is 0
 // for a single-patient mutation.
@@ -216,8 +214,8 @@ pub fn rejectionCode(e: Rejection): string {
 // counter untouched.
 pub fn initStore() {
     transaction {
-        if not exists(^auditCounter[AUDIT_COUNTER_NAME]) {
-            ^auditCounter[AUDIT_COUNTER_NAME] = AuditCounter(nextId: FIRST_AUDIT_ID)
+        if not exists(^auditCounter[auditCounterName]) {
+            ^auditCounter[auditCounterName] = AuditCounter(nextId: firstAuditId)
         }
     }
 }
@@ -230,9 +228,7 @@ pub fn initStore() {
 // stay non-`pub`: a `pub` export owns its own transaction.
 fn applyBundle(changes: List<Change>): Result<ChangeSetApplied, Rejection> {
     const n = length(changes)
-    if n == 0 {
-        return err(Rejection::emptyBundle)
-    }
+    require n != 0 else Rejection::emptyBundle
 
     // Pass 1 — canonical maps: duplicate detection and same-bundle create sets.
     var seen: Map<string, bool> = Map()
@@ -242,9 +238,8 @@ fn applyBundle(changes: List<Change>): Result<ChangeSetApplied, Rejection> {
     var activeSecond: Map<string, int> = Map()
     for c in changes {
         const key = subjectKey(c)
-        if seen[key] ?? false {
-            return err(Rejection::duplicateSubject(kind: changeKind(c), id: changeId(c)))
-        }
+        const duplicate = seen[key] ?? false
+        require not duplicate else Rejection::duplicateSubject(kind: changeKind(c), id: changeId(c))
         seen[key] = true
         match c {
             createPatient(id, s, d) => {
@@ -275,20 +270,13 @@ fn applyBundle(changes: List<Change>): Result<ChangeSetApplied, Rejection> {
 
     // Pass 2 — validate every entry against the store and the bundle.
     for c in changes {
-        match validate(c, createdPatients, createdEncounters, activeFirst, activeSecond) {
-            ok(v) => {}
-            err(e) => {
-                return err(e)
-            }
-        }
+        try validate(c, createdPatients, createdEncounters, activeFirst, activeSecond)
     }
 
     // The audit counter must be established (by `initStore`) before any
     // change-set: audit allocation depends on it. This is checked here, before
     // any write, so a missing counter rolls nothing back.
-    if not exists(^auditCounter[AUDIT_COUNTER_NAME]) {
-        return err(Rejection::auditCounterMissing)
-    }
+    require exists(^auditCounter[auditCounterName]) else Rejection::auditCounterMissing
 
     // Pass 3 — apply primaries and active-medication state, recording drafts.
     var drafts: List<AuditDraft> = List()
@@ -311,7 +299,7 @@ fn applyBundle(changes: List<Change>): Result<ChangeSetApplied, Rejection> {
     }
     for p in touched {
         if createdPatients[p] ?? false {
-            ^patientAggregates[p] = PatientAggregate(revision: INITIAL_REVISION)
+            ^patientAggregates[p] = PatientAggregate(revision: initialRevision)
         } else {
             const cur = ^patientAggregates[p].revision ?? 0
             ^patientAggregates[p] = PatientAggregate(revision: cur + 1)
@@ -319,7 +307,7 @@ fn applyBundle(changes: List<Change>): Result<ChangeSetApplied, Rejection> {
     }
 
     // Pass 5 — allocate contiguous audit IDs and write the audit trail.
-    const firstAudit = ^auditCounter[AUDIT_COUNTER_NAME].nextId ?? FIRST_AUDIT_ID
+    const firstAudit = ^auditCounter[auditCounterName].nextId ?? firstAuditId
     var auditId = firstAudit
     for d in drafts {
         ^auditEvents[auditId] = AuditEvent(
@@ -336,7 +324,7 @@ fn applyBundle(changes: List<Change>): Result<ChangeSetApplied, Rejection> {
         }
         auditId += 1
     }
-    ^auditCounter[AUDIT_COUNTER_NAME] = AuditCounter(nextId: auditId)
+    ^auditCounter[auditCounterName] = AuditCounter(nextId: auditId)
 
     const explicit = n
     const implicit = length(drafts) - n
@@ -446,146 +434,84 @@ fn encounterReachable(encounterId: int, createdEncounters: Map<int, int>): bool 
 
 // validation ----------------------------------------------------------------
 
+// The shared revision preconditions of every update arm: the expected revision
+// matches, and the revision has room to advance.
+fn revisionGuards(kind: string, id: int, actual: int, expected: int): Result<bool, Rejection> {
+    require actual == expected else Rejection::staleRevision(kind: kind, id: id, expected: expected, actual: actual)
+    require actual < maxInt else Rejection::revisionOverflow(kind: kind, id: id)
+    return ok(true)
+}
+
+// Each arm is a precondition chain: let-else reads the subject, `try` joins the
+// shared revision guards, and one `require` line states each remaining
+// precondition. Guard order is rejection order.
 fn validate(c: Change, createdPatients: Map<int, bool>, createdEncounters: Map<int, int>, activeFirst: Map<string, int>, activeSecond: Map<string, int>): Result<bool, Rejection> {
     match c {
         createPatient(id, s, d) => {
-            if exists(^patients[id]) {
-                return err(Rejection::resourceAlreadyExists(kind: "patient", id: id))
-            }
-            if not status::patientStatusValid(s) {
-                return err(Rejection::unsupportedStatus(kind: "patient", id: id, status: s))
-            }
+            require not exists(^patients[id]) else Rejection::resourceAlreadyExists(kind: "patient", id: id)
+            require status::patientStatusValid(s) else Rejection::unsupportedStatus(kind: "patient", id: id, status: s)
             return ok(true)
         }
         updatePatient(id, expected, s, d) => {
             const p = ^patients[id] else {
                 return err(Rejection::resourceMissing(kind: "patient", id: id))
             }
-            if p.revision != expected {
-                return err(Rejection::staleRevision(kind: "patient", id: id, expected: expected, actual: p.revision))
-            }
-            if p.revision >= MAX_REVISION {
-                return err(Rejection::revisionOverflow(kind: "patient", id: id))
-            }
-            if not status::patientStatusValid(s) {
-                return err(Rejection::unsupportedStatus(kind: "patient", id: id, status: s))
-            }
-            if not status::patientTransitionOk(p.status, s) {
-                return err(Rejection::unsupportedTransition(kind: "patient", id: id, prior: p.status, intended: s))
-            }
-            if not exists(^patientAggregates[id]) {
-                return err(Rejection::patientAggregateMissing(patientId: id))
-            }
+            try revisionGuards("patient", id, p.revision, expected)
+            require status::patientStatusValid(s) else Rejection::unsupportedStatus(kind: "patient", id: id, status: s)
+            require status::patientTransitionOk(p.status, s) else Rejection::unsupportedTransition(kind: "patient", id: id, prior: p.status, intended: s)
+            require exists(^patientAggregates[id]) else Rejection::patientAggregateMissing(patientId: id)
             return ok(true)
         }
         createEncounter(id, patientId, s, reason) => {
-            if exists(^encounters[id]) {
-                return err(Rejection::resourceAlreadyExists(kind: "encounter", id: id))
-            }
-            if not status::encounterStatusValid(s) {
-                return err(Rejection::unsupportedStatus(kind: "encounter", id: id, status: s))
-            }
-            if not status::encounterCreateOk(s) {
-                return err(Rejection::unsupportedStatus(kind: "encounter", id: id, status: s))
-            }
-            if not patientReachable(patientId, createdPatients) {
-                return err(Rejection::patientMissing(patientId: patientId, referencedByKind: "encounter", referencedById: id))
-            }
+            require not exists(^encounters[id]) else Rejection::resourceAlreadyExists(kind: "encounter", id: id)
+            require status::encounterStatusValid(s) else Rejection::unsupportedStatus(kind: "encounter", id: id, status: s)
+            require status::encounterCreateOk(s) else Rejection::unsupportedStatus(kind: "encounter", id: id, status: s)
+            require patientReachable(patientId, createdPatients) else Rejection::patientMissing(patientId: patientId, referencedByKind: "encounter", referencedById: id)
             return ok(true)
         }
         updateEncounter(id, expected, s, reason) => {
             const e = ^encounters[id] else {
                 return err(Rejection::resourceMissing(kind: "encounter", id: id))
             }
-            if e.revision != expected {
-                return err(Rejection::staleRevision(kind: "encounter", id: id, expected: expected, actual: e.revision))
-            }
-            if e.revision >= MAX_REVISION {
-                return err(Rejection::revisionOverflow(kind: "encounter", id: id))
-            }
-            if not status::encounterStatusValid(s) {
-                return err(Rejection::unsupportedStatus(kind: "encounter", id: id, status: s))
-            }
-            if not status::encounterTransitionOk(e.status, s) {
-                return err(Rejection::unsupportedTransition(kind: "encounter", id: id, prior: e.status, intended: s))
-            }
-            if not exists(^patientAggregates[e.patientId]) {
-                return err(Rejection::patientAggregateMissing(patientId: e.patientId))
-            }
+            try revisionGuards("encounter", id, e.revision, expected)
+            require status::encounterStatusValid(s) else Rejection::unsupportedStatus(kind: "encounter", id: id, status: s)
+            require status::encounterTransitionOk(e.status, s) else Rejection::unsupportedTransition(kind: "encounter", id: id, prior: e.status, intended: s)
+            require exists(^patientAggregates[e.patientId]) else Rejection::patientAggregateMissing(patientId: e.patientId)
             return ok(true)
         }
         createObservation(id, patientId, encounterId, s, code, value) => {
-            if exists(^observations[id]) {
-                return err(Rejection::resourceAlreadyExists(kind: "observation", id: id))
-            }
-            if not status::observationStatusValid(s) {
-                return err(Rejection::unsupportedStatus(kind: "observation", id: id, status: s))
-            }
-            if not status::observationCreateOk(s) {
-                return err(Rejection::unsupportedStatus(kind: "observation", id: id, status: s))
-            }
-            if not patientReachable(patientId, createdPatients) {
-                return err(Rejection::patientMissing(patientId: patientId, referencedByKind: "observation", referencedById: id))
-            }
-            if not encounterReachable(encounterId, createdEncounters) {
-                return err(Rejection::encounterMissing(encounterId: encounterId, referencedByObservation: id))
-            }
+            require not exists(^observations[id]) else Rejection::resourceAlreadyExists(kind: "observation", id: id)
+            require status::observationStatusValid(s) else Rejection::unsupportedStatus(kind: "observation", id: id, status: s)
+            require status::observationCreateOk(s) else Rejection::unsupportedStatus(kind: "observation", id: id, status: s)
+            require patientReachable(patientId, createdPatients) else Rejection::patientMissing(patientId: patientId, referencedByKind: "observation", referencedById: id)
+            require encounterReachable(encounterId, createdEncounters) else Rejection::encounterMissing(encounterId: encounterId, referencedByObservation: id)
             const ep = encounterPatient(encounterId, createdEncounters)
-            if ep != patientId {
-                return err(Rejection::observationPatientMismatch(observationId: id, observationPatient: patientId, encounterPatient: ep))
-            }
+            require ep == patientId else Rejection::observationPatientMismatch(observationId: id, observationPatient: patientId, encounterPatient: ep)
             return ok(true)
         }
         updateObservation(id, expected, patientId, encounterId, s, code, value) => {
             const o = ^observations[id] else {
                 return err(Rejection::resourceMissing(kind: "observation", id: id))
             }
-            if o.revision != expected {
-                return err(Rejection::staleRevision(kind: "observation", id: id, expected: expected, actual: o.revision))
-            }
-            if o.revision >= MAX_REVISION {
-                return err(Rejection::revisionOverflow(kind: "observation", id: id))
-            }
-            if not status::observationStatusValid(s) {
-                return err(Rejection::unsupportedStatus(kind: "observation", id: id, status: s))
-            }
-            if not status::observationTransitionOk(o.status, s) {
-                return err(Rejection::unsupportedTransition(kind: "observation", id: id, prior: o.status, intended: s))
-            }
-            if not patientReachable(patientId, createdPatients) {
-                return err(Rejection::patientMissing(patientId: patientId, referencedByKind: "observation", referencedById: id))
-            }
-            if not encounterReachable(encounterId, createdEncounters) {
-                return err(Rejection::encounterMissing(encounterId: encounterId, referencedByObservation: id))
-            }
+            try revisionGuards("observation", id, o.revision, expected)
+            require status::observationStatusValid(s) else Rejection::unsupportedStatus(kind: "observation", id: id, status: s)
+            require status::observationTransitionOk(o.status, s) else Rejection::unsupportedTransition(kind: "observation", id: id, prior: o.status, intended: s)
+            require patientReachable(patientId, createdPatients) else Rejection::patientMissing(patientId: patientId, referencedByKind: "observation", referencedById: id)
+            require encounterReachable(encounterId, createdEncounters) else Rejection::encounterMissing(encounterId: encounterId, referencedByObservation: id)
             const ep = encounterPatient(encounterId, createdEncounters)
-            if ep != patientId {
-                return err(Rejection::observationPatientMismatch(observationId: id, observationPatient: patientId, encounterPatient: ep))
-            }
-            if not exists(^patientAggregates[o.patientId]) {
-                return err(Rejection::patientAggregateMissing(patientId: o.patientId))
-            }
+            require ep == patientId else Rejection::observationPatientMismatch(observationId: id, observationPatient: patientId, encounterPatient: ep)
+            require exists(^patientAggregates[o.patientId]) else Rejection::patientAggregateMissing(patientId: o.patientId)
             return ok(true)
         }
         createMedicationOrder(id, patientId, code, s, dose) => {
-            if exists(^medicationOrders[id]) {
-                return err(Rejection::resourceAlreadyExists(kind: "medicationOrder", id: id))
-            }
-            if not status::medicationStatusValid(s) {
-                return err(Rejection::unsupportedStatus(kind: "medicationOrder", id: id, status: s))
-            }
-            if not status::medicationCreateOk(s) {
-                return err(Rejection::unsupportedStatus(kind: "medicationOrder", id: id, status: s))
-            }
-            if not patientReachable(patientId, createdPatients) {
-                return err(Rejection::patientMissing(patientId: patientId, referencedByKind: "medicationOrder", referencedById: id))
-            }
+            require not exists(^medicationOrders[id]) else Rejection::resourceAlreadyExists(kind: "medicationOrder", id: id)
+            require status::medicationStatusValid(s) else Rejection::unsupportedStatus(kind: "medicationOrder", id: id, status: s)
+            require status::medicationCreateOk(s) else Rejection::unsupportedStatus(kind: "medicationOrder", id: id, status: s)
+            require patientReachable(patientId, createdPatients) else Rejection::patientMissing(patientId: patientId, referencedByKind: "medicationOrder", referencedById: id)
             if s == "active" {
                 const ak = string(patientId) + ":" + code
                 const second = activeSecond[ak] ?? 0
-                if second != 0 {
-                    return err(Rejection::activeMedicationCollision(patientId: patientId, code: code, first: activeFirst[ak] ?? 0, second: second))
-                }
+                require second == 0 else Rejection::activeMedicationCollision(patientId: patientId, code: code, first: activeFirst[ak] ?? 0, second: second)
             }
             return ok(true)
         }
@@ -593,29 +519,14 @@ fn validate(c: Change, createdPatients: Map<int, bool>, createdEncounters: Map<i
             const m = ^medicationOrders[id] else {
                 return err(Rejection::resourceMissing(kind: "medicationOrder", id: id))
             }
-            if m.revision != expected {
-                return err(Rejection::staleRevision(kind: "medicationOrder", id: id, expected: expected, actual: m.revision))
-            }
-            if m.revision >= MAX_REVISION {
-                return err(Rejection::revisionOverflow(kind: "medicationOrder", id: id))
-            }
-            if not status::medicationStatusValid(s) {
-                return err(Rejection::unsupportedStatus(kind: "medicationOrder", id: id, status: s))
-            }
-            if not status::medicationTransitionOk(m.status, s) {
-                return err(Rejection::unsupportedTransition(kind: "medicationOrder", id: id, prior: m.status, intended: s))
-            }
-            if not patientReachable(patientId, createdPatients) {
-                return err(Rejection::patientMissing(patientId: patientId, referencedByKind: "medicationOrder", referencedById: id))
-            }
-            if not exists(^patientAggregates[m.patientId]) {
-                return err(Rejection::patientAggregateMissing(patientId: m.patientId))
-            }
+            try revisionGuards("medicationOrder", id, m.revision, expected)
+            require status::medicationStatusValid(s) else Rejection::unsupportedStatus(kind: "medicationOrder", id: id, status: s)
+            require status::medicationTransitionOk(m.status, s) else Rejection::unsupportedTransition(kind: "medicationOrder", id: id, prior: m.status, intended: s)
+            require patientReachable(patientId, createdPatients) else Rejection::patientMissing(patientId: patientId, referencedByKind: "medicationOrder", referencedById: id)
+            require exists(^patientAggregates[m.patientId]) else Rejection::patientAggregateMissing(patientId: m.patientId)
             if s == "active" {
                 if const a = ^activeMedications[patientId].byCode[code] {
-                    if a.orderId != id {
-                        return err(Rejection::activeMedicationCollision(patientId: patientId, code: code, first: a.orderId, second: id))
-                    }
+                    require a.orderId == id else Rejection::activeMedicationCollision(patientId: patientId, code: code, first: a.orderId, second: id)
                 }
             }
             return ok(true)
@@ -628,8 +539,8 @@ fn validate(c: Change, createdPatients: Map<int, bool>, createdEncounters: Map<i
 fn applyPrimary(c: Change, drafts: List<AuditDraft>, seen: Map<string, bool>): List<AuditDraft> {
     match c {
         createPatient(id, s, d) => {
-            ^patients[id] = Patient(revision: INITIAL_REVISION, status: s, display: d)
-            return append(drafts, AuditDraft(subjectKind: "patient", subjectId: id, mutationKind: "explicitCreate", priorRevision: 0, newRevision: INITIAL_REVISION, patientA: id, patientB: 0))
+            ^patients[id] = Patient(revision: initialRevision, status: s, display: d)
+            return append(drafts, AuditDraft(subjectKind: "patient", subjectId: id, mutationKind: "explicitCreate", priorRevision: 0, newRevision: initialRevision, patientA: id, patientB: 0))
         }
         updatePatient(id, expected, s, d) => {
             const prior = ^patients[id].revision ?? 0
@@ -638,8 +549,8 @@ fn applyPrimary(c: Change, drafts: List<AuditDraft>, seen: Map<string, bool>): L
             return append(drafts, AuditDraft(subjectKind: "patient", subjectId: id, mutationKind: "explicitUpdate", priorRevision: prior, newRevision: nr, patientA: id, patientB: 0))
         }
         createEncounter(id, patientId, s, reason) => {
-            ^encounters[id] = Encounter(revision: INITIAL_REVISION, patientId: patientId, status: s, reason: reason)
-            return append(drafts, AuditDraft(subjectKind: "encounter", subjectId: id, mutationKind: "explicitCreate", priorRevision: 0, newRevision: INITIAL_REVISION, patientA: patientId, patientB: 0))
+            ^encounters[id] = Encounter(revision: initialRevision, patientId: patientId, status: s, reason: reason)
+            return append(drafts, AuditDraft(subjectKind: "encounter", subjectId: id, mutationKind: "explicitCreate", priorRevision: 0, newRevision: initialRevision, patientA: patientId, patientB: 0))
         }
         updateEncounter(id, expected, s, reason) => {
             const owner = ^encounters[id].patientId ?? 0
@@ -649,8 +560,8 @@ fn applyPrimary(c: Change, drafts: List<AuditDraft>, seen: Map<string, bool>): L
             return append(drafts, AuditDraft(subjectKind: "encounter", subjectId: id, mutationKind: "explicitUpdate", priorRevision: prior, newRevision: nr, patientA: owner, patientB: 0))
         }
         createObservation(id, patientId, encounterId, s, code, value) => {
-            ^observations[id] = Observation(revision: INITIAL_REVISION, patientId: patientId, encounterId: encounterId, status: s, code: code, value: value)
-            return append(drafts, AuditDraft(subjectKind: "observation", subjectId: id, mutationKind: "explicitCreate", priorRevision: 0, newRevision: INITIAL_REVISION, patientA: patientId, patientB: 0))
+            ^observations[id] = Observation(revision: initialRevision, patientId: patientId, encounterId: encounterId, status: s, code: code, value: value)
+            return append(drafts, AuditDraft(subjectKind: "observation", subjectId: id, mutationKind: "explicitCreate", priorRevision: 0, newRevision: initialRevision, patientA: patientId, patientB: 0))
         }
         updateObservation(id, expected, patientId, encounterId, s, code, value) => {
             const owner = ^observations[id].patientId ?? 0
@@ -664,12 +575,12 @@ fn applyPrimary(c: Change, drafts: List<AuditDraft>, seen: Map<string, bool>): L
             return append(drafts, AuditDraft(subjectKind: "observation", subjectId: id, mutationKind: "explicitUpdate", priorRevision: prior, newRevision: nr, patientA: owner, patientB: second))
         }
         createMedicationOrder(id, patientId, code, s, dose) => {
-            ^medicationOrders[id] = MedicationOrder(revision: INITIAL_REVISION, patientId: patientId, code: code, status: s, dose: dose)
-            var out = append(drafts, AuditDraft(subjectKind: "medicationOrder", subjectId: id, mutationKind: "explicitCreate", priorRevision: 0, newRevision: INITIAL_REVISION, patientA: patientId, patientB: 0))
+            ^medicationOrders[id] = MedicationOrder(revision: initialRevision, patientId: patientId, code: code, status: s, dose: dose)
+            var out = append(drafts, AuditDraft(subjectKind: "medicationOrder", subjectId: id, mutationKind: "explicitCreate", priorRevision: 0, newRevision: initialRevision, patientA: patientId, patientB: 0))
             if s == "active" {
                 out = supersedeIncumbent(patientId, code, out, seen)
                 ^activeMedications[patientId].marker = 1
-                ^activeMedications[patientId].byCode[code] = ActiveMedications.byCode(orderId: id, orderRevision: INITIAL_REVISION)
+                ^activeMedications[patientId].byCode[code] = ActiveMedications.byCode(orderId: id, orderRevision: initialRevision)
             }
             return out
         }
