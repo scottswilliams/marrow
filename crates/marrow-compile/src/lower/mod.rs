@@ -315,6 +315,13 @@ pub(crate) struct FnLowerer<'a> {
     /// function or test body and discards them for a generic instance (whose spans
     /// would duplicate the template's).
     hover_facts: Vec<(SourceSpan, String, Option<DefinitionTarget>)>,
+    /// Whether this body's editor hover facts are retained. A monomorphic function or
+    /// test body is queried by the editor and collects them; a generic instance and the
+    /// template proof pass discard them (an instance's spans duplicate its template's),
+    /// so they render no fact — critically, they never render a use-site type spelling,
+    /// which on a deeply monomorphized instance is an O(depth) string built per instance
+    /// (Σ = O(instances²) across a divergent monomorphization).
+    collect_hover: bool,
     failed: bool,
     invariant: Option<LowerInvariant>,
 }
@@ -359,6 +366,7 @@ impl<'a> FnLowerer<'a> {
         module: &'a str,
         ret: RetType,
         body_kind: BodyKind,
+        collect_hover: bool,
     ) -> Self {
         FnLowerer {
             draft,
@@ -390,9 +398,24 @@ impl<'a> FnLowerer<'a> {
             ret,
             body_kind,
             hover_facts: Vec::new(),
+            collect_hover,
             failed: false,
             invariant: None,
         }
+    }
+
+    /// Retain one editor hover fact at `span`. Only reached when `collect_hover` — the
+    /// caller renders the display inside that guard so a discarded body (a generic
+    /// instance, the template proof pass) never pays the O(depth) spelling render.
+    fn record_hover(
+        &mut self,
+        span: SourceSpan,
+        display: String,
+        definition: Option<DefinitionTarget>,
+    ) {
+        #[cfg(test)]
+        crate::types::bump_hover_spelling_chars(display.len());
+        self.hover_facts.push((span, display, definition));
     }
 
     /// Lower `function` and add it to the draft, returning its assigned [`FuncId`]
@@ -430,6 +453,8 @@ impl<'a> FnLowerer<'a> {
             function,
             Vec::new(),
             LowerMode::Concrete,
+            // A monomorphic function body is queried by the editor: collect its facts.
+            true,
         )
     }
 
@@ -476,6 +501,10 @@ impl<'a> FnLowerer<'a> {
             template.decl,
             type_env,
             LowerMode::Concrete,
+            // An instance's use-site spans duplicate its template's, so its facts are
+            // discarded by the driver; do not render them (the O(depth) spelling per
+            // instance is the divergent-monomorphization O(N²) hot path).
+            false,
         )
     }
 
@@ -532,6 +561,9 @@ impl<'a> FnLowerer<'a> {
             template.decl,
             type_env,
             LowerMode::Template,
+            // The template proof pass runs on a throwaway draft and discards its emitted
+            // code and facts; render no hover displays.
+            false,
         )?;
         let generic = check_records.take_generic_diagnostics();
         Ok(TemplateProofOutcome {
@@ -560,6 +592,7 @@ impl<'a> FnLowerer<'a> {
         function: &FunctionDecl,
         type_env: Vec<TypeParamSlot>,
         mode: LowerMode,
+        collect_hover: bool,
     ) -> LowerResult {
         let ret = {
             let env = TypeEnv { params: &type_env };
@@ -601,6 +634,7 @@ impl<'a> FnLowerer<'a> {
             module,
             ret,
             BodyKind::Function,
+            collect_hover,
         );
         lowerer.type_env = type_env;
         lowerer.mode = mode;
@@ -714,6 +748,8 @@ impl<'a> FnLowerer<'a> {
             module,
             RetType::Unit,
             BodyKind::Test,
+            // A test body is queried by the editor like a monomorphic function.
+            true,
         );
         // A test body is a unit-returning block: control that falls through ends with
         // an implicit return, exactly like a unit function.
@@ -1255,6 +1291,7 @@ mod generic_cache_boundary_tests {
             "main",
             RetType::Unit,
             BodyKind::Function,
+            true,
         )
     }
 

@@ -136,6 +136,41 @@ fn nested_type_fixture(d: usize) -> String {
     source
 }
 
+/// A divergent-monomorphization shape whose instances deepen, terminating at a chosen
+/// depth. A chain of `depth + 1` distinct generic functions `w0..w{depth}`: each `wk`
+/// (k > 0) binds its parameter — a use site that renders the resolved type — and tail-
+/// calls `w{k-1}(some(x))`, deepening the argument one `Option` level per hop; `w0` is the
+/// leaf. The single driver call `w{depth}(0)` instantiates `wk<Option^(depth-k)<int>>` for
+/// each k, so instance `k`'s one use-site type spelling is `O(depth - k)` characters and
+/// the total instance spelling is `Σ = O(depth²)`. The deepening lives entirely in
+/// instance bodies (each `some(x)` nests one level, well under the expression-nesting
+/// limit), and the driver stays a single constant call — so a monomorphic-only render
+/// budget is constant in `depth`. The instantiation population (`~2·depth`) stays well
+/// under `MAX_INSTANTIATIONS`, so the program compiles cleanly rather than hitting the
+/// bound.
+fn divergent_hover_fixture(depth: usize) -> String {
+    let mut source = String::from("module main\n\n");
+    writeln!(
+        source,
+        "fn w0<T>(x: T): int {{\n    const y = x\n    return 0\n}}\n"
+    )
+    .expect("write leaf");
+    for level in 1..=depth {
+        writeln!(
+            source,
+            "fn w{level}<T>(x: T): int {{\n    const y = x\n    return w{}(some(x))\n}}\n",
+            level - 1
+        )
+        .expect("write chain link");
+    }
+    writeln!(
+        source,
+        "pub fn driver(): int {{\n    return w{depth}(0)\n}}"
+    )
+    .expect("write driver");
+    source
+}
+
 fn ratio(at_2v: usize, at_v: usize) -> f64 {
     assert!(at_v > 0, "1x count must be positive to form a ratio");
     at_2v as f64 / at_v as f64
@@ -235,6 +270,45 @@ fn fn_axis_scan_is_linear() {
         "directory build count is ~linear; builds {} -> {} ratio {build_ratio:.2}",
         b.directory_builds,
         c.directory_builds,
+    );
+}
+
+/// Editor hover facts are rendered only for the monomorphic bodies the editor queries;
+/// a generic instance's use-site spans duplicate its template's, so its facts are
+/// discarded and its use-site type spellings are never rendered. On a divergent
+/// monomorphization (`wrap` called at `Optionᵏ<int>` for growing `k`), the pre-repair
+/// per-instance render made the total spelling work `Σ O(k) = O(instances²)`; the repair
+/// holds `hover_spelling_chars` to the driver's monomorphic baseline — one constant-width
+/// signature display per generic call, so it grows ~linearly (2x per axis doubling) and
+/// stays under a linear ceiling. Before the repair the same measurements quadruple per
+/// doubling and blow past the ceiling (this is the recurrence gate: a future eager
+/// per-instance render fails here instead of silently reinflating the warm suite).
+#[test]
+fn instance_hover_spelling_is_not_rendered_so_the_axis_is_linear() {
+    let a = counts_for(divergent_hover_fixture(64));
+    let b = counts_for(divergent_hover_fixture(128));
+    let c = counts_for(divergent_hover_fixture(256));
+
+    for (lo, hi) in [(&a, &b), (&b, &c)] {
+        let spelling_ratio = ratio(hi.hover_spelling_chars, lo.hover_spelling_chars);
+        assert!(
+            spelling_ratio <= 2.3,
+            "hover spelling work is the monomorphic driver baseline, not super-linear in \
+             the instantiation depth; chars {} -> {} ratio {spelling_ratio:.2} \
+             (a per-instance render quadruples per doubling)",
+            lo.hover_spelling_chars,
+            hi.hover_spelling_chars,
+        );
+    }
+
+    // Absolute ceiling: the retained work is the driver's single generic call, so it is a
+    // small constant independent of the chain depth. A per-instance deep-type render
+    // (`Σ = O(depth²)`, ~3·256² ≈ 200k chars at depth=256) blows past this.
+    assert!(
+        c.hover_spelling_chars < 256,
+        "hover spelling work is the constant monomorphic baseline, not quadratic in the \
+         instantiation depth: {} chars at depth=256",
+        c.hover_spelling_chars,
     );
 }
 

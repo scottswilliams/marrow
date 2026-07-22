@@ -1300,6 +1300,13 @@ pub(crate) struct ScalingCounts {
     /// Type-inst rows replayed across every proof fork (`proof_clones *
     /// type_insts.len()`).
     pub(crate) proof_clone_rows: usize,
+    /// Characters rendered into editor hover displays across the whole compile
+    /// (`ty.spelling`/signature displays). A monomorphized instance body's facts are
+    /// discarded — an instance's use-site spans duplicate its template's — so its
+    /// spelling is never rendered; only monomorphic function and test bodies contribute.
+    /// On a divergent-monomorphization program the pre-repair per-instance render made
+    /// this Σ O(depth) = O(instances²); the repair holds it to the monomorphic baseline.
+    pub(crate) hover_spelling_chars: usize,
 }
 
 #[cfg(test)]
@@ -1312,7 +1319,15 @@ thread_local! {
         cycle_walk_steps: 0,
         proof_clones: 0,
         proof_clone_rows: 0,
+        hover_spelling_chars: 0,
     }) };
+}
+
+/// Observe editor hover-display rendering work: the character length of one rendered
+/// hover display. A no-op outside the scaling-count test window.
+#[cfg(test)]
+pub(crate) fn bump_hover_spelling_chars(chars: usize) {
+    bump_scaling(|counts| counts.hover_spelling_chars += chars);
 }
 
 #[cfg(test)]

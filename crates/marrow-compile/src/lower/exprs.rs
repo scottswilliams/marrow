@@ -113,9 +113,14 @@ impl<'a> FnLowerer<'a> {
                         let (slot, ty) = (local.slot, local.ty);
                         // Record the resolved local/parameter type at this use site for
                         // editor hover, before emitting the load. A local use has no
-                        // definition target.
-                        let display = ty.spelling(self.records);
-                        self.hover_facts.push((*span, display, None));
+                        // definition target. Rendered only for a body whose facts are
+                        // retained: the type spelling is O(type depth), and a divergent
+                        // monomorphization would otherwise render it for each of O(N)
+                        // discarded instances (Σ = O(N²)).
+                        if self.collect_hover {
+                            let display = ty.spelling(self.records);
+                            self.record_hover(*span, display, None);
+                        }
                         self.push(Instr::LocalGet(slot), *span);
                         return Some(ty);
                     }
@@ -1313,8 +1318,10 @@ impl<'a> FnLowerer<'a> {
                 sig.ret,
                 sig.definition_target(),
             );
-            let display = signature_display(name, &params, ret, self.records);
-            self.hover_facts.push((callee_span, display, Some(target)));
+            if self.collect_hover {
+                let display = signature_display(name, &params, ret, self.records);
+                self.record_hover(callee_span, display, Some(target));
+            }
             return self.lower_function_call(index, &params, ret, args, span);
         }
         // A same-module generic function is monomorphized at the call site (its type
@@ -1377,8 +1384,10 @@ impl<'a> FnLowerer<'a> {
                     sig.ret,
                     sig.definition_target(),
                 );
-                let display = signature_display(item, &params, ret, self.records);
-                self.hover_facts.push((callee_span, display, Some(target)));
+                if self.collect_hover {
+                    let display = signature_display(item, &params, ret, self.records);
+                    self.record_hover(callee_span, display, Some(target));
+                }
                 self.lower_function_call(index, &params, ret, args, span)
             }
             CallResolution::NotPublic => {
@@ -1487,6 +1496,9 @@ impl<'a> FnLowerer<'a> {
     /// template's canonical signature display and its definition target. The target is
     /// the source template, never a minted instance.
     fn record_generic_call(&mut self, index: usize, callee_span: SourceSpan) {
+        if !self.collect_hover {
+            return;
+        }
         let (display, target) = {
             let template = &self.generics.templates()[index];
             let decl = template.decl;
@@ -1499,7 +1511,7 @@ impl<'a> FnLowerer<'a> {
                 },
             )
         };
-        self.hover_facts.push((callee_span, display, Some(target)));
+        self.record_hover(callee_span, display, Some(target));
     }
 
     /// Lower a call to a generic function: infer each type argument from the call's
