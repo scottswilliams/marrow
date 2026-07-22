@@ -270,15 +270,16 @@ impl RowPlan {
         schemas: &[StoreSchema],
         target: &ImportTarget,
     ) -> Result<Self, ImportError> {
-        let schema = schemas.get(target.root as usize).ok_or_else(|| {
-            ImportError::UnsupportedShape {
-                reason: format!(
-                    "root index {} is out of range ({} declared root(s))",
-                    target.root,
-                    schemas.len()
-                ),
-            }
-        })?;
+        let schema =
+            schemas
+                .get(target.root as usize)
+                .ok_or_else(|| ImportError::UnsupportedShape {
+                    reason: format!(
+                        "root index {} is out of range ({} declared root(s))",
+                        target.root,
+                        schemas.len()
+                    ),
+                })?;
 
         if !schema.groups.is_empty() || !schema.branches.is_empty() {
             return Err(ImportError::UnsupportedShape {
@@ -469,17 +470,19 @@ fn commit_batch(
     report: &mut ImportReport,
     line_no: u64,
 ) -> Result<(), ImportError> {
-    let mut txn = store.txn_session(grant, demand).map_err(|error| match error {
-        SessionError::Denied => ImportError::Denied,
-        SessionError::Poisoned => ImportError::Commit {
-            reason: "the store handle is poisoned by an earlier interrupted commit".to_string(),
-            committed: *report,
-        },
-        SessionError::Engine(engine) => ImportError::Commit {
-            reason: format!("the engine could not open a transaction: {engine}"),
-            committed: *report,
-        },
-    })?;
+    let mut txn = store
+        .txn_session(grant, demand)
+        .map_err(|error| match error {
+            SessionError::Denied => ImportError::Denied,
+            SessionError::Poisoned => ImportError::Commit {
+                reason: "the store handle is poisoned by an earlier interrupted commit".to_string(),
+                committed: *report,
+            },
+            SessionError::Engine(engine) => ImportError::Commit {
+                reason: format!("the engine could not open a transaction: {engine}"),
+                committed: *report,
+            },
+        })?;
 
     let site = txn.site(0);
     let staged = batch.len() as u64;
@@ -827,7 +830,9 @@ impl JsonLine<'_> {
         let mut bytes = [0u8; 4];
         bytes[0] = lead;
         for slot in bytes.iter_mut().take(width).skip(1) {
-            let cont = self.next_byte().ok_or("a truncated UTF-8 sequence in a string")?;
+            let cont = self
+                .next_byte()
+                .ok_or("a truncated UTF-8 sequence in a string")?;
             if cont & 0xC0 != 0x80 {
                 return Err("an invalid UTF-8 continuation byte in a string".to_string());
             }
@@ -852,8 +857,7 @@ impl JsonLine<'_> {
             if !(0xDC00..=0xDFFF).contains(&low) {
                 return Err("an invalid low surrogate".to_string());
             }
-            let combined =
-                0x1_0000 + (((unit - 0xD800) as u32) << 10) + (low - 0xDC00) as u32;
+            let combined = 0x1_0000 + (((unit - 0xD800) as u32) << 10) + (low - 0xDC00) as u32;
             char::from_u32(combined).ok_or_else(|| "an invalid surrogate pair".to_string())
         } else if (0xDC00..=0xDFFF).contains(&unit) {
             Err("a lone low surrogate".to_string())
@@ -1029,14 +1033,12 @@ mod tests {
         let object = parse_row_object(br#"{"value": 1}"#, &ImportLimits::DEFAULT).expect("parse");
         assert!(plan.map_row(object).is_err());
         // Unrecognized member.
-        let object =
-            parse_row_object(br#"{"id": 1, "value": 2, "x": 3}"#, &ImportLimits::DEFAULT)
-                .expect("parse");
+        let object = parse_row_object(br#"{"id": 1, "value": 2, "x": 3}"#, &ImportLimits::DEFAULT)
+            .expect("parse");
         assert!(plan.map_row(object).is_err());
         // Type mismatch on the key.
-        let object =
-            parse_row_object(br#"{"id": "not-int", "value": 2}"#, &ImportLimits::DEFAULT)
-                .expect("parse");
+        let object = parse_row_object(br#"{"id": "not-int", "value": 2}"#, &ImportLimits::DEFAULT)
+            .expect("parse");
         assert!(plan.map_row(object).is_err());
     }
 
