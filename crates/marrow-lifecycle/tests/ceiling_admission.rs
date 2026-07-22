@@ -179,6 +179,91 @@ fn a_broadened_demand_is_refused_naming_the_exceeding_place() {
     );
 }
 
+/// The naming join spells the Workshop catalog's places correctly through the recursive
+/// walk: a store provisioned under a Workshop variant with one export refuses a variant
+/// broadened to touch a two-root spread — the refusal spells the second root (`^tallies`) and
+/// its field (`^tallies.count`) exactly, proving the join is not a single-root special case.
+#[test]
+fn the_refusal_spells_places_across_roots() {
+    const WORKSHOP_IDS: &str = "marrow ids v0\n\
+         machine-written by marrow; do not edit\n\
+         id application . 1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a\n\
+         id product Asset 1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d\n\
+         id field Asset.name 1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e\n\
+         id product Tally 2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d\n\
+         id field Tally.count 2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e\n\
+         id root assets 1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b\n\
+         id key assets.id 1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c\n\
+         id root tallies 2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b\n\
+         id key tallies.name 2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c\n\
+         high-water 0\n\
+         end\n";
+    const TWO_ROOT_SHAPE: &str = r#"resource Asset {
+    required name: string
+}
+
+resource Tally {
+    required count: int
+}
+
+store ^assets[id: int]: Asset
+
+store ^tallies[name: string]: Tally
+"#;
+    let read_only = format!(
+        "{TWO_ROOT_SHAPE}\npub fn assetName(id: int): string? {{\n    \
+         return ^assets[id].name\n}}\n"
+    );
+    let broadened = format!(
+        "{TWO_ROOT_SHAPE}\npub fn assetName(id: int): string? {{\n    \
+         var found: string? = absent\n    transaction {{\n        \
+         found = ^assets[id].name\n        \
+         const prior = ^tallies[\"reads\"].count ?? 0\n        \
+         ^tallies[\"reads\"].count = prior + 1\n    }}\n    return found\n}}\n"
+    );
+
+    let compile_with = |source: &str| -> VerifiedImage {
+        let manifest = marrow_project::Manifest::parse("edition = \"2026\"\n").expect("manifest");
+        let files = vec![marrow_project::CapturedFile::new(
+            "src/main.mw".to_string(),
+            source.as_bytes().to_vec(),
+        )];
+        let project = marrow_project::capture(
+            &manifest,
+            files,
+            Some(WORKSHOP_IDS.as_bytes()),
+            &marrow_project::CaptureLimits::DEFAULT,
+        )
+        .expect("capture");
+        let compiled = marrow_compile::compile(&project).expect("compile");
+        verify(&compiled.image.bytes).expect("verify")
+    };
+
+    let scratch = Scratch::new("two-root");
+    let image_a = compile_with(&read_only);
+    let image_b = compile_with(&broadened);
+    provision(scratch.dir(), &image_a);
+
+    let refusal = match attach_image(scratch.dir(), &image_b) {
+        Err(LifecycleError::DemandExceedsCeiling(refusal)) => refusal,
+        Err(other) => panic!("expected demand-exceeds-ceiling, got {}", other.code()),
+        Ok(_) => panic!("the two-root broadening must be refused"),
+    };
+    let rendered = refusal.to_string();
+    assert!(
+        rendered.contains("writes ^tallies.count"),
+        "spells the second root's written field: {rendered}"
+    );
+    assert!(
+        refusal
+            .exceeding
+            .iter()
+            .all(|atom| atom.export == "assetName"),
+        "every exceeding atom names the broadened export: {:?}",
+        refusal.exceeding,
+    );
+}
+
 /// The dual: a store provisioned under the broad image *admits* the narrower read-only image —
 /// its demand is a strict subset of the accepted ceiling — as a binding-only rebind (same
 /// durable contract and interface, different code). This proves the check is a real
