@@ -2,19 +2,21 @@
 //! verified image's own types.
 //!
 //! Decoding maps a request's JSON argument onto an export parameter's
-//! [`ImageType`], resolving record fields and enum variants against the image's
-//! sealed tables (which carry the field names, variant names, and image-local type
-//! indices a bare wire value does not). Encoding is the inverse over a returned
-//! [`Value`]. Both cover exactly the G00a transfer graph — the seven scalars, an
-//! optional wrapper, a product (record), and a sum (enum, including `Option`/
-//! `Result`). A collection never reaches this codec: an export whose signature
-//! touches one is not admitted to the served interface, so the runner never
-//! launches with it.
+//! [`ImageType`], resolving record fields, enum variants, collection element/key/
+//! value types, and root key columns against the image's sealed tables (which carry
+//! the names and image-local type indices a bare wire value does not). Encoding is
+//! the inverse over a returned [`Value`]. Both cover the whole transfer graph — the
+//! seven scalars, an optional wrapper, a product (record), a sum (enum, including
+//! `Option`/`Result`), a finite `List<T>`, an ordered `Map<K, V>` (an array of
+//! `[key, value]` pair-arrays, never a JS object), and an entry identity `Id(^root)`
+//! (the array of its key-column scalars). The graph is closed over every
+//! `ImageType`, so a served signature always has a codec.
 
 use marrow_image::{ImageType, Scalar};
 use marrow_local_wire::Json;
-use marrow_verify::VerifiedImage;
-use marrow_vm::Value;
+use marrow_verify::{SealedCollectionType, VerifiedImage};
+use marrow_vm::{KeyScalar, Value};
+use std::collections::HashSet;
 use std::rc::Rc;
 
 /// Decode a JSON argument into a runtime value against `ty`, or `None` when the
@@ -32,9 +34,12 @@ pub(crate) fn decode_arg(image: &VerifiedImage, ty: &ImageType, json: &Json) -> 
         ImageType::Enum { idx, optional } => {
             wrap_optional(*optional, json, |j| decode_enum(image, *idx, j))
         }
-        // Excluded from the served interface; unreachable for a launched runner. An
-        // entry identity is excluded for the same reason.
-        ImageType::Collection { .. } | ImageType::Identity { .. } => None,
+        ImageType::Collection { idx, optional } => {
+            wrap_optional(*optional, json, |j| decode_collection(image, *idx, j))
+        }
+        ImageType::Identity { root, optional } => {
+            wrap_optional(*optional, json, |j| decode_identity(image, *root, j))
+        }
     }
 }
 
@@ -130,6 +135,101 @@ fn decode_enum(image: &VerifiedImage, idx: u16, json: &Json) -> Option<Value> {
     ))
 }
 
+/// Decode a finite collection argument against the image's COLLTYPES entry: a
+/// `List<T>` from a JSON array of element values, or an ordered `Map<K, V>` from a
+/// JSON array of `[key, value]` pair-arrays. A map with a duplicate key, a
+/// mis-shaped pair, or a key/value that does not match the declared type is a
+/// mismatch.
+fn decode_collection(image: &VerifiedImage, idx: u16, json: &Json) -> Option<Value> {
+    let Json::Array(items) = json else {
+        return None;
+    };
+    match image.collection_type(idx) {
+        SealedCollectionType::List { elem } => {
+            let mut values = Vec::with_capacity(items.len());
+            for item in items {
+                values.push(decode_arg(image, &elem, item)?);
+            }
+            Some(Value::list(idx, Rc::new(values)))
+        }
+        SealedCollectionType::Map { key, value } => {
+            let key_scalar = scalar_of(key)?;
+            let mut entries = Vec::with_capacity(items.len());
+            let mut seen: HashSet<String> = HashSet::with_capacity(items.len());
+            for item in items {
+                let Json::Array(pair) = item else {
+                    return None;
+                };
+                let [key_json, value_json] = pair.as_slice() else {
+                    return None;
+                };
+                let key_value = decode_key(key_scalar, key_json)?;
+                // A map has unique keys; the canonical key spelling detects a
+                // duplicate in bounded work.
+                if !seen.insert(marrow_local_wire::encode(&encode_key(&key_value))) {
+                    return None;
+                }
+                entries.push((key_value, decode_arg(image, &value, value_json)?));
+            }
+            Some(Value::map(idx, Rc::new(entries)))
+        }
+    }
+}
+
+/// Decode an entry identity `Id(^root)` argument: a JSON array of the root's
+/// key-column scalars, one per declared column and in declaration order.
+///
+/// An `Id(^root)` parameter is currently trough-absent (the checker rejects an
+/// identity in any parameter position), so no verified image reaches this from an
+/// argument; identity crosses only as a return today. This half keeps the codec
+/// total and symmetric with [`encode_value`]'s identity arm and rejects a hostile
+/// identity-shaped argument rather than trusting it.
+fn decode_identity(image: &VerifiedImage, root: u16, json: &Json) -> Option<Value> {
+    let Json::Array(items) = json else {
+        return None;
+    };
+    let columns = image.roots()[root as usize].keys();
+    if items.len() != columns.len() {
+        return None;
+    }
+    let mut keys = Vec::with_capacity(columns.len());
+    for (column, item) in columns.iter().zip(items) {
+        keys.push(decode_key(*column, item)?);
+    }
+    Some(Value::Id(root, Rc::from(keys.as_slice())))
+}
+
+/// The bare scalar of a key type. A map key or identity key column is always a bare
+/// scalar (the verifier proved it); anything else is a mismatch.
+fn scalar_of(ty: ImageType) -> Option<Scalar> {
+    match ty {
+        ImageType::Scalar {
+            scalar,
+            optional: false,
+        } => Some(scalar),
+        _ => None,
+    }
+}
+
+/// Decode a JSON value into a [`KeyScalar`] against a declared key scalar type,
+/// mirroring [`decode_scalar`]'s spellings (temporal canonical text, `0x`-hex bytes).
+fn decode_key(scalar: Scalar, json: &Json) -> Option<KeyScalar> {
+    Some(match (scalar, json) {
+        (Scalar::Int, Json::Int(n)) => KeyScalar::Int(*n),
+        (Scalar::Bool, Json::Bool(b)) => KeyScalar::Bool(*b),
+        (Scalar::Text, Json::Str(s)) => KeyScalar::Str(s.clone()),
+        (Scalar::Bytes, Json::Str(s)) => KeyScalar::Bytes(decode_hex_bytes(s)?),
+        (Scalar::Date, Json::Str(s)) => KeyScalar::Date(marrow_temporal::parse_date(s.as_bytes())?),
+        (Scalar::Instant, Json::Str(s)) => {
+            KeyScalar::Instant(marrow_temporal::parse_instant(s.as_bytes())?)
+        }
+        (Scalar::Duration, Json::Str(s)) => {
+            KeyScalar::Duration(marrow_temporal::parse_duration(s.as_bytes())?)
+        }
+        _ => return None,
+    })
+}
+
 /// Encode a returned value into its wire JSON, or `None` for a value outside the
 /// transfer graph (a collection — unreachable for a served export).
 pub(crate) fn encode_value(image: &VerifiedImage, value: &Value) -> Option<Json> {
@@ -168,10 +268,42 @@ pub(crate) fn encode_value(image: &VerifiedImage, value: &Value) -> Option<Json>
                 ("payload".to_string(), Json::Array(items)),
             ])
         }
-        // Outside the G00a transfer graph; a served export never returns one. An
-        // entry identity is excluded from the wire interface for the same reason.
-        Value::List(..) | Value::Map(..) | Value::Id(..) => return None,
+        Value::List(_, _, items) => {
+            let mut encoded = Vec::with_capacity(items.len());
+            for item in items.iter() {
+                encoded.push(encode_value(image, item)?);
+            }
+            Json::Array(encoded)
+        }
+        // An ordered map crosses as an array of `[key, value]` pair-arrays, never a
+        // JS object, so a non-string key and entry order both survive.
+        Value::Map(_, _, entries) => {
+            let mut encoded = Vec::with_capacity(entries.len());
+            for (key, value) in entries.iter() {
+                encoded.push(Json::Array(vec![
+                    encode_key(key),
+                    encode_value(image, value)?,
+                ]));
+            }
+            Json::Array(encoded)
+        }
+        // An entry identity crosses as the array of its key-column scalars.
+        Value::Id(_, keys) => Json::Array(keys.iter().map(encode_key).collect()),
     })
+}
+
+/// Encode a [`KeyScalar`] into its wire JSON, mirroring [`encode_value`]'s scalar
+/// spellings (temporal canonical text, `0x`-hex bytes).
+fn encode_key(key: &KeyScalar) -> Json {
+    match key {
+        KeyScalar::Int(n) => Json::Int(*n),
+        KeyScalar::Bool(b) => Json::Bool(*b),
+        KeyScalar::Str(s) => Json::Str(s.clone()),
+        KeyScalar::Bytes(bytes) => Json::Str(hex_bytes(bytes)),
+        KeyScalar::Date(days) => Json::Str(date_text(*days)),
+        KeyScalar::Instant(nanos) => Json::Str(instant_text(*nanos)),
+        KeyScalar::Duration(nanos) => Json::Str(marrow_temporal::format_duration(*nanos)),
+    }
 }
 
 /// Decode a `0x`-prefixed even-length lowercase-hex string to bytes, matching the

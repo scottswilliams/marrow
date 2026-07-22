@@ -8,10 +8,10 @@
 import * as M from "./marrow-supervisor.mjs";
 
 /** The identity of the wire interface this client was generated for. */
-export const INTERFACE_ID = "1b7824af5eca288fa9aeb8f92b69c9cb5111bdba79aebe61b002ff63a72cad6f";
+export const INTERFACE_ID = "238f5b5937c25ff2baac7e7ac9df2f8fd86f6cc2e0af08ef8994b5f435fccdc1";
 
 /** The exact image identity a native attached-session launch proves back. */
-export const IMAGE_ID = "090b9ae94f4bbbd84754121e672730a98d35db7b16a3c29c1f88a89aed84f20f";
+export const IMAGE_ID = "38ca39d737f4bb7e5a25c05a7c5f0a3433cca8eb2e439e9e637a3827551d7b48";
 
 export class Client {
   private readonly session: M.Session;
@@ -44,6 +44,18 @@ export class Client {
     this.session.terminate();
   }
 
+  /** `main.lookup` */
+  async lookup(arg0: Array<[string, bigint]>, arg1: string): Promise<bigint> {
+    const data = await this.session.call("1dd97dd46e5c728097a462676cff0244b628f773ca8c49aa682e4b97f9ed3f46", [M.eMap(M.eText, M.eInt)(arg0), M.eText(arg1)]);
+    return M.dInt(data);
+  }
+
+  /** `main.nums` */
+  async nums(): Promise<Array<bigint>> {
+    const data = await this.session.call("2e62191135b8e739febe0f864342fac7a1bad8647fe87f1b9debfa44b5897f63", []);
+    return M.dList(M.dInt)(data) as Array<bigint>;
+  }
+
   /** `main.add` */
   async add(arg0: bigint, arg1: bigint): Promise<bigint> {
     const data = await this.session.call("615264168892c10801e5f5bb16a3496738f41acf72b74e3edd9f20a6725fedbe", [M.eInt(arg0), M.eInt(arg1)]);
@@ -66,6 +78,18 @@ export class Client {
   async grow(arg0: { member: "dot"; payload: [] } | { member: "circle"; payload: [bigint] }): Promise<{ member: "dot"; payload: [] } | { member: "circle"; payload: [bigint] }> {
     const data = await this.session.call("96102f6d3ce812b6744eca135e0f976a1c7bd4ca448d08cbf98ee546aaca379b", [M.eSum([["dot", []], ["circle", [M.eInt]]])(arg0)]);
     return M.dSum([["dot", []], ["circle", [M.dInt]]])(data) as { member: "dot"; payload: [] } | { member: "circle"; payload: [bigint] };
+  }
+
+  /** `main.tally` */
+  async tally(): Promise<Array<[string, bigint]>> {
+    const data = await this.session.call("9d8ff883d17868c7f60144fd227a235d15286a0dc7a7cf8b46443b44ca3d63bd", []);
+    return M.dMap(M.dText, M.dInt)(data) as Array<[string, bigint]>;
+  }
+
+  /** `main.total` */
+  async total(arg0: Array<bigint>): Promise<bigint> {
+    const data = await this.session.call("a0b92d9b31fbd3b83037fec2caec865e6bf7ce7b81ad4a79482a5d37b25400ec", [M.eList(M.eInt)(arg0)]);
+    return M.dInt(data);
   }
 
   /** `main.shift` */

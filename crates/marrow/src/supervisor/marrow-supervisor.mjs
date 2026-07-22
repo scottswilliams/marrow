@@ -536,6 +536,51 @@ export function eRecord(fields) {
   };
 }
 
+/** A finite list: each element encoded by `inner`. */
+export function eList(inner) {
+  return (v) => {
+    if (!Array.isArray(v)) throw new TypeError("expected an array");
+    return v.map((item) => inner(item));
+  };
+}
+
+/**
+ * An ordered map, crossing as an array of `[key, value]` pairs (never a JS object,
+ * so a non-string key and entry order both survive). Keys must be unique.
+ */
+export function eMap(encKey, encValue) {
+  return (v) => {
+    if (!Array.isArray(v)) throw new TypeError("expected an array of [key, value] pairs");
+    const seen = new Set();
+    return v.map((pair) => {
+      if (!Array.isArray(pair) || pair.length !== 2) {
+        throw new TypeError("expected a [key, value] pair");
+      }
+      const key = encKey(pair[0]);
+      const token = encodeCanonical(key).toString("utf8");
+      if (seen.has(token)) throw new TypeError("duplicate map key");
+      seen.add(token);
+      return [key, encValue(pair[1])];
+    });
+  };
+}
+
+/**
+ * An entry identity `{ root, key }`: validate the root brand and encode the key
+ * tuple as the array of its key-column scalars.
+ */
+export function eId(root, encKeys) {
+  return (v) => {
+    if (v === null || typeof v !== "object" || v.root !== root || !Array.isArray(v.key)) {
+      throw new TypeError(`expected an identity for root \`${root}\``);
+    }
+    if (v.key.length !== encKeys.length) {
+      throw new TypeError(`wrong key arity for root \`${root}\``);
+    }
+    return v.key.map((k, i) => encKeys[i](k));
+  };
+}
+
 /** variants: `[name, [payload encoders]]` pairs in declaration order. */
 export function eSum(variants) {
   return (v) => {
@@ -624,6 +669,39 @@ export function dRecord(fields) {
       }
     }
     return out;
+  };
+}
+
+export function dList(inner) {
+  return (d) => {
+    if (!Array.isArray(d)) throw protocol("expected a list array");
+    return d.map((item) => inner(item));
+  };
+}
+
+export function dMap(decKey, decValue) {
+  return (d) => {
+    if (!Array.isArray(d)) throw protocol("expected a map array");
+    const seen = new Set();
+    return d.map((pair) => {
+      if (!Array.isArray(pair) || pair.length !== 2) {
+        throw protocol("expected a [key, value] pair");
+      }
+      const key = decKey(pair[0]);
+      const token = encodeCanonical(key).toString("utf8");
+      if (seen.has(token)) throw protocol("duplicate map key");
+      seen.add(token);
+      return [key, decValue(pair[1])];
+    });
+  };
+}
+
+export function dId(root, decKeys) {
+  return (d) => {
+    if (!Array.isArray(d) || d.length !== decKeys.length) {
+      throw protocol("expected an identity key array");
+    }
+    return { root, key: d.map((k, i) => decKeys[i](k)) };
   };
 }
 

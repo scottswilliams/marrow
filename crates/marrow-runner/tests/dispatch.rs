@@ -176,6 +176,144 @@ pub fn shift(p: Point, dx: int): Point {
     );
 }
 
+/// A storeless program exercising the earned collection carriers as both a return
+/// and a parameter: a `List<int>`, and an ordered `Map<string, int>`.
+const COLLECTIONS: &str = r#"pub fn nums(): List<int> {
+    var xs: List<int> = List()
+    xs = append(xs, 1)
+    xs = append(xs, 2)
+    return xs
+}
+
+pub fn total(xs: List<int>): int {
+    var s = 0
+    for x in xs {
+        s = s + x
+    }
+    return s
+}
+
+pub fn tally(): Map<string, int> {
+    var m: Map<string, int> = Map()
+    m["a"] = 1
+    m["b"] = 2
+    return m
+}
+
+pub fn lookup(m: Map<string, int>, k: string): int {
+    return m[k] ?? 0
+}
+"#;
+
+fn array(items: Vec<Json>) -> Json {
+    Json::Array(items)
+}
+
+#[test]
+fn a_list_round_trips_through_the_codec() {
+    let (service, ids) = build(COLLECTIONS, None);
+    // Return: a built list crosses as a JSON array.
+    assert_eq!(
+        call(&service, id_of(&ids, "nums"), vec![]),
+        ServerMessage::Value {
+            data: array(vec![Json::Int(1), Json::Int(2)])
+        }
+    );
+    // Parameter: a JSON array decodes onto the `List<int>` parameter.
+    assert_eq!(
+        call(
+            &service,
+            id_of(&ids, "total"),
+            vec![array(vec![Json::Int(2), Json::Int(3), Json::Int(4)])],
+        ),
+        ServerMessage::Value { data: Json::Int(9) }
+    );
+}
+
+#[test]
+fn a_hostile_list_argument_is_rejected() {
+    let (service, ids) = build(COLLECTIONS, None);
+    // A non-array where a list is expected.
+    assert_eq!(
+        call(&service, id_of(&ids, "total"), vec![Json::Int(3)]),
+        ServerMessage::Reject {
+            code: "runner.arg_mismatch".to_string()
+        }
+    );
+    // A list element of the wrong scalar type.
+    assert_eq!(
+        call(
+            &service,
+            id_of(&ids, "total"),
+            vec![array(vec![Json::Int(1), Json::Str("x".to_string())])],
+        ),
+        ServerMessage::Reject {
+            code: "runner.arg_mismatch".to_string()
+        }
+    );
+}
+
+#[test]
+fn a_map_round_trips_through_the_codec() {
+    let (service, ids) = build(COLLECTIONS, None);
+    // Return: an ordered map crosses as an array of [key, value] pairs, in insertion
+    // order, never a JS object.
+    assert_eq!(
+        call(&service, id_of(&ids, "tally"), vec![]),
+        ServerMessage::Value {
+            data: array(vec![
+                array(vec![Json::Str("a".to_string()), Json::Int(1)]),
+                array(vec![Json::Str("b".to_string()), Json::Int(2)]),
+            ])
+        }
+    );
+    // Parameter: a pair-array decodes onto the `Map<string, int>` parameter.
+    let map = array(vec![
+        array(vec![Json::Str("a".to_string()), Json::Int(10)]),
+        array(vec![Json::Str("b".to_string()), Json::Int(20)]),
+    ]);
+    assert_eq!(
+        call(
+            &service,
+            id_of(&ids, "lookup"),
+            vec![map, Json::Str("b".to_string())],
+        ),
+        ServerMessage::Value {
+            data: Json::Int(20)
+        }
+    );
+}
+
+#[test]
+fn a_hostile_map_argument_is_rejected() {
+    let (service, ids) = build(COLLECTIONS, None);
+    let reject = ServerMessage::Reject {
+        code: "runner.arg_mismatch".to_string(),
+    };
+    let key = Json::Str("k".to_string());
+    // A duplicate key.
+    let dup = array(vec![
+        array(vec![Json::Str("a".to_string()), Json::Int(1)]),
+        array(vec![Json::Str("a".to_string()), Json::Int(2)]),
+    ]);
+    assert_eq!(
+        call(&service, id_of(&ids, "lookup"), vec![dup, key.clone()]),
+        reject
+    );
+    // A mis-shaped entry (not a two-element pair).
+    let bad_pair = array(vec![array(vec![Json::Str("a".to_string())])]);
+    assert_eq!(
+        call(&service, id_of(&ids, "lookup"), vec![bad_pair, key.clone()]),
+        reject
+    );
+    // A key of the wrong scalar type (int where the key is a string).
+    let bad_key = array(vec![array(vec![Json::Int(1), Json::Int(1)])]);
+    assert_eq!(
+        call(&service, id_of(&ids, "lookup"), vec![bad_key, key]),
+        reject
+    );
+}
+
 #[test]
 fn a_record_with_an_extra_field_is_rejected() {
     let source = r#"struct Point {

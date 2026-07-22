@@ -65,6 +65,15 @@ export function eRecord(
 export function eSum(
   variants: ReadonlyArray<readonly [string, ReadonlyArray<(v: never) => WireValue>]>,
 ): (v: { member: string; payload: readonly unknown[] }) => WireValue;
+export function eList<T>(inner: (v: T) => WireValue): (v: readonly T[]) => WireValue;
+export function eMap<K, V>(
+  encKey: (k: K) => WireValue,
+  encValue: (v: V) => WireValue,
+): (v: ReadonlyArray<readonly [K, V]>) => WireValue;
+export function eId(
+  root: string,
+  encKeys: ReadonlyArray<(k: never) => WireValue>,
+): (v: { readonly root: string; readonly key: readonly unknown[] }) => WireValue;
 
 export function dUnit(d: WireValue): void;
 export function dInt(d: WireValue): bigint;
@@ -81,6 +90,15 @@ export function dRecord(
 export function dSum(
   variants: ReadonlyArray<readonly [string, ReadonlyArray<(d: WireValue) => unknown>]>,
 ): (d: WireValue) => unknown;
+export function dList<T>(inner: (d: WireValue) => T): (d: WireValue) => T[];
+export function dMap<K, V>(
+  decKey: (d: WireValue) => K,
+  decValue: (d: WireValue) => V,
+): (d: WireValue) => Array<[K, V]>;
+export function dId(
+  root: string,
+  decKeys: ReadonlyArray<(d: WireValue) => unknown>,
+): (d: WireValue) => { root: string; key: unknown[] };
 
 export interface LaunchOptions {
   /** Path to the `marrow-runner` executable. */

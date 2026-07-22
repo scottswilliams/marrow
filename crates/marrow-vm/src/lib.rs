@@ -21,3 +21,7 @@ pub use attach::{
 pub use fault::RuntimeFault;
 pub use run::{run, run_durable};
 pub use value::Value;
+// The key-scalar type a `Value::Map` entry and a `Value::Id` key tuple carry. It
+// belongs to the kernel codec owner; the value model surfaces it because its public
+// `Value` API (constructors and variants) already exposes it.
+pub use marrow_kernel::codec::key::KeyScalar;

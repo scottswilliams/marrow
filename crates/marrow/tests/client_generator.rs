@@ -115,6 +115,30 @@ pub fn grow(s: Shape): Shape {
 pub fn ping() {
     return
 }
+
+pub fn nums(): List<int> {
+    var xs: List<int> = List()
+    xs = append(xs, 1)
+    return xs
+}
+
+pub fn total(xs: List<int>): int {
+    var s = 0
+    for x in xs {
+        s = s + x
+    }
+    return s
+}
+
+pub fn tally(): Map<string, int> {
+    var m: Map<string, int> = Map()
+    m["a"] = 1
+    return m
+}
+
+pub fn lookup(m: Map<string, int>, k: string): int {
+    return m[k] ?? 0
+}
 "#;
 
 fn fixture_project(temp: &TempDir) -> PathBuf {
