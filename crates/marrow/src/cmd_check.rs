@@ -1,12 +1,14 @@
-//! `marrow check [projectdir]`: capture, check, and describe durable demand.
+//! `marrow check [--demand] [projectdir]`: capture, check, and describe durable demand.
 //!
 //! The minimal check surface. It captures the project, runs the resilient analysis
 //! floor for the complete diagnostic set (every stage over every module, including
 //! test bodies), and prints each diagnostic with its span. A project that checks clean
-//! is compiled and verified so each exported function can be described by its
-//! verifier-reconstructed durable **demand** — which durable places it reads and
-//! writes, in source spelling. The demand describes access and never grants it; `check`
-//! opens no store and runs no code.
+//! is compiled and verified so each exported function's verifier-reconstructed durable
+//! **demand** — which durable places it reads and writes, in source spelling — can be
+//! described. The default groups that demand into a human-shaped per-module summary
+//! ([`crate::demand::demand_summary_lines`]); `--demand` prints the full per-export
+//! sentence form ([`crate::demand::demand_lines`]) unchanged. The demand describes
+//! access and never grants it; `check` opens no store and runs no code.
 
 use std::path::PathBuf;
 use std::process::ExitCode;
