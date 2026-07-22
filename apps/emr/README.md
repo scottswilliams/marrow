@@ -129,10 +129,29 @@ honestly rather than worked around:
   through the tool. Imported patients carry an aggregate revision (imported into
   `patientAggregates`) so they can be updated by later change-sets.
 - **First-failure precedence is input-order sensitive.** The accept/reject
-  decision and the committed state are order-independent; when several entries are
-  invalid, the *reported* first rejection follows input order (the contract's
-  canonical smallest-subject ordering needs a sort the stock surface does not
-  provide).
+  decision, the committed state, and the audit trail (drafts are sorted into
+  canonical `(kind, id, mutation-kind)` order before audit IDs are allocated) are
+  all order-independent. What remains input-order sensitive is only *which*
+  rejection is reported first when several entries are invalid — the contract's
+  canonical smallest-subject choice needs a sort applied to the rejection scan too.
+- **Active-medication supersession covers the create path only.** A newly created
+  `active` order supersedes the incumbent at its `(patient, code)` key (the
+  workload's signature implicit mutation, and correctly suppressed when the
+  incumbent is also explicitly changed in the same bundle). Raising a *different*
+  existing order to `active` at an already-occupied key via an *update* is rejected
+  as an `activeMedicationCollision` rather than superseding the incumbent; model
+  the swap as a create of the new active order.
+- **Overflow is a runtime fault, not a domain rejection.** Revision and
+  audit-counter successors are computed with plain `+ 1`; on `int` overflow they
+  trap as a runtime/store fault (rolling the change-set back) rather than surfacing
+  the contract's `revisionOverflow` / audit-counter-overflow domain codes. The
+  aggregate-presence check assumes a coherent store (every existing patient has an
+  aggregate revision, established by import of `patientAggregates` and by the
+  create path).
+- **The global audit event names one affected patient.** An observation whose
+  patient moves affects two patients; the global `auditEvents` row records the
+  primary (`patientA`), while both patient-audit links are still written, so
+  per-patient audit coverage is complete.
 
 ## Design note — atomicity
 

@@ -38,6 +38,50 @@ struct AuditDraft {
     patientB: int
 }
 
+// Canonical mutation order over drafts: (ResourceKind, resource id, MutationKind).
+
+fn kindRank(kind: string): int {
+    if kind == "patient" { return 0 }
+    if kind == "encounter" { return 1 }
+    if kind == "observation" { return 2 }
+    return 3
+}
+
+fn mutationRank(mutation: string): int {
+    if mutation == "explicitCreate" { return 0 }
+    if mutation == "explicitUpdate" { return 1 }
+    return 2
+}
+
+fn draftBefore(a: AuditDraft, b: AuditDraft): bool {
+    const ka = kindRank(a.subjectKind)
+    const kb = kindRank(b.subjectKind)
+    if ka != kb { return ka < kb }
+    if a.subjectId != b.subjectId { return a.subjectId < b.subjectId }
+    return mutationRank(a.mutationKind) < mutationRank(b.mutationKind)
+}
+
+// Insertion sort over the bounded draft list (at most 2 per bundle entry).
+fn sortDrafts(drafts: List<AuditDraft>): List<AuditDraft> {
+    var out: List<AuditDraft> = List()
+    for d in drafts {
+        var merged: List<AuditDraft> = List()
+        var placed = false
+        for e in out {
+            if not placed and draftBefore(d, e) {
+                merged = append(merged, d)
+                placed = true
+            }
+            merged = append(merged, e)
+        }
+        if not placed {
+            merged = append(merged, d)
+        }
+        out = merged
+    }
+    return out
+}
+
 // canonical subject naming --------------------------------------------------
 
 fn changeKind(c: Change): string {
@@ -82,7 +126,6 @@ pub fn rejectionCode(e: Rejection): string {
         revisionOverflow(kind, id) => return "revisionOverflow"
         unsupportedStatus(kind, id, s) => return "unsupportedStatus"
         unsupportedTransition(kind, id, prior, intended) => return "unsupportedTransition"
-        immutableEncounterPatient(id, prior, intended) => return "immutableEncounterPatient"
         patientMissing(patientId, rk, ri) => return "patientMissing"
         encounterMissing(encounterId, obs) => return "encounterMissing"
         observationPatientMismatch(obsId, op, ep) => return "observationPatientMismatch"
@@ -168,8 +211,13 @@ fn applyBundle(changes: List<Change>): Result<ChangeSetApplied, Rejection> {
     // Pass 3 — apply primaries and active-medication state, recording drafts.
     var drafts: List<AuditDraft> = List()
     for c in changes {
-        drafts = applyPrimary(c, drafts)
+        drafts = applyPrimary(c, drafts, seen)
     }
+
+    // Order the drafts into canonical mutation order — (ResourceKind, resource id,
+    // MutationKind) — before allocating audit IDs, so the committed audit trail
+    // (and every allocated audit ID) is independent of input entry order.
+    drafts = sortDrafts(drafts)
 
     // Pass 4 — advance each touched patient's aggregate revision once.
     var touched: Map<int, bool> = Map()
@@ -433,9 +481,6 @@ fn validate(c: Change, createdPatients: Map<int, bool>, createdEncounters: Map<i
             if not exists(^patientAggregates[o.patientId]) {
                 return err(Rejection::patientAggregateMissing(patientId: o.patientId))
             }
-            if not patientReachable(patientId, createdPatients) {
-                return err(Rejection::patientMissing(patientId: patientId, referencedByKind: "observation", referencedById: id))
-            }
             return ok(true)
         }
         createMedicationOrder(id, patientId, code, s, dose) => {
@@ -496,7 +541,7 @@ fn validate(c: Change, createdPatients: Map<int, bool>, createdEncounters: Map<i
 
 // application ----------------------------------------------------------------
 
-fn applyPrimary(c: Change, drafts: List<AuditDraft>): List<AuditDraft> {
+fn applyPrimary(c: Change, drafts: List<AuditDraft>, seen: Map<string, bool>): List<AuditDraft> {
     match c {
         createPatient(id, s, d) => {
             ^patients[id] = Patient(revision: INITIAL_REVISION, status: s, display: d)
@@ -538,7 +583,7 @@ fn applyPrimary(c: Change, drafts: List<AuditDraft>): List<AuditDraft> {
             ^medicationOrders[id] = MedicationOrder(revision: INITIAL_REVISION, patientId: patientId, code: code, status: s, dose: dose)
             var out = append(drafts, AuditDraft(subjectKind: "medicationOrder", subjectId: id, mutationKind: "explicitCreate", priorRevision: 0, newRevision: INITIAL_REVISION, patientA: patientId, patientB: 0))
             if s == "active" {
-                out = supersedeIncumbent(patientId, code, out)
+                out = supersedeIncumbent(patientId, code, out, seen)
                 ^activeMedications[patientId].marker = 1
                 ^activeMedications[patientId].byCode[code] = ActiveMedications.byCode(orderId: id, orderRevision: INITIAL_REVISION)
             }
@@ -564,10 +609,13 @@ fn applyPrimary(c: Change, drafts: List<AuditDraft>): List<AuditDraft> {
 }
 
 // Displace the current active incumbent at (patient, code), if any, with one
-// implicit `active -> superseded` mutation, and record its draft.
-fn supersedeIncumbent(patientId: int, code: string, drafts: List<AuditDraft>): List<AuditDraft> {
+// implicit `active -> superseded` mutation, and record its draft. When the
+// incumbent order is itself explicitly changed in the same bundle, that explicit
+// mutation accounts for it and no implicit supersession is added.
+fn supersedeIncumbent(patientId: int, code: string, drafts: List<AuditDraft>, seen: Map<string, bool>): List<AuditDraft> {
     if const a = ^activeMedications[patientId].byCode[code] {
         const incId = a.orderId
+        if seen["medicationOrder:" + string(incId)] ?? false { return drafts }
         if const im = ^medicationOrders[incId] {
             const prior = im.revision
             const nr = prior + 1
