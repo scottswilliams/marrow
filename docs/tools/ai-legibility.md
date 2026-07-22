@@ -20,7 +20,7 @@ parser owns; it does not define syntax, and nothing here overrides the
 |---|---|---|
 | Command outcomes | `marrow run`/`marrow test` with `--format jsonl` | One canonical JSON object per line; `outcome` is one of `value`, `diagnostic`, `artifact_rejected`, `fault`, or `error`, keeping the [four failure families](../language/errors-and-transactions.md) distinct. |
 | Diagnostics | every command | A typed dotted code (`check.unsupported`, `parse.syntax`, …) with a 1-based source span; the closed registry is the [Error Code Reference](../error-codes.md). |
-| Durable access demand | `marrow check` | One line per exported function naming the durable places its whole call graph reads and writes, in source spelling (`bookstore.put reads ^books; writes ^books`). |
+| Durable access demand | `marrow check` (summary), `marrow check --demand` (full) | The default summary groups each export's read/write durable demand by module, rolled up to roots. `--demand` prints one line per exported function naming every durable place its whole call graph reads and writes, in source spelling (`bookstore.put reads ^books; writes ^books`). |
 | Editor facts | `marrow lsp` | Diagnostics, whole-document formatting, hover, and go-to-definition, served from the compiler's published analysis facts over the Language Server Protocol; see the [language server](lsp.md). |
 | Wire interface | `marrow client typescript` | A generated strict client whose method signatures and transfer types are reconstructed from the verified image; see the [TypeScript client](typescript-client.md). |
 

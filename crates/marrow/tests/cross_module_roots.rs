@@ -69,15 +69,15 @@ fn a_durable_root_is_read_and_written_across_modules() {
     );
 }
 
-/// `marrow check` describes each export's durable access demand in source spelling and
-/// exits 0. Both modules appear: `teller`'s read and write of `^accounts` — a root it
-/// does not declare — is the project-wide-roots law made visible in the demand report.
+/// `marrow check --demand` describes each export's durable access demand in source
+/// spelling and exits 0. Both modules appear: `teller`'s read and write of `^accounts` —
+/// a root it does not declare — is the project-wide-roots law made visible in the report.
 /// The bytes are frozen so a regression that regionalizes root visibility is
 /// conspicuous.
 #[test]
 fn check_reports_cross_module_root_demand() {
     let output =
-        Project::from_fixture("cross_module_roots").run_cli("cross-module-check", &["check"]);
+        Project::from_fixture("cross_module_roots").run_cli("cross-module-check", &["check", "--demand"]);
     assert!(
         output.status.success(),
         "check must succeed on the clean cross-module project: {}",

@@ -1,0 +1,7 @@
+pub fn isPositive(n: int): bool {
+    return n > 0
+}
+
+pub fn isEven(n: int): bool {
+    return n % 2 == 0
+}

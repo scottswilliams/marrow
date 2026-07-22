@@ -26,7 +26,7 @@ Marrow
 Usage:
   marrow init <projectdir>
   marrow fmt [--check | --write] <file.mw | projectdir>
-  marrow check [projectdir]
+  marrow check [--demand] [projectdir]
   marrow run <export> [--format jsonl] [-- <args>...]
   marrow import --store <dir> --jsonl <path> --root <name> [--keys <col,...>]
   marrow test [--format text|jsonl] [--filter <substring>]

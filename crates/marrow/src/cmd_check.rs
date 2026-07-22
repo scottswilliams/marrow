@@ -19,30 +19,43 @@ use marrow_compile::{
 };
 use marrow_verify::VerifiedImage;
 
-use crate::demand::demand_lines;
+use crate::demand::{demand_lines, demand_summary_lines};
 use crate::project::capture_project;
 use crate::report_simple_error;
 use crate::term_style::{Stream, Style};
 
 const HELP: &str = "\
 Usage:
-  marrow check [projectdir]
+  marrow check [--demand] [projectdir]
 
 Capture and check a project's source, reporting every diagnostic with its span. A
-project that checks clean prints one line per exported function describing its
-durable access demand — which durable places it reads and writes — in source
-spelling. Demand describes access and never grants it. `check` opens no store and
-runs no code. It exits 0 when the project checks clean, 1 when any diagnostic is
-reported or a fixed bound is reached, and 2 on a usage error.
+project that checks clean prints a summary of its durable access demand — which durable
+places each exported function reads and writes — grouped by module, in source spelling.
+Exports that share an identical demand are listed once, each demand names its roots with
+a child-place count, and storeless exports collapse to one note per module.
+
+With --demand, the full per-export form is printed instead: one line per exported
+function naming every durable place it reads and writes. Demand describes access and
+never grants it. `check` opens no store and runs no code. It exits 0 when the project
+checks clean, 1 when any diagnostic is reported or a fixed bound is reached, and 2 on a
+usage error.
 ";
 
 pub(crate) fn check(rest: &[String]) -> ExitCode {
     let mut target: Option<String> = None;
+    let mut full_demand = false;
     for arg in rest {
         match arg.as_str() {
             "--help" | "-h" => {
                 print!("{HELP}");
                 return ExitCode::SUCCESS;
+            }
+            "--demand" => {
+                if full_demand {
+                    eprintln!("duplicate --demand");
+                    return ExitCode::from(2);
+                }
+                full_demand = true;
             }
             value if value.starts_with('-') => return crate::unknown_option("check", value),
             value => {
@@ -94,18 +107,24 @@ pub(crate) fn check(rest: &[String]) -> ExitCode {
         }
     };
 
-    describe_exports(&compiled.exports, &compiled.naming, &image)
+    describe_exports(&compiled.exports, &compiled.naming, &image, full_demand)
 }
 
-/// Print one demand line per export, in `module.item` order, and exit success. Each
-/// line names the export and its demand sentence, so a reader sees the whole program's
-/// durable footprint export by export.
+/// Describe the checked project's durable demand and exit success. The default is the
+/// human-shaped summary grouped by module; `--demand` prints the full per-export atom
+/// form instead. Both render from the same demand facts through the shared owner.
 fn describe_exports(
     exports: &[ExportEntry],
     naming: &DurableNaming,
     image: &VerifiedImage,
+    full_demand: bool,
 ) -> ExitCode {
-    match demand_lines(exports, naming, image) {
+    let rendered = if full_demand {
+        demand_lines(exports, naming, image)
+    } else {
+        demand_summary_lines(exports, naming, image)
+    };
+    match rendered {
         Ok(lines) => {
             for line in lines {
                 println!("{line}");

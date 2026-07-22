@@ -498,14 +498,14 @@ fn sparse_contact_fields_are_present_or_clear() {
 // The A5B01 demand surface — frozen bytes
 // ---------------------------------------------------------------------------
 
-/// `marrow check` describes every export's durable access demand in source spelling and
-/// exits 0 on the clean flagship project. The bytes are frozen: the demand describes
+/// `marrow check --demand` describes every export's durable access demand in source
+/// spelling and exits 0 on the clean flagship project. The bytes are frozen: the demand describes
 /// which durable places each export reads and writes, and never grants that access.
 /// A checkout's five-effect transaction shows as its full read/write demand union; a
 /// read-only report shows reads only; an index read renders under `reads`.
 #[test]
 fn check_reports_the_flagship_demand_sentences() {
-    let output = Project::from_fixture("club_locker").run_cli("club-check", &["check"]);
+    let output = Project::from_fixture("club_locker").run_cli("club-check", &["check", "--demand"]);
     assert!(
         output.status.success(),
         "check must succeed on the clean flagship: {}",

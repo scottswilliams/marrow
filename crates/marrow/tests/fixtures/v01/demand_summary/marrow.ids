@@ -1,0 +1,14 @@
+marrow ids v0
+machine-written by marrow; do not edit
+id application . 01137fdb063a213021c3d2e59f3de632
+id product Account 1caff8dc1d9fbdd7694a32f218c62c67
+id product Event 754dad690ef1e01d0555f651c1707f65
+id field Account.balance 2bc2603e808a48479a9f0b9b374c2ada
+id field Account.name 90d0840a819fea39b1c0cbac31ba8ece
+id field Event.kind 7b4a6706cb573361550fe104c494ced8
+id root accounts 31da281d086944448b4570f131d807f5
+id root events 0f5deb74da18cebc2de29d943152ffd4
+id key accounts.id aa599121d8ff5620f96f495a96548d69
+id key events.id d40e8a08871e8ed82be161786aa8e29c
+high-water 0
+end

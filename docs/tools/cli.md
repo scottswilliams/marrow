@@ -64,7 +64,7 @@ manifest or source tree is invalid reports the matching `config.invalid` or
 ## `marrow check`
 
 ```text
-marrow check [projectdir]
+marrow check [--demand] [projectdir]
 ```
 
 Captures and checks the [project](projects.md) at `projectdir` (the working
@@ -75,22 +75,50 @@ when any diagnostic is reported or a fixed compiler bound is reached, and `2` on
 usage error.
 
 A project that checks clean is compiled and independently verified, and `check`
-prints one line per exported (`pub fn`) function to standard output, in
-`module.item` order, describing that export's durable
-[access demand](../language/durable-places.md#access-demand) in source spelling:
+summarizes each exported (`pub fn`) function's durable
+[access demand](../language/durable-places.md#access-demand) — the durable places
+its whole call graph reads and writes, in source spelling — to standard output. The
+default summary is grouped by module: exports that share an identical demand are
+listed once, each demand names its touched **roots** with a count of the distinct
+child places under each, and exports that touch no durable data collapse to one
+storeless note per module. Modules and exports are ordered deterministically, so the
+output is byte-stable across runs.
+
+```text
+2 exports across 1 module
+
+bookstore: 2 exports
+  lookup
+    reads ^books (+1 field)
+  put
+    reads ^books
+    writes ^books
+```
+
+A count such as `(+1 field)` is the number of distinct child places — stored fields,
+managed indexes, static groups, or keyed branches — the export touches under that
+root; the child unit is spelled on the first root that carries a count and abbreviated
+to `(+N)` after. A root a read-modify-write export both reads and writes appears under
+both `reads` and `writes`.
+
+### `marrow check --demand`
+
+`--demand` prints the full per-export form instead of the summary: one line per
+exported function to standard output, in `module.item` order, naming every durable
+place the export reads and writes rather than rolling children up to their roots.
 
 ```text
 bookstore.lookup reads ^books and ^books.byIsbn
 bookstore.put reads ^books; writes ^books
 ```
 
-The demand is the set of durable places the export's whole call graph touches,
-named by their durable paths (`^root`, `^root.field`, `^root.index`) and grouped by
-whether the export reads or writes each. A presence probe, a field or entry read,
-and an ordered index or family traversal are reads; a write and an erase are writes;
-a place a read-modify-write export both reads and writes is named in both clauses.
-The demand *describes* the access a program requires and never grants it. An export
-that touches no durable data is reported as reading or writing no durable data.
+Each place is named by its durable path (`^root`, `^root.field`, `^root.index`) and
+grouped by whether the export reads or writes it. A presence probe, a field or entry
+read, and an ordered index or family traversal are reads; a write and an erase are
+writes; a place a read-modify-write export both reads and writes is named in both
+clauses. An export that touches no durable data is reported as reading or writing no
+durable data. Under either form the demand *describes* the access a program requires
+and never grants it.
 
 ## `marrow run`
 

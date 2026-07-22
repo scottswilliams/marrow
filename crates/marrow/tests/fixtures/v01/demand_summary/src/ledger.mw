@@ -1,0 +1,40 @@
+resource Account {
+    required balance: int
+    name: string
+}
+
+store ^accounts[id: int]: Account
+
+resource Event {
+    required kind: int
+}
+
+store ^events[id: int]: Event
+
+pub fn alpha(id: int) {
+    transaction {
+        const bal = ^accounts[id].balance ?? 0
+        const nm = ^accounts[id].name ?? ""
+        ^accounts[id].balance = bal + 1
+        ^accounts[id].name = nm
+        ^events[id] = Event(kind: bal)
+    }
+}
+
+pub fn beta(id: int) {
+    transaction {
+        const bal = ^accounts[id].balance ?? 0
+        const nm = ^accounts[id].name ?? ""
+        ^accounts[id].balance = bal + 1
+        ^accounts[id].name = nm
+        ^events[id] = Event(kind: bal)
+    }
+}
+
+pub fn accountBalance(id: int): int {
+    return ^accounts[id].balance ?? 0
+}
+
+pub fn double(n: int): int {
+    return n * 2
+}
