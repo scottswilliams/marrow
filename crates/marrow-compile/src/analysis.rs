@@ -994,10 +994,7 @@ mod completion {
                 PositionClass::ExpressionName,
                 expression_name_candidates(file, &scope),
             ),
-            Located::Member(base) => (
-                PositionClass::Member,
-                member_candidates(file, &scope, base),
-            ),
+            Located::Member(base) => (PositionClass::Member, member_candidates(file, &scope, base)),
             Located::EnumPath(base) => (PositionClass::EnumPath, enum_path_candidates(file, base)),
             Located::TypeAnnotation => (
                 PositionClass::TypeAnnotation,
@@ -1093,9 +1090,7 @@ mod completion {
                 scope.type_params = item.type_params.iter().map(|p| p.name.clone()).collect();
                 locate_struct_field_type(item, offset)
             }
-            Declaration::Resource(resource) => {
-                members_type_position(&resource.members, offset)
-            }
+            Declaration::Resource(resource) => members_type_position(&resource.members, offset),
             Declaration::Enum(item) => {
                 scope.type_params = item.type_params.iter().map(|p| p.name.clone()).collect();
                 locate_enum_payload_type(&item.members, offset)
@@ -1115,10 +1110,7 @@ mod completion {
         members_type_position(&item.members, offset)
     }
 
-    fn members_type_position(
-        members: &[ResourceMember],
-        offset: u32,
-    ) -> Option<Located<'static>> {
+    fn members_type_position(members: &[ResourceMember], offset: u32) -> Option<Located<'static>> {
         for member in members {
             match member {
                 ResourceMember::Field(field) => {
@@ -1136,10 +1128,7 @@ mod completion {
         None
     }
 
-    fn locate_enum_payload_type(
-        members: &[EnumMember],
-        offset: u32,
-    ) -> Option<Located<'static>> {
+    fn locate_enum_payload_type(members: &[EnumMember], offset: u32) -> Option<Located<'static>> {
         for member in members {
             for field in &member.payload {
                 if contains(field.ty.span(), offset) {
@@ -1244,18 +1233,22 @@ mod completion {
                 {
                     return Some(Located::TypeAnnotation);
                 }
-                value.as_ref().and_then(|value| locate_expression(value, offset))
+                value
+                    .as_ref()
+                    .and_then(|value| locate_expression(value, offset))
             }
-            Statement::Assign { target, value, .. } => locate_expression(target, offset)
-                .or_else(|| locate_expression(value, offset)),
-            Statement::CompoundAssign { target, value, .. } => locate_expression(target, offset)
-                .or_else(|| locate_expression(value, offset)),
+            Statement::Assign { target, value, .. } => {
+                locate_expression(target, offset).or_else(|| locate_expression(value, offset))
+            }
+            Statement::CompoundAssign { target, value, .. } => {
+                locate_expression(target, offset).or_else(|| locate_expression(value, offset))
+            }
             Statement::Delete { path, .. } => locate_expression(path, offset),
             Statement::PlaceBinding { place, .. } => locate_expression(place, offset),
             Statement::Unset { place, .. } => locate_expression(place, offset),
-            Statement::Return { value, .. } => {
-                value.as_ref().and_then(|value| locate_expression(value, offset))
-            }
+            Statement::Return { value, .. } => value
+                .as_ref()
+                .and_then(|value| locate_expression(value, offset)),
             Statement::Assert { value, .. } => locate_expression(value, offset),
             Statement::Expr { value, .. } => locate_expression(value, offset),
             Statement::If {
@@ -1321,12 +1314,13 @@ mod completion {
                     .filter(|block| contains(block.span, offset))
                     .and_then(|block| locate_block(block, offset, scope))
             }
-            Statement::While { condition, body, .. } => locate_expression(condition, offset)
-                .or_else(|| {
-                    contains(body.span, offset)
-                        .then(|| locate_block(body, offset, scope))
-                        .flatten()
-                }),
+            Statement::While {
+                condition, body, ..
+            } => locate_expression(condition, offset).or_else(|| {
+                contains(body.span, offset)
+                    .then(|| locate_block(body, offset, scope))
+                    .flatten()
+            }),
             Statement::For {
                 binding,
                 iterable,
@@ -1372,7 +1366,9 @@ mod completion {
             Statement::Transaction { body, .. } => contains(body.span, offset)
                 .then(|| locate_block(body, offset, scope))
                 .flatten(),
-            Statement::Match { scrutinee, arms, .. } => {
+            Statement::Match {
+                scrutinee, arms, ..
+            } => {
                 if let Some(located) = locate_expression(scrutinee, offset) {
                     return Some(located);
                 }
@@ -1467,9 +1463,7 @@ mod completion {
                     .filter(|block| contains(block.span, offset))
                     .and_then(|block| locate_block(block, offset, scope))
             }
-            Statement::Break { .. }
-            | Statement::Continue { .. }
-            | Statement::Error { .. } => None,
+            Statement::Break { .. } | Statement::Continue { .. } | Statement::Error { .. } => None,
         }
     }
 
@@ -1580,7 +1574,11 @@ mod completion {
                 Declaration::Const(konst) => candidates.push(Candidate {
                     label: konst.name.clone(),
                     kind: CandidateKind::Const,
-                    detail: konst.ty.as_ref().map(TypeExpr::to_string).unwrap_or_default(),
+                    detail: konst
+                        .ty
+                        .as_ref()
+                        .map(TypeExpr::to_string)
+                        .unwrap_or_default(),
                 }),
                 Declaration::Enum(item) => candidates.push(Candidate {
                     label: item.name.clone(),
@@ -1616,10 +1614,14 @@ mod completion {
         let Some(type_name) = base_type_name(scope, base) else {
             return Vec::new();
         };
-        let Some(item) = file.declarations.iter().find_map(|declaration| match declaration {
-            Declaration::Struct(item) if item.name == type_name => Some(item),
-            _ => None,
-        }) else {
+        let Some(item) = file
+            .declarations
+            .iter()
+            .find_map(|declaration| match declaration {
+                Declaration::Struct(item) if item.name == type_name => Some(item),
+                _ => None,
+            })
+        else {
             return Vec::new();
         };
         struct_field_candidates(&item.members)
@@ -1666,10 +1668,14 @@ mod completion {
         let Some((enum_name, rest)) = segments.split_first() else {
             return Vec::new();
         };
-        let Some(item) = file.declarations.iter().find_map(|declaration| match declaration {
-            Declaration::Enum(item) if &item.name == enum_name => Some(item),
-            _ => None,
-        }) else {
+        let Some(item) = file
+            .declarations
+            .iter()
+            .find_map(|declaration| match declaration {
+                Declaration::Enum(item) if &item.name == enum_name => Some(item),
+                _ => None,
+            })
+        else {
             return Vec::new();
         };
         match resolve_enum_members(item, rest) {

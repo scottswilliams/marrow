@@ -74,9 +74,18 @@ fn completions_expression_name() {
     let offset = at(source, "return t\n}", "return ".len());
     let (class, labels) = labels(&snapshot, offset);
     assert_eq!(class, PositionClass::ExpressionName);
-    assert!(labels.iter().any(|l| l == "total"), "local in scope: {labels:?}");
-    assert!(labels.iter().any(|l| l == "helper"), "module fn: {labels:?}");
-    assert!(labels.iter().any(|l| l == "caller"), "module fn: {labels:?}");
+    assert!(
+        labels.iter().any(|l| l == "total"),
+        "local in scope: {labels:?}"
+    );
+    assert!(
+        labels.iter().any(|l| l == "helper"),
+        "module fn: {labels:?}"
+    );
+    assert!(
+        labels.iter().any(|l| l == "caller"),
+        "module fn: {labels:?}"
+    );
     assert!(labels.iter().any(|l| l == "some"), "builtin: {labels:?}");
 }
 
@@ -137,9 +146,18 @@ fn completions_type_annotation() {
     let offset = at(source, "const x: Thing", "const x: ".len());
     let (class, labels) = labels(&snapshot, offset);
     assert_eq!(class, PositionClass::TypeAnnotation);
-    assert!(labels.iter().any(|l| l == "Thing"), "named type: {labels:?}");
-    assert!(labels.iter().any(|l| l == "int"), "builtin type: {labels:?}");
-    assert!(labels.iter().any(|l| l == "Map"), "reserved generic: {labels:?}");
+    assert!(
+        labels.iter().any(|l| l == "Thing"),
+        "named type: {labels:?}"
+    );
+    assert!(
+        labels.iter().any(|l| l == "int"),
+        "builtin type: {labels:?}"
+    );
+    assert!(
+        labels.iter().any(|l| l == "Map"),
+        "reserved generic: {labels:?}"
+    );
 }
 
 #[test]
@@ -150,7 +168,10 @@ fn completions_type_annotation_offers_generic_type_parameters() {
     let offset = at(source, "const x: T =", "const x: ".len());
     let (class, labels) = labels(&snapshot, offset);
     assert_eq!(class, PositionClass::TypeAnnotation);
-    assert!(labels.iter().any(|l| l == "T"), "type parameter in scope: {labels:?}");
+    assert!(
+        labels.iter().any(|l| l == "T"),
+        "type parameter in scope: {labels:?}"
+    );
 }
 
 #[test]
@@ -187,7 +208,10 @@ fn completions_unresolvable_base_is_absent_fields_not_panic() {
     let offset = at(source, "return mystery.\n", "return mystery.".len());
     let (class, labels) = labels(&snapshot, offset);
     assert_eq!(class, PositionClass::Member);
-    assert!(labels.is_empty(), "no fields for an unresolvable base: {labels:?}");
+    assert!(
+        labels.is_empty(),
+        "no fields for an unresolvable base: {labels:?}"
+    );
 }
 
 #[test]
@@ -205,7 +229,10 @@ fn completions_over_cap_refuses() {
         })) => {
             assert_eq!(limit, MAX_COMPLETION_CANDIDATES);
         }
-        other => panic!("expected a candidate-count refusal, got {}", describe(&other)),
+        other => panic!(
+            "expected a candidate-count refusal, got {}",
+            describe(&other)
+        ),
     }
 }
 
@@ -254,6 +281,8 @@ fn completions_non_utf8_file_is_unavailable() {
     };
     assert!(matches!(
         snapshot.completions(&identity("src/app.mw"), 0),
-        Ok(CompletionOutcome::Ready(Fact::Unavailable(Unavailability::Syntax)))
+        Ok(CompletionOutcome::Ready(Fact::Unavailable(
+            Unavailability::Syntax
+        )))
     ));
 }
