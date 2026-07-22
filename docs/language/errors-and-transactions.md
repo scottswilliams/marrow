@@ -171,7 +171,12 @@ the region opens while one is owed: its implicit `err` exit would leave the
 transaction uncommitted. The compiler reports this at check time as
 `check.transaction_uncommitted`, at the `try`; the verifier independently
 reconstructs the same flow from the image and rejects it as *a path returns
-without committing the transaction* (`image.flow`).
+without committing the transaction* (`image.flow`). A
+[`require` guard](control-flow.md#require-guards) follows exactly the same law:
+its failure exit is implicit and carries no commit, so a `require` on such a
+path is reported the same way, at the `require`. A helper called inside the
+region owns no region, so its `try` and `require` exits stay ordinary control
+flow.
 
 To fail a durable change deliberately, spell the exit as a `return`. A guard that
 returns `err` before staging anything commits an empty region and persists no
