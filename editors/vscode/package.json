@@ -2,7 +2,7 @@
   "name": "marrow",
   "displayName": "Marrow",
   "description": "Language support for Marrow (.mw), backed by the bundled marrow language server.",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "license": "Apache-2.0",
   "publisher": "marrow-project",
   "icon": "icons/marrow-gallery.png",
@@ -37,10 +37,18 @@
         "extensions": [
           ".mw"
         ],
+        "configuration": "./language-configuration.json",
         "icon": {
           "light": "./icons/marrow.svg",
           "dark": "./icons/marrow.svg"
         }
+      }
+    ],
+    "grammars": [
+      {
+        "language": "marrow",
+        "scopeName": "source.marrow",
+        "path": "./syntaxes/marrow.tmLanguage.json"
       }
     ],
     "commands": [

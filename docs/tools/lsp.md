@@ -97,10 +97,13 @@ refused whole, never returned as a truncated candidate list or signature.
 An installed Visual Studio Code extension packages this server for editor use. It lives
 in the repository at `editors/vscode/`. The extension is a thin host: it registers the
 `marrow` language for the `.mw` extension and starts one bundled `marrow lsp` process
-per window over standard input and output. It contributes no grammar, language
-configuration, snippets, or on-type formatting, and it derives no language meaning of
-its own; diagnostics, formatting, hover, definition, completion, signature help, and
-document symbols come from the server.
+per window over standard input and output. It contributes a static TextMate grammar for
+syntax highlighting and a language configuration for `//` comment toggling and bracket
+pairing; the grammar is generated from the parser's reserved-word inventory and
+drift-checked, not hand-written. It contributes no snippets, on-type formatting, or
+indentation rules, and it derives no deeper language meaning of its own: diagnostics,
+formatting, hover, definition, completion, signature help, and document symbols come
+from the server.
 
 The packaged extension targets macOS on Apple Silicon (`darwin-arm64`) and bundles the
 matching `marrow` release binary; the server is launched from that bundled absolute path

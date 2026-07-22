@@ -8,10 +8,21 @@ language features come from that server.
 
 The extension is a thin host. It registers the `marrow` language for the `.mw`
 extension and starts one bundled `marrow lsp` process per window over standard input
-and output. It contributes no grammar, no language configuration, no snippets, and no
-on-type formatting. Diagnostics, whole-document formatting, hover, and go-to-definition
-are served by the language server from the compiler's published analysis facts; the
-extension derives no language meaning of its own.
+and output. Diagnostics, whole-document formatting, hover, and go-to-definition are
+served by the language server from the compiler's published analysis facts; the
+extension computes no such language meaning of its own.
+
+The extension contributes two static, editor-only files. A TextMate grammar
+(`syntaxes/marrow.tmLanguage.json`) provides syntax highlighting for comments,
+strings, number literals, the durable `^root` sigil, the `::` path separator, and the
+reserved words. It is **generated from the parser**, not hand-written: a test in
+`marrow-syntax` renders it from the parser-owned reserved-word inventory and a fixed
+set of lexical forms, and byte-diffs the committed file, so a lexer change that
+outpaces the grammar fails a check. A language configuration
+(`language-configuration.json`) provides `//` comment toggling and bracket and
+quote pairing. Neither file reconstructs semantics the server owns: highlighting is
+static token coloring, and there are no snippets, no on-type formatting, and no
+indentation or newline rules.
 
 ## Requirements
 

@@ -43,6 +43,8 @@ const ALLOWED_EXACT = new Set([
   "extension/LICENSE.txt",
   "extension/icons/marrow-gallery.png",
   "extension/icons/marrow.svg",
+  "extension/language-configuration.json",
+  "extension/syntaxes/marrow.tmLanguage.json",
   "extension/server/marrow",
 ]);
 

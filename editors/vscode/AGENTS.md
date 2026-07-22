@@ -13,12 +13,27 @@ paths, or add client middleware, retry loops, or diagnostic filtering. Every lan
 fact is the server's. Missing editor behavior is added to Marrow first, never
 reconstructed here.
 
+## Static editor contributions
+
+The package contributes exactly two static, editor-only files:
+
+- `syntaxes/marrow.tmLanguage.json` — a TextMate grammar for syntax highlighting.
+  It is **generated, never hand-edited**: `crates/marrow-syntax/tests/cases/vscode_grammar.rs`
+  renders it from the parser-owned reserved-word inventory (read from the
+  drift-checked `reserved-words` block in `docs/tools/ai-legibility.md`) plus a fixed
+  set of lexer-owned lexical forms, and byte-diffs the committed file. Regenerate with
+  `cargo test -p marrow-syntax regenerate_vscode_grammar -- --ignored` in the same
+  change as any parser/keyword change; do not edit the JSON by hand. It scopes only
+  forms the lexer owns — no speculative function/type/member coloring.
+- `language-configuration.json` — `//` comment toggling and bracket/quote pairing,
+  derived from the same verified forms. It carries no indentation rules and no
+  `onEnter` rules; newline classification stays with the compiler.
+
 ## What this package does not contain
 
-No TextMate grammar or `syntaxes/`, no `language-configuration.json` of any content,
-no snippets, themes, debuggers, views, or settings contributions, no on-type
-formatting, no telemetry, network client, updater, or downloader, and no second
-executable. There is no server-path override setting: the server is the bundled
+No snippets, themes, debuggers, views, or settings contributions, no on-type or
+newline formatting, no telemetry, network client, updater, or downloader, and no
+second executable. There is no server-path override setting: the server is the bundled
 absolute-path `server/marrow`, launched with the fixed arguments `["lsp"]`.
 
 ## Build and packaging
