@@ -1363,8 +1363,7 @@ mod completion {
             Statement::Expr { value, .. } => locate_expression(value, offset),
             Statement::Require {
                 condition, value, ..
-            } => locate_expression(condition, offset)
-                .or_else(|| locate_expression(value, offset)),
+            } => locate_expression(condition, offset).or_else(|| locate_expression(value, offset)),
             Statement::If {
                 condition,
                 then_block,

@@ -2001,8 +2001,8 @@ fn owner_lattice_violation(
                      the closing brace — so an exit that bypasses them leaves staged writes \
                      uncommitted. Spell a deliberate failure as an in-region `return` (a \
                      commit site), and place a guard that must not commit before the block. A \
-                     prefix `try` is ordinary control flow, not a commit, so its `err` exit \
-                     may not cross a region its own function owns."
+                     prefix `try` or a `require` guard is ordinary control flow, not a commit, \
+                     so its implicit `err` exit may not cross a region its own function owns."
                         .to_string(),
                 ));
             }

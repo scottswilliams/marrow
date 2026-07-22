@@ -941,7 +941,11 @@ fn parses_a_require_guard() {
     assert!(
         matches!(
             &main.body.statements[0],
-            Statement::Require { condition: Expression::Binary { .. }, value: Expression::Literal { .. }, .. }
+            Statement::Require {
+                condition: Expression::Binary { .. },
+                value: Expression::Literal { .. },
+                ..
+            }
         ),
         "stmt 0: {:?}",
         main.body.statements[0]
@@ -961,7 +965,11 @@ fn require_splits_on_the_top_level_else_only() {
     assert!(
         matches!(
             &main.body.statements[0],
-            Statement::Require { condition: Expression::Call { .. }, value: Expression::Call { .. }, .. }
+            Statement::Require {
+                condition: Expression::Call { .. },
+                value: Expression::Call { .. },
+                ..
+            }
         ),
         "stmt 0: {:?}",
         main.body.statements[0]
@@ -1008,6 +1016,9 @@ fn require_formats_idempotently() {
     let once = format_source(source);
     let twice = format_source(&once);
     assert_eq!(once, twice, "formatting is a fixed point:\n{once}");
-    assert!(once.contains("require n > 0 else \"not positive\""), "{once}");
+    assert!(
+        once.contains("require n > 0 else \"not positive\""),
+        "{once}"
+    );
     assert!(parse_source(&once).diagnostics.is_empty());
 }

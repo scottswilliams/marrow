@@ -396,6 +396,27 @@ fn matrix() -> Vec<Row> {
                 code: "check.transaction_empty",
             },
         },
+        // ---- REQ01: the `require` guard mirrors the try transaction law. ----
+        // A `require` inside an owned region: its implicit `err` exit carries no
+        // commit, so the checker refuses it (`check.transaction_uncommitted`)
+        // before an image is minted, and the verifier would reconstruct the same
+        // uncommitted exit from a tampered image (`image.flow`) — the two agree.
+        Row {
+            label: "REQ01: require inside an owned region (uncommitted implicit exit)",
+            ops: "pub fn addPositive(id: int): Result<bool, string> {\n    transaction {\n        require id > 0 else \"id must be positive\"\n        ^books[id] = Book(title: \"t\", isbn: \"i\")\n        return ok(true)\n    }\n}",
+            expect: Expect::CheckerRejects {
+                code: "check.transaction_uncommitted",
+            },
+        },
+        // The admitted shape: the guard lives in a helper joining the export's
+        // region, so the failure exit is ordinary control flow into the export's
+        // committing in-region `return`. Driven end to end: the ok path commits
+        // the write, the require path rejects without disturbing the store.
+        Row {
+            label: "REQ01: require in a helper joining the region / driver test",
+            ops: "fn addChecked(id: int, title: string): Result<bool, string> {\n    require id > 0 else \"id must be positive\"\n    require not exists(^books[id]) else \"already shelved\"\n    ^books[id] = Book(title: title, isbn: \"i\")\n    return ok(true)\n}\n\npub fn shelve(id: int, title: string): Result<bool, string> {\n    transaction {\n        return addChecked(id, title)\n    }\n}\n\npub fn shelvedTitle(id: int): string? {\n    return ^books[id].title\n}\n\ntest \"require guards admit the valid add and reject the invalid ones\" {\n    match shelve(200, \"dune\") {\n        ok(v) => {}\n        err(e) => {\n            assert false\n        }\n    }\n    match shelve(0, \"zero\") {\n        ok(v) => {\n            assert false\n        }\n        err(e) => {\n            assert e == \"id must be positive\"\n        }\n    }\n    match shelve(200, \"impostor\") {\n        ok(v) => {\n            assert false\n        }\n        err(e) => {\n            assert e == \"already shelved\"\n        }\n    }\n    assert shelvedTitle(200) ?? \"none\" == \"dune\"\n}",
+            expect: Expect::RoundTrips { run: true },
+        },
         // ---- DX05: `exists` over a unique index — the presence half of the lookup. ----
         // `exists(^books.byIsbn[isbn])` probes the unique index for a matching entry
         // without materializing its identity: the same complete-key lookup the `if const`
@@ -683,15 +704,16 @@ fn checker_acceptance_implies_verification_over_the_composition_matrix() {
     // region row into a round trip, IDK01 lowered every identity-operand capturing position,
     // and TX02 promoted the last divergence — the empty (no-op) transaction — to a check-time
     // diagnostic, so the checker-accept/verify-reject ledger is now empty. A new divergence
-    // added without a ledger row fails an individual row above; these counts fail if the
-    // closed empty-transaction row silently changes verdict.
+    // added without a ledger row fails an individual row above; these counts fail if a
+    // closed checker-rejected row silently changes verdict. The two rejections are the
+    // TX02-promoted empty transaction and the REQ01 require-inside-an-owned-region law.
     assert_eq!(
         known_divergent, 0,
         "the divergence ledger is empty after TX02"
     );
     assert_eq!(
-        checker_rejected, 1,
-        "expected exactly the TX02-promoted empty-transaction check-time rejection",
+        checker_rejected, 2,
+        "expected exactly the empty-transaction and require-in-region check-time rejections",
     );
 }
 

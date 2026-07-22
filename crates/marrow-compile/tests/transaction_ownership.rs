@@ -208,9 +208,115 @@ fn a_try_crossing_an_owned_region_is_rejected() {
 }
 
 // ---------------------------------------------------------------------------
+// Law (d), require mirror: a `require` may not stand on a path exiting a region
+// its own function owns — its implicit failure exit carries no commit, exactly
+// like `try`'s.
+// ---------------------------------------------------------------------------
+
+/// A `require` inside an owned region: its implicit `err` exit would return from
+/// inside the region without committing. Refused at check time at the `require`.
+#[test]
+fn a_require_inside_an_owned_region_is_rejected() {
+    let ops = "pub fn setChecked(id: int, v: int): Result<int, string> {\n    transaction {\n        require v > 0 else \"value must be positive\"\n        ^counters[id] = Counter(value: v)\n        return ok(v)\n    }\n}\n";
+    let diagnostic = only(ops);
+    assert_eq!(diagnostic.code, "check.transaction_uncommitted");
+    assert_eq!(
+        diagnostic.line(),
+        line_of(ops, "require v > 0"),
+        "reported at the `require`: {}",
+        diagnostic.message
+    );
+    assert!(
+        diagnostic.message.contains("commit"),
+        "names the commit rule: {}",
+        diagnostic.message
+    );
+}
+
+/// A `require` before the owned region begins: its failure path exits the
+/// function while the region's commit sites are still ahead, the same law an
+/// early spelled `return` breaks.
+#[test]
+fn a_require_before_an_owned_region_is_rejected() {
+    let ops = "pub fn setChecked(id: int, v: int): Result<int, string> {\n    require v > 0 else \"value must be positive\"\n    transaction {\n        ^counters[id] = Counter(value: v)\n        return ok(v)\n    }\n}\n";
+    let diagnostic = only(ops);
+    assert_eq!(diagnostic.code, "check.transaction_uncommitted");
+    assert_eq!(
+        diagnostic.line(),
+        line_of(ops, "require v > 0"),
+        "reported at the `require`: {}",
+        diagnostic.message
+    );
+}
+
+/// A `require` inside a region nested in another region: the reopened-region law
+/// fires first (the earliest offending construct wins), and the composition is
+/// still refused before any image is minted.
+#[test]
+fn a_require_inside_a_nested_region_is_still_refused() {
+    let ops = "pub fn setChecked(id: int, v: int): Result<int, string> {\n    transaction {\n        transaction {\n            require v > 0 else \"value must be positive\"\n            ^counters[id] = Counter(value: v)\n            return ok(v)\n        }\n    }\n}\n";
+    let diagnostic = only(ops);
+    assert_eq!(diagnostic.code, "check.transaction_reopened");
+}
+
+/// A `try` and a `require` both inside an owned region: the tape is scanned in
+/// index order, so the earliest uncommitted exit — the `try` — is the one
+/// reported, deterministically.
+#[test]
+fn try_then_require_inside_a_region_reports_the_earliest_exit() {
+    let ops = "fn check(v: int): Result<int, string> {\n    if v > 0 {\n        return ok(v)\n    }\n    return err(\"value must be positive\")\n}\n\npub fn setChecked(id: int, v: int): Result<int, string> {\n    transaction {\n        const w = try check(v)\n        require w < 100 else \"value too large\"\n        ^counters[id] = Counter(value: w)\n        return ok(w)\n    }\n}\n";
+    let diagnostic = only(ops);
+    assert_eq!(diagnostic.code, "check.transaction_uncommitted");
+    assert_eq!(
+        diagnostic.line(),
+        line_of(ops, "const w = try check(v)"),
+        "the earliest exit is reported: {}",
+        diagnostic.message
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Soundness controls: the checker is never stricter than the verifier — the
 // accepted forms the laws above reject-by-contrast must still compile clean.
 // ---------------------------------------------------------------------------
+
+/// A `require` in a helper that joins its caller's region owns no region itself:
+/// its failure exit is ordinary control flow into the export's committing
+/// in-region `return`, exactly like a helper's `try` (the EMR `validate` shape).
+#[test]
+fn a_require_in_a_helper_joining_the_region_compiles() {
+    let ops = "fn validate(v: int): Result<int, string> {\n    require v > 0 else \"value must be positive\"\n    return ok(v)\n}\n\nfn apply(id: int, v: int): Result<int, string> {\n    const w = try validate(v)\n    ^counters[id] = Counter(value: w)\n    return ok(w)\n}\n\npub fn setChecked(id: int, v: int): Result<int, string> {\n    transaction {\n        return apply(id, v)\n    }\n}\n";
+    assert!(
+        diagnostics(ops).is_empty(),
+        "a helper's require joins the caller's region: {:#?}",
+        diagnostics(ops)
+    );
+}
+
+/// A `require` in a helper reached through another helper inside the region:
+/// region membership is transitive over calls, and neither helper owns the
+/// region, so the guard stays legal at any depth.
+#[test]
+fn a_require_two_helpers_deep_inside_the_region_compiles() {
+    let ops = "fn guard(v: int): Result<int, string> {\n    require v > 0 else \"value must be positive\"\n    return ok(v)\n}\n\nfn validate(v: int): Result<int, string> {\n    const w = try guard(v)\n    require w < 100 else \"value too large\"\n    return ok(w)\n}\n\nfn apply(id: int, v: int): Result<int, string> {\n    const w = try validate(v)\n    ^counters[id] = Counter(value: w)\n    return ok(w)\n}\n\npub fn setChecked(id: int, v: int): Result<int, string> {\n    transaction {\n        return apply(id, v)\n    }\n}\n";
+    assert!(
+        diagnostics(ops).is_empty(),
+        "requires at any helper depth join the caller's region: {:#?}",
+        diagnostics(ops)
+    );
+}
+
+/// A `require` after the region's closing commit: the commit has already
+/// happened on that path, so the implicit failure exit no longer bypasses it.
+#[test]
+fn a_require_after_the_regions_commit_compiles() {
+    let ops = "pub fn setChecked(id: int, v: int): Result<int, string> {\n    transaction {\n        ^counters[id] = Counter(value: v)\n    }\n    require v > 0 else \"value must be positive\"\n    return ok(v)\n}\n";
+    assert!(
+        diagnostics(ops).is_empty(),
+        "a require after the commit does not bypass it: {:#?}",
+        diagnostics(ops)
+    );
+}
 
 /// A read-only export that opens a `transaction` around only reads is admitted (the
 /// region carries read demand); it is not an empty region.

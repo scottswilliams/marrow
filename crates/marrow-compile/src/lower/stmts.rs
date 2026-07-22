@@ -155,6 +155,11 @@ impl<'a> FnLowerer<'a> {
                 else_block,
                 ..
             } => self.lower_let_else(*is_var, name, ty.as_ref(), value, else_block),
+            Statement::Require {
+                condition,
+                value,
+                span,
+            } => self.lower_require(condition, value, *span),
             Statement::While {
                 condition, body, ..
             } => self.lower_while(condition, body),
@@ -631,6 +636,82 @@ impl<'a> FnLowerer<'a> {
             self.push(Instr::TxnCommit, span);
         }
         self.push(Instr::Return, span);
+    }
+
+    /// Lower `require <condition> else <value>`: pure sugar for
+    /// `if not <condition> { return err(<value>) }`, emitting the identical tape —
+    /// condition, `BoolNot`, a branch over the failure arm, the bare failure value
+    /// lowered as the enclosing function's `Result` error type, the error
+    /// construction, and a `Return`. The failure value is evaluated only on the
+    /// failure path. The `Return` is emitted bare (never through
+    /// [`emit_region_return`]): like `try`'s implicit `err` exit, a `require`
+    /// failure carries no commit, so the owner-lattice scan reports
+    /// `check.transaction_uncommitted` at the `require` when its exit would cross
+    /// a region this function owns — exactly the try law. Outside an owned region
+    /// the bare `Return` and the handwritten form's uncommitted `Return` coincide,
+    /// which is what makes the byte-identity artifact hold.
+    fn lower_require(
+        &mut self,
+        condition: &Expression,
+        value: &Expression,
+        span: SourceSpan,
+    ) -> Flow {
+        if self.terminal_rejection() {
+            return Flow::Rejected;
+        }
+        if self.lower_condition(condition).is_none() {
+            return if self.terminal_rejection() {
+                Flow::Rejected
+            } else {
+                Flow::Fallthrough
+            };
+        }
+        self.push(Instr::BoolNot, condition.span());
+        let jif = self.push_jif(condition.span());
+        let ret_id = match self.ret {
+            RetType::Value(ty) => ty.bare_enum(),
+            RetType::Unit => None,
+        };
+        let classified = self.records.with_metadata_session(|session| {
+            Ok::<_, LowerInvariant>(match ret_id {
+                Some(id) => session.reserved_instantiation(id)?.map(|args| (id, args)),
+                None => None,
+            })
+        });
+        let Some(resolved) = self.accept_resolution(
+            classified.map_err(ResolveError::Invariant),
+            span,
+            "this require guard",
+        ) else {
+            return Flow::Fallthrough;
+        };
+        let Some((ret_id, ReservedEnumArgs::Result(_, ret_err))) = resolved else {
+            self.fail(SourceDiagnostic::at(
+                Code::CheckType.as_str(),
+                self.file,
+                span,
+                "`require` is only valid in a function that returns a Result".to_string(),
+            ));
+            return Flow::Fallthrough;
+        };
+        if self.lower_as(value, garg_to_lty(ret_err)).is_none() {
+            return if self.terminal_rejection() {
+                Flow::Rejected
+            } else {
+                Flow::Fallthrough
+            };
+        }
+        self.push(
+            Instr::EnumConstruct {
+                enum_idx: ret_id.index(),
+                variant: RESULT_ERR,
+            },
+            span,
+        );
+        self.push(Instr::Return, span);
+        let next = self.here();
+        self.patch(jif, next);
+        Flow::Fallthrough
     }
 
     fn lower_return(&mut self, value: Option<&Expression>, span: SourceSpan) -> Flow {
