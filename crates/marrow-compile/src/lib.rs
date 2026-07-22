@@ -39,9 +39,10 @@ mod scalar;
 mod types;
 
 pub use analysis::{
-    AnalysisFailure, AnalysisResourceLimit, AnalysisSnapshot, Definition, Fact, FormatOutcome,
-    Hover, InputRevision, MAX_FORMAT_OUTPUT_BYTES, MAX_SNAPSHOT_FACT_BYTES,
-    MAX_SNAPSHOT_FACT_COUNT, QueryError, Unavailability, analyze,
+    AnalysisFailure, AnalysisResourceLimit, AnalysisSnapshot, DeclKind, DeclSymbol, Definition,
+    Fact, FormatOutcome, Hover, InputRevision, MAX_DOCUMENT_SYMBOLS_PER_FILE,
+    MAX_FORMAT_OUTPUT_BYTES, MAX_SNAPSHOT_FACT_BYTES, MAX_SNAPSHOT_FACT_COUNT, MAX_SYMBOL_DEPTH,
+    QueryError, Unavailability, analyze,
 };
 pub use compile::{
     CompileFailure, CompileInvariant, CompileResourceLimit, Compiled, CompiledTests, ExportEntry,

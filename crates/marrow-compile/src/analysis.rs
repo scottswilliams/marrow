@@ -17,7 +17,7 @@
 use std::sync::Arc;
 
 use marrow_project::{FileIdentity, ProjectInput};
-use marrow_syntax::FormatRefusal;
+use marrow_syntax::{Declaration, EnumMember, FormatRefusal, SourceSpan};
 
 use crate::compile::{Analyzed, analyze_project};
 use crate::{CompileInvariant, CompileResourceLimit, SourceDiagnostic};
@@ -59,6 +59,19 @@ pub const MAX_SNAPSHOT_FACT_BYTES: u64 = 4 * 1024 * 1024;
 /// second input bound.
 pub const MAX_FORMAT_OUTPUT_BYTES: u64 = 4 * 1024 * 1024;
 
+/// The largest number of declaration-hierarchy symbols one module file admits before its
+/// snapshot is transactionally refused as a [`AnalysisResourceLimit::DocumentSymbolCount`].
+/// Every projected node — each top-level declaration and each nested enum member — counts
+/// once. No partial or truncated outline is retained.
+pub const MAX_DOCUMENT_SYMBOLS_PER_FILE: u64 = 4_096;
+
+/// The largest declaration-hierarchy nesting depth one module file admits before its
+/// snapshot is refused as a [`AnalysisResourceLimit::DocumentSymbolDepth`]. Top-level
+/// declarations sit at depth one; enum members deepen the tree by one level each. The
+/// parser admits far deeper enum-member nesting, so this analysis bound is reachable and
+/// fails a pathological outline closed rather than recursing without limit.
+pub const MAX_SYMBOL_DEPTH: u16 = 16;
+
 /// A fixed analysis resource bound that produced no snapshot. It wraps CRES01's shipped
 /// [`CompileResourceLimit`] verbatim for a compile-side aggregate bound, and names the
 /// snapshot fact bounds directly. Closed and exhaustively matchable.
@@ -70,6 +83,12 @@ pub enum AnalysisResourceLimit {
     SnapshotFactCount { limit: u64 },
     /// The retained fact byte footprint exceeded [`MAX_SNAPSHOT_FACT_BYTES`].
     SnapshotFactBytes { limit: u64 },
+    /// One module file's declaration-hierarchy symbol count exceeded
+    /// [`MAX_DOCUMENT_SYMBOLS_PER_FILE`].
+    DocumentSymbolCount { limit: u64 },
+    /// One module file's declaration-hierarchy nesting depth exceeded
+    /// [`MAX_SYMBOL_DEPTH`].
+    DocumentSymbolDepth { limit: u16 },
 }
 
 /// Why analysis produced no snapshot. Both arms echo the caller revision exactly and
@@ -112,6 +131,11 @@ pub struct AnalysisSnapshot {
     /// `(file, callee span)` for qualified calls whose target module did not parse. A
     /// query at one of these positions is [`Unavailability::Dependency`], not `Absent`.
     dependency_gaps: Vec<(FileIdentity, marrow_syntax::SourceSpan)>,
+    /// The declaration-hierarchy outline of each cleanly-parsed module file, in source
+    /// declaration order. A file that did not parse has no entry — it is in
+    /// `broken_files` — and a `document_symbols` query for it is
+    /// [`Unavailability::Syntax`], not an absent tree.
+    document_symbols: Vec<(FileIdentity, Vec<DeclSymbol>)>,
 }
 
 impl AnalysisSnapshot {
@@ -264,6 +288,36 @@ impl AnalysisSnapshot {
             Err(refusal) => Ok(FormatOutcome::Refused(refusal)),
         }
     }
+
+    /// The declaration-hierarchy outline of a module file: its top-level declarations in
+    /// source order, each nested enum member under its enum, projected from the parsed
+    /// AST's existing declared-name spans and declaration ranges. An unknown file is a
+    /// typed [`QueryError`]; a file that did not parse is [`Unavailability::Syntax`]; a
+    /// cleanly-parsed file with no declarations is a truthful `Present` empty outline.
+    ///
+    /// This is a pure projection: it reclassifies nothing and reads no resolved semantic
+    /// identity. The outline is retained per snapshot and bounded per file by
+    /// [`MAX_DOCUMENT_SYMBOLS_PER_FILE`] and [`MAX_SYMBOL_DEPTH`] at snapshot admission.
+    pub fn document_symbols(
+        &self,
+        file: &FileIdentity,
+    ) -> Result<Fact<&[DeclSymbol]>, QueryError> {
+        self.source_of(file)?;
+        if self.broken_files.iter().any(|broken| broken == file) {
+            return Ok(Fact::Unavailable(Unavailability::Syntax));
+        }
+        match self
+            .document_symbols
+            .iter()
+            .find(|(symbol_file, _)| symbol_file == file)
+        {
+            Some((_, symbols)) => Ok(Fact::Present(symbols.as_slice())),
+            // A validated input that is neither broken nor retained did not parse cleanly;
+            // the honest outcome is the same syntax-unavailable verdict, never a fabricated
+            // empty tree.
+            None => Ok(Fact::Unavailable(Unavailability::Syntax)),
+        }
+    }
 }
 
 /// The outcome of a checked whole-document format query.
@@ -328,10 +382,29 @@ pub fn analyze(
         }
         Analyzed::Diagnostics(diagnostics) => diagnostics,
     };
-    // Enforce the fact publication bounds before retention: an overflow transactionally
-    // refuses the whole snapshot as a resource limit rather than admitting a truncated
-    // or partial fact set.
-    if analysis.hover_facts.len() as u64 > MAX_SNAPSHOT_FACT_COUNT {
+    // A per-file declaration-hierarchy bound overflow transactionally refuses the whole
+    // snapshot rather than admitting a partial or truncated outline.
+    if let Some(limit) = analysis.symbol_limit {
+        let limit = match limit {
+            SymbolLimit::Count => AnalysisResourceLimit::DocumentSymbolCount {
+                limit: MAX_DOCUMENT_SYMBOLS_PER_FILE,
+            },
+            SymbolLimit::Depth => AnalysisResourceLimit::DocumentSymbolDepth {
+                limit: MAX_SYMBOL_DEPTH,
+            },
+        };
+        return Err(AnalysisFailure::ResourceLimit { revision, limit });
+    }
+    // Enforce the snapshot fact publication bounds before retention: an overflow
+    // transactionally refuses the whole snapshot as a resource limit rather than admitting
+    // a truncated or partial fact set. Retained declaration-hierarchy symbols charge the
+    // same count and byte bounds as hover/definition facts.
+    let retained_symbols: u64 = analysis
+        .document_symbols
+        .iter()
+        .map(|(_, symbols)| symbol_count(symbols))
+        .sum();
+    if analysis.hover_facts.len() as u64 + retained_symbols > MAX_SNAPSHOT_FACT_COUNT {
         return Err(AnalysisFailure::ResourceLimit {
             revision,
             limit: AnalysisResourceLimit::SnapshotFactCount {
@@ -339,11 +412,17 @@ pub fn analyze(
             },
         });
     }
+    let symbol_fact_bytes: u64 = analysis
+        .document_symbols
+        .iter()
+        .map(|(file, symbols)| file.as_str().len() as u64 + symbol_bytes(symbols))
+        .sum();
     let fact_bytes: u64 = analysis
         .hover_facts
         .iter()
         .map(|fact| fact.retained_bytes() as u64)
-        .sum();
+        .sum::<u64>()
+        + symbol_fact_bytes;
     if fact_bytes > MAX_SNAPSHOT_FACT_BYTES {
         return Err(AnalysisFailure::ResourceLimit {
             revision,
@@ -359,6 +438,7 @@ pub fn analyze(
         hover_facts: analysis.hover_facts,
         broken_files: analysis.broken_files,
         dependency_gaps: analysis.dependency_gaps,
+        document_symbols: analysis.document_symbols,
     }))
 }
 
@@ -428,5 +508,231 @@ impl Hover {
     /// The canonical type display.
     pub fn display(&self) -> &str {
         &self.display
+    }
+}
+
+/// The declaration kind of a [`DeclSymbol`], mirroring the parser's `Declaration`
+/// variants plus the nested `EnumMember`. Closed and exhaustively matchable so a
+/// consumer maps each kind to its editor symbol category without a wildcard, and a new
+/// declaration variant forces a decision here.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum DeclKind {
+    /// A transparent `alias` type declaration.
+    Alias,
+    /// A nominal `type` declaration.
+    Nominal,
+    /// A module-private `const` declaration.
+    Const,
+    /// A durable `resource` declaration.
+    Resource,
+    /// A `struct` value-type declaration.
+    Struct,
+    /// A `store` saved-root declaration.
+    Store,
+    /// A `fn` function declaration.
+    Function,
+    /// An `enum` declaration.
+    Enum,
+    /// A `test` declaration.
+    Test,
+    /// One member of an enum, nested under its enum (recursively under a `category`).
+    EnumMember,
+}
+
+/// One node of a module file's declaration hierarchy: a declared name, its kind, the
+/// span of its declared name (the selection range), the full header-through-body
+/// declaration range, and its nested member children. Children are non-empty only for an
+/// enum and its nested `category` members; every other declaration is a leaf on this
+/// floor. A pure projection of the parsed AST — it carries no resolved type, effect, or
+/// durable-anchor spelling.
+pub struct DeclSymbol {
+    name: String,
+    kind: DeclKind,
+    name_span: SourceSpan,
+    full_range: SourceSpan,
+    children: Vec<DeclSymbol>,
+}
+
+impl DeclSymbol {
+    /// The declared name spelling.
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// The declaration kind.
+    pub fn kind(&self) -> DeclKind {
+        self.kind
+    }
+
+    /// The span of the declared name — the selection range. For a declaration whose AST
+    /// carries no separate name span, this is the full declaration range.
+    pub fn name_span(&self) -> SourceSpan {
+        self.name_span
+    }
+
+    /// The full header-through-body declaration range.
+    pub fn full_range(&self) -> SourceSpan {
+        self.full_range
+    }
+
+    /// The nested member children, in source order.
+    pub fn children(&self) -> &[DeclSymbol] {
+        &self.children
+    }
+
+    /// This node's retained byte footprint: its name spelling. Spans and the kind are
+    /// fixed-size and charged by the count bound. Children are summed separately.
+    fn retained_bytes(&self) -> u64 {
+        self.name.len() as u64
+    }
+}
+
+/// The total number of symbol nodes in a projected outline, counting nested members.
+fn symbol_count(symbols: &[DeclSymbol]) -> u64 {
+    symbols
+        .iter()
+        .map(|symbol| 1 + symbol_count(&symbol.children))
+        .sum()
+}
+
+/// The total retained byte footprint of a projected outline, counting nested members.
+fn symbol_bytes(symbols: &[DeclSymbol]) -> u64 {
+    symbols
+        .iter()
+        .map(|symbol| symbol.retained_bytes() + symbol_bytes(&symbol.children))
+        .sum()
+}
+
+/// Which per-file declaration-hierarchy bound a projection exhausted. Internal to the
+/// projection; [`analyze`] maps it to the matching [`AnalysisResourceLimit`].
+pub(crate) enum SymbolLimit {
+    Count,
+    Depth,
+}
+
+/// Project one module file's declarations into its declaration-hierarchy outline, or the
+/// first per-file bound the outline would exceed. A pure projection over existing name
+/// spans and declaration ranges: it reclassifies nothing.
+pub(crate) fn project_document_symbols(
+    declarations: &[Declaration],
+) -> Result<Vec<DeclSymbol>, SymbolLimit> {
+    let mut builder = SymbolProjection { count: 0 };
+    declarations
+        .iter()
+        .map(|declaration| builder.declaration(declaration, 1))
+        .collect()
+}
+
+/// The bounded projection walk. It carries the running per-file node count and enforces
+/// the count and depth bounds as it descends, so no outline is materialized past either
+/// bound.
+struct SymbolProjection {
+    count: u64,
+}
+
+impl SymbolProjection {
+    /// Admit one more node at `depth`, enforcing both per-file bounds before it is built.
+    fn admit(&mut self, depth: u16) -> Result<(), SymbolLimit> {
+        if depth > MAX_SYMBOL_DEPTH {
+            return Err(SymbolLimit::Depth);
+        }
+        self.count += 1;
+        if self.count > MAX_DOCUMENT_SYMBOLS_PER_FILE {
+            return Err(SymbolLimit::Count);
+        }
+        Ok(())
+    }
+
+    fn declaration(
+        &mut self,
+        declaration: &Declaration,
+        depth: u16,
+    ) -> Result<DeclSymbol, SymbolLimit> {
+        self.admit(depth)?;
+        let leaf = |name: String, kind: DeclKind, name_span: SourceSpan, full_range: SourceSpan| {
+            DeclSymbol {
+                name,
+                kind,
+                name_span,
+                full_range,
+                children: Vec::new(),
+            }
+        };
+        let symbol = match declaration {
+            Declaration::Alias(alias) => {
+                leaf(alias.name.clone(), DeclKind::Alias, alias.name_span, alias.span)
+            }
+            Declaration::Nominal(nominal) => leaf(
+                nominal.name.clone(),
+                DeclKind::Nominal,
+                nominal.name_span,
+                nominal.span,
+            ),
+            // A `const` declaration carries no separate name span in the AST, so its
+            // selection range is its full declaration range.
+            Declaration::Const(konst) => {
+                leaf(konst.name.clone(), DeclKind::Const, konst.span, konst.span)
+            }
+            Declaration::Resource(resource) => leaf(
+                resource.name.clone(),
+                DeclKind::Resource,
+                resource.name_span,
+                resource.span,
+            ),
+            Declaration::Struct(item) => {
+                leaf(item.name.clone(), DeclKind::Struct, item.name_span, item.span)
+            }
+            // A store's declared name is its saved-root spelling; its name span covers
+            // the `^root` sigiled root.
+            Declaration::Store(store) => leaf(
+                store.root.root.clone(),
+                DeclKind::Store,
+                store.root.span,
+                store.span,
+            ),
+            Declaration::Function(function) => leaf(
+                function.name.clone(),
+                DeclKind::Function,
+                function.name_span,
+                function.span,
+            ),
+            Declaration::Test(test) => {
+                leaf(test.name.clone(), DeclKind::Test, test.name_span, test.span)
+            }
+            Declaration::Enum(item) => {
+                let children = self.members(&item.members, depth + 1)?;
+                DeclSymbol {
+                    name: item.name.clone(),
+                    kind: DeclKind::Enum,
+                    name_span: item.name_span,
+                    full_range: item.span,
+                    children,
+                }
+            }
+        };
+        Ok(symbol)
+    }
+
+    fn members(
+        &mut self,
+        members: &[EnumMember],
+        depth: u16,
+    ) -> Result<Vec<DeclSymbol>, SymbolLimit> {
+        members
+            .iter()
+            .map(|member| self.member(member, depth))
+            .collect()
+    }
+
+    fn member(&mut self, member: &EnumMember, depth: u16) -> Result<DeclSymbol, SymbolLimit> {
+        self.admit(depth)?;
+        let children = self.members(&member.members, depth + 1)?;
+        Ok(DeclSymbol {
+            name: member.name.clone(),
+            kind: DeclKind::EnumMember,
+            name_span: member.name_span,
+            full_range: member.span,
+            children,
+        })
     }
 }

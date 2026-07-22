@@ -621,6 +621,14 @@ struct Driven {
     /// Editor dependency gaps: `(file, callee span)` for qualified calls to modules
     /// that did not parse. Survive body-lowering failure (threaded, not returned).
     dependency_gaps: Vec<(FileIdentity, SourceSpan)>,
+    /// The declaration-hierarchy outline of each cleanly-parsed module file, projected
+    /// from its parse tree. Carried orthogonally to the semantic outcome; the production
+    /// compile's projection ignores it and the analysis snapshot consumes it.
+    document_symbols: Vec<(FileIdentity, Vec<crate::analysis::DeclSymbol>)>,
+    /// The first per-file declaration-hierarchy bound a module's outline exceeded, if
+    /// any. The analysis snapshot refuses transactionally on it; the production compile
+    /// ignores it (symbol bounds are analysis-only and never fail compilation).
+    symbol_limit: Option<crate::analysis::SymbolLimit>,
 }
 
 /// The outcome of the semantic pass over the cleanly-parsed modules: a complete image,
@@ -728,6 +736,32 @@ fn drive(project: &ProjectInput, mode: TestMode) -> Driven {
         .collect();
     broken_modules.extend(non_utf8_modules);
 
+    // Project each cleanly-parsed module's declaration hierarchy from its parse tree — a
+    // pure analysis byproduct of the one traversal, orthogonal to the semantic outcome
+    // and ignored by the production compile's projection. A broken module contributes no
+    // outline (a `document_symbols` query for it is syntax-unavailable). The first per-file
+    // bound overflow stops projection: the analysis snapshot refuses the whole snapshot on
+    // it, so no partial outline set is retained.
+    let mut document_symbols: Vec<(FileIdentity, Vec<crate::analysis::DeclSymbol>)> = Vec::new();
+    let mut symbol_limit: Option<crate::analysis::SymbolLimit> = None;
+    for module in &parsed {
+        if module
+            .parsed
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.severity == marrow_syntax::Severity::Error)
+        {
+            continue;
+        }
+        match crate::analysis::project_document_symbols(&module.parsed.file.declarations) {
+            Ok(symbols) => document_symbols.push((module.file.clone(), symbols)),
+            Err(limit) => {
+                symbol_limit = Some(limit);
+                break;
+            }
+        }
+    }
+
     // Only cleanly-parsed modules enter analysis; a module with a parse error is
     // skipped as a dependent unit (its parse diagnostics are already recorded).
     let clean: Vec<Module> = parsed
@@ -766,6 +800,8 @@ fn drive(project: &ProjectInput, mode: TestMode) -> Driven {
         semantic,
         hover_facts,
         dependency_gaps,
+        document_symbols,
+        symbol_limit,
     }
 }
 
@@ -1439,6 +1475,8 @@ pub(crate) struct ProjectAnalysis {
     pub(crate) hover_facts: Vec<crate::analysis::HoverFact>,
     pub(crate) dependency_gaps: Vec<(FileIdentity, SourceSpan)>,
     pub(crate) broken_files: Vec<FileIdentity>,
+    pub(crate) document_symbols: Vec<(FileIdentity, Vec<crate::analysis::DeclSymbol>)>,
+    pub(crate) symbol_limit: Option<crate::analysis::SymbolLimit>,
 }
 
 /// Drive the analysis pass over a project — test bodies included, per the editor
@@ -1452,6 +1490,8 @@ pub(crate) fn analyze_project(project: &ProjectInput) -> ProjectAnalysis {
     let driven = drive(project, TestMode::Include);
     let hover_facts = driven.hover_facts;
     let dependency_gaps = driven.dependency_gaps;
+    let document_symbols = driven.document_symbols;
+    let symbol_limit = driven.symbol_limit;
     // A file that contributed a parse-stage diagnostic did not parse cleanly; a fact
     // query in it is syntax-unavailable rather than absent.
     let mut broken_files: Vec<FileIdentity> = Vec::new();
@@ -1466,6 +1506,8 @@ pub(crate) fn analyze_project(project: &ProjectInput) -> ProjectAnalysis {
         hover_facts,
         dependency_gaps,
         broken_files,
+        document_symbols,
+        symbol_limit,
     }
 }
 
