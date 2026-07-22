@@ -376,10 +376,10 @@ impl std::error::Error for ImageBuildError {}
 
 /// The mutable image builder.
 ///
-/// `Clone` supports the compiler's once-checked generic template pass, which lowers
-/// a generic body against a throwaway copy of the in-progress draft so its emitted
-/// code and any abstract-parameter instantiations are discarded without disturbing
-/// the real image or its type indices.
+/// The once-checked generic template pass appends its throwaway image directly to the real
+/// draft inside a [`DraftSavepoint`], rewinding it on exit (see [`Self::savepoint`] /
+/// [`Self::rewind_to`]); the `Clone` derive is used only by tests that need an independent
+/// copy of a built draft.
 #[derive(Debug, Default, Clone)]
 pub struct ImageDraft {
     strings: Vec<String>,

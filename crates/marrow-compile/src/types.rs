@@ -24,8 +24,8 @@ use std::hash::{Hash, Hasher};
 
 use marrow_codes::Code;
 use marrow_image::{
-    CollectionTypeDef, EnumId, EnumTypeDef, FieldDef, ImageDraft, ImageType, RecordTypeDef, Scalar,
-    TypeId, VariantDef,
+    CollectionTypeDef, DraftSavepoint, EnumId, EnumTypeDef, FieldDef, ImageDraft, ImageType,
+    RecordTypeDef, Scalar, TypeId, VariantDef,
 };
 use marrow_project::FileIdentity;
 use marrow_syntax::{
@@ -748,6 +748,54 @@ pub(crate) struct RegistryProofSavepoint {
     prior_payloads: Vec<SourceDiagnostic>,
     entry_records: usize,
     entry_enums: usize,
+}
+
+/// A live isolated generic-template proof pass over the real registry and draft. Entering it
+/// admits the pass and records the savepoint; the guard restores both owners on **every**
+/// exit — the caller's normal return, an early lowering invariant, or an unwind — so a proof
+/// that fails or panics part-way leaks nothing. The proof body borrows the real draft through
+/// [`Self::draft`]; the registry is restored through its interior mutability. Only the
+/// diagnostics the caller takes before the guard drops cross back.
+pub(crate) struct TemplateProofScope<'r, 'd> {
+    registry: &'r TypeRegistry,
+    draft: &'d mut ImageDraft,
+    savepoint: Option<RegistryProofSavepoint>,
+    draft_savepoint: DraftSavepoint,
+}
+
+impl<'r, 'd> TemplateProofScope<'r, 'd> {
+    /// Admit a proof pass on a settled registry, capturing the registry and draft
+    /// savepoints. Fails with the same admission errors as [`TypeRegistry::enter_template_proof`]
+    /// (an unstable fill owner, a non-open limit owner, or owner contention), leaving both
+    /// owners untouched.
+    pub(crate) fn enter(
+        registry: &'r TypeRegistry,
+        draft: &'d mut ImageDraft,
+    ) -> Result<Self, GenericInvariant> {
+        let draft_savepoint = draft.savepoint();
+        let savepoint =
+            registry.enter_template_proof(draft.record_type_count(), draft.enum_type_count())?;
+        Ok(Self {
+            registry,
+            draft,
+            savepoint: Some(savepoint),
+            draft_savepoint,
+        })
+    }
+
+    /// The real in-progress draft the proof body appends its throwaway image to.
+    pub(crate) fn draft(&mut self) -> &mut ImageDraft {
+        self.draft
+    }
+}
+
+impl Drop for TemplateProofScope<'_, '_> {
+    fn drop(&mut self) {
+        if let Some(savepoint) = self.savepoint.take() {
+            self.registry.exit_template_proof(savepoint);
+            self.draft.rewind_to(self.draft_savepoint.clone());
+        }
+    }
 }
 
 /// One owner-ordered transfer from an isolated generic proof pass: the optional
@@ -4744,12 +4792,17 @@ impl TypeRegistry {
         let has_unstable_row = generics.type_insts.iter().any(|inst| {
             matches!(inst.state, TypeInstState::Filling { .. }) || !inst.dependents.is_empty()
         });
+        // A proof pass is non-reentrant: it swaps the argument domain to `TemplateProof` for
+        // its duration and restores it on exit, so finding it already `TemplateProof` on entry
+        // means a prior pass never exited (or the owner is otherwise unsettled). Reject rather
+        // than nest, keeping the swap a clean save/restore pair.
         if generics.fill_batch_start.is_some()
             || !generics.fill_rows.is_empty()
             || !generics.fill_stack.is_empty()
             || !generics.fill_failures.is_empty()
             || has_unstable_row
             || generics.build_invariant.is_some()
+            || !matches!(generics.argument_domain, ArgumentDomain::Concrete)
         {
             return Err(GenericInvariant::ProofClone(
                 ProofCloneError::UnstableFillState,
@@ -7433,6 +7486,14 @@ mod instantiation_state_tests {
         limit: StableLimit,
         payloads: Vec<SourceDiagnostic>,
         build_invariant: Option<GenericInvariant>,
+        // The lockstep secondary indexes and the swapped argument domain: an isolation probe
+        // must observe a missed index purge or a stuck `TemplateProof` domain, not only the
+        // primary append-only owners. `HashMap` equality is content-based, so these compare
+        // regardless of iteration order.
+        type_index: HashMap<(usize, Vec<GArg>), usize>,
+        fn_index: HashMap<(usize, Vec<GArg>), usize>,
+        collection_index: HashMap<CollSpec, u16>,
+        argument_domain: ArgumentDomain,
     }
 
     fn stable_snapshot(registry: &TypeRegistry) -> StableSnapshot {
@@ -7496,6 +7557,10 @@ mod instantiation_state_tests {
             limit,
             payloads: generics.collection_payloads.clone(),
             build_invariant: generics.build_invariant,
+            type_index: generics.type_index.clone(),
+            fn_index: generics.fn_index.clone(),
+            collection_index: registry.collection_index.borrow().clone(),
+            argument_domain: generics.argument_domain,
         }
     }
 

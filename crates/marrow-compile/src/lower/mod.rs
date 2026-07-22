@@ -62,7 +62,7 @@ use crate::types::{
     CollSpec, EnumVariantSelection, GArg, GenericDiagnostics, GenericInvariant as LowerInvariant,
     MintSite, NominalId, OPTION_NONE, OPTION_SOME, ProductFieldProjection, RESULT_ERR, RESULT_OK,
     ReservedEnumArgs, ResolveError, ResolveRefusal, StaticNamedType, StructFieldProjection,
-    SupportSet, TypeConstraint, TypeInstId, TypeMetadataSession, TypeRegistry,
+    SupportSet, TemplateProofScope, TypeConstraint, TypeInstId, TypeMetadataSession, TypeRegistry,
 };
 
 /// Whether control continues past a statement or block, leaves it (via `return`,
@@ -531,14 +531,13 @@ impl<'a> FnLowerer<'a> {
         let module = &template.module;
         // Prove the body directly on the in-progress registry and draft — so it sees every
         // already-minted type at its real index (a concrete callee's signature stays
-        // consistent) — inside a savepoint that erases the abstract-parameter instantiations
-        // and throwaway emitted code the pass appends. A fill batch never mutates a settled
-        // prefix row, so rewinding the appended suffix restores the exact pre-proof state;
-        // only the taken diagnostics cross back. The savepoint is restored on every path,
-        // including a lowering invariant, so a failed proof leaks nothing.
-        let draft_savepoint = draft.savepoint();
-        let proof =
-            records.enter_template_proof(draft.record_type_count(), draft.enum_type_count())?;
+        // consistent) — inside a scope that erases the abstract-parameter instantiations and
+        // throwaway emitted code the pass appends. A fill batch never mutates a settled prefix
+        // row, so rewinding the appended suffix restores the exact pre-proof state; only the
+        // taken diagnostics cross back. The scope guard restores both owners on every path —
+        // a normal return, an early lowering invariant, or an unwind — so a failed proof
+        // leaks nothing.
+        let mut scope = TemplateProofScope::enter(records, draft)?;
         let mut diagnostics = Vec::new();
         // Each parameter's position in this vector is its abstract `LTy::Param`
         // index, and its constraint is read back from here by `constraint_at`.
@@ -552,7 +551,7 @@ impl<'a> FnLowerer<'a> {
             .collect::<Vec<_>>();
         let mut dependency_gaps = Vec::new();
         let lowered = FnLowerer::lower_with_env(
-            draft,
+            scope.draft(),
             records,
             durable,
             functions,
@@ -570,15 +569,12 @@ impl<'a> FnLowerer<'a> {
             // displays.
             false,
         );
-        // Take the proof's diagnostics before restoring: `take_generic_diagnostics` drains
-        // the swapped-in buffer and limit owner that `exit_template_proof` then re-seats.
-        let outcome = lowered.map(|_| TemplateProofOutcome {
+        // Take the proof's diagnostics before the scope drops: `take_generic_diagnostics`
+        // drains the swapped-in buffer and limit owner that the guard then re-seats.
+        lowered.map(|_| TemplateProofOutcome {
             diagnostics,
             generic: records.take_generic_diagnostics(),
-        });
-        records.exit_template_proof(proof);
-        draft.rewind_to(draft_savepoint);
-        outcome
+        })
     }
 
     /// The shared driver for an ordinary function, a generic instance, and the
