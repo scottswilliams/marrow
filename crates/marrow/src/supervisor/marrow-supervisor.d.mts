@@ -151,7 +151,7 @@ export interface ProvisionReceipt {
 
 export class Session {
   readonly interfaceId: string;
-  call(exportId: string, args: WireValue[]): Promise<WireValue>;
+  call<T>(exportId: string, args: WireValue[], decode: (data: WireValue) => T): Promise<T>;
   close(): Promise<void>;
   terminate(): void;
 }

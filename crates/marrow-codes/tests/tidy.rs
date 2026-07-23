@@ -973,3 +973,19 @@ fn no_ambient_clock_on_the_temporal_path() {
         violations.join("\n")
     );
 }
+
+/// Public rustdoc must not retain a link to the removed raw native constructor.
+#[test]
+fn native_store_alias_docs_name_the_opaque_owner_not_a_removed_constructor() {
+    let root = workspace_root();
+    let source = std::fs::read_to_string(root.join("crates/marrow-kernel/src/durable/mod.rs"))
+        .expect("read durable module");
+    assert!(
+        !source.contains("DurableStore::open_native"),
+        "the native alias rustdoc still links the removed raw constructor",
+    );
+    assert!(
+        source.contains("NativeStoreOwner"),
+        "the native alias docs must name the opaque semantic owner",
+    );
+}

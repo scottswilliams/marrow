@@ -699,50 +699,327 @@ mod tests {
     }
 
     #[cfg(unix)]
-    #[test]
-    fn process_exit_is_the_only_release_after_quarantine() {
-        let scratch = Scratch::new("quarantine-process-exit");
-        NativeEngineOwner::provision(&scratch.0).expect("provision");
-        let status = std::process::Command::new(std::env::current_exe().expect("test executable"))
-            .args([
-                "--exact",
-                "native_owner::tests::quarantine_child_helper",
-                "--ignored",
-                "--nocapture",
-            ])
-            .env("MARROW_NATIVE_OWNER_QUARANTINE_DIR", &scratch.0)
-            .status()
-            .expect("run quarantine child");
-        assert!(status.success(), "quarantine child failed: {status}");
+    struct ChildGuard(Option<std::process::Child>);
 
-        NativeEngineOwner::open_existing_admitted(&scratch.0, [16; 16], || {
+    #[cfg(unix)]
+    impl ChildGuard {
+        fn spawn(directory: &Path, mode: &str) -> Self {
+            let child =
+                std::process::Command::new(std::env::current_exe().expect("test executable"))
+                    .args([
+                        "--exact",
+                        "native_owner::tests::coordinated_quarantine_child_helper",
+                        "--ignored",
+                        "--nocapture",
+                    ])
+                    .env("MARROW_NATIVE_OWNER_COORDINATED_DIR", directory)
+                    .env("MARROW_NATIVE_OWNER_COORDINATED_MODE", mode)
+                    .spawn()
+                    .expect("spawn coordinated quarantine child");
+            Self(Some(child))
+        }
+
+        fn id(&self) -> u32 {
+            self.0.as_ref().expect("live child").id()
+        }
+
+        fn wait_success(mut self) {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+            loop {
+                let status = self
+                    .0
+                    .as_mut()
+                    .expect("live child")
+                    .try_wait()
+                    .expect("poll coordinated child exit");
+                if let Some(status) = status {
+                    self.0.take();
+                    assert!(status.success(), "coordinated child failed: {status}");
+                    return;
+                }
+                if std::time::Instant::now() >= deadline {
+                    let mut child = self.0.take().expect("live child");
+                    let _ = child.kill();
+                    let status = child.wait().expect("reap timed-out coordinated child");
+                    panic!("coordinated child did not exit before the deadline: {status}");
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    impl Drop for ChildGuard {
+        fn drop(&mut self) {
+            if let Some(mut child) = self.0.take() {
+                let _ = child.kill();
+                let _ = child.wait();
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    fn phase_path(directory: &Path, mode: &str, phase: &str, kind: &str) -> PathBuf {
+        directory.join(format!(".quarantine-{mode}-{phase}-{kind}"))
+    }
+
+    #[cfg(unix)]
+    fn wait_for_phase(child: &mut ChildGuard, directory: &Path, mode: &str, phase: &str) {
+        let ready = phase_path(directory, mode, phase, "ready");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        loop {
+            if ready.exists() {
+                return;
+            }
+            if let Some(status) = child
+                .0
+                .as_mut()
+                .expect("live child")
+                .try_wait()
+                .expect("poll coordinated child")
+            {
+                panic!("coordinated child exited before {mode}/{phase}: {status}");
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "timed out waiting for coordinated phase {mode}/{phase}",
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
+
+    #[cfg(unix)]
+    fn release_phase(directory: &Path, mode: &str, phase: &str) {
+        std::fs::write(phase_path(directory, mode, phase, "release"), b"release")
+            .expect("release coordinated phase");
+    }
+
+    #[cfg(unix)]
+    fn child_barrier(directory: &Path, mode: &str, phase: &str) {
+        std::fs::write(phase_path(directory, mode, phase, "ready"), phase)
+            .expect("publish coordinated phase");
+        let release = phase_path(directory, mode, phase, "release");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        while !release.exists() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "timed out awaiting release for {mode}/{phase}",
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
+
+    #[cfg(unix)]
+    fn assert_competing_open_is_exactly_lock_refused(
+        directory: &Path,
+        child_pid: u32,
+        phase: &str,
+    ) {
+        let result = NativeEngineOwner::open_existing_admitted(directory, [0x72; 16], || {
+            Ok::<_, std::convert::Infallible>(())
+        });
+        match result {
+            Err(NativeOwnerOpenError::Lock(error @ NativeLockError::StoreInUse { .. })) => {
+                assert_eq!(error.code(), Code::StoreLocked.as_str(), "phase {phase}");
+                match error {
+                    NativeLockError::StoreInUse { owner: Some(owner) } => {
+                        assert_eq!(owner.pid, child_pid, "phase {phase} owner pid");
+                        assert_eq!(owner.instance, [0x71; 16], "phase {phase} instance");
+                    }
+                    NativeLockError::StoreInUse { owner: None } => {
+                        panic!("phase {phase} lost the exact owner detail")
+                    }
+                    NativeLockError::Io(_) => unreachable!(),
+                }
+            }
+            Err(NativeOwnerOpenError::Lock(NativeLockError::Io(error))) => {
+                panic!("phase {phase} produced lock I/O instead of contention: {error}")
+            }
+            Err(NativeOwnerOpenError::Io(error)) => {
+                panic!("phase {phase} failed to canonicalize: {error}")
+            }
+            Err(NativeOwnerOpenError::Store(error)) => {
+                panic!("phase {phase} reached the engine despite held lock: {error}")
+            }
+            Err(NativeOwnerOpenError::Refused(never)) => match never {},
+            Ok(_) => panic!("phase {phase} admitted a competing owner"),
+        }
+    }
+
+    #[cfg(unix)]
+    fn seed_audit_body(directory: &Path) {
+        let mut owner = NativeEngineOwner::open_existing_admitted(directory, [0x70; 16], || {
             Ok::<_, std::convert::Infallible>(())
         })
-        .expect("process exit releases the quarantined descriptor");
+        .expect("open audit seed owner");
+        let mut txn = owner.begin().expect("begin audit seed transaction");
+        for index in 0..64u32 {
+            txn.put(format!("k{index:03}").as_bytes(), vec![index as u8; 32])
+                .expect("seed audit cell");
+        }
+        assert_eq!(txn.commit(), CommitOutcome::Confirmed);
+    }
+
+    #[cfg(unix)]
+    fn corrupt_live_engine_for_audit(directory: &Path) {
+        let path = directory.join(NATIVE_ENGINE_FILE);
+        let mut file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&path)
+            .expect("open live engine for hostile mutation");
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes).expect("read live engine");
+        for offset in (0..bytes.len()).step_by(97) {
+            bytes[offset] ^= 0xff;
+        }
+        file.seek(SeekFrom::Start(0)).expect("rewind live engine");
+        file.write_all(&bytes).expect("write hostile mutation");
+        file.sync_all().expect("sync hostile mutation");
+    }
+
+    #[cfg(unix)]
+    fn run_coordinated_quarantine_case(mode: &str) {
+        let scratch = Scratch::new(mode);
+        NativeEngineOwner::provision(&scratch.0).expect("provision");
+        if mode == "audit-failure" {
+            seed_audit_body(&scratch.0);
+        }
+        let pristine =
+            std::fs::read(scratch.0.join(NATIVE_ENGINE_FILE)).expect("read pristine engine");
+        let mut child = ChildGuard::spawn(&scratch.0, mode);
+
+        wait_for_phase(&mut child, &scratch.0, mode, "before-recovery");
+        assert_competing_open_is_exactly_lock_refused(&scratch.0, child.id(), "before-recovery");
+
+        let backup = scratch.0.join("store.redb.before-recovery");
+        if mode == "reopen-failure" {
+            std::fs::rename(scratch.0.join(NATIVE_ENGINE_FILE), &backup)
+                .expect("remove engine before recovery reopen");
+        }
+        release_phase(&scratch.0, mode, "before-recovery");
+
+        match mode {
+            "success" => {
+                wait_for_phase(&mut child, &scratch.0, mode, "recovered-live");
+                assert_competing_open_is_exactly_lock_refused(
+                    &scratch.0,
+                    child.id(),
+                    "recovered-live",
+                );
+                release_phase(&scratch.0, mode, "recovered-live");
+
+                wait_for_phase(&mut child, &scratch.0, mode, "recovered-dropped");
+                assert_competing_open_is_exactly_lock_refused(
+                    &scratch.0,
+                    child.id(),
+                    "recovered-dropped",
+                );
+                release_phase(&scratch.0, mode, "recovered-dropped");
+            }
+            "reopen-failure" => {
+                wait_for_phase(&mut child, &scratch.0, mode, "reopen-refused");
+                assert_competing_open_is_exactly_lock_refused(
+                    &scratch.0,
+                    child.id(),
+                    "reopen-refused",
+                );
+                std::fs::rename(&backup, scratch.0.join(NATIVE_ENGINE_FILE))
+                    .expect("restore valid engine before child exit");
+                release_phase(&scratch.0, mode, "reopen-refused");
+            }
+            "audit-failure" => {
+                wait_for_phase(&mut child, &scratch.0, mode, "reopened-before-audit");
+                assert_competing_open_is_exactly_lock_refused(
+                    &scratch.0,
+                    child.id(),
+                    "reopened-before-audit",
+                );
+                corrupt_live_engine_for_audit(&scratch.0);
+                release_phase(&scratch.0, mode, "reopened-before-audit");
+
+                wait_for_phase(&mut child, &scratch.0, mode, "audit-refused");
+                assert_competing_open_is_exactly_lock_refused(
+                    &scratch.0,
+                    child.id(),
+                    "audit-refused",
+                );
+                std::fs::write(scratch.0.join(NATIVE_ENGINE_FILE), &pristine)
+                    .expect("restore valid engine before child exit");
+                release_phase(&scratch.0, mode, "audit-refused");
+            }
+            other => panic!("unknown coordinated mode {other}"),
+        }
+
+        child.wait_success();
+        NativeEngineOwner::open_existing_admitted(&scratch.0, [0x73; 16], || {
+            Ok::<_, std::convert::Infallible>(())
+        })
+        .expect("process exit is the sole quarantine release");
     }
 
     #[cfg(unix)]
     #[test]
-    #[ignore = "child-process helper for process-lifetime quarantine"]
-    fn quarantine_child_helper() {
-        let Ok(path) = std::env::var("MARROW_NATIVE_OWNER_QUARANTINE_DIR") else {
+    fn quarantine_is_observed_across_success_and_failed_recovery_phases() {
+        for mode in ["success", "reopen-failure", "audit-failure"] {
+            run_coordinated_quarantine_case(mode);
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    #[ignore = "child-process helper for coordinated quarantine phases"]
+    fn coordinated_quarantine_child_helper() {
+        let Ok(path) = std::env::var("MARROW_NATIVE_OWNER_COORDINATED_DIR") else {
             return;
         };
-        let owner = NativeEngineOwner::open_existing_admitted(Path::new(&path), [15; 16], || {
+        let mode = std::env::var("MARROW_NATIVE_OWNER_COORDINATED_MODE").expect("coordinated mode");
+        let directory = Path::new(&path);
+        let owner = NativeEngineOwner::open_existing_admitted(directory, [0x71; 16], || {
             Ok::<_, std::convert::Infallible>(())
         })
         .expect("child opens owner");
-        let owner = owner
-            .reopen_existing_and_audit()
-            .expect("child enters quarantine");
-        drop(owner);
-        assert!(matches!(
-            NativeEngineOwner::open_existing_admitted(Path::new(&path), [16; 16], || {
-                Ok::<_, std::convert::Infallible>(())
-            }),
-            Err(NativeOwnerOpenError::Lock(
-                NativeLockError::StoreInUse { .. }
-            ))
-        ));
+        child_barrier(directory, &mode, "before-recovery");
+
+        match mode.as_str() {
+            "success" => {
+                let owner = owner
+                    .reopen_existing_and_audit()
+                    .expect("successful reopen and audit");
+                child_barrier(directory, &mode, "recovered-live");
+                drop(owner);
+                child_barrier(directory, &mode, "recovered-dropped");
+            }
+            "reopen-failure" => {
+                let error = match owner.reopen_existing_and_audit() {
+                    Ok(_) => panic!("a missing recovery engine unexpectedly reopened"),
+                    Err(error) => error,
+                };
+                assert_eq!(error.code(), Code::StoreIo.as_str());
+                assert!(
+                    matches!(error, StoreError::Io { op: "open", .. }),
+                    "missing recovery must fail in the existing-open phase: {error}",
+                );
+                child_barrier(directory, &mode, "reopen-refused");
+            }
+            "audit-failure" => {
+                let mut owner = owner;
+                owner.lock.quarantine();
+                drop(owner.engine.take());
+                owner.engine = Some(
+                    NativeEngine::open_existing(&directory.join(NATIVE_ENGINE_FILE))
+                        .expect("fresh existing-only reopen before audit"),
+                );
+                child_barrier(directory, &mode, "reopened-before-audit");
+                let error = owner
+                    .engine_mut()
+                    .audit_integrity()
+                    .expect_err("hostile live mutation must fail the full audit");
+                assert_eq!(error.code(), Code::StoreCorruption.as_str());
+                drop(owner);
+                child_barrier(directory, &mode, "audit-refused");
+            }
+            other => panic!("unknown coordinated mode {other}"),
+        }
     }
 }

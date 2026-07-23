@@ -307,26 +307,24 @@ impl Connection {
         turn: Option<u32>,
         deadlines: &Deadlines,
     ) -> io::Result<()> {
-        let frame = encode_response(message, turn);
+        let frame = encode_response(message, turn).map_err(|error| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("response encoding failed: {}", error.code_str()),
+            )
+        })?;
         let deadline = Instant::now() + deadlines.frame;
         write_all_deadline(&mut self.stream, &frame, deadline, deadlines.poll)
     }
 }
 
-/// Encode a response frame, downgrading a value too large to frame into a typed
-/// reject so the runner never emits an over-limit frame.
-fn encode_response(message: &ServerMessage, turn: Option<u32>) -> Vec<u8> {
-    let encode = |message: &ServerMessage| match turn {
+/// Encode one response frame. A failure after handler dispatch closes the
+/// connection without a reply; it must never be rewritten as a pre-dispatch
+/// reject because the handled invocation may already have committed.
+fn encode_response(message: &ServerMessage, turn: Option<u32>) -> Result<Vec<u8>, WireError> {
+    match turn {
         Some(turn) => message.encode_with_turn(turn),
         None => message.encode(),
-    };
-    match encode(message) {
-        Ok(frame) => frame,
-        Err(_) => ServerMessage::Reject {
-            code: marrow_codes::Code::WireFrameTooLarge.as_str().to_string(),
-        }
-        .encode_with_turn(turn.unwrap_or(0))
-        .expect("a reject frame is within the frame bound"),
     }
 }
 

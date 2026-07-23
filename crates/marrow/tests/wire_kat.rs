@@ -162,6 +162,7 @@ function driveReply(messages, options = {}) {
   session.dead = false;
   session.inFlight = options.inFlight === false ? null : {
     turn: options.pendingTurn ?? 0n,
+    decode: options.decode ?? ((value) => value),
     resolve(value) {
       observed.current = { kind: "value", value };
     },
@@ -203,6 +204,7 @@ function driveReply(messages, options = {}) {
   session.dead = false;
   session.inFlight = {
     turn: 0n,
+    decode: (value) => value,
     resolve(value) {
       observed.first = value;
     },
@@ -211,6 +213,7 @@ function driveReply(messages, options = {}) {
     },
   };
   session.queue = [{
+    decode: (value) => value,
     resolve(value) {
       observed.second = { kind: "value", value };
     },
@@ -265,6 +268,7 @@ function driveReply(messages, options = {}) {
   session.queue = [
     {
       args: [],
+      decode: (value) => value,
       exportId: "11".repeat(32),
       resolve(value) {
         observed.first = value;
@@ -275,6 +279,7 @@ function driveReply(messages, options = {}) {
     },
     {
       args: [],
+      decode: (value) => value,
       exportId: "22".repeat(32),
       resolve(value) {
         observed.second = value;
@@ -402,6 +407,111 @@ malformedReply("turn-mismatch", [{ data: 1n, kind: "value" }], {
   pendingTurn: 1n,
   replyTurn: 0n,
 });
+
+async function malformedReturn(label, data, decode) {
+  const { observed, session } = driveReply(
+    [{ data, kind: "value" }],
+    { decode },
+  );
+  let later;
+  M.Session.prototype.call
+    .call(session, "11".repeat(32), [], M.dInt)
+    .catch((error) => { later = error; });
+  await Promise.resolve();
+  ok(
+    `return-${label}`,
+    observed.current?.kind === "error" &&
+      observed.current.error instanceof M.MarrowLossError &&
+      observed.current.error.loss === M.LOSS.OUTCOME_UNKNOWN &&
+      observed.current.error.cause instanceof M.WireFormatError &&
+      observed.current.error.cause.code === "wire.malformed" &&
+      observed.queued instanceof M.MarrowLossError &&
+      observed.queued.loss === M.LOSS.INTERRUPTED &&
+      observed.pump === 0 &&
+      session.dead &&
+      session.inFlight === null &&
+      observed.tornDown &&
+      later instanceof M.MarrowLossError &&
+      later.loss === M.LOSS.NOT_STARTED,
+    `current=${String(observed.current?.error)} pump=${observed.pump} dead=${session.dead}`,
+  );
+}
+
+for (const [label, data, decode] of [
+  ["wrong-primitive", "7", M.dInt],
+  ["wrong-list-element", [1n, "2"], M.dList(M.dInt)],
+  [
+    "record-extra-key",
+    { extra: 2n, value: 1n },
+    M.dRecord([["value", true, M.dInt]]),
+  ],
+  [
+    "sum-extra-key",
+    { extra: null, member: "some", payload: [1n] },
+    M.dSum([["some", [M.dInt]]]),
+  ],
+  ["invalid-date", "2021-02-29", M.dDate],
+  ["noncanonical-instant", "2026-07-15T12:00:00.50Z", M.dInstant],
+  ["out-of-range-duration", "PT170141183460469231731687303716S", M.dDuration],
+  ["overlong-duration", `PT${"9".repeat(31)}S`, M.dDuration],
+  ["unexpected-decoder-exception", 1n, () => { throw new TypeError("decoder bug"); }],
+]) {
+  await malformedReturn(label, data, decode);
+}
+
+for (const [label, encode, value] of [
+  [
+    "record-extra-key",
+    M.eRecord([["value", true, M.eInt]]),
+    { extra: 2n, value: 1n },
+  ],
+  [
+    "sum-extra-key",
+    M.eSum([["some", [M.eInt]]]),
+    { extra: null, member: "some", payload: [1n] },
+  ],
+  ["invalid-date", M.eDate, "2021-02-29"],
+  ["noncanonical-instant", M.eInstant, "2026-07-15T12:00:00.50Z"],
+  ["out-of-range-duration", M.eDuration, "PT170141183460469231731687303716S"],
+  ["overlong-duration", M.eDuration, `PT${"9".repeat(31)}S`],
+]) {
+  try {
+    encode(value);
+    ok(`encode-${label}`, false, "accepted an invalid crossing value");
+  } catch (error) {
+    ok(
+      `encode-${label}`,
+      error instanceof TypeError,
+      String(error),
+    );
+  }
+}
+
+for (const [label, encode, decode, value] of [
+  ["date-minimum", M.eDate, M.dDate, "0001-01-01"],
+  ["date-leap-day", M.eDate, M.dDate, "2000-02-29"],
+  ["date-maximum", M.eDate, M.dDate, "9999-12-31"],
+  ["instant-minimum", M.eInstant, M.dInstant, "0001-01-01T00:00:00Z"],
+  ["instant-maximum", M.eInstant, M.dInstant, "9999-12-31T23:59:59.999999999Z"],
+  [
+    "duration-maximum",
+    M.eDuration,
+    M.dDuration,
+    "PT170141183460469231731687303715.884105727S",
+  ],
+  [
+    "duration-minimum",
+    M.eDuration,
+    M.dDuration,
+    "-PT170141183460469231731687303715.884105728S",
+  ],
+]) {
+  try {
+    ok(`crossing-${label}`, decode(encode(value)) === value);
+  } catch (error) {
+    ok(`crossing-${label}`, false, String(error));
+  }
+}
 
 {
   const { observed, session } = driveReply([], { inFlight: false });

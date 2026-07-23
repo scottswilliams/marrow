@@ -1,9 +1,9 @@
 //! The supervised-channel discipline and the handoff-boundary loss classification,
 //! exercised over a real Unix-domain socket.
 //!
-//! The six channel journeys bind a Unix listener and connect to it, which the
-//! command sandbox denies with `EPERM`, so those tests are `#[ignore]`d and run
-//! explicitly with the sandbox disabled:
+//! The socket-backed channel journeys bind a Unix listener and connect to it,
+//! which the command sandbox denies with `EPERM`, so those tests are `#[ignore]`d
+//! and run explicitly with the sandbox disabled:
 //!
 //! ```text
 //! cargo test -p marrow-runner --test channel -- --ignored
@@ -24,8 +24,8 @@ use std::thread;
 use std::time::Duration;
 
 use marrow_local_wire::{
-    ClientMessage, DurableState, HandoffStage, Id32, Json, LossClass, ServerMessage, Span,
-    classify, frame_body_len,
+    ClientMessage, DurableState, HandoffStage, Id32, Json, LossClass, MAX_FRAME, ServerMessage,
+    Span, classify, frame_body_len,
 };
 use marrow_runner::{Channel, Deadlines, Handler, LaunchSecrets, Service, mint_id};
 
@@ -296,6 +296,154 @@ fn loss_after_classification_before_reply_is_outcome_unknown() {
     conn.run_session(&mut handler, &quick()).expect("serve");
     assert_eq!(client.join().expect("client"), LossClass::OutcomeUnknown);
     channel.teardown();
+}
+
+struct OversizedResponseHandler {
+    calls: usize,
+}
+
+fn oversized_response() -> ServerMessage {
+    ServerMessage::Value {
+        data: Json::Array(vec![Json::Int(i64::MAX); 65_536]),
+    }
+}
+
+impl Handler for OversizedResponseHandler {
+    fn handle(&mut self, _message: ClientMessage) -> ServerMessage {
+        self.calls += 1;
+        oversized_response()
+    }
+}
+
+/// A response that becomes too large only after dispatch cannot be rewritten as
+/// a pre-dispatch reject: the handler may already have committed. The channel
+/// closes without a reply and does not dispatch an already-buffered N+1 request.
+#[test]
+#[ignore = "binds a Unix socket; run with the sandbox disabled"]
+fn an_oversized_post_dispatch_response_closes_without_a_reply_or_second_dispatch() {
+    let error = oversized_response()
+        .encode_with_turn(0)
+        .expect_err("the canonical framed response crosses the bound");
+    assert_eq!(
+        error.code_str(),
+        "wire.frame_too_large",
+        "the authoritative wire encoder must reject the response at the frame bound",
+    );
+
+    let channel = Channel::bind().expect("bind");
+    let path = channel.socket_path().to_path_buf();
+    let nonce = mint_id().unwrap();
+    let session = mint_id().unwrap();
+    let interface = Id32::from_bytes([0x81; 32]);
+
+    let client = thread::spawn(move || {
+        let mut stream = connect(&path);
+        send(&mut stream, &ClientMessage::Hello { nonce }).unwrap();
+        assert!(matches!(
+            recv(&mut stream),
+            Some(ServerMessage::Ready { .. })
+        ));
+        let first = ClientMessage::Request {
+            export: Id32::from_bytes([0x82; 32]),
+            args: Vec::new(),
+        }
+        .encode_with_turn(0)
+        .expect("first request");
+        let second = ClientMessage::Request {
+            export: Id32::from_bytes([0x83; 32]),
+            args: Vec::new(),
+        }
+        .encode_with_turn(1)
+        .expect("second request");
+        stream.write_all(&first).expect("dispatch first request");
+        stream.write_all(&second).expect("prebuffer second request");
+        stream
+            .shutdown(std::net::Shutdown::Write)
+            .expect("finish request stream");
+
+        let mut reply_bytes = Vec::new();
+        stream
+            .read_to_end(&mut reply_bytes)
+            .expect("read silent close to EOF");
+        reply_bytes
+    });
+
+    let mut handler = OversizedResponseHandler { calls: 0 };
+    let mut conn = channel
+        .accept_authenticated(&secrets(nonce, session), interface, &quick(), 16)
+        .expect("accept");
+    conn.run_session(&mut handler, &quick()).expect("serve");
+    drop(conn);
+    let reply_bytes = client.join().expect("client");
+    channel.teardown();
+
+    assert!(
+        reply_bytes.is_empty(),
+        "no response bytes may cross after dispatch: {reply_bytes:?}"
+    );
+    assert_eq!(
+        handler.calls, 1,
+        "N+1 must not dispatch after encode failure"
+    );
+    assert_eq!(
+        classify(HandoffStage::Dispatched),
+        LossClass::OutcomeUnknown
+    );
+}
+
+/// An oversized incoming frame is refused before dispatch, so its typed reject
+/// remains truthful and the handler is never entered.
+#[test]
+#[ignore = "binds a Unix socket; run with the sandbox disabled"]
+fn an_oversized_pre_dispatch_request_keeps_its_typed_reject() {
+    let channel = Channel::bind().expect("bind");
+    let path = channel.socket_path().to_path_buf();
+    let nonce = mint_id().unwrap();
+    let session = mint_id().unwrap();
+    let interface = Id32::from_bytes([0x84; 32]);
+
+    let client = thread::spawn(move || {
+        let mut stream = connect(&path);
+        send(&mut stream, &ClientMessage::Hello { nonce }).unwrap();
+        assert!(matches!(
+            recv(&mut stream),
+            Some(ServerMessage::Ready { .. })
+        ));
+        stream
+            .write_all(
+                &u32::try_from(MAX_FRAME + 1)
+                    .expect("frame bound fits u32")
+                    .to_be_bytes(),
+            )
+            .expect("write oversized request header");
+        let reject = recv_with_turn(&mut stream);
+        let eof = recv(&mut stream);
+        (reject, eof)
+    });
+
+    let mut handler = OversizedResponseHandler { calls: 0 };
+    let mut conn = channel
+        .accept_authenticated(&secrets(nonce, session), interface, &quick(), 16)
+        .expect("accept");
+    conn.run_session(&mut handler, &quick()).expect("serve");
+    drop(conn);
+    let (reject, eof) = client.join().expect("client");
+    channel.teardown();
+
+    assert_eq!(
+        reject,
+        Some((
+            ServerMessage::Reject {
+                code: "wire.frame_too_large".to_string(),
+            },
+            Some(0),
+        )),
+    );
+    assert_eq!(eof, None);
+    assert_eq!(
+        handler.calls, 0,
+        "pre-dispatch refusal must not enter the handler"
+    );
 }
 
 /// First-connection-wins is bounded: a same-uid racer that connects first with a

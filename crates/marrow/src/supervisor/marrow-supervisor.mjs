@@ -492,9 +492,57 @@ function decodeOneFrame(frames, chunk) {
 // validation so a mismatched argument fails here with a `TypeError` before any
 // byte is sent (the runner remains authoritative).
 
-const DATE_TEXT = /^\d{4}-\d{2}-\d{2}$/;
-const INSTANT_TEXT = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,9})?Z$/;
-const DURATION_TEXT = /^-?PT\d+(\.\d{1,9})?S$/;
+const DATE_TEXT = /^(\d{4})-(\d{2})-(\d{2})$/;
+const INSTANT_TEXT = /^(\d{4}-\d{2}-\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,9}))?Z$/;
+const DURATION_TEXT = /^(-)?PT(0|[1-9]\d*)(?:\.(\d{1,9}))?S$/;
+const I128_MAX = 2n ** 127n - 1n;
+const I128_MIN_MAGNITUDE = 2n ** 127n;
+const MAX_DURATION_SECONDS_DIGITS = 30;
+
+function isLeapYear(year) {
+  return year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+}
+
+function isCanonicalDate(value) {
+  if (typeof value !== "string") return false;
+  const match = DATE_TEXT.exec(value);
+  if (match === null) return false;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  if (year < 1 || year > 9999 || month < 1 || month > 12) return false;
+  const days = [31, isLeapYear(year) ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+  return day >= 1 && day <= days[month - 1];
+}
+
+function isCanonicalFraction(fraction) {
+  return fraction === undefined || !fraction.endsWith("0");
+}
+
+function isCanonicalInstant(value) {
+  if (typeof value !== "string") return false;
+  const match = INSTANT_TEXT.exec(value);
+  return (
+    match !== null &&
+    isCanonicalDate(match[1]) &&
+    Number(match[2]) <= 23 &&
+    Number(match[3]) <= 59 &&
+    Number(match[4]) <= 59 &&
+    isCanonicalFraction(match[5])
+  );
+}
+
+function isCanonicalDuration(value) {
+  if (typeof value !== "string") return false;
+  const match = DURATION_TEXT.exec(value);
+  if (match === null || !isCanonicalFraction(match[3])) return false;
+  if (match[2].length > MAX_DURATION_SECONDS_DIGITS) return false;
+  const negative = match[1] !== undefined;
+  const fraction = match[3] === undefined ? 0n : BigInt(match[3].padEnd(9, "0"));
+  const magnitude = BigInt(match[2]) * 1_000_000_000n + fraction;
+  if (negative) return magnitude > 0n && magnitude <= I128_MIN_MAGNITUDE;
+  return magnitude <= I128_MAX;
+}
 
 export function eInt(v) {
   if (typeof v !== "bigint" || v < I64_MIN || v > I64_MAX) {
@@ -519,21 +567,21 @@ export function eBytes(v) {
 }
 
 export function eDate(v) {
-  if (typeof v !== "string" || !DATE_TEXT.test(v)) {
+  if (!isCanonicalDate(v)) {
     throw new TypeError("expected a canonical date `YYYY-MM-DD`");
   }
   return v;
 }
 
 export function eInstant(v) {
-  if (typeof v !== "string" || !INSTANT_TEXT.test(v)) {
+  if (!isCanonicalInstant(v)) {
     throw new TypeError("expected a canonical UTC instant");
   }
   return v;
 }
 
 export function eDuration(v) {
-  if (typeof v !== "string" || !DURATION_TEXT.test(v)) {
+  if (!isCanonicalDuration(v)) {
     throw new TypeError("expected a canonical duration `PT<seconds>S`");
   }
   return v;
@@ -551,7 +599,7 @@ export function eRecord(fields) {
       throw new TypeError("expected a record object");
     }
     for (const key of Object.keys(v)) {
-      if (!names.has(key) && v[key] !== undefined) {
+      if (!names.has(key)) {
         throw new TypeError(`unknown record field \`${key}\``);
       }
     }
@@ -616,7 +664,7 @@ export function eId(root, encKeys) {
 /** variants: `[name, [payload encoders]]` pairs in declaration order. */
 export function eSum(variants) {
   return (v) => {
-    if (v === null || typeof v !== "object" || typeof v.member !== "string") {
+    if (!hasExactKeys(v, ["member", "payload"]) || typeof v.member !== "string") {
       throw new TypeError("expected an enum value `{ member, payload }`");
     }
     const variant = variants.find(([name]) => name === v.member);
@@ -713,19 +761,19 @@ export function dBytes(d) {
 }
 
 export function dDate(d) {
-  if (typeof d !== "string" || !DATE_TEXT.test(d)) throw protocol("expected a date");
+  if (!isCanonicalDate(d)) throw protocol("expected a date");
   return d;
 }
 
 export function dInstant(d) {
-  if (typeof d !== "string" || !INSTANT_TEXT.test(d)) {
+  if (!isCanonicalInstant(d)) {
     throw protocol("expected an instant");
   }
   return d;
 }
 
 export function dDuration(d) {
-  if (typeof d !== "string" || !DURATION_TEXT.test(d)) {
+  if (!isCanonicalDuration(d)) {
     throw protocol("expected a duration");
   }
   return d;
@@ -736,9 +784,13 @@ export function dOpt(inner) {
 }
 
 export function dRecord(fields) {
+  const names = new Set(fields.map(([name]) => name));
   return (d) => {
     if (d === null || typeof d !== "object" || Array.isArray(d)) {
       throw protocol("expected a record");
+    }
+    for (const key of Object.keys(d)) {
+      if (!names.has(key)) throw protocol(`unknown record field \`${key}\``);
     }
     const out = {};
     for (const [name, required, decode] of fields) {
@@ -788,7 +840,7 @@ export function dId(root, decKeys) {
 
 export function dSum(variants) {
   return (d) => {
-    if (d === null || typeof d !== "object" || typeof d.member !== "string") {
+    if (!hasExactKeys(d, ["member", "payload"]) || typeof d.member !== "string") {
       throw protocol("expected an enum value");
     }
     const variant = variants.find(([name]) => name === d.member);
@@ -1043,10 +1095,10 @@ export class Session {
 
   /**
    * Invoke `exportId` (64 lowercase hex) with already-encoded wire arguments.
-   * Resolves with the reply's `data`, or rejects with `MarrowFault`,
+   * Resolves with the decoded reply value, or rejects with `MarrowFault`,
    * `MarrowIncomplete`, `MarrowReject`, `WireFormatError`, or `MarrowLossError`.
    */
-  call(exportId, args) {
+  call(exportId, args, decode) {
     return new Promise((resolve, reject) => {
       if (this.dead) {
         reject(new MarrowLossError(LOSS.NOT_STARTED));
@@ -1056,7 +1108,7 @@ export class Session {
         reject(new RangeError("marrow call queue is full"));
         return;
       }
-      this.queue.push({ exportId, args, resolve, reject });
+      this.queue.push({ exportId, args, decode, resolve, reject });
       this.pump();
     });
   }
@@ -1145,19 +1197,33 @@ export class Session {
       return;
     }
 
-    this.inFlight = null;
-    clearTimeout(this.replyDeadline);
     if (
       hasExactKeys(message, ["data", "kind", "turn"]) &&
       message.kind === "value"
     ) {
-      pending.resolve(message.data);
+      let decoded;
+      try {
+        decoded = pending.decode(message.data);
+      } catch (error) {
+        const cause = error instanceof WireFormatError
+          ? error
+          : protocol("return decoder rejected the reply");
+        this.fail(cause);
+        return;
+      }
+      this.inFlight = null;
+      clearTimeout(this.replyDeadline);
+      pending.resolve(decoded);
+      this.pump();
+      return;
     } else if (
       hasExactKeys(message, ["code", "kind", "span", "turn"]) &&
       message.kind === "fault" &&
       isWireCode(message.code) &&
       isWireSpan(message.span)
     ) {
+      this.inFlight = null;
+      clearTimeout(this.replyDeadline);
       pending.reject(
         new MarrowFault(message.code, message.span.line, message.span.column),
       );
@@ -1170,6 +1236,8 @@ export class Session {
         message.durable === DURABLE_STATE.UNKNOWN) &&
       isWireSpan(message.span)
     ) {
+      this.inFlight = null;
+      clearTimeout(this.replyDeadline);
       pending.reject(
         new MarrowIncomplete(
           message.code,
@@ -1188,8 +1256,12 @@ export class Session {
       message.kind === "reject" &&
       isWireCode(message.code)
     ) {
+      this.inFlight = null;
+      clearTimeout(this.replyDeadline);
       pending.reject(new MarrowReject(message.code));
     } else {
+      this.inFlight = null;
+      clearTimeout(this.replyDeadline);
       pending.reject(new MarrowLossError(
         LOSS.OUTCOME_UNKNOWN,
         protocol("invalid reply schema"),

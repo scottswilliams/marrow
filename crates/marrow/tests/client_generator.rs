@@ -367,8 +367,14 @@ fn a_collection_export_generates() {
     );
     let client = std::fs::read_to_string(project.join("gen").join("client.mts")).expect("client");
     assert!(
-        client.contains("Promise<Array<bigint>>") && client.contains("M.dList(M.dInt)"),
+        client.contains("Promise<Array<bigint>>")
+            && client.contains("this.session.call(")
+            && client.contains(", M.dList(M.dInt))"),
         "expected a list-returning method, got:\n{client}"
+    );
+    assert!(
+        !client.contains("M.dList(M.dInt)(data)"),
+        "return decoding must happen inside Session before it settles or pumps: {client}",
     );
 }
 

@@ -37,9 +37,8 @@ pub use marrow_store::{
     StoreError,
 };
 
-/// A native, redb-backed durable store — the concrete type [`DurableStore::open_native`]
-/// yields. Named as an alias so a downstream lifecycle owner can hold a native store without
-/// naming the byte-engine crate.
+/// The opaque native, redb-backed durable-store owner. Named as an alias so a
+/// downstream lifecycle owner can hold it without naming the byte-engine crate.
 pub type NativeStore = NativeStoreOwner;
 
 /// The native engine's on-disk format version, re-exported so a downstream lifecycle owner

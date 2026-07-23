@@ -133,14 +133,15 @@ fn method(descriptor: &FunctionDescriptor, names: &[ExportName]) -> String {
         "  async {name}({}): Promise<{ret_ts}> {{\n",
         params.join(", ")
     ));
-    out.push_str(&format!(
-        "    const data = await this.session.call(\"{}\", [{}]);\n",
+    let call = format!(
+        "await this.session.call(\"{}\", [{}], {})",
         descriptor_hex(descriptor),
-        args.join(", ")
-    ));
+        args.join(", "),
+        decoder(ret),
+    );
     out.push_str(&format!(
         "    return {};\n",
-        decode_expr(ret, "data", &ret_ts)
+        decode_expr(ret, &call, &ret_ts)
     ));
     out.push_str("  }\n");
     out
@@ -406,11 +407,11 @@ fn decoder_is_precise(ty: &TransferType) -> bool {
 /// The full decode expression for a return value. A precise decoder is emitted bare;
 /// one that returns `unknown` (or the loosely-typed identity handle) is cast to its
 /// exact structural type.
-fn decode_expr(ret: &TransferType, data: &str, ret_ts: &str) -> String {
+fn decode_expr(ret: &TransferType, decoded: &str, ret_ts: &str) -> String {
     if decoder_is_precise(ret) {
-        format!("{}({data})", decoder(ret))
+        decoded.to_string()
     } else {
-        format!("{}({data}) as {ret_ts}", decoder(ret))
+        format!("{decoded} as {ret_ts}")
     }
 }
 

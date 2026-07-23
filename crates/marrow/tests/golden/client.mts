@@ -46,55 +46,46 @@ export class Client {
 
   /** `main.lookup` */
   async lookup(arg0: Array<[string, bigint]>, arg1: string): Promise<bigint> {
-    const data = await this.session.call("1dd97dd46e5c728097a462676cff0244b628f773ca8c49aa682e4b97f9ed3f46", [M.eMap(M.eText, M.eInt)(arg0), M.eText(arg1)]);
-    return M.dInt(data);
+    return await this.session.call("1dd97dd46e5c728097a462676cff0244b628f773ca8c49aa682e4b97f9ed3f46", [M.eMap(M.eText, M.eInt)(arg0), M.eText(arg1)], M.dInt);
   }
 
   /** `main.nums` */
   async nums(): Promise<Array<bigint>> {
-    const data = await this.session.call("2e62191135b8e739febe0f864342fac7a1bad8647fe87f1b9debfa44b5897f63", []);
-    return M.dList(M.dInt)(data);
+    return await this.session.call("2e62191135b8e739febe0f864342fac7a1bad8647fe87f1b9debfa44b5897f63", [], M.dList(M.dInt));
   }
 
   /** `main.add` */
   async add(arg0: bigint, arg1: bigint): Promise<bigint> {
-    const data = await this.session.call("615264168892c10801e5f5bb16a3496738f41acf72b74e3edd9f20a6725fedbe", [M.eInt(arg0), M.eInt(arg1)]);
-    return M.dInt(data);
+    return await this.session.call("615264168892c10801e5f5bb16a3496738f41acf72b74e3edd9f20a6725fedbe", [M.eInt(arg0), M.eInt(arg1)], M.dInt);
   }
 
   /** `main.ping` */
   async ping(): Promise<void> {
-    const data = await this.session.call("64f416543f8043012160edb9a7154b2c97ef4424848b54f01f22e7ba1cb79389", []);
-    return M.dUnit(data);
+    return await this.session.call("64f416543f8043012160edb9a7154b2c97ef4424848b54f01f22e7ba1cb79389", [], M.dUnit);
   }
 
   /** `main.echoAsset` */
   async echoAsset(arg0: { label: string; details: { count: bigint } }): Promise<{ label: string; details: { count: bigint } }> {
-    const data = await this.session.call("6983ed0642ac588503184f3c6979b421ba8502a3a27ff4b696c97bf47d308d90", [M.eRecord([["label", true, M.eText], ["details", true, M.eRecord([["count", true, M.eInt]])]])(arg0)]);
-    return M.dRecord([["label", true, M.dText], ["details", true, M.dRecord([["count", true, M.dInt]])]])(data) as { label: string; details: { count: bigint } };
+    return await this.session.call("6983ed0642ac588503184f3c6979b421ba8502a3a27ff4b696c97bf47d308d90", [M.eRecord([["label", true, M.eText], ["details", true, M.eRecord([["count", true, M.eInt]])]])(arg0)], M.dRecord([["label", true, M.dText], ["details", true, M.dRecord([["count", true, M.dInt]])]])) as { label: string; details: { count: bigint } };
   }
 
   /** `main.grow` */
   async grow(arg0: { member: "dot"; payload: [] } | { member: "circle"; payload: [bigint] }): Promise<{ member: "dot"; payload: [] } | { member: "circle"; payload: [bigint] }> {
-    const data = await this.session.call("96102f6d3ce812b6744eca135e0f976a1c7bd4ca448d08cbf98ee546aaca379b", [M.eSum([["dot", []], ["circle", [M.eInt]]])(arg0)]);
-    return M.dSum([["dot", []], ["circle", [M.dInt]]])(data) as { member: "dot"; payload: [] } | { member: "circle"; payload: [bigint] };
+    return await this.session.call("96102f6d3ce812b6744eca135e0f976a1c7bd4ca448d08cbf98ee546aaca379b", [M.eSum([["dot", []], ["circle", [M.eInt]]])(arg0)], M.dSum([["dot", []], ["circle", [M.dInt]]])) as { member: "dot"; payload: [] } | { member: "circle"; payload: [bigint] };
   }
 
   /** `main.tally` */
   async tally(): Promise<Array<[string, bigint]>> {
-    const data = await this.session.call("9d8ff883d17868c7f60144fd227a235d15286a0dc7a7cf8b46443b44ca3d63bd", []);
-    return M.dMap(M.dText, M.dInt)(data);
+    return await this.session.call("9d8ff883d17868c7f60144fd227a235d15286a0dc7a7cf8b46443b44ca3d63bd", [], M.dMap(M.dText, M.dInt));
   }
 
   /** `main.total` */
   async total(arg0: Array<bigint>): Promise<bigint> {
-    const data = await this.session.call("a0b92d9b31fbd3b83037fec2caec865e6bf7ce7b81ad4a79482a5d37b25400ec", [M.eList(M.eInt)(arg0)]);
-    return M.dInt(data);
+    return await this.session.call("a0b92d9b31fbd3b83037fec2caec865e6bf7ce7b81ad4a79482a5d37b25400ec", [M.eList(M.eInt)(arg0)], M.dInt);
   }
 
   /** `main.shift` */
   async shift(arg0: { x: bigint; y: bigint }, arg1: bigint): Promise<{ x: bigint; y: bigint }> {
-    const data = await this.session.call("dc5ecfdb00cd260eb04d8c1e12af4784ae4a9de09ef73c18439bec7ec3635b47", [M.eRecord([["x", true, M.eInt], ["y", true, M.eInt]])(arg0), M.eInt(arg1)]);
-    return M.dRecord([["x", true, M.dInt], ["y", true, M.dInt]])(data) as { x: bigint; y: bigint };
+    return await this.session.call("dc5ecfdb00cd260eb04d8c1e12af4784ae4a9de09ef73c18439bec7ec3635b47", [M.eRecord([["x", true, M.eInt], ["y", true, M.eInt]])(arg0), M.eInt(arg1)], M.dRecord([["x", true, M.dInt], ["y", true, M.dInt]])) as { x: bigint; y: bigint };
   }
 }
