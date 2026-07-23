@@ -9,6 +9,11 @@
     "expression": {
       "patterns": [
         { "include": "#comments" },
+        { "include": "#lexical-expression" }
+      ]
+    },
+    "lexical-expression": {
+      "patterns": [
         { "include": "#strings" },
         { "include": "#numbers" },
         { "include": "#durable-root" },
@@ -16,31 +21,38 @@
         { "include": "#namespace" },
         { "include": "#operators" },
         { "include": "#delimiters" },
-        { "include": "#punctuation" }
+        { "include": "#punctuation" },
+        { "include": "#identifiers" }
       ]
     },
     "comments": {
       "patterns": [
-        { "name": "comment.line.documentation.marrow", "match": "///.*$" },
-        { "name": "comment.line.double-slash.marrow", "match": "//.*$" }
+        { "name": "comment.line.documentation.marrow", "match": "///[^\\r\\n]*" },
+        { "name": "comment.line.double-slash.marrow", "match": "//[^\\r\\n]*" }
+      ]
+    },
+    "hole-comments": {
+      "patterns": [
+        { "name": "comment.line.documentation.marrow", "match": "///[^}\\r\\n]*" },
+        { "name": "comment.line.double-slash.marrow", "match": "//[^}\\r\\n]*" }
       ]
     },
     "keywords": {
       "patterns": [
-        { "name": "keyword.control.marrow", "match": "\\b(transaction|continue|require|assert|delete|return|break|match|merge|unset|while|else|lock|for|try|if|in)\\b" },
-        { "name": "keyword.declaration.marrow", "match": "\\b(resource|module|struct|alias|const|index|place|store|enum|test|type|use|var|fn)\\b" },
-        { "name": "storage.modifier.marrow", "match": "\\b(sensitive|required|supports|checked|journal|unique|pub)\\b" },
-        { "name": "storage.modifier.effect.marrow", "match": "\\b(declassify|writes|reads)\\b" },
-        { "name": "storage.type.builtin.marrow", "match": "\\b(ErrorCode|duration|decimal|instant|string|Error|bytes|bool|date|int|Id)\\b" },
-        { "name": "constant.language.marrow", "match": "\\b(unknown|absent|false|true)\\b" },
-        { "name": "keyword.operator.word.marrow", "match": "\\b(and|not|is|or)\\b" }
+        { "name": "keyword.control.marrow", "match": "(transaction|continue|require|assert|delete|return|break|match|merge|unset|while|else|lock|for|try|if|in)(?![A-Za-z0-9_])" },
+        { "name": "keyword.declaration.marrow", "match": "(resource|module|struct|alias|const|index|place|store|enum|test|type|use|var|fn)(?![A-Za-z0-9_])" },
+        { "name": "storage.modifier.marrow", "match": "(sensitive|required|supports|checked|journal|unique|pub)(?![A-Za-z0-9_])" },
+        { "name": "storage.modifier.effect.marrow", "match": "(declassify|writes|reads)(?![A-Za-z0-9_])" },
+        { "name": "storage.type.builtin.marrow", "match": "(ErrorCode|duration|decimal|instant|unknown|string|Error|bytes|bool|date|int|Id)(?![A-Za-z0-9_])" },
+        { "name": "constant.language.marrow", "match": "(absent|false|true)(?![A-Za-z0-9_])" },
+        { "name": "keyword.operator.word.marrow", "match": "(and|not|is|or)(?![A-Za-z0-9_])" }
       ]
     },
     "numbers": {
       "patterns": [
-        { "name": "constant.numeric.duration.marrow", "match": "\\b[0-9]+\\.(minutes|seconds|minute|second|hours|weeks|days|hour|week|day)\\b" },
-        { "name": "constant.numeric.decimal.marrow", "match": "\\b[0-9]+\\.[0-9]+\\b" },
-        { "name": "constant.numeric.integer.marrow", "match": "\\b[0-9]+\\b" }
+        { "name": "constant.numeric.duration.marrow", "match": "[0-9]+\\.(minutes|seconds|minute|second|hours|weeks|days|hour|week|day)(?![A-Za-z0-9_])" },
+        { "name": "constant.numeric.decimal.marrow", "match": "[0-9]+\\.[0-9]+" },
+        { "name": "constant.numeric.integer.marrow", "match": "[0-9]+" }
       ]
     },
     "durable-root": {
@@ -66,6 +78,11 @@
     "punctuation": {
       "patterns": [
         { "name": "punctuation.separator.marrow", "match": "(,|\\.|:|\\?)" }
+      ]
+    },
+    "identifiers": {
+      "patterns": [
+        { "match": "[A-Za-z_][A-Za-z0-9_]*" }
       ]
     },
     "escape": {
@@ -113,13 +130,25 @@
         { "include": "#interpolation-hole" }
       ]
     },
+    "escaped-hole-string": {
+      "name": "string.quoted.double.marrow",
+      "begin": "\\\\\"",
+      "beginCaptures": { "0": { "name": "punctuation.definition.string.begin.marrow" } },
+      "end": "\\\\\"",
+      "endCaptures": { "0": { "name": "punctuation.definition.string.end.marrow" } },
+      "patterns": [ { "include": "#escape" } ]
+    },
     "interpolation-hole": {
       "name": "meta.embedded.line.marrow",
       "begin": "\\{",
       "beginCaptures": { "0": { "name": "punctuation.section.embedded.marrow" } },
       "end": "\\}",
       "endCaptures": { "0": { "name": "punctuation.section.embedded.marrow" } },
-      "patterns": [ { "include": "#expression" } ]
+      "patterns": [
+        { "include": "#hole-comments" },
+        { "include": "#escaped-hole-string" },
+        { "include": "#lexical-expression" }
+      ]
     }
   }
 }

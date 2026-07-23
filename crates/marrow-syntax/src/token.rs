@@ -53,538 +53,409 @@ pub enum LexicalClass {
     DurableRootSigil,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TokenKind {
-    Identifier,
-    Integer,
-    Decimal,
-    /// A duration literal `NUMBER.UNIT` (`1.day`); the token text is the whole literal.
-    Duration,
-    String,
-    InterpolationStart,
-    InterpolationText,
-    InterpolationExprStart,
-    InterpolationExprEnd,
-    InterpolationEnd,
-    Bytes,
-    Keyword(Keyword),
-    Comment,
-    DocComment,
-    Newline,
-    Eof,
-    LeftParen,
-    RightParen,
-    LeftBracket,
-    RightBracket,
-    /// Block delimiters. A bare `{`/`}` in source is always a block delimiter;
-    /// interpolation holes and `{{`/`}}` escapes are handled inside `$"..."` before
-    /// these are produced.
-    LeftBrace,
-    RightBrace,
-    /// The `=>` of a match arm.
-    FatArrow,
-    Colon,
-    DoubleColon,
-    Comma,
-    Dot,
-    DotDot,
-    DotDotEqual,
-    Equal,
-    EqualEqual,
-    BangEqual,
-    Question,
-    QuestionDot,
-    QuestionQuestion,
-    Less,
-    LessEqual,
-    Greater,
-    GreaterEqual,
-    Plus,
-    Minus,
-    Star,
-    Slash,
-    Percent,
-    PlusEqual,
-    MinusEqual,
-    StarEqual,
-    SlashEqual,
-    PercentEqual,
-    Caret,
+macro_rules! count_variants {
+    ($($variant:ident),+ $(,)?) => {
+        <[()]>::len(&[$(count_variants!(@one $variant)),+])
+    };
+    (@one $variant:ident) => {
+        ()
+    };
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Keyword {
-    Module,
-    Use,
-    Pub,
-    Fn,
-    Alias,
-    Type,
-    Supports,
-    Resource,
-    Struct,
-    Store,
-    Enum,
-    Test,
-    Assert,
-    Match,
-    Index,
-    Unique,
-    Required,
-    Const,
-    Var,
-    Place,
-    Checked,
-    If,
-    Else,
-    While,
-    For,
-    In,
-    Break,
-    Continue,
-    Return,
-    Absent,
-    Delete,
-    Unset,
-    Merge,
-    Journal,
-    Sensitive,
-    Declassify,
-    Transaction,
-    Lock,
-    // Held for the future effect-signature clause (`pub fn f(): T writes ^a reads ^b`).
-    // Reserved now so the spelling stays free; the clause itself is not yet grammar.
-    Writes,
-    Reads,
-    Try,
-    Require,
-    True,
-    False,
-    Not,
-    And,
-    Or,
-    Is,
-    Int,
-    Decimal,
-    Bool,
-    String,
-    Bytes,
-    Date,
-    Instant,
-    Duration,
-    Unknown,
-    Error,
-    ErrorCode,
-    Id,
-}
-
-impl Keyword {
-    /// Every reserved word, in declaration order.
-    pub const ALL: [Self; 60] = [
-        Self::Module,
-        Self::Use,
-        Self::Pub,
-        Self::Fn,
-        Self::Alias,
-        Self::Type,
-        Self::Supports,
-        Self::Resource,
-        Self::Struct,
-        Self::Store,
-        Self::Enum,
-        Self::Test,
-        Self::Assert,
-        Self::Match,
-        Self::Index,
-        Self::Unique,
-        Self::Required,
-        Self::Const,
-        Self::Var,
-        Self::Place,
-        Self::Checked,
-        Self::If,
-        Self::Else,
-        Self::While,
-        Self::For,
-        Self::In,
-        Self::Break,
-        Self::Continue,
-        Self::Return,
-        Self::Absent,
-        Self::Delete,
-        Self::Unset,
-        Self::Merge,
-        Self::Journal,
-        Self::Sensitive,
-        Self::Declassify,
-        Self::Transaction,
-        Self::Lock,
-        Self::Writes,
-        Self::Reads,
-        Self::Try,
-        Self::Require,
-        Self::True,
-        Self::False,
-        Self::Not,
-        Self::And,
-        Self::Or,
-        Self::Is,
-        Self::Int,
-        Self::Decimal,
-        Self::Bool,
-        Self::String,
-        Self::Bytes,
-        Self::Date,
-        Self::Instant,
-        Self::Duration,
-        Self::Unknown,
-        Self::Error,
-        Self::ErrorCode,
-        Self::Id,
-    ];
-
-    /// The exact source spelling reserved by the lexer.
-    pub const fn spelling(self) -> &'static str {
-        match self {
-            Self::Module => "module",
-            Self::Use => "use",
-            Self::Pub => "pub",
-            Self::Fn => "fn",
-            Self::Alias => "alias",
-            Self::Type => "type",
-            Self::Supports => "supports",
-            Self::Resource => "resource",
-            Self::Struct => "struct",
-            Self::Store => "store",
-            Self::Enum => "enum",
-            Self::Test => "test",
-            Self::Assert => "assert",
-            Self::Match => "match",
-            Self::Index => "index",
-            Self::Unique => "unique",
-            Self::Required => "required",
-            Self::Const => "const",
-            Self::Var => "var",
-            Self::Place => "place",
-            Self::Checked => "checked",
-            Self::If => "if",
-            Self::Else => "else",
-            Self::While => "while",
-            Self::For => "for",
-            Self::In => "in",
-            Self::Break => "break",
-            Self::Continue => "continue",
-            Self::Return => "return",
-            Self::Absent => "absent",
-            Self::Delete => "delete",
-            Self::Unset => "unset",
-            Self::Merge => "merge",
-            Self::Journal => "journal",
-            Self::Sensitive => "sensitive",
-            Self::Declassify => "declassify",
-            Self::Transaction => "transaction",
-            Self::Lock => "lock",
-            Self::Writes => "writes",
-            Self::Reads => "reads",
-            Self::Try => "try",
-            Self::Require => "require",
-            Self::True => "true",
-            Self::False => "false",
-            Self::Not => "not",
-            Self::And => "and",
-            Self::Or => "or",
-            Self::Is => "is",
-            Self::Int => "int",
-            Self::Decimal => "decimal",
-            Self::Bool => "bool",
-            Self::String => "string",
-            Self::Bytes => "bytes",
-            Self::Date => "date",
-            Self::Instant => "instant",
-            Self::Duration => "duration",
-            Self::Unknown => "unknown",
-            Self::Error => "Error",
-            Self::ErrorCode => "ErrorCode",
-            Self::Id => "Id",
-        }
-    }
-
-    /// The lexical role established by this reserved spelling.
-    pub const fn lexical_class(self) -> LexicalClass {
-        match self {
-            Self::Module
-            | Self::Use
-            | Self::Fn
-            | Self::Alias
-            | Self::Type
-            | Self::Resource
-            | Self::Struct
-            | Self::Store
-            | Self::Enum
-            | Self::Test
-            | Self::Index
-            | Self::Const
-            | Self::Var
-            | Self::Place => LexicalClass::Declaration,
-            Self::Pub
-            | Self::Supports
-            | Self::Unique
-            | Self::Required
-            | Self::Checked
-            | Self::Journal
-            | Self::Sensitive => LexicalClass::Modifier,
-            Self::Declassify | Self::Writes | Self::Reads => LexicalClass::Effect,
-            Self::Assert
-            | Self::Match
-            | Self::If
-            | Self::Else
-            | Self::While
-            | Self::For
-            | Self::In
-            | Self::Break
-            | Self::Continue
-            | Self::Return
-            | Self::Delete
-            | Self::Unset
-            | Self::Merge
-            | Self::Transaction
-            | Self::Lock
-            | Self::Try
-            | Self::Require => LexicalClass::ControlFlow,
-            Self::True | Self::False | Self::Absent | Self::Unknown => LexicalClass::BuiltinValue,
-            Self::Not | Self::And | Self::Or | Self::Is => LexicalClass::WordOperator,
-            Self::Int
-            | Self::Decimal
-            | Self::Bool
-            | Self::String
-            | Self::Bytes
-            | Self::Date
-            | Self::Instant
-            | Self::Duration
-            | Self::Error
-            | Self::ErrorCode
-            | Self::Id => LexicalClass::BuiltinType,
-        }
-    }
-}
-
-impl TokenKind {
-    /// One representative of every token-kind variant, for read-only inventory
-    /// projections. The keyword representative does not replace [`Keyword::ALL`].
-    pub const INVENTORY: [Self; 50] = [
-        Self::Identifier,
-        Self::Integer,
-        Self::Decimal,
-        Self::Duration,
-        Self::String,
-        Self::InterpolationStart,
-        Self::InterpolationText,
-        Self::InterpolationExprStart,
-        Self::InterpolationExprEnd,
-        Self::InterpolationEnd,
-        Self::Bytes,
-        Self::Keyword(Keyword::Module),
-        Self::Comment,
-        Self::DocComment,
-        Self::Newline,
-        Self::Eof,
-        Self::LeftParen,
-        Self::RightParen,
-        Self::LeftBracket,
-        Self::RightBracket,
-        Self::LeftBrace,
-        Self::RightBrace,
-        Self::FatArrow,
-        Self::Colon,
-        Self::DoubleColon,
-        Self::Comma,
-        Self::Dot,
-        Self::DotDot,
-        Self::DotDotEqual,
-        Self::Equal,
-        Self::EqualEqual,
-        Self::BangEqual,
-        Self::Question,
-        Self::QuestionDot,
-        Self::QuestionQuestion,
-        Self::Less,
-        Self::LessEqual,
-        Self::Greater,
-        Self::GreaterEqual,
-        Self::Plus,
-        Self::Minus,
-        Self::Star,
-        Self::Slash,
-        Self::Percent,
-        Self::PlusEqual,
-        Self::MinusEqual,
-        Self::StarEqual,
-        Self::SlashEqual,
-        Self::PercentEqual,
-        Self::Caret,
-    ];
-
-    /// The stable variant name used by lexical inventory projections.
-    pub const fn inventory_name(self) -> &'static str {
-        match self {
-            Self::Identifier => "Identifier",
-            Self::Integer => "Integer",
-            Self::Decimal => "Decimal",
-            Self::Duration => "Duration",
-            Self::String => "String",
-            Self::InterpolationStart => "InterpolationStart",
-            Self::InterpolationText => "InterpolationText",
-            Self::InterpolationExprStart => "InterpolationExprStart",
-            Self::InterpolationExprEnd => "InterpolationExprEnd",
-            Self::InterpolationEnd => "InterpolationEnd",
-            Self::Bytes => "Bytes",
-            Self::Keyword(_) => "Keyword",
-            Self::Comment => "Comment",
-            Self::DocComment => "DocComment",
-            Self::Newline => "Newline",
-            Self::Eof => "Eof",
-            Self::LeftParen => "LeftParen",
-            Self::RightParen => "RightParen",
-            Self::LeftBracket => "LeftBracket",
-            Self::RightBracket => "RightBracket",
-            Self::LeftBrace => "LeftBrace",
-            Self::RightBrace => "RightBrace",
-            Self::FatArrow => "FatArrow",
-            Self::Colon => "Colon",
-            Self::DoubleColon => "DoubleColon",
-            Self::Comma => "Comma",
-            Self::Dot => "Dot",
-            Self::DotDot => "DotDot",
-            Self::DotDotEqual => "DotDotEqual",
-            Self::Equal => "Equal",
-            Self::EqualEqual => "EqualEqual",
-            Self::BangEqual => "BangEqual",
-            Self::Question => "Question",
-            Self::QuestionDot => "QuestionDot",
-            Self::QuestionQuestion => "QuestionQuestion",
-            Self::Less => "Less",
-            Self::LessEqual => "LessEqual",
-            Self::Greater => "Greater",
-            Self::GreaterEqual => "GreaterEqual",
-            Self::Plus => "Plus",
-            Self::Minus => "Minus",
-            Self::Star => "Star",
-            Self::Slash => "Slash",
-            Self::Percent => "Percent",
-            Self::PlusEqual => "PlusEqual",
-            Self::MinusEqual => "MinusEqual",
-            Self::StarEqual => "StarEqual",
-            Self::SlashEqual => "SlashEqual",
-            Self::PercentEqual => "PercentEqual",
-            Self::Caret => "Caret",
-        }
-    }
-
-    /// The class known from tokenization alone.
-    pub const fn lexical_class(self) -> LexicalClass {
-        match self {
-            Self::Identifier | Self::Newline | Self::Eof => LexicalClass::Unscoped,
-            Self::Integer => LexicalClass::IntegerLiteral,
-            Self::Decimal => LexicalClass::DecimalLiteral,
-            Self::Duration => LexicalClass::DurationLiteral,
-            Self::String => LexicalClass::StringLiteral,
-            Self::InterpolationStart | Self::InterpolationText | Self::InterpolationEnd => {
-                LexicalClass::InterpolationString
+macro_rules! define_keywords {
+    (
+        $(
+            $(#[$meta:meta])*
+            $variant:ident => {
+                spelling: $spelling:literal,
+                class: $class:ident $(,)?
             }
-            Self::InterpolationExprStart | Self::InterpolationExprEnd => {
-                LexicalClass::InterpolationDelimiter
-            }
-            Self::Bytes => LexicalClass::BytesLiteral,
-            Self::Keyword(keyword) => keyword.lexical_class(),
-            Self::Comment => LexicalClass::Comment,
-            Self::DocComment => LexicalClass::DocumentationComment,
-            Self::LeftParen
-            | Self::RightParen
-            | Self::LeftBracket
-            | Self::RightBracket
-            | Self::LeftBrace
-            | Self::RightBrace => LexicalClass::Delimiter,
-            Self::FatArrow
-            | Self::DotDot
-            | Self::DotDotEqual
-            | Self::Equal
-            | Self::EqualEqual
-            | Self::BangEqual
-            | Self::QuestionDot
-            | Self::QuestionQuestion
-            | Self::Less
-            | Self::LessEqual
-            | Self::Greater
-            | Self::GreaterEqual
-            | Self::Plus
-            | Self::Minus
-            | Self::Star
-            | Self::Slash
-            | Self::Percent
-            | Self::PlusEqual
-            | Self::MinusEqual
-            | Self::StarEqual
-            | Self::SlashEqual
-            | Self::PercentEqual => LexicalClass::Operator,
-            Self::Colon | Self::Comma | Self::Dot | Self::Question => LexicalClass::Punctuation,
-            Self::DoubleColon => LexicalClass::PathSeparator,
-            Self::Caret => LexicalClass::DurableRootSigil,
+        ),+ $(,)?
+    ) => {
+        #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+        pub enum Keyword {
+            $(
+                $(#[$meta])*
+                $variant,
+            )+
         }
-    }
 
-    /// Exact fixed spelling, when the token is not content-bearing.
-    pub const fn fixed_spelling(self) -> Option<&'static str> {
-        match self {
-            Self::Identifier
-            | Self::Integer
-            | Self::Decimal
-            | Self::Duration
-            | Self::String
-            | Self::InterpolationText
-            | Self::Bytes
-            | Self::Comment
-            | Self::DocComment
-            | Self::Newline
-            | Self::Eof => None,
-            Self::InterpolationStart => Some("$\""),
-            Self::InterpolationExprStart | Self::LeftBrace => Some("{"),
-            Self::InterpolationExprEnd | Self::RightBrace => Some("}"),
-            Self::InterpolationEnd => Some("\""),
-            Self::Keyword(keyword) => Some(keyword.spelling()),
-            Self::LeftParen => Some("("),
-            Self::RightParen => Some(")"),
-            Self::LeftBracket => Some("["),
-            Self::RightBracket => Some("]"),
-            Self::FatArrow => Some("=>"),
-            Self::Colon => Some(":"),
-            Self::DoubleColon => Some("::"),
-            Self::Comma => Some(","),
-            Self::Dot => Some("."),
-            Self::DotDot => Some(".."),
-            Self::DotDotEqual => Some("..="),
-            Self::Equal => Some("="),
-            Self::EqualEqual => Some("=="),
-            Self::BangEqual => Some("!="),
-            Self::Question => Some("?"),
-            Self::QuestionDot => Some("?."),
-            Self::QuestionQuestion => Some("??"),
-            Self::Less => Some("<"),
-            Self::LessEqual => Some("<="),
-            Self::Greater => Some(">"),
-            Self::GreaterEqual => Some(">="),
-            Self::Plus => Some("+"),
-            Self::Minus => Some("-"),
-            Self::Star => Some("*"),
-            Self::Slash => Some("/"),
-            Self::Percent => Some("%"),
-            Self::PlusEqual => Some("+="),
-            Self::MinusEqual => Some("-="),
-            Self::StarEqual => Some("*="),
-            Self::SlashEqual => Some("/="),
-            Self::PercentEqual => Some("%="),
-            Self::Caret => Some("^"),
+        impl Keyword {
+            /// Every reserved word, in declaration order.
+            pub const ALL: [Self; count_variants!($($variant),+)] = [
+                $(Self::$variant),+
+            ];
+
+            /// The exact source spelling reserved by the lexer.
+            pub const fn spelling(self) -> &'static str {
+                match self {
+                    $(Self::$variant => $spelling),+
+                }
+            }
+
+            /// The lexical role established by this reserved spelling.
+            pub const fn lexical_class(self) -> LexicalClass {
+                match self {
+                    $(Self::$variant => LexicalClass::$class),+
+                }
+            }
         }
-    }
+
+        pub(crate) fn keyword(text: &str) -> Option<Keyword> {
+            match text {
+                $($spelling => Some(Keyword::$variant),)+
+                _ => None,
+            }
+        }
+    };
+}
+
+define_keywords! {
+    Module => { spelling: "module", class: Declaration },
+    Use => { spelling: "use", class: Declaration },
+    Pub => { spelling: "pub", class: Modifier },
+    Fn => { spelling: "fn", class: Declaration },
+    Alias => { spelling: "alias", class: Declaration },
+    Type => { spelling: "type", class: Declaration },
+    Supports => { spelling: "supports", class: Modifier },
+    Resource => { spelling: "resource", class: Declaration },
+    Struct => { spelling: "struct", class: Declaration },
+    Store => { spelling: "store", class: Declaration },
+    Enum => { spelling: "enum", class: Declaration },
+    Test => { spelling: "test", class: Declaration },
+    Assert => { spelling: "assert", class: ControlFlow },
+    Match => { spelling: "match", class: ControlFlow },
+    Index => { spelling: "index", class: Declaration },
+    Unique => { spelling: "unique", class: Modifier },
+    Required => { spelling: "required", class: Modifier },
+    Const => { spelling: "const", class: Declaration },
+    Var => { spelling: "var", class: Declaration },
+    Place => { spelling: "place", class: Declaration },
+    Checked => { spelling: "checked", class: Modifier },
+    If => { spelling: "if", class: ControlFlow },
+    Else => { spelling: "else", class: ControlFlow },
+    While => { spelling: "while", class: ControlFlow },
+    For => { spelling: "for", class: ControlFlow },
+    In => { spelling: "in", class: ControlFlow },
+    Break => { spelling: "break", class: ControlFlow },
+    Continue => { spelling: "continue", class: ControlFlow },
+    Return => { spelling: "return", class: ControlFlow },
+    Absent => { spelling: "absent", class: BuiltinValue },
+    Delete => { spelling: "delete", class: ControlFlow },
+    Unset => { spelling: "unset", class: ControlFlow },
+    Merge => { spelling: "merge", class: ControlFlow },
+    Journal => { spelling: "journal", class: Modifier },
+    Sensitive => { spelling: "sensitive", class: Modifier },
+    Declassify => { spelling: "declassify", class: Effect },
+    Transaction => { spelling: "transaction", class: ControlFlow },
+    Lock => { spelling: "lock", class: ControlFlow },
+    // Held for the future effect-signature clause. The spelling is reserved,
+    // while the clause itself is not yet grammar.
+    Writes => { spelling: "writes", class: Effect },
+    Reads => { spelling: "reads", class: Effect },
+    Try => { spelling: "try", class: ControlFlow },
+    Require => { spelling: "require", class: ControlFlow },
+    True => { spelling: "true", class: BuiltinValue },
+    False => { spelling: "false", class: BuiltinValue },
+    Not => { spelling: "not", class: WordOperator },
+    And => { spelling: "and", class: WordOperator },
+    Or => { spelling: "or", class: WordOperator },
+    Is => { spelling: "is", class: WordOperator },
+    Int => { spelling: "int", class: BuiltinType },
+    Decimal => { spelling: "decimal", class: BuiltinType },
+    Bool => { spelling: "bool", class: BuiltinType },
+    String => { spelling: "string", class: BuiltinType },
+    Bytes => { spelling: "bytes", class: BuiltinType },
+    Date => { spelling: "date", class: BuiltinType },
+    Instant => { spelling: "instant", class: BuiltinType },
+    Duration => { spelling: "duration", class: BuiltinType },
+    Unknown => { spelling: "unknown", class: BuiltinType },
+    Error => { spelling: "Error", class: BuiltinType },
+    ErrorCode => { spelling: "ErrorCode", class: BuiltinType },
+    Id => { spelling: "Id", class: BuiltinType },
+}
+
+macro_rules! token_kind_name_pattern {
+    ($variant:ident) => {
+        Self::$variant
+    };
+    ($variant:ident, $payload:ty) => {
+        Self::$variant(_)
+    };
+}
+
+macro_rules! token_kind_inventory {
+    ($variant:ident) => {
+        Self::$variant
+    };
+    ($variant:ident, $inventory:expr) => {
+        $inventory
+    };
+}
+
+macro_rules! token_kind_value_pattern {
+    ($variant:ident) => {
+        Self::$variant
+    };
+    ($variant:ident, $binding:ident) => {
+        Self::$variant($binding)
+    };
+}
+
+macro_rules! define_token_kinds {
+    (
+        $(
+            $(#[$meta:meta])*
+            $variant:ident $(($payload:ty, $binding:ident, $inventory:expr))? => {
+                class: $class:expr,
+                fixed: $fixed:expr,
+            }
+        ),+ $(,)?
+    ) => {
+        #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+        pub enum TokenKind {
+            $(
+                $(#[$meta])*
+                $variant $(($payload))?,
+            )+
+        }
+
+        impl TokenKind {
+            /// One representative of every token-kind variant, generated from
+            /// the same construction as the enum and its lexical facts.
+            pub const INVENTORY: [Self; count_variants!($($variant),+)] = [
+                $(token_kind_inventory!($variant $(, $inventory)?)),+
+            ];
+
+            /// The stable variant name used by lexical inventory projections.
+            pub const fn inventory_name(self) -> &'static str {
+                match self {
+                    $(token_kind_name_pattern!($variant $(, $payload)?) => stringify!($variant)),+
+                }
+            }
+
+            /// The class known from tokenization alone.
+            pub const fn lexical_class(self) -> LexicalClass {
+                match self {
+                    $(token_kind_value_pattern!($variant $(, $binding)?) => $class),+
+                }
+            }
+
+            /// Exact fixed spelling, when the token is not content-bearing.
+            pub const fn fixed_spelling(self) -> Option<&'static str> {
+                match self {
+                    $(token_kind_value_pattern!($variant $(, $binding)?) => $fixed),+
+                }
+            }
+        }
+    };
+}
+
+define_token_kinds! {
+    Identifier => {
+        class: LexicalClass::Unscoped,
+        fixed: None,
+    },
+    Integer => {
+        class: LexicalClass::IntegerLiteral,
+        fixed: None,
+    },
+    Decimal => {
+        class: LexicalClass::DecimalLiteral,
+        fixed: None,
+    },
+    /// A duration literal NUMBER.UNIT; the token text is the whole literal.
+    Duration => {
+        class: LexicalClass::DurationLiteral,
+        fixed: None,
+    },
+    String => {
+        class: LexicalClass::StringLiteral,
+        fixed: None,
+    },
+    InterpolationStart => {
+        class: LexicalClass::InterpolationString,
+        fixed: Some("$\""),
+    },
+    InterpolationText => {
+        class: LexicalClass::InterpolationString,
+        fixed: None,
+    },
+    InterpolationExprStart => {
+        class: LexicalClass::InterpolationDelimiter,
+        fixed: Some("{"),
+    },
+    InterpolationExprEnd => {
+        class: LexicalClass::InterpolationDelimiter,
+        fixed: Some("}"),
+    },
+    InterpolationEnd => {
+        class: LexicalClass::InterpolationString,
+        fixed: Some("\""),
+    },
+    Bytes => {
+        class: LexicalClass::BytesLiteral,
+        fixed: None,
+    },
+    Keyword(Keyword, keyword, Self::Keyword(Keyword::Module)) => {
+        class: keyword.lexical_class(),
+        fixed: Some(keyword.spelling()),
+    },
+    Comment => {
+        class: LexicalClass::Comment,
+        fixed: None,
+    },
+    DocComment => {
+        class: LexicalClass::DocumentationComment,
+        fixed: None,
+    },
+    Newline => {
+        class: LexicalClass::Unscoped,
+        fixed: None,
+    },
+    Eof => {
+        class: LexicalClass::Unscoped,
+        fixed: None,
+    },
+    LeftParen => {
+        class: LexicalClass::Delimiter,
+        fixed: Some("("),
+    },
+    RightParen => {
+        class: LexicalClass::Delimiter,
+        fixed: Some(")"),
+    },
+    LeftBracket => {
+        class: LexicalClass::Delimiter,
+        fixed: Some("["),
+    },
+    RightBracket => {
+        class: LexicalClass::Delimiter,
+        fixed: Some("]"),
+    },
+    /// Block delimiters. Interpolation holes and doubled-brace escapes are
+    /// recognized inside interpolation before these tokens are produced.
+    LeftBrace => {
+        class: LexicalClass::Delimiter,
+        fixed: Some("{"),
+    },
+    RightBrace => {
+        class: LexicalClass::Delimiter,
+        fixed: Some("}"),
+    },
+    /// The match-arm arrow.
+    FatArrow => {
+        class: LexicalClass::Operator,
+        fixed: Some("=>"),
+    },
+    Colon => {
+        class: LexicalClass::Punctuation,
+        fixed: Some(":"),
+    },
+    DoubleColon => {
+        class: LexicalClass::PathSeparator,
+        fixed: Some("::"),
+    },
+    Comma => {
+        class: LexicalClass::Punctuation,
+        fixed: Some(","),
+    },
+    Dot => {
+        class: LexicalClass::Punctuation,
+        fixed: Some("."),
+    },
+    DotDot => {
+        class: LexicalClass::Operator,
+        fixed: Some(".."),
+    },
+    DotDotEqual => {
+        class: LexicalClass::Operator,
+        fixed: Some("..="),
+    },
+    Equal => {
+        class: LexicalClass::Operator,
+        fixed: Some("="),
+    },
+    EqualEqual => {
+        class: LexicalClass::Operator,
+        fixed: Some("=="),
+    },
+    BangEqual => {
+        class: LexicalClass::Operator,
+        fixed: Some("!="),
+    },
+    Question => {
+        class: LexicalClass::Punctuation,
+        fixed: Some("?"),
+    },
+    QuestionDot => {
+        class: LexicalClass::Operator,
+        fixed: Some("?."),
+    },
+    QuestionQuestion => {
+        class: LexicalClass::Operator,
+        fixed: Some("??"),
+    },
+    Less => {
+        class: LexicalClass::Operator,
+        fixed: Some("<"),
+    },
+    LessEqual => {
+        class: LexicalClass::Operator,
+        fixed: Some("<="),
+    },
+    Greater => {
+        class: LexicalClass::Operator,
+        fixed: Some(">"),
+    },
+    GreaterEqual => {
+        class: LexicalClass::Operator,
+        fixed: Some(">="),
+    },
+    Plus => {
+        class: LexicalClass::Operator,
+        fixed: Some("+"),
+    },
+    Minus => {
+        class: LexicalClass::Operator,
+        fixed: Some("-"),
+    },
+    Star => {
+        class: LexicalClass::Operator,
+        fixed: Some("*"),
+    },
+    Slash => {
+        class: LexicalClass::Operator,
+        fixed: Some("/"),
+    },
+    Percent => {
+        class: LexicalClass::Operator,
+        fixed: Some("%"),
+    },
+    PlusEqual => {
+        class: LexicalClass::Operator,
+        fixed: Some("+="),
+    },
+    MinusEqual => {
+        class: LexicalClass::Operator,
+        fixed: Some("-="),
+    },
+    StarEqual => {
+        class: LexicalClass::Operator,
+        fixed: Some("*="),
+    },
+    SlashEqual => {
+        class: LexicalClass::Operator,
+        fixed: Some("/="),
+    },
+    PercentEqual => {
+        class: LexicalClass::Operator,
+        fixed: Some("%="),
+    },
+    Caret => {
+        class: LexicalClass::DurableRootSigil,
+        fixed: Some("^"),
+    },
 }
 
 /// Type and constructor keywords that may head a single-token call expression.
@@ -645,72 +516,6 @@ fn read_identifier(text: &str) -> Option<(&str, &str)> {
         }
     }
     Some((&text[..end], &text[end..]))
-}
-
-pub(crate) fn keyword(text: &str) -> Option<Keyword> {
-    Some(match text {
-        "module" => Keyword::Module,
-        "use" => Keyword::Use,
-        "pub" => Keyword::Pub,
-        "fn" => Keyword::Fn,
-        "alias" => Keyword::Alias,
-        "type" => Keyword::Type,
-        "supports" => Keyword::Supports,
-        "resource" => Keyword::Resource,
-        "struct" => Keyword::Struct,
-        "store" => Keyword::Store,
-        "enum" => Keyword::Enum,
-        "test" => Keyword::Test,
-        "assert" => Keyword::Assert,
-        "match" => Keyword::Match,
-        "index" => Keyword::Index,
-        "unique" => Keyword::Unique,
-        "required" => Keyword::Required,
-        "const" => Keyword::Const,
-        "var" => Keyword::Var,
-        "place" => Keyword::Place,
-        "checked" => Keyword::Checked,
-        "if" => Keyword::If,
-        "else" => Keyword::Else,
-        "while" => Keyword::While,
-        "for" => Keyword::For,
-        "in" => Keyword::In,
-        "break" => Keyword::Break,
-        "continue" => Keyword::Continue,
-        "return" => Keyword::Return,
-        "absent" => Keyword::Absent,
-        "delete" => Keyword::Delete,
-        "unset" => Keyword::Unset,
-        "merge" => Keyword::Merge,
-        "journal" => Keyword::Journal,
-        "sensitive" => Keyword::Sensitive,
-        "declassify" => Keyword::Declassify,
-        "transaction" => Keyword::Transaction,
-        "lock" => Keyword::Lock,
-        "writes" => Keyword::Writes,
-        "reads" => Keyword::Reads,
-        "try" => Keyword::Try,
-        "require" => Keyword::Require,
-        "true" => Keyword::True,
-        "false" => Keyword::False,
-        "not" => Keyword::Not,
-        "and" => Keyword::And,
-        "or" => Keyword::Or,
-        "is" => Keyword::Is,
-        "int" => Keyword::Int,
-        "decimal" => Keyword::Decimal,
-        "bool" => Keyword::Bool,
-        "string" => Keyword::String,
-        "bytes" => Keyword::Bytes,
-        "date" => Keyword::Date,
-        "instant" => Keyword::Instant,
-        "duration" => Keyword::Duration,
-        "unknown" => Keyword::Unknown,
-        "Error" => Keyword::Error,
-        "ErrorCode" => Keyword::ErrorCode,
-        "Id" => Keyword::Id,
-        _ => return None,
-    })
 }
 
 #[derive(Clone, Copy)]
