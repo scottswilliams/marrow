@@ -532,7 +532,7 @@ mod tests {
     use crate::demand::{DemandAtom, ExportDemand, OperationClass};
     use crate::durable_id::LedgerIdBytes;
     use crate::export_id::ExportId;
-    use crate::semantic::{SemanticPath, SemanticStep, SemanticStepKind};
+    use crate::semantic::SemanticPath;
     use crate::ty::{ImageType, Scalar};
     use sha2::{Digest, Sha256};
 
@@ -542,10 +542,7 @@ mod tests {
 
     fn demand_a() -> crate::DemandSetId {
         ExportDemand::from_atoms([DemandAtom::new(
-            SemanticPath::from_steps(vec![
-                SemanticStep::new(SemanticStepKind::Application, ledger(0x0a)),
-                SemanticStep::new(SemanticStepKind::Placement, ledger(0x0b)),
-            ]),
+            SemanticPath::root(ledger(0x0a), ledger(0x0b)),
             OperationClass::Read,
         )])
         .demand_set_id()
@@ -847,17 +844,11 @@ mod tests {
             demand_id: {
                 ExportDemand::from_atoms([
                     DemandAtom::new(
-                        SemanticPath::from_steps(vec![
-                            SemanticStep::new(SemanticStepKind::Application, ledger(0x0a)),
-                            SemanticStep::new(SemanticStepKind::Placement, ledger(0x0b)),
-                        ]),
+                        SemanticPath::root(ledger(0x0a), ledger(0x0b)),
                         OperationClass::Read,
                     ),
                     DemandAtom::new(
-                        SemanticPath::from_steps(vec![
-                            SemanticStep::new(SemanticStepKind::Application, ledger(0x0a)),
-                            SemanticStep::new(SemanticStepKind::Placement, ledger(0x0b)),
-                        ]),
+                        SemanticPath::root(ledger(0x0a), ledger(0x0b)),
                         OperationClass::Write,
                     ),
                 ])

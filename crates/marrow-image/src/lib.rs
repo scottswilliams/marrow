@@ -73,7 +73,8 @@ pub use interface::{
     TransferVariant, VariantShape,
 };
 pub use semantic::{
-    SemanticNode, SemanticNodeKind, SemanticPath, SemanticStep, SemanticStepKind, SemanticTarget,
+    EmptySemanticPath, SemanticNode, SemanticNodeKind, SemanticPath, SemanticStep,
+    SemanticStepKind, SemanticTarget,
 };
 pub use store_digest::{
     STORE_DATA_KIND, STORE_ENVELOPE_KIND, STORE_HEAD_KIND, STORE_INTERFACE_KIND, StoreDataDigest,

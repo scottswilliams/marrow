@@ -883,7 +883,7 @@ mod index_site_partition {
     }
 
     fn path(steps: Vec<SemanticStep>) -> SemanticPath {
-        SemanticPath::from_steps(steps)
+        SemanticPath::try_from_steps(steps).expect("hostile fixture path is non-empty")
     }
 
     fn root_step() -> Vec<SemanticStep> {

@@ -10,7 +10,7 @@
 use marrow_image::{
     DurableMemberDef, DurableValueShape, EnumTypeDef, ExportId, FieldDef, FunctionDef, ImageDraft,
     ImageType, Instr, KeyColumn, LedgerIdBytes, RecordTypeDef, RootDef, RootIdentity, Scalar,
-    SemanticPath, SemanticStep, SemanticStepKind, SiteDef, SpanEntry, VariantDef,
+    SemanticPath, SiteDef, SpanEntry, VariantDef,
 };
 use marrow_verify::{VerifyPhase, verify};
 
@@ -146,10 +146,10 @@ fn build(
             ],
         },
     });
-    draft.add_site(SiteDef::whole_payload(SemanticPath::from_steps(vec![
-        SemanticStep::new(SemanticStepKind::Application, id(APPLICATION_ID)),
-        SemanticStep::new(SemanticStepKind::Placement, id(PLACEMENT)),
-    ])));
+    draft.add_site(SiteDef::whole_payload(SemanticPath::root(
+        id(APPLICATION_ID),
+        id(PLACEMENT),
+    )));
     let src = draft.intern_string("src/main.mw");
     let fname = draft.intern_string("f");
     let code = vec![Instr::LocalGet(0), Instr::Return];

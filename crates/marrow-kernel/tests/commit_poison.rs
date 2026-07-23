@@ -41,16 +41,10 @@ const ROOT_KEY_ID: [u8; 16] = [0x94; 16];
 const VALUE_FIELD_ID: [u8; 16] = [0x95; 16];
 
 fn vm_root_path() -> SemanticPath {
-    SemanticPath::from_steps(vec![
-        SemanticStep::new(
-            SemanticStepKind::Application,
-            LedgerIdBytes::from_bytes(APPLICATION_ID),
-        ),
-        SemanticStep::new(
-            SemanticStepKind::Placement,
-            LedgerIdBytes::from_bytes(ROOT_PLACEMENT_ID),
-        ),
-    ])
+    SemanticPath::root(
+        LedgerIdBytes::from_bytes(APPLICATION_ID),
+        LedgerIdBytes::from_bytes(ROOT_PLACEMENT_ID),
+    )
 }
 
 fn vm_spans(code: &[Instr]) -> Vec<SpanEntry> {
@@ -105,14 +99,11 @@ fn vm_commit_image(write: VmWrite) -> VerifiedImage {
     let entry_site = draft
         .add_site(SiteDef::whole_payload(vm_root_path()))
         .index();
-    let mut field_path = vm_root_path().steps().to_vec();
-    field_path.push(SemanticStep::new(
+    let field_path = vm_root_path().child(SemanticStep::new(
         SemanticStepKind::Field,
         LedgerIdBytes::from_bytes(VALUE_FIELD_ID),
     ));
-    let field_site = draft
-        .add_site(SiteDef::field_leaf(SemanticPath::from_steps(field_path)))
-        .index();
+    let field_site = draft.add_site(SiteDef::field_leaf(field_path)).index();
     let key = draft.intern_text("vm");
     let value = draft.intern_int(7);
     let mut code = vec![

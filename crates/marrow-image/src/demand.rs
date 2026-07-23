@@ -46,7 +46,7 @@
 
 use sha2::{Digest, Sha256};
 
-use crate::semantic::{SemanticPath, SemanticStepKind};
+use crate::semantic::{EmptySemanticPath, SemanticPath, SemanticStepKind};
 
 /// The domain-separation tag for the demand-set identity. Distinct from every other
 /// Marrow identity's `kind`, so a `DemandSetId` can never collide with an `ImageId`,
@@ -340,9 +340,6 @@ fn decode_atom_body(body: &[u8]) -> Result<DemandAtom, CeilingDecodeError> {
     let tag = cur.u8()?;
     let class = OperationClass::from_tag(tag).ok_or(CeilingDecodeError::UnknownClass)?;
     let step_count = cur.u16()? as usize;
-    if step_count == 0 {
-        return Err(CeilingDecodeError::EmptyPath);
-    }
     if step_count > MAX_ATOM_STEPS {
         return Err(CeilingDecodeError::StepCountOverflow);
     }
@@ -353,10 +350,12 @@ fn decode_atom_body(body: &[u8]) -> Result<DemandAtom, CeilingDecodeError> {
         let id = crate::durable_id::LedgerIdBytes::from_bytes(cur.array16()?);
         steps.push(crate::semantic::SemanticStep::new(kind, id));
     }
+    let path = SemanticPath::try_from_steps(steps)
+        .map_err(|EmptySemanticPath| CeilingDecodeError::EmptyPath)?;
     if !cur.at_end() {
         return Err(CeilingDecodeError::TrailingBytes);
     }
-    Ok(DemandAtom::new(SemanticPath::from_steps(steps), class))
+    Ok(DemandAtom::new(path, class))
 }
 
 /// A bounded forward reader over an atom-set payload: every read validates the
@@ -494,19 +493,12 @@ mod tests {
 
     /// The path `[application 0x0a, placement 0x0b]` — a whole-entry root site.
     fn root_path() -> SemanticPath {
-        SemanticPath::from_steps(vec![
-            SemanticStep::new(SemanticStepKind::Application, id(0x0a)),
-            SemanticStep::new(SemanticStepKind::Placement, id(0x0b)),
-        ])
+        SemanticPath::root(id(0x0a), id(0x0b))
     }
 
     /// The path `[application 0x0a, placement 0x0b, field 0x0e]` — a field leaf.
     fn field_path(field: u8) -> SemanticPath {
-        SemanticPath::from_steps(vec![
-            SemanticStep::new(SemanticStepKind::Application, id(0x0a)),
-            SemanticStep::new(SemanticStepKind::Placement, id(0x0b)),
-            SemanticStep::new(SemanticStepKind::Field, id(field)),
-        ])
+        root_path().child(SemanticStep::new(SemanticStepKind::Field, id(field)))
     }
 
     /// A two-atom demand: read the whole entry, write a field. Fixed ids so the KAT
@@ -727,6 +719,23 @@ mod tests {
         assert_eq!(
             ExportDemand::decode_atom_set(&[]),
             Err(CeilingDecodeError::Truncated),
+        );
+    }
+
+    #[test]
+    fn decode_atom_set_rejects_an_empty_path_before_trailing_atom_bytes() {
+        let mut atom_body = vec![0x00];
+        atom_body.extend_from_slice(&0u16.to_be_bytes());
+        atom_body.push(0xff);
+
+        let mut payload = Vec::new();
+        push_lp(&mut payload, LOCAL_ROOT_LINEAGE);
+        payload.extend_from_slice(&1u32.to_be_bytes());
+        push_lp(&mut payload, &atom_body);
+
+        assert_eq!(
+            ExportDemand::decode_atom_set(&payload),
+            Err(CeilingDecodeError::EmptyPath),
         );
     }
 

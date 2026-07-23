@@ -32,33 +32,17 @@ const BRANCH_KEY_ID: [u8; 16] = [0x31; 16];
 const TEXT_FIELD_ID: [u8; 16] = [0x32; 16];
 
 fn root_path() -> SemanticPath {
-    SemanticPath::from_steps(vec![
-        SemanticStep::new(
-            SemanticStepKind::Application,
-            LedgerIdBytes::from_bytes(APPLICATION_ID),
-        ),
-        SemanticStep::new(
-            SemanticStepKind::Placement,
-            LedgerIdBytes::from_bytes(ROOT_PLACEMENT_ID),
-        ),
-    ])
+    SemanticPath::root(
+        LedgerIdBytes::from_bytes(APPLICATION_ID),
+        LedgerIdBytes::from_bytes(ROOT_PLACEMENT_ID),
+    )
 }
 
 fn branch_path() -> SemanticPath {
-    SemanticPath::from_steps(vec![
-        SemanticStep::new(
-            SemanticStepKind::Application,
-            LedgerIdBytes::from_bytes(APPLICATION_ID),
-        ),
-        SemanticStep::new(
-            SemanticStepKind::Placement,
-            LedgerIdBytes::from_bytes(ROOT_PLACEMENT_ID),
-        ),
-        SemanticStep::new(
-            SemanticStepKind::Placement,
-            LedgerIdBytes::from_bytes(BRANCH_PLACEMENT_ID),
-        ),
-    ])
+    root_path().child(SemanticStep::new(
+        SemanticStepKind::Placement,
+        LedgerIdBytes::from_bytes(BRANCH_PLACEMENT_ID),
+    ))
 }
 
 fn spans(code: &[Instr]) -> Vec<SpanEntry> {

@@ -25,31 +25,18 @@ const LABEL_FIELD_ID: [u8; 16] = [0x0f; 16];
 
 /// The semantic path of the tracer root itself: `application -> placement`.
 fn root_path() -> SemanticPath {
-    SemanticPath::from_steps(vec![
-        SemanticStep::new(
-            SemanticStepKind::Application,
-            LedgerIdBytes::from_bytes(APPLICATION_ID),
-        ),
-        SemanticStep::new(
-            SemanticStepKind::Placement,
-            LedgerIdBytes::from_bytes(PLACEMENT_ID),
-        ),
-    ])
+    SemanticPath::root(
+        LedgerIdBytes::from_bytes(APPLICATION_ID),
+        LedgerIdBytes::from_bytes(PLACEMENT_ID),
+    )
 }
 
 /// The semantic path of a top-level field of the tracer root.
 fn field_path(field_id: [u8; 16]) -> SemanticPath {
-    SemanticPath::from_steps(vec![
-        SemanticStep::new(
-            SemanticStepKind::Application,
-            LedgerIdBytes::from_bytes(APPLICATION_ID),
-        ),
-        SemanticStep::new(
-            SemanticStepKind::Placement,
-            LedgerIdBytes::from_bytes(PLACEMENT_ID),
-        ),
-        SemanticStep::new(SemanticStepKind::Field, LedgerIdBytes::from_bytes(field_id)),
-    ])
+    root_path().child(SemanticStep::new(
+        SemanticStepKind::Field,
+        LedgerIdBytes::from_bytes(field_id),
+    ))
 }
 
 /// The tracer `Counter` record's durable member tree: `value:int` required then
@@ -1357,17 +1344,10 @@ const NON_INDEX_ELIGIBLE_FIELD_DETAIL: &str =
 /// The semantic path of a managed index of the tracer root: `application ->
 /// placement -> index`.
 fn index_path(index_id: [u8; 16]) -> SemanticPath {
-    SemanticPath::from_steps(vec![
-        SemanticStep::new(
-            SemanticStepKind::Application,
-            LedgerIdBytes::from_bytes(APPLICATION_ID),
-        ),
-        SemanticStep::new(
-            SemanticStepKind::Placement,
-            LedgerIdBytes::from_bytes(PLACEMENT_ID),
-        ),
-        SemanticStep::new(SemanticStepKind::Index, LedgerIdBytes::from_bytes(index_id)),
-    ])
+    root_path().child(SemanticStep::new(
+        SemanticStepKind::Index,
+        LedgerIdBytes::from_bytes(index_id),
+    ))
 }
 
 /// A well-formed indexed tracer graph: the counters root plus a nonunique
@@ -1952,20 +1932,14 @@ fn a_root_member_tree_with_fewer_members_than_record_slots_rejects() {
 /// The semantic path of the `details` group *node* (not its field leaf): application ->
 /// root placement -> group. A whole-group `GroupEntry` site addresses this node.
 fn group_entry_path() -> SemanticPath {
-    SemanticPath::from_steps(vec![
-        SemanticStep::new(
-            SemanticStepKind::Application,
-            LedgerIdBytes::from_bytes([0x0a; 16]),
-        ),
-        SemanticStep::new(
-            SemanticStepKind::Placement,
-            LedgerIdBytes::from_bytes([0x0b; 16]),
-        ),
-        SemanticStep::new(
-            SemanticStepKind::Group,
-            LedgerIdBytes::from_bytes([0x20; 16]),
-        ),
-    ])
+    SemanticPath::root(
+        LedgerIdBytes::from_bytes([0x0a; 16]),
+        LedgerIdBytes::from_bytes([0x0b; 16]),
+    )
+    .child(SemanticStep::new(
+        SemanticStepKind::Group,
+        LedgerIdBytes::from_bytes([0x20; 16]),
+    ))
 }
 
 #[test]
@@ -2043,24 +2017,10 @@ fn a_group_opcode_over_a_non_group_site_rejects() {
 /// application -> root placement -> group (`details`) -> field (`pages`). A group field's
 /// path carries a `Group` step, distinct from a branch placement step.
 fn group_field_path() -> SemanticPath {
-    SemanticPath::from_steps(vec![
-        SemanticStep::new(
-            SemanticStepKind::Application,
-            LedgerIdBytes::from_bytes([0x0a; 16]),
-        ),
-        SemanticStep::new(
-            SemanticStepKind::Placement,
-            LedgerIdBytes::from_bytes([0x0b; 16]),
-        ),
-        SemanticStep::new(
-            SemanticStepKind::Group,
-            LedgerIdBytes::from_bytes([0x20; 16]),
-        ),
-        SemanticStep::new(
-            SemanticStepKind::Field,
-            LedgerIdBytes::from_bytes([0x21; 16]),
-        ),
-    ])
+    group_entry_path().child(SemanticStep::new(
+        SemanticStepKind::Field,
+        LedgerIdBytes::from_bytes([0x21; 16]),
+    ))
 }
 
 #[test]
@@ -2110,24 +2070,10 @@ fn an_opcode_over_a_parked_group_field_site_rejects() {
 /// application -> root placement -> branch placement -> field (four steps), the
 /// deepest concrete address in that graph.
 fn branch_field_path() -> SemanticPath {
-    SemanticPath::from_steps(vec![
-        SemanticStep::new(
-            SemanticStepKind::Application,
-            LedgerIdBytes::from_bytes([0x0a; 16]),
-        ),
-        SemanticStep::new(
-            SemanticStepKind::Placement,
-            LedgerIdBytes::from_bytes([0x0b; 16]),
-        ),
-        SemanticStep::new(
-            SemanticStepKind::Placement,
-            LedgerIdBytes::from_bytes([0x30; 16]),
-        ),
-        SemanticStep::new(
-            SemanticStepKind::Field,
-            LedgerIdBytes::from_bytes([0x32; 16]),
-        ),
-    ])
+    branch_entry_path().child(SemanticStep::new(
+        SemanticStepKind::Field,
+        LedgerIdBytes::from_bytes([0x32; 16]),
+    ))
 }
 
 #[test]
@@ -2235,20 +2181,14 @@ fn flat_branch_draft() -> (ImageDraft, u16) {
 /// The whole-payload site path of the flat-branch graph's `notes` branch entry:
 /// application -> root placement -> branch placement (three steps).
 fn branch_entry_path() -> SemanticPath {
-    SemanticPath::from_steps(vec![
-        SemanticStep::new(
-            SemanticStepKind::Application,
-            LedgerIdBytes::from_bytes([0x0a; 16]),
-        ),
-        SemanticStep::new(
-            SemanticStepKind::Placement,
-            LedgerIdBytes::from_bytes([0x0b; 16]),
-        ),
-        SemanticStep::new(
-            SemanticStepKind::Placement,
-            LedgerIdBytes::from_bytes([0x30; 16]),
-        ),
-    ])
+    SemanticPath::root(
+        LedgerIdBytes::from_bytes([0x0a; 16]),
+        LedgerIdBytes::from_bytes([0x0b; 16]),
+    )
+    .child(SemanticStep::new(
+        SemanticStepKind::Placement,
+        LedgerIdBytes::from_bytes([0x30; 16]),
+    ))
 }
 
 #[test]
@@ -2371,7 +2311,7 @@ fn n_step_field_path(n: usize) -> SemanticPath {
             LedgerIdBytes::from_bytes([0x91; 16]),
         ));
     }
-    SemanticPath::from_steps(steps)
+    SemanticPath::try_from_steps(steps).expect("hostile fixture path is non-empty")
 }
 
 #[test]
@@ -2423,6 +2363,39 @@ fn a_site_path_past_the_maximum_depth_is_refused_by_the_encoder() {
             Err(marrow_image::ImageBuildError::SitePathTooDeep)
         ),
         "the encoder refuses a site path past the maximum depth"
+    );
+}
+
+#[test]
+fn a_forged_zero_step_site_path_is_refused_before_any_path_body() {
+    let mut draft = ImageDraft::new();
+    durable_schema(&mut draft);
+    let mut bytes = finish_two_key(
+        draft,
+        vec![Instr::TxnBegin, Instr::TxnCommit, Instr::Return],
+    );
+
+    let mut root_site = vec![
+        marrow_image::bounds::MIN_SITE_PATH_STEPS as u8,
+        SemanticStepKind::Application.ledger_kind(),
+    ];
+    root_site.extend_from_slice(&APPLICATION_ID);
+    root_site.push(SemanticStepKind::Placement.ledger_kind());
+    root_site.extend_from_slice(&PLACEMENT_ID);
+    root_site.push(0x00);
+    let count_at = bytes
+        .windows(root_site.len())
+        .position(|window| window == root_site)
+        .expect("the root whole-payload site is present");
+    bytes[count_at] = 0;
+    rehash(&mut bytes);
+
+    let rejection = verify(&bytes).expect_err("a zero-step site path must reject");
+    assert_eq!(rejection.code(), "image.table");
+    assert_eq!(
+        rejection.detail(),
+        "durable site path names no graph node",
+        "the minimum-length gate rejects before reading a step or target",
     );
 }
 
@@ -3082,20 +3055,12 @@ fn branch_presence_schema() -> (ImageDraft, u16, u16, u16) {
     draft.add_site(SiteDef::whole_payload(root_path()));
     draft.add_site(SiteDef::field_leaf(field_path(VALUE_FIELD_ID)));
     let label_site = draft.add_site(SiteDef::field_leaf(field_path(LABEL_FIELD_ID)));
-    let branch_entry = draft.add_site(SiteDef::whole_payload(SemanticPath::from_steps(vec![
-        SemanticStep::new(
-            SemanticStepKind::Application,
-            LedgerIdBytes::from_bytes(APPLICATION_ID),
-        ),
-        SemanticStep::new(
-            SemanticStepKind::Placement,
-            LedgerIdBytes::from_bytes(PLACEMENT_ID),
-        ),
+    let branch_entry = draft.add_site(SiteDef::whole_payload(root_path().child(
         SemanticStep::new(
             SemanticStepKind::Placement,
             LedgerIdBytes::from_bytes([0x30; 16]),
         ),
-    ])));
+    )));
     (
         draft,
         label_site.index(),
@@ -3224,24 +3189,17 @@ fn branch_field_schema() -> (ImageDraft, u16, u16) {
         },
     });
     let root_entry = draft.add_site(SiteDef::whole_payload(root_path()));
-    let branch_field = draft.add_site(SiteDef::field_leaf(SemanticPath::from_steps(vec![
-        SemanticStep::new(
-            SemanticStepKind::Application,
-            LedgerIdBytes::from_bytes(APPLICATION_ID),
-        ),
-        SemanticStep::new(
-            SemanticStepKind::Placement,
-            LedgerIdBytes::from_bytes(PLACEMENT_ID),
-        ),
-        SemanticStep::new(
-            SemanticStepKind::Placement,
-            LedgerIdBytes::from_bytes([0x30; 16]),
-        ),
-        SemanticStep::new(
-            SemanticStepKind::Field,
-            LedgerIdBytes::from_bytes([0x32; 16]),
-        ),
-    ])));
+    let branch_field = draft.add_site(SiteDef::field_leaf(
+        root_path()
+            .child(SemanticStep::new(
+                SemanticStepKind::Placement,
+                LedgerIdBytes::from_bytes([0x30; 16]),
+            ))
+            .child(SemanticStep::new(
+                SemanticStepKind::Field,
+                LedgerIdBytes::from_bytes([0x32; 16]),
+            )),
+    ));
     (draft, root_entry.index(), branch_field.index())
 }
 
@@ -4724,12 +4682,13 @@ fn step(kind: SemanticStepKind, id: u8) -> SemanticStep {
 /// The whole-payload site path of the nested `tags` branch entry from a chain of steps
 /// below the root: `application -> root placement -> <chain>`.
 fn nested_path(chain: &[SemanticStep]) -> SemanticPath {
-    let mut steps = vec![
-        step(SemanticStepKind::Application, 0x0a),
-        step(SemanticStepKind::Placement, 0x0b),
-    ];
-    steps.extend_from_slice(chain);
-    SemanticPath::from_steps(steps)
+    chain.iter().copied().fold(
+        SemanticPath::root(
+            LedgerIdBytes::from_bytes([0x0a; 16]),
+            LedgerIdBytes::from_bytes([0x0b; 16]),
+        ),
+        |path, step| path.child(step),
+    )
 }
 
 /// Add a read-only export that runs `DurExists` over the whole-payload `site` at the given

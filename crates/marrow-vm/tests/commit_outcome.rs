@@ -1,7 +1,7 @@
 use marrow_image::{
     DurableMemberDef, DurableValueShape, ExportId, FieldDef, FunctionDef, ImageDraft, ImageType,
     Instr, KeyColumn, LedgerIdBytes, RecordTypeDef, RootDef, RootIdentity, Scalar, SemanticPath,
-    SemanticStep, SemanticStepKind, SiteDef, SpanEntry,
+    SiteDef, SpanEntry,
 };
 use marrow_kernel::codec::key::KeyScalar;
 use marrow_kernel::durable::{
@@ -22,16 +22,10 @@ const ROOT_KEY_ID: [u8; 16] = [0x84; 16];
 const VALUE_FIELD_ID: [u8; 16] = [0x85; 16];
 
 fn root_path() -> SemanticPath {
-    SemanticPath::from_steps(vec![
-        SemanticStep::new(
-            SemanticStepKind::Application,
-            LedgerIdBytes::from_bytes(APPLICATION_ID),
-        ),
-        SemanticStep::new(
-            SemanticStepKind::Placement,
-            LedgerIdBytes::from_bytes(ROOT_PLACEMENT_ID),
-        ),
-    ])
+    SemanticPath::root(
+        LedgerIdBytes::from_bytes(APPLICATION_ID),
+        LedgerIdBytes::from_bytes(ROOT_PLACEMENT_ID),
+    )
 }
 
 fn spans(code: &[Instr]) -> Vec<SpanEntry> {

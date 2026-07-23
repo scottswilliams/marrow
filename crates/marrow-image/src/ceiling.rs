@@ -149,19 +149,12 @@ mod tests {
 
     /// The path `[application 0x0a, placement 0x0b]` — a whole-entry root site.
     fn root_path() -> SemanticPath {
-        SemanticPath::from_steps(vec![
-            SemanticStep::new(SemanticStepKind::Application, id(0x0a)),
-            SemanticStep::new(SemanticStepKind::Placement, id(0x0b)),
-        ])
+        SemanticPath::root(id(0x0a), id(0x0b))
     }
 
     /// The path `[application 0x0a, placement 0x0b, field 0x0e]` — a field leaf.
     fn field_path(field: u8) -> SemanticPath {
-        SemanticPath::from_steps(vec![
-            SemanticStep::new(SemanticStepKind::Application, id(0x0a)),
-            SemanticStep::new(SemanticStepKind::Placement, id(0x0b)),
-            SemanticStep::new(SemanticStepKind::Field, id(field)),
-        ])
+        root_path().child(SemanticStep::new(SemanticStepKind::Field, id(field)))
     }
 
     /// A two-atom demand union: read the whole entry, write a field. Fixed ids so the

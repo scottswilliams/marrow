@@ -24,25 +24,17 @@ const BY_SHELF_ID: [u8; 16] = [0x3b; 16];
 const BY_ISBN_ID: [u8; 16] = [0x4b; 16];
 
 fn root_path() -> SemanticPath {
-    SemanticPath::from_steps(vec![
-        SemanticStep::new(
-            SemanticStepKind::Application,
-            LedgerIdBytes::from_bytes(APPLICATION_ID),
-        ),
-        SemanticStep::new(
-            SemanticStepKind::Placement,
-            LedgerIdBytes::from_bytes(PLACEMENT_ID),
-        ),
-    ])
+    SemanticPath::root(
+        LedgerIdBytes::from_bytes(APPLICATION_ID),
+        LedgerIdBytes::from_bytes(PLACEMENT_ID),
+    )
 }
 
 fn index_path(index_id: [u8; 16]) -> SemanticPath {
-    let mut steps = root_path().steps().to_vec();
-    steps.push(SemanticStep::new(
+    root_path().child(SemanticStep::new(
         SemanticStepKind::Index,
         LedgerIdBytes::from_bytes(index_id),
-    ));
-    SemanticPath::from_steps(steps)
+    ))
 }
 
 fn spans(code: &[Instr]) -> Vec<SpanEntry> {

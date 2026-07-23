@@ -238,6 +238,8 @@ fn decode_site(
             .expect("take(16) yields 16 bytes");
         steps.push(SemanticStep::new(kind, LedgerIdBytes::from_bytes(id_bytes)));
     }
+    let path = SemanticPath::try_from_steps(steps)
+        .map_err(|_| reject(VerifyPhase::Table, "durable site path names no graph node"))?;
     let target = match reader
         .u8()
         .ok_or(reject(VerifyPhase::Table, "short site target"))?
@@ -249,11 +251,11 @@ fn decode_site(
         0x04 => SemanticTarget::GroupEntry,
         _ => return Err(reject(VerifyPhase::Table, "unknown site target tag")),
     };
-    let site = resolve_site(&steps, target, nodes, roots)?;
+    let site = resolve_site(&path, target, nodes, roots)?;
     // The site's node path is the chain it resolved against — retained parallel to
     // the sealed site so demand reconstruction can name the node a flat site
     // addresses without re-deriving it from the executable form.
-    Ok((site, SemanticPath::from_steps(steps)))
+    Ok((site, path))
 }
 
 /// Resolve a decoded site path plus target kind to a [`SealedSite`]. A path that
@@ -267,11 +269,12 @@ fn decode_site(
 /// as [`SealedSite::Parked`], carrying the resolved path and target. Both forms re-derive
 /// everything from the reconstructed graph, never trusting the image.
 fn resolve_site(
-    steps: &[SemanticStep],
+    path: &SemanticPath,
     target: SemanticTarget,
     nodes: &[SemanticNode],
     roots: &[DecodedRoot],
 ) -> Result<SealedSite, VerifyRejection> {
+    let steps = path.steps();
     let node = nodes
         .iter()
         .find(|node| node.path.steps() == steps)
@@ -371,7 +374,7 @@ fn resolve_site(
         ))? as u16;
     let root = &roots[root_index as usize];
     let parked = || SealedSite::Parked {
-        path: SemanticPath::from_steps(steps.to_vec()),
+        path: path.clone(),
         target,
     };
     if !is_flat_executable_root(root) {

@@ -365,12 +365,8 @@ impl DurableContractDescriptor {
             return Vec::new();
         };
         let mut nodes = Vec::new();
-        let app_step = SemanticStep::new(SemanticStepKind::Application, application);
         for root in &self.roots {
-            let root_path = SemanticPath::new(vec![
-                app_step,
-                SemanticStep::new(SemanticStepKind::Placement, root.placement),
-            ]);
+            let root_path = SemanticPath::root(application, root.placement);
             nodes.push(SemanticNode {
                 kind: SemanticNodeKind::Root,
                 path: root_path.clone(),

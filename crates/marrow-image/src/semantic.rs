@@ -24,6 +24,22 @@
 
 use crate::durable_id::LedgerIdBytes;
 
+/// A dynamic step sequence cannot construct a semantic path because it is empty.
+///
+/// Nonemptiness is the only invariant enforced at construction. Step kinds, graph
+/// membership, target agreement, and depth remain the responsibility of their
+/// existing producer and verifier boundaries.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EmptySemanticPath;
+
+impl std::fmt::Display for EmptySemanticPath {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("a semantic path must contain at least one step")
+    }
+}
+
+impl std::error::Error for EmptySemanticPath {}
+
 /// The kind of one step in a [`SemanticPath`], mirroring the ledger's frozen kind
 /// space: the application root, a keyed placement (a store root or a nested
 /// `branch` — both keyed nodes), a static `group` namespace, or a stored field.
@@ -128,20 +144,27 @@ pub struct SemanticPath {
 }
 
 impl SemanticPath {
-    /// Build a path from an application step and the chain of node steps below it.
-    /// The application step is the shared root of every path in a graph.
-    pub(crate) fn new(steps: Vec<SemanticStep>) -> Self {
-        Self { steps }
-    }
-
     /// Build a path from an explicit step chain. This is the producer-side
     /// constructor a compiler uses to spell the path of an operation site it emits
     /// into the image; the verifier does not trust such a path but resolves it
     /// against its own independently derived [`crate::SemanticNode`] set. The chain
     /// runs from the application step to the addressed node and must be non-empty.
-    pub fn from_steps(steps: Vec<SemanticStep>) -> Self {
-        debug_assert!(!steps.is_empty(), "a semantic path has at least one step");
-        Self { steps }
+    pub fn try_from_steps(steps: Vec<SemanticStep>) -> Result<Self, EmptySemanticPath> {
+        if steps.is_empty() {
+            return Err(EmptySemanticPath);
+        }
+        Ok(Self { steps })
+    }
+
+    /// Build the canonical path of a durable root from its application and placement
+    /// ledger ids.
+    pub fn root(application: LedgerIdBytes, placement: LedgerIdBytes) -> Self {
+        Self {
+            steps: vec![
+                SemanticStep::new(SemanticStepKind::Application, application),
+                SemanticStep::new(SemanticStepKind::Placement, placement),
+            ],
+        }
     }
 
     /// This path's ordered steps, from the application root to the addressed node.
@@ -157,7 +180,8 @@ impl SemanticPath {
 
     /// A child path: this path extended by one more step. Used by the graph walker to
     /// descend into a group's or a branch's members.
-    pub(crate) fn child(&self, step: SemanticStep) -> Self {
+    #[must_use]
+    pub fn child(&self, step: SemanticStep) -> Self {
         let mut steps = self.steps.clone();
         steps.push(step);
         Self { steps }
@@ -185,4 +209,93 @@ pub enum SemanticNodeKind {
 pub struct SemanticNode {
     pub kind: SemanticNodeKind,
     pub path: SemanticPath,
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+
+    use super::{EmptySemanticPath, SemanticPath, SemanticStep, SemanticStepKind};
+    use crate::draft::{ImageBuildError, ImageDraft, SiteDef};
+    use crate::durable_id::LedgerIdBytes;
+
+    fn id(byte: u8) -> LedgerIdBytes {
+        LedgerIdBytes::from_bytes([byte; 16])
+    }
+
+    #[test]
+    fn empty_step_vector_is_rejected_without_unwinding() {
+        let outcome = std::panic::catch_unwind(|| SemanticPath::try_from_steps(Vec::new()));
+
+        assert!(matches!(outcome, Ok(Err(EmptySemanticPath))));
+    }
+
+    #[test]
+    fn dynamic_nonempty_paths_preserve_steps_node_and_structural_traits() {
+        let one_step = vec![SemanticStep::new(SemanticStepKind::Application, id(1))];
+        let path = SemanticPath::try_from_steps(one_step.clone()).expect("one step is non-empty");
+
+        assert_eq!(path.steps(), one_step);
+        assert_eq!(path.node_id(), id(1));
+        assert_eq!(path, path.clone());
+
+        let multiple_steps = vec![
+            SemanticStep::new(SemanticStepKind::Application, id(1)),
+            SemanticStep::new(SemanticStepKind::Placement, id(2)),
+            SemanticStep::new(SemanticStepKind::Field, id(3)),
+        ];
+        let multiple = SemanticPath::try_from_steps(multiple_steps.clone())
+            .expect("three steps are non-empty");
+        assert_eq!(multiple.steps(), multiple_steps);
+        assert_eq!(multiple.node_id(), id(3));
+        assert!(path < multiple);
+
+        let mut original_hasher = DefaultHasher::new();
+        multiple.hash(&mut original_hasher);
+        let mut clone_hasher = DefaultHasher::new();
+        multiple.clone().hash(&mut clone_hasher);
+        assert_eq!(original_hasher.finish(), clone_hasher.finish());
+    }
+
+    #[test]
+    fn root_and_child_preserve_the_canonical_chain_without_mutating_the_parent() {
+        let root = SemanticPath::root(id(1), id(2));
+        let child_step = SemanticStep::new(SemanticStepKind::Field, id(3));
+        let child = root.child(child_step);
+
+        assert_eq!(
+            root.steps(),
+            [
+                SemanticStep::new(SemanticStepKind::Application, id(1)),
+                SemanticStep::new(SemanticStepKind::Placement, id(2)),
+            ]
+        );
+        assert_eq!(
+            child.steps(),
+            [
+                SemanticStep::new(SemanticStepKind::Application, id(1)),
+                SemanticStep::new(SemanticStepKind::Placement, id(2)),
+                child_step,
+            ]
+        );
+        assert_eq!(root.node_id(), id(2));
+        assert_eq!(child.node_id(), id(3));
+    }
+
+    #[test]
+    fn one_step_is_a_general_path_but_not_an_operation_site() {
+        let path = SemanticPath::try_from_steps(vec![SemanticStep::new(
+            SemanticStepKind::Application,
+            id(1),
+        )])
+        .expect("one step is non-empty");
+        let mut draft = ImageDraft::new();
+        draft.add_site(SiteDef::whole_payload(path));
+
+        assert!(matches!(
+            draft.encode(),
+            Err(ImageBuildError::SitePathTooShort)
+        ));
+    }
 }

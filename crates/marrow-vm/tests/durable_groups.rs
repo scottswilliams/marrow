@@ -27,30 +27,17 @@ const GROUP_ID: [u8; 16] = [0x20; 16];
 const PAGES_FIELD_ID: [u8; 16] = [0x21; 16];
 
 fn root_path() -> SemanticPath {
-    SemanticPath::from_steps(vec![
-        SemanticStep::new(
-            SemanticStepKind::Application,
-            LedgerIdBytes::from_bytes(APPLICATION_ID),
-        ),
-        SemanticStep::new(
-            SemanticStepKind::Placement,
-            LedgerIdBytes::from_bytes(ROOT_PLACEMENT_ID),
-        ),
-    ])
+    SemanticPath::root(
+        LedgerIdBytes::from_bytes(APPLICATION_ID),
+        LedgerIdBytes::from_bytes(ROOT_PLACEMENT_ID),
+    )
 }
 
 fn group_path() -> SemanticPath {
-    SemanticPath::from_steps(vec![
-        SemanticStep::new(
-            SemanticStepKind::Application,
-            LedgerIdBytes::from_bytes(APPLICATION_ID),
-        ),
-        SemanticStep::new(
-            SemanticStepKind::Placement,
-            LedgerIdBytes::from_bytes(ROOT_PLACEMENT_ID),
-        ),
-        SemanticStep::new(SemanticStepKind::Group, LedgerIdBytes::from_bytes(GROUP_ID)),
-    ])
+    root_path().child(SemanticStep::new(
+        SemanticStepKind::Group,
+        LedgerIdBytes::from_bytes(GROUP_ID),
+    ))
 }
 
 fn spans(code: &[Instr]) -> Vec<SpanEntry> {

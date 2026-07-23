@@ -164,36 +164,27 @@ fn two_root_branch_draft(draft: &mut ImageDraft) -> (u16, u16, u16) {
 
 /// A top-level field-leaf site path on root A: application -> root placement -> field id.
 fn field_path(field_id: [u8; 16]) -> SemanticPath {
-    SemanticPath::from_steps(vec![
-        SemanticStep::new(
-            SemanticStepKind::Application,
-            LedgerIdBytes::from_bytes(APPLICATION_ID),
-        ),
-        SemanticStep::new(
-            SemanticStepKind::Placement,
-            LedgerIdBytes::from_bytes(A_PLACEMENT),
-        ),
-        SemanticStep::new(SemanticStepKind::Field, LedgerIdBytes::from_bytes(field_id)),
-    ])
+    SemanticPath::root(
+        LedgerIdBytes::from_bytes(APPLICATION_ID),
+        LedgerIdBytes::from_bytes(A_PLACEMENT),
+    )
+    .child(SemanticStep::new(
+        SemanticStepKind::Field,
+        LedgerIdBytes::from_bytes(field_id),
+    ))
 }
 
 /// The whole-payload path of root A's `notes` branch entry: application -> root placement
 /// -> branch placement.
 fn branch_entry_path() -> SemanticPath {
-    SemanticPath::from_steps(vec![
-        SemanticStep::new(
-            SemanticStepKind::Application,
-            LedgerIdBytes::from_bytes(APPLICATION_ID),
-        ),
-        SemanticStep::new(
-            SemanticStepKind::Placement,
-            LedgerIdBytes::from_bytes(A_PLACEMENT),
-        ),
-        SemanticStep::new(
-            SemanticStepKind::Placement,
-            LedgerIdBytes::from_bytes(A_BRANCH_PLACEMENT),
-        ),
-    ])
+    SemanticPath::root(
+        LedgerIdBytes::from_bytes(APPLICATION_ID),
+        LedgerIdBytes::from_bytes(A_PLACEMENT),
+    )
+    .child(SemanticStep::new(
+        SemanticStepKind::Placement,
+        LedgerIdBytes::from_bytes(A_BRANCH_PLACEMENT),
+    ))
 }
 
 fn build_export(draft: &mut ImageDraft, code: Vec<Instr>) {

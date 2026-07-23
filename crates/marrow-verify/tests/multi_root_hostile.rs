@@ -6,7 +6,7 @@
 use marrow_image::{
     DurableMemberDef, DurableValueShape, ExportId, FieldDef, FunctionDef, ImageDraft, ImageType,
     Instr, KeyColumn, LedgerIdBytes, RecordTypeDef, RootDef, RootIdentity, Scalar, SemanticPath,
-    SemanticStep, SemanticStepKind, SiteDef, SpanEntry,
+    SiteDef, SpanEntry,
 };
 use marrow_verify::{VerifyPhase, verify};
 
@@ -23,16 +23,10 @@ const B_KEY: [u8; 16] = [0x1c; 16];
 const B_FIELD: [u8; 16] = [0x1e; 16];
 
 fn placement_path(placement: [u8; 16]) -> SemanticPath {
-    SemanticPath::from_steps(vec![
-        SemanticStep::new(
-            SemanticStepKind::Application,
-            LedgerIdBytes::from_bytes(APPLICATION_ID),
-        ),
-        SemanticStep::new(
-            SemanticStepKind::Placement,
-            LedgerIdBytes::from_bytes(placement),
-        ),
-    ])
+    SemanticPath::root(
+        LedgerIdBytes::from_bytes(APPLICATION_ID),
+        LedgerIdBytes::from_bytes(placement),
+    )
 }
 
 fn spans(code: &[Instr]) -> Vec<SpanEntry> {

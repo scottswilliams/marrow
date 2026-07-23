@@ -249,28 +249,17 @@ mod tests {
 
     /// The whole-entry path `[application, root]`.
     fn root_path() -> SemanticPath {
-        SemanticPath::from_steps(vec![
-            SemanticStep::new(SemanticStepKind::Application, id(APP)),
-            SemanticStep::new(SemanticStepKind::Placement, id(ROOT)),
-        ])
+        SemanticPath::root(id(APP), id(ROOT))
     }
 
     /// A field-leaf path `[application, root, field]`.
     fn field_path(field: u8) -> SemanticPath {
-        SemanticPath::from_steps(vec![
-            SemanticStep::new(SemanticStepKind::Application, id(APP)),
-            SemanticStep::new(SemanticStepKind::Placement, id(ROOT)),
-            SemanticStep::new(SemanticStepKind::Field, id(field)),
-        ])
+        root_path().child(SemanticStep::new(SemanticStepKind::Field, id(field)))
     }
 
     /// An index path `[application, root, index]`.
     fn index_path() -> SemanticPath {
-        SemanticPath::from_steps(vec![
-            SemanticStep::new(SemanticStepKind::Application, id(APP)),
-            SemanticStep::new(SemanticStepKind::Placement, id(ROOT)),
-            SemanticStep::new(SemanticStepKind::Index, id(INDEX)),
-        ])
+        root_path().child(SemanticStep::new(SemanticStepKind::Index, id(INDEX)))
     }
 
     fn sentence(atoms: Vec<DemandAtom>) -> String {
@@ -444,10 +433,7 @@ mod tests {
 
     #[test]
     fn a_demand_summary_over_an_unknown_node_is_unnameable() {
-        let unknown = SemanticPath::from_steps(vec![
-            SemanticStep::new(SemanticStepKind::Application, id(APP)),
-            SemanticStep::new(SemanticStepKind::Placement, id(0x77)),
-        ]);
+        let unknown = SemanticPath::root(id(APP), id(0x77));
         let demand = ExportDemand::from_atoms([DemandAtom::new(unknown, OperationClass::Read)]);
         assert!(naming().demand_summary(&demand).is_none());
     }
@@ -457,10 +443,7 @@ mod tests {
         // A node the join does not know cannot be rendered, so the whole sentence is
         // `None` rather than a partial or invented spelling. This never happens for a
         // demand reconstructed from an admitted graph.
-        let unknown = SemanticPath::from_steps(vec![
-            SemanticStep::new(SemanticStepKind::Application, id(APP)),
-            SemanticStep::new(SemanticStepKind::Placement, id(0x77)),
-        ]);
+        let unknown = SemanticPath::root(id(APP), id(0x77));
         let demand = ExportDemand::from_atoms([DemandAtom::new(unknown, OperationClass::Read)]);
         assert!(naming().demand_sentence(&demand).is_none());
     }

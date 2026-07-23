@@ -250,25 +250,15 @@ fn a_durable_image() -> Vec<u8> {
             ],
         },
     });
-    let app = SemanticStep::new(
-        SemanticStepKind::Application,
+    let root_path = SemanticPath::root(
         LedgerIdBytes::from_bytes([0x0a; 16]),
-    );
-    let placement = SemanticStep::new(
-        SemanticStepKind::Placement,
         LedgerIdBytes::from_bytes([0x0b; 16]),
     );
-    draft.add_site(SiteDef::whole_payload(SemanticPath::from_steps(vec![
-        app, placement,
-    ])));
-    let value_site = draft.add_site(SiteDef::field_leaf(SemanticPath::from_steps(vec![
-        app,
-        placement,
-        SemanticStep::new(
-            SemanticStepKind::Field,
-            LedgerIdBytes::from_bytes([0x0e; 16]),
-        ),
-    ])));
+    draft.add_site(SiteDef::whole_payload(root_path.clone()));
+    let value_site = draft.add_site(SiteDef::field_leaf(root_path.child(SemanticStep::new(
+        SemanticStepKind::Field,
+        LedgerIdBytes::from_bytes([0x0e; 16]),
+    ))));
     let src = draft.intern_string("src/main.mw");
     let name = draft.intern_string("put");
     let code = vec![
@@ -387,30 +377,18 @@ fn an_indexed_durable_image() -> Vec<u8> {
             ],
         },
     });
-    let app = SemanticStep::new(
-        SemanticStepKind::Application,
+    let root_path = SemanticPath::root(
         LedgerIdBytes::from_bytes([0x0a; 16]),
-    );
-    let placement = SemanticStep::new(
-        SemanticStepKind::Placement,
         LedgerIdBytes::from_bytes([0x0b; 16]),
     );
-    draft.add_site(SiteDef::index_scan(SemanticPath::from_steps(vec![
-        app,
-        placement,
-        SemanticStep::new(
-            SemanticStepKind::Index,
-            LedgerIdBytes::from_bytes([0x70; 16]),
-        ),
-    ])));
-    draft.add_site(SiteDef::index_lookup(SemanticPath::from_steps(vec![
-        app,
-        placement,
-        SemanticStep::new(
-            SemanticStepKind::Index,
-            LedgerIdBytes::from_bytes([0x71; 16]),
-        ),
-    ])));
+    draft.add_site(SiteDef::index_scan(root_path.child(SemanticStep::new(
+        SemanticStepKind::Index,
+        LedgerIdBytes::from_bytes([0x70; 16]),
+    ))));
+    draft.add_site(SiteDef::index_lookup(root_path.child(SemanticStep::new(
+        SemanticStepKind::Index,
+        LedgerIdBytes::from_bytes([0x71; 16]),
+    ))));
     draft.encode().expect("encode").bytes
 }
 
@@ -481,33 +459,19 @@ fn a_strict_durable_image() -> Vec<u8> {
             ],
         },
     });
-    let app = SemanticStep::new(
-        SemanticStepKind::Application,
+    let root_path = SemanticPath::root(
         LedgerIdBytes::from_bytes([0x0a; 16]),
-    );
-    let placement = SemanticStep::new(
-        SemanticStepKind::Placement,
         LedgerIdBytes::from_bytes([0x0b; 16]),
     );
-    draft.add_site(SiteDef::whole_payload(SemanticPath::from_steps(vec![
-        app, placement,
-    ])));
-    draft.add_site(SiteDef::field_leaf(SemanticPath::from_steps(vec![
-        app,
-        placement,
-        SemanticStep::new(
-            SemanticStepKind::Field,
-            LedgerIdBytes::from_bytes([0x0e; 16]),
-        ),
-    ])));
-    let label_site = draft.add_site(SiteDef::field_leaf(SemanticPath::from_steps(vec![
-        app,
-        placement,
-        SemanticStep::new(
-            SemanticStepKind::Field,
-            LedgerIdBytes::from_bytes([0x0f; 16]),
-        ),
-    ])));
+    draft.add_site(SiteDef::whole_payload(root_path.clone()));
+    draft.add_site(SiteDef::field_leaf(root_path.child(SemanticStep::new(
+        SemanticStepKind::Field,
+        LedgerIdBytes::from_bytes([0x0e; 16]),
+    ))));
+    let label_site = draft.add_site(SiteDef::field_leaf(root_path.child(SemanticStep::new(
+        SemanticStepKind::Field,
+        LedgerIdBytes::from_bytes([0x0f; 16]),
+    ))));
     let src = draft.intern_string("src/main.mw");
     let name = draft.intern_string("tag");
     let text = draft.intern_text("x");
@@ -666,12 +630,8 @@ fn a_group_branch_durable_image() -> Vec<u8> {
     // field-leaf site per stored field (`title`, `details.pages`, `notes.text`).
     // Every site seals as parked; mutating the image reaches the nested-site path
     // decode and node resolution a flat root never exercises.
-    let app = SemanticStep::new(
-        SemanticStepKind::Application,
+    let root_path = SemanticPath::root(
         LedgerIdBytes::from_bytes([0x0a; 16]),
-    );
-    let root_place = SemanticStep::new(
-        SemanticStepKind::Placement,
         LedgerIdBytes::from_bytes([0x0b; 16]),
     );
     let group = SemanticStep::new(
@@ -684,29 +644,15 @@ fn a_group_branch_durable_image() -> Vec<u8> {
     );
     let field =
         |id: [u8; 16]| SemanticStep::new(SemanticStepKind::Field, LedgerIdBytes::from_bytes(id));
-    draft.add_site(SiteDef::whole_payload(SemanticPath::from_steps(vec![
-        app, root_place,
-    ])));
-    draft.add_site(SiteDef::field_leaf(SemanticPath::from_steps(vec![
-        app,
-        root_place,
-        field([0x0e; 16]),
-    ])));
-    draft.add_site(SiteDef::field_leaf(SemanticPath::from_steps(vec![
-        app,
-        root_place,
-        group,
-        field([0x21; 16]),
-    ])));
-    draft.add_site(SiteDef::whole_payload(SemanticPath::from_steps(vec![
-        app, root_place, branch,
-    ])));
-    draft.add_site(SiteDef::field_leaf(SemanticPath::from_steps(vec![
-        app,
-        root_place,
-        branch,
-        field([0x32; 16]),
-    ])));
+    draft.add_site(SiteDef::whole_payload(root_path.clone()));
+    draft.add_site(SiteDef::field_leaf(root_path.child(field([0x0e; 16]))));
+    draft.add_site(SiteDef::field_leaf(
+        root_path.child(group).child(field([0x21; 16])),
+    ));
+    draft.add_site(SiteDef::whole_payload(root_path.child(branch)));
+    draft.add_site(SiteDef::field_leaf(
+        root_path.child(branch).child(field([0x32; 16])),
+    ));
     let src = draft.intern_string("src/main.mw");
     let name = draft.intern_string("label");
     let zero = draft.intern_int(0);
@@ -965,18 +911,12 @@ fn a_multi_site_durable_image() -> Vec<u8> {
                 .collect(),
         },
     });
-    let app_step = SemanticStep::new(SemanticStepKind::Application, application);
-    let placement_step = SemanticStep::new(SemanticStepKind::Placement, placement);
-    draft.add_site(SiteDef::whole_payload(SemanticPath::from_steps(vec![
-        app_step,
-        placement_step,
-    ])));
+    let root_path = SemanticPath::root(application, placement);
+    draft.add_site(SiteDef::whole_payload(root_path.clone()));
     for id in field_ids {
-        draft.add_site(SiteDef::field_leaf(SemanticPath::from_steps(vec![
-            app_step,
-            placement_step,
-            SemanticStep::new(SemanticStepKind::Field, id),
-        ])));
+        draft.add_site(SiteDef::field_leaf(
+            root_path.child(SemanticStep::new(SemanticStepKind::Field, id)),
+        ));
     }
     let src = draft.intern_string("src/main.mw");
     let name = draft.intern_string("label");
