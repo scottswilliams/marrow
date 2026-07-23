@@ -120,7 +120,7 @@ fn parser_retains_every_semantic_site_span() {
         "        on zero_divisor {\n",
         "            return\n",
         "        }\n",
-        "    call(local, named: mutable)\n",
+        "    call(\"😀\", named: mutable)\n",
         "}\n",
     );
     let parsed = parse_source(source);
@@ -420,16 +420,21 @@ fn parser_retains_every_semantic_site_span() {
     assert_eq!(positional.name, None);
     assert_eq!(positional.name_span, None);
     assert_eq!(named.name.as_deref(), Some("named"));
-    assert_site(
-        source,
-        named.name_span.expect("named argument span"),
-        "named",
+    let named_span = named.name_span.expect("named argument span");
+    assert_site(source, named_span, "named");
+    assert_within(*call_span, named_span, "named argument");
+    let line_start = source[..named_span.start_byte]
+        .rfind('\n')
+        .map_or(0, |newline| newline + 1);
+    let line_prefix = &source[line_start..named_span.start_byte];
+    assert!(
+        line_prefix.contains('😀'),
+        "the column oracle needs an astral scalar before the token on the same line"
     );
-    assert_within(
-        *call_span,
-        named.name_span.expect("named argument span"),
-        "named argument",
-    );
+    let byte_column = line_prefix.len() as u32 + 1;
+    let scalar_column = line_prefix.chars().count() as u32 + 1;
+    assert_eq!(named_span.column, byte_column);
+    assert_ne!(named_span.column, scalar_column);
 }
 
 #[test]
