@@ -11,12 +11,13 @@
 //! To regenerate after an intended change:
 //!   cargo test -p marrow-syntax regenerate_vscode_grammar -- --ignored
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 
 use marrow_syntax::{
-    Keyword, LexicalClass, TokenKind, duration_unit_spellings, is_reserved_word, lex_source,
+    Keyword, LexicalClass, NESTING_DEPTH_LIMIT, NESTING_LIMIT, TokenKind, duration_unit_spellings,
+    is_reserved_word, lex_source,
 };
 
 const KEYWORD_CLASSES: [LexicalClass; 7] = [
@@ -503,12 +504,95 @@ struct ScopedSpan {
     direct_lexical_scope: Option<String>,
 }
 
-#[derive(Clone, Copy)]
-struct ScanContext<'source, 'scope> {
-    source: &'source str,
-    limit: usize,
-    stack: &'scope [String],
-    direct_scope: Option<&'scope str>,
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RegionRule {
+    begin: String,
+    end: String,
+    scope: String,
+    begin_capture: Option<String>,
+    end_capture: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RepositoryRule {
+    name: String,
+    entries: Vec<PatternEntry>,
+    region: Option<RegionRule>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SearchMode {
+    Begin,
+    Entries,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SearchFrame {
+    repository: usize,
+    next_entry: usize,
+    path: Vec<usize>,
+    mode: SearchMode,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RegionFrame {
+    repository: usize,
+    stack: Vec<String>,
+    direct_scope: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum MachineFrame {
+    Region(RegionFrame),
+    Search(SearchFrame),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FrameKind {
+    Root,
+    Region,
+    Search,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SearchContext {
+    stack: Vec<String>,
+    direct_scope: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum MachineAction {
+    NoMatch,
+    Match {
+        end: usize,
+        edge: RuleEdge,
+        scope: Option<String>,
+    },
+    EnterRegion {
+        end: usize,
+        edge: RuleEdge,
+    },
+    ExitRegion {
+        end: usize,
+        edge: RuleEdge,
+    },
+}
+
+const MAX_ORACLE_WORK: usize = 1_048_576;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct WorkBudget {
+    remaining: usize,
+}
+
+impl WorkBudget {
+    fn charge(&mut self) -> Result<(), OracleFailure> {
+        self.remaining = self
+            .remaining
+            .checked_sub(1)
+            .ok_or(OracleFailure::WorkLimit)?;
+        Ok(())
+    }
 }
 
 fn json_string(text: &str) -> (String, usize) {
@@ -659,6 +743,50 @@ fn capture_scope(object: &str, field: &str) -> Option<String> {
         .lines()
         .find(|line| line.contains(&marker))
         .and_then(|line| json_string_field_opt(line, "name"))
+}
+
+fn repository_rules(grammar: &str) -> (Vec<RepositoryRule>, BTreeMap<String, usize>) {
+    let mut repositories = Vec::new();
+    let mut lookup = BTreeMap::new();
+    for name in repository_names(grammar) {
+        let object = repository_object(grammar, &name);
+        let region = json_string_field_opt(object, "begin").map(|begin| RegionRule {
+            begin,
+            end: json_string_field(object, "end"),
+            scope: json_string_field(object, "name"),
+            begin_capture: capture_scope(object, "beginCaptures"),
+            end_capture: capture_scope(object, "endCaptures"),
+        });
+        let index = repositories.len();
+        assert!(
+            lookup.insert(name.clone(), index).is_none(),
+            "duplicate grammar repository '{name}'"
+        );
+        repositories.push(RepositoryRule {
+            entries: pattern_entries(&name, object),
+            name,
+            region,
+        });
+    }
+    (repositories, lookup)
+}
+
+fn default_oracle_work_limit(
+    source_bytes: usize,
+    emitted_edges: usize,
+    repositories: usize,
+) -> Result<usize, OracleFailure> {
+    source_bytes
+        .checked_add(1)
+        .and_then(|source| {
+            emitted_edges
+                .checked_add(repositories)
+                .and_then(|grammar| grammar.checked_add(1))
+                .and_then(|grammar| source.checked_mul(grammar))
+        })
+        .and_then(|work| work.checked_mul(4))
+        .map(|work| work.min(MAX_ORACLE_WORK))
+        .ok_or(OracleFailure::WorkLimit)
 }
 
 fn is_word_at(source: &str, index: usize) -> bool {
@@ -876,18 +1004,49 @@ fn match_restricted_pattern(
         .then_some(start + literal.len())
 }
 
-struct TextMateOracle<'a> {
-    grammar: &'a str,
+struct TextMateOracle {
+    repositories: Vec<RepositoryRule>,
+    repository_lookup: BTreeMap<String, usize>,
+    root_repository: usize,
+    emitted_edge_count: usize,
+    work_limit: Option<usize>,
     spans: Vec<ScopedSpan>,
     successful_edges: BTreeSet<RuleEdge>,
     lexical_scopes: BTreeSet<&'static str>,
     root_scope: String,
 }
 
-impl<'a> TextMateOracle<'a> {
-    fn new(grammar: &'a str) -> Self {
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum OracleFailure {
+    NestingLimit,
+    IncludeCycle(String),
+    IncludeDepthLimit,
+    WorkLimit,
+}
+
+impl TextMateOracle {
+    fn new(grammar: &str) -> Self {
+        let (repositories, repository_lookup) = repository_rules(grammar);
+        let root_repository = *repository_lookup
+            .get("expression")
+            .expect("grammar expression repository");
+        let emitted_edge_count = repositories
+            .iter()
+            .map(|repository| {
+                repository
+                    .entries
+                    .iter()
+                    .filter(|entry| matches!(entry, PatternEntry::Match { .. }))
+                    .count()
+                    + usize::from(repository.region.is_some()) * 2
+            })
+            .sum();
         Self {
-            grammar,
+            repositories,
+            repository_lookup,
+            root_repository,
+            emitted_edge_count,
+            work_limit: None,
             spans: Vec::new(),
             successful_edges: BTreeSet::new(),
             lexical_scopes: lexical_scopes(),
@@ -895,27 +1054,10 @@ impl<'a> TextMateOracle<'a> {
         }
     }
 
-    fn tokenize(mut self, source: &str) -> (Vec<ScopedSpan>, BTreeSet<RuleEdge>) {
-        let root_stack = vec![self.root_scope.clone()];
-        let mut index = 0usize;
-        while index < source.len() {
-            if let Some(end) =
-                self.try_repository("expression", source, index, source.len(), &root_stack, None)
-            {
-                assert!(end > index, "TextMate rule did not consume input");
-                index = end;
-            } else {
-                let end = index
-                    + source[index..]
-                        .chars()
-                        .next()
-                        .expect("source character")
-                        .len_utf8();
-                self.push_span(index..end, &root_stack, None);
-                index = end;
-            }
-        }
-        (self.spans, self.successful_edges)
+    fn with_work_limit(grammar: &str, work_limit: usize) -> Self {
+        let mut oracle = Self::new(grammar);
+        oracle.work_limit = Some(work_limit);
+        oracle
     }
 
     fn push_span(&mut self, span: Range<usize>, stack: &[String], direct_scope: Option<&str>) {
@@ -944,221 +1086,401 @@ impl<'a> TextMateOracle<'a> {
         });
     }
 
-    fn try_pattern(
-        &mut self,
-        edge: &RuleEdge,
-        pattern: &str,
-        source: &str,
-        start: usize,
-        limit: usize,
-    ) -> Option<usize> {
-        let end = match_restricted_pattern(pattern, source, start, limit)?;
-        self.successful_edges.insert(edge.clone());
-        Some(end)
+    fn search_frame(
+        &self,
+        repository: usize,
+        parent_path: &[usize],
+        mode: SearchMode,
+    ) -> Result<SearchFrame, OracleFailure> {
+        if parent_path.contains(&repository) {
+            return Err(OracleFailure::IncludeCycle(
+                self.repositories[repository].name.clone(),
+            ));
+        }
+        if parent_path.len() >= NESTING_DEPTH_LIMIT {
+            return Err(OracleFailure::IncludeDepthLimit);
+        }
+        let mut path = Vec::with_capacity(parent_path.len() + 1);
+        path.extend_from_slice(parent_path);
+        path.push(repository);
+        Ok(SearchFrame {
+            repository,
+            next_entry: 0,
+            path,
+            mode,
+        })
     }
 
-    fn try_entry(
-        &mut self,
+    fn repository_search_mode(&self, repository: usize) -> SearchMode {
+        if self.repositories[repository].region.is_some() {
+            SearchMode::Begin
+        } else {
+            SearchMode::Entries
+        }
+    }
+
+    fn inspect_pattern(
+        &self,
         entry: &PatternEntry,
         source: &str,
         start: usize,
         limit: usize,
-        stack: &[String],
-        inherited_scope: Option<&str>,
-    ) -> Option<usize> {
+    ) -> MachineAction {
         match entry {
-            PatternEntry::Include(include) => self.try_repository(
-                include.trim_start_matches('#'),
-                source,
-                start,
-                limit,
-                stack,
-                inherited_scope,
-            ),
+            PatternEntry::Include(_) => {
+                unreachable!("the machine driver owns repository include dispatch")
+            }
             PatternEntry::Match {
                 edge,
                 scope,
                 pattern,
-            } => {
-                let end = self.try_pattern(edge, pattern, source, start, limit)?;
-                assert!(
-                    end > start,
-                    "TextMate match edge {edge:?} did not consume input"
-                );
-                let mut matched_stack = stack.to_vec();
-                let scope_is_lexical = scope
-                    .as_deref()
-                    .is_some_and(|scope| self.lexical_scopes.contains(scope));
-                if let Some(scope) = scope {
-                    matched_stack.push(scope.clone());
-                }
-                let direct_scope = if scope_is_lexical {
-                    scope.as_deref()
-                } else {
-                    inherited_scope
-                };
-                self.push_span(start..end, &matched_stack, direct_scope);
-                Some(end)
-            }
+            } => match match_restricted_pattern(pattern, source, start, limit) {
+                Some(end) => MachineAction::Match {
+                    end,
+                    edge: edge.clone(),
+                    scope: scope.clone(),
+                },
+                None => MachineAction::NoMatch,
+            },
         }
     }
 
-    fn try_repository(
-        &mut self,
-        name: &str,
+    fn inspect_region_begin(
+        &self,
+        repository: usize,
         source: &str,
         start: usize,
         limit: usize,
-        stack: &[String],
-        inherited_scope: Option<&str>,
-    ) -> Option<usize> {
-        let object = repository_object(self.grammar, name).to_string();
-        if json_string_field_opt(&object, "begin").is_some() {
-            return self.try_region(
-                name,
-                &object,
-                start,
-                ScanContext {
-                    source,
-                    limit,
-                    stack,
-                    direct_scope: inherited_scope,
-                },
-            );
-        }
-        for entry in pattern_entries(name, &object) {
-            if let Some(end) = self.try_entry(&entry, source, start, limit, stack, inherited_scope)
-            {
-                return Some(end);
-            }
-        }
-        None
-    }
-
-    fn try_region(
-        &mut self,
-        name: &str,
-        object: &str,
-        start: usize,
-        context: ScanContext<'_, '_>,
-    ) -> Option<usize> {
-        let begin = json_string_field(object, "begin");
-        let after_begin = self.try_pattern(
-            &RuleEdge::begin(name),
-            &begin,
-            context.source,
-            start,
-            context.limit,
-        )?;
-        assert!(
-            after_begin > start,
-            "TextMate begin edge for '{name}' did not consume input"
-        );
-
-        let region_scope = json_string_field(object, "name");
-        let mut region_stack = context.stack.to_vec();
-        region_stack.push(region_scope.clone());
-        let region_scope_is_lexical = self.lexical_scopes.contains(region_scope.as_str());
-        let region_direct_scope = if region_scope.starts_with("meta.embedded.") {
-            None
-        } else if region_scope_is_lexical {
-            Some(region_scope.as_str())
-        } else {
-            context.direct_scope
-        };
-
-        let begin_capture = capture_scope(object, "beginCaptures");
-        let mut begin_stack = region_stack.clone();
-        let begin_capture_is_lexical = begin_capture
-            .as_deref()
-            .is_some_and(|scope| self.lexical_scopes.contains(scope));
-        if let Some(scope) = &begin_capture {
-            begin_stack.push(scope.clone());
-        }
-        let begin_direct_scope = if begin_capture_is_lexical {
-            begin_capture.as_deref()
-        } else {
-            region_direct_scope
-        };
-        self.push_span(start..after_begin, &begin_stack, begin_direct_scope);
-
-        Some(self.scan_region(
-            name,
-            object,
-            after_begin,
-            ScanContext {
-                source: context.source,
-                limit: context.limit,
-                stack: &region_stack,
-                direct_scope: region_direct_scope,
+    ) -> MachineAction {
+        let rule = self.repositories[repository]
+            .region
+            .as_ref()
+            .expect("region repository");
+        match match_restricted_pattern(&rule.begin, source, start, limit) {
+            Some(end) => MachineAction::EnterRegion {
+                end,
+                edge: RuleEdge::begin(&self.repositories[repository].name),
             },
-        ))
+            None => MachineAction::NoMatch,
+        }
     }
 
-    fn scan_region(
+    fn inspect_region_end(
+        &self,
+        repository: usize,
+        source: &str,
+        start: usize,
+        limit: usize,
+    ) -> MachineAction {
+        let rule = self.repositories[repository]
+            .region
+            .as_ref()
+            .expect("region repository");
+        match match_restricted_pattern(&rule.end, source, start, limit) {
+            Some(end) => MachineAction::ExitRegion {
+                end,
+                edge: RuleEdge::end(&self.repositories[repository].name),
+            },
+            None => MachineAction::NoMatch,
+        }
+    }
+
+    fn raw_fallback(
         &mut self,
-        name: &str,
-        object: &str,
-        mut index: usize,
-        context: ScanContext<'_, '_>,
-    ) -> usize {
-        let end_pattern = json_string_field(object, "end");
-        let end_edge = RuleEdge::end(name);
-        let end_capture = capture_scope(object, "endCaptures");
-        let end_capture_is_lexical = end_capture
-            .as_deref()
-            .is_some_and(|scope| self.lexical_scopes.contains(scope));
-        let entries = pattern_entries(name, object);
+        source: &str,
+        index: usize,
+        context: &SearchContext,
+        work: &mut WorkBudget,
+    ) -> Result<usize, OracleFailure> {
+        work.charge()?;
+        let end = index
+            + source[index..]
+                .chars()
+                .next()
+                .expect("source character")
+                .len_utf8();
+        self.push_span(index..end, &context.stack, context.direct_scope.as_deref());
+        Ok(end)
+    }
 
-        while index < context.limit {
-            if let Some(end) = self.try_pattern(
-                &end_edge,
-                &end_pattern,
-                context.source,
-                index,
-                context.limit,
-            ) {
-                let mut end_stack = context.stack.to_vec();
-                if let Some(scope) = &end_capture {
-                    end_stack.push(scope.clone());
-                }
-                let end_direct_scope = if end_capture_is_lexical {
-                    end_capture.as_deref()
-                } else {
-                    context.direct_scope
-                };
-                self.push_span(index..end, &end_stack, end_direct_scope);
-                return end;
-            }
+    fn tokenize(
+        mut self,
+        source: &str,
+    ) -> Result<(Vec<ScopedSpan>, BTreeSet<RuleEdge>), OracleFailure> {
+        let default_work = default_oracle_work_limit(
+            source.len(),
+            self.emitted_edge_count,
+            self.repositories.len(),
+        )?;
+        let mut work = WorkBudget {
+            remaining: self
+                .work_limit
+                .map_or(default_work, |limit| limit.min(default_work)),
+        };
+        let root_stack = vec![self.root_scope.clone()];
+        let mut frames = Vec::<MachineFrame>::new();
+        let mut search_context = None::<SearchContext>;
+        let mut interpolation_depth = 0usize;
+        let mut index = 0usize;
 
-            let mut consumed = None;
-            for entry in &entries {
-                consumed = self.try_entry(
-                    entry,
-                    context.source,
-                    index,
-                    context.limit,
-                    context.stack,
-                    context.direct_scope,
-                );
-                if consumed.is_some() {
-                    break;
+        while index < source.len() {
+            let frame_kind = match frames.last() {
+                None => FrameKind::Root,
+                Some(MachineFrame::Region(_)) => FrameKind::Region,
+                Some(MachineFrame::Search(_)) => FrameKind::Search,
+            };
+            match frame_kind {
+                FrameKind::Root => {
+                    assert!(
+                        search_context.is_none(),
+                        "root dispatch retained a stale search context"
+                    );
+                    work.charge()?;
+                    let mode = self.repository_search_mode(self.root_repository);
+                    let frame = self.search_frame(self.root_repository, &[], mode)?;
+                    search_context = Some(SearchContext {
+                        stack: root_stack.clone(),
+                        direct_scope: None,
+                    });
+                    frames.push(MachineFrame::Search(frame));
                 }
-            }
-            if let Some(end) = consumed {
-                index = end;
-            } else {
-                let end = index
-                    + context.source[index..context.limit]
-                        .chars()
-                        .next()
-                        .expect("region character")
-                        .len_utf8();
-                self.push_span(index..end, context.stack, context.direct_scope);
-                index = end;
+                FrameKind::Region => {
+                    let region = match frames.last() {
+                        Some(MachineFrame::Region(region)) => region.clone(),
+                        _ => unreachable!("frame kind and region frame agree"),
+                    };
+                    work.charge()?;
+                    match self.inspect_region_end(region.repository, source, index, source.len()) {
+                        MachineAction::NoMatch => {
+                            assert!(
+                                search_context.is_none(),
+                                "region dispatch retained a stale search context"
+                            );
+                            work.charge()?;
+                            search_context = Some(SearchContext {
+                                stack: region.stack.clone(),
+                                direct_scope: region.direct_scope.clone(),
+                            });
+                            frames.push(MachineFrame::Search(self.search_frame(
+                                region.repository,
+                                &[],
+                                SearchMode::Entries,
+                            )?));
+                        }
+                        MachineAction::ExitRegion { end, edge } => {
+                            assert!(
+                                end > index,
+                                "TextMate end edge {edge:?} did not consume input"
+                            );
+                            let Some(MachineFrame::Region(closed)) = frames.pop() else {
+                                unreachable!("frame kind and region frame agree");
+                            };
+                            let rule = self.repositories[closed.repository]
+                                .region
+                                .as_ref()
+                                .expect("region repository")
+                                .clone();
+                            let closes_interpolation =
+                                self.repositories[closed.repository].name == "interpolation";
+                            let mut end_stack = closed.stack;
+                            if let Some(scope) = &rule.end_capture {
+                                end_stack.push(scope.clone());
+                            }
+                            let capture_is_lexical = rule
+                                .end_capture
+                                .as_deref()
+                                .is_some_and(|scope| self.lexical_scopes.contains(scope));
+                            let end_direct_scope = if capture_is_lexical {
+                                rule.end_capture.clone()
+                            } else {
+                                closed.direct_scope
+                            };
+                            self.successful_edges.insert(edge);
+                            self.push_span(index..end, &end_stack, end_direct_scope.as_deref());
+                            if closes_interpolation {
+                                interpolation_depth = interpolation_depth
+                                    .checked_sub(1)
+                                    .expect("an open interpolation contributes one depth");
+                            }
+                            index = end;
+                        }
+                        _ => unreachable!("an end inspector only exits or misses"),
+                    }
+                }
+                FrameKind::Search => {
+                    let frame = match frames.last() {
+                        Some(MachineFrame::Search(frame)) => frame.clone(),
+                        _ => unreachable!("frame kind and search frame agree"),
+                    };
+                    match frame.mode {
+                        SearchMode::Begin => {
+                            work.charge()?;
+                            match self.inspect_region_begin(
+                                frame.repository,
+                                source,
+                                index,
+                                source.len(),
+                            ) {
+                                MachineAction::NoMatch => {
+                                    assert!(matches!(frames.pop(), Some(MachineFrame::Search(_))));
+                                    if !matches!(frames.last(), Some(MachineFrame::Search(_))) {
+                                        let context =
+                                            search_context.take().expect("active search context");
+                                        index =
+                                            self.raw_fallback(source, index, &context, &mut work)?;
+                                    }
+                                }
+                                MachineAction::EnterRegion { end, edge } => {
+                                    assert!(
+                                        end > index,
+                                        "TextMate begin edge {edge:?} did not consume input"
+                                    );
+                                    let repository_name =
+                                        self.repositories[frame.repository].name.clone();
+                                    if repository_name == "interpolation" {
+                                        if interpolation_depth >= NESTING_DEPTH_LIMIT {
+                                            return Err(OracleFailure::NestingLimit);
+                                        }
+                                        interpolation_depth += 1;
+                                    }
+                                    let context =
+                                        search_context.take().expect("active search context");
+                                    let rule = self.repositories[frame.repository]
+                                        .region
+                                        .as_ref()
+                                        .expect("region repository")
+                                        .clone();
+                                    let mut region_stack = context.stack;
+                                    region_stack.push(rule.scope.clone());
+                                    let scope_is_lexical =
+                                        self.lexical_scopes.contains(rule.scope.as_str());
+                                    let region_direct_scope =
+                                        if rule.scope.starts_with("meta.embedded.") {
+                                            None
+                                        } else if scope_is_lexical {
+                                            Some(rule.scope.clone())
+                                        } else {
+                                            context.direct_scope
+                                        };
+                                    let mut begin_stack = region_stack.clone();
+                                    if let Some(scope) = &rule.begin_capture {
+                                        begin_stack.push(scope.clone());
+                                    }
+                                    let capture_is_lexical = rule
+                                        .begin_capture
+                                        .as_deref()
+                                        .is_some_and(|scope| self.lexical_scopes.contains(scope));
+                                    let begin_direct_scope = if capture_is_lexical {
+                                        rule.begin_capture.clone()
+                                    } else {
+                                        region_direct_scope.clone()
+                                    };
+                                    while matches!(frames.last(), Some(MachineFrame::Search(_))) {
+                                        frames.pop();
+                                    }
+                                    self.successful_edges.insert(edge);
+                                    self.push_span(
+                                        index..end,
+                                        &begin_stack,
+                                        begin_direct_scope.as_deref(),
+                                    );
+                                    frames.push(MachineFrame::Region(RegionFrame {
+                                        repository: frame.repository,
+                                        stack: region_stack,
+                                        direct_scope: region_direct_scope,
+                                    }));
+                                    index = end;
+                                }
+                                _ => unreachable!("a begin inspector only enters or misses"),
+                            }
+                        }
+                        SearchMode::Entries => {
+                            let entry = self.repositories[frame.repository]
+                                .entries
+                                .get(frame.next_entry)
+                                .cloned();
+                            let Some(entry) = entry else {
+                                work.charge()?;
+                                assert!(matches!(frames.pop(), Some(MachineFrame::Search(_))));
+                                if !matches!(frames.last(), Some(MachineFrame::Search(_))) {
+                                    let context =
+                                        search_context.take().expect("active search context");
+                                    index =
+                                        self.raw_fallback(source, index, &context, &mut work)?;
+                                }
+                                continue;
+                            };
+                            let Some(MachineFrame::Search(active)) = frames.last_mut() else {
+                                unreachable!("frame kind and search frame agree");
+                            };
+                            active.next_entry += 1;
+                            match entry {
+                                PatternEntry::Include(include) => {
+                                    work.charge()?;
+                                    let include = include.trim_start_matches('#');
+                                    let repository =
+                                        *self.repository_lookup.get(include).unwrap_or_else(|| {
+                                            panic!("missing grammar repository '{include}'")
+                                        });
+                                    let mode = self.repository_search_mode(repository);
+                                    frames.push(MachineFrame::Search(self.search_frame(
+                                        repository,
+                                        &frame.path,
+                                        mode,
+                                    )?));
+                                }
+                                PatternEntry::Match { .. } => {
+                                    work.charge()?;
+                                    match self.inspect_pattern(&entry, source, index, source.len())
+                                    {
+                                        MachineAction::NoMatch => {}
+                                        MachineAction::Match { end, edge, scope } => {
+                                            assert!(
+                                                end > index,
+                                                "TextMate match edge {edge:?} did not consume input"
+                                            );
+                                            let context = search_context
+                                                .take()
+                                                .expect("active search context");
+                                            let mut matched_stack = context.stack;
+                                            let scope_is_lexical =
+                                                scope.as_deref().is_some_and(|scope| {
+                                                    self.lexical_scopes.contains(scope)
+                                                });
+                                            if let Some(scope) = &scope {
+                                                matched_stack.push(scope.clone());
+                                            }
+                                            let direct_scope = if scope_is_lexical {
+                                                scope.as_deref()
+                                            } else {
+                                                context.direct_scope.as_deref()
+                                            };
+                                            while matches!(
+                                                frames.last(),
+                                                Some(MachineFrame::Search(_))
+                                            ) {
+                                                frames.pop();
+                                            }
+                                            self.successful_edges.insert(edge);
+                                            self.push_span(
+                                                index..end,
+                                                &matched_stack,
+                                                direct_scope,
+                                            );
+                                            index = end;
+                                        }
+                                        _ => unreachable!(
+                                            "a pattern inspector only matches or misses"
+                                        ),
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
-        context.limit
+        Ok((self.spans, self.successful_edges))
     }
 }
 
@@ -1203,9 +1525,67 @@ fn scoped_span_at(spans: &[ScopedSpan], byte: usize) -> &ScopedSpan {
     span
 }
 
+fn nested_interpolation(depth: usize) -> String {
+    let mut source = String::with_capacity(depth * 5 + 1);
+    for _ in 0..depth {
+        source.push_str("$\"{");
+    }
+    source.push('x');
+    for _ in 0..depth {
+        source.push_str("}\"");
+    }
+    source
+}
+
+fn include_cycle_grammar(repositories: &[(&str, &str)]) -> String {
+    let mut grammar = String::from("{\n  \"scopeName\": \"source.marrow\",\n  \"repository\": {\n");
+    for (index, (name, include)) in repositories.iter().enumerate() {
+        grammar.push_str(&format!(
+            "    \"{name}\": {{\n      \"patterns\": [\n        \
+             {{ \"include\": \"#{include}\" }}\n      ]\n    }}{}\n",
+            if index + 1 == repositories.len() {
+                ""
+            } else {
+                ","
+            }
+        ));
+    }
+    grammar.push_str("  }\n}\n");
+    grammar
+}
+
+fn include_chain_grammar(repository_count: usize) -> String {
+    assert!(repository_count > 0, "an include chain has a root");
+    let names: Vec<_> = (0..repository_count)
+        .map(|index| {
+            if index == 0 {
+                "expression".to_string()
+            } else {
+                format!("chain_{index}")
+            }
+        })
+        .collect();
+    let mut grammar = String::from("{\n  \"scopeName\": \"source.marrow\",\n  \"repository\": {\n");
+    for (index, name) in names.iter().enumerate() {
+        let entry = if let Some(next) = names.get(index + 1) {
+            format!("{{ \"include\": \"#{next}\" }}")
+        } else {
+            "{ \"match\": \"x\" }".to_string()
+        };
+        grammar.push_str(&format!(
+            "    \"{name}\": {{\n      \"patterns\": [\n        {entry}\n      ]\n    }}{}\n",
+            if index + 1 == names.len() { "" } else { "," }
+        ));
+    }
+    grammar.push_str("  }\n}\n");
+    grammar
+}
+
 fn assert_emitted_scopes_match_lexer(source: &str, successful_edges: &mut BTreeSet<RuleEdge>) {
     let grammar = render_grammar();
-    let (spans, fixture_successful_edges) = TextMateOracle::new(&grammar).tokenize(source);
+    let (spans, fixture_successful_edges) = TextMateOracle::new(&grammar)
+        .tokenize(source)
+        .expect("the emitted grammar corpus stays within oracle limits");
     successful_edges.extend(fixture_successful_edges);
     let lexed = lex_source(source);
     assert!(
@@ -1313,6 +1693,128 @@ fn validate_token_inventory(inventory: &[TokenKind]) -> Result<(), String> {
 }
 
 #[test]
+fn textmate_oracle_matches_the_parser_interpolation_depth_boundary() {
+    let grammar = render_grammar();
+    let admitted = nested_interpolation(NESTING_DEPTH_LIMIT);
+    let refused = nested_interpolation(NESTING_DEPTH_LIMIT + 1);
+
+    let admitted_lex = lex_source(&admitted);
+    assert!(
+        admitted_lex.diagnostics.is_empty(),
+        "the exact parser nesting boundary must remain admitted: {:#?}",
+        admitted_lex.diagnostics
+    );
+    let refused_lex = lex_source(&refused);
+    assert_eq!(
+        refused_lex
+            .diagnostics
+            .iter()
+            .filter(|diagnostic| diagnostic.code == NESTING_LIMIT)
+            .count(),
+        1,
+        "the first over-limit interpolation must be the parser-owned nesting refusal: {:#?}",
+        refused_lex.diagnostics
+    );
+
+    TextMateOracle::new(&grammar)
+        .tokenize(&admitted)
+        .expect("the oracle must admit the parser's exact nesting boundary");
+    assert_eq!(
+        TextMateOracle::new(&grammar).tokenize(&refused),
+        Err(OracleFailure::NestingLimit)
+    );
+}
+
+#[test]
+fn textmate_oracle_rejects_direct_and_mutual_include_cycles() {
+    let direct = include_cycle_grammar(&[("expression", "expression")]);
+    assert_eq!(
+        TextMateOracle::new(&direct).tokenize("x"),
+        Err(OracleFailure::IncludeCycle("expression".to_string()))
+    );
+
+    let mutual = include_cycle_grammar(&[("expression", "other"), ("other", "expression")]);
+    assert_eq!(
+        TextMateOracle::new(&mutual).tokenize("x"),
+        Err(OracleFailure::IncludeCycle("expression".to_string()))
+    );
+}
+
+#[test]
+fn textmate_oracle_bounds_unique_include_depth() {
+    let admitted = include_chain_grammar(NESTING_DEPTH_LIMIT);
+    TextMateOracle::new(&admitted)
+        .tokenize("x")
+        .expect("the exact unique-include depth boundary must be admitted");
+
+    let refused = include_chain_grammar(NESTING_DEPTH_LIMIT + 1);
+    assert_eq!(
+        TextMateOracle::new(&refused).tokenize("x"),
+        Err(OracleFailure::IncludeDepthLimit)
+    );
+}
+
+#[test]
+fn textmate_oracle_work_budget_bites_at_the_first_excess_operation() {
+    const REQUIRED_WORK: usize = 2;
+    let grammar = include_chain_grammar(1);
+    TextMateOracle::with_work_limit(&grammar, REQUIRED_WORK)
+        .tokenize("x")
+        .expect("one repository visit and one matching edge fit the exact budget");
+    assert_eq!(
+        TextMateOracle::with_work_limit(&grammar, REQUIRED_WORK - 1).tokenize("x"),
+        Err(OracleFailure::WorkLimit)
+    );
+
+    assert_eq!(
+        default_oracle_work_limit(usize::MAX, 0, 0),
+        Err(OracleFailure::WorkLimit)
+    );
+    assert_eq!(
+        default_oracle_work_limit(MAX_ORACLE_WORK, MAX_ORACLE_WORK, 0),
+        Ok(MAX_ORACLE_WORK)
+    );
+}
+
+#[test]
+fn textmate_oracle_traversal_has_one_non_recursive_driver() {
+    let source = include_str!("vscode_grammar.rs");
+    for legacy_dispatcher in [
+        concat!("fn try_", "entry("),
+        concat!("fn try_", "repository("),
+        concat!("fn try_", "region("),
+        concat!("fn scan_", "region("),
+    ] {
+        assert!(
+            !source.contains(legacy_dispatcher),
+            "legacy recursive dispatcher survived: {legacy_dispatcher}"
+        );
+    }
+    assert_eq!(
+        source.matches(concat!("match frame_", "kind {")).count(),
+        1,
+        "exactly one driver must dispatch the explicit machine frame kinds"
+    );
+    for recursive_call in [
+        concat!("self.", "tokenize("),
+        concat!("Self::", "tokenize("),
+    ] {
+        assert!(
+            !source.contains(recursive_call),
+            "the consuming driver must not call itself"
+        );
+    }
+
+    let pattern_leaf: fn(&TextMateOracle, &PatternEntry, &str, usize, usize) -> MachineAction =
+        TextMateOracle::inspect_pattern;
+    let begin_leaf: fn(&TextMateOracle, usize, &str, usize, usize) -> MachineAction =
+        TextMateOracle::inspect_region_begin;
+    let end_leaf: fn(&TextMateOracle, usize, &str, usize, usize) -> MachineAction =
+        TextMateOracle::inspect_region_end;
+    let _ = (pattern_leaf, begin_leaf, end_leaf);
+}
+
+#[test]
 fn generated_grammar_is_committed() {
     let path = grammar_path();
     let committed = std::fs::read_to_string(&path)
@@ -1403,7 +1905,9 @@ fn single_owner_rejects_spelling_and_inventory_mutations() {
 fn interpolation_holes_retain_the_complete_scope_stack() {
     let source = r#"$"plain {name true 1.2} tail""#;
     let grammar = render_grammar();
-    let (spans, _) = TextMateOracle::new(&grammar).tokenize(source);
+    let (spans, _) = TextMateOracle::new(&grammar)
+        .tokenize(source)
+        .expect("stack fixture stays within oracle limits");
     let stack_at = |needle: &str| {
         let byte = source.find(needle).expect("needle in stack fixture");
         scoped_span_at(&spans, byte)
@@ -1506,7 +2010,9 @@ fn interpolation_holes_retain_the_complete_scope_stack() {
     );
 
     let nested_source = r#"$"outer {$"inner {name true 1.2}"} tail""#;
-    let (nested_spans, _) = TextMateOracle::new(&grammar).tokenize(nested_source);
+    let (nested_spans, _) = TextMateOracle::new(&grammar)
+        .tokenize(nested_source)
+        .expect("nested stack fixture stays within oracle limits");
     let nested_name = scoped_span_at(
         &nested_spans,
         nested_source.find("name").expect("name in nested fixture"),
@@ -1527,7 +2033,9 @@ fn interpolation_holes_retain_the_complete_scope_stack() {
 #[test]
 fn textmate_coverage_counts_only_successful_rule_edges() {
     let grammar = render_grammar();
-    let (_, covered) = TextMateOracle::new(&grammar).tokenize("name");
+    let (_, covered) = TextMateOracle::new(&grammar)
+        .tokenize("name")
+        .expect("coverage fixture stays within oracle limits");
 
     assert_eq!(
         covered,
