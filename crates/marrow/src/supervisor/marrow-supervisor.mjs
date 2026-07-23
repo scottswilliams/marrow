@@ -166,8 +166,11 @@ function encodeInto(value, out) {
       throw new TypeError(`not a wire value: ${typeof value}`);
   }
   if (Array.isArray(value)) {
+    const sparseError = () => new TypeError("sparse array is not a wire value");
+    const length = requireDenseArray(value, sparseError);
     out.push("[");
-    for (let i = 0; i < value.length; i += 1) {
+    for (let i = 0; i < length; i += 1) {
+      if (!hasOwn(value, i)) throw sparseError();
       if (i > 0) out.push(",");
       encodeInto(value[i], out);
     }
@@ -177,10 +180,14 @@ function encodeInto(value, out) {
   const keys = Object.keys(value).sort(byUtf8);
   out.push("{");
   for (let i = 0; i < keys.length; i += 1) {
+    const key = keys[i];
     if (i > 0) out.push(",");
-    encodeString(keys[i], out);
+    encodeString(key, out);
     out.push(":");
-    encodeInto(value[keys[i]], out);
+    if (!hasOwn(value, key)) {
+      throw new TypeError("wire object changed during canonical encoding");
+    }
+    encodeInto(value[key], out);
   }
   out.push("}");
 }
@@ -492,6 +499,39 @@ function decodeOneFrame(frames, chunk) {
 // validation so a mismatched argument fails here with a `TypeError` before any
 // byte is sent (the runner remains authoritative).
 
+function hasOwn(value, key) {
+  return Object.prototype.hasOwnProperty.call(value, key);
+}
+
+function defineOwnData(target, key, value) {
+  Object.defineProperty(target, key, {
+    configurable: true,
+    enumerable: true,
+    value,
+    writable: true,
+  });
+}
+
+// Transferred arrays are dense vectors. Validate every slot before reading it,
+// then build a fresh ordinary Array without consulting receiver-controlled hooks.
+function requireDenseArray(value, sparseError) {
+  const length = value.length;
+  for (let i = 0; i < length; i += 1) {
+    if (!hasOwn(value, i)) throw sparseError();
+  }
+  return length;
+}
+
+function mapDenseArray(value, transform, sparseError) {
+  const length = requireDenseArray(value, sparseError);
+  const result = [];
+  for (let i = 0; i < length; i += 1) {
+    if (!hasOwn(value, i)) throw sparseError();
+    defineOwnData(result, i, transform(value[i], i));
+  }
+  return result;
+}
+
 const DATE_TEXT = /^(\d{4})-(\d{2})-(\d{2})$/;
 const INSTANT_TEXT = /^(\d{4}-\d{2}-\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,9}))?Z$/;
 const DURATION_TEXT = /^(-)?PT(0|[1-9]\d*)(?:\.(\d{1,9}))?S$/;
@@ -605,11 +645,12 @@ export function eRecord(fields) {
     }
     const out = {};
     for (const [name, required, encode] of fields) {
-      const field = v[name];
-      if (field === undefined) {
+      const present = hasOwn(v, name);
+      const field = present ? v[name] : undefined;
+      if (!present || field === undefined) {
         if (required) throw new TypeError(`missing required field \`${name}\``);
       } else {
-        out[name] = encode(field);
+        defineOwnData(out, name, encode(field));
       }
     }
     return out;
@@ -620,7 +661,11 @@ export function eRecord(fields) {
 export function eList(inner) {
   return (v) => {
     if (!Array.isArray(v)) throw new TypeError("expected an array");
-    return v.map((item) => inner(item));
+    return mapDenseArray(
+      v,
+      (item) => inner(item),
+      () => new TypeError("expected a dense array"),
+    );
   };
 }
 
@@ -632,16 +677,29 @@ export function eMap(encKey, encValue) {
   return (v) => {
     if (!Array.isArray(v)) throw new TypeError("expected an array of [key, value] pairs");
     const seen = new Set();
-    return v.map((pair) => {
-      if (!Array.isArray(pair) || pair.length !== 2) {
-        throw new TypeError("expected a [key, value] pair");
-      }
-      const key = encKey(pair[0]);
-      const token = encodeCanonical(key).toString("utf8");
-      if (seen.has(token)) throw new TypeError("duplicate map key");
-      seen.add(token);
-      return [key, encValue(pair[1])];
-    });
+    return mapDenseArray(
+      v,
+      (pair) => {
+        if (!Array.isArray(pair) || pair.length !== 2) {
+          throw new TypeError("expected a [key, value] pair");
+        }
+        return mapDenseArray(
+          pair,
+          (leaf, index) => {
+            if (index === 0) {
+              const key = encKey(leaf);
+              const token = encodeCanonical(key).toString("utf8");
+              if (seen.has(token)) throw new TypeError("duplicate map key");
+              seen.add(token);
+              return key;
+            }
+            return encValue(leaf);
+          },
+          () => new TypeError("expected a dense [key, value] pair"),
+        );
+      },
+      () => new TypeError("expected a dense array of [key, value] pairs"),
+    );
   };
 }
 
@@ -651,32 +709,55 @@ export function eMap(encKey, encValue) {
  */
 export function eId(root, encKeys) {
   return (v) => {
-    if (v === null || typeof v !== "object" || v.root !== root || !Array.isArray(v.key)) {
+    if (v === null || typeof v !== "object" || !hasOwn(v, "root")) {
       throw new TypeError(`expected an identity for root \`${root}\``);
     }
-    if (v.key.length !== encKeys.length) {
+    const actualRoot = v.root;
+    if (!hasOwn(v, "key")) {
+      throw new TypeError(`expected an identity for root \`${root}\``);
+    }
+    const key = v.key;
+    if (actualRoot !== root || !Array.isArray(key)) {
+      throw new TypeError(`expected an identity for root \`${root}\``);
+    }
+    if (key.length !== encKeys.length) {
       throw new TypeError(`wrong key arity for root \`${root}\``);
     }
-    return v.key.map((k, i) => encKeys[i](k));
+    return mapDenseArray(
+      key,
+      (key, index) => encKeys[index](key),
+      () => new TypeError(`expected a dense identity key for root \`${root}\``),
+    );
   };
 }
 
 /** variants: `[name, [payload encoders]]` pairs in declaration order. */
 export function eSum(variants) {
   return (v) => {
-    if (!hasExactKeys(v, ["member", "payload"]) || typeof v.member !== "string") {
+    if (!hasExactKeys(v, ["member", "payload"])) {
       throw new TypeError("expected an enum value `{ member, payload }`");
     }
-    const variant = variants.find(([name]) => name === v.member);
+    const member = v.member;
+    if (typeof member !== "string" || !hasOwn(v, "payload")) {
+      throw new TypeError("expected an enum value `{ member, payload }`");
+    }
+    const payload = v.payload;
+    const variant = variants.find(([name]) => name === member);
     if (variant === undefined) {
-      throw new TypeError(`unknown enum member \`${v.member}\``);
+      throw new TypeError(`unknown enum member \`${member}\``);
     }
     const [, encoders] = variant;
-    const payload = v.payload;
     if (!Array.isArray(payload) || payload.length !== encoders.length) {
-      throw new TypeError(`wrong payload arity for \`${v.member}\``);
+      throw new TypeError(`wrong payload arity for \`${member}\``);
     }
-    return { member: v.member, payload: payload.map((leaf, i) => encoders[i](leaf)) };
+    return {
+      member,
+      payload: mapDenseArray(
+        payload,
+        (leaf, index) => encoders[index](leaf),
+        () => new TypeError(`expected a dense payload for \`${member}\``),
+      ),
+    };
   };
 }
 
@@ -794,11 +875,12 @@ export function dRecord(fields) {
     }
     const out = {};
     for (const [name, required, decode] of fields) {
-      const field = d[name];
-      if (field === undefined) {
+      const present = hasOwn(d, name);
+      const field = present ? d[name] : undefined;
+      if (!present || field === undefined) {
         if (required) throw protocol(`missing required field \`${name}\``);
       } else {
-        out[name] = decode(field);
+        defineOwnData(out, name, decode(field));
       }
     }
     return out;
@@ -808,7 +890,11 @@ export function dRecord(fields) {
 export function dList(inner) {
   return (d) => {
     if (!Array.isArray(d)) throw protocol("expected a list array");
-    return d.map((item) => inner(item));
+    return mapDenseArray(
+      d,
+      (item) => inner(item),
+      () => protocol("expected a dense list array"),
+    );
   };
 }
 
@@ -816,16 +902,29 @@ export function dMap(decKey, decValue) {
   return (d) => {
     if (!Array.isArray(d)) throw protocol("expected a map array");
     const seen = new Set();
-    return d.map((pair) => {
-      if (!Array.isArray(pair) || pair.length !== 2) {
-        throw protocol("expected a [key, value] pair");
-      }
-      const key = decKey(pair[0]);
-      const token = encodeCanonical(key).toString("utf8");
-      if (seen.has(token)) throw protocol("duplicate map key");
-      seen.add(token);
-      return [key, decValue(pair[1])];
-    });
+    return mapDenseArray(
+      d,
+      (pair) => {
+        if (!Array.isArray(pair) || pair.length !== 2) {
+          throw protocol("expected a [key, value] pair");
+        }
+        return mapDenseArray(
+          pair,
+          (leaf, index) => {
+            if (index === 0) {
+              const key = decKey(leaf);
+              const token = encodeCanonical(key).toString("utf8");
+              if (seen.has(token)) throw protocol("duplicate map key");
+              seen.add(token);
+              return key;
+            }
+            return decValue(leaf);
+          },
+          () => protocol("expected a dense [key, value] pair"),
+        );
+      },
+      () => protocol("expected a dense map array"),
+    );
   };
 }
 
@@ -834,24 +933,40 @@ export function dId(root, decKeys) {
     if (!Array.isArray(d) || d.length !== decKeys.length) {
       throw protocol("expected an identity key array");
     }
-    return { root, key: d.map((k, i) => decKeys[i](k)) };
+    return {
+      root,
+      key: mapDenseArray(
+        d,
+        (key, index) => decKeys[index](key),
+        () => protocol("expected a dense identity key array"),
+      ),
+    };
   };
 }
 
 export function dSum(variants) {
   return (d) => {
-    if (!hasExactKeys(d, ["member", "payload"]) || typeof d.member !== "string") {
+    if (!hasExactKeys(d, ["member", "payload"])) {
       throw protocol("expected an enum value");
     }
-    const variant = variants.find(([name]) => name === d.member);
-    if (variant === undefined) throw protocol(`unknown member \`${d.member}\``);
+    const member = d.member;
+    if (typeof member !== "string" || !hasOwn(d, "payload")) {
+      throw protocol("expected an enum value");
+    }
+    const payload = d.payload;
+    const variant = variants.find(([name]) => name === member);
+    if (variant === undefined) throw protocol(`unknown member \`${member}\``);
     const [, decoders] = variant;
-    if (!Array.isArray(d.payload) || d.payload.length !== decoders.length) {
+    if (!Array.isArray(payload) || payload.length !== decoders.length) {
       throw protocol("wrong payload arity");
     }
     return {
-      member: d.member,
-      payload: d.payload.map((leaf, i) => decoders[i](leaf)),
+      member,
+      payload: mapDenseArray(
+        payload,
+        (leaf, index) => decoders[index](leaf),
+        () => protocol("expected a dense enum payload"),
+      ),
     };
   };
 }

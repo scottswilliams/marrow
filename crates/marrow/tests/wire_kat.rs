@@ -103,6 +103,163 @@ function lines(name) {
     .filter((line) => line.length > 0 && !line.startsWith("#"));
 }
 
+function defineData(target, key, value) {
+  Object.defineProperty(target, key, {
+    configurable: true,
+    enumerable: true,
+    value,
+    writable: true,
+  });
+  return target;
+}
+
+function ownObject(entries, prototype = Object.prototype) {
+  const value = Object.create(prototype);
+  for (const [key, field] of entries) defineData(value, key, field);
+  return value;
+}
+
+function normalOwnData(target, key, expected) {
+  const descriptor = Object.getOwnPropertyDescriptor(target, key);
+  return (
+    descriptor !== undefined &&
+    descriptor.configurable === true &&
+    descriptor.enumerable === true &&
+    descriptor.writable === true &&
+    Object.is(descriptor.value, expected) &&
+    descriptor.get === undefined &&
+    descriptor.set === undefined
+  );
+}
+
+function normalDenseArray(value, expected) {
+  if (
+    !Array.isArray(value) ||
+    Object.getPrototypeOf(value) !== Array.prototype ||
+    value.length !== expected.length
+  ) {
+    return false;
+  }
+  for (let i = 0; i < expected.length; i += 1) {
+    if (!normalOwnData(value, String(i), expected[i])) return false;
+  }
+  return true;
+}
+
+function inheritedSparse(length, index, inheritedValue) {
+  let reads = 0;
+  const prototype = Object.create(Array.prototype);
+  Object.defineProperty(prototype, String(index), {
+    configurable: true,
+    enumerable: true,
+    get() {
+      reads += 1;
+      return inheritedValue;
+    },
+  });
+  const value = [];
+  value.length = length;
+  Object.setPrototypeOf(value, prototype);
+  return { value, reads: () => reads };
+}
+
+function mutatingDense(firstValue, inheritedValue) {
+  let reads = 0;
+  const prototype = Object.create(Array.prototype);
+  Object.defineProperty(prototype, "1", {
+    configurable: true,
+    enumerable: true,
+    get() {
+      reads += 1;
+      return inheritedValue;
+    },
+  });
+  const value = [];
+  Object.setPrototypeOf(value, prototype);
+  defineData(value, "1", inheritedValue);
+  Object.defineProperty(value, "0", {
+    configurable: true,
+    enumerable: true,
+    get() {
+      delete value[1];
+      return firstValue;
+    },
+  });
+  return { value, reads: () => reads };
+}
+
+function mutatingOwnObject(firstValue, inheritedValue) {
+  let reads = 0;
+  const prototype = {};
+  Object.defineProperty(prototype, "b", {
+    configurable: true,
+    enumerable: true,
+    get() {
+      reads += 1;
+      return inheritedValue;
+    },
+  });
+  const value = Object.create(prototype);
+  defineData(value, "b", inheritedValue);
+  Object.defineProperty(value, "a", {
+    configurable: true,
+    enumerable: true,
+    get() {
+      delete value.b;
+      return firstValue;
+    },
+  });
+  return { value, reads: () => reads };
+}
+
+function rejectSparseWithoutRead(label, sparse, crossing, ErrorType) {
+  let error;
+  try {
+    crossing(sparse.value);
+  } catch (caught) {
+    error = caught;
+  }
+  ok(
+    label,
+    error instanceof ErrorType &&
+      (!(error instanceof M.WireFormatError) || error.code === "wire.malformed") &&
+      sparse.reads() === 0,
+    `error=${String(error)} inheritedReads=${sparse.reads()}`,
+  );
+}
+
+function hookedDense(values, placement, hook) {
+  let observations = 0;
+  const value = [];
+  for (let i = 0; i < values.length; i += 1) {
+    defineData(value, String(i), values[i]);
+  }
+  const target = placement === "own" ? value : Object.create(Array.prototype);
+  if (hook === "species") {
+    const constructor = {};
+    Object.defineProperty(constructor, Symbol.species, {
+      configurable: true,
+      get() {
+        observations += 1;
+        throw new Error("transferred constructor species was observed");
+      },
+    });
+    defineData(target, "constructor", constructor);
+  } else {
+    const key = hook === "iterator" ? Symbol.iterator : hook;
+    Object.defineProperty(target, key, {
+      configurable: true,
+      enumerable: hook !== "iterator",
+      get() {
+        observations += 1;
+        throw new Error(`transferred ${hook} hook was observed`);
+      },
+    });
+  }
+  if (placement === "inherited") Object.setPrototypeOf(value, target);
+  return { value, observations: () => observations };
+}
+
 // Accepted: the mirror parses each canonical form and its encoder reproduces the
 // identical bytes. parseCanonical itself rejects any input its own encoder does
 // not consider canonical, so a byte disagreement fails here.
@@ -143,6 +300,7 @@ for (const line of lines("noncanonical_kat.tsv")) {
 function driveReply(messages, options = {}) {
   const observed = {
     current: null,
+    currentSettles: 0,
     queued: null,
     pump: 0,
     tornDown: false,
@@ -164,9 +322,11 @@ function driveReply(messages, options = {}) {
     turn: options.pendingTurn ?? 0n,
     decode: options.decode ?? ((value) => value),
     resolve(value) {
+      observed.currentSettles += 1;
       observed.current = { kind: "value", value };
     },
     reject(error) {
+      observed.currentSettles += 1;
       observed.current = { kind: "error", error };
     },
   };
@@ -511,6 +671,531 @@ for (const [label, encode, decode, value] of [
   } catch (error) {
     ok(`crossing-${label}`, false, String(error));
   }
+}
+
+{
+  const encodeNested = M.eRecord([["value", true, M.eInt]]);
+  const decodeNested = M.dRecord([["value", true, M.dInt]]);
+  const encoders = [
+    ["__proto__", true, encodeNested],
+    ["constructor", true, M.eInt],
+    ["prototype", true, M.eInt],
+    ["toString", true, M.eInt],
+  ];
+  const decoders = [
+    ["__proto__", true, decodeNested],
+    ["constructor", true, M.dInt],
+    ["prototype", true, M.dInt],
+    ["toString", true, M.dInt],
+  ];
+  const input = ownObject([
+    ["__proto__", ownObject([["value", 7n]])],
+    ["constructor", 8n],
+    ["prototype", 9n],
+    ["toString", 10n],
+  ]);
+  let encoded;
+  let canonical;
+  let decoded;
+  let error;
+  try {
+    encoded = M.eRecord(encoders)(input);
+    canonical = M.encodeCanonical(encoded);
+    const parsed = M.parseCanonical(canonical);
+    decoded = M.dRecord(decoders)(parsed);
+  } catch (caught) {
+    error = caught;
+  }
+  const encodedProto = encoded === undefined
+    ? undefined
+    : Object.getOwnPropertyDescriptor(encoded, "__proto__")?.value;
+  const decodedProto = decoded === undefined
+    ? undefined
+    : Object.getOwnPropertyDescriptor(decoded, "__proto__")?.value;
+  ok(
+    "record-collision-round-trip",
+    error === undefined &&
+      canonical.toString("utf8") ===
+      '{"__proto__":{"value":7},"constructor":8,"prototype":9,"toString":10}' &&
+      Object.getPrototypeOf(encoded) === Object.prototype &&
+      Object.getPrototypeOf(decoded) === Object.prototype &&
+      normalOwnData(encoded, "__proto__", encodedProto) &&
+      normalOwnData(encoded, "constructor", 8n) &&
+      normalOwnData(encoded, "prototype", 9n) &&
+      normalOwnData(encoded, "toString", 10n) &&
+      normalOwnData(encodedProto, "value", 7n) &&
+      normalOwnData(decoded, "__proto__", decodedProto) &&
+      normalOwnData(decoded, "constructor", 8n) &&
+      normalOwnData(decoded, "prototype", 9n) &&
+      normalOwnData(decoded, "toString", 10n) &&
+      normalOwnData(decodedProto, "value", 7n),
+    error === undefined ? canonical.toString("utf8") : String(error),
+  );
+}
+
+for (const [label, crossing, ErrorType] of [
+  ["encode", M.eRecord, TypeError],
+  ["decode", M.dRecord, M.WireFormatError],
+]) {
+  const scalar = label === "encode" ? M.eInt : M.dInt;
+  const inherited = ownObject([
+    ["__proto__", 1n],
+    ["constructor", 2n],
+    ["prototype", 3n],
+    ["toString", 4n],
+  ]);
+  for (const name of ["__proto__", "constructor", "prototype", "toString"]) {
+    let error;
+    try {
+      crossing([[name, true, scalar]])(Object.create(inherited));
+    } catch (caught) {
+      error = caught;
+    }
+    ok(
+      `record-${label}-required-${name}-must-be-own`,
+      error instanceof ErrorType,
+      String(error),
+    );
+  }
+
+  const optional = crossing([
+    ["__proto__", false, scalar],
+    ["constructor", false, scalar],
+    ["prototype", false, scalar],
+    ["toString", false, scalar],
+  ])(Object.create(inherited));
+  ok(
+    `record-${label}-optional-inherited-fields-absent`,
+    Object.getPrototypeOf(optional) === Object.prototype &&
+      Object.keys(optional).length === 0,
+    Object.keys(optional).join(","),
+  );
+
+  const explicitUndefined = Object.create(inherited);
+  for (const name of ["__proto__", "constructor", "prototype", "toString"]) {
+    defineData(explicitUndefined, name, undefined);
+  }
+  const omitted = crossing([
+    ["__proto__", false, scalar],
+    ["constructor", false, scalar],
+    ["prototype", false, scalar],
+    ["toString", false, scalar],
+  ])(explicitUndefined);
+  ok(
+    `record-${label}-own-undefined-remains-omitted`,
+    Object.getPrototypeOf(omitted) === Object.prototype &&
+      Object.keys(omitted).length === 0,
+  );
+}
+
+{
+  const data = M.parseCanonical(
+    Buffer.from('{"__proto__":{"value":7}}', "utf8"),
+  );
+  const decode = M.dRecord([
+    ["__proto__", true, M.dRecord([["value", true, M.dInt]])],
+  ]);
+  const { observed, session } = driveReply(
+    [{ data, kind: "value" }],
+    { decode },
+  );
+  const value = observed.current?.value;
+  const protoField = Object.getOwnPropertyDescriptor(value, "__proto__")?.value;
+  ok(
+    "reply-valid-record-proto-field-settles-before-pump",
+    observed.current?.kind === "value" &&
+      observed.currentSettles === 1 &&
+      observed.pump === 1 &&
+      observed.queued === null &&
+      session.queue.length === 1 &&
+      !session.dead &&
+      !observed.tornDown &&
+      Object.getPrototypeOf(value) === Object.prototype &&
+      normalOwnData(value, "__proto__", protoField) &&
+      normalOwnData(protoField, "value", 7n),
+    `settles=${observed.currentSettles} pump=${observed.pump} dead=${session.dead}`,
+  );
+}
+
+{
+  const encoder = M.eId("items", [M.eInt, M.eText]);
+  const valid = ownObject([
+    ["root", "items"],
+    ["key", [7n, "a"]],
+    ["extra", "preserved accepted-extra behavior"],
+  ]);
+  const encoded = encoder(valid);
+  ok(
+    "identity-own-root-key-and-existing-extra-behavior",
+    normalDenseArray(encoded, [7n, "a"]),
+  );
+
+  for (const [label, value] of [
+    ["wrong-root-brand", ownObject([["root", "other"], ["key", [7n, "a"]]])],
+    ["non-array-key", ownObject([["root", "items"], ["key", 7n]])],
+    ["short-key-arity", ownObject([["root", "items"], ["key", [7n]]])],
+    ["long-key-arity", ownObject([["root", "items"], ["key", [7n, "a", 9n]]])],
+  ]) {
+    let error;
+    try {
+      encoder(value);
+    } catch (caught) {
+      error = caught;
+    }
+    ok(`identity-preserves-${label}-rejection`, error instanceof TypeError, String(error));
+  }
+
+  for (const [missing, value] of [
+    [
+      "root",
+      ownObject(
+        [["key", [7n, "a"]]],
+        ownObject([["root", "items"]]),
+      ),
+    ],
+    [
+      "key",
+      ownObject(
+        [["root", "items"]],
+        ownObject([["key", [7n, "a"]]]),
+      ),
+    ],
+  ]) {
+    let error;
+    try {
+      encoder(value);
+    } catch (caught) {
+      error = caught;
+    }
+    ok(
+      `identity-${missing}-must-be-own`,
+      error instanceof TypeError,
+      String(error),
+    );
+  }
+
+  let inheritedKeyReads = 0;
+  const prototype = ownObject([]);
+  Object.defineProperty(prototype, "key", {
+    configurable: true,
+    enumerable: true,
+    get() {
+      inheritedKeyReads += 1;
+      return [7n, "a"];
+    },
+  });
+  const mutating = ownObject([["key", [7n, "a"]]], prototype);
+  Object.defineProperty(mutating, "root", {
+    configurable: true,
+    enumerable: true,
+    get() {
+      delete mutating.key;
+      return "items";
+    },
+  });
+  let mutationError;
+  try {
+    encoder(mutating);
+  } catch (caught) {
+    mutationError = caught;
+  }
+  ok(
+    "identity-rechecks-own-key-after-root-getter",
+    mutationError instanceof TypeError && inheritedKeyReads === 0,
+    `error=${String(mutationError)} inheritedReads=${inheritedKeyReads}`,
+  );
+}
+
+for (const [label, crossing, ErrorType] of [
+  ["encode", M.eSum([["some", [M.eInt]]]), TypeError],
+  ["decode", M.dSum([["some", [M.dInt]]]), M.WireFormatError],
+]) {
+  let inheritedPayloadReads = 0;
+  const prototype = ownObject([]);
+  Object.defineProperty(prototype, "payload", {
+    configurable: true,
+    enumerable: true,
+    get() {
+      inheritedPayloadReads += 1;
+      return [1n];
+    },
+  });
+  const value = ownObject([["payload", [1n]]], prototype);
+  Object.defineProperty(value, "member", {
+    configurable: true,
+    enumerable: true,
+    get() {
+      delete value.payload;
+      return "some";
+    },
+  });
+  let error;
+  try {
+    crossing(value);
+  } catch (caught) {
+    error = caught;
+  }
+  ok(
+    `sum-${label}-rechecks-own-payload-after-member-getter`,
+    error instanceof ErrorType && inheritedPayloadReads === 0,
+    `error=${String(error)} inheritedReads=${inheritedPayloadReads}`,
+  );
+}
+
+rejectSparseWithoutRead(
+  "canonical-array-hole-rejects-before-inherited-read",
+  inheritedSparse(1, 0, 1n),
+  (value) => M.encodeCanonical(value),
+  TypeError,
+);
+rejectSparseWithoutRead(
+  "encode-list-hole-rejects-before-inherited-read",
+  inheritedSparse(1, 0, 1n),
+  M.eList(M.eInt),
+  TypeError,
+);
+rejectSparseWithoutRead(
+  "decode-list-hole-rejects-before-inherited-read",
+  inheritedSparse(1, 0, 1n),
+  M.dList(M.dInt),
+  M.WireFormatError,
+);
+rejectSparseWithoutRead(
+  "encode-nested-list-hole-rejects-before-inherited-read",
+  inheritedSparse(1, 0, 1n),
+  (value) => M.eList(M.eList(M.eInt))([value]),
+  TypeError,
+);
+rejectSparseWithoutRead(
+  "decode-nested-list-hole-rejects-before-inherited-read",
+  inheritedSparse(1, 0, 1n),
+  (value) => M.dList(M.dList(M.dInt))([value]),
+  M.WireFormatError,
+);
+rejectSparseWithoutRead(
+  "encode-map-outer-hole-rejects-before-inherited-read",
+  inheritedSparse(1, 0, [1n, 2n]),
+  M.eMap(M.eInt, M.eInt),
+  TypeError,
+);
+rejectSparseWithoutRead(
+  "decode-map-outer-hole-rejects-before-inherited-read",
+  inheritedSparse(1, 0, [1n, 2n]),
+  M.dMap(M.dInt, M.dInt),
+  M.WireFormatError,
+);
+rejectSparseWithoutRead(
+  "encode-map-pair-hole-rejects-before-inherited-read",
+  inheritedSparse(2, 1, 2n),
+  (value) => M.eMap(M.eInt, M.eInt)([defineData(value, "0", 1n)]),
+  TypeError,
+);
+rejectSparseWithoutRead(
+  "decode-map-pair-hole-rejects-before-inherited-read",
+  inheritedSparse(2, 1, 2n),
+  (value) => M.dMap(M.dInt, M.dInt)([defineData(value, "0", 1n)]),
+  M.WireFormatError,
+);
+rejectSparseWithoutRead(
+  "encode-identity-key-hole-rejects-before-inherited-read",
+  inheritedSparse(1, 0, 1n),
+  (value) => M.eId("items", [M.eInt])(ownObject([["root", "items"], ["key", value]])),
+  TypeError,
+);
+rejectSparseWithoutRead(
+  "decode-identity-key-hole-rejects-before-inherited-read",
+  inheritedSparse(1, 0, 1n),
+  M.dId("items", [M.dInt]),
+  M.WireFormatError,
+);
+rejectSparseWithoutRead(
+  "encode-sum-payload-hole-rejects-before-inherited-read",
+  inheritedSparse(1, 0, 1n),
+  (value) => M.eSum([["some", [M.eInt]]])({ member: "some", payload: value }),
+  TypeError,
+);
+rejectSparseWithoutRead(
+  "decode-sum-payload-hole-rejects-before-inherited-read",
+  inheritedSparse(1, 0, 1n),
+  (value) => M.dSum([["some", [M.dInt]]])({ member: "some", payload: value }),
+  M.WireFormatError,
+);
+
+for (const [label, array, crossing, ErrorType] of [
+  ["canonical", mutatingDense(1n, 2n), (value) => M.encodeCanonical(value), TypeError],
+  ["encode-list", mutatingDense(1n, 2n), M.eList(M.eInt), TypeError],
+  ["decode-list", mutatingDense(1n, 2n), M.dList(M.dInt), M.WireFormatError],
+  [
+    "encode-map-outer",
+    mutatingDense([1n, 2n], [3n, 4n]),
+    M.eMap(M.eInt, M.eInt),
+    TypeError,
+  ],
+  [
+    "decode-map-outer",
+    mutatingDense([1n, 2n], [3n, 4n]),
+    M.dMap(M.dInt, M.dInt),
+    M.WireFormatError,
+  ],
+  [
+    "encode-map-pair",
+    mutatingDense(1n, 2n),
+    (value) => M.eMap(M.eInt, M.eInt)([value]),
+    TypeError,
+  ],
+  [
+    "decode-map-pair",
+    mutatingDense(1n, 2n),
+    (value) => M.dMap(M.dInt, M.dInt)([value]),
+    M.WireFormatError,
+  ],
+  [
+    "encode-identity-key",
+    mutatingDense(1n, 2n),
+    (value) => M.eId("items", [M.eInt, M.eInt])(
+      ownObject([["root", "items"], ["key", value]]),
+    ),
+    TypeError,
+  ],
+  [
+    "decode-identity-key",
+    mutatingDense(1n, 2n),
+    M.dId("items", [M.dInt, M.dInt]),
+    M.WireFormatError,
+  ],
+  [
+    "encode-sum-payload",
+    mutatingDense(1n, 2n),
+    (value) => M.eSum([["some", [M.eInt, M.eInt]]])({
+      member: "some",
+      payload: value,
+    }),
+    TypeError,
+  ],
+  [
+    "decode-sum-payload",
+    mutatingDense(1n, 2n),
+    (value) => M.dSum([["some", [M.dInt, M.dInt]]])({
+      member: "some",
+      payload: value,
+    }),
+    M.WireFormatError,
+  ],
+]) {
+  rejectSparseWithoutRead(
+    `dense-mutation-${label}-rejects-before-inherited-read`,
+    array,
+    crossing,
+    ErrorType,
+  );
+}
+
+{
+  const mutating = mutatingOwnObject(1n, 2n);
+  let error;
+  try {
+    M.encodeCanonical(mutating.value);
+  } catch (caught) {
+    error = caught;
+  }
+  ok(
+    "canonical-object-mutation-rejects-before-inherited-read",
+    error instanceof TypeError && mutating.reads() === 0,
+    `error=${String(error)} inheritedReads=${mutating.reads()}`,
+  );
+}
+
+{
+  const dense = [1n, 2n];
+  defineData(dense, "extra", 3n);
+  ok(
+    "canonical-dense-array-keeps-bytes-and-ignores-extra-property",
+    M.encodeCanonical(dense).toString("utf8") === "[1,2]",
+  );
+  const list = M.eList(M.eInt)(dense);
+  ok(
+    "list-dense-array-keeps-values-and-ignores-extra-property",
+    normalDenseArray(list, [1n, 2n]) && !Object.hasOwn(list, "extra"),
+  );
+}
+
+const hookCases = [
+  ["canonical", [1n], (value) => M.encodeCanonical(value)],
+  ["encode-list", [1n], M.eList(M.eInt)],
+  ["decode-list", [1n], M.dList(M.dInt)],
+  ["encode-map-outer", [[1n, 2n]], M.eMap(M.eInt, M.eInt)],
+  ["decode-map-outer", [[1n, 2n]], M.dMap(M.dInt, M.dInt)],
+  ["encode-map-pair", [1n, 2n], (value) => M.eMap(M.eInt, M.eInt)([value])],
+  ["decode-map-pair", [1n, 2n], (value) => M.dMap(M.dInt, M.dInt)([value])],
+  [
+    "encode-identity-key",
+    [1n],
+    (value) => M.eId("items", [M.eInt])(ownObject([["root", "items"], ["key", value]])),
+  ],
+  ["decode-identity-key", [1n], M.dId("items", [M.dInt])],
+  [
+    "encode-sum-payload",
+    [1n],
+    (value) => M.eSum([["some", [M.eInt]]])({ member: "some", payload: value }),
+  ],
+  [
+    "decode-sum-payload",
+    [1n],
+    (value) => M.dSum([["some", [M.dInt]]])({ member: "some", payload: value }),
+  ],
+];
+for (const [crossingLabel, values, crossing] of hookCases) {
+  for (const placement of ["own", "inherited"]) {
+    for (const hook of ["map", "iterator", "constructor", "species"]) {
+      const instrumented = hookedDense(values, placement, hook);
+      let error;
+      try {
+        crossing(instrumented.value);
+      } catch (caught) {
+        error = caught;
+      }
+      ok(
+        `dense-hooks-${crossingLabel}-${placement}-${hook}`,
+        error === undefined && instrumented.observations() === 0,
+        `error=${String(error)} observations=${instrumented.observations()}`,
+      );
+    }
+  }
+}
+
+{
+  const encodedList = M.eList(M.eInt)([1n, 2n]);
+  const decodedList = M.dList(M.dInt)([1n, 2n]);
+  const encodedMap = M.eMap(M.eInt, M.eText)([[1n, "a"]]);
+  const decodedMap = M.dMap(M.dInt, M.dText)([[1n, "a"]]);
+  const encodedId = M.eId("items", [M.eInt])(
+    ownObject([["root", "items"], ["key", [1n]]]),
+  );
+  const decodedId = M.dId("items", [M.dInt])([1n]);
+  const encodedSum = M.eSum([["some", [M.eInt]]])({
+    member: "some",
+    payload: [1n],
+  });
+  const decodedSum = M.dSum([["some", [M.dInt]]])({
+    member: "some",
+    payload: [1n],
+  });
+  ok(
+    "dense-crossing-outputs-have-normal-own-index-descriptors",
+    normalDenseArray(encodedList, [1n, 2n]) &&
+      normalDenseArray(decodedList, [1n, 2n]) &&
+      normalDenseArray(encodedMap, [encodedMap[0]]) &&
+      normalDenseArray(encodedMap[0], [1n, "a"]) &&
+      normalDenseArray(decodedMap, [decodedMap[0]]) &&
+      normalDenseArray(decodedMap[0], [1n, "a"]) &&
+      normalDenseArray(encodedId, [1n]) &&
+      decodedId.root === "items" &&
+      normalDenseArray(decodedId.key, [1n]) &&
+      encodedSum.member === "some" &&
+      normalDenseArray(encodedSum.payload, [1n]) &&
+      decodedSum.member === "some" &&
+      normalDenseArray(decodedSum.payload, [1n]),
+  );
 }
 
 {
