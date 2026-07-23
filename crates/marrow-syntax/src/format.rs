@@ -1198,6 +1198,7 @@ fn format_statement_with_comments(
             else_ifs,
             else_block,
             span: _,
+            ..
         } => {
             let ctx = StatementFormatContext {
                 source,
@@ -1328,6 +1329,7 @@ fn format_statement_with_comments(
             value,
             else_block,
             span: _,
+            ..
         } => {
             let ctx = StatementFormatContext {
                 source,
@@ -1619,10 +1621,10 @@ fn format_checked(
 ) -> String {
     let pad = INDENT.repeat(ctx.level);
     let prefix = match bind {
-        CheckedBind::Const { name, ty } => {
+        CheckedBind::Const { name, ty, .. } => {
             format!("const {name}{} = ", format_type_annotation(ty))
         }
-        CheckedBind::Var { name, ty } => {
+        CheckedBind::Var { name, ty, .. } => {
             format!("var {name}{} = ", format_type_annotation(ty))
         }
         CheckedBind::Return => "return ".to_string(),

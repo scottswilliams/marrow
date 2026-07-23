@@ -17,7 +17,7 @@ use crate::ast::{
 };
 use crate::diagnostic::{
     Diagnostic, DiagnosticReason, ExpectedSyntax, ParseDiagnosticReason, ReservedSyntax, Severity,
-    UnsupportedSyntax,
+    SourceSpan, UnsupportedSyntax,
 };
 use crate::parse_expr::join_spans;
 use crate::token::{Keyword, Token, TokenKind};
@@ -214,6 +214,7 @@ fn parse_const_or_var(
             Some(if is_var {
                 Statement::Var {
                     name,
+                    name_span: name_token.span,
                     keys,
                     ty,
                     value: Some(value),
@@ -222,6 +223,7 @@ fn parse_const_or_var(
             } else {
                 Statement::Const {
                     name,
+                    name_span: name_token.span,
                     ty,
                     value,
                     span,
@@ -230,6 +232,7 @@ fn parse_const_or_var(
         }
         None if is_var => Some(Statement::Var {
             name,
+            name_span: name_token.span,
             keys,
             ty,
             value: None,
@@ -455,7 +458,7 @@ pub(super) fn parse_if_const_head(
     source: &str,
     line: &[Token],
     diagnostics: &mut Vec<Diagnostic>,
-) -> Option<(String, Option<TypeExpr>, Expression)> {
+) -> Option<(String, SourceSpan, Option<TypeExpr>, Expression)> {
     let Some(name_token) = line.get(1) else {
         return expected_expression_line(line, diagnostics);
     };
@@ -509,7 +512,7 @@ pub(super) fn parse_if_const_head(
         };
         let anchor = split.equal_span.unwrap_or(name_token.span);
         let value = expr_of_after(source, value_tokens, anchor, diagnostics)?;
-        return Some((name, ty, value));
+        return Some((name, name_token.span, ty, value));
     }
 
     if line.get(index).map(|token| token.kind) != Some(TokenKind::Equal) {
@@ -517,7 +520,7 @@ pub(super) fn parse_if_const_head(
     }
     let equal = line[index];
     let value = expr_of_after(source, &line[index + 1..], equal.span, diagnostics)?;
-    Some((name, None, value))
+    Some((name, name_token.span, None, value))
 }
 
 /// Parse a `for` header `binding in [reversed] iterable [by step]` or the bounded

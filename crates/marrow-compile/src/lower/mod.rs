@@ -1129,14 +1129,17 @@ mod generic_cache_boundary_tests {
             .expect("Map<int,List<int>> mints");
         let parameter = || TypeExpr::Name {
             text: "T".to_string(),
+            segment_spans: Vec::new(),
             span: span(),
         };
         let annotation = TypeExpr::Apply {
             head: "Map".to_string(),
+            head_span: span(),
             args: vec![
                 parameter(),
                 TypeExpr::Apply {
                     head: "List".to_string(),
+                    head_span: span(),
                     args: vec![parameter()],
                     span: span(),
                 },
@@ -1184,6 +1187,7 @@ mod generic_cache_boundary_tests {
             ] {
                 let annotation = TypeExpr::Name {
                     text: name.to_string(),
+                    segment_spans: Vec::new(),
                     span: span(),
                 };
                 let mut subst = sentinel.clone();
@@ -1220,13 +1224,16 @@ mod generic_cache_boundary_tests {
     fn map_resolution_validates_hostile_key_metadata_before_refusal() {
         let annotation = TypeExpr::Apply {
             head: "Map".to_string(),
+            head_span: span(),
             args: vec![
                 TypeExpr::Name {
                     text: "K".to_string(),
+                    segment_spans: Vec::new(),
                     span: span(),
                 },
                 TypeExpr::Name {
                     text: "int".to_string(),
+                    segment_spans: Vec::new(),
                     span: span(),
                 },
             ],
@@ -1280,15 +1287,19 @@ mod generic_cache_boundary_tests {
     fn lower_map_resolution_rejects_a_missing_nominal_before_value_mint() {
         let annotation = TypeExpr::Apply {
             head: "Map".to_string(),
+            head_span: span(),
             args: vec![
                 TypeExpr::Name {
                     text: "K".to_string(),
+                    segment_spans: Vec::new(),
                     span: span(),
                 },
                 TypeExpr::Apply {
                     head: "List".to_string(),
+                    head_span: span(),
                     args: vec![TypeExpr::Name {
                         text: "int".to_string(),
+                        segment_spans: Vec::new(),
                         span: span(),
                     }],
                     span: span(),
@@ -1745,6 +1756,7 @@ mod generic_cache_boundary_tests {
         });
         let args = [Argument {
             name: Some("value".to_string()),
+            name_span: Some(span()),
             value: name("item"),
         }];
 
@@ -1815,6 +1827,7 @@ mod generic_cache_boundary_tests {
         });
         let args = [Argument {
             name: Some("value".to_string()),
+            name_span: Some(span()),
             value: name("item"),
         }];
 
@@ -1957,6 +1970,7 @@ mod generic_cache_boundary_tests {
         });
         let args = [Argument {
             name: Some("value".to_string()),
+            name_span: Some(span()),
             value: name("item"),
         }];
 
@@ -2038,6 +2052,7 @@ mod generic_cache_boundary_tests {
                 }),
                 args: vec![Argument {
                     name: Some("value".to_string()),
+                    name_span: Some(span()),
                     value: name("item"),
                 }],
                 multiline: false,
@@ -2180,8 +2195,10 @@ mod generic_cache_boundary_tests {
         };
         let annotation = TypeExpr::Apply {
             head: "Option".to_string(),
+            head_span: span(),
             args: vec![TypeExpr::Name {
                 text: "int".to_string(),
+                segment_spans: Vec::new(),
                 span: span(),
             }],
             span: span(),
@@ -2203,6 +2220,7 @@ mod generic_cache_boundary_tests {
             lowerer.lower_checked(
                 &CheckedBind::Const {
                     name: "result".to_string(),
+                    name_span: span(),
                     ty: Some(annotation),
                 },
                 &operation,
@@ -2351,10 +2369,13 @@ mod generic_cache_boundary_tests {
                 },
                 Statement::Const {
                     name: "later_generic".to_string(),
+                    name_span: span(),
                     ty: Some(TypeExpr::Apply {
                         head: "Option".to_string(),
+                        head_span: span(),
                         args: vec![TypeExpr::Name {
                             text: "int".to_string(),
+                            segment_spans: Vec::new(),
                             span: span(),
                         }],
                         span: span(),

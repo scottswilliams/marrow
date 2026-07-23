@@ -7,6 +7,7 @@ use marrow_project::IdentityLedger;
 fn name(text: &str) -> TypeExpr {
     TypeExpr::Name {
         text: text.to_string(),
+        segment_spans: Vec::new(),
         span: SourceSpan::default(),
     }
 }

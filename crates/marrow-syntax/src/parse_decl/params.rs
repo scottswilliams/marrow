@@ -292,8 +292,10 @@ fn parse_params_tokens(source: &str, inner: &[Token]) -> ParseResult<Vec<ParamDe
             .collect();
         reject_removed_parameter_mode(source, group.body)?;
         let rest = group.body;
-        let name = match rest.first() {
-            Some(token) if token.kind == TokenKind::Identifier => token.text(source).to_string(),
+        let (name, name_span) = match rest.first() {
+            Some(token) if token.kind == TokenKind::Identifier => {
+                (token.text(source).to_string(), token.span)
+            }
             _ => {
                 return Err(ParseError::new(
                     ParseDiagnosticReason::Expected(ExpectedSyntax::ParameterName),
@@ -348,6 +350,7 @@ fn parse_params_tokens(source: &str, inner: &[Token]) -> ParseResult<Vec<ParamDe
         params.push(ParamDecl {
             docs,
             name,
+            name_span,
             keys,
             ty,
         });

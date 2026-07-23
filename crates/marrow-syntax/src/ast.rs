@@ -68,12 +68,14 @@ impl SourceFile {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ModuleDecl {
     pub name: String,
+    pub segment_spans: Vec<SourceSpan>,
     pub span: SourceSpan,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UseDecl {
     pub name: String,
+    pub segment_spans: Vec<SourceSpan>,
     pub span: SourceSpan,
 }
 
@@ -149,6 +151,7 @@ pub struct TestDecl {
 pub struct ConstDecl {
     pub docs: Vec<String>,
     pub name: String,
+    pub name_span: SourceSpan,
     pub ty: Option<TypeExpr>,
     /// `None` when the value text did not parse; the parser reports the error.
     pub value: Option<Expression>,
@@ -374,6 +377,7 @@ pub enum InterpolationPart {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Argument {
     pub name: Option<String>,
+    pub name_span: Option<SourceSpan>,
     pub value: Expression,
 }
 
@@ -525,6 +529,7 @@ pub struct StoreDecl {
     pub docs: Vec<String>,
     pub root: SavedRoot,
     pub resource: String,
+    pub resource_span: SourceSpan,
     pub indexes: Vec<IndexDecl>,
     pub comments: Vec<Comment>,
     pub span: SourceSpan,
@@ -583,6 +588,8 @@ pub struct IndexDecl {
     /// The source span of each argument, parallel to `args`, so a per-argument
     /// diagnostic points at the offending path rather than the whole `index` line.
     pub arg_spans: Vec<SourceSpan>,
+    /// One source span per dotted path segment, parallel to `args`.
+    pub arg_segment_spans: Vec<Vec<SourceSpan>>,
     pub unique: bool,
     pub span: SourceSpan,
 }
@@ -712,12 +719,14 @@ pub enum CommentPlacement {
 pub enum Statement {
     Const {
         name: String,
+        name_span: SourceSpan,
         ty: Option<TypeExpr>,
         value: Expression,
         span: SourceSpan,
     },
     Var {
         name: String,
+        name_span: SourceSpan,
         keys: Vec<KeyParam>,
         ty: Option<TypeExpr>,
         value: Option<Expression>,
@@ -793,6 +802,7 @@ pub enum Statement {
     /// `const`/`var`, names that type when written.
     IfConst {
         name: String,
+        name_span: SourceSpan,
         ty: Option<TypeExpr>,
         value: Expression,
         then_block: Block,
@@ -818,6 +828,7 @@ pub enum Statement {
     LetElse {
         is_var: bool,
         name: String,
+        name_span: SourceSpan,
         ty: Option<TypeExpr>,
         value: Expression,
         else_block: Block,
@@ -901,8 +912,16 @@ pub enum Statement {
 /// type annotation) or a `return`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CheckedBind {
-    Const { name: String, ty: Option<TypeExpr> },
-    Var { name: String, ty: Option<TypeExpr> },
+    Const {
+        name: String,
+        name_span: SourceSpan,
+        ty: Option<TypeExpr>,
+    },
+    Var {
+        name: String,
+        name_span: SourceSpan,
+        ty: Option<TypeExpr>,
+    },
     Return,
 }
 
@@ -926,6 +945,7 @@ pub struct MatchArm {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IfConstBinding {
     pub name: String,
+    pub name_span: SourceSpan,
     pub ty: Option<TypeExpr>,
     pub value: Expression,
 }
@@ -1027,6 +1047,7 @@ pub struct ParamDecl {
     /// parameter docs are not written.
     pub docs: Vec<String>,
     pub name: String,
+    pub name_span: SourceSpan,
     /// Key parameters when the parameter is a local keyed collection
     /// (`scores[player: string]: int`), spelled like the local declaration head.
     /// Empty for an ordinary scalar, resource, collection, or identity parameter,
@@ -1038,6 +1059,7 @@ pub struct ParamDecl {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KeyParam {
     pub name: String,
+    pub name_span: SourceSpan,
     pub ty: TypeExpr,
 }
 
@@ -1053,7 +1075,11 @@ pub enum TypeExpr {
     /// `text` is the whitespace-free source spelling; classifying it as a scalar,
     /// `unknown`, or a named type is a resolution concern that needs project
     /// knowledge, so it stays with the semantic owner.
-    Name { text: String, span: SourceSpan },
+    Name {
+        text: String,
+        segment_spans: Vec<SourceSpan>,
+        span: SourceSpan,
+    },
     /// `Id(^root)`, a saved-store identity type.
     Identity(IdentityTypeExpr),
     /// `T?`, an optional value type.
@@ -1068,6 +1094,7 @@ pub enum TypeExpr {
     /// arguments in source order; the semantic owner resolves the head.
     Apply {
         head: String,
+        head_span: SourceSpan,
         args: Vec<TypeExpr>,
         span: SourceSpan,
     },

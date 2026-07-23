@@ -356,7 +356,10 @@ pub(super) fn parse_resource_head(
 
 /// Parse a store header's tokens after the `store` keyword:
 /// `^root [[key: type, ...]]: Resource`.
-pub(super) fn parse_store_head(source: &str, tokens: &[Token]) -> ParseResult<(SavedRoot, String)> {
+pub(super) fn parse_store_head(
+    source: &str,
+    tokens: &[Token],
+) -> ParseResult<(SavedRoot, String, SourceSpan)> {
     if !matches!(
         tokens.first().map(|token| token.kind),
         Some(TokenKind::Caret)
@@ -402,8 +405,10 @@ pub(super) fn parse_store_head(source: &str, tokens: &[Token]) -> ParseResult<(S
         parse_bracket_key_params(source, &rest[..colon])?
     };
     let resource_tokens = &rest[colon + 1..];
-    let resource = match resource_tokens {
-        [token] if token.kind == TokenKind::Identifier => token.text(source).to_string(),
+    let (resource, resource_span) = match resource_tokens {
+        [token] if token.kind == TokenKind::Identifier => {
+            (token.text(source).to_string(), token.span)
+        }
         _ => {
             return Err(ParseError::new(
                 ParseDiagnosticReason::Expected(ExpectedSyntax::StoreResourceName),
@@ -418,6 +423,7 @@ pub(super) fn parse_store_head(source: &str, tokens: &[Token]) -> ParseResult<(S
             span: root_span,
         },
         resource,
+        resource_span,
     ))
 }
 
@@ -457,8 +463,10 @@ pub(super) fn parse_key_params_tokens(source: &str, inner: &[Token]) -> ParseRes
     }
     let mut params = Vec::new();
     for part in split_top_level_commas(&inner) {
-        let name = match part.first() {
-            Some(token) if token.kind == TokenKind::Identifier => token.text(source).to_string(),
+        let (name, name_span) = match part.first() {
+            Some(token) if token.kind == TokenKind::Identifier => {
+                (token.text(source).to_string(), token.span)
+            }
             _ => {
                 return Err(ParseError::new(
                     ParseDiagnosticReason::Expected(ExpectedSyntax::KeyName),
@@ -478,7 +486,11 @@ pub(super) fn parse_key_params_tokens(source: &str, inner: &[Token]) -> ParseRes
             ExpectedSyntax::KeyType,
             "expected key type annotation",
         )?;
-        params.push(KeyParam { name, ty });
+        params.push(KeyParam {
+            name,
+            name_span,
+            ty,
+        });
     }
     Ok(params)
 }
@@ -520,13 +532,15 @@ pub(super) fn parse_index_tokens(source: &str, tokens: &[Token]) -> ParseResult<
     }
     let mut args = Vec::new();
     let mut arg_spans = Vec::new();
+    let mut arg_segment_spans = Vec::new();
     for part in split_top_level_commas(&inner) {
-        let arg = field_path_text(source, part).ok_or(ParseError::new(
+        let (arg, segment_spans) = field_path(source, part).ok_or(ParseError::new(
             ParseDiagnosticReason::Expected(ExpectedSyntax::IndexFieldPath),
             "expected index field path",
         ))?;
         args.push(arg);
         arg_spans.push(line_span_or(part, part[0].span));
+        arg_segment_spans.push(segment_spans);
     }
     let tail = &rest[close + 1..];
     let unique = match tail {
@@ -545,13 +559,14 @@ pub(super) fn parse_index_tokens(source: &str, tokens: &[Token]) -> ParseResult<
         name_span,
         args,
         arg_spans,
+        arg_segment_spans,
         unique,
         span: SourceSpan::default(),
     })
 }
 
 /// Validate a dotted field path (`field` or `field.sub`) and return its text.
-fn field_path_text(source: &str, tokens: &[Token]) -> Option<String> {
+fn field_path(source: &str, tokens: &[Token]) -> Option<(String, Vec<SourceSpan>)> {
     if tokens.is_empty() {
         return None;
     }
@@ -571,7 +586,10 @@ fn field_path_text(source: &str, tokens: &[Token]) -> Option<String> {
     }
     let start = tokens[0].span.start_byte;
     let end = tokens[tokens.len() - 1].span.end_byte;
-    Some(source[start..end].to_string())
+    Some((
+        source[start..end].to_string(),
+        tokens.iter().step_by(2).map(|token| token.span).collect(),
+    ))
 }
 
 /// Parse a `required? name [keys]? (: type)?` resource member head into a field

@@ -4740,8 +4740,14 @@ impl TypeRegistry {
                 inner: Box::new(self.expand(inner)),
                 span: *span,
             },
-            TypeExpr::Apply { head, args, span } => TypeExpr::Apply {
+            TypeExpr::Apply {
+                head,
+                head_span,
+                args,
+                span,
+            } => TypeExpr::Apply {
                 head: head.clone(),
+                head_span: *head_span,
                 args: args.iter().map(|arg| self.expand(arg)).collect(),
                 span: *span,
             },
@@ -4973,6 +4979,7 @@ impl TypeRegistry {
 fn reserved_templates() -> Vec<TypeTemplate> {
     let param = |name: &str| TypeExpr::Name {
         text: name.to_string(),
+        segment_spans: Vec::new(),
         span: SourceSpan::default(),
     };
     let payload = |ty: TypeExpr| TemplatePayload {
@@ -5431,8 +5438,14 @@ fn expand_in(table: &BTreeMap<String, TypeExpr>, ty: &TypeExpr) -> TypeExpr {
             inner: Box::new(expand_in(table, inner)),
             span: *span,
         },
-        TypeExpr::Apply { head, args, span } => TypeExpr::Apply {
+        TypeExpr::Apply {
+            head,
+            head_span,
+            args,
+            span,
+        } => TypeExpr::Apply {
             head: head.clone(),
+            head_span: *head_span,
             args: args.iter().map(|arg| expand_in(table, arg)).collect(),
             span: *span,
         },
@@ -7511,6 +7524,7 @@ mod instantiation_state_tests {
     fn name(text: &str) -> TypeExpr {
         TypeExpr::Name {
             text: text.to_string(),
+            segment_spans: Vec::new(),
             span: SourceSpan::default(),
         }
     }
@@ -7518,6 +7532,7 @@ mod instantiation_state_tests {
     fn apply(head: &str, args: Vec<TypeExpr>) -> TypeExpr {
         TypeExpr::Apply {
             head: head.to_string(),
+            head_span: SourceSpan::default(),
             args,
             span: SourceSpan::default(),
         }

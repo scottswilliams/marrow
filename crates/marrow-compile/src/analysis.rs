@@ -1312,8 +1312,8 @@ mod completion {
                 ty: ty.as_ref(),
             }),
             Statement::Checked { bind, .. } => match bind {
-                marrow_syntax::CheckedBind::Const { name, ty }
-                | marrow_syntax::CheckedBind::Var { name, ty } => Some(Binding {
+                marrow_syntax::CheckedBind::Const { name, ty, .. }
+                | marrow_syntax::CheckedBind::Var { name, ty, .. } => Some(Binding {
                     name: name.clone(),
                     ty: ty.as_ref(),
                 }),

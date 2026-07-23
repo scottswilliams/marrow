@@ -52,6 +52,7 @@ impl<'a> FnLowerer<'a> {
                 ty,
                 value,
                 span,
+                ..
             } => {
                 if !keys.is_empty() {
                     self.fail(unsupported(self.file, *span, "a keyed local"));
@@ -2738,7 +2739,7 @@ impl<'a> FnLowerer<'a> {
     fn store_checked_result(&mut self, bind: &CheckedBind, span: SourceSpan) -> Option<Local> {
         let int = LTy::bare_scalar(ScalarType::Int);
         match bind {
-            CheckedBind::Const { name, ty } | CheckedBind::Var { name, ty } => {
+            CheckedBind::Const { name, ty, .. } | CheckedBind::Var { name, ty, .. } => {
                 let mutable = matches!(bind, CheckedBind::Var { .. });
                 let target = self.coerce_int_result(ty.as_ref(), int, span)?;
                 let slot = self.alloc_slot(span)?;

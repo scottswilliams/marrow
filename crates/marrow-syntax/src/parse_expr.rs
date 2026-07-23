@@ -986,20 +986,27 @@ impl<'a> ExprParser<'a> {
 
     fn argument(&mut self) -> Result<Argument, Expression> {
         self.recover_removed_argument_mode();
-        let name = if matches!(self.peek(), Some(TokenKind::Identifier))
+        let (name, name_span) = if matches!(self.peek(), Some(TokenKind::Identifier))
             && matches!(self.peek_at(1), Some(TokenKind::Colon))
         {
             let identifier = self.advance();
             self.advance();
-            Some(identifier.text(self.source).to_string())
+            (
+                Some(identifier.text(self.source).to_string()),
+                Some(identifier.span),
+            )
         } else {
-            None
+            (None, None)
         };
         let value = self.expression();
         if value.is_error() {
             return Err(value);
         }
-        Ok(Argument { name, value })
+        Ok(Argument {
+            name,
+            name_span,
+            value,
+        })
     }
 
     fn recover_removed_argument_mode(&mut self) {

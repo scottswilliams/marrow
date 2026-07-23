@@ -40,6 +40,8 @@ mod parse_type_expr;
 mod parse_types_params;
 #[path = "cases/roundtrip.rs"]
 mod roundtrip;
+#[path = "cases/semantic_spans.rs"]
+mod semantic_spans;
 #[path = "cases/total_parser_architecture.rs"]
 mod total_parser_architecture;
 #[path = "cases/type_expr_architecture.rs"]

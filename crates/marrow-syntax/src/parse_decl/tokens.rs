@@ -13,7 +13,7 @@ use crate::diagnostic::{
     Diagnostic, DiagnosticReason, ExpectedSyntax, ParseDiagnosticReason, Severity, SourceSpan,
 };
 use crate::parse_expr::{ExprParser, ParseComplete, join_spans};
-use crate::token::{Keyword, Token, TokenKind, is_qualified_name};
+use crate::token::{Keyword, LexicalClass, Token, TokenKind, is_qualified_name};
 
 /// The end byte of the physical line containing `start`, excluding the trailing
 /// `\r`/`\n`. This matches `Line::end_byte` for a declaration's first line.
@@ -36,11 +36,16 @@ pub(super) fn first_line_end(source: &str, start: usize) -> usize {
 pub(super) fn doc_comment_text(text: &str) -> String {
     text.strip_prefix("///").unwrap_or(text).trim().to_string()
 }
-fn qualified_name_text(source: &str, tokens: &[Token]) -> Option<String> {
+fn qualified_name(source: &str, tokens: &[Token]) -> Option<(String, Vec<SourceSpan>)> {
     let first = tokens.first()?;
     let last = tokens.last()?;
     let text = &source[first.span.start_byte..last.span.end_byte];
-    is_qualified_name(text).then(|| text.to_string())
+    is_qualified_name(text).then(|| {
+        (
+            text.to_string(),
+            tokens.iter().step_by(2).map(|token| token.span).collect(),
+        )
+    })
 }
 /// Why a `use`/`module` path failed to parse: a reserved word stands where a
 /// path segment must be (with the offending token), or the tokens do not spell a
@@ -49,13 +54,19 @@ pub(super) enum PathNameError {
     ReservedSegment(Token),
     NotQualified,
 }
-pub(super) fn module_name(source: &str, tokens: &[Token]) -> Result<String, PathNameError> {
+pub(super) fn module_name(
+    source: &str,
+    tokens: &[Token],
+) -> Result<(String, Vec<SourceSpan>), PathNameError> {
     if let Some(reserved) = reserved_segment(tokens) {
         return Err(PathNameError::ReservedSegment(*reserved));
     }
-    qualified_name_text(source, tokens).ok_or(PathNameError::NotQualified)
+    qualified_name(source, tokens).ok_or(PathNameError::NotQualified)
 }
-pub(super) fn import_name(source: &str, tokens: &[Token]) -> Result<String, PathNameError> {
+pub(super) fn import_name(
+    source: &str,
+    tokens: &[Token],
+) -> Result<(String, Vec<SourceSpan>), PathNameError> {
     // A project may declare `module std::bytes`, so the reserved type word `bytes`
     // stays legal as that import's final segment; a reserved segment in any other
     // position is the path error. This is a path-shape allowance, not a shipped
@@ -65,7 +76,7 @@ pub(super) fn import_name(source: &str, tokens: &[Token]) -> Result<String, Path
     {
         return Err(PathNameError::ReservedSegment(*reserved));
     }
-    qualified_name_text(source, tokens).ok_or(PathNameError::NotQualified)
+    qualified_name(source, tokens).ok_or(PathNameError::NotQualified)
 }
 fn reserved_segment(tokens: &[Token]) -> Option<&Token> {
     tokens
@@ -532,8 +543,36 @@ fn build_type_expr(
     }
     Ok(TypeExpr::Name {
         text: type_text(source, tokens),
+        segment_spans: type_name_segment_spans(tokens),
         span,
     })
+}
+
+/// Exact token spans for a type spelling that is only a `::`-separated name.
+/// Other unresolved spellings retain their whole span but deliberately expose no
+/// identifier occurrence.
+fn type_name_segment_spans(tokens: &[Token]) -> Vec<SourceSpan> {
+    if tokens.is_empty() {
+        return Vec::new();
+    }
+    for (index, token) in tokens.iter().enumerate() {
+        let valid = if index.is_multiple_of(2) {
+            match token.kind {
+                TokenKind::Identifier => true,
+                TokenKind::Keyword(keyword) => keyword.lexical_class() == LexicalClass::BuiltinType,
+                _ => false,
+            }
+        } else {
+            token.kind == TokenKind::DoubleColon
+        };
+        if !valid {
+            return Vec::new();
+        }
+    }
+    if tokens.len().is_multiple_of(2) {
+        return Vec::new();
+    }
+    tokens.iter().step_by(2).map(|token| token.span).collect()
 }
 
 /// A generic type application `Head<Arg, ...>`: any identifier head whose `<...>`
@@ -586,7 +625,12 @@ fn build_apply(
         }
         args.push(build_type_expr(source, part, expected)?);
     }
-    Ok(Some(TypeExpr::Apply { head, args, span }))
+    Ok(Some(TypeExpr::Apply {
+        head,
+        head_span: tokens[0].span,
+        args,
+        span,
+    }))
 }
 
 /// Whether a token slice opens as an identity constructor `Id ( ^`. `Id` is a

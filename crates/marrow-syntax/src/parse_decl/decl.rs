@@ -322,7 +322,13 @@ impl<'a> DeclParser<'a> {
             );
         } else {
             match name {
-                Ok(name) => file.module = Some(ModuleDecl { name, span }),
+                Ok((name, segment_spans)) => {
+                    file.module = Some(ModuleDecl {
+                        name,
+                        segment_spans,
+                        span,
+                    });
+                }
                 Err(PathNameError::ReservedSegment(reserved)) => {
                     self.report_reserved_path_segment(reserved);
                 }
@@ -339,7 +345,11 @@ impl<'a> DeclParser<'a> {
         let span = self.header_span();
         let header = self.take_header_line();
         match import_name(self.source, &header[1..]) {
-            Ok(name) => file.uses.push(UseDecl { name, span }),
+            Ok((name, segment_spans)) => file.uses.push(UseDecl {
+                name,
+                segment_spans,
+                span,
+            }),
             Err(PathNameError::ReservedSegment(reserved)) => {
                 self.report_reserved_path_segment(reserved);
             }
@@ -368,7 +378,7 @@ impl<'a> DeclParser<'a> {
         // `const Name [: type] = value`. The name is the identifier after the
         // keyword; the type runs from `:` to `=`; the value is everything after.
         let equal = find_top_level_equal(&header[1..]).map(|index| index + 1);
-        let (name, ty, value) = match equal {
+        let (name, name_span, ty, value) = match equal {
             Some(equal) => {
                 let head = &header[1..equal];
                 let value_tokens = &header[equal + 1..];
@@ -381,9 +391,9 @@ impl<'a> DeclParser<'a> {
                         "const declarations require a value after `=`",
                     );
                 }
-                let (name, ty) = self.const_name_type(span, head);
+                let (name, name_span, ty) = self.const_name_type(span, head);
                 let value = self.value_expression(value_tokens);
-                (name, ty, value)
+                (name, name_span, ty, value)
             }
             None => {
                 self.error_span(
@@ -391,13 +401,14 @@ impl<'a> DeclParser<'a> {
                     ParseDiagnosticReason::ConstRequiresValue,
                     "const declarations require `=` and a value",
                 );
-                let (name, ty) = self.const_name_type(span, &header[1..]);
-                (name, ty, None)
+                let (name, name_span, ty) = self.const_name_type(span, &header[1..]);
+                (name, name_span, ty, None)
             }
         };
         ConstDecl {
             docs,
             name,
+            name_span,
             ty,
             value,
             span,
@@ -406,7 +417,11 @@ impl<'a> DeclParser<'a> {
 
     /// Split a const head (`Name` or `Name: type`) into the name and optional
     /// type, reporting a non-identifier name or malformed type annotation.
-    fn const_name_type(&mut self, span: SourceSpan, head: &[Token]) -> (String, Option<TypeExpr>) {
+    fn const_name_type(
+        &mut self,
+        span: SourceSpan,
+        head: &[Token],
+    ) -> (String, SourceSpan, Option<TypeExpr>) {
         let colon = head.iter().position(|token| token.kind == TokenKind::Colon);
         let (name_tokens, type_tokens) = match colon {
             Some(index) => (&head[..index], Some(&head[index + 1..])),
@@ -420,6 +435,7 @@ impl<'a> DeclParser<'a> {
                 .to_string(),
             None => String::new(),
         };
+        let name_span = line_span_or(name_tokens, span);
         // A reserved word is not an identifier (per the grammar), so it cannot name
         // a const any more than it can name a param, member, or key.
         if keyword(&name).is_some() {
@@ -466,7 +482,7 @@ impl<'a> DeclParser<'a> {
                 .map_or(span, |token| gap_after(token.span));
             Some(TypeExpr::Incomplete { span: gap })
         });
-        (name, ty)
+        (name, name_span, ty)
     }
 
     /// Parse an `alias Name = Type` header line: a transparent type alias. The
@@ -798,7 +814,7 @@ impl<'a> DeclParser<'a> {
     fn parse_store(&mut self, docs: Vec<String>) -> StoreDecl {
         let span = self.header_span();
         let header = self.take_header_line();
-        let (root, resource) = match parse_store_head(self.source, &header[1..]) {
+        let (root, resource, resource_span) = match parse_store_head(self.source, &header[1..]) {
             Ok(parsed) => parsed,
             Err(error) => {
                 self.report(span, error);
@@ -809,6 +825,7 @@ impl<'a> DeclParser<'a> {
                         span: SourceSpan::default(),
                     },
                     String::new(),
+                    span,
                 )
             }
         };
@@ -821,6 +838,7 @@ impl<'a> DeclParser<'a> {
             docs,
             root,
             resource,
+            resource_span,
             indexes,
             comments,
             span,

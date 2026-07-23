@@ -793,7 +793,7 @@ fn parses_checked_arithmetic_forms() {
             ..
         } => {
             assert!(
-                matches!(bind, CheckedBind::Const { name, ty: Some(_) } if name == "q"),
+                matches!(bind, CheckedBind::Const { name, ty: Some(_), .. } if name == "q"),
                 "{bind:#?}"
             );
             assert!(out_of_range.is_some() && zero_divisor.is_some());
@@ -808,7 +808,7 @@ fn parses_checked_arithmetic_forms() {
             ..
         } => {
             assert!(
-                matches!(bind, CheckedBind::Var { name, ty: None } if name == "r"),
+                matches!(bind, CheckedBind::Var { name, ty: None, .. } if name == "r"),
                 "{bind:#?}"
             );
             assert!(out_of_range.is_some() && zero_divisor.is_none());

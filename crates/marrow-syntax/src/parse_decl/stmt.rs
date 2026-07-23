@@ -25,6 +25,7 @@ enum IfHead {
     Expr(Expression),
     ConstBinding {
         name: String,
+        name_span: SourceSpan,
         ty: Option<TypeExpr>,
         value: Expression,
     },
@@ -573,8 +574,14 @@ impl<'a> StmtParser<'a> {
                 else_block,
                 span: join_spans(start, end),
             },
-            IfHead::ConstBinding { name, ty, value } => Statement::IfConst {
+            IfHead::ConstBinding {
                 name,
+                name_span,
+                ty,
+                value,
+            } => Statement::IfConst {
+                name,
+                name_span,
                 ty,
                 value,
                 then_block,
@@ -779,15 +786,24 @@ impl<'a> StmtParser<'a> {
         );
         self.pos = binding_end + 1; // past the `else`
         let else_block = self.parse_clause_body();
-        let (is_var, name, ty, value) = match binding {
+        let (is_var, name, name_span, ty, value) = match binding {
             Some(Statement::Const {
-                name, ty, value, ..
-            }) => (false, name, ty, value),
+                name,
+                name_span,
+                ty,
+                value,
+                ..
+            }) => (false, name, name_span, ty, value),
             Some(Statement::Var {
-                name, ty, value, ..
+                name,
+                name_span,
+                ty,
+                value,
+                ..
             }) => (
                 true,
                 name,
+                name_span,
                 ty,
                 value.unwrap_or(Expression::Error {
                     span: start,
@@ -797,6 +813,7 @@ impl<'a> StmtParser<'a> {
             _ => (
                 false,
                 String::new(),
+                start,
                 None,
                 Expression::Error {
                     span: start,
@@ -807,6 +824,7 @@ impl<'a> StmtParser<'a> {
         Statement::LetElse {
             is_var,
             name,
+            name_span,
             ty,
             value,
             span: join_spans(start, else_block.span),
@@ -1010,8 +1028,14 @@ impl<'a> StmtParser<'a> {
         let head = if starts_const && top_level_and_starts(line).len() > 1 {
             Some(self.parse_if_const_chain(line))
         } else if starts_const {
-            parse_if_const_head(self.source, line, &mut self.diagnostics)
-                .map(|(name, ty, value)| IfHead::ConstBinding { name, ty, value })
+            parse_if_const_head(self.source, line, &mut self.diagnostics).map(
+                |(name, name_span, ty, value)| IfHead::ConstBinding {
+                    name,
+                    name_span,
+                    ty,
+                    value,
+                },
+            )
         } else {
             expr_of_after(self.source, line, keyword, &mut self.diagnostics).map(IfHead::Expr)
         };
@@ -1035,10 +1059,15 @@ impl<'a> StmtParser<'a> {
             let part_end = starts.get(index + 1).map_or(line.len(), |next| next - 1);
             let part = &line[start..part_end];
             if part.first().map(|token| token.kind) == Some(TokenKind::Keyword(Keyword::Const)) {
-                if let Some((name, ty, value)) =
+                if let Some((name, name_span, ty, value)) =
                     parse_if_const_head(self.source, part, &mut self.diagnostics)
                 {
-                    bindings.push(IfConstBinding { name, ty, value });
+                    bindings.push(IfConstBinding {
+                        name,
+                        name_span,
+                        ty,
+                        value,
+                    });
                 }
             } else {
                 // The first non-`const` part begins the trailing condition; keep the
@@ -1428,14 +1457,24 @@ fn parse_checked_bind(
     match prefix.first().map(|token| token.kind) {
         Some(TokenKind::Keyword(Keyword::Return)) => CheckedBind::Return,
         Some(TokenKind::Keyword(Keyword::Var)) => {
-            let (name, ty) = parse_checked_binding_name(source, prefix, true, diagnostics);
-            CheckedBind::Var { name, ty }
+            let (name, name_span, ty) =
+                parse_checked_binding_name(source, prefix, true, diagnostics);
+            CheckedBind::Var {
+                name,
+                name_span,
+                ty,
+            }
         }
         // `const`, and the detection-guaranteed-unreachable fallback, both bind a
         // fresh const so the node is well-formed.
         _ => {
-            let (name, ty) = parse_checked_binding_name(source, prefix, false, diagnostics);
-            CheckedBind::Const { name, ty }
+            let (name, name_span, ty) =
+                parse_checked_binding_name(source, prefix, false, diagnostics);
+            CheckedBind::Const {
+                name,
+                name_span,
+                ty,
+            }
         }
     }
 }
@@ -1448,9 +1487,11 @@ fn parse_checked_binding_name(
     prefix: &[Token],
     is_var: bool,
     diagnostics: &mut Vec<Diagnostic>,
-) -> (String, Option<TypeExpr>) {
-    let name = match prefix.get(1) {
-        Some(token) if token.kind == TokenKind::Identifier => token.text(source).to_string(),
+) -> (String, SourceSpan, Option<TypeExpr>) {
+    let (name, name_span) = match prefix.get(1) {
+        Some(token) if token.kind == TokenKind::Identifier => {
+            (token.text(source).to_string(), token.span)
+        }
         other => {
             let (span, expected) = (
                 other.map_or(prefix[0].span, |token| token.span),
@@ -1468,7 +1509,7 @@ fn parse_checked_binding_name(
                 help: None,
                 span,
             });
-            String::new()
+            (String::new(), span)
         }
     };
 
@@ -1495,5 +1536,5 @@ fn parse_checked_binding_name(
             }
         }
     }
-    (name, ty)
+    (name, name_span, ty)
 }
