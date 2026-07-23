@@ -450,10 +450,47 @@ fn keyword_pattern_matches(pattern: &str, source: &str) -> bool {
     })
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+enum RuleEdgeKind {
+    Match(usize),
+    Begin,
+    End,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct RuleEdge {
+    repository: String,
+    kind: RuleEdgeKind,
+}
+
+impl RuleEdge {
+    fn matched(repository: &str, index: usize) -> Self {
+        Self {
+            repository: repository.to_string(),
+            kind: RuleEdgeKind::Match(index),
+        }
+    }
+
+    fn begin(repository: &str) -> Self {
+        Self {
+            repository: repository.to_string(),
+            kind: RuleEdgeKind::Begin,
+        }
+    }
+
+    fn end(repository: &str) -> Self {
+        Self {
+            repository: repository.to_string(),
+            kind: RuleEdgeKind::End,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum PatternEntry {
     Include(String),
     Match {
+        edge: RuleEdge,
         scope: Option<String>,
         pattern: String,
     },
@@ -462,7 +499,16 @@ enum PatternEntry {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ScopedSpan {
     span: Range<usize>,
-    scope: String,
+    stack: Vec<String>,
+    direct_lexical_scope: Option<String>,
+}
+
+#[derive(Clone, Copy)]
+struct ScanContext<'source, 'scope> {
+    source: &'source str,
+    limit: usize,
+    stack: &'scope [String],
+    direct_scope: Option<&'scope str>,
 }
 
 fn json_string(text: &str) -> (String, usize) {
@@ -503,20 +549,6 @@ fn json_string_field(object: &str, field: &str) -> String {
         .unwrap_or_else(|| panic!("missing JSON string field '{field}'"))
 }
 
-fn json_string_fields(object: &str, field: &str) -> Vec<String> {
-    let marker = format!("\"{field}\":");
-    let mut values = Vec::new();
-    let mut rest = object;
-    while let Some(index) = rest.find(&marker) {
-        rest = &rest[index + marker.len()..];
-        let trimmed = rest.trim_start();
-        let (value, consumed) = json_string(trimmed);
-        values.push(value);
-        rest = &trimmed[consumed..];
-    }
-    values
-}
-
 fn repository_object<'a>(grammar: &'a str, name: &str) -> &'a str {
     let marker = format!("\"{name}\": {{");
     let key = grammar
@@ -554,7 +586,8 @@ fn repository_object<'a>(grammar: &'a str, name: &str) -> &'a str {
     panic!("unterminated grammar repository '{name}'")
 }
 
-fn pattern_entries(object: &str) -> Vec<PatternEntry> {
+fn pattern_entries(repository: &str, object: &str) -> Vec<PatternEntry> {
+    let mut match_index = 0usize;
     object
         .lines()
         .filter_map(|line| {
@@ -562,25 +595,70 @@ fn pattern_entries(object: &str) -> Vec<PatternEntry> {
                 return Some(PatternEntry::Include(json_string_field(line, "include")));
             }
             if line.contains("\"match\":") {
-                return Some(PatternEntry::Match {
+                let entry = PatternEntry::Match {
+                    edge: RuleEdge::matched(repository, match_index),
                     scope: json_string_field_opt(line, "name"),
                     pattern: json_string_field(line, "match"),
-                });
+                };
+                match_index += 1;
+                return Some(entry);
             }
             None
         })
         .collect()
 }
 
-fn emitted_patterns(grammar: &str) -> BTreeSet<String> {
+fn repository_names(grammar: &str) -> Vec<String> {
     grammar
+        .lines()
+        .filter_map(|line| {
+            line.strip_prefix("    \"")
+                .and_then(|entry| entry.strip_suffix("\": {"))
+                .map(str::to_string)
+        })
+        .collect()
+}
+
+fn emitted_edges(grammar: &str) -> BTreeSet<RuleEdge> {
+    let mut edges = BTreeSet::new();
+    for repository in repository_names(grammar) {
+        let object = repository_object(grammar, &repository);
+        for entry in pattern_entries(&repository, object) {
+            if let PatternEntry::Match { edge, .. } = entry {
+                assert!(edges.insert(edge), "duplicate emitted match edge");
+            }
+        }
+        if json_string_field_opt(object, "begin").is_some() {
+            assert!(
+                json_string_field_opt(object, "end").is_some(),
+                "region '{repository}' has a begin edge without an end edge"
+            );
+            assert!(edges.insert(RuleEdge::begin(&repository)));
+            assert!(edges.insert(RuleEdge::end(&repository)));
+        }
+    }
+    let emitted_field_count = grammar
         .lines()
         .flat_map(|line| {
             ["match", "begin", "end"]
                 .into_iter()
                 .filter_map(|field| json_string_field_opt(line, field))
         })
-        .collect()
+        .count();
+    assert_eq!(
+        edges.len(),
+        emitted_field_count,
+        "every emitted match, begin, and end field must have a stable rule-edge identity"
+    );
+    edges
+}
+
+fn capture_scope(object: &str, field: &str) -> Option<String> {
+    let marker = format!("\"{field}\":");
+    object
+        .lines()
+        .find(|line| line.contains(&marker))
+        .and_then(|line| json_string_field_opt(line, "name"))
 }
 
 fn is_word_at(source: &str, index: usize) -> bool {
@@ -801,7 +879,9 @@ fn match_restricted_pattern(
 struct TextMateOracle<'a> {
     grammar: &'a str,
     spans: Vec<ScopedSpan>,
-    attempted: BTreeSet<String>,
+    successful_edges: BTreeSet<RuleEdge>,
+    lexical_scopes: BTreeSet<&'static str>,
+    root_scope: String,
 }
 
 impl<'a> TextMateOracle<'a> {
@@ -809,36 +889,118 @@ impl<'a> TextMateOracle<'a> {
         Self {
             grammar,
             spans: Vec::new(),
-            attempted: BTreeSet::new(),
+            successful_edges: BTreeSet::new(),
+            lexical_scopes: lexical_scopes(),
+            root_scope: json_string_field(grammar, "scopeName"),
         }
     }
 
-    fn tokenize(mut self, source: &str) -> (Vec<ScopedSpan>, BTreeSet<String>) {
+    fn tokenize(mut self, source: &str) -> (Vec<ScopedSpan>, BTreeSet<RuleEdge>) {
+        let root_stack = vec![self.root_scope.clone()];
         let mut index = 0usize;
         while index < source.len() {
-            if let Some(end) = self.try_repository("expression", source, index, source.len()) {
+            if let Some(end) =
+                self.try_repository("expression", source, index, source.len(), &root_stack, None)
+            {
                 assert!(end > index, "TextMate rule did not consume input");
                 index = end;
             } else {
-                index += source[index..]
-                    .chars()
-                    .next()
-                    .expect("source character")
-                    .len_utf8();
+                let end = index
+                    + source[index..]
+                        .chars()
+                        .next()
+                        .expect("source character")
+                        .len_utf8();
+                self.push_span(index..end, &root_stack, None);
+                index = end;
             }
         }
-        (self.spans, self.attempted)
+        (self.spans, self.successful_edges)
+    }
+
+    fn push_span(&mut self, span: Range<usize>, stack: &[String], direct_scope: Option<&str>) {
+        if span.is_empty() {
+            return;
+        }
+        if let Some(direct_scope) = direct_scope {
+            assert!(
+                stack.iter().any(|scope| scope == direct_scope),
+                "direct lexical scope '{direct_scope}' is absent from its TextMate stack {stack:?}"
+            );
+        }
+        let direct_lexical_scope = direct_scope.map(str::to_string);
+        if let Some(previous) = self.spans.last_mut()
+            && previous.span.end == span.start
+            && previous.stack == stack
+            && previous.direct_lexical_scope == direct_lexical_scope
+        {
+            previous.span.end = span.end;
+            return;
+        }
+        self.spans.push(ScopedSpan {
+            span,
+            stack: stack.to_vec(),
+            direct_lexical_scope,
+        });
     }
 
     fn try_pattern(
         &mut self,
+        edge: &RuleEdge,
         pattern: &str,
         source: &str,
         start: usize,
         limit: usize,
     ) -> Option<usize> {
-        self.attempted.insert(pattern.to_string());
-        match_restricted_pattern(pattern, source, start, limit)
+        let end = match_restricted_pattern(pattern, source, start, limit)?;
+        self.successful_edges.insert(edge.clone());
+        Some(end)
+    }
+
+    fn try_entry(
+        &mut self,
+        entry: &PatternEntry,
+        source: &str,
+        start: usize,
+        limit: usize,
+        stack: &[String],
+        inherited_scope: Option<&str>,
+    ) -> Option<usize> {
+        match entry {
+            PatternEntry::Include(include) => self.try_repository(
+                include.trim_start_matches('#'),
+                source,
+                start,
+                limit,
+                stack,
+                inherited_scope,
+            ),
+            PatternEntry::Match {
+                edge,
+                scope,
+                pattern,
+            } => {
+                let end = self.try_pattern(edge, pattern, source, start, limit)?;
+                assert!(
+                    end > start,
+                    "TextMate match edge {edge:?} did not consume input"
+                );
+                let mut matched_stack = stack.to_vec();
+                let scope_is_lexical = scope
+                    .as_deref()
+                    .is_some_and(|scope| self.lexical_scopes.contains(scope));
+                if let Some(scope) = scope {
+                    matched_stack.push(scope.clone());
+                }
+                let direct_scope = if scope_is_lexical {
+                    scope.as_deref()
+                } else {
+                    inherited_scope
+                };
+                self.push_span(start..end, &matched_stack, direct_scope);
+                Some(end)
+            }
+        }
     }
 
     fn try_repository(
@@ -847,38 +1009,27 @@ impl<'a> TextMateOracle<'a> {
         source: &str,
         start: usize,
         limit: usize,
+        stack: &[String],
+        inherited_scope: Option<&str>,
     ) -> Option<usize> {
-        if matches!(
-            name,
-            "double-string"
-                | "bytes-string"
-                | "escaped-hole-string"
-                | "interpolation"
-                | "interpolation-hole"
-        ) {
-            return self.try_region(name, source, start, limit);
-        }
         let object = repository_object(self.grammar, name).to_string();
-        for entry in pattern_entries(&object) {
-            match entry {
-                PatternEntry::Include(include) => {
-                    if let Some(end) =
-                        self.try_repository(include.trim_start_matches('#'), source, start, limit)
-                    {
-                        return Some(end);
-                    }
-                }
-                PatternEntry::Match { scope, pattern } => {
-                    if let Some(end) = self.try_pattern(&pattern, source, start, limit) {
-                        if let Some(scope) = scope {
-                            self.spans.push(ScopedSpan {
-                                span: start..end,
-                                scope,
-                            });
-                        }
-                        return Some(end);
-                    }
-                }
+        if json_string_field_opt(&object, "begin").is_some() {
+            return self.try_region(
+                name,
+                &object,
+                start,
+                ScanContext {
+                    source,
+                    limit,
+                    stack,
+                    direct_scope: inherited_scope,
+                },
+            );
+        }
+        for entry in pattern_entries(name, &object) {
+            if let Some(end) = self.try_entry(&entry, source, start, limit, stack, inherited_scope)
+            {
+                return Some(end);
             }
         }
         None
@@ -887,219 +1038,127 @@ impl<'a> TextMateOracle<'a> {
     fn try_region(
         &mut self,
         name: &str,
-        source: &str,
+        object: &str,
         start: usize,
-        limit: usize,
+        context: ScanContext<'_, '_>,
     ) -> Option<usize> {
-        let object = repository_object(self.grammar, name).to_string();
-        let begin = json_string_field(&object, "begin");
-        let after_begin = self.try_pattern(&begin, source, start, limit)?;
-        if name == "interpolation" {
-            return Some(self.scan_interpolation(&object, source, start, after_begin, limit));
+        let begin = json_string_field(object, "begin");
+        let after_begin = self.try_pattern(
+            &RuleEdge::begin(name),
+            &begin,
+            context.source,
+            start,
+            context.limit,
+        )?;
+        assert!(
+            after_begin > start,
+            "TextMate begin edge for '{name}' did not consume input"
+        );
+
+        let region_scope = json_string_field(object, "name");
+        let mut region_stack = context.stack.to_vec();
+        region_stack.push(region_scope.clone());
+        let region_scope_is_lexical = self.lexical_scopes.contains(region_scope.as_str());
+        let region_direct_scope = if region_scope.starts_with("meta.embedded.") {
+            None
+        } else if region_scope_is_lexical {
+            Some(region_scope.as_str())
+        } else {
+            context.direct_scope
+        };
+
+        let begin_capture = capture_scope(object, "beginCaptures");
+        let mut begin_stack = region_stack.clone();
+        let begin_capture_is_lexical = begin_capture
+            .as_deref()
+            .is_some_and(|scope| self.lexical_scopes.contains(scope));
+        if let Some(scope) = &begin_capture {
+            begin_stack.push(scope.clone());
         }
-        if name == "interpolation-hole" {
-            return Some(self.scan_interpolation_hole(&object, source, start, after_begin, limit));
-        }
-        Some(self.scan_simple_region(&object, source, start, after_begin, limit))
+        let begin_direct_scope = if begin_capture_is_lexical {
+            begin_capture.as_deref()
+        } else {
+            region_direct_scope
+        };
+        self.push_span(start..after_begin, &begin_stack, begin_direct_scope);
+
+        Some(self.scan_region(
+            name,
+            object,
+            after_begin,
+            ScanContext {
+                source: context.source,
+                limit: context.limit,
+                stack: &region_stack,
+                direct_scope: region_direct_scope,
+            },
+        ))
     }
 
-    fn scan_simple_region(
+    fn scan_region(
         &mut self,
+        name: &str,
         object: &str,
-        source: &str,
-        start: usize,
         mut index: usize,
-        limit: usize,
+        context: ScanContext<'_, '_>,
     ) -> usize {
         let end_pattern = json_string_field(object, "end");
-        let region_scope = json_string_field(object, "name");
-        let entries = pattern_entries(object);
-        while index < limit {
-            if let Some(end) = self.try_pattern(&end_pattern, source, index, limit) {
-                self.spans.push(ScopedSpan {
-                    span: start..end,
-                    scope: region_scope,
-                });
+        let end_edge = RuleEdge::end(name);
+        let end_capture = capture_scope(object, "endCaptures");
+        let end_capture_is_lexical = end_capture
+            .as_deref()
+            .is_some_and(|scope| self.lexical_scopes.contains(scope));
+        let entries = pattern_entries(name, object);
+
+        while index < context.limit {
+            if let Some(end) = self.try_pattern(
+                &end_edge,
+                &end_pattern,
+                context.source,
+                index,
+                context.limit,
+            ) {
+                let mut end_stack = context.stack.to_vec();
+                if let Some(scope) = &end_capture {
+                    end_stack.push(scope.clone());
+                }
+                let end_direct_scope = if end_capture_is_lexical {
+                    end_capture.as_deref()
+                } else {
+                    context.direct_scope
+                };
+                self.push_span(index..end, &end_stack, end_direct_scope);
                 return end;
             }
+
             let mut consumed = None;
             for entry in &entries {
-                match entry {
-                    PatternEntry::Include(include) => {
-                        consumed = self.try_repository(
-                            include.trim_start_matches('#'),
-                            source,
-                            index,
-                            limit,
-                        );
-                    }
-                    PatternEntry::Match { scope, pattern } => {
-                        consumed = self.try_pattern(pattern, source, index, limit);
-                        if let (Some(end), Some(scope)) = (consumed, scope) {
-                            self.spans.push(ScopedSpan {
-                                span: index..end,
-                                scope: scope.clone(),
-                            });
-                        }
-                    }
-                }
+                consumed = self.try_entry(
+                    entry,
+                    context.source,
+                    index,
+                    context.limit,
+                    context.stack,
+                    context.direct_scope,
+                );
                 if consumed.is_some() {
                     break;
                 }
             }
-            index = consumed.unwrap_or_else(|| {
-                index
-                    + source[index..limit]
+            if let Some(end) = consumed {
+                index = end;
+            } else {
+                let end = index
+                    + context.source[index..context.limit]
                         .chars()
                         .next()
                         .expect("region character")
-                        .len_utf8()
-            });
-        }
-        self.spans.push(ScopedSpan {
-            span: start..limit,
-            scope: region_scope,
-        });
-        limit
-    }
-
-    fn scan_interpolation(
-        &mut self,
-        object: &str,
-        source: &str,
-        start: usize,
-        mut index: usize,
-        limit: usize,
-    ) -> usize {
-        let end_pattern = json_string_field(object, "end");
-        let region_scope = json_string_field(object, "name");
-        let entries = pattern_entries(object);
-        let mut segment_start = start;
-        while index < limit {
-            if let Some(end) = self.try_pattern(&end_pattern, source, index, limit) {
-                self.spans.push(ScopedSpan {
-                    span: segment_start..end,
-                    scope: region_scope,
-                });
-                return end;
+                        .len_utf8();
+                self.push_span(index..end, context.stack, context.direct_scope);
+                index = end;
             }
-            let mut consumed = None;
-            for entry in &entries {
-                match entry {
-                    PatternEntry::Include(include) if include == "#interpolation-hole" => {
-                        consumed = self.try_repository("interpolation-hole", source, index, limit);
-                        if let Some(end) = consumed {
-                            if segment_start < index {
-                                self.spans.push(ScopedSpan {
-                                    span: segment_start..index,
-                                    scope: region_scope.clone(),
-                                });
-                            }
-                            segment_start = end;
-                        }
-                    }
-                    PatternEntry::Include(include) => {
-                        consumed = self.try_repository(
-                            include.trim_start_matches('#'),
-                            source,
-                            index,
-                            limit,
-                        );
-                    }
-                    PatternEntry::Match { scope, pattern } => {
-                        consumed = self.try_pattern(pattern, source, index, limit);
-                        if let (Some(end), Some(scope)) = (consumed, scope) {
-                            self.spans.push(ScopedSpan {
-                                span: index..end,
-                                scope: scope.clone(),
-                            });
-                        }
-                    }
-                }
-                if consumed.is_some() {
-                    break;
-                }
-            }
-            index = consumed.unwrap_or_else(|| {
-                index
-                    + source[index..limit]
-                        .chars()
-                        .next()
-                        .expect("interpolation character")
-                        .len_utf8()
-            });
         }
-        if segment_start < limit {
-            self.spans.push(ScopedSpan {
-                span: segment_start..limit,
-                scope: region_scope,
-            });
-        }
-        limit
-    }
-
-    fn scan_interpolation_hole(
-        &mut self,
-        object: &str,
-        source: &str,
-        start: usize,
-        mut index: usize,
-        limit: usize,
-    ) -> usize {
-        let end_pattern = json_string_field(object, "end");
-        let names = json_string_fields(object, "name");
-        let delimiter_scope = names
-            .into_iter()
-            .find(|name| name.starts_with("punctuation.section.embedded"))
-            .expect("interpolation delimiter capture scope");
-        self.spans.push(ScopedSpan {
-            span: start..index,
-            scope: delimiter_scope.clone(),
-        });
-        let entries = pattern_entries(object);
-        while index < limit {
-            if let Some(end) = self.try_pattern(&end_pattern, source, index, limit) {
-                self.spans.push(ScopedSpan {
-                    span: index..end,
-                    scope: delimiter_scope,
-                });
-                return end;
-            }
-            let mut consumed = None;
-            for entry in &entries {
-                match entry {
-                    PatternEntry::Include(include) => {
-                        consumed = self.try_repository(
-                            include.trim_start_matches('#'),
-                            source,
-                            index,
-                            limit,
-                        );
-                    }
-                    PatternEntry::Match { scope, pattern } => {
-                        consumed = self.try_pattern(pattern, source, index, limit);
-                        if let (Some(end), Some(scope)) = (consumed, scope) {
-                            self.spans.push(ScopedSpan {
-                                span: index..end,
-                                scope: scope.clone(),
-                            });
-                        }
-                    }
-                }
-                if consumed.is_some() {
-                    break;
-                }
-            }
-            index = consumed.unwrap_or_else(|| {
-                index
-                    + source[index..limit]
-                        .chars()
-                        .next()
-                        .expect("hole character")
-                        .len_utf8()
-            });
-        }
-        limit
+        context.limit
     }
 }
 
@@ -1132,42 +1191,53 @@ fn lexical_scopes() -> BTreeSet<&'static str> {
     .collect()
 }
 
-fn assert_emitted_scopes_match_lexer(source: &str, attempted: &mut BTreeSet<String>) {
+fn scoped_span_at(spans: &[ScopedSpan], byte: usize) -> &ScopedSpan {
+    let mut matching = spans.iter().filter(|span| span.span.contains(&byte));
+    let span = matching
+        .next()
+        .unwrap_or_else(|| panic!("no TextMate stack covers byte {byte}; spans={spans:#?}"));
+    assert!(
+        matching.next().is_none(),
+        "multiple TextMate stacks cover byte {byte}; spans={spans:#?}"
+    );
+    span
+}
+
+fn assert_emitted_scopes_match_lexer(source: &str, successful_edges: &mut BTreeSet<RuleEdge>) {
     let grammar = render_grammar();
-    let (spans, fixture_attempted) = TextMateOracle::new(&grammar).tokenize(source);
-    attempted.extend(fixture_attempted);
+    let (spans, fixture_successful_edges) = TextMateOracle::new(&grammar).tokenize(source);
+    successful_edges.extend(fixture_successful_edges);
     let lexed = lex_source(source);
     assert!(
         lexed.diagnostics.is_empty(),
         "fixture must be lexer-valid: {source:?}: {:#?}",
         lexed.diagnostics
     );
-    let owned_scopes = lexical_scopes();
     for token in lexed.tokens {
         if matches!(token.kind, TokenKind::Newline | TokenKind::Eof) {
             continue;
         }
         let expected = textmate_scope(token.kind.lexical_class());
         for byte in token.span.start_byte..token.span.end_byte {
-            let actual: BTreeSet<&str> = spans
-                .iter()
-                .filter(|span| {
-                    span.span.contains(&byte) && owned_scopes.contains(span.scope.as_str())
-                })
-                .map(|span| span.scope.as_str())
-                .collect();
-            match expected {
-                Some(expected) => assert_eq!(
-                    actual,
-                    BTreeSet::from([expected]),
-                    "emitted grammar disagrees at byte {byte} of {source:?} for {:?}; spans={spans:#?}",
-                    token.kind
-                ),
-                None => assert!(
-                    actual.is_empty(),
-                    "unscoped token {:?} gained {actual:?} at byte {byte} of {source:?}; spans={spans:#?}",
-                    token.kind
-                ),
+            let span = scoped_span_at(&spans, byte);
+            assert_eq!(
+                span.stack.first().map(String::as_str),
+                Some("source.marrow"),
+                "the root TextMate scope is absent at byte {byte} of {source:?}"
+            );
+            assert_eq!(
+                span.direct_lexical_scope.as_deref(),
+                expected,
+                "emitted grammar disagrees at byte {byte} of {source:?} for {:?}; stack={:?}",
+                token.kind,
+                span.stack
+            );
+            if let Some(expected) = expected {
+                assert!(
+                    span.stack.iter().any(|scope| scope == expected),
+                    "direct lexical scope '{expected}' is absent at byte {byte} of {source:?}; stack={:?}",
+                    span.stack
+                );
             }
         }
     }
@@ -1330,25 +1400,165 @@ fn single_owner_rejects_spelling_and_inventory_mutations() {
 }
 
 #[test]
+fn interpolation_holes_retain_the_complete_scope_stack() {
+    let source = r#"$"plain {name true 1.2} tail""#;
+    let grammar = render_grammar();
+    let (spans, _) = TextMateOracle::new(&grammar).tokenize(source);
+    let stack_at = |needle: &str| {
+        let byte = source.find(needle).expect("needle in stack fixture");
+        scoped_span_at(&spans, byte)
+    };
+
+    let name = stack_at("name");
+    assert_eq!(
+        name.stack.as_slice(),
+        [
+            "source.marrow",
+            "string.interpolated.marrow",
+            "meta.embedded.line.marrow",
+        ]
+    );
+    assert_eq!(name.direct_lexical_scope.as_deref(), None);
+
+    let value = stack_at("true");
+    assert_eq!(
+        value.stack.as_slice(),
+        [
+            "source.marrow",
+            "string.interpolated.marrow",
+            "meta.embedded.line.marrow",
+            "constant.language.marrow",
+        ]
+    );
+    assert_eq!(
+        value.direct_lexical_scope.as_deref(),
+        Some("constant.language.marrow")
+    );
+
+    let decimal = stack_at("1.2");
+    assert_eq!(
+        decimal.stack.as_slice(),
+        [
+            "source.marrow",
+            "string.interpolated.marrow",
+            "meta.embedded.line.marrow",
+            "constant.numeric.decimal.marrow",
+        ]
+    );
+    assert_eq!(
+        decimal.direct_lexical_scope.as_deref(),
+        Some("constant.numeric.decimal.marrow")
+    );
+
+    let delimiter = stack_at("{");
+    assert_eq!(
+        delimiter.stack.as_slice(),
+        [
+            "source.marrow",
+            "string.interpolated.marrow",
+            "meta.embedded.line.marrow",
+            "punctuation.section.embedded.marrow",
+        ]
+    );
+    assert_eq!(
+        delimiter.direct_lexical_scope.as_deref(),
+        Some("punctuation.section.embedded.marrow")
+    );
+
+    let closing_delimiter = scoped_span_at(
+        &spans,
+        source
+            .rfind('}')
+            .expect("closing delimiter in stack fixture"),
+    );
+    assert_eq!(closing_delimiter.stack, delimiter.stack);
+    assert_eq!(
+        closing_delimiter.direct_lexical_scope,
+        delimiter.direct_lexical_scope
+    );
+
+    let interpolation_begin = scoped_span_at(&spans, 0);
+    assert_eq!(
+        interpolation_begin.stack.as_slice(),
+        [
+            "source.marrow",
+            "string.interpolated.marrow",
+            "punctuation.definition.string.begin.marrow",
+        ]
+    );
+    assert_eq!(
+        interpolation_begin.direct_lexical_scope.as_deref(),
+        Some("string.interpolated.marrow")
+    );
+
+    let interpolation_end = scoped_span_at(&spans, source.len() - 1);
+    assert_eq!(
+        interpolation_end.stack.as_slice(),
+        [
+            "source.marrow",
+            "string.interpolated.marrow",
+            "punctuation.definition.string.end.marrow",
+        ]
+    );
+    assert_eq!(
+        interpolation_end.direct_lexical_scope.as_deref(),
+        Some("string.interpolated.marrow")
+    );
+
+    let nested_source = r#"$"outer {$"inner {name true 1.2}"} tail""#;
+    let (nested_spans, _) = TextMateOracle::new(&grammar).tokenize(nested_source);
+    let nested_name = scoped_span_at(
+        &nested_spans,
+        nested_source.find("name").expect("name in nested fixture"),
+    );
+    assert_eq!(
+        nested_name.stack.as_slice(),
+        [
+            "source.marrow",
+            "string.interpolated.marrow",
+            "meta.embedded.line.marrow",
+            "string.interpolated.marrow",
+            "meta.embedded.line.marrow",
+        ]
+    );
+    assert_eq!(nested_name.direct_lexical_scope.as_deref(), None);
+}
+
+#[test]
+fn textmate_coverage_counts_only_successful_rule_edges() {
+    let grammar = render_grammar();
+    let (_, covered) = TextMateOracle::new(&grammar).tokenize("name");
+
+    assert_eq!(
+        covered,
+        BTreeSet::from([RuleEdge::matched("identifiers", 0)]),
+        "a fixture must cover only the emitted rules that actually match"
+    );
+}
+
+#[test]
 fn emitted_textmate_patterns_match_lexer_tokens() {
-    let mut attempted = BTreeSet::new();
+    let mut successful_edges = BTreeSet::new();
     for source in [
         "42abc 1.2x 2.days 3.daysx 4.month",
         r#"b"x" ab"x" pub"x" b"\x41\n" "a\"b\u{41}""#,
         r#"$"plain {{ brace }} {name} tail""#,
         r#"$"escaped {\"}\"} tail""#,
         r#"$"comment {value // note} tail""#,
+        r#"$"documentation {value /// note} tail""#,
+        r#"$"nested {$"inner {name true 1.2}"} tail""#,
         "// ordinary comment",
         "/// documentation comment",
-        "not and or is fn pub unknown true absent",
+        "if fn pub declassify unknown true not",
         "() [] {} => : :: , . .. ..= = == != ? ?. ?? < <= > >= + - * / % += -= *= /= %= ^root",
+        "^",
     ] {
-        assert_emitted_scopes_match_lexer(source, &mut attempted);
+        assert_emitted_scopes_match_lexer(source, &mut successful_edges);
     }
     assert_eq!(
-        attempted,
-        emitted_patterns(&render_grammar()),
-        "every emitted restricted pattern must execute in the oracle corpus"
+        successful_edges,
+        emitted_edges(&render_grammar()),
+        "every emitted match, begin, and end edge must succeed in the oracle corpus"
     );
 }
 
