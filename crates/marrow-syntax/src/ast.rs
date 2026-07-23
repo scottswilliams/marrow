@@ -622,6 +622,8 @@ pub struct TypeParamDecl {
     pub name: String,
     pub name_span: SourceSpan,
     pub constraint: Option<TypeConstraint>,
+    /// The exact capability-token span, present exactly when `constraint` is present.
+    pub constraint_span: Option<SourceSpan>,
     pub span: SourceSpan,
 }
 

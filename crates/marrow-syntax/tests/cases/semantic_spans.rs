@@ -1,8 +1,8 @@
 //! Parser-owned spans for declaration, binding, type, index, and call sites.
 
 use marrow_syntax::{
-    CheckedBind, Declaration, Expression, SourceSpan, Statement, TypeExpr, format_source,
-    parse_source,
+    CheckedBind, Declaration, Expression, SourceSpan, Statement, TypeConstraint, TypeExpr,
+    format_source, parse_source,
 };
 
 fn assert_site(source: &str, span: SourceSpan, spelling: &str) {
@@ -430,6 +430,81 @@ fn parser_retains_every_semantic_site_span() {
         named.name_span.expect("named argument span"),
         "named argument",
     );
+}
+
+#[test]
+fn parser_retains_type_constraint_and_nominal_support_spans() {
+    let source = concat!(
+        "fn compare<T, E supports equality>(left: T, right: E): bool {\n",
+        "    return left == left and right == right\n",
+        "}\n",
+        "\n",
+        "// 😀 keeps the later constraint's byte offset distinct\n",
+        "fn ordered<O supports order>(value: O): O {\n",
+        "    return value\n",
+        "}\n",
+        "\n",
+        "type Delta: int in 0..=100 supports add, subtract\n",
+    );
+    let parsed = parse_source(source);
+    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    assert_eq!(format_source(source), source);
+
+    let [
+        Declaration::Function(compare),
+        Declaration::Function(ordered),
+        Declaration::Nominal(delta),
+    ] = parsed.file.declarations.as_slice()
+    else {
+        panic!(
+            "unexpected declaration corpus: {:#?}",
+            parsed.file.declarations
+        );
+    };
+
+    let [unconstrained, equality] = compare.type_params.as_slice() else {
+        panic!("compare must retain two type parameters");
+    };
+    assert_eq!(unconstrained.constraint, None);
+    assert_eq!(unconstrained.constraint_span, None);
+    assert_eq!(
+        unconstrained.constraint.is_some(),
+        unconstrained.constraint_span.is_some()
+    );
+    assert_eq!(equality.constraint, Some(TypeConstraint::Equality));
+    assert_eq!(
+        equality.constraint.is_some(),
+        equality.constraint_span.is_some()
+    );
+    let equality_span = equality.constraint_span.expect("equality span");
+    assert_site(source, equality_span, "equality");
+    assert_within(equality.span, equality_span, "equality constraint");
+
+    let [order] = ordered.type_params.as_slice() else {
+        panic!("ordered must retain one type parameter");
+    };
+    assert_eq!(order.constraint, Some(TypeConstraint::Order));
+    assert_eq!(order.constraint.is_some(), order.constraint_span.is_some());
+    let order_span = order.constraint_span.expect("order span");
+    assert_site(source, order_span, "order");
+    assert_within(order.span, order_span, "order constraint");
+    let before_order = &source[..order_span.start_byte];
+    assert!(before_order.contains('😀'));
+    assert_ne!(
+        before_order.len(),
+        before_order.chars().count(),
+        "astral text must distinguish byte offsets from character offsets"
+    );
+
+    let [add, subtract] = delta.supports.as_slice() else {
+        panic!("nominal support spellings must remain complete");
+    };
+    assert_eq!(add.name, "add");
+    assert_site(source, add.span, "add");
+    assert_within(delta.span, add.span, "add support");
+    assert_eq!(subtract.name, "subtract");
+    assert_site(source, subtract.span, "subtract");
+    assert_within(delta.span, subtract.span, "subtract support");
 }
 
 #[test]

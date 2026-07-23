@@ -170,11 +170,12 @@ pub(super) fn parse_type_params_tokens(
             }
         };
         let name = name_token.text(source).to_string();
-        let constraint = match &group[1..] {
-            [] => None,
-            [supports, capability] if supports.kind == TokenKind::Keyword(Keyword::Supports) => {
-                Some(parse_type_constraint(source, capability)?)
-            }
+        let (constraint, constraint_span) = match &group[1..] {
+            [] => (None, None),
+            [supports, capability] if supports.kind == TokenKind::Keyword(Keyword::Supports) => (
+                Some(parse_type_constraint(source, capability)?),
+                Some(capability.span),
+            ),
             [supports, ..] if supports.kind == TokenKind::Keyword(Keyword::Supports) => {
                 return Err(ParseError::at(
                     supports.span,
@@ -201,6 +202,7 @@ pub(super) fn parse_type_params_tokens(
             name,
             name_span: name_token.span,
             constraint,
+            constraint_span,
             span,
         });
     }
