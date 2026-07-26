@@ -165,8 +165,8 @@ dependency cannot satisfy. Repository source remains Apache-2.0.
   settings, limits, raw evidence, and regression policy. Do not call a behavior
   proven, safe, scalable, portable, or institution-ready without the
   corresponding evidence.
-- The compiler-dev audit mode is not executable on the beta line: `marrow check`
-  is the minimal surface — it reports diagnostics and each export's durable access
+- The compiler-dev audit mode is not executable: `marrow check` is the minimal
+  surface — it reports diagnostics and each export's durable access
   demand — and carries no `--compiler-dev` audit mode. Checker, inference, analysis, hover, and other
   semantic-tooling changes instead rely on the production-path test tiers above —
   source exercised through the production parser/checker or compiler and the
@@ -175,6 +175,21 @@ dependency cannot satisfy. Repository source remains Apache-2.0.
   `check.unsupported` diagnostic at its span, and that typed unsupported outcome
   is the recorded evidence for an absent capability; do not substitute a
   suppressed audit warning or another baseline for it.
+
+## Development branch and release authority
+
+`main` is the sole development and integration branch. New lanes derive from
+current `origin/main`; after their required gates and reviews they rebase onto
+current `main`, fast-forward `main`, push, fetch, and verify `origin/main`. The
+former `beta` branch is not an integration target; its retained worktree and
+unrelated user changes remain untouched until separately handled.
+
+Public `main` contains unreleased development source. A push to `main` is not a
+versioned release, compatibility or support promise, production-readiness claim,
+or safety-readiness claim. Tags, releases, release assets, public candidate
+references, support declarations, visibility changes, and default-branch
+configuration remain governed by the explicit release gate; ordinary lane
+authority grants none of them.
 
 ## Worktrees, builds, and integration
 
