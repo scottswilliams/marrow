@@ -1,0 +1,33 @@
+{
+  "name": "marrow-vsq-host-driver",
+  "displayName": "Marrow VSQ Host Driver",
+  "description": "Dependency-free transient driver for the Marrow installed-host acceptance gate.",
+  "version": "0.0.0",
+  "private": true,
+  "publisher": "marrow-project",
+  "engines": {
+    "vscode": "^1.82.0"
+  },
+  "main": "./extension.cjs",
+  "activationEvents": [
+    "*"
+  ],
+  "extensionKind": [
+    "workspace"
+  ],
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": true
+    },
+    "virtualWorkspaces": {
+      "supported": true
+    }
+  },
+  "files": [
+    "extension.cjs",
+    "tests.cjs"
+  ],
+  "scripts": {
+    "test": "node ./tests.cjs"
+  }
+}

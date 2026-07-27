@@ -61,6 +61,14 @@ export function activate(context: vscode.ExtensionContext): void {
     }),
   );
 
+  context.subscriptions.push(
+    vscode.workspace.onDidOpenTextDocument((document) => {
+      if (isFileMarrowDocument(document)) {
+        void startClient(context);
+      }
+    }),
+  );
+
   void startClient(context);
 }
 
@@ -72,8 +80,15 @@ function folderCount(): number {
   return vscode.workspace.workspaceFolders?.length ?? 0;
 }
 
+function isFileMarrowDocument(document: vscode.TextDocument): boolean {
+  return document.languageId === "marrow" && document.uri.scheme === "file";
+}
+
 async function startClient(context: vscode.ExtensionContext): Promise<void> {
   if (client !== undefined || starting) {
+    return;
+  }
+  if (!vscode.workspace.textDocuments.some(isFileMarrowDocument)) {
     return;
   }
   if (process.platform !== SUPPORTED_PLATFORM || process.arch !== SUPPORTED_ARCH) {

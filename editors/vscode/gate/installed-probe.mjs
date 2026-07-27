@@ -9,11 +9,8 @@
 // retirement, capture-unavailable `-32803`, multi-root `-32602` pre-initialize refusal,
 // clean shutdown with no orphan child).
 //
-// The parts that require the real VS Code extension host and the interactive Workspace
-// Trust UI (Restricted Mode disposition, trust-grant activation, extension-host render
-// clocks, and extension-host-attributed network observation) are NOT simulated here; the
-// completion packet marks them PENDING-HUMAN. Driving the bundled server directly over
-// stdio validates the server side of the same contract without faking the host.
+// Real VS Code host behavior is owned by real-host.mjs. This probe keeps the direct
+// installed-server protocol checks separate rather than simulating editor UI behavior.
 //
 // Usage: node gate/installed-probe.mjs
 // Exits nonzero on any failed assertion (and before the extension is built).
@@ -29,13 +26,13 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const EXT_ROOT = join(HERE, "..");
 const SERVER = join(EXT_ROOT, "server", "marrow");
 const BUNDLE = join(EXT_ROOT, "out", "extension.js");
+const REAL_HOST = join(HERE, "real-host.mjs");
 const CANONICAL_BINARY_SHA256 =
-  "1f8947dbfb696973166eecb3d77bcb0df62613578780d6a71ab5bcc4dc78ef8b";
+  "39c12b09f699ab1e81cd0375d16f23c5a577110d72ba6c230d952cfd59e2a247";
 
 const BANNED_IMPORTS = ["fs", "net", "http", "https", "dns", "child_process", "node:fs", "node:net", "node:http", "node:https", "node:dns", "node:child_process"];
 
 let failures = 0;
-const pending = [];
 function check(name, cond, detail = "") {
   if (cond) {
     console.log(`  PASS  ${name}`);
@@ -43,10 +40,6 @@ function check(name, cond, detail = "") {
     failures++;
     console.error(`  FAIL  ${name}${detail ? ` — ${detail}` : ""}`);
   }
-}
-function markPending(name) {
-  pending.push(name);
-  console.log(`  PENDING-HUMAN  ${name}`);
 }
 
 function sha256File(p) {
@@ -59,6 +52,7 @@ function staticGates() {
   console.log("[static] artifact presence and thin-host absence");
   check("out/extension.js present", existsSync(BUNDLE), `${BUNDLE} missing`);
   check("server/marrow present", existsSync(SERVER), `${SERVER} missing`);
+  check("real-host gate present", existsSync(REAL_HOST), `${REAL_HOST} missing`);
   if (existsSync(SERVER)) {
     check(
       "server/marrow is the pinned canonical binary",
@@ -263,23 +257,18 @@ async function journeyGates() {
   rmSync(root2b, { recursive: true, force: true });
 }
 
-function pendingHumanClauses() {
-  console.log("\n[installed-host] clauses requiring the real VS Code host + interactive trust UI");
-  markPending("Restricted Mode disposition in the real extension host (untrusted workspace)");
-  markPending("Workspace Trust grant -> activation through the real trust UI (Production mode)");
-  markPending("Virtual-workspace refusal in the real extension host");
-  markPending("Extension-host render clocks (§7 five thresholds, median/p95)");
-  markPending("Behavioral network gate: zero extension-host-attributed DNS/socket/HTTP");
-  markPending("Exactly-one-child + restart orphan-absence via extension-host process listing");
-  markPending("Tombstone retirement (file delete/rename) observed in the Problems UI");
+function realHostBoundary() {
+  console.log("\n[installed-host] delegated boundary");
+  console.log("  INFO  real-host.mjs owns installed activation/providers, workspace negatives/recovery, restart/known-child teardown, and practical timings");
+  console.log("  INFO  physical punctuation typing and the built-in token inspector remain explicit pending-interactive evidence; this probe does not simulate them");
 }
 
 async function main() {
   console.log("=== Marrow H00b installed-journey probe ===");
   staticGates();
   await journeyGates();
-  pendingHumanClauses();
-  console.log(`\nresult: ${failures} failure(s), ${pending.length} PENDING-HUMAN clause(s)`);
+  realHostBoundary();
+  console.log(`\nresult: ${failures} failure(s)`);
   process.exit(failures === 0 ? 0 : 1);
 }
 
