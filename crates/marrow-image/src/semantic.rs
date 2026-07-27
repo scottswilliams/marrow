@@ -259,6 +259,42 @@ mod tests {
     }
 
     #[test]
+    fn dynamic_constructor_moves_the_exact_vector_without_reallocation() {
+        let mut steps = Vec::with_capacity(8);
+        steps.push(SemanticStep::new(SemanticStepKind::Application, id(1)));
+        steps.push(SemanticStep::new(SemanticStepKind::Placement, id(2)));
+        let pointer = steps.as_ptr();
+        let length = steps.len();
+        let capacity = steps.capacity();
+
+        let path = SemanticPath::try_from_steps(steps).expect("two steps are non-empty");
+
+        assert_eq!(path.steps.as_ptr(), pointer);
+        assert_eq!(path.steps.len(), length);
+        assert_eq!(path.steps.capacity(), capacity);
+    }
+
+    #[test]
+    fn dynamic_constructor_source_keeps_the_single_check_and_direct_move() {
+        let expected = concat!(
+            "    pub fn try_from_steps(steps: Vec<SemanticStep>) -> ",
+            "Result<Self, EmptySemanticPath> {\n",
+            "        if steps.is_empty() {\n",
+            "            return Err(EmptySemanticPath);\n",
+            "        }\n",
+            "        Ok(Self { steps })\n",
+            "    }\n",
+        );
+        let source = include_str!("semantic.rs");
+
+        assert_eq!(
+            source.matches(expected).count(),
+            1,
+            "the constructor must remain one emptiness branch followed by a direct vector move"
+        );
+    }
+
+    #[test]
     fn root_and_child_preserve_the_canonical_chain_without_mutating_the_parent() {
         let root = SemanticPath::root(id(1), id(2));
         let child_step = SemanticStep::new(SemanticStepKind::Field, id(3));
