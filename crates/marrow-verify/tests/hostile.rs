@@ -179,13 +179,7 @@ fn rehashed_export_index_out_of_range_rejects_at_table() {
     bytes[func_field] = 0xFF;
     bytes[func_field + 1] = 0xFF;
     rehash(&mut bytes);
-    let rejection = verify(&bytes).expect_err("the unresolved maximum-depth path must reject");
-    assert_eq!(rejection.code(), "image.table");
-    assert_eq!(
-        rejection.detail(),
-        "durable site path does not resolve to a graph node",
-        "the inclusive maximum must pass the depth gate and fail only at node resolution",
-    );
+    assert_eq!(code_of(&bytes), "image.table");
 }
 
 /// An image with two exported functions, `a` and `b`, each returning a constant.
@@ -2335,7 +2329,13 @@ fn a_site_path_at_the_maximum_depth_is_admitted_by_the_bound() {
         draft,
         vec![Instr::TxnBegin, Instr::TxnCommit, Instr::Return],
     );
-    assert_eq!(code_of(&bytes), "image.table");
+    let rejection = verify(&bytes).expect_err("the unresolved maximum-depth path must reject");
+    assert_eq!(rejection.code(), "image.table");
+    assert_eq!(
+        rejection.detail(),
+        "durable site path does not resolve to a graph node",
+        "the inclusive maximum must pass the depth gate and fail only at node resolution",
+    );
 }
 
 #[test]
