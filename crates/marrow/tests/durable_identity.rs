@@ -200,6 +200,71 @@ fn run_mints_missing_identities_once_and_reuses_them() {
     );
 }
 
+/// Two roots over one resource consume the compiler's project-wide unique gap
+/// sequence unchanged. The published ledger has one row per shared anchor plus
+/// the root-specific rows, and a second run preserves the exact artifact bytes.
+#[test]
+fn run_publishes_the_compiler_owned_unique_multi_root_gap_set_once() {
+    let temp = TempDir::new("run-mints-shared-resource");
+    let source = r#"resource Shared {
+    required value: int
+}
+
+store ^first[id: int]: Shared
+store ^second[id: int]: Shared
+
+pub fn noop(): int {
+    return 0
+}
+"#;
+    project(&temp, source);
+
+    let first = run_in(&temp, &["run", "noop"]);
+    let published = fs::read(temp.join(".marrow/ids")).unwrap_or_else(|error| {
+        panic!(
+            "run must publish the compiler-owned gaps before any later outcome: {error}; {}",
+            combined(&first)
+        )
+    });
+    assert!(
+        !combined(&first).contains("project.ids_mint"),
+        "the unique compiler requests must reach publication: {}",
+        combined(&first),
+    );
+    let ledger =
+        marrow_project::IdentityLedger::parse(&published).expect("published ledger parses");
+    let anchors: Vec<marrow_project::IdentityAnchor> =
+        ledger.entries().map(|(anchor, _)| anchor.clone()).collect();
+    assert_eq!(
+        anchors,
+        vec![
+            marrow_project::IdentityAnchor::new(marrow_project::IdentityKind::Application, "."),
+            marrow_project::IdentityAnchor::new(marrow_project::IdentityKind::Product, "Shared"),
+            marrow_project::IdentityAnchor::new(
+                marrow_project::IdentityKind::Field,
+                "Shared.value",
+            ),
+            marrow_project::IdentityAnchor::new(marrow_project::IdentityKind::Root, "first"),
+            marrow_project::IdentityAnchor::new(marrow_project::IdentityKind::Root, "second"),
+            marrow_project::IdentityAnchor::new(marrow_project::IdentityKind::Key, "first.id"),
+            marrow_project::IdentityAnchor::new(marrow_project::IdentityKind::Key, "second.id"),
+        ],
+        "the publisher receives each compiler-owned request exactly once",
+    );
+
+    let second = run_in(&temp, &["run", "noop"]);
+    assert_eq!(
+        fs::read(temp.join(".marrow/ids")).unwrap_or_else(|error| {
+            panic!(
+                "the second run must retain the ledger: {error}; {}",
+                combined(&second)
+            )
+        }),
+        published,
+        "a second run preserves the exact published bytes",
+    );
+}
+
 /// The clone/relocation journeys: a fresh checkout (a byte copy of the project,
 /// committed `.marrow/ids` included) at a different location reuses the
 /// committed ids — nothing re-mints and the artifact stays byte-identical.

@@ -33,7 +33,7 @@ use marrow_image::{
     DurableValueShape, FieldDef, ImageDraft, ImageType, KeyColumn, LedgerIdBytes, RecordTypeDef,
     RootDef, RootIdentity, Scalar, SemanticPath, SemanticStep, SemanticStepKind, SiteDef, bounds,
 };
-use marrow_project::{FileIdentity, IdentityKind, IdentityLedger};
+use marrow_project::{FileIdentity, IdentityAnchor, IdentityKind, IdentityLedger};
 use marrow_syntax::{
     FieldDecl, GroupDecl, IndexDecl, KeyParam, ResourceDecl, ResourceMember, SourceSpan, StoreDecl,
     TypeExpr,
@@ -416,6 +416,7 @@ impl DurableRegistry {
         records.with_metadata_session(|metadata| {
             let mut registry = Self::default();
             let mut type_metadata = DurableTypeMetadata { records, metadata };
+            let mut reported_identity_gaps = BTreeSet::new();
             for (file, store) in stores {
                 // A repeated placement name has no unambiguous address and cannot key a second
                 // DURABLE-table row; reject it and keep the first declaration.
@@ -439,6 +440,7 @@ impl DurableRegistry {
                     file,
                     store,
                     ledger,
+                    &mut reported_identity_gaps,
                     diagnostics,
                 )? {
                     StoreBuild::Admitted(built) => {
@@ -509,6 +511,7 @@ fn build_one(
     file: &FileIdentity,
     store: &StoreDecl,
     ledger: Option<&IdentityLedger>,
+    reported_identity_gaps: &mut BTreeSet<IdentityAnchor>,
     diagnostics: &mut Vec<SourceDiagnostic>,
 ) -> Result<StoreBuild, GenericInvariant> {
     let records = type_metadata.records;
@@ -569,7 +572,13 @@ fn build_one(
     // resource's member tree (top-level fields, groups, and branches) anchors as
     // it is walked. A missing or retired anchor is a precise typed diagnostic
     // carrying the `(kind, path)` gap the mint action consumes.
-    let mut resolver = IdentityResolver::new(file, store.span, ledger, diagnostics);
+    let mut resolver = IdentityResolver::new(
+        file,
+        store.span,
+        ledger,
+        reported_identity_gaps,
+        diagnostics,
+    );
     let application = resolver.resolve(IdentityKind::Application, APPLICATION_ANCHOR_PATH);
     let placement = resolver.resolve(IdentityKind::Root, &store.root.root);
     resolver.name_step(placement, PathSigil::Root, &store.root.root);
@@ -895,6 +904,10 @@ struct IdentityResolver<'a> {
     /// The durable-path naming entries collected as this store's nodes resolve, drained
     /// into the [`BuiltRoot`] once the graph is known complete.
     naming: Vec<(LedgerIdBytes, PathSigil, String)>,
+    /// Project-wide missing or retired anchors whose first resolution already emitted
+    /// the typed gap. Every resolver still marks its own root incomplete on a shared
+    /// gap; only diagnostic ownership is deduplicated.
+    reported_identity_gaps: &'a mut BTreeSet<IdentityAnchor>,
     diagnostics: &'a mut Vec<SourceDiagnostic>,
 }
 
@@ -910,6 +923,7 @@ impl<'a> IdentityResolver<'a> {
         file: &'a FileIdentity,
         span: SourceSpan,
         ledger: Option<&'a IdentityLedger>,
+        reported_identity_gaps: &'a mut BTreeSet<IdentityAnchor>,
         diagnostics: &'a mut Vec<SourceDiagnostic>,
     ) -> Self {
         Self {
@@ -921,6 +935,7 @@ impl<'a> IdentityResolver<'a> {
             invariant: None,
             value_path: Vec::new(),
             naming: Vec::new(),
+            reported_identity_gaps,
             diagnostics,
         }
     }
@@ -1150,8 +1165,11 @@ impl<'a> IdentityResolver<'a> {
             Some(id) => LedgerIdBytes::from_bytes(*id.bytes()),
             None => {
                 self.complete = false;
-                self.diagnostics
-                    .push(identity_gap(self.file, self.span, kind, path, retired));
+                let anchor = IdentityAnchor::new(kind, path);
+                if self.reported_identity_gaps.insert(anchor) {
+                    self.diagnostics
+                        .push(identity_gap(self.file, self.span, kind, path, retired));
+                }
                 LedgerIdBytes::from_bytes([0u8; 16])
             }
         }
@@ -1925,10 +1943,12 @@ mod generic_enum_shape_tests {
             .expect("Ready Option mints");
 
         let mut diagnostics = Vec::new();
+        let mut reported_identity_gaps = BTreeSet::new();
         let mut resolver = IdentityResolver::new(
             crate::test_main_file_identity(),
             SourceSpan::default(),
             None,
+            &mut reported_identity_gaps,
             &mut diagnostics,
         );
         let shape = records
@@ -1977,10 +1997,12 @@ mod generic_enum_shape_tests {
             variants: Vec::new(),
         });
         let mut diagnostics = Vec::new();
+        let mut reported_identity_gaps = BTreeSet::new();
         let mut resolver = IdentityResolver::new(
             crate::test_main_file_identity(),
             SourceSpan::default(),
             None,
+            &mut reported_identity_gaps,
             &mut diagnostics,
         );
 
@@ -2024,10 +2046,12 @@ mod generic_enum_shape_tests {
             body: TypeInstKind::Struct,
         };
         let mut diagnostics = Vec::new();
+        let mut reported_identity_gaps = BTreeSet::new();
         let mut resolver = IdentityResolver::new(
             crate::test_main_file_identity(),
             SourceSpan::default(),
             None,
+            &mut reported_identity_gaps,
             &mut diagnostics,
         );
 
@@ -2077,10 +2101,12 @@ store ^holders[id: int]: Holder
             body: TypeInstKind::Struct,
         };
         let before = draft.encode().expect("seeded draft encodes");
+        let mut reported_identity_gaps = BTreeSet::new();
         let mut resolver = IdentityResolver::new(
             crate::test_main_file_identity(),
             SourceSpan::default(),
             None,
+            &mut reported_identity_gaps,
             &mut diagnostics,
         );
         assert!(

@@ -334,12 +334,7 @@ fn mint_missing_identities(
     for diagnostic in diagnostics {
         match &diagnostic.identity {
             Some(gap) if gap.retired => return MintOutcome::NotApplicable,
-            Some(gap) => {
-                let anchor = gap.anchor();
-                if !anchors.contains(&anchor) {
-                    anchors.push(anchor);
-                }
-            }
+            Some(gap) => anchors.push(gap.anchor()),
             None => {}
         }
     }
