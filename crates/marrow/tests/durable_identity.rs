@@ -95,6 +95,82 @@ fn combined(output: &Output) -> String {
     )
 }
 
+fn metadata_snapshot(root: &Path) -> Vec<(String, bool, Vec<u8>)> {
+    let meta = root.join(".marrow");
+    let mut snapshot: Vec<(String, bool, Vec<u8>)> = fs::read_dir(&meta)
+        .expect("metadata directory")
+        .map(|entry| {
+            let entry = entry.expect("metadata entry");
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let kind = entry.file_type().expect("entry type");
+            let bytes = if kind.is_file() {
+                fs::read(entry.path()).expect("metadata file bytes")
+            } else {
+                Vec::new()
+            };
+            (name, kind.is_file(), bytes)
+        })
+        .collect();
+    snapshot.sort_by(|a, b| a.0.cmp(&b.0));
+    snapshot
+}
+
+fn required_identity_rows() -> Vec<String> {
+    vec![
+        format!("id application . {}\n", "a0".repeat(16)),
+        format!("id product Thing {}\n", "a1".repeat(16)),
+        format!("id root items {}\n", "a2".repeat(16)),
+        format!("id key items.id {}\n", "a3".repeat(16)),
+    ]
+}
+
+fn identity_artifact_with_row_count(rows: usize) -> Vec<u8> {
+    let mut out = String::from("marrow ids v0\nmachine-written by marrow; do not edit\n");
+    for row in required_identity_rows() {
+        out.push_str(&row);
+    }
+    for row in 0..rows - 4 {
+        out.push_str(&format!("id field filler.f{row:04} {:032x}\n", row + 1));
+    }
+    out.push_str("high-water 0\nend\n");
+    let bytes = out.into_bytes();
+    let parsed = marrow_project::IdentityLedger::parse(&bytes).expect("row-bound base parses");
+    assert_eq!(parsed.entries().count(), rows);
+    bytes
+}
+
+fn identity_artifact_of_exact_len(target: usize) -> Vec<u8> {
+    let header = "marrow ids v0\nmachine-written by marrow; do not edit\n";
+    let tail = "high-water 0\nend\n";
+    let required = required_identity_rows();
+    let fixed = header.len() + tail.len() + required.iter().map(String::len).sum::<usize>();
+    let filler_bytes = target - fixed;
+    let minimum_path = "f0000".len();
+    let minimum_row = 43 + minimum_path;
+    let maximum_row = 43 + 512;
+    let count = filler_bytes.div_ceil(maximum_row);
+    assert!(count * minimum_row <= filler_bytes);
+    let mut extra = filler_bytes - count * minimum_row;
+
+    let mut out = String::from(header);
+    for row in required {
+        out.push_str(&row);
+    }
+    for row in 0..count {
+        let added = extra.min(512 - minimum_path);
+        extra -= added;
+        let base = format!("f{row:04}");
+        let path = format!("{base}{}", "x".repeat(minimum_path + added - base.len()));
+        out.push_str(&format!("id field {path} {:032x}\n", row + 1));
+    }
+    assert_eq!(extra, 0);
+    out.push_str(tail);
+    let bytes = out.into_bytes();
+    assert_eq!(bytes.len(), target);
+    marrow_project::IdentityLedger::parse(&bytes).expect("byte-bound base parses");
+    bytes
+}
+
 /// Compile-and-verify a one-module project through the production owners,
 /// returning the sealed image's durable-contract identity. Used by the
 /// rename-preserves journey, which must observe the contract id across a
@@ -200,11 +276,14 @@ fn run_mints_missing_identities_once_and_reuses_them() {
     );
 }
 
-/// Two roots over one resource consume the compiler's project-wide unique gap
-/// sequence unchanged. The published ledger has one row per shared anchor plus
-/// the root-specific rows, and a second run preserves the exact artifact bytes.
+/// This publication probe stops at absent-export resolution before the image
+/// verifier because shared-product projection is not yet accepted end to end. It
+/// establishes only that two roots referencing one resource publish the
+/// compiler's project-wide unique anchor sequence; it makes no claim that a
+/// shared-resource image verifies or executes. Replace this publication-only
+/// probe with the normal successful journey when that behavior is implemented.
 #[test]
-fn run_publishes_the_compiler_owned_unique_multi_root_gap_set_once() {
+fn run_publication_probe_emits_shared_resource_anchors_once_without_reaching_verify() {
     let temp = TempDir::new("run-mints-shared-resource");
     let source = r#"resource Shared {
     required value: int
@@ -219,7 +298,12 @@ pub fn noop(): int {
 "#;
     project(&temp, source);
 
-    let first = run_in(&temp, &["run", "noop"]);
+    let expected_stderr =
+        b"no exported function `missing` in this project; run marrow --help for usage\n";
+    let first = run_in(&temp, &["run", "missing"]);
+    assert_eq!(first.status.code(), Some(2), "{first:?}");
+    assert_eq!(first.stdout, b"");
+    assert_eq!(first.stderr, expected_stderr);
     let published = fs::read(temp.join(".marrow/ids")).unwrap_or_else(|error| {
         panic!(
             "run must publish the compiler-owned gaps before any later outcome: {error}; {}",
@@ -251,8 +335,19 @@ pub fn noop(): int {
         ],
         "the publisher receives each compiler-owned request exactly once",
     );
+    let published_snapshot = metadata_snapshot(&temp);
+    assert_eq!(
+        published_snapshot,
+        vec![("ids".to_string(), true, published.clone())],
+        "the first run creates exactly one regular metadata artifact",
+    );
 
-    let second = run_in(&temp, &["run", "noop"]);
+    // This repeats the same pre-verifier resolution outcome and must not touch
+    // any byte or entry in the captured metadata directory.
+    let second = run_in(&temp, &["run", "missing"]);
+    assert_eq!(second.status.code(), Some(2), "{second:?}");
+    assert_eq!(second.stdout, b"");
+    assert_eq!(second.stderr, expected_stderr);
     assert_eq!(
         fs::read(temp.join(".marrow/ids")).unwrap_or_else(|error| {
             panic!(
@@ -262,6 +357,113 @@ pub fn noop(): int {
         }),
         published,
         "a second run preserves the exact published bytes",
+    );
+    assert_eq!(
+        metadata_snapshot(&temp),
+        published_snapshot,
+        "a second run preserves the complete metadata snapshot",
+    );
+}
+
+/// A compiler-derived anchor one byte past the 512-byte ledger grammar limit is
+/// refused before entropy or publication. With no captured artifact, refusal must
+/// not create the project-metadata directory.
+#[test]
+fn run_refuses_a_513_byte_derived_anchor_without_creating_metadata() {
+    let temp = TempDir::new("run-refuses-overlong-anchor");
+    let resource = format!("R{}", "r".repeat(255));
+    let field = format!("f{}", "f".repeat(255));
+    assert_eq!(format!("{resource}.{field}").len(), 513);
+    let source = format!(
+        "resource {resource} {{\n\
+         \x20   required {field}: int\n\
+         }}\n\n\
+         store ^items[id: int]: {resource}\n\n\
+         pub fn noop(): int {{\n\
+         \x20   return 0\n\
+         }}\n"
+    );
+    project(&temp, &source);
+
+    let output = run_in(&temp, &["run", "noop"]);
+    assert!(
+        !temp.join(".marrow").exists(),
+        "a planning refusal has no publication effect: {}",
+        combined(&output),
+    );
+    assert!(!output.status.success(), "{output:?}");
+    assert!(
+        combined(&output).contains("project.ids_mint"),
+        "{}",
+        combined(&output),
+    );
+}
+
+#[test]
+fn run_row_and_byte_n_plus_one_refusals_preserve_the_complete_metadata_snapshot() {
+    let source = r#"resource Thing {
+    required value: int
+}
+
+store ^items[id: int]: Thing
+
+pub fn noop(): int {
+    return 0
+}
+"#;
+    let missing_row_len = format!("id field Thing.value {}\n", "a4".repeat(16)).len();
+    let byte_base_len = marrow_project::MAX_IDS_BYTES + 1 - missing_row_len;
+    let cases = [
+        (
+            "row-limit",
+            identity_artifact_with_row_count(marrow_project::MAX_IDS_ROWS),
+        ),
+        ("byte-limit", identity_artifact_of_exact_len(byte_base_len)),
+    ];
+
+    for (name, ids) in cases {
+        let temp = TempDir::new(name);
+        project(&temp, source);
+        fs::create_dir_all(temp.join(".marrow")).expect("metadata directory");
+        fs::write(temp.join(".marrow/ids"), &ids).expect("seed near-limit ledger");
+        let before = metadata_snapshot(&temp);
+
+        let output = run_in(&temp, &["run", "absentExport"]);
+        assert!(!output.status.success(), "{output:?}");
+        assert!(
+            combined(&output).contains("project.ids_mint"),
+            "{name}: {}",
+            combined(&output),
+        );
+        assert_eq!(
+            fs::read(temp.join(".marrow/ids")).expect("ledger survives"),
+            ids,
+            "{name}: the captured artifact remains byte-exact",
+        );
+        assert_eq!(
+            metadata_snapshot(&temp),
+            before,
+            "{name}: every metadata entry remains exact",
+        );
+        assert!(
+            metadata_snapshot(&temp)
+                .iter()
+                .all(|(entry, _, _)| !entry.starts_with("ids.tmp.")),
+            "{name}: no publication temp appears",
+        );
+    }
+}
+
+#[test]
+fn a_storeless_run_with_no_identity_gap_never_creates_metadata() {
+    let temp = TempDir::new("run-no-identity-gap");
+    project(&temp, "pub fn answer(): int {\n    return 42\n}\n");
+    let output = run_in(&temp, &["run", "answer"]);
+    assert!(output.status.success(), "{}", combined(&output));
+    assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "42");
+    assert!(
+        !temp.join(".marrow").exists(),
+        "an empty identity request cannot reach entropy or publication",
     );
 }
 

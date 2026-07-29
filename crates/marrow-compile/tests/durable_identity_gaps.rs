@@ -1,8 +1,10 @@
 //! Project-wide durable-identity gap ownership.
 //!
-//! Two store roots may share one resource graph. The compiler reports each missing
-//! `(kind, path)` anchor once in deterministic first-resolution order while keeping
-//! every affected root identity-incomplete.
+//! A project can declare two store roots that reference one resource. The compiler
+//! reports each missing `(kind, path)` anchor once in deterministic first-resolution
+//! order while keeping every affected root identity-incomplete. Later image
+//! admission rejects the repeated semantic identities; this test covers gap
+//! reporting only.
 
 use std::collections::BTreeSet;
 

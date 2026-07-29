@@ -3,6 +3,7 @@
 use marrow_codes::Code;
 use marrow_project::{
     CaptureBound, CaptureErrorKind, CaptureLimits, CapturedFile, CollisionReason,
+    DurableIdentityId, IdentityAnchor, IdentityKind, LedgerExpectedArtifact,
     MAX_FILE_IDENTITY_BYTES, Manifest, ProjectInput,
 };
 
@@ -15,7 +16,14 @@ fn file(path: &str, body: &str) -> CapturedFile {
 }
 
 fn capture(files: Vec<CapturedFile>) -> Result<ProjectInput, marrow_project::CaptureError> {
-    marrow_project::capture(&manifest(), files, None, &CaptureLimits::DEFAULT)
+    capture_with_ids(files, None)
+}
+
+fn capture_with_ids(
+    files: Vec<CapturedFile>,
+    ids: Option<&[u8]>,
+) -> Result<ProjectInput, marrow_project::CaptureError> {
+    marrow_project::capture(&manifest(), files, ids, &CaptureLimits::DEFAULT)
 }
 
 fn identities(input: &ProjectInput) -> Vec<String> {
@@ -73,6 +81,79 @@ fn determinism_yields_identical_project_input() {
     let b = capture(vec![file("src/shelf/books.mw", "pub fn a()\n    return\n")]).expect("valid");
     assert_eq!(identities(&a), identities(&b));
     assert_eq!(a, b);
+}
+
+#[test]
+fn captured_ledger_equality_preserves_presence_but_ignores_valid_row_order() {
+    let files = vec![file("src/main.mw", "pub fn main(): int { return 0 }\n")];
+    let empty = b"marrow ids v0\nmachine-written by marrow; do not edit\nhigh-water 0\nend\n";
+    let absent = capture_with_ids(files.clone(), None).expect("absent capture");
+    let present_empty =
+        capture_with_ids(files.clone(), Some(empty)).expect("present-empty capture");
+    assert_ne!(
+        absent, present_empty,
+        "absent and present-empty artifact states stay distinct",
+    );
+
+    let canonical = b"marrow ids v0\nmachine-written by marrow; do not edit\n\
+                      id application . 01010101010101010101010101010101\n\
+                      id product Thing 02020202020202020202020202020202\n\
+                      high-water 0\nend\n";
+    let shuffled = b"marrow ids v0\nmachine-written by marrow; do not edit\n\
+                     id product Thing 02020202020202020202020202020202\n\
+                     id application . 01010101010101010101010101010101\n\
+                     high-water 0\nend\n";
+    let canonical_input =
+        capture_with_ids(files.clone(), Some(canonical)).expect("canonical capture");
+    let shuffled_input = capture_with_ids(files, Some(shuffled)).expect("shuffled capture");
+    assert_eq!(
+        canonical_input, shuffled_input,
+        "present artifacts compare by parsed ledger, not valid row order",
+    );
+    for debug in [
+        format!("{canonical_input:?}"),
+        format!("{shuffled_input:?}"),
+    ] {
+        assert!(!debug.contains("marrow ids v0"));
+        assert!(!debug.contains("machine-written by marrow"));
+    }
+}
+
+#[test]
+fn public_admission_binds_the_exact_captured_witness_to_a_canonical_successor() {
+    let shuffled = b"marrow ids v0\nmachine-written by marrow; do not edit\n\
+                     id product Thing 02020202020202020202020202020202\n\
+                     id application . 01010101010101010101010101010101\n\
+                     high-water 0\nend\n";
+    let input = capture_with_ids(
+        vec![file("src/main.mw", "pub fn main(): int { return 0 }\n")],
+        Some(shuffled),
+    )
+    .expect("capture shuffled ledger");
+    let plan = input
+        .admit_identity_mints_with(
+            IdentityAnchor::new(IdentityKind::Field, "Thing.value"),
+            Vec::new(),
+            |count| {
+                assert_eq!(count, 1);
+                Ok::<_, std::convert::Infallible>(vec![DurableIdentityId::from_bytes([3; 16])])
+            },
+        )
+        .expect("admission succeeds");
+    plan.visit(|view| {
+        assert_eq!(
+            view.expected(),
+            LedgerExpectedArtifact::Present(shuffled),
+            "the exact valid captured bytes remain the expected witness",
+        );
+        let next = std::str::from_utf8(view.next()).expect("canonical successor UTF-8");
+        assert!(
+            next.find("id application .").expect("application row")
+                < next.find("id product Thing").expect("product row")
+        );
+        assert!(next.contains("id field Thing.value 03030303030303030303030303030303"));
+        marrow_project::IdentityLedger::parse(view.next()).expect("successor parses");
+    });
 }
 
 #[test]

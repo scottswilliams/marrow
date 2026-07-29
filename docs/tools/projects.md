@@ -115,6 +115,26 @@ bounded (8,192 rows, 1 MiB); parsing a full-bound 8,192-row artifact is
 measured at about 2 ms, and an oversized file is rejected at the bound without
 being read.
 
+Project capture validates the ledger once and privately retains both its
+read-only semantic form and whether the artifact was absent or present. When it
+was present, capture also retains the exact validated bytes. Identity mutation
+is available only as one structurally nonempty admission against that captured
+state. Before requesting entropy, the project owner validates the anchor
+grammar, duplicate and live/retired state, resulting row count, and exact
+canonical successor length, in that order. It then requires exactly one
+candidate per request, rejects candidates already present in a live row,
+tombstone, or earlier candidate, and serializes the admitted successor once.
+A planning refusal has no entropy or metadata effect; a later candidate or
+binding refusal still has no metadata effect. Each reports `project.ids_mint`.
+
+The resulting one-use publication plan binds the exact captured artifact state
+to the canonical successor and cannot be constructed from raw byte slices. The
+current command-line publisher consumes that plan as a unit and retains the
+existing synchronized temporary-file-and-rename publication. It does not yet
+compare the captured expected state with the filesystem before replacement, so
+the binding is not a stale-publication, replay-prevention, or unique-issuance
+guarantee.
+
 A merge that leaves conflict markers, two rows claiming one identity (the
 signature of the same declaration minted independently on two branches), a
 truncated file, or any other damage is rejected whole with
@@ -138,9 +158,11 @@ the additive mint could readopt an orphaned id or diverge from the store's
 committed ledger, so a missing identity there is a precise `check.durable_identity`
 failure the developer resolves deliberately (the tombstone-aware mint is the
 accepted apply action's job). In ordinary development the ledger is invisible —
-storeless `marrow run` mints missing identities automatically; every other command
-requires them to be present and fails precisely with `check.durable_identity` when
-one is missing. A storeless project has no `.marrow/ids`.
+storeless `marrow run` receives each compiler-owned missing anchor once per
+project, admits the complete nonempty request, and mints the identities
+automatically; every other command requires them to be present and fails
+precisely with `check.durable_identity` when one is missing. A storeless project
+with no durable declarations has no `.marrow/ids`.
 
 ## Creating a project
 

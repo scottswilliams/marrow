@@ -11,7 +11,7 @@
 use marrow_codes::Code;
 
 use crate::identity::{FileIdentity, ModuleName, SourcePathReason};
-use crate::ids::{IdentityLedger, IdsError};
+use crate::ids::{CapturedLedger, IdentityLedger, IdsError};
 use crate::manifest::{Edition, Manifest};
 
 /// A source file handed to [`capture`] by the physical adapter: a caller-supplied
@@ -134,7 +134,7 @@ impl ModuleInput {
 pub struct ProjectInput {
     edition: Edition,
     modules: Vec<ModuleInput>,
-    ledger: Option<IdentityLedger>,
+    captured_ledger: CapturedLedger,
 }
 
 impl ProjectInput {
@@ -152,7 +152,20 @@ impl ProjectInput {
     /// `.marrow/ids` artifact. `None` means the artifact is absent — the normal
     /// state of a storeless project, equivalent to an empty ledger.
     pub fn identity_ledger(&self) -> Option<&IdentityLedger> {
-        self.ledger.as_ref()
+        self.captured_ledger.present_ledger()
+    }
+
+    /// Admit one structurally nonempty identity-mint operation against the exact
+    /// captured ledger state, then invoke `supply` once with the exact positive
+    /// candidate count.
+    pub fn admit_identity_mints_with<E>(
+        &self,
+        first: crate::IdentityAnchor,
+        rest: Vec<crate::IdentityAnchor>,
+        supply: impl FnOnce(usize) -> Result<Vec<crate::DurableIdentityId>, E>,
+    ) -> Result<crate::LedgerPublicationPlan, crate::IdentityMintFailure<E>> {
+        self.captured_ledger
+            .admit_identity_mints_with(first, rest, supply)
     }
 }
 
@@ -175,10 +188,7 @@ pub fn capture(
     ids: Option<&[u8]>,
     limits: &CaptureLimits,
 ) -> Result<ProjectInput, CaptureError> {
-    let ledger = match ids {
-        Some(bytes) => Some(IdentityLedger::parse(bytes).map_err(CaptureError::ids)?),
-        None => None,
-    };
+    let captured_ledger = CapturedLedger::capture(ids).map_err(CaptureError::ids)?;
     if files.len() > limits.max_files {
         return Err(CaptureError::limit(
             CaptureBound::FileCount,
@@ -260,7 +270,7 @@ pub fn capture(
     Ok(ProjectInput {
         edition: manifest.edition(),
         modules,
-        ledger,
+        captured_ledger,
     })
 }
 

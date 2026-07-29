@@ -21,7 +21,7 @@ direction.
 |---|---|---|
 | `marrow` | CLI: `init`, `fmt`, `check`, `run` (compile, verify, then execute an export storeless or through the native attached runner), `test` (compile a verified test image and run each `test`, driving a durable test against its own fresh ephemeral attachment), `import`, `image`, `lsp`, and `client typescript` (the deterministic strict-TypeScript generator emitting the pinned Node supervision module beside the generated client), plus typed not-yet-supported responses for refounding command names. Run and test output preserve incomplete invocation and durable-state facts separately | — |
 | `marrow-codes` | Typed diagnostic-code registry and generated code reference | — |
-| `marrow-project` | Pure project-input owner: manifest schema, contained discovery, the `.marrow/ids` durable-identity ledger, immutable captured input | — |
+| `marrow-project` | Pure project-input owner: manifest schema, contained discovery, immutable captured input, the read-only `.marrow/ids` semantic ledger, and the sole admitted identity-mutation/canonical-serialization path from an exact validated capture to an affine publication plan | — |
 | `marrow-project-fs` | Bounded physical project-input adapter: opened-handle admission of the project root, manifest, source tree, and identity ledger under fixed byte/visited-entry/depth bounds, one iterative sorted source walk, the consumer-neutral root-relative overlay input, and the capture-failure presentation facade; feeds root-relative bytes to `marrow-project` and depends only on it and `marrow-codes` | [Projects](../tools/projects.md) |
 | `marrow-syntax` | Lexer, parser, AST, formatter, and source diagnostics; owns the checked-format policy (`check_format`/`FormatRefusal`) both the CLI and the analysis snapshot consume | [Syntax](syntax.md) |
 | `marrow-compile` | Storeless subset checker, language scalar vocabulary, and lowering to a program-image draft: it emits the whole durable graph's operation sites and lowers named `place` bindings with a once-evaluated key tuple and structured present-entry analysis. One dependency-resilient driver serves both the production compile (first-non-empty-stage projection) and the editor analysis floor: a revisioned immutable `AnalysisSnapshot` holding the caller's `ProjectInput`, the complete per-file diagnostic set, and selective hover/definition/format queries returning typed present/absent/unavailable facts with FIDB01-bounded file identities and full spans | — |
@@ -48,6 +48,27 @@ One typed owner defines each semantic fact. Downstream crates consume stable
 typed projections rather than matching source spellings, diagnostic prose,
 raw paths, or serialized messages. When a needed fact is missing, add it to the
 upstream owner; do not reconstruct it in the CLI, LSP, or tests.
+
+## Identity mutation admission
+
+Project capture privately retains one `CapturedLedger`: the parsed semantic
+ledger, an absent/present distinction, and the exact bounded raw bytes when
+present. `IdentityLedger` exposes parsing and lookup only. The sole public
+mutation operation is structurally nonempty and remains on `ProjectInput`; its
+private planner sorts and validates the complete request, computes the exact
+canonical successor size from semantic rows, and checks the row and byte bounds
+before invoking the candidate supplier. Exact candidate count and collisions
+are checked before the first base-ledger clone. A private admitted state then
+serializes once and constructs the non-cloneable `LedgerPublicationPlan`.
+
+The plan binds the exact captured expected state to one canonical successor.
+Its only external access consumes the plan and borrows both halves together;
+raw bytes cannot construct or split a plan through the API. The `marrow run`
+bridge consumes this plan directly and writes only its successor through the
+existing synchronized temporary-file-and-rename publisher. The physical
+publisher does not yet compare the expected half against a fresh filesystem
+state, so this boundary establishes neither stale-publication refusal nor
+replay prevention.
 
 ## Access demand
 

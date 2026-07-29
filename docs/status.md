@@ -39,11 +39,16 @@ server (`marrow-lsp`); and the `marrow` CLI. The
 - One pure project-input owner (`marrow-project`): the closed `marrow.toml`
   manifest schema (required explicit `edition`), deterministic contained
   discovery over caller-supplied listings, path-derived module identity, and an
-  immutable project input. One bounded physical adapter (`marrow-project-fs`)
+  immutable project input that privately retains the validated identity ledger's
+  absent/present state and exact present bytes. The owner admits each nonempty
+  identity mutation through one bounded, canonical planner before candidate
+  supply and produces a non-cloneable publication plan binding the captured
+  state to its successor. One bounded physical adapter (`marrow-project-fs`)
   admits the project root, manifest, source tree, and identity ledger through
-  opened handles under fixed byte, visited-entry, and depth bounds and feeds that
-  owner; the CLI consumes it with an empty overlay. See
-  [Projects](tools/projects.md).
+  opened handles under fixed byte, visited-entry, and depth bounds and feeds
+  that owner; the CLI consumes it with an empty overlay. The current physical
+  publisher consumes the plan but does not yet compare its expected state with
+  the filesystem. See [Projects](tools/projects.md).
 - `marrow init` creates a new project; `marrow fmt` formats a single `.mw` file
   or every captured source file in a project directory (`--check`/`--write`);
   `marrow check` checks a project and describes each export's durable access
@@ -181,8 +186,11 @@ to eight ordered columns; each key column is a scalar in the closed orderable
 durable-key set (`int`, `string`, `bool`, `bytes`, `date`, `instant`). Every
 root — and each of its key columns — is a distinct durable graph node with a
 complete entropy-minted identity in the committed machine-written `.marrow/ids`
-ledger (minted by `marrow run`, required by every path, tombstoned on
-retirement), and the program's durable graph carries a stable 32-byte
+ledger. Storeless `marrow run` receives each compiler-owned missing anchor once
+per project, admits the whole bounded request before entropy, and publishes the
+canonical successor; every other path requires complete identities. Tombstones
+are parsed and preserved, while the production retirement action remains
+future. The program's durable graph carries a stable 32-byte
 durable-contract identity computed over those ledger ids and the graph shape
 (including key-column order) — so an anchor move preserves durable identity (the
 ledger-model property; a rename becomes an anchor move under the future apply

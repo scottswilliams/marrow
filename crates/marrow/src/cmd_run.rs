@@ -20,7 +20,7 @@ use std::process::ExitCode;
 use std::rc::Rc;
 
 use marrow_compile::{CompileFailure, ExportEntry, ExportId, SourceDiagnostic, compile};
-use marrow_project::{DurableIdentityId, IdentityAnchor, ProjectInput};
+use marrow_project::{DurableIdentityId, IdentityAnchor, LedgerPublicationPlan, ProjectInput};
 use marrow_verify::{
     FunctionIndex, ImageType, Scalar, SealedEnumType, SealedRecordType, VerifiedImage,
 };
@@ -338,26 +338,22 @@ fn mint_missing_identities(
             None => {}
         }
     }
-    if anchors.is_empty() {
+    let mut anchors = anchors.into_iter();
+    let Some(first) = anchors.next() else {
         return MintOutcome::NotApplicable;
-    }
-
-    let mut mints: Vec<(IdentityAnchor, DurableIdentityId)> = Vec::with_capacity(anchors.len());
-    for anchor in anchors {
-        let id = match draw_entropy_id() {
-            Ok(id) => id,
-            Err(_) => return MintOutcome::Failed(marrow_codes::Code::ProjectIdsMint.as_str()),
-        };
-        mints.push((anchor, id));
-    }
-    let ledger = project.identity_ledger().cloned().unwrap_or_default();
-    let minted = match ledger.with_minted(&mints) {
-        Ok(minted) => minted,
-        // A collision or state conflict: no retry, and the artifact bytes are
-        // untouched (`with_minted` never mutated the source ledger).
+    };
+    let rest = anchors.collect();
+    let publication = match project.admit_identity_mints_with(first, rest, |exact_count| {
+        let mut candidates = Vec::with_capacity(exact_count);
+        for _ in 0..exact_count {
+            candidates.push(draw_entropy_id()?);
+        }
+        Ok::<_, std::io::Error>(candidates)
+    }) {
+        Ok(publication) => publication,
         Err(_) => return MintOutcome::Failed(marrow_codes::Code::ProjectIdsMint.as_str()),
     };
-    match publish_ids(Path::new("."), &minted.to_bytes()) {
+    match publish_ids(Path::new("."), publication) {
         Ok(()) => {
             emit_commit_steer(Path::new("."));
             MintOutcome::Minted
@@ -452,26 +448,30 @@ fn draw_entropy_id() -> std::io::Result<DurableIdentityId> {
 /// observes either the old complete artifact or the new one — never a torn
 /// write — and the data sync before the rename keeps that true across power
 /// loss (an unsynced rename can be journaled ahead of the data blocks). The
-/// temp file is removed on failure.
-fn publish_ids(root: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    let meta = root.join(marrow_project::META_DIR);
-    std::fs::create_dir_all(&meta)?;
-    sweep_stale_publish_temps(&meta);
-    let target = root.join(marrow_project::IDS_FILE);
-    let temp = root.join(format!(
-        "{}.tmp.{}",
-        marrow_project::IDS_FILE,
-        std::process::id()
-    ));
-    if let Err(error) = write_synced(&temp, bytes) {
-        let _ = std::fs::remove_file(&temp);
-        return Err(error);
-    }
-    if let Err(error) = std::fs::rename(&temp, &target) {
-        let _ = std::fs::remove_file(&temp);
-        return Err(error);
-    }
-    sync_directory(&meta)
+/// temp file is removed on failure. The publisher writes the admitted successor
+/// only. It does not compare the plan's expected state with the filesystem;
+/// serialized recapture and stale-publication refusal are not implemented here.
+fn publish_ids(root: &Path, publication: LedgerPublicationPlan) -> std::io::Result<()> {
+    publication.visit(|view| {
+        let meta = root.join(marrow_project::META_DIR);
+        std::fs::create_dir_all(&meta)?;
+        sweep_stale_publish_temps(&meta);
+        let target = root.join(marrow_project::IDS_FILE);
+        let temp = root.join(format!(
+            "{}.tmp.{}",
+            marrow_project::IDS_FILE,
+            std::process::id()
+        ));
+        if let Err(error) = write_synced(&temp, view.next()) {
+            let _ = std::fs::remove_file(&temp);
+            return Err(error);
+        }
+        if let Err(error) = std::fs::rename(&temp, &target) {
+            let _ = std::fs::remove_file(&temp);
+            return Err(error);
+        }
+        sync_directory(&meta)
+    })
 }
 
 /// Write `bytes` to `path` and sync the file's data to disk before returning,

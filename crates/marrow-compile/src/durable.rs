@@ -417,6 +417,10 @@ impl DurableRegistry {
             let mut registry = Self::default();
             let mut type_metadata = DurableTypeMetadata { records, metadata };
             let mut reported_identity_gaps = BTreeSet::new();
+            let mut identity_build = IdentityBuildState {
+                ledger,
+                reported_gaps: &mut reported_identity_gaps,
+            };
             for (file, store) in stores {
                 // A repeated placement name has no unambiguous address and cannot key a second
                 // DURABLE-table row; reject it and keep the first declaration.
@@ -439,8 +443,7 @@ impl DurableRegistry {
                     resources,
                     file,
                     store,
-                    ledger,
-                    &mut reported_identity_gaps,
+                    &mut identity_build,
                     diagnostics,
                 )? {
                     StoreBuild::Admitted(built) => {
@@ -495,6 +498,14 @@ struct DurableTypeMetadata<'registry, 'session> {
     metadata: &'session mut TypeMetadataSession<'registry>,
 }
 
+/// Project-wide identity inputs shared by each store build. The ledger remains
+/// read-only while the gap set assigns the first diagnostic for a shared anchor
+/// across all per-store resolvers.
+struct IdentityBuildState<'ledger, 'gaps> {
+    ledger: Option<&'ledger IdentityLedger>,
+    reported_gaps: &'gaps mut BTreeSet<IdentityAnchor>,
+}
+
 /// Resolve, validate, and commit one `store` declaration into the draft, returning its
 /// build outcome. A failing store pushes its diagnostic and commits no root, site, or
 /// application identity, so it cannot corrupt an already-appended root (`build_extras` may
@@ -510,8 +521,7 @@ fn build_one(
     resources: &[(FileIdentity, &ResourceDecl)],
     file: &FileIdentity,
     store: &StoreDecl,
-    ledger: Option<&IdentityLedger>,
-    reported_identity_gaps: &mut BTreeSet<IdentityAnchor>,
+    identity_build: &mut IdentityBuildState<'_, '_>,
     diagnostics: &mut Vec<SourceDiagnostic>,
 ) -> Result<StoreBuild, GenericInvariant> {
     let records = type_metadata.records;
@@ -575,8 +585,8 @@ fn build_one(
     let mut resolver = IdentityResolver::new(
         file,
         store.span,
-        ledger,
-        reported_identity_gaps,
+        identity_build.ledger,
+        identity_build.reported_gaps,
         diagnostics,
     );
     let application = resolver.resolve(IdentityKind::Application, APPLICATION_ANCHOR_PATH);
