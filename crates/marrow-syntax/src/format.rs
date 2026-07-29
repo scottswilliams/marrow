@@ -1197,7 +1197,6 @@ fn format_statement_with_comments(
             then_block,
             else_ifs,
             else_block,
-            span: _,
             ..
         } => {
             let ctx = StatementFormatContext {
@@ -1328,7 +1327,6 @@ fn format_statement_with_comments(
             ty,
             value,
             else_block,
-            span: _,
             ..
         } => {
             let ctx = StatementFormatContext {
