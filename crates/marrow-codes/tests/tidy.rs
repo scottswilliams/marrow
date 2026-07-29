@@ -492,13 +492,11 @@ fn rust_sources(dir: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
-/// The pure owners have no filesystem edge: `marrow-project` (the project-input
-/// and identity-ledger owner) and `marrow-compile` (a read-only ledger
-/// consumer) never touch `std::fs`. This is the D00 absence gate for compiler
-/// ledger mutation — minting and publishing `.marrow/ids` live only in the CLI's
-/// `marrow run` convenience action (and in the accepted apply action when it
-/// lands), so the compiler can never write identity. OS entropy is likewise a
-/// CLI concern; these crates draw none.
+/// The pure owners have no filesystem edge: `marrow-project` owns project input
+/// plus pure admitted identity mutation and canonical serialization, while
+/// `marrow-compile` is a read-only ledger consumer. Neither touches `std::fs` or
+/// draws entropy. The CLI supplies OS entropy and owns physical `.marrow/ids`
+/// publication, so neither pure owner can read or write identity artifacts.
 #[test]
 fn pure_owners_have_no_filesystem_edge() {
     let root = workspace_root();
@@ -526,6 +524,29 @@ fn pure_owners_have_no_filesystem_edge() {
         "a filesystem edge reached a pure owner:\n{}",
         violations.join("\n")
     );
+}
+
+#[test]
+fn durable_identity_hex_has_one_nonallocating_owner() {
+    let root = workspace_root();
+    let source = std::fs::read_to_string(root.join("crates/marrow-project/src/ids.rs"))
+        .expect("read durable-identity owner");
+    assert_eq!(
+        source.matches("const ID_HEX_DIGITS:").count(),
+        1,
+        "the lowercase identity alphabet must have one owner",
+    );
+    assert_eq!(
+        source.matches("fn write_canonical_hex").count(),
+        1,
+        "identity formatting must use one nonallocating fixed-buffer writer",
+    );
+    for duplicate in ["char::from_digit", "fn push_id_hex"] {
+        assert!(
+            !source.contains(duplicate),
+            "a duplicate identity-hex implementation remains: {duplicate}",
+        );
+    }
 }
 
 /// The raw logical-cell maintenance escape is absent. Such a seam can clone the

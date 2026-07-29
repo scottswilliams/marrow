@@ -17,6 +17,7 @@
 //! serialization is canonical (sorted, bounded), so publication is
 //! deterministic byte-for-byte.
 
+use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::sync::Arc;
@@ -44,6 +45,8 @@ const IDS_HEADER: &str = "marrow ids v0";
 const IDS_NOTICE: &str = "machine-written by marrow; do not edit";
 /// The end marker. A file without it is torn and rejected whole.
 const IDS_END: &str = "end";
+/// The one lowercase alphabet used by both public and artifact id rendering.
+const ID_HEX_DIGITS: &[u8; 16] = b"0123456789abcdef";
 
 /// The fixed artifact bounds: total bytes and total rows (entries plus
 /// tombstones). Both guard the reader against an unbounded or hostile file, and
@@ -181,12 +184,16 @@ impl DurableIdentityId {
 
     /// The canonical 32-digit lowercase-hex artifact spelling.
     pub fn to_hex(self) -> String {
-        let mut hex = String::with_capacity(32);
-        for byte in self.0 {
-            hex.push(char::from_digit(u32::from(byte >> 4), 16).expect("hex nibble"));
-            hex.push(char::from_digit(u32::from(byte & 0xf), 16).expect("hex nibble"));
+        let mut bytes = [0; 32];
+        self.write_canonical_hex(&mut bytes);
+        String::from_utf8(bytes.to_vec()).expect("canonical identity hex is ASCII")
+    }
+
+    fn write_canonical_hex(self, output: &mut [u8; 32]) {
+        for (index, byte) in self.0.into_iter().enumerate() {
+            output[index * 2] = ID_HEX_DIGITS[usize::from(byte >> 4)];
+            output[index * 2 + 1] = ID_HEX_DIGITS[usize::from(byte & 0x0f)];
         }
-        hex
     }
 
     fn parse_hex(text: &str) -> Option<Self> {
@@ -250,6 +257,36 @@ pub struct IdentityLedger {
     high_water: u64,
 }
 
+#[cfg(test)]
+std::thread_local! {
+    static TOMBSTONE_LOOKUP_COMPARISONS: std::cell::Cell<usize> =
+        const { std::cell::Cell::new(0) };
+}
+
+fn compare_tombstone_anchor(
+    tombstone: &IdentityTombstone,
+    kind: IdentityKind,
+    path: &str,
+) -> Ordering {
+    #[cfg(test)]
+    TOMBSTONE_LOOKUP_COMPARISONS.set(TOMBSTONE_LOOKUP_COMPARISONS.get() + 1);
+    tombstone
+        .anchor
+        .kind
+        .cmp(&kind)
+        .then_with(|| tombstone.anchor.path.as_str().cmp(path))
+}
+
+#[cfg(test)]
+fn reset_tombstone_lookup_comparisons() {
+    TOMBSTONE_LOOKUP_COMPARISONS.set(0);
+}
+
+#[cfg(test)]
+fn tombstone_lookup_comparisons() -> usize {
+    TOMBSTONE_LOOKUP_COMPARISONS.get()
+}
+
 impl IdentityLedger {
     /// The id bound to `(kind, path)`, if the anchor has a live row.
     pub fn lookup(&self, kind: IdentityKind, path: &str) -> Option<DurableIdentityId> {
@@ -259,9 +296,7 @@ impl IdentityLedger {
     /// Whether `(kind, path)` names a retired anchor. A retired anchor can
     /// never be re-minted; re-declaring at it fails closed.
     pub fn is_retired(&self, kind: IdentityKind, path: &str) -> bool {
-        self.tombstones
-            .iter()
-            .any(|tombstone| tombstone.anchor.kind == kind && tombstone.anchor.path == path)
+        self.tombstone_index(kind, path).is_ok()
     }
 
     /// The live rows, in canonical anchor order.
@@ -272,6 +307,11 @@ impl IdentityLedger {
     /// The retirement high-water: the count of retire events this line has seen.
     pub fn high_water(&self) -> u64 {
         self.high_water
+    }
+
+    fn tombstone_index(&self, kind: IdentityKind, path: &str) -> Result<usize, usize> {
+        self.tombstones
+            .binary_search_by(|tombstone| compare_tombstone_anchor(tombstone, kind, path))
     }
 
     /// Parse the committed artifact, rejecting any corruption whole with a
@@ -444,8 +484,16 @@ impl IdentityLedger {
                 ));
             }
         }
+        // Preserve the parser's input-order rejection precedence above, then
+        // normalize only the admitted semantic state for equality, lookup, and
+        // canonical successor construction.
+        ledger.tombstones.sort_by(canonical_tombstone_order);
         Ok(ledger)
     }
+}
+
+fn canonical_tombstone_order(left: &IdentityTombstone, right: &IdentityTombstone) -> Ordering {
+    (&left.anchor, left.id).cmp(&(&right.anchor, right.id))
 }
 
 /// A validated captured identity artifact and its read-only semantic ledger.
@@ -811,16 +859,15 @@ impl<'a> LedgerMutationPlan<'a> {
     ) -> Result<Self, IdentityMutationError> {
         rest.push(first);
         rest.sort();
-        validate_requests(&rest)?;
+        let rest = validate_requests(rest)?;
         for anchor in &rest {
             if captured.ledger.entries.contains_key(anchor) {
                 return Err(IdentityMutationError::AnchorActive(anchor.clone()));
             }
             if captured
                 .ledger
-                .tombstones
-                .iter()
-                .any(|tombstone| tombstone.anchor == *anchor)
+                .tombstone_index(anchor.kind, &anchor.path)
+                .is_ok()
             {
                 return Err(IdentityMutationError::AnchorRetired(anchor.clone()));
             }
@@ -860,7 +907,9 @@ impl<'a> LedgerMutationPlan<'a> {
         captured: &'a CapturedLedger,
         anchor: IdentityAnchor,
     ) -> Result<Self, IdentityMutationError> {
-        validate_requests(std::slice::from_ref(&anchor))?;
+        if !valid_anchor_path(&anchor.path) {
+            return Err(IdentityMutationError::InvalidAnchor(anchor));
+        }
         if !captured.ledger.entries.contains_key(&anchor) {
             return Err(IdentityMutationError::AnchorNotActive(anchor));
         }
@@ -958,12 +1007,19 @@ impl<'a> LedgerMutationPlan<'a> {
         let Some(id) = ledger.entries.remove(&anchor) else {
             return Err(IdentityMutationError::AdmittedStateMismatch);
         };
+        let insertion = match ledger.tombstone_index(anchor.kind, &anchor.path) {
+            Ok(_) => return Err(IdentityMutationError::AdmittedStateMismatch),
+            Err(insertion) => insertion,
+        };
         ledger.high_water = successor_high_water;
-        ledger.tombstones.push(IdentityTombstone {
-            anchor,
-            id,
-            high_water: successor_high_water,
-        });
+        ledger.tombstones.insert(
+            insertion,
+            IdentityTombstone {
+                anchor,
+                id,
+                high_water: successor_high_water,
+            },
+        );
         Ok(AdmittedLedger {
             captured: self.captured,
             ledger,
@@ -972,18 +1028,21 @@ impl<'a> LedgerMutationPlan<'a> {
     }
 }
 
-fn validate_requests(requests: &[IdentityAnchor]) -> Result<(), IdentityMutationError> {
-    for anchor in requests {
-        if !valid_anchor_path(&anchor.path) {
-            return Err(IdentityMutationError::InvalidAnchor(anchor.clone()));
-        }
+fn validate_requests(
+    mut requests: Vec<IdentityAnchor>,
+) -> Result<Vec<IdentityAnchor>, IdentityMutationError> {
+    if let Some(index) = requests
+        .iter()
+        .position(|anchor| !valid_anchor_path(&anchor.path))
+    {
+        return Err(IdentityMutationError::InvalidAnchor(requests.remove(index)));
     }
     for pair in requests.windows(2) {
         if pair[0] == pair[1] {
             return Err(IdentityMutationError::DuplicateRequest(pair[0].clone()));
         }
     }
-    Ok(())
+    Ok(requests)
 }
 
 fn valid_anchor_path(path: &str) -> bool {
@@ -1106,9 +1165,7 @@ impl AdmittedLedger<'_> {
         for (anchor, id) in &self.ledger.entries {
             write_live_row(&mut next, anchor, *id)?;
         }
-        let mut tombstones: Vec<&IdentityTombstone> = self.ledger.tombstones.iter().collect();
-        tombstones.sort_by(|a, b| (&a.anchor, a.id).cmp(&(&b.anchor, b.id)));
-        for tombstone in tombstones {
+        for tombstone in &self.ledger.tombstones {
             write_retired_row(&mut next, tombstone)?;
         }
         let tail_start = next.len();
@@ -1150,7 +1207,7 @@ fn write_live_row(
     out.push(' ');
     out.push_str(&anchor.path);
     out.push(' ');
-    push_id_hex(out, id);
+    append_id_hex(out, id);
     out.push('\n');
     let actual = out.len() - start;
     if actual != projected {
@@ -1170,7 +1227,7 @@ fn write_retired_row(
     out.push(' ');
     out.push_str(&tombstone.anchor.path);
     out.push(' ');
-    push_id_hex(out, tombstone.id);
+    append_id_hex(out, tombstone.id);
     out.push(' ');
     out.push_str(&tombstone.high_water.to_string());
     out.push('\n');
@@ -1181,12 +1238,10 @@ fn write_retired_row(
     Ok(())
 }
 
-fn push_id_hex(out: &mut String, id: DurableIdentityId) {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    for byte in id.0 {
-        out.push(char::from(HEX[usize::from(byte >> 4)]));
-        out.push(char::from(HEX[usize::from(byte & 0x0f)]));
-    }
+fn append_id_hex(out: &mut String, id: DurableIdentityId) {
+    let mut bytes = [0; 32];
+    id.write_canonical_hex(&mut bytes);
+    out.push_str(std::str::from_utf8(&bytes).expect("canonical identity hex is ASCII"));
 }
 
 /// Parse the shared `<kind> <path> <hex-id>` core of an `id` or `retired` row.
@@ -1276,7 +1331,8 @@ mod tests {
     use super::{
         CapturedLedger, DurableIdentityId, IdentityAnchor, IdentityKind, IdentityLedger,
         IdentityMintFailure, IdentityMutationError, IdsErrorKind, LedgerExpectedArtifact,
-        LedgerMutationPlan, LedgerPublicationPlan,
+        LedgerMutationPlan, LedgerPublicationPlan, reset_tombstone_lookup_comparisons,
+        tombstone_lookup_comparisons,
     };
 
     fn id(byte: u8) -> DurableIdentityId {
@@ -1346,6 +1402,22 @@ mod tests {
         out.push_str(&format!("high-water {high_water}\nend\n"));
         let bytes = out.into_bytes();
         IdentityLedger::parse(&bytes).expect("generated live artifact parses");
+        bytes
+    }
+
+    fn retired_artifact(rows: usize) -> Vec<u8> {
+        let mut out = String::from("marrow ids v0\nmachine-written by marrow; do not edit\n");
+        for row in 0..rows {
+            out.push_str(&format!(
+                "retired field Old.f{row:04} {} {}\n",
+                id_number(row).to_hex(),
+                row + 1,
+            ));
+        }
+        out.push_str(&format!("high-water {rows}\nend\n"));
+        let bytes = out.into_bytes();
+        let parsed = IdentityLedger::parse(&bytes).expect("generated retired artifact parses");
+        assert_eq!(parsed.tombstones.len(), rows);
         bytes
     }
 
@@ -1503,6 +1575,28 @@ mod tests {
              high-water 0\n\
              end\n",
         );
+    }
+
+    #[test]
+    fn public_and_artifact_id_hex_share_the_lowercase_known_answer() {
+        let identity = DurableIdentityId::from_bytes([
+            0x00, 0x01, 0x0f, 0x10, 0x2a, 0x7f, 0x80, 0xab, 0xcd, 0xef, 0x55, 0xaa, 0x09, 0x90,
+            0xfe, 0xff,
+        ]);
+        let expected = "00010f102a7f80abcdef55aa0990feff";
+        assert_eq!(identity.to_hex(), expected);
+
+        let captured = CapturedLedger::capture(None).expect("absent capture");
+        let bytes = next_bytes(
+            plan_mints(
+                &captured,
+                vec![(anchor(IdentityKind::Application, "."), identity)],
+            )
+            .expect("known-answer mint"),
+        );
+        let text = std::str::from_utf8(&bytes).expect("artifact UTF-8");
+        assert!(text.contains(&format!("id application . {expected}\n")));
+        IdentityLedger::parse(&bytes).expect("known-answer successor parses");
     }
 
     #[test]
@@ -1762,23 +1856,58 @@ mod tests {
     #[test]
     fn mutation_refuses_a_path_past_512_bytes_before_building_a_successor() {
         let overlong = "x".repeat(super::MAX_PATH_BYTES + 1);
+        let invalid = anchor(IdentityKind::Field, &overlong);
+        let path_allocation = invalid.path.as_ptr();
         let captured = CapturedLedger::capture(None).expect("absent capture");
         let calls = std::cell::Cell::new(0);
-        let result = captured.admit_identity_mints_with(
-            anchor(IdentityKind::Field, &overlong),
-            Vec::new(),
-            |_| {
-                calls.set(calls.get() + 1);
-                Ok::<_, std::convert::Infallible>(vec![id(0x01)])
-            },
+        let result = captured.admit_identity_mints_with(invalid, Vec::new(), |_| {
+            calls.set(calls.get() + 1);
+            Ok::<_, std::convert::Infallible>(vec![id(0x01)])
+        });
+        let Err(IdentityMintFailure::Mutation(IdentityMutationError::InvalidAnchor(offender))) =
+            result
+        else {
+            panic!("expected invalid-anchor refusal");
+        };
+        assert_eq!(
+            offender.path.as_ptr(),
+            path_allocation,
+            "the canonical owned offender moves into the error without cloning its unbounded path",
         );
+        assert_eq!(calls.get(), 0, "grammar refusal precedes candidate supply");
+    }
+
+    #[test]
+    fn near_cap_retired_lookup_is_logarithmic_and_precedes_candidate_supply() {
+        let retired_rows = super::MAX_IDS_ROWS / 2;
+        let bytes = retired_artifact(retired_rows);
+        let captured =
+            CapturedLedger::capture(Some(&bytes)).expect("capture retired near-cap base");
+        let request_count = super::MAX_IDS_ROWS - retired_rows + 1;
+        let mut requests = (0..request_count)
+            .map(|row| IdentityAnchor::new(IdentityKind::Field, format!("New.f{row:04}")));
+        let first = requests.next().expect("nonempty near-cap request");
+        let calls = std::cell::Cell::new(0);
+        reset_tombstone_lookup_comparisons();
+        let result = captured.admit_identity_mints_with(first, requests.collect(), |_| {
+            calls.set(calls.get() + 1);
+            Ok::<_, std::convert::Infallible>(Vec::new())
+        });
         assert!(matches!(
             result,
             Err(IdentityMintFailure::Mutation(
-                IdentityMutationError::InvalidAnchor(_)
+                IdentityMutationError::RowLimit {
+                    projected: 8193,
+                    limit: 8192,
+                }
             ))
         ));
-        assert_eq!(calls.get(), 0, "grammar refusal precedes candidate supply");
+        assert_eq!(calls.get(), 0, "row refusal precedes candidate supply");
+        let comparisons = tombstone_lookup_comparisons();
+        assert!(
+            comparisons <= request_count * 16,
+            "{request_count} requests used {comparisons} retired-anchor comparisons",
+        );
     }
 
     #[test]
@@ -2215,6 +2344,37 @@ mod tests {
             assert!(!debug.contains("marrow ids v0"));
             assert!(!debug.contains("\\r\\n"));
         }
+    }
+
+    #[test]
+    fn reversed_valid_tombstones_are_semantically_equal_but_keep_exact_witnesses() {
+        let header = "marrow ids v0\nmachine-written by marrow; do not edit\n";
+        let first = format!("retired field Old.a {} 1\n", id(0x11).to_hex(),);
+        let second = format!("retired field Old.b {} 2\n", id(0x22).to_hex(),);
+        let tail = "high-water 2\nend\n";
+        let canonical = format!("{header}{first}{second}{tail}").into_bytes();
+        let reversed = format!("{header}{second}{first}{tail}").into_bytes();
+        let canonical_capture =
+            CapturedLedger::capture(Some(&canonical)).expect("canonical tombstones capture");
+        let reversed_capture =
+            CapturedLedger::capture(Some(&reversed)).expect("reversed tombstones capture");
+
+        let addition = vec![(anchor(IdentityKind::Field, "Fresh.value"), id(0x33))];
+        let (canonical_expected, canonical_next) = plan_parts(
+            plan_mints(&canonical_capture, addition.clone()).expect("canonical successor"),
+        );
+        let (reversed_expected, reversed_next) =
+            plan_parts(plan_mints(&reversed_capture, addition).expect("reversed successor"));
+
+        assert_eq!(
+            canonical_capture, reversed_capture,
+            "valid row order is not part of captured ledger semantics",
+        );
+        assert_eq!(canonical_expected, ExpectedBytes::Present(canonical));
+        assert_eq!(reversed_expected, ExpectedBytes::Present(reversed));
+        assert_ne!(canonical_expected, reversed_expected);
+        assert_eq!(canonical_next, reversed_next);
+        IdentityLedger::parse(&canonical_next).expect("canonical successor parses");
     }
 
     #[test]

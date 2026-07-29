@@ -311,7 +311,7 @@ pub fn noop(): int {
         )
     });
     assert!(
-        !combined(&first).contains("project.ids_mint"),
+        !combined(&first).contains(marrow_codes::Code::ProjectIdsMint.as_str()),
         "the unique compiler requests must reach publication: {}",
         combined(&first),
     );
@@ -393,7 +393,7 @@ fn run_refuses_a_513_byte_derived_anchor_without_creating_metadata() {
     );
     assert!(!output.status.success(), "{output:?}");
     assert!(
-        combined(&output).contains("project.ids_mint"),
+        combined(&output).contains(marrow_codes::Code::ProjectIdsMint.as_str()),
         "{}",
         combined(&output),
     );
@@ -431,7 +431,7 @@ pub fn noop(): int {
         let output = run_in(&temp, &["run", "absentExport"]);
         assert!(!output.status.success(), "{output:?}");
         assert!(
-            combined(&output).contains("project.ids_mint"),
+            combined(&output).contains(marrow_codes::Code::ProjectIdsMint.as_str()),
             "{name}: {}",
             combined(&output),
         );

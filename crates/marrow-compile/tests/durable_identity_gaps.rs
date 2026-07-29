@@ -8,6 +8,7 @@
 
 use std::collections::BTreeSet;
 
+use marrow_codes::Code;
 use marrow_compile::{CompileFailure, SourceDiagnostic, compile};
 use marrow_project::{
     CaptureLimits, CapturedFile, IdentityAnchor, IdentityKind, Manifest, ProjectInput,
@@ -82,7 +83,7 @@ pub fn readSecond(id: int): int? {
     for root in ["first", "second"] {
         assert!(
             diagnostics.iter().any(|diagnostic| {
-                diagnostic.code == "check.type"
+                diagnostic.code == Code::CheckType.as_str()
                     && diagnostic.message
                         == format!(
                             "`{root}` was declared but failed identity admission; see the \
