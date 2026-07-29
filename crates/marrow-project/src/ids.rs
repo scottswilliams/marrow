@@ -373,6 +373,9 @@ impl IdentityLedger {
                 Some("id") => {
                     rows += 1;
                     let (anchor, id) = parse_row(&mut fields, line)?;
+                    if fields.next().is_some() {
+                        return Err(malformed_line(line));
+                    }
                     if ids.insert(id, ()).is_some() {
                         return Err(IdsError::new(
                             IdsErrorKind::DuplicateId,
@@ -698,6 +701,55 @@ mod tests {
         let shuffled = format!("{}\n", lines.join("\n"));
         let reparsed = IdentityLedger::parse(shuffled.as_bytes()).expect("order-blind parse");
         assert_eq!(reparsed.to_bytes(), canonical);
+    }
+
+    #[test]
+    fn live_row_suffixes_are_malformed_before_insertion() {
+        let canonical = counter_ledger().to_bytes();
+        let text = String::from_utf8(canonical.clone()).unwrap();
+        let target_row = format!("id field Counter.label {}\n", id(0x0f).to_hex());
+        let target_without_newline = target_row
+            .strip_suffix('\n')
+            .expect("the target row has its artifact newline");
+
+        for suffix in [" ", "  ", " extra", " extra more", " extra "] {
+            let replacement = format!("{target_without_newline}{suffix}\n");
+            let malformed = text.replacen(&target_row, &replacement, 1);
+            assert_eq!(
+                IdentityLedger::parse(malformed.as_bytes())
+                    .unwrap_err()
+                    .kind,
+                IdsErrorKind::Malformed,
+                "suffix {suffix:?} must reject before the row is inserted"
+            );
+        }
+
+        let duplicate_with_suffix = text.replacen(
+            &target_row,
+            &format!("id application . {} extra\n", id(0x0a).to_hex()),
+            1,
+        );
+        assert_eq!(
+            IdentityLedger::parse(duplicate_with_suffix.as_bytes())
+                .unwrap_err()
+                .kind,
+            IdsErrorKind::Malformed,
+            "row grammar wins before duplicate-id or duplicate-anchor classification"
+        );
+
+        let suffix_and_conflict = text
+            .replacen(&target_row, &format!("{target_without_newline} extra\n"), 1)
+            .replacen("high-water ", "<<<<<<< ours\nhigh-water ", 1);
+        assert_eq!(
+            IdentityLedger::parse(suffix_and_conflict.as_bytes())
+                .unwrap_err()
+                .kind,
+            IdsErrorKind::ConflictMarker,
+            "the artifact-wide conflict scan retains its earlier precedence"
+        );
+
+        let reparsed = IdentityLedger::parse(&canonical).expect("canonical ledger remains valid");
+        assert_eq!(reparsed.to_bytes(), canonical, "valid bytes remain exact");
     }
 
     #[test]
