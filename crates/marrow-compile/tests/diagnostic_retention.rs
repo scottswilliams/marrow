@@ -1,4 +1,4 @@
-//! Production-path retention and admission laws for DIAGBOUND01.
+//! Production-path compiler-input admission and diagnostic-retention laws.
 
 use std::sync::Arc;
 
@@ -22,6 +22,7 @@ fn project_with_file_count(file_count: usize) -> ProjectInput {
 }
 
 fn project_with_sources(sources: Vec<Vec<u8>>) -> ProjectInput {
+    let max_files = sources.len();
     let max_file_bytes = sources.iter().map(Vec::len).max().unwrap_or_default();
     let total_bytes = sources.iter().map(Vec::len).sum();
     let files = sources
@@ -31,8 +32,19 @@ fn project_with_sources(sources: Vec<Vec<u8>>) -> ProjectInput {
         .collect();
     captured_project(
         files,
-        CaptureLimits::new(4_096, max_file_bytes, total_bytes),
+        CaptureLimits::new(max_files, max_file_bytes, total_bytes),
     )
+}
+
+fn project_with_overlapping_byte_limits(file_count: usize) -> ProjectInput {
+    let mut sources = vec![
+        vec![0xff; CaptureLimits::DEFAULT.max_file_bytes()];
+        CaptureLimits::DEFAULT.max_total_bytes()
+            / CaptureLimits::DEFAULT.max_file_bytes()
+    ];
+    sources[0].push(0xff);
+    sources.resize_with(file_count, Vec::new);
+    project_with_sources(sources)
 }
 
 fn assert_compile_limit(
@@ -162,6 +174,28 @@ fn compiler_drive_refuses_the_first_aggregate_byte_overrun_before_utf8_work() {
         project,
         ResourceLimitKind::ProjectSourceBytes,
         CaptureLimits::DEFAULT.max_total_bytes(),
+    );
+}
+
+#[test]
+fn compiler_drive_checks_module_count_before_file_and_aggregate_bytes() {
+    let project = project_with_overlapping_byte_limits(CaptureLimits::DEFAULT.max_files() + 1);
+    assert_drive_limit(
+        project,
+        ResourceLimitKind::ProjectFiles,
+        CaptureLimits::DEFAULT.max_files(),
+    );
+}
+
+#[test]
+fn compiler_drive_checks_file_bytes_before_aggregate_bytes() {
+    let project = project_with_overlapping_byte_limits(
+        CaptureLimits::DEFAULT.max_total_bytes() / CaptureLimits::DEFAULT.max_file_bytes(),
+    );
+    assert_drive_limit(
+        project,
+        ResourceLimitKind::ProjectFileBytes,
+        CaptureLimits::DEFAULT.max_file_bytes(),
     );
 }
 

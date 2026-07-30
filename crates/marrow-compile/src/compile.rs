@@ -2500,6 +2500,9 @@ mod tests {
             (DurableDepth, "DurableDepth"),
             (DiagnosticCount, "DiagnosticCount"),
             (DiagnosticBytes, "DiagnosticBytes"),
+            (ProjectFiles, "ProjectFiles"),
+            (ProjectFileBytes, "ProjectFileBytes"),
+            (ProjectSourceBytes, "ProjectSourceBytes"),
         ] {
             assert_eq!(kind.detail(), detail);
         }
