@@ -490,7 +490,10 @@ pub fn analyze(
     input: Arc<ProjectInput>,
     revision: InputRevision,
 ) -> Result<Arc<AnalysisSnapshot>, AnalysisFailure> {
-    let analysis = analyze_project(&input);
+    let analysis = analyze_project(&input).map_err(|limit| AnalysisFailure::ResourceLimit {
+        revision,
+        limit: AnalysisResourceLimit::Compile(limit),
+    })?;
     let diagnostics = match analysis.outcome {
         Analyzed::Invariant(invariant) => {
             return Err(AnalysisFailure::Invariant {

@@ -10,7 +10,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use marrow_codes::Code;
 use marrow_image::{EncodedImage, ExportId, ImageBuildError, ImageDraft, Instr};
-use marrow_project::{FileIdentity, ProjectInput};
+use marrow_project::{CaptureLimits, FileIdentity, ProjectInput};
 use marrow_syntax::{
     AliasDecl, ConstDecl, Declaration, EnumDecl, FunctionDecl, NominalDecl, ParsedSource,
     ResourceDecl, ResourceMember, SourceSpan, StoreDecl, StructDecl, parse_source,
@@ -206,6 +206,15 @@ pub enum ResourceLimitKind {
     /// The ordered diagnostic set grew past the total-byte bound, so the incomplete
     /// collection was discarded.
     DiagnosticBytes,
+    /// The captured project contains more modules than the production compiler drive
+    /// admits. A wider pure capture remains inspectable, but cannot enter compilation.
+    ProjectFiles,
+    /// One captured module contains more source bytes than the production compiler
+    /// drive admits.
+    ProjectFileBytes,
+    /// The captured project's aggregate source bytes exceed the production compiler
+    /// drive envelope.
+    ProjectSourceBytes,
 }
 
 impl ResourceLimitKind {
@@ -233,6 +242,9 @@ impl ResourceLimitKind {
             ResourceLimitKind::DurableDepth => "DurableDepth",
             ResourceLimitKind::DiagnosticCount => "DiagnosticCount",
             ResourceLimitKind::DiagnosticBytes => "DiagnosticBytes",
+            ResourceLimitKind::ProjectFiles => "ProjectFiles",
+            ResourceLimitKind::ProjectFileBytes => "ProjectFileBytes",
+            ResourceLimitKind::ProjectSourceBytes => "ProjectSourceBytes",
         }
     }
 }
@@ -565,7 +577,9 @@ struct LoweredFn {
 /// The production path excludes `test` declarations and emits an empty TEST-ENTRY
 /// table.
 pub fn compile(project: &ProjectInput) -> Result<Compiled, CompileFailure> {
-    let built = drive(project, TestMode::Exclude).into_built()?;
+    let built = drive(project, TestMode::Exclude)
+        .map_err(CompileFailure::ResourceLimit)?
+        .into_built()?;
     Ok(Compiled {
         image: built.image,
         exports: built.exports,
@@ -578,7 +592,9 @@ pub fn compile(project: &ProjectInput) -> Result<Compiled, CompileFailure> {
 /// each test's title with its location for `marrow test`. Failure uses the same
 /// source-diagnostic or opaque compiler-invariant boundary as [`compile`].
 pub fn compile_with_tests(project: &ProjectInput) -> Result<CompiledTests, CompileFailure> {
-    let built = drive(project, TestMode::Include).into_built()?;
+    let built = drive(project, TestMode::Include)
+        .map_err(CompileFailure::ResourceLimit)?
+        .into_built()?;
     Ok(CompiledTests {
         image: built.image,
         exports: built.exports,
@@ -631,6 +647,56 @@ struct Driven {
     completion_modules: Vec<crate::analysis::CompletionModule>,
 }
 
+/// Allocation-free admission for one compiler drive.
+///
+/// [`marrow_project::capture`] intentionally accepts caller-selected limits. This
+/// boundary keeps that pure construction API unchanged while ensuring every compiler
+/// and analysis entry point uses the one production envelope before it mints or
+/// retains parser, diagnostic, or fact state.
+struct DriveInputAdmission;
+
+impl DriveInputAdmission {
+    fn check(project: &ProjectInput) -> Result<(), CompileResourceLimit> {
+        let limits = CaptureLimits::DEFAULT;
+        let modules = project.modules();
+        if modules.len() > limits.max_files() {
+            return Err(CompileResourceLimit::new(
+                ResourceLimitKind::ProjectFiles,
+                limits.max_files() as u64,
+            ));
+        }
+
+        if modules
+            .iter()
+            .any(|module| module.source().len() > limits.max_file_bytes())
+        {
+            return Err(CompileResourceLimit::new(
+                ResourceLimitKind::ProjectFileBytes,
+                limits.max_file_bytes() as u64,
+            ));
+        }
+
+        let mut source_bytes = 0usize;
+        for module in modules {
+            source_bytes = source_bytes
+                .checked_add(module.source().len())
+                .ok_or_else(|| {
+                    CompileResourceLimit::new(
+                        ResourceLimitKind::ProjectSourceBytes,
+                        limits.max_total_bytes() as u64,
+                    )
+                })?;
+        }
+        if source_bytes > limits.max_total_bytes() {
+            return Err(CompileResourceLimit::new(
+                ResourceLimitKind::ProjectSourceBytes,
+                limits.max_total_bytes() as u64,
+            ));
+        }
+        Ok(())
+    }
+}
+
 /// The outcome of the semantic pass over the cleanly-parsed modules: a complete image,
 /// or the accumulated failure tagged with the stage that produced it.
 enum SemanticOutcome {
@@ -672,7 +738,8 @@ impl Driven {
 /// diagnostics or facts of an independent valid component. The semantic pass always
 /// runs over whatever parsed cleanly; the projection decides what the production
 /// compile reports.
-fn drive(project: &ProjectInput, mode: TestMode) -> Driven {
+fn drive(project: &ProjectInput, mode: TestMode) -> Result<Driven, CompileResourceLimit> {
+    DriveInputAdmission::check(project)?;
     let mut parse = Vec::new();
     let mut parsed: Vec<Module> = Vec::new();
     let mut non_utf8_modules: BTreeSet<String> = BTreeSet::new();
@@ -794,7 +861,7 @@ fn drive(project: &ProjectInput, mode: TestMode) -> Driven {
             ast: module.parsed.file,
         })
         .collect();
-    Driven {
+    Ok(Driven {
         parse,
         structural,
         semantic,
@@ -803,7 +870,7 @@ fn drive(project: &ProjectInput, mode: TestMode) -> Driven {
         document_symbols,
         symbol_limit,
         completion_modules,
-    }
+    })
 }
 
 /// Analyze the cleanly-parsed modules: build the named types and function signatures,
@@ -1502,8 +1569,10 @@ pub(crate) struct ProjectAnalysis {
 /// production compile uses, so a diagnostic avalanche transactionally becomes a resource
 /// limit rather than a retained partial set — no partial or truncated snapshot is
 /// admitted.
-pub(crate) fn analyze_project(project: &ProjectInput) -> ProjectAnalysis {
-    let driven = drive(project, TestMode::Include);
+pub(crate) fn analyze_project(
+    project: &ProjectInput,
+) -> Result<ProjectAnalysis, CompileResourceLimit> {
+    let driven = drive(project, TestMode::Include)?;
     let hover_facts = driven.hover_facts;
     let dependency_gaps = driven.dependency_gaps;
     let document_symbols = driven.document_symbols;
@@ -1518,7 +1587,7 @@ pub(crate) fn analyze_project(project: &ProjectInput) -> ProjectAnalysis {
         }
     }
     let outcome = analyze_outcome(driven.parse, driven.structural, driven.semantic);
-    ProjectAnalysis {
+    Ok(ProjectAnalysis {
         outcome,
         hover_facts,
         dependency_gaps,
@@ -1526,7 +1595,7 @@ pub(crate) fn analyze_project(project: &ProjectInput) -> ProjectAnalysis {
         document_symbols,
         symbol_limit,
         completion_modules,
-    }
+    })
 }
 
 /// Resolve the complete diagnostic outcome under the shared precedence from the driven
@@ -2636,7 +2705,7 @@ mod driver_agreement {
     /// driven traversal — same diagnostics, same order, no stage mixing.
     fn assert_projection_faithful(files: &[(&str, &str)]) {
         let input = project(files);
-        let driven = drive(&input, TestMode::Include);
+        let driven = drive(&input, TestMode::Include).expect("test input is drive-admitted");
         assert_eq!(
             projected(&driven),
             compiled(&compile_with_tests(&input)),
@@ -2686,7 +2755,7 @@ mod driver_agreement {
             ),
         ];
         let input = project(files);
-        let driven = drive(&input, TestMode::Include);
+        let driven = drive(&input, TestMode::Include).expect("test input is drive-admitted");
 
         // The broken module's parse error is recorded.
         assert!(
@@ -2736,7 +2805,7 @@ mod driver_agreement {
             ),
         ];
         let input = project(files);
-        let driven = drive(&input, TestMode::Include);
+        let driven = drive(&input, TestMode::Include).expect("test input is drive-admitted");
 
         // The broken base module's parse error is recorded.
         assert!(
