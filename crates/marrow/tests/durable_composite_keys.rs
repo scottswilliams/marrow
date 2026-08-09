@@ -573,7 +573,8 @@ fn a_missing_field_through_a_composite_root_place_names_the_root_container() {
         .find(|d| d.code() == marrow_codes::Code::CheckType.as_str())
         .expect("a check.type diagnostic for the missing field");
     assert_eq!(
-        hit.message(), "`enrollments` has no field `nope`",
+        hit.message(),
+        "`enrollments` has no field `nope`",
         "a composite-root place names its root container, not an empty branch",
     );
     assert!(

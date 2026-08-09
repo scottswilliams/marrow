@@ -2,9 +2,9 @@
 //!
 //! Every payload is built from the snapshot's facts and the exact source bytes; nothing
 //! is reconstructed. Byte spans become UTF-16 ranges through [`crate::position`], codes
-//! and severities come from the [`marrow_codes`] registry, type displays and definition
-//! targets come verbatim from the snapshot, and diagnostic URIs come from the one
-//! canonical re-encoder. The payload types are [`lsp_types`]; the server owns no
+//! and severities come verbatim from the diagnostic payload, type displays and
+//! definition targets come verbatim from the snapshot, and diagnostic URIs come from
+//! the one canonical re-encoder. The payload types are [`lsp_types`]; the server owns no
 //! hand-written duplicate DTO.
 
 use std::str::FromStr;
@@ -175,9 +175,7 @@ pub fn formatting(
             Some(vec![TextEdit::new(whole, formatted)])
         }
         Ok(
-            FormatOutcome::Refused(_)
-            | FormatOutcome::TooLarge { .. }
-            | FormatOutcome::InvalidUtf8,
+            FormatOutcome::Refused(_) | FormatOutcome::TooLarge { .. } | FormatOutcome::InvalidUtf8,
         )
         | Err(_) => None,
     }

@@ -593,9 +593,9 @@ fn a_missing_nested_result_member_reports_the_space_free_bracket_anchor() {
     );
     let diagnostics = compile(OUTCOME_SOURCE, &without_member).expect_err("incomplete identity");
     assert!(
-        diagnostics
-            .iter()
-            .any(|d| d.message().contains("member `Result[Option[int],string].ok`")),
+        diagnostics.iter().any(|d| d
+            .message()
+            .contains("member `Result[Option[int],string].ok`")),
         "the gap names the multi-argument enum member anchor: {diagnostics:?}"
     );
 }

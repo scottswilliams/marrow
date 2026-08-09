@@ -448,10 +448,7 @@ impl Diagnostics {
     /// The rendered messages, in compiler order, for asserting an actionable steer (a
     /// did-you-mean candidate, a named bound clause) that rides the diagnostic payload.
     pub fn messages(&self) -> Vec<&str> {
-        self.diagnostics
-            .iter()
-            .map(|d| d.message())
-            .collect()
+        self.diagnostics.iter().map(|d| d.message()).collect()
     }
 }
 
