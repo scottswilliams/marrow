@@ -21,6 +21,7 @@ const RETAINED_MEMBERS: &[&str] = &[
     "marrow",
     "marrow-codes",
     "marrow-compile",
+    "marrow-fs-journal",
     "marrow-image",
     "marrow-kernel",
     "marrow-lifecycle",
