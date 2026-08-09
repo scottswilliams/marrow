@@ -25,7 +25,9 @@ mod common;
 
 use common::Project;
 
-use marrow_syntax::{FormatRefusal, check_format};
+use marrow_syntax::{
+    FormatRefusal, SYNTAX_DIAGNOSTIC_COUNT_LIMIT, SyntaxDiagnosticLimit, check_format,
+};
 
 /// One nonempty JSONL record whose `name` field contains `needle`, or a panic that
 /// dumps the surrounding output.
@@ -324,6 +326,42 @@ fn comment_loss_is_refused_and_left_untouched() {
     assert_eq!(
         workspace.read("src/stranded.mw"),
         before,
+        "a refused file is never rewritten"
+    );
+}
+
+/// A file whose parse crosses the bounded diagnostic ceiling has no complete parse to
+/// format against: `check_format` refuses with the typed limit, and the CLI reports
+/// `fmt.diagnostic_limit` — never a fabricated `parse.syntax` row from the discarded
+/// payload — while the file is left byte-for-byte untouched.
+#[test]
+fn diagnostic_limited_parse_is_refused_with_the_typed_code() {
+    let dense = "@\n".repeat(SYNTAX_DIAGNOSTIC_COUNT_LIMIT + 1);
+    assert!(
+        dense.len() <= 1 << 20,
+        "the dense file must stay under the module byte limit"
+    );
+    match check_format(&dense) {
+        Err(FormatRefusal::DiagnosticLimit(SyntaxDiagnosticLimit::Count { limit })) => {
+            assert_eq!(limit, SYNTAX_DIAGNOSTIC_COUNT_LIMIT);
+        }
+        other => panic!("expected a count-limited refusal, got {other:?}"),
+    }
+
+    let workspace = Project::new()
+        .source("src/dense.mw", &dense)
+        .materialize("fmt-diag-limit");
+    let out = workspace.marrow(&["fmt", "--check", "src/dense.mw"]);
+    assert_eq!(out.code(), Some(1), "{out:?}");
+    let stderr = out.stderr_text();
+    assert!(stderr.contains("fmt.diagnostic_limit"), "{stderr}");
+    assert!(
+        !stderr.contains("parse.syntax"),
+        "a limited parse owns no rows to report: {stderr}"
+    );
+    assert_eq!(
+        workspace.read("src/dense.mw"),
+        dense,
         "a refused file is never rewritten"
     );
 }

@@ -4,7 +4,9 @@
 //! kind detail — which bound fired — on `run`/`test` records and the `client` stderr
 //! line, with no image, identity mint, diagnostic, numeric limit, source location, or
 //! partial output. Over `MAX_FUNCTIONS` functions reports `Functions`; over `MAX_EXPORTS`
-//! public functions reports `Exports`.
+//! public functions reports `Exports`. Single-file `marrow fmt` reuses the same typed
+//! code for its stat-first `ProjectFileBytes` module-size admission (A9), pinned here
+//! beside the aggregate bounds.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -120,6 +122,68 @@ fn client_emits_the_kinded_stderr_line_and_no_stdout() {
     assert_eq!(
         String::from_utf8(output.stderr).expect("utf8 stderr"),
         "cli.compiler_resource_limit: the compiler reached a fixed resource limit (Functions)\n"
+    );
+}
+
+/// A9: single-file `marrow fmt` admits at most the compiler's `ProjectFileBytes`
+/// module byte limit, refusing with that admission's exact typed code from the stat
+/// alone — before any open, read, or allocation. The oversized target is unreadable
+/// (mode `0o000`), so a route that read first would report `io.read` instead: the
+/// typed refusal is the proof no read occurred.
+#[cfg(unix)]
+#[test]
+fn fmt_refuses_an_over_limit_file_before_reading_it() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let limit = marrow_project::CaptureLimits::DEFAULT.max_file_bytes() as u64;
+    let dir = TempDir::new("fmt-file-bound");
+    let path = dir.root.join("big.mw");
+    let file = std::fs::File::create(&path).expect("create oversized source");
+    file.set_len(limit + 1).expect("size oversized source");
+    drop(file);
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000))
+        .expect("make source unreadable");
+
+    let output = run_in(&dir.root, &["fmt", "--check", "big.mw"]);
+    assert!(!output.status.success(), "an over-limit file must refuse");
+    let stderr = String::from_utf8(output.stderr).expect("utf8 stderr");
+    assert!(
+        stderr.contains("cli.compiler_resource_limit") && stderr.contains("ProjectFileBytes"),
+        "the refusal reuses the module-size admission's typed code: {stderr}"
+    );
+    assert!(
+        !stderr.contains("io.read"),
+        "the file must never be opened or read: {stderr}"
+    );
+}
+
+/// The admission bound is exclusive at the limit: a file of exactly the module byte
+/// limit passes the stat-first admission (and only then fails its unreadable open as
+/// `io.read`), so the guard never over-refuses an admissible file.
+#[cfg(unix)]
+#[test]
+fn fmt_admits_a_file_of_exactly_the_module_limit() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let limit = marrow_project::CaptureLimits::DEFAULT.max_file_bytes() as u64;
+    let dir = TempDir::new("fmt-file-at-bound");
+    let path = dir.root.join("exact.mw");
+    let file = std::fs::File::create(&path).expect("create at-bound source");
+    file.set_len(limit).expect("size at-bound source");
+    drop(file);
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000))
+        .expect("make source unreadable");
+
+    let output = run_in(&dir.root, &["fmt", "--check", "exact.mw"]);
+    assert!(!output.status.success(), "the unreadable open still fails");
+    let stderr = String::from_utf8(output.stderr).expect("utf8 stderr");
+    assert!(
+        stderr.contains("io.read"),
+        "an at-limit file passes admission and reaches the read: {stderr}"
+    );
+    assert!(
+        !stderr.contains("cli.compiler_resource_limit"),
+        "the bound must not over-refuse an admissible file: {stderr}"
     );
 }
 
