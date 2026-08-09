@@ -43,7 +43,11 @@ fn oversized_type_line(filler_len: usize) -> String {
 fn probe_row_overhead() -> usize {
     let parsed = parse_source(&oversized_type_line(64));
     let summary = parsed.diagnostics.summary();
-    assert_eq!(summary.count(), 1, "the probe line must yield one diagnostic");
+    assert_eq!(
+        summary.count(),
+        1,
+        "the probe line must yield one diagnostic"
+    );
     summary.owned_bytes() - 64
 }
 
@@ -99,7 +103,10 @@ fn help_is_finalized_before_submission_and_charged() {
         .help
         .as_deref()
         .expect("the loop-label diagnostic carries its remedy as help");
-    assert_eq!(help, "extract a function and use return to leave nested loops");
+    assert_eq!(
+        help,
+        "extract a function and use return to leave nested loops"
+    );
     assert_eq!(
         parsed.diagnostics.summary().owned_bytes(),
         rows[0].message.len() + help.len()
@@ -386,8 +393,7 @@ fn format_functions_refuse_only_a_diagnostic_limit() {
         format_source("wat\n").is_ok(),
         "a complete parse formats best-effort"
     );
-    let limit = format_source(&error_lines(COUNT + 1))
-        .expect_err("a limited parse cannot format");
+    let limit = format_source(&error_lines(COUNT + 1)).expect_err("a limited parse cannot format");
     assert_eq!(limit, SyntaxDiagnosticLimit::Count { limit: COUNT });
 
     assert_eq!(

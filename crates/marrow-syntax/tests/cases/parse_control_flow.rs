@@ -2,6 +2,7 @@
 //! handling, and match arms, with the brace-block rules each enforces.
 
 use crate::common;
+use crate::common::CompletePayload;
 use common::parse_reason;
 use marrow_syntax::{
     BinaryOp, Expression, ParseDiagnosticReason, Statement, UnsupportedSyntax, parse_source,
@@ -17,7 +18,11 @@ fn parses_a_range_for_by_step() {
          \x20   }\n\
          }\n",
     );
-    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    assert!(
+        parsed.diagnostics.complete().is_empty(),
+        "{:#?}",
+        parsed.diagnostics
+    );
     let run = parsed.file.function("run").expect("run function");
     let Statement::For { iterable, step, .. } = &run.body.statements[0] else {
         panic!("expected for, got {:?}", run.body.statements[0]);
@@ -48,7 +53,11 @@ fn a_range_for_without_by_has_no_step() {
          \x20   }\n\
          }\n",
     );
-    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    assert!(
+        parsed.diagnostics.complete().is_empty(),
+        "{:#?}",
+        parsed.diagnostics
+    );
     let run = parsed.file.function("run").expect("run function");
     let Statement::For { step, .. } = &run.body.statements[0] else {
         panic!("expected for, got {:?}", run.body.statements[0]);
@@ -68,7 +77,11 @@ fn parses_a_bounded_traversal_head_and_on_more_block() {
          \x20   }\n\
          }\n",
     );
-    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    assert!(
+        parsed.diagnostics.complete().is_empty(),
+        "{:#?}",
+        parsed.diagnostics
+    );
     let run = parsed.file.function("run").expect("run function");
     let Statement::For {
         iterable,
@@ -110,7 +123,11 @@ fn parses_a_branch_traversal_head_with_from() {
          \x20   }\n\
          }\n",
     );
-    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    assert!(
+        parsed.diagnostics.complete().is_empty(),
+        "{:#?}",
+        parsed.diagnostics
+    );
     let run = parsed.file.function("run").expect("run function");
     let Statement::For {
         iterable, bound, ..
@@ -143,7 +160,11 @@ fn parses_if_else_if_else_chain() {
          \x20   }\n\
          }\n",
     );
-    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    assert!(
+        parsed.diagnostics.complete().is_empty(),
+        "{:#?}",
+        parsed.diagnostics
+    );
     let classify = parsed.file.function("classify").expect("classify function");
     assert_eq!(classify.body.statements.len(), 1);
     let Statement::If {
@@ -198,7 +219,11 @@ fn parses_if_const_binding_guard() {
          \x20   }\n\
          }\n",
     );
-    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    assert!(
+        parsed.diagnostics.complete().is_empty(),
+        "{:#?}",
+        parsed.diagnostics
+    );
     let title = parsed.file.function("title").expect("title function");
     let Statement::IfConst {
         name,
@@ -232,7 +257,11 @@ fn parses_nested_if_inside_then_block() {
          \x20   return\n\
          }\n",
     );
-    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    assert!(
+        parsed.diagnostics.complete().is_empty(),
+        "{:#?}",
+        parsed.diagnostics
+    );
     let check = parsed.file.function("check").expect("check function");
     assert_eq!(
         check.body.statements.len(),
@@ -275,7 +304,11 @@ fn parses_while_and_for_loops() {
          \x20   }\n\
          }\n",
     );
-    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    assert!(
+        parsed.diagnostics.complete().is_empty(),
+        "{:#?}",
+        parsed.diagnostics
+    );
     let run = parsed.file.function("run").expect("run function");
     let statements = &run.body.statements;
     assert_eq!(statements.len(), 3, "{statements:#?}");
@@ -337,7 +370,11 @@ fn reversed_is_a_head_slot_keyword() {
 
     // `reversed <path>` — the order keyword followed by an iterable.
     let parsed = head("reversed ^books");
-    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    assert!(
+        parsed.diagnostics.complete().is_empty(),
+        "{:#?}",
+        parsed.diagnostics
+    );
     let (order, iterable) = for_stmt(&parsed).expect("for");
     assert_eq!(order, LoopOrder::Reversed);
     assert!(
@@ -348,7 +385,11 @@ fn reversed_is_a_head_slot_keyword() {
     // `reversed(<path>)` — the pinned reinterpretation: order keyword then a
     // parenthesized path, parsing identically to the old wrapper spelling.
     let parsed = head("reversed(^books)");
-    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    assert!(
+        parsed.diagnostics.complete().is_empty(),
+        "{:#?}",
+        parsed.diagnostics
+    );
     let (order, iterable) = for_stmt(&parsed).expect("for");
     assert_eq!(order, LoopOrder::Reversed);
     assert!(
@@ -358,7 +399,11 @@ fn reversed_is_a_head_slot_keyword() {
 
     // `reversed reversed` — the second `reversed` is an ordinary local name.
     let parsed = head("reversed reversed");
-    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    assert!(
+        parsed.diagnostics.complete().is_empty(),
+        "{:#?}",
+        parsed.diagnostics
+    );
     let (order, iterable) = for_stmt(&parsed).expect("for");
     assert_eq!(order, LoopOrder::Reversed);
     assert!(
@@ -369,14 +414,14 @@ fn reversed_is_a_head_slot_keyword() {
     // Bare `reversed` — no iterable after the keyword is a parse error.
     let parsed = head("reversed");
     assert!(
-        !parsed.diagnostics.is_empty(),
+        !parsed.diagnostics.complete().is_empty(),
         "bare reversed should not parse"
     );
 
     // `reversed.field` — `.` does not begin an expression, so the head is a parse error.
     let parsed = head("reversed.field");
     assert!(
-        !parsed.diagnostics.is_empty(),
+        !parsed.diagnostics.complete().is_empty(),
         "reversed.field should not parse"
     );
 }
@@ -391,7 +436,11 @@ fn reversed_outside_the_head_is_an_ordinary_name() {
          \x20   print(reversed)\n\
          }\n",
     );
-    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    assert!(
+        parsed.diagnostics.complete().is_empty(),
+        "{:#?}",
+        parsed.diagnostics
+    );
 }
 
 #[test]
@@ -408,10 +457,14 @@ fn loop_labels_are_rejected_as_removed_syntax() {
     );
     assert!(parsed.has_errors(), "expected loop-label rejection");
     assert!(
-        parsed.diagnostics.iter().any(|diagnostic| diagnostic.reason
-            == parse_reason(ParseDiagnosticReason::Unsupported(
-                UnsupportedSyntax::LoopLabels,
-            ))),
+        parsed
+            .diagnostics
+            .complete()
+            .iter()
+            .any(|diagnostic| diagnostic.reason
+                == parse_reason(ParseDiagnosticReason::Unsupported(
+                    UnsupportedSyntax::LoopLabels,
+                ))),
         "{:#?}",
         parsed.diagnostics
     );
@@ -426,10 +479,14 @@ fn labeled_break_and_continue_are_rejected_as_removed_syntax() {
         let parsed = parse_source(source);
         assert!(parsed.has_errors(), "expected labeled jump rejection");
         assert!(
-            parsed.diagnostics.iter().any(|diagnostic| diagnostic.reason
-                == parse_reason(ParseDiagnosticReason::Unsupported(
-                    UnsupportedSyntax::LoopLabels,
-                ))),
+            parsed
+                .diagnostics
+                .complete()
+                .iter()
+                .any(|diagnostic| diagnostic.reason
+                    == parse_reason(ParseDiagnosticReason::Unsupported(
+                        UnsupportedSyntax::LoopLabels,
+                    ))),
             "{:#?}",
             parsed.diagnostics
         );
@@ -445,7 +502,11 @@ fn parses_prefix_try_in_a_binding() {
          \x20   return\n\
          }\n",
     );
-    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    assert!(
+        parsed.diagnostics.complete().is_empty(),
+        "{:#?}",
+        parsed.diagnostics
+    );
     let run = parsed.file.function("run").expect("run function");
     let statements = &run.body.statements;
     assert_eq!(statements.len(), 2, "{statements:#?}");
@@ -472,7 +533,11 @@ fn parses_a_bare_prefix_try_statement() {
          \x20   return\n\
          }\n",
     );
-    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    assert!(
+        parsed.diagnostics.complete().is_empty(),
+        "{:#?}",
+        parsed.diagnostics
+    );
     let run = parsed.file.function("run").expect("run function");
     let Statement::Expr { value, .. } = &run.body.statements[0] else {
         panic!("expected expr statement, got {:?}", run.body.statements[0]);
@@ -494,11 +559,15 @@ fn throw_is_rejected_as_removed_syntax() {
     );
     assert!(parsed.has_errors(), "expected throw rejection");
     assert!(
-        parsed.diagnostics.iter().any(|diagnostic| diagnostic.reason
-            == parse_reason(ParseDiagnosticReason::Unsupported(
-                UnsupportedSyntax::ThrowStatement,
-            ))
-            && diagnostic.message.contains("Result")),
+        parsed
+            .diagnostics
+            .complete()
+            .iter()
+            .any(|diagnostic| diagnostic.reason
+                == parse_reason(ParseDiagnosticReason::Unsupported(
+                    UnsupportedSyntax::ThrowStatement,
+                ))
+                && diagnostic.message.contains("Result")),
         "{:#?}",
         parsed.diagnostics
     );
@@ -526,11 +595,15 @@ fn block_try_catch_is_rejected_as_removed_syntax() {
     );
     assert!(parsed.has_errors(), "expected block-try rejection");
     assert!(
-        parsed.diagnostics.iter().any(|diagnostic| diagnostic.reason
-            == parse_reason(ParseDiagnosticReason::Unsupported(
-                UnsupportedSyntax::TryCatchBlock,
-            ))
-            && diagnostic.message.contains("Result")),
+        parsed
+            .diagnostics
+            .complete()
+            .iter()
+            .any(|diagnostic| diagnostic.reason
+                == parse_reason(ParseDiagnosticReason::Unsupported(
+                    UnsupportedSyntax::TryCatchBlock,
+                ))
+                && diagnostic.message.contains("Result")),
         "{:#?}",
         parsed.diagnostics
     );
@@ -545,6 +618,7 @@ fn block_try_catch_is_rejected_as_removed_syntax() {
     assert!(
         !parsed
             .diagnostics
+            .complete()
             .iter()
             .any(|diagnostic| diagnostic.reason
                 == parse_reason(ParseDiagnosticReason::UnexpectedBlock)),
@@ -566,10 +640,14 @@ fn stray_catch_is_rejected_as_removed_syntax() {
     );
     assert!(parsed.has_errors(), "expected stray-catch rejection");
     assert!(
-        parsed.diagnostics.iter().any(|diagnostic| diagnostic.reason
-            == parse_reason(ParseDiagnosticReason::Unsupported(
-                UnsupportedSyntax::CatchClause,
-            ))),
+        parsed
+            .diagnostics
+            .complete()
+            .iter()
+            .any(|diagnostic| diagnostic.reason
+                == parse_reason(ParseDiagnosticReason::Unsupported(
+                    UnsupportedSyntax::CatchClause,
+                ))),
         "{:#?}",
         parsed.diagnostics
     );
@@ -593,7 +671,11 @@ fn nested_compound_at_end_of_body_parses_without_panic() {
          \x20   }\n\
          }\n",
     );
-    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    assert!(
+        parsed.diagnostics.complete().is_empty(),
+        "{:#?}",
+        parsed.diagnostics
+    );
     let run = parsed.file.function("run").expect("run function");
     let statements = &run.body.statements;
     assert_eq!(statements.len(), 2, "{statements:#?}");
@@ -618,7 +700,11 @@ fn malformed_while_condition_reports_a_parse_error() {
     // error: the grammar requires `while_stmt = "while" expression NEWLINE block`.
     let parsed = parse_source("fn f() {\n    while a == b == c {\n        return\n    }\n}\n");
     assert!(
-        parsed.diagnostics.iter().any(|d| d.code == "parse.syntax"),
+        parsed
+            .diagnostics
+            .complete()
+            .iter()
+            .any(|d| d.code == "parse.syntax"),
         "expected a parse error for the malformed `while` condition: {:#?}",
         parsed.diagnostics
     );
@@ -632,7 +718,11 @@ fn parses_a_match_statement_with_bare_member_arms() {
          match s {\n        active => print(\"a\")\n        \
          archived => print(\"b\")\n    }\n}\n",
     );
-    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    assert!(
+        parsed.diagnostics.complete().is_empty(),
+        "{:#?}",
+        parsed.diagnostics
+    );
     let f = parsed.file.function("f").expect("f");
     let Statement::Match {
         scrutinee, arms, ..
@@ -660,7 +750,11 @@ fn parses_a_match_arm_that_is_a_qualified_member_path() {
          match c {\n        tiger::bengal => print(\"a\")\n        \
          lion => print(\"b\")\n    }\n}\n",
     );
-    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    assert!(
+        parsed.diagnostics.complete().is_empty(),
+        "{:#?}",
+        parsed.diagnostics
+    );
     let f = parsed.file.function("f").expect("f");
     let Statement::Match { arms, .. } = &f.body.statements[0] else {
         panic!("expected a match, got {:?}", f.body.statements[0]);
@@ -683,6 +777,7 @@ fn rejects_a_match_arm_that_is_not_a_member_path() {
     assert!(
         parsed
             .diagnostics
+            .complete()
             .iter()
             .any(|d| d.reason == parse_reason(ParseDiagnosticReason::MatchArmMemberPath)),
         "{:#?}",

@@ -9,7 +9,7 @@ use crate::ast::{Comment, EnumMember, FieldDecl, GroupDecl, IndexDecl, ResourceM
 use crate::diagnostic::{ExpectedSyntax, ParseDiagnosticReason, SourceSpan};
 use crate::token::{Keyword, Token, TokenKind};
 
-impl<'a> DeclParser<'a> {
+impl DeclParser<'_, '_> {
     pub(super) fn parse_store_members(&mut self) -> (Vec<IndexDecl>, Vec<Comment>) {
         let (members, indexes, comments) = self.parse_resource_members(true);
         for member in members {

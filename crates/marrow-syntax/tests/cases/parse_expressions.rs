@@ -3,6 +3,7 @@
 //! spans an expression carries back into source.
 
 use crate::common;
+use crate::common::CompletePayload;
 use common::{has_reason, parse_reason};
 use marrow_syntax::{
     BinaryOp, Declaration, ExpectedSyntax, Expression, LiteralKind, ParseDiagnosticReason,
@@ -18,7 +19,7 @@ enum Expectation<'a> {
 fn parsed_return_expr(source: &str) -> Expression {
     let parsed = parse_source(source);
     assert!(
-        parsed.diagnostics.is_empty(),
+        parsed.diagnostics.complete().is_empty(),
         "expected {source:?} to parse cleanly: {:#?}",
         parsed.diagnostics
     );
@@ -79,7 +80,7 @@ fn parses_const_values_into_expression_nodes() {
     for (source, expected) in cases {
         let parsed = parse_source(source);
         assert!(
-            parsed.diagnostics.is_empty(),
+            parsed.diagnostics.complete().is_empty(),
             "expected {source:?} to parse cleanly: {:#?}",
             parsed.diagnostics
         );
@@ -113,7 +114,7 @@ fn a_month_or_year_word_literal_is_an_unfixed_duration_unit_error() {
         let parsed = parse_source(source);
         assert!(
             has_reason(
-                &parsed.diagnostics,
+                parsed.diagnostics.complete(),
                 parse_reason(ParseDiagnosticReason::UnfixedDurationUnit)
             ),
             "expected an unfixed-duration-unit error for {source:?}: {:#?}",
@@ -127,7 +128,7 @@ fn a_unit_word_is_only_a_unit_directly_after_an_integer_literal() {
     // `seconds` as an ordinary binding name and value is untouched by the literal fold.
     let parsed = parse_source("fn f(): int {\n    const seconds = 5\n    return seconds\n}\n");
     assert!(
-        parsed.diagnostics.is_empty(),
+        parsed.diagnostics.complete().is_empty(),
         "an identifier spelling a unit must parse cleanly: {:#?}",
         parsed.diagnostics
     );
@@ -178,7 +179,7 @@ fn interval_membership_does_not_chain() {
         let parsed = parse_source(source);
         assert!(
             has_reason(
-                &parsed.diagnostics,
+                parsed.diagnostics.complete(),
                 parse_reason(ParseDiagnosticReason::NonAssociativeOperator)
             ),
             "expected a non-associative error for {source:?}: {:#?}",
@@ -191,7 +192,11 @@ fn interval_membership_does_not_chain() {
 fn parses_const_operator_expressions_with_precedence() {
     // 60 * 60 + 1 parses as (60 * 60) + 1.
     let parsed = parse_source("const Total: int = 60 * 60 + 1\n");
-    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    assert!(
+        parsed.diagnostics.complete().is_empty(),
+        "{:#?}",
+        parsed.diagnostics
+    );
     let Declaration::Const(decl) = &parsed.file.declarations[0] else {
         panic!("expected const declaration");
     };
@@ -221,7 +226,11 @@ fn parses_const_operator_expressions_with_precedence() {
 #[test]
 fn parses_const_unary_and_grouping() {
     let parsed = parse_source("const Adjusted: int = -(1 + 2)\n");
-    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    assert!(
+        parsed.diagnostics.complete().is_empty(),
+        "{:#?}",
+        parsed.diagnostics
+    );
     let Declaration::Const(decl) = &parsed.file.declarations[0] else {
         panic!("expected const declaration");
     };
@@ -249,7 +258,7 @@ fn bare_type_keyword_is_not_a_value() {
     let parsed = parse_source("const Bad = int\n");
     assert!(
         has_reason(
-            &parsed.diagnostics,
+            parsed.diagnostics.complete(),
             parse_reason(ParseDiagnosticReason::KeywordExpression)
         ),
         "expected a keyword-in-value parse error: {:#?}",
@@ -284,6 +293,7 @@ fn const_chained_equality_is_not_associative() {
         let parsed = parse_source(source);
         let diagnostic = parsed
             .diagnostics
+            .complete()
             .iter()
             .find(|diagnostic| {
                 diagnostic.reason == parse_reason(ParseDiagnosticReason::NonAssociativeOperator)
@@ -348,15 +358,16 @@ fn empty_const_value_reports_the_single_generic_diagnostic() {
     // reports once that it requires a value.
     let parsed = parse_source("const Bad = \n");
     assert_eq!(
-        parsed.diagnostics.len(),
+        parsed.diagnostics.complete().len(),
         1,
         "an empty const value should report exactly once: {:#?}",
         parsed.diagnostics
     );
     assert!(
-        parsed.diagnostics[0].reason == parse_reason(ParseDiagnosticReason::ConstRequiresValue),
+        parsed.diagnostics.complete()[0].reason
+            == parse_reason(ParseDiagnosticReason::ConstRequiresValue),
         "{:#?}",
-        parsed.diagnostics[0]
+        parsed.diagnostics.complete()[0]
     );
 }
 
@@ -509,7 +520,7 @@ fn underscore_no_longer_parses_as_string_concatenation() {
     let parsed = parse_source("const Bad = \"a\" _ \"b\"\n");
     assert!(
         has_reason(
-            &parsed.diagnostics,
+            parsed.diagnostics.complete(),
             parse_reason(ParseDiagnosticReason::Expected(ExpectedSyntax::Expression))
         ),
         "expected an expression parse error for `_` concatenation: {:#?}",
@@ -533,6 +544,7 @@ fn bare_equals_in_expression_position_is_a_parse_error() {
     let parsed = parse_source(source);
     let diagnostic = parsed
         .diagnostics
+        .complete()
         .iter()
         .find(|diagnostic| {
             diagnostic.reason == parse_reason(ParseDiagnosticReason::EqualsInExpression)
@@ -572,6 +584,7 @@ fn chained_compound_assignment_is_reported_at_the_second_operator() {
         let parsed = parse_source(&source);
         let diagnostic = parsed
             .diagnostics
+            .complete()
             .iter()
             .find(|diagnostic| {
                 diagnostic.reason == parse_reason(ParseDiagnosticReason::CompoundAssignInExpression)
@@ -599,7 +612,7 @@ fn chained_compound_assignment_is_reported_at_the_second_operator() {
         );
         // The generic statement fallback must not also fire.
         assert!(
-            !parsed.diagnostics.iter().any(|diagnostic| {
+            !parsed.diagnostics.complete().iter().any(|diagnostic| {
                 diagnostic.reason
                     == parse_reason(ParseDiagnosticReason::Expected(ExpectedSyntax::Statement))
             }),
@@ -612,7 +625,11 @@ fn chained_compound_assignment_is_reported_at_the_second_operator() {
 #[test]
 fn a_single_compound_assignment_still_parses_cleanly() {
     let parsed = parse_source("module app\nfn f(a: int, b: int) {\n    a += b\n}\n");
-    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    assert!(
+        parsed.diagnostics.complete().is_empty(),
+        "{:#?}",
+        parsed.diagnostics
+    );
     let f = parsed.file.function("f").expect("function");
     assert!(
         matches!(&f.body.statements[0], Statement::CompoundAssign { .. }),

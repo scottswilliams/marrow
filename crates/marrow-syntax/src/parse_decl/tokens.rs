@@ -10,7 +10,8 @@ use crate::ast::{
     Comment, CommentMarker, CommentPlacement, Expression, IdentityTypeExpr, TypeExpr,
 };
 use crate::diagnostic::{
-    Diagnostic, DiagnosticReason, ExpectedSyntax, ParseDiagnosticReason, Severity, SourceSpan,
+    DiagnosticReason, DiscardingSyntaxErrorSink, ExpectedSyntax, ParseDiagnosticReason, SourceSpan,
+    SyntaxError, SyntaxSink,
 };
 use crate::parse_expr::{ExprParser, ParseComplete, join_spans};
 use crate::token::{Keyword, LexicalClass, Token, TokenKind, is_qualified_name};
@@ -94,20 +95,15 @@ fn is_std_bytes_import(source: &str, tokens: &[Token]) -> bool {
                 && bytes.kind == TokenKind::Keyword(Keyword::Bytes)
     )
 }
-pub(super) fn push_parse_error(
-    diagnostics: &mut Vec<Diagnostic>,
-    fallback: SourceSpan,
-    error: ParseError,
-) {
+pub(super) fn push_parse_error(sink: &mut SyntaxSink<'_>, fallback: SourceSpan, error: ParseError) {
     let (span, reason, message) = error.locate(fallback);
-    diagnostics.push(Diagnostic {
-        code: reason.code(),
-        reason: DiagnosticReason::Parser(reason),
-        severity: Severity::Error,
+    sink.push(SyntaxError::new(
+        reason.code(),
+        DiagnosticReason::Parser(reason),
         message,
-        help: None,
+        None,
         span,
-    });
+    ));
 }
 /// Drop comment tokens from a token slice. A `;` or `;;` line inside an open
 /// delimiter lexes to a `Comment`/`DocComment` token with no newline; like a
@@ -290,22 +286,20 @@ fn expr_slice(
     source: &str,
     tokens: &[Token],
     gap: SourceSpan,
-    diagnostics: &mut Vec<Diagnostic>,
+    sink: &mut SyntaxSink<'_>,
 ) -> Option<Expression> {
-    match ExprParser::new(source, tokens, gap).parse_complete(diagnostics) {
+    match ExprParser::new(source, tokens, gap, sink).parse_complete() {
         ParseComplete::Complete(expr) => Some(expr),
         ParseComplete::Reported => None,
         ParseComplete::Incomplete(span) => {
-            diagnostics.push(Diagnostic {
-                code: ParseDiagnosticReason::Expected(ExpectedSyntax::Expression).code(),
-                reason: DiagnosticReason::Parser(ParseDiagnosticReason::Expected(
-                    ExpectedSyntax::Expression,
-                )),
-                severity: Severity::Error,
-                message: "expected an expression".to_string(),
-                help: None,
+            let reason = ParseDiagnosticReason::Expected(ExpectedSyntax::Expression);
+            sink.push(SyntaxError::new(
+                reason.code(),
+                DiagnosticReason::Parser(reason),
+                "expected an expression",
+                None,
                 span,
-            });
+            ));
             None
         }
     }
@@ -319,10 +313,10 @@ pub(super) fn expr_of(
     source: &str,
     tokens: &[Token],
     anchor: SourceSpan,
-    diagnostics: &mut Vec<Diagnostic>,
+    sink: &mut SyntaxSink<'_>,
 ) -> Option<Expression> {
     let gap = tokens.first().map_or(anchor, |token| token.span);
-    expr_slice(source, tokens, gap, diagnostics)
+    expr_slice(source, tokens, gap, sink)
 }
 
 /// Parse the operand text that follows `anchor` — a `=`, statement keyword, or
@@ -333,9 +327,9 @@ pub(super) fn expr_of_after(
     source: &str,
     tokens: &[Token],
     anchor: SourceSpan,
-    diagnostics: &mut Vec<Diagnostic>,
+    sink: &mut SyntaxSink<'_>,
 ) -> Option<Expression> {
-    expr_slice(source, tokens, gap_after(anchor), diagnostics)
+    expr_slice(source, tokens, gap_after(anchor), sink)
 }
 
 /// Parse an assignment target that precedes `anchor` — the `=` that follows it.
@@ -344,22 +338,22 @@ pub(super) fn expr_of_before(
     source: &str,
     tokens: &[Token],
     anchor: SourceSpan,
-    diagnostics: &mut Vec<Diagnostic>,
+    sink: &mut SyntaxSink<'_>,
 ) -> Option<Expression> {
-    expr_slice(source, tokens, gap_before(anchor), diagnostics)
+    expr_slice(source, tokens, gap_before(anchor), sink)
 }
 
 /// Parse an operand inside a `for` header. A malformed or empty operand is
-/// reported once against the whole header by the caller, so this discards the
-/// operand's own diagnostics and yields `None`.
+/// reported once against the whole header by the caller, so this silent probe
+/// writes through a discarding sink and yields `None`.
 pub(super) fn expr_of_in_header(
     source: &str,
     tokens: &[Token],
     anchor: SourceSpan,
 ) -> Option<Expression> {
     let gap = tokens.first().map_or(anchor, |token| token.span);
-    let mut discarded = Vec::new();
-    match ExprParser::new(source, tokens, gap).parse_complete(&mut discarded) {
+    let mut discarding = DiscardingSyntaxErrorSink;
+    match ExprParser::new(source, tokens, gap, &mut discarding).parse_complete() {
         ParseComplete::Complete(expr) => Some(expr),
         ParseComplete::Reported | ParseComplete::Incomplete(_) => None,
     }

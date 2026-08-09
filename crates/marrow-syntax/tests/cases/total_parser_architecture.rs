@@ -6,6 +6,7 @@
 //! stays deleted, and an error node never appears without a diagnostic, so the
 //! `has_errors` gate downstream crates rely on is sound.
 
+use crate::common::CompletePayload;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -277,7 +278,10 @@ fn every_error_node_travels_with_a_diagnostic() {
         if file_has_error(&file) {
             malformed_seen = true;
             assert!(
-                diagnostics.iter().any(|d| d.severity == severity_error()),
+                diagnostics
+                    .complete()
+                    .iter()
+                    .any(|d| d.severity == severity_error()),
                 "an error node appeared with no diagnostic for {label}: {source:?}",
             );
         }

@@ -3,6 +3,7 @@
 //! sequence a resource body declares — fields and nested groups interleaved —
 //! rather than only recording which members are present.
 
+use crate::common::CompletePayload;
 use marrow_syntax::{ResourceMember, parse_source};
 
 /// The declared name of a resource member, in source order.
@@ -34,7 +35,11 @@ fn resource_members_keep_source_declaration_order() {
          store ^patients[id: string]: Patient\n",
     );
 
-    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    assert!(
+        parsed.diagnostics.complete().is_empty(),
+        "{:#?}",
+        parsed.diagnostics
+    );
     let resource = parsed.file.resource("Patient").expect("Patient resource");
 
     let order: Vec<&str> = resource.members.iter().map(member_name).collect();
@@ -71,7 +76,11 @@ fn a_field_after_a_group_keeps_its_trailing_position() {
          store ^orders[id: int]: Order\n",
     );
 
-    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    assert!(
+        parsed.diagnostics.complete().is_empty(),
+        "{:#?}",
+        parsed.diagnostics
+    );
     let resource = parsed.file.resource("Order").expect("Order resource");
 
     let order: Vec<&str> = resource.members.iter().map(member_name).collect();

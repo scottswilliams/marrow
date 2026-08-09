@@ -8,13 +8,13 @@
 //! error node as it unwinds, so no ancestor reports a second, cascading
 //! diagnostic on top of it.
 
+use crate::diagnostic::{SyntaxError, SyntaxErrorSink};
 use crate::token::{is_trivia, is_unfixed_duration_unit};
 use crate::{
-    Argument, BinaryOp, CompoundAssignOp, Diagnostic, DiagnosticReason, ExpectedSyntax, Expression,
+    Argument, BinaryOp, CompoundAssignOp, DiagnosticReason, ExpectedSyntax, Expression,
     InterpolationPart, Keyword, LiteralKind, NESTING_DEPTH_LIMIT, NESTING_LIMIT, PARSE_SYNTAX,
-    ParseDiagnosticReason, Recovery, Severity, SourceSpan, Token, TokenKind, UnaryOp,
-    UnsupportedSyntax, duration_unit_seconds, is_expression_callable_keyword,
-    is_expression_path_segment_keyword,
+    ParseDiagnosticReason, Recovery, SourceSpan, Token, TokenKind, UnaryOp, UnsupportedSyntax,
+    duration_unit_seconds, is_expression_callable_keyword, is_expression_path_segment_keyword,
 };
 
 /// The remedy shared by the comparison and equality non-associative levels: the
@@ -83,12 +83,21 @@ pub(crate) struct ExprParser<'a> {
     /// consumed token to anchor to; this keeps the diagnostic on a real 1-based
     /// position rather than the line-0 default.
     gap: SourceSpan,
-    diagnostics: Vec<Diagnostic>,
+    /// Where failures report: the caller's live scoped sink, or a discarding
+    /// sink for a silent probe. Every finding is written directly; the parser
+    /// owns no diagnostic batch of its own.
+    sink: &'a mut dyn SyntaxErrorSink,
 }
 
 impl<'a> ExprParser<'a> {
-    /// Build a parser whose missing-leading-operand diagnostics anchor at `gap`.
-    pub(crate) fn new(source: &'a str, tokens: &[Token], gap: SourceSpan) -> Self {
+    /// Build a parser whose missing-leading-operand diagnostics anchor at `gap`
+    /// and whose failures report through `sink`.
+    pub(crate) fn new(
+        source: &'a str,
+        tokens: &[Token],
+        gap: SourceSpan,
+        sink: &'a mut dyn SyntaxErrorSink,
+    ) -> Self {
         let tokens = tokens
             .iter()
             .copied()
@@ -100,13 +109,12 @@ impl<'a> ExprParser<'a> {
             pos: 0,
             depth: 0,
             gap,
-            diagnostics: Vec::new(),
+            sink,
         }
     }
 
-    /// Parse the whole slice as one expression, draining diagnostics into the
-    /// caller's vec and classifying the outcome.
-    pub(crate) fn parse_complete(mut self, diagnostics: &mut Vec<Diagnostic>) -> ParseComplete {
+    /// Parse the whole slice as one expression, classifying the outcome.
+    pub(crate) fn parse_complete(mut self) -> ParseComplete {
         let expr = self.expression();
         // A recovery node is a structured incomplete form (`base.`, `Enum::`); it is
         // kept in the tree so position analysis can classify it, unlike a bare error
@@ -119,7 +127,7 @@ impl<'a> ExprParser<'a> {
                 ..
             }
         );
-        let result = if expr.is_error() && !has_recovery {
+        if expr.is_error() && !has_recovery {
             ParseComplete::Reported
         } else if self.report_stray_assignment_operator() {
             // A `=` left where the expression should have ended is the `=`-for-`==`
@@ -130,9 +138,7 @@ impl<'a> ExprParser<'a> {
             ParseComplete::Incomplete(self.tokens[self.pos].span)
         } else {
             ParseComplete::Complete(expr)
-        };
-        diagnostics.append(&mut self.diagnostics);
-        result
+        }
     }
 
     /// If the next unconsumed token begins a stray assignment operator in
@@ -176,14 +182,13 @@ impl<'a> ExprParser<'a> {
         message: String,
         help: Option<String>,
     ) {
-        self.diagnostics.push(Diagnostic {
-            code: PARSE_SYNTAX,
-            reason: DiagnosticReason::Parser(reason),
-            severity: Severity::Error,
+        self.sink.push(SyntaxError::new(
+            PARSE_SYNTAX,
+            DiagnosticReason::Parser(reason),
             message,
             help,
             span,
-        });
+        ));
     }
 
     /// Report a diagnostic at `span` and return the error node for it, the single
@@ -304,14 +309,13 @@ impl<'a> ExprParser<'a> {
                 },
                 |token| token.span,
             );
-        self.diagnostics.push(Diagnostic {
-            code: NESTING_LIMIT,
-            reason: DiagnosticReason::Parser(ParseDiagnosticReason::NestingLimit),
-            severity: Severity::Error,
-            message: format!("expression nests deeper than the limit of {NESTING_DEPTH_LIMIT}"),
-            help: None,
+        self.sink.push(SyntaxError::new(
+            NESTING_LIMIT,
+            DiagnosticReason::Parser(ParseDiagnosticReason::NestingLimit),
+            format!("expression nests deeper than the limit of {NESTING_DEPTH_LIMIT}"),
+            None,
             span,
-        });
+        ));
         Expression::Error {
             span,
             recovery: None,

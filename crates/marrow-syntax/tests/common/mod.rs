@@ -6,7 +6,25 @@ pub mod oracle;
 
 use std::path::Path;
 
-use marrow_syntax::{Diagnostic, DiagnosticReason, LexerDiagnosticReason, ParseDiagnosticReason};
+use marrow_syntax::{
+    Diagnostic, DiagnosticReason, LexerDiagnosticReason, ParseDiagnosticReason, SyntaxDiagnostics,
+};
+
+/// Borrow the complete payload of a bounded diagnostic result the suite expects
+/// to be complete, panicking with the typed limit otherwise. Suite sources stay
+/// far below the diagnostic ceilings; the ceilings themselves are exercised by
+/// `cases/diagnostic_bounds.rs`.
+pub trait CompletePayload {
+    fn complete(&self) -> &[Diagnostic];
+}
+
+impl CompletePayload for SyntaxDiagnostics {
+    fn complete(&self) -> &[Diagnostic] {
+        self.as_complete()
+            .unwrap_or_else(|limit| panic!("expected complete diagnostics, hit {limit:?}"))
+            .as_slice()
+    }
+}
 
 /// Wrap a parser-stage reason in the unified diagnostic-reason enum, so the
 /// parse suites can assert on the typed reason rather than rendered prose.

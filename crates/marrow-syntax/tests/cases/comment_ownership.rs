@@ -30,9 +30,15 @@ fn compound_header_comment_spellings_converge() {
     let cuddled = run("    if n < 0 { // note\n        return\n    }\n");
     let before_brace = run("    if n < 0 // note\n    {\n        return\n    }\n");
     let own_line = run("    if n < 0 {\n        // note\n        return\n    }\n");
-    let canonical = format_source(&cuddled);
-    assert_eq!(format_source(&before_brace), canonical);
-    assert_eq!(format_source(&own_line), canonical);
+    let canonical = format_source(&cuddled).expect("a complete parse formats");
+    assert_eq!(
+        format_source(&before_brace).expect("a complete parse formats"),
+        canonical
+    );
+    assert_eq!(
+        format_source(&own_line).expect("a complete parse formats"),
+        canonical
+    );
     assert!(
         canonical.contains("if n < 0 {\n        // note\n        return"),
         "the header comment is owned by the block as its first line:\n{canonical}"
@@ -55,8 +61,12 @@ fn header_comments_on_every_compound_form_round_trip() {
         run("    match n // note\n    {\n        dot => return\n    }\n"),
     ] {
         faithful(&source);
-        let once = format_source(&source);
-        assert_eq!(format_source(&once), once, "not idempotent:\n{once}");
+        let once = format_source(&source).expect("a complete parse formats");
+        assert_eq!(
+            format_source(&once).expect("a complete parse formats"),
+            once,
+            "not idempotent:\n{once}"
+        );
     }
 }
 
@@ -96,8 +106,12 @@ fn match_arm_comments_round_trip() {
          // between arms\n        circle => {\n            return\n        }\n    }\n",
     );
     faithful(&source);
-    let once = format_source(&source);
-    assert_eq!(format_source(&once), once, "not idempotent:\n{once}");
+    let once = format_source(&source).expect("a complete parse formats");
+    assert_eq!(
+        format_source(&once).expect("a complete parse formats"),
+        once,
+        "not idempotent:\n{once}"
+    );
 }
 
 // ---- doc comments on members survive ----
@@ -131,7 +145,7 @@ fn mandatory_blocks_render_empty_braces() {
         ),
     ];
     for (source, expected_fragment) in cases {
-        let once = format_source(source);
+        let once = format_source(source).expect("a complete parse formats");
         assert!(
             once.contains(expected_fragment),
             "expected `{expected_fragment}` in:\n{once}"
@@ -142,7 +156,11 @@ fn mandatory_blocks_render_empty_braces() {
             "empty-brace output must re-parse:\n{once}\n{:#?}",
             reparsed.diagnostics
         );
-        assert_eq!(format_source(&once), once, "not idempotent:\n{once}");
+        assert_eq!(
+            format_source(&once).expect("a complete parse formats"),
+            once,
+            "not idempotent:\n{once}"
+        );
     }
 }
 
@@ -152,7 +170,7 @@ fn mandatory_blocks_render_empty_braces() {
 fn a_bodyless_store_stays_header_alone() {
     let header_alone = "module app\nresource B {\n    t: string\n}\nstore ^b: B\n";
     let empty_braces = "module app\nresource B {\n    t: string\n}\nstore ^b: B {\n}\n";
-    let canonical = format_source(header_alone);
+    let canonical = format_source(header_alone).expect("a complete parse formats");
     assert!(
         canonical.contains("store ^b: B\n"),
         "a member-less store stays header-alone:\n{canonical}"
@@ -162,7 +180,7 @@ fn a_bodyless_store_stays_header_alone() {
         "no empty braces on a member-less store:\n{canonical}"
     );
     assert_eq!(
-        format_source(empty_braces),
+        format_source(empty_braces).expect("a complete parse formats"),
         canonical,
         "empty braces normalize to header-alone"
     );

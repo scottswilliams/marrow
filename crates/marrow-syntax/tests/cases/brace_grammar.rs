@@ -3,6 +3,7 @@
 //! members, and header continuation. These are the load-bearing behavioral
 //! invariants of the block grammar.
 
+use crate::common::CompletePayload;
 use std::sync::mpsc;
 use std::time::Duration;
 
@@ -32,7 +33,7 @@ fn parse_bounded(source: &str) -> ParsedSource {
 }
 
 fn has_unclosed_block(parsed: &ParsedSource) -> bool {
-    parsed.diagnostics.iter().any(|d| {
+    parsed.diagnostics.complete().iter().any(|d| {
         d.reason
             == DiagnosticReason::Parser(ParseDiagnosticReason::Expected(ExpectedSyntax::CloseBrace))
     })
@@ -41,6 +42,7 @@ fn has_unclosed_block(parsed: &ParsedSource) -> bool {
 fn all_spans_one_based(parsed: &ParsedSource) -> bool {
     parsed
         .diagnostics
+        .complete()
         .iter()
         .all(|d| d.span.line >= 1 && d.span.column >= 1)
 }
@@ -50,7 +52,7 @@ fn all_spans_one_based(parsed: &ParsedSource) -> bool {
 fn assert_unclosed_block(source: &str) {
     let parsed = parse_bounded(source);
     assert!(
-        parsed.diagnostics.len() < 16,
+        parsed.diagnostics.complete().len() < 16,
         "diagnostics stay bounded for {source:?}: {:#?}",
         parsed.diagnostics
     );
@@ -69,7 +71,7 @@ fn assert_unclosed_block(source: &str) {
 fn clean(source: &str) {
     let parsed = parse_source(source);
     assert!(
-        parsed.diagnostics.is_empty(),
+        parsed.diagnostics.complete().is_empty(),
         "expected a clean parse of {source:?}: {:#?}",
         parsed.diagnostics
     );
@@ -85,7 +87,11 @@ fn a_braced_function_body_parses_clean() {
 #[test]
 fn a_single_statement_body_still_needs_braces_and_parses() {
     let parsed = parse_source("module app\nfn run(): int {\n    return 1\n}\n");
-    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    assert!(
+        parsed.diagnostics.complete().is_empty(),
+        "{:#?}",
+        parsed.diagnostics
+    );
     let run = parsed.file.function("run").expect("run");
     assert!(matches!(run.body.statements[0], Statement::Return { .. }));
 }
@@ -106,7 +112,11 @@ fn a_resource_store_and_group_use_braces() {
          notes[noteId: string] {\n        text: string\n    }\n}\n\
          store ^books[id: int]: Book {\n    index byTitle[title]\n}\n",
     );
-    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    assert!(
+        parsed.diagnostics.complete().is_empty(),
+        "{:#?}",
+        parsed.diagnostics
+    );
     let book = parsed.file.resource("Book").expect("Book");
     assert!(
         book.members
@@ -142,7 +152,11 @@ fn an_else_if_chain_parses() {
     let parsed = parse_source(
         "module app\nfn run(n: int) {\n    if n < 0 {\n        return\n    } else if n > 0 {\n        return\n    } else {\n        return\n    }\n}\n",
     );
-    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    assert!(
+        parsed.diagnostics.complete().is_empty(),
+        "{:#?}",
+        parsed.diagnostics
+    );
     let Statement::If {
         else_ifs,
         else_block,
@@ -160,7 +174,11 @@ fn an_inline_diverging_else_needs_no_braces() {
     let parsed = parse_source(
         "module app\nfn run(n: int): int {\n    if n < 0 {\n        return 0\n    } else return 1\n}\n",
     );
-    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    assert!(
+        parsed.diagnostics.complete().is_empty(),
+        "{:#?}",
+        parsed.diagnostics
+    );
     let Statement::If { else_block, .. } = &parsed.file.function("run").unwrap().body.statements[0]
     else {
         panic!("expected if");
@@ -178,7 +196,11 @@ fn an_inline_on_more_clause_cuddles_the_loop_brace() {
     let parsed = parse_source(
         "module app\nfn run(): int {\n    for k in ^c.items at most 5 {\n        log(k)\n    } on more return -1\n    return 0\n}\n",
     );
-    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    assert!(
+        parsed.diagnostics.complete().is_empty(),
+        "{:#?}",
+        parsed.diagnostics
+    );
     let Statement::For { bound, .. } = &parsed.file.function("run").unwrap().body.statements[0]
     else {
         panic!("expected for");
@@ -197,7 +219,11 @@ fn match_arms_use_fat_arrows_with_inline_and_braced_bodies() {
     let parsed = parse_source(
         "module app\nfn run(s: Shape): int {\n    match s {\n        dot => return 0\n        circle(r) => {\n            return r\n        }\n    }\n    return -1\n}\n",
     );
-    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    assert!(
+        parsed.diagnostics.complete().is_empty(),
+        "{:#?}",
+        parsed.diagnostics
+    );
     let Statement::Match { arms, .. } = &parsed.file.function("run").unwrap().body.statements[0]
     else {
         panic!("expected match");
@@ -211,7 +237,7 @@ fn a_match_arm_without_a_fat_arrow_reports_once() {
     let parsed =
         parse_source("module app\nfn run(s: Shape) {\n    match s {\n        dot\n    }\n}\n");
     assert!(
-        parsed.diagnostics.iter().any(
+        parsed.diagnostics.complete().iter().any(
             |d| d.reason == DiagnosticReason::Parser(ParseDiagnosticReason::MatchArmMemberPath)
         ),
         "a `=>`-less arm reports the arm error: {:#?}",
@@ -226,7 +252,11 @@ fn enum_members_are_newline_separated_with_braced_categories() {
     let parsed = parse_source(
         "module app\nenum Cat {\n    lion\n    tiger {\n        bengal\n        siberian\n    }\n}\n",
     );
-    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    assert!(
+        parsed.diagnostics.complete().is_empty(),
+        "{:#?}",
+        parsed.diagnostics
+    );
     let Some(Declaration::Enum(decl)) = parsed
         .file
         .declarations
@@ -256,7 +286,11 @@ fn a_header_continues_after_a_trailing_and() {
 #[test]
 fn a_value_continues_after_a_trailing_equals() {
     let parsed = parse_source("module app\nconst Total: int =\n    2 * 3\n");
-    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    assert!(
+        parsed.diagnostics.complete().is_empty(),
+        "{:#?}",
+        parsed.diagnostics
+    );
 }
 
 // ---- hostile / recovery ----
@@ -286,17 +320,18 @@ fn old_layout_input_yields_bounded_diagnostics_without_panic() {
     // flood: the body is not a brace block, so the function body is empty/erroring.
     let parsed = parse_source("module app\nfn run()\n    return\n");
     assert!(
-        !parsed.diagnostics.is_empty(),
+        !parsed.diagnostics.complete().is_empty(),
         "layout input is now a diagnostic"
     );
     assert!(
-        parsed.diagnostics.len() < 10,
+        parsed.diagnostics.complete().len() < 10,
         "diagnostics stay bounded, not a per-line flood: {:#?}",
         parsed.diagnostics
     );
     assert!(
         parsed
             .diagnostics
+            .complete()
             .iter()
             .all(|d| d.span.line >= 1 && d.span.column >= 1),
         "every diagnostic keeps a valid 1-based span"
@@ -309,6 +344,7 @@ fn a_bare_block_in_statement_position_is_rejected() {
     assert!(
         parsed
             .diagnostics
+            .complete()
             .iter()
             .any(|d| d.reason == DiagnosticReason::Parser(ParseDiagnosticReason::UnexpectedBlock)),
         "a bare block has no statement form: {:#?}",
@@ -361,7 +397,7 @@ fn a_semicolon_comment_is_no_longer_a_comment() {
     // `;` is not a comment leader; the lexer reports it as an unexpected character.
     let parsed = parse_source("module app\n; not a comment\n");
     assert!(
-        parsed.diagnostics.iter().any(|d| d.reason
+        parsed.diagnostics.complete().iter().any(|d| d.reason
             == DiagnosticReason::Lexer(LexerDiagnosticReason::UnexpectedCharacter(';'))),
         "a leading `;` is an unexpected character, not comment trivia: {:#?}",
         parsed.diagnostics
@@ -378,7 +414,7 @@ fn a_match_arm_body_expression_uses_expected_syntax() {
     // Guard the ExpectedSyntax import stays meaningful: an empty match body reports.
     let parsed = parse_source("module app\nfn run(s: Shape) {\n    match s\n}\n");
     assert!(
-        parsed.diagnostics.iter().any(|d| d.reason
+        parsed.diagnostics.complete().iter().any(|d| d.reason
             == DiagnosticReason::Parser(ParseDiagnosticReason::Expected(
                 ExpectedSyntax::MatchBody
             ))),
@@ -413,7 +449,7 @@ fn a_nested_group_stealing_the_outer_brace_reports_and_terminates() {
     // and reports the outer block as unclosed.
     let parsed = parse_bounded("module app\nresource B {\n    a{b\n}\n");
     assert!(
-        parsed.diagnostics.len() < 16,
+        parsed.diagnostics.complete().len() < 16,
         "bounded diagnostics: {:#?}",
         parsed.diagnostics
     );
@@ -444,7 +480,7 @@ fn an_if_const_chain_with_a_trailing_and_never_anchors_at_zero() {
     let parsed =
         parse_source("module app\nfn run() {\n    if const a = x and{\n        return\n    }\n}\n");
     assert!(
-        !parsed.diagnostics.is_empty(),
+        !parsed.diagnostics.complete().is_empty(),
         "the empty trailing condition is reported"
     );
     assert!(
@@ -474,7 +510,7 @@ fn no_parser_diagnostic_anchors_at_line_or_column_zero() {
     ];
     for source in corpus {
         let parsed = parse_bounded(source);
-        for d in &parsed.diagnostics {
+        for d in parsed.diagnostics.complete() {
             assert!(
                 d.span.line >= 1 && d.span.column >= 1,
                 "diagnostic at line {} column {} (positions are 1-based) for {source:?}: {d:#?}",

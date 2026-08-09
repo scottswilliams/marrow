@@ -2,6 +2,7 @@
 //! parser builds postfix chains and enforces the named/positional argument order.
 
 use crate::common;
+use crate::common::CompletePayload;
 use common::{has_reason, lexer_reason, parse_reason};
 use marrow_syntax::{
     BinaryOp, Declaration, Diagnose, ExpectedSyntax, Expression, InterpolationPart,
@@ -173,7 +174,7 @@ fn incomplete_member_recovery_still_reports_its_diagnostic() {
     assert!(parsed.has_errors());
     assert!(
         has_reason(
-            &parsed.diagnostics,
+            parsed.diagnostics.complete(),
             parse_reason(ParseDiagnosticReason::Expected(ExpectedSyntax::Expression))
         ),
         "expected the missing-field-name diagnostic: {:#?}",
@@ -188,7 +189,7 @@ fn parses_top_level_multi_line_const_value() {
     let source = "const id = some::call(\n  a: 1,\n  b: 2,\n)\n";
     let parsed = parse_source(source);
     assert!(
-        parsed.diagnostics.is_empty(),
+        parsed.diagnostics.complete().is_empty(),
         "multi-line const should parse cleanly: {:#?}",
         parsed.diagnostics
     );
@@ -215,7 +216,11 @@ fn parses_top_level_multi_line_const_value() {
 #[test]
 fn parses_interpolation_into_text_and_expression_parts() {
     let parsed = parse_source("const Label: string = $\"book {id}: {{ready}}\"\n");
-    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    assert!(
+        parsed.diagnostics.complete().is_empty(),
+        "{:#?}",
+        parsed.diagnostics
+    );
     let Declaration::Const(decl) = &parsed.file.declarations[0] else {
         panic!("expected const declaration");
     };
@@ -248,7 +253,11 @@ fn parses_interpolation_into_text_and_expression_parts() {
 fn parses_interpolation_with_embedded_call_path() {
     // From the reference sample: $"{id}: {^books[id].title}".
     let parsed = parse_source("const Line: string = $\"{id}: {^books[id].title}\"\n");
-    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    assert!(
+        parsed.diagnostics.complete().is_empty(),
+        "{:#?}",
+        parsed.diagnostics
+    );
     let Declaration::Const(decl) = &parsed.file.declarations[0] else {
         panic!("expected const declaration");
     };
@@ -273,7 +282,11 @@ fn parses_interpolation_with_embedded_call_path() {
 fn parses_calls_paths_and_field_access() {
     // `^books[id].title` is SavedRoot -> Keyed -> Field.
     let parsed = parse_source("const Title = ^books[id].title\n");
-    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    assert!(
+        parsed.diagnostics.complete().is_empty(),
+        "{:#?}",
+        parsed.diagnostics
+    );
     let Declaration::Const(decl) = &parsed.file.declarations[0] else {
         panic!("expected const declaration");
     };
@@ -310,7 +323,7 @@ fn open_range_arguments_parse_in_calls() {
         "fn f(start: int, end: int) {\n    for id in ^posts.byDate[start.., ..end, ..=end] {\n        print(id)\n    }\n}\n",
     );
     assert!(
-        parsed.diagnostics.is_empty(),
+        parsed.diagnostics.complete().is_empty(),
         "open range key arguments should parse cleanly: {:#?}",
         parsed.diagnostics
     );
@@ -322,7 +335,7 @@ fn quoted_field_segments_are_parse_errors() {
     assert!(parsed.has_errors(), "{:#?}", parsed.diagnostics);
     assert!(
         has_reason(
-            &parsed.diagnostics,
+            parsed.diagnostics.complete(),
             parse_reason(ParseDiagnosticReason::Unsupported(
                 UnsupportedSyntax::QuotedFieldSegments
             ))
@@ -351,7 +364,7 @@ fn unterminated_quoted_field_segment_does_not_panic() {
     assert!(parsed.has_errors(), "{:#?}", parsed.diagnostics);
     assert!(
         has_reason(
-            &parsed.diagnostics,
+            parsed.diagnostics.complete(),
             lexer_reason(LexerDiagnosticReason::UnterminatedString)
         ),
         "expected an unterminated-string diagnostic: {:#?}",
@@ -368,6 +381,7 @@ fn keyword_field_name_reports_a_parse_error() {
     let parsed = parse_source(source);
     let diagnostic = parsed
         .diagnostics
+        .complete()
         .iter()
         .find(|d| d.reason == parse_reason(ParseDiagnosticReason::KeywordFieldName))
         .unwrap_or_else(|| {
@@ -392,6 +406,7 @@ fn keyword_field_name_reports_once_not_also_expected_a_statement() {
     let parsed = parse_source(source);
     let on_offending_line: Vec<_> = parsed
         .diagnostics
+        .complete()
         .iter()
         .filter(|d| d.span.line == 2)
         .collect();
@@ -412,7 +427,7 @@ fn quoted_keyword_field_name_reports_a_parse_error() {
     let parsed = parse_source("const Bad = ^events[id].\"if\"\n");
     assert!(
         has_reason(
-            &parsed.diagnostics,
+            parsed.diagnostics.complete(),
             parse_reason(ParseDiagnosticReason::Unsupported(
                 UnsupportedSyntax::QuotedFieldSegments
             ))
@@ -429,15 +444,16 @@ fn const_value_keyword_field_reports_once_not_also_expected_an_expression() {
     // expression" fallback must not also fire: the line reports exactly once.
     let parsed = parse_source("const Bad = a.if\n");
     assert_eq!(
-        parsed.diagnostics.len(),
+        parsed.diagnostics.complete().len(),
         1,
         "the keyword-field const value should report exactly once: {:#?}",
         parsed.diagnostics
     );
     assert!(
-        parsed.diagnostics[0].reason == parse_reason(ParseDiagnosticReason::KeywordFieldName),
+        parsed.diagnostics.complete()[0].reason
+            == parse_reason(ParseDiagnosticReason::KeywordFieldName),
         "{:#?}",
-        parsed.diagnostics[0]
+        parsed.diagnostics.complete()[0]
     );
 }
 
@@ -448,6 +464,7 @@ fn if_condition_keyword_field_reports_once_not_also_expected_an_expression() {
     let parsed = parse_source("fn f() {\n    if a.if {\n        return\n    }\n}\n");
     let on_offending_line: Vec<_> = parsed
         .diagnostics
+        .complete()
         .iter()
         .filter(|d| d.span.line == 2)
         .collect();
@@ -466,7 +483,11 @@ fn if_condition_keyword_field_reports_once_not_also_expected_an_expression() {
 #[test]
 fn parses_named_call_arguments() {
     let parsed = parse_source("const Made = save(book: draft, total: 1)\n");
-    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    assert!(
+        parsed.diagnostics.complete().is_empty(),
+        "{:#?}",
+        parsed.diagnostics
+    );
     let Declaration::Const(decl) = &parsed.file.declarations[0] else {
         panic!("expected const declaration");
     };
@@ -489,7 +510,7 @@ fn removed_call_argument_modes_are_rejected() {
         assert!(parsed.has_errors(), "expected removed mode rejection");
         assert!(
             has_reason(
-                &parsed.diagnostics,
+                parsed.diagnostics.complete(),
                 parse_reason(ParseDiagnosticReason::Unsupported(
                     UnsupportedSyntax::ParameterModes
                 ))
@@ -503,7 +524,11 @@ fn removed_call_argument_modes_are_rejected() {
 #[test]
 fn out_and_inout_parse_as_ordinary_names() {
     let parsed = parse_source("const Made = save(out, inout)\n");
-    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    assert!(
+        parsed.diagnostics.complete().is_empty(),
+        "{:#?}",
+        parsed.diagnostics
+    );
     let Declaration::Const(decl) = &parsed.file.declarations[0] else {
         panic!("expected const declaration");
     };
@@ -518,7 +543,11 @@ fn out_and_inout_parse_as_ordinary_names() {
 #[test]
 fn out_and_inout_can_head_ordinary_call_argument_expressions() {
     let parsed = parse_source("const Made = save(out(1), inout - 1)\n");
-    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    assert!(
+        parsed.diagnostics.complete().is_empty(),
+        "{:#?}",
+        parsed.diagnostics
+    );
     let Declaration::Const(decl) = &parsed.file.declarations[0] else {
         panic!("expected const declaration");
     };
@@ -545,6 +574,7 @@ fn positional_argument_after_named_is_rejected() {
     let parsed = parse_source(source);
     let diagnostic = parsed
         .diagnostics
+        .complete()
         .iter()
         .find(|d| d.reason == parse_reason(ParseDiagnosticReason::PositionalArgumentAfterNamed))
         .unwrap_or_else(|| {
@@ -572,6 +602,7 @@ fn positional_argument_after_named_is_rejected() {
     assert_eq!(
         parsed
             .diagnostics
+            .complete()
             .iter()
             .filter(|d| {
                 d.reason == parse_reason(ParseDiagnosticReason::PositionalArgumentAfterNamed)
@@ -585,13 +616,21 @@ fn positional_argument_after_named_is_rejected() {
 fn positional_then_named_arguments_are_accepted() {
     // Positional arguments may precede named ones; only the reverse is rejected.
     let parsed = parse_source("const Made = sub(1, b: 2)\n");
-    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    assert!(
+        parsed.diagnostics.complete().is_empty(),
+        "{:#?}",
+        parsed.diagnostics
+    );
 }
 
 #[test]
 fn all_named_arguments_are_accepted() {
     let parsed = parse_source("const Made = sub(a: 1, b: 2)\n");
-    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    assert!(
+        parsed.diagnostics.complete().is_empty(),
+        "{:#?}",
+        parsed.diagnostics
+    );
 }
 
 #[test]
@@ -602,7 +641,7 @@ fn positional_after_named_is_rejected_inside_function_bodies() {
     let parsed = parse_source("fn run() {\n    log(level: 1, 2)\n}\n");
     assert!(
         has_reason(
-            &parsed.diagnostics,
+            parsed.diagnostics.complete(),
             parse_reason(ParseDiagnosticReason::PositionalArgumentAfterNamed)
         ),
         "{:#?}",
@@ -617,7 +656,7 @@ fn positional_after_named_is_rejected_in_nested_calls() {
     let parsed = parse_source("const Made = outer(inner(b: 1, 2))\n");
     assert!(
         has_reason(
-            &parsed.diagnostics,
+            parsed.diagnostics.complete(),
             parse_reason(ParseDiagnosticReason::PositionalArgumentAfterNamed)
         ),
         "{:#?}",
@@ -629,7 +668,11 @@ fn positional_after_named_is_rejected_in_nested_calls() {
 fn parses_conversion_and_constructor_calls() {
     // Conversion call on a type keyword.
     let parsed = parse_source("const Count: int = int(raw)\n");
-    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    assert!(
+        parsed.diagnostics.complete().is_empty(),
+        "{:#?}",
+        parsed.diagnostics
+    );
     let Declaration::Const(decl) = &parsed.file.declarations[0] else {
         panic!("expected const declaration");
     };
@@ -642,7 +685,11 @@ fn parses_conversion_and_constructor_calls() {
     );
 
     let parsed = parse_source("const Loaded = Id(^books, \"book-17\")\n");
-    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    assert!(
+        parsed.diagnostics.complete().is_empty(),
+        "{:#?}",
+        parsed.diagnostics
+    );
     let Declaration::Const(decl) = &parsed.file.declarations[0] else {
         panic!("expected const declaration");
     };
@@ -656,7 +703,11 @@ fn parses_conversion_and_constructor_calls() {
 
     // Qualified calls keep their path segments.
     let parsed = parse_source("const First = shelf::make(17)\n");
-    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    assert!(
+        parsed.diagnostics.complete().is_empty(),
+        "{:#?}",
+        parsed.diagnostics
+    );
     let Declaration::Const(decl) = &parsed.file.declarations[0] else {
         panic!("expected const declaration");
     };
@@ -679,7 +730,7 @@ fn keyword_head_and_keyword_path_segment_are_rejected() {
     let parsed = parse_source("const Bad = Author::Id(7)\n");
     assert!(
         has_reason(
-            &parsed.diagnostics,
+            parsed.diagnostics.complete(),
             parse_reason(ParseDiagnosticReason::Expected(ExpectedSyntax::Expression))
         ),
         "{:#?}",
@@ -689,7 +740,7 @@ fn keyword_head_and_keyword_path_segment_are_rejected() {
     let parsed = parse_source("const Bad = Id::fromKey(7)\n");
     assert!(
         has_reason(
-            &parsed.diagnostics,
+            parsed.diagnostics.complete(),
             parse_reason(ParseDiagnosticReason::KeywordExpression)
         ),
         "{:#?}",

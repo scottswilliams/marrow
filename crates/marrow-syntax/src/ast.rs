@@ -3,19 +3,20 @@
 
 use std::fmt;
 
-use crate::{Diagnostic, Severity, SourceSpan, TokenKind};
+use crate::{SourceSpan, SyntaxDiagnostics, TokenKind};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ParsedSource {
     pub file: SourceFile,
-    pub diagnostics: Vec<Diagnostic>,
+    pub diagnostics: SyntaxDiagnostics,
 }
 
 impl ParsedSource {
+    /// Whether the parse produced any diagnostic. Every syntax row is an
+    /// error, so a non-zero summary count is the has-errors fact even when a
+    /// limit discarded the payload.
     pub fn has_errors(&self) -> bool {
-        self.diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.severity == Severity::Error)
+        self.diagnostics.summary().count() != 0
     }
 }
 

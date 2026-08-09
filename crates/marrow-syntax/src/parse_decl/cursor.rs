@@ -7,11 +7,11 @@ use super::ParseError;
 use super::tokens::{comment_from_token, first_line_end, is_line_comment, line_end};
 use crate::ast::{Comment, CommentMarker, CommentPlacement};
 use crate::diagnostic::{
-    Diagnostic, DiagnosticReason, ExpectedSyntax, ParseDiagnosticReason, Severity, SourceSpan,
+    DiagnosticReason, ExpectedSyntax, ParseDiagnosticReason, SourceSpan, SyntaxError,
 };
 use crate::token::{Keyword, Token, TokenKind};
 
-impl<'a> DeclParser<'a> {
+impl<'a> DeclParser<'a, '_> {
     /// Collect the tokens of the current header line (up to the next
     /// `NEWLINE`/`{`/`}`/`EOF`) and advance past a closing `NEWLINE`. A body-bearing
     /// header ends at its opening `{`, which is left in place for the caller to
@@ -289,14 +289,13 @@ impl<'a> DeclParser<'a> {
         reason: ParseDiagnosticReason,
         message: impl Into<String>,
     ) {
-        self.diagnostics.push(Diagnostic {
-            code: reason.code(),
-            reason: DiagnosticReason::Parser(reason),
-            severity: Severity::Error,
-            message: message.into(),
-            help: None,
+        self.sink.push(SyntaxError::new(
+            reason.code(),
+            DiagnosticReason::Parser(reason),
+            message,
+            None,
             span,
-        });
+        ));
     }
 
     /// Report a parse error at its own pinned span, or at `fallback` (the header

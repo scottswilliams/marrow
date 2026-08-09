@@ -11,6 +11,7 @@
 //! To regenerate after an intended change:
 //!   cargo test -p marrow-syntax regenerate_vscode_grammar -- --ignored
 
+use crate::common::CompletePayload;
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
 use std::path::{Path, PathBuf};
@@ -1589,7 +1590,7 @@ fn assert_emitted_scopes_match_lexer(source: &str, successful_edges: &mut BTreeS
     successful_edges.extend(fixture_successful_edges);
     let lexed = lex_source(source);
     assert!(
-        lexed.diagnostics.is_empty(),
+        lexed.diagnostics.complete().is_empty(),
         "fixture must be lexer-valid: {source:?}: {:#?}",
         lexed.diagnostics
     );
@@ -1656,7 +1657,7 @@ fn validate_keyword_facts(facts: &[(Keyword, &'static str)]) -> Result<(), Strin
             return Err(format!("duplicate keyword spelling '{spelling}'"));
         }
         let lexed = lex_source(spelling);
-        if !lexed.diagnostics.is_empty()
+        if !lexed.diagnostics.complete().is_empty()
             || lexed.tokens.first().map(|token| token.kind) != Some(TokenKind::Keyword(keyword))
             || lexed.tokens.first().map(|token| token.text(spelling)) != Some(spelling)
         {
@@ -1700,7 +1701,7 @@ fn textmate_oracle_matches_the_parser_interpolation_depth_boundary() {
 
     let admitted_lex = lex_source(&admitted);
     assert!(
-        admitted_lex.diagnostics.is_empty(),
+        admitted_lex.diagnostics.complete().is_empty(),
         "the exact parser nesting boundary must remain admitted: {:#?}",
         admitted_lex.diagnostics
     );
@@ -1708,6 +1709,7 @@ fn textmate_oracle_matches_the_parser_interpolation_depth_boundary() {
     assert_eq!(
         refused_lex
             .diagnostics
+            .complete()
             .iter()
             .filter(|diagnostic| diagnostic.code == NESTING_LIMIT)
             .count(),
@@ -2166,7 +2168,11 @@ fn token_taxonomy_is_total_and_contextual_words_are_unscoped() {
     ] {
         assert!(!is_reserved_word(spelling), "'{spelling}' became reserved");
         let lexed = lex_source(spelling);
-        assert!(lexed.diagnostics.is_empty(), "{:#?}", lexed.diagnostics);
+        assert!(
+            lexed.diagnostics.complete().is_empty(),
+            "{:#?}",
+            lexed.diagnostics
+        );
         assert_eq!(
             lexed.tokens.first().map(|token| token.kind.lexical_class()),
             Some(LexicalClass::Unscoped),
@@ -2236,7 +2242,7 @@ fn literal_and_fixed_form_rules_follow_parser_facts() {
     );
 
     let interpolation = lex_source(r#"$"hello {value}""#);
-    assert!(interpolation.diagnostics.is_empty());
+    assert!(interpolation.diagnostics.complete().is_empty());
     assert_eq!(
         interpolation
             .tokens

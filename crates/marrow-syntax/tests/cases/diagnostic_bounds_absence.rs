@@ -29,7 +29,10 @@ fn production_sources() -> Vec<(PathBuf, String)> {
     let src = src_root();
     let mut out = Vec::new();
     collect(&src, &mut out);
-    assert!(!out.is_empty(), "production source inventory must be non-empty");
+    assert!(
+        !out.is_empty(),
+        "production source inventory must be non-empty"
+    );
     out
 }
 

@@ -16,6 +16,7 @@
 //! [`regression_corpus`] and then a fix.
 
 use crate::common;
+use crate::common::CompletePayload;
 use crate::common::oracle::{
     OVER_DEEP, assert_formatter_faithful, assert_total_invariants, has_error_diagnostic,
 };
@@ -270,6 +271,7 @@ fn deterministic_corpus_body() {
         saw_error |= has_error_diagnostic(&source);
         saw_over_deep |= marrow_syntax::parse_source(&source)
             .diagnostics
+            .complete()
             .iter()
             .any(|diagnostic| diagnostic.code == marrow_syntax::NESTING_LIMIT);
     }

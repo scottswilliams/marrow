@@ -16,8 +16,8 @@ use crate::ast::{
     CompoundAssignOp, Expression, ForBinding, ForName, KeyParam, LoopOrder, Statement, TypeExpr,
 };
 use crate::diagnostic::{
-    Diagnostic, DiagnosticReason, ExpectedSyntax, ParseDiagnosticReason, ReservedSyntax, Severity,
-    SourceSpan, UnsupportedSyntax,
+    DiagnosticReason, ExpectedSyntax, ParseDiagnosticReason, ReservedSyntax, SourceSpan,
+    SyntaxError, SyntaxSink, UnsupportedSyntax,
 };
 use crate::parse_expr::join_spans;
 use crate::token::{Keyword, Token, TokenKind};
@@ -25,80 +25,75 @@ use crate::token::{Keyword, Token, TokenKind};
 /// Report that `line` does not form a statement, at the line span, and yield
 /// `None`. The single owner of the generic statement-shape failure, so every
 /// unstructured line carries one diagnostic without a separate fallback pass.
-fn expected_statement(line: &[Token], diagnostics: &mut Vec<Diagnostic>) -> Option<Statement> {
+fn expected_statement(line: &[Token], sink: &mut SyntaxSink<'_>) -> Option<Statement> {
     let span = line_span_or(line, line[0].span);
-    diagnostics.push(Diagnostic {
-        code: ParseDiagnosticReason::Expected(ExpectedSyntax::Statement).code(),
-        reason: DiagnosticReason::Parser(ParseDiagnosticReason::Expected(
-            ExpectedSyntax::Statement,
-        )),
-        severity: Severity::Error,
-        message: "expected a statement".to_string(),
-        help: None,
+    let reason = ParseDiagnosticReason::Expected(ExpectedSyntax::Statement);
+    sink.push(SyntaxError::new(
+        reason.code(),
+        DiagnosticReason::Parser(reason),
+        "expected a statement",
+        None,
         span,
-    });
+    ));
     None
 }
 
 /// Report that `line` is missing the expression it needed, at the line span, and
 /// yield `None`. Used where a malformed header could not be structured as either
 /// its binding form or a condition expression.
-fn expected_expression_line<T>(line: &[Token], diagnostics: &mut Vec<Diagnostic>) -> Option<T> {
+fn expected_expression_line<T>(line: &[Token], sink: &mut SyntaxSink<'_>) -> Option<T> {
     let span = line_span_or(line, line[0].span);
-    diagnostics.push(Diagnostic {
-        code: ParseDiagnosticReason::Expected(ExpectedSyntax::Expression).code(),
-        reason: DiagnosticReason::Parser(ParseDiagnosticReason::Expected(
-            ExpectedSyntax::Expression,
-        )),
-        severity: Severity::Error,
-        message: "expected an expression".to_string(),
-        help: None,
+    let reason = ParseDiagnosticReason::Expected(ExpectedSyntax::Expression);
+    sink.push(SyntaxError::new(
+        reason.code(),
+        DiagnosticReason::Parser(reason),
+        "expected an expression",
+        None,
         span,
-    });
+    ));
     None
 }
 
 pub(super) fn parse_simple_statement(
     source: &str,
     line: &[Token],
-    diagnostics: &mut Vec<Diagnostic>,
+    sink: &mut SyntaxSink<'_>,
 ) -> Option<Statement> {
     let first = line.first()?;
     match first.kind {
-        TokenKind::Keyword(Keyword::Const) => parse_const_or_var(source, line, false, diagnostics),
-        TokenKind::Keyword(Keyword::Var) => parse_const_or_var(source, line, true, diagnostics),
-        TokenKind::Keyword(Keyword::Return) => parse_return(source, line, diagnostics),
+        TokenKind::Keyword(Keyword::Const) => parse_const_or_var(source, line, false, sink),
+        TokenKind::Keyword(Keyword::Var) => parse_const_or_var(source, line, true, sink),
+        TokenKind::Keyword(Keyword::Return) => parse_return(source, line, sink),
         TokenKind::Keyword(Keyword::Delete) => {
-            let value = expr_of_after(source, &line[1..], first.span, diagnostics)?;
+            let value = expr_of_after(source, &line[1..], first.span, sink)?;
             Some(Statement::Delete {
                 span: join_spans(first.span, value.span()),
                 path: value,
             })
         }
         TokenKind::Keyword(Keyword::Unset) => {
-            let place = expr_of_after(source, &line[1..], first.span, diagnostics)?;
+            let place = expr_of_after(source, &line[1..], first.span, sink)?;
             Some(Statement::Unset {
                 span: join_spans(first.span, place.span()),
                 place,
             })
         }
-        TokenKind::Keyword(Keyword::Place) => parse_place(source, line, diagnostics),
+        TokenKind::Keyword(Keyword::Place) => parse_place(source, line, sink),
         TokenKind::Keyword(Keyword::Merge) => {
-            diagnostics.push(Diagnostic {
-                code: PARSE_SYNTAX,
-                reason: DiagnosticReason::Parser(ParseDiagnosticReason::Reserved(
+            sink.push(SyntaxError::new(
+                PARSE_SYNTAX,
+                DiagnosticReason::Parser(ParseDiagnosticReason::Reserved(
                     ReservedSyntax::MergeStatement,
                 )),
-                severity: Severity::Error,
-                message: "`merge` is reserved and is not a v0.1 statement".to_string(),
-                help: None,
-                span: line_span_or(line, line[0].span),
-            });
+                "`merge` is reserved and is not a v0.1 statement",
+                None,
+                line_span_or(line, line[0].span),
+            ));
             None
         }
-        TokenKind::Keyword(Keyword::Break) => parse_break_or_continue(line, true, diagnostics),
-        TokenKind::Keyword(Keyword::Continue) => parse_break_or_continue(line, false, diagnostics),
-        _ => parse_assign_or_expr(source, line, diagnostics),
+        TokenKind::Keyword(Keyword::Break) => parse_break_or_continue(line, true, sink),
+        TokenKind::Keyword(Keyword::Continue) => parse_break_or_continue(line, false, sink),
+        _ => parse_assign_or_expr(source, line, sink),
     }
 }
 
@@ -106,33 +101,32 @@ fn parse_const_or_var(
     source: &str,
     line: &[Token],
     is_var: bool,
-    diagnostics: &mut Vec<Diagnostic>,
+    sink: &mut SyntaxSink<'_>,
 ) -> Option<Statement> {
     let keyword = line[0];
     let Some(name_token) = line.get(1) else {
-        return expected_statement(line, diagnostics);
+        return expected_statement(line, sink);
     };
     if name_token.kind != TokenKind::Identifier {
         if matches!(name_token.kind, TokenKind::Keyword(_)) {
             let kind = if is_var { "variable" } else { "const" };
-            diagnostics.push(Diagnostic {
-                code: PARSE_SYNTAX,
-                reason: DiagnosticReason::Parser(ParseDiagnosticReason::Expected(if is_var {
+            sink.push(SyntaxError::new(
+                PARSE_SYNTAX,
+                DiagnosticReason::Parser(ParseDiagnosticReason::Expected(if is_var {
                     ExpectedSyntax::VariableName
                 } else {
                     ExpectedSyntax::ConstName
                 })),
-                severity: Severity::Error,
-                message: format!(
+                format!(
                     "expected {kind} name; `{}` is a keyword",
                     name_token.text(source)
                 ),
-                help: Some("choose an identifier that is not reserved".to_string()),
-                span: name_token.span,
-            });
+                Some("choose an identifier that is not reserved".to_string()),
+                name_token.span,
+            ));
             return None;
         }
-        return expected_statement(line, diagnostics);
+        return expected_statement(line, sink);
     }
     let name = name_token.text(source).to_string();
     let mut index = 2;
@@ -142,7 +136,7 @@ fn parse_const_or_var(
     let mut keys = Vec::new();
     if line.get(index).map(|token| token.kind) == Some(TokenKind::LeftBracket) {
         if !is_var {
-            return expected_statement(line, diagnostics);
+            return expected_statement(line, sink);
         }
         match parse_var_keys(source, line, index) {
             Ok((parsed_keys, after)) => {
@@ -150,7 +144,7 @@ fn parse_const_or_var(
                 index = after;
             }
             Err(error) => {
-                push_parse_error(diagnostics, line_span_or(line, line[0].span), error);
+                push_parse_error(sink, line_span_or(line, line[0].span), error);
                 return None;
             }
         }
@@ -166,11 +160,11 @@ fn parse_const_or_var(
     ) {
         let after_colon = &line[index + 1..];
         if after_colon.is_empty() {
-            return expected_statement(line, diagnostics);
+            return expected_statement(line, sink);
         }
         let split = split_type_and_value(after_colon);
         if split.type_tokens.is_empty() {
-            return expected_statement(line, diagnostics);
+            return expected_statement(line, sink);
         }
         let (expected, message) = if is_var {
             (
@@ -183,14 +177,14 @@ fn parse_const_or_var(
         let ty = match parse_type(source, &split.type_tokens, expected, message) {
             Ok(parsed) => Some(parsed),
             Err(error) => {
-                push_parse_error(diagnostics, line_span_or(line, line[0].span), error);
+                push_parse_error(sink, line_span_or(line, line[0].span), error);
                 return None;
             }
         };
         let value = match split.value_tokens {
             Some(value_tokens) => {
                 let anchor = split.equal_span.unwrap_or(keyword.span);
-                Some(parse_rhs_value(source, value_tokens, anchor, diagnostics)?)
+                Some(parse_rhs_value(source, value_tokens, anchor, sink)?)
             }
             None => None,
         };
@@ -199,12 +193,12 @@ fn parse_const_or_var(
         match line.get(index).map(|token| token.kind) {
             Some(TokenKind::Equal) => {
                 let equal = line[index];
-                let value = parse_rhs_value(source, &line[index + 1..], equal.span, diagnostics)?;
+                let value = parse_rhs_value(source, &line[index + 1..], equal.span, sink)?;
                 (None, Some(value))
             }
             // `var name[keys]` without an initializer is allowed; `const` is not.
             None => (None, None),
-            _ => return expected_statement(line, diagnostics),
+            _ => return expected_statement(line, sink),
         }
     };
 
@@ -238,7 +232,7 @@ fn parse_const_or_var(
             value: None,
             span: join_spans(keyword.span, line[line.len() - 1].span),
         }),
-        None => expected_statement(line, diagnostics),
+        None => expected_statement(line, sink),
     }
 }
 
@@ -264,41 +258,35 @@ fn parse_var_keys(
 /// name, a required `=`, and the entry-address expression. The name must be an
 /// identifier (a keyword is reported like a `const` name), and the address is
 /// checked by the compiler — the parser only structures the binding.
-fn parse_place(
-    source: &str,
-    line: &[Token],
-    diagnostics: &mut Vec<Diagnostic>,
-) -> Option<Statement> {
+fn parse_place(source: &str, line: &[Token], sink: &mut SyntaxSink<'_>) -> Option<Statement> {
     let keyword = line[0];
     let Some(name_token) = line.get(1) else {
-        return expected_statement(line, diagnostics);
+        return expected_statement(line, sink);
     };
     if name_token.kind != TokenKind::Identifier {
         if matches!(name_token.kind, TokenKind::Keyword(_)) {
-            diagnostics.push(Diagnostic {
-                code: ParseDiagnosticReason::Expected(ExpectedSyntax::ConstName).code(),
-                reason: DiagnosticReason::Parser(ParseDiagnosticReason::Expected(
-                    ExpectedSyntax::ConstName,
-                )),
-                severity: Severity::Error,
-                message: format!(
+            let reason = ParseDiagnosticReason::Expected(ExpectedSyntax::ConstName);
+            sink.push(SyntaxError::new(
+                reason.code(),
+                DiagnosticReason::Parser(reason),
+                format!(
                     "expected place name; `{}` is a keyword",
                     name_token.text(source)
                 ),
-                help: Some("choose an identifier that is not reserved".to_string()),
-                span: name_token.span,
-            });
+                Some("choose an identifier that is not reserved".to_string()),
+                name_token.span,
+            ));
             return None;
         }
-        return expected_statement(line, diagnostics);
+        return expected_statement(line, sink);
     }
     let name = name_token.text(source).to_string();
     let name_span = name_token.span;
     if line.get(2).map(|token| token.kind) != Some(TokenKind::Equal) {
-        return expected_statement(line, diagnostics);
+        return expected_statement(line, sink);
     }
     let equal = line[2];
-    let place = expr_of_after(source, &line[3..], equal.span, diagnostics)?;
+    let place = expr_of_after(source, &line[3..], equal.span, sink)?;
     Some(Statement::PlaceBinding {
         span: join_spans(keyword.span, place.span()),
         name,
@@ -307,11 +295,7 @@ fn parse_place(
     })
 }
 
-fn parse_return(
-    source: &str,
-    line: &[Token],
-    diagnostics: &mut Vec<Diagnostic>,
-) -> Option<Statement> {
+fn parse_return(source: &str, line: &[Token], sink: &mut SyntaxSink<'_>) -> Option<Statement> {
     let keyword = line[0];
     if line.len() == 1 {
         return Some(Statement::Return {
@@ -319,7 +303,7 @@ fn parse_return(
             span: keyword.span,
         });
     }
-    let value = parse_rhs_value(source, &line[1..], keyword.span, diagnostics)?;
+    let value = parse_rhs_value(source, &line[1..], keyword.span, sink)?;
     Some(Statement::Return {
         span: join_spans(keyword.span, value.span()),
         value: Some(value),
@@ -334,43 +318,42 @@ fn parse_rhs_value(
     source: &str,
     tokens: &[Token],
     anchor: crate::diagnostic::SourceSpan,
-    diagnostics: &mut Vec<Diagnostic>,
+    sink: &mut SyntaxSink<'_>,
 ) -> Option<Expression> {
     if let Some(first) = tokens.first()
         && first.kind == TokenKind::Keyword(Keyword::Try)
     {
-        let inner = expr_of_after(source, &tokens[1..], first.span, diagnostics)?;
+        let inner = expr_of_after(source, &tokens[1..], first.span, sink)?;
         let span = join_spans(first.span, inner.span());
         return Some(Expression::Try {
             inner: Box::new(inner),
             span,
         });
     }
-    expr_of_after(source, tokens, anchor, diagnostics)
+    expr_of_after(source, tokens, anchor, sink)
 }
 
 fn parse_break_or_continue(
     line: &[Token],
     is_break: bool,
-    diagnostics: &mut Vec<Diagnostic>,
+    sink: &mut SyntaxSink<'_>,
 ) -> Option<Statement> {
     let keyword = line[0];
     let span = match line.get(1) {
         None => keyword.span,
         Some(token) if token.kind == TokenKind::Identifier && line.len() == 2 => {
-            diagnostics.push(Diagnostic {
-                code: PARSE_SYNTAX,
-                reason: DiagnosticReason::Parser(ParseDiagnosticReason::Unsupported(
+            sink.push(SyntaxError::new(
+                PARSE_SYNTAX,
+                DiagnosticReason::Parser(ParseDiagnosticReason::Unsupported(
                     UnsupportedSyntax::LoopLabels,
                 )),
-                severity: Severity::Error,
-                message: "loop labels were removed".to_string(),
-                help: Some("extract a function and use return to leave nested loops".to_string()),
-                span: token.span,
-            });
+                "loop labels were removed",
+                Some("extract a function and use return to leave nested loops".to_string()),
+                token.span,
+            ));
             join_spans(keyword.span, token.span)
         }
-        _ => return expected_statement(line, diagnostics),
+        _ => return expected_statement(line, sink),
     };
     Some(if is_break {
         Statement::Break { span }
@@ -382,14 +365,14 @@ fn parse_break_or_continue(
 fn parse_assign_or_expr(
     source: &str,
     line: &[Token],
-    diagnostics: &mut Vec<Diagnostic>,
+    sink: &mut SyntaxSink<'_>,
 ) -> Option<Statement> {
     if let Some(op_index) = find_top_level_compound_assign(line) {
         let op_token = line[op_index];
         let op = CompoundAssignOp::from_operator_token(op_token.kind)
             .expect("find_top_level_compound_assign yields a compound-assign token");
-        let target = expr_of_before(source, &line[..op_index], op_token.span, diagnostics)?;
-        let value = expr_of_after(source, &line[op_index + 1..], op_token.span, diagnostics)?;
+        let target = expr_of_before(source, &line[..op_index], op_token.span, sink)?;
+        let value = expr_of_after(source, &line[op_index + 1..], op_token.span, sink)?;
         return Some(Statement::CompoundAssign {
             span: join_spans(target.span(), value.span()),
             target,
@@ -405,19 +388,17 @@ fn parse_assign_or_expr(
         // rather than silently canonicalize.
         if equal > 0 && is_split_compound_operator(line[equal - 1].kind) {
             let op_span = line[equal - 1].span;
-            diagnostics.push(Diagnostic {
-                code: PARSE_SYNTAX,
-                reason: DiagnosticReason::Parser(ParseDiagnosticReason::SplitCompoundAssign),
-                severity: Severity::Error,
-                message: "write a compound assignment as one operator (`*=`), not a spaced `* =`"
-                    .to_string(),
-                help: None,
-                span: join_spans(op_span, equal_span),
-            });
+            sink.push(SyntaxError::new(
+                PARSE_SYNTAX,
+                DiagnosticReason::Parser(ParseDiagnosticReason::SplitCompoundAssign),
+                "write a compound assignment as one operator (`*=`), not a spaced `* =`",
+                None,
+                join_spans(op_span, equal_span),
+            ));
             return None;
         }
-        let target = expr_of_before(source, &line[..equal], equal_span, diagnostics)?;
-        let value = expr_of_after(source, &line[equal + 1..], equal_span, diagnostics)?;
+        let target = expr_of_before(source, &line[..equal], equal_span, sink)?;
+        let value = expr_of_after(source, &line[equal + 1..], equal_span, sink)?;
         Some(Statement::Assign {
             span: join_spans(target.span(), value.span()),
             target,
@@ -426,7 +407,7 @@ fn parse_assign_or_expr(
     } else {
         // `line` is non-empty here (the caller extracted its first token), so its
         // first token anchors any missing-expression diagnostic.
-        let value = expr_of(source, line, line[0].span, diagnostics)?;
+        let value = expr_of(source, line, line[0].span, sink)?;
         Some(Statement::Expr {
             span: value.span(),
             value,
@@ -457,29 +438,28 @@ fn is_split_compound_operator(kind: TokenKind) -> bool {
 pub(super) fn parse_if_const_head(
     source: &str,
     line: &[Token],
-    diagnostics: &mut Vec<Diagnostic>,
+    sink: &mut SyntaxSink<'_>,
 ) -> Option<(String, SourceSpan, Option<TypeExpr>, Expression)> {
     let Some(name_token) = line.get(1) else {
-        return expected_expression_line(line, diagnostics);
+        return expected_expression_line(line, sink);
     };
     if name_token.kind != TokenKind::Identifier {
         if matches!(name_token.kind, TokenKind::Keyword(_)) {
-            diagnostics.push(Diagnostic {
-                code: PARSE_SYNTAX,
-                reason: DiagnosticReason::Parser(ParseDiagnosticReason::Expected(
+            sink.push(SyntaxError::new(
+                PARSE_SYNTAX,
+                DiagnosticReason::Parser(ParseDiagnosticReason::Expected(
                     ExpectedSyntax::ConstName,
                 )),
-                severity: Severity::Error,
-                message: format!(
+                format!(
                     "expected const name; `{}` is a keyword",
                     name_token.text(source)
                 ),
-                help: Some("choose an identifier that is not reserved".to_string()),
-                span: name_token.span,
-            });
+                Some("choose an identifier that is not reserved".to_string()),
+                name_token.span,
+            ));
             return None;
         }
-        return expected_expression_line(line, diagnostics);
+        return expected_expression_line(line, sink);
     }
     let name = name_token.text(source).to_string();
 
@@ -487,11 +467,11 @@ pub(super) fn parse_if_const_head(
     if line.get(index).map(|token| token.kind) == Some(TokenKind::Colon) {
         let after_colon = &line[index + 1..];
         if after_colon.is_empty() {
-            return expected_expression_line(line, diagnostics);
+            return expected_expression_line(line, sink);
         }
         let split = split_type_and_value(after_colon);
         if split.type_tokens.is_empty() {
-            return expected_expression_line(line, diagnostics);
+            return expected_expression_line(line, sink);
         }
         let ty = match parse_type(
             source,
@@ -501,25 +481,25 @@ pub(super) fn parse_if_const_head(
         ) {
             Ok(parsed) => Some(parsed),
             Err(error) => {
-                push_parse_error(diagnostics, line_span_or(line, line[0].span), error);
+                push_parse_error(sink, line_span_or(line, line[0].span), error);
                 return None;
             }
         };
         // An `if const` binding always reads a value; a value-less annotation is a
         // condition, not a binding.
         let Some(value_tokens) = split.value_tokens else {
-            return expected_expression_line(line, diagnostics);
+            return expected_expression_line(line, sink);
         };
         let anchor = split.equal_span.unwrap_or(name_token.span);
-        let value = expr_of_after(source, value_tokens, anchor, diagnostics)?;
+        let value = expr_of_after(source, value_tokens, anchor, sink)?;
         return Some((name, name_token.span, ty, value));
     }
 
     if line.get(index).map(|token| token.kind) != Some(TokenKind::Equal) {
-        return expected_expression_line(line, diagnostics);
+        return expected_expression_line(line, sink);
     }
     let equal = line[index];
-    let value = expr_of_after(source, &line[index + 1..], equal.span, diagnostics)?;
+    let value = expr_of_after(source, &line[index + 1..], equal.span, sink)?;
     Some((name, name_token.span, None, value))
 }
 

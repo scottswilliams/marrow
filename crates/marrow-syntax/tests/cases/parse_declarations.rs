@@ -2,6 +2,7 @@
 //! source order, and the reference sample's declaration shape.
 
 use crate::common;
+use crate::common::CompletePayload;
 use common::{has_reason, lexer_reason, parse_reason, reason_count};
 use marrow_syntax::{
     Declaration, ExpectedSyntax, LexerDiagnosticReason, PARSE_SYNTAX, ParseDiagnosticReason,
@@ -23,7 +24,7 @@ fn parses_all_documented_source_files() {
     for block in blocks {
         let parsed = parse_source(&block.source);
         assert!(
-            parsed.diagnostics.is_empty(),
+            parsed.diagnostics.complete().is_empty(),
             "{}#{} should parse cleanly, got:\n{:#?}\n--- source ---\n{}",
             block.path,
             block.index,
@@ -58,7 +59,7 @@ fn parses_reference_sample_structure() {
     let parsed = parse_source(&common::reference_sample());
 
     assert!(
-        parsed.diagnostics.is_empty(),
+        parsed.diagnostics.complete().is_empty(),
         "unexpected diagnostics: {:#?}",
         parsed.diagnostics
     );
@@ -136,7 +137,11 @@ fn parses_optional_function_return_type() {
          }\n",
     );
 
-    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    assert!(
+        parsed.diagnostics.complete().is_empty(),
+        "{:#?}",
+        parsed.diagnostics
+    );
     let f = parsed.file.function("f").expect("function");
     assert_eq!(
         f.return_type.as_ref().map(ToString::to_string).as_deref(),
@@ -148,7 +153,11 @@ fn parses_optional_function_return_type() {
 fn retains_the_function_name_span_for_definition() {
     let source = "module app\n\nfn compute(): int {\n    return 1\n}\n";
     let parsed = parse_source(source);
-    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    assert!(
+        parsed.diagnostics.complete().is_empty(),
+        "{:#?}",
+        parsed.diagnostics
+    );
     let f = parsed.file.function("compute").expect("function");
     // The name span isolates the declared name token, not the whole header.
     assert_eq!(
@@ -174,7 +183,11 @@ fn parses_optional_parameter_type() {
          }\n",
     );
 
-    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    assert!(
+        parsed.diagnostics.complete().is_empty(),
+        "{:#?}",
+        parsed.diagnostics
+    );
     let f = parsed.file.function("f").expect("function");
     assert_eq!(f.params[0].ty.to_string(), "int?");
 }
@@ -194,6 +207,7 @@ fn rejects_a_double_optional_type() {
     assert!(
         parsed
             .diagnostics
+            .complete()
             .iter()
             .any(|d| d.message.contains("an optional type is written `T?`")),
         "{:#?}",
@@ -214,7 +228,11 @@ store ^books[id: int]: Book
 "#,
     );
 
-    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    assert!(
+        parsed.diagnostics.complete().is_empty(),
+        "{:#?}",
+        parsed.diagnostics
+    );
     let book = parsed.file.resource("Book").expect("Book resource");
     let ResourceMember::Field(title) = &book.members[0] else {
         panic!("expected field, got {:?}", book.members[0]);
@@ -246,7 +264,7 @@ fn parses_trailing_comments_on_declaration_lines() {
     );
 
     assert!(
-        parsed.diagnostics.is_empty(),
+        parsed.diagnostics.complete().is_empty(),
         "declaration trailing comments should be trivia: {:#?}",
         parsed.diagnostics
     );
@@ -267,6 +285,7 @@ fn merges_lexer_and_parser_diagnostics_in_source_order() {
     assert!(parsed.has_errors());
     let mut lines = parsed
         .diagnostics
+        .complete()
         .iter()
         .map(|diagnostic| diagnostic.span.line)
         .collect::<Vec<_>>();
@@ -289,8 +308,12 @@ fn rejects_internal_and_private_visibility() {
 
         assert!(parsed.has_errors(), "expected error for {visibility}");
         assert!(
-            parsed.diagnostics.iter().any(|diagnostic| diagnostic.reason
-                == parse_reason(ParseDiagnosticReason::InvalidVisibility)),
+            parsed
+                .diagnostics
+                .complete()
+                .iter()
+                .any(|diagnostic| diagnostic.reason
+                    == parse_reason(ParseDiagnosticReason::InvalidVisibility)),
             "diagnostics for {visibility}: {:#?}",
             parsed.diagnostics
         );
@@ -311,6 +334,7 @@ fn rejects_pub_on_resource_and_store_without_cascade() {
         let parsed = parse_source(&source);
         let visibility: Vec<_> = parsed
             .diagnostics
+            .complete()
             .iter()
             .filter(|diagnostic| {
                 diagnostic.reason == parse_reason(ParseDiagnosticReason::InvalidVisibility)
@@ -341,7 +365,7 @@ fn rejects_pub_on_resource_and_store_without_cascade() {
         // Recovery parses the declaration, so there is no field-line cascade: the
         // visibility error is the only diagnostic.
         assert_eq!(
-            parsed.diagnostics.len(),
+            parsed.diagnostics.complete().len(),
             1,
             "expected no cascade for `pub {keyword}`: {:#?}",
             parsed.diagnostics
@@ -364,15 +388,32 @@ pub fn main()
 "#,
     );
 
-    assert_eq!(parsed.diagnostics.len(), 2, "{:#?}", parsed.diagnostics);
-    assert!(parsed.diagnostics.iter().any(|diagnostic| diagnostic.reason
-        == parse_reason(ParseDiagnosticReason::Expected(
-            ExpectedSyntax::ResourceBody
-        ))));
-    assert!(parsed.diagnostics.iter().any(|diagnostic| diagnostic.reason
-        == parse_reason(ParseDiagnosticReason::Expected(
-            ExpectedSyntax::FunctionBody
-        ))));
+    assert_eq!(
+        parsed.diagnostics.complete().len(),
+        2,
+        "{:#?}",
+        parsed.diagnostics
+    );
+    assert!(
+        parsed
+            .diagnostics
+            .complete()
+            .iter()
+            .any(|diagnostic| diagnostic.reason
+                == parse_reason(ParseDiagnosticReason::Expected(
+                    ExpectedSyntax::ResourceBody
+                )))
+    );
+    assert!(
+        parsed
+            .diagnostics
+            .complete()
+            .iter()
+            .any(|diagnostic| diagnostic.reason
+                == parse_reason(ParseDiagnosticReason::Expected(
+                    ExpectedSyntax::FunctionBody
+                )))
+    );
 }
 
 #[test]
@@ -387,6 +428,7 @@ const MaxLoans: int
     assert!(
         parsed
             .diagnostics
+            .complete()
             .iter()
             .any(|diagnostic| diagnostic.code == PARSE_SYNTAX
                 && diagnostic.reason == parse_reason(ParseDiagnosticReason::ConstRequiresValue)),
@@ -401,8 +443,12 @@ fn rejects_invalid_module_names() {
 
     assert!(parsed.has_errors());
     assert!(
-        parsed.diagnostics.iter().any(|diagnostic| diagnostic.reason
-            == parse_reason(ParseDiagnosticReason::Expected(ExpectedSyntax::ModuleName))),
+        parsed
+            .diagnostics
+            .complete()
+            .iter()
+            .any(|diagnostic| diagnostic.reason
+                == parse_reason(ParseDiagnosticReason::Expected(ExpectedSyntax::ModuleName))),
         "{:#?}",
         parsed.diagnostics
     );
@@ -421,6 +467,7 @@ fn reserved_words_as_module_segments_are_rejected() {
         let parsed = parse_source(source);
         let segment: Vec<_> = parsed
             .diagnostics
+            .complete()
             .iter()
             .filter(|diagnostic| {
                 diagnostic.reason == parse_reason(ParseDiagnosticReason::KeywordPathSegment)
@@ -451,8 +498,12 @@ use *
 
     assert!(parsed.has_errors());
     assert!(
-        parsed.diagnostics.iter().any(|diagnostic| diagnostic.reason
-            == parse_reason(ParseDiagnosticReason::Expected(ExpectedSyntax::ImportName))),
+        parsed
+            .diagnostics
+            .complete()
+            .iter()
+            .any(|diagnostic| diagnostic.reason
+                == parse_reason(ParseDiagnosticReason::Expected(ExpectedSyntax::ImportName))),
         "{:#?}",
         parsed.diagnostics
     );
@@ -472,6 +523,7 @@ fn reserved_words_as_import_segments_are_rejected() {
         let parsed = parse_source(source);
         let segment: Vec<_> = parsed
             .diagnostics
+            .complete()
             .iter()
             .filter(|diagnostic| {
                 diagnostic.reason == parse_reason(ParseDiagnosticReason::KeywordPathSegment)
@@ -496,7 +548,7 @@ fn reserved_words_as_import_segments_are_rejected() {
     // path-shape allowance, not a shipped standard-library module.
     let std_bytes = parse_source("module app\nuse std::bytes\n");
     assert!(
-        std_bytes.diagnostics.is_empty(),
+        std_bytes.diagnostics.complete().is_empty(),
         "std::bytes import remains valid: {:#?}",
         std_bytes.diagnostics
     );
@@ -512,8 +564,12 @@ const : int = 1
 
     assert!(parsed.has_errors());
     assert!(
-        parsed.diagnostics.iter().any(|diagnostic| diagnostic.reason
-            == parse_reason(ParseDiagnosticReason::Expected(ExpectedSyntax::ConstName))),
+        parsed
+            .diagnostics
+            .complete()
+            .iter()
+            .any(|diagnostic| diagnostic.reason
+                == parse_reason(ParseDiagnosticReason::Expected(ExpectedSyntax::ConstName))),
         "{:#?}",
         parsed.diagnostics
     );
@@ -525,8 +581,12 @@ fn reserved_word_as_const_name_is_rejected() {
     // so a reserved word (`while`) in any of those positions is a parse error.
     let parsed = parse_source("module app\nconst while = 5\n");
     assert!(
-        parsed.diagnostics.iter().any(|diagnostic| diagnostic.reason
-            == parse_reason(ParseDiagnosticReason::Expected(ExpectedSyntax::ConstName))),
+        parsed
+            .diagnostics
+            .complete()
+            .iter()
+            .any(|diagnostic| diagnostic.reason
+                == parse_reason(ParseDiagnosticReason::Expected(ExpectedSyntax::ConstName))),
         "{:#?}",
         parsed.diagnostics
     );
@@ -537,8 +597,12 @@ fn future_surface_words_as_const_names_are_rejected() {
     for word in ["journal", "sensitive", "declassify", "Id"] {
         let parsed = parse_source(&format!("module app\nconst {word} = 5\n"));
         assert!(
-            parsed.diagnostics.iter().any(|diagnostic| diagnostic.reason
-                == parse_reason(ParseDiagnosticReason::Expected(ExpectedSyntax::ConstName))),
+            parsed
+                .diagnostics
+                .complete()
+                .iter()
+                .any(|diagnostic| diagnostic.reason
+                    == parse_reason(ParseDiagnosticReason::Expected(ExpectedSyntax::ConstName))),
             "expected const-name diagnostic for {word}: {:#?}",
             parsed.diagnostics
         );
@@ -550,10 +614,14 @@ fn future_surface_words_as_function_names_are_rejected() {
     for word in ["journal", "sensitive", "declassify", "Id"] {
         let parsed = parse_source(&format!("module app\nfn {word}() {{\n    return\n}}\n"));
         assert!(
-            parsed.diagnostics.iter().any(|diagnostic| diagnostic.reason
-                == parse_reason(ParseDiagnosticReason::Expected(
-                    ExpectedSyntax::FunctionName
-                ))),
+            parsed
+                .diagnostics
+                .complete()
+                .iter()
+                .any(|diagnostic| diagnostic.reason
+                    == parse_reason(ParseDiagnosticReason::Expected(
+                        ExpectedSyntax::FunctionName
+                    ))),
             "expected function-name diagnostic for {word}: {:#?}",
             parsed.diagnostics
         );
@@ -573,8 +641,12 @@ module later
 
     assert!(parsed.has_errors());
     assert!(
-        parsed.diagnostics.iter().any(|diagnostic| diagnostic.reason
-            == parse_reason(ParseDiagnosticReason::LateModuleDeclaration)),
+        parsed
+            .diagnostics
+            .complete()
+            .iter()
+            .any(|diagnostic| diagnostic.reason
+                == parse_reason(ParseDiagnosticReason::LateModuleDeclaration)),
         "{:#?}",
         parsed.diagnostics
     );
@@ -596,7 +668,11 @@ fn normalize(title: string): string {
 "#,
     );
 
-    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    assert!(
+        parsed.diagnostics.complete().is_empty(),
+        "{:#?}",
+        parsed.diagnostics
+    );
     let names = parsed
         .file
         .declarations
@@ -635,7 +711,7 @@ fn evolve_is_not_a_representable_declaration() {
     );
     assert!(
         common::has_reason(
-            &parsed.diagnostics,
+            parsed.diagnostics.complete(),
             parse_reason(ParseDiagnosticReason::Expected(ExpectedSyntax::Declaration)),
         ),
         "`evolve` must fail as an unknown declaration: {:#?}",
@@ -652,15 +728,15 @@ fn rejects_tabs_because_marrow_blocks_are_space_indented() {
     let parsed = parse_source("module app\n\tpub fn main()\n");
 
     assert!(parsed.has_errors());
-    assert_eq!(parsed.diagnostics[0].code, PARSE_SYNTAX);
-    assert_eq!(parsed.diagnostics[0].span.line, 2);
-    assert_eq!(parsed.diagnostics[0].span.column, 1);
+    assert_eq!(parsed.diagnostics.complete()[0].code, PARSE_SYNTAX);
+    assert_eq!(parsed.diagnostics.complete()[0].span.line, 2);
+    assert_eq!(parsed.diagnostics.complete()[0].span.column, 1);
     assert_eq!(
-        parsed.diagnostics[0].reason,
+        parsed.diagnostics.complete()[0].reason,
         lexer_reason(LexerDiagnosticReason::TabIndentation)
     );
     let tab_reports = reason_count(
-        &parsed.diagnostics,
+        parsed.diagnostics.complete(),
         lexer_reason(LexerDiagnosticReason::TabIndentation),
     );
     assert_eq!(tab_reports, 1, "{:#?}", parsed.diagnostics);
@@ -676,7 +752,7 @@ fn const_colon_with_no_type_recovers_incomplete_annotation() {
     assert!(parsed.has_errors(), "{:#?}", parsed.diagnostics);
     assert!(
         has_reason(
-            &parsed.diagnostics,
+            parsed.diagnostics.complete(),
             parse_reason(ParseDiagnosticReason::Expected(ExpectedSyntax::ConstType))
         ),
         "expected the missing const-type diagnostic: {:#?}",

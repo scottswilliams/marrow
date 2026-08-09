@@ -2,12 +2,12 @@
 //! the lexed-source result, and the small text/range helpers the lexer and the
 //! parsers share.
 
-use crate::{Diagnostic, SourceSpan};
+use crate::{SourceSpan, SyntaxDiagnostics};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LexedSource {
     pub tokens: Vec<Token>,
-    pub diagnostics: Vec<Diagnostic>,
+    pub diagnostics: SyntaxDiagnostics,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

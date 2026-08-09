@@ -2,6 +2,7 @@
 //! and the key/member-name grammar rules they share.
 
 use crate::common;
+use crate::common::CompletePayload;
 use common::{has_reason, parse_reason};
 use marrow_syntax::{ExpectedSyntax, ParseDiagnosticReason, parse_source};
 
@@ -15,7 +16,11 @@ fn parses_split_store_declaration() {
          store ^books[id: int]: Book\n",
     );
 
-    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    assert!(
+        parsed.diagnostics.complete().is_empty(),
+        "{:#?}",
+        parsed.diagnostics
+    );
     assert!(parsed.file.resource("Book").is_some());
     let store = parsed.file.store("books").expect("books store");
     assert_eq!(store.root.root, "books");
@@ -37,7 +42,7 @@ fn malformed_resource_header_reports_the_resource_rule() {
         let parsed = parse_source(source);
         assert!(
             has_reason(
-                &parsed.diagnostics,
+                parsed.diagnostics.complete(),
                 parse_reason(ParseDiagnosticReason::Expected(
                     ExpectedSyntax::ResourceHeader
                 ))
@@ -66,7 +71,7 @@ fn leading_keyed_layer_clause_keyword_reports_the_member_shape_rule() {
     assert!(parsed.has_errors(), "{:#?}", parsed.diagnostics);
     assert!(
         has_reason(
-            &parsed.diagnostics,
+            parsed.diagnostics.complete(),
             parse_reason(ParseDiagnosticReason::Expected(
                 ExpectedSyntax::ResourceMemberSyntax
             ))
@@ -77,6 +82,7 @@ fn leading_keyed_layer_clause_keyword_reports_the_member_shape_rule() {
     assert!(
         !parsed
             .diagnostics
+            .complete()
             .iter()
             .any(|d| d.message.contains("expected resource member name")),
         "a leading clause keyword must not get the bare member-name message: {:#?}",
@@ -99,6 +105,7 @@ fn trailing_keyed_layer_clause_after_a_type_names_the_stray_token() {
         assert!(parsed.has_errors(), "{clause}: {:#?}", parsed.diagnostics);
         let message = parsed
             .diagnostics
+            .complete()
             .iter()
             .map(|d| d.message.as_str())
             .collect::<Vec<_>>()
@@ -128,6 +135,7 @@ fn a_genuinely_missing_field_type_still_reports_the_missing_type() {
     assert!(
         parsed
             .diagnostics
+            .complete()
             .iter()
             .any(|d| d.message.contains("expected field type after `:`")),
         "a genuinely missing type keeps the missing-type message: {:#?}",
@@ -149,7 +157,7 @@ fn split_resource_body_rejects_index_members() {
     assert!(parsed.has_errors(), "expected parse rejection");
     assert!(
         has_reason(
-            &parsed.diagnostics,
+            parsed.diagnostics.complete(),
             parse_reason(ParseDiagnosticReason::IndexOutsideStoreBody)
         ),
         "{:#?}",
@@ -170,6 +178,7 @@ fn rejects_tilde_prefixed_saved_roots() {
         assert!(
             parsed
                 .diagnostics
+                .complete()
                 .iter()
                 .any(|diagnostic| diagnostic.code == "parse.syntax"),
             "{:#?}",
@@ -196,6 +205,7 @@ resource Book {
     assert!(
         parsed
             .diagnostics
+            .complete()
             .iter()
             .any(|diagnostic| diagnostic.reason
                 == parse_reason(ParseDiagnosticReason::UnexpectedBlock)),
@@ -219,6 +229,7 @@ store ^books[]: Book
     assert!(
         parsed
             .diagnostics
+            .complete()
             .iter()
             .any(|diagnostic| diagnostic.code == "parse.syntax"
                 && diagnostic.reason == parse_reason(ParseDiagnosticReason::EmptyKeyParameters)),
@@ -242,8 +253,12 @@ store ^books[id: int]: Book {
 
     assert!(parsed.has_errors());
     assert!(
-        parsed.diagnostics.iter().any(|diagnostic| diagnostic.reason
-            == parse_reason(ParseDiagnosticReason::EmptyIndexArguments)),
+        parsed
+            .diagnostics
+            .complete()
+            .iter()
+            .any(|diagnostic| diagnostic.reason
+                == parse_reason(ParseDiagnosticReason::EmptyIndexArguments)),
         "{:#?}",
         parsed.diagnostics
     );
@@ -296,7 +311,7 @@ fn header_helper_errors_report_specific_expected_parts() {
         assert!(parsed.has_errors(), "expected error for:\n{source}");
         assert!(
             has_reason(
-                &parsed.diagnostics,
+                parsed.diagnostics.complete(),
                 parse_reason(ParseDiagnosticReason::Expected(expected))
             ),
             "expected {expected:?} for {source}: {:#?}",
@@ -313,7 +328,7 @@ fn future_surface_words_as_resource_enum_or_store_root_names_are_rejected() {
         ));
         assert!(
             has_reason(
-                &resource.diagnostics,
+                resource.diagnostics.complete(),
                 parse_reason(ParseDiagnosticReason::Expected(
                     ExpectedSyntax::ResourceName
                 ))
@@ -325,7 +340,7 @@ fn future_surface_words_as_resource_enum_or_store_root_names_are_rejected() {
         let enum_source = parse_source(&format!("module app\nenum {word} {{\n    active\n}}\n"));
         assert!(
             has_reason(
-                &enum_source.diagnostics,
+                enum_source.diagnostics.complete(),
                 parse_reason(ParseDiagnosticReason::Expected(ExpectedSyntax::EnumName))
             ),
             "expected enum-name diagnostic for {word}: {:#?}",
@@ -337,7 +352,7 @@ fn future_surface_words_as_resource_enum_or_store_root_names_are_rejected() {
         ));
         assert!(
             has_reason(
-                &root.diagnostics,
+                root.diagnostics.complete(),
                 parse_reason(ParseDiagnosticReason::Expected(
                     ExpectedSyntax::SavedRootName
                 ))
@@ -359,10 +374,14 @@ fn rejects_malformed_index_field_paths() {
 
         assert!(parsed.has_errors(), "expected error for:\n{source}");
         assert!(
-            parsed.diagnostics.iter().any(|diagnostic| diagnostic.reason
-                == parse_reason(ParseDiagnosticReason::Expected(
-                    ExpectedSyntax::IndexFieldPath
-                ))),
+            parsed
+                .diagnostics
+                .complete()
+                .iter()
+                .any(|diagnostic| diagnostic.reason
+                    == parse_reason(ParseDiagnosticReason::Expected(
+                        ExpectedSyntax::IndexFieldPath
+                    ))),
             "diagnostics for {source}: {:#?}",
             parsed.diagnostics
         );
@@ -372,14 +391,19 @@ fn rejects_malformed_index_field_paths() {
 #[test]
 fn reserved_word_as_resource_member_name_is_rejected() {
     let parsed = parse_source("resource R {\n    while: int\n}\n");
-    assert_eq!(parsed.diagnostics.len(), 1, "{:#?}", parsed.diagnostics);
+    assert_eq!(
+        parsed.diagnostics.complete().len(),
+        1,
+        "{:#?}",
+        parsed.diagnostics
+    );
     assert!(
-        parsed.diagnostics[0].reason
+        parsed.diagnostics.complete()[0].reason
             == parse_reason(ParseDiagnosticReason::Expected(
                 ExpectedSyntax::ResourceMemberName
             )),
         "{:#?}",
-        parsed.diagnostics[0]
+        parsed.diagnostics.complete()[0]
     );
 }
 
@@ -388,10 +412,14 @@ fn future_surface_words_as_resource_member_names_are_rejected() {
     for word in ["journal", "sensitive", "declassify", "Id"] {
         let parsed = parse_source(&format!("resource R {{\n    {word}: int\n}}\n"));
         assert!(
-            parsed.diagnostics.iter().any(|diagnostic| diagnostic.reason
-                == parse_reason(ParseDiagnosticReason::Expected(
-                    ExpectedSyntax::ResourceMemberName
-                ))),
+            parsed
+                .diagnostics
+                .complete()
+                .iter()
+                .any(|diagnostic| diagnostic.reason
+                    == parse_reason(ParseDiagnosticReason::Expected(
+                        ExpectedSyntax::ResourceMemberName
+                    ))),
             "expected member-name diagnostic for {word}: {:#?}",
             parsed.diagnostics
         );
@@ -403,7 +431,7 @@ fn reserved_word_as_key_parameter_name_is_rejected() {
     let parsed = parse_source("resource R {\n    e[while: string]: int\n}\n");
     assert!(
         has_reason(
-            &parsed.diagnostics,
+            parsed.diagnostics.complete(),
             parse_reason(ParseDiagnosticReason::Expected(ExpectedSyntax::KeyName))
         ),
         "expected a key-name parse error for the reserved-word key name: {:#?}",
@@ -424,7 +452,11 @@ fn comment_lines_inside_a_multi_line_store_key_list_are_skipped() {
          \x20   shelf: string,\n\
          ]: Book\n",
     );
-    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    assert!(
+        parsed.diagnostics.complete().is_empty(),
+        "{:#?}",
+        parsed.diagnostics
+    );
     let store = parsed.file.store("books").expect("books store");
     assert_eq!(
         store
@@ -455,7 +487,11 @@ fn comment_lines_inside_a_multi_line_index_argument_list_are_skipped() {
          \x20       id]\n\
          }\n",
     );
-    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    assert!(
+        parsed.diagnostics.complete().is_empty(),
+        "{:#?}",
+        parsed.diagnostics
+    );
     let store = parsed.file.store("books").expect("books store");
     assert!(
         store
@@ -481,7 +517,7 @@ fn a_genuinely_missing_key_name_still_reports_a_key_name_error() {
     );
     assert!(
         has_reason(
-            &parsed.diagnostics,
+            parsed.diagnostics.complete(),
             parse_reason(ParseDiagnosticReason::Expected(ExpectedSyntax::KeyName))
         ),
         "expected a key-name parse error for the nameless key: {:#?}",

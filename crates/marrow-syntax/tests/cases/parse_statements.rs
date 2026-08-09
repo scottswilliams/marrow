@@ -2,6 +2,7 @@
 //! reserved statement surfaces, and the body diagnostics for malformed lines.
 
 use crate::common;
+use crate::common::CompletePayload;
 use common::{has_reason, lexer_reason, parse_reason};
 use marrow_syntax::{
     CheckedBind, CompoundAssignOp, Diagnose, ExpectedSyntax, Expression, LexerDiagnosticReason,
@@ -14,7 +15,11 @@ fn parses_simple_statements_in_function_bodies() {
     let parsed = parse_source(
         "module app\nfn main() {\n    const title: string = \"Small Gods\"\n    var count: int = 0\n    count = count + 1\n    print(title)\n    return count\n}\n",
     );
-    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    assert!(
+        parsed.diagnostics.complete().is_empty(),
+        "{:#?}",
+        parsed.diagnostics
+    );
     let main = parsed.file.function("main").expect("main function");
     let statements = &main.body.statements;
     assert_eq!(statements.len(), 5, "{statements:#?}");
@@ -73,7 +78,11 @@ fn parses_return_absent_as_a_return_of_the_absent_value() {
     // `absent` is an ordinary primary expression, so `return absent` is a `Return`
     // carrying the `Absent` value rather than a special return form.
     let parsed = parse_source("module app\nfn f(): int? {\n    return absent\n}\n");
-    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    assert!(
+        parsed.diagnostics.complete().is_empty(),
+        "{:#?}",
+        parsed.diagnostics
+    );
     let f = parsed.file.function("f").expect("function");
     assert!(
         matches!(
@@ -95,7 +104,11 @@ fn if_const_accepts_a_type_annotation() {
     let parsed = parse_source(
         "module app\nfn title(id: Id(^books)) {\n    if const pages: int = ^books[id].pages {\n        print(pages)\n    }\n}\n",
     );
-    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    assert!(
+        parsed.diagnostics.complete().is_empty(),
+        "{:#?}",
+        parsed.diagnostics
+    );
     let title = parsed.file.function("title").expect("title function");
     let Statement::IfConst {
         name, ty, value, ..
@@ -122,7 +135,11 @@ fn absent_is_a_primary_expression() {
     // The empty optional `absent` is a first-class primary value, usable wherever
     // an expression is, such as a `const` initializer.
     let parsed = parse_source("module app\nfn f() {\n    const x = absent\n}\n");
-    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    assert!(
+        parsed.diagnostics.complete().is_empty(),
+        "{:#?}",
+        parsed.diagnostics
+    );
     let f = parsed.file.function("f").expect("function");
     assert!(
         matches!(
@@ -143,7 +160,11 @@ fn parses_a_type_keyword_as_a_path_segment() {
     // through an imported `module std::bytes` parses. `length` here is an ordinary
     // path segment, not a shipped function.
     let parsed = parse_source("module app\nfn main() {\n    return std::bytes::length(data)\n}\n");
-    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    assert!(
+        parsed.diagnostics.complete().is_empty(),
+        "{:#?}",
+        parsed.diagnostics
+    );
     let main = parsed.file.function("main").expect("main function");
     assert!(
         matches!(
@@ -166,7 +187,11 @@ fn parses_a_type_keyword_as_a_leading_path_segment() {
     let parsed = parse_source(
         "module app\nuse std::bytes\nfn main() {\n    return bytes::length(data)\n}\n",
     );
-    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    assert!(
+        parsed.diagnostics.complete().is_empty(),
+        "{:#?}",
+        parsed.diagnostics
+    );
     let main = parsed.file.function("main").expect("main function");
     assert!(
         matches!(
@@ -183,7 +208,11 @@ fn parses_a_type_keyword_as_a_leading_path_segment() {
 #[test]
 fn parses_keyed_var_declaration() {
     let parsed = parse_source("module app\nfn tally() {\n    var counts[name: string]: int\n}\n");
-    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    assert!(
+        parsed.diagnostics.complete().is_empty(),
+        "{:#?}",
+        parsed.diagnostics
+    );
     let tally = parsed.file.function("tally").expect("tally function");
     let Statement::Var {
         name,
@@ -222,7 +251,11 @@ fn comment_lines_inside_a_multi_line_keyed_var_key_list_are_skipped() {
     let parsed = parse_source(
         "module app\nfn tally() {\n    var scores[\n        player: string, // who is scoring\n        // the round being recorded\n        round: int,\n    ]: int\n}\n",
     );
-    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    assert!(
+        parsed.diagnostics.complete().is_empty(),
+        "{:#?}",
+        parsed.diagnostics
+    );
     let tally = parsed.file.function("tally").expect("tally function");
     let Statement::Var { name, keys, ty, .. } = &tally.body.statements[0] else {
         panic!("expected var, got {:?}", tally.body.statements[0]);
@@ -248,7 +281,7 @@ fn keyed_var_key_list_errors_keep_key_specific_reasons() {
     assert!(parsed.has_errors(), "expected error for:\n{source}");
     assert!(
         has_reason(
-            &parsed.diagnostics,
+            parsed.diagnostics.complete(),
             parse_reason(ParseDiagnosticReason::EmptyKeyParameters)
         ),
         "expected keyed-var diagnostic for {source}: {:#?}",
@@ -256,7 +289,7 @@ fn keyed_var_key_list_errors_keep_key_specific_reasons() {
     );
     assert!(
         !has_reason(
-            &parsed.diagnostics,
+            parsed.diagnostics.complete(),
             parse_reason(ParseDiagnosticReason::Expected(ExpectedSyntax::Statement))
         ),
         "keyed-var errors should not fall back to statement recovery for {source}: {:#?}",
@@ -272,7 +305,7 @@ fn keyed_var_rejects_structural_equal_inside_key_type_annotations() {
     assert!(parsed.has_errors(), "expected error for:\n{source}");
     assert!(
         has_reason(
-            &parsed.diagnostics,
+            parsed.diagnostics.complete(),
             parse_reason(ParseDiagnosticReason::Expected(ExpectedSyntax::KeyType))
         ),
         "expected keyed-var key-type diagnostic for {source}: {:#?}",
@@ -280,7 +313,7 @@ fn keyed_var_rejects_structural_equal_inside_key_type_annotations() {
     );
     assert!(
         !has_reason(
-            &parsed.diagnostics,
+            parsed.diagnostics.complete(),
             parse_reason(ParseDiagnosticReason::Expected(ExpectedSyntax::Statement))
         ),
         "keyed-var errors should not fall back to statement recovery for {source}: {:#?}",
@@ -296,7 +329,7 @@ fn bracket_collection_literal_inside_call_does_not_fall_back_to_expected_stateme
     assert!(parsed.has_errors(), "expected error for:\n{source}");
     assert!(
         !has_reason(
-            &parsed.diagnostics,
+            parsed.diagnostics.complete(),
             parse_reason(ParseDiagnosticReason::Expected(ExpectedSyntax::Statement))
         ),
         "bracket literal errors should not fall back to statement recovery: {:#?}",
@@ -304,6 +337,7 @@ fn bracket_collection_literal_inside_call_does_not_fall_back_to_expected_stateme
     );
     let diagnostic = parsed
         .diagnostics
+        .complete()
         .iter()
         .find(|diagnostic| {
             diagnostic.reason
@@ -343,7 +377,7 @@ fn local_bindings_reject_structural_equal_inside_type_annotations() {
         assert!(parsed.has_errors(), "expected error for:\n{source}");
         assert!(
             has_reason(
-                &parsed.diagnostics,
+                parsed.diagnostics.complete(),
                 parse_reason(ParseDiagnosticReason::Expected(expected))
             ),
             "expected local binding type diagnostic for {source}: {:#?}",
@@ -351,7 +385,7 @@ fn local_bindings_reject_structural_equal_inside_type_annotations() {
         );
         assert!(
             !has_reason(
-                &parsed.diagnostics,
+                parsed.diagnostics.complete(),
                 parse_reason(ParseDiagnosticReason::Expected(ExpectedSyntax::Statement))
             ),
             "local binding type errors should not fall back to statement recovery for {source}: {:#?}",
@@ -363,7 +397,11 @@ fn local_bindings_reject_structural_equal_inside_type_annotations() {
 #[test]
 fn parses_keyed_var_with_multiple_keys_and_trailing_comma() {
     let parsed = parse_source("module app\nfn grid() {\n    var cells[x: int, y: int,]: bool\n}\n");
-    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    assert!(
+        parsed.diagnostics.complete().is_empty(),
+        "{:#?}",
+        parsed.diagnostics
+    );
     let grid = parsed.file.function("grid").expect("grid function");
     let Statement::Var { keys, ty, .. } = &grid.body.statements[0] else {
         panic!("expected var, got {:?}", grid.body.statements[0]);
@@ -379,7 +417,11 @@ fn parses_saved_writes_and_var_without_value() {
     let parsed = parse_source(
         "module app\nfn save() {\n    var book: Book\n    ^books[id].title = title\n    delete ^books[id].subtitle\n}\n",
     );
-    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    assert!(
+        parsed.diagnostics.complete().is_empty(),
+        "{:#?}",
+        parsed.diagnostics
+    );
     let save = parsed.file.function("save").expect("save function");
     let statements = &save.body.statements;
     assert_eq!(statements.len(), 3, "{statements:#?}");
@@ -411,7 +453,7 @@ fn rejects_lock_as_reserved_statement_and_consumes_its_block() {
     assert!(parsed.has_errors(), "expected lock rejection");
     assert!(
         has_reason(
-            &parsed.diagnostics,
+            parsed.diagnostics.complete(),
             parse_reason(ParseDiagnosticReason::Reserved(
                 ReservedSyntax::LockStatement
             ))
@@ -420,8 +462,12 @@ fn rejects_lock_as_reserved_statement_and_consumes_its_block() {
         parsed.diagnostics
     );
     assert!(
-        !parsed.diagnostics.iter().any(|diagnostic| diagnostic.reason
-            == parse_reason(ParseDiagnosticReason::Expected(ExpectedSyntax::Statement))),
+        !parsed
+            .diagnostics
+            .complete()
+            .iter()
+            .any(|diagnostic| diagnostic.reason
+                == parse_reason(ParseDiagnosticReason::Expected(ExpectedSyntax::Statement))),
         "{:#?}",
         parsed.diagnostics
     );
@@ -439,7 +485,7 @@ fn rejects_merge_as_reserved_statement() {
     assert!(parsed.has_errors(), "expected merge rejection");
     assert!(
         has_reason(
-            &parsed.diagnostics,
+            parsed.diagnostics.complete(),
             parse_reason(ParseDiagnosticReason::Reserved(
                 ReservedSyntax::MergeStatement
             ))
@@ -468,7 +514,11 @@ fn statement_spanning_open_delimiters_stays_one_statement() {
     let parsed = parse_source(
         "module app\nfn make() {\n    log(\n        code: \"book.absent\",\n        message: \"missing\",\n    )\n}\n",
     );
-    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    assert!(
+        parsed.diagnostics.complete().is_empty(),
+        "{:#?}",
+        parsed.diagnostics
+    );
     let make = parsed.file.function("make").expect("make function");
     let statements = &make.body.statements;
     assert_eq!(statements.len(), 1, "{statements:#?}");
@@ -502,6 +552,7 @@ fn reports_malformed_body_statements_with_a_diagnostic() {
         );
         let syntax = parsed
             .diagnostics
+            .complete()
             .iter()
             .find(|diagnostic| diagnostic.code == "parse.syntax" && diagnostic.span.line == 3)
             .unwrap_or_else(|| panic!("expected a line-3 parse.syntax diagnostic for {source:?}"));
@@ -540,6 +591,7 @@ fn a_doc_comment_in_statement_position_is_a_parse_error() {
         );
         let diagnostic = parsed
             .diagnostics
+            .complete()
             .iter()
             .find(|diagnostic| {
                 diagnostic.reason == parse_reason(ParseDiagnosticReason::DocCommentWithoutTarget)
@@ -582,6 +634,7 @@ fn a_dangling_doc_comment_with_no_following_target_is_a_parse_error() {
         );
         let diagnostic = parsed
             .diagnostics
+            .complete()
             .iter()
             .find(|diagnostic| {
                 diagnostic.reason == parse_reason(ParseDiagnosticReason::DocCommentWithoutTarget)
@@ -648,7 +701,7 @@ fn parses_final_block_statement_without_trailing_newline() {
     let parsed = parse_source("module app\nfn main() {\n    if ready {\n        return\n    }\n}");
 
     assert!(
-        parsed.diagnostics.is_empty(),
+        parsed.diagnostics.complete().is_empty(),
         "EOF should close the final block sequence: {:#?}",
         parsed.diagnostics
     );
@@ -663,6 +716,7 @@ fn surfaces_lexer_diagnostics_for_function_body_tokens() {
     assert!(parsed.has_errors(), "{:#?}", parsed.diagnostics);
     let obsolete = parsed
         .diagnostics
+        .complete()
         .iter()
         .find(|diagnostic| {
             diagnostic.reason
@@ -687,7 +741,11 @@ fn out_is_an_ordinary_variable_name() {
     let parsed =
         parse_source("module app\nfn f(): int {\n    var out: int = 0\n    return out\n}\n");
 
-    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    assert!(
+        parsed.diagnostics.complete().is_empty(),
+        "{:#?}",
+        parsed.diagnostics
+    );
 }
 
 #[test]
@@ -696,7 +754,11 @@ fn finally_is_an_ordinary_variable_name() {
         "module app\nfn f(): string {\n    var finally: string = \"done\"\n    return finally\n}\n",
     );
 
-    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    assert!(
+        parsed.diagnostics.complete().is_empty(),
+        "{:#?}",
+        parsed.diagnostics
+    );
 }
 
 #[test]
@@ -721,7 +783,11 @@ fn parses_compound_assignment_from_single_operator_token() {
         ),
     ] {
         let parsed = parse_source(source);
-        assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+        assert!(
+            parsed.diagnostics.complete().is_empty(),
+            "{:#?}",
+            parsed.diagnostics
+        );
         let f = parsed.file.function("f").expect("function");
         assert!(
             matches!(
@@ -746,8 +812,12 @@ fn split_compound_assignment_is_rejected_with_a_recovery_node() {
     // node so the body still parses.
     let parsed = parse_source("module app\nfn f() {\n    i * = 3\n}\n");
     assert!(
-        parsed.diagnostics.iter().any(|diagnostic| diagnostic.reason
-            == parse_reason(ParseDiagnosticReason::SplitCompoundAssign)),
+        parsed
+            .diagnostics
+            .complete()
+            .iter()
+            .any(|diagnostic| diagnostic.reason
+                == parse_reason(ParseDiagnosticReason::SplitCompoundAssign)),
         "{:#?}",
         parsed.diagnostics
     );
@@ -762,7 +832,11 @@ fn split_compound_assignment_is_rejected_with_a_recovery_node() {
 #[test]
 fn spaced_compound_assignment_does_not_generalize_to_comparisons() {
     let parsed = parse_source("module app\nfn f() {\n    i <= 3\n}\n");
-    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    assert!(
+        parsed.diagnostics.complete().is_empty(),
+        "{:#?}",
+        parsed.diagnostics
+    );
     let f = parsed.file.function("f").expect("function");
     assert!(
         matches!(&f.body.statements[0], Statement::Expr { .. }),
@@ -781,7 +855,11 @@ fn parses_checked_arithmetic_forms() {
     let parsed = parse_source(
         "module app\nfn main(a: int, b: int) {\n    const q: int = checked a / b\n        on out_of_range {\n            return\n        }\n        on zero_divisor {\n            return\n        }\n    var r = checked a + b\n        on out_of_range {\n            r = 0\n        }\n    return\n}\n",
     );
-    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    assert!(
+        parsed.diagnostics.complete().is_empty(),
+        "{:#?}",
+        parsed.diagnostics
+    );
     let main = parsed.file.function("main").expect("main function");
     let statements = &main.body.statements;
 
@@ -823,7 +901,11 @@ fn parses_checked_return() {
     let parsed = parse_source(
         "module app\nfn main(a: int, b: int): int {\n    return checked a * b\n        on out_of_range {\n            return 0\n        }\n}\n",
     );
-    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    assert!(
+        parsed.diagnostics.complete().is_empty(),
+        "{:#?}",
+        parsed.diagnostics
+    );
     let main = parsed.file.function("main").expect("main function");
     assert!(matches!(
         &main.body.statements[0],
@@ -842,7 +924,7 @@ fn checked_form_missing_arms_reports_checked_body() {
         "module app\nfn main(a: int, b: int) {\n    const q = checked a + b\n    return\n}\n",
     );
     assert!(has_reason(
-        &parsed.diagnostics,
+        parsed.diagnostics.complete(),
         parse_reason(ParseDiagnosticReason::Expected(ExpectedSyntax::CheckedBody)),
     ));
     let main = parsed.file.function("main").expect("main function");
@@ -860,7 +942,7 @@ fn checked_form_bad_arm_reports_checked_arm() {
         "module app\nfn main(a: int, b: int) {\n    const q = checked a + b\n        on wat {\n            return\n        }\n    return\n}\n",
     );
     assert!(has_reason(
-        &parsed.diagnostics,
+        parsed.diagnostics.complete(),
         parse_reason(ParseDiagnosticReason::CheckedArm),
     ));
 }
@@ -870,8 +952,8 @@ fn checked_form_bad_arm_reports_checked_arm() {
 #[test]
 fn checked_form_formats_idempotently() {
     let source = "module app\nfn main(a: int, b: int): int {\n    const q: int = checked a / b\n        on zero_divisor {\n            return 0\n        }\n        on out_of_range {\n            return 1\n        }\n    return q\n}\n";
-    let once = format_source(source);
-    let twice = format_source(&once);
+    let once = format_source(source).expect("a complete parse formats");
+    let twice = format_source(&once).expect("a complete parse formats");
     assert_eq!(once, twice, "formatting is a fixed point:\n{once}");
     // The fixed-order render puts out_of_range first even though source had it second.
     let oor = once.find("on out_of_range").expect("out_of_range arm");
@@ -881,7 +963,7 @@ fn checked_form_formats_idempotently() {
         "out_of_range renders before zero_divisor:\n{once}"
     );
     // The formatted output re-parses cleanly.
-    assert!(parse_source(&once).diagnostics.is_empty());
+    assert!(parse_source(&once).diagnostics.complete().is_empty());
 }
 
 /// `place name = ^root[key]` parses to a `PlaceBinding` naming the entry-address
@@ -891,7 +973,11 @@ fn parses_a_place_binding() {
     let parsed = parse_source(
         "module app\nfn main(id: int) {\n    place book = ^books[id]\n    book.title = \"x\"\n}\n",
     );
-    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    assert!(
+        parsed.diagnostics.complete().is_empty(),
+        "{:#?}",
+        parsed.diagnostics
+    );
     let main = parsed.file.function("main").expect("main function");
     assert!(
         matches!(
@@ -909,22 +995,22 @@ fn parses_a_place_binding() {
 #[test]
 fn a_malformed_place_binding_is_one_parse_error() {
     let missing_name = parse_source("module app\nfn main() {\n    place = 1\n}\n");
-    assert!(!missing_name.diagnostics.is_empty());
+    assert!(!missing_name.diagnostics.complete().is_empty());
 
     let missing_equals =
         parse_source("module app\nfn main(id: int) {\n    place book ^books[id]\n}\n");
-    assert!(!missing_equals.diagnostics.is_empty());
+    assert!(!missing_equals.diagnostics.complete().is_empty());
 }
 
 /// A `place` binding formats idempotently and re-parses cleanly.
 #[test]
 fn place_binding_formats_idempotently() {
     let source = "module app\nfn main(id: int) {\n    place book = ^books[id]\n    book.title = \"x\"\n    delete book\n}\n";
-    let once = format_source(source);
-    let twice = format_source(&once);
+    let once = format_source(source).expect("a complete parse formats");
+    let twice = format_source(&once).expect("a complete parse formats");
     assert_eq!(once, twice, "formatting is a fixed point:\n{once}");
     assert!(once.contains("place book = ^books[id]"), "{once}");
-    assert!(parse_source(&once).diagnostics.is_empty());
+    assert!(parse_source(&once).diagnostics.complete().is_empty());
 }
 
 // ---------------------------------------------------------------------------
@@ -936,7 +1022,11 @@ fn parses_a_require_guard() {
     let parsed = parse_source(
         "module app\nfn main(n: int): Result<int, string> {\n    require n > 0 else \"not positive\"\n    return ok(n)\n}\n",
     );
-    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    assert!(
+        parsed.diagnostics.complete().is_empty(),
+        "{:#?}",
+        parsed.diagnostics
+    );
     let main = parsed.file.function("main").expect("main function");
     assert!(
         matches!(
@@ -960,7 +1050,11 @@ fn require_splits_on_the_top_level_else_only() {
     let parsed = parse_source(
         "module app\nfn main(n: int): Result<int, string> {\n    require check(n) else render(n, \"low\")\n    return ok(n)\n}\n",
     );
-    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    assert!(
+        parsed.diagnostics.complete().is_empty(),
+        "{:#?}",
+        parsed.diagnostics
+    );
     let main = parsed.file.function("main").expect("main function");
     assert!(
         matches!(
@@ -983,13 +1077,18 @@ fn a_require_without_else_is_one_parse_error() {
     let parsed = parse_source("module app\nfn main(n: int) {\n    require n > 0\n    return\n}\n");
     assert!(
         has_reason(
-            &parsed.diagnostics,
+            parsed.diagnostics.complete(),
             parse_reason(ParseDiagnosticReason::Expected(ExpectedSyntax::RequireElse)),
         ),
         "{:#?}",
         parsed.diagnostics
     );
-    assert_eq!(parsed.diagnostics.len(), 1, "{:#?}", parsed.diagnostics);
+    assert_eq!(
+        parsed.diagnostics.complete().len(),
+        1,
+        "{:#?}",
+        parsed.diagnostics
+    );
 }
 
 /// `require` is a reserved word: it cannot stand as a binding name, and a bare
@@ -997,28 +1096,37 @@ fn a_require_without_else_is_one_parse_error() {
 #[test]
 fn require_is_reserved_and_rejected_as_an_identifier() {
     let as_const_name = parse_source("module app\nfn main() {\n    const require = 1\n}\n");
-    assert!(!as_const_name.diagnostics.is_empty(), "const-name position");
+    assert!(
+        !as_const_name.diagnostics.complete().is_empty(),
+        "const-name position"
+    );
 
     let as_fn_name = parse_source("module app\nfn require() {\n}\n");
-    assert!(!as_fn_name.diagnostics.is_empty(), "fn-name position");
+    assert!(
+        !as_fn_name.diagnostics.complete().is_empty(),
+        "fn-name position"
+    );
 
     let as_expression = parse_source("module app\nfn main() {\n    const x = require\n}\n");
-    assert!(!as_expression.diagnostics.is_empty(), "expression position");
+    assert!(
+        !as_expression.diagnostics.complete().is_empty(),
+        "expression position"
+    );
 
     let bare = parse_source("module app\nfn main() {\n    require\n}\n");
-    assert!(!bare.diagnostics.is_empty(), "bare keyword line");
+    assert!(!bare.diagnostics.complete().is_empty(), "bare keyword line");
 }
 
 /// A short `require` formats on one line and is a formatting fixed point.
 #[test]
 fn require_formats_idempotently() {
     let source = "module app\nfn main(n: int): Result<int, string> {\n    require n > 0 else \"not positive\"\n    return ok(n)\n}\n";
-    let once = format_source(source);
-    let twice = format_source(&once);
+    let once = format_source(source).expect("a complete parse formats");
+    let twice = format_source(&once).expect("a complete parse formats");
     assert_eq!(once, twice, "formatting is a fixed point:\n{once}");
     assert!(
         once.contains("require n > 0 else \"not positive\""),
         "{once}"
     );
-    assert!(parse_source(&once).diagnostics.is_empty());
+    assert!(parse_source(&once).diagnostics.complete().is_empty());
 }

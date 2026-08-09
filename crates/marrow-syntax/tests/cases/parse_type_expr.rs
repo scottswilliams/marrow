@@ -5,6 +5,7 @@
 //! These tests pin the node shape and the canonical render that the formatter and
 //! the durable digest depend on.
 
+use crate::common::CompletePayload;
 use marrow_syntax::{Declaration, IdentityTypeExpr, TypeExpr, parse_source};
 
 /// Parse a field spelling into its structural node through the production parser.
@@ -178,7 +179,7 @@ fn a_malformed_type_is_a_parse_error_in_every_position() {
         for (position, template) in POSITIONS {
             let source = template.replace('%', spelling);
             let parsed = parse_source(&source);
-            let matched = parsed.diagnostics.iter().find(|diagnostic| {
+            let matched = parsed.diagnostics.complete().iter().find(|diagnostic| {
                 diagnostic.code == "parse.syntax" && diagnostic.message == *message
             });
             assert!(
@@ -229,6 +230,7 @@ fn a_malformed_type_span_points_at_the_offending_token() {
         let parsed = parse_source(&source);
         let diagnostic = parsed
             .diagnostics
+            .complete()
             .iter()
             .find(|diagnostic| diagnostic.code == "parse.syntax")
             .unwrap_or_else(|| panic!("expected a parse error for `{spelling}`: {parsed:#?}"));

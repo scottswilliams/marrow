@@ -24,7 +24,7 @@ pub(super) enum BodyLine {
     Item,
 }
 
-impl<'a> DeclParser<'a> {
+impl DeclParser<'_, '_> {
     /// Classify and consume the next line of a `{ … }` declaration body. The
     /// caller supplies the opening `{` span (to anchor an unclosed-block diagnostic),
     /// its own-line comment accumulator (`docs` collects `///` doc comments to attach

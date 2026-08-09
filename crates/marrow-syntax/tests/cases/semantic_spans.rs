@@ -1,5 +1,6 @@
 //! Parser-owned spans for declaration, binding, type, index, and call sites.
 
+use crate::common::CompletePayload;
 use marrow_syntax::{
     CheckedBind, Declaration, Expression, SourceSpan, Statement, TypeConstraint, TypeExpr,
     format_source, parse_source,
@@ -124,9 +125,20 @@ fn parser_retains_every_semantic_site_span() {
         "}\n",
     );
     let parsed = parse_source(source);
-    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
-    assert_eq!(format_source(source), source);
-    assert_eq!(format_source(&format_source(source)), source);
+    assert!(
+        parsed.diagnostics.complete().is_empty(),
+        "{:#?}",
+        parsed.diagnostics
+    );
+    assert_eq!(
+        format_source(source).expect("a complete parse formats"),
+        source
+    );
+    assert_eq!(
+        format_source(&format_source(source).expect("a complete parse formats"))
+            .expect("a complete parse formats"),
+        source
+    );
 
     let module = parsed.file.module.as_ref().expect("module");
     assert_eq!(module.name, "app::semantic");
@@ -452,8 +464,15 @@ fn parser_retains_type_constraint_and_nominal_support_spans() {
         "type Delta: int in 0..=100 supports add, subtract\n",
     );
     let parsed = parse_source(source);
-    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
-    assert_eq!(format_source(source), source);
+    assert!(
+        parsed.diagnostics.complete().is_empty(),
+        "{:#?}",
+        parsed.diagnostics
+    );
+    assert_eq!(
+        format_source(source).expect("a complete parse formats"),
+        source
+    );
 
     let [
         Declaration::Function(compare),
@@ -597,6 +616,13 @@ fn malformed_nodes_retain_real_fallback_spans_and_remain_unavailable() {
 #[test]
 fn canonical_formatting_is_byte_identical_and_idempotent() {
     let canonical = "const Limit: int = 7\n";
-    assert_eq!(format_source(canonical), canonical);
-    assert_eq!(format_source(&format_source(canonical)), canonical);
+    assert_eq!(
+        format_source(canonical).expect("a complete parse formats"),
+        canonical
+    );
+    assert_eq!(
+        format_source(&format_source(canonical).expect("a complete parse formats"))
+            .expect("a complete parse formats"),
+        canonical
+    );
 }

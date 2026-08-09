@@ -8,6 +8,7 @@
 //! `comment_ownership.rs`; here the rendered text is the contract.
 
 use crate::common;
+use crate::common::CompletePayload;
 use marrow_syntax::{
     Block, Comment, CommentMarker, CommentPlacement, Declaration, Statement, format_expression,
     format_preserves_comments, format_source, parse_source,
@@ -18,7 +19,7 @@ use marrow_syntax::{
 /// `module app\n\n<decl>\n`, so stripping that frame exercises the same declaration
 /// path the public entry point uses.
 fn format_decl(source: &str) -> String {
-    let formatted = format_source(source);
+    let formatted = format_source(source).expect("a complete parse formats");
     formatted
         .strip_prefix("module app\n\n")
         .and_then(|rest| rest.strip_suffix('\n'))
@@ -46,10 +47,10 @@ fn format_function_body(source: &str) -> String {
 /// comment round-trips assert on the typed `Block.comments` (text, placement, marker)
 /// rather than substrings of the rendered text.
 fn reparsed_run_body(source: &str) -> Block {
-    let formatted = format_source(source);
+    let formatted = format_source(source).expect("a complete parse formats");
     let parsed = parse_source(&formatted);
     assert!(
-        parsed.diagnostics.is_empty(),
+        parsed.diagnostics.complete().is_empty(),
         "formatted output must re-parse cleanly:\n{formatted}\n{:#?}",
         parsed.diagnostics
     );
@@ -73,7 +74,7 @@ fn comment_facts(comments: &[Comment]) -> Vec<(&str, CommentPlacement, CommentMa
 fn format_const_value(source: &str) -> String {
     let parsed = parse_source(&format!("const X = {source}\n"));
     assert!(
-        parsed.diagnostics.is_empty(),
+        parsed.diagnostics.complete().is_empty(),
         "{source:?} should parse cleanly: {:#?}",
         parsed.diagnostics
     );
@@ -279,8 +280,8 @@ fn leaves_non_self_update_assignments_as_explicit() {
 #[test]
 fn compound_assign_fold_is_idempotent_and_reparses() {
     let source = "module app\nfn run() {\n    s = s + i\n}\n";
-    let once = format_source(source);
-    let twice = format_source(&once);
+    let once = format_source(source).expect("a complete parse formats");
+    let twice = format_source(&once).expect("a complete parse formats");
     assert_eq!(once, twice, "fold must be a fixed point");
 
     let body = reparsed_run_body(&once);
@@ -294,7 +295,10 @@ fn compound_assign_fold_is_idempotent_and_reparses() {
     );
     // The already-compound spelling formats to the identical canonical text.
     let already = "module app\nfn run() {\n    s += i\n}\n";
-    assert_eq!(format_source(already), once);
+    assert_eq!(
+        format_source(already).expect("a complete parse formats"),
+        once
+    );
 }
 
 /// The `use` block is formatter-owned: imports render sorted by module path,
@@ -304,7 +308,10 @@ fn sorts_and_deduplicates_the_use_block() {
     let source = "module app\n\nuse shelf::books\nuse catalog::isbn\nuse shelf::books\n\nfn f(): int {\n    return 0\n}\n";
     let expected =
         "module app\n\nuse catalog::isbn\nuse shelf::books\n\nfn f(): int {\n    return 0\n}\n";
-    assert_eq!(format_source(source), expected);
+    assert_eq!(
+        format_source(source).expect("a complete parse formats"),
+        expected
+    );
 }
 
 /// Sorting and collapsing the `use` block is a fixed point: formatting the
@@ -312,10 +319,10 @@ fn sorts_and_deduplicates_the_use_block() {
 #[test]
 fn use_block_formatting_is_idempotent() {
     let source = "module app\n\nuse shelf::b\nuse shelf::a\nuse shelf::a\n\nfn f(): int {\n    return 0\n}\n";
-    let once = format_source(source);
+    let once = format_source(source).expect("a complete parse formats");
     assert_eq!(
         once,
-        format_source(&once),
+        format_source(&once).expect("a complete parse formats"),
         "use-block sort is not a fixed point"
     );
 }
@@ -326,7 +333,7 @@ fn use_block_formatting_is_idempotent() {
 #[test]
 fn use_block_sort_never_reorders_declarations() {
     let source = "module app\n\nuse z::mod\nuse a::mod\n\nfn second(): int {\n    return 2\n}\n\nfn first(): int {\n    return 1\n}\n";
-    let formatted = format_source(source);
+    let formatted = format_source(source).expect("a complete parse formats");
     assert!(
         formatted.contains("use a::mod\nuse z::mod"),
         "imports must sort:\n{formatted}"
@@ -395,9 +402,9 @@ fn preserves_grouping_blank_between_match_arms() {
     let source = "module app\nfn label(s: Status) {\n    match s {\n        active => print(\"a\")\n\n        archived => print(\"b\")\n        deleted => print(\"c\")\n    }\n}\n";
     let expected = "    match s {\n        active => {\n            print(\"a\")\n        }\n\n        archived => {\n            print(\"b\")\n        }\n        deleted => {\n            print(\"c\")\n        }\n    }";
     assert_eq!(format_function_body(source), expected);
-    let once = format_source(source);
+    let once = format_source(source).expect("a complete parse formats");
     assert_eq!(
-        format_source(&once),
+        format_source(&once).expect("a complete parse formats"),
         once,
         "match-arm grouping blank is not idempotent"
     );
@@ -412,7 +419,7 @@ fn preserves_grouping_blank_between_match_arms() {
 #[test]
 fn an_else_if_chain_renders_multiline() {
     let source = "module app\nfn run(a: int): int {\n    if a > 0 {\n        return 1\n    } else if a == 0 {\n        return 0\n    } else if a == 1 {\n        return 2\n    }\n}\n";
-    let once = format_source(source);
+    let once = format_source(source).expect("a complete parse formats");
     assert!(
         once.contains("} else if a == 0 {\n        return 0\n    }"),
         "a middle else-if renders multiline:\n{once}"
@@ -426,7 +433,7 @@ fn an_else_if_chain_renders_multiline() {
         "formatted if-chain must re-parse:\n{once}"
     );
     assert_eq!(
-        format_source(&once),
+        format_source(&once).expect("a complete parse formats"),
         once,
         "if-chain rendering is not idempotent:\n{once}"
     );
@@ -438,7 +445,7 @@ fn an_else_if_chain_renders_multiline() {
 #[test]
 fn checked_arms_render_multiline() {
     let source = "module app\nfn run(a: int, b: int): int {\n    return checked a / b\n    on out_of_range {\n        return 0\n    }\n    on zero_divisor {\n        return -1\n    }\n}\n";
-    let once = format_source(source);
+    let once = format_source(source).expect("a complete parse formats");
     assert!(
         once.contains("on out_of_range {\n            return 0\n        }"),
         "the first checked arm renders multiline:\n{once}"
@@ -452,7 +459,7 @@ fn checked_arms_render_multiline() {
         "formatted checked arms must re-parse:\n{once}"
     );
     assert_eq!(
-        format_source(&once),
+        format_source(&once).expect("a complete parse formats"),
         once,
         "checked-arm rendering is not idempotent:\n{once}"
     );
@@ -477,10 +484,10 @@ fn empty_bodies_follow_the_mandatory_block_rule() {
         ),
     ];
     for (source, fragment) in cases {
-        let once = format_source(source);
+        let once = format_source(source).expect("a complete parse formats");
         assert!(once.contains(fragment), "expected `{fragment}` in:\n{once}");
         assert_eq!(
-            format_source(&once),
+            format_source(&once).expect("a complete parse formats"),
             once,
             "empty-body render is not idempotent:\n{once}"
         );
@@ -490,8 +497,16 @@ fn empty_bodies_follow_the_mandatory_block_rule() {
         );
     }
     let store = "module app\nresource B {\n    t: string\n}\nstore ^b: B\n";
-    assert!(format_source(store).contains("store ^b: B\n"));
-    assert!(!format_source(store).contains("store ^b: B {"));
+    assert!(
+        format_source(store)
+            .expect("a complete parse formats")
+            .contains("store ^b: B\n")
+    );
+    assert!(
+        !format_source(store)
+            .expect("a complete parse formats")
+            .contains("store ^b: B {")
+    );
 }
 
 /// A resource group mandates a `{ … }` body, so an empty group renders `{}` and
@@ -508,10 +523,10 @@ fn empty_resource_group_renders_braces_and_reparses() {
         ),
     ];
     for (source, fragment) in cases {
-        let once = format_source(source);
+        let once = format_source(source).expect("a complete parse formats");
         assert!(once.contains(fragment), "expected `{fragment}` in:\n{once}");
         assert_eq!(
-            format_source(&once),
+            format_source(&once).expect("a complete parse formats"),
             once,
             "empty-group render is not idempotent:\n{once}"
         );
@@ -544,7 +559,7 @@ fn formats_empty_doc_comment_lines_without_trailing_whitespace() {
         formatted.lines().all(|line| !line.ends_with(' ')),
         "formatter output contains trailing whitespace:\n{formatted:?}"
     );
-    let reparsed = parse_source(&format_source(source));
+    let reparsed = parse_source(&format_source(source).expect("a complete parse formats"));
     let Some(Declaration::Const(decl)) = reparsed.file.declarations.first() else {
         panic!("expected a const declaration: {:#?}", reparsed.file);
     };
@@ -555,7 +570,12 @@ fn formats_empty_doc_comment_lines_without_trailing_whitespace() {
 fn formats_resource_declaration_with_members() {
     let source = "module app\nresource Book {\n    /// Display title.\n    required title: string\n    tags[pos: int]: string\n    notes[noteId: string] {\n        text: string\n    }\n}\nstore ^books[id: int]: Book {\n    index byShelf[shelf, id] unique\n}\n";
     let expected = "module app\n\nresource Book {\n    /// Display title.\n    required title: string\n    tags[pos: int]: string\n    notes[noteId: string] {\n        text: string\n    }\n}\n\nstore ^books[id: int]: Book {\n    index byShelf[shelf, id] unique\n}";
-    assert_eq!(format_source(source).trim_end(), expected);
+    assert_eq!(
+        format_source(source)
+            .expect("a complete parse formats")
+            .trim_end(),
+        expected
+    );
 }
 
 /// A resource and the store that follows it each brace their own body; formatting is
@@ -564,8 +584,14 @@ fn formats_resource_declaration_with_members() {
 fn formats_a_resource_then_store_pair() {
     let source = "module app\nresource Book {\n    required title: string\n}\nstore ^books[id: int]: Book {\n    index byTitle[title, id]\n}\n";
     let expected = "module app\n\nresource Book {\n    required title: string\n}\n\nstore ^books[id: int]: Book {\n    index byTitle[title, id]\n}\n";
-    assert_eq!(format_source(source), expected);
-    assert_eq!(format_source(expected), expected);
+    assert_eq!(
+        format_source(source).expect("a complete parse formats"),
+        expected
+    );
+    assert_eq!(
+        format_source(expected).expect("a complete parse formats"),
+        expected
+    );
 }
 
 #[test]
@@ -579,7 +605,7 @@ fn formats_function_declaration_with_params() {
 fn formats_optional_function_return_and_absent_value() {
     let source = "module app\nfn f(): int? {\n    return absent\n}\n";
     assert_eq!(
-        format_source(source),
+        format_source(source).expect("a complete parse formats"),
         "module app\n\nfn f(): int? {\n    return absent\n}\n"
     );
 }
@@ -588,7 +614,10 @@ fn formats_optional_function_return_and_absent_value() {
 fn formats_whole_file_with_blank_line_policy() {
     let source = "module shelf::books\nuse std::clock\nuse shelf::books\nconst MaxLoans: int = 5\nresource Book {\n    required title: string\n}\nstore ^books[id: int]: Book\npub fn add(title: string): int {\n    return 1\n}\n";
     let expected = "module shelf::books\n\nuse shelf::books\nuse std::clock\n\nconst MaxLoans: int = 5\n\nresource Book {\n    required title: string\n}\n\nstore ^books[id: int]: Book\n\npub fn add(title: string): int {\n    return 1\n}\n";
-    assert_eq!(format_source(source), expected);
+    assert_eq!(
+        format_source(source).expect("a complete parse formats"),
+        expected
+    );
 }
 
 // ---- B5/B6 canonical rendering ----
@@ -600,8 +629,11 @@ fn formats_if_const_chain_canonically() {
     let source = "module app\nfn run(): int {\n    if const a = ^c[1].v and const b = ^c[2].v and a < b {\n        return 1\n    }\n    return 0\n}\n";
     let expected = "    if const a = ^c[1].v and const b = ^c[2].v and a < b {\n        return 1\n    }\n    return 0";
     assert_eq!(format_function_body(source), expected);
-    let once = format_source(source);
-    assert_eq!(format_source(&once), once);
+    let once = format_source(source).expect("a complete parse formats");
+    assert_eq!(
+        format_source(&once).expect("a complete parse formats"),
+        once
+    );
     // No longer a verbatim echo: the render is regenerated from the AST.
     let Statement::IfConstChain { bindings, .. } = &reparsed_run_body(source).statements[0] else {
         panic!("expected an if-const chain");
@@ -625,8 +657,11 @@ fn formats_let_else_canonically() {
         "    const x = ^c[1].v else {\n        log(\"x\")\n        return -1\n    }\n    return x"
     );
     for source in [single, braced] {
-        let once = format_source(source);
-        assert_eq!(format_source(&once), once);
+        let once = format_source(source).expect("a complete parse formats");
+        assert_eq!(
+            format_source(&once).expect("a complete parse formats"),
+            once
+        );
         let Statement::LetElse { .. } = &reparsed_run_body(source).statements[0] else {
             panic!("expected a let-else");
         };
@@ -640,9 +675,13 @@ fn formats_let_else_canonically() {
 #[test]
 fn single_line_call_wrapping_a_trailing_comma_call_is_idempotent() {
     let source = "module app\nfn run() {\n    print(h(g(a: 1, b: 2,)))\n}\n";
-    let once = format_source(source);
-    assert_eq!(format_source(&once), once, "not idempotent:\n{once}");
-    assert!(format_preserves_comments(source, &once));
+    let once = format_source(source).expect("a complete parse formats");
+    assert_eq!(
+        format_source(&once).expect("a complete parse formats"),
+        once,
+        "not idempotent:\n{once}"
+    );
+    assert!(format_preserves_comments(source, &once).expect("complete parses are comparable"));
 }
 
 /// A string interpolation is lexed within one line, so an embedded call never expands
@@ -660,12 +699,16 @@ fn trailing_comma_call_inside_interpolation_is_idempotent() {
         ),
     ];
     for (source, inline_interp) in cases {
-        let once = format_source(source);
+        let once = format_source(source).expect("a complete parse formats");
         assert!(
             once.contains(inline_interp),
             "embedded call must render inline:\n{once}"
         );
-        assert_eq!(format_source(&once), once, "not idempotent:\n{once}");
+        assert_eq!(
+            format_source(&once).expect("a complete parse formats"),
+            once,
+            "not idempotent:\n{once}"
+        );
         assert!(!parse_source(&once).has_errors(), "must re-parse:\n{once}");
     }
 }
@@ -674,7 +717,10 @@ fn trailing_comma_call_inside_interpolation_is_idempotent() {
 fn preserves_multiline_trailing_comma_calls() {
     let source = "module app\nfn fail() {\n    log(\n        code: \"book.absent\",\n        message: \"missing book\",\n    )\n}\n";
     let expected = "module app\n\nfn fail() {\n    log(\n        code: \"book.absent\",\n        message: \"missing book\",\n    )\n}\n";
-    assert_eq!(format_source(source), expected);
+    assert_eq!(
+        format_source(source).expect("a complete parse formats"),
+        expected
+    );
 }
 
 // ---- blank-line policy ----
@@ -685,9 +731,13 @@ fn preserves_multiline_trailing_comma_calls() {
 fn preserves_single_intra_body_blank_line() {
     let source = "module app\nresource Book {\n    required title: string\n\n\n    loanedTo: string\n}\npub fn run() {\n\n    const a = 1\n\n    const b = 2\n\n}\n";
     let expected = "module app\n\nresource Book {\n    required title: string\n\n    loanedTo: string\n}\n\npub fn run() {\n    const a = 1\n\n    const b = 2\n}\n";
-    assert_eq!(format_source(source), expected);
     assert_eq!(
-        format_source(&format_source(source)),
+        format_source(source).expect("a complete parse formats"),
+        expected
+    );
+    assert_eq!(
+        format_source(&format_source(source).expect("a complete parse formats"))
+            .expect("a complete parse formats"),
         expected,
         "not idempotent"
     );
@@ -699,9 +749,13 @@ fn preserves_single_intra_body_blank_line() {
 fn preserves_blank_above_doc_commented_member() {
     let source = "module app\nresource Book {\n    required title: string\n\n    /// Who currently holds the book.\n    loanedTo: string\n}\n";
     let expected = "module app\n\nresource Book {\n    required title: string\n\n    /// Who currently holds the book.\n    loanedTo: string\n}\n";
-    assert_eq!(format_source(source), expected);
     assert_eq!(
-        format_source(&format_source(source)),
+        format_source(source).expect("a complete parse formats"),
+        expected
+    );
+    assert_eq!(
+        format_source(&format_source(source).expect("a complete parse formats"))
+            .expect("a complete parse formats"),
         expected,
         "not idempotent"
     );
@@ -713,7 +767,10 @@ fn comment_after_blank_line_stays_attached_to_following_item() {
         "module app\npub fn run() {\n    const a = 1\n\n    // about b\n    const b = 2\n}\n";
     let expected =
         "module app\n\npub fn run() {\n    const a = 1\n\n    // about b\n    const b = 2\n}\n";
-    assert_eq!(format_source(source), expected);
+    assert_eq!(
+        format_source(source).expect("a complete parse formats"),
+        expected
+    );
 }
 
 #[test]
@@ -728,13 +785,13 @@ fn top_level_comment_after_blank_stays_with_following_decl_across_block_bearing_
         let source = format!(
             "module app\n\n{predecessor}\n\n// about two\npub fn two() {{\n    const b = 2\n}}\n"
         );
-        let once = format_source(&source);
+        let once = format_source(&source).expect("a complete parse formats");
         assert!(
             once.contains("\n\n// about two\npub fn two()"),
             "comment detached after predecessor `{predecessor}`:\n{once}"
         );
         assert_eq!(
-            format_source(&once),
+            format_source(&once).expect("a complete parse formats"),
             once,
             "not idempotent after `{predecessor}`:\n{once}"
         );
@@ -744,20 +801,37 @@ fn top_level_comment_after_blank_stays_with_following_decl_across_block_bearing_
 #[test]
 fn top_level_plain_comment_stays_glued_to_following_doc_comment() {
     let adjacent = "module app\n\n// a plain note\n/// the ceiling\nconst limit: int = 10\n";
-    assert_eq!(format_source(adjacent), adjacent);
-    assert_eq!(format_source(&format_source(adjacent)), adjacent);
+    assert_eq!(
+        format_source(adjacent).expect("a complete parse formats"),
+        adjacent
+    );
+    assert_eq!(
+        format_source(&format_source(adjacent).expect("a complete parse formats"))
+            .expect("a complete parse formats"),
+        adjacent
+    );
 
     let section_break =
         "module app\n\n// a standalone note\n\n/// the ceiling\nconst limit: int = 10\n";
-    assert_eq!(format_source(section_break), section_break);
-    assert_eq!(format_source(&format_source(section_break)), section_break);
+    assert_eq!(
+        format_source(section_break).expect("a complete parse formats"),
+        section_break
+    );
+    assert_eq!(
+        format_source(&format_source(section_break).expect("a complete parse formats"))
+            .expect("a complete parse formats"),
+        section_break
+    );
 }
 
 #[test]
 fn keeps_standalone_doc_paragraph_separate_from_following_declaration_docs() {
     let source = "module app\n/// Module overview.\n///\n\n/// Stored books.\nresource Book {\n    title: string\n}\n";
     let expected = "module app\n\n/// Module overview.\n///\n\n/// Stored books.\nresource Book {\n    title: string\n}\n";
-    assert_eq!(format_source(source), expected);
+    assert_eq!(
+        format_source(source).expect("a complete parse formats"),
+        expected
+    );
 }
 
 // ---- comment attachment ----
@@ -780,7 +854,8 @@ fn round_trips_ordinary_line_comments_by_placement() {
     ];
     let body = reparsed_run_body(source);
     assert_eq!(comment_facts(&body.comments), expected);
-    let recanonicalized = format_source(&format_source(source));
+    let recanonicalized = format_source(&format_source(source).expect("a complete parse formats"))
+        .expect("a complete parse formats");
     assert_eq!(
         comment_facts(&reparsed_run_body(&recanonicalized).comments),
         expected
@@ -793,8 +868,11 @@ fn round_trips_ordinary_line_comments_by_placement() {
 fn renders_own_line_body_comments_at_block_indent() {
     let source = "module app\nfn run() {\n    print(\"before\")\n            // odd indent\n    print(\"after\")\n}\n";
     let expected = "module app\n\nfn run() {\n    print(\"before\")\n    // odd indent\n    print(\"after\")\n}\n";
-    assert_eq!(format_source(source), expected);
-    let body = reparsed_run_body(&format_source(source));
+    assert_eq!(
+        format_source(source).expect("a complete parse formats"),
+        expected
+    );
+    let body = reparsed_run_body(&format_source(source).expect("a complete parse formats"));
     assert_eq!(
         comment_facts(&body.comments),
         [("odd indent", CommentPlacement::OwnLine, CommentMarker::Line)]
@@ -811,7 +889,11 @@ fn rejects_body_doc_comments_at_parse() {
     ] {
         let parsed = parse_source(source);
         assert!(
-            parsed.diagnostics.iter().any(|d| d.code == "parse.syntax"),
+            parsed
+                .diagnostics
+                .complete()
+                .iter()
+                .any(|d| d.code == "parse.syntax"),
             "a body doc comment must be a parse error: {source:?}: {:#?}",
             parsed.diagnostics
         );
@@ -854,7 +936,10 @@ fn round_trips_comments_attached_inside_nested_blocks() {
         );
     };
     check(source);
-    check(&format_source(&format_source(source)));
+    check(
+        &format_source(&format_source(source).expect("a complete parse formats"))
+            .expect("a complete parse formats"),
+    );
 }
 
 // ---- parameter docs ----
@@ -871,7 +956,11 @@ fn documented_parameter_signature_round_trips() {
     let source = "module app\nfn f(\n    /// first line\n    /// second line\n    book: int,\n    shelf: string,\n) {\n    return\n}\n";
     let param_docs = |source: &str| {
         let parsed = parse_source(source);
-        assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+        assert!(
+            parsed.diagnostics.complete().is_empty(),
+            "{:#?}",
+            parsed.diagnostics
+        );
         parsed
             .file
             .function("f")
@@ -889,9 +978,9 @@ fn documented_parameter_signature_round_trips() {
         ),
         ("shelf".to_string(), "string".to_string(), Vec::new()),
     ];
-    let once = format_source(source);
+    let once = format_source(source).expect("a complete parse formats");
     assert_eq!(
-        format_source(&once),
+        format_source(&once).expect("a complete parse formats"),
         once,
         "signature formatting is not a fixed point"
     );
@@ -904,7 +993,10 @@ fn documented_parameter_signature_round_trips() {
 fn preserves_top_level_and_member_line_comments() {
     let source = "module app\n// shared constants\nconst Max:int=5\n// stored records\nresource Book {\n    // visible label\n    title: string\n}\n";
     let expected = "module app\n\n// shared constants\nconst Max: int = 5\n\n// stored records\nresource Book {\n    // visible label\n    title: string\n}\n";
-    assert_eq!(format_source(source), expected);
+    assert_eq!(
+        format_source(source).expect("a complete parse formats"),
+        expected
+    );
 }
 
 /// An indented top-level own-line comment re-renders at column 1, round-trips
@@ -913,17 +1005,27 @@ fn preserves_top_level_and_member_line_comments() {
 fn preserves_indented_top_level_own_line_comments() {
     let source = "module app\n    // indented before first decl\nconst Max:int=5\n    /// indented between decls\nconst Min:int=0\n    // indented at end of file\n";
     let expected = "module app\n\n// indented before first decl\nconst Max: int = 5\n\n/// indented between decls\nconst Min: int = 0\n\n// indented at end of file\n";
-    assert_eq!(format_source(source), expected);
-    assert!(format_preserves_comments(source, expected));
-    let once = format_source(source);
-    assert_eq!(format_source(&once), once);
+    assert_eq!(
+        format_source(source).expect("a complete parse formats"),
+        expected
+    );
+    assert!(format_preserves_comments(source, expected).expect("complete parses are comparable"));
+    let once = format_source(source).expect("a complete parse formats");
+    assert_eq!(
+        format_source(&once).expect("a complete parse formats"),
+        once
+    );
 }
 
 #[test]
 fn rejects_indented_top_level_doc_comment_without_target() {
     let parsed = parse_source("module app\n    /// dangling doc at eof\n");
     assert!(
-        parsed.diagnostics.iter().any(|d| d.code == "parse.syntax"),
+        parsed
+            .diagnostics
+            .complete()
+            .iter()
+            .any(|d| d.code == "parse.syntax"),
         "an indented dangling doc comment must be a parse error: {:#?}",
         parsed.diagnostics
     );
@@ -937,9 +1039,15 @@ fn rejects_indented_top_level_doc_comment_without_target() {
 fn header_trailing_comments_route_by_body() {
     let source = "module app\nconst Max:int=5 // const rationale\n/// Stored books.\nresource Book { // resource rationale\n    title: string\n}\nstore ^books: Book // store rationale\nfn run() { // function rationale\n    return\n}\n";
     let expected = "module app\n\nconst Max: int = 5 // const rationale\n\n/// Stored books.\nresource Book {\n    // resource rationale\n    title: string\n}\n\nstore ^books: Book // store rationale\n\nfn run() {\n    // function rationale\n    return\n}\n";
-    assert_eq!(format_source(source), expected);
-    let once = format_source(source);
-    assert_eq!(format_source(&once), once);
+    assert_eq!(
+        format_source(source).expect("a complete parse formats"),
+        expected
+    );
+    let once = format_source(source).expect("a complete parse formats");
+    assert_eq!(
+        format_source(&once).expect("a complete parse formats"),
+        once
+    );
 }
 
 /// A comment trailing a member header routes the same way: a bodyless field, index, or
@@ -948,9 +1056,15 @@ fn header_trailing_comments_route_by_body() {
 fn member_header_trailing_comments_route_by_body() {
     let source = "module app\nresource Book {\n    details { // group rationale\n        required title: string // field rationale\n    }\n}\nstore ^books: Book {\n    index byTitle[title] // index rationale\n}\nenum Status {\n    category live { // category rationale\n        active // member rationale\n    }\n}\n";
     let expected = "module app\n\nresource Book {\n    details {\n        // group rationale\n        required title: string // field rationale\n    }\n}\n\nstore ^books: Book {\n    index byTitle[title] // index rationale\n}\n\nenum Status {\n    category live {\n        // category rationale\n        active // member rationale\n    }\n}\n";
-    assert_eq!(format_source(source), expected);
-    let once = format_source(source);
-    assert_eq!(format_source(&once), once);
+    assert_eq!(
+        format_source(source).expect("a complete parse formats"),
+        expected
+    );
+    let once = format_source(source).expect("a complete parse formats");
+    assert_eq!(
+        format_source(&once).expect("a complete parse formats"),
+        once
+    );
 }
 
 #[test]
@@ -959,16 +1073,25 @@ fn preserves_trailing_comments_on_multiline_top_level_headers() {
     // multiline function header is body-bearing, so the comment moves inside.
     let source = "module app\nconst Info = save(\n    title: \"x\",\n) // const rationale\nfn f(\n    /// the book to file\n    book: int,\n) { // function rationale\n    return\n}\n";
     let expected = "module app\n\nconst Info = save(\n    title: \"x\",\n) // const rationale\n\nfn f(\n    /// the book to file\n    book: int,\n) {\n    // function rationale\n    return\n}\n";
-    assert_eq!(format_source(source), expected);
-    let once = format_source(source);
-    assert_eq!(format_source(&once), once);
+    assert_eq!(
+        format_source(source).expect("a complete parse formats"),
+        expected
+    );
+    let once = format_source(source).expect("a complete parse formats");
+    assert_eq!(
+        format_source(&once).expect("a complete parse formats"),
+        once
+    );
 }
 
 #[test]
 fn preserves_trailing_comments_on_multiline_statements() {
     let source = "module app\nfn run() {\n    log(\n        code: \"book.absent\",\n        message: \"missing book\",\n    ) // retained rationale\n}\n";
     let expected = "module app\n\nfn run() {\n    log(\n        code: \"book.absent\",\n        message: \"missing book\",\n    ) // retained rationale\n}\n";
-    assert_eq!(format_source(source), expected);
+    assert_eq!(
+        format_source(source).expect("a complete parse formats"),
+        expected
+    );
     let body = reparsed_run_body(source);
     assert_eq!(
         comment_facts(&body.comments),
@@ -978,15 +1101,21 @@ fn preserves_trailing_comments_on_multiline_statements() {
             CommentMarker::Line
         )]
     );
-    let once = format_source(source);
-    assert_eq!(format_source(&once), once);
+    let once = format_source(source).expect("a complete parse formats");
+    assert_eq!(
+        format_source(&once).expect("a complete parse formats"),
+        once
+    );
 }
 
 #[test]
 fn preserves_trailing_comments_on_prefix_try_statements() {
     let source = "module app\nfn run(): Result<int, string> {\n    const x = try risky() // try rationale\n    return ok(x)\n}\n";
     let expected = "module app\n\nfn run(): Result<int, string> {\n    const x = try risky() // try rationale\n    return ok(x)\n}\n";
-    assert_eq!(format_source(source), expected);
+    assert_eq!(
+        format_source(source).expect("a complete parse formats"),
+        expected
+    );
     let body = reparsed_run_body(source);
     assert_eq!(
         comment_facts(&body.comments),
@@ -996,8 +1125,11 @@ fn preserves_trailing_comments_on_prefix_try_statements() {
             CommentMarker::Line
         )]
     );
-    let once = format_source(source);
-    assert_eq!(format_source(&once), once);
+    let once = format_source(source).expect("a complete parse formats");
+    assert_eq!(
+        format_source(&once).expect("a complete parse formats"),
+        once
+    );
 }
 
 /// A comment trailing a match-arm body statement stays on that statement inside the
@@ -1006,9 +1138,15 @@ fn preserves_trailing_comments_on_prefix_try_statements() {
 fn preserves_trailing_comments_on_match_arm_bodies() {
     let source = "module app\nfn run() {\n    match status {\n        active => return // active rationale\n        inactive => return\n    }\n}\n";
     let expected = "module app\n\nfn run() {\n    match status {\n        active => {\n            return // active rationale\n        }\n        inactive => {\n            return\n        }\n    }\n}\n";
-    assert_eq!(format_source(source), expected);
-    let once = format_source(source);
-    assert_eq!(format_source(&once), once);
+    assert_eq!(
+        format_source(source).expect("a complete parse formats"),
+        expected
+    );
+    let once = format_source(source).expect("a complete parse formats");
+    assert_eq!(
+        format_source(&once).expect("a complete parse formats"),
+        once
+    );
 }
 
 #[test]
@@ -1016,7 +1154,10 @@ fn comment_preservation_guard_rejects_unstable_rewrites() {
     let source = "module app\n\nconst info = save(\n    title: \"x\",\n) // const rationale\n";
     let unstable_rewrite =
         "module app\n\nconst info = save( // const rationale\n    title: \"x\",\n)\n";
-    assert!(!format_preserves_comments(source, unstable_rewrite));
+    assert!(
+        !format_preserves_comments(source, unstable_rewrite)
+            .expect("complete parses are comparable")
+    );
 }
 
 // ---- corpus-dependent goldens ----
@@ -1027,7 +1168,7 @@ fn comment_preservation_guard_rejects_unstable_rewrites() {
 fn canonical_sample_is_already_fmt_canonical() {
     let source = common::reference_sample();
     assert_eq!(
-        format_source(&source),
+        format_source(&source).expect("a complete parse formats"),
         source,
         "the canonical sample.md is not in fmt-canonical form"
     );
@@ -1042,10 +1183,10 @@ fn format_source_preserves_structure_and_reparses_cleanly() {
     assert!(blocks.len() >= 5, "expected several source files");
     for block in blocks {
         let source = block.source;
-        let once = format_source(&source);
+        let once = format_source(&source).expect("a complete parse formats");
         assert_eq!(
             once,
-            format_source(&once),
+            format_source(&once).expect("a complete parse formats"),
             "format_source is not a fixed point for:\n{source}"
         );
         assert!(
@@ -1072,7 +1213,9 @@ fn check_format_is_the_one_owned_format_policy() {
 
     // Unparsed source is refused with its parse diagnostics carried.
     match check_format("pub fn f(: int {\n    return 1\n}\n") {
-        Err(FormatRefusal::ParseInvalid(diagnostics)) => assert!(!diagnostics.is_empty()),
+        Err(FormatRefusal::ParseInvalid(diagnostics)) => {
+            assert!(!diagnostics.as_slice().is_empty())
+        }
         other => panic!("expected ParseInvalid, got {other:?}"),
     }
 }
@@ -1098,7 +1241,7 @@ fn check_format_refuses_sources_carrying_recovery_nodes() {
         );
         match check_format(source) {
             Err(FormatRefusal::ParseInvalid(diagnostics)) => assert!(
-                !diagnostics.is_empty(),
+                !diagnostics.as_slice().is_empty(),
                 "refusal must carry the parse diagnostics: {source:?}"
             ),
             other => panic!("expected ParseInvalid for {source:?}, got {other:?}"),
@@ -1113,8 +1256,12 @@ fn check_format_refuses_sources_carrying_recovery_nodes() {
 #[test]
 fn a_short_require_renders_on_one_line() {
     let source = "module app\nfn check(n: int): Result<int, string> {\n    require n > 0 else \"not positive\"\n    return ok(n)\n}\n";
-    let once = format_source(source);
-    assert_eq!(format_source(&once), once, "fixed point:\n{once}");
+    let once = format_source(source).expect("a complete parse formats");
+    assert_eq!(
+        format_source(&once).expect("a complete parse formats"),
+        once,
+        "fixed point:\n{once}"
+    );
     assert!(
         once.contains("    require n > 0 else \"not positive\"\n"),
         "one line:\n{once}"
@@ -1129,8 +1276,12 @@ fn a_short_require_renders_on_one_line() {
 #[test]
 fn a_long_require_value_breaks_inside_its_constructor() {
     let source = "module app\nenum Rejection {\n    staleRevision(kind: string, id: int, expected: int, actual: int)\n}\nfn check(kind: string, id: int, actual: int, expected: int): Result<bool, Rejection> {\n    require actual == expected else Rejection::staleRevision(\n        kind: kind,\n        id: id,\n        expected: expected,\n        actual: actual,\n    )\n    return ok(true)\n}\n";
-    let once = format_source(source);
-    assert_eq!(format_source(&once), once, "fixed point:\n{once}");
+    let once = format_source(source).expect("a complete parse formats");
+    assert_eq!(
+        format_source(&once).expect("a complete parse formats"),
+        once,
+        "fixed point:\n{once}"
+    );
     assert!(
         once.contains("require actual == expected else Rejection::staleRevision(\n"),
         "the head stays on one line and the value opens its multiline parens:\n{once}"
@@ -1140,7 +1291,7 @@ fn a_long_require_value_breaks_inside_its_constructor() {
         "constructor arguments sit one per line:\n{once}"
     );
     assert!(
-        parse_source(&once).diagnostics.is_empty(),
+        parse_source(&once).diagnostics.complete().is_empty(),
         "the wrapped form re-parses clean:\n{once}"
     );
 }
@@ -1151,8 +1302,12 @@ fn a_long_require_value_breaks_inside_its_constructor() {
 #[test]
 fn require_inline_constructor_value_is_a_fixed_point() {
     let source = "module app\nenum Rejection {\n    tooSmall(id: int)\n}\nfn check(id: int): Result<bool, Rejection> {\n    require id > 0 else Rejection::tooSmall(id: id)\n    return ok(true)\n}\n";
-    let once = format_source(source);
-    assert_eq!(format_source(&once), once, "fixed point:\n{once}");
+    let once = format_source(source).expect("a complete parse formats");
+    assert_eq!(
+        format_source(&once).expect("a complete parse formats"),
+        once,
+        "fixed point:\n{once}"
+    );
     assert!(
         once.contains("    require id > 0 else Rejection::tooSmall(id: id)\n"),
         "inline stays inline:\n{once}"

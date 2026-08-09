@@ -3,6 +3,7 @@
 //! signature rejects (defaults, generics, removed parameter modes, type aliases).
 
 use crate::common;
+use crate::common::CompletePayload;
 use common::parse_reason;
 use marrow_syntax::{
     Diagnose, ExpectedSyntax, ParseDiagnosticReason, ResourceMember, UnsupportedSyntax,
@@ -16,6 +17,7 @@ fn rejects_parameter_defaults() {
     assert!(parsed.has_errors(), "{:#?}", parsed.diagnostics);
     let diagnostic = parsed
         .diagnostics
+        .complete()
         .iter()
         .find(|diagnostic| {
             diagnostic.reason
@@ -43,6 +45,7 @@ fn parameter_equal_classifies_defaults_separately_from_nested_type_syntax() {
     assert!(
         default
             .diagnostics
+            .complete()
             .iter()
             .any(|diagnostic| diagnostic.reason
                 == parse_reason(ParseDiagnosticReason::Unsupported(
@@ -54,6 +57,7 @@ fn parameter_equal_classifies_defaults_separately_from_nested_type_syntax() {
     assert!(
         !default
             .diagnostics
+            .complete()
             .iter()
             .any(|diagnostic| diagnostic.reason
                 == parse_reason(ParseDiagnosticReason::Expected(
@@ -69,10 +73,14 @@ fn parameter_equal_classifies_defaults_separately_from_nested_type_syntax() {
     let nested = parse_source("module app\nfn f(x: Map<int, string>) {\n    return\n}\n");
     assert!(!nested.has_errors(), "{:#?}", nested.diagnostics);
     assert!(
-        !nested.diagnostics.iter().any(|diagnostic| diagnostic.reason
-            == parse_reason(ParseDiagnosticReason::Unsupported(
-                UnsupportedSyntax::ParameterDefaults,
-            ))),
+        !nested
+            .diagnostics
+            .complete()
+            .iter()
+            .any(|diagnostic| diagnostic.reason
+                == parse_reason(ParseDiagnosticReason::Unsupported(
+                    UnsupportedSyntax::ParameterDefaults,
+                ))),
         "{:#?}",
         nested.diagnostics
     );
@@ -90,10 +98,14 @@ fn removed_parameter_modes_are_rejected() {
             "expected removed parameter mode rejection"
         );
         assert!(
-            parsed.diagnostics.iter().any(|diagnostic| diagnostic.reason
-                == parse_reason(ParseDiagnosticReason::Unsupported(
-                    UnsupportedSyntax::ParameterModes,
-                ))),
+            parsed
+                .diagnostics
+                .complete()
+                .iter()
+                .any(|diagnostic| diagnostic.reason
+                    == parse_reason(ParseDiagnosticReason::Unsupported(
+                        UnsupportedSyntax::ParameterModes,
+                    ))),
             "{:#?}",
             parsed.diagnostics
         );
@@ -174,6 +186,7 @@ fn rejects_malformed_type_parameter_lists() {
         // at the header line; the guidance message discriminates the three shapes.
         let diagnostic = parsed
             .diagnostics
+            .complete()
             .iter()
             .find(|d| {
                 d.reason
@@ -215,6 +228,7 @@ fn unclosed_generic_type_argument_reports_the_missing_close() {
         let parsed = parse_source(source);
         let diagnostic = parsed
             .diagnostics
+            .complete()
             .iter()
             .find(|d| {
                 d.reason
@@ -243,12 +257,16 @@ fn formats_generic_function_headers() {
     // The formatter renders angle type-parameter lists with the canonical
     // `<T, U supports equality>` spacing and a braced, reindented body.
     let source = "module app\n\nfn pick<T,U supports equality>(x: T): U? {\nreturn absent\n}\n";
-    let formatted = format_source(source);
+    let formatted = format_source(source).expect("a complete parse formats");
     assert_eq!(
         formatted,
         "module app\n\nfn pick<T, U supports equality>(x: T): U? {\n    return absent\n}\n"
     );
-    assert_eq!(format_source(&formatted), formatted, "idempotent");
+    assert_eq!(
+        format_source(&formatted).expect("a complete parse formats"),
+        formatted,
+        "idempotent"
+    );
 }
 
 #[test]
@@ -297,6 +315,7 @@ fn alias_names_and_targets_are_validated() {
         assert!(parsed.has_errors(), "expected error for:\n{source}");
         let diagnostic = parsed
             .diagnostics
+            .complete()
             .iter()
             .find(|diagnostic| {
                 diagnostic.reason == parse_reason(ParseDiagnosticReason::Expected(expected))
@@ -327,7 +346,7 @@ fn rejects_malformed_type_annotations() {
 
         assert!(parsed.has_errors(), "expected error for:\n{source}");
         assert!(
-            parsed.diagnostics.iter().any(|diagnostic| {
+            parsed.diagnostics.complete().iter().any(|diagnostic| {
                 diagnostic.code == "parse.syntax"
                     && diagnostic.reason == parse_reason(ParseDiagnosticReason::Expected(expected))
             }),
@@ -369,6 +388,7 @@ fn rejects_trailing_tokens_after_a_complete_type_annotation() {
         assert!(parsed.has_errors(), "expected error for:\n{source}");
         let diagnostic = parsed
             .diagnostics
+            .complete()
             .iter()
             .find(|diagnostic| {
                 diagnostic.code == "parse.syntax"
@@ -450,6 +470,7 @@ fn signature_parse_errors_point_at_the_offending_token_not_column_one() {
         assert!(parsed.has_errors(), "expected error for:\n{source}");
         let diagnostic = parsed
             .diagnostics
+            .complete()
             .iter()
             .find(|diagnostic| {
                 diagnostic.code == "parse.syntax"
@@ -514,7 +535,7 @@ fn rejects_structural_equal_inside_type_annotations() {
 
         assert!(parsed.has_errors(), "expected error for:\n{source}");
         assert!(
-            parsed.diagnostics.iter().any(|diagnostic| {
+            parsed.diagnostics.complete().iter().any(|diagnostic| {
                 diagnostic.code == "parse.syntax"
                     && diagnostic.reason == parse_reason(ParseDiagnosticReason::Expected(expected))
             }),
@@ -605,14 +626,19 @@ fn composite_keyed_collection_parameter_carries_each_key() {
 #[test]
 fn reserved_word_as_parameter_name_is_rejected() {
     let parsed = parse_source("fn f(while: int) {\n    return\n}\n");
-    assert_eq!(parsed.diagnostics.len(), 1, "{:#?}", parsed.diagnostics);
+    assert_eq!(
+        parsed.diagnostics.complete().len(),
+        1,
+        "{:#?}",
+        parsed.diagnostics
+    );
     assert!(
-        parsed.diagnostics[0].reason
+        parsed.diagnostics.complete()[0].reason
             == parse_reason(ParseDiagnosticReason::Expected(
                 ExpectedSyntax::ParameterName
             )),
         "{:#?}",
-        parsed.diagnostics[0]
+        parsed.diagnostics.complete()[0]
     );
 }
 
@@ -621,10 +647,14 @@ fn future_surface_words_as_parameter_names_are_rejected() {
     for word in ["journal", "sensitive", "declassify", "Id"] {
         let parsed = parse_source(&format!("fn f({word}: int) {{\n    return\n}}\n"));
         assert!(
-            parsed.diagnostics.iter().any(|diagnostic| diagnostic.reason
-                == parse_reason(ParseDiagnosticReason::Expected(
-                    ExpectedSyntax::ParameterName
-                ))),
+            parsed
+                .diagnostics
+                .complete()
+                .iter()
+                .any(|diagnostic| diagnostic.reason
+                    == parse_reason(ParseDiagnosticReason::Expected(
+                        ExpectedSyntax::ParameterName
+                    ))),
             "expected parameter-name diagnostic for {word}: {:#?}",
             parsed.diagnostics
         );
@@ -773,6 +803,7 @@ fn trailing_doc_with_no_following_parameter_is_reported() {
     let parsed = parse_source(source);
     let diagnostic = parsed
         .diagnostics
+        .complete()
         .iter()
         .find(|d| d.reason == parse_reason(ParseDiagnosticReason::DocCommentBeforeParameter))
         .expect("a diagnostic for the orphaned doc comment");
@@ -837,7 +868,11 @@ fn parses_nominal_type_declarations() {
     let parsed = parse_source(
         "module app\ntype Age: int in 0..=150 supports add, subtract\ntype Percent: int in 0..101\n",
     );
-    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    assert!(
+        parsed.diagnostics.complete().is_empty(),
+        "{:#?}",
+        parsed.diagnostics
+    );
     let nominals: Vec<_> = parsed
         .file
         .declarations
@@ -905,6 +940,7 @@ fn nominal_type_declaration_recovers_totally() {
         assert!(
             parsed
                 .diagnostics
+                .complete()
                 .iter()
                 .any(|d| d.message.contains(expected_message)),
             "missing {expected_message:?} for {source:?}: {:#?}",
@@ -920,7 +956,7 @@ fn nominal_type_declaration_recovers_totally() {
         );
         // One diagnostic per defect, not a cascade.
         assert!(
-            parsed.diagnostics.len() <= 2,
+            parsed.diagnostics.complete().len() <= 2,
             "no cascade for {source:?}: {:#?}",
             parsed.diagnostics
         );
@@ -934,11 +970,11 @@ fn formats_nominal_type_declarations() {
     use marrow_syntax::format_source;
 
     let source = "module app\n\ntype Age:   int   in 0..=150   supports add,subtract\n";
-    let formatted = format_source(source);
+    let formatted = format_source(source).expect("a complete parse formats");
     assert_eq!(
         formatted,
         "module app\n\ntype Age: int in 0..=150 supports add, subtract\n"
     );
-    let reparsed = format_source(&formatted);
+    let reparsed = format_source(&formatted).expect("a complete parse formats");
     assert_eq!(formatted, reparsed, "formatting must be idempotent");
 }

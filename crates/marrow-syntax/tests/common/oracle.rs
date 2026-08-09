@@ -19,6 +19,7 @@
 //! A minimized counterexample from either lens becomes a deterministic fixture in
 //! `cases/fuzz.rs`, then a fix.
 
+use crate::common::CompletePayload;
 use marrow_syntax::{
     NESTING_DEPTH_LIMIT, ParsedSource, Severity, format_preserves_comments, format_source,
     lex_source, parse_source,
@@ -63,12 +64,12 @@ pub fn assert_total_invariants(source: &str) {
 
     let cap = diagnostic_cap(source);
     assert!(
-        first.diagnostics.len() <= cap,
+        first.diagnostics.complete().len() <= cap,
         "recovery emitted {} diagnostics, past the bound of {cap}, for {source:?}",
-        first.diagnostics.len()
+        first.diagnostics.complete().len()
     );
 
-    for diagnostic in &first.diagnostics {
+    for diagnostic in first.diagnostics.complete() {
         let span = diagnostic.span;
         assert!(
             span.start_byte <= span.end_byte && span.end_byte <= source.len(),
@@ -102,8 +103,8 @@ fn assert_formatter_total(parsed: &ParsedSource, source: &str) {
     if parsed.has_errors() {
         return;
     }
-    let once = format_source(source);
-    let twice = format_source(&once);
+    let once = format_source(source).expect("a complete parse formats");
+    let twice = format_source(&once).expect("a complete parse formats");
     assert_eq!(
         once, twice,
         "format is not idempotent for a clean parse of {source:?}"
@@ -130,9 +131,9 @@ pub fn assert_formatter_faithful(source: &str) {
         "a faithful-formatter subject must parse cleanly:\n{source}\n{:#?}",
         parsed.diagnostics
     );
-    let once = format_source(source);
+    let once = format_source(source).expect("a complete parse formats");
     assert!(
-        format_preserves_comments(source, &once),
+        format_preserves_comments(source, &once).expect("complete parses are comparable"),
         "canonical formatting dropped or moved a comment for:\n{source}\n--- formatted ---\n{once}"
     );
     assert_eq!(
@@ -206,6 +207,7 @@ fn structural_fingerprint(source: &str) -> String {
 pub fn has_error_diagnostic(source: &str) -> bool {
     parse_source(source)
         .diagnostics
+        .complete()
         .iter()
         .any(|diagnostic| diagnostic.severity == Severity::Error)
 }

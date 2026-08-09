@@ -15,8 +15,8 @@ use crate::ast::{
     IfConstBinding, MatchArm, Statement, TraversalBound, TypeExpr,
 };
 use crate::diagnostic::{
-    Diagnostic, DiagnosticReason, ExpectedSyntax, ParseDiagnosticReason, ReservedSyntax, Severity,
-    SourceSpan, UnsupportedSyntax,
+    DiagnosticReason, ExpectedSyntax, ParseDiagnosticReason, ReservedSyntax, SourceSpan,
+    SyntaxError, SyntaxSink, UnsupportedSyntax,
 };
 use crate::parse_expr::join_spans;
 use crate::token::{Keyword, Token, TokenKind};
@@ -57,7 +57,7 @@ fn is_stray_block_clause_keyword(keyword: Keyword) -> bool {
 /// Parses the statements of a function body over a token slice (the tokens
 /// strictly inside the enclosing `{ … }`). It frames nested `{ … }` blocks itself
 /// and delegates expression parsing to `ExprParser`.
-pub(super) struct StmtParser<'a> {
+pub(super) struct StmtParser<'a, 'c> {
     source: &'a str,
     tokens: &'a [Token],
     pos: usize,
@@ -65,10 +65,9 @@ pub(super) struct StmtParser<'a> {
     /// Each nested block swaps in a fresh accumulator (see `parse_nested_block`)
     /// so a comment lands in the block it appears in.
     comments: Vec<Comment>,
-    /// Parse errors for statement lines the body parser cannot structure, so a
-    /// malformed statement becomes a deterministic diagnostic instead of being
-    /// silently accepted.
-    diagnostics: Vec<Diagnostic>,
+    /// The declaration parser's scoped sink, reborrowed for the body's duration
+    /// so a malformed statement line reports directly to the one live collector.
+    sink: &'a mut SyntaxSink<'c>,
     /// Nested `{ … }` block depth. The lexer reports the nesting-limit diagnostic;
     /// this second layer stops the recursive descent at [`NESTING_DEPTH_LIMIT`] so a
     /// pathologically deep brace nest skips its body rather than overflowing the
@@ -76,25 +75,21 @@ pub(super) struct StmtParser<'a> {
     depth: usize,
 }
 
-impl<'a> StmtParser<'a> {
-    pub(super) fn new(source: &'a str, tokens: &'a [Token]) -> Self {
+impl<'a, 'c> StmtParser<'a, 'c> {
+    pub(super) fn new(source: &'a str, tokens: &'a [Token], sink: &'a mut SyntaxSink<'c>) -> Self {
         Self {
             source,
             tokens,
             pos: 0,
             comments: Vec::new(),
-            diagnostics: Vec::new(),
+            sink,
             depth: 0,
         }
     }
 
-    pub(super) fn parse_block(mut self) -> (Vec<Statement>, Vec<Comment>, Vec<Diagnostic>) {
+    pub(super) fn parse_block(mut self) -> (Vec<Statement>, Vec<Comment>) {
         let statements = self.statements();
-        (
-            statements,
-            std::mem::take(&mut self.comments),
-            std::mem::take(&mut self.diagnostics),
-        )
+        (statements, std::mem::take(&mut self.comments))
     }
 
     /// Record an own-line comment token (a leading or standalone comment) for
@@ -292,7 +287,7 @@ impl<'a> StmtParser<'a> {
         let start = self.tokens[self.pos].span;
         let line = self.take_line();
         let error_span = line_span_or(line, start);
-        let statement = parse_simple_statement(self.source, line, &mut self.diagnostics);
+        let statement = parse_simple_statement(self.source, line, self.sink);
         // Total parsing: a line that did not structure reported its own diagnostic
         // and becomes an error node carrying its span, so the body is never silently
         // short a statement.
@@ -344,15 +339,16 @@ impl<'a> StmtParser<'a> {
             return;
         }
         let colon = self.tokens[self.pos + 1];
-        self.error_span_reason(
-            join_spans(name.span, colon.span),
-            ParseDiagnosticReason::Unsupported(UnsupportedSyntax::LoopLabels),
+        // The remedy is part of the finding, finalized before submission (A8):
+        // no site reaches back into the collector to amend a submitted row.
+        let reason = ParseDiagnosticReason::Unsupported(UnsupportedSyntax::LoopLabels);
+        self.sink.push(SyntaxError::new(
+            reason.code(),
+            DiagnosticReason::Parser(reason),
             "loop labels were removed",
-        );
-        if let Some(diagnostic) = self.diagnostics.last_mut() {
-            diagnostic.help =
-                Some("extract a function and use return to leave nested loops".to_string());
-        }
+            Some("extract a function and use return to leave nested loops".to_string()),
+            join_spans(name.span, colon.span),
+        ));
         self.advance();
         self.advance();
     }
@@ -468,12 +464,11 @@ impl<'a> StmtParser<'a> {
             return None;
         }
         let error_span = line_span_or(header, start);
-        let inner = expr_of_after(self.source, header, start, &mut self.diagnostics).unwrap_or(
-            Expression::Error {
+        let inner =
+            expr_of_after(self.source, header, start, self.sink).unwrap_or(Expression::Error {
                 span: error_span,
                 recovery: None,
-            },
-        );
+            });
         let span = join_spans(start, inner.span());
         Some(Statement::Expr {
             value: Expression::Try {
@@ -779,11 +774,8 @@ impl<'a> StmtParser<'a> {
         let else_offset = find_top_level_else(&self.tokens[self.pos..line_end])
             .expect("let-else detected before dispatch");
         let binding_end = self.pos + else_offset;
-        let binding = parse_simple_statement(
-            self.source,
-            &self.tokens[self.pos..binding_end],
-            &mut self.diagnostics,
-        );
+        let binding =
+            parse_simple_statement(self.source, &self.tokens[self.pos..binding_end], self.sink);
         self.pos = binding_end + 1; // past the `else`
         let else_block = self.parse_clause_body();
         let (is_var, name, name_span, ty, value) = match binding {
@@ -850,27 +842,17 @@ impl<'a> StmtParser<'a> {
             );
             return Statement::Error { span: error_span };
         };
-        let condition = expr_of_after(
-            self.source,
-            &line[..else_offset],
-            keyword.span,
-            &mut self.diagnostics,
-        )
-        .unwrap_or(Expression::Error {
-            span: line_span_or(&line[..else_offset], keyword.span),
-            recovery: None,
-        });
+        let condition = expr_of_after(self.source, &line[..else_offset], keyword.span, self.sink)
+            .unwrap_or(Expression::Error {
+                span: line_span_or(&line[..else_offset], keyword.span),
+                recovery: None,
+            });
         let else_span = line[else_offset].span;
-        let value = expr_of_after(
-            self.source,
-            &line[else_offset + 1..],
-            else_span,
-            &mut self.diagnostics,
-        )
-        .unwrap_or(Expression::Error {
-            span: line_span_or(&line[else_offset + 1..], else_span),
-            recovery: None,
-        });
+        let value = expr_of_after(self.source, &line[else_offset + 1..], else_span, self.sink)
+            .unwrap_or(Expression::Error {
+                span: line_span_or(&line[else_offset + 1..], else_span),
+                recovery: None,
+            });
         let span = join_spans(keyword.span, value.span());
         Statement::Require {
             condition,
@@ -891,14 +873,15 @@ impl<'a> StmtParser<'a> {
             .position(|token| token.kind == TokenKind::Keyword(Keyword::Checked))
             .expect("checked form detected before dispatch");
         let checked_span = header[checked_index].span;
-        let bind = parse_checked_bind(self.source, &header[..checked_index], &mut self.diagnostics);
+        let bind = parse_checked_bind(self.source, &header[..checked_index], self.sink);
         let op_tokens = &header[checked_index + 1..];
         let op_error_span = line_span_or(op_tokens, checked_span);
-        let op = expr_of_after(self.source, op_tokens, checked_span, &mut self.diagnostics)
-            .unwrap_or(Expression::Error {
+        let op = expr_of_after(self.source, op_tokens, checked_span, self.sink).unwrap_or(
+            Expression::Error {
                 span: op_error_span,
                 recovery: None,
-            });
+            },
+        );
         let (out_of_range, zero_divisor, end) = self.checked_arms(start);
         Statement::Checked {
             bind,
@@ -1005,7 +988,7 @@ impl<'a> StmtParser<'a> {
     fn header_expression(&mut self, keyword: SourceSpan) -> Expression {
         let line = self.take_line();
         let error_span = line_span_or(line, keyword);
-        let expr = expr_of_after(self.source, line, keyword, &mut self.diagnostics);
+        let expr = expr_of_after(self.source, line, keyword, self.sink);
         // A failed header reported its own missing-expression diagnostic; the error
         // node stands in for the condition so the statement still parses.
         expr.unwrap_or(Expression::Error {
@@ -1028,16 +1011,16 @@ impl<'a> StmtParser<'a> {
         let head = if starts_const && top_level_and_starts(line).len() > 1 {
             Some(self.parse_if_const_chain(line))
         } else if starts_const {
-            parse_if_const_head(self.source, line, &mut self.diagnostics).map(
-                |(name, name_span, ty, value)| IfHead::ConstBinding {
+            parse_if_const_head(self.source, line, self.sink).map(|(name, name_span, ty, value)| {
+                IfHead::ConstBinding {
                     name,
                     name_span,
                     ty,
                     value,
-                },
-            )
+                }
+            })
         } else {
-            expr_of_after(self.source, line, keyword, &mut self.diagnostics).map(IfHead::Expr)
+            expr_of_after(self.source, line, keyword, self.sink).map(IfHead::Expr)
         };
         head.unwrap_or(IfHead::Expr(Expression::Error {
             span: error_span,
@@ -1060,7 +1043,7 @@ impl<'a> StmtParser<'a> {
             let part = &line[start..part_end];
             if part.first().map(|token| token.kind) == Some(TokenKind::Keyword(Keyword::Const)) {
                 if let Some((name, name_span, ty, value)) =
-                    parse_if_const_head(self.source, part, &mut self.diagnostics)
+                    parse_if_const_head(self.source, part, self.sink)
                 {
                     bindings.push(IfConstBinding {
                         name,
@@ -1081,7 +1064,7 @@ impl<'a> StmtParser<'a> {
             // `line[from - 1]` is that `and`: a guaranteed-valid anchor for an empty
             // trailing condition (`... and` with nothing after it).
             let anchor = line[from - 1].span;
-            expr_of(self.source, &line[from..], anchor, &mut self.diagnostics)
+            expr_of(self.source, &line[from..], anchor, self.sink)
         });
         IfHead::Chain {
             bindings,
@@ -1315,14 +1298,13 @@ impl<'a> StmtParser<'a> {
         reason: ParseDiagnosticReason,
         message: impl Into<String>,
     ) {
-        self.diagnostics.push(Diagnostic {
-            code: reason.code(),
-            reason: DiagnosticReason::Parser(reason),
-            severity: Severity::Error,
-            message: message.into(),
-            help: None,
+        self.sink.push(SyntaxError::new(
+            reason.code(),
+            DiagnosticReason::Parser(reason),
+            message,
+            None,
             span,
-        });
+        ));
     }
 
     /// Skip a malformed `{ … }` block, returning the span of the last token
@@ -1449,16 +1431,11 @@ fn top_level_and_starts(tokens: &[Token]) -> Vec<usize> {
 /// [`CheckedBind`]. The prefix is `return`, or `const`/`var NAME [: TYPE] =`. Stays
 /// total: a malformed name or type reports one diagnostic and falls back to an empty
 /// name so the statement node is still produced.
-fn parse_checked_bind(
-    source: &str,
-    prefix: &[Token],
-    diagnostics: &mut Vec<Diagnostic>,
-) -> CheckedBind {
+fn parse_checked_bind(source: &str, prefix: &[Token], sink: &mut SyntaxSink<'_>) -> CheckedBind {
     match prefix.first().map(|token| token.kind) {
         Some(TokenKind::Keyword(Keyword::Return)) => CheckedBind::Return,
         Some(TokenKind::Keyword(Keyword::Var)) => {
-            let (name, name_span, ty) =
-                parse_checked_binding_name(source, prefix, true, diagnostics);
+            let (name, name_span, ty) = parse_checked_binding_name(source, prefix, true, sink);
             CheckedBind::Var {
                 name,
                 name_span,
@@ -1468,8 +1445,7 @@ fn parse_checked_bind(
         // `const`, and the detection-guaranteed-unreachable fallback, both bind a
         // fresh const so the node is well-formed.
         _ => {
-            let (name, name_span, ty) =
-                parse_checked_binding_name(source, prefix, false, diagnostics);
+            let (name, name_span, ty) = parse_checked_binding_name(source, prefix, false, sink);
             CheckedBind::Const {
                 name,
                 name_span,
@@ -1486,7 +1462,7 @@ fn parse_checked_binding_name(
     source: &str,
     prefix: &[Token],
     is_var: bool,
-    diagnostics: &mut Vec<Diagnostic>,
+    sink: &mut SyntaxSink<'_>,
 ) -> (String, SourceSpan, Option<TypeExpr>) {
     let (name, name_span) = match prefix.get(1) {
         Some(token) if token.kind == TokenKind::Identifier => {
@@ -1501,14 +1477,14 @@ fn parse_checked_binding_name(
                     ExpectedSyntax::ConstName
                 },
             );
-            diagnostics.push(Diagnostic {
-                code: ParseDiagnosticReason::Expected(expected).code(),
-                reason: DiagnosticReason::Parser(ParseDiagnosticReason::Expected(expected)),
-                severity: Severity::Error,
-                message: "expected a name for the checked binding".to_string(),
-                help: None,
+            let reason = ParseDiagnosticReason::Expected(expected);
+            sink.push(SyntaxError::new(
+                reason.code(),
+                DiagnosticReason::Parser(reason),
+                "expected a name for the checked binding",
+                None,
                 span,
-            });
+            ));
             (String::new(), span)
         }
     };
@@ -1530,9 +1506,7 @@ fn parse_checked_binding_name(
             };
             match parse_type(source, &prefix[type_start..type_end], expected, message) {
                 Ok(parsed) => ty = Some(parsed),
-                Err(error) => {
-                    push_parse_error(diagnostics, line_span_or(prefix, prefix[0].span), error)
-                }
+                Err(error) => push_parse_error(sink, line_span_or(prefix, prefix[0].span), error),
             }
         }
     }

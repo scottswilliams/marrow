@@ -8,6 +8,7 @@
 //! separate rule; a paren argument list is what this consistency law covers.)
 
 use crate::common;
+use crate::common::CompletePayload;
 use common::{parse_reason, reason_count};
 use marrow_syntax::{ParseDiagnosticReason, parse_source};
 
@@ -60,7 +61,7 @@ fn positional_after_named_is_rejected_in_every_call_shape() {
         let parsed = parse_source(shape.reject);
         assert_eq!(
             reason_count(
-                &parsed.diagnostics,
+                parsed.diagnostics.complete(),
                 parse_reason(ParseDiagnosticReason::PositionalArgumentAfterNamed),
             ),
             1,
@@ -80,7 +81,7 @@ fn positional_before_named_is_accepted_in_every_call_shape() {
         let parsed = parse_source(shape.accept);
         assert_eq!(
             reason_count(
-                &parsed.diagnostics,
+                parsed.diagnostics.complete(),
                 parse_reason(ParseDiagnosticReason::PositionalArgumentAfterNamed),
             ),
             0,

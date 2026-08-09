@@ -4,17 +4,29 @@
 //! header-continuation token (`and`/`or`/`,`/`=`). It records lexical diagnostics
 //! as it goes.
 
+use crate::diagnostic::{SyntaxDiagnosticCollector, SyntaxError, SyntaxSink};
 use crate::token::{
     duration_unit_seconds, is_identifier_continue_char, is_identifier_start_char, keyword,
 };
 use crate::{
-    Diagnostic, DiagnosticReason, Keyword, LexedSource, LexerDiagnosticReason, NESTING_DEPTH_LIMIT,
-    NESTING_LIMIT, ObsoleteOperator, PARSE_SYNTAX, ParseDiagnosticReason, Severity, SourceSpan,
-    Token, TokenKind,
+    DiagnosticReason, Keyword, LexedSource, LexerDiagnosticReason, NESTING_DEPTH_LIMIT,
+    NESTING_LIMIT, ObsoleteOperator, PARSE_SYNTAX, ParseDiagnosticReason, SourceSpan, Token,
+    TokenKind,
 };
 
 pub fn lex_source(source: &str) -> LexedSource {
-    Lexer::new(source).lex()
+    let mut collector = SyntaxDiagnosticCollector::new();
+    let tokens = lex_tokens(source, collector.lexer_sink());
+    LexedSource {
+        tokens,
+        diagnostics: collector.finish(),
+    }
+}
+
+/// Lex through a caller-scoped sink, for the entry points that share one
+/// collector between the lexer and a parser.
+pub(crate) fn lex_tokens(source: &str, sink: SyntaxSink<'_>) -> Vec<Token> {
+    Lexer::new(source, sink).lex()
 }
 
 /// Why scanning an interpolation hole or nested interpolation literal for its
@@ -39,11 +51,11 @@ enum HoleContext {
     InHole,
 }
 
-struct Lexer<'a> {
+struct Lexer<'a, 'c> {
     source: &'a str,
     lines: Vec<Line<'a>>,
     tokens: Vec<Token>,
-    diagnostics: Vec<Diagnostic>,
+    sink: SyntaxSink<'c>,
     /// Open `(`/`[` depth. A `NEWLINE` is suppressed while this is non-zero, so a
     /// call or bracket group spans several physical lines as one logical line.
     open_delimiters: usize,
@@ -57,20 +69,20 @@ struct Lexer<'a> {
     reported_nesting_limit: bool,
 }
 
-impl<'a> Lexer<'a> {
-    fn new(source: &'a str) -> Self {
+impl<'a, 'c> Lexer<'a, 'c> {
+    fn new(source: &'a str, sink: SyntaxSink<'c>) -> Self {
         Self {
             source,
             lines: split_lines(source),
             tokens: Vec::new(),
-            diagnostics: Vec::new(),
+            sink,
             open_delimiters: 0,
             brace_depth: 0,
             reported_nesting_limit: false,
         }
     }
 
-    fn lex(mut self) -> LexedSource {
+    fn lex(mut self) -> Vec<Token> {
         // `Line` is `Copy`, so index the line stack rather than holding a borrow
         // across the mutating body. `self.lines` stays intact for `eof_span`.
         for index in 0..self.lines.len() {
@@ -98,10 +110,7 @@ impl<'a> Lexer<'a> {
         }
 
         self.push(TokenKind::Eof, self.eof_span());
-        LexedSource {
-            tokens: self.tokens,
-            diagnostics: self.diagnostics,
-        }
+        self.tokens
     }
 
     /// Emit the `NEWLINE` that ends a physical line, unless the line is continued.
@@ -148,14 +157,13 @@ impl<'a> Lexer<'a> {
             return;
         }
         self.reported_nesting_limit = true;
-        self.diagnostics.push(Diagnostic {
-            code: NESTING_LIMIT,
-            reason: DiagnosticReason::Parser(ParseDiagnosticReason::NestingLimit),
-            severity: Severity::Error,
-            message: format!("source nests deeper than the limit of {NESTING_DEPTH_LIMIT}"),
-            help: None,
+        self.sink.push(SyntaxError::new(
+            NESTING_LIMIT,
+            DiagnosticReason::Parser(ParseDiagnosticReason::NestingLimit),
+            format!("source nests deeper than the limit of {NESTING_DEPTH_LIMIT}"),
+            None,
             span,
-        });
+        ));
     }
 
     fn lex_line(&mut self, line: Line<'a>) {
@@ -516,14 +524,13 @@ impl<'a> Lexer<'a> {
     /// `check.nesting_limit` finding every other over-deep construct reports,
     /// anchored at the over-deep opener rather than the enclosing hole.
     fn report_interpolation_nesting_limit(&mut self, line: Line<'a>, offending: usize) {
-        self.diagnostics.push(Diagnostic {
-            code: NESTING_LIMIT,
-            reason: DiagnosticReason::Parser(ParseDiagnosticReason::NestingLimit),
-            severity: Severity::Error,
-            message: format!("interpolation nests deeper than the limit of {NESTING_DEPTH_LIMIT}"),
-            help: None,
-            span: self.span(line, offending, line.end_byte),
-        });
+        self.sink.push(SyntaxError::new(
+            NESTING_LIMIT,
+            DiagnosticReason::Parser(ParseDiagnosticReason::NestingLimit),
+            format!("interpolation nests deeper than the limit of {NESTING_DEPTH_LIMIT}"),
+            None,
+            self.span(line, offending, line.end_byte),
+        ));
     }
 
     fn find_string_end(&self, line: Line<'a>, start: usize) -> Option<usize> {
@@ -871,14 +878,13 @@ impl<'a> Lexer<'a> {
         message: impl Into<String>,
         help: Option<String>,
     ) {
-        self.diagnostics.push(Diagnostic {
-            code: PARSE_SYNTAX,
-            reason: DiagnosticReason::Lexer(reason),
-            severity: Severity::Error,
-            message: message.into(),
+        self.sink.push(SyntaxError::new(
+            PARSE_SYNTAX,
+            DiagnosticReason::Lexer(reason),
+            message,
             help,
             span,
-        });
+        ));
     }
 }
 

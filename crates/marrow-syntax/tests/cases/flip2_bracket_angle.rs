@@ -5,6 +5,7 @@
 //! comparison, and the one `>=` token-split closes a generic that glues onto an
 //! assignment.
 
+use crate::common::CompletePayload;
 use marrow_syntax::{
     Declaration, DiagnosticReason, ExpectedSyntax, Expression, ParseDiagnosticReason,
     ResourceMember, Statement, TypeExpr, parse_source,
@@ -13,7 +14,7 @@ use marrow_syntax::{
 fn clean(source: &str) {
     let parsed = parse_source(source);
     assert!(
-        parsed.diagnostics.is_empty(),
+        parsed.diagnostics.complete().is_empty(),
         "expected a clean parse of {source:?}: {:#?}",
         parsed.diagnostics
     );
@@ -23,6 +24,7 @@ fn has_reason(source: &str, reason: ParseDiagnosticReason) -> bool {
     let target = DiagnosticReason::Parser(reason);
     parse_source(source)
         .diagnostics
+        .complete()
         .iter()
         .any(|d| d.reason == target)
 }
@@ -33,7 +35,7 @@ fn first_statement(header: &str, body: &str) -> Statement {
     let source = format!("module app\n{header} {{\n{body}\n}}\n");
     let parsed = parse_source(&source);
     assert!(
-        parsed.diagnostics.is_empty(),
+        parsed.diagnostics.complete().is_empty(),
         "expected a clean parse of {source:?}: {:#?}",
         parsed.diagnostics
     );
@@ -168,7 +170,11 @@ fn a_keyed_store_root_declares_its_columns_in_brackets() {
     let parsed = parse_source(
         "module app\nresource Patient {\n    required name: string\n}\nstore ^patients[pid: int]: Patient\n",
     );
-    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    assert!(
+        parsed.diagnostics.complete().is_empty(),
+        "{:#?}",
+        parsed.diagnostics
+    );
     let store = parsed.file.store("patients").expect("store");
     assert_eq!(store.root.keys.len(), 1, "one key column pid");
     assert_eq!(store.root.keys[0].name, "pid");
@@ -179,7 +185,11 @@ fn a_composite_store_root_declares_each_column() {
     let parsed = parse_source(
         "module app\nresource Enrollment {\n    required grade: int\n}\nstore ^enrollments[student: string, course: string]: Enrollment\n",
     );
-    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    assert!(
+        parsed.diagnostics.complete().is_empty(),
+        "{:#?}",
+        parsed.diagnostics
+    );
     let store = parsed.file.store("enrollments").expect("store");
     assert_eq!(store.root.keys.len(), 2, "two key columns");
 }
@@ -189,7 +199,11 @@ fn keyed_leaf_and_branch_members_declare_in_brackets() {
     let parsed = parse_source(
         "module app\nresource Book {\n    required title: string\n    tags[pos: int]: string\n    notes[noteId: string] {\n        required text: string\n        tags[tagId: int] {\n            required weight: int\n        }\n    }\n}\nstore ^books[id: int]: Book\n",
     );
-    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    assert!(
+        parsed.diagnostics.complete().is_empty(),
+        "{:#?}",
+        parsed.diagnostics
+    );
     let book = parsed.file.resource("Book").expect("Book");
     let tags = book
         .members
@@ -221,7 +235,11 @@ fn index_declarations_are_bracketed() {
     let parsed = parse_source(
         "module app\nresource Book {\n    required isbn: string\n    required shelf: int\n}\nstore ^books[id: int]: Book {\n    index byShelf[shelf, id]\n    index byIsbn[isbn] unique\n}\n",
     );
-    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    assert!(
+        parsed.diagnostics.complete().is_empty(),
+        "{:#?}",
+        parsed.diagnostics
+    );
     let store = parsed.file.store("books").expect("store");
     assert_eq!(store.indexes.len(), 2, "two indexes: {store:#?}");
     assert_eq!(store.indexes[0].args, vec!["shelf", "id"]);
@@ -252,7 +270,7 @@ fn a_multi_argument_generic_parameter_is_one_parameter() {
     let source = "module app\nfn f(r: Map<int, string>, x: int): int {\n    return x\n}\n";
     let parsed = parse_source(source);
     assert!(
-        parsed.diagnostics.is_empty(),
+        parsed.diagnostics.complete().is_empty(),
         "expected a clean parse of {source:?}: {:#?}",
         parsed.diagnostics
     );
@@ -276,7 +294,7 @@ fn a_nested_multi_argument_generic_parameter_is_one_parameter() {
         "module app\nfn f(r: Map<int, Map<string, List<int>>>, x: int): int {\n    return x\n}\n";
     let parsed = parse_source(source);
     assert!(
-        parsed.diagnostics.is_empty(),
+        parsed.diagnostics.complete().is_empty(),
         "expected a clean parse of {source:?}: {:#?}",
         parsed.diagnostics
     );
@@ -298,7 +316,7 @@ fn a_multi_line_parameter_wraps_inside_its_generic() {
     let source = "module app\nfn f(\n    r: Map<int,\n           string>,\n    x: int\n): int {\n    return x\n}\n";
     let parsed = parse_source(source);
     assert!(
-        parsed.diagnostics.is_empty(),
+        parsed.diagnostics.complete().is_empty(),
         "expected a clean parse of {source:?}: {:#?}",
         parsed.diagnostics
     );
@@ -319,7 +337,7 @@ fn a_keyed_parameter_value_generic_does_not_split_the_list() {
         "module app\nfn f(scores[player: string]: Map<int, string>, x: int) {\n    return\n}\n";
     let parsed = parse_source(source);
     assert!(
-        parsed.diagnostics.is_empty(),
+        parsed.diagnostics.complete().is_empty(),
         "expected a clean parse of {source:?}: {:#?}",
         parsed.diagnostics
     );
@@ -393,7 +411,7 @@ fn const_type(source_type: &str) -> TypeExpr {
         format!("module app\nfn run() {{\n    const x: {source_type} = y\n    return\n}}\n");
     let parsed = parse_source(&source);
     assert!(
-        parsed.diagnostics.is_empty(),
+        parsed.diagnostics.complete().is_empty(),
         "expected clean parse of {source:?}: {:#?}",
         parsed.diagnostics
     );
@@ -471,7 +489,11 @@ fn generic_type_parameters_on_declarations_use_angles() {
         "module app\nfn includes<T supports equality>(xs: List<T>, x: T): bool {\n    return false\n}\n",
     );
     let parsed = parse_source("module app\nstruct Pair<A, B> {\n    first: A\n    second: B\n}\n");
-    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    assert!(
+        parsed.diagnostics.complete().is_empty(),
+        "{:#?}",
+        parsed.diagnostics
+    );
     let Some(Declaration::Struct(decl)) = parsed
         .file
         .declarations
@@ -537,6 +559,7 @@ fn a_chained_comparison_stays_a_parse_error() {
     assert!(
         parsed
             .diagnostics
+            .complete()
             .iter()
             .any(|d| d.reason
                 == DiagnosticReason::Parser(ParseDiagnosticReason::NonAssociativeOperator)),
@@ -552,7 +575,11 @@ fn the_unspaced_generic_assign_split_parses() {
     let parsed = parse_source(
         "module app\nfn run() {\n    const m: Map<string, int>= Map()\n    return\n}\n",
     );
-    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    assert!(
+        parsed.diagnostics.complete().is_empty(),
+        "{:#?}",
+        parsed.diagnostics
+    );
     let Statement::Const { ty, .. } =
         parsed.file.function("run").unwrap().body.statements[0].clone()
     else {

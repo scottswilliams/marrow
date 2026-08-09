@@ -9,11 +9,11 @@
 
 use crate::{
     AliasDecl, Argument, BinaryOp, Block, CheckedBind, Comment, CommentMarker, CommentPlacement,
-    CompoundAssignOp, ConstDecl, Declaration, Diagnostic, ElseIf, EnumDecl, EnumMember, Expression,
-    ForBinding, FunctionDecl, IfConstBinding, InterpolationPart, KeyParam, LiteralKind, LoopOrder,
-    MatchArm, NominalDecl, ParamDecl, ResourceDecl, ResourceMember, Statement, StoreDecl,
-    StructDecl, TokenKind, TraversalBound, TypeExpr, UnaryOp, duration_unit_forms,
-    encode_string_literal,
+    CompoundAssignOp, ConstDecl, Declaration, ElseIf, EnumDecl, EnumMember, Expression, ForBinding,
+    FunctionDecl, IfConstBinding, InterpolationPart, KeyParam, LiteralKind, LoopOrder, MatchArm,
+    NominalDecl, NonEmptyCompleteSyntaxDiagnostics, ParamDecl, ResourceDecl, ResourceMember,
+    Statement, StoreDecl, StructDecl, SyntaxDiagnosticLimit, TokenKind, TraversalBound, TypeExpr,
+    UnaryOp, duration_unit_forms, encode_string_literal,
 };
 
 /// Why checked whole-document formatting was refused. This is the one syntax-owned
@@ -21,9 +21,12 @@ use crate::{
 /// is classified once rather than reconstructed in each caller.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FormatRefusal {
-    /// The source did not parse; the parse diagnostics are carried for the caller to
-    /// render. Formatting an unparsed document could drop or mangle syntax.
-    ParseInvalid(Vec<Diagnostic>),
+    /// The source did not parse; the nonempty parse diagnostics are carried for the
+    /// caller to render. Formatting an unparsed document could drop or mangle syntax.
+    ParseInvalid(NonEmptyCompleteSyntaxDiagnostics),
+    /// The parse crossed a diagnostic ceiling, so the payload was discarded and no
+    /// complete parse exists to format from.
+    DiagnosticLimit(SyntaxDiagnosticLimit),
     /// Formatting would discard retained comments the parser cannot re-emit (a comment
     /// stranded on a continuation line inside an open delimiter), so the lossless
     /// contract refuses rather than silently drop them.
@@ -36,14 +39,19 @@ pub enum FormatRefusal {
 /// reparses source text nor re-derives the refusal decision.
 pub fn check_format(source: &str) -> Result<String, FormatRefusal> {
     let parsed = crate::parse_source(source);
-    if parsed.has_errors() {
-        return Err(FormatRefusal::ParseInvalid(parsed.diagnostics));
+    let diagnostics = match parsed.diagnostics.into_complete() {
+        Ok(complete) => complete,
+        Err(limit) => return Err(FormatRefusal::DiagnosticLimit(limit)),
+    };
+    if let Some(diagnostics) = diagnostics.into_non_empty() {
+        return Err(FormatRefusal::ParseInvalid(diagnostics));
     }
-    let formatted = format_parsed(source, &parsed);
-    if !format_preserves_comments(source, &formatted) {
-        return Err(FormatRefusal::CommentLoss);
+    let formatted = format_parsed(source, &parsed.file);
+    match format_preserves_comments(source, &formatted) {
+        Ok(true) => Ok(formatted),
+        Ok(false) => Err(FormatRefusal::CommentLoss),
+        Err(limit) => Err(FormatRefusal::DiagnosticLimit(limit)),
     }
-    Ok(formatted)
 }
 
 /// Precedence used to decide where parentheses are required, tightest-binding
@@ -68,16 +76,20 @@ const INDENT: &str = "    ";
 /// `format_block`). A comment in the middle of a value that spans several lines
 /// inside open delimiters is the one position the expression parser does not
 /// carry through.
-pub fn format_source(source: &str) -> String {
+///
+/// A complete parse — even one carrying errors — formats best-effort; only a
+/// parse whose diagnostics crossed a ceiling refuses, since no complete parse
+/// exists behind a discarded payload.
+pub fn format_source(source: &str) -> Result<String, SyntaxDiagnosticLimit> {
     let parsed = crate::parse_source(source);
-    format_parsed(source, &parsed)
+    parsed.diagnostics.as_complete()?;
+    Ok(format_parsed(source, &parsed.file))
 }
 
 /// Render an already-parsed file back to canonical Marrow `.mw` source, reading
 /// leaf text and blank-line structure from the `source` the AST's spans index
 /// into. `format_source` parses with the production parser and delegates here.
-fn format_parsed(source: &str, parsed: &crate::ast::ParsedSource) -> String {
-    let file = &parsed.file;
+fn format_parsed(source: &str, file: &crate::ast::SourceFile) -> String {
     let mut sections: Vec<FormatSection> = Vec::new();
 
     if let Some(module) = &file.module {
@@ -166,14 +178,20 @@ fn format_use_block(uses: &[crate::ast::UseDecl]) -> Option<FormatSection> {
 
 /// Whether replacing `source` with `formatted` would preserve every comment
 /// token's marker and normalized text, leave both files parseable, and produce
-/// stable formatter output.
-pub fn format_preserves_comments(source: &str, formatted: &str) -> bool {
+/// stable formatter output. A parse whose diagnostics crossed a ceiling has no
+/// complete parse to compare, so it returns the typed limit instead of a verdict.
+pub fn format_preserves_comments(
+    source: &str,
+    formatted: &str,
+) -> Result<bool, SyntaxDiagnosticLimit> {
     let parsed_source = crate::parse_source(source);
     let parsed_formatted = crate::parse_source(formatted);
-    !parsed_source.has_errors()
+    parsed_source.diagnostics.as_complete()?;
+    parsed_formatted.diagnostics.as_complete()?;
+    Ok(!parsed_source.has_errors()
         && !parsed_formatted.has_errors()
-        && format_source(formatted) == formatted
-        && normalized_comment_tokens(source) == normalized_comment_tokens(formatted)
+        && format_source(formatted)? == formatted
+        && normalized_comment_tokens(source) == normalized_comment_tokens(formatted))
 }
 
 struct FormatSection {
@@ -2004,8 +2022,9 @@ mod tests {
 
     fn parse(source: &str) -> Expression {
         let (expression, diagnostics) = parse_expression(source);
-        assert!(
-            diagnostics.is_empty(),
+        assert_eq!(
+            diagnostics.summary().count(),
+            0,
             "unexpected diagnostics: {diagnostics:?}"
         );
         expression.expect("expression")

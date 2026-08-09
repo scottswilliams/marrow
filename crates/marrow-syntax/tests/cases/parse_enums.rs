@@ -2,6 +2,7 @@
 //! grammar rules, and the clean enum round-trip through the formatter.
 
 use crate::common;
+use crate::common::CompletePayload;
 use common::parse_reason;
 use marrow_syntax::{ParseDiagnosticReason, parse_source};
 
@@ -13,7 +14,11 @@ fn member_names(decl: &marrow_syntax::EnumDecl) -> Vec<&str> {
 fn parses_a_flat_enum_declaration() {
     let parsed =
         parse_source("module app\nenum Status {\n    active\n    archived\n    banned\n}\n");
-    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    assert!(
+        parsed.diagnostics.complete().is_empty(),
+        "{:#?}",
+        parsed.diagnostics
+    );
     let status = parsed.file.enum_decl("Status").expect("Status enum");
     assert!(!status.public);
     assert_eq!(member_names(status), ["active", "archived", "banned"]);
@@ -22,7 +27,11 @@ fn parses_a_flat_enum_declaration() {
 #[test]
 fn parses_pub_enum() {
     let parsed = parse_source("module app\npub enum Status {\n    active\n}\n");
-    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    assert!(
+        parsed.diagnostics.complete().is_empty(),
+        "{:#?}",
+        parsed.diagnostics
+    );
     let status = parsed.file.enum_decl("Status").expect("Status enum");
     assert!(status.public);
     assert_eq!(member_names(status), ["active"]);
@@ -32,7 +41,11 @@ fn parses_pub_enum() {
 fn attaches_doc_comments_to_enum_members() {
     let parsed =
         parse_source("module app\nenum Status {\n    /// Currently live.\n    active\n}\n");
-    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    assert!(
+        parsed.diagnostics.complete().is_empty(),
+        "{:#?}",
+        parsed.diagnostics
+    );
     let status = parsed.file.enum_decl("Status").expect("Status enum");
     assert_eq!(status.members[0].docs, ["Currently live."]);
 }
@@ -44,6 +57,7 @@ fn rejects_an_enum_with_no_members() {
     assert!(
         parsed
             .diagnostics
+            .complete()
             .iter()
             .any(|d| d.reason == parse_reason(ParseDiagnosticReason::EnumNeedsMember)),
         "{:#?}",
@@ -58,6 +72,7 @@ fn rejects_an_enum_member_with_a_type_annotation() {
     assert!(
         parsed
             .diagnostics
+            .complete()
             .iter()
             .any(|d| d.reason == parse_reason(ParseDiagnosticReason::EnumMemberMustBeBareName)),
         "{:#?}",
@@ -70,7 +85,11 @@ fn parses_a_payload_member() {
     let parsed = parse_source(
         "module app\nenum Shape {\n    dot\n    circle(radius: int)\n    rect(width: int, height: int)\n}\n",
     );
-    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    assert!(
+        parsed.diagnostics.complete().is_empty(),
+        "{:#?}",
+        parsed.diagnostics
+    );
     let shape = parsed.file.enum_decl("Shape").expect("Shape enum");
     assert_eq!(member_names(shape), ["dot", "circle", "rect"]);
     assert!(shape.members[0].payload.is_empty(), "dot has no payload");
@@ -87,6 +106,7 @@ fn rejects_an_enum_member_with_an_empty_payload() {
     assert!(
         parsed
             .diagnostics
+            .complete()
             .iter()
             .any(|d| d.reason == parse_reason(ParseDiagnosticReason::EnumMemberMustBeBareName)),
         "{:#?}",
@@ -99,8 +119,15 @@ fn round_trips_a_payload_enum_through_the_formatter() {
     let source =
         "enum Shape {\n    dot\n    circle(radius: int)\n    rect(width: int, height: int)\n}";
     let parsed = parse_source(source);
-    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
-    assert_eq!(marrow_syntax::format_source(source), format!("{source}\n"));
+    assert!(
+        parsed.diagnostics.complete().is_empty(),
+        "{:#?}",
+        parsed.diagnostics
+    );
+    assert_eq!(
+        marrow_syntax::format_source(source).expect("a complete parse formats"),
+        format!("{source}\n")
+    );
 }
 
 #[test]
@@ -108,7 +135,11 @@ fn parses_nested_enum_members_into_a_tree() {
     let parsed = parse_source(
         "module app\nenum Cat {\n    category tiger {\n        bengal\n        siberian\n    }\n    housecat\n}\n",
     );
-    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    assert!(
+        parsed.diagnostics.complete().is_empty(),
+        "{:#?}",
+        parsed.diagnostics
+    );
     let cat = parsed.file.enum_decl("Cat").expect("Cat enum");
     assert_eq!(member_names(cat), ["tiger", "housecat"]);
     let tiger = &cat.members[0];
@@ -126,7 +157,11 @@ fn the_category_modifier_sets_the_flag_and_a_bare_member_does_not() {
     let parsed = parse_source(
         "module app\nenum Cat {\n    category tiger {\n        bengal\n    }\n    housecat\n}\n",
     );
-    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    assert!(
+        parsed.diagnostics.complete().is_empty(),
+        "{:#?}",
+        parsed.diagnostics
+    );
     let cat = parsed.file.enum_decl("Cat").expect("Cat enum");
     assert!(cat.members[0].category, "category tiger");
     assert!(!cat.members[1].category, "bare housecat");
@@ -138,8 +173,15 @@ fn the_category_modifier_sets_the_flag_and_a_bare_member_does_not() {
 fn round_trips_an_enum_through_the_formatter() {
     let source = "enum Status {\n    active\n    archived\n    banned\n}";
     let parsed = parse_source(source);
-    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    assert!(
+        parsed.diagnostics.complete().is_empty(),
+        "{:#?}",
+        parsed.diagnostics
+    );
     // The canonical form of a single declaration is the declaration followed by a
     // trailing newline, so a clean enum round-trips unchanged.
-    assert_eq!(marrow_syntax::format_source(source), format!("{source}\n"));
+    assert_eq!(
+        marrow_syntax::format_source(source).expect("a complete parse formats"),
+        format!("{source}\n")
+    );
 }

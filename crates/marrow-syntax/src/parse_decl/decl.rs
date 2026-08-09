@@ -12,10 +12,10 @@ use super::tokens::{
 };
 use crate::ast::{
     AliasDecl, Block, Comment, CommentMarker, CommentPlacement, ConstDecl, Declaration, EnumDecl,
-    Expression, FunctionDecl, ModuleDecl, NominalDecl, ParsedSource, ResourceDecl, SavedRoot,
-    SourceFile, StoreDecl, StructDecl, SupportSpelling, TestDecl, TypeExpr, UseDecl,
+    Expression, FunctionDecl, ModuleDecl, NominalDecl, ResourceDecl, SavedRoot, SourceFile,
+    StoreDecl, StructDecl, SupportSpelling, TestDecl, TypeExpr, UseDecl,
 };
-use crate::diagnostic::{Diagnostic, ExpectedSyntax, ParseDiagnosticReason, SourceSpan};
+use crate::diagnostic::{ExpectedSyntax, ParseDiagnosticReason, SourceSpan, SyntaxSink};
 use crate::literal::decode_string_literal;
 use crate::parse_expr::{ExprParser, ParseComplete};
 use crate::token::{Keyword, Token, TokenKind, is_identifier, keyword};
@@ -23,13 +23,14 @@ use crate::token::{Keyword, Token, TokenKind, is_identifier, keyword};
 /// Recursive-descent parser for top-level declarations over the file-wide token
 /// stream, the same stream `StmtParser`/`ExprParser` consume. It dispatches on
 /// token shape, frames resource and function bodies with `{`/`}` braces,
-/// and delegates statement and expression parsing to those parsers. A
+/// and delegates statement and expression parsing to those parsers, reborrowing
+/// its scoped sink so every finding reaches the one live collector. A
 /// declaration spans its whole first physical line at column 1.
-pub(crate) struct DeclParser<'a> {
+pub(crate) struct DeclParser<'a, 'c> {
     pub(super) source: &'a str,
     pub(super) tokens: &'a [Token],
     pub(super) pos: usize,
-    pub(super) diagnostics: Vec<Diagnostic>,
+    pub(super) sink: SyntaxSink<'c>,
     /// Nested member-block depth (resource groups, enum categories). The lexer
     /// reports the nesting-limit diagnostic; this second layer stops the recursive
     /// descent at [`crate::NESTING_DEPTH_LIMIT`] so a deep group/category nest skips
@@ -37,18 +38,18 @@ pub(crate) struct DeclParser<'a> {
     pub(super) depth: usize,
 }
 
-impl<'a> DeclParser<'a> {
-    pub(crate) fn new(source: &'a str, tokens: &'a [Token]) -> Self {
+impl<'a, 'c> DeclParser<'a, 'c> {
+    pub(crate) fn new(source: &'a str, tokens: &'a [Token], sink: SyntaxSink<'c>) -> Self {
         Self {
             source,
             tokens,
             pos: 0,
-            diagnostics: Vec::new(),
+            sink,
             depth: 0,
         }
     }
 
-    pub(crate) fn parse(mut self) -> ParsedSource {
+    pub(crate) fn parse(mut self) -> SourceFile {
         let mut file = SourceFile::default();
         let mut docs: Vec<Token> = Vec::new();
         let mut saw_top_level_item = false;
@@ -79,10 +80,7 @@ impl<'a> DeclParser<'a> {
         }
         self.flush_docs_as_comments(&mut docs, &mut file.comments);
 
-        ParsedSource {
-            file,
-            diagnostics: self.diagnostics,
-        }
+        file
     }
 
     /// Parse one top-level construct at the current header line: a declaration
@@ -1010,9 +1008,8 @@ impl<'a> DeclParser<'a> {
             line: open.span.line,
             column: open.span.column,
         };
-        let (statements, comments, diagnostics) =
-            StmtParser::new(self.source, body_tokens).parse_block();
-        self.diagnostics.extend(diagnostics);
+        let (statements, comments) =
+            StmtParser::new(self.source, body_tokens, &mut self.sink).parse_block();
         Block {
             statements,
             comments,
@@ -1039,7 +1036,7 @@ impl<'a> DeclParser<'a> {
         let gap = tokens
             .first()
             .map_or_else(SourceSpan::default, |token| token.span);
-        match ExprParser::new(self.source, tokens, gap).parse_complete(&mut self.diagnostics) {
+        match ExprParser::new(self.source, tokens, gap, &mut self.sink).parse_complete() {
             ParseComplete::Complete(expr) => Some(expr),
             ParseComplete::Reported => None,
             ParseComplete::Incomplete(_) => {

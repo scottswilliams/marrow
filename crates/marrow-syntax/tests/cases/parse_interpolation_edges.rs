@@ -2,6 +2,7 @@
 //! typed lexer and parser behavior, not rendered prose.
 
 use crate::common;
+use crate::common::CompletePayload;
 use common::{has_reason, lexer_reason, parse_reason};
 use marrow_syntax::{
     Declaration, DiagnosticReason, ExpectedSyntax, Expression, InterpolationPart,
@@ -18,7 +19,11 @@ use marrow_syntax::{
 fn deeply_nested_interpolation_parses_and_nests() {
     let source = "const Label = $\"a{$\"b{$\"c{x}d\"}e\"}f\"\n";
     let parsed = parse_source(source);
-    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    assert!(
+        parsed.diagnostics.complete().is_empty(),
+        "{:#?}",
+        parsed.diagnostics
+    );
 
     let Declaration::Const(decl) = &parsed.file.declarations[0] else {
         panic!("expected const declaration");
@@ -64,7 +69,7 @@ fn over_deep_interpolation_reports_the_nesting_limit_not_unterminated() {
     let lexed = lex_source(&source);
     assert!(
         has_reason(
-            &lexed.diagnostics,
+            lexed.diagnostics.complete(),
             parse_reason(ParseDiagnosticReason::NestingLimit),
         ),
         "an over-deep interpolation nest must report the nesting limit: {:#?}",
@@ -72,10 +77,10 @@ fn over_deep_interpolation_reports_the_nesting_limit_not_unterminated() {
     );
     assert!(
         !has_reason(
-            &lexed.diagnostics,
+            lexed.diagnostics.complete(),
             lexer_reason(LexerDiagnosticReason::UnterminatedInterpolationExpression),
         ) && !has_reason(
-            &lexed.diagnostics,
+            lexed.diagnostics.complete(),
             lexer_reason(LexerDiagnosticReason::UnterminatedInterpolationString),
         ),
         "a well-formed but over-deep nest must not be reported as unterminated: {:#?}",
@@ -91,8 +96,12 @@ fn over_deep_interpolation_reports_the_nesting_limit_not_unterminated() {
 fn unterminated_interpolation_expression_is_a_lexer_error() {
     let lexed = lex_source("fn main() {\n    print($\"book {id\")\n");
     assert!(
-        lexed.diagnostics.iter().any(|diagnostic| diagnostic.reason
-            == lexer_reason(LexerDiagnosticReason::UnterminatedInterpolationExpression)),
+        lexed
+            .diagnostics
+            .complete()
+            .iter()
+            .any(|diagnostic| diagnostic.reason
+                == lexer_reason(LexerDiagnosticReason::UnterminatedInterpolationExpression)),
         "expected an unterminated-interpolation-expression diagnostic: {:#?}",
         lexed.diagnostics
     );
@@ -107,8 +116,12 @@ fn unterminated_interpolation_expression_is_a_lexer_error() {
 fn nested_brace_inside_interpolation_expression_is_a_lexer_error() {
     let lexed = lex_source("fn main() {\n    print($\"book {a{b}}\")\n");
     assert!(
-        lexed.diagnostics.iter().any(|diagnostic| diagnostic.reason
-            == lexer_reason(LexerDiagnosticReason::UnterminatedInterpolationExpression)),
+        lexed
+            .diagnostics
+            .complete()
+            .iter()
+            .any(|diagnostic| diagnostic.reason
+                == lexer_reason(LexerDiagnosticReason::UnterminatedInterpolationExpression)),
         "expected a nested-brace interpolation to be rejected: {:#?}",
         lexed.diagnostics
     );
@@ -128,13 +141,17 @@ fn empty_interpolation_expression_is_rejected_by_the_parser() {
     // interpolation diagnostic, so the rejection is the parser's job.
     let lexed = lex_source(source);
     assert!(
-        !lexed.diagnostics.iter().any(|diagnostic| matches!(
-            diagnostic.reason,
-            DiagnosticReason::Lexer(
-                LexerDiagnosticReason::UnterminatedInterpolationExpression
-                    | LexerDiagnosticReason::UnterminatedInterpolationString
-            )
-        )),
+        !lexed
+            .diagnostics
+            .complete()
+            .iter()
+            .any(|diagnostic| matches!(
+                diagnostic.reason,
+                DiagnosticReason::Lexer(
+                    LexerDiagnosticReason::UnterminatedInterpolationExpression
+                        | LexerDiagnosticReason::UnterminatedInterpolationString
+                )
+            )),
         "empty `{{}}` should lex without an interpolation diagnostic: {:#?}",
         lexed.diagnostics
     );
@@ -142,7 +159,7 @@ fn empty_interpolation_expression_is_rejected_by_the_parser() {
     let parsed = parse_source(source);
     assert!(
         has_reason(
-            &parsed.diagnostics,
+            parsed.diagnostics.complete(),
             parse_reason(ParseDiagnosticReason::Expected(ExpectedSyntax::Expression)),
         ),
         "expected an `expected an expression` diagnostic for `{{}}`: {:#?}",
@@ -159,7 +176,7 @@ fn empty_interpolation_hole_in_a_statement_reports_expected_expression_at_the_ho
     let parsed = parse_source("fn main() {\n    print($\"book {}\")\n}\n");
     assert!(
         has_reason(
-            &parsed.diagnostics,
+            parsed.diagnostics.complete(),
             parse_reason(ParseDiagnosticReason::Expected(ExpectedSyntax::Expression)),
         ),
         "expected an `expected an expression` diagnostic: {:#?}",
@@ -167,7 +184,7 @@ fn empty_interpolation_hole_in_a_statement_reports_expected_expression_at_the_ho
     );
     assert!(
         !has_reason(
-            &parsed.diagnostics,
+            parsed.diagnostics.complete(),
             parse_reason(ParseDiagnosticReason::Expected(ExpectedSyntax::Statement)),
         ),
         "the empty hole must not fall through to `expected a statement`: {:#?}",
@@ -175,6 +192,7 @@ fn empty_interpolation_hole_in_a_statement_reports_expected_expression_at_the_ho
     );
     let hole = parsed
         .diagnostics
+        .complete()
         .iter()
         .find(|diagnostic| {
             diagnostic.reason
@@ -197,7 +215,7 @@ fn dangling_operator_interpolation_hole_reports_expected_expression() {
     let parsed = parse_source("fn main() {\n    print($\"book {a +}\")\n}\n");
     assert!(
         has_reason(
-            &parsed.diagnostics,
+            parsed.diagnostics.complete(),
             parse_reason(ParseDiagnosticReason::Expected(ExpectedSyntax::Expression)),
         ),
         "expected an `expected an expression` diagnostic: {:#?}",
@@ -205,7 +223,7 @@ fn dangling_operator_interpolation_hole_reports_expected_expression() {
     );
     assert!(
         !has_reason(
-            &parsed.diagnostics,
+            parsed.diagnostics.complete(),
             parse_reason(ParseDiagnosticReason::Expected(ExpectedSyntax::Statement)),
         ),
         "the dangling-operator hole must not fall through to `expected a statement`: {:#?}",
@@ -222,6 +240,7 @@ fn trailing_garbage_interpolation_hole_reports_at_the_stray_token() {
     let parsed = parse_source("fn main() {\n    print($\"book {a b}\")\n}\n");
     let hole = parsed
         .diagnostics
+        .complete()
         .iter()
         .find(|diagnostic| {
             diagnostic.reason
@@ -238,7 +257,7 @@ fn trailing_garbage_interpolation_hole_reports_at_the_stray_token() {
     );
     assert!(
         !has_reason(
-            &parsed.diagnostics,
+            parsed.diagnostics.complete(),
             parse_reason(ParseDiagnosticReason::Expected(ExpectedSyntax::Statement)),
         ),
         "the trailing-garbage hole must not fall through to `expected a statement`: {:#?}",
@@ -251,7 +270,11 @@ fn trailing_garbage_interpolation_hole_reports_at_the_stray_token() {
 #[test]
 fn valid_interpolation_hole_parses_without_diagnostics() {
     let parsed = parse_source("fn main() {\n    print($\"book {id} here\")\n}\n");
-    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    assert!(
+        parsed.diagnostics.complete().is_empty(),
+        "{:#?}",
+        parsed.diagnostics
+    );
 }
 
 /// A nested string literal inside an interpolation hole may be written with
@@ -267,7 +290,7 @@ fn escaped_quotes_in_interpolation_hole_parse_as_a_string_argument() {
     ] {
         let parsed = parse_source(source);
         assert!(
-            parsed.diagnostics.is_empty(),
+            parsed.diagnostics.complete().is_empty(),
             "{source:?}: {:#?}",
             parsed.diagnostics
         );
@@ -329,7 +352,7 @@ fn escaped_nested_strings_carry_structural_characters_as_content() {
     fn interpolation(source: &str) -> Vec<InterpolationPart> {
         let parsed = parse_source(source);
         assert!(
-            parsed.diagnostics.is_empty(),
+            parsed.diagnostics.complete().is_empty(),
             "{source:?}: {:#?}",
             parsed.diagnostics
         );
@@ -442,7 +465,11 @@ fn escaped_nested_strings_carry_structural_characters_as_content() {
 #[test]
 fn a_lone_closing_brace_is_literal_interpolation_text() {
     let parsed = parse_source("const Label = $\"book }\"\n");
-    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    assert!(
+        parsed.diagnostics.complete().is_empty(),
+        "{:#?}",
+        parsed.diagnostics
+    );
     let Declaration::Const(decl) = &parsed.file.declarations[0] else {
         panic!("expected const declaration");
     };
@@ -462,8 +489,12 @@ fn a_lone_closing_brace_is_literal_interpolation_text() {
 fn unterminated_interpolation_string_is_a_lexer_error() {
     let lexed = lex_source("fn main() {\n    print($\"book {id} more\n");
     assert!(
-        lexed.diagnostics.iter().any(|diagnostic| diagnostic.reason
-            == lexer_reason(LexerDiagnosticReason::UnterminatedInterpolationString)),
+        lexed
+            .diagnostics
+            .complete()
+            .iter()
+            .any(|diagnostic| diagnostic.reason
+                == lexer_reason(LexerDiagnosticReason::UnterminatedInterpolationString)),
         "expected an unterminated-interpolation-string diagnostic: {:#?}",
         lexed.diagnostics
     );

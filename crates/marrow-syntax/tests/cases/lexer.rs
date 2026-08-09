@@ -1,4 +1,5 @@
 use crate::common;
+use crate::common::CompletePayload;
 use marrow_syntax::{
     Diagnose, DiagnosticReason, Keyword, LexedSource, LexerDiagnosticReason, ObsoleteOperator,
     Severity, TokenKind, lex_source,
@@ -7,6 +8,7 @@ use marrow_syntax::{
 fn has_errors(lexed: &LexedSource) -> bool {
     lexed
         .diagnostics
+        .complete()
         .iter()
         .any(|diagnostic| diagnostic.severity == Severity::Error)
 }
@@ -328,7 +330,11 @@ fn lexes_utf8_strings_bytes_and_interpolation_boundaries() {
     let source = "print(\"café\", b\"naïve\", $\"olá {name}: €\")\n";
     let lexed = lex_source(source);
 
-    assert!(lexed.diagnostics.is_empty(), "{:#?}", lexed.diagnostics);
+    assert!(
+        lexed.diagnostics.complete().is_empty(),
+        "{:#?}",
+        lexed.diagnostics
+    );
     assert_eq!(
         lexed
             .tokens
@@ -434,26 +440,31 @@ fn reports_lexical_errors_with_parse_syntax_diagnostics() {
     let lexed = lex_source(source);
 
     assert!(has_errors(&lexed));
-    assert_eq!(lexed.diagnostics.len(), 3, "{:#?}", lexed.diagnostics);
+    assert_eq!(
+        lexed.diagnostics.complete().len(),
+        3,
+        "{:#?}",
+        lexed.diagnostics
+    );
     assert!(
-        lexed.diagnostics.iter().all(|diagnostic| {
+        lexed.diagnostics.complete().iter().all(|diagnostic| {
             diagnostic.code == "parse.syntax" && diagnostic.kind() == "parse"
         })
     );
     assert_eq!(
-        lexed.diagnostics[0].reason,
+        lexed.diagnostics.complete()[0].reason,
         DiagnosticReason::Lexer(LexerDiagnosticReason::TabIndentation)
     );
     assert_eq!(
-        lexed.diagnostics[1].reason,
+        lexed.diagnostics.complete()[1].reason,
         DiagnosticReason::Lexer(LexerDiagnosticReason::UnterminatedString)
     );
     assert_eq!(
-        lexed.diagnostics[2].reason,
+        lexed.diagnostics.complete()[2].reason,
         DiagnosticReason::Lexer(LexerDiagnosticReason::ReservedTilde)
     );
-    assert_eq!(lexed.diagnostics[0].span.line, 2);
-    assert_eq!(lexed.diagnostics[0].span.column, 1);
+    assert_eq!(lexed.diagnostics.complete()[0].span.line, 2);
+    assert_eq!(lexed.diagnostics.complete()[0].span.column, 1);
 }
 
 #[test]
@@ -463,6 +474,7 @@ fn reserves_tilde_for_ephemeral_roots() {
     assert!(has_errors(&lexed));
     let diagnostic = lexed
         .diagnostics
+        .complete()
         .iter()
         .find(|diagnostic| {
             diagnostic.reason == DiagnosticReason::Lexer(LexerDiagnosticReason::ReservedTilde)
@@ -495,6 +507,7 @@ fn rejects_obsolete_operators_with_marrow_guidance() {
         );
         let diagnostic = lexed
             .diagnostics
+            .complete()
             .iter()
             .find(|diagnostic| {
                 diagnostic.reason
@@ -637,6 +650,7 @@ fn rejects_an_at_sign_at_its_own_column() {
     let lexed = lex_source("print(a @ b)\n");
     let diagnostic = lexed
         .diagnostics
+        .complete()
         .iter()
         .find(|diagnostic| {
             diagnostic.reason

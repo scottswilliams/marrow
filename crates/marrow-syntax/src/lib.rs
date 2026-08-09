@@ -7,7 +7,6 @@
 //! Everything else (the lexer and the expression/declaration parsers) is an
 //! internal carve of one pipeline.
 
-mod active_call;
 mod ast;
 mod diagnostic;
 mod format;
@@ -17,9 +16,6 @@ mod parse_decl;
 mod parse_expr;
 mod token;
 
-pub use active_call::{
-    ActiveCallableContext, CallableCalleeContext, active_callable_context, callable_callee_contexts,
-};
 pub use ast::{
     AliasDecl, Argument, ArmBinding, BinaryOp, Block, CheckedBind, Comment, CommentMarker,
     CommentPlacement, CompoundAssignOp, ConstDecl, Declaration, ElseIf, EnumDecl, EnumMember,
@@ -31,9 +27,11 @@ pub use ast::{
     UseDecl, range_expr,
 };
 pub use diagnostic::{
-    Diagnose, Diagnostic, DiagnosticReason, ExpectedSyntax, LexerDiagnosticReason,
-    ObsoleteOperator, ParseDiagnosticReason, ReservedSyntax, Severity, SourceSpan,
-    UnsupportedSyntax,
+    CompleteSyntaxDiagnostics, Diagnose, Diagnostic, DiagnosticReason, ExpectedSyntax,
+    LexerDiagnosticReason, NonEmptyCompleteSyntaxDiagnostics, ObsoleteOperator,
+    ParseDiagnosticReason, ReservedSyntax, SYNTAX_DIAGNOSTIC_COUNT_LIMIT,
+    SYNTAX_DIAGNOSTIC_OWNED_BYTES_LIMIT, Severity, SourceSpan, SyntaxDiagnosticLimit,
+    SyntaxDiagnosticSummary, SyntaxDiagnostics, UnsupportedSyntax,
 };
 pub use format::{
     FormatRefusal, check_format, format_declaration, format_expression, format_preserves_comments,
@@ -79,48 +77,61 @@ pub fn is_reserved_word(text: &str) -> bool {
 }
 
 pub fn parse_source(source: &str) -> ParsedSource {
-    let lexed = lex_source(source);
-    let mut parsed = DeclParser::new(source, &lexed.tokens).parse();
-    let mut combined = lexed.diagnostics;
-    combined.append(&mut parsed.diagnostics);
-    combined.sort_by_key(|diagnostic| (diagnostic.span.line, diagnostic.span.start_byte));
-    parsed.diagnostics = combined;
-    parsed
+    // One live collector per entry point: a scoped lexer sink borrow ends with
+    // tokenization, then a parser sink borrows the same owner, and the
+    // collector is finished exactly once into the bounded result.
+    let mut collector = diagnostic::SyntaxDiagnosticCollector::new();
+    let tokens = lexer::lex_tokens(source, collector.lexer_sink());
+    let file = DeclParser::new(source, &tokens, collector.parser_sink()).parse();
+    ParsedSource {
+        file,
+        diagnostics: collector.finish(),
+    }
 }
 
-pub fn parse_expression(source: &str) -> (Option<Expression>, Vec<Diagnostic>) {
-    let lexed = lex_source(source);
-    let mut diagnostics = lexed.diagnostics;
-    let gap = lexed
-        .tokens
+pub fn parse_expression(source: &str) -> (Option<Expression>, SyntaxDiagnostics) {
+    let mut collector = diagnostic::SyntaxDiagnosticCollector::new();
+    let tokens = lexer::lex_tokens(source, collector.lexer_sink());
+    let gap = tokens
         .first()
         .map_or_else(SourceSpan::default, |token| token.span);
-    let expression = match parse_expr::ExprParser::new(source, &lexed.tokens, gap)
-        .parse_complete(&mut diagnostics)
-    {
-        parse_expr::ParseComplete::Complete(expr) => Some(expr),
-        parse_expr::ParseComplete::Reported => None,
-        parse_expr::ParseComplete::Incomplete(span) => {
-            diagnostics.push(Diagnostic {
-                code: PARSE_SYNTAX,
-                reason: DiagnosticReason::Parser(ParseDiagnosticReason::Expected(
-                    ExpectedSyntax::Expression,
-                )),
-                severity: Severity::Error,
-                message: "expected an expression".to_string(),
-                help: None,
-                span,
-            });
-            None
+    let expression = {
+        let mut sink = collector.parser_sink();
+        match parse_expr::ExprParser::new(source, &tokens, gap, &mut sink).parse_complete() {
+            parse_expr::ParseComplete::Complete(expr) => Some(expr),
+            parse_expr::ParseComplete::Reported => None,
+            parse_expr::ParseComplete::Incomplete(span) => {
+                sink.push(diagnostic::SyntaxError::new(
+                    PARSE_SYNTAX,
+                    DiagnosticReason::Parser(ParseDiagnosticReason::Expected(
+                        ExpectedSyntax::Expression,
+                    )),
+                    "expected an expression",
+                    None,
+                    span,
+                ));
+                None
+            }
         }
     };
-    diagnostics.sort_by_key(|diagnostic| (diagnostic.span.line, diagnostic.span.start_byte));
-    (expression, diagnostics)
+    (expression, collector.finish())
 }
 
 #[cfg(test)]
 mod decl_parser_corpus {
-    use super::{BinaryOp, Declaration, Expression, PARSE_SYNTAX, ParsedSource, parse_source};
+    use super::{
+        BinaryOp, Declaration, Diagnostic, Expression, PARSE_SYNTAX, ParsedSource,
+        SyntaxDiagnostics, parse_source,
+    };
+
+    /// Borrow the complete payload the test expects; these corpus inputs stay
+    /// far below the diagnostic ceilings.
+    fn complete(diagnostics: &SyntaxDiagnostics) -> &[Diagnostic] {
+        diagnostics
+            .as_complete()
+            .expect("corpus diagnostics stay complete")
+            .as_slice()
+    }
 
     /// Parsing is a pure function of the source, so a second parse must yield the
     /// identical AST and diagnostics. Running each corpus input through this also
@@ -216,7 +227,7 @@ mod decl_parser_corpus {
     #[test]
     fn const_value_reuses_the_expression_parser() {
         let ParsedSource { file, diagnostics } = parse_source("const Total: int = 60 * 60\n");
-        assert!(diagnostics.is_empty(), "{diagnostics:#?}");
+        assert!(complete(&diagnostics).is_empty(), "{diagnostics:#?}");
         let Some(Declaration::Const(decl)) = file.declarations.first() else {
             panic!("expected a const declaration: {file:#?}");
         };
@@ -241,7 +252,9 @@ mod decl_parser_corpus {
         // parsing keeps the written value as an error node rather than dropping it.
         let ParsedSource { file, diagnostics } = parse_source("const Bad = int\n");
         assert!(
-            diagnostics.iter().any(|d| d.code == PARSE_SYNTAX),
+            complete(&diagnostics)
+                .iter()
+                .any(|d| d.code == PARSE_SYNTAX),
             "expected a parse error for a type in value position: {diagnostics:#?}"
         );
         let Some(Declaration::Const(decl)) = file.declarations.first() else {
@@ -298,7 +311,7 @@ mod decl_parser_corpus {
             ),
         ] {
             let ParsedSource { diagnostics, .. } = parse_source(source);
-            let expression = diagnostics
+            let expression = complete(&diagnostics)
                 .iter()
                 .find(|d| {
                     d.reason
@@ -320,7 +333,7 @@ mod decl_parser_corpus {
                 expression.message
             );
             assert!(
-                !diagnostics
+                !complete(&diagnostics)
                     .iter()
                     .any(|d| d.message.contains("expected a statement")),
                 "the generic statement fallback must be suppressed for {source:?}: {diagnostics:#?}"
@@ -337,7 +350,7 @@ mod decl_parser_corpus {
 
         let source = "fn f() {\n    match {\n        a => { x }\n    }\n}\n";
         let ParsedSource { diagnostics, .. } = parse_source(source);
-        let gaps: Vec<_> = diagnostics
+        let gaps: Vec<_> = complete(&diagnostics)
             .iter()
             .filter(|d| {
                 d.reason
@@ -352,7 +365,7 @@ mod decl_parser_corpus {
             "exactly one expression gap for an empty match scrutinee: {diagnostics:#?}"
         );
         assert!(
-            !diagnostics
+            !complete(&diagnostics)
                 .iter()
                 .any(|d| d.message.contains("match arm is a member path")),
             "the arm `a` must parse cleanly, with no spurious arm diagnostic: {diagnostics:#?}"
@@ -367,7 +380,7 @@ mod decl_parser_corpus {
 
         let source = "fn f() {\n    = 5\n}\n";
         let ParsedSource { diagnostics, .. } = parse_source(source);
-        let expression = diagnostics
+        let expression = complete(&diagnostics)
             .iter()
             .find(|d| {
                 d.reason
@@ -390,7 +403,7 @@ mod decl_parser_corpus {
             "fn f() {\n    for x in 1..2 by {\n        x\n    }\n}\n",
         ] {
             let ParsedSource { diagnostics, .. } = parse_source(source);
-            let header: Vec<_> = diagnostics
+            let header: Vec<_> = complete(&diagnostics)
                 .iter()
                 .filter(|d| d.message.contains("expected `for <binding> in <iterable>`"))
                 .collect();
@@ -400,7 +413,7 @@ mod decl_parser_corpus {
                 "exactly one for-header diagnostic for {source:?}: {diagnostics:#?}"
             );
             assert!(
-                !diagnostics
+                !complete(&diagnostics)
                     .iter()
                     .any(|d| d.message.contains("expected an expression")),
                 "the for header owns recovery; no separate expression gap for {source:?}: {diagnostics:#?}"
@@ -434,7 +447,7 @@ mod decl_parser_corpus {
             ),
         ] {
             let ParsedSource { diagnostics, .. } = parse_source(source);
-            let delimiter = diagnostics
+            let delimiter = complete(&diagnostics)
                 .iter()
                 .find(|d| d.message.contains(expected))
                 .unwrap_or_else(|| {
@@ -450,7 +463,7 @@ mod decl_parser_corpus {
                 "valid 1-based span for {source:?}: {delimiter:#?}"
             );
             assert!(
-                !diagnostics
+                !complete(&diagnostics)
                     .iter()
                     .any(|d| d.message.contains("expected a statement")),
                 "the generic statement fallback must be suppressed for {source:?}: {diagnostics:#?}"
@@ -465,7 +478,7 @@ mod decl_parser_corpus {
     fn for_header_unclosed_paren_reports_only_the_header_diagnostic() {
         let source = "fn f() {\n    for x in (1 {\n        x\n    }\n}\n";
         let ParsedSource { diagnostics, .. } = parse_source(source);
-        let header: Vec<_> = diagnostics
+        let header: Vec<_> = complete(&diagnostics)
             .iter()
             .filter(|d| d.message.contains("expected `for <binding> in <iterable>`"))
             .collect();
@@ -475,7 +488,7 @@ mod decl_parser_corpus {
             "exactly one for-header diagnostic for {source:?}: {diagnostics:#?}"
         );
         assert!(
-            !diagnostics
+            !complete(&diagnostics)
                 .iter()
                 .any(|d| d.message.contains("expected `)`")),
             "the for header owns recovery; no separate close-delimiter gap for {source:?}: {diagnostics:#?}"
@@ -511,10 +524,10 @@ mod decl_parser_corpus {
         ] {
             let ParsedSource { diagnostics, .. } = parse_source(source);
             assert!(
-                !diagnostics.is_empty(),
+                !complete(&diagnostics).is_empty(),
                 "expected at least one diagnostic for {source:?}"
             );
-            for diagnostic in &diagnostics {
+            for diagnostic in complete(&diagnostics) {
                 assert!(
                     diagnostic.span.line >= 1 && diagnostic.span.column >= 1,
                     "diagnostic at line {} column {} for {source:?}: {diagnostic:#?}",
@@ -530,6 +543,7 @@ mod decl_parser_corpus {
     #[test]
     fn a_non_statement_line_reports_at_the_failure_token() {
         let ParsedSource { diagnostics, .. } = parse_source("fn f() {\n    * nope\n}\n");
+        let diagnostics = complete(&diagnostics);
         assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
         assert!(
             diagnostics[0].message.contains("expected an expression"),
@@ -545,7 +559,19 @@ mod decl_parser_corpus {
 
 #[cfg(test)]
 mod nesting_limit {
-    use super::{NESTING_DEPTH_LIMIT, NESTING_LIMIT, ParsedSource, parse_source};
+    use super::{
+        Diagnostic, NESTING_DEPTH_LIMIT, NESTING_LIMIT, ParsedSource, SyntaxDiagnostics,
+        parse_source,
+    };
+
+    /// Borrow the complete payload the test expects; nesting-limit sources
+    /// report once per over-deep region, far below the diagnostic ceilings.
+    fn complete(diagnostics: &SyntaxDiagnostics) -> &[Diagnostic] {
+        diagnostics
+            .as_complete()
+            .expect("nesting diagnostics stay complete")
+            .as_slice()
+    }
 
     /// Parse on a worker thread with the same generous stack the CLI runs the
     /// parser on, so the nesting limit — calibrated for that stack — trips before
@@ -560,8 +586,7 @@ mod nesting_limit {
     }
 
     fn codes(source: String) -> Vec<&'static str> {
-        parse_on_large_stack(source)
-            .diagnostics
+        complete(&parse_on_large_stack(source).diagnostics)
             .iter()
             .map(|diagnostic| diagnostic.code)
             .collect()
@@ -632,17 +657,16 @@ mod nesting_limit {
         source
     }
 
-    fn located_nesting_limit(source: String) -> super::Diagnostic {
-        parse_on_large_stack(source)
-            .diagnostics
-            .into_iter()
+    fn located_nesting_limit(source: String) -> Diagnostic {
+        complete(&parse_on_large_stack(source).diagnostics)
+            .iter()
             .find(|diagnostic| diagnostic.code == NESTING_LIMIT)
             .expect("a located nesting-limit diagnostic")
+            .clone()
     }
 
     fn nesting_limit_count(source: &str) -> usize {
-        parse_on_large_stack(source.to_string())
-            .diagnostics
+        complete(&parse_on_large_stack(source.to_string()).diagnostics)
             .iter()
             .filter(|diagnostic| diagnostic.code == NESTING_LIMIT)
             .count()
@@ -773,9 +797,9 @@ mod nesting_limit {
 
     #[test]
     fn deeply_nested_statements_report_the_nesting_limit() {
-        let located = parse_on_large_stack(nested_ifs(NESTING_DEPTH_LIMIT + 50))
-            .diagnostics
-            .into_iter()
+        let parsed = parse_on_large_stack(nested_ifs(NESTING_DEPTH_LIMIT + 50));
+        let located = complete(&parsed.diagnostics)
+            .iter()
             .find(|diagnostic| diagnostic.code == NESTING_LIMIT)
             .expect("a nesting-limit diagnostic for deep `if` nesting");
         assert!(
@@ -786,9 +810,9 @@ mod nesting_limit {
 
     #[test]
     fn deeply_nested_expressions_report_the_nesting_limit() {
-        let located = parse_on_large_stack(nested_parens(NESTING_DEPTH_LIMIT + 50))
-            .diagnostics
-            .into_iter()
+        let parsed = parse_on_large_stack(nested_parens(NESTING_DEPTH_LIMIT + 50));
+        let located = complete(&parsed.diagnostics)
+            .iter()
             .find(|diagnostic| diagnostic.code == NESTING_LIMIT)
             .expect("a nesting-limit diagnostic for deep parens");
         assert!(
