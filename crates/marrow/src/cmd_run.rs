@@ -271,7 +271,7 @@ fn diagnostic_records(diagnostics: &[SourceDiagnostic]) -> Vec<Record> {
     diagnostics
         .iter()
         .map(|diagnostic| Record::Diagnostic {
-            code: diagnostic.code,
+            code: diagnostic.code(),
             line: diagnostic.line(),
             column: diagnostic.column(),
         })
@@ -332,7 +332,7 @@ fn mint_missing_identities(
     // anchor is never re-mintable, so its failure stays precise and unminted.
     let mut anchors: Vec<IdentityAnchor> = Vec::new();
     for diagnostic in diagnostics {
-        match &diagnostic.identity {
+        match diagnostic.identity_gap() {
             Some(gap) if gap.retired => return MintOutcome::NotApplicable,
             Some(gap) => anchors.push(gap.anchor()),
             None => {}

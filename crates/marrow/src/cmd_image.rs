@@ -60,8 +60,8 @@ pub(crate) fn image(rest: &[String]) -> ExitCode {
                     diagnostic.file().as_str(),
                     diagnostic.line(),
                     diagnostic.column(),
-                    diagnostic.code,
-                    diagnostic.message
+                    diagnostic.code(),
+                    diagnostic.message()
                 );
             }
             return ExitCode::FAILURE;

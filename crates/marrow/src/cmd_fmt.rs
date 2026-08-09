@@ -187,7 +187,25 @@ fn fmt_one(file: &str, source: &str, mode: FmtMode) -> Result<FmtOutcome, ()> {
     let formatted = match marrow_syntax::check_format(source) {
         Ok(formatted) => formatted,
         Err(marrow_syntax::FormatRefusal::ParseInvalid(diagnostics)) => {
-            report_parse(file, &diagnostics);
+            report_parse(file, diagnostics.as_slice());
+            return Err(());
+        }
+        Err(marrow_syntax::FormatRefusal::DiagnosticLimit(limit)) => {
+            let bound = match limit {
+                marrow_syntax::SyntaxDiagnosticLimit::Count { limit } => {
+                    format!("{limit} retained rows")
+                }
+                marrow_syntax::SyntaxDiagnosticLimit::OwnedBytes { limit } => {
+                    format!("{limit} retained bytes")
+                }
+            };
+            report_simple_error(
+                Code::FmtDiagnosticLimit.as_str(),
+                &format!(
+                    "refusing to format {file}: its parse diagnostics exceeded the {bound} \
+                     bound, so no complete parse exists; repair the source's parse errors first"
+                ),
+            );
             return Err(());
         }
         Err(marrow_syntax::FormatRefusal::CommentLoss) => {
