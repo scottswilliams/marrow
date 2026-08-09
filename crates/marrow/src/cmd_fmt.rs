@@ -73,9 +73,22 @@ directory, no flag checks without writing. `marrow fmt` does not read from stdin
     if target_path.is_dir() {
         return fmt_project(target_path, mode);
     }
-    if let Err(error) = guard_regular_source_file(Path::new(&target)) {
-        report_io_error(&target, &error);
-        return ExitCode::FAILURE;
+    match admit_single_source_file(Path::new(&target)) {
+        Ok(()) => {}
+        Err(SingleFileRefusal::NotRegular(error)) => {
+            report_io_error(&target, &error);
+            return ExitCode::FAILURE;
+        }
+        Err(SingleFileRefusal::OverModuleLimit { actual, limit }) => {
+            report_simple_error(
+                Code::CliCompilerResourceLimit.as_str(),
+                &format!(
+                    "{}: {target} is {actual} bytes, over the {limit}-byte module limit",
+                    marrow_compile::ResourceLimitKind::ProjectFileBytes.detail()
+                ),
+            );
+            return ExitCode::FAILURE;
+        }
     }
     let source = match std::fs::read_to_string(&target) {
         Ok(source) => source,
@@ -151,19 +164,40 @@ fn render_capture_failure(failure: &crate::project::CaptureFailure) {
     }
 }
 
-/// Reject an explicit single-file argument that resolves to an existing non-regular
-/// file before the unbounded blocking read. A FIFO with no writer never returns, and
-/// a socket or device cannot be a source body, so a non-regular target fails closed
-/// promptly with an `io.read` error located at the path. A missing target never reaches
-/// here: the caller classifies it as `config.missing` first.
-fn guard_regular_source_file(path: &Path) -> io::Result<()> {
-    match fs::metadata(path) {
-        Ok(metadata) if !metadata.file_type().is_file() => Err(io::Error::new(
+/// Why the single-file admission refused a target before any read.
+enum SingleFileRefusal {
+    /// An existing non-regular target, reported as a located `io.read` error.
+    NotRegular(io::Error),
+    /// A regular target larger than the compiler's module byte limit (A9),
+    /// reported under the exact typed code the `ProjectFileBytes` admission uses.
+    OverModuleLimit { actual: u64, limit: u64 },
+}
+
+/// Admit an explicit single-file argument from one stat, before the blocking read
+/// or any allocation. A FIFO with no writer never returns, and a socket or device
+/// cannot be a source body, so a non-regular target fails closed promptly; a
+/// regular target over the compiler's 1 MiB module byte limit is refused with the
+/// module-size admission's typed code rather than materialized only to be rejected
+/// at compile. A missing or unstatable target passes through: `read_to_string`
+/// reports it as the located `io.read` error.
+fn admit_single_source_file(path: &Path) -> Result<(), SingleFileRefusal> {
+    let Ok(metadata) = fs::metadata(path) else {
+        return Ok(());
+    };
+    if !metadata.file_type().is_file() {
+        return Err(SingleFileRefusal::NotRegular(io::Error::new(
             io::ErrorKind::InvalidInput,
             "not a regular file",
-        )),
-        _ => Ok(()),
+        )));
     }
+    let limit = marrow_project::CaptureLimits::DEFAULT.max_file_bytes() as u64;
+    if metadata.len() > limit {
+        return Err(SingleFileRefusal::OverModuleLimit {
+            actual: metadata.len(),
+            limit,
+        });
+    }
+    Ok(())
 }
 
 /// The result of formatting one file in `--check`/`--write` mode.
