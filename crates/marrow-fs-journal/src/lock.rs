@@ -18,6 +18,9 @@ use crate::sys;
 /// }
 /// ```
 pub struct CacheLock {
+    /// Held for custody alone: closing the descriptor on drop is the one
+    /// release, so the field is never read.
+    #[allow(dead_code)]
     pub(crate) handle: sys::FileHandle,
     pub(crate) identity: FsIdentity,
 }

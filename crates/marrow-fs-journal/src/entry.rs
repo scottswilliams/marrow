@@ -54,10 +54,6 @@ impl EntryName {
     pub fn as_str(&self) -> &str {
         &self.0
     }
-
-    pub(crate) fn admitted_max_bytes() -> usize {
-        MAX_NAME_BYTES
-    }
 }
 
 impl fmt::Display for EntryName {
