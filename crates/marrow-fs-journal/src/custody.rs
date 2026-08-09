@@ -237,10 +237,13 @@ impl AdmittedDir {
         })
     }
 
-    /// Create one child directory (mode `0700`) and admit it.
+    /// Create one child directory (mode `0700` exactly, umask-independent)
+    /// and admit it.
     pub fn create_child_dir(&self, name: &EntryName) -> Result<Self, CustodyError> {
         sys::mkdir_child(&self.handle, name.as_str())?;
-        self.admit_child(name)
+        let child = self.admit_child(name)?;
+        sys::restore_dir_mode(&child.handle)?;
+        Ok(child)
     }
 
     /// The directory's identity at admission.

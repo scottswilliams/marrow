@@ -9,9 +9,9 @@ use std::os::unix::fs::{MetadataExt, PermissionsExt};
 
 use common::Scratch;
 use marrow_fs_journal::{
-    AdmittedDir, CorruptionReason, CustodyError, EntryName, EntryNameError, FrameCorruption,
-    FsIdentity, JournalCommon, JournalError, JournalKind, NodeKind, PendingName, PendingState,
-    TailState, claim, classify, encode_header, encode_record,
+    AdmittedDir, CacheLock, CorruptionReason, CustodyError, EntryName, EntryNameError,
+    FrameCorruption, FsIdentity, JournalCommon, JournalError, JournalKind, NodeKind, PendingName,
+    PendingState, TailState, claim, classify, encode_header, encode_record,
 };
 
 fn name(spelling: &str) -> EntryName {
@@ -356,6 +356,69 @@ fn a_vanished_pending_name_fails_the_append_recheck_closed() {
         live.append(2, b"x"),
         Err(JournalError::Custody(CustodyError::IdentityDrift { .. }))
     ));
+}
+
+/// The hostile-umask leg: entry creation modes are restored on the creating
+/// descriptor, so the claim law's exact `0600` (and the documented directory
+/// `0700`) hold under any process umask. The outer test re-invokes this
+/// binary's ignored helper through `sh` with `umask 0277`, which would
+/// otherwise strip the owner-write bit from every created entry.
+#[test]
+fn creation_modes_are_umask_independent() {
+    let exe = std::env::current_exe().expect("test binary path");
+    let output = std::process::Command::new("/bin/sh")
+        .arg("-c")
+        .arg(format!(
+            "umask 0277 && exec '{}' --exact hostile_umask_helper --ignored",
+            exe.display()
+        ))
+        .output()
+        .expect("run the hostile-umask child");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        output.status.success() && stdout.contains("1 passed"),
+        "the hostile-umask child failed:\n{stdout}\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+/// Runs only under `creation_modes_are_umask_independent`'s hostile umask.
+#[test]
+#[ignore = "re-invoked by creation_modes_are_umask_independent under umask 0277"]
+fn hostile_umask_helper() {
+    let scratch = Scratch::new("umask");
+    // The scratch root itself was created under the hostile umask; restore
+    // owner access so the subject under test is entry creation inside it.
+    set_mode(scratch.path(), 0o700);
+    let dir = root(&scratch);
+
+    let file = dir.create_file_excl(&name("probe")).expect("create probe");
+    assert_eq!(
+        file.stat().expect("stat probe").mode(),
+        0o600,
+        "file creation is umask-independent"
+    );
+
+    dir.create_child_dir(&name("inner")).expect("create child");
+    let child_mode = std::fs::metadata(scratch.path().join("inner"))
+        .expect("stat child")
+        .mode()
+        & 0o7777;
+    assert_eq!(child_mode, 0o700, "directory creation is umask-independent");
+
+    let lock = CacheLock::acquire(&dir, &name("lock")).expect("acquire lock");
+    let lock_mode = std::fs::metadata(scratch.path().join("lock"))
+        .expect("stat lock")
+        .mode()
+        & 0o7777;
+    assert_eq!(lock_mode, 0o600, "lock creation is umask-independent");
+    drop(lock);
+
+    let names = pending_name("store");
+    let mut live = claim_provision(&dir, &names);
+    live.append(2, b"i").expect("append");
+    live.append(3, b"c").expect("append terminal");
+    live.finish().expect("finish under the hostile umask");
 }
 
 #[test]

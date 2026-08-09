@@ -138,6 +138,13 @@ mod imp {
             .map_err(|errno| map("create directory", Reading::Plain, errno))
     }
 
+    /// `mkdirat`'s requested mode is masked by the process umask; the
+    /// documented exact 0700 is restored on the admitted descriptor.
+    pub(crate) fn restore_dir_mode(dir: &DirHandle) -> Result<(), CustodyError> {
+        rustix::fs::fchmod(dir, dir_mode())
+            .map_err(|errno| map("create directory", Reading::Plain, errno))
+    }
+
     pub(crate) fn create_file_excl(
         dir: &DirHandle,
         name: &str,
@@ -148,9 +155,15 @@ mod imp {
             | OFlags::NOFOLLOW
             | OFlags::CLOEXEC
             | OFlags::APPEND;
-        rustix::fs::openat(dir, name, flags, file_mode())
+        let file = rustix::fs::openat(dir, name, flags, file_mode())
             .map(File::from)
-            .map_err(|errno| map("create file", Reading::Nofollow, errno))
+            .map_err(|errno| map("create file", Reading::Nofollow, errno))?;
+        // The open-time mode is masked by the process umask; the exact 0600
+        // the claim law rechecks is restored on the creating descriptor
+        // before any use, so no umask can manufacture a wrong-mode claim.
+        rustix::fs::fchmod(&file, file_mode())
+            .map_err(|errno| map("create file", Reading::Plain, errno))?;
+        Ok(file)
     }
 
     pub(crate) fn open_file(dir: &DirHandle, name: &str) -> Result<FileHandle, CustodyError> {
@@ -174,9 +187,15 @@ mod imp {
 
     pub(crate) fn open_lock_file(dir: &DirHandle, name: &str) -> Result<FileHandle, CustodyError> {
         let flags = OFlags::RDWR | OFlags::CREATE | OFlags::NOFOLLOW | OFlags::CLOEXEC;
-        rustix::fs::openat(dir, name, flags, file_mode())
+        let file = rustix::fs::openat(dir, name, flags, file_mode())
             .map(File::from)
-            .map_err(|errno| map("open lock", Reading::Nofollow, errno))
+            .map_err(|errno| map("open lock", Reading::Nofollow, errno))?;
+        // A just-created lock entry carries the umask-masked mode; a
+        // wrong-mode entry would refuse the next same-user reopen. Restoring
+        // 0600 on the descriptor is idempotent for an existing entry.
+        rustix::fs::fchmod(&file, file_mode())
+            .map_err(|errno| map("open lock", Reading::Plain, errno))?;
+        Ok(file)
     }
 
     /// `flock(LOCK_EX | LOCK_NB)`. `Ok(false)` reports a held lock.
@@ -427,6 +446,10 @@ mod imp {
     }
 
     pub(crate) fn mkdir_child(dir: &DirHandle, _name: &str) -> Result<(), CustodyError> {
+        match *dir {}
+    }
+
+    pub(crate) fn restore_dir_mode(dir: &DirHandle) -> Result<(), CustodyError> {
         match *dir {}
     }
 
