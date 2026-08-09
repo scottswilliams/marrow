@@ -12,7 +12,7 @@ use marrow_codes::Code;
 use marrow_project::FileIdentity;
 use marrow_syntax::{ConstDecl, Expression, LiteralKind, TypeExpr, UnaryOp, decode_string_literal};
 
-use crate::diag::SourceDiagnostic;
+use crate::diag::{DiagnosticCollector, SourceDiagnostic};
 use crate::lower::parse_int;
 use crate::scalar::ScalarType;
 use crate::types::TypeRegistry;
@@ -59,7 +59,7 @@ impl ConstRegistry {
     pub(crate) fn build(
         consts: &[(String, FileIdentity, &ConstDecl)],
         types: &TypeRegistry,
-        diagnostics: &mut Vec<SourceDiagnostic>,
+        diagnostics: &mut DiagnosticCollector,
     ) -> Self {
         let mut entries: BTreeMap<String, Vec<(String, ConstScalar)>> = BTreeMap::new();
         for (module, file, decl) in consts {
@@ -97,7 +97,7 @@ fn evaluate(
     file: &FileIdentity,
     decl: &ConstDecl,
     types: &TypeRegistry,
-    diagnostics: &mut Vec<SourceDiagnostic>,
+    diagnostics: &mut DiagnosticCollector,
 ) -> Option<ConstScalar> {
     let Some(expression) = &decl.value else {
         diagnostics.push(unsupported(file, decl, "a constant without a value"));
@@ -138,7 +138,7 @@ fn evaluate(
 fn literal_value(
     file: &FileIdentity,
     expression: &Expression,
-    diagnostics: &mut Vec<SourceDiagnostic>,
+    diagnostics: &mut DiagnosticCollector,
 ) -> Option<ConstScalar> {
     match expression {
         Expression::Literal { kind, text, span } => match kind {

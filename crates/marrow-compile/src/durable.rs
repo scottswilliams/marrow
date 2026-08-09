@@ -40,7 +40,7 @@ use marrow_syntax::{
 };
 
 use crate::demand::{DurableNaming, PathSigil};
-use crate::diag::{IdentityGap, SourceDiagnostic};
+use crate::diag::{DiagnosticCollector, IdentityGap, SourceDiagnostic};
 use crate::scalar::ScalarType;
 use crate::types::{GArg, GenericInvariant, TypeMetadataSession, TypeRegistry};
 
@@ -408,7 +408,7 @@ impl DurableRegistry {
         resources: &[(FileIdentity, &ResourceDecl)],
         stores: &[(FileIdentity, &StoreDecl)],
         ledger: Option<&IdentityLedger>,
-        diagnostics: &mut Vec<SourceDiagnostic>,
+        diagnostics: &mut DiagnosticCollector,
     ) -> Result<Self, GenericInvariant> {
         if stores.is_empty() {
             return Ok(Self::default());
@@ -522,7 +522,7 @@ fn build_one(
     file: &FileIdentity,
     store: &StoreDecl,
     identity_build: &mut IdentityBuildState<'_, '_>,
-    diagnostics: &mut Vec<SourceDiagnostic>,
+    diagnostics: &mut DiagnosticCollector,
 ) -> Result<StoreBuild, GenericInvariant> {
     let records = type_metadata.records;
     let metadata = &mut *type_metadata.metadata;
@@ -851,7 +851,7 @@ fn resolve_key_scalars(
     span: SourceSpan,
     keys: &[KeyParam],
     records: &TypeRegistry,
-    diagnostics: &mut Vec<SourceDiagnostic>,
+    diagnostics: &mut DiagnosticCollector,
 ) -> Option<Vec<ScalarType>> {
     let mut scalars = Vec::with_capacity(keys.len());
     for key_param in keys {
@@ -918,7 +918,7 @@ struct IdentityResolver<'a> {
     /// the typed gap. Every resolver still marks its own root incomplete on a shared
     /// gap; only diagnostic ownership is deduplicated.
     reported_identity_gaps: &'a mut BTreeSet<IdentityAnchor>,
-    diagnostics: &'a mut Vec<SourceDiagnostic>,
+    diagnostics: &'a mut DiagnosticCollector,
 }
 
 /// One struct or enum value type on the durable value-shape recursion path.
@@ -934,7 +934,7 @@ impl<'a> IdentityResolver<'a> {
         span: SourceSpan,
         ledger: Option<&'a IdentityLedger>,
         reported_identity_gaps: &'a mut BTreeSet<IdentityAnchor>,
-        diagnostics: &'a mut Vec<SourceDiagnostic>,
+        diagnostics: &'a mut DiagnosticCollector,
     ) -> Self {
         Self {
             file,
@@ -1884,7 +1884,7 @@ fn identity_gap(
             path
         )
     };
-    SourceDiagnostic::identity_gap(
+    SourceDiagnostic::with_identity_gap(
         Code::CheckDurableIdentity.as_str(),
         file,
         span,

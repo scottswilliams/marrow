@@ -49,7 +49,7 @@ fn lowerer<'a>(
     functions: &'a FunctionRegistry,
     generics: &'a GenericRegistry<'a>,
     consts: &'a ConstRegistry,
-    diagnostics: &'a mut Vec<SourceDiagnostic>,
+    diagnostics: &'a mut DiagnosticCollector,
     dependency_gaps: &'a mut Vec<(FileIdentity, SourceSpan)>,
 ) -> FnLowerer<'a> {
     FnLowerer::new(

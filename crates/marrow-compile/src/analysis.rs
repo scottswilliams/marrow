@@ -310,10 +310,10 @@ impl AnalysisSnapshot {
     pub fn format(&self, file: &FileIdentity) -> Result<FormatOutcome, QueryError> {
         let source = self.source_of(file)?;
         let Ok(source) = std::str::from_utf8(source) else {
-            // A non-UTF-8 file cannot be lexed; formatting is refused as parse-invalid.
-            return Ok(FormatOutcome::Refused(FormatRefusal::ParseInvalid(
-                Vec::new(),
-            )));
+            // A non-UTF-8 file cannot be lexed. A parse-invalid refusal carries
+            // real nonempty syntax evidence, which an undecodable file has
+            // none of, so the outcome is its own typed arm.
+            return Ok(FormatOutcome::InvalidUtf8);
         };
         match marrow_syntax::check_format(source) {
             Ok(formatted) if formatted.len() as u64 > MAX_FORMAT_OUTPUT_BYTES => {
@@ -454,6 +454,9 @@ pub enum FormatOutcome {
     /// The formatted output exceeded [`MAX_FORMAT_OUTPUT_BYTES`]; a query-local refusal,
     /// not retained.
     TooLarge { limit: u64 },
+    /// The file is not valid UTF-8, so it cannot be lexed at all — distinct
+    /// from a parse-invalid refusal, which carries nonempty syntax evidence.
+    InvalidUtf8,
 }
 
 /// The definition target of a resolved function callee: the file the target is declared

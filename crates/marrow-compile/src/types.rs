@@ -33,7 +33,7 @@ use marrow_syntax::{
     ResourceMember, SourceSpan, StructDecl, TypeExpr, UnaryOp, range_expr,
 };
 
-use crate::diag::SourceDiagnostic;
+use crate::diag::{BoundedDiagnostics, DiagnosticCollector, SourceDiagnostic};
 use crate::scalar::ScalarType;
 
 /// The identity of a nominal type in [`TypeRegistry`] order, carried by the
@@ -750,7 +750,9 @@ pub(crate) struct RegistryProofSavepoint {
     fn_insts: usize,
     fn_queue: usize,
     prior_argument_domain: ArgumentDomain,
-    prior_payloads: Vec<SourceDiagnostic>,
+    /// The live pre-proof diagnostic owner, swapped whole out of the registry
+    /// at proof entry and re-seated whole at exit.
+    prior_payloads: DiagnosticCollector,
     entry_records: usize,
     entry_enums: usize,
 }
@@ -803,24 +805,26 @@ impl Drop for TemplateProofScope<'_, '_> {
     }
 }
 
-/// One owner-ordered transfer from an isolated generic proof pass: the optional
-/// terminal limit first, followed by payload diagnostics gathered before it.
+/// One owner-ordered finished transfer from the generic owner: the optional
+/// terminal limit row first, followed by the finished collection-payload
+/// terminal gathered before it. The names rename the live `{limit, payloads}`
+/// pair (A4); the live/terminal distinction is the point — a transfer is never
+/// reopened, only merged or adopted whole.
 #[must_use = "generic diagnostics must be adopted or reported as one ordered outcome"]
 pub(crate) struct GenericDiagnostics {
-    limit: Option<SourceDiagnostic>,
-    payloads: Vec<SourceDiagnostic>,
+    first_limit: Option<SourceDiagnostic>,
+    collection_payloads: BoundedDiagnostics,
 }
 
 impl GenericDiagnostics {
-    /// Consume this transfer in its canonical owner order.
-    pub(crate) fn into_ordered(self) -> Vec<SourceDiagnostic> {
-        let mut diagnostics =
-            Vec::with_capacity(self.payloads.len() + usize::from(self.limit.is_some()));
-        if let Some(limit) = self.limit {
-            diagnostics.push(limit);
+    /// Merge this transfer into the stage's live owner in canonical order:
+    /// the one-row limit exception is pushed first — charged exactly once,
+    /// here — then the finished collection payloads are absorbed.
+    pub(crate) fn merge_into(self, collector: &mut DiagnosticCollector) {
+        if let Some(limit) = self.first_limit {
+            collector.push(limit);
         }
-        diagnostics.extend(self.payloads);
-        diagnostics
+        collector.absorb(self.collection_payloads);
     }
 }
 
@@ -834,7 +838,6 @@ impl GenericDiagnostics {
 /// [`TypeRegistry::enter_template_proof`]/[`TypeRegistry::exit_template_proof`] savepoint,
 /// which truncates the rows the pass appends; a fill batch never mutates the settled prefix,
 /// so that suffix truncation restores the exact pre-proof state.
-#[derive(Default)]
 struct Monomorph {
     type_insts: Vec<TypeInst>,
     /// Lookup-only secondary index `(template, args) -> row in type_insts`. The
@@ -867,12 +870,37 @@ struct Monomorph {
     /// One owner for the shared type/function instantiation limit, kept separate
     /// from ordered collection-payload diagnostics.
     limit: LimitState,
-    collection_payloads: Vec<SourceDiagnostic>,
+    /// The live bounded owner of ordered collection-payload diagnostics.
+    collection_payloads: DiagnosticCollector,
     /// A declare/fill coherence failure discovered while building concrete source
     /// types. Kept inside the defaulted generic owner so private test fixtures cannot
     /// accidentally bypass a newly added top-level registry field.
     build_invariant: Option<GenericInvariant>,
     argument_domain: ArgumentDomain,
+}
+
+/// Manual `Default`: the diagnostic owner is deliberately non-`Default` (one
+/// live collector per owner, never conjured incidentally), so the generic
+/// owner spells its construction while every other field keeps its default.
+impl Default for Monomorph {
+    fn default() -> Self {
+        Self {
+            type_insts: Vec::new(),
+            type_index: HashMap::new(),
+            fn_base: 0,
+            fn_insts: Vec::new(),
+            fn_index: HashMap::new(),
+            fn_queue: VecDeque::new(),
+            fill_batch_start: None,
+            fill_rows: BTreeMap::new(),
+            fill_stack: Vec::new(),
+            fill_failures: Vec::new(),
+            limit: LimitState::Open,
+            collection_payloads: DiagnosticCollector::new(),
+            build_invariant: None,
+            argument_domain: ArgumentDomain::Concrete,
+        }
+    }
 }
 
 /// The closed capability set a nominal declaration's `supports` list unlocks.
@@ -4550,11 +4578,13 @@ impl TypeRegistry {
             .map(|inst| (inst.template, inst.args, inst.func))
     }
 
-    /// Drain the one owner-ordered generic outcome. Taking a pending limit advances
-    /// its owner to `Reported`, so cached `Rejected(Limit)` rows replay silently.
+    /// Drain the one owner-ordered generic outcome: replace the active live
+    /// owner with a fresh collector and finish the removed owner exactly once.
+    /// Taking a pending limit advances its owner to `Reported`, so cached
+    /// `Rejected(Limit)` rows replay silently.
     pub(crate) fn take_generic_diagnostics(&self) -> GenericDiagnostics {
         let mut generics = self.generics.borrow_mut();
-        let limit = match std::mem::replace(&mut generics.limit, LimitState::Reported) {
+        let first_limit = match std::mem::replace(&mut generics.limit, LimitState::Reported) {
             LimitState::Open => {
                 generics.limit = LimitState::Open;
                 None
@@ -4562,9 +4592,11 @@ impl TypeRegistry {
             LimitState::Pending(diagnostic) => Some(diagnostic),
             LimitState::Reported => None,
         };
+        let collector =
+            std::mem::replace(&mut generics.collection_payloads, DiagnosticCollector::new());
         GenericDiagnostics {
-            limit,
-            payloads: std::mem::take(&mut generics.collection_payloads),
+            first_limit,
+            collection_payloads: collector.finish(),
         }
     }
 
@@ -4572,18 +4604,23 @@ impl TypeRegistry {
         !matches!(self.generics.borrow().limit, LimitState::Open)
     }
 
+    /// Adopt a proof pass's transfer back into this owner: the limit state is
+    /// restored first exactly as taken (an already non-open owner keeps its
+    /// state — the transferred row is dropped, never double-charged), then the
+    /// finished collection payloads are consumed through the persistent live
+    /// owner's `absorb`. A terminal is never reopened.
     pub(crate) fn adopt_generic_diagnostics(&self, outcome: GenericDiagnostics) {
         let GenericDiagnostics {
-            limit,
-            mut payloads,
+            first_limit,
+            collection_payloads,
         } = outcome;
         let mut generics = self.generics.borrow_mut();
         if matches!(generics.limit, LimitState::Open)
-            && let Some(diagnostic) = limit
+            && let Some(diagnostic) = first_limit
         {
             generics.limit = LimitState::Pending(diagnostic);
         }
-        generics.collection_payloads.append(&mut payloads);
+        generics.collection_payloads.absorb(collection_payloads);
     }
 
     /// The image COLLTYPES index of `List[elem]`, minting it into `draft` on first
@@ -4778,7 +4815,7 @@ impl TypeRegistry {
         structs: &[(FileIdentity, &StructDecl)],
         enums: &[(FileIdentity, &EnumDecl)],
         resources: &[(FileIdentity, &ResourceDecl)],
-        diagnostics: &mut Vec<SourceDiagnostic>,
+        diagnostics: &mut DiagnosticCollector,
     ) -> Self {
         let mut registry = Self {
             aliases: build_alias_table(aliases, resources, structs, enums, diagnostics),
@@ -4913,7 +4950,12 @@ impl TypeRegistry {
             fn_insts: generics.fn_insts.len(),
             fn_queue: generics.fn_queue.len(),
             prior_argument_domain: generics.argument_domain,
-            prior_payloads: std::mem::take(&mut generics.collection_payloads),
+            // Whole-owner swap: the proof pass gets a fresh live collector and
+            // the prior owner is saved intact for exit to re-seat.
+            prior_payloads: std::mem::replace(
+                &mut generics.collection_payloads,
+                DiagnosticCollector::new(),
+            ),
             entry_records,
             entry_enums,
         };
@@ -5036,7 +5078,7 @@ fn register_type_templates(
     structs: &[(FileIdentity, &StructDecl)],
     enums: &[(FileIdentity, &EnumDecl)],
     resources: &[(FileIdentity, &ResourceDecl)],
-    diagnostics: &mut Vec<SourceDiagnostic>,
+    diagnostics: &mut DiagnosticCollector,
 ) {
     let type_param_names =
         |params: &[marrow_syntax::TypeParamDecl]| -> Vec<(String, Option<TypeConstraint>)> {
@@ -5134,7 +5176,7 @@ fn register_type_templates(
 fn template_struct_fields(
     file: &FileIdentity,
     decl: &StructDecl,
-    diagnostics: &mut Vec<SourceDiagnostic>,
+    diagnostics: &mut DiagnosticCollector,
 ) -> Option<Vec<(String, TypeExpr)>> {
     let mut fields = Vec::new();
     let mut ok = true;
@@ -5178,7 +5220,7 @@ fn template_struct_fields(
 fn template_enum_variants(
     file: &FileIdentity,
     decl: &EnumDecl,
-    diagnostics: &mut Vec<SourceDiagnostic>,
+    diagnostics: &mut DiagnosticCollector,
 ) -> Option<Vec<TemplateVariant>> {
     let mut variants = Vec::new();
     let mut ok = true;
@@ -5216,7 +5258,7 @@ fn build_alias_table(
     resources: &[(FileIdentity, &ResourceDecl)],
     structs: &[(FileIdentity, &StructDecl)],
     enums: &[(FileIdentity, &EnumDecl)],
-    diagnostics: &mut Vec<SourceDiagnostic>,
+    diagnostics: &mut DiagnosticCollector,
 ) -> BTreeMap<String, TypeExpr> {
     let mut raw: BTreeMap<String, TypeExpr> = BTreeMap::new();
     for (file, decl) in aliases {
@@ -5460,7 +5502,7 @@ fn expand_in(table: &BTreeMap<String, TypeExpr>, ty: &TypeExpr) -> TypeExpr {
 fn validate_alias_targets(
     registry: &TypeRegistry,
     aliases: &[(FileIdentity, &AliasDecl)],
-    diagnostics: &mut Vec<SourceDiagnostic>,
+    diagnostics: &mut DiagnosticCollector,
 ) {
     for (file, decl) in aliases {
         let Some(expanded) = registry.aliases.get(&decl.name) else {
@@ -5509,7 +5551,7 @@ fn build_nominals(
     resources: &[(FileIdentity, &ResourceDecl)],
     structs: &[(FileIdentity, &StructDecl)],
     enums: &[(FileIdentity, &EnumDecl)],
-    diagnostics: &mut Vec<SourceDiagnostic>,
+    diagnostics: &mut DiagnosticCollector,
 ) -> Vec<NominalInfo> {
     let mut built: Vec<NominalInfo> = Vec::new();
     for (file, decl) in nominals {
@@ -5579,9 +5621,9 @@ fn build_nominals(
 fn nominal_interval(
     file: &FileIdentity,
     interval: &Expression,
-    diagnostics: &mut Vec<SourceDiagnostic>,
+    diagnostics: &mut DiagnosticCollector,
 ) -> Option<(i64, i64)> {
-    let error = |diagnostics: &mut Vec<SourceDiagnostic>, span, message: &str| {
+    let error = |diagnostics: &mut DiagnosticCollector, span, message: &str| {
         diagnostics.push(SourceDiagnostic::at(
             Code::CheckType.as_str(),
             file,
@@ -5657,7 +5699,7 @@ fn literal_int(expr: &Expression) -> Option<i64> {
 fn support_set(
     file: &FileIdentity,
     decl: &NominalDecl,
-    diagnostics: &mut Vec<SourceDiagnostic>,
+    diagnostics: &mut DiagnosticCollector,
 ) -> Option<SupportSet> {
     let mut supports = SupportSet::default();
     for spelling in &decl.supports {
@@ -5710,7 +5752,7 @@ fn declare_structs<'a>(
     registry: &mut TypeRegistry,
     structs: &'a [(FileIdentity, &StructDecl)],
     resources: &[(FileIdentity, &ResourceDecl)],
-    diagnostics: &mut Vec<SourceDiagnostic>,
+    diagnostics: &mut DiagnosticCollector,
 ) -> Vec<ReservedStruct<'a>> {
     let mut reserved: Vec<ReservedStruct<'a>> = Vec::new();
     for (file, decl) in structs {
@@ -5765,7 +5807,7 @@ fn fill_structs(
     draft: &mut ImageDraft,
     registry: &mut TypeRegistry,
     reserved: &[ReservedStruct<'_>],
-    diagnostics: &mut Vec<SourceDiagnostic>,
+    diagnostics: &mut DiagnosticCollector,
 ) -> Result<(), GenericInvariant> {
     let mut dropped: Vec<TypeId> = Vec::new();
     for item in reserved {
@@ -5799,7 +5841,7 @@ fn struct_fields(
     registry: &TypeRegistry,
     file: &FileIdentity,
     decl: &StructDecl,
-    diagnostics: &mut Vec<SourceDiagnostic>,
+    diagnostics: &mut DiagnosticCollector,
 ) -> Result<Option<ResolvedStructFields>, GenericInvariant> {
     let mut fields = Vec::new();
     let mut field_defs = Vec::new();
@@ -5888,7 +5930,7 @@ fn declare_enums<'a>(
     registry: &mut TypeRegistry,
     enums: &'a [(FileIdentity, &EnumDecl)],
     resources: &[(FileIdentity, &ResourceDecl)],
-    diagnostics: &mut Vec<SourceDiagnostic>,
+    diagnostics: &mut DiagnosticCollector,
 ) -> Vec<ReservedEnum<'a>> {
     let mut reserved: Vec<ReservedEnum<'a>> = Vec::new();
     for (file, decl) in enums {
@@ -5957,7 +5999,7 @@ fn fill_enums(
     draft: &mut ImageDraft,
     registry: &mut TypeRegistry,
     reserved: &[ReservedEnum<'_>],
-    diagnostics: &mut Vec<SourceDiagnostic>,
+    diagnostics: &mut DiagnosticCollector,
 ) {
     let mut dropped: Vec<EnumId> = Vec::new();
     for item in reserved {
@@ -5988,7 +6030,7 @@ fn enum_variants(
     registry: &TypeRegistry,
     file: &FileIdentity,
     decl: &EnumDecl,
-    diagnostics: &mut Vec<SourceDiagnostic>,
+    diagnostics: &mut DiagnosticCollector,
 ) -> Option<(Vec<VariantInfo>, Vec<VariantDef>)> {
     let mut variants = Vec::new();
     let mut variant_defs = Vec::new();
@@ -6052,7 +6094,7 @@ fn enum_payload(
     registry: &TypeRegistry,
     file: &FileIdentity,
     member: &EnumMember,
-    diagnostics: &mut Vec<SourceDiagnostic>,
+    diagnostics: &mut DiagnosticCollector,
 ) -> Option<(Vec<EnumPayloadInfo>, Vec<ScalarType>)> {
     if member.payload.len() > marrow_image::bounds::MAX_PAYLOAD_FIELDS {
         diagnostics.push(SourceDiagnostic::at(
@@ -6109,7 +6151,7 @@ fn declare_records<'a>(
     draft: &mut ImageDraft,
     registry: &mut TypeRegistry,
     resources: &'a [(FileIdentity, &ResourceDecl)],
-    diagnostics: &mut Vec<SourceDiagnostic>,
+    diagnostics: &mut DiagnosticCollector,
 ) -> Vec<(FileIdentity, &'a ResourceDecl)> {
     let mut survivors = Vec::new();
     for (file, resource) in resources {
@@ -6154,7 +6196,7 @@ fn fill_records(
     draft: &mut ImageDraft,
     registry: &mut TypeRegistry,
     record_decls: &[(FileIdentity, &ResourceDecl)],
-    diagnostics: &mut Vec<SourceDiagnostic>,
+    diagnostics: &mut DiagnosticCollector,
 ) -> Result<(), GenericInvariant> {
     // The survivors are in the same order as the reserved records, so record `index`
     // is the one this declaration reserved.
@@ -6177,7 +6219,7 @@ fn fill_record(
     index: usize,
     file: &FileIdentity,
     resource: &ResourceDecl,
-    diagnostics: &mut Vec<SourceDiagnostic>,
+    diagnostics: &mut DiagnosticCollector,
 ) -> Result<(), GenericInvariant> {
     let type_id = registry.records[index].type_id;
     let mut fields = Vec::new();
@@ -6285,7 +6327,7 @@ fn build_group_leaves(
     registry: &TypeRegistry,
     group: &GroupDecl,
     file: &FileIdentity,
-    diagnostics: &mut Vec<SourceDiagnostic>,
+    diagnostics: &mut DiagnosticCollector,
 ) -> Result<(Vec<FieldInfo>, Vec<FieldDef>), GenericInvariant> {
     let mut fields = Vec::new();
     let mut field_defs = Vec::new();
@@ -6349,7 +6391,7 @@ pub(crate) fn reject_value_cycles(
     registry: &TypeRegistry,
     structs: &[(FileIdentity, &StructDecl)],
     resources: &[(FileIdentity, &ResourceDecl)],
-    diagnostics: &mut Vec<SourceDiagnostic>,
+    diagnostics: &mut DiagnosticCollector,
 ) -> Result<(), GenericInvariant> {
     let view = registry.metadata_view();
     let mut metadata = MetadataScratch::try_new(&view)?;
@@ -7663,7 +7705,7 @@ mod instantiation_state_tests {
         fill_stack: Vec<usize>,
         fill_failures: Vec<(usize, ResolveRefusal)>,
         limit: StableLimit,
-        payloads: Vec<SourceDiagnostic>,
+        payloads: crate::diag::CollectorProbe,
         build_invariant: Option<GenericInvariant>,
         // The lockstep secondary indexes and the swapped argument domain: an isolation probe
         // must observe a missed index purge or a stuck `TemplateProof` domain, not only the
@@ -7734,7 +7776,7 @@ mod instantiation_state_tests {
             fill_stack: generics.fill_stack.clone(),
             fill_failures: generics.fill_failures.clone(),
             limit,
-            payloads: generics.collection_payloads.clone(),
+            payloads: generics.collection_payloads.probe(),
             build_invariant: generics.build_invariant,
             type_index: generics.type_index.clone(),
             fn_index: generics.fn_index.clone(),

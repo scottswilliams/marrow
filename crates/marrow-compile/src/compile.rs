@@ -12,12 +12,14 @@ use marrow_codes::Code;
 use marrow_image::{EncodedImage, ExportId, ImageBuildError, ImageDraft, Instr};
 use marrow_project::{CaptureLimits, FileIdentity, ProjectInput};
 use marrow_syntax::{
-    AliasDecl, ConstDecl, Declaration, EnumDecl, FunctionDecl, NominalDecl, ParsedSource,
-    ResourceDecl, ResourceMember, SourceSpan, StoreDecl, StructDecl, parse_source,
+    AliasDecl, ConstDecl, Declaration, EnumDecl, FunctionDecl, NominalDecl, ResourceDecl,
+    ResourceMember, SourceFile, SourceSpan, StoreDecl, StructDecl, parse_source,
 };
 
 use crate::demand::DurableNaming;
-use crate::diag::SourceDiagnostic;
+use crate::diag::{
+    BoundedDiagnostics, CompileDiagnosticLimit, DiagnosticCollector, SourceDiagnostic,
+};
 use crate::durable::DurableRegistry;
 use crate::konst::ConstRegistry;
 use crate::lower::{
@@ -288,49 +290,16 @@ impl std::fmt::Display for CompileResourceLimit {
 
 impl std::error::Error for CompileResourceLimit {}
 
-/// The largest ordered diagnostic set eligible for the [`CompileFailure::Diagnostics`]
-/// arm, and the largest total message-byte footprint. A count or byte overflow
-/// transactionally discards the incomplete collection and classifies as a
-/// [`CompileResourceLimit`], so only a complete bounded diagnostic result reaches a
-/// caller (§ law 9). The bounds sit far above any real edit cycle's diagnostic set
-/// while still failing a pathological error avalanche closed.
-const MAX_DIAGNOSTIC_COUNT: usize = 4096;
-const MAX_DIAGNOSTIC_BYTES: usize = 1024 * 1024;
-
-/// The bounded diagnostic collection owner: it seals an assembled ordered diagnostic
-/// set into the arm it is eligible for. A set within both the count and byte bounds
-/// commits as `Complete`; an empty set is `Empty` (its stage becomes a private
-/// invariant unless a resource candidate exists); an overflow discards the whole
-/// set (prefix included) and yields the resource limit that displaced it.
-enum DiagnosticSeal {
-    Complete(NonEmptySourceDiagnostics),
-    Empty,
-    Overflow(CompileResourceLimit),
-}
-
-/// Seal an assembled ordered diagnostic set: overflow of either bound discards the
-/// incomplete collection and reports the displacing resource limit, so a truncated
-/// diagnostic set never reaches the `Diagnostics` arm.
-fn seal_diagnostics(diagnostics: Vec<SourceDiagnostic>) -> DiagnosticSeal {
-    if diagnostics.len() > MAX_DIAGNOSTIC_COUNT {
-        return DiagnosticSeal::Overflow(CompileResourceLimit::new(
-            ResourceLimitKind::DiagnosticCount,
-            MAX_DIAGNOSTIC_COUNT as u64,
-        ));
-    }
-    let bytes: usize = diagnostics
-        .iter()
-        .map(|diagnostic| diagnostic.message.len() + diagnostic.file().as_str().len())
-        .sum();
-    if bytes > MAX_DIAGNOSTIC_BYTES {
-        return DiagnosticSeal::Overflow(CompileResourceLimit::new(
-            ResourceLimitKind::DiagnosticBytes,
-            MAX_DIAGNOSTIC_BYTES as u64,
-        ));
-    }
-    match NonEmptySourceDiagnostics::new(diagnostics) {
-        Some(diagnostics) => DiagnosticSeal::Complete(diagnostics),
-        None => DiagnosticSeal::Empty,
+/// Map the collector's typed ceiling to its public resource-limit record: the
+/// one failure-boundary translation, exhaustive over both kinds.
+fn diagnostic_limit_failure(limit: CompileDiagnosticLimit) -> CompileResourceLimit {
+    match limit {
+        CompileDiagnosticLimit::Count { limit } => {
+            CompileResourceLimit::new(ResourceLimitKind::DiagnosticCount, limit as u64)
+        }
+        CompileDiagnosticLimit::OwnedBytes { limit } => {
+            CompileResourceLimit::new(ResourceLimitKind::DiagnosticBytes, limit as u64)
+        }
     }
 }
 
@@ -374,9 +343,12 @@ impl std::error::Error for CompileFailure {
     }
 }
 
+/// The semantic stage a diagnostics terminal came from, retained for the
+/// empty-boundary invariant. The parse and structural stages carry no tag: a
+/// logically empty parse or structural terminal passes over instead of
+/// crossing the boundary, so only semantic stages can reach it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CompileStage {
-    Parse,
     TypeInstantiation,
     FunctionSignatures,
     TemplateProof,
@@ -397,36 +369,20 @@ enum InvariantCause {
     ImageBuild(ImageBuildError),
 }
 
-/// The one boundary that assembles a total [`CompileFailure`] under the precedence
-/// `Invariant > Diagnostics > ResourceLimit`. An invariant dominates unconditionally.
-/// Otherwise the accumulated diagnostics are sealed: a complete bounded set is the
-/// `Diagnostics` arm (dominating any independent `resource` candidate); an empty set
-/// yields the `resource` candidate if one exists, else the empty-boundary invariant;
-/// and a diagnostic-collector overflow discards the incomplete set and reports the
-/// resource limit that displaced it.
-fn compile_failure(
-    diagnostics: Vec<SourceDiagnostic>,
-    invariant: Option<InvariantCause>,
-    resource: Option<CompileResourceLimit>,
-    stage: CompileStage,
-) -> CompileFailure {
-    if let Some(cause) = invariant {
-        return CompileFailure::Invariant(CompileInvariant(cause));
+/// Project one stage's finished diagnostic terminal to the failure it forces,
+/// or `None` for a logically empty stage the projection passes over. The
+/// public precedence `Invariant > Diagnostics > ResourceLimit` is structural:
+/// an invariant returns before any terminal is consulted, and a stage's own
+/// Limited terminal is the only resource candidate that can displace its rows.
+fn stage_failure(diagnostics: BoundedDiagnostics) -> Option<CompileFailure> {
+    match diagnostics {
+        BoundedDiagnostics::Complete { rows, .. } => {
+            NonEmptySourceDiagnostics::new(rows).map(CompileFailure::Diagnostics)
+        }
+        BoundedDiagnostics::Limited { limit, .. } => Some(CompileFailure::ResourceLimit(
+            diagnostic_limit_failure(limit),
+        )),
     }
-    match seal_diagnostics(diagnostics) {
-        DiagnosticSeal::Complete(diagnostics) => CompileFailure::Diagnostics(diagnostics),
-        DiagnosticSeal::Overflow(limit) => CompileFailure::ResourceLimit(limit),
-        DiagnosticSeal::Empty => match resource {
-            Some(limit) => CompileFailure::ResourceLimit(limit),
-            None => {
-                CompileFailure::Invariant(CompileInvariant(InvariantCause::EmptyDiagnostics(stage)))
-            }
-        },
-    }
-}
-
-fn diagnostic_failure(diagnostics: Vec<SourceDiagnostic>, stage: CompileStage) -> CompileFailure {
-    compile_failure(diagnostics, None, None, stage)
 }
 
 /// Classify a producer-side [`ImageBuildError`] from `ImageDraft::encode` into the
@@ -443,9 +399,8 @@ fn diagnostic_failure(diagnostics: Vec<SourceDiagnostic>, stage: CompileStage) -
 /// wildcard, so a new image-build variant forces an explicit classification here.
 fn image_build_outcome(error: ImageBuildError) -> SemanticOutcome {
     use marrow_image::bounds;
-    let stage = CompileStage::PostLoweringValidation;
     let aggregate = |kind: ResourceLimitKind, limit: usize| {
-        SemanticOutcome::ResourceLimit(CompileResourceLimit::new(kind, limit as u64), stage)
+        SemanticOutcome::ResourceLimit(CompileResourceLimit::new(kind, limit as u64))
     };
     match error {
         // Aggregate whole-program counts and the byte ceiling: no single offender.
@@ -509,17 +464,9 @@ fn image_build_outcome(error: ImageBuildError) -> SemanticOutcome {
         | ImageBuildError::SitePathTooDeep
         | ImageBuildError::LocalCountBelowParams
         | ImageBuildError::InvalidReference(_) => {
-            SemanticOutcome::Invariant(InvariantCause::ImageBuild(error), stage)
+            SemanticOutcome::Invariant(InvariantCause::ImageBuild(error))
         }
     }
-}
-
-/// A resource-limit failure with no source diagnostic: an aggregate encode bound the
-/// program exhausted. It carries no location. Diagnostics would dominate by
-/// precedence, but encode runs only when diagnostics are empty, so this is the sole
-/// candidate at its site.
-fn resource_failure(limit: CompileResourceLimit, stage: CompileStage) -> CompileFailure {
-    compile_failure(Vec::new(), None, Some(limit), stage)
 }
 
 /// Whether a compilation includes the project's `test` declarations. A production
@@ -532,11 +479,16 @@ enum TestMode {
 }
 
 /// A parsed module: its file identity (for spans and diagnostics), its dotted
-/// module name (for export identity), and the parse tree.
+/// module name (for export identity), the parse tree, and the logical broken
+/// status of its parse. Only the AST and that one bit survive parsing — the
+/// module's syntax diagnostics are absorbed into the drive's parse collector
+/// the moment the file is parsed (A5), so no per-module diagnostic state ever
+/// accumulates with the file count.
 struct Module {
     file: FileIdentity,
     name: String,
-    parsed: ParsedSource,
+    ast: SourceFile,
+    broken: bool,
 }
 
 /// A lowered function's identity for recursion detection and the
@@ -620,12 +572,20 @@ struct Built {
 /// flag forking control flow: the traversal is one and the same; only the projection
 /// differs.
 struct Driven {
-    /// Invalid-UTF-8 and syntax diagnostics from every module, parseable or not.
-    parse: Vec<SourceDiagnostic>,
-    /// Structural-bound diagnostics over the cleanly-parsed modules.
-    structural: Vec<SourceDiagnostic>,
+    /// Invalid-UTF-8 and syntax diagnostics from every module, parseable or
+    /// not: the parse stage's finished bounded terminal.
+    parse: BoundedDiagnostics,
+    /// Structural-bound diagnostics over the cleanly-parsed modules: that
+    /// stage's finished bounded terminal.
+    structural: BoundedDiagnostics,
     /// The semantic pass over the cleanly-parsed modules.
     semantic: SemanticOutcome,
+    /// The identities of input files that did not decode or parse, in
+    /// diagnostic order (invalid-UTF-8 files first, then broken parsed files).
+    /// Populated directly from decode and parse status — never reconstructed
+    /// from retained diagnostics, so a Limited parse terminal cannot erase it.
+    /// Bounded by drive admission.
+    broken_files: Vec<FileIdentity>,
     /// Editor hover facts collected while lowering the cleanly-parsed bodies. Carried
     /// out of the traversal orthogonally to the semantic outcome; the production
     /// compile's projection ignores them and the analysis snapshot consumes them.
@@ -701,32 +661,42 @@ impl DriveInputAdmission {
 /// or the accumulated failure tagged with the stage that produced it.
 enum SemanticOutcome {
     Built(Built),
-    Diagnostics(Vec<SourceDiagnostic>, CompileStage),
-    ResourceLimit(CompileResourceLimit, CompileStage),
-    Invariant(InvariantCause, CompileStage),
+    Diagnostics(BoundedDiagnostics, CompileStage),
+    /// An aggregate resource bound; its stage is not retained (no public
+    /// outcome distinguishes it, and the empty-boundary invariant below is the
+    /// only stage consumer).
+    ResourceLimit(CompileResourceLimit),
+    Invariant(InvariantCause),
 }
 
 impl Driven {
-    /// Project the production compile result. The first non-empty stage in order —
-    /// parse, then structural, then semantic — is the failure, byte-identical to the
-    /// historical staged early-return (diagnostics are never sorted or deduped, so a
-    /// stage's set is exactly what that stage would have returned). A fully clean pass
-    /// yields the image.
+    /// Project the production compile result. The first logically non-empty
+    /// stage in order — parse, then structural, then semantic — is the
+    /// failure, byte-identical to the historical staged early-return (a
+    /// stage's rows are never sorted, deduped, or merged with a later
+    /// stage's, so no cross-stage limit strengthening can occur: a limit
+    /// arises only within the stage whose own collector crossed it). The
+    /// structural stage retains the `Parse` tag. A semantic diagnostics
+    /// terminal that is complete and empty is the empty-boundary invariant. A
+    /// fully clean pass yields the image.
     fn into_built(self) -> Result<Built, CompileFailure> {
-        if !self.parse.is_empty() {
-            return Err(diagnostic_failure(self.parse, CompileStage::Parse));
+        if let Some(failure) = stage_failure(self.parse) {
+            return Err(failure);
         }
-        if !self.structural.is_empty() {
-            return Err(diagnostic_failure(self.structural, CompileStage::Parse));
+        if let Some(failure) = stage_failure(self.structural) {
+            return Err(failure);
         }
         match self.semantic {
             SemanticOutcome::Built(built) => Ok(built),
-            SemanticOutcome::Diagnostics(diagnostics, stage) => {
-                Err(diagnostic_failure(diagnostics, stage))
-            }
-            SemanticOutcome::ResourceLimit(limit, stage) => Err(resource_failure(limit, stage)),
-            SemanticOutcome::Invariant(cause, stage) => {
-                Err(compile_failure(Vec::new(), Some(cause), None, stage))
+            SemanticOutcome::Diagnostics(diagnostics, stage) => match stage_failure(diagnostics) {
+                Some(failure) => Err(failure),
+                None => Err(CompileFailure::Invariant(CompileInvariant(
+                    InvariantCause::EmptyDiagnostics(stage),
+                ))),
+            },
+            SemanticOutcome::ResourceLimit(limit) => Err(CompileFailure::ResourceLimit(limit)),
+            SemanticOutcome::Invariant(cause) => {
+                Err(CompileFailure::Invariant(CompileInvariant(cause)))
             }
         }
     }
@@ -740,50 +710,55 @@ impl Driven {
 /// compile reports.
 fn drive(project: &ProjectInput, mode: TestMode) -> Result<Driven, CompileResourceLimit> {
     DriveInputAdmission::check(project)?;
-    let mut parse = Vec::new();
-    let mut parsed: Vec<Module> = Vec::new();
+    let mut parse = DiagnosticCollector::new();
+    let mut broken_files: Vec<FileIdentity> = Vec::new();
     let mut non_utf8_modules: BTreeSet<String> = BTreeSet::new();
+
+    // Pass one decodes and classifies UTF-8 only, appending each invalid
+    // file's one typed row immediately, so invalid rows form a canonical-order
+    // prefix (A5). A non-UTF-8 file never enters parsing, but it is still a
+    // project module that did not parse; record it as broken so a qualified
+    // call into it is a dependency gap rather than an absence.
+    let mut decoded: Vec<(FileIdentity, String, &str)> = Vec::new();
     for module in project.modules() {
         let file = module.identity().clone();
         let name = module.module().as_str().to_string();
         match std::str::from_utf8(module.source()) {
-            Ok(source) => parsed.push(Module {
-                file,
-                name,
-                parsed: parse_source(source),
-            }),
-            Err(_) => {
-                parse.push(SourceDiagnostic::at(
-                    Code::CheckUnsupported.as_str(),
+            Ok(source) => decoded.push((file, name, source)),
+            Err(error) => {
+                parse.push(SourceDiagnostic::invalid_utf8(
                     &file,
-                    // A non-UTF-8 file has no parsed construct to point at: a
-                    // zero-length span at the file start, whose 1-based point is 1:1.
-                    SourceSpan {
-                        start_byte: 0,
-                        end_byte: 0,
-                        line: 1,
-                        column: 1,
-                    },
-                    "source file is not valid UTF-8".to_string(),
+                    error.valid_up_to(),
+                    error.error_len(),
                 ));
-                // A non-UTF-8 file never enters parsing, but it is still a project
-                // module that did not parse; record it as broken so a qualified call
-                // into it is a dependency gap rather than an absence.
+                broken_files.push(file);
                 non_utf8_modules.insert(name);
             }
         }
     }
-    for module in &parsed {
-        for diagnostic in &module.parsed.diagnostics {
-            if diagnostic.severity == marrow_syntax::Severity::Error {
-                parse.push(SourceDiagnostic::at(
-                    diagnostic.code,
-                    &module.file,
-                    diagnostic.span,
-                    diagnostic.message.clone(),
-                ));
-            }
+
+    // Pass two parses one valid module at a time and immediately consumes its
+    // syntax terminal through the one bridge, retaining only the AST and the
+    // logical broken status (A5): no collection of un-absorbed parse results
+    // ever exists, so retained diagnostic state is bounded by the compiler
+    // collector plus the one in-flight file's syntax collector. Absorbing the
+    // complete payload is equivalent to the historical Error-severity filter:
+    // every syntax producer constructs `Severity::Error` (the private syntax
+    // constructor fixes it).
+    let mut parsed: Vec<Module> = Vec::new();
+    for (file, name, source) in decoded {
+        let result = parse_source(source);
+        let broken = result.diagnostics.summary().count() != 0;
+        parse.absorb_syntax(&file, result.diagnostics);
+        if broken {
+            broken_files.push(file.clone());
         }
+        parsed.push(Module {
+            file,
+            name,
+            ast: result.file,
+            broken,
+        });
     }
 
     // The dotted names of modules that did not parse — a syntax error in a parsed
@@ -792,13 +767,7 @@ fn drive(project: &ProjectInput, mode: TestMode) -> Result<Driven, CompileResour
     // fact.
     let mut broken_modules: BTreeSet<String> = parsed
         .iter()
-        .filter(|module| {
-            module
-                .parsed
-                .diagnostics
-                .iter()
-                .any(|diagnostic| diagnostic.severity == marrow_syntax::Severity::Error)
-        })
+        .filter(|module| module.broken)
         .map(|module| module.name.clone())
         .collect();
     broken_modules.extend(non_utf8_modules);
@@ -809,9 +778,8 @@ fn drive(project: &ProjectInput, mode: TestMode) -> Result<Driven, CompileResour
     // completion query, which classifies positions over recovered incomplete forms in a
     // broken file. A non-UTF-8 file never produced a `Module`, so it has no retained tree
     // and a completion query in it is syntax-unavailable.
-    let (clean, broken_parsed): (Vec<Module>, Vec<Module>) = parsed
-        .into_iter()
-        .partition(|module| !module.parsed.has_errors());
+    let (clean, broken_parsed): (Vec<Module>, Vec<Module>) =
+        parsed.into_iter().partition(|module| !module.broken);
 
     // Project each cleanly-parsed module's declaration hierarchy from its parse tree — a
     // pure analysis byproduct of the one traversal, orthogonal to the semantic outcome
@@ -822,7 +790,7 @@ fn drive(project: &ProjectInput, mode: TestMode) -> Result<Driven, CompileResour
     let mut document_symbols: Vec<(FileIdentity, Vec<crate::analysis::DeclSymbol>)> = Vec::new();
     let mut symbol_limit: Option<crate::analysis::SymbolLimit> = None;
     for module in &clean {
-        match crate::analysis::project_document_symbols(&module.parsed.file.declarations) {
+        match crate::analysis::project_document_symbols(&module.ast.declarations) {
             Ok(symbols) => document_symbols.push((module.file.clone(), symbols)),
             Err(limit) => {
                 symbol_limit = Some(limit);
@@ -837,7 +805,7 @@ fn drive(project: &ProjectInput, mode: TestMode) -> Result<Driven, CompileResour
     // parse tree ahead of the first draft mutation. Durable member-tree nesting depth is
     // not checked here: its exact accounting is the encoder's, and it surfaces as a
     // locationless `DurableDepth` resource limit rather than a divergent source count.
-    let mut structural = Vec::new();
+    let mut structural = DiagnosticCollector::new();
     check_structural_resource_bounds(&clean, &mut structural);
 
     let mut hover_facts = Vec::new();
@@ -858,13 +826,14 @@ fn drive(project: &ProjectInput, mode: TestMode) -> Result<Driven, CompileResour
         .chain(broken_parsed)
         .map(|module| crate::analysis::CompletionModule {
             file: module.file,
-            ast: module.parsed.file,
+            ast: module.ast,
         })
         .collect();
     Ok(Driven {
-        parse,
-        structural,
+        parse: parse.finish(),
+        structural: structural.finish(),
         semantic,
+        broken_files,
         hover_facts,
         dependency_gaps,
         document_symbols,
@@ -886,7 +855,7 @@ fn run_semantic(
     hover_facts: &mut Vec<crate::analysis::HoverFact>,
     dependency_gaps: &mut Vec<(FileIdentity, SourceSpan)>,
 ) -> SemanticOutcome {
-    let mut diagnostics = Vec::new();
+    let mut diagnostics = DiagnosticCollector::new();
     // Store roots whose durable identity failed admission, steered to their identity
     // reports once each across the whole compile rather than at every reference.
     let mut admission_steered: BTreeSet<String> = BTreeSet::new();
@@ -902,7 +871,7 @@ fn run_semantic(
     // and its exports, but is not importable by module path.
     let mut module_names: BTreeSet<String> = BTreeSet::new();
     for module in parsed {
-        if let Some(header) = &module.parsed.file.module {
+        if let Some(header) = &module.ast.module {
             let declared = header.name.replace("::", ".");
             if declared == module.name {
                 module_names.insert(module.name.clone());
@@ -927,7 +896,7 @@ fn run_semantic(
     let mut imports: BTreeMap<String, Vec<(String, String)>> = BTreeMap::new();
     for module in parsed {
         let bindings = imports.entry(module.name.clone()).or_default();
-        for use_decl in &module.parsed.file.uses {
+        for use_decl in &module.ast.uses {
             let target = use_decl.name.replace("::", ".");
             let segment = target
                 .rsplit('.')
@@ -965,7 +934,7 @@ fn run_semantic(
     let functions: Vec<(FileIdentity, String, &FunctionDecl)> = parsed
         .iter()
         .flat_map(|module| {
-            module.parsed.file.declarations.iter().filter_map(|decl| {
+            module.ast.declarations.iter().filter_map(|decl| {
                 if let Declaration::Function(function) = decl {
                     Some((module.file.clone(), module.name.clone(), function))
                 } else {
@@ -982,7 +951,7 @@ fn run_semantic(
     let aliases: Vec<(FileIdentity, &AliasDecl)> = parsed
         .iter()
         .flat_map(|module| {
-            module.parsed.file.declarations.iter().filter_map(|decl| {
+            module.ast.declarations.iter().filter_map(|decl| {
                 if let Declaration::Alias(alias) = decl {
                     Some((module.file.clone(), alias))
                 } else {
@@ -994,7 +963,7 @@ fn run_semantic(
     let nominals: Vec<(FileIdentity, &NominalDecl)> = parsed
         .iter()
         .flat_map(|module| {
-            module.parsed.file.declarations.iter().filter_map(|decl| {
+            module.ast.declarations.iter().filter_map(|decl| {
                 if let Declaration::Nominal(nominal) = decl {
                     Some((module.file.clone(), nominal))
                 } else {
@@ -1006,7 +975,7 @@ fn run_semantic(
     let resources: Vec<(FileIdentity, &ResourceDecl)> = parsed
         .iter()
         .flat_map(|module| {
-            module.parsed.file.declarations.iter().filter_map(|decl| {
+            module.ast.declarations.iter().filter_map(|decl| {
                 if let Declaration::Resource(resource) = decl {
                     Some((module.file.clone(), resource))
                 } else {
@@ -1018,7 +987,7 @@ fn run_semantic(
     let structs: Vec<(FileIdentity, &StructDecl)> = parsed
         .iter()
         .flat_map(|module| {
-            module.parsed.file.declarations.iter().filter_map(|decl| {
+            module.ast.declarations.iter().filter_map(|decl| {
                 if let Declaration::Struct(item) = decl {
                     Some((module.file.clone(), item))
                 } else {
@@ -1030,7 +999,7 @@ fn run_semantic(
     let enums: Vec<(FileIdentity, &EnumDecl)> = parsed
         .iter()
         .flat_map(|module| {
-            module.parsed.file.declarations.iter().filter_map(|decl| {
+            module.ast.declarations.iter().filter_map(|decl| {
                 if let Declaration::Enum(item) = decl {
                     Some((module.file.clone(), item))
                 } else {
@@ -1049,19 +1018,16 @@ fn run_semantic(
         &mut diagnostics,
     );
     if let Some(invariant) = records.build_invariant() {
-        return SemanticOutcome::Invariant(
-            InvariantCause::Generic(invariant),
-            CompileStage::TypeInstantiation,
-        );
+        return SemanticOutcome::Invariant(InvariantCause::Generic(invariant));
     }
     if records.has_instantiation_limit() {
-        diagnostics.extend(records.take_generic_diagnostics().into_ordered());
-        return SemanticOutcome::Diagnostics(diagnostics, CompileStage::TypeInstantiation);
+        records.take_generic_diagnostics().merge_into(&mut diagnostics);
+        return SemanticOutcome::Diagnostics(diagnostics.finish(), CompileStage::TypeInstantiation);
     }
     let stores: Vec<(FileIdentity, &StoreDecl)> = parsed
         .iter()
         .flat_map(|module| {
-            module.parsed.file.declarations.iter().filter_map(|decl| {
+            module.ast.declarations.iter().filter_map(|decl| {
                 if let Declaration::Store(store) = decl {
                     Some((module.file.clone(), store))
                 } else {
@@ -1080,10 +1046,7 @@ fn run_semantic(
     ) {
         Ok(durable) => durable,
         Err(invariant) => {
-            return SemanticOutcome::Invariant(
-                InvariantCause::Generic(invariant),
-                CompileStage::TypeInstantiation,
-            );
+            return SemanticOutcome::Invariant(InvariantCause::Generic(invariant));
         }
     };
     let signatures = match FunctionRegistry::build(
@@ -1098,14 +1061,11 @@ fn run_semantic(
     ) {
         Ok(Some(signatures)) => signatures,
         Ok(None) => {
-            diagnostics.extend(records.take_generic_diagnostics().into_ordered());
-            return SemanticOutcome::Diagnostics(diagnostics, CompileStage::FunctionSignatures);
+            records.take_generic_diagnostics().merge_into(&mut diagnostics);
+            return SemanticOutcome::Diagnostics(diagnostics.finish(), CompileStage::FunctionSignatures);
         }
         Err(invariant) => {
-            return SemanticOutcome::Invariant(
-                InvariantCause::Generic(invariant),
-                CompileStage::FunctionSignatures,
-            );
+            return SemanticOutcome::Invariant(InvariantCause::Generic(invariant));
         }
     };
     // Generic functions are templates with no image index; they are monomorphized at
@@ -1113,7 +1073,7 @@ fn run_semantic(
     let generic_functions: Vec<(FileIdentity, String, &FunctionDecl)> = parsed
         .iter()
         .flat_map(|module| {
-            module.parsed.file.declarations.iter().filter_map(|decl| {
+            module.ast.declarations.iter().filter_map(|decl| {
                 if let Declaration::Function(function) = decl
                     && !function.type_params.is_empty()
                 {
@@ -1131,7 +1091,7 @@ fn run_semantic(
     let const_decls: Vec<(String, FileIdentity, &ConstDecl)> = parsed
         .iter()
         .flat_map(|module| {
-            module.parsed.file.declarations.iter().filter_map(|decl| {
+            module.ast.declarations.iter().filter_map(|decl| {
                 if let Declaration::Const(konst) = decl {
                     Some((module.name.clone(), module.file.clone(), konst))
                 } else {
@@ -1159,13 +1119,10 @@ fn run_semantic(
         ) {
             Ok(outcome) => outcome,
             Err(invariant) => {
-                return SemanticOutcome::Invariant(
-                    InvariantCause::Generic(invariant),
-                    CompileStage::TemplateProof,
-                );
+                return SemanticOutcome::Invariant(InvariantCause::Generic(invariant));
             }
         };
-        diagnostics.extend(outcome.diagnostics);
+        diagnostics.absorb(outcome.diagnostics);
         records.adopt_generic_diagnostics(outcome.generic);
         // Adopt the template body's editor facts, collected once at the template. A
         // generic instance never re-collects these (its use-site spans duplicate the
@@ -1185,8 +1142,8 @@ fn run_semantic(
         }
     }
     if records.has_instantiation_limit() {
-        diagnostics.extend(records.take_generic_diagnostics().into_ordered());
-        return SemanticOutcome::Diagnostics(diagnostics, CompileStage::TemplateProof);
+        records.take_generic_diagnostics().merge_into(&mut diagnostics);
+        return SemanticOutcome::Diagnostics(diagnostics.finish(), CompileStage::TemplateProof);
     }
 
     // Generic instances are image functions with no stable identity, indexed after
@@ -1197,7 +1154,7 @@ fn run_semantic(
     let test_count: u16 = if mode == TestMode::Include {
         parsed
             .iter()
-            .flat_map(|module| &module.parsed.file.declarations)
+            .flat_map(|module| &module.ast.declarations)
             .filter(|decl| matches!(decl, Declaration::Test(_)))
             .count() as u16
     } else {
@@ -1214,7 +1171,7 @@ fn run_semantic(
     let mut exports: Vec<ExportEntry> = Vec::new();
     let mut lowered: Vec<LoweredFn> = Vec::new();
     'function_bodies: for module in parsed {
-        for declaration in &module.parsed.file.declarations {
+        for declaration in &module.ast.declarations {
             match declaration {
                 Declaration::Function(function) if !function.type_params.is_empty() => {
                     // A generic template is not lowered in place.
@@ -1243,10 +1200,7 @@ fn run_semantic(
                             continue;
                         }
                         Err(invariant) => {
-                            return SemanticOutcome::Invariant(
-                                InvariantCause::Generic(invariant),
-                                CompileStage::BodyLowering,
-                            );
+                            return SemanticOutcome::Invariant(InvariantCause::Generic(invariant));
                         }
                     };
                     for (span, display, definition) in result.hover_facts {
@@ -1327,7 +1281,7 @@ fn run_semantic(
     let mut tests: Vec<TestEntry> = Vec::new();
     if mode == TestMode::Include && !records.has_instantiation_limit() {
         'test_bodies: for module in parsed {
-            for declaration in &module.parsed.file.declarations {
+            for declaration in &module.ast.declarations {
                 let Declaration::Test(test) = declaration else {
                     continue;
                 };
@@ -1363,10 +1317,7 @@ fn run_semantic(
                         continue;
                     }
                     Err(invariant) => {
-                        return SemanticOutcome::Invariant(
-                            InvariantCause::Generic(invariant),
-                            CompileStage::BodyLowering,
-                        );
+                        return SemanticOutcome::Invariant(InvariantCause::Generic(invariant));
                     }
                 };
                 for (span, display, definition) in result.hover_facts {
@@ -1433,10 +1384,7 @@ fn run_semantic(
                 Ok(Some(result)) => result,
                 Ok(None) => break,
                 Err(invariant) => {
-                    return SemanticOutcome::Invariant(
-                        InvariantCause::Generic(invariant),
-                        CompileStage::BodyLowering,
-                    );
+                    return SemanticOutcome::Invariant(InvariantCause::Generic(invariant));
                 }
             };
             debug_assert_eq!(
@@ -1468,17 +1416,14 @@ fn run_semantic(
     // monomorphized `Tree[int]` containing `Tree[int]` is an ordinary record cycle),
     // now that every field and body annotation has been resolved.
     let stopped_on_limit = records.has_instantiation_limit();
-    diagnostics.extend(records.take_generic_diagnostics().into_ordered());
+    records.take_generic_diagnostics().merge_into(&mut diagnostics);
     if stopped_on_limit {
-        return SemanticOutcome::Diagnostics(diagnostics, CompileStage::BodyLowering);
+        return SemanticOutcome::Diagnostics(diagnostics.finish(), CompileStage::BodyLowering);
     }
     if let Err(invariant) =
         crate::types::reject_value_cycles(&records, &structs, &resources, &mut diagnostics)
     {
-        return SemanticOutcome::Invariant(
-            InvariantCause::Generic(invariant),
-            CompileStage::PostLoweringValidation,
-        );
+        return SemanticOutcome::Invariant(InvariantCause::Generic(invariant));
     }
 
     // The compiled subset does not admit recursion: the direct-call graph must be
@@ -1522,7 +1467,7 @@ fn run_semantic(
     }
 
     if !diagnostics.is_empty() {
-        return SemanticOutcome::Diagnostics(diagnostics, CompileStage::PostLoweringValidation);
+        return SemanticOutcome::Diagnostics(diagnostics.finish(), CompileStage::PostLoweringValidation);
     }
 
     match draft.encode() {
@@ -1578,14 +1523,10 @@ pub(crate) fn analyze_project(
     let document_symbols = driven.document_symbols;
     let symbol_limit = driven.symbol_limit;
     let completion_modules = driven.completion_modules;
-    // A file that contributed a parse-stage diagnostic did not parse cleanly; a fact
-    // query in it is syntax-unavailable rather than absent.
-    let mut broken_files: Vec<FileIdentity> = Vec::new();
-    for diagnostic in &driven.parse {
-        if !broken_files.iter().any(|file| file == diagnostic.file()) {
-            broken_files.push(diagnostic.file().clone());
-        }
-    }
+    // The drive records broken files directly from decode and parse status, so
+    // the fact survives even when the parse stage's diagnostic payload was
+    // discarded by a limit.
+    let broken_files = driven.broken_files;
     let outcome = analyze_outcome(driven.parse, driven.structural, driven.semantic);
     Ok(ProjectAnalysis {
         outcome,
@@ -1599,41 +1540,45 @@ pub(crate) fn analyze_project(
 }
 
 /// Resolve the complete diagnostic outcome under the shared precedence from the driven
-/// stage buckets.
+/// stage terminals. Analysis alone creates a temporary fourth collector that
+/// consumes parse, then structural, then semantic diagnostics before one
+/// finish — the ordered cross-stage union, in which an OwnedBytes limit may
+/// strengthen to Count across stages (the production projection never merges
+/// stages, so it never strengthens across them).
 fn analyze_outcome(
-    parse: Vec<SourceDiagnostic>,
-    structural: Vec<SourceDiagnostic>,
+    parse: BoundedDiagnostics,
+    structural: BoundedDiagnostics,
     semantic: SemanticOutcome,
 ) -> Analyzed {
-    let mut diagnostics = parse;
-    diagnostics.extend(structural);
     // The parse and structural prechecks preempt the semantic pass in the production
     // compile: `into_built` returns those stages before the semantic outcome is
     // consulted. So a real precheck diagnostic dominates a semantic invariant or
     // resource limit here too — otherwise a defense-in-depth encode outcome (a bound the
     // precheck already owns) would diverge from the production result. The semantic
     // pass's own diagnostics still union in for dependency resilience.
-    let precheck_present = !diagnostics.is_empty();
-    let mut resource = None;
-    let mut invariant = None;
+    let precheck_present = !parse.is_empty() || !structural.is_empty();
+    let mut union = DiagnosticCollector::new();
+    union.absorb(parse);
+    union.absorb(structural);
     match semantic {
-        SemanticOutcome::Invariant(cause, _) => invariant = Some(CompileInvariant(cause)),
-        SemanticOutcome::Diagnostics(semantic, _) => diagnostics.extend(semantic),
-        SemanticOutcome::ResourceLimit(limit, _) => resource = Some(limit),
-        SemanticOutcome::Built(_) => {}
+        SemanticOutcome::Invariant(cause) if !precheck_present => {
+            return Analyzed::Invariant(CompileInvariant(cause));
+        }
+        SemanticOutcome::ResourceLimit(limit) if !precheck_present => {
+            return Analyzed::ResourceLimit(limit);
+        }
+        SemanticOutcome::Diagnostics(semantic, _) => union.absorb(semantic),
+        // With prechecks present the semantic invariant or resource limit is
+        // suppressed: the precheck union is the analysis result.
+        SemanticOutcome::Invariant(..)
+        | SemanticOutcome::ResourceLimit(..)
+        | SemanticOutcome::Built(_) => {}
     }
-    if let Some(invariant) = invariant
-        && !precheck_present
-    {
-        return Analyzed::Invariant(invariant);
-    }
-    match seal_diagnostics(diagnostics) {
-        DiagnosticSeal::Complete(diagnostics) => Analyzed::Diagnostics(diagnostics.into_vec()),
-        DiagnosticSeal::Overflow(limit) => Analyzed::ResourceLimit(limit),
-        DiagnosticSeal::Empty => match resource {
-            Some(limit) => Analyzed::ResourceLimit(limit),
-            None => Analyzed::Diagnostics(Vec::new()),
-        },
+    match union.finish() {
+        BoundedDiagnostics::Complete { rows, .. } => Analyzed::Diagnostics(rows),
+        BoundedDiagnostics::Limited { limit, .. } => {
+            Analyzed::ResourceLimit(diagnostic_limit_failure(limit))
+        }
     }
 }
 
@@ -1643,10 +1588,10 @@ fn analyze_outcome(
 /// position (`some`/`exists`/`trim`/...); such a function would be admitted and
 /// then never reached. Functions of the same name in different modules are distinct
 /// and do not conflict.
-fn reject_duplicate_functions(parsed: &[Module], diagnostics: &mut Vec<SourceDiagnostic>) {
+fn reject_duplicate_functions(parsed: &[Module], diagnostics: &mut DiagnosticCollector) {
     for module in parsed {
         let mut seen: Vec<&str> = Vec::new();
-        for declaration in &module.parsed.file.declarations {
+        for declaration in &module.ast.declarations {
             let Declaration::Function(function) = declaration else {
                 continue;
             };
@@ -1679,7 +1624,7 @@ fn reject_duplicate_functions(parsed: &[Module], diagnostics: &mut Vec<SourceDia
 /// mutual recursion cycle. A function is on a cycle exactly when it can reach
 /// itself by following direct calls, so each function is checked for reachability
 /// back to itself over the edge set.
-fn reject_recursion(lowered: &[LoweredFn], diagnostics: &mut Vec<SourceDiagnostic>) {
+fn reject_recursion(lowered: &[LoweredFn], diagnostics: &mut DiagnosticCollector) {
     // Adjacency by image index. Indices are dense (0..lowered.len()) and each
     // function appears once, so a plain vec keyed by index is exact.
     let mut callees: Vec<&[u16]> = vec![&[]; lowered.len()];
@@ -1733,7 +1678,7 @@ fn reaches_self(start: u16, callees: &[&[u16]]) -> bool {
 /// therefore reported only where a caller cannot satisfy it — at an export entry, at
 /// the specific unwrapped mutation or call-site span. A test entry receives its
 /// ambient transaction from the test harness and is likewise exempt.
-fn reject_missing_transaction(lowered: &[LoweredFn], diagnostics: &mut Vec<SourceDiagnostic>) {
+fn reject_missing_transaction(lowered: &[LoweredFn], diagnostics: &mut DiagnosticCollector) {
     let count = lowered.len();
     let mut by_index: Vec<Option<&LoweredFn>> = vec![None; count];
     for function in lowered {
@@ -1860,7 +1805,7 @@ fn instr_successors(code: &[Instr], index: usize) -> Vec<usize> {
 /// exactly one the verifier would reject at image.flow: the checker is never stricter
 /// than the boundary. The requires-ambient-transaction pass runs first and already
 /// covers a durable mutation outside any region, so this pass need not restate it.
-fn reject_transaction_ownership(lowered: &[LoweredFn], diagnostics: &mut Vec<SourceDiagnostic>) {
+fn reject_transaction_ownership(lowered: &[LoweredFn], diagnostics: &mut DiagnosticCollector) {
     let count = lowered.len();
     let mut by_index: Vec<Option<&LoweredFn>> = vec![None; count];
     for function in lowered {
@@ -2099,7 +2044,7 @@ fn owner_lattice_violation(
 /// session the direct operation needs. Only a directly-owned transaction counts as a
 /// driven owner; because a transaction owner is never reached through a helper, the
 /// test body's direct call edges carry the whole relation.
-fn reject_mixed_test_bodies(lowered: &[LoweredFn], diagnostics: &mut Vec<SourceDiagnostic>) {
+fn reject_mixed_test_bodies(lowered: &[LoweredFn], diagnostics: &mut DiagnosticCollector) {
     let count = lowered.len();
     let mut owns_transaction = vec![false; count];
     for function in lowered {
@@ -2138,9 +2083,9 @@ fn reject_mixed_test_bodies(lowered: &[LoweredFn], diagnostics: &mut Vec<SourceD
 /// offending construct's span before the image structure is built. Bounds knowable
 /// only after type resolution (durable value depth, struct-leaf width, key tuples,
 /// index projections) or lowering (locals, code bytes) are owned elsewhere.
-fn check_structural_resource_bounds(parsed: &[Module], diagnostics: &mut Vec<SourceDiagnostic>) {
+fn check_structural_resource_bounds(parsed: &[Module], diagnostics: &mut DiagnosticCollector) {
     for module in parsed {
-        for declaration in &module.parsed.file.declarations {
+        for declaration in &module.ast.declarations {
             match declaration {
                 Declaration::Resource(resource) => {
                     check_record_field_width(
@@ -2185,7 +2130,7 @@ fn check_record_field_width(
     file: &FileIdentity,
     span: SourceSpan,
     members: &[ResourceMember],
-    diagnostics: &mut Vec<SourceDiagnostic>,
+    diagnostics: &mut DiagnosticCollector,
 ) {
     let fields = members
         .iter()

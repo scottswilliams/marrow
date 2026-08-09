@@ -54,7 +54,7 @@ use marrow_syntax::{
     range_expr,
 };
 
-use crate::diag::SourceDiagnostic;
+use crate::diag::{BoundedDiagnostics, DiagnosticCollector, SourceDiagnostic};
 use crate::durable::DurableRegistry;
 use crate::konst::{ConstRegistry, ConstScalar};
 use crate::scalar::ScalarType;
@@ -243,7 +243,7 @@ pub(crate) struct FnLowerer<'a> {
     /// The generic function templates, for resolving a generic call target.
     generics: &'a GenericRegistry<'a>,
     consts: &'a ConstRegistry,
-    diagnostics: &'a mut Vec<SourceDiagnostic>,
+    diagnostics: &'a mut DiagnosticCollector,
     /// The editor dependency-gap sink: `(file, callee span)` for each qualified call to
     /// a module that did not parse. Threaded in like `diagnostics` so the gap survives
     /// even when the body it sits in fails to lower (an unresolved call fails the body).
@@ -366,7 +366,7 @@ impl<'a> FnLowerer<'a> {
         functions: &'a FunctionRegistry,
         generics: &'a GenericRegistry<'a>,
         consts: &'a ConstRegistry,
-        diagnostics: &'a mut Vec<SourceDiagnostic>,
+        diagnostics: &'a mut DiagnosticCollector,
         dependency_gaps: &'a mut Vec<(FileIdentity, SourceSpan)>,
         admission_steered: &'a mut BTreeSet<String>,
         file: &'a FileIdentity,
@@ -458,7 +458,7 @@ impl<'a> FnLowerer<'a> {
         functions: &'a FunctionRegistry,
         generics: &'a GenericRegistry<'a>,
         consts: &'a ConstRegistry,
-        diagnostics: &'a mut Vec<SourceDiagnostic>,
+        diagnostics: &'a mut DiagnosticCollector,
         dependency_gaps: &'a mut Vec<(FileIdentity, SourceSpan)>,
         admission_steered: &'a mut BTreeSet<String>,
         file: &'a FileIdentity,
@@ -498,7 +498,7 @@ impl<'a> FnLowerer<'a> {
         functions: &'a FunctionRegistry,
         generics: &'a GenericRegistry<'a>,
         consts: &'a ConstRegistry,
-        diagnostics: &'a mut Vec<SourceDiagnostic>,
+        diagnostics: &'a mut DiagnosticCollector,
         dependency_gaps: &'a mut Vec<(FileIdentity, SourceSpan)>,
         admission_steered: &'a mut BTreeSet<String>,
         template: &'a GenericTemplate<'a>,
@@ -564,7 +564,10 @@ impl<'a> FnLowerer<'a> {
         // a normal return, an early lowering invariant, or an unwind — so a failed proof
         // leaks nothing.
         let mut scope = TemplateProofScope::enter(records, draft)?;
-        let mut diagnostics = Vec::new();
+        // The proof's local collector: success seals it into the outcome's
+        // terminal for the outer stage owner to absorb; an invariant failure
+        // drops it with the scope.
+        let mut diagnostics = DiagnosticCollector::new();
         // Each parameter's position in this vector is its abstract `LTy::Param`
         // index, and its constraint is read back from here by `constraint_at`.
         let type_env = template
@@ -604,7 +607,7 @@ impl<'a> FnLowerer<'a> {
             .map(|lowered| lowered.hover_facts)
             .unwrap_or_default();
         Ok(TemplateProofOutcome {
-            diagnostics,
+            diagnostics: diagnostics.finish(),
             generic: records.take_generic_diagnostics(),
             hover_facts,
             dependency_gaps,
@@ -623,7 +626,7 @@ impl<'a> FnLowerer<'a> {
         functions: &'a FunctionRegistry,
         generics: &'a GenericRegistry<'a>,
         consts: &'a ConstRegistry,
-        diagnostics: &'a mut Vec<SourceDiagnostic>,
+        diagnostics: &'a mut DiagnosticCollector,
         dependency_gaps: &'a mut Vec<(FileIdentity, SourceSpan)>,
         admission_steered: &'a mut BTreeSet<String>,
         file: &'a FileIdentity,
@@ -767,7 +770,7 @@ impl<'a> FnLowerer<'a> {
         functions: &'a FunctionRegistry,
         generics: &'a GenericRegistry<'a>,
         consts: &'a ConstRegistry,
-        diagnostics: &'a mut Vec<SourceDiagnostic>,
+        diagnostics: &'a mut DiagnosticCollector,
         dependency_gaps: &'a mut Vec<(FileIdentity, SourceSpan)>,
         admission_steered: &'a mut BTreeSet<String>,
         file: &'a FileIdentity,
@@ -1358,7 +1361,7 @@ mod generic_cache_boundary_tests {
         functions: &'a FunctionRegistry,
         generics: &'a GenericRegistry<'a>,
         consts: &'a ConstRegistry,
-        diagnostics: &'a mut Vec<SourceDiagnostic>,
+        diagnostics: &'a mut DiagnosticCollector,
         dependency_gaps: &'a mut Vec<(FileIdentity, SourceSpan)>,
     ) -> FnLowerer<'a> {
         FnLowerer::new(

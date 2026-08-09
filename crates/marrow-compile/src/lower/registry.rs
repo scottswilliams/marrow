@@ -19,7 +19,9 @@ pub(crate) struct FunctionRegistry {
 }
 
 pub(crate) struct TemplateProofOutcome {
-    pub(crate) diagnostics: Vec<SourceDiagnostic>,
+    /// The proof's finished local diagnostic terminal, sealed by the local
+    /// collector's one `finish` for the outer stage owner to absorb.
+    pub(crate) diagnostics: BoundedDiagnostics,
     pub(crate) generic: GenericDiagnostics,
     /// Editor hover facts from the once-checked template body: `(span, hover display,
     /// optional definition target)` for each resolved local/parameter use and function
@@ -46,7 +48,7 @@ impl FunctionRegistry {
         modules: BTreeSet<String>,
         imports: BTreeMap<String, Vec<(String, String)>>,
         broken_modules: BTreeSet<String>,
-        diagnostics: &mut Vec<SourceDiagnostic>,
+        diagnostics: &mut DiagnosticCollector,
     ) -> Result<Option<Self>, LowerInvariant> {
         let mut sigs = Vec::with_capacity(functions.len());
         let mut accepted = true;
