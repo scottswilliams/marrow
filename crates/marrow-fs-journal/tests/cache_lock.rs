@@ -83,8 +83,7 @@ fn distinct_names_lock_independently() {
 fn a_symlink_lock_entry_is_refused() {
     let scratch = Scratch::new("symlink-lock");
     let dir = root(&scratch);
-    std::os::unix::fs::symlink("elsewhere", scratch.path().join("lock"))
-        .expect("create symlink");
+    std::os::unix::fs::symlink("elsewhere", scratch.path().join("lock")).expect("create symlink");
     assert!(matches!(
         CacheLock::acquire(&dir, &name("lock")),
         Err(LockError::Custody(_))

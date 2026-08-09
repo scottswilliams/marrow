@@ -99,12 +99,9 @@ impl fmt::Display for EntryNameError {
             Self::Dot => formatter.write_str("`.` aliases the admitted directory itself"),
             Self::DotDot => formatter.write_str("`..` escapes the admitted directory"),
             Self::Nul => formatter.write_str("an entry name cannot contain a NUL byte"),
-            Self::Absolute => {
-                formatter.write_str("an entry name must be relative, not absolute or drive-prefixed")
-            }
-            Self::Separator => {
-                formatter.write_str("an entry name cannot contain a path separator")
-            }
+            Self::Absolute => formatter
+                .write_str("an entry name must be relative, not absolute or drive-prefixed"),
+            Self::Separator => formatter.write_str("an entry name cannot contain a path separator"),
             Self::Control => formatter.write_str("an entry name cannot contain a control byte"),
             Self::TooLong { len } => write!(
                 formatter,

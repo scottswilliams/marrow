@@ -321,7 +321,10 @@ impl fmt::Display for FrameLawError {
                 "a {found}-byte row header leaves no record room under the {kind} ceiling"
             ),
             Self::TagOutOfRegistry { kind, found } => {
-                write!(formatter, "phase tag {found} is outside the {kind} registry")
+                write!(
+                    formatter,
+                    "phase tag {found} is outside the {kind} registry"
+                )
             }
             Self::TagBehindSequence { sequence, found } => write!(
                 formatter,
@@ -344,10 +347,9 @@ impl fmt::Display for FrameLawError {
                 formatter,
                 "a {found}-byte payload exceeds the {kind} ceiling"
             ),
-            Self::SequenceOutOfRegistry { kind, found } => write!(
-                formatter,
-                "sequence {found} is beyond the {kind} registry"
-            ),
+            Self::SequenceOutOfRegistry { kind, found } => {
+                write!(formatter, "sequence {found} is beyond the {kind} registry")
+            }
         }
     }
 }
@@ -370,7 +372,10 @@ pub enum FrameCorruption {
     /// The kind byte names no kind.
     BadKind { found: u8 },
     /// The kind byte names a different kind than this journal.
-    WrongKind { expected: JournalKind, found: JournalKind },
+    WrongKind {
+        expected: JournalKind,
+        found: JournalKind,
+    },
     /// The reserved field is not zero.
     NonzeroReserved { found: u16 },
     /// The header length violates the kind's law.
@@ -382,7 +387,11 @@ pub enum FrameCorruption {
     /// not fit under the ceiling.
     BadRecordLength { sequence: u32, found: u32 },
     /// A closed-record kind's record does not have its exact position length.
-    WrongRecordSize { sequence: u32, expected: u32, found: u32 },
+    WrongRecordSize {
+        sequence: u32,
+        expected: u32,
+        found: u32,
+    },
     /// A record's trailing length echo differs from its leading length.
     LengthEchoMismatch { sequence: u32 },
     /// The record sequence is not dense from zero.
@@ -390,7 +399,11 @@ pub enum FrameCorruption {
     /// A phase tag is outside the kind's registry.
     TagOutOfRegistry { sequence: u32, found: u8 },
     /// A phase tag fails to strictly advance.
-    TagNotAdvancing { sequence: u32, previous: u8, found: u8 },
+    TagNotAdvancing {
+        sequence: u32,
+        previous: u8,
+        found: u8,
+    },
     /// A closed-record kind's phase tag is not sequence + 1.
     TagNotDense { sequence: u32, found: u8 },
     /// The first record's phase is not `Prepared`.
@@ -594,8 +607,8 @@ pub fn decode_frame(expected: JournalKind, bytes: &[u8]) -> Result<DecodedFrame,
     if bytes[8] != VERSION {
         return Err(FrameCorruption::BadVersion { found: bytes[8] });
     }
-    let kind = JournalKind::from_code(bytes[9])
-        .ok_or(FrameCorruption::BadKind { found: bytes[9] })?;
+    let kind =
+        JournalKind::from_code(bytes[9]).ok_or(FrameCorruption::BadKind { found: bytes[9] })?;
     if kind != expected {
         return Err(FrameCorruption::WrongKind {
             expected,
@@ -683,9 +696,8 @@ pub fn decode_frame(expected: JournalKind, bytes: &[u8]) -> Result<DecodedFrame,
             });
         }
         if remaining.len() >= 8 {
-            let found_sequence = u32::from_be_bytes(
-                remaining[4..8].try_into().expect("four sequence bytes"),
-            );
+            let found_sequence =
+                u32::from_be_bytes(remaining[4..8].try_into().expect("four sequence bytes"));
             if found_sequence != sequence {
                 return Err(FrameCorruption::SequenceNotDense {
                     expected: sequence,

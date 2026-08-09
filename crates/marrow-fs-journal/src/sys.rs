@@ -138,7 +138,10 @@ mod imp {
             .map_err(|errno| map("create directory", Reading::Plain, errno))
     }
 
-    pub(crate) fn create_file_excl(dir: &DirHandle, name: &str) -> Result<FileHandle, CustodyError> {
+    pub(crate) fn create_file_excl(
+        dir: &DirHandle,
+        name: &str,
+    ) -> Result<FileHandle, CustodyError> {
         let flags = OFlags::RDWR
             | OFlags::CREATE
             | OFlags::EXCL
@@ -415,7 +418,10 @@ mod imp {
         match *dir {}
     }
 
-    pub(crate) fn create_file_excl(dir: &DirHandle, _name: &str) -> Result<FileHandle, CustodyError> {
+    pub(crate) fn create_file_excl(
+        dir: &DirHandle,
+        _name: &str,
+    ) -> Result<FileHandle, CustodyError> {
         match *dir {}
     }
 
@@ -470,7 +476,11 @@ mod imp {
         match *file {}
     }
 
-    pub(crate) fn exchange(dir: &DirHandle, _first: &str, _second: &str) -> Result<(), CustodyError> {
+    pub(crate) fn exchange(
+        dir: &DirHandle,
+        _first: &str,
+        _second: &str,
+    ) -> Result<(), CustodyError> {
         match *dir {}
     }
 

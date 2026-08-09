@@ -11,7 +11,7 @@ use common::Scratch;
 use marrow_fs_journal::{
     AdmittedDir, CorruptionReason, CustodyError, EntryName, EntryNameError, FrameCorruption,
     FsIdentity, JournalCommon, JournalError, JournalKind, NodeKind, PendingName, PendingState,
-    TailState, classify, claim, encode_header, encode_record,
+    TailState, claim, classify, encode_header, encode_record,
 };
 
 fn name(spelling: &str) -> EntryName {
@@ -121,9 +121,7 @@ fn the_claim_witness_carries_the_parent_and_fresh_inode() {
 
     let pending_path = scratch.path().join("pkg.pending");
     let written = std::fs::read(&pending_path).expect("read pending");
-    let embedded = JournalCommon::decode(
-        written[16..64].try_into().expect("48-byte common"),
-    );
+    let embedded = JournalCommon::decode(written[16..64].try_into().expect("48-byte common"));
     assert_eq!(embedded.generation, [0x51; 16]);
     assert_eq!(embedded.parent, parent);
     assert_eq!(
@@ -283,7 +281,8 @@ fn an_append_over_the_ceiling_is_refused_and_writes_nothing() {
         "a refused append writes nothing",
     );
 
-    live.append(2, b"still-usable").expect("the journal stays live");
+    live.append(2, b"still-usable")
+        .expect("the journal stays live");
 }
 
 #[test]
@@ -295,7 +294,9 @@ fn finish_requires_the_terminal_phase_then_removes_both_names() {
 
     live.append(2, b"installed").expect("append");
     let incomplete = live;
-    let error = incomplete.finish().expect_err("finish refuses before the terminal phase");
+    let error = incomplete
+        .finish()
+        .expect_err("finish refuses before the terminal phase");
     assert!(matches!(
         error,
         JournalError::FinishBeforeComplete { last_tag: 2 }
@@ -333,7 +334,9 @@ fn a_hidden_extra_link_fails_the_finish_recheck_closed() {
     .expect("plant a hidden extra link");
     assert!(matches!(
         live.finish(),
-        Err(JournalError::Corrupt(CorruptionReason::ExtraLinks { found: 2 }))
+        Err(JournalError::Corrupt(CorruptionReason::ExtraLinks {
+            found: 2
+        }))
     ));
     assert!(
         scratch.path().join("store.pending").exists(),
@@ -380,7 +383,10 @@ fn create_only_debris_is_preclaim_and_discardable_under_witness() {
         match classify(&dir, &names, JournalKind::Provision).expect("classify") {
             PendingState::Preclaim(debris) => {
                 debris.discard().expect("witnessed discard");
-                assert!(!claim_path.exists(), "discard removes the debris at cut {cut}");
+                assert!(
+                    !claim_path.exists(),
+                    "discard removes the debris at cut {cut}"
+                );
             }
             other => panic!("cut {cut}: expected preclaim, found {other:?}"),
         }
@@ -454,10 +460,9 @@ fn a_two_link_journal_with_appended_records_is_retained_corruption() {
     std::fs::hard_link(&claim_path, scratch.path().join("store.pending")).expect("link");
 
     match classify(&dir, &names, JournalKind::Provision).expect("classify") {
-        PendingState::Corrupt(corruption) => assert_eq!(
-            corruption.reason(),
-            &CorruptionReason::ClaimBeyondPrepared
-        ),
+        PendingState::Corrupt(corruption) => {
+            assert_eq!(corruption.reason(), &CorruptionReason::ClaimBeyondPrepared)
+        }
         other => panic!("expected retained corruption, found {other:?}"),
     }
 }
@@ -572,7 +577,8 @@ fn an_incomplete_tail_is_truncated_only_against_the_unique_next_record() {
     assert_eq!(pending.frame().tail(), &TailState::Clean);
 
     let mut live = pending.resume().expect("resume after truncation");
-    live.append(2, b"final").expect("re-append the truncated record");
+    live.append(2, b"final")
+        .expect("re-append the truncated record");
     live.append(3, b"done").expect("append terminal");
     live.finish().expect("finish");
 }
@@ -623,8 +629,7 @@ fn hostile_pending_states_are_retained_corruption() {
 
     // A different kind under this journal's name.
     let mut other_kind = encode_header(JournalKind::Rebind, &PROVISION_HEADER).expect("header");
-    other_kind
-        .extend_from_slice(&encode_record(JournalKind::Rebind, 0, 1, b"P").expect("record"));
+    other_kind.extend_from_slice(&encode_record(JournalKind::Rebind, 0, 1, b"P").expect("record"));
     std::fs::write(&pending_path, &other_kind).expect("write");
     assert_corrupt(
         &dir,
@@ -707,11 +712,7 @@ fn a_closed_kind_journal_verifies_its_self_witness_on_replay() {
         parent: FsIdentity::new(0xDEAD, 0xBEEF),
         journal_inode,
     });
-    assert_corrupt(
-        &dir,
-        &names,
-        &CorruptionReason::SelfWitnessParentMismatch,
-    );
+    assert_corrupt(&dir, &names, &CorruptionReason::SelfWitnessParentMismatch);
 
     // A foreign inode identity is retained corruption.
     plant(JournalCommon {

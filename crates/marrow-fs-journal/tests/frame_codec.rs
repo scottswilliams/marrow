@@ -107,7 +107,9 @@ fn identity_projection_is_the_frozen_sixteen_byte_layout() {
     let bytes = PARENT.to_bytes();
     assert_eq!(
         bytes,
-        [1, 2, 3, 4, 5, 6, 7, 8, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18]
+        [
+            1, 2, 3, 4, 5, 6, 7, 8, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18
+        ]
     );
     assert_eq!(FsIdentity::from_bytes(bytes), PARENT);
 }
@@ -206,10 +208,7 @@ fn the_golden_cache_frame_is_byte_exact() {
 #[test]
 fn record_encoding_is_the_frozen_layout() {
     let encoded = encode_record(JournalKind::Provision, 1, 2, &[0xAB, 0xCD]).expect("record");
-    assert_eq!(
-        encoded,
-        [0, 0, 0, 7, 0, 0, 0, 1, 2, 0xAB, 0xCD, 0, 0, 0, 7]
-    );
+    assert_eq!(encoded, [0, 0, 0, 7, 0, 0, 0, 1, 2, 0xAB, 0xCD, 0, 0, 0, 7]);
 }
 
 #[test]

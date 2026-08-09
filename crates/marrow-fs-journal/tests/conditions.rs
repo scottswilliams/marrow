@@ -50,7 +50,10 @@ fn rustix_is_pinned_in_exactly_one_workspace_manifest() {
     let mut naming: Vec<PathBuf> = Vec::new();
 
     let mut manifests = vec![root.join("Cargo.toml")];
-    for entry in std::fs::read_dir(root.join("crates")).expect("read crates dir").flatten() {
+    for entry in std::fs::read_dir(root.join("crates"))
+        .expect("read crates dir")
+        .flatten()
+    {
         let manifest = entry.path().join("Cargo.toml");
         if manifest.is_file() {
             manifests.push(manifest);
@@ -109,7 +112,9 @@ fn the_resolved_rustix_feature_set_is_exactly_std_fs() {
     // Minimal dependency-free extraction over the resolve graph only (package
     // objects also carry `"features"` arrays inside their dependency lists,
     // so the scan starts at the resolve section).
-    let resolve_start = text.find("\"resolve\":").expect("metadata has a resolve graph");
+    let resolve_start = text
+        .find("\"resolve\":")
+        .expect("metadata has a resolve graph");
     let resolve = &text[resolve_start..];
     let mut feature_lists: Vec<Vec<String>> = Vec::new();
     for chunk in resolve.split("\"id\":\"").skip(1) {
@@ -177,8 +182,15 @@ fn no_rustix_type_escapes_the_public_api() {
         .find(|(path, _)| path.ends_with("sys.rs"))
         .expect("sys.rs exists");
     for declaration in [
-        "pub fn", "pub struct", "pub enum", "pub type", "pub use", "pub mod", "pub const",
-        "pub trait", "pub(super)",
+        "pub fn",
+        "pub struct",
+        "pub enum",
+        "pub type",
+        "pub use",
+        "pub mod",
+        "pub const",
+        "pub trait",
+        "pub(super)",
     ] {
         assert!(
             !sys.contains(declaration),
