@@ -160,6 +160,18 @@ mod imp {
             .map_err(|errno| map("open file", Reading::Nofollow, errno))
     }
 
+    /// Open a file for reading alone: witness-and-inspect custody over debris
+    /// whose mode may deny write access must not require more than read.
+    pub(crate) fn open_file_readonly(
+        dir: &DirHandle,
+        name: &str,
+    ) -> Result<FileHandle, CustodyError> {
+        let flags = OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC;
+        rustix::fs::openat(dir, name, flags, Mode::empty())
+            .map(File::from)
+            .map_err(|errno| map("open file", Reading::Nofollow, errno))
+    }
+
     pub(crate) fn open_lock_file(dir: &DirHandle, name: &str) -> Result<FileHandle, CustodyError> {
         let flags = OFlags::RDWR | OFlags::CREATE | OFlags::NOFOLLOW | OFlags::CLOEXEC;
         rustix::fs::openat(dir, name, flags, file_mode())
@@ -426,6 +438,13 @@ mod imp {
     }
 
     pub(crate) fn open_file(dir: &DirHandle, _name: &str) -> Result<FileHandle, CustodyError> {
+        match *dir {}
+    }
+
+    pub(crate) fn open_file_readonly(
+        dir: &DirHandle,
+        _name: &str,
+    ) -> Result<FileHandle, CustodyError> {
         match *dir {}
     }
 

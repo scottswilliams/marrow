@@ -261,18 +261,15 @@ impl AdmittedDir {
 
     /// Open one existing regular file `NOFOLLOW`, witnessing its opened inode.
     pub fn open_file(&self, name: &EntryName) -> Result<OpenedFile, CustodyError> {
-        let handle = sys::open_file(&self.handle, name.as_str())?;
-        let stat = sys::fstat_file(&handle)?;
-        if stat.kind != NodeKind::Regular {
-            return Err(CustodyError::WrongNodeKind {
-                op: "open file",
-                found: stat.kind,
-            });
-        }
-        Ok(OpenedFile {
-            handle,
-            identity: stat.identity,
-        })
+        witness_regular(sys::open_file(&self.handle, name.as_str())?)
+    }
+
+    /// Open one existing regular file read-only `NOFOLLOW`, witnessing its
+    /// opened inode. Preclaim debris may carry any mode the crash left, and
+    /// its only permitted mutation — the witnessed discard — needs the
+    /// directory alone, so its custody must not demand write access.
+    pub(crate) fn open_file_readonly(&self, name: &EntryName) -> Result<OpenedFile, CustodyError> {
+        witness_regular(sys::open_file_readonly(&self.handle, name.as_str())?)
     }
 
     /// Hard-link `existing` to `new_name`, refusing an existing destination.
@@ -309,6 +306,21 @@ impl AdmittedDir {
     pub fn rename_noreplace(&self, from: &EntryName, to: &EntryName) -> Result<(), CustodyError> {
         sys::rename_noreplace(&self.handle, from.as_str(), to.as_str())
     }
+}
+
+/// Require an opened handle to be a regular file and witness its inode.
+fn witness_regular(handle: sys::FileHandle) -> Result<OpenedFile, CustodyError> {
+    let stat = sys::fstat_file(&handle)?;
+    if stat.kind != NodeKind::Regular {
+        return Err(CustodyError::WrongNodeKind {
+            op: "open file",
+            found: stat.kind,
+        });
+    }
+    Ok(OpenedFile {
+        handle,
+        identity: stat.identity,
+    })
 }
 
 /// One typed reading of a refused directory admission on every qualified

@@ -622,8 +622,9 @@ fn classify_preclaim<'d>(
         });
     }
     // Preclaim content and mode are unconstrained: the crash may have fallen
-    // anywhere before the durable claim, including before the mode check.
-    let file = open_witnessed(dir, name.claim(), stat.identity())?;
+    // anywhere before the durable claim, including before the mode-restoring
+    // fchmod, so classification and discard must need only read access.
+    let file = witnessed(dir.open_file_readonly(name.claim())?, stat.identity())?;
     Ok(PendingState::Preclaim(PreclaimDebris {
         dir,
         name: name.clone(),
@@ -656,7 +657,7 @@ fn classify_claimed<'d>(
             found: claim_stat.mode(),
         });
     }
-    let file = open_witnessed(dir, name.claim(), claim_stat.identity())?;
+    let file = witnessed(dir.open_file(name.claim())?, claim_stat.identity())?;
     let frame = match replay(expected, &file)? {
         Ok(frame) => frame,
         Err(corruption) => return corrupt_state(CorruptionReason::Frame(corruption)),
@@ -695,7 +696,7 @@ fn classify_pending<'d>(
     if stat.mode() != JOURNAL_MODE {
         return corrupt_state(CorruptionReason::WrongMode { found: stat.mode() });
     }
-    let file = open_witnessed(dir, name.pending(), stat.identity())?;
+    let file = witnessed(dir.open_file(name.pending())?, stat.identity())?;
     let frame = match replay(expected, &file)? {
         Ok(frame) => frame,
         Err(corruption) => return corrupt_state(CorruptionReason::Frame(corruption)),
@@ -714,13 +715,8 @@ fn classify_pending<'d>(
     }))
 }
 
-/// Open `name` no-follow and require it to still be the observed inode.
-fn open_witnessed(
-    dir: &AdmittedDir,
-    name: &EntryName,
-    observed: FsIdentity,
-) -> Result<OpenedFile, JournalError> {
-    let file = dir.open_file(name)?;
+/// Require a freshly opened handle to still be the observed inode.
+fn witnessed(file: OpenedFile, observed: FsIdentity) -> Result<OpenedFile, JournalError> {
     if file.identity() != observed {
         return Err(JournalError::Custody(CustodyError::IdentityDrift {
             op: "classify",

@@ -398,6 +398,28 @@ fn create_only_debris_is_preclaim_and_discardable_under_witness() {
 }
 
 #[test]
+fn read_only_preclaim_debris_is_classified_and_discardable() {
+    let scratch = Scratch::new("preclaim-readonly");
+    let dir = root(&scratch);
+    let names = pending_name("store");
+    let claim_path = scratch.path().join("store.pending.create");
+
+    // Kill point: the crash fell between the create and the mode-restoring
+    // fchmod under a hostile umask, leaving mode-0400 debris. Classification
+    // and discard must need only read access to the file.
+    std::fs::write(&claim_path, b"partial").expect("plant preclaim debris");
+    set_mode(&claim_path, 0o400);
+
+    match classify(&dir, &names, JournalKind::Provision).expect("classify with read access alone") {
+        PendingState::Preclaim(debris) => debris
+            .discard()
+            .expect("the witnessed discard needs only the directory"),
+        other => panic!("expected preclaim, found {other:?}"),
+    }
+    assert!(!claim_path.exists());
+}
+
+#[test]
 fn preclaim_debris_with_an_extra_link_is_retained_corruption() {
     let scratch = Scratch::new("preclaim-linked");
     let dir = root(&scratch);
