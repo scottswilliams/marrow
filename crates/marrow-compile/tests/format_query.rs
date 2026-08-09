@@ -54,6 +54,21 @@ fn snapshot_format_refuses_a_parse_failed_file() {
 }
 
 #[test]
+fn snapshot_format_of_a_non_utf8_file_is_the_typed_invalid_utf8_outcome() {
+    let manifest = Manifest::parse("edition = \"2026\"\n").expect("valid manifest");
+    let captured = vec![CapturedFile::new("src/main.mw".to_string(), vec![0xFF])];
+    let input = marrow_project::capture(&manifest, captured, None, &CaptureLimits::DEFAULT)
+        .expect("capture project");
+    let Ok(snapshot) = analyze(Arc::new(input), InputRevision::new(1)) else {
+        panic!("a snapshot is produced even for a non-UTF-8 file");
+    };
+    assert!(matches!(
+        snapshot.format(&identity("src/main.mw")),
+        Ok(FormatOutcome::InvalidUtf8)
+    ));
+}
+
+#[test]
 fn snapshot_format_of_an_unknown_file_is_a_query_error() {
     let source = "pub fn f(): int {\n    return 1\n}\n";
     let Ok(snapshot) = analyze(

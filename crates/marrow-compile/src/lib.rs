@@ -77,6 +77,39 @@ pub(crate) fn test_main_file_identity() -> &'static marrow_project::FileIdentity
 }
 
 #[cfg(doctest)]
+pub mod source_diagnostic_privacy_doctests {
+    //! `SourceDiagnostic` is opaque: consumers read the frozen accessor set and
+    //! can neither reach a payload field nor construct a diagnostic.
+    //!
+    //! Field access does not compile:
+    //!
+    //! ```compile_fail
+    //! fn read(diagnostic: &marrow_compile::SourceDiagnostic) -> &str {
+    //!     &diagnostic.message
+    //! }
+    //! ```
+    //!
+    //! ```compile_fail
+    //! fn read(diagnostic: &marrow_compile::SourceDiagnostic) -> &str {
+    //!     diagnostic.code
+    //! }
+    //! ```
+    //!
+    //! External construction does not compile:
+    //!
+    //! ```compile_fail
+    //! fn build(file: marrow_project::FileIdentity) -> marrow_compile::SourceDiagnostic {
+    //!     marrow_compile::SourceDiagnostic::at(
+    //!         "check.type",
+    //!         &file,
+    //!         marrow_syntax::SourceSpan::default(),
+    //!         "forged".to_string(),
+    //!     )
+    //! }
+    //! ```
+}
+
+#[cfg(doctest)]
 pub mod compile_invariant_privacy_doctests {
     //! The compiler invariant is an opaque public outcome. External callers may
     //! distinguish the outer `CompileFailure::Invariant` arm, but cannot
