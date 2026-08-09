@@ -71,10 +71,18 @@ fn generated_reference_has_no_prototype_source_error_channel() {
     );
 
     let registry_source = include_str!("../src/lib.rs");
-    for removed_axis in ["pub enum Catchability", "fn catchability("] {
+    for removed_axis in [
+        "pub enum Catchability",
+        "fn catchability(",
+        // A10: severity is owned by the diagnostic payload (`marrow_syntax::Severity`
+        // fixed at construction); a per-code severity table would be a second owner
+        // that consumers could classify codes against, so it stays deleted.
+        "pub enum SeverityClass",
+        "fn severity_class(",
+    ] {
         assert!(
             !registry_source.contains(removed_axis),
-            "the deleted catchability classification returned to the registry: {removed_axis}"
+            "a deleted registry classification axis returned: {removed_axis}"
         );
     }
 }
