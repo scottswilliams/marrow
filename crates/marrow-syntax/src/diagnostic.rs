@@ -100,6 +100,12 @@ impl CompleteSyntaxDiagnostics {
         &self.0
     }
 
+    /// Consume into the owned rows, so a downstream envelope (the compiler's
+    /// syntax bridge) moves the payload instead of cloning it row by row.
+    pub fn into_boxed_slice(self) -> Box<[Diagnostic]> {
+        self.0
+    }
+
     /// The sole constructor of the nonempty wrapper: `Some` exactly when the
     /// payload holds at least one row.
     pub fn into_non_empty(self) -> Option<NonEmptyCompleteSyntaxDiagnostics> {

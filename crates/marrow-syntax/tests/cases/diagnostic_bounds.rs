@@ -364,6 +364,20 @@ fn nonempty_wrapper_construction_and_consumption() {
     assert_eq!(nonempty.as_slice()[0].code, PARSE_SYNTAX);
 }
 
+/// `into_boxed_slice` consumes the complete payload into the same rows
+/// `as_slice` exposes, in the same order.
+#[test]
+fn into_boxed_slice_yields_the_borrowed_rows() {
+    let complete = parse_source("wat\n@\n")
+        .diagnostics
+        .into_complete()
+        .expect("two error rows stay complete");
+    let borrowed: Vec<_> = complete.as_slice().to_vec();
+    assert_eq!(borrowed.len(), 2);
+    let owned = complete.into_boxed_slice();
+    assert_eq!(owned.as_ref(), borrowed.as_slice());
+}
+
 #[test]
 fn check_format_names_its_refusals_or_formats() {
     assert_eq!(

@@ -489,14 +489,10 @@ impl DiagnosticCollector {
             .saturating_add(count.saturating_mul(file.as_str().len()));
         match diagnostics.into_complete() {
             Ok(payload) => {
-                // The syntax terminal exposes borrowing access only, so each
-                // retained row is cloned into its compiler envelope; the
-                // transient double-retention is bounded by one file's syntax
-                // payload.
                 let rows = payload
-                    .as_slice()
-                    .iter()
-                    .map(|diagnostic| SourceDiagnostic::syntax(file, diagnostic.clone()))
+                    .into_boxed_slice()
+                    .into_iter()
+                    .map(|diagnostic| SourceDiagnostic::syntax(file, diagnostic))
                     .collect();
                 self.admit(count, bytes, RowSource::Many(rows));
             }
