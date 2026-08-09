@@ -2788,6 +2788,35 @@ mod driver_agreement {
         }
     }
 
+    /// The pinned invalid-UTF-8 facts flow through the production drive: the
+    /// typed row retains the exact `Utf8Error` numbers — a truncated multi-byte
+    /// sequence at end of input reports `error_len: None`, an invalid byte
+    /// reports its sequence length — while broken-file status is recorded
+    /// independently of the retained diagnostics.
+    #[test]
+    fn drive_retains_the_exact_invalid_utf8_facts() {
+        let manifest = Manifest::parse("edition = \"2026\"\n").expect("valid manifest");
+        let captured = vec![
+            CapturedFile::new("src/mid.mw".to_string(), b"ok\xFFrest".to_vec()),
+            CapturedFile::new("src/tail.mw".to_string(), b"ok \xF0\x9F".to_vec()),
+        ];
+        let input = marrow_project::capture(&manifest, captured, None, &CaptureLimits::DEFAULT)
+            .expect("capture project");
+        let driven = drive(&input, TestMode::Include).expect("test input is drive-admitted");
+        let rows = stage_rows(&driven.parse).expect("both files fail to decode");
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].invalid_utf8_facts(), Some((2, Some(1))));
+        assert_eq!(rows[1].invalid_utf8_facts(), Some((3, None)));
+        assert_eq!(
+            driven
+                .broken_files
+                .iter()
+                .map(|file| file.as_str())
+                .collect::<Vec<_>>(),
+            vec!["src/mid.mw", "src/tail.mw"],
+        );
+    }
+
     /// The diagnostics `compile_with_tests` reports, or `None` for a built image; a
     /// resource limit or invariant carries no diagnostics.
     fn compiled(result: &Result<CompiledTests, CompileFailure>) -> Option<Vec<SourceDiagnostic>> {
