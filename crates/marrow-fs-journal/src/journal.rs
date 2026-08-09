@@ -148,23 +148,6 @@ impl fmt::Display for CorruptionReason {
     }
 }
 
-/// Retained corruption: a typed classification that authorizes no mutation.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RetainedCorruption {
-    reason: CorruptionReason,
-}
-
-impl RetainedCorruption {
-    pub(crate) fn new(reason: CorruptionReason) -> Self {
-        Self { reason }
-    }
-
-    /// Why the state is corrupt.
-    pub fn reason(&self) -> &CorruptionReason {
-        &self.reason
-    }
-}
-
 /// A typed journal failure.
 #[derive(Debug)]
 pub enum JournalError {
@@ -269,7 +252,7 @@ pub enum PendingState<'d> {
     /// Only the pending name exists: a one-link claimed journal to replay.
     Pending(PendingJournal<'d>),
     /// Retained corruption; no mutation is authorized.
-    Corrupt(RetainedCorruption),
+    Corrupt(CorruptionReason),
 }
 
 /// Preclaim debris: a claim file that was never durably claimed. The only
@@ -820,7 +803,7 @@ fn frame_total_len(frame: &DecodedFrame) -> usize {
 }
 
 fn corrupt_state<'d>(reason: CorruptionReason) -> Result<PendingState<'d>, JournalError> {
-    Ok(PendingState::Corrupt(RetainedCorruption::new(reason)))
+    Ok(PendingState::Corrupt(reason))
 }
 
 /// Recheck the retained handle and its path mapping before and after every

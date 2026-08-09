@@ -54,6 +54,6 @@ pub use frame::{
 };
 pub use journal::{
     ClaimedJournal, CorruptionReason, JournalError, JournalWitness, LiveJournal, PendingJournal,
-    PendingName, PendingState, PreclaimDebris, RetainedCorruption, claim, classify,
+    PendingName, PendingState, PreclaimDebris, claim, classify,
 };
 pub use lock::{CacheLock, LockError};

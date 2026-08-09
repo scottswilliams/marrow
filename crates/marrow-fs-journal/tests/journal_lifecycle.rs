@@ -524,10 +524,9 @@ fn preclaim_debris_with_an_extra_link_is_retained_corruption() {
     std::fs::hard_link(&claim_path, scratch.path().join("elsewhere")).expect("extra link");
 
     match classify(&dir, &names, JournalKind::Provision).expect("classify") {
-        PendingState::Corrupt(corruption) => assert_eq!(
-            corruption.reason(),
-            &CorruptionReason::ExtraLinks { found: 2 }
-        ),
+        PendingState::Corrupt(reason) => {
+            assert_eq!(reason, CorruptionReason::ExtraLinks { found: 2 })
+        }
         other => panic!("expected retained corruption, found {other:?}"),
     }
     assert!(claim_path.exists(), "classification never mutates");
@@ -577,8 +576,8 @@ fn a_two_link_journal_with_appended_records_is_retained_corruption() {
     std::fs::hard_link(&claim_path, scratch.path().join("store.pending")).expect("link");
 
     match classify(&dir, &names, JournalKind::Provision).expect("classify") {
-        PendingState::Corrupt(corruption) => {
-            assert_eq!(corruption.reason(), &CorruptionReason::ClaimBeyondPrepared)
+        PendingState::Corrupt(reason) => {
+            assert_eq!(reason, CorruptionReason::ClaimBeyondPrepared)
         }
         other => panic!("expected retained corruption, found {other:?}"),
     }
@@ -593,9 +592,7 @@ fn split_inodes_under_both_names_are_retained_corruption() {
     std::fs::write(scratch.path().join("store.pending"), b"two").expect("pending file");
 
     match classify(&dir, &names, JournalKind::Provision).expect("classify") {
-        PendingState::Corrupt(corruption) => {
-            assert_eq!(corruption.reason(), &CorruptionReason::SplitInodes)
-        }
+        PendingState::Corrupt(reason) => assert_eq!(reason, CorruptionReason::SplitInodes),
         other => panic!("expected retained corruption, found {other:?}"),
     }
 }
@@ -851,7 +848,7 @@ fn set_mode(path: &std::path::Path, mode: u32) {
 
 fn assert_corrupt(dir: &AdmittedDir, names: &PendingName, expected: &CorruptionReason) {
     match classify(dir, names, names_kind(expected)).expect("classify") {
-        PendingState::Corrupt(corruption) => assert_eq!(corruption.reason(), expected),
+        PendingState::Corrupt(reason) => assert_eq!(&reason, expected),
         other => panic!("expected retained corruption {expected:?}, found {other:?}"),
     }
 }
