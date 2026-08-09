@@ -73,7 +73,7 @@ directory, no flag checks without writing. `marrow fmt` does not read from stdin
     if target_path.is_dir() {
         return fmt_project(target_path, mode);
     }
-    match admit_single_source_file(Path::new(&target)) {
+    match admit_single_source_file(target_path) {
         Ok(()) => {}
         Err(SingleFileRefusal::NotRegular(error)) => {
             report_io_error(&target, &error);
