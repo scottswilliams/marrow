@@ -22,13 +22,21 @@ const REGISTRY_SOURCE: &str = "registry+https://github.com/rust-lang/crates.io-i
 /// The frozen external dependency inventory: `(name, version, checksum, license)`,
 /// sorted. The CAP01 baseline added no external dependency; H00a added the reviewed
 /// lsp-types/serde/serde_json family (and their transitive nodes) for the language
-/// server, recorded here with their checksums and permissive licenses.
+/// server, and FSJOURNAL01 added the reviewed rustix family (and its transitive
+/// nodes) for the filesystem/journal owner, recorded here with their checksums and
+/// permissive licenses.
 const EXTERNAL_INVENTORY: &[(&str, &str, &str, &str)] = &[
     (
         "bitflags",
         "1.3.2",
         "bef38d45163c2f1dde094a7dfd33ccf595c92905c8f8f4fdc18d06fb1037718a",
         "MIT/Apache-2.0",
+    ),
+    (
+        "bitflags",
+        "2.13.1",
+        "b588b76d00fde79687d7646a9b5bdf3cc0f655e0bbd080335a95d7e96f3587da",
+        "MIT OR Apache-2.0",
     ),
     (
         "block-buffer",
@@ -61,6 +69,12 @@ const EXTERNAL_INVENTORY: &[(&str, &str, &str, &str)] = &[
         "MIT OR Apache-2.0",
     ),
     (
+        "errno",
+        "0.3.14",
+        "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb",
+        "MIT OR Apache-2.0",
+    ),
+    (
         "fluent-uri",
         "0.1.4",
         "17c704e9dbe1ddd863da1e6ff3567795087b1eb201ce80d8fa81162e1516500d",
@@ -83,6 +97,12 @@ const EXTERNAL_INVENTORY: &[(&str, &str, &str, &str)] = &[
         "0.2.186",
         "68ab91017fe16c622486840e4c83c9a37afeff978bd239b5293d61ece587de66",
         "MIT OR Apache-2.0",
+    ),
+    (
+        "linux-raw-sys",
+        "0.12.1",
+        "32a66949e030da00e8c7d4434b251670a91556f4144941d37452769c25d58a53",
+        "Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT",
     ),
     (
         "lsp-types",
@@ -113,6 +133,12 @@ const EXTERNAL_INVENTORY: &[(&str, &str, &str, &str)] = &[
         "4.1.0",
         "8e925444704b5f17d32bf42f5b6e2df050bceebc3dcd6e71cc73dafe8092e839",
         "MIT OR Apache-2.0",
+    ),
+    (
+        "rustix",
+        "1.1.4",
+        "b6fe4565b9518b83ef4f91bb47ce29620ca828bd32cb7e408f0062e9930ba190",
+        "Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT",
     ),
     (
         "serde",
@@ -197,6 +223,18 @@ const EXTERNAL_INVENTORY: &[(&str, &str, &str, &str)] = &[
         "0.9.5",
         "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a",
         "MIT/Apache-2.0",
+    ),
+    (
+        "windows-link",
+        "0.2.1",
+        "f0805222e57f7521d6a62e36fa9163bc891acd422f971defe97d64e70d0a4fe5",
+        "MIT OR Apache-2.0",
+    ),
+    (
+        "windows-sys",
+        "0.61.2",
+        "ae137229bcbd6cdf0f7b80a31df61766145077ddf49416a728b02cb3921ff3fc",
+        "MIT OR Apache-2.0",
     ),
     (
         "winnow",
