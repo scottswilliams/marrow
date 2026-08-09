@@ -323,3 +323,24 @@ prefix try in bindings and return
 
 The control statements are described in [Control flow](control-flow.md) and
 [Errors and transactions](errors-and-transactions.md).
+
+## Diagnostics
+
+A syntax problem is reported as a located diagnostic — `parse.syntax`, or
+`check.nesting_limit` at the fixed nesting bound — with a 1-based line and
+column. Parsing is total: a failure becomes an error node plus a diagnostic
+rather than dropped syntax, and every syntax diagnostic is an error; parsing
+reports no warnings. A source file that is not valid UTF-8 is not parsed; it is
+refused with one diagnostic at the start of the file.
+
+Diagnostic retention is bounded. A single file's parse retains at most 4096
+diagnostics and at most 1 MiB of diagnostic text, and a project check retains
+the same ceilings per compile stage; when one row crosses both ceilings at
+once, the count ceiling is the one reported. Source that overflows a ceiling is
+refused with a typed resource-limit outcome — `marrow check` reports
+`cli.compiler_resource_limit` and `marrow fmt` reports `fmt.diagnostic_limit` —
+never a truncated or partial diagnostic listing.
+
+Reported diagnostics are deterministic: within a file they appear in source
+order, and a project reports files in its canonical order with invalid-UTF-8
+refusals first. The output is byte-stable across runs.

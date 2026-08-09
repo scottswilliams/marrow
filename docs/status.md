@@ -32,6 +32,9 @@ server (`marrow-lsp`); and the `marrow` CLI. The
 
 - Native lexer, parser, and formatter for `.mw` source, with typed parse
   diagnostics.
+- Diagnostic retention is bounded end to end: syntax and compiler collectors cap
+  at 4096 rows and 1 MiB of retained text, and an over-ceiling project is a typed
+  resource-limit refusal, never a truncated listing.
 - The `.mw` block surface uses mandatory curly braces (statements terminate at a
   line break or `}`), square-bracket keyed access and key declarations, and
   angle-bracket generics; `//`/`///` are the comment leaders. This replaced the

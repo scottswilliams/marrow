@@ -76,7 +76,10 @@ directory by default) and reports every diagnostic, each with its source file an
 1-based line and column. `check` opens no store and runs no code. Diagnostics are
 written to standard error; the command exits `0` when the project checks clean, `1`
 when any diagnostic is reported or a fixed compiler bound is reached, and `2` on a
-usage error.
+usage error. Diagnostic retention is itself bounded: a project whose diagnostics
+cross a fixed retention ceiling (4096 diagnostics or 1 MiB of retained diagnostic
+text per compile stage) is reported as a single `cli.compiler_resource_limit` line
+rather than a truncated diagnostic listing.
 
 A project that checks clean is compiled and independently verified, and `check`
 summarizes each exported (`pub fn`) function's durable
