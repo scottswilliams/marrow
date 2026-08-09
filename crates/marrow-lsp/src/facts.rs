@@ -16,13 +16,12 @@ use lsp_types::{
     PublishDiagnosticsParams, Range as LspRange, SignatureHelp, SignatureInformation, SymbolKind,
     TextEdit, Uri,
 };
-use marrow_codes::{Code, SeverityClass};
 use marrow_compile::{
     ActiveCall, ActiveCallOutcome, AnalysisSnapshot, Candidate, CandidateKind, CompletionOutcome,
     Completions, DeclKind, DeclSymbol, Fact, FormatOutcome,
 };
 use marrow_project_fs::FileIdentity;
-use marrow_syntax::SourceSpan;
+use marrow_syntax::{Severity, SourceSpan};
 
 use crate::position::{LineMap, Position, Range};
 use crate::uri::{SelectedRoot, diagnostic_uri};
@@ -46,12 +45,12 @@ fn to_uri(root: &SelectedRoot, identity: &FileIdentity) -> Result<Uri, UriEncodi
     Uri::from_str(&diagnostic_uri(root, identity)).map_err(|_| UriEncodingError)
 }
 
-/// The LSP severity for a marrow code. An unregistered code (never expected from the
-/// compiler) defaults to `ERROR`.
-fn severity_of(code: &str) -> DiagnosticSeverity {
-    match Code::from_code(code).map(Code::severity_class) {
-        Some(SeverityClass::Warning) => DiagnosticSeverity::WARNING,
-        _ => DiagnosticSeverity::ERROR,
+/// The LSP severity of a diagnostic, projected from the payload's typed severity —
+/// the one severity owner — never reconstructed by classifying the code.
+fn to_lsp_severity(severity: Severity) -> DiagnosticSeverity {
+    match severity {
+        Severity::Error => DiagnosticSeverity::ERROR,
+        Severity::Warning => DiagnosticSeverity::WARNING,
     }
 }
 
@@ -73,11 +72,11 @@ pub fn diagnostics_for_file(
             let range = to_lsp_range(map.range_of(span.start_byte, span.end_byte));
             Diagnostic {
                 range,
-                severity: Some(severity_of(diagnostic.code)),
-                code: Some(NumberOrString::String(diagnostic.code.to_owned())),
+                severity: Some(to_lsp_severity(diagnostic.severity())),
+                code: Some(NumberOrString::String(diagnostic.code().to_owned())),
                 code_description: None,
                 source: Some("marrow".to_owned()),
-                message: diagnostic.message.clone(),
+                message: diagnostic.message().to_owned(),
                 related_information: None,
                 tags: None,
                 data: None,
@@ -157,8 +156,9 @@ pub fn definition(
 }
 
 /// The formatting edits for a document, or `None` (LSP `null`) when formatting is
-/// refused (unparsed source or comment loss) or the output exceeds its bound. A
-/// successful format is one whole-document replacement edit.
+/// refused (unparsed source, a diagnostic-limited parse, or comment loss), the file is
+/// not valid UTF-8, or the output exceeds its bound. A successful format is one
+/// whole-document replacement edit.
 pub fn formatting(
     snapshot: &AnalysisSnapshot,
     file: &FileIdentity,
@@ -174,7 +174,12 @@ pub fn formatting(
             let whole = LspRange::new(LspPosition::new(0, 0), to_lsp_position(map.end_position()));
             Some(vec![TextEdit::new(whole, formatted)])
         }
-        Ok(FormatOutcome::Refused(_) | FormatOutcome::TooLarge { .. }) | Err(_) => None,
+        Ok(
+            FormatOutcome::Refused(_)
+            | FormatOutcome::TooLarge { .. }
+            | FormatOutcome::InvalidUtf8,
+        )
+        | Err(_) => None,
     }
 }
 
