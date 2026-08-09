@@ -103,6 +103,7 @@ Formatter refusals.
 | Code | Meaning |
 |---|---|
 | `fmt.comment_loss` | `marrow fmt` would drop a retained comment while rewriting the source, so the command refuses instead of publishing lossy formatted output. |
+| `fmt.diagnostic_limit` | `marrow fmt` requires a complete parse, but the file produced more parse diagnostics than the bounded collector retains — its row-count or owned-byte ceiling discarded them — so the command refuses without formatted output. Repair the source's parse errors before formatting. |
 
 ### `cli.*` — kind `tooling`
 

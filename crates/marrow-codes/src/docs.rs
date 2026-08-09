@@ -139,7 +139,7 @@ Formatter refusals.
 | Code | Meaning |
 |---|---|"#
             .to_string(),
-        rows(&[Code::FmtCommentLoss]),
+        rows(&[Code::FmtCommentLoss, Code::FmtDiagnosticLimit]),
         r#"
 ### `cli.*` — kind `tooling`
 
