@@ -207,20 +207,40 @@ impl AdmittedDir {
     /// entry into custody: the caller vouches for the path's trust, and the
     /// final component is opened `DIRECTORY | NOFOLLOW | CLOEXEC`.
     pub fn admit_trusted_root(path: &Path) -> Result<Self, CustodyError> {
-        let _ = path;
-        todo!("root admission")
+        let handle = match sys::open_dir_root(path) {
+            Ok(handle) => handle,
+            Err(refusal) => {
+                let observed = sys::lstat_path(path).ok().flatten();
+                return Err(refine_dir_refusal(refusal, observed));
+            }
+        };
+        let stat = sys::fstat_dir(&handle)?;
+        Ok(Self {
+            handle,
+            identity: stat.identity,
+        })
     }
 
     /// Admit one child directory of this directory.
     pub fn admit_child(&self, name: &EntryName) -> Result<Self, CustodyError> {
-        let _ = name;
-        todo!("child admission")
+        let handle = match sys::open_dir_child(&self.handle, name.as_str()) {
+            Ok(handle) => handle,
+            Err(refusal) => {
+                let observed = self.stat_entry(name).ok().flatten();
+                return Err(refine_dir_refusal(refusal, observed));
+            }
+        };
+        let stat = sys::fstat_dir(&handle)?;
+        Ok(Self {
+            handle,
+            identity: stat.identity,
+        })
     }
 
     /// Create one child directory (mode `0700`) and admit it.
     pub fn create_child_dir(&self, name: &EntryName) -> Result<Self, CustodyError> {
-        let _ = name;
-        todo!("child creation")
+        sys::mkdir_child(&self.handle, name.as_str())?;
+        self.admit_child(name)
     }
 
     /// The directory's identity at admission.
@@ -231,54 +251,80 @@ impl AdmittedDir {
     /// Create one regular file `CREATE | EXCL | NOFOLLOW`, mode `0600`,
     /// witnessing its opened inode.
     pub fn create_file_excl(&self, name: &EntryName) -> Result<OpenedFile, CustodyError> {
-        let _ = name;
-        todo!("exclusive creation")
+        let handle = sys::create_file_excl(&self.handle, name.as_str())?;
+        let stat = sys::fstat_file(&handle)?;
+        Ok(OpenedFile {
+            handle,
+            identity: stat.identity,
+        })
     }
 
     /// Open one existing regular file `NOFOLLOW`, witnessing its opened inode.
     pub fn open_file(&self, name: &EntryName) -> Result<OpenedFile, CustodyError> {
-        let _ = name;
-        todo!("file opening")
+        let handle = sys::open_file(&self.handle, name.as_str())?;
+        let stat = sys::fstat_file(&handle)?;
+        if stat.kind != NodeKind::Regular {
+            return Err(CustodyError::WrongNodeKind {
+                op: "open file",
+                found: stat.kind,
+            });
+        }
+        Ok(OpenedFile {
+            handle,
+            identity: stat.identity,
+        })
     }
 
     /// Hard-link `existing` to `new_name`, refusing an existing destination.
     pub fn link(&self, existing: &EntryName, new_name: &EntryName) -> Result<(), CustodyError> {
-        let _ = (existing, new_name);
-        todo!("destination-refusing link")
+        sys::link(&self.handle, existing.as_str(), new_name.as_str())
     }
 
     /// Unlink one entry.
     pub fn unlink(&self, name: &EntryName) -> Result<(), CustodyError> {
-        let _ = name;
-        todo!("unlink")
+        sys::unlink(&self.handle, name.as_str())
     }
 
     /// Stat one entry without following symbolic links; `None` if absent.
     pub fn stat_entry(&self, name: &EntryName) -> Result<Option<EntryStat>, CustodyError> {
-        let _ = name;
-        todo!("entry stat")
+        sys::stat_entry(&self.handle, name.as_str())
     }
 
     /// `fsync` this directory: the durable commit of its entry mutations
     /// within the documented file-and-directory-`fsync` envelope.
     pub fn sync(&self) -> Result<(), CustodyError> {
-        todo!("directory sync")
+        sys::sync_dir(&self.handle)
     }
 
     /// Atomically exchange two entries (`renameat` with `EXCHANGE`). A
     /// platform or filesystem without exchange semantics refuses with a typed
     /// [`CustodyError::Unsupported`], never a fallback.
     pub fn exchange(&self, first: &EntryName, second: &EntryName) -> Result<(), CustodyError> {
-        let _ = (first, second);
-        todo!("entry exchange")
+        sys::exchange(&self.handle, first.as_str(), second.as_str())
     }
 
     /// Rename `from` to `to`, refusing an existing destination (`renameat`
     /// with `NOREPLACE`). A platform without the semantics refuses with a
     /// typed [`CustodyError::Unsupported`], never a fallback.
     pub fn rename_noreplace(&self, from: &EntryName, to: &EntryName) -> Result<(), CustodyError> {
-        let _ = (from, to);
-        todo!("destination-refusing rename")
+        sys::rename_noreplace(&self.handle, from.as_str(), to.as_str())
+    }
+}
+
+/// One typed reading of a refused directory admission on every qualified
+/// platform: Darwin reports a symlink under `O_DIRECTORY | O_NOFOLLOW` as
+/// `ENOTDIR` while Linux reports `ELOOP`, so a refusal from either family is
+/// refined by one no-follow stat of the refused entry. Nothing was admitted
+/// either way; the stat only names the refusal.
+fn refine_dir_refusal(refusal: CustodyError, observed: Option<EntryStat>) -> CustodyError {
+    let op = match &refusal {
+        CustodyError::NotADirectory { op } | CustodyError::SymlinkRefused { op } => *op,
+        _ => return refusal,
+    };
+    match observed {
+        Some(stat) if stat.kind == NodeKind::Symlink => CustodyError::SymlinkRefused { op },
+        Some(stat) if stat.kind != NodeKind::Directory => CustodyError::NotADirectory { op },
+        _ => refusal,
     }
 }
 
@@ -306,29 +352,26 @@ impl OpenedFile {
 
     /// Stat the file through its own handle.
     pub fn stat(&self) -> Result<EntryStat, CustodyError> {
-        todo!("handle stat")
+        sys::fstat_file(&self.handle)
     }
 
     /// Append `bytes` at the end of the file.
     pub fn append(&mut self, bytes: &[u8]) -> Result<(), CustodyError> {
-        let _ = bytes;
-        todo!("append")
+        sys::append(&mut self.handle, bytes)
     }
 
     /// Read at most `max` bytes from the start of the file.
     pub fn read_prefix(&self, max: usize) -> Result<Vec<u8>, CustodyError> {
-        let _ = max;
-        todo!("bounded read")
+        sys::read_prefix(&self.handle, max)
     }
 
     /// `fsync` the file within the documented envelope.
     pub fn sync(&self) -> Result<(), CustodyError> {
-        todo!("file sync")
+        sys::sync_file(&self.handle)
     }
 
     pub(crate) fn truncate(&self, len: u64) -> Result<(), CustodyError> {
-        let _ = len;
-        todo!("truncate")
+        sys::truncate_file(&self.handle, len)
     }
 }
 

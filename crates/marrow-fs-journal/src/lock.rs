@@ -2,7 +2,7 @@
 
 use std::fmt;
 
-use crate::custody::{AdmittedDir, CustodyError, FsIdentity};
+use crate::custody::{AdmittedDir, CustodyError, FsIdentity, NodeKind};
 use crate::entry::EntryName;
 use crate::sys;
 
@@ -28,8 +28,29 @@ impl CacheLock {
     /// identity drifted between locking and verification refuses with a typed
     /// custody error rather than holding an orphaned inode.
     pub fn acquire(dir: &AdmittedDir, name: &EntryName) -> Result<Self, LockError> {
-        let _ = (dir, name);
-        todo!("lock acquisition")
+        let handle = sys::open_lock_file(&dir.handle, name.as_str())?;
+        if !sys::try_lock_exclusive(&handle)? {
+            return Err(LockError::Held);
+        }
+        let stat = sys::fstat_file(&handle)?;
+        if stat.kind != NodeKind::Regular {
+            return Err(LockError::Custody(CustodyError::WrongNodeKind {
+                op: "lock",
+                found: stat.kind,
+            }));
+        }
+        // The name must still map to the locked inode: without this recheck a
+        // racing unlink-and-recreate would leave this holder excluding nobody
+        // on an orphaned inode.
+        match dir.stat_entry(name)? {
+            Some(entry) if entry.identity() == stat.identity => Ok(Self {
+                handle,
+                identity: stat.identity,
+            }),
+            _ => Err(LockError::Custody(CustodyError::IdentityDrift {
+                op: "lock",
+            })),
+        }
     }
 
     /// The locked entry's inode identity.
