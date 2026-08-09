@@ -241,12 +241,55 @@ fn the_crate_contains_no_unsafe_code() {
     // The workspace forbids `unsafe_code` by lint; this scan keeps the
     // absence conspicuous from the conformance suite as well.
     for (path, contents) in crate_sources() {
-        assert!(
-            !contents.contains("unsafe "),
-            "{} contains unsafe code",
-            path.display()
-        );
+        for pattern in ["unsafe ", "unsafe{"] {
+            assert!(
+                !contents.contains(pattern),
+                "{} contains unsafe code",
+                path.display()
+            );
+        }
     }
+}
+
+/// The third leg of the escape red-list: no raw descriptor reaches the public
+/// API. The public custody types wrap their descriptors in private fields
+/// (`sys` handles), so descriptor tokens may appear in private plumbing but
+/// never on a `pub` item or a trait-impl header, where they would hand the
+/// descriptor to callers. The tokens are concatenated so a widened scan
+/// cannot match this file.
+#[test]
+fn no_raw_descriptor_escapes_a_public_signature_or_impl() {
+    let tokens = [
+        ["As", "Fd"].concat(),
+        ["AsRaw", "Fd"].concat(),
+        ["as_raw", "_fd"].concat(),
+        ["into_raw", "_fd"].concat(),
+        ["Raw", "Fd"].concat(),
+        ["Owned", "Fd"].concat(),
+        ["Borrowed", "Fd"].concat(),
+    ];
+    let mut violations: Vec<String> = Vec::new();
+    for (path, contents) in crate_sources() {
+        for (index, line) in contents.lines().enumerate() {
+            let trimmed = line.trim_start();
+            let public_position = trimmed.contains("pub ")
+                || trimmed.starts_with("impl ")
+                || trimmed.starts_with("impl<");
+            if !public_position {
+                continue;
+            }
+            for token in &tokens {
+                if line.contains(token.as_str()) {
+                    violations.push(format!("{}:{}: {token}", path.display(), index + 1));
+                }
+            }
+        }
+    }
+    assert!(
+        violations.is_empty(),
+        "a raw descriptor reached a public signature or impl:\n{}",
+        violations.join("\n")
+    );
 }
 
 /// The Linux qualification leg: the `linux_raw` backend must actually be in
