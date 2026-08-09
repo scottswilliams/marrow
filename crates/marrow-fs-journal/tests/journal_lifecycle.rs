@@ -817,15 +817,14 @@ fn every_per_byte_cut_of_a_provision_journal_classifies_deterministically() {
         let state =
             classify(&dir, &names, JournalKind::Provision).expect("classify pending debris");
         match state {
-            PendingState::Corrupt(CorruptionReason::Frame(FrameCorruption::TooShort {
-                found,
-            })) => {
+            PendingState::Corrupt(CorruptionReason::Frame(FrameCorruption::TooShort { found })) => {
                 assert!(cut < 16, "pending cut {cut}: TooShort past the prefix");
                 assert_eq!(found, cut);
             }
-            PendingState::Corrupt(CorruptionReason::Frame(
-                FrameCorruption::HeaderTruncated { expected, found },
-            )) => {
+            PendingState::Corrupt(CorruptionReason::Frame(FrameCorruption::HeaderTruncated {
+                expected,
+                found,
+            })) => {
                 assert!(
                     (16..header_end).contains(&cut),
                     "pending cut {cut}: HeaderTruncated outside the row header"
