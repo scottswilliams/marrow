@@ -19,8 +19,35 @@ impl EntryName {
     /// Admit `name` as one normal relative component, or return the typed
     /// rejection. No filesystem call is made; admission is pure.
     pub fn admit(name: &str) -> Result<Self, EntryNameError> {
-        let _ = name;
-        todo!("entry-name admission")
+        if name.is_empty() {
+            return Err(EntryNameError::Empty);
+        }
+        if name == "." {
+            return Err(EntryNameError::Dot);
+        }
+        if name == ".." {
+            return Err(EntryNameError::DotDot);
+        }
+        if name.contains('\0') {
+            return Err(EntryNameError::Nul);
+        }
+        let bytes = name.as_bytes();
+        // Leading separators and drive prefixes are absolute spellings on the
+        // platform family that reads them, so they are refused everywhere.
+        let drive_prefixed = bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':';
+        if bytes[0] == b'/' || bytes[0] == b'\\' || drive_prefixed {
+            return Err(EntryNameError::Absolute);
+        }
+        if name.contains('/') || name.contains('\\') {
+            return Err(EntryNameError::Separator);
+        }
+        if name.chars().any(|c| c.is_control()) {
+            return Err(EntryNameError::Control);
+        }
+        if bytes.len() > MAX_NAME_BYTES {
+            return Err(EntryNameError::TooLong { len: bytes.len() });
+        }
+        Ok(Self(name.to_string()))
     }
 
     /// The admitted spelling.

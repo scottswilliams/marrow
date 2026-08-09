@@ -164,13 +164,25 @@ pub struct JournalCommon {
 impl JournalCommon {
     /// The frozen 48-byte layout: generation, parent identity, inode identity.
     pub fn encode(&self) -> [u8; JOURNAL_COMMON_LEN] {
-        todo!("journal-common encoding")
+        let mut bytes = [0u8; JOURNAL_COMMON_LEN];
+        bytes[0..16].copy_from_slice(&self.generation);
+        bytes[16..32].copy_from_slice(&self.parent.to_bytes());
+        bytes[32..48].copy_from_slice(&self.journal_inode.to_bytes());
+        bytes
     }
 
     /// Decode the frozen 48-byte layout.
     pub fn decode(bytes: &[u8; JOURNAL_COMMON_LEN]) -> Self {
-        let _ = bytes;
-        todo!("journal-common decoding")
+        let field = |from: usize| -> [u8; 16] {
+            bytes[from..from + 16]
+                .try_into()
+                .expect("a 16-byte field of the fixed layout")
+        };
+        Self {
+            generation: field(0),
+            parent: FsIdentity::from_bytes(field(16)),
+            journal_inode: FsIdentity::from_bytes(field(32)),
+        }
     }
 }
 
@@ -246,12 +258,18 @@ impl DecodedFrame {
 
     /// Whether the final registry phase has been recorded.
     pub fn is_complete(&self) -> bool {
-        todo!("frame completeness")
+        self.records
+            .last()
+            .is_some_and(|record| record.phase_tag == self.kind.phase_count())
     }
 
     /// The `JournalCommon` leading kinds 4 and 5; `None` for kinds 1–3.
     pub fn journal_common(&self) -> Option<JournalCommon> {
-        todo!("journal-common projection")
+        self.kind.exact_header_len()?;
+        let common: &[u8; JOURNAL_COMMON_LEN] = self.row_header[..JOURNAL_COMMON_LEN]
+            .try_into()
+            .expect("a closed-kind header begins with the 48-byte common");
+        Some(JournalCommon::decode(common))
     }
 }
 
@@ -463,8 +481,35 @@ impl std::error::Error for FrameCorruption {}
 /// Encode the fixed prefix and row header for `kind`, refusing a header that
 /// violates the kind's law.
 pub fn encode_header(kind: JournalKind, row_header: &[u8]) -> Result<Vec<u8>, FrameLawError> {
-    let _ = (kind, row_header);
-    todo!("frame header encoding")
+    match kind.exact_header_len() {
+        Some(expected) => {
+            if row_header.len() != expected {
+                return Err(FrameLawError::WrongHeaderLength {
+                    kind,
+                    expected,
+                    found: row_header.len(),
+                });
+            }
+        }
+        None => {
+            if PREFIX_LEN + row_header.len() + RECORD_OVERHEAD > kind.ceiling() {
+                return Err(FrameLawError::HeaderOverCeiling {
+                    kind,
+                    found: row_header.len(),
+                });
+            }
+        }
+    }
+    let header_len =
+        u32::try_from(row_header.len()).expect("a lawful row header fits the length field");
+    let mut bytes = Vec::with_capacity(PREFIX_LEN + row_header.len());
+    bytes.extend_from_slice(&MAGIC);
+    bytes.push(VERSION);
+    bytes.push(kind.code());
+    bytes.extend_from_slice(&0u16.to_be_bytes());
+    bytes.extend_from_slice(&header_len.to_be_bytes());
+    bytes.extend_from_slice(row_header);
+    Ok(bytes)
 }
 
 /// Encode one record for `kind`, refusing a sequence, tag, or payload that
@@ -476,18 +521,229 @@ pub fn encode_record(
     phase_tag: u8,
     payload: &[u8],
 ) -> Result<Vec<u8>, FrameLawError> {
-    let _ = (kind, sequence, phase_tag, payload);
-    todo!("record encoding")
+    let phases = kind.phase_count();
+    if phase_tag == 0 || phase_tag > phases {
+        return Err(FrameLawError::TagOutOfRegistry {
+            kind,
+            found: phase_tag,
+        });
+    }
+    if sequence >= u32::from(phases) {
+        return Err(FrameLawError::SequenceOutOfRegistry {
+            kind,
+            found: sequence,
+        });
+    }
+    if u32::from(phase_tag) <= sequence {
+        return Err(FrameLawError::TagBehindSequence {
+            sequence,
+            found: phase_tag,
+        });
+    }
+    match kind.exact_payload_len(sequence) {
+        Some(expected) => {
+            if u32::from(phase_tag) != sequence + 1 {
+                return Err(FrameLawError::TagNotDense {
+                    sequence,
+                    found: phase_tag,
+                });
+            }
+            if payload.len() != expected {
+                return Err(FrameLawError::WrongPayloadLength {
+                    sequence,
+                    expected,
+                    found: payload.len(),
+                });
+            }
+        }
+        None => {
+            if PREFIX_LEN + RECORD_OVERHEAD + payload.len() > kind.ceiling() {
+                return Err(FrameLawError::PayloadOverCeiling {
+                    kind,
+                    found: payload.len(),
+                });
+            }
+        }
+    }
+    let record_len =
+        RECORD_LEN_BASE + u32::try_from(payload.len()).expect("a lawful payload fits the ceiling");
+    let mut bytes = Vec::with_capacity(RECORD_OVERHEAD + payload.len());
+    bytes.extend_from_slice(&record_len.to_be_bytes());
+    bytes.extend_from_slice(&sequence.to_be_bytes());
+    bytes.push(phase_tag);
+    bytes.extend_from_slice(payload);
+    bytes.extend_from_slice(&record_len.to_be_bytes());
+    Ok(bytes)
 }
 
 /// Decode `bytes` as an `expected`-kind frame. The caller reads at most
 /// `ceiling + 1` bytes; the decoder refuses the surplus byte before any
 /// length-derived allocation and fully validates every structurally visible
 /// field, including the visible fields of an incomplete tail.
-pub fn decode_frame(
-    expected: JournalKind,
-    bytes: &[u8],
-) -> Result<DecodedFrame, FrameCorruption> {
-    let _ = (expected, bytes);
-    todo!("frame decoding")
+pub fn decode_frame(expected: JournalKind, bytes: &[u8]) -> Result<DecodedFrame, FrameCorruption> {
+    let ceiling = expected.ceiling();
+    if bytes.len() > ceiling {
+        return Err(FrameCorruption::Oversized { limit: ceiling });
+    }
+    if bytes.len() < PREFIX_LEN {
+        return Err(FrameCorruption::TooShort { found: bytes.len() });
+    }
+    if bytes[0..8] != MAGIC {
+        return Err(FrameCorruption::BadMagic);
+    }
+    if bytes[8] != VERSION {
+        return Err(FrameCorruption::BadVersion { found: bytes[8] });
+    }
+    let kind = JournalKind::from_code(bytes[9])
+        .ok_or(FrameCorruption::BadKind { found: bytes[9] })?;
+    if kind != expected {
+        return Err(FrameCorruption::WrongKind {
+            expected,
+            found: kind,
+        });
+    }
+    let reserved = u16::from_be_bytes([bytes[10], bytes[11]]);
+    if reserved != 0 {
+        return Err(FrameCorruption::NonzeroReserved { found: reserved });
+    }
+    let declared_header = u32::from_be_bytes(
+        bytes[12..16]
+            .try_into()
+            .expect("the fixed prefix carries four header-length bytes"),
+    );
+    let header_len = declared_header as usize;
+    let header_lawful = match kind.exact_header_len() {
+        Some(exact) => header_len == exact,
+        None => PREFIX_LEN + header_len + RECORD_OVERHEAD <= ceiling,
+    };
+    if !header_lawful {
+        return Err(FrameCorruption::BadHeaderLength {
+            found: declared_header,
+        });
+    }
+    let header_end = PREFIX_LEN + header_len;
+    if bytes.len() < header_end {
+        return Err(FrameCorruption::HeaderTruncated {
+            expected: header_len,
+            found: bytes.len() - PREFIX_LEN,
+        });
+    }
+    let row_header = bytes[PREFIX_LEN..header_end].to_vec();
+
+    let phases = expected.phase_count();
+    let mut records: Vec<PhaseRecord> = Vec::new();
+    let mut offset = header_end;
+    let mut last_tag: u8 = 0;
+    let tail = loop {
+        if offset == bytes.len() {
+            break TailState::Clean;
+        }
+        if last_tag == phases {
+            return Err(FrameCorruption::TrailingBytes {
+                found: bytes.len() - offset,
+            });
+        }
+        let sequence = u32::try_from(records.len()).expect("at most phase_count records");
+        let remaining = &bytes[offset..];
+
+        // Validate every structurally visible field of the (possibly
+        // incomplete) next record before accepting it as a tail candidate.
+        if remaining.len() < 4 {
+            break TailState::IncompletePrefix {
+                bytes: remaining.to_vec(),
+            };
+        }
+        let declared = u32::from_be_bytes(
+            remaining[0..4]
+                .try_into()
+                .expect("four declared-length bytes"),
+        );
+        if declared < RECORD_LEN_BASE {
+            return Err(FrameCorruption::BadRecordLength {
+                sequence,
+                found: declared,
+            });
+        }
+        if let Some(exact_payload) = expected.exact_payload_len(sequence) {
+            let exact = RECORD_LEN_BASE
+                + u32::try_from(exact_payload).expect("closed payload lengths are small");
+            if declared != exact {
+                return Err(FrameCorruption::WrongRecordSize {
+                    sequence,
+                    expected: exact,
+                    found: declared,
+                });
+            }
+        }
+        let disk = declared as usize + 8;
+        if offset + disk > ceiling {
+            return Err(FrameCorruption::BadRecordLength {
+                sequence,
+                found: declared,
+            });
+        }
+        if remaining.len() >= 8 {
+            let found_sequence = u32::from_be_bytes(
+                remaining[4..8].try_into().expect("four sequence bytes"),
+            );
+            if found_sequence != sequence {
+                return Err(FrameCorruption::SequenceNotDense {
+                    expected: sequence,
+                    found: found_sequence,
+                });
+            }
+        }
+        if remaining.len() >= 9 {
+            let tag = remaining[8];
+            if tag == 0 || tag > phases {
+                return Err(FrameCorruption::TagOutOfRegistry {
+                    sequence,
+                    found: tag,
+                });
+            }
+            if sequence == 0 && tag != 1 {
+                return Err(FrameCorruption::FirstTagNotPrepared { found: tag });
+            }
+            if tag <= last_tag {
+                return Err(FrameCorruption::TagNotAdvancing {
+                    sequence,
+                    previous: last_tag,
+                    found: tag,
+                });
+            }
+            if expected.exact_payload_len(sequence).is_some() && u32::from(tag) != sequence + 1 {
+                return Err(FrameCorruption::TagNotDense {
+                    sequence,
+                    found: tag,
+                });
+            }
+        }
+        if remaining.len() < disk {
+            break TailState::IncompletePrefix {
+                bytes: remaining.to_vec(),
+            };
+        }
+        let echo = u32::from_be_bytes(
+            remaining[disk - 4..disk]
+                .try_into()
+                .expect("four echo bytes"),
+        );
+        if echo != declared {
+            return Err(FrameCorruption::LengthEchoMismatch { sequence });
+        }
+        records.push(PhaseRecord {
+            sequence,
+            phase_tag: remaining[8],
+            payload: remaining[9..disk - 4].to_vec(),
+        });
+        last_tag = remaining[8];
+        offset += disk;
+    };
+
+    Ok(DecodedFrame {
+        kind: expected,
+        row_header,
+        records,
+        tail,
+    })
 }

@@ -37,13 +37,23 @@ impl FsIdentity {
 
     /// The frozen 16-byte layout: `u64_be(st_dev) || u64_be(st_ino)`.
     pub fn to_bytes(self) -> [u8; 16] {
-        todo!("identity encoding")
+        let mut bytes = [0u8; 16];
+        bytes[0..8].copy_from_slice(&self.dev.to_be_bytes());
+        bytes[8..16].copy_from_slice(&self.ino.to_be_bytes());
+        bytes
     }
 
     /// Decode the frozen 16-byte layout.
     pub fn from_bytes(bytes: [u8; 16]) -> Self {
-        let _ = bytes;
-        todo!("identity decoding")
+        let field = |from: usize| -> [u8; 8] {
+            bytes[from..from + 8]
+                .try_into()
+                .expect("an 8-byte field of the fixed layout")
+        };
+        Self {
+            dev: u64::from_be_bytes(field(0)),
+            ino: u64::from_be_bytes(field(8)),
+        }
     }
 }
 

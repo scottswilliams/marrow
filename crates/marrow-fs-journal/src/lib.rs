@@ -33,8 +33,9 @@
 //!
 //! The established claim is atomic publication plus process- and OS-crash
 //! recovery inside the documented file-and-directory-`fsync` envelope. Every
-//! sync in this crate is a plain `fsync`; `fcntl_fullfsync` is not used because
-//! no current envelope claims power-loss durability. Sudden-power-loss or
+//! sync in this crate is a plain `fsync`; the Darwin full-flush fcntl is not
+//! used because no current envelope claims power-loss durability, and the
+//! conformance suite keeps both facts conspicuous. Sudden-power-loss or
 //! drive-cache-reset durability on macOS is not established.
 
 mod custody;
