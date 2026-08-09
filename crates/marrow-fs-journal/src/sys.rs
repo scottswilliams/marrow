@@ -291,12 +291,20 @@ mod imp {
     }
 
     /// Read at most `max` bytes from offset zero through the retained handle.
-    /// The allocation is bounded by the caller's kind ceiling, never by an
-    /// untrusted length field.
+    /// The allocation is guided by a same-handle `fstat` — one byte past the
+    /// statted size, so a file that grew after the stat fills the buffer and
+    /// forces the `max`-sized retry instead of silently returning a short
+    /// prefix — and the caller's kind ceiling, never an untrusted length
+    /// field, still bounds the total bytes read.
     pub(crate) fn read_prefix(file: &FileHandle, max: usize) -> Result<Vec<u8>, CustodyError> {
-        let mut buffer = vec![0u8; max];
+        let statted = fstat_file(file)?.size.saturating_add(1);
+        let hint = usize::try_from(statted).unwrap_or(max).min(max);
+        let mut buffer = vec![0u8; hint];
         let mut filled = 0usize;
         while filled < max {
+            if filled == buffer.len() {
+                buffer.resize(max, 0);
+            }
             match file.read_at(&mut buffer[filled..], filled as u64) {
                 Ok(0) => break,
                 Ok(read) => filled += read,
@@ -317,11 +325,17 @@ mod imp {
         /// trusted from the open call.
         #[test]
         fn retained_descriptors_are_cloexec_and_journal_files_append() {
+            static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+            let serial = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let nonce = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|elapsed| elapsed.as_nanos())
+                .unwrap_or(0);
             let root = std::env::temp_dir().join(format!(
-                "marrow-fs-journal-sys-flags-{}",
+                "marrow-fs-journal-sys-flags-{}-{nonce}-{serial}",
                 std::process::id()
             ));
-            std::fs::create_dir_all(&root).expect("create scratch");
+            std::fs::create_dir(&root).expect("create scratch");
 
             let dir = open_dir_root(&root).expect("open scratch root");
             let dir_fd_flags = rustix::io::fcntl_getfd(&dir).expect("dir descriptor flags");

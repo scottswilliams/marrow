@@ -12,6 +12,10 @@ use crate::sys;
 /// sole custody, and dropping it is the only release. The descriptor is
 /// close-on-exec, so no spawned process inherits the exclusion.
 ///
+/// Lock entry names share the admitted directory with pending-journal names
+/// and must stay disjoint from them; that namespace discipline is cooperative
+/// and belongs to the consumer.
+///
 /// ```compile_fail
 /// fn duplicate(lock: marrow_fs_journal::CacheLock) {
 ///     let _second = lock.clone();

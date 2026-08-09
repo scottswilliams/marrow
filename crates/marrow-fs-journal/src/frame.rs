@@ -113,6 +113,12 @@ impl JournalKind {
         }
     }
 
+    /// Whether the kind's row header begins with a leading [`JournalCommon`]
+    /// self-witness (kinds 4 and 5).
+    pub const fn carries_self_witness(self) -> bool {
+        matches!(self, Self::Lineage | Self::Cache)
+    }
+
     /// The exact phase-payload length by record position for kinds whose
     /// record sizes are closed (4 and 5).
     pub const fn exact_payload_len(self, position: u32) -> Option<usize> {
@@ -265,7 +271,9 @@ impl DecodedFrame {
 
     /// The `JournalCommon` leading kinds 4 and 5; `None` for kinds 1–3.
     pub fn journal_common(&self) -> Option<JournalCommon> {
-        self.kind.exact_header_len()?;
+        if !self.kind.carries_self_witness() {
+            return None;
+        }
         let common: &[u8; JOURNAL_COMMON_LEN] = self.row_header[..JOURNAL_COMMON_LEN]
             .try_into()
             .expect("a closed-kind header begins with the 48-byte common");

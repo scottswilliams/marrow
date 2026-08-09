@@ -155,7 +155,7 @@ pub enum JournalError {
     Custody(CustodyError),
     /// The producer violated the kind's frame law; nothing was written.
     Law(FrameLawError),
-    /// Corruption was found; nothing was mutated.
+    /// Corruption was found; no further mutation is authorized.
     Corrupt(CorruptionReason),
     /// A kind-4 or kind-5 row header did not embed the offered witness.
     WitnessNotEmbedded,
@@ -772,7 +772,7 @@ fn claim_bytes(
     witness: &JournalWitness,
 ) -> Result<Vec<u8>, JournalError> {
     let mut bytes = encode_header(kind, header)?;
-    if kind.exact_header_len().is_some() {
+    if kind.carries_self_witness() {
         let common: &[u8; JOURNAL_COMMON_LEN] = header[..JOURNAL_COMMON_LEN]
             .try_into()
             .expect("the exact header length was just enforced");

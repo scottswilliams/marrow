@@ -78,8 +78,8 @@ pub enum EntryNameError {
     /// The spelling contains a path separator, so it names more than one
     /// component.
     Separator,
-    /// The spelling contains a control byte, which no qualified platform
-    /// accepts in a portable entry name.
+    /// The spelling contains a control character, which this crate's portable
+    /// entry grammar refuses regardless of what any platform would accept.
     Control,
     /// The spelling exceeds the qualified platforms' name length bound.
     TooLong {
