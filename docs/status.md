@@ -15,12 +15,14 @@ refounded lane by lane; a feature is absent until its lane lands it.
 
 ## Current
 
-The beta workspace is sixteen crates: the retained diagnostic-code registry
+The beta workspace is seventeen crates: the retained diagnostic-code registry
 (`marrow-codes`), syntax owner (`marrow-syntax`), ordered-byte storage engine
 (`marrow-store`), pure project-input owner (`marrow-project`), bounded physical
 project-input adapter (`marrow-project-fs`), and temporal-domain owner
 (`marrow-temporal`); the refounded compiler pipeline (`marrow-compile`,
 `marrow-image`, `marrow-verify`, `marrow-vm`) and path kernel (`marrow-kernel`);
+the sole descriptor-rooted filesystem publication and pending-journal owner
+(`marrow-fs-journal`);
 the native store lifecycle owner (`marrow-lifecycle`), pure local-wire protocol
 owner (`marrow-local-wire`), and attached runner (`marrow-runner`); the language
 server (`marrow-lsp`); and the `marrow` CLI. The
