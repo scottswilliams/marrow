@@ -1,0 +1,19 @@
+[package]
+name = "marrow-fs-journal"
+description = "Sole descriptor-rooted filesystem publication owner: entry-name admission, admitted-directory custody, the cooperative cache lock, and the bounded five-kind pending-journal frame with replay and crash-debris classification."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+# DEP-RUSTIX-FSJOURNAL decision of record: exact pin, default features off, and a
+# feature set of exactly {std, fs}. Any added feature word, version move, or
+# second consuming crate is a fresh maintainer decision; the dependency-condition
+# tests enforce the resolved feature set and the single-manifest boundary.
+rustix = { version = "=1.1.4", default-features = false, features = ["std", "fs"] }
+
+[lints]
+workspace = true

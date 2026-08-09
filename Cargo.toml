@@ -4,6 +4,7 @@ members = [
     "crates/marrow",
     "crates/marrow-codes",
     "crates/marrow-compile",
+    "crates/marrow-fs-journal",
     "crates/marrow-image",
     "crates/marrow-kernel",
     "crates/marrow-lifecycle",
