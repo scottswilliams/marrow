@@ -543,27 +543,33 @@ pub fn claim<'d>(
         parent: dir.identity(),
         journal_inode: file.identity(),
     };
-    let bytes = match claim_bytes(kind, &build_header(&witness), prepared_payload, &witness) {
+    // Every refusal before the link leaves a never-linked claim file:
+    // preclaim by the protocol's own law, so it is discarded under witness
+    // before the refusal returns.
+    let bytes = match write_claim_file(
+        dir,
+        name,
+        &mut file,
+        kind,
+        &build_header(&witness),
+        prepared_payload,
+        &witness,
+    ) {
         Ok(bytes) => bytes,
         Err(refusal) => {
-            // Never linked, never synced: preclaim, discarded under witness.
             discard_witnessed(dir, name.claim(), &file)?;
             return Err(refusal);
         }
     };
-    file.append(&bytes)?;
-    file.sync()?;
-    let reread = file.read_prefix(kind.ceiling() + 1)?;
-    if reread != bytes {
-        return Err(JournalError::Corrupt(CorruptionReason::RereadMismatch));
-    }
-    recheck(dir, name.claim(), &file, 1, bytes.len())?;
     match dir.link(name.claim(), name.pending()) {
         Ok(()) => {}
         Err(collision @ CustodyError::AlreadyExists { .. }) => {
             discard_witnessed(dir, name.claim(), &file)?;
             return Err(JournalError::Custody(collision));
         }
+        // Any other link failure leaves the link's outcome uncertain — the
+        // pending name may or may not exist — so nothing is mutated here;
+        // classification owns whatever state the failure left behind.
         Err(error) => return Err(JournalError::Custody(error)),
     }
     // This parent sync is the durable claim.
@@ -749,6 +755,29 @@ fn witness_mismatch(
         return Some(CorruptionReason::SelfWitnessInodeMismatch);
     }
     None
+}
+
+/// Assemble, write, sync, and validate the claim file's exact bytes through
+/// the creating handle. Every refusal returns to the caller, which still
+/// holds the never-linked file's witness for the discard.
+fn write_claim_file(
+    dir: &AdmittedDir,
+    name: &PendingName,
+    file: &mut OpenedFile,
+    kind: JournalKind,
+    header: &[u8],
+    prepared_payload: &[u8],
+    witness: &JournalWitness,
+) -> Result<Vec<u8>, JournalError> {
+    let bytes = claim_bytes(kind, header, prepared_payload, witness)?;
+    file.append(&bytes)?;
+    file.sync()?;
+    let reread = file.read_prefix(kind.ceiling() + 1)?;
+    if reread != bytes {
+        return Err(JournalError::Corrupt(CorruptionReason::RereadMismatch));
+    }
+    recheck(dir, name.claim(), file, 1, bytes.len())?;
+    Ok(bytes)
 }
 
 /// Assemble and law-check the claim bytes: the header (with the kinds-4/5

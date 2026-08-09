@@ -183,6 +183,38 @@ fn a_frame_law_violation_in_the_header_is_refused_before_any_link() {
 }
 
 #[test]
+fn a_pre_link_recheck_refusal_discards_the_never_linked_claim_file() {
+    let scratch = Scratch::new("pre-link-discard");
+    let dir = root(&scratch);
+    let names = pending_name("store");
+    let claim_path = scratch.path().join("store.pending.create");
+
+    // The header builder runs between the create and the link, so it is the
+    // one public injection point for hostile mid-claim state: force a wrong
+    // mode onto the fresh claim file and the pre-link recheck must refuse.
+    let result = claim(
+        &dir,
+        &names,
+        JournalKind::Provision,
+        |_witness| {
+            set_mode(&claim_path, 0o644);
+            PROVISION_HEADER.to_vec()
+        },
+        b"P",
+    );
+    assert!(matches!(
+        result,
+        Err(JournalError::Corrupt(CorruptionReason::WrongMode {
+            found: 0o644
+        }))
+    ));
+    assert!(
+        !claim_path.exists() && !scratch.path().join("store.pending").exists(),
+        "every pre-link refusal discards the never-linked claim file under witness",
+    );
+}
+
+#[test]
 fn a_claim_collides_with_existing_journal_names() {
     let scratch = Scratch::new("collide");
     let dir = root(&scratch);
