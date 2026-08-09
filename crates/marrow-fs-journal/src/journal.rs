@@ -18,14 +18,19 @@
 
 use std::fmt;
 
-use crate::custody::{AdmittedDir, CustodyError, FsIdentity, NodeKind, OpenedFile};
+use crate::custody::{AdmittedDir, CustodyError, EntryStat, FsIdentity, NodeKind, OpenedFile};
 use crate::entry::{EntryName, EntryNameError};
-use crate::frame::{DecodedFrame, FrameCorruption, FrameLawError, JournalKind};
+use crate::frame::{
+    DecodedFrame, FrameCorruption, FrameLawError, JOURNAL_COMMON_LEN, JournalCommon, JournalKind,
+    PREFIX_LEN, RECORD_OVERHEAD, TailState, decode_frame, encode_header, encode_record,
+};
 
 /// The fixed claim-name suffix.
 const CLAIM_SUFFIX: &str = ".pending.create";
 /// The fixed pending-name suffix.
 const PENDING_SUFFIX: &str = ".pending";
+/// The fixed journal file mode.
+const JOURNAL_MODE: u32 = 0o600;
 
 /// The two fixed names of one pending journal, derived from a base name.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -39,8 +44,13 @@ impl PendingName {
     /// Derive `<base>.pending.create` and `<base>.pending`, re-admitting both
     /// derived spellings.
     pub fn derive(base: &EntryName) -> Result<Self, EntryNameError> {
-        let _ = base;
-        todo!("pending-name derivation")
+        let claim = EntryName::admit(&format!("{base}{CLAIM_SUFFIX}"))?;
+        let pending = EntryName::admit(&format!("{base}{PENDING_SUFFIX}"))?;
+        Ok(Self {
+            base: base.clone(),
+            claim,
+            pending,
+        })
     }
 
     /// The base name.
@@ -86,6 +96,8 @@ pub enum CorruptionReason {
     WrongMode { found: u32 },
     /// A journal inode carries an unexpected hard-link count.
     ExtraLinks { found: u64 },
+    /// The journal file's size is not the exact expected byte length.
+    UnexpectedLength { expected: u64, found: u64 },
     /// The claim and pending names map to different inodes.
     SplitInodes,
     /// A kind-4 or kind-5 header's parent identity is not the admitted
@@ -116,6 +128,10 @@ impl fmt::Display for CorruptionReason {
             Self::ExtraLinks { found } => {
                 write!(formatter, "the journal inode has {found} links")
             }
+            Self::UnexpectedLength { expected, found } => write!(
+                formatter,
+                "the journal is {found} bytes, not the expected {expected}"
+            ),
             Self::SplitInodes => {
                 formatter.write_str("the claim and pending names map to different inodes")
             }
@@ -275,7 +291,7 @@ impl PreclaimDebris<'_> {
     /// witnessed inode immediately before the unlink, and the parent is
     /// synced afterward.
     pub fn discard(self) -> Result<(), JournalError> {
-        todo!("witnessed preclaim discard")
+        discard_witnessed(self.dir, self.name.claim(), &self.file)
     }
 }
 
@@ -294,10 +310,25 @@ impl<'d> ClaimedJournal<'d> {
         &self.frame
     }
 
-    /// Complete the claim: re-sync the parent so the claim is durable,
-    /// unlink the claim name, and return the live journal.
+    /// Complete the claim: re-establish the durable claim sync (the crash may
+    /// have preceded it), unlink the claim name, and return the live journal.
     pub fn adopt(self) -> Result<LiveJournal<'d>, JournalError> {
-        todo!("claim adoption")
+        let total = frame_total_len(&self.frame);
+        self.dir.sync()?;
+        recheck(self.dir, self.name.pending(), &self.file, 2, total)?;
+        recheck(self.dir, self.name.claim(), &self.file, 2, total)?;
+        self.dir.unlink(self.name.claim())?;
+        self.dir.sync()?;
+        recheck(self.dir, self.name.pending(), &self.file, 1, total)?;
+        Ok(LiveJournal {
+            dir: self.dir,
+            kind: self.frame.kind(),
+            name: self.name,
+            file: self.file,
+            total_len: total,
+            next_sequence: 1,
+            last_tag: 1,
+        })
     }
 }
 
@@ -321,13 +352,75 @@ impl<'d> PendingJournal<'d> {
     /// derived from the header and admitted artifact state. Any other tail is
     /// corruption and nothing is mutated.
     pub fn truncate_tail(&mut self, expected_next_record: &[u8]) -> Result<(), JournalError> {
-        let _ = expected_next_record;
-        todo!("exact-prefix tail truncation")
+        let TailState::IncompletePrefix { bytes } = self.frame.tail() else {
+            return Err(JournalError::NoIncompleteTail);
+        };
+        let tail = bytes.clone();
+        let valid_len = frame_total_len(&self.frame);
+        let valid_bytes = self.file.read_prefix(valid_len)?;
+
+        // The offered record must itself be the legal continuation: appended
+        // to the valid frame it decodes as exactly one more complete record.
+        let mut candidate = valid_bytes.clone();
+        candidate.extend_from_slice(expected_next_record);
+        match decode_frame(self.frame.kind(), &candidate) {
+            Ok(frame)
+                if frame.records().len() == self.frame.records().len() + 1
+                    && frame.tail() == &TailState::Clean => {}
+            Ok(_) => return Err(JournalError::TailNotPrefix),
+            Err(corruption) => return Err(JournalError::ExpectedRecordIllegal(corruption)),
+        }
+
+        // The exact-prefix law: only a strict prefix of that unique record
+        // may be truncated.
+        if tail.len() >= expected_next_record.len()
+            || expected_next_record[..tail.len()] != tail[..]
+        {
+            return Err(JournalError::TailNotPrefix);
+        }
+
+        recheck(
+            self.dir,
+            self.name.pending(),
+            &self.file,
+            1,
+            valid_len + tail.len(),
+        )?;
+        self.file.truncate(valid_len as u64)?;
+        self.file.sync()?;
+        let reread = self.file.read_prefix(self.frame.kind().ceiling() + 1)?;
+        if reread != valid_bytes {
+            return Err(JournalError::Corrupt(CorruptionReason::RereadMismatch));
+        }
+        recheck(self.dir, self.name.pending(), &self.file, 1, valid_len)?;
+        self.frame = decode_frame(self.frame.kind(), &valid_bytes)
+            .map_err(|corruption| JournalError::Corrupt(CorruptionReason::Frame(corruption)))?;
+        Ok(())
     }
 
     /// Resume appending. The tail must be clean.
     pub fn resume(self) -> Result<LiveJournal<'d>, JournalError> {
-        todo!("journal resumption")
+        if self.frame.tail() != &TailState::Clean {
+            return Err(JournalError::IncompleteTail);
+        }
+        let total = frame_total_len(&self.frame);
+        recheck(self.dir, self.name.pending(), &self.file, 1, total)?;
+        let last = self
+            .frame
+            .records()
+            .last()
+            .expect("a pending journal carries at least its Prepared record");
+        let next_sequence = u32::try_from(self.frame.records().len())
+            .expect("a registry holds at most six records");
+        Ok(LiveJournal {
+            dir: self.dir,
+            kind: self.frame.kind(),
+            last_tag: last.phase_tag(),
+            name: self.name,
+            file: self.file,
+            total_len: total,
+            next_sequence,
+        })
     }
 }
 
@@ -368,15 +461,64 @@ impl LiveJournal<'_> {
     /// Append one record: validate the kind's law, recheck the mapping and
     /// witness, write, `fsync` the file, and recheck again.
     pub fn append(&mut self, phase_tag: u8, payload: &[u8]) -> Result<(), JournalError> {
-        let _ = (phase_tag, payload);
-        todo!("bounded journal append")
+        if self.is_complete() {
+            return Err(JournalError::AppendAfterComplete);
+        }
+        if phase_tag <= self.last_tag {
+            return Err(JournalError::TagNotAdvancing {
+                last: self.last_tag,
+                requested: phase_tag,
+            });
+        }
+        let record = encode_record(self.kind, self.next_sequence, phase_tag, payload)?;
+        let total = self.total_len + record.len();
+        if total > self.kind.ceiling() {
+            return Err(JournalError::CeilingExceeded {
+                total,
+                limit: self.kind.ceiling(),
+            });
+        }
+        recheck(self.dir, self.name.pending(), &self.file, 1, self.total_len)?;
+        self.file.append(&record)?;
+        self.file.sync()?;
+        recheck(self.dir, self.name.pending(), &self.file, 1, total)?;
+        self.total_len = total;
+        self.next_sequence += 1;
+        self.last_tag = phase_tag;
+        Ok(())
     }
 
     /// Terminally unlink the complete journal: after the unlink both names
     /// are absent and the retained handle is `nlink == 0`; the parent sync
     /// alone commits marker absence and permits owner release.
     pub fn finish(self) -> Result<(), JournalError> {
-        todo!("terminal unlink")
+        if !self.is_complete() {
+            return Err(JournalError::FinishBeforeComplete {
+                last_tag: self.last_tag,
+            });
+        }
+        recheck(self.dir, self.name.pending(), &self.file, 1, self.total_len)?;
+        if self.dir.stat_entry(self.name.claim())?.is_some() {
+            return Err(JournalError::Custody(CustodyError::IdentityDrift {
+                op: "finish",
+            }));
+        }
+        self.dir.unlink(self.name.pending())?;
+        let stat = self.file.stat()?;
+        if stat.nlink() != 0 {
+            return Err(JournalError::Corrupt(CorruptionReason::ExtraLinks {
+                found: stat.nlink(),
+            }));
+        }
+        if self.dir.stat_entry(self.name.pending())?.is_some()
+            || self.dir.stat_entry(self.name.claim())?.is_some()
+        {
+            return Err(JournalError::Custody(CustodyError::IdentityDrift {
+                op: "finish",
+            }));
+        }
+        self.dir.sync()?;
+        Ok(())
     }
 }
 
@@ -391,8 +533,60 @@ pub fn claim<'d>(
     build_header: impl FnOnce(&JournalWitness) -> Vec<u8>,
     prepared_payload: &[u8],
 ) -> Result<LiveJournal<'d>, JournalError> {
-    let _ = (dir, name, kind, build_header, prepared_payload);
-    todo!("journal claim")
+    if dir.stat_entry(name.claim())?.is_some() || dir.stat_entry(name.pending())?.is_some() {
+        return Err(JournalError::Custody(CustodyError::AlreadyExists {
+            op: "claim",
+        }));
+    }
+    let mut file = dir.create_file_excl(name.claim())?;
+    let witness = JournalWitness {
+        parent: dir.identity(),
+        journal_inode: file.identity(),
+    };
+    let bytes = match claim_bytes(kind, &build_header(&witness), prepared_payload, &witness) {
+        Ok(bytes) => bytes,
+        Err(refusal) => {
+            // Never linked, never synced: preclaim, discarded under witness.
+            discard_witnessed(dir, name.claim(), &file)?;
+            return Err(refusal);
+        }
+    };
+    file.append(&bytes)?;
+    file.sync()?;
+    let reread = file.read_prefix(kind.ceiling() + 1)?;
+    if reread != bytes {
+        return Err(JournalError::Corrupt(CorruptionReason::RereadMismatch));
+    }
+    recheck(dir, name.claim(), &file, 1, bytes.len())?;
+    match dir.link(name.claim(), name.pending()) {
+        Ok(()) => {}
+        Err(collision @ CustodyError::AlreadyExists { .. }) => {
+            discard_witnessed(dir, name.claim(), &file)?;
+            return Err(JournalError::Custody(collision));
+        }
+        Err(error) => return Err(JournalError::Custody(error)),
+    }
+    // This parent sync is the durable claim.
+    dir.sync()?;
+    recheck(dir, name.pending(), &file, 2, bytes.len())?;
+    recheck(dir, name.claim(), &file, 2, bytes.len())?;
+    dir.unlink(name.claim())?;
+    dir.sync()?;
+    recheck(dir, name.pending(), &file, 1, bytes.len())?;
+    if dir.stat_entry(name.claim())?.is_some() {
+        return Err(JournalError::Custody(CustodyError::IdentityDrift {
+            op: "claim",
+        }));
+    }
+    Ok(LiveJournal {
+        dir,
+        name: name.clone(),
+        kind,
+        file,
+        total_len: bytes.len(),
+        next_sequence: 1,
+        last_tag: 1,
+    })
 }
 
 /// Classify the state of the pending-journal name pair without mutating
@@ -402,6 +596,269 @@ pub fn classify<'d>(
     name: &PendingName,
     expected: JournalKind,
 ) -> Result<PendingState<'d>, JournalError> {
-    let _ = (dir, name, expected);
-    todo!("debris classification")
+    let claim_stat = dir.stat_entry(name.claim())?;
+    let pending_stat = dir.stat_entry(name.pending())?;
+    match (claim_stat, pending_stat) {
+        (None, None) => Ok(PendingState::Absent),
+        (Some(claim_stat), None) => classify_preclaim(dir, name, claim_stat),
+        (Some(claim_stat), Some(pending_stat)) => {
+            classify_claimed(dir, name, expected, claim_stat, pending_stat)
+        }
+        (None, Some(pending_stat)) => classify_pending(dir, name, expected, pending_stat),
+    }
+}
+
+fn classify_preclaim<'d>(
+    dir: &'d AdmittedDir,
+    name: &PendingName,
+    stat: EntryStat,
+) -> Result<PendingState<'d>, JournalError> {
+    if stat.kind() != NodeKind::Regular {
+        return corrupt_state(CorruptionReason::WrongNodeKind { found: stat.kind() });
+    }
+    if stat.nlink() != 1 {
+        return corrupt_state(CorruptionReason::ExtraLinks {
+            found: stat.nlink(),
+        });
+    }
+    // Preclaim content and mode are unconstrained: the crash may have fallen
+    // anywhere before the durable claim, including before the mode check.
+    let file = open_witnessed(dir, name.claim(), stat.identity())?;
+    Ok(PendingState::Preclaim(PreclaimDebris {
+        dir,
+        name: name.clone(),
+        file,
+    }))
+}
+
+fn classify_claimed<'d>(
+    dir: &'d AdmittedDir,
+    name: &PendingName,
+    expected: JournalKind,
+    claim_stat: EntryStat,
+    pending_stat: EntryStat,
+) -> Result<PendingState<'d>, JournalError> {
+    for stat in [&claim_stat, &pending_stat] {
+        if stat.kind() != NodeKind::Regular {
+            return corrupt_state(CorruptionReason::WrongNodeKind { found: stat.kind() });
+        }
+    }
+    if claim_stat.identity() != pending_stat.identity() {
+        return corrupt_state(CorruptionReason::SplitInodes);
+    }
+    if claim_stat.nlink() != 2 {
+        return corrupt_state(CorruptionReason::ExtraLinks {
+            found: claim_stat.nlink(),
+        });
+    }
+    if claim_stat.mode() != JOURNAL_MODE {
+        return corrupt_state(CorruptionReason::WrongMode {
+            found: claim_stat.mode(),
+        });
+    }
+    let file = open_witnessed(dir, name.claim(), claim_stat.identity())?;
+    let frame = match replay(expected, &file)? {
+        Ok(frame) => frame,
+        Err(corruption) => return corrupt_state(CorruptionReason::Frame(corruption)),
+    };
+    if frame.records().is_empty() {
+        return corrupt_state(CorruptionReason::MissingPrepared);
+    }
+    if frame.records().len() > 1 || frame.tail() != &TailState::Clean {
+        return corrupt_state(CorruptionReason::ClaimBeyondPrepared);
+    }
+    if let Some(reason) = witness_mismatch(&frame, dir, &file) {
+        return corrupt_state(reason);
+    }
+    Ok(PendingState::Claimed(ClaimedJournal {
+        dir,
+        name: name.clone(),
+        file,
+        frame,
+    }))
+}
+
+fn classify_pending<'d>(
+    dir: &'d AdmittedDir,
+    name: &PendingName,
+    expected: JournalKind,
+    stat: EntryStat,
+) -> Result<PendingState<'d>, JournalError> {
+    if stat.kind() != NodeKind::Regular {
+        return corrupt_state(CorruptionReason::WrongNodeKind { found: stat.kind() });
+    }
+    if stat.nlink() != 1 {
+        return corrupt_state(CorruptionReason::ExtraLinks {
+            found: stat.nlink(),
+        });
+    }
+    if stat.mode() != JOURNAL_MODE {
+        return corrupt_state(CorruptionReason::WrongMode { found: stat.mode() });
+    }
+    let file = open_witnessed(dir, name.pending(), stat.identity())?;
+    let frame = match replay(expected, &file)? {
+        Ok(frame) => frame,
+        Err(corruption) => return corrupt_state(CorruptionReason::Frame(corruption)),
+    };
+    if frame.records().is_empty() {
+        return corrupt_state(CorruptionReason::MissingPrepared);
+    }
+    if let Some(reason) = witness_mismatch(&frame, dir, &file) {
+        return corrupt_state(reason);
+    }
+    Ok(PendingState::Pending(PendingJournal {
+        dir,
+        name: name.clone(),
+        file,
+        frame,
+    }))
+}
+
+/// Open `name` no-follow and require it to still be the observed inode.
+fn open_witnessed(
+    dir: &AdmittedDir,
+    name: &EntryName,
+    observed: FsIdentity,
+) -> Result<OpenedFile, JournalError> {
+    let file = dir.open_file(name)?;
+    if file.identity() != observed {
+        return Err(JournalError::Custody(CustodyError::IdentityDrift {
+            op: "classify",
+        }));
+    }
+    Ok(file)
+}
+
+/// Bounded replay: read at most ceiling-plus-one bytes through the retained
+/// handle and decode. The inner result separates transient custody failures
+/// (outer) from frame corruption (inner).
+fn replay(
+    expected: JournalKind,
+    file: &OpenedFile,
+) -> Result<Result<DecodedFrame, FrameCorruption>, JournalError> {
+    let bytes = file.read_prefix(expected.ceiling() + 1)?;
+    Ok(decode_frame(expected, &bytes))
+}
+
+fn witness_mismatch(
+    frame: &DecodedFrame,
+    dir: &AdmittedDir,
+    file: &OpenedFile,
+) -> Option<CorruptionReason> {
+    let common = frame.journal_common()?;
+    if common.parent != dir.identity() {
+        return Some(CorruptionReason::SelfWitnessParentMismatch);
+    }
+    if common.journal_inode != file.identity() {
+        return Some(CorruptionReason::SelfWitnessInodeMismatch);
+    }
+    None
+}
+
+/// Assemble and law-check the claim bytes: the header (with the kinds-4/5
+/// embedded witness) plus the sequence-zero Prepared record.
+fn claim_bytes(
+    kind: JournalKind,
+    header: &[u8],
+    prepared_payload: &[u8],
+    witness: &JournalWitness,
+) -> Result<Vec<u8>, JournalError> {
+    let mut bytes = encode_header(kind, header)?;
+    if kind.exact_header_len().is_some() {
+        let common: &[u8; JOURNAL_COMMON_LEN] = header[..JOURNAL_COMMON_LEN]
+            .try_into()
+            .expect("the exact header length was just enforced");
+        let common = JournalCommon::decode(common);
+        if common.parent != witness.parent || common.journal_inode != witness.journal_inode {
+            return Err(JournalError::WitnessNotEmbedded);
+        }
+    }
+    bytes.extend_from_slice(&encode_record(kind, 0, 1, prepared_payload)?);
+    if bytes.len() > kind.ceiling() {
+        return Err(JournalError::CeilingExceeded {
+            total: bytes.len(),
+            limit: kind.ceiling(),
+        });
+    }
+    Ok(bytes)
+}
+
+/// The exact byte length of a decoded frame's durable content.
+fn frame_total_len(frame: &DecodedFrame) -> usize {
+    PREFIX_LEN
+        + frame.row_header().len()
+        + frame
+            .records()
+            .iter()
+            .map(|record| RECORD_OVERHEAD + record.payload().len())
+            .sum::<usize>()
+}
+
+fn corrupt_state<'d>(reason: CorruptionReason) -> Result<PendingState<'d>, JournalError> {
+    Ok(PendingState::Corrupt(RetainedCorruption::new(reason)))
+}
+
+/// Recheck the retained handle and its path mapping before and after every
+/// mutation: node kind, the exact `0600` mode, link count, exact byte length,
+/// and name-to-inode mapping. Any mismatch fails closed.
+fn recheck(
+    dir: &AdmittedDir,
+    name: &EntryName,
+    file: &OpenedFile,
+    nlink: u64,
+    len: usize,
+) -> Result<(), JournalError> {
+    // Path mapping first: a stolen or vanished name is identity drift, not a
+    // link-count artifact of the retained handle.
+    match dir.stat_entry(name)? {
+        Some(entry) if entry.identity() == file.identity() => {}
+        _ => {
+            return Err(JournalError::Custody(CustodyError::IdentityDrift {
+                op: "journal recheck",
+            }));
+        }
+    }
+    let stat = file.stat()?;
+    if stat.kind() != NodeKind::Regular {
+        return Err(JournalError::Corrupt(CorruptionReason::WrongNodeKind {
+            found: stat.kind(),
+        }));
+    }
+    if stat.mode() != JOURNAL_MODE {
+        return Err(JournalError::Corrupt(CorruptionReason::WrongMode {
+            found: stat.mode(),
+        }));
+    }
+    if stat.nlink() != nlink {
+        return Err(JournalError::Corrupt(CorruptionReason::ExtraLinks {
+            found: stat.nlink(),
+        }));
+    }
+    let expected = len as u64;
+    if stat.size() != expected {
+        return Err(JournalError::Corrupt(CorruptionReason::UnexpectedLength {
+            expected,
+            found: stat.size(),
+        }));
+    }
+    Ok(())
+}
+
+/// Unlink `name` only while it still maps to the witnessed inode, then sync
+/// the parent. The one permitted cleanup, and it is witnessed.
+fn discard_witnessed(
+    dir: &AdmittedDir,
+    name: &EntryName,
+    file: &OpenedFile,
+) -> Result<(), JournalError> {
+    match dir.stat_entry(name)? {
+        Some(entry) if entry.identity() == file.identity() => {
+            dir.unlink(name)?;
+            dir.sync()?;
+            Ok(())
+        }
+        _ => Err(JournalError::Custody(CustodyError::IdentityDrift {
+            op: "discard",
+        })),
+    }
 }

@@ -14,14 +14,15 @@
 //! platform-invalid spelling before any filesystem call. Directories are
 //! admitted from a retained trusted directory descriptor with
 //! `DIRECTORY | NOFOLLOW | CLOEXEC`; file creation is `CREATE | EXCL` with mode
-//! `0600`. No raw descriptor or `rustix` type escapes the public API, and this
-//! crate contains no `unsafe` code.
+//! `0600`. No raw descriptor and no type of the private syscall adapter's
+//! dependency escapes the public API, and this crate contains no `unsafe`
+//! code.
 //!
 //! `ENOSYS`, `ENOTSUP`, `EOPNOTSUPP`, unsupported `EINVAL`, `EXDEV`, identity
 //! drift, unsupported semantics, and an unqualified platform all fail closed as
-//! typed refusals. The qualified platforms are Darwin (the `rustix` libc
-//! backend) and Linux on `x86_64`/`aarch64` (the `rustix` `linux_raw` backend);
-//! every operation on any other platform returns a typed
+//! typed refusals. The qualified platforms are Darwin (the adapter's libc
+//! backend) and Linux on `x86_64`/`aarch64` (the adapter's `linux_raw`
+//! backend); every operation on any other platform returns a typed
 //! unqualified-platform refusal.
 //!
 //! Portable identity checks are not a kernel compare-and-swap. The safety claim

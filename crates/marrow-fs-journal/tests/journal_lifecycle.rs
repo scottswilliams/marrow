@@ -673,6 +673,12 @@ fn a_closed_kind_journal_verifies_its_self_witness_on_replay() {
     let names = pending_name("pkg");
     let pending_path = scratch.path().join("pkg.pending");
 
+    // Create the journal file once so its inode identity is known before the
+    // frames are planted; rewrites keep the same inode.
+    std::fs::write(&pending_path, b"").expect("create pending file");
+    set_mode(&pending_path, 0o600);
+    let journal_inode = identity_of(&pending_path);
+
     let plant = |common: JournalCommon| {
         let mut header = common.encode().to_vec();
         header.extend_from_slice(&[0xEE; 136]);
@@ -681,7 +687,6 @@ fn a_closed_kind_journal_verifies_its_self_witness_on_replay() {
             &encode_record(JournalKind::Lineage, 0, 1, &[0x01]).expect("record"),
         );
         std::fs::write(&pending_path, &bytes).expect("write");
-        set_mode(&pending_path, 0o600);
     };
 
     // Correct witness: the file's own identity and the admitted parent.
@@ -689,7 +694,7 @@ fn a_closed_kind_journal_verifies_its_self_witness_on_replay() {
     plant(JournalCommon {
         generation: [0x51; 16],
         parent: FsIdentity::new(file.dev(), file.ino()),
-        journal_inode: identity_of(&pending_path),
+        journal_inode,
     });
     assert!(matches!(
         classify(&dir, &names, JournalKind::Lineage).expect("classify"),
@@ -700,7 +705,7 @@ fn a_closed_kind_journal_verifies_its_self_witness_on_replay() {
     plant(JournalCommon {
         generation: [0x51; 16],
         parent: FsIdentity::new(0xDEAD, 0xBEEF),
-        journal_inode: identity_of(&pending_path),
+        journal_inode,
     });
     assert_corrupt(
         &dir,
