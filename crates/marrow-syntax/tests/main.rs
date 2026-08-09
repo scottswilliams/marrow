@@ -4,6 +4,8 @@ mod common;
 mod brace_grammar;
 #[path = "cases/comment_ownership.rs"]
 mod comment_ownership;
+#[path = "cases/diagnostic_bounds_absence.rs"]
+mod diagnostic_bounds_absence;
 #[path = "cases/flip2_bracket_angle.rs"]
 mod flip2_bracket_angle;
 #[path = "cases/format.rs"]
