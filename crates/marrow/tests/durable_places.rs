@@ -68,7 +68,7 @@ fn compile_error_codes(source: &str) -> Vec<String> {
     match marrow_compile::compile(&project) {
         Ok(_) => Vec::new(),
         Err(marrow_compile::CompileFailure::Diagnostics(diagnostics)) => {
-            diagnostics.iter().map(|d| d.code.to_string()).collect()
+            diagnostics.iter().map(|d| d.code().to_string()).collect()
         }
         Err(
             marrow_compile::CompileFailure::Invariant(_)

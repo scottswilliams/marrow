@@ -50,7 +50,7 @@ fn contract_of(source: &str, ids: &str) -> DurableContractId {
 }
 
 fn codes(diagnostics: &[SourceDiagnostic]) -> Vec<&str> {
-    diagnostics.iter().map(|d| d.code).collect()
+    diagnostics.iter().map(|d| d.code()).collect()
 }
 
 // --- Singleton roots: `store ^name: Resource` with no key column. ---
@@ -256,7 +256,7 @@ pub fn get(name: string): int? {
     assert!(
         !diagnostics
             .iter()
-            .any(|d| d.message.contains("not yet executable")),
+            .any(|d| d.message().contains("not yet executable")),
         "a single-key root must not be mislabelled not-yet-executable: {diagnostics:?}"
     );
 }

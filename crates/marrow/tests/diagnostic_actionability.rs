@@ -132,9 +132,9 @@ fn d13_unbounded_traversal_names_the_bound_law_at_the_head() {
         diagnostics.all()
     );
     assert!(
-        unbounded.message.contains("unbounded") && unbounded.message.contains("at most"),
+        unbounded.message().contains("unbounded") && unbounded.message().contains("at most"),
         "the message names the bound law and the fix: {}",
-        unbounded.message
+        unbounded.message()
     );
 }
 
@@ -180,7 +180,7 @@ fn d07_a_dropped_root_reports_one_primary_and_one_steer() {
     assert!(
         diagnostics
             .only("check.type")
-            .message
+            .message()
             .contains("failed identity admission"),
         "the single steer points at the identity reports",
     );
@@ -208,9 +208,9 @@ fn d04_a_failed_binding_does_not_cascade_not_in_scope() {
         diagnostics.all()
     );
     assert!(
-        primary.message.contains("int?"),
+        primary.message().contains("int?"),
         "the primary names the optional operand: {}",
-        primary.message
+        primary.message()
     );
     assert!(
         diagnostics
@@ -243,10 +243,10 @@ fn d08_a_misspelled_root_suggests_the_nearest_store_root() {
     );
     assert!(
         unknown
-            .message
+            .message()
             .contains("Did you mean the store root `^members`?"),
         "the root family is named with its nearest candidate: {}",
-        unknown.message
+        unknown.message()
     );
 }
 
@@ -264,9 +264,9 @@ fn d10_a_misspelled_callee_suggests_the_nearest_function() {
     let unknown = diagnostics.only("check.type");
     assert!(
         unknown
-            .message
+            .message()
             .contains("Did you mean the function `openAccount`?"),
         "the function family is named with its nearest candidate: {}",
-        unknown.message
+        unknown.message()
     );
 }

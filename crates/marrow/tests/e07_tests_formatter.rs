@@ -280,7 +280,7 @@ fn unparseable_source_is_refused_and_left_untouched() {
     match check_format(&before) {
         Err(FormatRefusal::ParseInvalid(diagnostics)) => {
             assert!(
-                !diagnostics.is_empty(),
+                !diagnostics.as_slice().is_empty(),
                 "a parse refusal carries its diagnostics"
             );
         }

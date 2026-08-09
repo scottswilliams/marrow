@@ -379,7 +379,7 @@ store ^assets[key: int]: Asset
     assert!(
         diagnostics
             .iter()
-            .any(|d| d.code == "check.type" && d.message.contains("more than once")),
+            .any(|d| d.code() == "check.type" && d.message().contains("more than once")),
         "expected a duplicate-root-name check.type rejection, got {diagnostics:#?}"
     );
 }
@@ -454,7 +454,7 @@ pub fn confuse(id: int): int? {
 "#;
     let diagnostics = compile(source, IDS).expect_err("a cross-root identity is rejected");
     assert!(
-        diagnostics.iter().any(|d| d.code == "check.type"),
+        diagnostics.iter().any(|d| d.code() == "check.type"),
         "expected a check.type rejection, got {diagnostics:#?}"
     );
 }

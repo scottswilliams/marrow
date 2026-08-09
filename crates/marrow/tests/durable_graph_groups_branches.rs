@@ -52,7 +52,7 @@ fn contract_of(source: &str, ids: &str) -> DurableContractId {
 }
 
 fn codes(diagnostics: &[SourceDiagnostic]) -> Vec<&str> {
-    diagnostics.iter().map(|d| d.code).collect()
+    diagnostics.iter().map(|d| d.code()).collect()
 }
 
 // A resource with a top-level field, a static `group` holding a field, and a keyed
@@ -165,7 +165,7 @@ fn a_missing_group_identity_fails_precisely() {
     assert!(
         diagnostics
             .iter()
-            .any(|d| d.message.contains("group `Book.details`")),
+            .any(|d| d.message().contains("group `Book.details`")),
         "the gap names the group anchor: {diagnostics:?}"
     );
 }
@@ -184,7 +184,7 @@ fn a_missing_group_field_identity_fails_precisely() {
     assert!(
         diagnostics
             .iter()
-            .any(|d| d.message.contains("field `Book.details.pages`")),
+            .any(|d| d.message().contains("field `Book.details.pages`")),
         "the gap names the group-qualified field path: {diagnostics:?}"
     );
 }
@@ -363,7 +363,7 @@ fn a_retired_group_anchor_cannot_be_reused() {
         "{diagnostics:?}"
     );
     assert!(
-        diagnostics.iter().any(|d| d.message.contains("retired")),
+        diagnostics.iter().any(|d| d.message().contains("retired")),
         "the diagnostic names the retirement: {diagnostics:?}"
     );
 }

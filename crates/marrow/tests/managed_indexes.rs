@@ -105,7 +105,7 @@ fn verify_source(source: &str, ids: &str) -> Result<marrow_verify::VerifiedImage
         Err(marrow_compile::CompileFailure::Diagnostics(diagnostics)) => {
             return Err(diagnostics
                 .iter()
-                .map(|diagnostic| diagnostic.code)
+                .map(|diagnostic| diagnostic.code())
                 .collect::<Vec<_>>()
                 .join(","));
         }
@@ -137,7 +137,7 @@ fn compile_codes(source: &str, ids: &str) -> Vec<&'static str> {
         Ok(_) => Vec::new(),
         Err(marrow_compile::CompileFailure::Diagnostics(diagnostics)) => diagnostics
             .iter()
-            .map(|diagnostic| diagnostic.code)
+            .map(|diagnostic| diagnostic.code())
             .collect(),
         Err(
             marrow_compile::CompileFailure::Invariant(_)

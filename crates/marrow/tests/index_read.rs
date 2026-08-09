@@ -132,7 +132,7 @@ fn compile_errors(body: &str) -> Vec<marrow_compile::SourceDiagnostic> {
 fn has_type_error(diagnostics: &[marrow_compile::SourceDiagnostic]) -> bool {
     diagnostics
         .iter()
-        .any(|d| d.code == "check.type" || d.code == "check.unsupported")
+        .any(|d| d.code() == "check.type" || d.code() == "check.unsupported")
 }
 
 fn export<'a>(image: &'a VerifiedImage, name: &str) -> &'a SealedExport {

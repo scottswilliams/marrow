@@ -654,13 +654,13 @@ fn chaining_a_subbranch_off_a_materialized_branch_steers_to_the_durable_path() {
     );
     let diagnostic = diagnostics
         .iter()
-        .find(|d| d.code == "check.type")
+        .find(|d| d.code() == "check.type")
         .unwrap_or_else(|| panic!("no check.type diagnostic in {diagnostics:#?}"));
     assert!(
-        diagnostic.message.contains("`tags` is a keyed branch")
-            && diagnostic.message.contains("distinct durable node")
-            && diagnostic.message.contains("nested `if const`"),
+        diagnostic.message().contains("`tags` is a keyed branch")
+            && diagnostic.message().contains("distinct durable node")
+            && diagnostic.message().contains("nested `if const`"),
         "{}",
-        diagnostic.message
+        diagnostic.message()
     );
 }

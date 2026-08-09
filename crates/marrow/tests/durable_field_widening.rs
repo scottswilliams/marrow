@@ -51,7 +51,7 @@ fn contract_of(source: &str, ids: &str) -> DurableContractId {
 }
 
 fn codes(diagnostics: &[SourceDiagnostic]) -> Vec<&str> {
-    diagnostics.iter().map(|d| d.code).collect()
+    diagnostics.iter().map(|d| d.code()).collect()
 }
 
 // A resource storing every widened value kind: a plain scalar (`id`), a user enum
@@ -275,7 +275,7 @@ fn a_missing_enum_sum_identity_fails_precisely() {
     assert!(
         diagnostics
             .iter()
-            .any(|d| d.message.contains("sum `Access`")),
+            .any(|d| d.message().contains("sum `Access`")),
         "the gap names the enum sum anchor: {diagnostics:?}"
     );
 }
@@ -294,7 +294,7 @@ fn a_missing_enum_member_identity_fails_precisely() {
     assert!(
         diagnostics
             .iter()
-            .any(|d| d.message.contains("member `Access.writer`")),
+            .any(|d| d.message().contains("member `Access.writer`")),
         "the gap names the enum member anchor: {diagnostics:?}"
     );
 }
@@ -312,7 +312,7 @@ fn an_option_field_mints_its_generic_enum_sum_and_members() {
     assert!(
         diagnostics
             .iter()
-            .any(|d| d.message.contains("sum `Option[string]`")),
+            .any(|d| d.message().contains("sum `Option[string]`")),
         "{diagnostics:?}"
     );
 }
@@ -356,7 +356,7 @@ fn appending_an_enum_member_changes_the_identity_and_mints_a_fresh_id() {
     assert!(
         diagnostics
             .iter()
-            .any(|d| d.message.contains("member `Access.auditor`")),
+            .any(|d| d.message().contains("member `Access.auditor`")),
         "{diagnostics:?}"
     );
 
@@ -580,7 +580,7 @@ fn a_missing_nested_result_sum_reports_the_space_free_bracket_anchor() {
     assert!(
         diagnostics
             .iter()
-            .any(|d| d.message.contains("sum `Result[Option[int],string]`")),
+            .any(|d| d.message().contains("sum `Result[Option[int],string]`")),
         "the gap names the multi-argument enum sum anchor with a space-free comma: {diagnostics:?}"
     );
 }
@@ -595,7 +595,7 @@ fn a_missing_nested_result_member_reports_the_space_free_bracket_anchor() {
     assert!(
         diagnostics
             .iter()
-            .any(|d| d.message.contains("member `Result[Option[int],string].ok`")),
+            .any(|d| d.message().contains("member `Result[Option[int],string].ok`")),
         "the gap names the multi-argument enum member anchor: {diagnostics:?}"
     );
 }
@@ -611,7 +611,7 @@ fn the_nested_option_reached_through_the_result_mints_its_own_anchor() {
     assert!(
         diagnostics
             .iter()
-            .any(|d| d.message.contains("sum `Option[int]`")),
+            .any(|d| d.message().contains("sum `Option[int]`")),
         "{diagnostics:?}"
     );
 }

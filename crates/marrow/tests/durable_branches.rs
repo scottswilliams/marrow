@@ -1121,22 +1121,22 @@ fn chaining_a_branch_off_a_materialized_record_steers_to_the_durable_path() {
     );
     let diagnostic = diagnostics
         .iter()
-        .find(|d| d.code == "check.type")
+        .find(|d| d.code() == "check.type")
         .unwrap_or_else(|| panic!("no check.type diagnostic in {diagnostics:#?}"));
     // The span points at the branch name `notes` in `b.notes`.
-    assert_eq!(diagnostic.line(), 70, "{}", diagnostic.message);
+    assert_eq!(diagnostic.line(), 70, "{}", diagnostic.message());
     // Voice: fact (the branch in source spelling), rule, then the canonical durable-path fix.
     assert!(
         diagnostic
-            .message
+            .message()
             .contains("`notes` is a keyed branch of `Book`"),
         "{}",
-        diagnostic.message
+        diagnostic.message()
     );
     assert!(
-        diagnostic.message.contains("distinct durable node")
-            && diagnostic.message.contains("`^books["),
+        diagnostic.message().contains("distinct durable node")
+            && diagnostic.message().contains("`^books["),
         "{}",
-        diagnostic.message
+        diagnostic.message()
     );
 }

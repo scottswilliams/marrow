@@ -165,7 +165,7 @@ fn pipeline(ops: &str) -> Stage {
                 .as_slice()
                 .first()
                 .expect("a rejection carries at least one diagnostic")
-                .code,
+                .code(),
         ),
         Err(
             marrow_compile::CompileFailure::Invariant(_)

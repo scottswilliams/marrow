@@ -96,7 +96,7 @@ fn compile_errors(source: &str) -> Vec<SourceDiagnostic> {
 }
 
 fn has_code(diagnostics: &[SourceDiagnostic], code: &str) -> bool {
-    diagnostics.iter().any(|d| d.code == code)
+    diagnostics.iter().any(|d| d.code() == code)
 }
 
 fn export<'a>(image: &'a VerifiedImage, name: &str) -> &'a SealedExport {

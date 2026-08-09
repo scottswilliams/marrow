@@ -397,26 +397,26 @@ pub struct Diagnostics {
 impl Diagnostics {
     /// The diagnostic codes in compiler order.
     pub fn codes(&self) -> Vec<&str> {
-        self.diagnostics.iter().map(|d| d.code).collect()
+        self.diagnostics.iter().map(|d| d.code()).collect()
     }
 
     /// Whether any diagnostic carries `code`.
     pub fn has_code(&self, code: &str) -> bool {
-        self.diagnostics.iter().any(|d| d.code == code)
+        self.diagnostics.iter().any(|d| d.code() == code)
     }
 
     /// `(code, line, column)` for each diagnostic, in compiler order.
     pub fn all(&self) -> Vec<(&str, u32, u32)> {
         self.diagnostics
             .iter()
-            .map(|d| (d.code, d.line(), d.column()))
+            .map(|d| (d.code(), d.line(), d.column()))
             .collect()
     }
 
     /// The number of diagnostics carrying `code` — the count a cascade-suppression
     /// fixture pins so one fault cannot re-report at every dependent site.
     pub fn count_code(&self, code: &str) -> usize {
-        self.diagnostics.iter().filter(|d| d.code == code).count()
+        self.diagnostics.iter().filter(|d| d.code() == code).count()
     }
 
     /// The total number of diagnostics.
@@ -433,7 +433,7 @@ impl Diagnostics {
     /// actionability suite asserts against one primary diagnostic per defect, so a
     /// second occurrence is a cascade regression the accessor surfaces immediately.
     pub fn only(&self, code: &str) -> &SourceDiagnostic {
-        let mut matches = self.diagnostics.iter().filter(|d| d.code == code);
+        let mut matches = self.diagnostics.iter().filter(|d| d.code() == code);
         let first = matches
             .next()
             .unwrap_or_else(|| panic!("no `{code}` diagnostic in {:?}", self.all()));
@@ -450,7 +450,7 @@ impl Diagnostics {
     pub fn messages(&self) -> Vec<&str> {
         self.diagnostics
             .iter()
-            .map(|d| d.message.as_str())
+            .map(|d| d.message())
             .collect()
     }
 }

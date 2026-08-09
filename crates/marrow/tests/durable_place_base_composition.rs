@@ -305,7 +305,7 @@ fn a_bad_place_composition_reports_the_inline_diagnostic() {
         .ids(IDS)
         .try_image()
         .expect_err("an unknown branch is refused");
-    let message = diags.only("check.type").message.clone();
+    let message = diags.only("check.type").message().to_owned();
     assert!(
         message.contains("bogus") && message.contains("keyed branch"),
         "the place-composed refusal names the missing branch: {message:?}",
@@ -323,7 +323,7 @@ fn a_bad_place_composition_reports_the_inline_diagnostic() {
         .try_image()
         .expect_err("an unknown inline branch is refused");
     assert_eq!(
-        inline.only("check.type").message,
+        inline.only("check.type").message(),
         message,
         "the place and inline forms share one branch-resolution message",
     );

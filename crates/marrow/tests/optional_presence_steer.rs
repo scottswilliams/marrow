@@ -20,7 +20,7 @@ fn only_type_message(source: &str) -> String {
     let diags = Project::single(source)
         .try_image()
         .expect_err("the misuse must fail the check");
-    diags.only("check.type").message.clone()
+    diags.only("check.type").message().to_owned()
 }
 
 /// Returning an optional where the signature promises the present `T` is the misuse, and
