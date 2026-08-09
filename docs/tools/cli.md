@@ -56,10 +56,14 @@ source in place through a temporary file that preserves the original permissions
 `marrow fmt` does not read from stdin.
 
 Source that does not parse is left untouched and reported with located
-`parse.syntax` diagnostics. Formatting that would drop a retained comment is
-refused with `fmt.comment_loss` rather than published lossily. A directory whose
-manifest or source tree is invalid reports the matching `config.invalid` or
-`project.*` code.
+`parse.syntax` diagnostics. A file whose parse produces more diagnostics than the
+bounded per-file collector retains is refused with `fmt.diagnostic_limit`, since no
+complete parse exists to format against. Formatting that would drop a retained
+comment is refused with `fmt.comment_loss` rather than published lossily. A single
+file larger than the compiler's 1 MiB module byte limit is refused before it is
+read, with the same `cli.compiler_resource_limit` code the compiler's module-size
+admission reports. A directory whose manifest or source tree is invalid reports
+the matching `config.invalid` or `project.*` code.
 
 ## `marrow check`
 
