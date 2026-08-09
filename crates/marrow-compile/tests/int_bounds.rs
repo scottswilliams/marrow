@@ -32,7 +32,9 @@ fn compile_err(source: &str) -> Vec<SourceDiagnostic> {
 }
 
 fn has_code(diagnostics: &[SourceDiagnostic], code: &str) -> bool {
-    diagnostics.iter().any(|diagnostic| diagnostic.code() == code)
+    diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic.code() == code)
 }
 
 fn wrap(body: &str) -> String {

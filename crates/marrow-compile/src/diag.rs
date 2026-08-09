@@ -292,9 +292,9 @@ impl SourceDiagnostic {
             SourceDiagnosticPayload::Syntax(diagnostic) => {
                 file + diagnostic.message.len() + diagnostic.help.as_deref().map_or(0, str::len)
             }
-            SourceDiagnosticPayload::Compiler(CompilerDiagnostic::Rendered {
-                message, ..
-            }) => file + message.len(),
+            SourceDiagnosticPayload::Compiler(CompilerDiagnostic::Rendered { message, .. }) => {
+                file + message.len()
+            }
             SourceDiagnosticPayload::Compiler(CompilerDiagnostic::IdentityGap {
                 message,
                 gap,
@@ -409,12 +409,13 @@ fn accumulate_limited(
     added_count: usize,
     added_bytes: usize,
 ) {
-    *count = count.saturating_add(added_count).min(MAX_DIAGNOSTIC_COUNT + 1);
+    *count = count
+        .saturating_add(added_count)
+        .min(MAX_DIAGNOSTIC_COUNT + 1);
     *owned_bytes = owned_bytes
         .saturating_add(added_bytes)
         .min(MAX_DIAGNOSTIC_BYTES + 1);
-    if matches!(limit, CompileDiagnosticLimit::OwnedBytes { .. }) && *count > MAX_DIAGNOSTIC_COUNT
-    {
+    if matches!(limit, CompileDiagnosticLimit::OwnedBytes { .. }) && *count > MAX_DIAGNOSTIC_COUNT {
         *limit = CompileDiagnosticLimit::Count {
             limit: MAX_DIAGNOSTIC_COUNT,
         };
@@ -732,9 +733,7 @@ mod tests {
         let syntax = SourceDiagnostic::syntax(file(), complete[0].clone());
         assert_eq!(
             syntax.retained_owned_bytes(),
-            file_len
-                + complete[0].message.len()
-                + complete[0].help.as_deref().map_or(0, str::len)
+            file_len + complete[0].message.len() + complete[0].help.as_deref().map_or(0, str::len)
         );
         assert!(syntax.reason().is_some());
         assert_eq!(syntax.severity(), Severity::Error);
@@ -864,11 +863,11 @@ mod tests {
         target.absorb(terminal);
         let merged = target.probe();
         assert_eq!(merged.count, 3);
+        assert_eq!(merged.owned_bytes, 3 * file().as_str().len() + 1 + 3 + 5);
         assert_eq!(
-            merged.owned_bytes,
-            3 * file().as_str().len() + 1 + 3 + 5
+            merged.rows[1].retained_owned_bytes(),
+            file().as_str().len() + 3
         );
-        assert_eq!(merged.rows[1].retained_owned_bytes(), file().as_str().len() + 3);
 
         // A Limited terminal forces Limited; with the composed count crossed,
         // Count is selected over the absorbed OwnedBytes kind.
@@ -952,7 +951,11 @@ mod tests {
                 .sum::<usize>()
         );
         assert_eq!(
-            probe.rows.iter().map(SourceDiagnostic::line).collect::<Vec<_>>(),
+            probe
+                .rows
+                .iter()
+                .map(SourceDiagnostic::line)
+                .collect::<Vec<_>>(),
             vec![1, 2]
         );
         assert!(probe.rows.iter().all(|row| row.file() == file()));
@@ -997,13 +1000,15 @@ mod tests {
 
         let empty_terminal = DiagnosticCollector::new().finish();
         assert!(empty_terminal.is_empty());
-        assert!(!BoundedDiagnostics::Limited {
-            count: MAX_DIAGNOSTIC_COUNT + 1,
-            owned_bytes: 0,
-            limit: CompileDiagnosticLimit::Count {
-                limit: MAX_DIAGNOSTIC_COUNT
-            },
-        }
-        .is_empty());
+        assert!(
+            !BoundedDiagnostics::Limited {
+                count: MAX_DIAGNOSTIC_COUNT + 1,
+                owned_bytes: 0,
+                limit: CompileDiagnosticLimit::Count {
+                    limit: MAX_DIAGNOSTIC_COUNT
+                },
+            }
+            .is_empty()
+        );
     }
 }

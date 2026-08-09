@@ -1021,7 +1021,9 @@ fn run_semantic(
         return SemanticOutcome::Invariant(InvariantCause::Generic(invariant));
     }
     if records.has_instantiation_limit() {
-        records.take_generic_diagnostics().merge_into(&mut diagnostics);
+        records
+            .take_generic_diagnostics()
+            .merge_into(&mut diagnostics);
         return SemanticOutcome::Diagnostics(diagnostics.finish(), CompileStage::TypeInstantiation);
     }
     let stores: Vec<(FileIdentity, &StoreDecl)> = parsed
@@ -1061,8 +1063,13 @@ fn run_semantic(
     ) {
         Ok(Some(signatures)) => signatures,
         Ok(None) => {
-            records.take_generic_diagnostics().merge_into(&mut diagnostics);
-            return SemanticOutcome::Diagnostics(diagnostics.finish(), CompileStage::FunctionSignatures);
+            records
+                .take_generic_diagnostics()
+                .merge_into(&mut diagnostics);
+            return SemanticOutcome::Diagnostics(
+                diagnostics.finish(),
+                CompileStage::FunctionSignatures,
+            );
         }
         Err(invariant) => {
             return SemanticOutcome::Invariant(InvariantCause::Generic(invariant));
@@ -1142,7 +1149,9 @@ fn run_semantic(
         }
     }
     if records.has_instantiation_limit() {
-        records.take_generic_diagnostics().merge_into(&mut diagnostics);
+        records
+            .take_generic_diagnostics()
+            .merge_into(&mut diagnostics);
         return SemanticOutcome::Diagnostics(diagnostics.finish(), CompileStage::TemplateProof);
     }
 
@@ -1416,7 +1425,9 @@ fn run_semantic(
     // monomorphized `Tree[int]` containing `Tree[int]` is an ordinary record cycle),
     // now that every field and body annotation has been resolved.
     let stopped_on_limit = records.has_instantiation_limit();
-    records.take_generic_diagnostics().merge_into(&mut diagnostics);
+    records
+        .take_generic_diagnostics()
+        .merge_into(&mut diagnostics);
     if stopped_on_limit {
         return SemanticOutcome::Diagnostics(diagnostics.finish(), CompileStage::BodyLowering);
     }
@@ -1467,7 +1478,10 @@ fn run_semantic(
     }
 
     if !diagnostics.is_empty() {
-        return SemanticOutcome::Diagnostics(diagnostics.finish(), CompileStage::PostLoweringValidation);
+        return SemanticOutcome::Diagnostics(
+            diagnostics.finish(),
+            CompileStage::PostLoweringValidation,
+        );
     }
 
     match draft.encode() {
@@ -2389,7 +2403,7 @@ mod tests {
         let CompileFailure::Diagnostics(diagnostics) = failure else {
             panic!("the parse stage's own rows are the failure")
         };
-        assert_eq!(diagnostics.as_slice(), &[parse_row.clone()]);
+        assert_eq!(diagnostics.as_slice(), std::slice::from_ref(&parse_row));
 
         let failure = driven(
             finished(vec![parse_row.clone()]),
@@ -2420,9 +2434,11 @@ mod tests {
             BoundedDiagnostics::Complete { rows, .. } => rows.as_ptr(),
             BoundedDiagnostics::Limited { .. } => panic!("two rows stay complete"),
         };
-        let failure = driven(terminal, empty_terminal(), SemanticOutcome::Invariant(
-            proof_clone_cause(),
-        ))
+        let failure = driven(
+            terminal,
+            empty_terminal(),
+            SemanticOutcome::Invariant(proof_clone_cause()),
+        )
         .into_built()
         .map(|_| ())
         .expect_err("a nonempty parse stage fails compilation");
@@ -2747,9 +2763,7 @@ mod driver_agreement {
     /// a stage the projection passes over.
     fn stage_rows(stage: &BoundedDiagnostics) -> Option<Vec<SourceDiagnostic>> {
         match stage {
-            BoundedDiagnostics::Complete { rows, .. } => {
-                (!rows.is_empty()).then(|| rows.clone())
-            }
+            BoundedDiagnostics::Complete { rows, .. } => (!rows.is_empty()).then(|| rows.clone()),
             BoundedDiagnostics::Limited { .. } => Some(Vec::new()),
         }
     }
@@ -2845,7 +2859,9 @@ mod driver_agreement {
         // The broken module's parse error is recorded.
         let parse_rows = stage_rows(&driven.parse).expect("the parse stage is non-empty");
         assert!(
-            parse_rows.iter().any(|d| d.file().as_str() == "src/broken.mw"),
+            parse_rows
+                .iter()
+                .any(|d| d.file().as_str() == "src/broken.mw"),
             "the broken module's parse diagnostic must be recorded: {parse_rows:?}",
         );
 
@@ -2894,7 +2910,9 @@ mod driver_agreement {
         // The broken base module's parse error is recorded.
         let parse_rows = stage_rows(&driven.parse).expect("the parse stage is non-empty");
         assert!(
-            parse_rows.iter().any(|d| d.file().as_str() == "src/base.mw")
+            parse_rows
+                .iter()
+                .any(|d| d.file().as_str() == "src/base.mw")
         );
 
         // The dependent module is analyzed, and its cross-references to the absent base

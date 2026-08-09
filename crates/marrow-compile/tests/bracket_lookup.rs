@@ -178,7 +178,8 @@ fn a_map_bracket_unset_needs_a_var_binding() {
     ));
     let diagnostic = first_of(&diagnostics, "check.type");
     assert!(
-        diagnostic.message().contains("`const`") && diagnostic.message().contains("cannot be modified"),
+        diagnostic.message().contains("`const`")
+            && diagnostic.message().contains("cannot be modified"),
         "{}",
         diagnostic.message()
     );

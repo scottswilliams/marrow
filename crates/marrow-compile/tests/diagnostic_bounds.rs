@@ -48,7 +48,10 @@ fn assert_diagnostic_resource_limit(
 /// silently skewing every count fixture below.
 fn assert_one_error_per_at_sign() {
     assert_eq!(
-        marrow_syntax::parse_source("@\n").diagnostics.summary().count(),
+        marrow_syntax::parse_source("@\n")
+            .diagnostics
+            .summary()
+            .count(),
         1
     );
     assert_eq!(
@@ -161,12 +164,7 @@ fn a_limited_syntax_file_forces_limited_beside_a_clean_sibling() {
 #[test]
 fn crossing_the_byte_ceiling_is_a_diagnostic_bytes_resource_limit() {
     let over: Vec<(String, Vec<u8>)> = (0..8)
-        .map(|tag| {
-            (
-                format!("src/m{tag}.mw"),
-                long_import_source(tag, 26, 5100),
-            )
-        })
+        .map(|tag| (format!("src/m{tag}.mw"), long_import_source(tag, 26, 5100)))
         .collect();
     assert_diagnostic_resource_limit(
         compile(&project(over)).expect_err("an over-byte diagnostic set must not compile"),
@@ -175,12 +173,7 @@ fn crossing_the_byte_ceiling_is_a_diagnostic_bytes_resource_limit() {
     );
 
     let under: Vec<(String, Vec<u8>)> = (0..4)
-        .map(|tag| {
-            (
-                format!("src/m{tag}.mw"),
-                long_import_source(tag, 26, 5100),
-            )
-        })
+        .map(|tag| (format!("src/m{tag}.mw"), long_import_source(tag, 26, 5100)))
         .collect();
     let rows = diagnostics(&project(under));
     assert_eq!(rows.len(), 4 * 26, "every under-ceiling row is retained");
@@ -277,8 +270,15 @@ fn production_projects_the_parse_stage_while_the_analysis_union_crosses() {
     ]);
 
     let rows = diagnostics(&input);
-    assert_eq!(rows.len(), parse_rows, "production reports the parse stage only");
-    assert!(rows.iter().all(|row| row.file().as_str() == "src/broken.mw"));
+    assert_eq!(
+        rows.len(),
+        parse_rows,
+        "production reports the parse stage only"
+    );
+    assert!(
+        rows.iter()
+            .all(|row| row.file().as_str() == "src/broken.mw")
+    );
 
     let failure = analyze(Arc::new(input), InputRevision::new(11))
         .err()

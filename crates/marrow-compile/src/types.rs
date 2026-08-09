@@ -4592,8 +4592,10 @@ impl TypeRegistry {
             LimitState::Pending(diagnostic) => Some(diagnostic),
             LimitState::Reported => None,
         };
-        let collector =
-            std::mem::replace(&mut generics.collection_payloads, DiagnosticCollector::new());
+        let collector = std::mem::replace(
+            &mut generics.collection_payloads,
+            DiagnosticCollector::new(),
+        );
         GenericDiagnostics {
             first_limit,
             collection_payloads: collector.finish(),

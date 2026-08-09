@@ -77,7 +77,9 @@ fn compile_files_err(files: &[(&str, &str)]) -> Vec<SourceDiagnostic> {
 }
 
 fn has_code(diagnostics: &[SourceDiagnostic], code: &str) -> bool {
-    diagnostics.iter().any(|diagnostic| diagnostic.code() == code)
+    diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic.code() == code)
 }
 
 fn assert_one_located_limit(diagnostics: &[SourceDiagnostic], line: u32, column: u32) {
@@ -1804,7 +1806,8 @@ pub fn run(): Result<Map<int, int>, int> {
     assert!(
         diagnostics
             .iter()
-            .any(|d| d.message().contains("`ok` payload of `Result`") && d.message().contains("`Map`")),
+            .any(|d| d.message().contains("`ok` payload of `Result`")
+                && d.message().contains("`Map`")),
         "{diagnostics:#?}"
     );
 }

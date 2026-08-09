@@ -144,7 +144,9 @@ fn a_dropped_root_referenced_from_a_generic_and_an_ordinary_function_steers_once
     assert_eq!(
         diagnostics
             .iter()
-            .filter(|d| d.code() == "check.type" && d.message().contains("failed identity admission"))
+            .filter(
+                |d| d.code() == "check.type" && d.message().contains("failed identity admission")
+            )
             .count(),
         1,
         "one steer per dropped root, not one per reference site: {diagnostics:#?}",
