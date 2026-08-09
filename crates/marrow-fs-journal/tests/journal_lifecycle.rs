@@ -785,6 +785,68 @@ fn hostile_pending_states_are_retained_corruption() {
     );
 }
 
+/// The exhaustive kill sweep for the provision protocol: every byte-position
+/// cut of the complete claim bytes, planted as debris under each of the two
+/// single-name states, classifies to a typed state — never an error, never a
+/// panic — and lands in the class the representative fixtures pin.
+#[test]
+fn every_per_byte_cut_of_a_provision_journal_classifies_deterministically() {
+    let scratch = Scratch::new("cut-sweep");
+    let dir = root(&scratch);
+    let names = pending_name("store");
+    let claim_path = scratch.path().join("store.pending.create");
+    let pending_path = scratch.path().join("store.pending");
+    let full = provision_claim_bytes();
+    let header_end = 16 + PROVISION_HEADER.len();
+
+    for cut in 0..=full.len() {
+        // Create-only debris is preclaim at every cut: content and mode are
+        // unconstrained before the durable claim.
+        std::fs::write(&claim_path, &full[..cut]).expect("plant claim debris");
+        match classify(&dir, &names, JournalKind::Provision).expect("classify claim debris") {
+            PendingState::Preclaim(_) => {}
+            other => panic!("claim cut {cut}: expected preclaim, found {other:?}"),
+        }
+        std::fs::remove_file(&claim_path).expect("clear claim debris");
+
+        // Pending-name debris crosses the pinned class boundaries: inside the
+        // fixed prefix, inside the row header, before the Prepared record's
+        // completion, and the one complete frame.
+        std::fs::write(&pending_path, &full[..cut]).expect("plant pending debris");
+        set_mode(&pending_path, 0o600);
+        let state =
+            classify(&dir, &names, JournalKind::Provision).expect("classify pending debris");
+        match state {
+            PendingState::Corrupt(CorruptionReason::Frame(FrameCorruption::TooShort {
+                found,
+            })) => {
+                assert!(cut < 16, "pending cut {cut}: TooShort past the prefix");
+                assert_eq!(found, cut);
+            }
+            PendingState::Corrupt(CorruptionReason::Frame(
+                FrameCorruption::HeaderTruncated { expected, found },
+            )) => {
+                assert!(
+                    (16..header_end).contains(&cut),
+                    "pending cut {cut}: HeaderTruncated outside the row header"
+                );
+                assert_eq!((expected, found), (PROVISION_HEADER.len(), cut - 16));
+            }
+            PendingState::Corrupt(CorruptionReason::MissingPrepared) => {
+                assert!(
+                    (header_end..full.len()).contains(&cut),
+                    "pending cut {cut}: MissingPrepared outside the record span"
+                );
+            }
+            PendingState::Pending(_) => {
+                assert_eq!(cut, full.len(), "pending cut {cut}: complete frame only");
+            }
+            other => panic!("pending cut {cut}: unclassified state {other:?}"),
+        }
+        std::fs::remove_file(&pending_path).expect("clear pending debris");
+    }
+}
+
 #[test]
 fn a_closed_kind_journal_verifies_its_self_witness_on_replay() {
     let scratch = Scratch::new("self-witness");
