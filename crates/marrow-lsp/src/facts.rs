@@ -427,6 +427,42 @@ mod absence_gate {
     fn no_reconstruction_leak() {
         scan(FORBIDDEN_RECONSTRUCTION);
     }
+
+    /// The one severity owner is the diagnostic payload: no server source
+    /// classifies a code to reconstruct severity. The forbidden names are the
+    /// deleted registry severity surface; they are spelled via `concat!` so
+    /// this gate's own text never matches, and every crate source is scanned.
+    #[test]
+    fn severity_comes_from_the_payload_never_the_code() {
+        let forbidden = [
+            concat!("Severity", "Class"),
+            concat!("severity", "_class"),
+            concat!("fn severity", "_of"),
+        ];
+        let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut paths: Vec<std::path::PathBuf> = std::fs::read_dir(&src)
+            .expect("read the crate src directory")
+            .map(|entry| entry.expect("src entry").path())
+            .filter(|path| path.extension().is_some_and(|extension| extension == "rs"))
+            .collect();
+        paths.sort();
+        assert!(!paths.is_empty(), "the source inventory must be non-empty");
+        for path in paths {
+            let text = std::fs::read_to_string(&path).expect("read crate source");
+            for needle in forbidden {
+                assert!(
+                    !text.contains(needle),
+                    "{} reconstructs severity from a code: `{needle}`",
+                    path.display()
+                );
+            }
+        }
+        let facts = std::fs::read_to_string(src.join("facts.rs")).expect("read facts.rs");
+        assert!(
+            facts.contains("to_lsp_severity(diagnostic.severity())"),
+            "expected the payload severity projection; if it was renamed, update this scan"
+        );
+    }
 }
 
 #[cfg(test)]

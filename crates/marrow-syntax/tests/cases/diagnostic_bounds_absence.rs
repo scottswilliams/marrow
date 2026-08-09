@@ -95,6 +95,47 @@ fn no_post_submit_diagnostic_mutation() {
     }
 }
 
+/// The collector is one concrete private type: no generic collector or the
+/// retired generic counter family reappears. A type parameter on the collector
+/// would reopen per-policy configurability the design deletes.
+#[test]
+fn the_collector_is_concrete_not_generic() {
+    let sources = production_sources();
+    let all: String = sources.iter().map(|(_, text)| text.as_str()).collect();
+    assert!(
+        all.contains("struct SyntaxDiagnosticCollector"),
+        "expected the concrete collector; if it was renamed, update this scan"
+    );
+    for (path, text) in &sources {
+        for forbidden in ["SyntaxDiagnosticCollector<", "BoundedDiagnosticCounter"] {
+            assert!(
+                !text.contains(forbidden),
+                "{} declares a generic collector shape: `{forbidden}`",
+                path.display()
+            );
+        }
+    }
+}
+
+/// The compiler owns invalid UTF-8: every syntax entry point takes `&str`, so
+/// non-UTF-8 input is unrepresentable to this crate by API shape. The pinned
+/// signatures keep that contract conspicuous against a byte-slice entry point.
+#[test]
+fn entry_points_admit_only_utf8_by_signature() {
+    let sources = production_sources();
+    let all: String = sources.iter().map(|(_, text)| text.as_str()).collect();
+    for signature in [
+        "pub fn parse_source(source: &str)",
+        "pub fn lex_source(source: &str)",
+        "pub fn parse_expression(source: &str)",
+    ] {
+        assert!(
+            all.contains(signature),
+            "expected the `&str` entry point `{signature}`; syntax must never decode bytes"
+        );
+    }
+}
+
 /// The collector, sinks, and error constructor are private implementation:
 /// no public collector, sink type, sink trait, or sink accessor exists. The
 /// presence half asserts the private symbols under their current names so a

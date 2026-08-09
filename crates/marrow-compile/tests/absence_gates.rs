@@ -86,3 +86,37 @@ fn the_one_row_exception_is_declared_exactly_once() {
         "exactly one one-row exception may exist: {found:?}"
     );
 }
+
+/// Cross-crate recurrence: the compiler never re-collects raw syntax rows. A
+/// syntax terminal enters only through the consuming `absorb_syntax` bridge, so
+/// the syntax row type is never held in a vector here.
+#[test]
+fn no_raw_syntax_diagnostic_vector_exists() {
+    let found = occurrences("Vec<Diagnostic>");
+    assert!(
+        found.is_empty(),
+        "Vec<Diagnostic> must not exist in the compiler; absorb the syntax terminal: {found:?}"
+    );
+}
+
+/// The collector is one concrete private type: no generic collector or the
+/// retired generic counter family reappears.
+#[test]
+fn the_collector_is_concrete_not_generic() {
+    let mut declared = false;
+    for path in src_files() {
+        let source = fs::read_to_string(&path).expect("read source file");
+        declared |= source.contains("struct DiagnosticCollector");
+        for forbidden in ["DiagnosticCollector<", "BoundedDiagnosticCounter"] {
+            assert!(
+                !source.contains(forbidden),
+                "{} declares a generic collector shape: `{forbidden}`",
+                path.display()
+            );
+        }
+    }
+    assert!(
+        declared,
+        "expected the concrete collector; if it was renamed, update this scan"
+    );
+}
