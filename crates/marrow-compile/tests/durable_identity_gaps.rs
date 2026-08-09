@@ -54,7 +54,7 @@ pub fn readSecond(id: int): int? {
     let diagnostics = diagnostics(&project(source));
     let gaps: Vec<IdentityAnchor> = diagnostics
         .iter()
-        .filter_map(|diagnostic| diagnostic.identity.as_ref())
+        .filter_map(|diagnostic| diagnostic.identity_gap())
         .map(|gap| {
             assert!(!gap.retired, "the fixture has no retired anchors");
             gap.anchor()
@@ -83,8 +83,8 @@ pub fn readSecond(id: int): int? {
     for root in ["first", "second"] {
         assert!(
             diagnostics.iter().any(|diagnostic| {
-                diagnostic.code == Code::CheckType.as_str()
-                    && diagnostic.message
+                diagnostic.code() == Code::CheckType.as_str()
+                    && diagnostic.message()
                         == format!(
                             "`{root}` was declared but failed identity admission; see the \
                              `check.durable_identity` reports"

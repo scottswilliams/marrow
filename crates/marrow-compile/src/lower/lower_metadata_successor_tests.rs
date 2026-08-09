@@ -6,7 +6,7 @@ use marrow_syntax::{Declaration, parse_source};
 fn function(source: &str) -> FunctionDecl {
     let parsed = parse_source(source);
     assert!(
-        parsed.diagnostics.is_empty(),
+        !parsed.has_errors(),
         "fixture must parse cleanly: {:?}",
         parsed.diagnostics
     );
@@ -88,7 +88,7 @@ fn collection_mismatch_in_interpolation_stops_before_later_part() {
     let functions = FunctionRegistry::default();
     let generics = GenericRegistry::default();
     let consts = ConstRegistry::default();
-    let mut diagnostics = Vec::new();
+    let mut diagnostics = DiagnosticCollector::new();
     let mut draft = ImageDraft::new();
     let mut dependency_gaps = Vec::new();
     let mut lowerer = lowerer(
@@ -136,7 +136,7 @@ fn collection_mismatch_in_checked_annotation_stops_before_handler() {
     let functions = FunctionRegistry::default();
     let generics = GenericRegistry::default();
     let consts = ConstRegistry::default();
-    let mut diagnostics = Vec::new();
+    let mut diagnostics = DiagnosticCollector::new();
     let mut draft = ImageDraft::new();
     let mut dependency_gaps = Vec::new();
     let mut lowerer = lowerer(
@@ -194,7 +194,7 @@ fn collection_mismatch_in_if_const_else_if_condition_is_terminal() {
     let functions = FunctionRegistry::default();
     let generics = GenericRegistry::default();
     let consts = ConstRegistry::default();
-    let mut diagnostics = Vec::new();
+    let mut diagnostics = DiagnosticCollector::new();
     let mut draft = ImageDraft::new();
     let mut dependency_gaps = Vec::new();
     let mut lowerer = lowerer(
@@ -263,7 +263,7 @@ fn collection_mismatch_in_first_block_statement_stops_later_mint_and_finish() {
     let functions = FunctionRegistry::default();
     let generics = GenericRegistry::default();
     let consts = ConstRegistry::default();
-    let mut diagnostics = Vec::new();
+    let mut diagnostics = DiagnosticCollector::new();
     let mut draft = ImageDraft::new();
     let mut dependency_gaps = Vec::new();
     let mut lowerer = lowerer(
@@ -301,7 +301,7 @@ fn collection_mismatch_in_first_block_statement_stops_later_mint_and_finish() {
 
 fn built_registry_with_generic_struct() -> (TypeRegistry, ImageDraft, usize) {
     let parsed = parse_source("struct Box<T> {\n    value: T\n}\n");
-    assert!(parsed.diagnostics.is_empty());
+    assert!(!parsed.has_errors());
     let declaration = parsed
         .file
         .declarations
@@ -313,7 +313,7 @@ fn built_registry_with_generic_struct() -> (TypeRegistry, ImageDraft, usize) {
         .expect("generic struct declaration exists");
     let structs = [(crate::test_file_identity("src/main.mw"), declaration)];
     let mut draft = ImageDraft::new();
-    let mut diagnostics = Vec::new();
+    let mut diagnostics = DiagnosticCollector::new();
     let registry = TypeRegistry::build(&mut draft, &[], &[], &structs, &[], &[], &mut diagnostics);
     assert!(diagnostics.is_empty());
     let template = registry
@@ -324,7 +324,7 @@ fn built_registry_with_generic_struct() -> (TypeRegistry, ImageDraft, usize) {
 
 fn built_reserved_registry() -> (TypeRegistry, ImageDraft) {
     let mut draft = ImageDraft::new();
-    let mut diagnostics = Vec::new();
+    let mut diagnostics = DiagnosticCollector::new();
     let registry = TypeRegistry::build(&mut draft, &[], &[], &[], &[], &[], &mut diagnostics);
     assert!(diagnostics.is_empty());
     (registry, draft)
@@ -341,7 +341,7 @@ fn generic_struct_constructor_transfers_the_registry_witness_error() {
     let functions = FunctionRegistry::default();
     let generics = GenericRegistry::default();
     let consts = ConstRegistry::default();
-    let mut diagnostics = Vec::new();
+    let mut diagnostics = DiagnosticCollector::new();
     let mut dependency_gaps = Vec::new();
     let mut lowerer = lowerer(
         &mut draft,
@@ -383,7 +383,7 @@ fn generic_enum_constructor_transfers_the_registry_witness_error() {
     let functions = FunctionRegistry::default();
     let generics = GenericRegistry::default();
     let consts = ConstRegistry::default();
-    let mut diagnostics = Vec::new();
+    let mut diagnostics = DiagnosticCollector::new();
     let mut dependency_gaps = Vec::new();
     let mut lowerer = lowerer(
         &mut draft,

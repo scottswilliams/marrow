@@ -77,7 +77,7 @@ fn compile_files_err(files: &[(&str, &str)]) -> Vec<SourceDiagnostic> {
 }
 
 fn has_code(diagnostics: &[SourceDiagnostic], code: &str) -> bool {
-    diagnostics.iter().any(|diagnostic| diagnostic.code == code)
+    diagnostics.iter().any(|diagnostic| diagnostic.code() == code)
 }
 
 fn assert_one_located_limit(diagnostics: &[SourceDiagnostic], line: u32, column: u32) {
@@ -87,7 +87,7 @@ fn assert_one_located_limit(diagnostics: &[SourceDiagnostic], line: u32, column:
         "a limit refusal must not cascade: {diagnostics:#?}"
     );
     let diagnostic = &diagnostics[0];
-    assert_eq!(diagnostic.code, "check.instantiation_limit");
+    assert_eq!(diagnostic.code(), "check.instantiation_limit");
     assert_eq!(diagnostic.file().as_str(), "src/main.mw");
     assert_eq!((diagnostic.line(), diagnostic.column()), (line, column));
 }
@@ -101,7 +101,7 @@ fn assert_diagnostic_sites(diagnostics: &[SourceDiagnostic], expected: &[(&str, 
     );
     let actual: Vec<(&str, u32, u32)> = diagnostics
         .iter()
-        .map(|diagnostic| (diagnostic.code, diagnostic.line(), diagnostic.column()))
+        .map(|diagnostic| (diagnostic.code(), diagnostic.line(), diagnostic.column()))
         .collect();
     assert_eq!(actual, expected, "{diagnostics:#?}");
 }
@@ -253,7 +253,7 @@ pub fn driver(): int {
     assert!(
         diagnostics
             .iter()
-            .any(|d| d.message.contains("cannot infer type parameter `T`")),
+            .any(|d| d.message().contains("cannot infer type parameter `T`")),
         "{diagnostics:#?}"
     );
 }
@@ -278,7 +278,7 @@ pub fn driver(): int {
     assert!(
         diagnostics
             .iter()
-            .any(|d| d.message.contains("supports equality")),
+            .any(|d| d.message().contains("supports equality")),
         "{diagnostics:#?}"
     );
 }
@@ -303,7 +303,7 @@ pub fn driver(): int {
     assert!(
         diagnostics
             .iter()
-            .any(|d| d.message.contains("supports order")),
+            .any(|d| d.message().contains("supports order")),
         "{diagnostics:#?}"
     );
 }
@@ -331,7 +331,7 @@ pub fn driver(): bool {
     assert!(
         diagnostics
             .iter()
-            .any(|d| d.message.contains("does not `supports order`")),
+            .any(|d| d.message().contains("does not `supports order`")),
         "{diagnostics:#?}"
     );
 }
@@ -618,7 +618,7 @@ pub fn driver(): int {
     ]);
     assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
     let diagnostic = &diagnostics[0];
-    assert_eq!(diagnostic.code, "check.instantiation_limit");
+    assert_eq!(diagnostic.code(), "check.instantiation_limit");
     assert_eq!(diagnostic.file().as_str(), "src/library.mw");
     assert_eq!((diagnostic.line(), diagnostic.column()), (7, 25));
 }
@@ -1056,7 +1056,7 @@ pub fn driver(value: Pair<int, string>): int {
 "#,
     );
     assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
-    assert_eq!(diagnostics[0].code, "check.unsupported");
+    assert_eq!(diagnostics[0].code(), "check.unsupported");
     assert_eq!(diagnostics[0].file().as_str(), "src/main.mw");
     assert_eq!((diagnostics[0].line(), diagnostics[0].column()), (7, 22));
 }
@@ -1566,17 +1566,17 @@ pub fn run(): int {
     );
     let cycle = diagnostics
         .iter()
-        .find(|diagnostic| diagnostic.code == "check.recursion")
+        .find(|diagnostic| diagnostic.code() == "check.recursion")
         .expect("a recursion diagnostic");
     assert!(
-        cycle.message.contains("Loop<int>"),
+        cycle.message().contains("Loop<int>"),
         "the cycle path must render `Loop<int>` in angle form: {}",
-        cycle.message
+        cycle.message()
     );
     assert!(
-        cycle.message.contains("Box<Loop<int>>"),
+        cycle.message().contains("Box<Loop<int>>"),
         "the cycle path must render the nested `Box<Loop<int>>` in angle form: {}",
-        cycle.message
+        cycle.message()
     );
 }
 
@@ -1599,7 +1599,7 @@ pub fn run(): int {
     assert!(
         diagnostics
             .iter()
-            .any(|diagnostic| diagnostic.message.contains("Map<string, List<int>>")),
+            .any(|diagnostic| diagnostic.message().contains("Map<string, List<int>>")),
         "the collection type must render in angle form: {diagnostics:#?}"
     );
 }
@@ -1629,7 +1629,7 @@ pub fn f(): Result<int, int> {
     assert!(
         diagnostics
             .iter()
-            .any(|diagnostic| diagnostic.message.contains("Result<int, string>")),
+            .any(|diagnostic| diagnostic.message().contains("Result<int, string>")),
         "the propagated error operand must render in angle form: {diagnostics:#?}"
     );
 }
@@ -1753,8 +1753,8 @@ pub fn run(): int {
     assert!(
         diagnostics
             .iter()
-            .any(|d| d.message.contains("`some` payload of `Option`")
-                && d.message.contains("not a payload type")),
+            .any(|d| d.message().contains("`some` payload of `Option`")
+                && d.message().contains("not a payload type")),
         "{diagnostics:#?}"
     );
 }
@@ -1780,7 +1780,7 @@ pub fn run(): int {
     assert!(
         diagnostics
             .iter()
-            .any(|d| d.message.contains("not a payload type")),
+            .any(|d| d.message().contains("not a payload type")),
         "{diagnostics:#?}"
     );
 }
@@ -1804,7 +1804,7 @@ pub fn run(): Result<Map<int, int>, int> {
     assert!(
         diagnostics
             .iter()
-            .any(|d| d.message.contains("`ok` payload of `Result`") && d.message.contains("`Map`")),
+            .any(|d| d.message().contains("`ok` payload of `Result`") && d.message().contains("`Map`")),
         "{diagnostics:#?}"
     );
 }
@@ -1833,7 +1833,7 @@ pub fn run(): int {
     assert!(
         diagnostics
             .iter()
-            .any(|d| d.message.contains("`wrap` payload of `Box`")),
+            .any(|d| d.message().contains("`wrap` payload of `Box`")),
         "{diagnostics:#?}"
     );
 }
@@ -1863,7 +1863,7 @@ pub fn run(): int {
     assert!(
         diagnostics
             .iter()
-            .any(|d| d.message.contains("`v` payload of `E`")),
+            .any(|d| d.message().contains("`v` payload of `E`")),
         "{diagnostics:#?}"
     );
 }
@@ -1888,7 +1888,7 @@ pub fn run(): int {
     assert!(
         diagnostics
             .iter()
-            .any(|d| d.message.contains("not a payload type")),
+            .any(|d| d.message().contains("not a payload type")),
         "{diagnostics:#?}"
     );
 }
@@ -1916,7 +1916,7 @@ pub fn run(): int {
     assert!(
         diagnostics
             .iter()
-            .any(|d| d.message.contains("not a payload type")),
+            .any(|d| d.message().contains("not a payload type")),
         "{diagnostics:#?}"
     );
 }
@@ -2047,9 +2047,9 @@ pub fn driver(): int {
         1,
         "the failed proof must not cascade into sibling templates or concrete work: {diagnostics:#?}"
     );
-    assert_eq!(diagnostics[0].code, "check.type");
+    assert_eq!(diagnostics[0].code(), "check.type");
     assert!(
-        diagnostics[0].message.contains("supports order"),
+        diagnostics[0].message().contains("supports order"),
         "{diagnostics:#?}"
     );
     assert_eq!(

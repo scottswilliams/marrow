@@ -87,11 +87,11 @@ pub fn make(): string {
     };
     let hit = diagnostics
         .iter()
-        .find(|d| d.code == "check.type")
+        .find(|d| d.code() == "check.type")
         .unwrap_or_else(|| {
             panic!(
                 "expected a `check.type` diagnostic, got {:?}",
-                diagnostics.iter().map(|d| d.code).collect::<Vec<_>>()
+                diagnostics.iter().map(|d| d.code()).collect::<Vec<_>>()
             )
         });
     assert!(

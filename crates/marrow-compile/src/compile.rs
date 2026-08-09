@@ -2171,8 +2171,11 @@ fn is_ascii_identifier(text: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::valid_export_path;
-    use super::{Built, CompileFailure, CompileStage, InvariantCause, compile_failure};
-    use crate::diag::SourceDiagnostic;
+    use super::{
+        Analyzed, BoundedDiagnostics, Built, CompileFailure, CompileStage, Driven, InvariantCause,
+        SemanticOutcome, analyze_outcome,
+    };
+    use crate::diag::{DiagnosticCollector, MAX_DIAGNOSTIC_COUNT, SourceDiagnostic};
     use crate::types::{
         CollectionKind, GenericCacheInvariant, GenericInvariant, ProofCloneError, Reserved,
         TypeInstKind,
@@ -2230,7 +2233,6 @@ mod tests {
 
     fn stage_label(stage: CompileStage) -> &'static str {
         match stage {
-            CompileStage::Parse => "parse",
             CompileStage::TypeInstantiation => "type instantiation",
             CompileStage::FunctionSignatures => "function signatures",
             CompileStage::TemplateProof => "template proof",
@@ -2307,16 +2309,49 @@ mod tests {
         );
     }
 
-    /// A private compiler-coherence failure dominates source diagnostics already
-    /// accumulated at that stage. The public result contains no partial image.
+    /// A driven pass whose stage terminals are exactly `parse`, `structural`,
+    /// and `semantic`, with no orthogonal analysis facts. The projection under
+    /// test reads only these.
+    fn driven(
+        parse: BoundedDiagnostics,
+        structural: BoundedDiagnostics,
+        semantic: SemanticOutcome,
+    ) -> Driven {
+        Driven {
+            parse,
+            structural,
+            semantic,
+            broken_files: Vec::new(),
+            hover_facts: Vec::new(),
+            dependency_gaps: Vec::new(),
+            document_symbols: Vec::new(),
+            symbol_limit: None,
+            completion_modules: Vec::new(),
+        }
+    }
+
+    fn empty_terminal() -> BoundedDiagnostics {
+        DiagnosticCollector::new().finish()
+    }
+
+    fn finished(rows: Vec<SourceDiagnostic>) -> BoundedDiagnostics {
+        let mut collector = DiagnosticCollector::new();
+        for row in rows {
+            collector.push(row);
+        }
+        collector.finish()
+    }
+
+    /// A semantic invariant reaches the public boundary opaque: no partial
+    /// image, a private cause, and the fixed rendering.
     #[test]
-    fn invariant_dominates_existing_diagnostics_at_the_public_boundary() {
-        let outcome: Result<Built, CompileFailure> = Err(compile_failure(
-            vec![diagnostic(Code::CheckType.as_str(), 3)],
-            Some(proof_clone_cause()),
-            None,
-            CompileStage::TemplateProof,
-        ));
+    fn a_semantic_invariant_is_opaque_at_the_public_boundary() {
+        let outcome: Result<Built, CompileFailure> = driven(
+            empty_terminal(),
+            empty_terminal(),
+            SemanticOutcome::Invariant(proof_clone_cause()),
+        )
+        .into_built();
         let Err(failure) = outcome else {
             panic!("an invariant must not produce a partial image")
         };
@@ -2324,7 +2359,7 @@ mod tests {
         assert_eq!(failure.to_string(), "compiler invariant failure");
         assert!(std::error::Error::source(&failure).is_some());
         let CompileFailure::Invariant(invariant) = failure else {
-            panic!("the private invariant must dominate retained diagnostics")
+            panic!("the private invariant must stay an invariant")
         };
         assert!(matches!(
             invariant.0,
@@ -2337,19 +2372,60 @@ mod tests {
         assert!(std::error::Error::source(&invariant).is_none());
     }
 
-    /// Diagnostics preserve their original order and allocation behind a statically
-    /// nonempty owner. Every borrowed and owned iteration surface observes that order.
+    /// An earlier stage's complete diagnostics dominate a later semantic
+    /// invariant or resource limit: the projection reports the first
+    /// logically non-empty stage and never mixes stages.
+    #[test]
+    fn an_earlier_stage_dominates_a_later_semantic_failure() {
+        let parse_row = diagnostic(Code::CheckType.as_str(), 3);
+        let failure = driven(
+            finished(vec![parse_row.clone()]),
+            empty_terminal(),
+            SemanticOutcome::Invariant(proof_clone_cause()),
+        )
+        .into_built()
+        .map(|_| ())
+        .expect_err("a parse-stage row fails compilation");
+        let CompileFailure::Diagnostics(diagnostics) = failure else {
+            panic!("the parse stage's own rows are the failure")
+        };
+        assert_eq!(diagnostics.as_slice(), &[parse_row.clone()]);
+
+        let failure = driven(
+            finished(vec![parse_row.clone()]),
+            empty_terminal(),
+            SemanticOutcome::ResourceLimit(resource(super::ResourceLimitKind::Functions)),
+        )
+        .into_built()
+        .map(|_| ())
+        .expect_err("a parse-stage row fails compilation");
+        assert!(
+            matches!(failure, CompileFailure::Diagnostics(_)),
+            "diagnostics dominate an independent later resource candidate"
+        );
+    }
+
+    /// Diagnostics preserve their collector order and allocation behind a
+    /// statically nonempty owner. Every borrowed and owned iteration surface
+    /// observes that order; recovering the vector recovers the collector's
+    /// allocation without a copy.
     #[test]
     fn diagnostic_failure_preserves_order_allocation_and_iteration_views() {
         let expected = vec![
             diagnostic(Code::CheckType.as_str(), 4),
             diagnostic(Code::CheckType.as_str(), 9),
         ];
-        let mut original = Vec::with_capacity(8);
-        original.extend(expected.iter().cloned());
-        let original_ptr = original.as_ptr();
-        let original_capacity = original.capacity();
-        let failure = compile_failure(original, None, None, CompileStage::BodyLowering);
+        let terminal = finished(expected.clone());
+        let original_ptr = match &terminal {
+            BoundedDiagnostics::Complete { rows, .. } => rows.as_ptr(),
+            BoundedDiagnostics::Limited { .. } => panic!("two rows stay complete"),
+        };
+        let failure = driven(terminal, empty_terminal(), SemanticOutcome::Invariant(
+            proof_clone_cause(),
+        ))
+        .into_built()
+        .map(|_| ())
+        .expect_err("a nonempty parse stage fails compilation");
         assert_eq!(
             failure.to_string(),
             "compilation failed with source diagnostics"
@@ -2367,39 +2443,38 @@ mod tests {
             expected
         );
         let recovered = diagnostics.into_vec();
-        assert_eq!(recovered.as_ptr(), original_ptr);
-        assert_eq!(recovered.capacity(), original_capacity);
+        assert_eq!(
+            recovered.as_ptr(),
+            original_ptr,
+            "the collector's allocation is recovered without a copy"
+        );
         assert_eq!(recovered, expected);
-
-        let mut original = Vec::with_capacity(8);
-        original.extend(expected.iter().cloned());
-        let original_ptr = original.as_ptr();
-        let failure = compile_failure(original, None, None, CompileStage::BodyLowering);
-        let CompileFailure::Diagnostics(diagnostics) = failure else {
-            panic!("a nonempty source failure must remain diagnostics")
-        };
-        let iterator: std::vec::IntoIter<SourceDiagnostic> = diagnostics.into_iter();
-        assert_eq!(iterator.as_slice().as_ptr(), original_ptr);
-        assert_eq!(iterator.as_slice(), expected.as_slice());
-        assert_eq!(iterator.collect::<Vec<_>>(), expected);
     }
 
-    /// An empty source-diagnostic vector is a private invariant carrying the exact
-    /// stage that attempted to cross the boundary. The matcher intentionally has no
-    /// wildcard, so adding a stage requires updating this contract.
+    /// A complete-but-empty semantic diagnostics terminal is a private
+    /// invariant carrying the exact stage that attempted to cross the
+    /// boundary; a logically empty parse or structural terminal instead
+    /// passes over. The matcher intentionally has no wildcard, so adding a
+    /// stage requires updating this contract.
     #[test]
-    fn empty_failure_is_an_exact_invariant_at_every_compile_stage() {
+    fn an_empty_semantic_terminal_is_an_exact_invariant_at_every_stage() {
         for stage in [
-            CompileStage::Parse,
             CompileStage::TypeInstantiation,
             CompileStage::FunctionSignatures,
             CompileStage::TemplateProof,
             CompileStage::BodyLowering,
             CompileStage::PostLoweringValidation,
         ] {
-            let empty = compile_failure(Vec::new(), None, None, stage);
+            let empty = driven(
+                empty_terminal(),
+                empty_terminal(),
+                SemanticOutcome::Diagnostics(empty_terminal(), stage),
+            )
+            .into_built()
+            .map(|_| ())
+            .expect_err("an empty semantic terminal must not build");
             let CompileFailure::Invariant(invariant) = empty else {
-                panic!("an empty diagnostic failure must become a compiler invariant")
+                panic!("an empty diagnostic terminal must become a compiler invariant")
             };
             let InvariantCause::EmptyDiagnostics(actual) = invariant.0 else {
                 panic!("the empty boundary keeps its private stage")
@@ -2407,6 +2482,89 @@ mod tests {
             assert_eq!(stage_label(actual), stage_label(stage));
             assert_eq!(actual, stage);
         }
+    }
+
+    /// The analysis union reads the same terminals the production projection
+    /// does, row by row: with empty prechecks a semantic invariant or
+    /// resource limit passes through; with prechecks present it is
+    /// suppressed for the precheck union; a semantic empty terminal is a
+    /// truthful empty snapshot (where production reports the empty-boundary
+    /// invariant above); and the union of stages may cross a ceiling no
+    /// single stage crossed.
+    #[test]
+    fn the_analysis_union_follows_the_stage_table() {
+        let row = |line| diagnostic(Code::CheckType.as_str(), line);
+
+        // Empty prechecks pass the semantic failure through.
+        assert!(matches!(
+            analyze_outcome(
+                empty_terminal(),
+                empty_terminal(),
+                SemanticOutcome::Invariant(proof_clone_cause()),
+            ),
+            Analyzed::Invariant(_)
+        ));
+        assert!(matches!(
+            analyze_outcome(
+                empty_terminal(),
+                empty_terminal(),
+                SemanticOutcome::ResourceLimit(resource(super::ResourceLimitKind::Functions)),
+            ),
+            Analyzed::ResourceLimit(_)
+        ));
+
+        // A precheck row suppresses the semantic invariant and resource limit.
+        for semantic in [
+            SemanticOutcome::Invariant(proof_clone_cause()),
+            SemanticOutcome::ResourceLimit(resource(super::ResourceLimitKind::Functions)),
+        ] {
+            let Analyzed::Diagnostics(rows) =
+                analyze_outcome(finished(vec![row(3)]), empty_terminal(), semantic)
+            else {
+                panic!("prechecks suppress the semantic failure")
+            };
+            assert_eq!(rows, vec![row(3)]);
+        }
+
+        // A semantic empty terminal with empty prechecks is an empty snapshot.
+        let Analyzed::Diagnostics(rows) = analyze_outcome(
+            empty_terminal(),
+            empty_terminal(),
+            SemanticOutcome::Diagnostics(empty_terminal(), CompileStage::BodyLowering),
+        ) else {
+            panic!("a clean union is a producible snapshot")
+        };
+        assert!(rows.is_empty());
+
+        // The ordered union: parse, then structural, then semantic rows.
+        let Analyzed::Diagnostics(rows) = analyze_outcome(
+            finished(vec![row(1)]),
+            finished(vec![row(2)]),
+            SemanticOutcome::Diagnostics(finished(vec![row(3)]), CompileStage::BodyLowering),
+        ) else {
+            panic!("a bounded union is a producible snapshot")
+        };
+        assert_eq!(rows, vec![row(1), row(2), row(3)]);
+
+        // Analysis alone strengthens an OwnedBytes limit to Count across
+        // stages: a byte-limited parse terminal plus enough semantic rows to
+        // cross the count ceiling resolves as the count limit.
+        let byte_limited = BoundedDiagnostics::Limited {
+            count: MAX_DIAGNOSTIC_COUNT - 5,
+            owned_bytes: crate::diag::MAX_DIAGNOSTIC_BYTES + 1,
+            limit: crate::diag::CompileDiagnosticLimit::OwnedBytes {
+                limit: crate::diag::MAX_DIAGNOSTIC_BYTES,
+            },
+        };
+        let semantic_rows: Vec<SourceDiagnostic> = (0..10).map(|line| row(line + 1)).collect();
+        let Analyzed::ResourceLimit(limit) = analyze_outcome(
+            byte_limited,
+            empty_terminal(),
+            SemanticOutcome::Diagnostics(finished(semantic_rows), CompileStage::BodyLowering),
+        ) else {
+            panic!("a limited union is the displacing resource limit")
+        };
+        assert_eq!(limit.kind(), super::ResourceLimitKind::DiagnosticCount);
     }
 
     #[test]
@@ -2453,17 +2611,18 @@ mod tests {
         }
     }
 
-    /// A resource candidate surfaces only when no invariant and no diagnostic set
-    /// coexist: it is the lowest arm of the `Invariant > Diagnostics > ResourceLimit`
-    /// precedence.
+    /// A semantic resource limit with clean earlier stages is the lowest arm
+    /// of the `Invariant > Diagnostics > ResourceLimit` precedence.
     #[test]
     fn resource_limit_surfaces_with_no_invariant_and_no_diagnostics() {
-        let failure = compile_failure(
-            Vec::new(),
-            None,
-            Some(resource(super::ResourceLimitKind::Functions)),
-            CompileStage::PostLoweringValidation,
-        );
+        let failure = driven(
+            empty_terminal(),
+            empty_terminal(),
+            SemanticOutcome::ResourceLimit(resource(super::ResourceLimitKind::Functions)),
+        )
+        .into_built()
+        .map(|_| ())
+        .expect_err("a resource limit must not build");
         let CompileFailure::ResourceLimit(limit) = failure else {
             panic!("an aggregate bound with no diagnostics is a resource limit")
         };
@@ -2476,65 +2635,28 @@ mod tests {
         );
     }
 
-    /// A complete bounded diagnostic set dominates an independent later resource
-    /// candidate.
+    /// A stage terminal past the count ceiling reaches the boundary as the
+    /// displacing resource limit; no partial `Diagnostics` candidate
+    /// survives.
     #[test]
-    fn complete_diagnostics_dominate_a_resource_candidate() {
-        let failure = compile_failure(
-            vec![diagnostic(Code::CheckType.as_str(), 3)],
-            None,
-            Some(resource(super::ResourceLimitKind::Sites)),
-            CompileStage::PostLoweringValidation,
-        );
-        assert!(
-            matches!(failure, CompileFailure::Diagnostics(_)),
-            "a complete diagnostic set outranks a resource candidate"
-        );
-    }
-
-    /// A private invariant dominates a coexisting resource candidate.
-    #[test]
-    fn invariant_dominates_a_resource_candidate() {
-        let failure = compile_failure(
-            Vec::new(),
-            Some(proof_clone_cause()),
-            Some(resource(super::ResourceLimitKind::ImageBytes)),
-            CompileStage::PostLoweringValidation,
-        );
-        assert!(
-            matches!(failure, CompileFailure::Invariant(_)),
-            "an invariant outranks a resource candidate"
-        );
-    }
-
-    /// A diagnostic set past the count bound transactionally discards the incomplete
-    /// collection (its prefix included) and reports the displacing resource limit; no
-    /// partial `Diagnostics` candidate survives.
-    #[test]
-    fn diagnostic_count_overflow_discards_the_incomplete_collection() {
-        let overflowing: Vec<SourceDiagnostic> = (0..=super::MAX_DIAGNOSTIC_COUNT as u32)
-            .map(|line| diagnostic(Code::CheckType.as_str(), line + 1))
-            .collect();
-        assert!(overflowing.len() > super::MAX_DIAGNOSTIC_COUNT);
-        let failure = compile_failure(
-            overflowing,
-            None,
-            None,
-            CompileStage::PostLoweringValidation,
-        );
+    fn a_limited_stage_terminal_is_the_displacing_resource_limit() {
+        let mut collector = DiagnosticCollector::new();
+        for line in 0..=MAX_DIAGNOSTIC_COUNT as u32 {
+            collector.push(diagnostic(Code::CheckType.as_str(), line + 1));
+        }
+        let failure = driven(
+            collector.finish(),
+            empty_terminal(),
+            SemanticOutcome::Invariant(proof_clone_cause()),
+        )
+        .into_built()
+        .map(|_| ())
+        .expect_err("an over-ceiling stage must not build");
         let CompileFailure::ResourceLimit(limit) = failure else {
             panic!("an overflowing diagnostic collection is discarded for a resource limit")
         };
         assert_eq!(limit.kind(), super::ResourceLimitKind::DiagnosticCount);
-        assert_eq!(limit.limit(), super::MAX_DIAGNOSTIC_COUNT as u64);
-    }
-
-    /// An empty diagnostic set with no resource candidate is still the private
-    /// empty-boundary invariant, so the resource arm never masks that invariant.
-    #[test]
-    fn empty_without_a_resource_candidate_stays_an_invariant() {
-        let failure = compile_failure(Vec::new(), None, None, CompileStage::Parse);
-        assert!(matches!(failure, CompileFailure::Invariant(_)));
+        assert_eq!(limit.limit(), MAX_DIAGNOSTIC_COUNT as u64);
     }
 
     #[test]
@@ -2550,21 +2672,21 @@ mod tests {
     #[test]
     fn image_build_errors_classify_without_a_fabricated_location() {
         let aggregate = super::image_build_outcome(marrow_image::ImageBuildError::TooManyFunctions);
-        let super::SemanticOutcome::ResourceLimit(limit, _) = aggregate else {
+        let super::SemanticOutcome::ResourceLimit(limit) = aggregate else {
             panic!("an aggregate count is a resource limit")
         };
         assert_eq!(limit.kind(), super::ResourceLimitKind::Functions);
 
         let prechecked = super::image_build_outcome(marrow_image::ImageBuildError::TooManyLocals);
         assert!(
-            matches!(prechecked, super::SemanticOutcome::Invariant(_, _)),
+            matches!(prechecked, super::SemanticOutcome::Invariant(_)),
             "a compiler draft past the source-prechecked local bound is an opaque invariant"
         );
 
         let contradiction =
             super::image_build_outcome(marrow_image::ImageBuildError::InvalidReference("x"));
         assert!(
-            matches!(contradiction, super::SemanticOutcome::Invariant(_, _)),
+            matches!(contradiction, super::SemanticOutcome::Invariant(_)),
             "a producer-state contradiction is an opaque invariant, not a diagnostic"
         );
     }
@@ -2620,19 +2742,34 @@ mod driver_agreement {
             .expect("capture project")
     }
 
+    /// The rows a logically non-empty stage terminal projects (empty for a
+    /// limited terminal, mirroring `compiled`'s resource arm), or `None` for
+    /// a stage the projection passes over.
+    fn stage_rows(stage: &BoundedDiagnostics) -> Option<Vec<SourceDiagnostic>> {
+        match stage {
+            BoundedDiagnostics::Complete { rows, .. } => {
+                (!rows.is_empty()).then(|| rows.clone())
+            }
+            BoundedDiagnostics::Limited { .. } => Some(Vec::new()),
+        }
+    }
+
     /// The diagnostics the first-non-empty-stage projection of a driven pass yields,
     /// or `None` for a clean pass; a resource limit or invariant carries no
     /// diagnostics.
     fn projected(driven: &Driven) -> Option<Vec<SourceDiagnostic>> {
-        if !driven.parse.is_empty() {
-            return Some(driven.parse.clone());
+        if let Some(rows) = stage_rows(&driven.parse) {
+            return Some(rows);
         }
-        if !driven.structural.is_empty() {
-            return Some(driven.structural.clone());
+        if let Some(rows) = stage_rows(&driven.structural) {
+            return Some(rows);
         }
         match &driven.semantic {
             SemanticOutcome::Built(_) => None,
-            SemanticOutcome::Diagnostics(diagnostics, _) => Some(diagnostics.clone()),
+            SemanticOutcome::Diagnostics(diagnostics, _) => match diagnostics {
+                BoundedDiagnostics::Complete { rows, .. } => Some(rows.clone()),
+                BoundedDiagnostics::Limited { .. } => Some(Vec::new()),
+            },
             SemanticOutcome::ResourceLimit(..) | SemanticOutcome::Invariant(..) => Some(Vec::new()),
         }
     }
@@ -2706,19 +2843,18 @@ mod driver_agreement {
         let driven = drive(&input, TestMode::Include).expect("test input is drive-admitted");
 
         // The broken module's parse error is recorded.
+        let parse_rows = stage_rows(&driven.parse).expect("the parse stage is non-empty");
         assert!(
-            driven
-                .parse
-                .iter()
-                .any(|d| d.file().as_str() == "src/broken.mw"),
-            "the broken module's parse diagnostic must be recorded: {:?}",
-            driven.parse,
+            parse_rows.iter().any(|d| d.file().as_str() == "src/broken.mw"),
+            "the broken module's parse diagnostic must be recorded: {parse_rows:?}",
         );
 
         // The valid module was analyzed despite the sibling parse error: its own
         // semantic diagnostic reached the semantic stage.
         let semantic = match &driven.semantic {
-            SemanticOutcome::Diagnostics(diagnostics, _) => diagnostics.clone(),
+            SemanticOutcome::Diagnostics(BoundedDiagnostics::Complete { rows, .. }, _) => {
+                rows.clone()
+            }
             _ => panic!("expected semantic diagnostics from the valid module"),
         };
         assert!(
@@ -2730,7 +2866,7 @@ mod driver_agreement {
         // to the historical parse hard-stop.
         assert_eq!(
             compiled(&compile_with_tests(&input)),
-            Some(driven.parse.clone())
+            stage_rows(&driven.parse)
         );
     }
 
@@ -2756,18 +2892,18 @@ mod driver_agreement {
         let driven = drive(&input, TestMode::Include).expect("test input is drive-admitted");
 
         // The broken base module's parse error is recorded.
+        let parse_rows = stage_rows(&driven.parse).expect("the parse stage is non-empty");
         assert!(
-            driven
-                .parse
-                .iter()
-                .any(|d| d.file().as_str() == "src/base.mw")
+            parse_rows.iter().any(|d| d.file().as_str() == "src/base.mw")
         );
 
         // The dependent module is analyzed, and its cross-references to the absent base
         // module reduce to the ordinary missing-module family — no panic, no invariant,
         // no resource limit.
         let semantic = match &driven.semantic {
-            SemanticOutcome::Diagnostics(diagnostics, _) => diagnostics.clone(),
+            SemanticOutcome::Diagnostics(BoundedDiagnostics::Complete { rows, .. }, _) => {
+                rows.clone()
+            }
             _ => panic!("a dependent module must still produce ordinary semantic diagnostics"),
         };
         let dependent: Vec<&SourceDiagnostic> = semantic
@@ -2783,7 +2919,7 @@ mod driver_agreement {
             marrow_codes::Code::CheckType.as_str(),
         ];
         assert!(
-            dependent.iter().all(|d| missing_family.contains(&d.code)),
+            dependent.iter().all(|d| missing_family.contains(&d.code())),
             "a reference to a parse-failed module reduces to the ordinary missing-reference \
              family (check.import / check.type), never a fabricated or invariant code: {dependent:?}",
         );
@@ -2792,7 +2928,7 @@ mod driver_agreement {
         // stage.
         assert_eq!(
             compiled(&compile_with_tests(&input)),
-            Some(driven.parse.clone())
+            stage_rows(&driven.parse)
         );
     }
 }

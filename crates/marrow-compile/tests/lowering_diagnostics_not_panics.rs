@@ -60,7 +60,7 @@ fn rejects_with(source: &str, code: &str) {
         Err(marrow_compile::CompileFailure::Diagnostics(diagnostics)) => assert!(
             diagnostics
                 .iter()
-                .any(|d: &SourceDiagnostic| d.code == code),
+                .any(|d: &SourceDiagnostic| d.code() == code),
             "expected `{code}` for:\n{source}\ngot {diagnostics:#?}",
         ),
         Err(marrow_compile::CompileFailure::ResourceLimit(_)) => {

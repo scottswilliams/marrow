@@ -171,7 +171,7 @@ fn owner_snapshot(registry: &TypeRegistry) -> OwnerSnapshot {
             LimitState::Pending(_) => 1,
             LimitState::Reported => 2,
         },
-        payload_count: generics.collection_payloads.len(),
+        payload_count: generics.collection_payloads.probe_rows().len(),
     }
 }
 
@@ -488,7 +488,7 @@ store ^first[id: int]: First
 store ^second[id: int]: Second
 "#,
     );
-    assert!(parsed.diagnostics.is_empty());
+    assert!(!parsed.has_errors());
     let resources = vec![
         (
             crate::test_file_identity("src/main.mw"),
@@ -510,7 +510,7 @@ store ^second[id: int]: Second
         ),
     ];
     let mut draft = ImageDraft::new();
-    let mut diagnostics = Vec::new();
+    let mut diagnostics = DiagnosticCollector::new();
     let records = TypeRegistry::build(&mut draft, &[], &[], &[], &[], &resources, &mut diagnostics);
     assert!(diagnostics.is_empty());
     let shared = records.by_name("First").expect("First record").fields[0].ty;
@@ -567,7 +567,7 @@ fn invalid_ready_option_argument_stops_before_durable_anchor_resolution() {
     let parsed = marrow_syntax::parse_source(
         "module main\n\nresource Resource {\n    required value: Option<int>\n}\n\nstore ^resources[id: int]: Resource\n",
     );
-    assert!(parsed.diagnostics.is_empty());
+    assert!(!parsed.has_errors());
     let resource = parsed
         .file
         .resource("Resource")
@@ -579,7 +579,7 @@ fn invalid_ready_option_argument_stops_before_durable_anchor_resolution() {
     let resources = vec![(crate::test_file_identity("src/main.mw"), resource)];
     let stores = vec![(crate::test_file_identity("src/main.mw"), store)];
     let mut draft = ImageDraft::new();
-    let mut diagnostics = Vec::new();
+    let mut diagnostics = DiagnosticCollector::new();
     let registry =
         TypeRegistry::build(&mut draft, &[], &[], &[], &[], &resources, &mut diagnostics);
     assert!(diagnostics.is_empty());
@@ -630,7 +630,7 @@ fn invalid_ready_option_argument_stops_before_durable_anchor_resolution() {
 
 fn reserved_registry() -> (TypeRegistry, ImageDraft) {
     let mut draft = ImageDraft::new();
-    let mut diagnostics = Vec::new();
+    let mut diagnostics = DiagnosticCollector::new();
     let registry = TypeRegistry::build(&mut draft, &[], &[], &[], &[], &[], &mut diagnostics);
     assert!(diagnostics.is_empty());
     (registry, draft)

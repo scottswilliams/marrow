@@ -7613,6 +7613,15 @@ mod instantiation_state_tests {
         }
     }
 
+    /// Merge a finished generic transfer into a fresh collector and read the
+    /// complete ordered rows, panicking on a limited terminal (these fixtures
+    /// stay far below the ceilings).
+    fn ordered(outcome: GenericDiagnostics) -> Vec<SourceDiagnostic> {
+        let mut collector = DiagnosticCollector::new();
+        outcome.merge_into(&mut collector);
+        collector.finish().expect_complete()
+    }
+
     fn registry(templates: Vec<TypeTemplate>) -> TypeRegistry {
         TypeRegistry {
             aliases: BTreeMap::new(),
@@ -7652,7 +7661,7 @@ mod instantiation_state_tests {
     #[derive(Debug, PartialEq, Eq)]
     enum StableLimit {
         Open,
-        Pending(SourceDiagnostic),
+        PendingRow(SourceDiagnostic),
         Reported,
     }
 
@@ -7758,7 +7767,7 @@ mod instantiation_state_tests {
             .collect();
         let limit = match &generics.limit {
             LimitState::Open => StableLimit::Open,
-            LimitState::Pending(diagnostic) => StableLimit::Pending(diagnostic.clone()),
+            LimitState::Pending(diagnostic) => StableLimit::PendingRow(diagnostic.clone()),
             LimitState::Reported => StableLimit::Reported,
         };
         StableSnapshot {
@@ -8285,9 +8294,9 @@ mod instantiation_state_tests {
                 .all(|inst| matches!(inst.state, TypeInstState::Rejected(ResolveRefusal::Limit)))
         );
         assert!(registry.generics.borrow().fill_stack.is_empty());
-        let first = registry.take_generic_diagnostics().into_ordered();
+        let first = ordered(registry.take_generic_diagnostics());
         assert_eq!(first.len(), 1);
-        assert_eq!(first[0].code, Code::CheckInstantiationLimit.as_str());
+        assert_eq!(first[0].code(), Code::CheckInstantiationLimit.as_str());
         assert_eq!((first[0].line(), first[0].column()), (10, 9));
         assert_eq!(
             registry.mint_type_instance(&mut draft, 0, &[GArg::Scalar(ScalarType::Int)], site(20),),
@@ -8297,12 +8306,7 @@ mod instantiation_state_tests {
         assert_eq!(generics.type_insts.len(), before);
         assert_eq!(generics.type_insts[0].id, first_row_id);
         drop(generics);
-        assert!(
-            registry
-                .take_generic_diagnostics()
-                .into_ordered()
-                .is_empty()
-        );
+        assert!(ordered(registry.take_generic_diagnostics()).is_empty());
     }
 
     #[test]
@@ -8496,16 +8500,11 @@ mod instantiation_state_tests {
 
         // Only the proof's diagnostics cross back, transferred once in owner order.
         registry.adopt_generic_diagnostics(outcome);
-        let adopted = registry.take_generic_diagnostics().into_ordered();
+        let adopted = ordered(registry.take_generic_diagnostics());
         assert_eq!(adopted.len(), 2);
-        assert_eq!(adopted[0].code, Code::CheckInstantiationLimit.as_str());
-        assert_eq!(adopted[1].code, Code::CheckUnsupported.as_str());
-        assert!(
-            registry
-                .take_generic_diagnostics()
-                .into_ordered()
-                .is_empty()
-        );
+        assert_eq!(adopted[0].code(), Code::CheckInstantiationLimit.as_str());
+        assert_eq!(adopted[1].code(), Code::CheckUnsupported.as_str());
+        assert!(ordered(registry.take_generic_diagnostics()).is_empty());
     }
 
     #[test]
@@ -9455,7 +9454,7 @@ mod instantiation_state_tests {
                 ProofCloneError::LimitOwnerNotOpen
             ))
         ));
-        assert!(matches!(pending.limit, StableLimit::Pending(_)));
+        assert!(matches!(pending.limit, StableLimit::PendingRow(_)));
         assert!(matches!(reported.limit, StableLimit::Reported));
         assert_eq!(stable_snapshot(&registry), reported);
         registry.generics.borrow_mut().limit = LimitState::Open;
@@ -11172,7 +11171,7 @@ store ^holders[id: int]: Holder
 "#,
         ] {
             let parsed = parse_source(source);
-            assert!(parsed.diagnostics.is_empty());
+            assert!(!parsed.has_errors());
             let generic_struct = parsed
                 .file
                 .declarations
@@ -11204,7 +11203,7 @@ store ^holders[id: int]: Holder
             let resources = vec![(crate::test_file_identity("src/main.mw"), resource)];
             let stores = vec![(crate::test_file_identity("src/main.mw"), store)];
             let mut draft = ImageDraft::new();
-            let mut diagnostics = Vec::new();
+            let mut diagnostics = DiagnosticCollector::new();
             let registry = TypeRegistry::build(
                 &mut draft,
                 &[],
@@ -11269,18 +11268,19 @@ store ^holders[id: int]: Holder
             id: TypeInstId::Enum(enum_id),
             body: TypeInstKind::Struct,
         };
-        let mut diagnostics = vec![SourceDiagnostic::at(
+        let mut diagnostics = DiagnosticCollector::new();
+        diagnostics.push(SourceDiagnostic::at(
             Code::CheckType.as_str(),
             crate::test_main_file_identity(),
             SourceSpan::default(),
             "earlier source failure".to_string(),
-        )];
-        let before = diagnostics.clone();
+        ));
+        let before = diagnostics.probe();
 
         assert_eq!(
             reject_value_cycles(&registry, &[], &[], &mut diagnostics),
             Err(expected)
         );
-        assert_eq!(diagnostics, before);
+        assert_eq!(diagnostics.probe(), before);
     }
 }

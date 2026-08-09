@@ -61,7 +61,7 @@ fn the_instantiation_limit_diagnostic_carries_the_real_use_site_file() {
     let produced = diagnostics(vec![("src/library.mw", library), ("src/main.mw", main)]);
     let limit = produced
         .iter()
-        .find(|d| d.code == "check.instantiation_limit")
+        .find(|d| d.code() == "check.instantiation_limit")
         .expect("an instantiation-limit diagnostic");
     let expected = FileIdentity::validate("src/library.mw")
         .expect("canonical identity")

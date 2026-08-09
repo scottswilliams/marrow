@@ -1081,7 +1081,7 @@ mod generic_cache_boundary_tests {
     }
 
     fn generic_enum_registry(draft: &mut ImageDraft) -> TypeRegistry {
-        let mut diagnostics = Vec::new();
+        let mut diagnostics = DiagnosticCollector::new();
         TypeRegistry::build(draft, &[], &[], &[], &[], &[], &mut diagnostics)
     }
 
@@ -1092,7 +1092,7 @@ mod generic_cache_boundary_tests {
 }
 "#,
         );
-        assert!(parsed.diagnostics.is_empty());
+        assert!(!parsed.has_errors());
         let declaration = parsed
             .file
             .declarations
@@ -1102,7 +1102,7 @@ mod generic_cache_boundary_tests {
                 _ => None,
             })
             .expect("generic struct parses");
-        let mut diagnostics = Vec::new();
+        let mut diagnostics = DiagnosticCollector::new();
         let records = TypeRegistry::build(
             draft,
             &[],
@@ -1393,7 +1393,7 @@ mod generic_cache_boundary_tests {
         let functions = FunctionRegistry::default();
         let generics = GenericRegistry::default();
         let consts = ConstRegistry::default();
-        let mut diagnostics = Vec::new();
+        let mut diagnostics = DiagnosticCollector::new();
         let mut dependency_gaps = Vec::new();
         let request_span = SourceSpan {
             start_byte: 40,
@@ -1430,12 +1430,12 @@ mod generic_cache_boundary_tests {
         );
         assert!(lowerer.alloc_slot(request_span).is_none());
         assert!(lowerer.terminal_rejection());
-        assert_eq!(lowerer.diagnostics.len(), 1);
+        assert_eq!(lowerer.diagnostics.probe_rows().len(), 1);
         assert_eq!(
-            lowerer.diagnostics[0].code,
+            lowerer.diagnostics.probe_rows()[0].code(),
             Code::CheckResourceLimit.as_str()
         );
-        assert_eq!(lowerer.diagnostics[0].span(), request_span);
+        assert_eq!(lowerer.diagnostics.probe_rows()[0].span(), request_span);
         assert!(matches!(
             lowerer.finish("rejected", Vec::new(), ImageType::Unit),
             Ok(None)
@@ -1444,7 +1444,7 @@ mod generic_cache_boundary_tests {
         let after = draft.encode().expect("rejected draft still encodes");
         assert_eq!(after.bytes, before.bytes);
         assert_eq!(after.image_id, before.image_id);
-        assert_eq!(diagnostics.len(), 1);
+        assert_eq!(diagnostics.probe_rows().len(), 1);
     }
 
     fn orphan_enum_and_struct(draft: &mut ImageDraft) -> (EnumId, TypeId) {
@@ -1469,7 +1469,7 @@ mod generic_cache_boundary_tests {
         let functions = FunctionRegistry::default();
         let generics = GenericRegistry::default();
         let consts = ConstRegistry::default();
-        let mut diagnostics = Vec::new();
+        let mut diagnostics = DiagnosticCollector::new();
         let mut dependency_gaps = Vec::new();
         let mut lowerer = lowerer(
             &mut draft,
@@ -1534,7 +1534,7 @@ mod generic_cache_boundary_tests {
         let functions = FunctionRegistry::default();
         let generics = GenericRegistry::default();
         let consts = ConstRegistry::default();
-        let mut diagnostics = Vec::new();
+        let mut diagnostics = DiagnosticCollector::new();
         let mut dependency_gaps = Vec::new();
         let mut lowerer = lowerer(
             &mut draft,
@@ -1593,7 +1593,7 @@ mod generic_cache_boundary_tests {
         let functions = FunctionRegistry::default();
         let generics = GenericRegistry::default();
         let consts = ConstRegistry::default();
-        let mut diagnostics = Vec::new();
+        let mut diagnostics = DiagnosticCollector::new();
         let mut dependency_gaps = Vec::new();
         let mut lowerer = lowerer(
             &mut draft,
@@ -1656,7 +1656,7 @@ mod generic_cache_boundary_tests {
         let functions = FunctionRegistry::default();
         let generics = GenericRegistry::default();
         let consts = ConstRegistry::default();
-        let mut diagnostics = Vec::new();
+        let mut diagnostics = DiagnosticCollector::new();
         let mut dependency_gaps = Vec::new();
         let mut lowerer = lowerer(
             &mut draft,
@@ -1734,7 +1734,7 @@ mod generic_cache_boundary_tests {
         let functions = FunctionRegistry::default();
         let generics = GenericRegistry::default();
         let consts = ConstRegistry::default();
-        let mut diagnostics = Vec::new();
+        let mut diagnostics = DiagnosticCollector::new();
         let mut dependency_gaps = Vec::new();
         let mut lowerer = lowerer(
             &mut draft,
@@ -1805,7 +1805,7 @@ mod generic_cache_boundary_tests {
         let functions = FunctionRegistry::default();
         let generics = GenericRegistry::default();
         let consts = ConstRegistry::default();
-        let mut diagnostics = Vec::new();
+        let mut diagnostics = DiagnosticCollector::new();
         let mut dependency_gaps = Vec::new();
         let mut lowerer = lowerer(
             &mut draft,
@@ -1872,7 +1872,7 @@ mod generic_cache_boundary_tests {
         let functions = FunctionRegistry::default();
         let generics = GenericRegistry::default();
         let consts = ConstRegistry::default();
-        let mut diagnostics = Vec::new();
+        let mut diagnostics = DiagnosticCollector::new();
         let mut dependency_gaps = Vec::new();
         let mut lowerer = lowerer(
             &mut draft,
@@ -1944,7 +1944,7 @@ mod generic_cache_boundary_tests {
         let functions = FunctionRegistry::default();
         let generics = GenericRegistry::default();
         let consts = ConstRegistry::default();
-        let mut diagnostics = Vec::new();
+        let mut diagnostics = DiagnosticCollector::new();
         let mut dependency_gaps = Vec::new();
         let mut lowerer = lowerer(
             &mut draft,
@@ -2019,7 +2019,7 @@ mod generic_cache_boundary_tests {
         let functions = FunctionRegistry::default();
         let generics = GenericRegistry::default();
         let consts = ConstRegistry::default();
-        let mut diagnostics = Vec::new();
+        let mut diagnostics = DiagnosticCollector::new();
         let mut dependency_gaps = Vec::new();
         let mut lowerer = lowerer(
             &mut draft,
@@ -2102,7 +2102,7 @@ mod generic_cache_boundary_tests {
         let functions = FunctionRegistry::default();
         let generics = GenericRegistry::default();
         let consts = ConstRegistry::default();
-        let mut diagnostics = Vec::new();
+        let mut diagnostics = DiagnosticCollector::new();
         let mut dependency_gaps = Vec::new();
         let mut lowerer = lowerer(
             &mut draft,
@@ -2164,7 +2164,7 @@ mod generic_cache_boundary_tests {
         let functions = FunctionRegistry::default();
         let generics = GenericRegistry::default();
         let consts = ConstRegistry::default();
-        let mut diagnostics = Vec::new();
+        let mut diagnostics = DiagnosticCollector::new();
         let mut dependency_gaps = Vec::new();
         let mut lowerer = lowerer(
             &mut draft,
@@ -2254,7 +2254,7 @@ mod generic_cache_boundary_tests {
         let functions = FunctionRegistry::default();
         let generics = GenericRegistry::default();
         let consts = ConstRegistry::default();
-        let mut diagnostics = Vec::new();
+        let mut diagnostics = DiagnosticCollector::new();
         let mut dependency_gaps = Vec::new();
         let mut lowerer = lowerer(
             &mut draft,
@@ -2333,7 +2333,7 @@ mod generic_cache_boundary_tests {
         let functions = FunctionRegistry::default();
         let generics = GenericRegistry::default();
         let consts = ConstRegistry::default();
-        let mut diagnostics = Vec::new();
+        let mut diagnostics = DiagnosticCollector::new();
         let mut dependency_gaps = Vec::new();
         let mut lowerer = lowerer(
             &mut draft,

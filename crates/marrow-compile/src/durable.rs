@@ -1933,7 +1933,7 @@ mod generic_enum_shape_tests {
     #[test]
     fn ready_option_reaches_the_durable_enum_shape_owner() {
         let mut draft = ImageDraft::new();
-        let mut build_diagnostics = Vec::new();
+        let mut build_diagnostics = DiagnosticCollector::new();
         let records =
             TypeRegistry::build(&mut draft, &[], &[], &[], &[], &[], &mut build_diagnostics);
         assert!(build_diagnostics.is_empty());
@@ -1952,7 +1952,7 @@ mod generic_enum_shape_tests {
             )
             .expect("Ready Option mints");
 
-        let mut diagnostics = Vec::new();
+        let mut diagnostics = DiagnosticCollector::new();
         let mut reported_identity_gaps = BTreeSet::new();
         let mut resolver = IdentityResolver::new(
             crate::test_main_file_identity(),
@@ -1984,11 +1984,16 @@ mod generic_enum_shape_tests {
             "the test intentionally supplies no ledger"
         );
         drop(resolver);
-        assert_eq!(diagnostics.len(), 3, "sum plus two member identity gaps");
+        assert_eq!(
+            diagnostics.probe_rows().len(),
+            3,
+            "sum plus two member identity gaps"
+        );
         assert!(
             diagnostics
+                .probe_rows()
                 .iter()
-                .all(|diagnostic| diagnostic.code == Code::CheckDurableIdentity.as_str())
+                .all(|diagnostic| diagnostic.code() == Code::CheckDurableIdentity.as_str())
         );
     }
 
@@ -1997,7 +2002,7 @@ mod generic_enum_shape_tests {
     #[test]
     fn unavailable_enum_stops_before_durable_identity_resolution() {
         let mut draft = ImageDraft::new();
-        let mut build_diagnostics = Vec::new();
+        let mut build_diagnostics = DiagnosticCollector::new();
         let records =
             TypeRegistry::build(&mut draft, &[], &[], &[], &[], &[], &mut build_diagnostics);
         assert!(build_diagnostics.is_empty());
@@ -2006,7 +2011,7 @@ mod generic_enum_shape_tests {
             name,
             variants: Vec::new(),
         });
-        let mut diagnostics = Vec::new();
+        let mut diagnostics = DiagnosticCollector::new();
         let mut reported_identity_gaps = BTreeSet::new();
         let mut resolver = IdentityResolver::new(
             crate::test_main_file_identity(),
@@ -2030,15 +2035,18 @@ mod generic_enum_shape_tests {
         assert!(!resolver.complete);
         assert!(resolver.seen_enums.is_empty());
         drop(resolver);
-        assert_eq!(diagnostics.len(), 1);
-        assert_eq!(diagnostics[0].code, Code::CheckUnsupported.as_str());
-        assert!(diagnostics[0].identity.is_none());
+        assert_eq!(diagnostics.probe_rows().len(), 1);
+        assert_eq!(
+            diagnostics.probe_rows()[0].code(),
+            Code::CheckUnsupported.as_str()
+        );
+        assert!(diagnostics.probe_rows()[0].identity_gap().is_none());
     }
 
     #[test]
     fn ready_enum_with_struct_body_is_not_contextualized_or_resolved() {
         let mut draft = ImageDraft::new();
-        let mut build_diagnostics = Vec::new();
+        let mut build_diagnostics = DiagnosticCollector::new();
         let records =
             TypeRegistry::build(&mut draft, &[], &[], &[], &[], &[], &mut build_diagnostics);
         let option = records
@@ -2055,7 +2063,7 @@ mod generic_enum_shape_tests {
             id: TypeInstId::Enum(option),
             body: TypeInstKind::Struct,
         };
-        let mut diagnostics = Vec::new();
+        let mut diagnostics = DiagnosticCollector::new();
         let mut reported_identity_gaps = BTreeSet::new();
         let mut resolver = IdentityResolver::new(
             crate::test_main_file_identity(),
@@ -2086,7 +2094,7 @@ mod generic_enum_shape_tests {
 store ^holders[id: int]: Holder
 "#,
         );
-        assert!(parsed.diagnostics.is_empty());
+        assert!(!parsed.has_errors());
         let resource = parsed
             .file
             .declarations
@@ -2098,7 +2106,7 @@ store ^holders[id: int]: Holder
             .expect("resource parses");
         let resources = vec![(crate::test_file_identity("src/main.mw"), resource)];
         let mut draft = ImageDraft::new();
-        let mut diagnostics = Vec::new();
+        let mut diagnostics = DiagnosticCollector::new();
         let records =
             TypeRegistry::build(&mut draft, &[], &[], &[], &[], &resources, &mut diagnostics);
         assert!(diagnostics.is_empty());

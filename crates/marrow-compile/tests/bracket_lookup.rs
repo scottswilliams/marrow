@@ -40,7 +40,7 @@ fn compile_err(source: &str) -> Vec<SourceDiagnostic> {
 fn first_of(diagnostics: &[SourceDiagnostic], code: &str) -> SourceDiagnostic {
     diagnostics
         .iter()
-        .find(|diagnostic| diagnostic.code == code)
+        .find(|diagnostic| diagnostic.code() == code)
         .unwrap_or_else(|| panic!("no `{code}` diagnostic in {diagnostics:#?}"))
         .clone()
 }
@@ -90,16 +90,16 @@ fn a_literal_dead_list_index_is_a_teaching_check_type() {
         // leads, the governing law follows, the canonical first position closes.
         assert!(
             diagnostic
-                .message
+                .message()
                 .starts_with(&format!("`xs[{index}]` names no list position")),
             "dead index {index}: {}",
-            diagnostic.message
+            diagnostic.message()
         );
         assert!(
-            diagnostic.message.contains("List positions count from 1")
-                && diagnostic.message.contains("`xs[1]`"),
+            diagnostic.message().contains("List positions count from 1")
+                && diagnostic.message().contains("`xs[1]`"),
             "dead index {index}: {}",
-            diagnostic.message
+            diagnostic.message()
         );
     }
 }
@@ -133,10 +133,10 @@ fn a_map_bracket_write_needs_a_var_binding() {
     ));
     let diagnostic = first_of(&diagnostics, "check.type");
     assert!(
-        diagnostic.message.contains("`const`")
-            && diagnostic.message.contains("cannot be reassigned"),
+        diagnostic.message().contains("`const`")
+            && diagnostic.message().contains("cannot be reassigned"),
         "{}",
-        diagnostic.message
+        diagnostic.message()
     );
 }
 
@@ -151,15 +151,15 @@ fn a_list_keyed_write_is_a_teaching_check_type() {
     // Fact-first: the list is named in source spelling, the law follows, and the fix
     // names the user's own right-hand side (`9`) with the canonical spellings.
     assert!(
-        diagnostic.message.starts_with("`xs` is a list"),
+        diagnostic.message().starts_with("`xs` is a list"),
         "{}",
-        diagnostic.message
+        diagnostic.message()
     );
     assert!(
-        diagnostic.message.contains("append(xs, 9)")
-            && diagnostic.message.contains("Map<int, int>"),
+        diagnostic.message().contains("append(xs, 9)")
+            && diagnostic.message().contains("Map<int, int>"),
         "{}",
-        diagnostic.message
+        diagnostic.message()
     );
 }
 
@@ -178,9 +178,9 @@ fn a_map_bracket_unset_needs_a_var_binding() {
     ));
     let diagnostic = first_of(&diagnostics, "check.type");
     assert!(
-        diagnostic.message.contains("`const`") && diagnostic.message.contains("cannot be modified"),
+        diagnostic.message().contains("`const`") && diagnostic.message().contains("cannot be modified"),
         "{}",
-        diagnostic.message
+        diagnostic.message()
     );
 }
 
@@ -193,14 +193,14 @@ fn a_list_bracket_unset_is_a_teaching_check_type() {
     ));
     let diagnostic = first_of(&diagnostics, "check.type");
     assert!(
-        diagnostic.message.starts_with("`xs` is a list"),
+        diagnostic.message().starts_with("`xs` is a list"),
         "{}",
-        diagnostic.message
+        diagnostic.message()
     );
     assert!(
-        diagnostic.message.contains("Map<int, int>"),
+        diagnostic.message().contains("Map<int, int>"),
         "{}",
-        diagnostic.message
+        diagnostic.message()
     );
 }
 
@@ -215,9 +215,9 @@ fn get_and_insert_are_deleted_but_shadowable() {
         )));
         let diagnostic = first_of(&diagnostics, "check.type");
         assert!(
-            diagnostic.message.contains("not in scope"),
+            diagnostic.message().contains("not in scope"),
             "{name}: {}",
-            diagnostic.message
+            diagnostic.message()
         );
     }
     compile_ok(&wrap(
@@ -243,17 +243,17 @@ fn equality_against_absent_steers_to_the_presence_forms() {
         // names the canonical presence forms.
         assert!(
             diagnostic
-                .message
+                .message()
                 .starts_with("`absent` is not an operand of"),
             "{op}: {}",
-            diagnostic.message
+            diagnostic.message()
         );
         assert!(
-            diagnostic.message.contains("if const")
-                && diagnostic.message.contains("??")
-                && diagnostic.message.contains("exists("),
+            diagnostic.message().contains("if const")
+                && diagnostic.message().contains("??")
+                && diagnostic.message().contains("exists("),
             "{op}: {}",
-            diagnostic.message
+            diagnostic.message()
         );
     }
 }

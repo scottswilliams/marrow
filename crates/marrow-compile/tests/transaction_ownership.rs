@@ -90,12 +90,12 @@ fn line_of(ops: &str, needle: &str) -> u32 {
 fn an_empty_transaction_is_rejected_at_the_block() {
     let ops = "pub fn emptyRegion() {\n    transaction {\n    }\n}\n";
     let diagnostic = only(ops);
-    assert_eq!(diagnostic.code, "check.transaction_empty");
+    assert_eq!(diagnostic.code(), "check.transaction_empty");
     assert_eq!(diagnostic.line(), line_of(ops, "transaction {"));
     assert!(
-        diagnostic.message.contains("no durable operation"),
+        diagnostic.message().contains("no durable operation"),
         "steers to the empty-region remedy: {}",
-        diagnostic.message
+        diagnostic.message()
     );
 }
 
@@ -105,11 +105,11 @@ fn an_empty_transaction_is_rejected_at_the_block() {
 fn a_second_region_reopens_an_owned_transaction() {
     let ops = "pub fn twoRegions(id: int, v: int) {\n    transaction {\n        ^counters[id] = Counter(value: v)\n    }\n    transaction {\n        ^counters[id].value = v\n    }\n}\n";
     let diagnostic = only(ops);
-    assert_eq!(diagnostic.code, "check.transaction_reopened");
+    assert_eq!(diagnostic.code(), "check.transaction_reopened");
     assert!(
-        diagnostic.message.contains("exactly once") || diagnostic.message.contains("single"),
+        diagnostic.message().contains("exactly once") || diagnostic.message().contains("single"),
         "steers to the one-region remedy: {}",
-        diagnostic.message
+        diagnostic.message()
     );
 }
 
@@ -119,12 +119,12 @@ fn a_second_region_reopens_an_owned_transaction() {
 fn an_early_return_before_the_region_is_uncommitted() {
     let ops = "pub fn maybeSet(id: int, v: int, skip: bool) {\n    if skip {\n        return\n    }\n    transaction {\n        ^counters[id] = Counter(value: v)\n    }\n}\n";
     let diagnostic = only(ops);
-    assert_eq!(diagnostic.code, "check.transaction_uncommitted");
+    assert_eq!(diagnostic.code(), "check.transaction_uncommitted");
     assert!(
-        diagnostic.message.contains("commit site")
-            || diagnostic.message.contains("without committing"),
+        diagnostic.message().contains("commit site")
+            || diagnostic.message().contains("without committing"),
         "steers to spelling the exit as an in-region return: {}",
-        diagnostic.message
+        diagnostic.message()
     );
 }
 
@@ -134,16 +134,16 @@ fn an_early_return_before_the_region_is_uncommitted() {
 fn a_durable_read_after_commit_is_rejected() {
     let ops = "pub fn setAndGet(id: int, v: int): int? {\n    transaction {\n        ^counters[id] = Counter(value: v)\n    }\n    return ^counters[id].value\n}\n";
     let diagnostic = only(ops);
-    assert_eq!(diagnostic.code, "check.durable_after_commit");
+    assert_eq!(diagnostic.code(), "check.durable_after_commit");
     assert_eq!(
         diagnostic.line(),
         line_of(ops, "return ^counters[id].value")
     );
     assert!(
-        diagnostic.message.contains("after the `transaction`")
-            || diagnostic.message.contains("consumes"),
+        diagnostic.message().contains("after the `transaction`")
+            || diagnostic.message().contains("consumes"),
         "steers to moving the read inside the region: {}",
-        diagnostic.message
+        diagnostic.message()
     );
 }
 
@@ -157,13 +157,13 @@ fn a_durable_read_after_commit_is_rejected() {
 fn calling_a_transaction_owner_is_rejected() {
     let ops = "pub fn owner(id: int, v: int) {\n    transaction {\n        ^counters[id] = Counter(value: v)\n    }\n}\n\npub fn driver(id: int, v: int) {\n    owner(id, v)\n}\n";
     let diagnostic = only(ops);
-    assert_eq!(diagnostic.code, "check.transaction_owner_called");
+    assert_eq!(diagnostic.code(), "check.transaction_owner_called");
     assert_eq!(diagnostic.line(), line_of(ops, "owner(id, v)\n}"));
     assert!(
-        diagnostic.message.contains("`owner`")
-            && diagnostic.message.contains("invocation boundary"),
+        diagnostic.message().contains("`owner`")
+            && diagnostic.message().contains("invocation boundary"),
         "names the owner and the boundary rule: {}",
-        diagnostic.message
+        diagnostic.message()
     );
 }
 
@@ -177,14 +177,14 @@ fn calling_a_transaction_owner_is_rejected() {
 fn a_helper_owning_a_region_is_rejected() {
     let ops = "fn helperOwns(id: int, v: int) {\n    transaction {\n        ^counters[id] = Counter(value: v)\n    }\n}\n";
     let diagnostic = only(ops);
-    assert_eq!(diagnostic.code, "check.transaction_misplaced");
+    assert_eq!(diagnostic.code(), "check.transaction_misplaced");
     assert!(
         diagnostic
-            .message
+            .message()
             .contains("only in the export that owns it")
-            || diagnostic.message.contains("owning export"),
+            || diagnostic.message().contains("owning export"),
         "steers to moving the block to the owner: {}",
-        diagnostic.message
+        diagnostic.message()
     );
 }
 
@@ -199,11 +199,11 @@ fn a_helper_owning_a_region_is_rejected() {
 fn a_try_crossing_an_owned_region_is_rejected() {
     let ops = "fn check(v: int): Result<int, string> {\n    if v > 0 {\n        return ok(v)\n    }\n    return err(\"value must be positive\")\n}\n\npub fn setChecked(id: int, v: int): Result<int, string> {\n    transaction {\n        const w = try check(v)\n        ^counters[id] = Counter(value: w)\n    }\n    return ok(v)\n}\n";
     let diagnostic = only(ops);
-    assert_eq!(diagnostic.code, "check.transaction_uncommitted");
+    assert_eq!(diagnostic.code(), "check.transaction_uncommitted");
     assert!(
-        diagnostic.message.contains("try") && diagnostic.message.contains("commit"),
+        diagnostic.message().contains("try") && diagnostic.message().contains("commit"),
         "names `try` and the commit rule: {}",
-        diagnostic.message
+        diagnostic.message()
     );
 }
 
@@ -219,17 +219,17 @@ fn a_try_crossing_an_owned_region_is_rejected() {
 fn a_require_inside_an_owned_region_is_rejected() {
     let ops = "pub fn setChecked(id: int, v: int): Result<int, string> {\n    transaction {\n        require v > 0 else \"value must be positive\"\n        ^counters[id] = Counter(value: v)\n        return ok(v)\n    }\n}\n";
     let diagnostic = only(ops);
-    assert_eq!(diagnostic.code, "check.transaction_uncommitted");
+    assert_eq!(diagnostic.code(), "check.transaction_uncommitted");
     assert_eq!(
         diagnostic.line(),
         line_of(ops, "require v > 0"),
         "reported at the `require`: {}",
-        diagnostic.message
+        diagnostic.message()
     );
     assert!(
-        diagnostic.message.contains("commit"),
+        diagnostic.message().contains("commit"),
         "names the commit rule: {}",
-        diagnostic.message
+        diagnostic.message()
     );
 }
 
@@ -240,12 +240,12 @@ fn a_require_inside_an_owned_region_is_rejected() {
 fn a_require_before_an_owned_region_is_rejected() {
     let ops = "pub fn setChecked(id: int, v: int): Result<int, string> {\n    require v > 0 else \"value must be positive\"\n    transaction {\n        ^counters[id] = Counter(value: v)\n        return ok(v)\n    }\n}\n";
     let diagnostic = only(ops);
-    assert_eq!(diagnostic.code, "check.transaction_uncommitted");
+    assert_eq!(diagnostic.code(), "check.transaction_uncommitted");
     assert_eq!(
         diagnostic.line(),
         line_of(ops, "require v > 0"),
         "reported at the `require`: {}",
-        diagnostic.message
+        diagnostic.message()
     );
 }
 
@@ -256,7 +256,7 @@ fn a_require_before_an_owned_region_is_rejected() {
 fn a_require_inside_a_nested_region_is_still_refused() {
     let ops = "pub fn setChecked(id: int, v: int): Result<int, string> {\n    transaction {\n        transaction {\n            require v > 0 else \"value must be positive\"\n            ^counters[id] = Counter(value: v)\n            return ok(v)\n        }\n    }\n}\n";
     let diagnostic = only(ops);
-    assert_eq!(diagnostic.code, "check.transaction_reopened");
+    assert_eq!(diagnostic.code(), "check.transaction_reopened");
 }
 
 /// A `try` and a `require` both inside an owned region: the tape is scanned in
@@ -266,12 +266,12 @@ fn a_require_inside_a_nested_region_is_still_refused() {
 fn try_then_require_inside_a_region_reports_the_earliest_exit() {
     let ops = "fn check(v: int): Result<int, string> {\n    if v > 0 {\n        return ok(v)\n    }\n    return err(\"value must be positive\")\n}\n\npub fn setChecked(id: int, v: int): Result<int, string> {\n    transaction {\n        const w = try check(v)\n        require w < 100 else \"value too large\"\n        ^counters[id] = Counter(value: w)\n        return ok(w)\n    }\n}\n";
     let diagnostic = only(ops);
-    assert_eq!(diagnostic.code, "check.transaction_uncommitted");
+    assert_eq!(diagnostic.code(), "check.transaction_uncommitted");
     assert_eq!(
         diagnostic.line(),
         line_of(ops, "const w = try check(v)"),
         "the earliest exit is reported: {}",
-        diagnostic.message
+        diagnostic.message()
     );
 }
 

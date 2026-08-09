@@ -51,23 +51,23 @@ fn a_reference_to_an_admission_failed_root_is_steered_to_the_identity_reports() 
 
     let steering = diagnostics
         .iter()
-        .find(|d| d.file().as_str() == "src/report.mw" && d.code == "check.type")
+        .find(|d| d.file().as_str() == "src/report.mw" && d.code() == "check.type")
         .unwrap_or_else(|| panic!("expected a reference-site diagnostic, got {diagnostics:#?}"));
     assert_eq!(
-        steering.message,
+        steering.message(),
         "`members` was declared but failed identity admission; see the \
          `check.durable_identity` reports",
         "the reference site names the admission failure, not a bare unknown name",
     );
     assert!(
-        !steering.message.contains("is not in scope"),
+        !steering.message().contains("is not in scope"),
         "an admission-failed root must not read as an unknown name: {}",
-        steering.message,
+        steering.message(),
     );
     assert!(
         diagnostics
             .iter()
-            .any(|d| d.code == "check.durable_identity"),
+            .any(|d| d.code() == "check.durable_identity"),
         "the primary identity gaps are still reported: {diagnostics:#?}",
     );
 }
@@ -89,7 +89,7 @@ fn the_steering_holds_within_the_declaring_module() {
     assert!(
         diagnostics
             .iter()
-            .any(|d| d.code == "check.type" && d.message.contains("failed identity admission")),
+            .any(|d| d.code() == "check.type" && d.message().contains("failed identity admission")),
         "the declaring module's own reference is steered too: {diagnostics:#?}",
     );
 }
@@ -109,13 +109,13 @@ fn a_genuinely_undeclared_root_keeps_the_unknown_name_message() {
     assert!(
         diagnostics
             .iter()
-            .any(|d| d.code == "check.type" && d.message == "`ghosts` is not in scope"),
+            .any(|d| d.code() == "check.type" && d.message() == "`ghosts` is not in scope"),
         "an undeclared root is a plain unknown name: {diagnostics:#?}",
     );
     assert!(
         diagnostics
             .iter()
-            .all(|d| !d.message.contains("`ghosts` was declared")),
+            .all(|d| !d.message().contains("`ghosts` was declared")),
         "an undeclared root never claims to have been declared: {diagnostics:#?}",
     );
 }
@@ -144,7 +144,7 @@ fn a_dropped_root_referenced_from_a_generic_and_an_ordinary_function_steers_once
     assert_eq!(
         diagnostics
             .iter()
-            .filter(|d| d.code == "check.type" && d.message.contains("failed identity admission"))
+            .filter(|d| d.code() == "check.type" && d.message().contains("failed identity admission"))
             .count(),
         1,
         "one steer per dropped root, not one per reference site: {diagnostics:#?}",

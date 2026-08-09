@@ -41,7 +41,7 @@ fn assert_source_resource_limit(result: Result<impl std::fmt::Debug, CompileFail
             assert!(
                 diagnostics
                     .iter()
-                    .any(|diagnostic| diagnostic.code == "check.resource_limit"
+                    .any(|diagnostic| diagnostic.code() == "check.resource_limit"
                         && diagnostic.file().as_str() == "src/main.mw"),
                 "expected a check.resource_limit at src/main.mw, got {:#?}",
                 diagnostics.as_slice(),
@@ -141,7 +141,7 @@ fn assert_exact_local_limit(
         "the first rejected slot request emits exactly one diagnostic: {diagnostics:#?}",
     );
     let diagnostic: &SourceDiagnostic = &diagnostics[0];
-    assert_eq!(diagnostic.code, "check.resource_limit");
+    assert_eq!(diagnostic.code(), "check.resource_limit");
     assert_eq!(diagnostic.file().as_str(), "src/main.mw");
     assert_eq!(diagnostic.span(), span);
 }
@@ -266,7 +266,7 @@ fn diagnostic_codes(result: Result<impl std::fmt::Debug, CompileFailure>) -> Vec
             );
             diagnostics
                 .iter()
-                .map(|diagnostic| diagnostic.code)
+                .map(|diagnostic| diagnostic.code())
                 .collect()
         }
         Err(other) => panic!("expected source diagnostics, got {other:?}"),

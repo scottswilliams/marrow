@@ -307,8 +307,9 @@ fn the_analysis_union_orders_parse_rows_before_semantic_rows() {
     let rows = diagnostics(&input);
     assert_eq!(rows.len(), 2, "production projects the parse stage");
 
-    let snapshot =
-        analyze(Arc::new(input), InputRevision::new(12)).expect("the union stays bounded");
+    let Ok(snapshot) = analyze(Arc::new(input), InputRevision::new(12)) else {
+        panic!("the union stays bounded");
+    };
     let files: Vec<&str> = snapshot
         .diagnostics()
         .iter()
