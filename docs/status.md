@@ -77,7 +77,10 @@ server (`marrow-lsp`); and the `marrow` CLI. The
   test`. A source diagnostic or artifact rejection fails CI. Contextual and
   deliberately future examples use `text` fences. The `marrow-syntax` corpus
   proves the same complete sources parse and format.
-- Linux and macOS source builds with the pinned Rust toolchain.
+- Linux and macOS source builds with the pinned Rust toolchain. Opening a
+  persistent store additionally requires macOS, or Linux on `x86_64` or
+  `aarch64`; any other target builds, runs storeless commands, and refuses a
+  store open at run time naming its platform.
 
 ### Storage engine
 

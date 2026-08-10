@@ -35,6 +35,62 @@ open and commit recovery use existing-only operations. A missing file remains ab
 unstamped, foreign, dangling, or unreadable file is refused rather than created
 or adopted.
 
+## Owner lock, in two phases
+
+An existing-store open is split so that nothing above the storage layer has to
+read a byte of the store directory to decide exclusion.
+
+Acquisition canonicalizes the directory, opens the `lock` entry as that
+directory's own regular file — a link or another node kind standing in for it is
+refused, and the opened node is compared against the entry the directory names —
+and takes the advisory lock. It makes no engine call and is not told which store
+instance it is about to hold. It returns an affine pending owner. Whether the
+entry is reachable under a second name is admitted *after* the lock: a second
+link does not divide exclusion, so refusing on it earlier would convert a
+contender's exclusion verdict into an I/O refusal.
+
+Binding publishes the store instance the caller has since read, runs the
+caller's zero-capability admission callback, and opens (and, when the prior
+shutdown was unclean, fully audits) the existing engine under the same lock.
+Dropping a pending owner instead releases the lock and preserves whatever unclean
+obligation it inherited.
+
+A contender that meets a live holder is told the store is locked, and the
+holder's marker bytes only decide how precisely the holder is named. The marker
+records a lock held before its store is known (`Pending`: magic, layout version,
+state tag, pid, acquisition time) or one bound to it (`Bound`: the same fields
+plus the 16-byte store instance); the bound layout this replaced, which carried
+no state tag, is still read. Any other byte string names no owner and changes no
+verdict, and the decoder reaches every byte through a checked lookup so that a
+length it does not expect reaches a verdict rather than an abort.
+
+The `lock` entry is not a completeness signal: provision does not write it, the
+first open creates it, and from then on it persists — empty after a clean close,
+carrying the crashed holder's descriptor after an unclean one, which is the
+inherited obligation the next acquisition discharges only by a completed open
+and clean close.
+
+## Owner-held artifact admission
+
+`marrow-lifecycle` reads the store directory's own `envelope` and `head` only
+under that owner, from a directory descriptor retained across the whole
+admission (`marrow-fs-journal`, the workspace's sole owner of descriptor-rooted
+filesystem operations). Each child is opened from that descriptor without
+following a link, must be a regular file reachable under exactly one name, and
+is bounded before allocation by the exact ceiling the version in its own
+five-byte prefix selects; identity, length, and the directory's mapping of the
+name are rechecked before the bytes reach a decoder. A version this build does
+not read is refused at the prefix, with no body read.
+
+Two paths into the same directory are outside that protocol and are resolved by
+path: `store.redb`, which the storage layer opens as part of holding the engine,
+and the `lock` entry it owns.
+
+Because those descriptor-rooted operations are provided on macOS, and on Linux
+for `x86_64` and `aarch64`, a store open on any other target refuses with a typed
+unqualified-platform refusal naming the operating system and architecture. The
+build itself is not narrowed.
+
 ## Commit witness and recovery
 
 The path kernel owns one bounded witness cell. A new witness is a version tag

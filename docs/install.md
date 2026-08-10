@@ -12,6 +12,13 @@ revision that contains the documentation you are reading.
 
 Other operating systems are not supported by the current source build.
 
+Opening a persistent store is narrower than the build. A store open performs
+descriptor-rooted filesystem operations that the current source provides on
+macOS, and on Linux for the `x86_64` and `aarch64` architectures. A build for
+any other target still compiles and still runs storeless commands; an attempt to
+open a store refuses at run time, naming the operating system and architecture
+it refused on.
+
 ## Install The Command
 
 ```sh

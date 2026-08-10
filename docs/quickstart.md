@@ -8,7 +8,9 @@ growing; the [status](status.md) page states what is current.
 ## Build the command
 
 Marrow builds from source with the pinned Rust toolchain (Rust 1.89) on Linux or
-macOS. See [Install from source](install.md) for the requirements.
+macOS. The durable half of this page — provisioning and opening a store —
+additionally requires macOS, or Linux on `x86_64` or `aarch64`. See
+[Install from source](install.md) for the requirements.
 
 ```sh
 git clone https://github.com/scottswilliams/marrow

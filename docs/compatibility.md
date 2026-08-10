@@ -7,8 +7,12 @@ A future release must identify both its version and source revision.
 ## Current Build Boundary
 
 The workspace package version is `0.1.0`, uses Rust 1.89, and currently supports
-source builds on Linux and macOS. There is no `v0.1.0` release tag, crates.io
-publication, signed binary, or prebuilt distribution.
+source builds on Linux and macOS. Opening a persistent store is narrower than
+the build: the descriptor-rooted filesystem operations a store open performs are
+provided on macOS, and on Linux for `x86_64` and `aarch64`. Any other target
+builds and runs storeless commands, and refuses a store open at run time naming
+the operating system and architecture. There is no `v0.1.0` release tag,
+crates.io publication, signed binary, or prebuilt distribution.
 
 `marrow --version` prints the package version and an engine-profile tuple. The
 tuple identifies storage layout facts used by the current binary; it is not a
