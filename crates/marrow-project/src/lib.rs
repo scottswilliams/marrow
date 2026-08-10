@@ -30,9 +30,9 @@ pub use identity::{
     SourcePathReason,
 };
 pub use ids::{
-    DurableIdentityId, IDS_FILE, IdentityAnchor, IdentityKind, IdentityLedger, IdentityMintFailure,
-    IdentityMutationError, IdentityTombstone, IdsError, IdsErrorKind, LEGACY_IDS_FILE,
-    LedgerExpectedArtifact, LedgerPublicationPlan, LedgerPublicationView, MAX_IDS_BYTES,
-    MAX_IDS_ROWS, META_DIR,
+    DurableIdentityId, IDS_ENTRY, IDS_FILE, IdentityAnchor, IdentityKind, IdentityLedger,
+    IdentityMintFailure, IdentityMutationError, IdentityTombstone, IdsError, IdsErrorKind,
+    LEGACY_IDS_FILE, LedgerExpectedArtifact, LedgerPublicationPlan, LedgerPublicationView,
+    MAX_IDS_BYTES, MAX_IDS_ROWS, META_DIR,
 };
 pub use manifest::{Edition, Manifest, ManifestError, ManifestErrorKind, Position};

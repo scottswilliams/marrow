@@ -10,11 +10,11 @@ path-derived source names have one owner and one meaning.
 ```text
 my_app/
   marrow.toml      manifest (required)
-  .marrow/         committed project metadata (machine-written)
-    ids            durable-identity ledger (present only when the project
-                   declares durable data)
-    publish.lock   zero-byte entry the tools lock while writing metadata
-                   (present once the project has published a ledger)
+  .marrow/         project metadata (machine-written)
+    ids            durable-identity ledger, committed (present only when the
+                   project declares durable data)
+    publish.lock   zero-byte entry the tools lock while writing metadata;
+                   machine-local, never committed
   src/             source root (required for any source file)
     main.mw        path-derived name `main`
     shelf/
@@ -22,11 +22,23 @@ my_app/
 ```
 
 `.marrow` is the project's behind-the-scenes metadata directory. It holds
-committed machine-written artifacts only — today, the identity ledger and the
-zero-byte `publish.lock` the tools lock while writing metadata. Commit the
-directory with the source, like `.github`; caches and stores never live in it,
-so it is never ignored. Developers do not read or edit its contents. A project
-that has never published a ledger has no `.marrow` directory at all.
+machine-written artifacts only, and developers do not read or edit its contents.
+Exactly one of them is committed: the identity ledger `.marrow/ids`, which is
+part of the program and travels with the source. Everything else in the
+directory is machine-local runtime state that no checkout carries — today the
+zero-byte `publish.lock` the tools lock while writing metadata. Add one line to
+the project's `.gitignore`:
+
+```text
+.marrow/publish.lock
+```
+
+A lock that travelled with a checkout would be worse than absent: an ordinary
+Git operation that deletes and recreates a tracked entry replaces the inode, and
+a holder of the replaced inode would exclude nobody. Caches and stores never
+live in `.marrow` either. The directory appears when a command first writes
+project metadata; a project that has published no ledger and taken no metadata
+lock has no `.marrow` directory at all.
 
 Source lives under the fixed `src` directory. Every `.mw` file under `src` is
 captured; nothing outside `src` is captured. A project needs no `src` directory
@@ -139,6 +151,14 @@ byte-for-byte the state the plan was admitted against, then publishes through a
 crash-recoverable protocol. A plan admitted against a generation another writer
 has since replaced is refused without installing anything, so the binding is a
 stale-publication refusal.
+
+Because `publish.lock` is never committed, a fresh clone reaches its first
+publication with the lock absent, which is the ordinary case: taking the write
+lock creates `.marrow` and the lock entry when either is missing. Two commands
+racing that first publication are still serialized — the lock entry is opened
+rather than exclusively created, so the process that loses the race locks the
+same entry the winner created and reports `io.write` naming the contended write
+lock, never a half-published ledger.
 
 Publication is serialized and crash-recoverable. The successor is written and
 synced to the fixed `.marrow/ids.publish.stage`, a durable marker is claimed at

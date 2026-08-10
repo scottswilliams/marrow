@@ -528,3 +528,36 @@ fn the_external_inventory_is_unchanged_from_the_clean_tree() {
         "the external (name, version, checksum, license) inventory drifted from the clean tree (source is asserted separately as the one registry)"
     );
 }
+
+/// The cooperative project-metadata write lock is machine-local runtime state,
+/// so no checkout carries it. This pins the repository ignore entry and the
+/// absence of a tracked lock: a tracked lock would be deleted and recreated by
+/// ordinary Git operations, replacing the inode a holder is excluding on.
+#[test]
+fn the_cooperative_write_lock_is_never_committed() {
+    let root = workspace_root();
+    let ignore = read(&root, ".gitignore");
+    assert!(
+        ignore
+            .lines()
+            .any(|line| line.trim() == "**/.marrow/publish.lock"),
+        "the repository must ignore the machine-local `.marrow/publish.lock` at any depth"
+    );
+
+    // Tracked-file evidence needs a repository; a source tarball has none, and
+    // the ignore entry above is the gate either way.
+    let listed = Command::new("git")
+        .arg("-C")
+        .arg(&root)
+        .args(["ls-files", "--", "*publish.lock"])
+        .output();
+    if let Ok(output) = listed
+        && output.status.success()
+    {
+        let tracked = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            tracked.trim().is_empty(),
+            "the machine-local write lock must not be tracked: {tracked}"
+        );
+    }
+}

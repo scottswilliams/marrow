@@ -341,8 +341,8 @@ pub fn noop(): int {
         vec![
             ("ids".to_string(), true, published.clone()),
             // The zero-byte rendezvous entry the publication owner locks while
-            // it writes metadata. It is created once and committed with the
-            // ledger; nothing else appears.
+            // it writes metadata. It is machine-local runtime state that no
+            // checkout carries; nothing else appears.
             ("publish.lock".to_string(), true, Vec::new()),
         ],
         "the first run creates the ledger and the metadata write lock, and nothing else",

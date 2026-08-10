@@ -171,8 +171,48 @@ fn a_published_ledger_is_stable_across_runs() {
     assert_eq!(
         fs::read(workspace.path(".marrow/publish.lock")).expect("the rendezvous entry"),
         b"",
-        "the write lock is a zero-byte rendezvous entry committed with the rest of `.marrow`"
+        "the write lock is a zero-byte rendezvous entry"
     );
+}
+
+/// A fresh clone carries the committed ledger and no lock, because the lock is
+/// machine-local runtime state. That absence is the ordinary first-publish case:
+/// the write owner creates the entry, and the run that needs no mint neither
+/// rewrites the ledger nor fails for the missing lock.
+#[test]
+fn a_clone_without_the_machine_local_lock_publishes_normally() {
+    let workspace = project().materialize("ids-clone-no-lock");
+    assert!(workspace.marrow(&["run", "answer"]).success());
+    let published = fs::read(workspace.path(".marrow/ids")).expect("the published ledger");
+
+    // Exactly what a clone of the committed tree holds: the ledger, no lock.
+    fs::remove_file(workspace.path(".marrow/publish.lock")).expect("drop the machine-local lock");
+
+    let ran = workspace.marrow(&["run", "answer"]);
+    let text = format!("{}{}", ran.stdout_text(), ran.stderr_text());
+    assert!(ran.success(), "a clone without the lock failed: {text}");
+    assert!(
+        ran.stdout_text().contains("42"),
+        "run printed no value: {text}"
+    );
+    assert_eq!(
+        fs::read(workspace.path(".marrow/ids")).expect("the ledger"),
+        published,
+        "a run with no missing identity leaves the committed ledger byte-for-byte unchanged"
+    );
+
+    // A project that mints on a fresh clone takes the lock, so the entry is
+    // recreated rather than required.
+    fs::remove_file(workspace.path(".marrow/ids")).expect("drop the ledger too");
+    fs::remove_file(workspace.path(".marrow/publish.lock")).ok();
+    let minted = workspace.marrow(&["run", "answer"]);
+    assert!(minted.success(), "{}", minted.stderr_text());
+    assert_eq!(
+        fs::read(workspace.path(".marrow/publish.lock")).expect("the recreated lock"),
+        b"",
+        "the first publication of a clone creates the machine-local lock"
+    );
+    assert!(workspace.path(".marrow/ids").exists());
 }
 
 /// A project with no durable declaration mints nothing, so publication creates

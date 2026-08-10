@@ -1,6 +1,10 @@
 /target/
 /.idea/
 /.vscode/
+# The cooperative project-metadata write lock is machine-local runtime state:
+# every Marrow project in this tree creates it on its first publication and no
+# checkout ever carries it. Only `.marrow/ids` is committed.
+**/.marrow/publish.lock
 *.swp
 *.swo
 *.tmp
