@@ -249,6 +249,37 @@ impl ResourceLimitKind {
             ResourceLimitKind::ProjectSourceBytes => "ProjectSourceBytes",
         }
     }
+
+    /// The human sentence fragment naming which bound was exhausted, for terminal
+    /// output. It is the same fact [`detail`](Self::detail) carries as a machine
+    /// identifier: a tool reads the identifier, a person reads this. Rendering the
+    /// identifier itself into prose would put a Rust variant name in front of a
+    /// person, so the two projections stay separate and exhaustive over one enum.
+    pub fn description(self) -> &'static str {
+        match self {
+            ResourceLimitKind::Strings => "the interned string table is full",
+            ResourceLimitKind::Consts => "the constant table is full",
+            ResourceLimitKind::Types => "the type table is full",
+            ResourceLimitKind::Enums => "the enum table is full",
+            ResourceLimitKind::Collections => "the collection type table is full",
+            ResourceLimitKind::Roots => "the durable root table is full",
+            ResourceLimitKind::DurableMembers => "the durable member table is full",
+            ResourceLimitKind::Sites => "the effect site table is full",
+            ResourceLimitKind::Functions => "the function table is full",
+            ResourceLimitKind::Exports => "the export table is full",
+            ResourceLimitKind::TestEntries => "the test entry table is full",
+            ResourceLimitKind::ImageBytes => "the program image is too large",
+            ResourceLimitKind::StringBytes => "one text value is too large",
+            ResourceLimitKind::CodeBytes => "one function's compiled code is too large",
+            ResourceLimitKind::IndexComponents => "one index projects too many components",
+            ResourceLimitKind::DurableDepth => "the durable member tree is nested too deeply",
+            ResourceLimitKind::DiagnosticCount => "too many diagnostics to retain",
+            ResourceLimitKind::DiagnosticBytes => "the diagnostics hold too much text to retain",
+            ResourceLimitKind::ProjectFiles => "the project has too many source files",
+            ResourceLimitKind::ProjectFileBytes => "one source file is too large",
+            ResourceLimitKind::ProjectSourceBytes => "the project's source is too large",
+        }
+    }
 }
 
 /// A fixed compiler-owned resource bound compilation exhausted with no single

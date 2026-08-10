@@ -269,16 +269,16 @@ fn compiler_invariant_report() -> (&'static str, &'static str) {
 
 /// The fixed code and bounded message a compiler resource-limit outcome emits on
 /// stderr. The generator writes no client and no stdout: it fails the whole program
-/// closed with one line naming which aggregate bound was exhausted (the typed kind
-/// detail) and carrying no source location or numeric limit payload.
+/// closed with one line naming which aggregate bound was exhausted, in the kind's own
+/// words, and carrying no source location or numeric limit payload.
 fn compiler_resource_limit_report(
     limit: marrow_compile::CompileResourceLimit,
 ) -> (&'static str, String) {
     (
         marrow_codes::Code::CliCompilerResourceLimit.as_str(),
         format!(
-            "the compiler reached a fixed resource limit ({})",
-            limit.kind().detail()
+            "the compiler reached a fixed resource limit: {}",
+            limit.kind().description()
         ),
     )
 }

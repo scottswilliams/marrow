@@ -576,3 +576,98 @@ fn image_too_large_is_an_aggregate_resource_limit() {
     source.push_str("pub fn main(): int {\n    return 0\n}\n");
     assert_aggregate_resource_limit(compile(&project(&source, None)));
 }
+
+/// Every fixed bound projects two ways from one typed kind: `detail` is the frozen
+/// machine identifier a tool bisects on, `description` is the sentence fragment a
+/// person reads. Rendering the identifier into terminal prose is the defect this
+/// pins — no CLI surface may put a Rust variant name in front of a reader. The
+/// exhaustive match makes a new bound a compile error here rather than a silent
+/// `Functions`-shaped word on stderr.
+#[test]
+fn every_resource_limit_kind_describes_itself_without_its_variant_name() {
+    use marrow_compile::ResourceLimitKind as Kind;
+
+    const EVERY_KIND: [Kind; 21] = [
+        Kind::Strings,
+        Kind::Consts,
+        Kind::Types,
+        Kind::Enums,
+        Kind::Collections,
+        Kind::Roots,
+        Kind::DurableMembers,
+        Kind::Sites,
+        Kind::Functions,
+        Kind::Exports,
+        Kind::TestEntries,
+        Kind::ImageBytes,
+        Kind::StringBytes,
+        Kind::CodeBytes,
+        Kind::IndexComponents,
+        Kind::DurableDepth,
+        Kind::DiagnosticCount,
+        Kind::DiagnosticBytes,
+        Kind::ProjectFiles,
+        Kind::ProjectFileBytes,
+        Kind::ProjectSourceBytes,
+    ];
+
+    for kind in EVERY_KIND {
+        // Exhaustiveness anchor: a new variant fails to compile until it is listed
+        // in `EVERY_KIND` above and given its own prose.
+        match kind {
+            Kind::Strings
+            | Kind::Consts
+            | Kind::Types
+            | Kind::Enums
+            | Kind::Collections
+            | Kind::Roots
+            | Kind::DurableMembers
+            | Kind::Sites
+            | Kind::Functions
+            | Kind::Exports
+            | Kind::TestEntries
+            | Kind::ImageBytes
+            | Kind::StringBytes
+            | Kind::CodeBytes
+            | Kind::IndexComponents
+            | Kind::DurableDepth
+            | Kind::DiagnosticCount
+            | Kind::DiagnosticBytes
+            | Kind::ProjectFiles
+            | Kind::ProjectFileBytes
+            | Kind::ProjectSourceBytes => {}
+        }
+
+        let identifier = kind.detail();
+        let description = kind.description();
+        assert!(
+            description.contains(' '),
+            "`{identifier}` describes itself as `{description}`, which is an identifier, \
+             not prose"
+        );
+        assert!(
+            description
+                .chars()
+                .next()
+                .is_some_and(|first| first.is_lowercase()),
+            "`{description}` must read as a sentence fragment, lowercase and unpunctuated"
+        );
+        assert!(
+            !description.contains(identifier),
+            "`{description}` still carries the Rust variant name `{identifier}`"
+        );
+    }
+
+    let identifiers: Vec<&str> = EVERY_KIND.iter().map(|kind| kind.detail()).collect();
+    let descriptions: Vec<&str> = EVERY_KIND.iter().map(|kind| kind.description()).collect();
+    for projection in [&identifiers, &descriptions] {
+        let mut sorted = projection.clone();
+        sorted.sort_unstable();
+        sorted.dedup();
+        assert_eq!(
+            sorted.len(),
+            EVERY_KIND.len(),
+            "each bound must be distinguishable on both surfaces"
+        );
+    }
+}

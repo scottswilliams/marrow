@@ -70,8 +70,8 @@ pub(crate) fn image(rest: &[String]) -> ExitCode {
             crate::report_simple_error(
                 marrow_codes::Code::CliCompilerResourceLimit.as_str(),
                 &format!(
-                    "the compiler reached a fixed resource limit ({})",
-                    limit.kind().detail()
+                    "the compiler reached a fixed resource limit: {}",
+                    limit.kind().description()
                 ),
             );
             return ExitCode::FAILURE;
