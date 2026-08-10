@@ -887,6 +887,99 @@ mod tests {
         assert!(nearly_full.probe_rows().is_empty());
     }
 
+    /// A2's unconditional half: absorbing a Limited terminal whose composed
+    /// totals sit under *both* ceilings still leaves this owner Limited, and
+    /// the absorbed kind is inherited. The absorbed payload was destroyed, so
+    /// admissible-looking totals must never reopen the owner as a complete
+    /// set — a guard that reacted only to a composed crossing would seal a
+    /// silently short diagnostic set as Complete.
+    #[test]
+    fn absorbing_an_under_ceiling_limited_terminal_forces_limited() {
+        for inherited in [
+            CompileDiagnosticLimit::Count {
+                limit: MAX_DIAGNOSTIC_COUNT,
+            },
+            CompileDiagnosticLimit::OwnedBytes {
+                limit: MAX_DIAGNOSTIC_BYTES,
+            },
+        ] {
+            let mut empty = DiagnosticCollector::new();
+            empty.absorb(BoundedDiagnostics::Limited {
+                count: 1,
+                owned_bytes: 1,
+                limit: inherited,
+            });
+            let probe = empty.probe();
+            assert_eq!(
+                probe.limit,
+                Some(inherited),
+                "an under-ceiling Limited terminal still forces Limited and keeps its kind"
+            );
+            assert!(probe.rows.is_empty());
+            assert!(!empty.is_empty(), "a limited owner is never empty");
+            empty.push(row_with_message_len(1));
+            assert!(
+                empty.probe_rows().is_empty(),
+                "the destroyed payload never re-materializes"
+            );
+            assert!(
+                matches!(empty.finish(), BoundedDiagnostics::Limited { .. }),
+                "an absorbed Limited terminal is never sealed Complete"
+            );
+
+            // The same absorption over a retaining prefix: the prefix drops too.
+            let mut retaining = DiagnosticCollector::new();
+            retaining.push(row_with_message_len(1));
+            retaining.absorb(BoundedDiagnostics::Limited {
+                count: 1,
+                owned_bytes: 1,
+                limit: inherited,
+            });
+            assert_eq!(retaining.probe().limit, Some(inherited));
+            assert!(
+                retaining.probe_rows().is_empty(),
+                "the retained prefix drops with the absorbed payload"
+            );
+            assert!(
+                matches!(retaining.finish(), BoundedDiagnostics::Limited { .. }),
+                "an absorbed Limited terminal is never sealed Complete"
+            );
+        }
+    }
+
+    /// Why the state above is unreachable from production today, and what
+    /// would make it reachable: a sealed Limited terminal always reports at
+    /// least one total past the ceiling it names — on both sides of the bridge
+    /// — so with the A7 ceilings equal, every composed absorption crosses
+    /// again on its own. This equality is the premise; the unconditional guard
+    /// above is what still holds A2 if the premise ever changes.
+    #[test]
+    fn a_sealed_limited_terminal_always_reports_a_crossed_total() {
+        let mut counted = DiagnosticCollector::new();
+        for _ in 0..=MAX_DIAGNOSTIC_COUNT {
+            counted.push(row_with_message_len(1));
+        }
+        let BoundedDiagnostics::Limited { count, .. } = counted.finish() else {
+            panic!("crossing the count ceiling seals Limited");
+        };
+        assert!(count > MAX_DIAGNOSTIC_COUNT);
+
+        let mut sized = DiagnosticCollector::new();
+        sized.push(row_with_message_len(MAX_DIAGNOSTIC_BYTES + 1));
+        let BoundedDiagnostics::Limited { owned_bytes, .. } = sized.finish() else {
+            panic!("crossing the byte ceiling seals Limited");
+        };
+        assert!(owned_bytes > MAX_DIAGNOSTIC_BYTES);
+
+        let dense = "@\n".repeat(SYNTAX_DIAGNOSTIC_COUNT_LIMIT + 1);
+        let summary = marrow_syntax::parse_source(&dense).diagnostics.summary();
+        assert!(
+            summary.count() > MAX_DIAGNOSTIC_COUNT
+                || summary.owned_bytes() > MAX_DIAGNOSTIC_BYTES,
+            "a limited syntax summary crosses a compiler ceiling on its own"
+        );
+    }
+
     /// The syntax bridge charges the summary's owned bytes plus one file
     /// spelling per row — so a longer file identity crosses the byte ceiling
     /// where a shorter one retains, at the exact edge.

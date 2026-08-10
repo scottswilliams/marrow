@@ -134,26 +134,58 @@ fn one_past_the_count_ceiling_is_a_diagnostic_count_resource_limit() {
 
 /// A2: absorbing a Limited syntax terminal unconditionally leaves the compiler
 /// collector Limited. A sibling clean file must not let the destroyed payload
-/// disappear into a successful or partial compile.
+/// disappear into a successful or partial compile — in either canonical order,
+/// so a clean batch absorbed after the Limited one cannot restore a retaining
+/// owner either.
 #[test]
 fn a_limited_syntax_file_forces_limited_beside_a_clean_sibling() {
     assert_one_error_per_at_sign();
-    let input = project(vec![
-        (
-            "src/clean.mw".to_string(),
-            b"module clean\n\npub fn f(): int {\n    return 1\n}\n".to_vec(),
-        ),
-        (
-            "src/dense.mw".to_string(),
-            at_sign_lines(SYNTAX_DIAGNOSTIC_COUNT_LIMIT + 1),
-        ),
-    ]);
-    assert_diagnostic_resource_limit(
-        compile(&input)
-            .map(|_| ())
-            .expect_err("a Limited syntax file must never vanish into a built image"),
-        ResourceLimitKind::DiagnosticCount,
-        SYNTAX_DIAGNOSTIC_COUNT_LIMIT,
+    for (clean_module, dense_path) in [
+        // The clean file is absorbed first, then the Limited one; then the
+        // reverse, so a Complete batch absorbed into a Limited owner is covered.
+        ("clean", "src/dense.mw"),
+        ("zclean", "src/adense.mw"),
+    ] {
+        let clean =
+            format!("module {clean_module}\n\npub fn f(): int {{\n    return 1\n}}\n").into_bytes();
+        let input = project(vec![
+            (format!("src/{clean_module}.mw"), clean),
+            (
+                dense_path.to_string(),
+                at_sign_lines(SYNTAX_DIAGNOSTIC_COUNT_LIMIT + 1),
+            ),
+        ]);
+        assert_diagnostic_resource_limit(
+            compile(&input)
+                .map(|_| ())
+                .expect_err("a Limited syntax file must never vanish into a built image"),
+            ResourceLimitKind::DiagnosticCount,
+            SYNTAX_DIAGNOSTIC_COUNT_LIMIT,
+        );
+    }
+}
+
+/// The premise that keeps the collector's *unconditional* Limited guard
+/// unobservable from production: a sealed syntax terminal always reports at
+/// least one total past the ceiling it names, and the compiler ceilings equal
+/// the syntax ceilings (A7), so every absorbed Limited terminal crosses a
+/// compiler ceiling on the composition alone. The guard is what still holds A2
+/// if this premise changes; its own red lives beside it in the collector.
+#[test]
+fn a_limited_syntax_terminal_always_crosses_a_compiler_ceiling_on_its_own() {
+    let dense = "@\n".repeat(SYNTAX_DIAGNOSTIC_COUNT_LIMIT + 1);
+    let summary = marrow_syntax::parse_source(&dense).diagnostics.summary();
+    assert!(
+        marrow_syntax::parse_source(&dense)
+            .diagnostics
+            .as_complete()
+            .is_err(),
+        "the fixture's syntax terminal is Limited"
+    );
+    assert!(
+        summary.count() > SYNTAX_DIAGNOSTIC_COUNT_LIMIT
+            || summary.owned_bytes() > SYNTAX_DIAGNOSTIC_OWNED_BYTES_LIMIT,
+        "a limited summary reports a crossed total: {summary:?}"
     );
 }
 
