@@ -167,9 +167,6 @@ pub(crate) struct Lowered {
     /// the image — to report the ownership-lattice laws at their source spans.
     pub code: Vec<Instr>,
     pub code_spans: Vec<SourceSpan>,
-    /// Editor facts from this body: `(span, hover display, optional definition target)`
-    /// for each resolved local/parameter use and function callee.
-    pub hover_facts: Vec<(SourceSpan, Box<str>, Option<DefinitionTarget>)>,
 }
 
 /// The outcome of resolving a call target against module scope.
@@ -304,20 +301,6 @@ pub(crate) struct FnLowerer<'a> {
     ret: RetType,
     /// Whether this is a function or a test body; gates the owned `assert`.
     body_kind: BodyKind,
-    /// Editor facts collected while lowering this body: `(span, hover display,
-    /// optional definition target)`. A resolved local/parameter use carries a type
-    /// display and no definition; a resolved function callee carries its signature
-    /// display and its definition target. The caller keeps these for a monomorphic
-    /// function or test body and discards them for a generic instance (whose spans
-    /// would duplicate the template's).
-    hover_facts: Vec<(SourceSpan, Box<str>, Option<DefinitionTarget>)>,
-    /// Whether this body's editor hover facts are retained. A monomorphic function or
-    /// test body is queried by the editor and collects them; a generic instance and the
-    /// template proof pass discard them (an instance's spans duplicate its template's),
-    /// so they render no fact — critically, they never render a use-site type spelling,
-    /// which on a deeply monomorphized instance is an O(depth) string built per instance
-    /// (Σ = O(instances²) across a divergent monomorphization).
-    collect_hover: bool,
     failed: bool,
     invariant: Option<LowerInvariant>,
 }
@@ -364,7 +347,6 @@ impl<'a> FnLowerer<'a> {
         module: &'a str,
         ret: RetType,
         body_kind: BodyKind,
-        collect_hover: bool,
     ) -> Self {
         FnLowerer {
             draft,
@@ -396,24 +378,24 @@ impl<'a> FnLowerer<'a> {
             local_limit_reached: false,
             ret,
             body_kind,
-            hover_facts: Vec::new(),
-            collect_hover,
             failed: false,
             invariant: None,
         }
     }
 
-    /// Retain one editor hover fact at `span`. Only reached when `collect_hover` — the
-    /// caller renders the display inside that guard so a discarded body (a generic
-    /// instance, the template proof pass) never pays the O(depth) spelling render.
-    /// Whether this body's hover facts are still worth rendering: it is a body whose
-    /// facts are retained, and no snapshot ceiling has been crossed yet. Once the
-    /// ledger is Limited the whole snapshot is already refused, so every further
-    /// display render is waste.
+    /// Whether this body's hover displays are still worth rendering: its facts are
+    /// retained (a generic instance's duplicate its template's and are discarded), and no
+    /// snapshot ceiling has been crossed. A caller renders the display inside this guard
+    /// so a discarded body never pays the O(depth) spelling render, which on a deeply
+    /// monomorphized instance would be Σ = O(instances²) across a divergent
+    /// monomorphization.
     fn collects_hover(&self) -> bool {
-        self.collect_hover && !self.facts.is_limited()
+        self.facts.renders_facts()
     }
 
+    /// Admit one editor hover fact at `span` through the ledger, at the push: a resolved
+    /// local or parameter use carries a type display and no definition; a resolved
+    /// function callee carries its signature display and its definition target.
     fn record_hover(
         &mut self,
         span: SourceSpan,
@@ -422,7 +404,7 @@ impl<'a> FnLowerer<'a> {
     ) {
         #[cfg(test)]
         crate::types::bump_hover_spelling_chars(display.len());
-        self.hover_facts.push((span, display, definition));
+        self.facts.hover(span, display, definition);
     }
 
     /// The hover display of a local or parameter's value type. A bare template type
@@ -479,8 +461,6 @@ impl<'a> FnLowerer<'a> {
             function,
             Vec::new(),
             LowerMode::Concrete,
-            // A monomorphic function body is queried by the editor: collect its facts.
-            true,
         )
     }
 
@@ -527,10 +507,6 @@ impl<'a> FnLowerer<'a> {
             template.decl,
             type_env,
             LowerMode::Concrete,
-            // An instance's use-site spans duplicate its template's, so its facts are
-            // discarded by the driver; do not render them (the O(depth) spelling per
-            // instance is the divergent-monomorphization O(N²) hot path).
-            false,
         )
     }
 
@@ -559,10 +535,13 @@ impl<'a> FnLowerer<'a> {
         // already-minted type at its real index (a concrete callee's signature stays
         // consistent) — inside a scope that erases the abstract-parameter instantiations and
         // throwaway emitted code the pass appends. A fill batch never mutates a settled prefix
-        // row, so rewinding the appended suffix restores the exact pre-proof state; only the
-        // taken diagnostics cross back. The scope guard restores both owners on every path —
-        // a normal return, an early lowering invariant, or an unwind — so a failed proof
-        // leaks nothing.
+        // row, so rewinding the appended suffix restores the exact pre-proof state. The scope
+        // guard restores both owners on every path — a normal return, an early lowering
+        // invariant, or an unwind — so no throwaway type or instruction survives a failed
+        // proof. It restores the draft and the registry, and nothing else: the proof's
+        // diagnostics live in a local collector that a failure drops, while its editor facts
+        // are admitted where they are derived and are not retracted by a later failure of
+        // this pass (see `FactSink`).
         let mut scope = TemplateProofScope::enter(records, draft)?;
         // The proof's local collector: success seals it into the outcome's
         // terminal for the outer stage owner to absorb; an invariant failure
@@ -578,7 +557,12 @@ impl<'a> FnLowerer<'a> {
                 binding: ParamBinding::Abstract(*constraint),
             })
             .collect::<Vec<_>>();
-        let lowered = FnLowerer::lower_with_env(
+        // The template body is checked exactly once (never per instance), so its editor
+        // facts are collected here: a template-parameter use renders by its declared
+        // spelling and no divergent-monomorphization O(N²) rendering occurs. They reach
+        // the ledger through the sink as they are derived; only the throwaway image
+        // function this pass emits is discarded with the scope.
+        FnLowerer::lower_with_env(
             scope.draft(),
             records,
             durable,
@@ -593,22 +577,12 @@ impl<'a> FnLowerer<'a> {
             template.decl,
             type_env,
             LowerMode::Template,
-            // Collect editor facts once, at the template: the template body is checked
-            // exactly once (never per instance), so a template-parameter use renders by its
-            // declared spelling and no divergent-monomorphization O(N²) rendering occurs.
-            true,
         )?;
-        // Take the proof's editor facts and diagnostics before the scope drops:
-        // `take_generic_diagnostics` drains the swapped-in buffer and limit owner that the
-        // guard then re-seats. The facts are owned data, materialized before the throwaway
-        // draft and registry clone are rewound.
-        let hover_facts = lowered
-            .map(|lowered| lowered.hover_facts)
-            .unwrap_or_default();
+        // Take the proof's diagnostics before the scope drops: `take_generic_diagnostics`
+        // drains the swapped-in buffer and limit owner that the guard then re-seats.
         Ok(TemplateProofOutcome {
             diagnostics: diagnostics.finish(),
             generic: records.take_generic_diagnostics(),
-            hover_facts,
         })
     }
 
@@ -632,7 +606,6 @@ impl<'a> FnLowerer<'a> {
         function: &FunctionDecl,
         type_env: Vec<TypeParamSlot>,
         mode: LowerMode,
-        collect_hover: bool,
     ) -> LowerResult {
         let ret = {
             let env = TypeEnv { params: &type_env };
@@ -674,7 +647,6 @@ impl<'a> FnLowerer<'a> {
             module,
             ret,
             BodyKind::Function,
-            collect_hover,
         );
         lowerer.type_env = type_env;
         lowerer.mode = mode;
@@ -790,8 +762,6 @@ impl<'a> FnLowerer<'a> {
             module,
             RetType::Unit,
             BodyKind::Test,
-            // A test body is queried by the editor like a monomorphic function.
-            true,
         );
         // A test body is a unit-returning block: control that falls through ends with
         // an implicit return, exactly like a unit function.
@@ -838,7 +808,6 @@ impl<'a> FnLowerer<'a> {
             owns_transaction,
             code,
             code_spans,
-            hover_facts: std::mem::take(&mut self.hover_facts),
         }))
     }
 
@@ -1378,7 +1347,6 @@ mod generic_cache_boundary_tests {
             "main",
             RetType::Unit,
             BodyKind::Function,
-            true,
         )
     }
 

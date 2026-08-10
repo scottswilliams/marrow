@@ -235,16 +235,20 @@ fn no_parse_tree_is_retained_for_a_query() {
     );
 }
 
-/// Every editor-fact producer writes through the one scoped sink borrow. No raw
-/// mutable fact vector parameter survives, so a fact cannot be retained without
-/// passing the ledger's ceilings at the push.
+/// Every editor-fact producer writes through the one scoped sink borrow. Neither a raw
+/// mutable fact vector parameter nor a producer-owned staging carrier survives, so a
+/// fact cannot be retained — or even allocated in bulk — without passing the ledger's
+/// ceilings at the push that produced it. A staged carrier is the same defect in a
+/// different shape: it makes one body's live fact set a function of the body's length
+/// rather than of the snapshot ceiling.
 #[test]
-fn no_mutable_fact_vector_parameter_exists() {
+fn no_fact_carrier_outside_the_ledger_exists() {
     for forbidden in [
         "&mut Vec<HoverFact",
         "&mut Vec<crate::analysis::HoverFact",
         "&mut Vec<(FileIdentity, SourceSpan)>",
         "&mut Vec<DeclSymbol",
+        "Vec<(SourceSpan, Box<str>",
     ] {
         let found = occurrences(forbidden);
         assert!(

@@ -1042,9 +1042,10 @@ fn limited_facts(count: u64, bytes: u64, limit: AnalysisFactLimit) -> FactState 
 
 /// The scoped borrow one body's lowering writes its editor facts through.
 ///
-/// A producer never holds a fact vector, so no fact can be retained without passing the
-/// ledger's ceilings. A body whose facts duplicate an already-collected template's is
-/// given the `Discarding` state rather than a scratch vector nobody reads.
+/// A producer never holds a fact vector: every fact reaches the ledger's ceilings at the
+/// push that produced it, so no single body can stage more facts than a whole snapshot
+/// admits. A body whose facts duplicate an already-collected template's is given the
+/// `Discarding` state rather than a scratch vector nobody reads.
 pub(crate) enum FactSink<'a> {
     Retaining {
         ledger: &'a mut AnalysisFactCollector,
@@ -1056,6 +1057,21 @@ pub(crate) enum FactSink<'a> {
 }
 
 impl FactSink<'_> {
+    /// Admit one editor hover fact in this sink's file, at the push that produced it.
+    /// The ledger charges it against both ceilings before it is retained, so the count a
+    /// single body can hold live is bounded by the snapshot ceiling rather than by the
+    /// body's length.
+    pub(crate) fn hover(
+        &mut self,
+        span: SourceSpan,
+        display: Box<str>,
+        definition: Option<DefinitionTarget>,
+    ) {
+        if let FactSink::Retaining { ledger, file } = self {
+            ledger.admit_hover(*file, span, display, definition);
+        }
+    }
+
     /// Retain one dependency gap in this sink's file. Gaps are written as they are
     /// discovered, so one survives even when the body it sits in fails to lower.
     pub(crate) fn gap(&mut self, span: SourceSpan) {
@@ -1064,12 +1080,13 @@ impl FactSink<'_> {
         }
     }
 
-    /// Whether rendering further fact displays is already waste: this sink discards, or
-    /// the ledger has already refused the whole snapshot.
-    pub(crate) fn is_limited(&self) -> bool {
+    /// Whether a fact written here would still be retained. A producer renders a fact
+    /// display only inside this guard: a discarding sink keeps nothing, and once the
+    /// ledger is Limited the whole snapshot is already refused, so both are waste.
+    pub(crate) fn renders_facts(&self) -> bool {
         match self {
-            FactSink::Retaining { ledger, .. } => ledger.is_limited(),
-            FactSink::Discarding => true,
+            FactSink::Retaining { ledger, .. } => !ledger.is_limited(),
+            FactSink::Discarding => false,
         }
     }
 }
@@ -3172,6 +3189,71 @@ mod fact_ledger_tests {
                 limit: AnalysisFactLimit::Count { .. }
             }
         ));
+    }
+
+    /// The count ceiling bounds one body, not only one project. Every hover fact is
+    /// admitted at the push that produced it, so a ceiling reached part-way through a
+    /// body stops that body's remaining display renders immediately. A producer that
+    /// staged its body's facts in a vector of its own would render — and hold — every one
+    /// of them before the ledger saw the first, making one body's live fact set a
+    /// function of the body's length rather than of the ceiling.
+    ///
+    /// The differential is the proof: the same wide body renders thousands of characters
+    /// of display when the ledger has room, and almost none when the ledger is already at
+    /// the ceiling as the body begins.
+    #[test]
+    fn one_body_stops_rendering_hover_displays_at_the_ceiling() {
+        // Document-symbol nodes are admitted before any body lowers, so they fill the
+        // shared count to one short of the ceiling.
+        let prefill = MAX_SNAPSHOT_FACT_COUNT as usize - 1;
+        let per_file = 4_001usize;
+        let mut sources: Vec<(String, String)> = Vec::new();
+        let mut filled = 0usize;
+        while filled < prefill {
+            let members = per_file.min(prefill - filled) - 1;
+            let index = sources.len();
+            let mut source = format!("module module_{index}\n\nenum E {{\n");
+            for member in 0..members {
+                source.push_str(&format!("    m{member}\n"));
+            }
+            source.push_str("}\n");
+            sources.push((format!("src/module_{index}.mw"), source));
+            filled += members + 1;
+        }
+        assert_eq!(filled, prefill);
+
+        let mut wide = String::from("module wide\n\nfn wide(a: int): int {\n    var t: int = a\n");
+        for _ in 0..2_000 {
+            wide.push_str("    t = t + t\n");
+        }
+        wide.push_str("    return t\n}\n");
+
+        let rendered = |files: Vec<(&str, &str)>| {
+            let input = Arc::new(project(&files));
+            let (_, counts) = crate::types::capture_scaling_counts(|| {
+                let _ = crate::analysis::analyze(input, InputRevision::new(1));
+            });
+            counts.hover_spelling_chars
+        };
+
+        let mut files: Vec<(&str, &str)> = sources
+            .iter()
+            .map(|(path, source)| (path.as_str(), source.as_str()))
+            .collect();
+        files.push(("src/wide.mw", wide.as_str()));
+        let at_the_ceiling = rendered(files);
+        let with_room = rendered(vec![("src/wide.mw", wide.as_str())]);
+
+        assert!(
+            with_room > 4_000,
+            "the fixture body renders thousands of display characters when the ledger \
+             has room: {with_room}"
+        );
+        assert!(
+            at_the_ceiling < 64,
+            "a body whose facts cross the ceiling must stop rendering displays inside \
+             itself, not after it: {at_the_ceiling} characters rendered"
+        );
     }
 
     /// Broken-module status is not a public fact row: it charges neither ceiling and is

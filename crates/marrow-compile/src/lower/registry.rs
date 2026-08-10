@@ -33,13 +33,6 @@ pub(crate) struct TemplateProofOutcome {
     /// collector's one `finish` for the outer stage owner to absorb.
     pub(crate) diagnostics: BoundedDiagnostics,
     pub(crate) generic: GenericDiagnostics,
-    /// Editor hover facts from the once-checked template body: `(span, hover display,
-    /// optional definition target)` for each resolved local/parameter use and function
-    /// callee, collected exactly once at the template. A template-parameter use renders by
-    /// its declared spelling. Instances never re-collect these (their use-site spans
-    /// duplicate the template's), so the divergent-monomorphization O(N²) hot path is not
-    /// entered.
-    pub(crate) hover_facts: Vec<(SourceSpan, Box<str>, Option<DefinitionTarget>)>,
 }
 
 impl FunctionRegistry {

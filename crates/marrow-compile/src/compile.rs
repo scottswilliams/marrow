@@ -1146,13 +1146,6 @@ fn run_semantic(
         };
         diagnostics.absorb(outcome.diagnostics);
         records.adopt_generic_diagnostics(outcome.generic);
-        // Adopt the template body's editor facts, collected once at the template. A
-        // generic instance never re-collects these (its use-site spans duplicate the
-        // template's), so a position inside a generic body resolves to the template's fact
-        // and the divergent-monomorphization render stays off the O(N²) path.
-        for (span, display, definition) in outcome.hover_facts {
-            facts.admit_hover(template.at(), span, display, definition);
-        }
         if records.has_instantiation_limit() {
             break;
         }
@@ -1221,9 +1214,6 @@ fn run_semantic(
                             return SemanticOutcome::Invariant(InvariantCause::Generic(invariant));
                         }
                     };
-                    for (span, display, definition) in result.hover_facts {
-                        facts.admit_hover(module.at, span, display, definition);
-                    }
                     lowered.push(LoweredFn {
                         index: result.func.index(),
                         file: module.file.clone(),
@@ -1333,9 +1323,6 @@ fn run_semantic(
                         return SemanticOutcome::Invariant(InvariantCause::Generic(invariant));
                     }
                 };
-                for (span, display, definition) in result.hover_facts {
-                    facts.admit_hover(module.at, span, display, definition);
-                }
                 lowered.push(LoweredFn {
                     index: result.func.index(),
                     file: module.file.clone(),

@@ -67,7 +67,6 @@ fn lowerer<'a>(
         "main",
         RetType::Unit,
         BodyKind::Function,
-        true,
     )
 }
 
