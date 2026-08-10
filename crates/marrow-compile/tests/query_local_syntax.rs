@@ -45,6 +45,10 @@ use marrow_syntax::{
 /// be handed, since drive admission refuses anything larger before a snapshot exists.
 const MAX_ADMITTED_FILE_BYTES: usize = 1 << 20;
 
+/// The language server's owned-heap ceiling, which every retention and transient term
+/// in the analysis layer is sized against. This file consumes it; it does not move it.
+const H_OWNED_BYTES: usize = 640 * 1024 * 1024;
+
 /// The editor-latency budget for one query of a maximum admitted file, in the optimized
 /// profile the language server ships in.
 ///
@@ -91,7 +95,21 @@ const ORDINARY_QUERY_BUDGET_MS: u128 = 10;
 /// `maximum resident set size` never sees it, so a sample is a floor and this term is the
 /// ceiling. Two things sit outside it, exactly as they do for the retention term: the
 /// caller-shared source bytes, and per-allocation allocator overhead.
-const MAX_QUERY_PARSE_TRANSIENT_BYTES: usize = 896 * 1024 * 1024;
+///
+/// The term is a consequence of [`MAX_SOURCE_BYTE_CHARGE`], not an independent number:
+/// the cap is the invariant and this is what the cap costs at the admission ceiling.
+const MAX_QUERY_PARSE_TRANSIENT_BYTES: usize =
+    MAX_ADMITTED_FILE_BYTES * (MAX_SOURCE_BYTE_CHARGE + TOKEN_CHARGE) + TOKEN_CHARGE + DIAGNOSTICS;
+
+/// **The invariant of this file.** No node family the parser builds may charge more than
+/// this many heap bytes per source byte it exclusively requires.
+///
+/// The derived figure is a maximum over roughly twenty families, so shrinking the widest
+/// one promotes the next; a bound stated only as a total would let a widened field hide
+/// behind whichever family happened to be largest. `no_node_family_exceeds_the_declared_source_byte_cap`
+/// therefore asserts this per family, and the cap sits deliberately above the derived
+/// maximum so one future field costs a review rather than a re-derivation of the ceiling.
+const MAX_SOURCE_BYTE_CHARGE: usize = 320;
 
 /// Amortized container growth. Every container in a parse tree is built by pushing —
 /// none is pre-sized from an exact count and none is shrunk — and the standard library
@@ -347,6 +365,26 @@ fn source_byte_charge() -> usize {
     worst_charge(declaration_level_charges(), statement_line_charge())
 }
 
+/// Every node family the parser builds, with the heap one source byte of that family
+/// charges — the union of the statement-line contents, the constructs outside a
+/// statement line, the expression node, and the statement slot, **not** their maximum.
+///
+/// [`source_byte_charge`] is a maximum over these families, so shrinking the widest one
+/// promotes the next and a cap asserted only in total lets a widened field hide behind
+/// whichever family happens to be largest at the time. Asserting the cap over this list
+/// is what makes a new or widened field fail a test rather than move the ceiling.
+fn source_byte_charges_by_family() -> Vec<(&'static str, usize)> {
+    statement_line_content_charges()
+        .into_iter()
+        .chain(declaration_level_charges())
+        .map(|(kind, bytes, source_bytes)| (kind, bytes.div_ceil(source_bytes)))
+        .chain([
+            ("Expression", expression_charge()),
+            ("a statement line", statement_line_charge()),
+        ])
+        .collect()
+}
+
 /// Everything else a statement line can hold, with what its slot and own allocations
 /// cost and the fewest source bytes the grammar admits for one. Each minimum is the
 /// construct's own spelling, exclusive of any child node's bytes.
@@ -466,26 +504,44 @@ fn declaration_level_charges() -> Vec<(&'static str, usize, usize)> {
     ]
 }
 
-/// The lexed token vector for the whole file, plus the one filtered copy an expression
-/// parse holds. `ExprParser::parse_complete` builds no further parser and the declaration
-/// parser holds at most one at a time, so two token vectors are live at the peak.
+/// How many token allocations are live beside the tree at the peak: the lexer's vector
+/// for the whole file, plus the one filtered copy an expression parse holds.
+/// `ExprParser::parse_complete` builds no further parser and the declaration parser holds
+/// at most one at a time.
 const LIVE_TOKEN_VECTORS: usize = 2;
+
+/// The capacity slack one live token allocation carries. A `Vec` grown by pushing holds
+/// the amortized growth factor; a slice handed to `Box<[Token]>` at close holds none,
+/// because a `Box<[T]>` has no capacity field to hold any.
+const TOKEN_VECTOR_SLACK: usize = GROWTH;
+
+/// What the lexed tokens charge per source byte.
+///
+/// The lexer emits at most one token per source byte — every token but the zero-width
+/// `Eof` sentinel covers at least one byte of source, pinned by
+/// [`the_token_vector_holds_at_most_one_token_per_source_byte`] — so this is the whole
+/// token cost of a source byte, and the trailing sentinel is one further token charged
+/// outside the per-byte term.
+const TOKEN_CHARGE: usize = LIVE_TOKEN_VECTORS * TOKEN_VECTOR_SLACK * size_of::<Token>();
 
 /// The syntax collector's own retention, which is live beside the tree until
 /// `parse_source` returns. Both of its ceilings are pinned by `marrow-syntax`; a row is
 /// charged at 256 bytes, comfortably above the `Diagnostic` it wraps.
 const DIAGNOSTIC_ROW_BYTES: usize = 256;
 
-fn diagnostic_charge() -> usize {
-    GROWTH * SYNTAX_DIAGNOSTIC_COUNT_LIMIT * DIAGNOSTIC_ROW_BYTES
-        + GROWTH * SYNTAX_DIAGNOSTIC_OWNED_BYTES_LIMIT
-}
+/// The collector's two pinned ceilings, each charged with the growth factor because both
+/// containers are still grown by pushing.
+const DIAGNOSTICS: usize = GROWTH * SYNTAX_DIAGNOSTIC_COUNT_LIMIT * DIAGNOSTIC_ROW_BYTES
+    + GROWTH * SYNTAX_DIAGNOSTIC_OWNED_BYTES_LIMIT;
 
 /// The accounted worst case of one query-local parse.
+///
+/// Written in exactly the shape of [`MAX_QUERY_PARSE_TRANSIENT_BYTES`], with the derived
+/// `source_byte_charge()` where the term carries the declared cap. The two therefore
+/// differ in one factor only, which is what makes the cap — rather than this figure —
+/// the thing a reviewer has to agree with.
 fn accounted_query_parse_transient() -> usize {
-    MAX_ADMITTED_FILE_BYTES
-        * (source_byte_charge() + LIVE_TOKEN_VECTORS * GROWTH * size_of::<Token>())
-        + diagnostic_charge()
+    MAX_ADMITTED_FILE_BYTES * (source_byte_charge() + TOKEN_CHARGE) + TOKEN_CHARGE + DIAGNOSTICS
 }
 
 fn captured(files: Vec<(&str, Vec<u8>)>) -> Arc<ProjectInput> {
@@ -789,6 +845,31 @@ fn statement_dense_file(per_body: usize) -> Vec<u8> {
 /// Statement lines per body in [`statement_dense_file`], one past a power of two.
 const STATEMENT_DENSE_PER_BODY: usize = 257;
 
+/// A second statement-dense shape, one past a much larger power of two. Bodies this long
+/// hold their growth slack at a coarser granularity, so while every body is pre-sized
+/// exactly this shape is indistinguishable from the one above — and before that it was
+/// the denser of the two, which is why it is kept: a sample search that stopped at the
+/// first "densest" shape had already missed it.
+const STATEMENT_DENSE_PER_LONG_BODY: usize = 4097;
+
+/// Every maximum-size shape this file can build, each queryable and each a corroborating
+/// sample under the derived bound rather than a source of it.
+fn maximum_admitted_shapes() -> Vec<(&'static str, Vec<u8>)> {
+    vec![
+        (
+            "statement-dense",
+            statement_dense_file(STATEMENT_DENSE_PER_BODY),
+        ),
+        (
+            "statement-dense-long-bodies",
+            statement_dense_file(STATEMENT_DENSE_PER_LONG_BODY),
+        ),
+        ("name-chain", name_chain_file()),
+        ("operator-chain", dense_admitted_file()),
+        ("comment-padded", maximum_admitted_file()),
+    ]
+}
+
 /// A clean maximum admitted file of one long operator chain per body over an undeclared
 /// name, the shape an independent review used to beat the previously exported term. Kept
 /// as a corroborating sample: every name is a diagnostic rather than a hover fact, so the
@@ -871,17 +952,10 @@ fn assert_within_budget(measured: u128, budget: u128, bytes: usize) {
 /// once published as the worst case and neither is.
 #[test]
 fn a_query_over_a_maximum_admitted_file_stays_in_budget_when_optimized() {
-    for (path, bytes) in [
-        (
-            "src/stmts.mw",
-            statement_dense_file(STATEMENT_DENSE_PER_BODY),
-        ),
-        ("src/big.mw", maximum_admitted_file()),
-        ("src/dense.mw", dense_admitted_file()),
-        ("src/chain.mw", name_chain_file()),
-    ] {
+    let path = "src/shape.mw";
+    for (label, bytes) in maximum_admitted_shapes() {
         let snapshot = snapshot(vec![(path, bytes)]);
-        eprintln!("shape {path}");
+        eprintln!("shape {label}");
         assert_within_budget(
             worst_query_ms(&snapshot, path),
             QUERY_BUDGET_MS,
@@ -1018,7 +1092,7 @@ fn the_query_parse_transient_closes_under_the_exported_term() {
     assert_eq!(line, 740, "the densest source byte's charge moved");
     let accounted = accounted_query_parse_transient();
     assert_eq!(
-        accounted, 914_358_272,
+        accounted, 914_358_400,
         "the accounted query-local parse transient moved; re-derive the term before \
          changing this number"
     );
@@ -1027,6 +1101,70 @@ fn the_query_parse_transient_closes_under_the_exported_term() {
         "the accounted {accounted} bytes exceed the exported \
          MAX_QUERY_PARSE_TRANSIENT_BYTES {MAX_QUERY_PARSE_TRANSIENT_BYTES}"
     );
+}
+
+/// **The enforcement artifact.** Every node family charges under the declared cap.
+///
+/// The derived bound is a maximum over roughly twenty families. A field added to any one
+/// of them widens that family's charge, and this fails at that family — before the
+/// widening can be absorbed by the distance between the derived maximum and the exported
+/// term, and whether or not the family that grew is the one currently deciding the
+/// maximum. `expression_own_bytes` and the two charge tables destructure exhaustively, so
+/// a genuinely new field or variant fails to build here first.
+#[test]
+fn no_node_family_exceeds_the_declared_source_byte_cap() {
+    let families = source_byte_charges_by_family();
+    for (kind, charge) in &families {
+        assert!(
+            *charge <= MAX_SOURCE_BYTE_CHARGE,
+            "`{kind}` charges {charge} bytes per source byte, over the declared cap of \
+             {MAX_SOURCE_BYTE_CHARGE}; shrink the family or re-derive the cap and the \
+             exported term together"
+        );
+    }
+    let widest = families
+        .iter()
+        .max_by_key(|(_, charge)| *charge)
+        .expect("the family list is not empty");
+    eprintln!("widest node family: {} at {} bytes/source byte", widest.0, widest.1);
+    assert_eq!(
+        source_byte_charge(),
+        widest.1,
+        "the derived maximum disagrees with the widest family, so the layered charge \
+         functions and the flat family list have drifted apart"
+    );
+}
+
+/// The exported term keeps a third of the owned-heap ceiling in reserve, so a later
+/// widening inside the cap cannot quietly re-approach it. A cap raised far enough to
+/// break this is a decision about `H_owned`, not a representation detail.
+#[test]
+fn the_exported_term_stays_well_under_the_owned_heap_ceiling() {
+    assert!(
+        MAX_QUERY_PARSE_TRANSIENT_BYTES * 3 <= H_OWNED_BYTES * 2,
+        "the exported {MAX_QUERY_PARSE_TRANSIENT_BYTES} bytes are over two thirds of the \
+         {H_OWNED_BYTES}-byte owned-heap ceiling"
+    );
+}
+
+/// The lexer emits at most one token per source byte, which is the half of
+/// [`TOKEN_CHARGE`] that a type cannot carry: `Box<[Token]>` makes growth slack
+/// unrepresentable, but nothing in the type stops the lexer from emitting two tokens for
+/// one byte. Every token but the zero-width `Eof` sentinel covers at least one byte of
+/// source, so the count is bounded by the file's length plus that sentinel.
+#[test]
+fn the_token_vector_holds_at_most_one_token_per_source_byte() {
+    for (label, bytes) in maximum_admitted_shapes() {
+        let text = std::str::from_utf8(&bytes).expect("the fixture is UTF-8");
+        let tokens = marrow_syntax::lex_source(text).tokens.len();
+        eprintln!("{label}: {tokens} tokens over {} source bytes", text.len());
+        assert!(
+            tokens <= text.len() + 1,
+            "{label} lexed {tokens} tokens from {} source bytes, over the one-per-byte \
+             bound TOKEN_CHARGE rests on",
+            text.len()
+        );
+    }
 }
 
 /// The corroborating samples: every maximum-size shape reachable here is queryable, and
@@ -1038,17 +1176,8 @@ fn the_query_parse_transient_closes_under_the_exported_term() {
 /// rather than the sample being searched for and published as a term.
 #[test]
 fn every_maximum_admitted_shape_stays_under_the_derived_bound() {
-    let shapes = [
-        (
-            "statement-dense",
-            statement_dense_file(STATEMENT_DENSE_PER_BODY),
-        ),
-        ("name-chain", name_chain_file()),
-        ("operator-chain", dense_admitted_file()),
-        ("comment-padded", maximum_admitted_file()),
-    ];
     let mut densest = 0;
-    for (label, bytes) in shapes {
+    for (label, bytes) in maximum_admitted_shapes() {
         let statements = statement_vector_bytes(&bytes);
         eprintln!("{label}: statement vectors hold {statements} bytes");
         assert!(
