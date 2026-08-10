@@ -29,8 +29,8 @@ use crate::durable::DurableRegistry;
 use crate::konst::ConstRegistry;
 use crate::lower::{
     BodyOutcome, DeclaredFn, FnLowerer, FunctionRegistry, GenericRegistry, ModuleBinding,
-    ModuleLedger, is_durable_place_op, is_mutation_instr, is_reserved_builtin_name,
-    reserved_builtin_name,
+    ModuleLedger, SignatureOutcome, is_durable_place_op, is_mutation_instr,
+    is_reserved_builtin_name, reserved_builtin_name,
 };
 use crate::types::BuildError;
 use crate::types::{GenericInvariant, TypeRegistry};
@@ -1836,6 +1836,11 @@ fn lower_declared_functions(
     let mut lowered: Vec<LoweredFn> = Vec::new();
     let mut exports: Vec<ExportEntry> = Vec::new();
     let mut exit = DeclarationExit::Exhausted;
+    // The signature build walked these same declarations in this same order, so the
+    // refusal a body asks about is the one its own declaration received. Asking by
+    // name would answer for the first declaration of a repeated name at every later
+    // one.
+    let mut signatures = resolution.signatures.declarations();
     for module in parsed {
         for declaration in &module.ast.declarations {
             let Declaration::Function(function) = declaration else {
@@ -1849,17 +1854,20 @@ fn lower_declared_functions(
                 // A generic template is not lowered in place.
                 continue;
             }
-            if resolution
-                .signatures
-                .signature_refused(&module.name, &function.name)
-            {
+            match signatures.next_at(module.at, function.name_span) {
                 // The signature was refused and reported at the annotation it could
                 // not resolve. Lowering the body would resolve the same annotation
                 // again and report it a second time, and there is no parameter list
                 // to bind, so the declaration is refused whole: it takes no image
                 // index, exactly as a body refused for its own error does.
-                exit = DeclarationExit::Refused;
-                continue;
+                Ok(SignatureOutcome::Refused) => {
+                    exit = DeclarationExit::Refused;
+                    continue;
+                }
+                Ok(SignatureOutcome::Resolved) => {}
+                Err(drift) => {
+                    return Err(PhaseStop::Invariant(InvariantCause::Generic(drift.into())));
+                }
             }
             let result = match FnLowerer::lower(
                 draft,
@@ -3077,6 +3085,74 @@ mod tests {
     #[test]
     fn the_signature_completeness_proof_is_zero_sized() {
         assert_eq!(std::mem::size_of::<SignaturesComplete>(), 0);
+    }
+
+    /// A refused signature standing behind an accepted duplicate of its name still
+    /// withholds the completeness proof.
+    ///
+    /// The proof reads the ledger's refused set. A set that answered only for the
+    /// keys a lookup resolves to a refusal would skip this one, and `Artifacts`
+    /// would hold a proof minted over a table the compiler refused a declaration
+    /// in — the amendment's sentence would be false for exactly this source shape.
+    #[test]
+    fn a_refusal_behind_an_accepted_duplicate_withholds_the_completeness_proof() {
+        let (identity, _) = marrow_project::FileIdentity::validate("src/main.mw")
+            .expect("a valid source path");
+        let parsed = marrow_syntax::parse_source(
+            "module main\n\nfn dup(a: int): int {\n    return a\n}\n\n\
+             fn dup(a: Nope): int {\n    return 1\n}\n",
+        );
+        let functions: Vec<crate::lower::DeclaredFn<'_>> = parsed
+            .file
+            .declarations
+            .iter()
+            .filter_map(|decl| match decl {
+                crate::compile::Declaration::Function(function) => {
+                    Some(crate::lower::DeclaredFn {
+                        file: identity.clone(),
+                        at: crate::analysis::FileRef::admitted(0),
+                        module: "main".to_string(),
+                        decl: function,
+                    })
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(functions.len(), 2, "both declarations are parsed");
+
+        let mut draft = marrow_image::ImageDraft::new();
+        let mut diagnostics = DiagnosticCollector::new();
+        let records =
+            crate::types::TypeRegistry::build(&mut draft, &[], &[], &[], &[], &[], &mut diagnostics)
+                .expect("the test registry stays within the ledger budget");
+        let durable = crate::durable::DurableRegistry::build(
+            &mut draft,
+            &records,
+            &[],
+            &[],
+            None,
+            &mut diagnostics,
+        )
+        .expect("an empty project builds an empty durable registry");
+        let signatures = crate::lower::FunctionRegistry::build(
+            &records,
+            &mut draft,
+            &durable,
+            &functions,
+            crate::lower::ModuleLedger::new(crate::decl::DeclarationNamespace::Module),
+            BTreeMap::new(),
+            &mut diagnostics,
+        )
+        .expect("the signature ledger stays within its budget");
+
+        assert!(
+            !signatures.every_signature_accepted(),
+            "the second `dup` was refused for its parameter type",
+        );
+        assert!(
+            CompleteFunctionRegistry(signatures).complete().is_none(),
+            "a refused signature withholds the completeness proof",
+        );
     }
 
     /// The fence's positive direction. Production cannot reach it — an unavailable

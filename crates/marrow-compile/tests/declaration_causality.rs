@@ -1072,6 +1072,68 @@ fn i5_a_refused_parameter_type_never_truncates_its_signature() {
     );
 }
 
+/// A signature refused behind an accepted duplicate of its name reports its cause
+/// once. The repeat is the duplicate check's own report; the refused annotation is
+/// the compiler's reason for refusing that occurrence, and the body-lowering guard
+/// has to consult the occurrence it is lowering rather than the name — a name-keyed
+/// guard reads the accepted duplicate, lowers the refused body, and re-resolves the
+/// annotation that was already reported.
+#[test]
+fn a_signature_refused_behind_an_accepted_duplicate_reports_its_cause_once() {
+    let diagnostics = diagnostics(
+        "module main\n\n\
+         fn dup(a: int): int {\n\
+         \x20   return a\n\
+         }\n\n\
+         fn dup(a: Nope): int {\n\
+         \x20   return 1\n\
+         }\n\n\
+         pub fn caller(): int {\n\
+         \x20   return dup(1)\n\
+         }\n",
+    );
+
+    assert_eq!(
+        diagnostics
+            .iter()
+            .filter(|row| row.code() == "check.unsupported")
+            .count(),
+        1,
+        "the refused parameter type is the declaration's own cause, reported at it \
+         once: {:#?}",
+        messages(&diagnostics),
+    );
+}
+
+/// The return-type sibling of the same guard: the refused occurrence's return
+/// annotation is resolved once, by the signature build, not again by its body.
+#[test]
+fn a_return_type_refused_behind_an_accepted_duplicate_reports_its_cause_once() {
+    let diagnostics = diagnostics(
+        "module main\n\n\
+         fn dup(): int {\n\
+         \x20   return 1\n\
+         }\n\n\
+         fn dup(): Nope {\n\
+         \x20   return 1\n\
+         }\n\n\
+         pub fn caller(): int {\n\
+         \x20   return dup()\n\
+         }\n",
+    );
+
+    assert_eq!(
+        diagnostics
+            .iter()
+            .filter(|row| row.code() == "check.unsupported")
+            .count(),
+        1,
+        "the refused return type is the declaration's own cause, reported at it \
+         once: {:#?}",
+        messages(&diagnostics),
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Modules — I-1
 //

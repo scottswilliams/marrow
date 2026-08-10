@@ -438,11 +438,29 @@ pub(crate) enum Binding<'a, T> {
     Absent,
 }
 
-/// Which occurrence a key resolves to, and where the merged refusal lives.
+/// Which occurrence a key resolves to.
 #[derive(Debug, Clone, Copy)]
 enum Selected {
     Accepted(usize),
     Refused(DeclarationRefusalId),
+}
+
+/// What the index holds for one declared key.
+#[derive(Debug, Clone, Copy)]
+struct KeyOccurrences {
+    /// The key's first occurrence — what [`DeclarationLedger::lookup`] answers with.
+    /// A refused declaration occupies its name from where it is written, so a later
+    /// accepted duplicate does not displace it, exactly as a later accepted
+    /// duplicate of an accepted declaration does not.
+    first: Selected,
+    /// The merged refusal every refused occurrence of this key folds into, which is
+    /// `first`'s own when the first occurrence was refused.
+    ///
+    /// Recorded even when an accepted occurrence answers the lookup: a refusal
+    /// standing behind an accepted duplicate is still a refusal the source wrote,
+    /// and a completeness predicate that could not see it would call a project
+    /// holding a refused declaration whole.
+    refused: Option<DeclarationRefusalId>,
 }
 
 /// Every occurrence of every declared key in one namespace, in declaration order.
@@ -454,7 +472,7 @@ enum Selected {
 pub(crate) struct DeclarationLedger<K, T> {
     namespace: DeclarationNamespace,
     occurrences: Vec<(K, DeclarationOccurrence<T>)>,
-    index: BTreeMap<K, Selected>,
+    index: BTreeMap<K, KeyOccurrences>,
     /// Positions in `occurrences` of the merged refusal for each refused key,
     /// addressed by [`DeclarationRefusalId`].
     refusals: Vec<usize>,
@@ -494,32 +512,22 @@ impl<K: Ord + Clone, T> DeclarationLedger<K, T> {
         occurrence: DeclarationOccurrence<T>,
     ) -> Result<(), DeclarationLedgerFull> {
         let position = self.occurrences.len();
-        match occurrence {
+        let occurrence = match occurrence {
             DeclarationOccurrence::Accepted(value) => {
-                self.index
-                    .entry(key.clone())
-                    .or_insert(Selected::Accepted(position));
-                self.occurrences
-                    .push((key, DeclarationOccurrence::Accepted(value)));
+                self.index.entry(key.clone()).or_insert(KeyOccurrences {
+                    first: Selected::Accepted(position),
+                    refused: None,
+                });
+                DeclarationOccurrence::Accepted(value)
             }
+            // A further refusal of a key already refused merges into the first: the
+            // count rises, no second name is retained, no bytes are charged, and no
+            // second occurrence is recorded.
             DeclarationOccurrence::Refused(summary) => {
-                match self.index.get(&key).copied() {
-                    // An accepted occurrence already answers this key; the refusal
-                    // is retained in source order but costs no lookup change.
-                    Some(Selected::Accepted(_)) => {
-                        self.charge(summary.retained_owned_bytes())?;
-                        self.occurrences
-                            .push((key, DeclarationOccurrence::Refused(summary)));
-                    }
-                    // A second refusal of one key merges into the first: the count
-                    // rises, no second name is retained, and no bytes are charged.
-                    Some(Selected::Refused(id)) => {
-                        let at = self.refusals[id.index as usize];
-                        if let Some((_, DeclarationOccurrence::Refused(first))) =
-                            self.occurrences.get_mut(at)
-                        {
-                            first.merge(summary);
-                        }
+                match self.index.get(&key).and_then(|entry| entry.refused) {
+                    Some(id) => {
+                        self.merge_refusal(id, summary);
+                        return Ok(());
                     }
                     None => {
                         self.charge(summary.retained_owned_bytes())?;
@@ -528,14 +536,32 @@ impl<K: Ord + Clone, T> DeclarationLedger<K, T> {
                             index: self.refusals.len() as u32,
                         };
                         self.refusals.push(position);
-                        self.index.insert(key.clone(), Selected::Refused(id));
-                        self.occurrences
-                            .push((key, DeclarationOccurrence::Refused(summary)));
+                        self.index
+                            .entry(key.clone())
+                            .and_modify(|entry| entry.refused = Some(id))
+                            .or_insert(KeyOccurrences {
+                                first: Selected::Refused(id),
+                                refused: Some(id),
+                            });
+                        DeclarationOccurrence::Refused(summary)
                     }
                 }
             }
-        }
+        };
+        self.occurrences.push((key, occurrence));
         Ok(())
+    }
+
+    /// Fold a further refusal of an already-refused key into the summary `id`
+    /// addresses. Drift leaves the merged summary untouched: the first refusal
+    /// remains the reported cause, which is what a steer reads.
+    fn merge_refusal(&mut self, id: DeclarationRefusalId, summary: DeclarationRefusalSummary) {
+        let Some(at) = self.refusals.get(id.index as usize).copied() else {
+            return;
+        };
+        if let Some((_, DeclarationOccurrence::Refused(first))) = self.occurrences.get_mut(at) {
+            first.merge(summary);
+        }
     }
 
     fn charge(&mut self, bytes: usize) -> Result<(), DeclarationLedgerFull> {
@@ -550,13 +576,13 @@ impl<K: Ord + Clone, T> DeclarationLedger<K, T> {
     /// What `key` resolves to: its first accepted occurrence, else the merged
     /// refusal for the key, else a genuine absence.
     pub(crate) fn lookup(&self, key: &K) -> Binding<'_, T> {
-        match self.index.get(key) {
-            Some(Selected::Accepted(at)) => match self.occurrences.get(*at) {
+        match self.index.get(key).map(|entry| entry.first) {
+            Some(Selected::Accepted(at)) => match self.occurrences.get(at) {
                 Some((_, DeclarationOccurrence::Accepted(value))) => Binding::Accepted(value),
                 _ => Binding::Absent,
             },
-            Some(Selected::Refused(id)) => match self.refusal(*id) {
-                Ok(summary) => Binding::Refused(*id, summary),
+            Some(Selected::Refused(id)) => match self.refusal(id) {
+                Ok(summary) => Binding::Refused(id, summary),
                 Err(DeclarationIndexDrift) => Binding::Absent,
             },
             None => Binding::Absent,
@@ -598,22 +624,19 @@ impl<K: Ord + Clone, T> DeclarationLedger<K, T> {
         self.index.keys()
     }
 
-    /// The refused declarations in source order, one per key — the merged summary
-    /// each refused key answers with.
+    /// The refused declarations in source order, one per refused key — the merged
+    /// summary each refused key answers with, whether or not an accepted duplicate
+    /// of the same name answers the lookup.
     ///
     /// A namespace whose *declared* set is observed independently of its accepted
     /// set reads it from here and `accepted()` together: a refused declaration is
     /// still a declaration the source wrote, and a derivation that walks only the
     /// accepted set silently narrows what it derives.
     pub(crate) fn refused(&self) -> impl Iterator<Item = (&K, &DeclarationRefusalSummary)> {
-        self.occurrences
+        self.refusals
             .iter()
-            .filter_map(|(key, occurrence)| match occurrence {
-                DeclarationOccurrence::Refused(summary)
-                    if matches!(self.index.get(key), Some(Selected::Refused(_))) =>
-                {
-                    Some((key, summary))
-                }
+            .filter_map(|at| match self.occurrences.get(*at) {
+                Some((key, DeclarationOccurrence::Refused(summary))) => Some((key, summary)),
                 _ => None,
             })
     }
@@ -652,8 +675,8 @@ impl<K: Ord + Clone, T> DeclarationLedger<K, T> {
             .filter_map(move |(at, (key, occurrence))| match occurrence {
                 DeclarationOccurrence::Accepted(value)
                     if matches!(
-                        self.index.get(key),
-                        Some(Selected::Accepted(first)) if *first == at
+                        self.index.get(key).map(|entry| entry.first),
+                        Some(Selected::Accepted(first)) if first == at
                     ) =>
                 {
                     Some((key, value))
@@ -772,6 +795,47 @@ mod tests {
             ledger.lookup(&"a".to_string()),
             Binding::Accepted(1)
         ));
+    }
+
+    /// A refusal standing behind an accepted duplicate of its key is still a
+    /// refusal the source wrote. The refused set is what a completeness predicate
+    /// reads, so a set answering only for the keys a lookup resolves to a refusal
+    /// would call a project holding a refused declaration whole.
+    #[test]
+    fn an_accepted_duplicate_does_not_hide_a_later_refusal() {
+        let mut ledger = ledger();
+        ledger
+            .declare("a".to_string(), DeclarationOccurrence::Accepted(1))
+            .expect("within budget");
+        ledger
+            .declare(
+                "a".to_string(),
+                DeclarationOccurrence::Refused(refusal("a")),
+            )
+            .expect("within budget");
+        assert_eq!(ledger.refused().count(), 1);
+    }
+
+    /// A refused declaration occupies its name from where it is written, so a later
+    /// accepted duplicate does not displace it — the same first-occurrence-wins rule
+    /// an accepted duplicate meets. Every such shape is separately reported as a
+    /// name conflict by the namespace's own duplicate check.
+    #[test]
+    fn a_refused_occurrence_occupies_its_name_against_a_later_acceptance() {
+        let mut ledger = ledger();
+        ledger
+            .declare(
+                "a".to_string(),
+                DeclarationOccurrence::Refused(refusal("a")),
+            )
+            .expect("within budget");
+        ledger
+            .declare("a".to_string(), DeclarationOccurrence::Accepted(1))
+            .expect("within budget");
+        match ledger.lookup(&"a".to_string()) {
+            Binding::Refused(_, summary) => assert_eq!(summary.name(), "a"),
+            other => panic!("expected a refusal, got {other:?}"),
+        }
     }
 
     #[test]

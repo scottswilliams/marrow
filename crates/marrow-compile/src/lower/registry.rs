@@ -42,9 +42,67 @@ pub(crate) type FnKey = (String, String);
 /// module is reported by its own check before this is built.
 pub(crate) struct FunctionRegistry {
     sigs: DeclarationLedger<FnKey, FnSignature>,
+    /// Each monomorphic function declaration in the source order body lowering
+    /// walks, so a body asks about the declaration it is lowering rather than about
+    /// its name. See [`SignatureWalk`].
+    declarations: Vec<DeclaredSignature>,
     modules: ModuleLedger,
     /// `module -> [(final-segment binding, dotted target module)]`.
     imports: BTreeMap<String, Vec<(String, String)>>,
+}
+
+/// How the signature build resolved one monomorphic function declaration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SignatureOutcome {
+    /// Every annotation resolved; the body lowers against the signature.
+    Resolved,
+    /// A parameter or return type was refused and reported at this declaration.
+    /// The body is refused with it: there is no parameter list to bind, and
+    /// resolving the same annotation again would report the cause a second time.
+    Refused,
+}
+
+/// One monomorphic function declaration as the signature build resolved it, with
+/// the `Copy` site its name is written at.
+#[derive(Debug, Clone, Copy)]
+struct DeclaredSignature {
+    at: FileRef,
+    name_span: SourceSpan,
+    outcome: SignatureOutcome,
+}
+
+/// A cursor over the monomorphic signature declarations, in the source order both
+/// the signature build and body lowering walk them.
+///
+/// The refusal is keyed to the *occurrence*, never to the name. A module may
+/// declare one name twice — the repeat is reported by its own duplicate check and
+/// both declarations still lower a body — so a name-keyed answer serves the first
+/// occurrence's outcome to every later one: it lowers a refused body, which
+/// re-resolves the annotation already reported, and withholds an accepted body
+/// whose image index was minted.
+pub(crate) struct SignatureWalk<'a> {
+    remaining: std::slice::Iter<'a, DeclaredSignature>,
+}
+
+impl SignatureWalk<'_> {
+    /// How the declaration whose name is written at `at`/`name_span` resolved,
+    /// consuming one entry.
+    ///
+    /// The site is checked, not assumed: the two walks derive their declaration
+    /// sequence separately from the same parse, and a divergence is
+    /// [`DeclarationIndexDrift`] rather than a refusal answered for a neighbouring
+    /// declaration.
+    pub(crate) fn next_at(
+        &mut self,
+        at: FileRef,
+        name_span: SourceSpan,
+    ) -> Result<SignatureOutcome, DeclarationIndexDrift> {
+        let declared = self.remaining.next().ok_or(DeclarationIndexDrift)?;
+        if declared.at != at || declared.name_span != name_span {
+            return Err(DeclarationIndexDrift);
+        }
+        Ok(declared.outcome)
+    }
 }
 
 pub(crate) struct TemplateProofOutcome {
@@ -60,6 +118,7 @@ impl Default for FunctionRegistry {
     fn default() -> Self {
         Self {
             sigs: DeclarationLedger::new(DeclarationNamespace::Function),
+            declarations: Vec::new(),
             modules: ModuleLedger::new(DeclarationNamespace::Module),
             imports: BTreeMap::new(),
         }
@@ -94,6 +153,7 @@ impl FunctionRegistry {
         diagnostics: &mut DiagnosticCollector,
     ) -> Result<FunctionRegistry, BuildError> {
         let mut sigs = DeclarationLedger::new(DeclarationNamespace::Function);
+        let mut declarations = Vec::new();
         // Only monomorphic functions take an image index and enter the signature
         // table; a generic function is a template with no single image entry (its
         // per-application instances are minted lazily), so it is skipped here and
@@ -159,7 +219,14 @@ impl FunctionRegistry {
                 }
             };
             let occurrence = match refusal {
-                Some(refusal) => DeclarationOccurrence::Refused(refusal),
+                Some(refusal) => {
+                    declarations.push(DeclaredSignature {
+                        at: declared.at,
+                        name_span: function.name_span,
+                        outcome: SignatureOutcome::Refused,
+                    });
+                    DeclarationOccurrence::Refused(refusal)
+                }
                 None => {
                     let signature = FnSignature {
                         module: module.clone(),
@@ -172,6 +239,11 @@ impl FunctionRegistry {
                         decl_range: decl_range(function),
                     };
                     index += 1;
+                    declarations.push(DeclaredSignature {
+                        at: declared.at,
+                        name_span: function.name_span,
+                        outcome: SignatureOutcome::Resolved,
+                    });
                     DeclarationOccurrence::Accepted(signature)
                 }
             };
@@ -179,6 +251,7 @@ impl FunctionRegistry {
         }
         Ok(Self {
             sigs,
+            declarations,
             modules,
             imports,
         })
@@ -219,13 +292,12 @@ impl FunctionRegistry {
         self.sigs.lookup(&(module.to_string(), name.to_string()))
     }
 
-    /// Whether the signature of `name` in `module` was refused.
-    ///
-    /// The body-lowering driver asks before lowering: a refused signature bound no
-    /// parameter types, so its body has none to bind and re-resolving its annotation
-    /// would report the same cause a second time.
-    pub(crate) fn signature_refused(&self, module: &str, name: &str) -> bool {
-        matches!(self.same_module(module, name), Binding::Refused(..))
+    /// The monomorphic signature declarations, for the body-lowering walk that
+    /// visits the same declarations in the same order.
+    pub(crate) fn declarations(&self) -> SignatureWalk<'_> {
+        SignatureWalk {
+            remaining: self.declarations.iter(),
+        }
     }
 
     /// Resolve a `::`-qualified call `prefix::item` from within `current`. A single
