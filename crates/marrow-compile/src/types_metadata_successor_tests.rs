@@ -1,5 +1,6 @@
 use super::*;
 
+use crate::decl::DeclarationBudget;
 use crate::durable::DurableRegistry;
 use marrow_image::{CollectionTypeDef, EnumTypeDef, FieldDef, ImageType, RecordTypeDef, Scalar};
 use marrow_project::IdentityLedger;
@@ -50,8 +51,14 @@ fn enum_template(template_name: &str, param: &str) -> TypeTemplate {
 
 fn test_registry(templates: Vec<TypeTemplate>) -> TypeRegistry {
     TypeRegistry {
-        named: DeclarationLedger::new(DeclarationNamespace::NamedType),
-        members: DeclarationLedger::new(DeclarationNamespace::ResourceMember),
+        named: DeclarationLedger::new(
+            DeclarationNamespace::NamedType,
+            DeclarationBudget::default(),
+        ),
+        members: DeclarationLedger::new(
+            DeclarationNamespace::ResourceMember,
+            DeclarationBudget::default(),
+        ),
         aliases: BTreeMap::new(),
         nominals: Vec::new(),
         structs: Vec::new(),
@@ -517,8 +524,17 @@ store ^second[id: int]: Second
     ];
     let mut draft = ImageDraft::new();
     let mut diagnostics = DiagnosticCollector::new();
-    let records = TypeRegistry::build(&mut draft, &[], &[], &[], &[], &resources, &mut diagnostics)
-        .expect("the test registry stays within the ledger budget");
+    let records = TypeRegistry::build(
+        &mut draft,
+        &[],
+        &[],
+        &[],
+        &[],
+        &resources,
+        &mut diagnostics,
+        DeclarationBudget::default(),
+    )
+    .expect("the test registry stays within the ledger budget");
     assert!(diagnostics.is_empty());
     let shared = records.by_name("First").expect("First record").fields[0].ty;
     assert!(matches!(shared, GArg::Enum(_)));
@@ -537,6 +553,7 @@ store ^second[id: int]: Second
             &stores,
             Some(&ledger),
             &mut diagnostics,
+            DeclarationBudget::default(),
         )
     });
 
@@ -595,9 +612,17 @@ fn invalid_ready_option_argument_stops_before_durable_anchor_resolution() {
     )];
     let mut draft = ImageDraft::new();
     let mut diagnostics = DiagnosticCollector::new();
-    let registry =
-        TypeRegistry::build(&mut draft, &[], &[], &[], &[], &resources, &mut diagnostics)
-            .expect("the test registry stays within the ledger budget");
+    let registry = TypeRegistry::build(
+        &mut draft,
+        &[],
+        &[],
+        &[],
+        &[],
+        &resources,
+        &mut diagnostics,
+        DeclarationBudget::default(),
+    )
+    .expect("the test registry stays within the ledger budget");
     assert!(diagnostics.is_empty());
     let option = match registry
         .by_name("Resource")
@@ -632,6 +657,7 @@ fn invalid_ready_option_argument_stops_before_durable_anchor_resolution() {
         &stores,
         Some(&ledger),
         &mut diagnostics,
+        DeclarationBudget::default(),
     );
 
     assert!(matches!(
@@ -648,8 +674,17 @@ fn invalid_ready_option_argument_stops_before_durable_anchor_resolution() {
 fn reserved_registry() -> (TypeRegistry, ImageDraft) {
     let mut draft = ImageDraft::new();
     let mut diagnostics = DiagnosticCollector::new();
-    let registry = TypeRegistry::build(&mut draft, &[], &[], &[], &[], &[], &mut diagnostics)
-        .expect("the test registry stays within the ledger budget");
+    let registry = TypeRegistry::build(
+        &mut draft,
+        &[],
+        &[],
+        &[],
+        &[],
+        &[],
+        &mut diagnostics,
+        DeclarationBudget::default(),
+    )
+    .expect("the test registry stays within the ledger budget");
     assert!(diagnostics.is_empty());
     (registry, draft)
 }

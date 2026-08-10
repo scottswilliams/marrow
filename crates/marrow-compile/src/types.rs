@@ -35,9 +35,9 @@ use marrow_syntax::{
 
 use crate::analysis::FileRef;
 use crate::decl::{
-    Binding, DeclarationIndexDrift, DeclarationLedger, DeclarationLedgerFull, DeclarationNamespace,
-    DeclarationOccurrence, DeclarationRefusalId, DeclarationRefusalSummary, Declared,
-    declaration_refused, refuse, refuse_covered, refuse_first, refuse_row,
+    Binding, DeclarationBudget, DeclarationIndexDrift, DeclarationLedger, DeclarationLedgerFull,
+    DeclarationNamespace, DeclarationOccurrence, DeclarationRefusalId, DeclarationRefusalSummary,
+    Declared, declaration_refused, refuse, refuse_covered, refuse_first, refuse_row,
 };
 use crate::diag::{BoundedDiagnostics, DiagnosticCollector, SourceDiagnostic};
 use crate::scalar::ScalarType;
@@ -1244,11 +1244,18 @@ pub(crate) struct TypeRegistry {
     row_directory: RefCell<Option<RowDirectory>>,
 }
 
-impl Default for TypeRegistry {
-    fn default() -> Self {
+impl TypeRegistry {
+    /// A registry with no declared type, charging its retentions against the pass's
+    /// `budget`. There is no `Default`: a ledger that retains off the pass's books
+    /// would let the declared ceiling be crossed without reporting it.
+    ///
+    /// Production builds the registry through [`Self::build`]; this exists for the
+    /// lowering tests that need a registry holding only the reserved templates.
+    #[cfg(test)]
+    pub(crate) fn empty(budget: DeclarationBudget) -> Self {
         Self {
-            named: DeclarationLedger::new(DeclarationNamespace::NamedType),
-            members: DeclarationLedger::new(DeclarationNamespace::ResourceMember),
+            named: DeclarationLedger::new(DeclarationNamespace::NamedType, budget.clone()),
+            members: DeclarationLedger::new(DeclarationNamespace::ResourceMember, budget),
             aliases: BTreeMap::new(),
             nominals: Vec::new(),
             structs: Vec::new(),
@@ -5160,13 +5167,14 @@ impl TypeRegistry {
         enums: &[(FileRef, FileIdentity, &EnumDecl)],
         resources: &[(FileRef, FileIdentity, &ResourceDecl)],
         diagnostics: &mut DiagnosticCollector,
+        budget: DeclarationBudget,
     ) -> Result<Self, DeclarationLedgerFull> {
-        let mut named = DeclarationLedger::new(DeclarationNamespace::NamedType);
+        let mut named = DeclarationLedger::new(DeclarationNamespace::NamedType, budget.clone());
         let aliases_table =
             build_alias_table(&mut named, aliases, resources, structs, enums, diagnostics)?;
         let mut registry = Self {
             named,
-            members: DeclarationLedger::new(DeclarationNamespace::ResourceMember),
+            members: DeclarationLedger::new(DeclarationNamespace::ResourceMember, budget),
             aliases: aliases_table,
             nominals: Vec::new(),
             structs: Vec::new(),
@@ -8462,8 +8470,10 @@ mod refusal_join_tests {
     /// Two distinct refusal handles, minted by a real ledger so their namespace
     /// tags and indexes are the ones production would produce.
     fn handles() -> (ResolveRefusal, ResolveRefusal) {
-        let mut ledger: DeclarationLedger<String, ()> =
-            DeclarationLedger::new(DeclarationNamespace::NamedType);
+        let mut ledger: DeclarationLedger<String, ()> = DeclarationLedger::new(
+            DeclarationNamespace::NamedType,
+            DeclarationBudget::default(),
+        );
         let mut refusal = |name: &str| {
             let (identity, _) = FileIdentity::validate("src/main.mw").expect("a valid source path");
             let declared = Declared {
@@ -8526,10 +8536,14 @@ mod refusal_join_tests {
     /// two ledgers do not collapse into one steer.
     #[test]
     fn handles_from_two_namespaces_never_merge() {
-        let mut types: DeclarationLedger<String, ()> =
-            DeclarationLedger::new(DeclarationNamespace::NamedType);
-        let mut roots: DeclarationLedger<String, ()> =
-            DeclarationLedger::new(DeclarationNamespace::DurableRoot);
+        let mut types: DeclarationLedger<String, ()> = DeclarationLedger::new(
+            DeclarationNamespace::NamedType,
+            DeclarationBudget::default(),
+        );
+        let mut roots: DeclarationLedger<String, ()> = DeclarationLedger::new(
+            DeclarationNamespace::DurableRoot,
+            DeclarationBudget::default(),
+        );
         let (identity, _) = FileIdentity::validate("src/main.mw").expect("a valid source path");
         let declared = Declared {
             name: "x",
@@ -8630,8 +8644,14 @@ mod instantiation_state_tests {
 
     fn registry(templates: Vec<TypeTemplate>) -> TypeRegistry {
         TypeRegistry {
-            named: DeclarationLedger::new(DeclarationNamespace::NamedType),
-            members: DeclarationLedger::new(DeclarationNamespace::ResourceMember),
+            named: DeclarationLedger::new(
+                DeclarationNamespace::NamedType,
+                DeclarationBudget::default(),
+            ),
+            members: DeclarationLedger::new(
+                DeclarationNamespace::ResourceMember,
+                DeclarationBudget::default(),
+            ),
             aliases: BTreeMap::new(),
             nominals: Vec::new(),
             structs: Vec::new(),
@@ -12236,6 +12256,7 @@ store ^holders[id: int]: Holder
                 &[],
                 &resources,
                 &mut diagnostics,
+                DeclarationBudget::default(),
             )
             .expect("the test registry stays within the ledger budget");
             assert!(diagnostics.is_empty());
@@ -12269,8 +12290,7 @@ store ^holders[id: int]: Holder
                     &resources,
                     &stores,
                     None,
-                    &mut diagnostics,
-                ),
+                    &mut diagnostics, DeclarationBudget::default()),
                 Err(crate::types::BuildError::Invariant(found)) if found == expected
             ));
             assert!(diagnostics.is_empty());

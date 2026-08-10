@@ -41,8 +41,9 @@ use marrow_syntax::{
 
 use crate::analysis::FileRef;
 use crate::decl::{
-    Binding, DeclarationIndexDrift, DeclarationLedger, DeclarationNamespace, DeclarationOccurrence,
-    DeclarationRefusalId, DeclarationRefusalSummary, Declared, refuse_covered, refuse_row,
+    Binding, DeclarationBudget, DeclarationIndexDrift, DeclarationLedger, DeclarationNamespace,
+    DeclarationOccurrence, DeclarationRefusalId, DeclarationRefusalSummary, Declared,
+    refuse_covered, refuse_row,
 };
 use crate::demand::{DurableNaming, PathSigil};
 use crate::diag::{DiagnosticCollector, IdentityGap, SourceDiagnostic};
@@ -324,11 +325,14 @@ pub(crate) struct DurableRegistry {
     naming: Vec<(LedgerIdBytes, PathSigil, String)>,
 }
 
-impl Default for DurableRegistry {
-    fn default() -> Self {
+impl DurableRegistry {
+    /// A registry with no declared root, charging its retentions against the pass's
+    /// `budget`. There is no `Default`: a ledger that retains off the pass's books
+    /// would let the declared ceiling be crossed without reporting it.
+    pub(crate) fn empty(budget: DeclarationBudget) -> Self {
         Self {
             roots: Vec::new(),
-            declared: DeclarationLedger::new(DeclarationNamespace::DurableRoot),
+            declared: DeclarationLedger::new(DeclarationNamespace::DurableRoot, budget),
             by_resource: BTreeMap::new(),
             naming: Vec::new(),
         }
@@ -475,12 +479,13 @@ impl DurableRegistry {
         stores: &[(FileRef, FileIdentity, &StoreDecl)],
         ledger: Option<&IdentityLedger>,
         diagnostics: &mut DiagnosticCollector,
+        budget: DeclarationBudget,
     ) -> Result<Self, BuildError> {
         if stores.is_empty() {
-            return Ok(Self::default());
+            return Ok(Self::empty(budget));
         }
         records.with_metadata_session(|metadata| {
-            let mut registry = Self::default();
+            let mut registry = Self::empty(budget.clone());
             let mut type_metadata = DurableTypeMetadata { records, metadata };
             let mut reported_identity_gaps = BTreeSet::new();
             let mut identity_build = IdentityBuildState {
@@ -2142,9 +2147,17 @@ mod generic_enum_shape_tests {
     fn ready_option_reaches_the_durable_enum_shape_owner() {
         let mut draft = ImageDraft::new();
         let mut build_diagnostics = DiagnosticCollector::new();
-        let records =
-            TypeRegistry::build(&mut draft, &[], &[], &[], &[], &[], &mut build_diagnostics)
-                .expect("the test registry stays within the ledger budget");
+        let records = TypeRegistry::build(
+            &mut draft,
+            &[],
+            &[],
+            &[],
+            &[],
+            &[],
+            &mut build_diagnostics,
+            DeclarationBudget::default(),
+        )
+        .expect("the test registry stays within the ledger budget");
         assert!(build_diagnostics.is_empty());
         let option = records
             .instantiate_reserved_option(
@@ -2212,9 +2225,17 @@ mod generic_enum_shape_tests {
     fn unavailable_enum_stops_before_durable_identity_resolution() {
         let mut draft = ImageDraft::new();
         let mut build_diagnostics = DiagnosticCollector::new();
-        let records =
-            TypeRegistry::build(&mut draft, &[], &[], &[], &[], &[], &mut build_diagnostics)
-                .expect("the test registry stays within the ledger budget");
+        let records = TypeRegistry::build(
+            &mut draft,
+            &[],
+            &[],
+            &[],
+            &[],
+            &[],
+            &mut build_diagnostics,
+            DeclarationBudget::default(),
+        )
+        .expect("the test registry stays within the ledger budget");
         assert!(build_diagnostics.is_empty());
         let name = draft.intern_string("Unavailable");
         let unavailable = draft.add_enum_type(marrow_image::EnumTypeDef {
@@ -2257,9 +2278,17 @@ mod generic_enum_shape_tests {
     fn ready_enum_with_struct_body_is_not_contextualized_or_resolved() {
         let mut draft = ImageDraft::new();
         let mut build_diagnostics = DiagnosticCollector::new();
-        let records =
-            TypeRegistry::build(&mut draft, &[], &[], &[], &[], &[], &mut build_diagnostics)
-                .expect("the test registry stays within the ledger budget");
+        let records = TypeRegistry::build(
+            &mut draft,
+            &[],
+            &[],
+            &[],
+            &[],
+            &[],
+            &mut build_diagnostics,
+            DeclarationBudget::default(),
+        )
+        .expect("the test registry stays within the ledger budget");
         let option = records
             .instantiate_reserved_option(
                 &mut draft,
@@ -2322,9 +2351,17 @@ store ^holders[id: int]: Holder
         )];
         let mut draft = ImageDraft::new();
         let mut diagnostics = DiagnosticCollector::new();
-        let records =
-            TypeRegistry::build(&mut draft, &[], &[], &[], &[], &resources, &mut diagnostics)
-                .expect("the test registry stays within the ledger budget");
+        let records = TypeRegistry::build(
+            &mut draft,
+            &[],
+            &[],
+            &[],
+            &[],
+            &resources,
+            &mut diagnostics,
+            DeclarationBudget::default(),
+        )
+        .expect("the test registry stays within the ledger budget");
         assert!(diagnostics.is_empty());
         let option = match records.by_name("Holder").expect("record exists").fields[0].ty {
             GArg::Enum(id) => id,

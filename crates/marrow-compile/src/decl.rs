@@ -8,13 +8,15 @@
 //! rather than `Absent`.
 //!
 //! The retained summary is the only owned retention this module adds, and it is
-//! charged against [`MAX_DECLARATION_LEDGER_BYTES`] at `declare`. The charge is
-//! per refused *key*: re-refusing a key already in the ledger increments a bounded
-//! occurrence count and costs nothing, which is what holds amplification to the
-//! number of refused declarations rather than the number of uses.
+//! charged at `declare` against the pass's one [`DeclarationBudget`], whose ceiling
+//! is [`MAX_DECLARATION_LEDGER_BYTES`]. The charge is per refused *key*: re-refusing
+//! a key already in the ledger increments a bounded occurrence count and costs
+//! nothing, which is what holds amplification to the number of refused declarations
+//! rather than the number of uses.
 
 use std::cell::Cell;
 use std::collections::BTreeMap;
+use std::rc::Rc;
 
 use marrow_codes::Code;
 use marrow_project::FileIdentity;
@@ -38,6 +40,35 @@ pub(crate) const MAX_DECLARATION_LEDGER_BYTES: usize = MAX_DIAGNOSTIC_BYTES;
 /// rather than dropping a key and fabricating an absence at its uses.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct DeclarationLedgerFull;
+
+/// The one retention budget every declaration ledger of a pass charges against.
+///
+/// One budget, not one per namespace: [`MAX_DECLARATION_LEDGER_BYTES`] bounds what
+/// the pass retains while the diagnostic collector is live, and a pass runs six
+/// production ledgers, so a per-ledger charge would admit six times the declared
+/// bound. Shared by handle rather than by `&mut`, because the ledgers are owned by
+/// separate registries that are built in sequence and then read together — no
+/// single mutable borrow spans them. A semantic pass runs on one thread, and the
+/// handle is deliberately not `Sync`.
+#[derive(Clone, Default)]
+pub(crate) struct DeclarationBudget(Rc<Cell<usize>>);
+
+impl DeclarationBudget {
+    /// Charge `bytes` against the pass's remaining budget, or report the ceiling.
+    fn charge(&self, bytes: usize) -> Result<(), DeclarationLedgerFull> {
+        let charged = self.0.get().saturating_add(bytes);
+        if charged > MAX_DECLARATION_LEDGER_BYTES {
+            return Err(DeclarationLedgerFull);
+        }
+        self.0.set(charged);
+        Ok(())
+    }
+
+    #[cfg(test)]
+    fn spent(&self) -> usize {
+        self.0.get()
+    }
+}
 
 /// Which namespace's ledger minted a [`DeclarationRefusalId`].
 ///
@@ -476,7 +507,7 @@ pub(crate) struct DeclarationLedger<K, T> {
     /// Positions in `occurrences` of the merged refusal for each refused key,
     /// addressed by [`DeclarationRefusalId`].
     refusals: Vec<usize>,
-    owned_bytes: usize,
+    budget: DeclarationBudget,
 }
 
 /// Layer 1 and the lookup index disagree: a `DeclarationRefusalId` addresses a
@@ -486,15 +517,16 @@ pub(crate) struct DeclarationLedger<K, T> {
 pub(crate) struct DeclarationIndexDrift;
 
 impl<K, T> DeclarationLedger<K, T> {
-    /// An empty ledger for `namespace`. There is no `Default`: an untagged ledger
-    /// would mint ids that compare equal to another namespace's.
-    pub(crate) fn new(namespace: DeclarationNamespace) -> Self {
+    /// An empty ledger for `namespace`, charging its retentions against `budget`.
+    /// There is no `Default`: an untagged ledger would mint ids that compare equal
+    /// to another namespace's, and an unbudgeted one would retain off the books.
+    pub(crate) fn new(namespace: DeclarationNamespace, budget: DeclarationBudget) -> Self {
         Self {
             namespace,
             occurrences: Vec::new(),
             index: BTreeMap::new(),
             refusals: Vec::new(),
-            owned_bytes: 0,
+            budget,
         }
     }
 }
@@ -530,7 +562,7 @@ impl<K: Ord + Clone, T> DeclarationLedger<K, T> {
                         return Ok(());
                     }
                     None => {
-                        self.charge(summary.retained_owned_bytes())?;
+                        self.budget.charge(summary.retained_owned_bytes())?;
                         let id = DeclarationRefusalId {
                             namespace: self.namespace,
                             index: self.refusals.len() as u32,
@@ -562,15 +594,6 @@ impl<K: Ord + Clone, T> DeclarationLedger<K, T> {
         if let Some((_, DeclarationOccurrence::Refused(first))) = self.occurrences.get_mut(at) {
             first.merge(summary);
         }
-    }
-
-    fn charge(&mut self, bytes: usize) -> Result<(), DeclarationLedgerFull> {
-        let charged = self.owned_bytes.saturating_add(bytes);
-        if charged > MAX_DECLARATION_LEDGER_BYTES {
-            return Err(DeclarationLedgerFull);
-        }
-        self.owned_bytes = charged;
-        Ok(())
     }
 
     /// What `key` resolves to: its first accepted occurrence, else the merged
@@ -725,7 +748,7 @@ mod tests {
     }
 
     fn ledger() -> DeclarationLedger<String, u32> {
-        DeclarationLedger::new(DeclarationNamespace::Constant)
+        DeclarationLedger::new(DeclarationNamespace::Constant, DeclarationBudget::default())
     }
 
     #[test]
@@ -847,14 +870,14 @@ mod tests {
                 DeclarationOccurrence::Refused(refusal("a")),
             )
             .expect("within budget");
-        let after_first = ledger.owned_bytes;
+        let after_first = ledger.budget.spent();
         ledger
             .declare(
                 "a".to_string(),
                 DeclarationOccurrence::Refused(refusal("a")),
             )
             .expect("within budget");
-        assert_eq!(ledger.owned_bytes, after_first);
+        assert_eq!(ledger.budget.spent(), after_first);
         match ledger.lookup(&"a".to_string()) {
             // The second refusal folds into the first: one retained summary, one
             // reportable cause, and a bounded count of the occurrences behind it.
@@ -926,7 +949,7 @@ mod tests {
     #[test]
     fn crossing_the_byte_ceiling_is_a_typed_limit_not_a_dropped_key() {
         let mut ledger: DeclarationLedger<String, u32> =
-            DeclarationLedger::new(DeclarationNamespace::Constant);
+            DeclarationLedger::new(DeclarationNamespace::Constant, DeclarationBudget::default());
         let wide = "n".repeat(4096);
         let mut diagnostics = DiagnosticCollector::new();
         let mut declared = 0usize;
@@ -939,7 +962,7 @@ mod tests {
             }
             assert!(declared < 4096, "the ceiling must bind before this");
         }
-        assert!(ledger.owned_bytes <= MAX_DECLARATION_LEDGER_BYTES);
+        assert!(ledger.budget.spent() <= MAX_DECLARATION_LEDGER_BYTES);
     }
 
     #[test]
@@ -966,8 +989,10 @@ mod tests {
                 DeclarationOccurrence::Refused(refusal("a")),
             )
             .expect("within budget");
-        let mut types: DeclarationLedger<String, u32> =
-            DeclarationLedger::new(DeclarationNamespace::NamedType);
+        let mut types: DeclarationLedger<String, u32> = DeclarationLedger::new(
+            DeclarationNamespace::NamedType,
+            DeclarationBudget::default(),
+        );
         types
             .declare(
                 "a".to_string(),

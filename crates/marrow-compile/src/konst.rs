@@ -14,8 +14,8 @@ use marrow_syntax::{
 
 use crate::analysis::FileRef;
 use crate::decl::{
-    Binding, DeclarationLedger, DeclarationLedgerFull, DeclarationNamespace, DeclarationOccurrence,
-    DeclarationRefusalSummary, Declared, refuse, refuse_row,
+    Binding, DeclarationBudget, DeclarationLedger, DeclarationLedgerFull, DeclarationNamespace,
+    DeclarationOccurrence, DeclarationRefusalSummary, Declared, refuse, refuse_row,
 };
 use crate::diag::{DiagnosticCollector, SourceDiagnostic};
 use crate::lower::parse_int;
@@ -54,10 +54,17 @@ pub(crate) struct ConstRegistry {
     entries: DeclarationLedger<ConstKey, ConstScalar>,
 }
 
-impl Default for ConstRegistry {
-    fn default() -> Self {
+impl ConstRegistry {
+    /// A registry with no declared constant, charging its retentions against the
+    /// pass's `budget`. There is no `Default`: a ledger that retains off the pass's
+    /// books would let the declared ceiling be crossed without reporting it.
+    ///
+    /// Production builds every registry through [`Self::build`]; this exists for
+    /// the lowering tests that need a scope with no constant in it.
+    #[cfg(test)]
+    pub(crate) fn empty(budget: DeclarationBudget) -> Self {
         Self {
-            entries: DeclarationLedger::new(DeclarationNamespace::Constant),
+            entries: DeclarationLedger::new(DeclarationNamespace::Constant, budget),
         }
     }
 }
@@ -89,9 +96,10 @@ impl ConstRegistry {
         consts: &[(String, FileRef, FileIdentity, &ConstDecl)],
         types: &TypeRegistry,
         diagnostics: &mut DiagnosticCollector,
+        budget: DeclarationBudget,
     ) -> Result<Self, DeclarationLedgerFull> {
         let mut entries: DeclarationLedger<ConstKey, ConstScalar> =
-            DeclarationLedger::new(DeclarationNamespace::Constant);
+            DeclarationLedger::new(DeclarationNamespace::Constant, budget);
         for (module, at, file, decl) in consts {
             let key = (module.clone(), decl.name.clone());
             let declared = Declared {

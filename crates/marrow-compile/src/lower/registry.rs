@@ -3,8 +3,8 @@
 use super::*;
 
 use crate::decl::{
-    Binding, DeclarationLedger, DeclarationNamespace, DeclarationOccurrence,
-    DeclarationRefusalSummary, Declared, refuse_covered, refuse_first,
+    Binding, DeclarationBudget, DeclarationIndexDrift, DeclarationLedger, DeclarationNamespace,
+    DeclarationOccurrence, DeclarationRefusalSummary, Declared, refuse_covered, refuse_first,
 };
 use crate::types::BuildError;
 
@@ -112,20 +112,23 @@ pub(crate) struct TemplateProofOutcome {
     pub(crate) generic: GenericDiagnostics,
 }
 
-impl Default for FunctionRegistry {
+impl FunctionRegistry {
     /// The registry of a project with no modules, functions, or imports. Each ledger
-    /// carries its namespace tag, so there is no untagged empty ledger.
-    fn default() -> Self {
+    /// carries its namespace tag and the pass's retention budget, so there is
+    /// neither an untagged nor an unbudgeted empty ledger.
+    ///
+    /// Production builds the registry through [`Self::build`]; this exists for the
+    /// lowering tests that need a scope with no function in it.
+    #[cfg(test)]
+    pub(crate) fn empty(budget: DeclarationBudget) -> Self {
         Self {
-            sigs: DeclarationLedger::new(DeclarationNamespace::Function),
+            sigs: DeclarationLedger::new(DeclarationNamespace::Function, budget.clone()),
             declarations: Vec::new(),
-            modules: ModuleLedger::new(DeclarationNamespace::Module),
+            modules: ModuleLedger::new(DeclarationNamespace::Module, budget),
             imports: BTreeMap::new(),
         }
     }
-}
 
-impl FunctionRegistry {
     /// Resolve every function's signature in declaration order.
     ///
     /// A signature is refused whole: one parameter or return type the compiler
@@ -151,8 +154,9 @@ impl FunctionRegistry {
         modules: ModuleLedger,
         imports: BTreeMap<String, Vec<(String, String)>>,
         diagnostics: &mut DiagnosticCollector,
+        budget: DeclarationBudget,
     ) -> Result<FunctionRegistry, BuildError> {
-        let mut sigs = DeclarationLedger::new(DeclarationNamespace::Function);
+        let mut sigs = DeclarationLedger::new(DeclarationNamespace::Function, budget);
         let mut declarations = Vec::new();
         // Only monomorphic functions take an image index and enter the signature
         // table; a generic function is a template with no single image entry (its

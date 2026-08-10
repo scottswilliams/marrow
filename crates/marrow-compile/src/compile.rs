@@ -18,8 +18,8 @@ use marrow_syntax::{
 
 use crate::analysis::{AnalysisFactCollector, BoundedAnalysisFacts, FactSink, FileRef};
 use crate::decl::{
-    Binding, DeclarationLedgerFull, DeclarationNamespace, DeclarationOccurrence, Declared,
-    MAX_DECLARATION_LEDGER_BYTES, SourceStage, refuse, refuse_at_earlier_stage,
+    Binding, DeclarationBudget, DeclarationLedgerFull, DeclarationNamespace, DeclarationOccurrence,
+    Declared, MAX_DECLARATION_LEDGER_BYTES, SourceStage, refuse, refuse_at_earlier_stage,
 };
 use crate::demand::DurableNaming;
 use crate::diag::{
@@ -1167,6 +1167,10 @@ fn run_semantic(
     }
 
     let mut diagnostics = DiagnosticCollector::new();
+    // One retention budget for the whole pass. Every ledger below charges its
+    // retained refusals against it, so the declared ceiling bounds what the pass
+    // holds rather than what any single namespace holds.
+    let budget = DeclarationBudget::default();
     // Store roots whose durable identity failed admission, steered to their identity
     // reports once each across the whole compile rather than at every reference.
     // The source-root-relative path is the authority for module identity. A file
@@ -1180,7 +1184,7 @@ fn run_semantic(
     // statement about a file the reader can see. Module order is not observed —
     // nothing takes a slot from this ledger — so the stage-refused modules are
     // declared first and the header-checked ones after.
-    let mut modules = ModuleLedger::new(DeclarationNamespace::Module);
+    let mut modules = ModuleLedger::new(DeclarationNamespace::Module, budget.clone());
     for module in unparsed {
         let refusal = refuse_at_earlier_stage(
             Declared::whole_file(&module.name, &module.file, module.at),
@@ -1372,6 +1376,7 @@ fn run_semantic(
         &enums,
         &resources,
         &mut diagnostics,
+        budget.clone(),
     ) {
         Ok(records) => records,
         Err(DeclarationLedgerFull) => return SemanticOutcome::ResourceLimit(ledger_full()),
@@ -1406,6 +1411,7 @@ fn run_semantic(
         &stores,
         project.identity_ledger(),
         &mut diagnostics,
+        budget.clone(),
     ) {
         Ok(durable) => durable,
         Err(BuildError::Invariant(invariant)) => {
@@ -1431,6 +1437,7 @@ fn run_semantic(
         modules,
         imports,
         &mut diagnostics,
+        budget.clone(),
     ) {
         Ok(signatures) => CompleteFunctionRegistry(signatures),
         Err(BuildError::Invariant(invariant)) => {
@@ -1478,7 +1485,7 @@ fn run_semantic(
             })
         })
         .collect();
-    let constants = match ConstRegistry::build(&const_decls, &records, &mut diagnostics) {
+    let constants = match ConstRegistry::build(&const_decls, &records, &mut diagnostics, budget) {
         Ok(constants) => constants,
         Err(DeclarationLedgerFull) => return SemanticOutcome::ResourceLimit(ledger_full()),
     };
@@ -2796,7 +2803,9 @@ mod tests {
         CompleteLoweredFunctionSet, CompleteTypeRegistry, DeclarationExit, Driven, InvariantCause,
         SemanticOutcome, SignaturesComplete, analyze_outcome,
     };
+    use crate::compile::Declaration;
     use crate::diag::{DiagnosticCollector, MAX_DIAGNOSTIC_COUNT, SourceDiagnostic};
+    use crate::lower::FunctionRegistry;
     use crate::types::{
         CollectionKind, GenericCacheInvariant, GenericInvariant, ProofCloneError, Reserved,
         TypeInstKind,
@@ -3094,10 +3103,56 @@ mod tests {
     /// keys a lookup resolves to a refusal would skip this one, and `Artifacts`
     /// would hold a proof minted over a table the compiler refused a declaration
     /// in — the amendment's sentence would be false for exactly this source shape.
+    /// Resolve `functions` through the production registry owners, over a project
+    /// that declares nothing else.
+    ///
+    /// Built through the real builders rather than hand-assembled: a completeness
+    /// proof is only meaningful over a table the production build produced.
+    fn signature_registry(functions: &[crate::lower::DeclaredFn<'_>]) -> FunctionRegistry {
+        let budget = crate::decl::DeclarationBudget::default();
+        let mut draft = marrow_image::ImageDraft::new();
+        let mut diagnostics = DiagnosticCollector::new();
+        let records = crate::types::TypeRegistry::build(
+            &mut draft,
+            &[],
+            &[],
+            &[],
+            &[],
+            &[],
+            &mut diagnostics,
+            budget.clone(),
+        )
+        .expect("the test registry stays within the ledger budget");
+        let durable = crate::durable::DurableRegistry::build(
+            &mut draft,
+            &records,
+            &[],
+            &[],
+            None,
+            &mut diagnostics,
+            budget.clone(),
+        )
+        .expect("an empty project builds an empty durable registry");
+        crate::lower::FunctionRegistry::build(
+            &records,
+            &mut draft,
+            &durable,
+            functions,
+            crate::lower::ModuleLedger::new(
+                crate::decl::DeclarationNamespace::Module,
+                budget.clone(),
+            ),
+            BTreeMap::new(),
+            &mut diagnostics,
+            budget,
+        )
+        .expect("the signature ledger stays within its budget")
+    }
+
     #[test]
     fn a_refusal_behind_an_accepted_duplicate_withholds_the_completeness_proof() {
-        let (identity, _) = marrow_project::FileIdentity::validate("src/main.mw")
-            .expect("a valid source path");
+        let (identity, _) =
+            marrow_project::FileIdentity::validate("src/main.mw").expect("a valid source path");
         let parsed = marrow_syntax::parse_source(
             "module main\n\nfn dup(a: int): int {\n    return a\n}\n\n\
              fn dup(a: Nope): int {\n    return 1\n}\n",
@@ -3107,43 +3162,17 @@ mod tests {
             .declarations
             .iter()
             .filter_map(|decl| match decl {
-                crate::compile::Declaration::Function(function) => {
-                    Some(crate::lower::DeclaredFn {
-                        file: identity.clone(),
-                        at: crate::analysis::FileRef::admitted(0),
-                        module: "main".to_string(),
-                        decl: function,
-                    })
-                }
+                Declaration::Function(function) => Some(crate::lower::DeclaredFn {
+                    file: identity.clone(),
+                    at: crate::analysis::FileRef::admitted(0),
+                    module: "main".to_string(),
+                    decl: function,
+                }),
                 _ => None,
             })
             .collect();
         assert_eq!(functions.len(), 2, "both declarations are parsed");
-
-        let mut draft = marrow_image::ImageDraft::new();
-        let mut diagnostics = DiagnosticCollector::new();
-        let records =
-            crate::types::TypeRegistry::build(&mut draft, &[], &[], &[], &[], &[], &mut diagnostics)
-                .expect("the test registry stays within the ledger budget");
-        let durable = crate::durable::DurableRegistry::build(
-            &mut draft,
-            &records,
-            &[],
-            &[],
-            None,
-            &mut diagnostics,
-        )
-        .expect("an empty project builds an empty durable registry");
-        let signatures = crate::lower::FunctionRegistry::build(
-            &records,
-            &mut draft,
-            &durable,
-            &functions,
-            crate::lower::ModuleLedger::new(crate::decl::DeclarationNamespace::Module),
-            BTreeMap::new(),
-            &mut diagnostics,
-        )
-        .expect("the signature ledger stays within its budget");
+        let signatures = signature_registry(&functions);
 
         assert!(
             !signatures.every_signature_accepted(),
@@ -3163,46 +3192,9 @@ mod tests {
     /// destructure is load-bearing, and the all-available base is checked to be checked.
     #[test]
     fn an_empty_terminal_with_a_withheld_artifact_is_an_invariant() {
-        // Built through the production registry owners over an empty project rather
-        // than hand-assembled: the artifact is only meaningful over a table the real
-        // builder accepted.
-        let complete_registry = || {
-            let mut draft = marrow_image::ImageDraft::new();
-            let mut diagnostics = DiagnosticCollector::new();
-            let records = crate::types::TypeRegistry::build(
-                &mut draft,
-                &[],
-                &[],
-                &[],
-                &[],
-                &[],
-                &mut diagnostics,
-            );
-            let records = records.expect("the test registry stays within the ledger budget");
-            let durable = crate::durable::DurableRegistry::build(
-                &mut draft,
-                &records,
-                &[],
-                &[],
-                None,
-                &mut diagnostics,
-            )
-            .expect("an empty project builds an empty durable registry");
-            let signatures = crate::lower::FunctionRegistry::build(
-                &records,
-                &mut draft,
-                &durable,
-                &[],
-                crate::lower::ModuleLedger::new(crate::decl::DeclarationNamespace::Module),
-                BTreeMap::new(),
-                &mut diagnostics,
-            )
-            .expect("an empty project resolves every signature");
-            CompleteFunctionRegistry(signatures)
-        };
         let available = || Artifacts {
             types: Some(CompleteTypeRegistry),
-            functions: complete_registry().complete(),
+            functions: CompleteFunctionRegistry(signature_registry(&[])).complete(),
             template_proofs: Some(AcceptedQueuedTemplateProofs),
             function_bodies: Some(CompleteDeclaredFunctionBodies),
             test_bodies: Some(CompleteDeclaredTestBodies),

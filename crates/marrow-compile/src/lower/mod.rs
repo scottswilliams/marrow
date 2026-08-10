@@ -1223,6 +1223,7 @@ mod lower_metadata_successor_tests;
 #[cfg(test)]
 mod generic_cache_boundary_tests {
     use super::*;
+    use crate::decl::DeclarationBudget;
     use crate::types::{GenericInvariant, Reserved, TypeInstKind, count_metadata_directory_builds};
     use marrow_image::{EnumTypeDef, RecordTypeDef};
     use marrow_syntax::{Declaration, parse_source};
@@ -1244,8 +1245,17 @@ mod generic_cache_boundary_tests {
 
     fn generic_enum_registry(draft: &mut ImageDraft) -> TypeRegistry {
         let mut diagnostics = DiagnosticCollector::new();
-        TypeRegistry::build(draft, &[], &[], &[], &[], &[], &mut diagnostics)
-            .expect("the test registry stays within the ledger budget")
+        TypeRegistry::build(
+            draft,
+            &[],
+            &[],
+            &[],
+            &[],
+            &[],
+            &mut diagnostics,
+            DeclarationBudget::default(),
+        )
+        .expect("the test registry stays within the ledger budget")
     }
 
     fn generic_struct_registry(draft: &mut ImageDraft) -> TypeRegistry {
@@ -1278,6 +1288,7 @@ mod generic_cache_boundary_tests {
             &[],
             &[],
             &mut diagnostics,
+            DeclarationBudget::default(),
         );
         assert!(diagnostics.is_empty());
         records.expect("the test registry stays within the ledger budget")
@@ -1432,7 +1443,7 @@ mod generic_cache_boundary_tests {
                 resolve_type(
                     &records,
                     &mut draft,
-                    &DurableRegistry::default(),
+                    &DurableRegistry::empty(DeclarationBudget::default()),
                     &annotation,
                     TypeEnv { params: &params },
                     MintSite {
@@ -1491,7 +1502,7 @@ mod generic_cache_boundary_tests {
             resolve_type(
                 &records,
                 &mut draft,
-                &DurableRegistry::default(),
+                &DurableRegistry::empty(DeclarationBudget::default()),
                 &annotation,
                 TypeEnv { params: &params },
                 MintSite {
@@ -1552,10 +1563,10 @@ mod generic_cache_boundary_tests {
         let mut draft = ImageDraft::new();
         let records = generic_enum_registry(&mut draft);
         let before = draft.encode().expect("empty draft encodes");
-        let durable = DurableRegistry::default();
-        let functions = FunctionRegistry::default();
+        let durable = DurableRegistry::empty(DeclarationBudget::default());
+        let functions = FunctionRegistry::empty(DeclarationBudget::default());
         let generics = GenericRegistry::default();
-        let consts = ConstRegistry::default();
+        let consts = ConstRegistry::empty(DeclarationBudget::default());
         let mut diagnostics = DiagnosticCollector::new();
         let request_span = SourceSpan {
             start_byte: 40,
@@ -1627,10 +1638,10 @@ mod generic_cache_boundary_tests {
         let mut draft = ImageDraft::new();
         let records = generic_enum_registry(&mut draft);
         let before = draft.encode().expect("empty draft encodes");
-        let durable = DurableRegistry::default();
-        let functions = FunctionRegistry::default();
+        let durable = DurableRegistry::empty(DeclarationBudget::default());
+        let functions = FunctionRegistry::empty(DeclarationBudget::default());
         let generics = GenericRegistry::default();
-        let consts = ConstRegistry::default();
+        let consts = ConstRegistry::empty(DeclarationBudget::default());
         let mut diagnostics = DiagnosticCollector::new();
         let mut lowerer = lowerer(
             &mut draft,
@@ -1691,10 +1702,10 @@ mod generic_cache_boundary_tests {
         let records = generic_enum_registry(&mut draft);
         let (enum_id, _) = orphan_enum_and_struct(&mut draft);
         let draft_before = draft.encode().expect("seeded draft encodes");
-        let durable = DurableRegistry::default();
-        let functions = FunctionRegistry::default();
+        let durable = DurableRegistry::empty(DeclarationBudget::default());
+        let functions = FunctionRegistry::empty(DeclarationBudget::default());
         let generics = GenericRegistry::default();
-        let consts = ConstRegistry::default();
+        let consts = ConstRegistry::empty(DeclarationBudget::default());
         let mut diagnostics = DiagnosticCollector::new();
         let mut lowerer = lowerer(
             &mut draft,
@@ -1749,10 +1760,10 @@ mod generic_cache_boundary_tests {
         let records = generic_enum_registry(&mut draft);
         let (_, struct_id) = orphan_enum_and_struct(&mut draft);
         let draft_before = draft.encode().expect("seeded draft encodes");
-        let durable = DurableRegistry::default();
-        let functions = FunctionRegistry::default();
+        let durable = DurableRegistry::empty(DeclarationBudget::default());
+        let functions = FunctionRegistry::empty(DeclarationBudget::default());
         let generics = GenericRegistry::default();
-        let consts = ConstRegistry::default();
+        let consts = ConstRegistry::empty(DeclarationBudget::default());
         let mut diagnostics = DiagnosticCollector::new();
         let mut lowerer = lowerer(
             &mut draft,
@@ -1811,10 +1822,10 @@ mod generic_cache_boundary_tests {
         let records = generic_enum_registry(&mut draft);
         let (_, type_id) = orphan_enum_and_struct(&mut draft);
         let draft_before = draft.encode().expect("seeded draft encodes");
-        let durable = DurableRegistry::default();
-        let functions = FunctionRegistry::default();
+        let durable = DurableRegistry::empty(DeclarationBudget::default());
+        let functions = FunctionRegistry::empty(DeclarationBudget::default());
         let generics = GenericRegistry::default();
-        let consts = ConstRegistry::default();
+        let consts = ConstRegistry::empty(DeclarationBudget::default());
         let mut diagnostics = DiagnosticCollector::new();
         let mut lowerer = lowerer(
             &mut draft,
@@ -1888,10 +1899,10 @@ mod generic_cache_boundary_tests {
             body: TypeInstKind::Struct,
         };
         let before = draft.encode().expect("seeded draft encodes");
-        let durable = DurableRegistry::default();
-        let functions = FunctionRegistry::default();
+        let durable = DurableRegistry::empty(DeclarationBudget::default());
+        let functions = FunctionRegistry::empty(DeclarationBudget::default());
         let generics = GenericRegistry::default();
-        let consts = ConstRegistry::default();
+        let consts = ConstRegistry::empty(DeclarationBudget::default());
         let mut diagnostics = DiagnosticCollector::new();
         let mut lowerer = lowerer(
             &mut draft,
@@ -1957,10 +1968,10 @@ mod generic_cache_boundary_tests {
             body: TypeInstKind::Enum,
         };
         let before = draft.encode().expect("seeded draft encodes");
-        let durable = DurableRegistry::default();
-        let functions = FunctionRegistry::default();
+        let durable = DurableRegistry::empty(DeclarationBudget::default());
+        let functions = FunctionRegistry::empty(DeclarationBudget::default());
         let generics = GenericRegistry::default();
-        let consts = ConstRegistry::default();
+        let consts = ConstRegistry::empty(DeclarationBudget::default());
         let mut diagnostics = DiagnosticCollector::new();
         let mut lowerer = lowerer(
             &mut draft,
@@ -2022,10 +2033,10 @@ mod generic_cache_boundary_tests {
             body: TypeInstKind::Struct,
         };
         let draft_before = draft.encode().expect("seeded draft encodes");
-        let durable = DurableRegistry::default();
-        let functions = FunctionRegistry::default();
+        let durable = DurableRegistry::empty(DeclarationBudget::default());
+        let functions = FunctionRegistry::empty(DeclarationBudget::default());
         let generics = GenericRegistry::default();
-        let consts = ConstRegistry::default();
+        let consts = ConstRegistry::empty(DeclarationBudget::default());
         let mut diagnostics = DiagnosticCollector::new();
         let mut lowerer = lowerer(
             &mut draft,
@@ -2093,10 +2104,10 @@ mod generic_cache_boundary_tests {
             variant: 1,
         };
         let draft_before = draft.encode().expect("seeded draft encodes");
-        let durable = DurableRegistry::default();
-        let functions = FunctionRegistry::default();
+        let durable = DurableRegistry::empty(DeclarationBudget::default());
+        let functions = FunctionRegistry::empty(DeclarationBudget::default());
         let generics = GenericRegistry::default();
-        let consts = ConstRegistry::default();
+        let consts = ConstRegistry::empty(DeclarationBudget::default());
         let mut diagnostics = DiagnosticCollector::new();
         let mut lowerer = lowerer(
             &mut draft,
@@ -2166,10 +2177,10 @@ mod generic_cache_boundary_tests {
             variant: 1,
         };
         let draft_before = draft.encode().expect("seeded draft encodes");
-        let durable = DurableRegistry::default();
-        let functions = FunctionRegistry::default();
+        let durable = DurableRegistry::empty(DeclarationBudget::default());
+        let functions = FunctionRegistry::empty(DeclarationBudget::default());
         let generics = GenericRegistry::default();
-        let consts = ConstRegistry::default();
+        let consts = ConstRegistry::empty(DeclarationBudget::default());
         let mut diagnostics = DiagnosticCollector::new();
         let mut lowerer = lowerer(
             &mut draft,
@@ -2249,10 +2260,10 @@ mod generic_cache_boundary_tests {
             body: TypeInstKind::Struct,
         };
         let before = draft.encode().expect("seeded draft encodes");
-        let durable = DurableRegistry::default();
-        let functions = FunctionRegistry::default();
+        let durable = DurableRegistry::empty(DeclarationBudget::default());
+        let functions = FunctionRegistry::empty(DeclarationBudget::default());
         let generics = GenericRegistry::default();
-        let consts = ConstRegistry::default();
+        let consts = ConstRegistry::empty(DeclarationBudget::default());
         let mut diagnostics = DiagnosticCollector::new();
         let mut lowerer = lowerer(
             &mut draft,
@@ -2309,10 +2320,10 @@ mod generic_cache_boundary_tests {
         draft.intern_int(1);
         draft.intern_int(2);
         let draft_before = draft.encode().expect("seeded draft encodes");
-        let durable = DurableRegistry::default();
-        let functions = FunctionRegistry::default();
+        let durable = DurableRegistry::empty(DeclarationBudget::default());
+        let functions = FunctionRegistry::empty(DeclarationBudget::default());
         let generics = GenericRegistry::default();
-        let consts = ConstRegistry::default();
+        let consts = ConstRegistry::empty(DeclarationBudget::default());
         let mut diagnostics = DiagnosticCollector::new();
         let mut lowerer = lowerer(
             &mut draft,
@@ -2398,10 +2409,10 @@ mod generic_cache_boundary_tests {
         let records = generic_enum_registry(&mut draft);
         let expected = GenericInvariant::ReservedTemplateMissing(Reserved::Result);
         let before = draft.encode().expect("empty draft encodes");
-        let durable = DurableRegistry::default();
-        let functions = FunctionRegistry::default();
+        let durable = DurableRegistry::empty(DeclarationBudget::default());
+        let functions = FunctionRegistry::empty(DeclarationBudget::default());
         let generics = GenericRegistry::default();
-        let consts = ConstRegistry::default();
+        let consts = ConstRegistry::empty(DeclarationBudget::default());
         let mut diagnostics = DiagnosticCollector::new();
         let mut lowerer = lowerer(
             &mut draft,
@@ -2476,10 +2487,10 @@ mod generic_cache_boundary_tests {
             .expect("Option row mints ready");
         let expected = GenericInvariant::ReadyBodyMissing(TypeInstId::Enum(enum_id));
         let draft_before = draft.encode().expect("seeded draft encodes");
-        let durable = DurableRegistry::default();
-        let functions = FunctionRegistry::default();
+        let durable = DurableRegistry::empty(DeclarationBudget::default());
+        let functions = FunctionRegistry::empty(DeclarationBudget::default());
         let generics = GenericRegistry::default();
-        let consts = ConstRegistry::default();
+        let consts = ConstRegistry::empty(DeclarationBudget::default());
         let mut diagnostics = DiagnosticCollector::new();
         let mut lowerer = lowerer(
             &mut draft,

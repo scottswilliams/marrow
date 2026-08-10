@@ -297,6 +297,32 @@ fn e9_crossing_the_ledger_ceiling_is_a_typed_resource_limit() {
     }
 }
 
+/// The ceiling is one budget for the whole pass, not one per namespace. Six
+/// production ledgers each holding the declared ceiling would retain six times the
+/// bound the reference states, and the retention this term exists to bound is what
+/// the pass holds while the diagnostic collector is live — a property of the pass,
+/// not of any one namespace.
+#[test]
+fn the_ledger_ceiling_is_one_budget_across_namespaces() {
+    // Neither half crosses the ceiling alone: each retains about 600 names of a
+    // thousand bytes against a 1 MiB bound. Together they do.
+    let wide = "n".repeat(1000);
+    let mut constants = String::from("module main\n\n");
+    let mut aliases = String::from("module more\n\n");
+    for index in 0..600 {
+        constants.push_str(&format!("const {wide}{index} = 1 + 2\n"));
+        aliases.push_str(&format!("alias N{wide}{index} = Nope\n"));
+    }
+    let project = files(&[("src/main.mw", constants), ("src/more.mw", aliases)]);
+
+    match compile(&project) {
+        Err(CompileFailure::ResourceLimit(limit)) => {
+            assert_eq!(limit.kind(), ResourceLimitKind::DeclarationLedgerBytes);
+        }
+        other => panic!("expected the ledger's typed ceiling, got {other:?}"),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Durable roots — I-3, I-9, I-10
 //

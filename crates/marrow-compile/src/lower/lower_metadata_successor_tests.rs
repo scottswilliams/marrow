@@ -1,5 +1,6 @@
 use super::*;
 
+use crate::decl::DeclarationBudget;
 use crate::types::{CollectionKind, GenericInvariant, TypeInstKind};
 use marrow_syntax::{Declaration, parse_source};
 
@@ -22,7 +23,7 @@ fn function(source: &str) -> FunctionDecl {
 }
 
 fn cache_ahead_registry() -> TypeRegistry {
-    let registry = TypeRegistry::default();
+    let registry = TypeRegistry::empty(DeclarationBudget::default());
     let mut donor = ImageDraft::new();
     let _ = registry.instantiate_list(&mut donor, GArg::Scalar(ScalarType::Int));
     registry
@@ -81,10 +82,10 @@ fn collection_mismatch_in_interpolation_stops_before_later_part() {
         panic!("fixture contains an interpolation")
     };
     let records = cache_ahead_registry();
-    let durable = DurableRegistry::default();
-    let functions = FunctionRegistry::default();
+    let durable = DurableRegistry::empty(DeclarationBudget::default());
+    let functions = FunctionRegistry::empty(DeclarationBudget::default());
     let generics = GenericRegistry::default();
-    let consts = ConstRegistry::default();
+    let consts = ConstRegistry::empty(DeclarationBudget::default());
     let mut diagnostics = DiagnosticCollector::new();
     let mut draft = ImageDraft::new();
     let mut lowerer = lowerer(
@@ -128,10 +129,10 @@ fn collection_mismatch_in_checked_annotation_stops_before_handler() {
     );
     let statement = &function.body.statements[0];
     let records = cache_ahead_registry();
-    let durable = DurableRegistry::default();
-    let functions = FunctionRegistry::default();
+    let durable = DurableRegistry::empty(DeclarationBudget::default());
+    let functions = FunctionRegistry::empty(DeclarationBudget::default());
     let generics = GenericRegistry::default();
-    let consts = ConstRegistry::default();
+    let consts = ConstRegistry::empty(DeclarationBudget::default());
     let mut diagnostics = DiagnosticCollector::new();
     let mut draft = ImageDraft::new();
     let mut lowerer = lowerer(
@@ -185,10 +186,10 @@ fn collection_mismatch_in_if_const_else_if_condition_is_terminal() {
     );
     let statement = &function.body.statements[0];
     let records = cache_ahead_registry();
-    let durable = DurableRegistry::default();
-    let functions = FunctionRegistry::default();
+    let durable = DurableRegistry::empty(DeclarationBudget::default());
+    let functions = FunctionRegistry::empty(DeclarationBudget::default());
     let generics = GenericRegistry::default();
-    let consts = ConstRegistry::default();
+    let consts = ConstRegistry::empty(DeclarationBudget::default());
     let mut diagnostics = DiagnosticCollector::new();
     let mut draft = ImageDraft::new();
     let mut lowerer = lowerer(
@@ -253,10 +254,10 @@ fn collection_mismatch_in_first_block_statement_stops_later_mint_and_finish() {
         "fn probe() {\n    const first = List(1)\n    const later = List(\"AFTER_BLOCK_MINT\")\n}\n",
     );
     let records = cache_ahead_registry();
-    let durable = DurableRegistry::default();
-    let functions = FunctionRegistry::default();
+    let durable = DurableRegistry::empty(DeclarationBudget::default());
+    let functions = FunctionRegistry::empty(DeclarationBudget::default());
     let generics = GenericRegistry::default();
-    let consts = ConstRegistry::default();
+    let consts = ConstRegistry::empty(DeclarationBudget::default());
     let mut diagnostics = DiagnosticCollector::new();
     let mut draft = ImageDraft::new();
     let mut lowerer = lowerer(
@@ -311,8 +312,17 @@ fn built_registry_with_generic_struct() -> (TypeRegistry, ImageDraft, usize) {
     )];
     let mut draft = ImageDraft::new();
     let mut diagnostics = DiagnosticCollector::new();
-    let registry = TypeRegistry::build(&mut draft, &[], &[], &structs, &[], &[], &mut diagnostics)
-        .expect("the test registry stays within the ledger budget");
+    let registry = TypeRegistry::build(
+        &mut draft,
+        &[],
+        &[],
+        &structs,
+        &[],
+        &[],
+        &mut diagnostics,
+        DeclarationBudget::default(),
+    )
+    .expect("the test registry stays within the ledger budget");
     assert!(diagnostics.is_empty());
     let template = registry
         .type_template_by_name("Box")
@@ -323,8 +333,17 @@ fn built_registry_with_generic_struct() -> (TypeRegistry, ImageDraft, usize) {
 fn built_reserved_registry() -> (TypeRegistry, ImageDraft) {
     let mut draft = ImageDraft::new();
     let mut diagnostics = DiagnosticCollector::new();
-    let registry = TypeRegistry::build(&mut draft, &[], &[], &[], &[], &[], &mut diagnostics)
-        .expect("the test registry stays within the ledger budget");
+    let registry = TypeRegistry::build(
+        &mut draft,
+        &[],
+        &[],
+        &[],
+        &[],
+        &[],
+        &mut diagnostics,
+        DeclarationBudget::default(),
+    )
+    .expect("the test registry stays within the ledger budget");
     assert!(diagnostics.is_empty());
     (registry, draft)
 }
@@ -336,10 +355,10 @@ fn generic_struct_constructor_transfers_the_registry_witness_error() {
         .type_template_by_name("Option")
         .expect("reserved Option template exists");
     let draft_before = draft_fingerprint(&draft);
-    let durable = DurableRegistry::default();
-    let functions = FunctionRegistry::default();
+    let durable = DurableRegistry::empty(DeclarationBudget::default());
+    let functions = FunctionRegistry::empty(DeclarationBudget::default());
     let generics = GenericRegistry::default();
-    let consts = ConstRegistry::default();
+    let consts = ConstRegistry::empty(DeclarationBudget::default());
     let mut diagnostics = DiagnosticCollector::new();
     let mut lowerer = lowerer(
         &mut draft,
@@ -377,10 +396,10 @@ fn generic_struct_constructor_transfers_the_registry_witness_error() {
 fn generic_enum_constructor_transfers_the_registry_witness_error() {
     let (records, mut draft, template) = built_registry_with_generic_struct();
     let draft_before = draft_fingerprint(&draft);
-    let durable = DurableRegistry::default();
-    let functions = FunctionRegistry::default();
+    let durable = DurableRegistry::empty(DeclarationBudget::default());
+    let functions = FunctionRegistry::empty(DeclarationBudget::default());
     let generics = GenericRegistry::default();
-    let consts = ConstRegistry::default();
+    let consts = ConstRegistry::empty(DeclarationBudget::default());
     let mut diagnostics = DiagnosticCollector::new();
     let mut lowerer = lowerer(
         &mut draft,
