@@ -196,6 +196,9 @@ impl<'a> FnLowerer<'a> {
                 [enum_name, variant] if self.records.enum_by_name(enum_name.text()).is_some() => {
                     self.lower_enum_construct(enum_name.text(), variant.text(), &[], *span)
                 }
+                // A qualified name whose head is a refused enum is that enum's
+                // refusal, not an unsupported spelling.
+                [head, _] if self.steer_refused_type(head.text(), *span) => None,
                 _ => {
                     self.fail(unsupported(self.file, *span, "a qualified name"));
                     None
@@ -1367,6 +1370,12 @@ impl<'a> FnLowerer<'a> {
         // function of the same common name shadows them.
         if let Some(result) = self.lower_collection_fallback(name, args, span) {
             return result;
+        }
+        // A construction of a type this project declared and refused is not an
+        // unknown callable: the declaration reported the cause, and this site is
+        // steered to it rather than told the name does not exist.
+        if self.steer_refused_type(name, span) {
+            return None;
         }
         let suggestion = nearest_name(name, self.functions.module_function_names(self.module));
         self.fail(name_not_in_scope(

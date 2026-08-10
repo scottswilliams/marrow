@@ -1001,6 +1001,27 @@ impl<'a> FnLowerer<'a> {
         }
     }
 
+    /// Steer a use that named a refused type to that declaration's cause, if the
+    /// name is one, reporting once per refused key.
+    ///
+    /// A construction site and a qualified name resolve through the kind-specific
+    /// tables rather than through type-annotation resolution, so they reach their
+    /// own not-in-scope report without ever consulting a `ResolveRefusal`. This is
+    /// the one probe that keeps those paths from calling a refused type undeclared.
+    fn steer_refused_type(&mut self, name: &str, span: SourceSpan) -> bool {
+        let Binding::Refused(_, summary) = self.records.named_type(name) else {
+            return false;
+        };
+        match summary.steer_once() {
+            true => {
+                let row = declaration_refused(self.file, span, summary);
+                self.fail(row);
+            }
+            false => self.failed = true,
+        }
+        true
+    }
+
     fn record_invariant(&mut self, invariant: LowerInvariant) {
         if self.invariant.is_none() {
             self.invariant = Some(invariant);

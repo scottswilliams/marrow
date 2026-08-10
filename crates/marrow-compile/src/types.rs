@@ -4900,6 +4900,12 @@ impl TypeRegistry {
         }
     }
 
+    /// What the declared type name `name` binds: its kind, the refusal that stands
+    /// in its place, or a genuine absence.
+    pub(crate) fn named_type(&self, name: &str) -> Binding<'_, NamedTypeKind> {
+        self.named.lookup(&name.to_string())
+    }
+
     /// The row a member position reports when its declared type does not resolve
     /// to an admitted shape: the causal steer when the annotation names a
     /// declaration this project refused, and the subset-gap phrase otherwise.

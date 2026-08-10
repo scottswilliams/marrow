@@ -558,6 +558,62 @@ fn r19_a_refused_member_does_not_narrow_the_identity_gap_set() {
 // is steered to the cause instead).
 // ---------------------------------------------------------------------------
 
+/// R5 — a struct refused for a bad field. The construction resolves through the
+/// struct table, not through annotation resolution, so it reached its own
+/// not-in-scope report: `Point` is not in scope, of a struct declared six lines
+/// above whose field the compiler had just diagnosed.
+#[test]
+fn r5_a_refused_struct_is_not_out_of_scope_at_its_construction() {
+    let diagnostics = diagnostics(
+        "module main\n\n\
+         struct Point {\n\
+         \x20   x: Nope\n\
+         \x20   y: int\n\
+         }\n\n\
+         pub fn make(): int {\n\
+         \x20   const p = Point(x: 1, y: 2)\n\
+         \x20   return p.y\n\
+         }\n",
+    );
+
+    assert_never_out_of_scope(&diagnostics, "Point");
+    assert_eq!(
+        rows(&diagnostics),
+        vec![("check.unsupported", 4, 8), ("check.unsupported", 9, 15)],
+        "the field reports the cause and the construction is steered to it",
+    );
+}
+
+/// R10 — an enum refused for a bad payload. A qualified `Enum::member` is a third
+/// resolution path again, and it reported the *spelling* as unsupported rather than
+/// the enum this project declared and the compiler refused.
+#[test]
+fn r10_a_refused_enum_steers_its_qualified_use_to_the_payload_report() {
+    let diagnostics = diagnostics(
+        "module main\n\n\
+         enum Shape {\n\
+         \x20   Circle(r: Nope)\n\
+         \x20   Square\n\
+         }\n\n\
+         pub fn make(): int {\n\
+         \x20   const s = Shape::Square\n\
+         \x20   return 1\n\
+         }\n",
+    );
+
+    assert!(
+        !messages(&diagnostics)
+            .iter()
+            .any(|message| message.contains("a qualified name is not yet supported")),
+        "the enum is declared; the qualified use must name its cause: {:#?}",
+        messages(&diagnostics),
+    );
+    assert_eq!(
+        rows(&diagnostics),
+        vec![("check.unsupported", 4, 15), ("check.unsupported", 9, 15)],
+    );
+}
+
 /// R6 — an alias over an unknown target. Today the annotation blames the language;
 /// the alias's own `check.type` report two lines above is never connected to it.
 #[test]
