@@ -117,17 +117,82 @@ fn the_collector_is_concrete_not_generic() {
     }
 }
 
+/// The parameter list of the `fn new(` declared in `text`, whitespace-collapsed onto
+/// one line. rustfmt wraps this signature differently as its length changes, so the
+/// shape is compared on a canonical form rather than on one formatting of it.
+fn constructor_parameters(text: &str) -> String {
+    let open = text.find("fn new(").expect("the constructor is declared") + "fn new(".len();
+    let parameters = &text[open..];
+    let mut depth = 1usize;
+    let end = parameters
+        .char_indices()
+        .find_map(|(index, character)| {
+            match character {
+                '(' => depth += 1,
+                ')' => depth -= 1,
+                _ => {}
+            }
+            (depth == 0).then_some(index)
+        })
+        .expect("the parameter list is closed");
+    let collapsed = parameters[..end]
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    // rustfmt writes a trailing comma when it wraps and omits it inline; the canonical
+    // form has neither, so both spellings compare equal.
+    collapsed.trim_end_matches(',').to_string()
+}
+
+/// The extraction reads the real parameter list, not one formatting of it: the same
+/// signature wrapped by rustfmt and written inline collapse to one string, a nested
+/// parenthesis does not truncate it, and a code parameter is visible in the result.
+/// Without this the gate below could pass by matching nothing.
+#[test]
+fn the_constructor_parameter_scan_is_insensitive_to_formatting() {
+    let wrapped = "fn new(\n    reason: DiagnosticReason,\n    span: SourceSpan,\n) -> Self {";
+    let inline = "fn new(reason: DiagnosticReason, span: SourceSpan) -> Self {";
+    assert_eq!(
+        constructor_parameters(wrapped),
+        constructor_parameters(inline)
+    );
+    assert_eq!(
+        constructor_parameters(inline),
+        "reason: DiagnosticReason, span: SourceSpan"
+    );
+    assert_eq!(
+        constructor_parameters("fn new(make: fn(u8) -> u8, span: SourceSpan) -> Self {"),
+        "make: fn(u8) -> u8, span: SourceSpan"
+    );
+    assert!(
+        constructor_parameters("fn new(reason: DiagnosticReason, code: &'static str) -> Self {")
+            .contains("code"),
+        "a code parameter must be visible to the gate below"
+    );
+}
+
 /// The code is derived from the typed reason at the one error constructor, so
-/// a code/reason mismatch is unrepresentable rather than merely unwritten: no
-/// production site passes a code beside a reason.
+/// a code/reason mismatch is unrepresentable rather than merely unwritten: the
+/// constructor accepts the typed reason and no code beside it, and the stored code
+/// is read back off that reason.
 #[test]
 fn the_error_constructor_derives_its_code_from_the_reason() {
     let sources = production_sources();
-    let all: String = sources.iter().map(|(_, text)| text.as_str()).collect();
+    let inherent = sources
+        .iter()
+        .find_map(|(_, text)| text.split_once("impl SyntaxError {"))
+        .expect("the private error type declares an inherent impl")
+        .1;
+    let parameters = constructor_parameters(inherent);
     assert!(
-        all.contains("pub(crate) fn new(\n        reason: DiagnosticReason,"),
-        "expected the reason-first error constructor; if it was renamed, update this scan"
+        parameters.starts_with("reason: DiagnosticReason,"),
+        "the error constructor must take the typed reason first: `{parameters}`"
     );
+    assert!(
+        !parameters.contains("code"),
+        "the error constructor must accept no code beside the reason: `{parameters}`"
+    );
+    let all: String = sources.iter().map(|(_, text)| text.as_str()).collect();
     assert!(
         all.contains("code: reason.code(),"),
         "expected the derived code; if the mapping moved, update this scan"
