@@ -475,24 +475,17 @@ fn without_literals(source: &str) -> String {
                 }
             }
             blank!(cursor);
-        } else if rest[0] == b'r'
-            && !index
-                .checked_sub(1)
-                .is_some_and(|previous| is_ident_byte(bytes[previous]))
-            && rest[1..]
-                .iter()
-                .position(|byte| *byte != b'#')
-                .is_some_and(|hashes| rest.get(1 + hashes) == Some(&b'"'))
-        {
-            let hashes = rest[1..].iter().position(|byte| *byte != b'#').unwrap_or(0);
+        } else if let Some((prefix, hashes)) = raw_string_open(bytes, index) {
+            // The opener's width: the `b`/`c` marker, the `r`, the hashes, the quote.
+            let open = prefix + 1 + hashes + 1;
             let mut closer = Vec::with_capacity(hashes + 1);
             closer.push(b'"');
             closer.extend(std::iter::repeat_n(b'#', hashes));
-            let body = &rest[2 + hashes..];
+            let body = &rest[open..];
             let end = body
                 .windows(closer.len())
                 .position(|window| window == closer.as_slice())
-                .map_or(rest.len(), |offset| 2 + hashes + offset + closer.len());
+                .map_or(rest.len(), |offset| open + offset + closer.len());
             blank!(end);
         } else if rest[0] == b'"' {
             let mut cursor = 1usize;
@@ -519,6 +512,31 @@ fn without_literals(source: &str) -> String {
 
 fn is_ident_byte(byte: u8) -> bool {
     byte.is_ascii_alphanumeric() || byte == b'_'
+}
+
+/// The `(prefix, hashes)` of a raw string literal opening at `index`, where `prefix`
+/// counts the optional `b`/`c` byte- or C-string marker before the `r`.
+///
+/// A raw string honours no escapes. A scanner that fails to recognise one of its
+/// spellings falls through to the ordinary string branch, reads the literal's backslash
+/// as an escape, walks past the closing quote, and blanks the rest of the file — every
+/// gate downstream then passes because its shape was erased rather than absent. So every
+/// spelling is recognised here, and the probe test below plants one of each.
+fn raw_string_open(bytes: &[u8], index: usize) -> Option<(usize, usize)> {
+    let rest = &bytes[index..];
+    let prefix = usize::from(matches!(rest.first(), Some(b'b' | b'c')));
+    if rest.get(prefix) != Some(&b'r') {
+        return None;
+    }
+    // The whole prefix must open a token: `abr"x"` is an identifier, not a literal.
+    if index
+        .checked_sub(1)
+        .is_some_and(|previous| is_ident_byte(bytes[previous]))
+    {
+        return None;
+    }
+    let hashes = rest[prefix + 1..].iter().position(|byte| *byte != b'#')?;
+    (rest.get(prefix + 1 + hashes) == Some(&b'"')).then_some((prefix, hashes))
 }
 
 /// The length of a char literal starting at `rest`, or `None` when the quote opens a
@@ -623,6 +641,10 @@ fn the_production_scanner_reads_code_and_not_prose() {
 fn keeper<'a>(text: &'a str) -> char {
     let quoted = "forbidden_shape in a string";
     let raw = r#"forbidden_shape in a raw string"#;
+    let byte_raw = br"forbidden_shape and a trailing backslash \";
+    let byte_raw_hashed = br#"forbidden_shape with an inner "quote" and a backslash \"#;
+    let c_raw = cr"forbidden_shape in a C raw string \";
+    let byte_escaped = b"forbidden_shape with an escaped backslash \\";
     let tick = '\'';
     forbidden_shape();
     'x'
@@ -704,6 +726,56 @@ fn the_production_scanner_still_sees_the_real_compiler() {
     );
 }
 
+/// The projection reaches the END of every scanned production file. The sentinels above
+/// sit at the top and middle of two files; a blanking bug that runs away — an
+/// unterminated literal, an unrecognised raw-string spelling — erases a file's tail
+/// instead, and every gate scanning for a shape in that tail then passes because the
+/// shape was erased rather than absent. The sentinel is derived per file, so it covers
+/// files no list here names and needs no maintenance when a file gains a declaration.
+#[test]
+fn the_projection_reaches_the_end_of_every_scanned_file() {
+    for path in src_files() {
+        if is_test_only_file(&path) {
+            continue;
+        }
+        let source = fs::read_to_string(&path).expect("read source file");
+        let code = production_code(&source);
+        let Some(sentinel) = last_production_item(&source) else {
+            continue;
+        };
+        let offset = source
+            .rfind(sentinel)
+            .expect("the sentinel is a line of the source");
+        assert_eq!(
+            &code[offset..offset + sentinel.len()],
+            sentinel,
+            "the projection lost the tail of {}: the file's last production item \
+             header `{sentinel}` did not survive blanking",
+            path.display(),
+        );
+    }
+}
+
+/// The last item header in `source`'s production region — the region before the first
+/// top-level `#[cfg(test)]`. A header is a column-0 line opening a block; lines carrying
+/// a quote, a comment, or a lifetime are excluded so the sentinel is text the projection
+/// must reproduce byte for byte.
+fn last_production_item(source: &str) -> Option<&str> {
+    let production = source
+        .split_once("\n#[cfg(test)]")
+        .map_or(source, |(before, _)| before);
+    production
+        .lines()
+        .filter(|line| {
+            line.starts_with(|first: char| first.is_ascii_alphabetic())
+                && line.ends_with('{')
+                && !line.contains('"')
+                && !line.contains('\'')
+                && !line.contains("//")
+        })
+        .next_back()
+}
+
 /// The image is produced at exactly one place. `CheckedProgram::encode` is the only
 /// caller of `ImageDraft::encode`, and `Driven::into_built` is the only caller of that —
 /// so the production projection is the single point at which an image-policy verdict can
@@ -741,9 +813,12 @@ fn no_phase_runs_on_an_empty_diagnostic_set() {
         "only NonEmptySourceDiagnostics may ask whether a row set is empty: {found:?}",
     );
     let diag = production_code_of("diag.rs");
-    assert!(
-        !diag.contains("fn is_empty(&self) -> bool {\n        self.rows.is_empty()"),
-        "the collector's is_empty must stay behind cfg(test): the projection blanks it",
+    assert_eq!(
+        diag.matches("fn is_empty(&self) -> bool").count(),
+        1,
+        "diag.rs declares two logical-emptiness readers — the finished terminal's and \
+         the collector's — and exactly the terminal's may be production code; the \
+         collector's stays behind cfg(test), which the projection blanks",
     );
 }
 
