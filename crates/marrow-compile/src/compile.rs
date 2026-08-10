@@ -1631,7 +1631,11 @@ fn registry_phases(
         records.take_generic_diagnostics().merge_into(diagnostics);
         return Err(PhaseStop::StageDiagnostics(CompileStage::TemplateProof));
     }
-    let template_proofs = Some(AcceptedQueuedTemplateProofs);
+    // Reaching here is the artifact: the pass returned above on the one outcome that
+    // withholds it, so every phase below runs with the queued instance set trustworthy.
+    // Writing it as a value rather than an `Option` keeps the gates below falsifiable —
+    // a conjunct that cannot be false proves nothing about the phase it claims to gate.
+    let template_proofs = AcceptedQueuedTemplateProofs;
 
     // Generic instances are image functions with no stable identity, indexed after every
     // monomorphic function and test. `base` is that boundary; the shared `Monomorph`
@@ -1682,7 +1686,7 @@ fn registry_phases(
     // every declared body took the index reserved for it, so instances append after
     // them — carried by the three artifacts above, not by an empty diagnostic set.
     let mut drain_lowered_every_instance = true;
-    if template_proofs.is_some() && function_bodies.is_some() && test_bodies.is_some() {
+    if function_bodies.is_some() && test_bodies.is_some() {
         while let Some((template_index, args, reserved)) = records.next_fn_pending() {
             let template = &resolution.generics.templates()[template_index];
             let result = match FnLowerer::lower_instance(
@@ -1732,16 +1736,16 @@ fn registry_phases(
         }
     }
 
-    // The lowered set is complete when the template proofs were accepted, every declared
-    // function body lowered, and the drain — if it ran — lowered every instance it was
-    // offered. A duplicate test title is a declaration refusal, not a lowering refusal:
-    // the minted indices stay dense, so it withholds only the drain.
-    let lowered_set =
-        (template_proofs.is_some() && function_bodies.is_some() && drain_lowered_every_instance)
-            .then_some(CompleteLoweredFunctionSet(lowered));
+    // The lowered set is complete when every declared function body lowered and the
+    // drain — if it ran — lowered every instance it was offered, under the accepted
+    // template proofs the whole region runs beneath. A duplicate test title is a
+    // declaration refusal, not a lowering refusal: the minted indices stay dense, so it
+    // withholds only the drain.
+    let lowered_set = (function_bodies.is_some() && drain_lowered_every_instance)
+        .then_some(CompleteLoweredFunctionSet(lowered));
 
     Ok(RegistryPhases {
-        template_proofs,
+        template_proofs: Some(template_proofs),
         function_bodies,
         test_bodies,
         lowered_set,

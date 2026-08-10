@@ -352,14 +352,23 @@ fn a_reserved_but_unlowered_instance_never_reaches_the_encoder() {
 /// reports its own diagnostic bound: the semantic terminal is `Limited`, which is a
 /// diagnostic state, and the fence takes that strictly before the projection's verdict.
 /// No image-policy kind may surface here.
+///
+/// The two halves are separate on purpose. The 257 public functions lower cleanly and
+/// mint 257 exports, which latches a real `MAX_EXPORTS` excess into the draft — a
+/// program whose bodies are all refused mints nothing and would cross no image ceiling
+/// at all, so the fixture would not be testing the fence. The single avalanche body
+/// then overflows the diagnostic collector.
 #[test]
 fn a_limited_terminal_reports_its_own_bound_over_an_image_ceiling() {
     let mut source = String::from("module main\n\n");
-    for index in 0..4097 {
-        source.push_str(&format!(
-            "fn f{index}(): int {{\n    return missing()\n}}\n\n"
-        ));
+    for index in 0..257 {
+        source.push_str(&format!("pub fn f{index}(): int {{\n    return 0\n}}\n\n"));
     }
+    source.push_str("pub fn avalanche(): int {\n");
+    for index in 0..4200 {
+        source.push_str(&format!("    const c{index} = missing()\n"));
+    }
+    source.push_str("    return 0\n}\n");
     match compile(&project(&[("src/main.mw", &source)])) {
         Err(CompileFailure::ResourceLimit(limit)) => assert!(
             matches!(
@@ -395,5 +404,59 @@ fn no_continuation_fixture_reaches_an_invariant() {
                 "every refusal reports; none becomes a bare invariant: {source}",
             );
         }
+    }
+}
+
+/// A generic instance whose body is refused stops the drain mid-queue, so the reserved
+/// indices behind it are never minted and `CompleteLoweredFunctionSet` is withheld. The
+/// independent recursion cycle in the same program is therefore NOT reported: the call
+/// graph is a dependent fact of the lowered set, and a dependent fact is never produced
+/// from a missing prerequisite. This is the drain conjunct of the lowered-set gate —
+/// reds 9 and 10 exercise the declared-body conjuncts, and nothing else reaches a
+/// refusal inside `lower_instance`.
+const DRAIN_REFUSED_MID_QUEUE: &str = r#"module main
+
+pub fn driver(): int {
+    return identity(1)
+}
+
+fn identity<T>(x: T): int {
+    return missing()
+}
+
+fn ping(): int {
+    return pong()
+}
+
+fn pong(): int {
+    return ping()
+}
+"#;
+
+#[test]
+fn a_refused_instance_body_withholds_the_lowered_set() {
+    let rows = diagnostics(DRAIN_REFUSED_MID_QUEUE);
+    let found = codes(&rows);
+    assert_eq!(
+        found,
+        vec!["check.type", "check.type"],
+        "the template proof and the refused instance each report the unresolved call, \
+         and the withheld lowered set produces no call-graph fact: {rows:#?}",
+    );
+    for outcome in [
+        outcome_of(compile(&project(&[(
+            "src/main.mw",
+            DRAIN_REFUSED_MID_QUEUE,
+        )]))),
+        outcome_of(compile_with_tests(&project(&[(
+            "src/main.mw",
+            DRAIN_REFUSED_MID_QUEUE,
+        )]))),
+    ] {
+        assert_eq!(
+            outcome,
+            Outcome::Diagnostics,
+            "a reserved-but-unminted instance index never reaches the encoder",
+        );
     }
 }
