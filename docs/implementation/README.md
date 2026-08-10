@@ -58,13 +58,13 @@ snapshot's typed count and byte ceilings **at the push that produced it**, befor
 the retained collection grows. No producer holds a fact carrier of its own, so
 the ceiling bounds what one body holds live, not only what a whole project does,
 and a producer stops rendering fact displays the moment the ledger is limited —
-including part-way through the body it is lowering. Crossing a ceiling discards the whole payload,
-including the already-admitted prefix, and the ledger seals into an opaque
-terminal that `analyze` projects through one exhaustive translation to the public
-`SnapshotFactCount` or `SnapshotFactBytes` limit. Count keeps precedence over
-bytes. No partial fact set is published under any provenance, and the ledger's
-internal saturated totals are never published: a published total would be a
-fabricated count.
+including part-way through the body it is lowering. Crossing a ceiling discards
+the whole payload, including the already-admitted prefix, and seals the ledger
+into an opaque terminal that `analyze` projects through one translation to the
+public `SnapshotFactCount` or `SnapshotFactBytes` limit. Count keeps precedence
+over bytes. No partial fact set is published under any provenance, and the
+ledger's internal saturated totals are never published: a published total would
+be a fabricated count.
 
 The observable bounds are unchanged:
 
@@ -114,33 +114,59 @@ no collector, and contributes no diagnostic. Parseability is never inferred from
 such a parse — the snapshot's own broken-file record answers that — and the parse
 is bounded by the 1 MiB per-file admission ceiling that already ran.
 
-**Measured transient terms.** Two working-set terms are measured rather than
-accounted, so a consumer sizing a heap reads them beside the retention term.
-Both were measured in the optimized profile on the recorded host; the full
-fingerprint, recipe, and per-run figures live with the lane's evidence.
+**Accounted transient terms.** Two working-set terms sit beside the retention
+term for a consumer sizing a heap. Both are accounted from pinned ceilings and
+the representation, not measured on a fixture; measurements corroborate them and
+live with the lane's evidence.
 
 ```text
-MAX_QUERY_PARSE_TRANSIENT_BYTES    <= 160 MiB
+MAX_QUERY_PARSE_TRANSIENT_BYTES    <= 896 MiB
 MAX_ANALYSIS_FACT_TRANSIENT_BYTES  <=  25 MiB
 ```
 
-`MAX_QUERY_PARSE_TRANSIENT_BYTES` is the live tree of **one** query-local parse
-at the 1 MiB per-file admission ceiling, measured on the densest file a query can
-be handed (145 MB measured). Only that ceiling bounds it: whether a file is
-queryable does not depend on the image or fact ceilings, and a file that did not
-parse cleanly is still queried for its recovered forms. Repeated queries are not
-free — the first reuses the pages the drive's own trees freed, while six
-sequential queries over that file moved the process high-water by 160 MB — so the
-term bounds one live parse, not a session.
+`MAX_QUERY_PARSE_TRANSIENT_BYTES` is the working set of **one** query-local parse
+of one maximum admitted file: the tree, the lexer's token vector, the expression
+parser's bounded token copy, and the syntax collector's bounded rows, live
+together. The accounted figure is **914,358,272 bytes** (872 MiB), derived in
+three steps. A `Statement` is the widest node the parser stores in a vector, and
+the grammar spends at least two source bytes on one — a content byte and a line
+terminator no other statement uses — so one source byte buys at most half a
+statement slot plus one content byte. A content byte buys at most one expression
+node in its widest placement plus that node's own allocations; every other kind a
+statement line can hold, and every kind outside one, charges less per byte, which
+is asserted rather than argued. The tokens and the collector are live beside the
+tree. Multiplying by the 1 MiB per-file admission ceiling gives the figure.
 
-`MAX_ANALYSIS_FACT_TRANSIENT_BYTES` is the peak attributable to producing facts,
-measured as the difference between a fact-avalanche workload and an
+Three properties of this term matter to a consumer. It charges allocated
+capacity, so a `maximum resident set size` sample is a floor and not a check —
+amortized growth slack is paid for by an allocator and never becomes resident.
+It **exceeds a 640 MiB owned-heap ceiling**, and it is published that way rather
+than narrowed to a comfortable measurement: three earlier passes each published a
+measured term and each was beaten by a denser admissible file. And it bounds one
+live parse, not a session — repeated queries are not free.
+
+Queryability itself depends on more than the admission ceiling. A file is
+queryable only if its project yields a snapshot, and a single file that crosses
+the analysis fact ceiling or the diagnostic ceiling refuses `analyze` outright,
+so no snapshot exists to query. The densest queryable tree therefore comes from a
+file whose nodes charge neither ceiling: a module that failed to parse, or names
+that never resolve.
+
+`MAX_ANALYSIS_FACT_TRANSIENT_BYTES` covers the peak attributable to producing
+facts. Its dominant part is accounted: the live fact payload the ledger holds
+while retaining is at most **21,176,320 bytes**, an arithmetic property of
+`MAX_SNAPSHOT_FACT_COUNT`, `MAX_SNAPSHOT_FACT_BYTES`, and the project admission
+limits, because admission stops at the ceiling at the push that produced each
+fact and every charged spelling is held in an exactly sized `Box<str>`. No
+workload can make that payload larger; a denser one only reaches the ceiling
+sooner. The remainder — one display rendered and freed as it is charged — is
+measured, as the difference between a fact-avalanche workload and an
 identical-shape fact-free control (19 MB measured, on a hover avalanche crossing
 the count ceiling inside a single body).
 
-Both are distinct from, and much smaller than, the analysis **build** transient:
-`drive` materializes every module's tree at once because cross-module resolution
-needs them. That working set is named, not closed, by the bounded-fact work.
+Both are distinct from the analysis **build** transient: `drive` materializes
+every module's tree at once because cross-module resolution needs them. That
+working set is named, not closed, by the bounded-fact work.
 
 ## Identity mutation admission
 

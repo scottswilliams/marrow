@@ -102,9 +102,9 @@ document-symbol queries as typed present, absent, or syntax/dependency-unavailab
 facts. Every editor fact is admitted against the snapshot's fact count and byte
 ceilings at the push that produced it — no producer stages its own — so a project
 whose facts would exceed a public snapshot bound is refused as a typed resource
-limit rather than materialized and then rejected; the snapshot retains no parse tree, and completion and signature-help
-queries re-parse the one file they name. The
-independent verifier (`marrow-verify`) is the only image decoder and rejects a
+limit rather than materialized and then rejected; the snapshot retains no parse
+tree, and completion and signature-help queries re-parse the one file they name.
+The independent verifier (`marrow-verify`) is the only image decoder and rejects a
 malformed or hostile image in bounded phases — envelope, table closure,
 per-function structure and types, call/effect closure with all-cycle rejection,
 and transaction-flow validation — before sealing a `VerifiedImage`. The stack VM

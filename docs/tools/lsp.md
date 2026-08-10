@@ -95,14 +95,22 @@ refused whole, never returned as a truncated candidate list or signature.
 A held snapshot retains no parse tree: completion and signature-help queries
 re-parse the single file they name from the snapshot's own retained bytes. The
 measured cost on the recorded host is under a millisecond for a 64 KiB file and
-49 ms for a file at the 1 MiB per-file admission ceiling. The compiler pins both
-with budget tests that assert in the optimized profile the server ships in and
-record the measurement in either profile, because the unoptimized profile runs
-the same code about an order of magnitude slower. Parse results are not cached —
-a cache would be a second retention owner — so a session's retained memory stays
-bounded by the snapshot's own accounted footprint rather than by how many files
-have been queried. The transient cost of a parse is separate and is not bounded
-by that footprint; the compiler publishes it as a measured term.
+112 ms for a file at the 1 MiB per-file admission ceiling in its densest
+shape — single-byte statement lines, which build one statement node per two
+source bytes. The compiler pins both with budget tests that assert in the
+optimized profile the server ships in and record the measurement in either
+profile, because the unoptimized profile runs the same code about an order of
+magnitude slower. A maximum admitted file in that shape does not answer inside
+the roughly 100 ms at which a response reads as immediate; the ordinary-file
+figure is the one a session meets. Earlier passes recorded 49 ms for the same
+ceiling, measured on a comment-padded file, which is not the worst shape.
+
+Parse results are not cached — a cache would be a second retention owner — so a
+session's retained memory stays bounded by the snapshot's own accounted footprint
+rather than by how many files have been queried. The transient cost of a parse is
+separate and is not bounded by that footprint; the compiler publishes it as an
+accounted term, and that term is larger than the retained footprint by two orders
+of magnitude.
 
 A snapshot answers about its own retained bytes. Every fact and every coordinate
 resolves against the exact source the snapshot was computed from, and a query
