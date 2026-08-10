@@ -575,8 +575,17 @@ fn install_untracked_ignore(meta: &AdmittedDir) -> Result<(), IdsPublicationErro
             // it is asked read-only: a checkout may carry the entry unwritable,
             // and an open that demanded write to decide it would refuse every
             // publication and recovery of a project that needs no append.
-            let opened = meta.open_file_readonly(&name)?;
-            (None, opened.read_prefix(IGNORE_READ_CEILING + 1)?)
+            //
+            // A mode that withholds even that read leaves the entry as found
+            // for the same reason a withheld write does: the read exists only
+            // to decide a cosmetic append, so refusing here would refuse every
+            // publication and recovery of a project over a file this owner
+            // merely wanted to tidy.
+            match meta.open_file_readonly(&name) {
+                Ok(opened) => (None, opened.read_prefix(IGNORE_READ_CEILING + 1)?),
+                Err(error) if access_withheld(&error) => return Ok(()),
+                Err(error) => return Err(error.into()),
+            }
         }
         Err(error) => return Err(error.into()),
     };
@@ -621,7 +630,7 @@ fn install_untracked_ignore(meta: &AdmittedDir) -> Result<(), IdsPublicationErro
         // directory, and every other custody refusal stays one.
         None => match meta.open_file(&name) {
             Ok(opened) => opened,
-            Err(error) if write_withheld(&error) => return Ok(()),
+            Err(error) if access_withheld(&error) => return Ok(()),
             Err(error) => return Err(error.into()),
         },
     };
@@ -631,15 +640,20 @@ fn install_untracked_ignore(meta: &AdmittedDir) -> Result<(), IdsPublicationErro
     Ok(())
 }
 
-/// Whether a refused open says this process may not write the entry, rather
-/// than that the entry is not one this owner can maintain at all.
+/// Whether a refused open says this process may not reach the entry's bytes,
+/// rather than that the entry is not one this owner can maintain at all. Both
+/// of the ignore entry's opens read their refusals through here: the mode that
+/// withholds the deciding read and the mode that withholds the append are the
+/// same permission-class condition on the same cosmetic file.
 ///
 /// The custody owner reads a permission refusal over a regular file whose owner
 /// bits fall short as [`CustodyError::ModeDenied`]; a permission refusal it
-/// could not attribute to those bits — another user's entry, a read-only mount,
-/// a restrictive security policy — arrives unclassified and is the same
-/// withheld write from this caller's side.
-fn write_withheld(error: &CustodyError) -> bool {
+/// could not attribute to those bits — another user's entry, a restrictive
+/// security policy — arrives unclassified and is the same withheld access from
+/// this caller's side. An environmental write failure is not in this family: a
+/// read-only mount refuses the lock open long before the ignore entry, and a
+/// full or read-only filesystem carries its own error kind and stays a refusal.
+fn access_withheld(error: &CustodyError) -> bool {
     match error {
         CustodyError::ModeDenied { .. } => true,
         CustodyError::Io { source, .. } => source.kind() == std::io::ErrorKind::PermissionDenied,

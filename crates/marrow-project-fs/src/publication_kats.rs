@@ -1319,6 +1319,58 @@ fn withhold_write(path: &Path) {
     );
 }
 
+/// Withhold read access to `path` with `mode`, failing loudly when the mode
+/// binds nothing.
+///
+/// The same vacuity this file's write-withholding helper guards against applies
+/// here: an unreadable entry that binds nothing would leave its kat asserting an
+/// acquisition nothing was ever in the way of.
+fn withhold_read(path: &Path, mode: u32) {
+    set_mode(path, mode);
+    let binds = fs::OpenOptions::new().read(true).open(path).is_err();
+    assert!(
+        binds,
+        "mode {mode:04o} on {} did not refuse a read-only open, so this kat never ran. Run the \
+         suite as a process the mode bits bind, on a filesystem that carries them.",
+        path.display()
+    );
+}
+
+/// An ignore entry this owner cannot read is left as found for the same reason
+/// one it cannot write is: the read that decides what is missing is part of the
+/// same cosmetic append, so a mode that withholds it refuses no publication and
+/// no recovery.
+///
+/// A checkout can carry the entry with no access at all, or write-only, just as
+/// easily as read-only, and an owner that refused there would refuse every
+/// publication and every recovery of that project over a file it only ever
+/// wanted to tidy.
+#[test]
+fn an_unreadable_ignore_entry_leaves_the_owner_working() {
+    let _serial = serialized();
+    for mode in [0o000, 0o200] {
+        let project = Project::new(&format!("ignore-unreadable-{mode:04o}"));
+        project.write_meta(".gitignore", PREVIOUS_FORMAT_IGNORE);
+        let path = project.meta().join(".gitignore");
+        withhold_read(&path, mode);
+
+        let guard = ProjectMetadataWriteGuard::acquire(project.path()).unwrap_or_else(|error| {
+            panic!("mode {mode:04o} on the ignore entry refused the acquisition: {error:?}")
+        });
+        guard
+            .recover_ids()
+            .expect("recovery takes the same guard and must reach the same conclusion");
+        drop(guard);
+
+        set_mode(&path, 0o600);
+        assert_eq!(
+            project.read_meta(".gitignore").as_deref(),
+            Some(PREVIOUS_FORMAT_IGNORE),
+            "the entry the owner could not read at mode {mode:04o} is not the entry it left"
+        );
+    }
+}
+
 /// An ignore entry this owner cannot write is left as found, exactly as one
 /// past the read bound is, and no publication or recovery is refused for it.
 ///
