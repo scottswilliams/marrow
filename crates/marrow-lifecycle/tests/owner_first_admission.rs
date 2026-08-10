@@ -282,6 +282,128 @@ fn a_contender_is_locked_out_whatever_state_the_holder_marker_is_in() {
     drop(held);
 }
 
+/// The whole family, enumerated: every door by which a contender can learn about a held
+/// store, and the verdict each one yields. A door either reaches the directory's own `lock`
+/// entry — and then the verdict is exactly `store.locked`, whatever the marker's bytes, its
+/// link count, the store's other artifacts, or the directory's mode say — or it cannot reach
+/// that entry at all, and then it refuses. No door admits a second owner.
+///
+/// Two doors get past the marker and are stopped behind it: a marker deleted under the
+/// holder, and a fresh node renamed over its name. Both let a contender take a lock the
+/// holder is not holding, and the engine's own file lock is what refuses them — so the
+/// verdict is still `store.locked`, at the cost of the contender leaving an unclean
+/// obligation behind in an intact store. The marker is a cooperating owner's own custody,
+/// not a defence against an actor who can rewrite the store directory.
+#[cfg(unix)]
+#[test]
+fn no_door_into_a_held_store_admits_a_second_owner() {
+    use std::os::unix::fs::PermissionsExt;
+
+    /// The verdict a door is allowed to produce. `Locked` is the exclusion verdict a
+    /// contender is owed; `Refused` is a door the contender cannot see through at all, where
+    /// it must still refuse rather than proceed.
+    enum Verdict {
+        Locked,
+        Refused(&'static [&'static str]),
+    }
+
+    let doors: Vec<(&str, Box<dyn Fn(&Path)>, Verdict)> = vec![
+        (
+            "the marker deleted under the holder",
+            Box::new(|store: &Path| {
+                std::fs::remove_file(store.join(marrow_lifecycle::LOCK_FILE)).expect("remove");
+            }),
+            Verdict::Locked,
+        ),
+        (
+            "a fresh node renamed over the marker's name",
+            Box::new(|store: &Path| {
+                let decoy = store.join("decoy");
+                std::fs::write(&decoy, b"").expect("write the decoy");
+                std::fs::rename(&decoy, store.join(marrow_lifecycle::LOCK_FILE)).expect("swap");
+            }),
+            Verdict::Locked,
+        ),
+        (
+            "the store directory stripped of write access",
+            Box::new(|store: &Path| {
+                std::fs::set_permissions(store, std::fs::Permissions::from_mode(0o500))
+                    .expect("chmod the store directory");
+            }),
+            Verdict::Locked,
+        ),
+        (
+            "the engine deleted under the holder",
+            Box::new(|store: &Path| {
+                std::fs::remove_file(store.join(marrow_lifecycle::ENGINE_FILE)).expect("remove");
+            }),
+            Verdict::Locked,
+        ),
+        (
+            "a symbolic link standing in for the marker",
+            Box::new(|store: &Path| {
+                let marker = store.join(marrow_lifecycle::LOCK_FILE);
+                std::fs::remove_file(&marker).expect("remove the marker");
+                std::os::unix::fs::symlink(store.join("elsewhere"), &marker).expect("link");
+            }),
+            Verdict::Refused(&["store.io"]),
+        ),
+        (
+            "a directory standing in for the marker",
+            Box::new(|store: &Path| {
+                let marker = store.join(marrow_lifecycle::LOCK_FILE);
+                std::fs::remove_file(&marker).expect("remove the marker");
+                std::fs::create_dir(&marker).expect("a directory in place of the marker");
+            }),
+            Verdict::Refused(&["store.io"]),
+        ),
+        (
+            "a marker whose own mode denies the open",
+            Box::new(|store: &Path| {
+                std::fs::set_permissions(
+                    store.join(marrow_lifecycle::LOCK_FILE),
+                    std::fs::Permissions::from_mode(0o000),
+                )
+                .expect("chmod the marker");
+            }),
+            // A process that may open it regardless (a privileged test runner) still meets
+            // the holder and is told so; one that may not cannot see the door at all.
+            Verdict::Refused(&["store.io", "store.locked"]),
+        ),
+        (
+            "the store directory removed under the holder",
+            Box::new(|store: &Path| {
+                std::fs::remove_dir_all(store).expect("remove the store directory");
+            }),
+            Verdict::Refused(&["store.io"]),
+        ),
+    ];
+
+    for (door, damage, expected) in doors {
+        let (_dir, store) = provisioned("held-store-doors");
+        let held = open(&store, schemas(), sites()).expect("the holder opens the store");
+        damage(&store);
+
+        match open(&store, schemas(), sites()) {
+            Ok(_) => panic!("{door} admitted a second owner of a held store"),
+            Err(error) => match expected {
+                Verdict::Locked => assert_eq!(
+                    error.code(),
+                    "store.locked",
+                    "{door} must yield the exclusion verdict, got {error}",
+                ),
+                Verdict::Refused(codes) => assert!(
+                    codes.contains(&error.code()),
+                    "{door} must refuse as one of {codes:?}, got {} ({error})",
+                    error.code(),
+                ),
+            },
+        }
+        let _ = std::fs::set_permissions(&store, std::fs::Permissions::from_mode(0o700));
+        drop(held);
+    }
+}
+
 /// The exact envelope ceiling, driven at N and N+1. The largest envelope the encoder can
 /// produce — a writer toolchain at its own bound — is exactly 126 bytes and opens; one byte
 /// more is refused as a representational limit rather than as corruption, which is what
