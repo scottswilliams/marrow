@@ -480,18 +480,22 @@ impl DiagnosticCollector {
     /// kinds have crossed.
     pub(crate) fn absorb_syntax(&mut self, file: &FileIdentity, diagnostics: SyntaxDiagnostics) {
         let summary = diagnostics.summary();
-        let count = summary.count();
-        let bytes = summary
-            .owned_bytes()
-            .saturating_add(count.saturating_mul(file.as_str().len()));
+        let charge = |count: usize| {
+            summary
+                .owned_bytes()
+                .saturating_add(count.saturating_mul(file.as_str().len()))
+        };
         match diagnostics.into_complete() {
             Ok(payload) => {
-                let rows = payload
+                let rows: Vec<SourceDiagnostic> = payload
                     .into_boxed_slice()
                     .into_iter()
                     .map(|diagnostic| SourceDiagnostic::syntax(file, diagnostic))
                     .collect();
-                self.admit(count, bytes, RowSource::Many(rows));
+                // The retained rows are the count, exactly as in `absorb`: the
+                // materialized vector is the one quantity both charges derive from.
+                let count = rows.len();
+                self.admit(count, charge(count), RowSource::Many(rows));
             }
             Err(limit) => {
                 let inherited = match limit {
@@ -504,7 +508,10 @@ impl DiagnosticCollector {
                         }
                     }
                 };
-                self.absorb_limited(count, bytes, inherited);
+                // A Limited terminal destroyed its payload, so its saturated summary
+                // count is the only quantity left to charge.
+                let count = summary.count();
+                self.absorb_limited(count, charge(count), inherited);
             }
         }
     }
