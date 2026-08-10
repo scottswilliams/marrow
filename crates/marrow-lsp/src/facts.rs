@@ -406,30 +406,172 @@ mod absence_gate {
         out
     }
 
+    /// One character blanked. A newline survives, so a blanked source keeps the
+    /// line boundaries of the original.
+    fn blank(ch: char) -> char {
+        if ch == '\n' { '\n' } else { ' ' }
+    }
+
+    /// The index just past a raw string literal whose prefix word ends at
+    /// `after_word`, or `None` when no raw literal opens there. Only a whole word
+    /// opens one, so `for` is not read as an `r` prefix, and nothing inside ends
+    /// the literal except a quote followed by the hashes it opened with.
+    fn raw_literal_end(chars: &[char], after_word: usize, word: &str) -> Option<usize> {
+        matches!(word, "r" | "br" | "cr").then_some(())?;
+        let mut hashes = 0;
+        while chars.get(after_word + hashes) == Some(&'#') {
+            hashes += 1;
+        }
+        (chars.get(after_word + hashes) == Some(&'"')).then_some(())?;
+        let mut cursor = after_word + hashes + 1;
+        while cursor < chars.len() {
+            let closes = chars[cursor] == '"'
+                && (1..=hashes).all(|offset| chars.get(cursor + offset) == Some(&'#'));
+            cursor += 1;
+            if closes {
+                return Some(cursor + hashes);
+            }
+        }
+        Some(cursor)
+    }
+
+    /// The index just past an escaped literal opening at `start`, where a
+    /// backslash escapes the character after it: `"…"`, or `'…'` for a character.
+    fn escaped_literal_end(chars: &[char], start: usize, delimiter: char) -> usize {
+        let mut cursor = start + 1;
+        while cursor < chars.len() {
+            match chars[cursor] {
+                '\\' => cursor += 2,
+                ch if ch == delimiter => return cursor + 1,
+                _ => cursor += 1,
+            }
+        }
+        cursor
+    }
+
+    /// The index just past a block comment opening at `start`, counting nesting.
+    fn block_comment_end(chars: &[char], start: usize) -> usize {
+        let mut cursor = start + 2;
+        let mut depth = 1usize;
+        while cursor < chars.len() && depth > 0 {
+            match (chars[cursor], chars.get(cursor + 1)) {
+                ('/', Some('*')) => {
+                    depth += 1;
+                    cursor += 2;
+                }
+                ('*', Some('/')) => {
+                    depth -= 1;
+                    cursor += 2;
+                }
+                _ => cursor += 1,
+            }
+        }
+        cursor
+    }
+
+    /// Blank `chars[start..end]` into `out`, returning the index to resume from.
+    /// `end` may run past the source when a literal or comment is unterminated,
+    /// which a source that compiles cannot contain.
+    fn blank_through(chars: &[char], start: usize, end: usize, out: &mut String) -> usize {
+        let end = end.min(chars.len());
+        out.extend(chars[start..end].iter().copied().map(blank));
+        end
+    }
+
+    /// The source with the contents of comments and literals blanked, one
+    /// character for one, so [`production_lines`] reads item structure from code
+    /// alone. Fixture text is the reason: a test that spells `#[cfg(test)]`, an
+    /// item opener, or a closing brace at column zero inside a string would
+    /// otherwise redraw the scanned region from inside a test module. A raw or
+    /// byte literal read as an ordinary one is worse still — `r"a\"` and
+    /// `br#"{"x":1}"#` each leave an unterminated string that blanks every line
+    /// after it, retiring the gates below without a failure.
+    fn code_only(source: &str) -> String {
+        let chars: Vec<char> = source.chars().collect();
+        let mut out = String::with_capacity(source.len());
+        let mut index = 0;
+        while index < chars.len() {
+            let is_word = |ch: &char| ch.is_alphanumeric() || *ch == '_';
+            let ch = chars[index];
+            if is_word(&ch) {
+                let end = index + chars[index..].iter().take_while(|c| is_word(c)).count();
+                let word: String = chars[index..end].iter().collect();
+                match raw_literal_end(&chars, end, &word) {
+                    Some(literal) => index = blank_through(&chars, index, literal, &mut out),
+                    None => {
+                        out.extend(chars[index..end].iter());
+                        index = end;
+                    }
+                }
+                continue;
+            }
+            match ch {
+                '/' if chars.get(index + 1) == Some(&'/') => {
+                    let end = chars[index..]
+                        .iter()
+                        .position(|c| *c == '\n')
+                        .map_or(chars.len(), |offset| index + offset);
+                    index = blank_through(&chars, index, end, &mut out);
+                }
+                '/' if chars.get(index + 1) == Some(&'*') => {
+                    let end = block_comment_end(&chars, index);
+                    index = blank_through(&chars, index, end, &mut out);
+                }
+                '"' => {
+                    let end = escaped_literal_end(&chars, index, '"');
+                    index = blank_through(&chars, index, end, &mut out);
+                }
+                // A character literal is `'x'` or `'\…'`; every other `'` opens a
+                // lifetime, which is code.
+                '\'' if chars.get(index + 1) == Some(&'\\')
+                    || chars.get(index + 2) == Some(&'\'') =>
+                {
+                    let end = escaped_literal_end(&chars, index, '\'');
+                    index = blank_through(&chars, index, end, &mut out);
+                }
+                _ => {
+                    out.push(ch);
+                    index += 1;
+                }
+            }
+        }
+        out
+    }
+
     /// The production lines of a source: every line outside a `#[cfg(test)]`
     /// item. Test code and this gate's own token lists legitimately name the
     /// forbidden surface, so a block-opening annotated item is skipped from its
     /// attribute to the closing brace at the attribute's own indentation (with an
     /// optional `;` for an annotated initializer), which formatted sources
-    /// guarantee. Production code that follows a test-only helper is still
+    /// guarantee. Structure is read from [`code_only`], never from comment or
+    /// literal text. Production code that follows a test-only helper is still
     /// scanned. Any other annotated form stays in the scanned region, and an
     /// unterminated one panics: a false positive fails loudly, where guessing its
     /// extent would blank the rest of the file silently.
     fn production_lines(source: &str) -> Vec<&str> {
-        let mut lines = source.lines().peekable();
+        let code = code_only(source);
+        let mut lines = source.lines().zip(code.lines()).peekable();
         let mut kept = Vec::new();
-        while let Some(line) = lines.next() {
-            let Some(indent) = line.strip_suffix("#[cfg(test)]").map(str::len) else {
+        while let Some((line, structure)) = lines.next() {
+            let Some(indent) = structure
+                .trim_end()
+                .strip_suffix("#[cfg(test)]")
+                .map(str::len)
+            else {
                 kept.push(line);
                 continue;
             };
-            if !lines.peek().is_some_and(|next| next.ends_with('{')) {
+            if !lines
+                .peek()
+                .is_some_and(|(_, next)| next.trim_end().ends_with('{'))
+            {
                 continue;
             }
             let close = format!("{}}}", " ".repeat(indent));
-            let closed = lines
-                .by_ref()
-                .any(|skipped| skipped == close || skipped.strip_prefix(&close) == Some(";"));
+            let closed = lines.by_ref().any(|(_, skipped)| {
+                let skipped = skipped.trim_end();
+                skipped == close || skipped.strip_prefix(&close) == Some(";")
+            });
             assert!(
                 closed,
                 "a `#[cfg(test)]` item opened at indent {indent} has no closing `{close}`; \
@@ -526,6 +668,51 @@ after_item
             std::panic::catch_unwind(|| production_lines(unterminated)).is_err(),
             "an unterminated test item must fail loudly, never blank the remainder"
         );
+    }
+
+    /// Fixture text is not structure. A test module whose string literals spell
+    /// `#[cfg(test)]`, an item opener, and a closing brace at column zero — in an
+    /// ordinary literal and in a raw one, exactly as the fixtures above do — is
+    /// still skipped whole, and the production line after it is still scanned.
+    /// Reading those lines as structure ends the skip inside the module, which
+    /// scans test code as production and leaves the rest of the module unscanned.
+    #[test]
+    fn fixture_text_inside_a_literal_is_not_structure() {
+        let source = r##"before_item
+#[cfg(test)]
+mod gate {
+    const ORDINARY: &str = "
+#[cfg(test)]
+mod inner {
+}
+";
+    const RAW: &str = r#"
+}
+"#;
+    hidden_in_gate
+}
+after_item
+"##;
+        assert_eq!(production_lines(source), ["before_item", "after_item"]);
+    }
+
+    /// A `#[test]` attribute is test code by definition, so one in the scanned
+    /// region of any crate source proves the scan lost a `#[cfg(test)]` item's
+    /// boundary — the silent failure that would read this gate's own token lists
+    /// as production uses.
+    #[test]
+    fn no_test_attribute_survives_the_production_scan() {
+        for (path, source) in crate_sources() {
+            for line in production_lines(&source) {
+                assert_ne!(
+                    line.trim(),
+                    "#[test]",
+                    "a `#[test]` attribute is inside the scanned region of {}, so a \
+                     `#[cfg(test)]` item's extent was misread",
+                    path.display()
+                );
+            }
+        }
     }
 
     #[test]
