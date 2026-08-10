@@ -482,19 +482,22 @@ impl<'a> FnLowerer<'a> {
     /// group. A `mid` that is a stored field (or an unknown name) leaves the expression an
     /// ordinary field projection on a durable field value, lowered and diagnosed by the
     /// ordinary field path rather than compiling to a codeless durable body.
-    pub(super) fn durable_shape_here(&self, expr: &Expression) -> Option<DurShape> {
+    pub(super) fn durable_shape_here(
+        &self,
+        expr: &Expression,
+    ) -> Result<Option<DurShape>, DeclarationIndexDrift> {
         if is_group_leaf_address(expr) {
-            return self.middle_names_a_group(expr).then_some(DurShape::Field);
+            return Ok(self.middle_names_a_group(expr)?.then_some(DurShape::Field));
         }
-        Self::durable_shape(expr)
+        Ok(Self::durable_shape(expr))
     }
 
     /// Whether the middle selector of a group-leaf address `<entry>.mid.leaf` names a
     /// root-level `group`: the entry is the root itself (`^root[k]`, not a nested branch,
     /// which offers no executable group) and the root declares a group named `mid`.
-    fn middle_names_a_group(&self, expr: &Expression) -> bool {
+    fn middle_names_a_group(&self, expr: &Expression) -> Result<bool, DeclarationIndexDrift> {
         let Expression::Field { base, .. } = expr else {
-            return false;
+            return Ok(false);
         };
         let Expression::Field {
             base: entry,
@@ -502,20 +505,21 @@ impl<'a> FnLowerer<'a> {
             ..
         } = base.as_ref()
         else {
-            return false;
+            return Ok(false);
         };
         let Expression::Keyed {
             base: root_base, ..
         } = entry.as_ref()
         else {
-            return false;
+            return Ok(false);
         };
         let Expression::SavedRoot { name, .. } = root_base.as_ref() else {
-            return false;
+            return Ok(false);
         };
-        self.durable
-            .root_by_name(name)
-            .is_some_and(|root| root.group(mid).is_some())
+        Ok(self
+            .durable
+            .root_by_name(name)?
+            .is_some_and(|root| root.group(mid).is_some()))
     }
 
     /// The most recent in-scope `place` binding named `name`, if any.
@@ -606,9 +610,12 @@ impl<'a> FnLowerer<'a> {
     /// `Keyed` whose base is a field of the store root naming a declared index). The
     /// index reference lives as long as the durable registry, so it may be held across a
     /// mutable lowering call.
-    pub(super) fn resolve_index_read<'e>(&self, expr: &'e Expression) -> Option<IndexRead<'a, 'e>> {
+    pub(super) fn resolve_index_read<'e>(
+        &self,
+        expr: &'e Expression,
+    ) -> Result<Option<IndexRead<'a, 'e>>, DeclarationIndexDrift> {
         let Expression::Keyed { base, keys, .. } = expr else {
-            return None;
+            return Ok(None);
         };
         let Expression::Field {
             base: field_base,
@@ -616,22 +623,23 @@ impl<'a> FnLowerer<'a> {
             ..
         } = base.as_ref()
         else {
-            return None;
+            return Ok(None);
         };
         let Expression::SavedRoot {
             name: root_name, ..
         } = field_base.as_ref()
         else {
-            return None;
+            return Ok(None);
         };
         let durable: &'a DurableRegistry = self.durable;
-        let root = durable.root_by_name(root_name)?;
-        let index = root.index(name)?;
-        Some(IndexRead {
-            index,
-            root,
-            keys: keys.as_slice(),
-        })
+        Ok(durable
+            .root_by_name(root_name)?
+            .and_then(|root| root.index(name).map(|index| (root, index)))
+            .map(|(root, index)| IndexRead {
+                index,
+                root,
+                keys: keys.as_slice(),
+            }))
     }
 
     /// Lower a unique index's exact lookup `^root.index[keys]`: check the operands against
@@ -706,9 +714,12 @@ impl<'a> FnLowerer<'a> {
         Some(LTy::bare_scalar(ScalarType::Bool))
     }
 
-    pub(super) fn durable_access(&self, expr: &Expression) -> Option<DurShape> {
-        if let Some(shape) = self.durable_shape_here(expr) {
-            return Some(shape);
+    pub(super) fn durable_access(
+        &self,
+        expr: &Expression,
+    ) -> Result<Option<DurShape>, DeclarationIndexDrift> {
+        if let Some(shape) = self.durable_shape_here(expr)? {
+            return Ok(Some(shape));
         }
         // A place-rooted composed address extends a named `place`/pin with the same field,
         // group, and branch selectors an inline `^root` address takes. Classification is
@@ -718,7 +729,7 @@ impl<'a> FnLowerer<'a> {
         // or a branch field). A projection on a durable field *value* (`p.field.sub`) is not
         // a durable cell and falls through to ordinary projection, exactly as the inline
         // form does.
-        match expr {
+        Ok(match expr {
             Expression::Name { .. } => self.is_place_name(expr).then_some(DurShape::Entry),
             // A place-rooted keyed selection `<place>(.branch[bk])+` is a branch entry. It is
             // classified by place-rootedness, not by resolving the branch, so an unknown
@@ -737,7 +748,7 @@ impl<'a> FnLowerer<'a> {
                     && self.is_place_rooted(base)))
             .then_some(DurShape::Field),
             _ => None,
-        }
+        })
     }
 
     /// Whether the leftmost base of a durable path expression is an in-scope named
@@ -1142,7 +1153,11 @@ impl<'a> FnLowerer<'a> {
     /// [`PlaceLocal`] on success. Returns `None` when the address does not resolve — the
     /// resolver has already reported why — so the caller can poison the name.
     fn bind_place_address(&mut self, name: &str, place_expr: &Expression) -> Option<()> {
-        if !matches!(self.durable_access(place_expr), Some(DurShape::Entry)) {
+        let access = match self.durable_access(place_expr) {
+            Ok(shape) => shape,
+            Err(drift) => return self.ledger_drift(drift),
+        };
+        if !matches!(access, Some(DurShape::Entry)) {
             self.fail(SourceDiagnostic::at(
                 Code::CheckType.as_str(),
                 self.file,
@@ -1572,7 +1587,11 @@ impl<'a> FnLowerer<'a> {
         // A managed-index read completes the presence family over an index: a unique index
         // is a complete-key probe (the presence half of the `if const` lookup), a nonunique
         // index is scan-only and has no keyed presence probe.
-        if let Some(read) = self.resolve_index_read(&arg.value) {
+        let index_read = match self.resolve_index_read(&arg.value) {
+            Ok(read) => read,
+            Err(drift) => return self.ledger_drift(drift),
+        };
+        if let Some(read) = index_read {
             if read.index.unique {
                 return self.lower_index_exists(read.index, read.keys, arg.value.span());
             }
@@ -1592,14 +1611,22 @@ impl<'a> FnLowerer<'a> {
         // declared branch) is the family-populated probe: it names no immediate child key,
         // so it reuses the traversal place resolver and emits only the ancestor key-path.
         // A scalar-field tail is not a family — it falls through to the keyed cell probe.
-        if self.arg_is_family(&arg.value) {
+        let is_family = match self.arg_is_family(&arg.value) {
+            Ok(family) => family,
+            Err(drift) => return self.ledger_drift(drift),
+        };
+        if is_family {
             let target = self.resolve_traversal_place(&arg.value)?;
             self.emit_key_path(&target.ancestor_keys, target.span)?;
             self.push(Instr::DurFamilyExists(target.entry_site), span);
             return Some(LTy::bare_scalar(ScalarType::Bool));
         }
         // A specific addressed cell (an entry or a field) probes that one cell's presence.
-        if self.durable_access(&arg.value).is_some() {
+        let access = match self.durable_access(&arg.value) {
+            Ok(shape) => shape,
+            Err(drift) => return self.ledger_drift(drift),
+        };
+        if access.is_some() {
             let place = self.resolve_durable(&arg.value)?;
             self.emit_key_path(&place.keys, place.span)?;
             let site = match place.target {
@@ -2914,7 +2941,14 @@ impl<'a> FnLowerer<'a> {
     /// Lower `delete ^r(k)` / `delete ^r(k).branch(bk)` (entry payload erase) or
     /// `delete ^r(k).f` (sparse-field erase).
     pub(super) fn lower_durable_delete(&mut self, path: &Expression, span: SourceSpan) {
-        if self.durable_access(path).is_none() {
+        let access = match self.durable_access(path) {
+            Ok(shape) => shape,
+            Err(drift) => {
+                self.record_invariant(LowerInvariant::from(drift));
+                return;
+            }
+        };
+        if access.is_none() {
             self.fail(unsupported(self.file, span, "this delete target"));
             return;
         }

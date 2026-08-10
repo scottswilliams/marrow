@@ -797,11 +797,30 @@ enum SemanticOutcome {
 }
 
 /// The declaration ledgers' shared retention ceiling, as its public record.
-fn ledger_full() -> CompileResourceLimit {
-    CompileResourceLimit::new(
-        ResourceLimitKind::DeclarationLedgerBytes,
-        MAX_DECLARATION_LEDGER_BYTES as u64,
-    )
+impl From<DeclarationLedgerFull> for CompileResourceLimit {
+    fn from(_: DeclarationLedgerFull) -> Self {
+        Self::new(
+            ResourceLimitKind::DeclarationLedgerBytes,
+            MAX_DECLARATION_LEDGER_BYTES as u64,
+        )
+    }
+}
+
+impl From<DeclarationLedgerFull> for SemanticOutcome {
+    fn from(full: DeclarationLedgerFull) -> Self {
+        Self::ResourceLimit(full.into())
+    }
+}
+
+/// The one place a registry build's two failure arms become pass outcomes, so the
+/// five builders that return [`BuildError`] cannot disagree about either.
+impl From<BuildError> for SemanticOutcome {
+    fn from(error: BuildError) -> Self {
+        match error {
+            BuildError::Invariant(invariant) => Self::Invariant(InvariantCause::Generic(invariant)),
+            BuildError::LedgerFull(full) => full.into(),
+        }
+    }
 }
 
 /// The type registry resolved every declared type. Root of the artifact dependency
@@ -1204,7 +1223,7 @@ fn run_semantic(
             .declare(module.name.clone(), DeclarationOccurrence::Refused(refusal))
             .is_err()
         {
-            return SemanticOutcome::ResourceLimit(ledger_full());
+            return DeclarationLedgerFull.into();
         }
     }
     for module in parsed {
@@ -1232,7 +1251,7 @@ fn run_semantic(
             ))
         };
         if modules.declare(module.name.clone(), occurrence).is_err() {
-            return SemanticOutcome::ResourceLimit(ledger_full());
+            return DeclarationLedgerFull.into();
         }
     }
 
@@ -1250,7 +1269,13 @@ fn run_semantic(
                 .unwrap_or(target.as_str())
                 .to_string();
             let spelling = marrow_syntax::name_path_spelling(&use_decl.segments);
-            match modules.lookup(&target) {
+            let binding = match modules.lookup(&target) {
+                Ok(binding) => binding,
+                Err(drift) => {
+                    return SemanticOutcome::Invariant(InvariantCause::Generic(drift.into()));
+                }
+            };
+            match binding {
                 Binding::Accepted(ModuleBinding) => {}
                 // The project contains the module and refused it. The import fails
                 // for that cause, which it names, rather than denying the module.
@@ -1389,7 +1414,7 @@ fn run_semantic(
         budget.clone(),
     ) {
         Ok(records) => records,
-        Err(DeclarationLedgerFull) => return SemanticOutcome::ResourceLimit(ledger_full()),
+        Err(error) => return error.into(),
     };
     if let Some(invariant) = records.build_invariant() {
         return SemanticOutcome::Invariant(InvariantCause::Generic(invariant));
@@ -1424,12 +1449,7 @@ fn run_semantic(
         budget.clone(),
     ) {
         Ok(durable) => durable,
-        Err(BuildError::Invariant(invariant)) => {
-            return SemanticOutcome::Invariant(InvariantCause::Generic(invariant));
-        }
-        Err(BuildError::LedgerFull(DeclarationLedgerFull)) => {
-            return SemanticOutcome::ResourceLimit(ledger_full());
-        }
+        Err(error) => return error.into(),
     };
     // The type registry resolved every declared type: every later phase resolves its
     // annotations through it.
@@ -1450,12 +1470,7 @@ fn run_semantic(
         budget.clone(),
     ) {
         Ok(signatures) => CompleteFunctionRegistry(signatures),
-        Err(BuildError::Invariant(invariant)) => {
-            return SemanticOutcome::Invariant(InvariantCause::Generic(invariant));
-        }
-        Err(BuildError::LedgerFull(DeclarationLedgerFull)) => {
-            return SemanticOutcome::ResourceLimit(ledger_full());
-        }
+        Err(error) => return error.into(),
     };
     let function_registry = signatures.complete();
     // Generic functions are templates with no image index; they are monomorphized at
@@ -1497,7 +1512,7 @@ fn run_semantic(
         .collect();
     let constants = match ConstRegistry::build(&const_decls, &records, &mut diagnostics, budget) {
         Ok(constants) => constants,
-        Err(DeclarationLedgerFull) => return SemanticOutcome::ResourceLimit(ledger_full()),
+        Err(full) => return full.into(),
     };
 
     // Everything from the template proof to the instance drain resolves call sites

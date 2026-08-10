@@ -568,6 +568,7 @@ store ^second[id: int]: Second
         assert_eq!(
             durable
                 .root_by_name(root_name)
+                .expect("the durable ledger stays coherent")
                 .and_then(|root| root.field("value"))
                 .map(|field| field.ty),
             Some(shared),

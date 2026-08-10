@@ -598,17 +598,20 @@ impl<K: Ord + Clone, T> DeclarationLedger<K, T> {
 
     /// What `key` resolves to: its first accepted occurrence, else the merged
     /// refusal for the key, else a genuine absence.
-    pub(crate) fn lookup(&self, key: &K) -> Binding<'_, T> {
+    ///
+    /// Drift between layer 1 and the index is reported, never answered: `Absent` is
+    /// a statement about the source — that nothing declared this key — and a ledger
+    /// that answered it for its own incoherence would put a fabricated absence back
+    /// at the use site, which is the defect this module exists to remove. An
+    /// invariant is not a binding, so it does not become a `Binding` variant.
+    pub(crate) fn lookup(&self, key: &K) -> Result<Binding<'_, T>, DeclarationIndexDrift> {
         match self.index.get(key).map(|entry| entry.first) {
             Some(Selected::Accepted(at)) => match self.occurrences.get(at) {
-                Some((_, DeclarationOccurrence::Accepted(value))) => Binding::Accepted(value),
-                _ => Binding::Absent,
+                Some((_, DeclarationOccurrence::Accepted(value))) => Ok(Binding::Accepted(value)),
+                _ => Err(DeclarationIndexDrift),
             },
-            Some(Selected::Refused(id)) => match self.refusal(id) {
-                Ok(summary) => Binding::Refused(id, summary),
-                Err(DeclarationIndexDrift) => Binding::Absent,
-            },
-            None => Binding::Absent,
+            Some(Selected::Refused(id)) => Ok(Binding::Refused(id, self.refusal(id)?)),
+            None => Ok(Binding::Absent),
         }
     }
 
@@ -754,7 +757,10 @@ mod tests {
     #[test]
     fn an_undeclared_key_is_absent() {
         let ledger = ledger();
-        assert!(matches!(ledger.lookup(&"a".to_string()), Binding::Absent));
+        assert!(matches!(
+            ledger.lookup(&"a".to_string()),
+            Ok(Binding::Absent)
+        ));
     }
 
     #[test]
@@ -767,7 +773,7 @@ mod tests {
             )
             .expect("within budget");
         match ledger.lookup(&"a".to_string()) {
-            Binding::Refused(_, summary) => {
+            Ok(Binding::Refused(_, summary)) => {
                 assert_eq!(summary.name(), "a");
                 assert_eq!(summary.code(), "check.type");
             }
@@ -798,7 +804,7 @@ mod tests {
             .expect("within budget");
         assert!(matches!(
             ledger.lookup(&"a".to_string()),
-            Binding::Accepted(1)
+            Ok(Binding::Accepted(1))
         ));
     }
 
@@ -816,7 +822,7 @@ mod tests {
             .expect("within budget");
         assert!(matches!(
             ledger.lookup(&"a".to_string()),
-            Binding::Accepted(1)
+            Ok(Binding::Accepted(1))
         ));
     }
 
@@ -856,7 +862,7 @@ mod tests {
             .declare("a".to_string(), DeclarationOccurrence::Accepted(1))
             .expect("within budget");
         match ledger.lookup(&"a".to_string()) {
-            Binding::Refused(_, summary) => assert_eq!(summary.name(), "a"),
+            Ok(Binding::Refused(_, summary)) => assert_eq!(summary.name(), "a"),
             other => panic!("expected a refusal, got {other:?}"),
         }
     }
@@ -881,7 +887,7 @@ mod tests {
         match ledger.lookup(&"a".to_string()) {
             // The second refusal folds into the first: one retained summary, one
             // reportable cause, and a bounded count of the occurrences behind it.
-            Binding::Refused(_, summary) => assert_eq!(summary.further, 1),
+            Ok(Binding::Refused(_, summary)) => assert_eq!(summary.further, 1),
             other => panic!("expected a refusal, got {other:?}"),
         }
         assert_eq!(ledger.occurrences.len(), 1);
@@ -898,7 +904,7 @@ mod tests {
             .expect("within budget");
         let key = "a".to_string();
         let steers = |ledger: &DeclarationLedger<String, u32>| match ledger.lookup(&key) {
-            Binding::Refused(_, summary) => summary.steer_once(),
+            Ok(Binding::Refused(_, summary)) => summary.steer_once(),
             other => panic!("expected a refusal, got {other:?}"),
         };
         assert!(steers(&ledger));
@@ -1000,10 +1006,10 @@ mod tests {
             )
             .expect("within budget");
 
-        let Binding::Refused(from_constants, _) = constants.lookup(&"a".to_string()) else {
+        let Ok(Binding::Refused(from_constants, _)) = constants.lookup(&"a".to_string()) else {
             panic!("expected a refusal");
         };
-        let Binding::Refused(from_types, _) = types.lookup(&"a".to_string()) else {
+        let Ok(Binding::Refused(from_types, _)) = types.lookup(&"a".to_string()) else {
             panic!("expected a refusal");
         };
         assert_ne!(from_constants, from_types);

@@ -14,8 +14,9 @@ use marrow_syntax::{
 
 use crate::analysis::FileRef;
 use crate::decl::{
-    Binding, DeclarationBudget, DeclarationLedger, DeclarationLedgerFull, DeclarationNamespace,
-    DeclarationOccurrence, DeclarationRefusalSummary, Declared, refuse, refuse_row,
+    Binding, DeclarationBudget, DeclarationIndexDrift, DeclarationLedger, DeclarationLedgerFull,
+    DeclarationNamespace, DeclarationOccurrence, DeclarationRefusalSummary, Declared, refuse,
+    refuse_row,
 };
 use crate::diag::{DiagnosticCollector, SourceDiagnostic};
 use crate::lower::parse_int;
@@ -72,7 +73,11 @@ impl ConstRegistry {
 impl ConstRegistry {
     /// What the constant named `name` binds in `module`: its folded value, the
     /// refusal that stands in its place, or a genuine absence.
-    pub(crate) fn lookup(&self, module: &str, name: &str) -> Binding<'_, ConstScalar> {
+    pub(crate) fn lookup(
+        &self,
+        module: &str,
+        name: &str,
+    ) -> Result<Binding<'_, ConstScalar>, DeclarationIndexDrift> {
         self.entries.lookup(&(module.to_string(), name.to_string()))
     }
 

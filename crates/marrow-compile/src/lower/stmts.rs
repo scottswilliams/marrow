@@ -348,7 +348,14 @@ impl<'a> FnLowerer<'a> {
     }
 
     fn lower_assign(&mut self, target: &Expression, value: &Expression) {
-        if self.durable_access(target).is_some() {
+        let access = match self.durable_access(target) {
+            Ok(shape) => shape,
+            Err(drift) => {
+                self.record_invariant(LowerInvariant::from(drift));
+                return;
+            }
+        };
+        if access.is_some() {
             if let Some(place) = self.resolve_durable(target) {
                 self.lower_durable_assign(place, value);
             }
@@ -975,7 +982,11 @@ impl<'a> FnLowerer<'a> {
             // edge, so a sparse-field set through the same place in the then block
             // lowers strict; a bare place name is otherwise not a value.
             let mut guard_path: Option<Vec<u16>> = None;
-            let optional = if matches!(self.durable_access(value), Some(DurShape::Entry)) {
+            let access = match self.durable_access(value) {
+                Ok(shape) => shape,
+                Err(drift) => return self.ledger_drift(drift),
+            };
+            let optional = if matches!(access, Some(DurShape::Entry)) {
                 let place = self.resolve_durable(value)?;
                 guard_path = place.bound_key_path();
                 self.lower_durable_read(place)?
@@ -1387,7 +1398,14 @@ impl<'a> FnLowerer<'a> {
         }
         // A `for` head over a managed index scans it. Only a nonunique index is scanned
         // (progressive-prefix); a unique index is an exact lookup, not an iteration.
-        if let Some(read) = self.resolve_index_read(iterable) {
+        let index_read = match self.resolve_index_read(iterable) {
+            Ok(read) => read,
+            Err(drift) => {
+                self.record_invariant(LowerInvariant::from(drift));
+                return Flow::Rejected;
+            }
+        };
+        if let Some(read) = index_read {
             if read.index.unique {
                 self.fail(SourceDiagnostic::at(
                     Code::CheckType.as_str(),
@@ -1629,8 +1647,8 @@ impl<'a> FnLowerer<'a> {
     /// branch — a scalar-field selection is a specific-cell probe. Non-emitting: it
     /// classifies the argument before a probe is chosen, since a branch family and a
     /// scalar field share the `Field`-on-entry-address syntax.
-    pub(super) fn arg_is_family(&self, expr: &Expression) -> bool {
-        match expr {
+    pub(super) fn arg_is_family(&self, expr: &Expression) -> Result<bool, DeclarationIndexDrift> {
+        Ok(match expr {
             Expression::SavedRoot { .. } => true,
             // A keyed branch family, addressed either from an inline entry address
             // (`^root(k).branch`) or from a named `place`/pin base (`b.notes`): the tail
@@ -1638,11 +1656,11 @@ impl<'a> FnLowerer<'a> {
             // recognized here so `exists(b.notes)` routes to the family-populated probe
             // rather than misreporting the branch as a missing field.
             Expression::Field { base, name, .. } => self
-                .entry_address_node(base)
+                .entry_address_node(base)?
                 .or_else(|| self.place_base_node(base))
                 .is_some_and(|parent| parent.branch(name).is_some()),
             _ => false,
-        }
+        })
     }
 
     /// The durable node a bare named `place`/pin base addresses, for the `exists` family
@@ -1663,24 +1681,27 @@ impl<'a> FnLowerer<'a> {
     /// durable root without emitting a diagnostic. `None` when `expr` is not a resolvable
     /// entry address (a wrong or parked root name, an unknown branch, or a non-address
     /// shape). Used only to classify an `exists` tail; the real resolvers own diagnostics.
-    fn entry_address_node(&self, expr: &Expression) -> Option<DurNode<'a>> {
+    fn entry_address_node(
+        &self,
+        expr: &Expression,
+    ) -> Result<Option<DurNode<'a>>, DeclarationIndexDrift> {
         let Expression::Keyed { base, .. } = expr else {
-            return None;
+            return Ok(None);
         };
-        match &**base {
+        Ok(match &**base {
             Expression::SavedRoot { name, .. } => {
-                self.durable.root_by_name(name).map(DurNode::Root)
+                self.durable.root_by_name(name)?.map(DurNode::Root)
             }
             Expression::Field {
                 base: parent_base,
                 name: branch_name,
                 ..
-            } => {
-                let parent = self.entry_address_node(parent_base)?;
-                parent.branch(branch_name).map(DurNode::Branch)
-            }
+            } => match self.entry_address_node(parent_base)? {
+                Some(parent) => parent.branch(branch_name).map(DurNode::Branch),
+                None => None,
+            },
             _ => None,
-        }
+        })
     }
 
     /// Resolve a durable traversal place into the traversed layer's entry site, its

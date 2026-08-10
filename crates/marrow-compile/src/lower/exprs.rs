@@ -62,7 +62,11 @@ impl<'a> FnLowerer<'a> {
         // A read through a managed index `^root.index[keys]`: a unique index is an exact
         // complete-key lookup yielding the optional `Id(^root)`; a nonunique index is read
         // by scanning it with a `for` head, so naming one in value position is rejected.
-        if let Some(read) = self.resolve_index_read(expr) {
+        let index_read = match self.resolve_index_read(expr) {
+            Ok(read) => read,
+            Err(drift) => return self.ledger_drift(drift),
+        };
+        if let Some(read) = index_read {
             if read.index.unique {
                 return self.lower_index_lookup(
                     read.index,
@@ -87,8 +91,16 @@ impl<'a> FnLowerer<'a> {
         // group, group leaf, or whole branch entry off a named `place`/pin — reads the same
         // way its inline `^root…` equivalent does. A bare place name is a durable
         // designation, not a value, and falls through to its own diagnostic below.
-        if self.durable_shape_here(expr).is_some()
-            || (!matches!(expr, Expression::Name { .. }) && self.durable_access(expr).is_some())
+        let durable_here = match self.durable_shape_here(expr) {
+            Ok(shape) => shape,
+            Err(drift) => return self.ledger_drift(drift),
+        };
+        let durable_composed = match self.durable_access(expr) {
+            Ok(shape) => shape,
+            Err(drift) => return self.ledger_drift(drift),
+        };
+        if durable_here.is_some()
+            || (!matches!(expr, Expression::Name { .. }) && durable_composed.is_some())
         {
             let place = self.resolve_durable(expr)?;
             return self.lower_durable_read(place);
@@ -154,18 +166,17 @@ impl<'a> FnLowerer<'a> {
                     // declaration pass refused still holds its name here, so the use
                     // is steered to that cause rather than told the name is unknown.
                     let consts = self.consts;
-                    match consts.lookup(self.module, name) {
+                    let constant = match consts.lookup(self.module, name) {
+                        Ok(binding) => binding,
+                        Err(drift) => return self.ledger_drift(drift),
+                    };
+                    match constant {
                         Binding::Accepted(value) => {
                             let value = value.clone();
                             return Some(self.lower_const_value(&value, *span));
                         }
                         Binding::Refused(_, refusal) => {
-                            if refusal.steer_once() {
-                                let row = declaration_refused(self.file, *span, refusal);
-                                self.fail(row);
-                            } else {
-                                self.failed = true;
-                            }
+                            self.steer_refusal(refusal, *span);
                             return None;
                         }
                         Binding::Absent => {}
@@ -1135,7 +1146,11 @@ impl<'a> FnLowerer<'a> {
                 // its executable branch tree).
                 if let Some((resource, head_span, mut path)) = split_dotted_head(base) {
                     path.push(&**name);
-                    if let Some(branch) = self.executable_branch_path(resource, &path) {
+                    let executable = match self.executable_branch_path(resource, &path) {
+                        Ok(branch) => branch,
+                        Err(drift) => return self.ledger_drift(drift),
+                    };
+                    if let Some(branch) = executable {
                         let display = branch_ctor_display(resource, &path);
                         return self
                             .lower_branch_constructor(
@@ -1162,9 +1177,11 @@ impl<'a> FnLowerer<'a> {
                     // one of its branches is not knowable here, and calling the form
                     // unsupported would blame the language for the store's own
                     // reported defect.
-                    if let RootBinding::Refused(_, summary) =
-                        self.durable.root_by_resource(resource)
-                    {
+                    let backing = match self.durable.root_by_resource(resource) {
+                        Ok(binding) => binding,
+                        Err(drift) => return self.ledger_drift(drift),
+                    };
+                    if let RootBinding::Refused(_, summary) = backing {
                         match summary.steer_once() {
                             true => {
                                 let row = declaration_refused(self.file, span, summary);
@@ -1363,7 +1380,11 @@ impl<'a> FnLowerer<'a> {
                 .lower_constructor(name, args, span)
                 .map(CallResult::Value);
         }
-        match self.functions.same_module(self.module, name) {
+        let same_module = match self.functions.same_module(self.module, name) {
+            Ok(binding) => binding,
+            Err(drift) => return self.ledger_drift(drift),
+        };
+        match same_module {
             Binding::Accepted(sig) => {
                 let (index, params, ret, target) = (
                     sig.index,
@@ -1444,7 +1465,11 @@ impl<'a> FnLowerer<'a> {
         span: SourceSpan,
         callee_span: SourceSpan,
     ) -> Option<CallResult> {
-        match self.functions.resolve_qualified(self.module, prefix, item) {
+        let resolved = match self.functions.resolve_qualified(self.module, prefix, item) {
+            Ok(resolution) => resolution,
+            Err(drift) => return self.ledger_drift(drift),
+        };
+        match resolved {
             CallResolution::Found(sig) => {
                 let (index, params, ret, target) = (
                     sig.index,
@@ -1484,7 +1509,11 @@ impl<'a> FnLowerer<'a> {
             CallResolution::NotFound => {
                 // A qualified generic function is resolved through the same module
                 // scope and monomorphized, after the monomorphic table misses.
-                if let Some(module) = self.functions.resolved_module(self.module, prefix)
+                let resolved_module = match self.functions.resolved_module(self.module, prefix) {
+                    Ok(module) => module,
+                    Err(drift) => return self.ledger_drift(drift),
+                };
+                if let Some(module) = resolved_module.clone()
                     && let Some((template, public)) = self.generics.in_module(&module, item)
                 {
                     if !public && module != self.module {
@@ -1509,12 +1538,9 @@ impl<'a> FnLowerer<'a> {
                     .join("::");
                 // When the prefix names a real module, offer the nearest function in
                 // that module as a did-you-mean for a misspelled cross-module callee.
-                let suggestion = self
-                    .functions
-                    .resolved_module(self.module, prefix)
-                    .and_then(|module| {
-                        nearest_name(item, self.functions.module_function_names(&module))
-                    });
+                let suggestion = resolved_module.and_then(|module| {
+                    nearest_name(item, self.functions.module_function_names(&module))
+                });
                 self.fail(name_not_in_scope(
                     self.file,
                     span,
@@ -2041,16 +2067,23 @@ impl<'a> FnLowerer<'a> {
         &self,
         resource: &str,
         path: &[&str],
-    ) -> Option<&'a crate::durable::DurableBranch> {
-        let RootBinding::Executable(root) = self.durable.root_by_resource(resource) else {
-            return None;
+    ) -> Result<Option<&'a crate::durable::DurableBranch>, DeclarationIndexDrift> {
+        let RootBinding::Executable(root) = self.durable.root_by_resource(resource)? else {
+            return Ok(None);
         };
-        let (first, rest) = path.split_first()?;
-        let mut branch = root.branch(first)?;
+        let Some((first, rest)) = path.split_first() else {
+            return Ok(None);
+        };
+        let Some(mut branch) = root.branch(first) else {
+            return Ok(None);
+        };
         for name in rest {
-            branch = branch.branch(name)?;
+            let Some(next) = branch.branch(name) else {
+                return Ok(None);
+            };
+            branch = next;
         }
-        Some(branch)
+        Ok(Some(branch))
     }
 
     /// Lower a keyed branch entry constructor `Resource.branch(field: value, …)`. The
@@ -3180,7 +3213,11 @@ impl<'a> FnLowerer<'a> {
                             .record_by_type(ty)
                             .map(|info| info.name.clone())
                         {
-                            match self.durable.root_by_resource(&resource) {
+                            let backing = match self.durable.root_by_resource(&resource) {
+                                Ok(binding) => binding,
+                                Err(drift) => return self.ledger_drift(drift),
+                            };
+                            match backing {
                                 RootBinding::Executable(root) if root.branch(name).is_some() => {
                                     self.fail(branch_not_a_field(
                                         self.file,

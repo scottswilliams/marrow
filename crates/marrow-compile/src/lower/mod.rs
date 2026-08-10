@@ -1060,14 +1060,23 @@ impl<'a> FnLowerer<'a> {
     /// reported, once per refused key: the first use carries the row and every
     /// later one fails silently, which is what holds amplification to the number of
     /// refused declarations rather than the number of uses.
+    ///
+    /// The one exception is written here rather than at a use site: a missing ledger
+    /// identity is the single refusal class whose cause is a report *family* rather
+    /// than one row, so its steer names that family instead of citing a single
+    /// declaring row. Every other cause reuses the row its declaration pushed, which
+    /// is what keeps the other refusal classes from claiming an identity failure
+    /// that was never reported.
     fn steer_refusal(&mut self, summary: &DeclarationRefusalSummary, span: SourceSpan) {
-        match summary.steer_once() {
-            true => {
-                let row = declaration_refused(self.file, span, summary);
-                self.fail(row);
-            }
-            false => self.failed = true,
+        if !summary.steer_once() {
+            self.failed = true;
+            return;
         }
+        let row = match summary.gap() {
+            Some(_) => identity_admission_failed(self.file, span, summary.name()),
+            None => declaration_refused(self.file, span, summary),
+        };
+        self.fail(row);
     }
 
     /// Steer a use that named a refused type to that declaration's cause, if the
@@ -1078,11 +1087,17 @@ impl<'a> FnLowerer<'a> {
     /// own not-in-scope report without ever consulting a `ResolveRefusal`. This is
     /// the one probe that keeps those paths from calling a refused type undeclared.
     fn steer_refused_type(&mut self, name: &str, span: SourceSpan) -> bool {
-        let Binding::Refused(_, summary) = self.records.named_type(name) else {
-            return false;
-        };
-        self.steer_refusal(summary, span);
-        true
+        match self.records.named_type(name) {
+            Ok(Binding::Refused(_, summary)) => {
+                self.steer_refusal(summary, span);
+                true
+            }
+            Ok(Binding::Accepted(_) | Binding::Absent) => false,
+            Err(drift) => {
+                self.record_invariant(LowerInvariant::from(drift));
+                true
+            }
+        }
     }
 
     /// The same steer for a member of a resource record or one of its unkeyed
@@ -1092,11 +1107,19 @@ impl<'a> FnLowerer<'a> {
     /// `owner` is a resource record's name, or the `Record.group` anchor of an
     /// unkeyed group.
     fn steer_refused_member(&mut self, owner: &str, member: &str, span: SourceSpan) -> bool {
-        let Binding::Refused(_, summary) = self.records.member(owner, member) else {
-            return false;
-        };
-        self.steer_refusal(summary, span);
-        true
+        match self.records.member(owner, member) {
+            Ok(Binding::Refused(_, summary)) => {
+                self.steer_refusal(summary, span);
+                true
+            }
+            Ok(Binding::Accepted(_) | Binding::Absent) => false,
+            // The ledger cannot say whether the owner declared this member, so no
+            // "has no field" report may be made from here either.
+            Err(drift) => {
+                self.record_invariant(LowerInvariant::from(drift));
+                true
+            }
+        }
     }
 
     /// The same steer for a member a projection already resolved to its refusal
@@ -1107,6 +1130,16 @@ impl<'a> FnLowerer<'a> {
             Ok(None) => self.failed = true,
             Err(drift) => self.record_invariant(LowerInvariant::from(drift)),
         }
+    }
+
+    /// Route a namespace ledger's coherence failure to the invariant path.
+    ///
+    /// A drifted lookup answers nothing about the source, so no diagnostic is
+    /// pushed and no binding is invented for it: the pass reports the invariant and
+    /// this body produces no value.
+    fn ledger_drift<T>(&mut self, drift: DeclarationIndexDrift) -> Option<T> {
+        self.record_invariant(LowerInvariant::from(drift));
+        None
     }
 
     fn record_invariant(&mut self, invariant: LowerInvariant) {
@@ -1167,7 +1200,11 @@ impl<'a> FnLowerer<'a> {
         span: SourceSpan,
     ) -> Option<&'a crate::durable::DurableRoot> {
         let durable: &'a DurableRegistry = self.durable;
-        match durable.root(name) {
+        let binding = match durable.root(name) {
+            Ok(binding) => binding,
+            Err(drift) => return self.ledger_drift(drift),
+        };
+        match binding {
             RootBinding::Executable(root) => Some(root),
             RootBinding::NotYetExecutable => {
                 self.fail(not_yet_executable(self.file, span, name));
@@ -1178,21 +1215,7 @@ impl<'a> FnLowerer<'a> {
                 // already reported the cause, so the first reference is steered to it
                 // and the rest fail silently. One refused store does not echo at every
                 // use.
-                if refusal.steer_once() {
-                    // A missing ledger identity is the one refusal with a report
-                    // *family* rather than a single row, so it names that family.
-                    // Every other cause — a refused member, index, bound, value cycle,
-                    // or admission check — reuses the one row it pushed, which is what
-                    // keeps nine of the ten refusal sites from claiming an identity
-                    // failure that was never reported.
-                    let row = match refusal.gap() {
-                        Some(_) => identity_admission_failed(self.file, span, name),
-                        None => declaration_refused(self.file, span, refusal),
-                    };
-                    self.fail(row);
-                } else {
-                    self.failed = true;
-                }
+                self.steer_refusal(refusal, span);
                 None
             }
             RootBinding::Absent => {

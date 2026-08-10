@@ -169,7 +169,7 @@ fn resolve_expanded(
                     // A name no table answers is either genuinely undeclared or a
                     // declaration this project refused; the ledger tells them apart,
                     // and only the first may be reported as an unsupported form.
-                    None => Err(ResolveError::Refusal(records.unresolved_named_type(text))),
+                    None => Err(ResolveError::Refusal(records.unresolved_named_type(text)?)),
                 }
             }
         }
@@ -189,7 +189,7 @@ fn resolve_expanded(
         // declared, or over a not-yet-executable root, is an unsupported type (`None`),
         // reported by the caller like any other unresolved annotation.
         TypeExpr::Identity(identity) => {
-            let root = match durable.root(&identity.root) {
+            let root = match durable.root(&identity.root)? {
                 RootBinding::Executable(root) => root,
                 RootBinding::Refused(id, _) => {
                     return Err(ResolveError::Refusal(ResolveRefusal::RefusedDeclaration(

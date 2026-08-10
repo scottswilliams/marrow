@@ -292,7 +292,11 @@ impl FunctionRegistry {
 
     /// Resolve an unqualified call from within `module`: a function of that name in
     /// the same module, or the cause its declaration was refused for.
-    pub(super) fn same_module(&self, module: &str, name: &str) -> Binding<'_, FnSignature> {
+    pub(super) fn same_module(
+        &self,
+        module: &str,
+        name: &str,
+    ) -> Result<Binding<'_, FnSignature>, DeclarationIndexDrift> {
         self.sigs.lookup(&(module.to_string(), name.to_string()))
     }
 
@@ -313,35 +317,43 @@ impl FunctionRegistry {
         current: &str,
         prefix: &[NameSegment],
         item: &str,
-    ) -> CallResolution<'_> {
-        let module = match self.prefix_module(current, prefix) {
+    ) -> Result<CallResolution<'_>, DeclarationIndexDrift> {
+        let module = match self.prefix_module(current, prefix)? {
             ModuleResolution::Accepted(module) => module,
             // The prefix names a module this project contains and refused. The
             // declaration reported the cause, so the call reuses it rather than
             // resolving into a scope that does not exist.
-            ModuleResolution::Refused(summary) => return CallResolution::ModuleRefused(summary),
-            ModuleResolution::Absent => return CallResolution::NotFound,
-        };
-        match self.sigs.lookup(&(module.clone(), item.to_string())) {
-            Binding::Accepted(sig) if sig.public || sig.module == current => {
-                CallResolution::Found(sig)
+            ModuleResolution::Refused(summary) => {
+                return Ok(CallResolution::ModuleRefused(summary));
             }
-            Binding::Accepted(_) => CallResolution::NotPublic,
-            // A refused signature is not callable from anywhere, so visibility is
-            // not the question: the declaration reported its cause and this call
-            // reuses it.
-            Binding::Refused(_, summary) => CallResolution::SignatureRefused(summary),
-            Binding::Absent => CallResolution::NotFound,
-        }
+            ModuleResolution::Absent => return Ok(CallResolution::NotFound),
+        };
+        Ok(
+            match self.sigs.lookup(&(module.clone(), item.to_string()))? {
+                Binding::Accepted(sig) if sig.public || sig.module == current => {
+                    CallResolution::Found(sig)
+                }
+                Binding::Accepted(_) => CallResolution::NotPublic,
+                // A refused signature is not callable from anywhere, so visibility
+                // is not the question: the declaration reported its cause and this
+                // call reuses it.
+                Binding::Refused(_, summary) => CallResolution::SignatureRefused(summary),
+                Binding::Absent => CallResolution::NotFound,
+            },
+        )
     }
 
     /// The dotted module a `::`-qualified prefix names from within `current`, shared
     /// with generic-call resolution so both read module scope one way.
-    pub(super) fn resolved_module(&self, current: &str, prefix: &[NameSegment]) -> Option<String> {
-        match self.prefix_module(current, prefix) {
+    pub(super) fn resolved_module(
+        &self,
+        current: &str,
+        prefix: &[NameSegment],
+    ) -> Result<Option<String>, DeclarationIndexDrift> {
+        Ok(match self.prefix_module(current, prefix)? {
             ModuleResolution::Accepted(module) => Some(module),
             ModuleResolution::Refused(_) | ModuleResolution::Absent => None,
-        }
+        })
     }
 
     /// What a `::`-qualified prefix names from within `current`: an importable
@@ -351,7 +363,11 @@ impl FunctionRegistry {
     /// reference to its own name; a surviving binding to a since-refused target is
     /// resolved through its dotted target. One owner for both call resolution and
     /// generic-call resolution, so the two cannot disagree about module scope.
-    fn prefix_module(&self, current: &str, prefix: &[NameSegment]) -> ModuleResolution<'_> {
+    fn prefix_module(
+        &self,
+        current: &str,
+        prefix: &[NameSegment],
+    ) -> Result<ModuleResolution<'_>, DeclarationIndexDrift> {
         let dotted = if let [single] = prefix {
             match self
                 .imports
@@ -364,11 +380,11 @@ impl FunctionRegistry {
         } else {
             dotted_module_path(prefix)
         };
-        match self.modules.lookup(&dotted) {
+        Ok(match self.modules.lookup(&dotted)? {
             Binding::Accepted(ModuleBinding) => ModuleResolution::Accepted(dotted),
             Binding::Refused(_, summary) => ModuleResolution::Refused(summary),
             Binding::Absent => ModuleResolution::Absent,
-        }
+        })
     }
 }
 

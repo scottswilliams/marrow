@@ -289,6 +289,12 @@ impl From<DeclarationLedgerFull> for BuildError {
     }
 }
 
+impl From<DeclarationIndexDrift> for BuildError {
+    fn from(drift: DeclarationIndexDrift) -> Self {
+        Self::Invariant(drift.into())
+    }
+}
+
 /// A generic-resolution failure is either a source-semantic refusal or a compiler
 /// coherence failure. Only the refusal arm may enter a rejected cache row.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -306,6 +312,12 @@ impl From<ResolveRefusal> for ResolveError {
 impl From<GenericInvariant> for ResolveError {
     fn from(invariant: GenericInvariant) -> Self {
         Self::Invariant(invariant)
+    }
+}
+
+impl From<DeclarationIndexDrift> for ResolveError {
+    fn from(drift: DeclarationIndexDrift) -> Self {
+        Self::Invariant(drift.into())
     }
 }
 
@@ -2873,7 +2885,7 @@ impl TypeMetadataSession<'_> {
                             ty: group.type_id,
                         });
                     }
-                    Ok(match self.view.registry.member(&info.name, name) {
+                    Ok(match self.view.registry.member(&info.name, name)? {
                         Binding::Refused(id, _) => ProductFieldProjection::RefusedMember(id),
                         Binding::Accepted(_) | Binding::Absent => {
                             ProductFieldProjection::MissingRecordField
@@ -2885,7 +2897,7 @@ impl TypeMetadataSession<'_> {
                     let info = &owner.groups[group];
                     let Some((index, field)) = info.field(name) else {
                         let anchor = format!("{}.{}", owner.name, info.name);
-                        return Ok(match self.view.registry.member(&anchor, name) {
+                        return Ok(match self.view.registry.member(&anchor, name)? {
                             Binding::Refused(id, _) => ProductFieldProjection::RefusedMember(id),
                             Binding::Accepted(_) | Binding::Absent => {
                                 ProductFieldProjection::MissingGroupField
@@ -3473,8 +3485,12 @@ impl TypeRegistry {
         } else {
             // A head no template answers is either genuinely undeclared or a
             // template this project declared and the compiler refused.
-            self.type_template_by_name(head)
-                .ok_or(ResolveError::Refusal(self.unresolved_named_type(head)))?
+            match self.type_template_by_name(head) {
+                Some(template) => template,
+                None => {
+                    return Err(ResolveError::Refusal(self.unresolved_named_type(head)?));
+                }
+            }
         };
         if reserved.is_some() {
             let actual = self.type_templates[template].body.kind();
@@ -4983,16 +4999,22 @@ impl TypeRegistry {
     /// is never the answer for a type this project declared. A name the ledger
     /// never saw is a real absence; a name it refused carries the cause forward as
     /// a `Copy` handle.
-    pub(crate) fn unresolved_named_type(&self, name: &str) -> ResolveRefusal {
-        match self.named.lookup(&name.to_string()) {
+    pub(crate) fn unresolved_named_type(
+        &self,
+        name: &str,
+    ) -> Result<ResolveRefusal, DeclarationIndexDrift> {
+        Ok(match self.named.lookup(&name.to_string())? {
             Binding::Refused(id, _) => ResolveRefusal::RefusedDeclaration(id),
             Binding::Accepted(_) | Binding::Absent => ResolveRefusal::Unsupported,
-        }
+        })
     }
 
     /// What the declared type name `name` binds: its kind, the refusal that stands
     /// in its place, or a genuine absence.
-    pub(crate) fn named_type(&self, name: &str) -> Binding<'_, NamedTypeKind> {
+    pub(crate) fn named_type(
+        &self,
+        name: &str,
+    ) -> Result<Binding<'_, NamedTypeKind>, DeclarationIndexDrift> {
         self.named.lookup(&name.to_string())
     }
 
@@ -5007,13 +5029,13 @@ impl TypeRegistry {
         ty: &TypeExpr,
         file: &FileIdentity,
         subject: &str,
-    ) -> SourceDiagnostic {
+    ) -> Result<SourceDiagnostic, DeclarationIndexDrift> {
         if let TypeExpr::Name { text, .. } = ty
-            && let Binding::Refused(_, summary) = self.named.lookup(&text.to_string())
+            && let Binding::Refused(_, summary) = self.named.lookup(&text.to_string())?
         {
-            return declaration_refused(file, ty.span(), summary);
+            return Ok(declaration_refused(file, ty.span(), summary));
         }
-        unsupported(file, ty.span(), subject)
+        Ok(unsupported(file, ty.span(), subject))
     }
 
     /// The row a member whose type could not resolve is reported with: the causal
@@ -5075,7 +5097,11 @@ impl TypeRegistry {
     /// A lookup that would report "has no field" reads this first, so the one
     /// namespace that refuses a member without refusing what contains it cannot
     /// make a false statement about the source.
-    pub(crate) fn member(&self, owner: &str, member: &str) -> Binding<'_, FieldInfo> {
+    pub(crate) fn member(
+        &self,
+        owner: &str,
+        member: &str,
+    ) -> Result<Binding<'_, FieldInfo>, DeclarationIndexDrift> {
         self.members.lookup(&MemberKey::field(owner, member))
     }
 
@@ -5168,7 +5194,7 @@ impl TypeRegistry {
         resources: &[(FileRef, FileIdentity, &ResourceDecl)],
         diagnostics: &mut DiagnosticCollector,
         budget: DeclarationBudget,
-    ) -> Result<Self, DeclarationLedgerFull> {
+    ) -> Result<Self, BuildError> {
         let mut named = DeclarationLedger::new(DeclarationNamespace::NamedType, budget.clone());
         let aliases_table =
             build_alias_table(&mut named, aliases, resources, structs, enums, diagnostics)?;
@@ -5242,10 +5268,13 @@ impl TypeRegistry {
                 fill_enums(draft, &mut registry, &enum_decls, diagnostics)?;
                 validate_alias_targets(&mut registry, aliases, diagnostics)?;
             }
-            Err(BuildError::LedgerFull(full)) => return Err(full),
+            // A coherence failure is recorded on the registry rather than
+            // returned: the remaining fills are skipped and `build_invariant` is
+            // what fences the pass off from the artifacts.
             Err(BuildError::Invariant(invariant)) => {
                 registry.generics.get_mut().build_invariant = Some(invariant);
             }
+            Err(full @ BuildError::LedgerFull(_)) => return Err(full),
         }
         Ok(registry)
     }
@@ -6706,7 +6735,7 @@ fn fill_enums(
     registry: &mut TypeRegistry,
     reserved: &[ReservedEnum<'_>],
     diagnostics: &mut DiagnosticCollector,
-) -> Result<(), DeclarationLedgerFull> {
+) -> Result<(), BuildError> {
     let mut dropped: Vec<EnumId> = Vec::new();
     for item in reserved {
         let declared = Declared {
@@ -6715,7 +6744,7 @@ fn fill_enums(
             at: item.at,
             span: item.decl.name_span,
         };
-        let occurrence = enum_variants(draft, registry, declared, item.decl, diagnostics)
+        let occurrence = enum_variants(draft, registry, declared, item.decl, diagnostics)?
             .map_accepted(|(variants, variant_defs)| {
                 draft.set_enum_variants(item.enum_id, variant_defs);
                 if let Some(info) = registry
@@ -6738,6 +6767,12 @@ fn fill_enums(
     Ok(())
 }
 
+/// One enum's selectable variants and the image definitions that carry them.
+type EnumVariants = (Vec<VariantInfo>, Vec<VariantDef>);
+
+/// One enum member's payload fields, as info and as the scalars the image holds.
+type EnumPayload = (Vec<EnumPayloadInfo>, Vec<ScalarType>);
+
 /// Resolve an enum's members to its selectable variants and their image
 /// definitions, or `None` if any member is unsupported. On the flat line every
 /// member is a leaf: a `category` member or one with nested members is deferred.
@@ -6747,7 +6782,7 @@ fn enum_variants(
     declared: Declared<'_>,
     decl: &EnumDecl,
     diagnostics: &mut DiagnosticCollector,
-) -> DeclarationOccurrence<(Vec<VariantInfo>, Vec<VariantDef>)> {
+) -> Result<DeclarationOccurrence<EnumVariants>, DeclarationIndexDrift> {
     let file = declared.file;
     let mut variants = Vec::new();
     let mut variant_defs = Vec::new();
@@ -6796,7 +6831,7 @@ fn enum_variants(
         }
         seen.push(member.name.clone());
         let Some((payload, payload_scalars)) =
-            enum_payload(registry, declared, member, diagnostics, &mut refusal)
+            enum_payload(registry, declared, member, diagnostics, &mut refusal)?
         else {
             continue;
         };
@@ -6814,10 +6849,10 @@ fn enum_variants(
             payload,
         });
     }
-    match refusal {
+    Ok(match refusal {
         Some(refusal) => DeclarationOccurrence::Refused(refusal),
         None => DeclarationOccurrence::Accepted((variants, variant_defs)),
-    }
+    })
 }
 
 /// Resolve one member's payload fields to their scalars and info, or `None` when
@@ -6830,7 +6865,7 @@ fn enum_payload(
     member: &EnumMember,
     diagnostics: &mut DiagnosticCollector,
     refusal: &mut Option<DeclarationRefusalSummary>,
-) -> Option<(Vec<EnumPayloadInfo>, Vec<ScalarType>)> {
+) -> Result<Option<EnumPayload>, DeclarationIndexDrift> {
     let file = declared.file;
     if member.payload.len() > marrow_image::bounds::MAX_PAYLOAD_FIELDS {
         refuse_first(
@@ -6848,7 +6883,7 @@ fn enum_payload(
                 ),
             ),
         );
-        return None;
+        return Ok(None);
     }
     let mut payload = Vec::new();
     let mut scalars = Vec::new();
@@ -6869,7 +6904,7 @@ fn enum_payload(
             // that cause; only a genuinely unknown or unadmitted spelling is
             // described as an unsupported payload type.
             let row =
-                registry.unresolved_member_row(&field.ty, file, "this enum payload field type");
+                registry.unresolved_member_row(&field.ty, file, "this enum payload field type")?;
             refuse_first(refusal, diagnostics, declared, row);
             ok = false;
             continue;
@@ -6880,7 +6915,7 @@ fn enum_payload(
         });
         scalars.push(scalar);
     }
-    ok.then_some((payload, scalars))
+    Ok(ok.then_some((payload, scalars)))
 }
 
 /// Pass one for the admitted record types: reserve each resource's image
@@ -8497,7 +8532,7 @@ mod refusal_join_tests {
                 )
                 .expect("within budget");
             match ledger.lookup(&name.to_string()) {
-                Binding::Refused(id, _) => ResolveRefusal::RefusedDeclaration(id),
+                Ok(Binding::Refused(id, _)) => ResolveRefusal::RefusedDeclaration(id),
                 _ => panic!("expected a refusal"),
             }
         };
@@ -8567,7 +8602,7 @@ mod refusal_join_tests {
                 )
                 .expect("within budget");
             match ledger.lookup(&"x".to_string()) {
-                Binding::Refused(id, _) => ResolveRefusal::RefusedDeclaration(id),
+                Ok(Binding::Refused(id, _)) => ResolveRefusal::RefusedDeclaration(id),
                 _ => panic!("expected a refusal"),
             }
         };

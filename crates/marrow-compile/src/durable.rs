@@ -350,8 +350,8 @@ impl DurableRegistry {
     /// What the placement name `name` resolves to: its executable root, a parked
     /// declaration, the refusal that stands in its place, or a genuine absence. The
     /// one owner of that four-way answer; every other root lookup projects from it.
-    pub(crate) fn root(&self, name: &str) -> RootBinding<'_> {
-        match self.declared.lookup(&name.to_string()) {
+    pub(crate) fn root(&self, name: &str) -> Result<RootBinding<'_>, DeclarationIndexDrift> {
+        Ok(match self.declared.lookup(&name.to_string())? {
             Binding::Accepted(declared) => match declared.executable {
                 Some(at) => match self.roots.get(at) {
                     Some(root) => RootBinding::Executable(root),
@@ -365,7 +365,7 @@ impl DurableRegistry {
             },
             Binding::Refused(id, refusal) => RootBinding::Refused(id, refusal),
             Binding::Absent => RootBinding::Absent,
-        }
+        })
     }
 
     /// The refusal a durable-root handle addresses. A handle another namespace
@@ -381,11 +381,14 @@ impl DurableRegistry {
     /// the owner an entry address `^name[…]` resolves against. The probe-free form, for
     /// the classifiers that resolve a shape without reporting; a lookup that reports
     /// takes [`DurableRegistry::root`] so a refused root is not read as an absent one.
-    pub(crate) fn root_by_name(&self, name: &str) -> Option<&DurableRoot> {
-        match self.root(name) {
+    pub(crate) fn root_by_name(
+        &self,
+        name: &str,
+    ) -> Result<Option<&DurableRoot>, DeclarationIndexDrift> {
+        Ok(match self.root(name)? {
             RootBinding::Executable(root) => Some(root),
             RootBinding::NotYetExecutable | RootBinding::Refused(..) | RootBinding::Absent => None,
-        }
+        })
     }
 
     /// What the resource `resource` binds as a store root: the same four-way answer
@@ -397,10 +400,13 @@ impl DurableRegistry {
     /// A store this project declared and the compiler refused answers `Refused`, so
     /// the use is steered to that store's own cause rather than told the form is one
     /// the language does not support.
-    pub(crate) fn root_by_resource(&self, resource: &str) -> RootBinding<'_> {
+    pub(crate) fn root_by_resource(
+        &self,
+        resource: &str,
+    ) -> Result<RootBinding<'_>, DeclarationIndexDrift> {
         match self.by_resource.get(resource) {
             Some(name) => self.root(name),
-            None => RootBinding::Absent,
+            None => Ok(RootBinding::Absent),
         }
     }
 
