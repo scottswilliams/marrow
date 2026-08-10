@@ -40,7 +40,7 @@
 //! classifies positions while its hover facts stay syntax-unavailable.
 
 use std::mem::size_of;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::Instant;
 
 use marrow_compile::{
@@ -929,22 +929,51 @@ const STATEMENT_DENSE_PER_BODY: usize = 257;
 /// first "densest" shape had already missed it.
 const STATEMENT_DENSE_PER_LONG_BODY: usize = 4097;
 
+/// The module path every maximum-size shape is captured at, so one shape's snapshot is
+/// the same project whichever test reads it.
+const SHAPE_PATH: &str = "src/shape.mw";
+
 /// Every maximum-size shape this file can build, each queryable and each a corroborating
 /// sample under the derived bound rather than a source of it.
-fn maximum_admitted_shapes() -> Vec<(&'static str, Vec<u8>)> {
-    vec![
-        (
-            "statement-dense",
-            statement_dense_file(STATEMENT_DENSE_PER_BODY),
-        ),
-        (
-            "statement-dense-long-bodies",
-            statement_dense_file(STATEMENT_DENSE_PER_LONG_BODY),
-        ),
-        ("name-chain", name_chain_file()),
-        ("operator-chain", dense_admitted_file()),
-        ("comment-padded", maximum_admitted_file()),
-    ]
+///
+/// Assembled once. Three tests state laws over the same five shapes, and each shape is a
+/// whole maximum admitted file, so building them per test spent more of the suite on
+/// `String::push_str` than on any assertion. The bytes are immutable and the shapes are
+/// the same objects every reader sees.
+fn maximum_admitted_shapes() -> &'static [(&'static str, Vec<u8>)] {
+    static SHAPES: OnceLock<Vec<(&'static str, Vec<u8>)>> = OnceLock::new();
+    SHAPES.get_or_init(|| {
+        vec![
+            (
+                "statement-dense",
+                statement_dense_file(STATEMENT_DENSE_PER_BODY),
+            ),
+            (
+                "statement-dense-long-bodies",
+                statement_dense_file(STATEMENT_DENSE_PER_LONG_BODY),
+            ),
+            ("name-chain", name_chain_file()),
+            ("operator-chain", dense_admitted_file()),
+            ("comment-padded", maximum_admitted_file()),
+        ]
+    })
+}
+
+/// One snapshot per maximum-size shape, built once.
+///
+/// Two tests query these, and an analysis drive over a maximum admitted module is the
+/// single largest thing this file does. A snapshot is immutable and its queries are
+/// query-local — each re-parses the file it is asked about and retains no tree — so a
+/// shared snapshot answers exactly what a freshly built one answers, and the latency
+/// each query pays is the same parse either way.
+fn maximum_admitted_snapshots() -> &'static [(&'static str, Arc<AnalysisSnapshot>)] {
+    static SNAPSHOTS: OnceLock<Vec<(&'static str, Arc<AnalysisSnapshot>)>> = OnceLock::new();
+    SNAPSHOTS.get_or_init(|| {
+        maximum_admitted_shapes()
+            .iter()
+            .map(|(label, bytes)| (*label, snapshot(vec![(SHAPE_PATH, bytes.clone())])))
+            .collect()
+    })
 }
 
 /// The two shapes that beat the exported term by 1.43x, at the admission ceiling.
@@ -1202,12 +1231,23 @@ fn nested_statements(statement: &Statement) -> usize {
     }
 }
 
-/// The worst wall time of five completion queries over `path`, after one warm query.
+/// How many timed queries the worst case is taken over.
+///
+/// Repeats buy one thing: they keep a single scheduler hiccup from deciding a fence. Only
+/// the optimized profile asserts the budget, so only there is there a fence to protect;
+/// the unoptimized profile prints the number and returns before comparing it. It takes
+/// one sample, which still exercises the query over every shape and still records a
+/// measurement — the whole of what an unoptimized run establishes here — without paying
+/// five times over for a figure no assertion reads.
+const BUDGET_SAMPLES: usize = if cfg!(debug_assertions) { 1 } else { 5 };
+
+/// The worst wall time of [`BUDGET_SAMPLES`] completion queries over `path`, after one
+/// warm query.
 fn worst_query_ms(snapshot: &AnalysisSnapshot, path: &str) -> u128 {
     let file = identity(path);
     let _ = snapshot.completions(&file, 64);
     let mut worst = 0u128;
-    for _ in 0..5 {
+    for _ in 0..BUDGET_SAMPLES {
         let started = Instant::now();
         let outcome = snapshot.completions(&file, 64);
         worst = worst.max(started.elapsed().as_millis());
@@ -1239,12 +1279,10 @@ fn assert_within_budget(measured: u128, budget: u128, bytes: usize) {
 /// once published as the worst case and neither is.
 #[test]
 fn a_query_over_a_maximum_admitted_file_stays_in_budget_when_optimized() {
-    let path = "src/shape.mw";
-    for (label, bytes) in maximum_admitted_shapes() {
-        let snapshot = snapshot(vec![(path, bytes)]);
+    for (label, snapshot) in maximum_admitted_snapshots() {
         eprintln!("shape {label}");
         assert_within_budget(
-            worst_query_ms(&snapshot, path),
+            worst_query_ms(snapshot, SHAPE_PATH),
             QUERY_BUDGET_MS,
             MAX_ADMITTED_FILE_BYTES,
         );
@@ -1860,7 +1898,7 @@ fn every_charged_family_names_all_of_its_fields() {
 #[test]
 fn the_token_vector_holds_at_most_one_token_per_source_byte() {
     for (label, bytes) in maximum_admitted_shapes() {
-        let text = std::str::from_utf8(&bytes).expect("the fixture is UTF-8");
+        let text = std::str::from_utf8(bytes).expect("the fixture is UTF-8");
         let tokens = marrow_syntax::lex_source(text).tokens.len();
         eprintln!("{label}: {tokens} tokens over {} source bytes", text.len());
         assert!(
@@ -2041,8 +2079,11 @@ fn a_desynchronizing_maximum_admitted_file_is_still_admitted_and_queryable() {
 fn every_maximum_admitted_shape_stays_under_the_derived_bound() {
     let predicted = statement_list_term();
     let mut densest = 0;
-    for (label, bytes) in maximum_admitted_shapes() {
-        let statements = statement_vector_bytes(&bytes);
+    for ((label, bytes), (_, snapshot)) in maximum_admitted_shapes()
+        .iter()
+        .zip(maximum_admitted_snapshots())
+    {
+        let statements = statement_vector_bytes(bytes);
         eprintln!("{label}: statement lists hold {statements} bytes of a predicted {predicted}");
         assert!(
             statements <= predicted,
@@ -2050,10 +2091,8 @@ fn every_maximum_admitted_shape_stays_under_the_derived_bound() {
              {predicted} — the derivation is optimistic about what a block can hold"
         );
         densest = densest.max(statements);
-        let path = "src/shape.mw";
-        let snapshot = snapshot(vec![(path, bytes)]);
         assert!(
-            snapshot.completions(&identity(path), 64).is_ok(),
+            snapshot.completions(&identity(SHAPE_PATH), 64).is_ok(),
             "{label} answers the query whose parse the term bounds"
         );
     }
