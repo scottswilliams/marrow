@@ -10,8 +10,7 @@ use crate::token::{
 };
 use crate::{
     DiagnosticReason, Keyword, LexedSource, LexerDiagnosticReason, NESTING_DEPTH_LIMIT,
-    ObsoleteOperator, ParseDiagnosticReason, SourceSpan, Token,
-    TokenKind,
+    ObsoleteOperator, ParseDiagnosticReason, SourceSpan, Token, TokenKind,
 };
 
 pub fn lex_source(source: &str) -> LexedSource {
@@ -158,7 +157,7 @@ impl<'a, 'c> Lexer<'a, 'c> {
         }
         self.reported_nesting_limit = true;
         self.sink.push(SyntaxError::new(
-                        DiagnosticReason::Parser(ParseDiagnosticReason::NestingLimit),
+            DiagnosticReason::Parser(ParseDiagnosticReason::NestingLimit),
             format!("source nests deeper than the limit of {NESTING_DEPTH_LIMIT}"),
             None,
             span,
@@ -524,7 +523,7 @@ impl<'a, 'c> Lexer<'a, 'c> {
     /// anchored at the over-deep opener rather than the enclosing hole.
     fn report_interpolation_nesting_limit(&mut self, line: Line<'a>, offending: usize) {
         self.sink.push(SyntaxError::new(
-                        DiagnosticReason::Parser(ParseDiagnosticReason::NestingLimit),
+            DiagnosticReason::Parser(ParseDiagnosticReason::NestingLimit),
             format!("interpolation nests deeper than the limit of {NESTING_DEPTH_LIMIT}"),
             None,
             self.span(line, offending, line.end_byte),
@@ -877,7 +876,7 @@ impl<'a, 'c> Lexer<'a, 'c> {
         help: Option<String>,
     ) {
         self.sink.push(SyntaxError::new(
-                        DiagnosticReason::Lexer(reason),
+            DiagnosticReason::Lexer(reason),
             message,
             help,
             span,

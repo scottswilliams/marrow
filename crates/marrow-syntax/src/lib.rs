@@ -102,7 +102,7 @@ pub fn parse_expression(source: &str) -> (Option<Expression>, SyntaxDiagnostics)
             parse_expr::ParseComplete::Reported => None,
             parse_expr::ParseComplete::Incomplete(span) => {
                 sink.push(diagnostic::SyntaxError::new(
-                                        DiagnosticReason::Parser(ParseDiagnosticReason::Expected(
+                    DiagnosticReason::Parser(ParseDiagnosticReason::Expected(
                         ExpectedSyntax::Expression,
                     )),
                     "expected an expression",

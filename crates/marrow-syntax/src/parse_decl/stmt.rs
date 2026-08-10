@@ -343,7 +343,7 @@ impl<'a, 'c> StmtParser<'a, 'c> {
         // no site reaches back into the collector to amend a submitted row.
         let reason = ParseDiagnosticReason::Unsupported(UnsupportedSyntax::LoopLabels);
         self.sink.push(SyntaxError::new(
-                        DiagnosticReason::Parser(reason),
+            DiagnosticReason::Parser(reason),
             "loop labels were removed",
             Some("extract a function and use return to leave nested loops".to_string()),
             join_spans(name.span, colon.span),
@@ -1298,7 +1298,7 @@ impl<'a, 'c> StmtParser<'a, 'c> {
         message: impl Into<String>,
     ) {
         self.sink.push(SyntaxError::new(
-                        DiagnosticReason::Parser(reason),
+            DiagnosticReason::Parser(reason),
             message,
             None,
             span,
@@ -1477,7 +1477,7 @@ fn parse_checked_binding_name(
             );
             let reason = ParseDiagnosticReason::Expected(expected);
             sink.push(SyntaxError::new(
-                                DiagnosticReason::Parser(reason),
+                DiagnosticReason::Parser(reason),
                 "expected a name for the checked binding",
                 None,
                 span,

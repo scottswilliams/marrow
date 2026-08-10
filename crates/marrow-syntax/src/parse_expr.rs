@@ -12,9 +12,9 @@ use crate::diagnostic::{SyntaxError, SyntaxErrorSink};
 use crate::token::{is_trivia, is_unfixed_duration_unit};
 use crate::{
     Argument, BinaryOp, CompoundAssignOp, DiagnosticReason, ExpectedSyntax, Expression,
-    InterpolationPart, Keyword, LiteralKind, NESTING_DEPTH_LIMIT,
-    ParseDiagnosticReason, Recovery, SourceSpan, Token, TokenKind, UnaryOp, UnsupportedSyntax,
-    duration_unit_seconds, is_expression_callable_keyword, is_expression_path_segment_keyword,
+    InterpolationPart, Keyword, LiteralKind, NESTING_DEPTH_LIMIT, ParseDiagnosticReason, Recovery,
+    SourceSpan, Token, TokenKind, UnaryOp, UnsupportedSyntax, duration_unit_seconds,
+    is_expression_callable_keyword, is_expression_path_segment_keyword,
 };
 
 /// The remedy shared by the comparison and equality non-associative levels: the
@@ -183,7 +183,7 @@ impl<'a> ExprParser<'a> {
         help: Option<String>,
     ) {
         self.sink.push(SyntaxError::new(
-                        DiagnosticReason::Parser(reason),
+            DiagnosticReason::Parser(reason),
             message,
             help,
             span,
@@ -309,7 +309,7 @@ impl<'a> ExprParser<'a> {
                 |token| token.span,
             );
         self.sink.push(SyntaxError::new(
-                        DiagnosticReason::Parser(ParseDiagnosticReason::NestingLimit),
+            DiagnosticReason::Parser(ParseDiagnosticReason::NestingLimit),
             format!("expression nests deeper than the limit of {NESTING_DEPTH_LIMIT}"),
             None,
             span,

@@ -954,8 +954,7 @@ mod tests {
         let dense = "@\n".repeat(SYNTAX_DIAGNOSTIC_COUNT_LIMIT + 1);
         let summary = marrow_syntax::parse_source(&dense).diagnostics.summary();
         assert!(
-            summary.count() > MAX_DIAGNOSTIC_COUNT
-                || summary.owned_bytes() > MAX_DIAGNOSTIC_BYTES,
+            summary.count() > MAX_DIAGNOSTIC_COUNT || summary.owned_bytes() > MAX_DIAGNOSTIC_BYTES,
             "a limited syntax summary crosses a compiler ceiling on its own"
         );
     }

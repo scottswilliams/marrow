@@ -290,7 +290,7 @@ impl<'a> DeclParser<'a, '_> {
         message: impl Into<String>,
     ) {
         self.sink.push(SyntaxError::new(
-                        DiagnosticReason::Parser(reason),
+            DiagnosticReason::Parser(reason),
             message,
             None,
             span,

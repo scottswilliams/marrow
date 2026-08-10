@@ -28,7 +28,7 @@ fn expected_statement(line: &[Token], sink: &mut SyntaxSink<'_>) -> Option<State
     let span = line_span_or(line, line[0].span);
     let reason = ParseDiagnosticReason::Expected(ExpectedSyntax::Statement);
     sink.push(SyntaxError::new(
-                DiagnosticReason::Parser(reason),
+        DiagnosticReason::Parser(reason),
         "expected a statement",
         None,
         span,
@@ -43,7 +43,7 @@ fn expected_expression_line<T>(line: &[Token], sink: &mut SyntaxSink<'_>) -> Opt
     let span = line_span_or(line, line[0].span);
     let reason = ParseDiagnosticReason::Expected(ExpectedSyntax::Expression);
     sink.push(SyntaxError::new(
-                DiagnosticReason::Parser(reason),
+        DiagnosticReason::Parser(reason),
         "expected an expression",
         None,
         span,
@@ -78,7 +78,7 @@ pub(super) fn parse_simple_statement(
         TokenKind::Keyword(Keyword::Place) => parse_place(source, line, sink),
         TokenKind::Keyword(Keyword::Merge) => {
             sink.push(SyntaxError::new(
-                                DiagnosticReason::Parser(ParseDiagnosticReason::Reserved(
+                DiagnosticReason::Parser(ParseDiagnosticReason::Reserved(
                     ReservedSyntax::MergeStatement,
                 )),
                 "`merge` is reserved and is not a v0.1 statement",
@@ -107,7 +107,7 @@ fn parse_const_or_var(
         if matches!(name_token.kind, TokenKind::Keyword(_)) {
             let kind = if is_var { "variable" } else { "const" };
             sink.push(SyntaxError::new(
-                                DiagnosticReason::Parser(ParseDiagnosticReason::Expected(if is_var {
+                DiagnosticReason::Parser(ParseDiagnosticReason::Expected(if is_var {
                     ExpectedSyntax::VariableName
                 } else {
                     ExpectedSyntax::ConstName
@@ -262,7 +262,7 @@ fn parse_place(source: &str, line: &[Token], sink: &mut SyntaxSink<'_>) -> Optio
         if matches!(name_token.kind, TokenKind::Keyword(_)) {
             let reason = ParseDiagnosticReason::Expected(ExpectedSyntax::ConstName);
             sink.push(SyntaxError::new(
-                                DiagnosticReason::Parser(reason),
+                DiagnosticReason::Parser(reason),
                 format!(
                     "expected place name; `{}` is a keyword",
                     name_token.text(source)
@@ -337,7 +337,7 @@ fn parse_break_or_continue(
         None => keyword.span,
         Some(token) if token.kind == TokenKind::Identifier && line.len() == 2 => {
             sink.push(SyntaxError::new(
-                                DiagnosticReason::Parser(ParseDiagnosticReason::Unsupported(
+                DiagnosticReason::Parser(ParseDiagnosticReason::Unsupported(
                     UnsupportedSyntax::LoopLabels,
                 )),
                 "loop labels were removed",
@@ -382,7 +382,7 @@ fn parse_assign_or_expr(
         if equal > 0 && is_split_compound_operator(line[equal - 1].kind) {
             let op_span = line[equal - 1].span;
             sink.push(SyntaxError::new(
-                                DiagnosticReason::Parser(ParseDiagnosticReason::SplitCompoundAssign),
+                DiagnosticReason::Parser(ParseDiagnosticReason::SplitCompoundAssign),
                 "write a compound assignment as one operator (`*=`), not a spaced `* =`",
                 None,
                 join_spans(op_span, equal_span),
@@ -438,7 +438,7 @@ pub(super) fn parse_if_const_head(
     if name_token.kind != TokenKind::Identifier {
         if matches!(name_token.kind, TokenKind::Keyword(_)) {
             sink.push(SyntaxError::new(
-                                DiagnosticReason::Parser(ParseDiagnosticReason::Expected(
+                DiagnosticReason::Parser(ParseDiagnosticReason::Expected(
                     ExpectedSyntax::ConstName,
                 )),
                 format!(

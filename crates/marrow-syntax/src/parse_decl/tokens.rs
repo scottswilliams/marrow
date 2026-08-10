@@ -98,7 +98,7 @@ fn is_std_bytes_import(source: &str, tokens: &[Token]) -> bool {
 pub(super) fn push_parse_error(sink: &mut SyntaxSink<'_>, fallback: SourceSpan, error: ParseError) {
     let (span, reason, message) = error.locate(fallback);
     sink.push(SyntaxError::new(
-                DiagnosticReason::Parser(reason),
+        DiagnosticReason::Parser(reason),
         message,
         None,
         span,
@@ -293,7 +293,7 @@ fn expr_slice(
         ParseComplete::Incomplete(span) => {
             let reason = ParseDiagnosticReason::Expected(ExpectedSyntax::Expression);
             sink.push(SyntaxError::new(
-                                DiagnosticReason::Parser(reason),
+                DiagnosticReason::Parser(reason),
                 "expected an expression",
                 None,
                 span,
