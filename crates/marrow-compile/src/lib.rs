@@ -30,6 +30,7 @@
 
 mod analysis;
 mod compile;
+mod decl;
 mod demand;
 mod diag;
 mod durable;
