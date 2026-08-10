@@ -650,24 +650,34 @@ impl AdmittedModules {
     }
 }
 
+/// The language server's owned-heap ceiling, which every retention and transient term in
+/// this layer is sized against. Set elsewhere; consumed here.
+const OWNED_HEAP_BYTES: usize = 640 * 1024 * 1024;
+
+/// The heap one parse of one admitted file may allocate.
+///
+/// **Declared, not derived from a length.** It is two thirds of the owned-heap ceiling,
+/// which keeps a third in reserve for everything a query holds beside the parse. Stating
+/// it independently of any length is what makes the admission below a real gate: were it
+/// defined as what some chosen length costs, comparing a file's charge against it would
+/// reduce to comparing that file's length against the chosen one, for any rate, and a
+/// widened representation would raise both sides equally and admit exactly as much as
+/// before while silently costing more heap.
+pub const MAX_QUERY_PARSE_TRANSIENT_BYTES: usize = OWNED_HEAP_BYTES * 2 / 3;
+
 /// The longest source file this crate parses.
 ///
-/// Every parse of an admitted file — the drive's own, and each query-local re-parse a
-/// snapshot serves — is bounded by what this length costs, so it is the one number that
-/// decides [`MAX_QUERY_PARSE_TRANSIENT_BYTES`]. Admission compares the *charge* rather
-/// than the length, so a widened parse representation narrows what is admitted without
-/// anyone editing this constant.
-pub const MAX_PARSED_FILE_BYTES: usize = 1 << 20;
-
-/// The heap one parse of a maximum admitted file may allocate.
+/// **Derived from the heap ceiling, not chosen.** It is the longest file whose parse fits
+/// [`MAX_QUERY_PARSE_TRANSIENT_BYTES`] at the per-source-byte rate `marrow-syntax`
+/// publishes for the representation its parser builds. Widening that representation
+/// therefore narrows what is admitted, with no length edited here; `marrow-compile`'s
+/// `the_admitted_length_and_the_exported_term_agree_with_the_derivation` re-derives the
+/// rate from the representation and fails if the published constant drifts from it.
 ///
-/// Derived, not chosen: it is what [`MAX_PARSED_FILE_BYTES`] costs at the per-source-byte
-/// rate `marrow-syntax` publishes for the representation its parser builds.
-/// `marrow-compile`'s `the_query_parse_transient_closes_under_the_exported_term`
-/// re-derives that rate from the representation and fails if the published constant
-/// drifts from it.
-pub const MAX_QUERY_PARSE_TRANSIENT_BYTES: usize =
-    marrow_syntax::max_parse_bytes(MAX_PARSED_FILE_BYTES);
+/// It is a byte count rather than a round number because it is a consequence: rounding it
+/// would be choosing a length again.
+pub const MAX_PARSED_FILE_BYTES: usize =
+    marrow_syntax::max_parse_length(MAX_QUERY_PARSE_TRANSIENT_BYTES);
 
 /// This crate never offers to parse a file the project owner would refuse to capture.
 /// The two ceilings are set by different owners for different reasons — one bounds a

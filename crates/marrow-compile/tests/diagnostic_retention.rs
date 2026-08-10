@@ -3,8 +3,8 @@
 use std::sync::Arc;
 
 use marrow_compile::{
-    AnalysisFailure, AnalysisResourceLimit, CompileFailure, InputRevision, ResourceLimitKind,
-    analyze, compile, compile_with_tests,
+    AnalysisFailure, AnalysisResourceLimit, CompileFailure, InputRevision, MAX_PARSED_FILE_BYTES,
+    ResourceLimitKind, analyze, compile, compile_with_tests,
 };
 use marrow_project::{CaptureLimits, CapturedFile, Manifest, ProjectInput};
 
@@ -36,15 +36,23 @@ fn project_with_sources(sources: Vec<Vec<u8>>) -> ProjectInput {
     )
 }
 
-fn project_with_overlapping_byte_limits(file_count: usize) -> ProjectInput {
-    let mut sources = vec![
-        vec![0xff; CaptureLimits::DEFAULT.max_file_bytes()];
-        CaptureLimits::DEFAULT.max_total_bytes()
-            / CaptureLimits::DEFAULT.max_file_bytes()
-    ];
+/// Sources totalling exactly `total` bytes, none of them longer than the drive's own
+/// per-file ceiling, so the aggregate ceiling is the only one they can trip.
+fn sources_totalling(total: usize) -> Vec<Vec<u8>> {
+    let mut sources = vec![vec![0xff; MAX_PARSED_FILE_BYTES]; total / MAX_PARSED_FILE_BYTES];
+    let remainder = total % MAX_PARSED_FILE_BYTES;
+    if remainder > 0 {
+        sources.push(vec![0xff; remainder]);
+    }
+    sources
+}
+
+/// Sources that trip the drive's per-file ceiling and the aggregate ceiling at once, so a
+/// refusal names whichever the drive checks first.
+fn overlapping_byte_limit_sources() -> Vec<Vec<u8>> {
+    let mut sources = sources_totalling(CaptureLimits::DEFAULT.max_total_bytes());
     sources[0].push(0xff);
-    sources.resize_with(file_count, Vec::new);
-    project_with_sources(sources)
+    sources
 }
 
 fn assert_compile_limit(
@@ -142,32 +150,35 @@ fn compiler_drive_admits_exactly_4096_captured_modules() {
     assert_exact_boundary_is_admitted(project_with_file_count(CaptureLimits::DEFAULT.max_files()));
 }
 
+/// The drive refuses a file longer than its own per-file ceiling, which is the longest
+/// file whose parse fits this crate's heap ceiling — shorter than the project owner's
+/// capture ceiling, so this file is captured and then refused here.
 #[test]
 fn compiler_drive_refuses_the_first_overbound_module_before_utf8_work() {
-    let mut source = vec![0; CaptureLimits::DEFAULT.max_file_bytes() + 1];
+    let mut source = vec![0; MAX_PARSED_FILE_BYTES + 1];
     source[0] = 0xff;
+    assert!(
+        source.len() <= CaptureLimits::DEFAULT.max_file_bytes(),
+        "the fixture is captured and then refused by the drive, not refused at capture"
+    );
     let project = project_with_sources(vec![source]);
     assert_drive_limit(
         project,
         ResourceLimitKind::ProjectFileBytes,
-        CaptureLimits::DEFAULT.max_file_bytes(),
+        MAX_PARSED_FILE_BYTES,
     );
 }
 
 #[test]
-fn compiler_drive_admits_an_exactly_one_mib_module() {
-    let mut source = vec![0; CaptureLimits::DEFAULT.max_file_bytes()];
+fn compiler_drive_admits_a_module_at_exactly_its_parse_ceiling() {
+    let mut source = vec![0; MAX_PARSED_FILE_BYTES];
     source[0] = 0xff;
     assert_exact_boundary_is_admitted(project_with_sources(vec![source]));
 }
 
 #[test]
 fn compiler_drive_refuses_the_first_aggregate_byte_overrun_before_utf8_work() {
-    let mut sources = vec![
-        vec![0xff; CaptureLimits::DEFAULT.max_file_bytes()];
-        CaptureLimits::DEFAULT.max_total_bytes()
-            / CaptureLimits::DEFAULT.max_file_bytes()
-    ];
+    let mut sources = sources_totalling(CaptureLimits::DEFAULT.max_total_bytes());
     sources.push(vec![0xff]);
     let project = project_with_sources(sources);
     assert_drive_limit(
@@ -179,7 +190,9 @@ fn compiler_drive_refuses_the_first_aggregate_byte_overrun_before_utf8_work() {
 
 #[test]
 fn compiler_drive_checks_module_count_before_file_and_aggregate_bytes() {
-    let project = project_with_overlapping_byte_limits(CaptureLimits::DEFAULT.max_files() + 1);
+    let mut sources = overlapping_byte_limit_sources();
+    sources.resize_with(CaptureLimits::DEFAULT.max_files() + 1, Vec::new);
+    let project = project_with_sources(sources);
     assert_drive_limit(
         project,
         ResourceLimitKind::ProjectFiles,
@@ -189,22 +202,16 @@ fn compiler_drive_checks_module_count_before_file_and_aggregate_bytes() {
 
 #[test]
 fn compiler_drive_checks_file_bytes_before_aggregate_bytes() {
-    let project = project_with_overlapping_byte_limits(
-        CaptureLimits::DEFAULT.max_total_bytes() / CaptureLimits::DEFAULT.max_file_bytes(),
-    );
+    let project = project_with_sources(overlapping_byte_limit_sources());
     assert_drive_limit(
         project,
         ResourceLimitKind::ProjectFileBytes,
-        CaptureLimits::DEFAULT.max_file_bytes(),
+        MAX_PARSED_FILE_BYTES,
     );
 }
 
 #[test]
 fn compiler_drive_admits_exactly_64_mib_of_source() {
-    let sources = vec![
-        vec![0xff; CaptureLimits::DEFAULT.max_file_bytes()];
-        CaptureLimits::DEFAULT.max_total_bytes()
-            / CaptureLimits::DEFAULT.max_file_bytes()
-    ];
+    let sources = sources_totalling(CaptureLimits::DEFAULT.max_total_bytes());
     assert_exact_boundary_is_admitted(project_with_sources(sources));
 }

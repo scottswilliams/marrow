@@ -87,15 +87,27 @@ pub const NESTING_LIMIT: &str = Code::CheckNestingLimit.as_str();
 ///
 /// It charges allocated capacity, not resident pages. Two things sit outside it: the
 /// caller's source bytes, which the parser borrows, and per-allocation allocator
-/// overhead.
-pub const MAX_PARSE_BYTES_PER_SOURCE_BYTE: usize = 360;
+/// overhead. Every container slot is charged at the standard library's minimum non-zero
+/// capacity, which is four elements rather than the two a doubling growth would suggest:
+/// a container holding one element allocates four slots, and one element is the least a
+/// node family's own spelling admits.
+pub const MAX_PARSE_BYTES_PER_SOURCE_BYTE: usize = 552;
 
 /// The heap [`parse_source`] allocates regardless of the file's length: the diagnostic
-/// collector's two ceilings, and the token slice's zero-width `Eof` sentinel, which is
-/// the one token that covers no source byte.
+/// collector's two ceilings, the token slice's zero-width `Eof` sentinel, which is the
+/// one token that covers no source byte, and the block measurement's own working set,
+/// which the nesting limit bounds rather than the source.
 pub const MAX_PARSE_FIXED_BYTES: usize = 2 * SYNTAX_DIAGNOSTIC_COUNT_LIMIT * 256
     + 2 * SYNTAX_DIAGNOSTIC_OWNED_BYTES_LIMIT
-    + size_of::<Token>();
+    + size_of::<Token>()
+    + MAX_BLOCK_MEASUREMENT_BYTES;
+
+/// What sizing a body's statement lists holds beyond its per-source-byte charge: an
+/// open-block stack the nesting limit bounds, and the smallest non-zero capacity its
+/// block vector takes. Published because it is part of [`MAX_PARSE_FIXED_BYTES`] and is
+/// derived from a private frame this crate owns, so a caller accounting the fixed charge
+/// consumes it rather than restating it.
+pub const MAX_BLOCK_MEASUREMENT_BYTES: usize = parse_decl::BLOCK_MEASUREMENT_FIXED_BYTES;
 
 /// The heap [`parse_source`] can allocate for a file of `source_bytes`.
 ///
@@ -105,6 +117,20 @@ pub const MAX_PARSE_FIXED_BYTES: usize = 2 * SYNTAX_DIAGNOSTIC_COUNT_LIMIT * 256
 /// discover the cost afterwards.
 pub const fn max_parse_bytes(source_bytes: usize) -> usize {
     source_bytes * MAX_PARSE_BYTES_PER_SOURCE_BYTE + MAX_PARSE_FIXED_BYTES
+}
+
+/// The longest file [`max_parse_bytes`] keeps within `heap_bytes`, and zero when the
+/// length-independent charge alone is over it.
+///
+/// The inverse of [`max_parse_bytes`], for a caller that owns a heap ceiling and wants
+/// the length that fits it rather than the cost of a length it already has. A caller
+/// deriving its admitted length this way narrows what it admits whenever the parsed
+/// representation widens, without editing a length of its own.
+pub const fn max_parse_length(heap_bytes: usize) -> usize {
+    if heap_bytes < MAX_PARSE_FIXED_BYTES {
+        return 0;
+    }
+    (heap_bytes - MAX_PARSE_FIXED_BYTES) / MAX_PARSE_BYTES_PER_SOURCE_BYTE
 }
 
 pub fn is_reserved_word(text: &str) -> bool {

@@ -22,6 +22,16 @@
 use crate::NESTING_DEPTH_LIMIT;
 use crate::token::{Token, TokenKind};
 
+/// What one measurement holds regardless of the body's length: the open-block stack,
+/// which the nesting limit bounds rather than the source, and the smallest non-zero
+/// capacity its block vector takes. Both are constants, so they are charged once in
+/// [`crate::MAX_PARSE_FIXED_BYTES`] rather than per source byte.
+pub(crate) const FIXED_BYTES: usize =
+    NESTING_DEPTH_LIMIT * size_of::<Frame>() + MIN_BLOCK_CAPACITY * size_of::<(u32, u32)>();
+
+/// The standard library's minimum non-zero capacity for an element of this width.
+const MIN_BLOCK_CAPACITY: usize = 4;
+
 /// The measured statement capacity of a body and of each block inside it.
 pub(super) struct BlockLines {
     /// Content lines directly in the body, outside every nested block.

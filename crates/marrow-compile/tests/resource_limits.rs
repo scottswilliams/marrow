@@ -78,18 +78,24 @@ fn ledger(anchors: &[String]) -> Vec<u8> {
 /// spelling is intentional: shadowing still consumes a fresh monotone frame slot,
 /// and the short line keeps the 65,537-binding totality case below the 1 MiB source
 /// capture bound. The returned span is the 257th initializer when present.
-fn local_binding_program(binding_count: usize) -> (String, Option<SourceSpan>) {
+/// A function of `binding_count` `const` bindings, each line prefixed by `indent`.
+///
+/// The prefix is a parameter because the widest fixture here has to fit one admitted
+/// file: 65,537 bindings at the canonical four-space indent do not, and what a file may
+/// be is a consequence of the heap ceiling rather than a round number to spend freely.
+fn local_binding_program(binding_count: usize, indent: &str) -> (String, Option<SourceSpan>) {
     let mut source = String::from("module main\n\npub fn locals() {\n");
     let mut first_rejected = None;
     for index in 0..binding_count {
-        source.push_str("    const x=");
+        source.push_str(indent);
+        source.push_str("const x=");
         let start_byte = source.len();
         if index == marrow_image::bounds::MAX_LOCALS {
             first_rejected = Some(SourceSpan {
                 start_byte,
                 end_byte: start_byte + 1,
                 line: source.bytes().filter(|byte| *byte == b'\n').count() as u32 + 1,
-                column: 13,
+                column: indent.len() as u32 + 9,
             });
         }
         source.push_str("0\n");
@@ -150,7 +156,7 @@ fn assert_exact_local_limit(
 /// rejection path cannot perturb an already-admitted function.
 #[test]
 fn exactly_256_explicit_bindings_compile_with_stable_image_bytes() {
-    let (source, rejected) = local_binding_program(marrow_image::bounds::MAX_LOCALS);
+    let (source, rejected) = local_binding_program(marrow_image::bounds::MAX_LOCALS, "    ");
     assert!(rejected.is_none());
     let compiled = compile(&project(&source, None))
         .unwrap_or_else(|failure| panic!("the complete 256-slot frame must compile: {failure:?}"));
@@ -169,7 +175,7 @@ fn exactly_256_explicit_bindings_compile_with_stable_image_bytes() {
 /// over-wide frame; the former locationless aggregate `Locals` outcome is forbidden.
 #[test]
 fn the_257th_explicit_binding_is_one_source_limited_diagnostic() {
-    let (source, rejected) = local_binding_program(marrow_image::bounds::MAX_LOCALS + 1);
+    let (source, rejected) = local_binding_program(marrow_image::bounds::MAX_LOCALS + 1, "    ");
     assert_exact_local_limit(
         compile(&project(&source, None)),
         rejected.expect("the 257th initializer span"),
@@ -194,13 +200,19 @@ fn parameters_locals_and_generated_temporaries_share_the_bound() {
     );
 }
 
-/// A legal sub-1-MiB source can ask for enough locals to overflow the backing `u16`.
-/// Compilation must stop at request 257 with the typed source refusal, never unwind,
-/// wrap, or continue through the remaining 65,280 requests.
+/// A source inside the admitted length can ask for enough locals to overflow the backing
+/// `u16`. Compilation must stop at request 257 with the typed source refusal, never
+/// unwind, wrap, or continue through the remaining 65,280 requests.
 #[test]
 fn sixty_five_thousand_local_requests_are_total_and_fail_stop() {
-    let (source, rejected) = local_binding_program(65_537);
-    assert!(source.len() < CaptureLimits::DEFAULT.max_file_bytes());
+    let (source, rejected) = local_binding_program(65_537, "");
+    assert!(
+        source.len() <= marrow_compile::MAX_PARSED_FILE_BYTES,
+        "the fixture has to be a file the drive admits, or it never reaches the local \
+         allocator: {} bytes against an admitted {}",
+        source.len(),
+        marrow_compile::MAX_PARSED_FILE_BYTES
+    );
     let outcome = catch_unwind(AssertUnwindSafe(|| compile(&project(&source, None))));
     let result = outcome.expect("local allocation must not panic or overflow");
     assert_exact_local_limit(

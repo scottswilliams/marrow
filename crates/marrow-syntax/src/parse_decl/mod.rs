@@ -21,6 +21,7 @@ mod statement_lines;
 mod stmt;
 mod tokens;
 
+pub(crate) use block_lines::FIXED_BYTES as BLOCK_MEASUREMENT_FIXED_BYTES;
 pub(crate) use decl::DeclParser;
 
 use crate::ast::{KeyParam, ParamDecl, TypeExpr, TypeParamDecl};

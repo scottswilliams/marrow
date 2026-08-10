@@ -52,6 +52,9 @@ fn module_file(index: usize, source: String) -> (String, String) {
 
 /// One module whose enum contributes `members` document-symbol nodes (the enum plus
 /// each member), with each member name padded to `name_bytes`.
+/// A module of `members` enum members, each name padded to `name_bytes`. Sized by its
+/// callers to stay inside the admitted file length: a module over it is refused by drive
+/// admission and never reaches the fact ceilings these fixtures are aimed at.
 fn symbol_module(index: usize, members: usize, name_bytes: usize) -> (String, String) {
     let mut source = format!("module module_{index}\n\nenum E {{\n");
     for member in 0..members {
@@ -65,6 +68,13 @@ fn symbol_module(index: usize, members: usize, name_bytes: usize) -> (String, St
         source.push('\n');
     }
     source.push_str("}\n");
+    assert!(
+        source.len() <= marrow_compile::MAX_PARSED_FILE_BYTES,
+        "a fixture module has to be a file the drive admits: {} bytes against an admitted \
+         {}",
+        source.len(),
+        marrow_compile::MAX_PARSED_FILE_BYTES
+    );
     module_file(index, source)
 }
 
@@ -142,7 +152,7 @@ fn the_count_ceiling_itself_is_admitted() {
 #[test]
 fn crossing_the_fact_bytes_refuses_with_the_byte_limit() {
     let name_bytes = 1_200usize;
-    let per_file = 800usize;
+    let per_file = 600usize;
     let bytes_per_file = (per_file * name_bytes) as u64;
     let files_needed = (MAX_SNAPSHOT_FACT_BYTES / bytes_per_file) as usize + 2;
     let files = (0..files_needed)
@@ -164,7 +174,9 @@ fn crossing_the_fact_bytes_refuses_with_the_byte_limit() {
 /// the count limit, never the byte limit.
 #[test]
 fn count_wins_a_simultaneous_crossing() {
-    let per_file = 4_000usize;
+    // Members per file sized to keep each module inside the admitted file length: the
+    // fixture has to reach the fact ceilings, so it must not be refused before them.
+    let per_file = 3_500usize;
     let files_needed = (MAX_SNAPSHOT_FACT_COUNT as usize / per_file) + 2;
     let files = (0..files_needed)
         .map(|index| symbol_module(index, per_file, 200))
