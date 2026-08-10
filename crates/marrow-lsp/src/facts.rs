@@ -350,23 +350,15 @@ fn symbol_kind(kind: DeclKind) -> SymbolKind {
     }
 }
 
-/// The absence gate over the completion/signature surface: the language server projects
-/// the compiler's complete candidate set verbatim and never reconstructs syntax or ranks.
-/// The forbidden construction tokens are the field setters that would introduce a
-/// server-side prefix/fuzzy filter, ranking, snippet, commit character, text edit beyond
-/// the label, or `completionItem/resolve` — every unearned surface the design refuses.
-/// Enforced over the crate's own analysis/wiring sources so a reintroduction is a build
-/// failure, not a review miss.
-#[cfg(test)]
-const ABSENCE_SCAN_SOURCES: &[&str] = &[
-    include_str!("facts.rs"),
-    include_str!("server.rs"),
-    include_str!("outbound.rs"),
-];
-
+/// The absence gates over the server's production sources: the language server
+/// projects the compiler's facts verbatim and never reconstructs completion
+/// ranking, document syntax, or diagnostic severity. Every gate reads the same
+/// recursive production inventory, so a module moved into a subdirectory — or a
+/// forbidden token added to a file no list happened to name — is a test failure
+/// rather than a review miss.
 #[cfg(test)]
 mod absence_gate {
-    use super::ABSENCE_SCAN_SOURCES;
+    use std::path::{Path, PathBuf};
 
     /// Field setters (lsp-types snake_case) that would enable a refused behavior. These
     /// names appear legitimately in this gate's own lists and in test code; the scan
@@ -386,14 +378,56 @@ mod absence_gate {
     /// reading the request `CompletionContext` to classify is a leak.
     const FORBIDDEN_RECONSTRUCTION: &[&str] = &["regex", "Regex", "CompletionContext", "keyword"];
 
-    /// The production region of a source file: everything before its first `#[cfg(test)]`
-    /// attribute. Test code and this gate's own token lists live below that line and
-    /// legitimately name the forbidden surface; only production wiring is scanned.
-    fn production_region(source: &str) -> &str {
-        match source.find("#[cfg(test)]") {
-            Some(cut) => &source[..cut],
-            None => source,
+    fn src_root() -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("src")
+    }
+
+    /// Every `.rs` source of this crate, walked recursively in sorted order: a
+    /// module moved into a subdirectory stays covered.
+    fn crate_sources() -> Vec<(PathBuf, String)> {
+        fn walk(dir: &Path, out: &mut Vec<(PathBuf, String)>) {
+            let mut entries: Vec<PathBuf> = std::fs::read_dir(dir)
+                .expect("read the crate src directory")
+                .map(|entry| entry.expect("src entry").path())
+                .collect();
+            entries.sort();
+            for path in entries {
+                if path.is_dir() {
+                    walk(&path, out);
+                } else if path.extension().is_some_and(|extension| extension == "rs") {
+                    let text = std::fs::read_to_string(&path).expect("read crate source");
+                    out.push((path, text));
+                }
+            }
         }
+        let mut out = Vec::new();
+        walk(&src_root(), &mut out);
+        assert!(!out.is_empty(), "the source inventory must be non-empty");
+        out
+    }
+
+    /// The production lines of a source: every line outside a `#[cfg(test)]`
+    /// item. Test code and this gate's own token lists legitimately name the
+    /// forbidden surface, so an annotated item is skipped from its attribute to
+    /// the closing brace at the attribute's own indentation — which formatted
+    /// sources guarantee. Production code that follows a test-only helper is
+    /// still scanned.
+    fn production_lines(source: &str) -> Vec<&str> {
+        let mut lines = source.lines();
+        let mut kept = Vec::new();
+        while let Some(line) = lines.next() {
+            let Some(indent) = line.strip_suffix("#[cfg(test)]").map(str::len) else {
+                kept.push(line);
+                continue;
+            };
+            let close = format!("{}}}", " ".repeat(indent));
+            for skipped in lines.by_ref() {
+                if skipped == close {
+                    break;
+                }
+            }
+        }
+        kept
     }
 
     /// A line the gate ignores: an explanatory comment (`//` …). A real forbidden use is a
@@ -403,19 +437,35 @@ mod absence_gate {
     }
 
     fn scan(needles: &[&str]) {
-        for source in ABSENCE_SCAN_SOURCES {
-            for line in production_region(source).lines() {
+        for (path, source) in crate_sources() {
+            for line in production_lines(&source) {
                 if is_comment(line) {
                     continue;
                 }
                 for needle in needles {
                     assert!(
                         !line.contains(needle),
-                        "forbidden token `{needle}` appears in production server code: {line}"
+                        "forbidden token `{needle}` appears in production server code ({}): {line}",
+                        path.display()
                     );
                 }
             }
         }
+    }
+
+    /// The inventory keeps scanning past a test-only helper: this production
+    /// item follows one in `document.rs`, and a cut-at-the-first-attribute rule
+    /// would silently drop it and everything after it.
+    #[test]
+    fn the_production_inventory_survives_an_early_test_item() {
+        let document = std::fs::read_to_string(src_root().join("document.rs"))
+            .expect("read the document ledger");
+        assert!(
+            production_lines(&document)
+                .iter()
+                .any(|line| line.contains("impl Default for DocumentLedger")),
+            "the scanned region must reach production code after a test-only helper"
+        );
     }
 
     #[test]
@@ -430,34 +480,16 @@ mod absence_gate {
 
     /// The one severity owner is the diagnostic payload: no server source
     /// classifies a code to reconstruct severity. The forbidden names are the
-    /// deleted registry severity surface; they are spelled via `concat!` so
-    /// this gate's own text never matches, and every crate source is scanned.
+    /// deleted registry severity surface, spelled via `concat!` so this gate's
+    /// own text never matches.
     #[test]
     fn severity_comes_from_the_payload_never_the_code() {
-        let forbidden = [
+        scan(&[
             concat!("Severity", "Class"),
             concat!("severity", "_class"),
             concat!("fn severity", "_of"),
-        ];
-        let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
-        let mut paths: Vec<std::path::PathBuf> = std::fs::read_dir(&src)
-            .expect("read the crate src directory")
-            .map(|entry| entry.expect("src entry").path())
-            .filter(|path| path.extension().is_some_and(|extension| extension == "rs"))
-            .collect();
-        paths.sort();
-        assert!(!paths.is_empty(), "the source inventory must be non-empty");
-        for path in paths {
-            let text = std::fs::read_to_string(&path).expect("read crate source");
-            for needle in forbidden {
-                assert!(
-                    !text.contains(needle),
-                    "{} reconstructs severity from a code: `{needle}`",
-                    path.display()
-                );
-            }
-        }
-        let facts = std::fs::read_to_string(src.join("facts.rs")).expect("read facts.rs");
+        ]);
+        let facts = std::fs::read_to_string(src_root().join("facts.rs")).expect("read facts.rs");
         assert!(
             facts.contains("to_lsp_severity(diagnostic.severity())"),
             "expected the payload severity projection; if it was renamed, update this scan"
