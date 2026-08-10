@@ -60,8 +60,10 @@ Source that does not parse is left untouched and reported with located
 bounded per-file collector retains is refused with `fmt.diagnostic_limit`, since no
 complete parse exists to format against. Formatting that would drop a retained
 comment is refused with `fmt.comment_loss` rather than published lossily. The
-same 1 MiB per-file byte limit applies to either target, but a different owner
-refuses it and reports it differently:
+per-file byte limits differ by owner, and a different owner refuses each and
+reports it differently. The project owner captures a file of up to 1 MiB; the
+compiler admits the shorter length its own parse-heap ceiling buys, so a file
+between the two is captured and then refused by the compiler:
 
 | Target | Code | Path reported | Byte count reported |
 |---|---|---|---|

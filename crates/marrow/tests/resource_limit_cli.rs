@@ -162,7 +162,7 @@ fn check_emits_the_same_kinded_stderr_line_as_its_siblings() {
 fn fmt_refuses_an_over_limit_file_before_reading_it() {
     use std::os::unix::fs::PermissionsExt;
 
-    let limit = marrow_project::CaptureLimits::DEFAULT.max_file_bytes() as u64;
+    let limit = marrow_compile::MAX_PARSED_FILE_BYTES as u64;
     let dir = TempDir::new("fmt-file-bound");
     let path = dir.root.join("big.mw");
     let file = std::fs::File::create(&path).expect("create oversized source");
@@ -198,7 +198,7 @@ fn fmt_refuses_an_over_limit_file_before_reading_it() {
 fn fmt_admits_a_file_of_exactly_the_module_limit() {
     use std::os::unix::fs::PermissionsExt;
 
-    let limit = marrow_project::CaptureLimits::DEFAULT.max_file_bytes() as u64;
+    let limit = marrow_compile::MAX_PARSED_FILE_BYTES as u64;
     let dir = TempDir::new("fmt-file-at-bound");
     let path = dir.root.join("exact.mw");
     let file = std::fs::File::create(&path).expect("create at-bound source");

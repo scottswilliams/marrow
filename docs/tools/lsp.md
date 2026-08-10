@@ -95,9 +95,8 @@ refused whole, never returned as a truncated candidate list or signature.
 A held snapshot retains no parse tree: completion and signature-help queries
 re-parse the single file they name from the snapshot's own retained bytes. The
 measured cost on the recorded host is under a millisecond for a 64 KiB file and
-70 ms for a file at the 1 MiB admission ceiling in its densest shape —
-single-byte statement lines, which build one statement node per two source
-bytes. The compiler pins both with budget tests that assert in the optimized
+54 ms for a file at the admission ceiling in its densest shape — single-byte
+statement lines, which build one statement node per two source bytes. The compiler pins both with budget tests that assert in the optimized
 profile the server ships in and record the measurement in either profile,
 because the unoptimized profile runs the same code about an order of magnitude
 slower.
@@ -105,10 +104,11 @@ slower.
 **A maximum admitted file in that shape still does not answer inside the roughly
 100 ms at which a response reads as immediate**, on a machine meaningfully slower
 than the recorded host; the ordinary-file figure is the one a session meets. The
-70 ms follows a shrink of the parsed representation from 112 ms, which is an
-improvement and not immediacy: a smaller tree is cheaper to build, but the
-worst-shape case is closed by parsing less of the file, not by parsing it more
-cheaply, and that is not implemented. Earlier passes recorded 49 ms for the same
+54 ms follows a shrink of the parsed representation from 112 ms and a narrowed
+admission ceiling from 70 ms, which is an improvement and not immediacy: a smaller
+tree and a shorter file are each cheaper to parse, but the worst-shape case is
+closed by parsing less of the file, not by parsing it more cheaply, and that is not
+implemented. Earlier passes recorded 49 ms for the same
 ceiling, measured on a comment-padded file, which is not the worst shape.
 
 Parse results are not cached — a cache would be a second retention owner — so a

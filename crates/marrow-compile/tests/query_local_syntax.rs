@@ -76,15 +76,16 @@ const H_OWNED_BYTES: usize = 640 * 1024 * 1024;
 /// lexes and parses the one file it names, then classifies the position over the result.
 /// The budget covers the whole query, not the parse alone.
 ///
-/// The number is derived from the densest shape a query can be handed, which is the same
-/// shape the parse-transient term is derived over: single-byte statement lines in a file
-/// whose module does not parse. On the recorded host that shape measures 70 ms worst of
-/// five after a warm query, over three runs, so the budget is twice that, rounded up,
-/// leaving room for a machine roughly half as fast and for ordinary run-to-run variation.
+/// The number is set over the densest shape a query can be handed, which is the same shape
+/// the parse-transient term is derived over: single-byte statement lines in a file whose
+/// module does not parse. On the recorded host that shape measures 54 ms worst of five
+/// after a warm query, over three runs, and the budget sits well above it, leaving room
+/// for a machine roughly half as fast and for ordinary run-to-run variation.
 ///
-/// **It is a regression fence, not an immediacy claim, and shrinking the representation
-/// did not make it one.** The same measurement was 112 ms before the parsed representation
-/// was shrunk, so a smaller tree is cheaper to build — but a maximum admitted file in its
+/// **It is a regression fence, not an immediacy claim, and nothing here made it one.** The
+/// same measurement was 112 ms before the parsed representation was shrunk and 70 ms at
+/// the wider admission ceiling that preceded the corrected accounting, so a smaller tree
+/// and a shorter file are each cheaper to parse — but a maximum admitted file in its
 /// densest shape still does not answer inside the ~100 ms at which a response reads as
 /// immediate on a machine half this one's speed, which is what the budget leaves room for.
 /// A green capacity bound is not evidence about latency; do not read one for the other.

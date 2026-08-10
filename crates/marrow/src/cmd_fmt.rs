@@ -201,10 +201,12 @@ enum SingleFileRefusal {
 /// Admit an explicit single-file argument from one stat, before the blocking read
 /// or any allocation. A FIFO with no writer never returns, and a socket or device
 /// cannot be a source body, so a non-regular target fails closed promptly; a
-/// regular target over the compiler's 1 MiB module byte limit is refused with the
+/// regular target over the compiler's module byte limit is refused with the
 /// module-size admission's typed code rather than materialized only to be rejected
-/// at compile. A missing or unstatable target passes through: `read_to_string`
-/// reports it as the located `io.read` error.
+/// at compile. The limit is that owner's constant rather than a copy: it is the
+/// longest file whose parse fits the compiler's heap ceiling, and this path is about
+/// to parse the file. A missing or unstatable target passes through:
+/// `read_to_string` reports it as the located `io.read` error.
 fn admit_single_source_file(path: &Path) -> Result<(), SingleFileRefusal> {
     let Ok(metadata) = fs::metadata(path) else {
         return Ok(());
@@ -215,7 +217,7 @@ fn admit_single_source_file(path: &Path) -> Result<(), SingleFileRefusal> {
             "not a regular file",
         )));
     }
-    let limit = marrow_project::CaptureLimits::DEFAULT.max_file_bytes() as u64;
+    let limit = marrow_compile::MAX_PARSED_FILE_BYTES as u64;
     if metadata.len() > limit {
         return Err(SingleFileRefusal::OverModuleLimit {
             actual: metadata.len(),
