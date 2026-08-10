@@ -392,19 +392,24 @@ fn content_byte_charge() -> usize {
 ///
 /// A `Statement` is the widest node the parser stores in a list, and it is stored in
 /// exactly one: a block's statement list. Two source bytes are the least the grammar
-/// spends on one statement — no two statements share a line, `statements` never builds
-/// one from an empty line, and every statement is closed either by its own newline or by
-/// its block's `}` — so a statement line of `L` bytes charges one statement slot plus
-/// `L - 1` content bytes at the content rate. Which `L` is worst depends on which of the
-/// two is wider, so both regimes are taken (see the body).
+/// spends on one statement: a statement occupies a *start* — a significant token
+/// following a boundary — and a start costs its own token plus the boundary before it,
+/// which is a newline or the `}` of a nested block. So a statement of `L` bytes charges
+/// one statement slot plus `L - 1` content bytes at the content rate. Which `L` is worst
+/// depends on which of the two is wider, so both regimes are taken (see the body).
+///
+/// Two statements *can* share a line — `if a {} if b {}` is two, because the first
+/// closes on a `}` that leaves the cursor mid-line — which is why the count is of starts
+/// and not of lines. Both boundary kinds cost a byte the start does not, so the floor
+/// holds either way, and it is pinned in `marrow-syntax` beside the pass that counts.
 ///
 /// The slot is charged once, not with the growth factor: a block's statement list is
-/// allocated at the measured count of content lines the block opens directly and handed
-/// to `Box<[Statement]>` at close, so it neither grows nor keeps slack. Measuring each
-/// block's own lines rather than its whole extent is what keeps this sound — the other
-/// count would reserve a nested line once per enclosing block — and the pass that measures
-/// a block is the one that decides the parser builds it, so a block sized at nothing and
-/// grown by doubling is not representable.
+/// allocated at the measured count of starts the block opens directly and handed to
+/// `Box<[Statement]>` at close, so it neither grows nor keeps slack. Measuring each
+/// block's own starts rather than its whole extent is what keeps this sound — the other
+/// count would reserve a nested start once per enclosing block — and the pass that
+/// measures a region is the one that decides the parser builds it, so a list sized at
+/// nothing and grown by doubling is not representable.
 fn statement_line_charge() -> usize {
     let content = content_byte_charge();
     // A line of `L` bytes charges `slot + (L - 1) * content`, so its per-byte rate is
@@ -488,7 +493,7 @@ fn declaration_level_charges() -> Vec<(&'static str, usize, usize)> {
     vec![
         // The shortest declaration keyword is `fn`. The slot is charged once for the
         // same reason a statement's is: the declaration list is allocated at the file's
-        // top-level content-line count, which a declaration always occupies at least one
+        // top-level statement-start count, which a declaration always opens at least one
         // of, and handed to `Box<[Declaration]>` at close.
         ("Declaration", size_of::<Declaration>() + string_bytes(1), 2),
         // `use`.
@@ -508,8 +513,7 @@ fn declaration_level_charges() -> Vec<(&'static str, usize, usize)> {
             3,
         ),
         // A member occupies its own line: the declaration-body frame reports one member
-        // per line, exactly as no two statements share one. An identifier and its
-        // newline are two source bytes.
+        // per line. An identifier and its newline are two source bytes.
         (
             "EnumMember",
             vec_bytes::<EnumMember>(1) + string_bytes(1),
@@ -561,12 +565,12 @@ const TOKEN_CHARGE: usize = LIVE_TOKEN_VECTORS * TOKEN_VECTOR_SLACK * size_of::<
 
 /// What measuring a body's block capacities charges per source byte.
 ///
-/// The parser measures each `{ … }` block's own statement-line count before parsing it,
-/// so a statement list is allocated once at its final size instead of growing. The
-/// measurement holds one `(token index, line count)` pair per block, still in the vector
-/// it was pushed into when the peak is taken, and a block costs at least the two source
-/// bytes of its own braces. Its open-block stack is bounded by the nesting limit rather
-/// than by the source, so it is a constant and not a per-byte charge.
+/// The parser measures each `{ … }` region's own statement-start count before parsing
+/// it, so a statement list is allocated once at its final size instead of growing. The
+/// measurement holds one `(token index, start count)` pair per region, still in the
+/// vector it was pushed into when the peak is taken, and a region costs at least the two
+/// source bytes of its own braces. Its open-block stack is bounded by the nesting limit
+/// rather than by the source, so it is a constant and not a per-byte charge.
 const BLOCK_MEASUREMENT_CHARGE: usize = GROWTH * size_of::<(u32, u32)>() / 2;
 
 /// The syntax collector's own retention, which is live beside the tree until
@@ -933,8 +937,8 @@ fn desynchronizing_shapes() -> Vec<(&'static str, Vec<u8>)> {
 /// A body nested to the block-nesting limit holding one block a level past it.
 ///
 /// The measurement and the parser disagreed about which `{` opens a block, so one block
-/// was reserved at another's line count — a phantom held for the whole parse — while that
-/// other was reserved at nothing and grew by doubling.
+/// was reserved at another's start count — a phantom held for the whole parse — while
+/// that other was reserved at nothing and grew by doubling.
 fn nesting_limit_desync_file() -> Vec<u8> {
     let limit = marrow_syntax::NESTING_DEPTH_LIMIT;
     let mut source = String::from("module m\n\nfn f() {\n");

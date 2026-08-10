@@ -31,9 +31,10 @@ pub(crate) struct DeclParser<'a, 'c> {
     pub(super) source: &'a str,
     pub(super) tokens: &'a [Token],
     pub(super) pos: usize,
-    /// The file's declarations, allocated once at the file's top-level line count —
-    /// a declaration occupies at least one such line — so the list never grows and
-    /// carries no amortized slack into the finished tree.
+    /// The file's declarations, allocated once at the file's top-level statement-start
+    /// count — a declaration opens at least one such start, including the second and
+    /// later ones on a line a preceding declaration's `}` did not end — so the list
+    /// never grows and carries no amortized slack into the finished tree.
     declarations: Vec<Declaration>,
     pub(super) sink: SyntaxSink<'c>,
     /// Nested member-block depth (resource groups, enum categories). The lexer

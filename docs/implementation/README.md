@@ -165,10 +165,14 @@ holding one element allocates four slots and one element is the least a family's
 own spelling admits — rather than at the doubling factor alone. The token slice and
 the collector are live beside the tree. Multiplying by the admitted length gives the
 figure. The statement slot itself is charged once rather than doubled: a statement
-list is allocated at the measured count of content lines its block opens directly
-and is held as a `Box<[Statement]>`, which has no capacity field for slack to live
-in. The pass that measures a block is the same one that decides the parser builds
-it, so a block sized at nothing and grown by doubling is not representable.
+list is allocated at the measured count of statement *starts* its block opens
+directly — a significant token following the block's `{`, a newline, or the `}` of
+a nested block — and is held as a `Box<[Statement]>`, which has no capacity field
+for slack to live in. Counting starts rather than lines is what makes the count an
+upper bound: a compound statement's body closes on a `}` mid-line, so `if a {} if
+b {}` is two statements on one line. The pass that measures a region is the same
+one that decides the parser builds it, so a list sized at nothing and grown by
+doubling is not representable.
 
 Three properties of this term matter to a consumer. It charges allocated
 capacity, so a `maximum resident set size` sample is a floor and not a check —

@@ -2,12 +2,27 @@
 //! before the body is parsed so every statement list is allocated once at its final
 //! size.
 //!
-//! A block holds at most one statement per *content line* it opens directly — a line
-//! carrying at least one significant token at the block's own brace depth. Counting
-//! only a block's own lines is what makes the total sound: a nested line belongs to
-//! exactly one block, so summed over every block in a body the count is the body's
-//! line count, where counting each block's whole extent would count a nested line once
-//! per enclosing block and over-reserve by the nesting depth.
+//! A block holds at most one statement per *statement start* it opens directly: a
+//! significant token at the block's own brace depth that follows a boundary — the
+//! block's own `{`, a `NEWLINE`, or the `}` closing a nested block. A newline is not
+//! the only boundary because a compound statement's body closes on a `}`, which leaves
+//! the cursor mid-line and the parser free to structure another statement from the same
+//! line (`if a {} if b {}`); counting lines would size such a block at one and leave the
+//! rest of it to be grown by doubling, which is what this pass exists to prevent.
+//!
+//! Counting only a block's own starts is what makes the total sound: a nested start
+//! belongs to exactly one block, so summed over every block in a body the count is the
+//! body's own start count, where counting each block's whole extent would count a nested
+//! start once per enclosing block and over-reserve by the nesting depth.
+//!
+//! A start costs at least two source bytes — its own token and the boundary separating
+//! it from the previous one — which is the bound the per-source-byte parse charge is
+//! derived from.
+//!
+//! The count is an upper bound, not an exact one: a clause continuing its statement past
+//! a nested block (`} else {`) begins no new statement but does follow a boundary, so it
+//! is counted. Over-reserving a slot cannot make the list grow, and the two-byte floor
+//! holds for a counted start whether or not the parser spends it.
 //!
 //! One pass with a brace stack measures every block in a body, so the body costs a
 //! single walk of its tokens rather than one walk per block.
@@ -39,34 +54,33 @@ const MIN_BLOCK_CAPACITY: usize = 4;
 
 /// The measured statement capacity of a body and of each block inside it.
 pub(super) struct BlockLines {
-    /// Content lines directly in the body, outside every nested block.
+    /// Statement starts directly in the body, outside every nested block.
     body: usize,
-    /// `(index of the `{`, content lines directly in that block)`, by token index.
+    /// `(index of the `{`, statement starts directly in that block)`, by token index.
     blocks: Box<[(u32, u32)]>,
 }
 
-/// One open block while measuring: where its `{` sits, the content lines counted so
-/// far, and whether the line in progress has content yet.
+/// One open block while measuring: where its `{` sits, the starts counted so far, and
+/// whether a statement is already in progress.
 struct Frame {
     open: u32,
-    lines: u32,
-    line_has_content: bool,
+    statements: u32,
+    /// Set by the first significant token after a boundary and cleared by the next
+    /// boundary, so the tokens between them are counted as one statement rather than
+    /// one each.
+    in_statement: bool,
 }
 
 impl BlockLines {
     pub(super) fn measure(tokens: &[Token]) -> Self {
-        let mut body = Frame {
-            open: 0,
-            lines: 0,
-            line_has_content: false,
-        };
+        let mut body = Frame::new(0);
         let mut open_blocks: Vec<Frame> = Vec::with_capacity(NESTING_DEPTH_LIMIT);
         let mut blocks: Vec<(u32, u32)> = Vec::new();
         // Open `{`s this pass left unmeasured. Measuring stops at the limit, so every
         // unmeasured `{` sits inside the innermost measured block and a plain count
         // keeps the stack aligned: their `}` closes one of them and never pops a
         // measured frame. Popping for one would credit the rest of that measured
-        // block's lines to its parent and leave the block itself to grow from nothing.
+        // block's starts to its parent and leave the block itself to grow from nothing.
         let mut unmeasured = 0usize;
         for (index, token) in tokens.iter().enumerate() {
             match token.kind {
@@ -75,20 +89,15 @@ impl BlockLines {
                         unmeasured += 1;
                         continue;
                     }
-                    current(&mut body, &mut open_blocks).line_has_content = true;
+                    current(&mut body, &mut open_blocks).begin_statement();
                     // Past the limit the parser skips the block rather than structuring
                     // it, so measuring deeper would size lists that are never built —
                     // and would make this stack grow with the source rather than with a
                     // fixed bound. The whole skipped extent is one statement of the
-                    // block that holds it: the line its `{` sits on, counted above, and
-                    // nothing within.
+                    // block that holds it: the one begun above, and nothing within.
                     match u32::try_from(index) {
                         Ok(open) if open_blocks.len() < NESTING_DEPTH_LIMIT => {
-                            open_blocks.push(Frame {
-                                open,
-                                lines: 0,
-                                line_has_content: false,
-                            });
+                            open_blocks.push(Frame::new(open));
                         }
                         _ => unmeasured = 1,
                     }
@@ -96,21 +105,25 @@ impl BlockLines {
                 TokenKind::RightBrace => {
                     if unmeasured > 0 {
                         unmeasured -= 1;
+                        if unmeasured > 0 {
+                            continue;
+                        }
                     } else if let Some(frame) = open_blocks.pop() {
-                        blocks.push((frame.open, frame.capacity()));
+                        blocks.push((frame.open, frame.statements));
+                    } else {
+                        continue;
                     }
+                    // A closed nested block ends the statement that held it, so the next
+                    // significant token on the same line begins another one.
+                    current(&mut body, &mut open_blocks).in_statement = false;
                 }
                 TokenKind::Newline => {
-                    let frame = current(&mut body, &mut open_blocks);
-                    if frame.line_has_content {
-                        frame.lines += 1;
-                        frame.line_has_content = false;
-                    }
+                    current(&mut body, &mut open_blocks).in_statement = false;
                 }
                 TokenKind::Eof => {}
                 _ => {
                     if unmeasured == 0 {
-                        current(&mut body, &mut open_blocks).line_has_content = true;
+                        current(&mut body, &mut open_blocks).begin_statement();
                     }
                 }
             }
@@ -119,11 +132,11 @@ impl BlockLines {
         // unclosed `{` holding a body's worth of statements would otherwise be the one
         // shape whose statement list is allocated by growing.
         while let Some(frame) = open_blocks.pop() {
-            blocks.push((frame.open, frame.capacity()));
+            blocks.push((frame.open, frame.statements));
         }
         blocks.sort_unstable_by_key(|(open, _)| *open);
         Self {
-            body: body.capacity() as usize,
+            body: body.statements as usize,
             blocks: blocks.into_boxed_slice(),
         }
     }
@@ -146,10 +159,20 @@ impl BlockLines {
 }
 
 impl Frame {
-    /// The content lines this frame opened, counting a final line that ran to the
-    /// block's `}` without a newline of its own.
-    fn capacity(&self) -> u32 {
-        self.lines + u32::from(self.line_has_content)
+    fn new(open: u32) -> Self {
+        Self {
+            open,
+            statements: 0,
+            in_statement: false,
+        }
+    }
+
+    /// Count a statement start, unless one is already in progress in this block.
+    fn begin_statement(&mut self) {
+        if !self.in_statement {
+            self.statements += 1;
+            self.in_statement = true;
+        }
     }
 }
 
@@ -337,10 +360,61 @@ mod tests {
         );
     }
 
-    /// Every content line belongs to exactly one block, so the measurements sum to the
-    /// body's own line count and never over-reserve by the nesting depth.
+    /// A compound statement's body closes on a `}`, which leaves the cursor mid-line and
+    /// the parser's loop free to structure another statement from the same line. A block
+    /// therefore holds as many statements as it has *starts*, not as many as it has
+    /// lines, and sizing it by lines is what let the one list this pass exists to size
+    /// exactly be grown by doubling instead.
     #[test]
-    fn the_measurements_sum_to_the_lines_they_came_from() {
+    fn statements_that_share_a_line_are_each_measured() {
+        let units = 64;
+        let source = format!("module m\n\nfn f() {{\n{}\n}}\n", "if a {} ".repeat(units));
+        let body = Body::of(&source);
+        let measured = body.measure().body();
+
+        let parsed = crate::parse_source(&source);
+        let Some(crate::Declaration::Function(function)) = parsed.file.declarations.first() else {
+            panic!("the fixture declares one function");
+        };
+        let structured = function.body.statements.len();
+
+        assert_eq!(
+            structured, units,
+            "the parser structures one statement per `if a {{}}`, all on one line"
+        );
+        assert!(
+            measured >= structured,
+            "the body was measured at {measured} statements and the parser built \
+             {structured} of them, so the list it was handed grew by doubling"
+        );
+    }
+
+    /// The same defect at declaration level: the file's declaration list is sized by this
+    /// pass too, and a declaration body also closes on a `}` mid-line.
+    #[test]
+    fn declarations_that_share_a_line_are_each_measured() {
+        let units = 64;
+        let source = format!("module m\n\n{}\n", "fn f(){} ".repeat(units));
+        let tokens = crate::lex_source(&source).tokens;
+        let measured = BlockLines::measure(&tokens).body();
+        let structured = crate::parse_source(&source).file.declarations.len();
+
+        assert_eq!(
+            structured, units,
+            "the parser structures one declaration per `fn f(){{}}`, all on one line \
+             (the `module` header is its own field, not a declaration)"
+        );
+        assert!(
+            measured >= structured,
+            "the file was measured at {measured} declarations and the parser built \
+             {structured} of them, so the list it was handed grew by doubling"
+        );
+    }
+
+    /// Every counted start belongs to exactly one block, so the measurements sum to the
+    /// body's own start count and never over-reserve by the nesting depth.
+    #[test]
+    fn the_measurements_sum_to_the_starts_they_came_from() {
         let statements = 32;
         let body = Body::of(&nested_to_the_limit(statements));
         let lines = body.measure();
@@ -350,10 +424,37 @@ mod tests {
             .filter_map(|open| lines.block(*open))
             .sum::<usize>()
             + lines.body();
-        let content_lines = NESTING_DEPTH_LIMIT + 1 + statements;
+        // One `if a {` per level, the over-limit `if a {}` inside the innermost, and the
+        // trailing statement lines. Each opens exactly one statement, in one block.
+        let starts = NESTING_DEPTH_LIMIT + 1 + statements;
         assert_eq!(
-            total, content_lines,
-            "the measured lines are the body's own content lines, once each"
+            total, starts,
+            "the measured starts are the body's own statement starts, once each"
         );
+    }
+
+    /// A start costs at least two source bytes — its own token and the boundary before
+    /// it — which is the floor the per-source-byte parse charge is derived from. Both
+    /// boundary kinds are exercised: the newline, and the `}` of a nested block.
+    #[test]
+    fn a_measured_start_costs_at_least_two_source_bytes() {
+        for unit in ["a\n", "{}", "if{}", "a\nb\n"] {
+            let filler = unit.repeat(512);
+            let source = format!("module m\n\nfn f() {{\n{filler}\n}}\n");
+            let body = Body::of(&source);
+            let lines = body.measure();
+            let total: usize = body
+                .opens
+                .iter()
+                .filter_map(|open| lines.block(*open))
+                .sum::<usize>()
+                + lines.body();
+            assert!(
+                total * 2 <= source.len(),
+                "{unit:?} measured {total} starts from {} source bytes, under the two \
+                 bytes per start the parse charge is derived from",
+                source.len()
+            );
+        }
     }
 }

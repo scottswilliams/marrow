@@ -230,8 +230,8 @@ impl<'a, 'c> StmtParser<'a, 'c> {
     }
 
     /// Parse statements until the block closes. `capacity` is the measured number of
-    /// content lines this block opens; a block holds at most one statement per such
-    /// line, so the list is allocated once and never grows.
+    /// statement starts this block opens; the loop below structures at most one
+    /// statement per start, so the list is allocated once and never grows.
     fn statements(&mut self, capacity: usize) -> Box<[Statement]> {
         let mut statements = Vec::with_capacity(capacity);
         while let Some(kind) = self.peek() {
