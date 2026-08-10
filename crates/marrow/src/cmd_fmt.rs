@@ -80,9 +80,12 @@ directory, no flag checks without writing. `marrow fmt` does not read from stdin
             return ExitCode::FAILURE;
         }
         Err(SingleFileRefusal::OverModuleLimit { actual, limit }) => {
-            // One bound, one sentence: a project target reports this same 1 MiB
-            // per-file bound through capture, so the single-file refusal names it
-            // the same way. Only the typed code differs, by refusal owner.
+            // `actual` is the stat's true file size, which this owner can report
+            // exactly because it never opens the file. The project target reaches the
+            // same 1 MiB bound through capture's bounded read, which stops one byte
+            // past the limit and so can only ever report `limit + 1`. The two owners
+            // name one bound under their own typed codes; their byte figures are not
+            // interchangeable.
             report_simple_error(
                 Code::CliCompilerResourceLimit.as_str(),
                 &format!("`{target}` is {actual} bytes, over the per-file byte limit ({limit})"),

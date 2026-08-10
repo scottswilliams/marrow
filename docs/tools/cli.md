@@ -60,13 +60,21 @@ Source that does not parse is left untouched and reported with located
 bounded per-file collector retains is refused with `fmt.diagnostic_limit`, since no
 complete parse exists to format against. Formatting that would drop a retained
 comment is refused with `fmt.comment_loss` rather than published lossily. The
-1 MiB per-file byte limit applies to either target and is reported in the same
-words; only the refusing owner differs. A single file over it is refused from its
-size alone, before it is read, under the same `cli.compiler_resource_limit` code
-the compiler's module-size admission reports; inside a project directory the same
-bound is reached during capture and reported as `project.capture_limit` against the
-project-relative path. A directory whose manifest or source tree is invalid reports
-the matching `config.invalid` or `project.*` code.
+same 1 MiB per-file byte limit applies to either target, but a different owner
+refuses it and reports it differently:
+
+| Target | Code | Path reported | Byte count reported |
+|---|---|---|---|
+| A single `.mw` file | `cli.compiler_resource_limit` | the path as written on the command line | the file's exact size |
+| A project directory | `project.capture_limit` | the project-relative path | one byte past the limit |
+
+A single file is refused from its size alone, before it is read, under the same
+code the compiler's module-size admission reports — having never opened the file,
+that owner reports the size the filesystem gave it. Inside a project directory
+the bound is reached during capture, whose bounded read stops one byte past the
+limit and so reports that figure rather than the file's true size. A directory
+whose manifest or source tree is invalid reports the matching `config.invalid` or
+`project.*` code.
 
 ## `marrow check`
 
