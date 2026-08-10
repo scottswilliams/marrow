@@ -188,6 +188,15 @@ pub(crate) fn report_simple_error(code: &str, message: &str) {
     );
 }
 
+/// The one stderr sentence naming an exhausted fixed compiler bound, in the exhausted
+/// bound's own words. `check`, `image`, and `client` all report a resource limit with
+/// this sentence, so it is written once: three copies of the template agreed by hand,
+/// and nothing made them keep agreeing. `run` and `test` report the same bound as an
+/// operational record whose text projection is the description alone.
+pub(crate) fn resource_limit_message(description: &str) -> String {
+    format!("the compiler reached a fixed resource limit: {description}")
+}
+
 pub(crate) fn report_io_error(file: &str, error: &std::io::Error) {
     report_simple_error(
         Code::IoRead.as_str(),

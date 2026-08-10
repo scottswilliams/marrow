@@ -276,10 +276,7 @@ fn compiler_resource_limit_report(
 ) -> (&'static str, String) {
     (
         marrow_codes::Code::CliCompilerResourceLimit.as_str(),
-        format!(
-            "the compiler reached a fixed resource limit: {}",
-            limit.kind().description()
-        ),
+        crate::resource_limit_message(limit.kind().description()),
     )
 }
 

@@ -23,8 +23,8 @@ use marrow_verify::VerifiedImage;
 
 use crate::demand::{demand_lines, demand_summary_lines};
 use crate::project::capture_project;
-use crate::report_simple_error;
 use crate::term_style::{Stream, Style};
+use crate::{report_simple_error, resource_limit_message};
 
 const HELP: &str = "\
 Usage:
@@ -174,13 +174,6 @@ fn report_analysis_failure(failure: &AnalysisFailure) -> ExitCode {
         ),
     }
     ExitCode::FAILURE
-}
-
-/// The stderr sentence naming an exhausted fixed bound, in the words `image` and
-/// `client` print. `run` and `test` report the same bound as an operational record on
-/// stdout, whose text projection is the description alone.
-fn resource_limit_message(description: &str) -> String {
-    format!("the compiler reached a fixed resource limit: {description}")
 }
 
 /// A compile failure on the clean-analysis path. A clean floor makes the diagnostic arm
