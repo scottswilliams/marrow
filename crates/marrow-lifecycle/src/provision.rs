@@ -88,6 +88,9 @@ pub enum ProvisionError {
     /// A complete or partially-formed store already occupies the destination: the caller lost
     /// the one-winner claim, or a prior provision is present. The destination is untouched.
     AlreadyProvisioned,
+    /// The store directory this provision built could not be admitted, so a store published
+    /// here could never be opened again. The destination is untouched.
+    Admission(AdmissionError),
     /// The ordered-byte engine could not be created.
     Store(StoreError),
     /// A filesystem operation failed.
@@ -99,6 +102,7 @@ impl ProvisionError {
     pub fn code(&self) -> &'static str {
         match self {
             ProvisionError::AlreadyProvisioned => Code::StoreLocked.as_str(),
+            ProvisionError::Admission(error) => error.code(),
             ProvisionError::Store(error) => error.code(),
             ProvisionError::Io(_) => Code::StoreIo.as_str(),
         }
@@ -111,6 +115,7 @@ impl std::fmt::Display for ProvisionError {
             ProvisionError::AlreadyProvisioned => {
                 write!(f, "a store already exists at the destination")
             }
+            ProvisionError::Admission(error) => write!(f, "{error}"),
             ProvisionError::Store(error) => {
                 write!(f, "the store engine could not be created: {error}")
             }
@@ -178,7 +183,14 @@ fn build_in_temp(temp: &Path, request: &ProvisionRequest) -> Result<(), Provisio
         .map_err(ProvisionError::Io)?;
     write_file(&store_dir::head_path(temp), &request.head.encode()).map_err(ProvisionError::Io)?;
     sync_dir(temp).map_err(ProvisionError::Io)?;
-    Ok(())
+
+    // Fail closed where an open never could succeed. An open admits the store directory as a
+    // descriptor, and the platforms that support those operations are narrower than the
+    // platforms this crate builds for; publishing a store that could never be opened again
+    // would move that refusal from the provision to every later open.
+    AdmittedStoreDir::admit(temp)
+        .map(drop)
+        .map_err(ProvisionError::Admission)
 }
 
 /// A held-open provisioned store: the native store the kernel drives, its envelope and head,
@@ -375,13 +387,15 @@ pub(crate) fn open_admitted<R>(
 
     // From here to the engine open, one owner holds the store: the completeness verdict, the
     // envelope, and the head are one admission snapshot rather than three separately racing
-    // observations. The directory is retained as a descriptor for the whole of it, so every
-    // artifact read reaches the directory this owner locked.
-    if !store_dir::artifacts_present(&dir) {
-        return Err(AdmitError::Open(OpenError::Incomplete));
-    }
+    // observations, all read through one retained directory descriptor.
     let admitted = AdmittedStoreDir::admit(&dir)
         .map_err(|error| AdmitError::Open(OpenError::Admission(error)))?;
+    if !admitted
+        .is_complete()
+        .map_err(|error| AdmitError::Open(OpenError::Admission(error)))?
+    {
+        return Err(AdmitError::Open(OpenError::Incomplete));
+    }
     let envelope = decode_envelope(&admitted).map_err(AdmitError::Open)?;
     let mut admitted_head = None;
 

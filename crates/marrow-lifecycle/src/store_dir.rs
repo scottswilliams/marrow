@@ -87,12 +87,18 @@ impl Artifact {
     /// The artifact's frozen directory-entry name. Each is one normal relative component,
     /// so admission of the name itself cannot fail for any store this crate reads.
     fn name(self) -> EntryName {
-        let name = match self {
+        entry_name(match self {
             Artifact::Envelope => ENVELOPE_FILE,
             Artifact::Head => HEAD_FILE,
-        };
-        EntryName::admit(name).expect("a store artifact name is one normal component")
+        })
     }
+}
+
+/// One frozen store-directory entry name as a relative component. Every name this module
+/// resolves is a fixed single component, so a name that cannot be admitted is a defect in
+/// this module rather than a property of any store.
+fn entry_name(name: &str) -> EntryName {
+    EntryName::admit(name).expect("a store directory entry name is one normal component")
 }
 
 /// How a store artifact changed under the owner between the witness admission took of it
@@ -245,6 +251,26 @@ impl AdmittedStoreDir {
                 entry: StoreEntry::Directory,
                 fault: AdmissionFault::Custody(error),
             })
+    }
+
+    /// Whether the retained directory maps all three durable artifact names to entries. The
+    /// completeness verdict is read through the same descriptor the artifact reads use, so
+    /// it belongs to the one admission snapshot taken under the owner rather than to a
+    /// separate resolution of three paths.
+    pub(crate) fn is_complete(&self) -> Result<bool, AdmissionError> {
+        for name in [ENGINE_FILE, ENVELOPE_FILE, HEAD_FILE] {
+            let present = self
+                .dir
+                .stat_entry(&entry_name(name))
+                .map_err(|error| AdmissionError {
+                    entry: StoreEntry::Directory,
+                    fault: AdmissionFault::Custody(error),
+                })?;
+            if present.is_none() {
+                return Ok(false);
+            }
+        }
+        Ok(true)
     }
 
     /// Read one artifact's whole bytes under the owner.
