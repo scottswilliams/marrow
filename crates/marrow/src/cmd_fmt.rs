@@ -80,12 +80,12 @@ directory, no flag checks without writing. `marrow fmt` does not read from stdin
             return ExitCode::FAILURE;
         }
         Err(SingleFileRefusal::OverModuleLimit { actual, limit }) => {
+            // One bound, one sentence: a project target reports this same 1 MiB
+            // per-file bound through capture, so the single-file refusal names it
+            // the same way. Only the typed code differs, by refusal owner.
             report_simple_error(
                 Code::CliCompilerResourceLimit.as_str(),
-                &format!(
-                    "{}: {target} is {actual} bytes, over the {limit}-byte module limit",
-                    marrow_compile::ResourceLimitKind::ProjectFileBytes.detail()
-                ),
+                &format!("`{target}` is {actual} bytes, over the per-file byte limit ({limit})"),
             );
             return ExitCode::FAILURE;
         }

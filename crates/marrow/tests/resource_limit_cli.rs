@@ -147,9 +147,15 @@ fn fmt_refuses_an_over_limit_file_before_reading_it() {
     let output = run_in(&dir.root, &["fmt", "--check", "big.mw"]);
     assert!(!output.status.success(), "an over-limit file must refuse");
     let stderr = String::from_utf8(output.stderr).expect("utf8 stderr");
-    assert!(
-        stderr.contains("cli.compiler_resource_limit") && stderr.contains("ProjectFileBytes"),
-        "the refusal reuses the module-size admission's typed code: {stderr}"
+    assert_eq!(
+        stderr,
+        format!(
+            "cli.compiler_resource_limit: `big.mw` is {} bytes, over the per-file byte limit \
+             ({limit})\n",
+            limit + 1
+        ),
+        "the refusal carries the admission's typed code and the project path's own \
+         sentence for this bound — never a Rust identifier"
     );
     assert!(
         !stderr.contains("io.read"),

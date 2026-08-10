@@ -59,10 +59,13 @@ Source that does not parse is left untouched and reported with located
 `parse.syntax` diagnostics. A file whose parse produces more diagnostics than the
 bounded per-file collector retains is refused with `fmt.diagnostic_limit`, since no
 complete parse exists to format against. Formatting that would drop a retained
-comment is refused with `fmt.comment_loss` rather than published lossily. A single
-file larger than the compiler's 1 MiB module byte limit is refused before it is
-read, with the same `cli.compiler_resource_limit` code the compiler's module-size
-admission reports. A directory whose manifest or source tree is invalid reports
+comment is refused with `fmt.comment_loss` rather than published lossily. The
+1 MiB per-file byte limit applies to either target and is reported in the same
+words; only the refusing owner differs. A single file over it is refused from its
+size alone, before it is read, under the same `cli.compiler_resource_limit` code
+the compiler's module-size admission reports; inside a project directory the same
+bound is reached during capture and reported as `project.capture_limit` against the
+project-relative path. A directory whose manifest or source tree is invalid reports
 the matching `config.invalid` or `project.*` code.
 
 ## `marrow check`
