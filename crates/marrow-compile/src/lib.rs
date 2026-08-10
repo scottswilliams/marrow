@@ -113,23 +113,16 @@ pub mod source_diagnostic_privacy_doctests {
 
 #[cfg(doctest)]
 pub mod fact_coordinate_privacy_doctests {
-    //! A retained fact's file and definition-target coordinates are private to the
-    //! compiler. They index one snapshot's own module order and definition-target
-    //! table, so a coordinate is meaningless outside the snapshot that minted it and
-    //! is never handed to a consumer. A consumer names a file by
+    //! A retained fact's file coordinate is private to the compiler. It indexes one
+    //! snapshot's own module order, so it is meaningless outside the snapshot that
+    //! minted it and is never handed to a consumer. A consumer names a file by
     //! `marrow_project::FileIdentity` and reads a definition through
     //! [`Definition`](crate::Definition), both of which the snapshot resolves.
     //!
-    //! The coordinate types are not nameable outside the crate:
+    //! The coordinate type is not nameable outside the crate:
     //!
     //! ```compile_fail
     //! fn coordinate() -> marrow_compile::FileRef {
-    //!     unimplemented!()
-    //! }
-    //! ```
-    //!
-    //! ```compile_fail
-    //! fn target() -> marrow_compile::DefTargetRef {
     //!     unimplemented!()
     //! }
     //! ```

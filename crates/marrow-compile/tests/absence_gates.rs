@@ -225,7 +225,6 @@ fn no_parse_tree_is_retained_for_a_query() {
             "revision",
             "diagnostics",
             "hover_facts",
-            "definition_targets",
             "broken_files",
             "dependency_gaps",
             "document_symbols",
@@ -328,15 +327,11 @@ fn fact_coordinates_declare_private_fields() {
             .join("analysis.rs"),
     )
     .expect("read the analysis fact owner");
-    for declaration in [
-        "pub(crate) struct FileRef(u16);",
-        "pub(crate) struct DefTargetRef(u32);",
-    ] {
-        assert!(
-            analysis.contains(declaration),
-            "expected the compact coordinate declaration `{declaration}`"
-        );
-    }
+    let declaration = "pub(crate) struct FileRef(u16);";
+    assert!(
+        analysis.contains(declaration),
+        "expected the compact coordinate declaration `{declaration}`"
+    );
 }
 
 /// The public definition fact declares exactly the private fields the crate's coordinate

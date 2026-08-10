@@ -173,15 +173,6 @@ impl FactSpan {
     }
 }
 
-/// One retained hover fact's definition target, as a position in the snapshot's own
-/// definition-target table. Many call sites resolve to one declaration, so the target
-/// is retained once and referenced rather than cloned per fact.
-///
-/// A target is retained only while admitting a hover fact that names it, so the table
-/// is never longer than the admitted fact count and its positions always fit.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub(crate) struct DefTargetRef(u32);
-
 /// A fixed analysis resource bound that produced no snapshot. It wraps CRES01's shipped
 /// [`CompileResourceLimit`] verbatim for a compile-side aggregate bound, and names the
 /// snapshot fact bounds directly. Closed and exhaustively matchable.
@@ -282,9 +273,6 @@ pub struct AnalysisSnapshot {
     revision: InputRevision,
     diagnostics: Box<[SourceDiagnostic]>,
     hover_facts: Box<[HoverFact]>,
-    /// Each distinct definition target once. A hover fact references its target by
-    /// position here rather than owning a copy of it.
-    definition_targets: Box<[DefinitionTarget]>,
     /// The input files that did not parse. A hover query in one of these is
     /// [`Unavailability::Syntax`], not `Absent`.
     broken_files: Box<[FileRef]>,
@@ -421,11 +409,7 @@ impl AnalysisSnapshot {
         if self.dependency_gap_at(file, offset) {
             return Ok(Fact::Unavailable(Unavailability::Dependency));
         }
-        let target = self
-            .fact_at(file, offset)
-            .and_then(|fact| fact.definition)
-            .and_then(|target| self.definition_targets.get(target.0 as usize));
-        match target {
+        match self.fact_at(file, offset).and_then(|fact| fact.definition) {
             // A retained target always names a module of this snapshot's own input,
             // so an unresolvable coordinate is not absence — it is no fact at all.
             Some(target) => match self.identity_of(target.file) {
@@ -688,7 +672,6 @@ pub fn analyze(
     };
     let RetainedFacts {
         hover_facts,
-        definition_targets,
         broken_files,
         dependency_gaps,
         document_symbols,
@@ -698,7 +681,6 @@ pub fn analyze(
         revision,
         diagnostics: diagnostics.into_boxed_slice(),
         hover_facts,
-        definition_targets,
         broken_files,
         dependency_gaps,
         document_symbols,
@@ -724,13 +706,34 @@ pub(crate) struct HoverFact {
     display: Box<str>,
     /// The definition target when this fact is a resolved function callee; `None` for a
     /// local or parameter use.
-    definition: Option<DefTargetRef>,
+    ///
+    /// Carried inline. Every coordinate in it is compact, so an inlined target costs the
+    /// fact struct less than a second retained table plus a reference into it would cost
+    /// the accounted worst case (`the_accounted_footprint_closes_under_the_exported_term`
+    /// derives both), and the snapshot keeps one retained fact family instead of two.
+    definition: Option<DefinitionTarget>,
+}
+
+impl HoverFact {
+    /// The logical byte charge of one retained hover fact: its display spelling plus the
+    /// file spelling of an optional definition target, which `spelling` resolves for a
+    /// coordinate. Fixed-size fields are charged by the count bound.
+    ///
+    /// The destructure is exhaustive so a new heap-owning field on this retained type is
+    /// a build error here rather than retention the exported term never saw.
+    fn retained_bytes(&self, spelling: impl FnOnce(FileRef) -> u64) -> u64 {
+        let HoverFact {
+            file: _,
+            span: _,
+            display,
+            definition,
+        } = self;
+        display.len() as u64 + definition.map_or(0, |target| target.retained_bytes(spelling))
+    }
 }
 
 /// The editor definition target of a resolved function callee: the file it is declared
 /// in, its declared-name span (the selection range), and its header-through-body range.
-/// Retained once per distinct target and referenced by position from every hover fact
-/// that resolves to it.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) struct DefinitionTarget {
     file: FileRef,
@@ -746,6 +749,20 @@ impl DefinitionTarget {
             name_span: FactSpan::of(name_span),
             decl_range: FactSpan::of(decl_range),
         }
+    }
+
+    /// The logical byte charge of one retained target: the spelling of the file it names.
+    /// Its spans are fixed-size and charged by the count bound.
+    ///
+    /// The destructure is exhaustive so a new heap-owning field on this retained type is
+    /// a build error here rather than retention the exported term never saw.
+    fn retained_bytes(self, spelling: impl FnOnce(FileRef) -> u64) -> u64 {
+        let DefinitionTarget {
+            file,
+            name_span: _,
+            decl_range: _,
+        } = self;
+        spelling(file)
     }
 }
 
@@ -764,7 +781,6 @@ pub(crate) enum AnalysisFactLimit {
 #[derive(Default)]
 pub(crate) struct RetainedFacts {
     pub(crate) hover_facts: Box<[HoverFact]>,
-    pub(crate) definition_targets: Box<[DefinitionTarget]>,
     pub(crate) broken_files: Box<[FileRef]>,
     pub(crate) dependency_gaps: Box<[(FileRef, FactSpan)]>,
     pub(crate) document_symbols: Box<[(FileRef, Box<[DeclSymbol]>)]>,
@@ -835,11 +851,6 @@ enum FactState {
 #[derive(Default)]
 struct RetainingFacts {
     hover_facts: Vec<HoverFact>,
-    definition_targets: Vec<DefinitionTarget>,
-    /// Each distinct definition target's position, keyed by its file and the byte its
-    /// declared name starts at. Two declarations in one file cannot begin their names
-    /// at the same byte, so the key is exact.
-    target_index: std::collections::BTreeMap<(u16, u32), DefTargetRef>,
     broken_files: Vec<FileRef>,
     dependency_gaps: Vec<(FileRef, FactSpan)>,
     document_symbols: Vec<(FileRef, Box<[DeclSymbol]>)>,
@@ -849,26 +860,10 @@ impl RetainingFacts {
     fn seal(self) -> RetainedFacts {
         RetainedFacts {
             hover_facts: self.hover_facts.into_boxed_slice(),
-            definition_targets: self.definition_targets.into_boxed_slice(),
             broken_files: self.broken_files.into_boxed_slice(),
             dependency_gaps: self.dependency_gaps.into_boxed_slice(),
             document_symbols: self.document_symbols.into_boxed_slice(),
         }
-    }
-
-    /// Retain `target` once, returning its position. A call site that resolves to an
-    /// already-retained declaration reuses it rather than cloning the target per fact.
-    fn intern(&mut self, target: DefinitionTarget) -> DefTargetRef {
-        let key = (target.file.0, target.name_span.start);
-        if let Some(existing) = self.target_index.get(&key) {
-            return *existing;
-        }
-        // A target is interned only from inside an admitted hover fact, so the table
-        // is bounded by `MAX_SNAPSHOT_FACT_COUNT` and the position is exact.
-        let at = DefTargetRef(self.definition_targets.len() as u32);
-        self.definition_targets.push(target);
-        self.target_index.insert(key, at);
-        at
     }
 }
 
@@ -908,9 +903,9 @@ impl AnalysisFactCollector {
         self.file_bytes.get(file.index()).copied().unwrap_or(0) as u64
     }
 
-    /// Retain one hover fact. Charges one count and its display plus the file spelling
-    /// of its optional definition target — the logical charge, unchanged by the compact
-    /// representation that no longer stores that spelling per fact.
+    /// Retain one hover fact. Charges one count and the fact's own logical byte charge —
+    /// unchanged by the compact representation, which no longer stores a file spelling
+    /// per fact.
     pub(crate) fn admit_hover(
         &mut self,
         file: FileRef,
@@ -918,17 +913,14 @@ impl AnalysisFactCollector {
         display: Box<str>,
         definition: Option<DefinitionTarget>,
     ) {
-        let bytes =
-            display.len() as u64 + definition.map_or(0, |target| self.spelling_bytes(target.file));
-        self.admit(1, bytes, |facts| {
-            let definition = definition.map(|target| facts.intern(target));
-            facts.hover_facts.push(HoverFact {
-                file,
-                span: FactSpan::of(span),
-                display,
-                definition,
-            });
-        });
+        let fact = HoverFact {
+            file,
+            span: FactSpan::of(span),
+            display,
+            definition,
+        };
+        let bytes = fact.retained_bytes(|at| self.spelling_bytes(at));
+        self.admit(1, bytes, move |facts| facts.hover_facts.push(fact));
     }
 
     /// Retain one dependency gap. It carries only fixed-size references and a span, so
@@ -1206,9 +1198,20 @@ impl DeclSymbol {
     }
 
     /// This node's retained byte footprint: its name spelling. Spans and the kind are
-    /// fixed-size and charged by the count bound. Children are summed separately.
+    /// fixed-size and charged by the count bound; children are summed separately, each
+    /// charging one count of its own.
+    ///
+    /// The destructure is exhaustive so a new heap-owning field on this retained type is
+    /// a build error here rather than retention the exported term never saw.
     fn retained_bytes(&self) -> u64 {
-        self.name.len() as u64
+        let DeclSymbol {
+            name,
+            kind: _,
+            name_span: _,
+            full_range: _,
+            children: _,
+        } = self;
+        name.len() as u64
     }
 }
 
@@ -2851,10 +2854,7 @@ mod fact_ledger_tests {
     ///
     /// The count-bounded families — hover facts, dependency gaps, and document-symbol
     /// nodes — share one ceiling, so charging the whole ceiling at the widest of their
-    /// unit sizes bounds every mixture of them. The count cannot be spent twice: a
-    /// definition target is interned only while admitting a hover fact that names it,
-    /// so the table grows by at most one row per admitted count and its cost belongs to
-    /// the hover unit rather than to a second independent maximum.
+    /// unit sizes bounds every mixture of them.
     fn worst_case_retained_bytes(fact_unit: u64, symbol_outline_unit: u64) -> u64 {
         MAX_SNAPSHOT_FACT_COUNT * fact_unit
             + MAX_SNAPSHOT_FACT_BYTES
@@ -2864,10 +2864,12 @@ mod fact_ledger_tests {
             + max_files() * size_of::<FileRef>() as u64
     }
 
-    /// The widest retained unit charged against the shared fact count.
+    /// The widest retained unit charged against the shared fact count. A hover fact
+    /// carries its definition target inline, so one admitted count charges one struct
+    /// and never a second retained row.
     fn fact_unit() -> u64 {
         [
-            size_of::<HoverFact>() + size_of::<DefinitionTarget>(),
+            size_of::<HoverFact>(),
             size_of::<DeclSymbol>(),
             size_of::<(FileRef, FactSpan)>(),
         ]
@@ -2876,9 +2878,20 @@ mod fact_ledger_tests {
         .unwrap_or(0) as u64
     }
 
+    /// The exact accounted worst case, published as a figure in the implementation map.
+    /// A change to it is an observable-contract change, so it is asserted rather than
+    /// only bounded.
+    const ACCOUNTED_WORST_CASE_RETAINED_BYTES: u64 = 11_116_544;
+
     /// The accounted footprint closes under the exported term with the compact
-    /// representation. The destructure is exhaustive, so a new retained snapshot field
-    /// is a build error here rather than a silent term violation.
+    /// representation.
+    ///
+    /// Two drift gates keep the accounting honest between them. Here, the snapshot
+    /// destructure is exhaustive, so a new retained *field* is a build error rather than
+    /// a silent term violation. At each retained fact type, `retained_bytes` destructures
+    /// its own fields exhaustively, so a new heap-owning field on `HoverFact`,
+    /// `DefinitionTarget`, or `DeclSymbol` is a build error there rather than retention
+    /// no ceiling and no term ever sees.
     #[test]
     fn the_accounted_footprint_closes_under_the_exported_term() {
         let AnalysisSnapshot {
@@ -2886,7 +2899,6 @@ mod fact_ledger_tests {
             revision: _,
             diagnostics: _,
             hover_facts: _,
-            definition_targets: _,
             broken_files: _,
             dependency_gaps: _,
             document_symbols: _,
@@ -2896,22 +2908,25 @@ mod fact_ledger_tests {
             fact_unit(),
             size_of::<(FileRef, Box<[DeclSymbol]>)>() as u64,
         );
+        assert_eq!(
+            accounted, ACCOUNTED_WORST_CASE_RETAINED_BYTES,
+            "the exact accounted worst case is published; update the implementation map \
+             and this pin together"
+        );
         assert!(
             accounted <= MAX_ANALYSIS_SNAPSHOT_RETAINED_BYTES,
             "accounted {accounted} exceeds the exported \
              MAX_ANALYSIS_SNAPSHOT_RETAINED_BYTES {MAX_ANALYSIS_SNAPSHOT_RETAINED_BYTES}"
         );
-        eprintln!("accounted worst-case retained bytes = {accounted}");
     }
 
     /// The compaction is load-bearing, not cosmetic: the same accounting against the
     /// representation this row replaced does **not** close.
     ///
     /// That representation retained, per hover fact, an owned `FileIdentity` (24 bytes
-    /// plus up to 4096 bytes of spelling, charged by neither ceiling) and a whole
-    /// inlined definition target holding a second one — a 144-byte fact struct against
-    /// today's 56 — and grew every collection as a `Vec` whose amortized capacity was
-    /// retained with it.
+    /// plus up to 4096 bytes of spelling, charged by neither ceiling) and a definition
+    /// target holding a second one — a 144-byte fact struct against today's 80 — and
+    /// grew every collection as a `Vec` whose amortized capacity was retained with it.
     #[test]
     fn the_superseded_representation_does_not_close() {
         const SUPERSEDED_HOVER_FACT: u64 = 144;
@@ -2955,7 +2970,6 @@ mod fact_ledger_tests {
             revision: InputRevision::new(0),
             diagnostics: Box::default(),
             hover_facts: Box::default(),
-            definition_targets: Box::default(),
             broken_files: Box::default(),
             dependency_gaps: Box::default(),
             document_symbols: Box::default(),
@@ -3045,43 +3059,22 @@ mod fact_ledger_tests {
         );
     }
 
-    /// The definition-target table never outgrows the admitted fact count: a target is
-    /// interned only while admitting a hover fact that names it. The exported retention
-    /// term charges the table inside the hover unit on exactly this ground.
+    /// One admitted count charges exactly one retained fact, whether or not the fact
+    /// names a definition target: the target is carried inside the fact, so no second
+    /// retained row and no second maximum exists for the exported term to charge.
     #[test]
-    fn the_target_table_never_outgrows_the_admitted_facts() {
-        let input = project(&[("src/main.mw", "")]);
-        let mut facts = ledger(&input);
-        for start in 0..64 {
-            facts.admit_gap(first(), span(start, start + 1));
-            facts.admit_hover(
-                first(),
-                span(start, start + 1),
-                "int".into(),
-                Some(DefinitionTarget::new(
-                    first(),
-                    span(start, start + 1),
-                    span(0, 400),
-                )),
-            );
-        }
-        let retained = match facts.finish() {
-            BoundedAnalysisFacts::Complete(facts) => facts,
-            BoundedAnalysisFacts::Limited { .. } => panic!("the fixture is under both ceilings"),
-        };
-        assert_eq!(retained.definition_targets.len(), 64);
-        assert!(retained.definition_targets.len() <= retained.hover_facts.len());
-    }
-
-    /// A definition target is retained once however many call sites resolve to it.
-    #[test]
-    fn one_definition_target_is_retained_once_per_declaration() {
+    fn a_hover_fact_carries_its_definition_target() {
         let input = project(&[("src/main.mw", "")]);
         let mut facts = ledger(&input);
         let target = DefinitionTarget::new(first(), span(4, 8), span(0, 20));
         for start in 0..16 {
             facts.admit_hover(first(), span(start, start + 1), "int".into(), Some(target));
         }
+        let (count, bytes) = charged(&facts);
+        assert_eq!(count, 16, "one count per admitted fact, never two");
+        // "int" plus the one file spelling each target charges.
+        let spelling = facts.spelling_bytes(first());
+        assert_eq!(bytes, 16 * (3 + spelling));
         let retained = match facts.finish() {
             BoundedAnalysisFacts::Complete(facts) => facts,
             BoundedAnalysisFacts::Limited { .. } => {
@@ -3089,7 +3082,12 @@ mod fact_ledger_tests {
             }
         };
         assert_eq!(retained.hover_facts.len(), 16);
-        assert_eq!(retained.definition_targets.len(), 1);
+        assert!(
+            retained
+                .hover_facts
+                .iter()
+                .all(|fact| fact.definition == Some(target))
+        );
     }
 
     /// Crossing the count ceiling discards the whole payload, including the admitted
@@ -3302,7 +3300,7 @@ mod fact_ledger_tests {
         for (file, span) in &snapshot.dependency_gaps {
             assert!(span.end as usize <= extent(*file));
         }
-        for target in &snapshot.definition_targets {
+        for target in snapshot.hover_facts.iter().filter_map(|fact| fact.definition) {
             let len = extent(target.file);
             assert!(target.name_span.end as usize <= len);
             assert!(target.decl_range.end as usize <= len);
