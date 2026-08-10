@@ -170,16 +170,24 @@ mod imp {
 
     /// Best-effort removal of an entry this call created and is about to
     /// refuse, so a refused creation returns no entry the caller was never
-    /// handed. The name is unlinked only while it still maps to the created
-    /// inode, so a racing replacement is never removed. If the witnessing stat
-    /// or the unlink itself fails the entry survives as never-linked debris,
-    /// which the pending-journal classification reads as preclaim.
+    /// handed. The unlink is issued only after a stat witnesses that the name
+    /// still maps to the created inode: nothing is removed on the evidence of
+    /// the name alone. The witness and the unlink are separate calls, so a
+    /// replacement landing between them is still removed — the same
+    /// stat-then-unlink window the witnessed discard carries, and the reason
+    /// the safety claim needs an exclusive or private admitted parent. The
+    /// removal is synced like every other entry mutation of this crate. If the
+    /// witnessing stat, the unlink, or the sync fails, the entry survives as
+    /// never-linked debris, which the pending-journal classification reads as
+    /// preclaim.
     fn remove_created(dir: &DirHandle, name: &str, file: &FileHandle) {
         let (Ok(created), Ok(Some(present))) = (fstat_file(file), stat_entry(dir, name)) else {
             return;
         };
-        if present.identity == created.identity {
-            let _ = rustix::fs::unlinkat(dir, name, AtFlags::empty());
+        if present.identity == created.identity
+            && rustix::fs::unlinkat(dir, name, AtFlags::empty()).is_ok()
+        {
+            let _ = sync_dir(dir);
         }
     }
 

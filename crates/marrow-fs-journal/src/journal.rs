@@ -858,8 +858,12 @@ fn recheck(
     Ok(())
 }
 
-/// Unlink `name` only while it still maps to the witnessed inode, then sync
-/// the parent. The one permitted cleanup, and it is witnessed.
+/// Unlink `name` after a stat witnesses that it still maps to the file's
+/// inode, then sync the parent: the one permitted cleanup, and nothing is
+/// removed on the evidence of the name alone. The witness and the unlink are
+/// separate calls, so a replacement landing between them is still removed —
+/// the safety claim needs an exclusive or private admitted parent for exactly
+/// this reason.
 fn discard_witnessed(
     dir: &AdmittedDir,
     name: &EntryName,
