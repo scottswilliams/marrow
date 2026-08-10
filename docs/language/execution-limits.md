@@ -30,6 +30,8 @@ A violation is an `image.table` or `image.function` rejection.
 | String-pool entries / bytes per entry | 8192 / 4 KiB |
 | Constant-pool entries | 1024 |
 | Functions / params per function | 4096 / 16 |
+| Exported functions | 256 |
+| Test entries | 256 |
 | Locals per frame | 256 |
 | Code bytes per function | 64 KiB |
 | Operand-stack depth | 256 |
