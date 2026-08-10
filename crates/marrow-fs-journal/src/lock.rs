@@ -2,7 +2,7 @@
 
 use std::fmt;
 
-use crate::custody::{AdmittedDir, CustodyError, FsIdentity, NodeKind};
+use crate::custody::{self, AdmittedDir, CustodyError, FsIdentity, NodeKind};
 use crate::entry::EntryName;
 use crate::sys;
 
@@ -39,16 +39,25 @@ impl CacheLock {
     /// Acquire the lock on `name` inside `dir`, creating the lock entry if
     /// absent. A node of the wrong kind refuses with
     /// [`CustodyError::WrongNodeKind`]; a held lock refuses with
-    /// [`LockError::Held`]; an entry whose identity drifted between locking and
-    /// verification refuses with a typed custody error rather than holding an
-    /// orphaned inode.
+    /// [`LockError::Held`]; an entry whose owner bits deny read-write access
+    /// refuses with [`CustodyError::ModeDenied`] naming the operator action;
+    /// an entry whose identity drifted between locking and verification
+    /// refuses with a typed custody error rather than holding an orphaned
+    /// inode.
     pub fn acquire(dir: &AdmittedDir, name: &EntryName) -> Result<Self, LockError> {
-        let handle = sys::open_lock_file(&dir.handle, name.as_str())?;
+        // A lock entry left carrying a umask-stripped mode by a crash inside
+        // the create-then-restore window is reopenable by nobody, so the
+        // refusal is refined into the typed mode refusal that names the mode
+        // an operator must restore.
+        let handle = sys::open_lock_file(&dir.handle, name.as_str()).map_err(|refusal| {
+            custody::refine_open_refusal(refusal, dir.observe(name), custody::REQUIRED_RW)
+        })?;
         // The node kind is classified on the opened handle before the lock is
-        // attempted. `flock` on the one non-regular node this open accepts — a
-        // FIFO — refuses with the platform's unsupported-semantics errno, so a
-        // later classification would report a planted FIFO as unsupported
-        // platform semantics instead of the wrong node kind it is.
+        // attempted, because `flock` classifies no node kind: on Darwin it
+        // refuses the one non-regular node this open accepts — a FIFO — with
+        // the unsupported-semantics errno this crate reads as an unqualified
+        // platform, so an acquisition that locked first would report the
+        // platform rather than name the planted node.
         let stat = sys::fstat_file(&handle)?;
         if stat.kind != NodeKind::Regular {
             return Err(LockError::Custody(CustodyError::WrongNodeKind {
@@ -59,9 +68,9 @@ impl CacheLock {
         if !sys::try_lock_exclusive(&handle)? {
             return Err(LockError::Held);
         }
-        // Only a node already admitted as a regular file has its mode
-        // restored, so a planted non-regular node is refused with its mode
-        // untouched.
+        // The restore runs on a node already admitted as a regular file and
+        // already locked, so a planted non-regular node and a contended entry
+        // both keep the mode they carried.
         sys::restore_lock_mode(&handle)?;
         // The name must still map to the locked inode: without this recheck a
         // racing unlink-and-recreate would leave this holder excluding nobody

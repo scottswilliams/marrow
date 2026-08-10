@@ -526,6 +526,48 @@ fn read_only_preclaim_debris_is_classified_and_discardable() {
     assert!(!claim_path.exists());
 }
 
+/// The sibling kill point: the same crash under a umask that strips owner read
+/// (`0477` leaves `0200`) leaves debris no open of this crate can reach, since
+/// classification pins the inode it reports through a held descriptor.
+/// Classification refuses it by name with the observed mode and the mode an
+/// operator must restore, rather than an unclassified I/O error; restoring
+/// that mode returns the debris to ordinary classification and discard.
+#[test]
+fn write_only_preclaim_debris_names_the_operator_action() {
+    let scratch = Scratch::new("preclaim-writeonly");
+    if !mode_bits_deny_this_process(&scratch) {
+        // The crate's own classification test pins the reading itself; this
+        // leg needs mode bits that actually deny.
+        return;
+    }
+    let dir = root(&scratch);
+    let names = pending_name("store");
+    let claim_path = scratch.path().join("store.pending.create");
+    std::fs::write(&claim_path, b"partial").expect("plant preclaim debris");
+    set_mode(&claim_path, 0o200);
+
+    match classify(&dir, &names, JournalKind::Provision) {
+        Err(JournalError::Custody(CustodyError::ModeDenied {
+            op,
+            found,
+            required,
+        })) => assert_eq!((op, found, required), ("open file", 0o200, 0o400)),
+        other => panic!("expected the typed mode refusal, found {other:?}"),
+    }
+    assert_eq!(
+        std::fs::metadata(&claim_path).expect("stat debris").mode() & 0o7777,
+        0o200,
+        "the refusal writes no mode of its own",
+    );
+
+    set_mode(&claim_path, 0o400);
+    match classify(&dir, &names, JournalKind::Provision).expect("classify after the restore") {
+        PendingState::Preclaim(debris) => debris.discard().expect("witnessed discard"),
+        other => panic!("expected preclaim, found {other:?}"),
+    }
+    assert!(!claim_path.exists());
+}
+
 #[test]
 fn preclaim_debris_with_an_extra_link_is_retained_corruption() {
     let scratch = Scratch::new("preclaim-linked");
@@ -917,6 +959,19 @@ fn identity_of(path: &std::path::Path) -> FsIdentity {
 
 fn set_mode(path: &std::path::Path, mode: u32) {
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).expect("set mode");
+}
+
+/// Whether permission bits actually deny this process the access a mode
+/// withholds. A process holding the override capability, or a filesystem that
+/// carries no mode bits, opens a mode-`0000` entry anyway.
+fn mode_bits_deny_this_process(scratch: &Scratch) -> bool {
+    let probe = scratch.path().join("deny-probe");
+    std::fs::write(&probe, b"").expect("plant the probe");
+    set_mode(&probe, 0o000);
+    let denied = std::fs::File::open(&probe).is_err();
+    set_mode(&probe, 0o600);
+    std::fs::remove_file(&probe).expect("remove the probe");
+    denied
 }
 
 fn assert_corrupt(dir: &AdmittedDir, names: &PendingName, expected: &CorruptionReason) {

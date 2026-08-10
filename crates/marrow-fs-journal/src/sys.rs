@@ -175,11 +175,13 @@ mod imp {
     /// the name alone. The witness and the unlink are separate calls, so a
     /// replacement landing between them is still removed — the same
     /// stat-then-unlink window the witnessed discard carries, and the reason
-    /// the safety claim needs an exclusive or private admitted parent. The
-    /// removal is synced like every other entry mutation of this crate. If the
-    /// witnessing stat, the unlink, or the sync fails, the entry survives as
-    /// never-linked debris, which the pending-journal classification reads as
-    /// preclaim.
+    /// the safety claim needs an exclusive or private admitted parent. A
+    /// successful unlink is followed by a directory `fsync` whose refusal is
+    /// discarded: the refusal that stopped the creation is what must reach the
+    /// caller, so this is the one entry mutation of this crate that does not
+    /// propagate its sync. A failed witness or unlink, or a crash before the
+    /// sync takes effect, leaves the entry as never-linked debris, which the
+    /// pending-journal classification reads as preclaim.
     fn remove_created(dir: &DirHandle, name: &str, file: &FileHandle) {
         let (Ok(created), Ok(Some(present))) = (fstat_file(file), stat_entry(dir, name)) else {
             return;
@@ -217,13 +219,16 @@ mod imp {
             .map_err(|errno| map("open lock", Reading::Nofollow, errno))
     }
 
-    /// Restore the lock entry's exact `0600`. A just-created entry carries the
-    /// umask-masked mode, and a wrong-mode entry would refuse the next
-    /// same-user reopen; the call is idempotent for an existing entry. The
-    /// caller admits the node as a regular file first, so a planted
-    /// non-regular node is refused before any mode is written and no refusal
-    /// that a non-regular node can reach stands between the open and this
-    /// restore.
+    /// Restore the lock entry's exact `0600`. The creating open is granted
+    /// whatever mode the umask masked its request down to, so this call is
+    /// what makes a just-created entry exactly `0600`; on an entry that
+    /// already existed it tightens a mode carrying extra bits and is otherwise
+    /// idempotent. It never reaches an entry whose owner bits a crash inside
+    /// that window left stripped, because no reopen of such an entry succeeds:
+    /// that entry is refused by name with the mode an operator must restore.
+    /// The caller admits the node as a regular file and takes the lock before
+    /// calling, so a refused non-regular node and a contended entry both keep
+    /// the mode they carried.
     pub(crate) fn restore_lock_mode(file: &FileHandle) -> Result<(), CustodyError> {
         rustix::fs::fchmod(file, file_mode())
             .map_err(|errno| map("open lock", Reading::Plain, errno))

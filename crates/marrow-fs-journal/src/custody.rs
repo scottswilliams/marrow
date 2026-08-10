@@ -11,6 +11,11 @@ use std::path::Path;
 use crate::entry::EntryName;
 use crate::sys;
 
+/// The owner bits a read-write open requires of the entry it opens.
+pub(crate) const REQUIRED_RW: u32 = 0o600;
+/// The owner bits the read-only debris open requires.
+const REQUIRED_READ: u32 = 0o400;
+
 /// A lossless filesystem identity: the platform's `st_dev` and `st_ino`
 /// projected injectively into `u64` each.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -148,6 +153,18 @@ pub enum CustodyError {
     WrongNodeKind { op: &'static str, found: NodeKind },
     /// The entry's identity changed between admission and use.
     IdentityDrift { op: &'static str },
+    /// The entry exists as a regular file whose permission bits do not carry
+    /// the owner access the operation requires, so no open can reach it. A
+    /// crash inside the create-then-`fchmod` window under an owner-stripping
+    /// umask leaves exactly this state; restoring `required` on the entry, or
+    /// removing it, is an operator action.
+    ModeDenied {
+        op: &'static str,
+        /// The entry's observed permission bits.
+        found: u32,
+        /// The owner bits the refused open required.
+        required: u32,
+    },
     /// An unclassified I/O failure.
     Io {
         op: &'static str,
@@ -180,6 +197,15 @@ impl fmt::Display for CustodyError {
             Self::IdentityDrift { op } => write!(
                 formatter,
                 "the entry's identity changed under {op}; refusing"
+            ),
+            Self::ModeDenied {
+                op,
+                found,
+                required,
+            } => write!(
+                formatter,
+                "{op} found an entry whose mode {found:o} denies the required {required:o}; \
+                 an operator must restore mode {required:o} on the entry or remove it"
             ),
             Self::Io { op, source } => write!(formatter, "{op} failed: {source}"),
         }
@@ -264,7 +290,9 @@ impl AdmittedDir {
 
     /// Open one existing regular file `NOFOLLOW`, witnessing its opened inode.
     pub fn open_file(&self, name: &EntryName) -> Result<OpenedFile, CustodyError> {
-        witness_regular(sys::open_file(&self.handle, name.as_str())?)
+        let handle = sys::open_file(&self.handle, name.as_str())
+            .map_err(|refusal| refine_open_refusal(refusal, self.observe(name), REQUIRED_RW))?;
+        witness_regular(handle)
     }
 
     /// Open one existing regular file read-only `NOFOLLOW`, witnessing its
@@ -272,7 +300,15 @@ impl AdmittedDir {
     /// its only permitted mutation — the witnessed discard — needs the
     /// directory alone, so its custody must not demand write access.
     pub(crate) fn open_file_readonly(&self, name: &EntryName) -> Result<OpenedFile, CustodyError> {
-        witness_regular(sys::open_file_readonly(&self.handle, name.as_str())?)
+        let handle = sys::open_file_readonly(&self.handle, name.as_str())
+            .map_err(|refusal| refine_open_refusal(refusal, self.observe(name), REQUIRED_READ))?;
+        witness_regular(handle)
+    }
+
+    /// A no-follow stat of `name` taken to name a refusal that has already
+    /// been issued. A stat that itself fails leaves the refusal unrefined.
+    pub(crate) fn observe(&self, name: &EntryName) -> Option<EntryStat> {
+        self.stat_entry(name).ok().flatten()
     }
 
     /// Hard-link `existing` to `new_name`, refusing an existing destination.
@@ -324,6 +360,36 @@ fn witness_regular(handle: sys::FileHandle) -> Result<OpenedFile, CustodyError> 
         handle,
         identity: stat.identity,
     })
+}
+
+/// One typed reading of a refused open: an entry that exists as a regular file
+/// whose owner bits do not carry `required` can be opened by nobody, so the
+/// refusal names its observed mode and the mode an operator must restore
+/// rather than arriving as an unclassified I/O error. The reading rests on the
+/// observed mode and on a permission-denied refusal together: an entry whose
+/// bits do carry `required` was refused for some other reason — another user
+/// owns it, say — and keeps its original refusal. Nothing was opened either
+/// way; the stat only names the refusal.
+pub(crate) fn refine_open_refusal(
+    refusal: CustodyError,
+    observed: Option<EntryStat>,
+    required: u32,
+) -> CustodyError {
+    let denied = match (&refusal, observed) {
+        (CustodyError::Io { op, source }, Some(stat))
+            if source.kind() == std::io::ErrorKind::PermissionDenied
+                && stat.kind == NodeKind::Regular
+                && stat.mode & required != required =>
+        {
+            Some(CustodyError::ModeDenied {
+                op,
+                found: stat.mode,
+                required,
+            })
+        }
+        _ => None,
+    };
+    denied.unwrap_or(refusal)
 }
 
 /// One typed reading of a refused directory admission on every qualified
@@ -396,5 +462,89 @@ impl fmt::Debug for OpenedFile {
             .debug_struct("OpenedFile")
             .field("identity", &self.identity)
             .finish_non_exhaustive()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn permission_denied(op: &'static str) -> CustodyError {
+        CustodyError::Io {
+            op,
+            source: std::io::Error::from(std::io::ErrorKind::PermissionDenied),
+        }
+    }
+
+    fn observed(kind: NodeKind, mode: u32) -> Option<EntryStat> {
+        Some(EntryStat {
+            identity: FsIdentity::new(1, 2),
+            kind,
+            nlink: 1,
+            size: 0,
+            mode,
+        })
+    }
+
+    /// The mode reading of a refused open, pinned per case. It is what a crash
+    /// inside the create-then-`fchmod` window leaves behind on either
+    /// qualified platform, so it is asserted here without depending on the
+    /// running process's own override capability.
+    #[test]
+    fn a_stripped_mode_is_read_as_the_typed_mode_refusal() {
+        for (found, required) in [
+            (0o400, 0o600),
+            (0o200, 0o600),
+            (0o000, 0o600),
+            (0o200, 0o400),
+        ] {
+            let refined = refine_open_refusal(
+                permission_denied("open lock"),
+                observed(NodeKind::Regular, found),
+                required,
+            );
+            assert!(
+                matches!(refined, CustodyError::ModeDenied { op: "open lock", found: seen, required: needed }
+                    if seen == found && needed == required),
+                "mode {found:o} against {required:o} was read as {refined:?}"
+            );
+        }
+    }
+
+    /// Every refusal the mode reading must leave alone: an entry that carries
+    /// the required bits was refused for some other reason, a non-regular node
+    /// and an absent entry carry no mode evidence, and a refusal that is not
+    /// permission-denied is already classified.
+    #[test]
+    fn only_a_permission_denied_regular_entry_short_of_the_bits_is_reread() {
+        let unrefined = [
+            refine_open_refusal(
+                permission_denied("open lock"),
+                observed(NodeKind::Regular, 0o600),
+                0o600,
+            ),
+            refine_open_refusal(
+                permission_denied("open lock"),
+                observed(NodeKind::Regular, 0o644),
+                0o600,
+            ),
+            refine_open_refusal(
+                permission_denied("open lock"),
+                observed(NodeKind::Other, 0o000),
+                0o600,
+            ),
+            refine_open_refusal(permission_denied("open lock"), None, 0o600),
+            refine_open_refusal(
+                CustodyError::NotFound { op: "open lock" },
+                observed(NodeKind::Regular, 0o000),
+                0o600,
+            ),
+        ];
+        for refusal in unrefined {
+            assert!(
+                !matches!(refusal, CustodyError::ModeDenied { .. }),
+                "{refusal:?} was reread as a mode refusal"
+            );
+        }
     }
 }
