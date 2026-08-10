@@ -1224,23 +1224,7 @@ fn a_complete_unwritable_ignore_entry_leaves_the_owner_working() {
     let project = Project::new("ignore-unwritable");
     project.write_meta(".gitignore", WRITTEN_IGNORE);
     let path = project.meta().join(".gitignore");
-    set_mode(&path, 0o444);
-    // A withheld write that binds nothing would leave this kat asserting an
-    // acquisition no unwritable entry was ever in the way of. Mode bits do not
-    // bind a process holding the mode-override capability (`root`, or
-    // `CAP_DAC_OVERRIDE` on Linux), and a filesystem that carries no mode bits
-    // does not enforce them at all.
-    let binds = fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .open(&path)
-        .is_err();
-    assert!(
-        binds,
-        "mode 0444 on {} did not refuse a read-write open, so this kat never ran. Run the \
-         suite as a process the mode bits bind, on a filesystem that carries them.",
-        path.display()
-    );
+    withhold_write(&path);
 
     let guard = ProjectMetadataWriteGuard::acquire(project.path())
         .expect("a complete ignore entry needs no write, so acquisition must not demand one");
@@ -1255,6 +1239,108 @@ fn a_complete_unwritable_ignore_entry_leaves_the_owner_working() {
         "the read-only decision wrote to the entry it only had to read"
     );
     set_mode(&path, 0o600);
+}
+
+/// Withhold write access to `path`, failing loudly when the mode binds nothing.
+///
+/// A withheld write that binds nothing would leave its kat asserting an
+/// acquisition no unwritable entry was ever in the way of. Mode bits do not
+/// bind a process holding the mode-override capability (`root`, or
+/// `CAP_DAC_OVERRIDE` on Linux), and a filesystem that carries no mode bits does
+/// not enforce them at all.
+fn withhold_write(path: &Path) {
+    set_mode(path, 0o444);
+    let binds = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(path)
+        .is_err();
+    assert!(
+        binds,
+        "mode 0444 on {} did not refuse a read-write open, so this kat never ran. Run the \
+         suite as a process the mode bits bind, on a filesystem that carries them.",
+        path.display()
+    );
+}
+
+/// The exact entry an earlier build of this owner wrote: its header line above
+/// the lock's name alone. A project that published before the three transient
+/// names joined the block carries this on disk.
+const PREVIOUS_FORMAT_IGNORE: &[u8] = b"\
+# Machine-written by Marrow. The cooperative project-metadata write lock is\n\
+# machine-local runtime state that no checkout carries.\n\
+publish.lock\n";
+
+/// An ignore entry this owner cannot write is left as found, exactly as one
+/// past the read bound is, and no publication or recovery is refused for it.
+///
+/// The entry is a convenience the owner maintains when it can — an untracked
+/// name is not what makes the protocol correct, and the entry is not part of
+/// any durable state the protocol reasons about. A project that published
+/// under an earlier name set and then had its ignore entry made read-only
+/// carries an entry this owner would complete and cannot, and gating durable
+/// publication on finishing that cosmetic append would refuse every
+/// publication and every recovery of that project outright.
+#[test]
+fn an_incomplete_unwritable_ignore_entry_leaves_the_owner_working() {
+    let _serial = serialized();
+    let project = Project::new("ignore-unwritable-incomplete");
+    project.write_meta(".gitignore", PREVIOUS_FORMAT_IGNORE);
+    let path = project.meta().join(".gitignore");
+    withhold_write(&path);
+
+    let guard = ProjectMetadataWriteGuard::acquire(project.path())
+        .expect("an append the owner cannot make must not refuse the acquisition");
+    guard
+        .recover_ids()
+        .expect("recovery takes the same guard and must reach the same conclusion");
+    drop(guard);
+
+    assert_eq!(
+        project.read_meta(".gitignore").as_deref(),
+        Some(PREVIOUS_FORMAT_IGNORE),
+        "the entry the owner could not complete is not the entry it left"
+    );
+    set_mode(&path, 0o600);
+}
+
+/// Only a withheld write is read as a convenience the owner leaves alone. A
+/// node kind this owner never wrote is a corrupted metadata directory, not a
+/// permissions case, so it stays the typed refusal it already was — including
+/// the FIFO, which an owner that blocked on classifying it would hang on under
+/// the write lock rather than refuse.
+#[test]
+fn a_non_regular_ignore_entry_is_still_refused() {
+    let _serial = serialized();
+    for kind in ["directory", "fifo"] {
+        let project = Project::new(&format!("ignore-{kind}"));
+        fs::create_dir_all(project.meta()).expect("create the metadata directory");
+        let path = project.meta().join(".gitignore");
+        match kind {
+            "directory" => fs::create_dir(&path).expect("plant the directory"),
+            _ => {
+                let planted = std::process::Command::new("mkfifo")
+                    .arg(&path)
+                    .status()
+                    .expect("run mkfifo");
+                assert!(planted.success(), "mkfifo planted the non-regular node");
+            }
+        }
+
+        let refusal = ProjectMetadataWriteGuard::acquire(project.path())
+            .err()
+            .unwrap_or_else(|| panic!("a {kind} at the ignore entry's name was admitted"));
+        assert_eq!(
+            refusal.refusal(),
+            IdsRefusal::Custody,
+            "a {kind} at the ignore entry's name reported {refusal:?}"
+        );
+        assert_eq!(
+            refused_operation(&refusal),
+            "open file",
+            "a {kind} at the ignore entry's name was refused by another operation"
+        );
+    }
 }
 
 /// Acquisitions racing one fresh project write one ignore entry between them.

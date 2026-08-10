@@ -548,6 +548,12 @@ fn admit_created_meta(
 /// fill leaves is finished by the next acquisition. It runs under the write
 /// lock, so one process at a time is inside it and two first publications
 /// cannot both append.
+///
+/// The block is a convenience the owner maintains when it can, so an entry it
+/// cannot write is left exactly as found — like one past the read bound — and
+/// no publication or recovery is refused over it. That reading covers a
+/// withheld write and nothing else: every other custody refusal here is a
+/// metadata directory this owner did not produce, and stays a typed refusal.
 fn install_untracked_ignore(meta: &AdmittedDir) -> Result<(), IdsPublicationError> {
     let name = admitted_name(IGNORE_NAME);
     let (created, found) = match meta.create_file_excl(&name) {
@@ -588,12 +594,39 @@ fn install_untracked_ignore(meta: &AdmittedDir) -> Result<(), IdsPublicationErro
     }
     let mut entry = match created {
         Some(created) => created,
-        None => meta.open_file(&name)?,
+        // An entry this process may not write is left as found for the same
+        // reason one past the read bound is: the append is a convenience, not
+        // a step any durable state depends on, and refusing here would refuse
+        // every publication and every recovery of a project whose ignore entry
+        // a checkout carries read-only. Only a withheld write reads that way —
+        // a node kind this owner never wrote is a corrupted metadata
+        // directory, and every other custody refusal stays one.
+        None => match meta.open_file(&name) {
+            Ok(opened) => opened,
+            Err(error) if write_withheld(&error) => return Ok(()),
+            Err(error) => return Err(error.into()),
+        },
     };
     entry.append(block.as_bytes())?;
     entry.sync()?;
     meta.sync()?;
     Ok(())
+}
+
+/// Whether a refused open says this process may not write the entry, rather
+/// than that the entry is not one this owner can maintain at all.
+///
+/// The custody owner reads a permission refusal over a regular file whose owner
+/// bits fall short as [`CustodyError::ModeDenied`]; a permission refusal it
+/// could not attribute to those bits — another user's entry, a read-only mount,
+/// a restrictive security policy — arrives unclassified and is the same
+/// withheld write from this caller's side.
+fn write_withheld(error: &CustodyError) -> bool {
+    match error {
+        CustodyError::ModeDenied { .. } => true,
+        CustodyError::Io { source, .. } => source.kind() == std::io::ErrorKind::PermissionDenied,
+        _ => false,
+    }
 }
 
 /// Every `.marrow` entry this protocol can leave that no checkout may carry:
