@@ -364,13 +364,15 @@ fn witness_regular(handle: sys::FileHandle) -> Result<OpenedFile, CustodyError> 
 }
 
 /// One typed reading of a refused open: an entry that exists as a regular file
-/// whose owner bits do not carry `required` can be opened by nobody, so the
-/// refusal names its observed mode and the mode an operator must restore
+/// whose owner bits do not carry `required` is refused to every process those
+/// bits bind, so the refusal names its observed mode and the mode to restore
 /// rather than arriving as an unclassified I/O error. The reading rests on the
 /// observed mode and on a permission-denied refusal together: an entry whose
 /// bits do carry `required` was refused for some other reason — another user
-/// owns it, say — and keeps its original refusal. Nothing was opened either
-/// way; the stat only names the refusal.
+/// owns it, say — and keeps its original refusal. A process holding the
+/// mode-override capability (`root`, or `CAP_DAC_OVERRIDE` on Linux) is not
+/// refused by those bits at all: its open succeeds and reaches no reading here.
+/// Nothing was opened either way; the stat only names the refusal.
 pub(crate) fn refine_open_refusal(
     refusal: CustodyError,
     observed: Option<EntryStat>,

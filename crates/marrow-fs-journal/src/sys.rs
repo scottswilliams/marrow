@@ -223,9 +223,12 @@ mod imp {
     /// whatever mode the umask masked its request down to, so this call is
     /// what makes a just-created entry exactly `0600`; on an entry that
     /// already existed it tightens a mode carrying extra bits and is otherwise
-    /// idempotent. It never reaches an entry whose owner bits a crash inside
-    /// that window left stripped, because no reopen of such an entry succeeds:
-    /// that entry is refused by name with the mode an operator must restore.
+    /// idempotent. From a process the mode bits bind it never reaches an entry
+    /// whose owner bits a crash inside that window left stripped, because no
+    /// reopen of such an entry succeeds: that entry is refused by name with the
+    /// mode an operator must restore. From a process holding the mode-override
+    /// capability (`root`, or `CAP_DAC_OVERRIDE` on Linux) the reopen does
+    /// succeed, and this call is then what returns the entry to `0600`.
     /// The caller admits the node as a regular file and takes the lock before
     /// calling, so a refused non-regular node and a contended entry both keep
     /// the mode they carried.

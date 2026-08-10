@@ -40,13 +40,18 @@
 //! could never reach again.
 //!
 //! A umask that strips owner read or write (`0477` or `0277`, say) therefore
-//! leaves an entry no later open of this crate can reach: preclaim debris it
-//! cannot read, or a lock entry it cannot reacquire. Both refuse with
-//! [`CustodyError::ModeDenied`], which names the entry's observed mode and the
-//! mode an operator must restore. Restoring that mode returns the entry to
-//! ordinary classification; this crate performs no path-based `chmod` of its
-//! own, because repairing a name it has not opened would write through
-//! whatever that name maps to at that instant.
+//! leaves an entry that no later open of this crate reaches from a process
+//! those bits bind: preclaim debris it cannot read, or a lock entry it cannot
+//! reacquire. Both refuse with [`CustodyError::ModeDenied`], which names the
+//! entry's observed mode and the mode to restore. Restoring that mode returns
+//! the entry to ordinary classification; this crate performs no path-based
+//! `chmod` of its own, because repairing a name it has not opened would write
+//! through whatever that name maps to at that instant.
+//!
+//! A process holding the mode-override capability (`root`, or
+//! `CAP_DAC_OVERRIDE` on Linux) is bound by none of those bits. Its opens
+//! succeed, so it sees no such refusal, and lock acquisition restores the
+//! documented `0600` on the entry itself.
 //!
 //! # Durability envelope
 //!

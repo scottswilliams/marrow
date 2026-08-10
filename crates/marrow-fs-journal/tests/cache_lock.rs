@@ -108,12 +108,18 @@ fn distinct_names_lock_independently() {
 }
 
 /// A lock entry whose owner bits a crash inside the create-then-restore window
-/// left stripped can be opened by nobody, so acquisition names the observed
-/// mode and the mode an operator must restore instead of returning an
-/// unclassified I/O error. The planted modes are what the two owner-stripping
+/// left stripped is opened by no process those bits bind, so acquisition names
+/// the observed mode and the mode an operator must restore instead of returning
+/// an unclassified I/O error. The planted modes are what the two owner-stripping
 /// umasks leave: `0277` leaves `0400`, `0477` leaves `0200`, and `0677` leaves
 /// `0000`. Restoring the named mode is the whole of the operator action, so
 /// the acquisition that follows it succeeds.
+///
+/// A process holding the mode-override capability (`root`, or
+/// `CAP_DAC_OVERRIDE` on Linux) is bound by none of those bits: its reopen
+/// succeeds, the mode restore reaches the stripped entry, and acquisition
+/// returns it to `0600` on its own. That is the case the probe below detects
+/// before anything is planted, and it is why this leg asserts nothing there.
 #[test]
 fn a_mode_stripped_lock_entry_names_the_operator_action() {
     let scratch = Scratch::new("mode-stripped-lock");

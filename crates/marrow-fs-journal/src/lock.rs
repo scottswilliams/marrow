@@ -46,9 +46,11 @@ impl CacheLock {
     /// inode.
     pub fn acquire(dir: &AdmittedDir, name: &EntryName) -> Result<Self, LockError> {
         // A lock entry left carrying a umask-stripped mode by a crash inside
-        // the create-then-restore window is reopenable by nobody, so the
-        // refusal is refined into the typed mode refusal that names the mode
-        // an operator must restore.
+        // the create-then-restore window is reopenable by no process those bits
+        // bind, so the refusal is refined into the typed mode refusal that
+        // names the mode an operator must restore. A process holding the
+        // mode-override capability (`root`, or `CAP_DAC_OVERRIDE` on Linux)
+        // reopens it instead, and the restore below returns it to `0600`.
         let handle = sys::open_lock_file(&dir.handle, name.as_str()).map_err(|refusal| {
             custody::refine_open_refusal(refusal, dir.observe(name), custody::REQUIRED_RW)
         })?;
