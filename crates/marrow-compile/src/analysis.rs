@@ -818,8 +818,8 @@ pub(crate) struct AnalysisFactCollector {
 enum FactState {
     Retaining {
         /// The running admitted count. Unlike the diagnostic owner's `rows.len()`,
-        /// this total spans four collections plus the nested document-symbol nodes,
-        /// so recomputing it per admission would be quadratic.
+        /// this total spans three fact families and counts every nested
+        /// document-symbol node, so recomputing it per admission would be quadratic.
         count: u64,
         bytes: u64,
         facts: RetainingFacts,
