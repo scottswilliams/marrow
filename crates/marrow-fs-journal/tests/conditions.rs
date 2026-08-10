@@ -179,7 +179,9 @@ fn code_only(source: &str) -> Vec<char> {
                     index += 1;
                     if inner == '\\' {
                         if index < chars.len() {
-                            out.push(' ');
+                            // A line continuation escapes a physical newline,
+                            // which [`blank`] keeps so the line count holds.
+                            out.push(blank(chars[index]));
                             index += 1;
                         }
                     } else if inner == '"' {
@@ -931,6 +933,21 @@ fn blanking_consumes_literals_whole_and_leaves_lifetimes_alone() {
     assert_eq!(
         blanked,
         "let a =     ; let b: &'x u8; let c =    ; let d = \"  ;"
+    );
+}
+
+/// A backslash line continuation inside a string keeps its newline, so a
+/// declaration after it is reported on the line the source spells it. Blanking
+/// the escaped character to a space would swallow that newline and shift every
+/// following violation one line up.
+#[test]
+fn a_string_line_continuation_keeps_its_newline() {
+    let owned = ["Owned", "Fd"].concat();
+    let source =
+        format!("const PROBE: &str = \"a\\\n    b\";\npub fn kept() -> {owned} {{ todo!() }}\n");
+    assert_eq!(
+        public_signature_spans(&source),
+        [(3, format!("pub fn kept() -> {owned}"))],
     );
 }
 
