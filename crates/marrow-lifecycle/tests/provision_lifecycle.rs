@@ -153,7 +153,9 @@ fn a_pre_rename_crash_state_keeps_the_destination_absent() {
 }
 
 /// A failed/absent preflight creates no file: probing an absent or incomplete store never
-/// mutates the filesystem.
+/// mutates the filesystem. An open of an incomplete store is a different operation: it
+/// takes the owner lock first, because exclusion must be decidable before the directory's
+/// contents are read at all, so it may leave the transient lock entry — and nothing else.
 #[test]
 fn a_failed_preflight_creates_no_file() {
     let dir = TempDir::new("no-file");
@@ -177,12 +179,16 @@ fn a_failed_preflight_creates_no_file() {
         "preflight on incomplete created nothing"
     );
 
-    // Open refuses an incomplete store without touching it.
+    // Open refuses an incomplete store, publishing no store artifact.
     assert!(matches!(
         open(&store, schemas(), sites()),
         Err(OpenError::Incomplete)
     ));
-    assert_eq!(list(&store), before, "a refused open created nothing");
+    let after: Vec<String> = list(&store)
+        .into_iter()
+        .filter(|name| name != marrow_lifecycle::LOCK_FILE)
+        .collect();
+    assert_eq!(after, before, "a refused open published a store artifact");
 }
 
 /// A second open of a held store is refused with StoreInUse naming the live owner (this

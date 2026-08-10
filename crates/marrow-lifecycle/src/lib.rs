@@ -38,8 +38,8 @@ pub use actor::{
 };
 pub use authority::{DemandExceedsCeiling, ExceedingDemand};
 pub use codec::FormatError;
-pub use envelope::{EngineKind, StoreEnvelope};
-pub use head::{ActiveBinding, LogicalHead};
+pub use envelope::{EngineKind, MAX_ENVELOPE_FILE_BYTES, StoreEnvelope};
+pub use head::{ActiveBinding, LogicalHead, MAX_HEAD_FILE_BYTES, MAX_HEAD_V3_FILE_BYTES};
 pub use headmap::{HeadMap, HeadMapEntry, MAX_HEAD_MAP_ENTRIES};
 pub use image::{accepted_ceiling, active_binding, head_map, head_map_node_order};
 pub use import::{
@@ -57,4 +57,7 @@ pub use provision::{
     preflight, provision,
 };
 pub use report::{ProvisionApproval, ProvisionImageError, ProvisionReport, provision_image};
-pub use store_dir::{ENGINE_FILE, ENVELOPE_FILE, HEAD_FILE, LOCK_FILE};
+pub use store_dir::{
+    AdmissionError, AdmissionFault, ENGINE_FILE, ENVELOPE_FILE, HEAD_FILE, Instability, LOCK_FILE,
+    StoreEntry,
+};

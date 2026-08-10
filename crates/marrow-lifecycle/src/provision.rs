@@ -27,13 +27,12 @@ use marrow_kernel::durable::{
     StoreError, StoreSchema, TxnSession,
 };
 
-use crate::codec::FormatError;
 use crate::durable_fs::{sync_dir, write_file};
 use crate::envelope::StoreEnvelope;
 use crate::head::LogicalHead;
 use crate::instance::StoreInstanceId;
 use crate::lock::LockError;
-use crate::store_dir;
+use crate::store_dir::{self, AdmissionError, AdmittedStoreDir, StoreEntry};
 
 /// A non-creating classification of a store directory.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -251,10 +250,12 @@ pub enum OpenError {
     Incomplete,
     /// The store is held by another owner, or the lock could not be taken.
     Lock(LockError),
-    /// The persisted envelope or head bytes did not decode. Carries the typed
+    /// One of the store directory's own artifacts could not be admitted under the owner:
+    /// its entry was refused, it was reachable under a second name, it changed while it was
+    /// being read, or its bytes did not decode. A decode failure carries the typed
     /// [`FormatError`] so an unknown writer version (`store.format_version`) or an over-bound
-    /// field (`store.limit`) is reported as itself, not flattened to corruption (FR01 §6).
-    Decode(FormatError),
+    /// length (`store.limit`) is reported as itself, not flattened to corruption (FR01 §6).
+    Admission(AdmissionError),
     /// The unclean-open integrity audit found the engine's stored bytes corrupt.
     Corruption { message: String },
     /// The ordered-byte engine could not be opened.
@@ -269,7 +270,7 @@ impl OpenError {
         match self {
             OpenError::NotProvisioned => Code::StoreIo.as_str(),
             OpenError::Incomplete | OpenError::Corruption { .. } => Code::StoreCorruption.as_str(),
-            OpenError::Decode(error) => error.code(),
+            OpenError::Admission(error) => error.code(),
             OpenError::Lock(error) => error.code(),
             OpenError::Store(error) => error.code(),
             OpenError::Io(_) => Code::StoreIo.as_str(),
@@ -288,7 +289,7 @@ impl std::fmt::Display for OpenError {
                 )
             }
             OpenError::Lock(error) => write!(f, "{error}"),
-            OpenError::Decode(error) => write!(f, "the store {error}"),
+            OpenError::Admission(error) => write!(f, "{error}"),
             OpenError::Corruption { message } => write!(f, "the store is corrupt: {message}"),
             OpenError::Store(error) => write!(f, "the store engine could not be opened: {error}"),
             OpenError::Io(error) => write!(f, "opening the store failed: {error}"),
@@ -362,11 +363,14 @@ pub(crate) fn open_admitted<R>(
 
     // From here to the engine open, one owner holds the store: the completeness verdict, the
     // envelope, and the head are one admission snapshot rather than three separately racing
-    // observations.
+    // observations. The directory is retained as a descriptor for the whole of it, so every
+    // artifact read reaches the directory this owner locked.
     if !store_dir::artifacts_present(&dir) {
         return Err(AdmitError::Open(OpenError::Incomplete));
     }
-    let envelope = decode_envelope(&dir).map_err(AdmitError::Open)?;
+    let admitted = AdmittedStoreDir::admit(&dir)
+        .map_err(|error| AdmitError::Open(OpenError::Admission(error)))?;
+    let envelope = decode_envelope(&admitted).map_err(AdmitError::Open)?;
     let mut admitted_head = None;
 
     // The kernel capsule binds the instance the envelope named into the owner marker, runs
@@ -376,7 +380,7 @@ pub(crate) fn open_admitted<R>(
         .bind_and_open_existing(*envelope.instance.bytes(), schemas, sites, || {
             // Read and admit the mutable logical head under the same owner. The callback
             // receives no store capability.
-            let head = decode_head(&dir).map_err(Ok)?;
+            let head = decode_head(&admitted).map_err(Ok)?;
             admit(&head).map_err(Err)?;
             admitted_head = Some(head);
             Ok::<(), Result<OpenError, R>>(())
@@ -400,14 +404,20 @@ pub(crate) fn open_admitted<R>(
     })
 }
 
-fn decode_envelope(dir: &Path) -> Result<StoreEnvelope, OpenError> {
-    let bytes = std::fs::read(store_dir::envelope_path(dir)).map_err(OpenError::Io)?;
-    StoreEnvelope::decode(&bytes).map_err(OpenError::Decode)
+fn decode_envelope(dir: &AdmittedStoreDir) -> Result<StoreEnvelope, OpenError> {
+    let bytes = dir
+        .read(StoreEntry::Envelope, crate::envelope::file_ceiling)
+        .map_err(OpenError::Admission)?;
+    StoreEnvelope::decode(&bytes)
+        .map_err(|error| OpenError::Admission(AdmissionError::format(StoreEntry::Envelope, error)))
 }
 
-fn decode_head(dir: &Path) -> Result<LogicalHead, OpenError> {
-    let bytes = std::fs::read(store_dir::head_path(dir)).map_err(OpenError::Io)?;
-    LogicalHead::decode(&bytes).map_err(OpenError::Decode)
+fn decode_head(dir: &AdmittedStoreDir) -> Result<LogicalHead, OpenError> {
+    let bytes = dir
+        .read(StoreEntry::Head, crate::head::file_ceiling)
+        .map_err(OpenError::Admission)?;
+    LogicalHead::decode(&bytes)
+        .map_err(|error| OpenError::Admission(AdmissionError::format(StoreEntry::Head, error)))
 }
 
 /// A private sibling temporary directory for building a store before its atomic claim: the

@@ -10,6 +10,11 @@ authors.workspace = true
 
 [dependencies]
 marrow-codes = { path = "../marrow-codes" }
+# The sole descriptor-rooted filesystem owner. Owner-held admission of the store
+# directory's own artifacts is a no-follow, single-link, identity-witnessed read,
+# which this crate consumes rather than reimplementing; it adds no third-party
+# edge, since that crate's private syscall adapter stays behind its typed boundary.
+marrow-fs-journal = { path = "../marrow-fs-journal" }
 marrow-image = { path = "../marrow-image" }
 marrow-kernel = { path = "../marrow-kernel" }
 marrow-verify = { path = "../marrow-verify" }

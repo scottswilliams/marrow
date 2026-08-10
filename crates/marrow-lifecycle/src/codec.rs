@@ -84,6 +84,26 @@ impl std::fmt::Display for FormatError {
 
 impl std::error::Error for FormatError {}
 
+/// Every persisted store artifact opens with its 4-byte magic and a 1-byte container
+/// version. An owner-held admission read classifies exactly this prefix — no more — to
+/// choose the artifact's byte ceiling before it allocates for the body, so a version whose
+/// framing this build has no bound for is refused ahead of any reservation.
+pub(crate) const ARTIFACT_PREFIX_BYTES: usize = 5;
+
+/// The container version `prefix` records, rejecting a prefix that is not this artifact's
+/// at all. The classification shares its magic and its position with the artifact's own
+/// decoder, so the ceiling an admission read applies and the verdict the decoder reaches
+/// cannot drift apart.
+pub(crate) fn artifact_version(
+    prefix: &[u8; ARTIFACT_PREFIX_BYTES],
+    magic: &[u8; 4],
+) -> Result<u8, FormatError> {
+    if &prefix[0..4] != magic {
+        return Err(FormatError::BadMagic);
+    }
+    Ok(prefix[4])
+}
+
 /// A bounded forward reader over a persisted artifact's bytes. Every read validates the
 /// remaining input before it borrows, so a truncated artifact rejects with
 /// [`FormatError::Truncated`] rather than panicking, and [`Reader::finish`] rejects any

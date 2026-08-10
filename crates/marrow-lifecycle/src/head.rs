@@ -14,8 +14,10 @@
 
 use marrow_image::StoreHeadDigest;
 
-use crate::codec::{FormatError, Reader, put_u32, put_u64};
-use crate::headmap::HeadMap;
+use crate::codec::{
+    ARTIFACT_PREFIX_BYTES, FormatError, Reader, artifact_version, put_u32, put_u64,
+};
+use crate::headmap::{HeadMap, MAX_HEAD_MAP_ENTRIES};
 
 /// The head magic: "MWSH" (Marrow Store Head).
 const MAGIC: &[u8; 4] = b"MWSH";
@@ -31,6 +33,50 @@ const HEAD_VERSION: u8 = 0x01;
 /// allocation (campaign law 9). Comfortably above any real program's whole-demand atom-set
 /// encoding and far below memory exhaustion.
 const MAX_ACCEPTED_CEILING_BYTES: u32 = 4 * 1024 * 1024;
+
+/// The fixed head bytes ahead of the identity map: magic, container version, image format
+/// version, the three 32-byte binding identities, and the reserved sequencing and
+/// data-digest slots.
+const HEAD_FIXED_PREFIX_BYTES: u64 = 4 + 1 + 1 + 32 * 3 + 8 + 32 + 8;
+
+/// The exact ceiling a v1 head file may occupy, applied by an owner-held admission read
+/// before it allocates for the body. It is the encoder's own maximum: the fixed prefix, an
+/// identity map at [`MAX_HEAD_MAP_ENTRIES`] entries behind its high-water and count, the
+/// length-prefixed accepted-ceiling payload at [`MAX_ACCEPTED_CEILING_BYTES`], and the
+/// 32-byte sealing digest.
+pub const MAX_HEAD_FILE_BYTES: u64 = HEAD_FIXED_PREFIX_BYTES
+    + 4
+    + 4
+    + MAX_HEAD_MAP_ENTRIES as u64 * (16 + 4)
+    + 4
+    + MAX_ACCEPTED_CEILING_BYTES as u64
+    + 32;
+
+/// The ceiling reserved for the head layout that carries the dependency-declaration
+/// continuity snapshot. No such head is written or decoded by this build — a head naming
+/// that version is refused as an unknown version — so this bound is a scheduler-pinned
+/// reservation, not a derivation from any encoder here. It exists so the version a head
+/// records, rather than the largest layout this build happens to write, is what selects the
+/// bound an admission read applies before allocating.
+pub const MAX_HEAD_V3_FILE_BYTES: u64 = 7_491_686;
+
+/// The head container versions whose file ceilings are pinned. Only [`HEAD_VERSION`] is
+/// written or decoded; the others exist so a head from a later layout is bounded by its own
+/// ceiling and then refused by its own version, rather than being refused for a length its
+/// layout was never held to.
+const HEAD_V2_VERSION: u8 = 0x02;
+const HEAD_V3_VERSION: u8 = 0x03;
+
+/// The ceiling a head file of the version its own prefix records may occupy, chosen before
+/// the body is allocated for. A version with no pinned bound is refused here as the same
+/// typed version refusal its decoder would reach.
+pub(crate) fn file_ceiling(prefix: &[u8; ARTIFACT_PREFIX_BYTES]) -> Result<u64, FormatError> {
+    match artifact_version(prefix, MAGIC)? {
+        HEAD_VERSION | HEAD_V2_VERSION => Ok(MAX_HEAD_FILE_BYTES),
+        HEAD_V3_VERSION => Ok(MAX_HEAD_V3_FILE_BYTES),
+        found => Err(FormatError::UnknownVersion { found }),
+    }
+}
 
 /// The active binding recorded in the head: the active image's byte identity plus the
 /// binding-fact identities a binding-only rebind compares. The image id changes on any body

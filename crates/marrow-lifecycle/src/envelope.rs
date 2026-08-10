@@ -16,7 +16,7 @@
 
 use marrow_image::StoreEnvelopeDigest;
 
-use crate::codec::{FormatError, Reader, put_u32};
+use crate::codec::{ARTIFACT_PREFIX_BYTES, FormatError, Reader, artifact_version, put_u32};
 use crate::instance::StoreInstanceId;
 
 /// The envelope magic: "MWSE" (Marrow Store Envelope).
@@ -29,6 +29,22 @@ const ENVELOPE_VERSION: u8 = 0x00;
 /// allocation. A released toolchain version is a short semantic-version string well within
 /// this.
 const MAX_TOOLCHAIN_BYTES: u32 = 64;
+
+/// The exact ceiling an envelope file may occupy, applied by an owner-held admission read
+/// before it allocates for the body. It is the encoder's own maximum: the 30 fixed body
+/// bytes, the writer toolchain at [`MAX_TOOLCHAIN_BYTES`], and the 32-byte sealing digest.
+/// A file beyond it is a representational limit, refused without reaching the decoder.
+pub const MAX_ENVELOPE_FILE_BYTES: u64 = 30 + MAX_TOOLCHAIN_BYTES as u64 + 32;
+
+/// The ceiling an envelope file of the version its own prefix records may occupy. This
+/// build records one version, so an envelope naming another is refused here — before any
+/// allocation — as the same typed version refusal its decoder would reach.
+pub(crate) fn file_ceiling(prefix: &[u8; ARTIFACT_PREFIX_BYTES]) -> Result<u64, FormatError> {
+    match artifact_version(prefix, MAGIC)? {
+        ENVELOPE_VERSION => Ok(MAX_ENVELOPE_FILE_BYTES),
+        found => Err(FormatError::UnknownVersion { found }),
+    }
+}
 
 /// The ordered-byte engine a store is written over. A closed discriminant set: a byte
 /// outside it is a typed [`FormatError::UnknownDiscriminant`], never a silent default.

@@ -423,6 +423,66 @@ fn each_artifact_malformation_is_reported_as_itself() {
     }
 }
 
+/// An artifact rewritten in place, to a different length, while admission is reading it is
+/// never admitted as a spliced artifact. The pre-read length check, the bounded read one
+/// byte past the ceiling, the identity and length recheck, and the artifact's own sealing
+/// digest together admit only bytes that were a whole artifact: every outcome here is one of
+/// the two whole heads the mutator writes, or a typed refusal.
+///
+/// The interleaving is real but not scheduled, so this drives the invariant rather than
+/// pinning a particular window; the deterministic substitution cases above pin the
+/// identity and link checks on their own.
+#[test]
+fn an_artifact_rewritten_under_a_read_is_never_admitted_spliced() {
+    let (_dir, store) = provisioned("torn-read");
+    let short = head(1, vec![0x11; 32]).encode();
+    let long = head(64, vec![0x22; 64 * 1024]).encode();
+    assert_ne!(
+        short.len(),
+        long.len(),
+        "the two forms must differ in length"
+    );
+    let path = head_path(&store);
+    let stop = std::sync::atomic::AtomicBool::new(false);
+
+    std::thread::scope(|scope| {
+        scope.spawn(|| {
+            use std::io::Write;
+            let mut which = false;
+            while !stop.load(Ordering::Relaxed) {
+                // Rewrite in place rather than renaming, so a reader's pinned handle can
+                // genuinely observe a body mid-write.
+                let bytes = if which { &short } else { &long };
+                which = !which;
+                if let Ok(mut file) = std::fs::OpenOptions::new().write(true).open(&path) {
+                    let _ = file.set_len(bytes.len() as u64);
+                    let _ = file.write_all(bytes);
+                }
+            }
+        });
+
+        for _ in 0..50 {
+            match open(&store, schemas(), sites()) {
+                Ok(opened) => {
+                    let admitted = opened.head.encode();
+                    assert!(
+                        admitted == short || admitted == long,
+                        "admission returned a head that was never wholly written",
+                    );
+                }
+                Err(error) => assert!(
+                    matches!(
+                        error.code(),
+                        "store.corruption" | "store.limit" | "store.format_version" | "store.io",
+                    ),
+                    "a torn read must be a typed refusal, got {error}",
+                ),
+            }
+        }
+        stop.store(true, Ordering::Relaxed);
+    });
+}
+
 /// A refused open publishes no store artifact. Taking the owner lock is what makes exclusion
 /// decidable before anything is read, so the lock entry itself may appear; the engine,
 /// envelope, and head never do.
