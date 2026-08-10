@@ -9,11 +9,21 @@
 //! <dir>/lock         the owner lock (advisory; its body names the live owner)
 //! ```
 //!
-//! A store is COMPLETE only when the directory exists and all three of `store.redb`,
-//! `envelope`, and `head` are present. The lock is not one of them and says nothing about
+//! A store is COMPLETE only when the directory holds all three of `store.redb`, `envelope`,
+//! and `head` as regular files. The lock is not one of them and says nothing about
 //! completeness: provision does not write it, the first open creates it, and from then on it
 //! persists — empty after a clean close, carrying the crashed holder's descriptor after an
 //! unclean one.
+//!
+//! Completeness is asked twice, and the two questions are different. Before an owner is
+//! held, [`artifacts_present`] asks only whether the directory maps the three names to
+//! entries at all — enough to keep an open from creating a lock entry in a directory that is
+//! not a store, and no more. Under the owner, [`AdmittedStoreDir::is_complete`] decides what
+//! those names map to.
+//!
+//! Neither question resolves a failure to look into an observation. Only "no such entry" is
+//! an observation of the directory's contents; a directory this process cannot traverse
+//! yields [`StoreAccessError`], never a missing artifact.
 //!
 //! Once the physical owner is held, [`AdmittedStoreDir`] is how the `envelope` and the
 //! `head` are read. It retains the directory as a descriptor and reads each of those two
@@ -25,8 +35,11 @@
 //!
 //! Two paths into the same directory are outside that protocol and are resolved by path
 //! instead: `store.redb`, which `marrow-store` opens as part of holding the engine, and the
-//! `lock` entry it owns. Neither is admitted from the retained descriptor, so what this
-//! module establishes covers the two artifacts it reads and no more.
+//! `lock` entry it owns. Neither's bytes are admitted from the retained descriptor, so what
+//! this module establishes about *content* covers the two artifacts it reads and no more.
+//! The engine's node kind is the one exception, decided by the completeness verdict because
+//! its opener resolves it by path and would otherwise follow a link out of the directory the
+//! owner holds.
 
 use std::path::{Path, PathBuf};
 
