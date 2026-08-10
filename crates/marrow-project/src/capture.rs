@@ -11,7 +11,7 @@
 use marrow_codes::Code;
 
 use crate::identity::{FileIdentity, ModuleName, SourcePathReason};
-use crate::ids::{CapturedLedger, IdentityLedger, IdsError};
+use crate::ids::{CapturedLedger, IDS_FILE, IdentityLedger, IdsError};
 use crate::manifest::{Edition, Manifest};
 
 /// A source file handed to [`capture`] by the physical adapter: a caller-supplied
@@ -455,9 +455,8 @@ impl CaptureError {
     }
 
     fn ids(error: IdsError) -> Self {
-        let message = format!(".marrow/ids is corrupt: {}", error.message);
-        let code =
-            Code::from_code(error.code).expect(".marrow/ids fault carries a registered code");
+        let message = format!("{IDS_FILE} is corrupt: {}", error.message);
+        let code = Code::from_code(error.code).expect("a ledger fault carries a registered code");
         Self {
             code,
             kind: CaptureErrorKind::IdsCorrupt { error },
