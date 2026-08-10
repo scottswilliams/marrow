@@ -580,15 +580,15 @@ const TOKEN_VECTOR_SLACK: usize = 1;
 /// outside the per-byte term.
 const TOKEN_CHARGE: usize = LIVE_TOKEN_VECTORS * TOKEN_VECTOR_SLACK * size_of::<Token>();
 
-/// What measuring a body's block capacities charges per source byte.
+/// What measuring a body's statement capacities charges per source byte.
 ///
 /// The parser measures each `{ … }` region's own statement-start count before parsing
 /// it, so a statement list is allocated once at its final size instead of growing. The
 /// measurement holds one `(token index, start count)` pair per region, still in the
 /// vector it was pushed into when the peak is taken, and a region costs at least the two
-/// source bytes of its own braces. Its open-block stack is bounded by the nesting limit
+/// source bytes of its own braces. Its open-region stack is bounded by the nesting limit
 /// rather than by the source, so it is a constant and not a per-byte charge.
-const BLOCK_MEASUREMENT_CHARGE: usize = GROWTH * size_of::<(u32, u32)>() / 2;
+const STATEMENT_CAPACITY_CHARGE: usize = GROWTH * size_of::<(u32, u32)>() / 2;
 
 /// The syntax collector's own retention, which is live beside the tree until
 /// `parse_source` returns. Both of its ceilings are pinned by `marrow-syntax`; a row is
@@ -607,7 +607,7 @@ const DIAGNOSTICS: usize = GROWTH * SYNTAX_DIAGNOSTIC_COUNT_LIMIT * DIAGNOSTIC_R
 /// is the cap, not this figure. It closes under the declared heap ceiling by the distance
 /// the cap sits above the derived maximum.
 fn accounted_query_parse_transient() -> usize {
-    MAX_ADMITTED_FILE_BYTES * (source_byte_charge() + TOKEN_CHARGE + BLOCK_MEASUREMENT_CHARGE)
+    MAX_ADMITTED_FILE_BYTES * (source_byte_charge() + TOKEN_CHARGE + STATEMENT_CAPACITY_CHARGE)
         + TOKEN_CHARGE
         + DIAGNOSTICS
         + marrow_syntax::MAX_STATEMENT_CAPACITY_BYTES
@@ -1736,7 +1736,7 @@ fn an_over_ceiling_file_is_refused_before_it_is_parsed() {
 #[test]
 fn the_admitted_length_and_the_exported_term_agree_with_the_derivation() {
     assert_eq!(
-        MAX_SOURCE_BYTE_CHARGE + TOKEN_CHARGE + BLOCK_MEASUREMENT_CHARGE,
+        MAX_SOURCE_BYTE_CHARGE + TOKEN_CHARGE + STATEMENT_CAPACITY_CHARGE,
         marrow_syntax::MAX_PARSE_BYTES_PER_SOURCE_BYTE,
         "the rate `marrow-syntax` publishes drifted from the rate derived here"
     );

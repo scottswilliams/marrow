@@ -83,7 +83,7 @@ pub const NESTING_LIMIT: &str = Code::CheckNestingLimit.as_str();
 ///
 /// **Declared, not measured.** The figure is a cap over every node family the parser
 /// builds — the widest one decides it, so shrinking that family promotes the next —
-/// plus the file's token slice and the block measurement that sizes each statement
+/// plus the file's token slice and the statement capacity pass that sizes each statement
 /// list. `marrow-compile`'s `no_node_family_exceeds_the_declared_source_byte_cap`
 /// re-derives it from the representation and fails if this constant drifts from it or
 /// if any family widens past it.
@@ -101,7 +101,7 @@ pub const MAX_PARSE_BYTES_PER_SOURCE_BYTE: usize = 552;
 
 /// The heap [`parse_source`] allocates regardless of the file's length: the diagnostic
 /// collector's two ceilings, the token slice's zero-width `Eof` sentinel, which is the
-/// one token that covers no source byte, and the block measurement's own working set,
+/// one token that covers no source byte, and the statement capacity pass's own working set,
 /// which the nesting limit bounds rather than the source.
 pub const MAX_PARSE_FIXED_BYTES: usize = 2 * SYNTAX_DIAGNOSTIC_COUNT_LIMIT * 256
     + 2 * SYNTAX_DIAGNOSTIC_OWNED_BYTES_LIMIT
