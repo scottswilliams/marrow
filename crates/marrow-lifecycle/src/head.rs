@@ -208,7 +208,7 @@ impl LogicalHead {
         // current" state unrepresentable even for a validly-resealed forged head.
         if commit_position != 0 || data_digest != [0u8; 32] || data_digest_position != 0 {
             return Err(FormatError::Malformed {
-                reason: "head reserves the sequencing and data-digest slots as zero",
+                reason: "the reserved sequencing and data-digest slots must be zero",
             });
         }
         let head_map = HeadMap::decode(&mut reader)?;
@@ -381,7 +381,7 @@ mod tests {
             assert_eq!(
                 LogicalHead::decode(&bytes),
                 Err(FormatError::Malformed {
-                    reason: "head reserves the sequencing and data-digest slots as zero"
+                    reason: "the reserved sequencing and data-digest slots must be zero"
                 }),
                 "a forged nonzero reserved slot at offset {offset} must reject",
             );
