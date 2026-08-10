@@ -562,10 +562,15 @@ fn admit_created_meta(
 /// inside it and two first publications cannot both append.
 ///
 /// The block is a convenience the owner maintains when it can, so an entry it
-/// cannot write is left exactly as found — like one past the read bound — and
-/// no publication or recovery is refused over it. That reading covers a
-/// withheld write and nothing else: every other custody refusal here is a
-/// metadata directory this owner did not produce, and stays a typed refusal.
+/// cannot reach is left exactly as found — like one past the read bound — and
+/// no publication or recovery is refused over it. The boundary that reading
+/// draws is exact. A permission-class condition on the entry itself is left as
+/// found, whether it withholds the deciding read or the append. An
+/// environmental failure of the write — no space left, a read-only filesystem —
+/// still refuses, because it breaks the durable write this publication depends
+/// on anyway rather than merely denying this owner one cosmetic file. Every
+/// other custody refusal here is a metadata directory this owner did not
+/// produce, and stays a typed refusal.
 fn install_untracked_ignore(meta: &AdmittedDir) -> Result<(), IdsPublicationError> {
     let name = admitted_name(IGNORE_NAME);
     let (created, found) = match meta.create_file_excl(&name) {
@@ -625,9 +630,10 @@ fn install_untracked_ignore(meta: &AdmittedDir) -> Result<(), IdsPublicationErro
         // reason one past the read bound is: the append is a convenience, not
         // a step any durable state depends on, and refusing here would refuse
         // every publication and every recovery of a project whose ignore entry
-        // a checkout carries read-only. Only a withheld write reads that way —
-        // a node kind this owner never wrote is a corrupted metadata
-        // directory, and every other custody refusal stays one.
+        // a checkout carries read-only. Only the permission-class refusals read
+        // that way — a node kind this owner never wrote is a corrupted metadata
+        // directory, an environmental write failure breaks the durable write
+        // regardless, and both stay typed refusals.
         None => match meta.open_file(&name) {
             Ok(opened) => opened,
             Err(error) if access_withheld(&error) => return Ok(()),
