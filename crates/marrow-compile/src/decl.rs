@@ -974,7 +974,7 @@ mod tests {
         );
     }
 
-    /// A1 — an id is valid only in the ledger that minted it. Two namespaces mint
+    /// An id is valid only in the ledger that minted it. Two namespaces mint
     /// index 0, and reading one's id out of the other is drift rather than the
     /// neighbouring summary, which is what keeps `join`'s same-id rule sound.
     #[test]

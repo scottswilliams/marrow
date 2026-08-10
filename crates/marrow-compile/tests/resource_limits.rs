@@ -14,6 +14,9 @@ use marrow_compile::{CompileFailure, SourceDiagnostic, compile};
 use marrow_project::{CaptureLimits, CapturedFile, Manifest, ProjectInput};
 use marrow_syntax::SourceSpan;
 
+#[path = "common/ids.rs"]
+mod ids;
+
 fn project(source: &str, ids: Option<&[u8]>) -> ProjectInput {
     let manifest = Manifest::parse("edition = \"2026\"\n").expect("valid manifest");
     let files = vec![CapturedFile::new(
@@ -60,16 +63,11 @@ fn assert_aggregate_resource_limit(result: Result<impl std::fmt::Debug, CompileF
     }
 }
 
-/// A durable identity ledger built from an ordered anchor list, each `"kind path"`
-/// receiving a distinct seeded id. No hand-alignment: the caller lists exactly the
-/// anchors its shape declares.
+/// A durable identity ledger over an ordered anchor list. The caller lists exactly
+/// the anchors its shape declares; the format is written in one place.
 fn ledger(anchors: &[String]) -> Vec<u8> {
-    let mut out = String::from("marrow ids v0\nmachine-written by marrow; do not edit\n");
-    for (seed, anchor) in anchors.iter().enumerate() {
-        out.push_str(&format!("id {anchor} {:032x}\n", seed as u128 + 1));
-    }
-    out.push_str("high-water 0\nend\n");
-    out.into_bytes()
+    let borrowed: Vec<&str> = anchors.iter().map(String::as_str).collect();
+    ids::ledger(&borrowed)
 }
 
 // ---- Per-function source precheck: total local-slot allocation.

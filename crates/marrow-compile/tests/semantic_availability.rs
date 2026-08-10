@@ -39,10 +39,9 @@ fn codes(rows: &[SourceDiagnostic]) -> Vec<&str> {
 ///
 /// The signature table is always built, so an unrelated body still lowers and
 /// reports its own error, and constant evaluation and the value-cycle audit run in
-/// their existing positions. The base stopped at the signature stage and reported
-/// the signature row alone; IMGDECL01's amendment to the artifact contract (design
-/// §3) replaced the withheld table with a refused ledger entry, so `driver`'s own
-/// unresolved call is now reported beside the three declaration refusals.
+/// their existing positions. A refused signature is a refused ledger entry rather
+/// than a withheld table, so `driver`'s own unresolved call is reported beside the
+/// three declaration refusals.
 #[test]
 fn signature_refusal_keeps_independent_checks_runnable() {
     let rows = diagnostics(

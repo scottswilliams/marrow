@@ -7,31 +7,23 @@
 use marrow_compile::{Compiled, compile};
 use marrow_project::{CaptureLimits, CapturedFile, Manifest, ProjectInput};
 
-/// A distinct 16-byte identity rendered as 32 lowercase hex, seeded by `n`.
-fn hexid(n: u64) -> String {
-    format!("{n:032x}")
-}
+#[path = "common/ids.rs"]
+mod ids;
 
 /// The durable identity ledger a `Wide` resource with `sparse` optional fields
 /// needs: the application, the product, one identity per field (the required
 /// `tag` plus `f0..f{sparse}`), the root, and its key column.
 fn wide_ids(sparse: usize) -> Vec<u8> {
-    let mut out = String::from("marrow ids v0\nmachine-written by marrow; do not edit\n");
-    let mut seed = 1u64;
-    let line = |kind_path: String, s: &mut u64, out: &mut String| {
-        out.push_str(&format!("id {kind_path} {}\n", hexid(*s)));
-        *s += 1;
-    };
-    line("application .".into(), &mut seed, &mut out);
-    line("product Wide".into(), &mut seed, &mut out);
-    line("field Wide.tag".into(), &mut seed, &mut out);
-    for i in 0..sparse {
-        line(format!("field Wide.f{i}"), &mut seed, &mut out);
-    }
-    line("root wide".into(), &mut seed, &mut out);
-    line("key wide.id".into(), &mut seed, &mut out);
-    out.push_str("high-water 0\nend\n");
-    out.into_bytes()
+    let mut anchors = vec![
+        "application .".to_string(),
+        "product Wide".to_string(),
+        "field Wide.tag".to_string(),
+    ];
+    anchors.extend((0..sparse).map(|i| format!("field Wide.f{i}")));
+    anchors.push("root wide".to_string());
+    anchors.push("key wide.id".to_string());
+    let borrowed: Vec<&str> = anchors.iter().map(String::as_str).collect();
+    ids::ledger(&borrowed)
 }
 
 /// A resource declaring one required key-bearing field and `sparse` optional

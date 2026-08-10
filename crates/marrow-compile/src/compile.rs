@@ -3108,8 +3108,8 @@ mod tests {
         assert!(!DeclarationExit::StoppedOnInstantiationLimit.complete());
     }
 
-    /// The IMGFAIL01 amendment (design §3): availability and the value are minted by
-    /// one owner, and the availability proof is zero-sized.
+    /// Availability and the value are minted by one owner, and the availability
+    /// proof is zero-sized.
     ///
     /// `Artifacts.functions` holds the proof token, never the table, so what `encode`
     /// consumes cannot be forged outside [`CompleteFunctionRegistry`] — the property

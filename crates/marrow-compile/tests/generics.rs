@@ -1350,11 +1350,9 @@ pub fn safe(): int {
 }
 "#,
     );
-    // CHANGED CONTRACT (IMGDECL01, I-6): a template member naming a type nothing
-    // declares is reported at the declaration, once, and the uses are steered to
-    // it. This project's own broken declaration used to be reported only at each
-    // *use*, as a language gap, with the declaration itself never reported at all.
-    // The second use is silent: the steer is once per refused key.
+    // A template member naming a type nothing declares is reported at the
+    // declaration, once, and the uses are steered to it. The second use is silent:
+    // the steer is once per refused key.
     assert_diagnostic_sites(
         &diagnostics,
         &[("check.type", 4, 13), ("check.type", 7, 17)],
@@ -1433,9 +1431,9 @@ fn useGood(value: Good<int>): int {
 }
 "#,
     );
-    // CHANGED CONTRACT (IMGDECL01, I-6): `Missing<T>` is now refused where it is
-    // written, and `useBad`'s annotation reuses that cause instead of reporting a
-    // subset gap for a template this project declared.
+    // `Missing<T>` is refused where it is written, and `useBad`'s annotation reuses
+    // that cause rather than reporting a subset gap for a template this project
+    // declared.
     assert_diagnostic_sites(
         &diagnostics,
         &[("check.type", 9, 13), ("check.type", 12, 18)],

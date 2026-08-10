@@ -27,6 +27,8 @@ use marrow_project::{FileIdentity, ProjectInput};
 
 #[path = "common/project.rs"]
 mod common_project;
+#[path = "common/ids.rs"]
+mod ids;
 #[path = "common/source_projection.rs"]
 mod source_projection;
 
@@ -380,31 +382,18 @@ fn every_resource_limit_kind_has_exactly_one_owner() {
 
 // ---- Red 4: the frozen corpus.
 
-/// A distinct 16-byte identity rendered as 32 lowercase hex, seeded by `n`.
-fn hexid(n: u64) -> String {
-    format!("{n:032x}")
-}
-
 /// The durable identity ledger the `Wide` resource and its `^wide` root need: the
 /// application, the product, one identity per declared field, the root, and its key
 /// column.
 fn item_ids() -> Vec<u8> {
-    let mut out = String::from("marrow ids v0\nmachine-written by marrow; do not edit\n");
-    for (seed, anchor) in [
+    ids::ledger(&[
         "application .",
         "product Wide",
         "field Wide.tag",
         "field Wide.note",
         "root wide",
         "key wide.id",
-    ]
-    .iter()
-    .enumerate()
-    {
-        out.push_str(&format!("id {anchor} {}\n", hexid(seed as u64 + 1)));
-    }
-    out.push_str("high-water 0\nend\n");
-    out.into_bytes()
+    ])
 }
 
 /// One frozen corpus entry: a project, and the identity ledger it needs (if any).

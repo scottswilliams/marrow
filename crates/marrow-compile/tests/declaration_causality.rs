@@ -11,12 +11,14 @@
 //! negative — that a refused name is never called out of scope — which is the
 //! fabrication these fixtures exist to kill.
 
-use std::collections::BTreeMap;
+use marrow_compile::ResourceLimitKind;
+use marrow_compile::{CompileFailure, InputRevision, SourceDiagnostic, analyze, compile};
+use marrow_project::{CaptureLimits, CapturedFile, Manifest, ProjectInput};
 
-use marrow_compile::{
-    CompileFailure, InputRevision, ResourceLimitKind, SourceDiagnostic, analyze, compile,
-};
-use marrow_project::{CaptureLimits, CapturedFile, IdentityAnchor, Manifest, ProjectInput};
+#[path = "common/ids.rs"]
+mod ids;
+#[path = "common/project.rs"]
+mod project_capture;
 
 fn project(source: &str) -> ProjectInput {
     files(&[("src/main.mw", source.to_string())])
@@ -27,13 +29,11 @@ fn files(sources: &[(&str, String)]) -> ProjectInput {
 }
 
 fn captured(sources: &[(&str, String)], ids: Option<&[u8]>) -> ProjectInput {
-    let manifest = Manifest::parse("edition = \"2026\"\n").expect("valid manifest");
-    let files = sources
+    let borrowed: Vec<(&str, &str)> = sources
         .iter()
-        .map(|(path, source)| CapturedFile::new(path.to_string(), source.as_bytes().to_vec()))
+        .map(|(path, source)| (*path, source.as_str()))
         .collect();
-    marrow_project::capture(&manifest, files, ids, &CaptureLimits::DEFAULT)
-        .expect("capture project")
+    project_capture::project_with_ids(&borrowed, ids)
 }
 
 /// A project whose durable identity ledger is complete, so no store refuses for a
@@ -41,49 +41,9 @@ fn captured(sources: &[(&str, String)], ids: Option<&[u8]>) -> ProjectInput {
 ///
 /// The identity gap is the one refusal class entitled to the "see the
 /// `check.durable_identity` reports" steer, and with no ledger *every* store refuses
-/// that way first. A red for any other durable refusal class has to mint past it, so
-/// this resolves the typed gaps the compiler itself reports — never a hand-written
-/// anchor list, which would encode a second opinion about the anchor set — until the
-/// compiler reports none.
+/// that way first, so a red for any other durable refusal class has to mint past it.
 fn with_minted_ids(sources: &[(&str, String)]) -> ProjectInput {
-    let mut minted: BTreeMap<IdentityAnchor, String> = BTreeMap::new();
-    for _ in 0..64 {
-        let ids = serialize_ids(&minted);
-        let project = captured(sources, Some(ids.as_bytes()));
-        let gaps: Vec<IdentityAnchor> = match compile(&project) {
-            Ok(_) => Vec::new(),
-            Err(CompileFailure::Diagnostics(diagnostics)) => diagnostics
-                .into_iter()
-                .filter_map(|row| row.identity_gap().map(marrow_compile::IdentityGap::anchor))
-                .collect(),
-            Err(other) => panic!("expected diagnostics while minting, got {other:?}"),
-        };
-        let mut fresh = false;
-        for anchor in gaps {
-            if !minted.contains_key(&anchor) {
-                let id = format!("{:032x}", minted.len() + 1);
-                minted.insert(anchor, id);
-                fresh = true;
-            }
-        }
-        if !fresh {
-            return captured(sources, Some(serialize_ids(&minted).as_bytes()));
-        }
-    }
-    panic!("minting a complete identity ledger did not converge");
-}
-
-fn serialize_ids(minted: &BTreeMap<IdentityAnchor, String>) -> String {
-    let mut text = String::from("marrow ids v0\nmachine-written by marrow; do not edit\n");
-    for (anchor, id) in minted {
-        text.push_str(&format!(
-            "id {} {} {id}\n",
-            anchor.kind.keyword(),
-            anchor.path
-        ));
-    }
-    text.push_str(&format!("high-water {}\nend\n", minted.len()));
-    text
+    ids::minted(|ledger| captured(sources, ledger))
 }
 
 fn diagnostics(source: &str) -> Vec<SourceDiagnostic> {
@@ -114,13 +74,17 @@ fn snapshot_diagnostics(input: ProjectInput) -> Vec<SourceDiagnostic> {
     snapshot.diagnostics().to_vec()
 }
 
-/// Every row, as `(code, line, column)` — the typed shape a red asserts.
-fn rows(diagnostics: &[SourceDiagnostic]) -> Vec<(&str, u32, u32)> {
+/// Every row, as `(file, code, line, column)` — the typed shape a red asserts.
+///
+/// The file is part of the shape, not context: a multi-file fixture that asserted
+/// only `(code, line, column)` would pass with every row attributed to the wrong
+/// module, which is the class of defect a project-wide namespace makes possible.
+fn rows(diagnostics: &[SourceDiagnostic]) -> Vec<(&str, &str, u32, u32)> {
     diagnostics
         .iter()
         .map(|row| {
             let span = row.span();
-            (row.code(), span.line, span.column)
+            (row.file().as_str(), row.code(), span.line, span.column)
         })
         .collect()
 }
@@ -154,10 +118,10 @@ fn assert_never_out_of_scope(diagnostics: &[SourceDiagnostic], name: &str) {
     }
 }
 
-/// R1 — a constant refused for a type mismatch is reported at its declaration and
+/// a constant refused for a type mismatch is reported at its declaration and
 /// its use is steered to that report, never called out of scope.
 #[test]
-fn r1_a_type_refused_constant_is_not_out_of_scope_at_its_use() {
+fn a_type_refused_constant_is_not_out_of_scope_at_its_use() {
     let diagnostics = diagnostics(
         "module main\n\n\
          const limit: int = \"x\"\n\n\
@@ -169,15 +133,18 @@ fn r1_a_type_refused_constant_is_not_out_of_scope_at_its_use() {
     assert_never_out_of_scope(&diagnostics, "limit");
     assert_eq!(
         rows(&diagnostics),
-        vec![("check.type", 3, 1), ("check.type", 6, 12)],
+        vec![
+            ("src/main.mw", "check.type", 3, 1),
+            ("src/main.mw", "check.type", 6, 12)
+        ],
         "the declaration reports the cause and the use is steered to it",
     );
 }
 
-/// R2 — a constant refused for a non-literal value behaves the same, and the steer
+/// a constant refused for a non-literal value behaves the same, and the steer
 /// reuses the declaring code (`check.unsupported`), not the use site's own.
 #[test]
-fn r2_a_value_refused_constant_steers_with_the_declaring_code() {
+fn a_value_refused_constant_steers_with_the_declaring_code() {
     let diagnostics = diagnostics(
         "module main\n\n\
          const limit = 1 + 2\n\n\
@@ -189,16 +156,19 @@ fn r2_a_value_refused_constant_steers_with_the_declaring_code() {
     assert_never_out_of_scope(&diagnostics, "limit");
     assert_eq!(
         rows(&diagnostics),
-        vec![("check.unsupported", 3, 15), ("check.unsupported", 6, 12)],
+        vec![
+            ("src/main.mw", "check.unsupported", 3, 15),
+            ("src/main.mw", "check.unsupported", 6, 12)
+        ],
         "the steer carries the declaring cause's code, so a use-site assertion \
          names the declaration's typed identity",
     );
 }
 
-/// R24 — the report is once per refused key, not once per use. Two uses of one
+/// the report is once per refused key, not once per use. Two uses of one
 /// refused constant produce the declaring row and exactly one steer.
 #[test]
-fn r24_a_refused_constant_is_reported_once_across_many_uses() {
+fn a_refused_constant_is_reported_once_across_many_uses() {
     let diagnostics = diagnostics(
         "module main\n\n\
          const limit: int = \"x\"\n\n\
@@ -217,14 +187,14 @@ fn r24_a_refused_constant_is_reported_once_across_many_uses() {
         "one declaring row and one steer, whatever the use count: {:#?}",
         rows(&diagnostics),
     );
-    assert_eq!(rows(&diagnostics)[0], ("check.type", 3, 1));
+    assert_eq!(rows(&diagnostics)[0], ("src/main.mw", "check.type", 3, 1));
 }
 
-/// R25 — a refused declaration still occupies its name, in both orders. The
+/// a refused declaration still occupies its name, in both orders. The
 /// duplicate check sees the refused occurrence, so the second declaration is a
 /// name conflict whether the refused one came first or second.
 #[test]
-fn r25_a_refused_constant_occupies_its_name_when_declared_first() {
+fn a_refused_constant_occupies_its_name_when_declared_first() {
     let diagnostics = diagnostics(
         "module main\n\n\
          const limit = 1 + 2\n\
@@ -234,10 +204,13 @@ fn r25_a_refused_constant_occupies_its_name_when_declared_first() {
          }\n",
     );
 
-    assert!(
-        diagnostics
-            .iter()
-            .any(|row| row.code() == "check.name_conflict"),
+    assert_eq!(
+        rows(&diagnostics),
+        vec![
+            ("src/main.mw", "check.unsupported", 3, 15),
+            ("src/main.mw", "check.name_conflict", 4, 1),
+            ("src/main.mw", "check.unsupported", 7, 12),
+        ],
         "a refused declaration occupies its name, so the redeclaration conflicts: {:#?}",
         rows(&diagnostics),
     );
@@ -245,7 +218,7 @@ fn r25_a_refused_constant_occupies_its_name_when_declared_first() {
 
 /// The sibling direction, which already held: the refused occurrence comes second.
 #[test]
-fn r25_a_refused_constant_occupies_its_name_when_declared_second() {
+fn a_refused_constant_occupies_its_name_when_declared_second() {
     let diagnostics = diagnostics(
         "module main\n\n\
          const limit = 5\n\
@@ -257,12 +230,12 @@ fn r25_a_refused_constant_occupies_its_name_when_declared_second() {
 
     assert_eq!(
         rows(&diagnostics),
-        vec![("check.name_conflict", 4, 1)],
+        vec![("src/main.mw", "check.name_conflict", 4, 1)],
         "the accepted first declaration answers the use; only the conflict reports",
     );
 }
 
-/// E9 — the retained names are bounded. A project whose refused declarations would
+/// the retained names are bounded. A project whose refused declarations would
 /// retain more than the ledger's declared ceiling stops with the typed resource
 /// limit. It never drops a key to stay under budget, which is the one outcome that
 /// would put a fabricated absence back at every use of the dropped name.
@@ -358,12 +331,12 @@ fn assert_not_steered_to_identity(diagnostics: &[SourceDiagnostic]) {
     );
 }
 
-/// R3 — a store root refused because its resource is undeclared is reported at its
+/// a store root refused because its resource is undeclared is reported at its
 /// declaration, and a write through it is steered to that report. Today the root is
 /// dropped whole, so the write says `items` is not in scope — of a root declared
 /// two lines above.
 #[test]
-fn r3_a_root_refused_for_its_resource_is_not_out_of_scope_at_a_write() {
+fn a_root_refused_for_its_resource_is_not_out_of_scope_at_a_write() {
     let diagnostics = diagnostics(
         "module main\n\n\
          store ^items[id: int]: Widget\n\n\
@@ -378,15 +351,18 @@ fn r3_a_root_refused_for_its_resource_is_not_out_of_scope_at_a_write() {
     assert_not_steered_to_identity(&diagnostics);
     assert_eq!(
         rows(&diagnostics),
-        vec![("check.type", 3, 1), ("check.type", 7, 9)],
+        vec![
+            ("src/main.mw", "check.type", 3, 1),
+            ("src/main.mw", "check.type", 7, 9)
+        ],
         "the declaration reports the cause and the write is steered to it",
     );
 }
 
-/// R4 — the same root through a `place` binding. The sibling lookup, not only
+/// the same root through a `place` binding. The sibling lookup, not only
 /// `resolve_root`'s write path, must reuse the declaring cause.
 #[test]
-fn r4_a_root_refused_for_its_resource_is_not_out_of_scope_at_a_place() {
+fn a_root_refused_for_its_resource_is_not_out_of_scope_at_a_place() {
     let diagnostics = diagnostics(
         "module main\n\n\
          store ^items[id: int]: Widget\n\n\
@@ -402,16 +378,16 @@ fn r4_a_root_refused_for_its_resource_is_not_out_of_scope_at_a_place() {
     assert_not_steered_to_identity(&diagnostics);
     assert_eq!(
         rows(&diagnostics)[0],
-        ("check.type", 3, 1),
+        ("src/main.mw", "check.type", 3, 1),
         "the declaration still owns the cause: {:#?}",
         rows(&diagnostics),
     );
 }
 
-/// R17 — the steer is once per refused root, not once per reference. Ten uses of one
+/// the steer is once per refused root, not once per reference. Ten uses of one
 /// refused root produce the declaring row and exactly one steer.
 #[test]
-fn r17_a_refused_root_is_reported_once_across_many_uses() {
+fn a_refused_root_is_reported_once_across_many_uses() {
     let mut source = String::from(
         "module main\n\n\
          store ^items[id: int]: Widget\n\n\
@@ -433,11 +409,11 @@ fn r17_a_refused_root_is_reported_once_across_many_uses() {
     );
 }
 
-/// R18 — a refused root is still offered as a did-you-mean. Dropping the key removes
+/// a refused root is still offered as a did-you-mean. Dropping the key removes
 /// it from the correction corpus too, so a near miss on a refused root gets no
 /// suggestion at all.
 #[test]
-fn r18_a_refused_root_is_offered_as_a_did_you_mean() {
+fn a_refused_root_is_offered_as_a_did_you_mean() {
     let diagnostics = diagnostics(
         "module main\n\n\
          store ^items[id: int]: Widget\n\n\
@@ -459,13 +435,13 @@ fn r18_a_refused_root_is_offered_as_a_did_you_mean() {
     );
 }
 
-/// A4 — a resource-keyed durable lookup answers the store's refusal, not an
+/// a resource-keyed durable lookup answers the store's refusal, not an
 /// absence. The branch constructor `Resource.branch(…)` resolves through the store
 /// backing `Resource`; scanning the executable roots for it answered `None` for a
 /// refused store, so the call fell through to the method-shaped-call report and
 /// blamed the language for the store's own reported defect.
 #[test]
-fn a4_a_branch_constructor_of_a_refused_store_names_the_stores_cause() {
+fn a_branch_constructor_of_a_refused_store_names_the_stores_cause() {
     let diagnostics = diagnostics(
         "module main\n\n\
          resource Widget {\n\
@@ -487,7 +463,7 @@ fn a4_a_branch_constructor_of_a_refused_store_names_the_stores_cause() {
     // every other reference to a store refused for a missing identity receives.
     assert_eq!(
         rows(&diagnostics).last().copied(),
-        Some(("check.type", 14, 15)),
+        Some(("src/main.mw", "check.type", 14, 15)),
         "the constructor is steered to the store's own cause: {:#?}",
         messages(&diagnostics),
     );
@@ -500,12 +476,12 @@ fn a4_a_branch_constructor_of_a_refused_store_names_the_stores_cause() {
     );
 }
 
-/// A4 — the same for the record-keyed steer. A materialized resource value names a
+/// the same for the record-keyed steer. A materialized resource value names a
 /// member that is neither a field nor, as far as this compilation knows, a branch:
 /// the store that would have built the branch tree was refused, so reporting the
 /// record as having no such field states as fact something the compiler cannot know.
 #[test]
-fn a4_a_branch_named_on_a_refused_stores_resource_names_the_stores_cause() {
+fn a_branch_named_on_a_refused_stores_resource_names_the_stores_cause() {
     let diagnostics = diagnostics(
         "module main\n\n\
          resource Widget {\n\
@@ -532,7 +508,7 @@ fn a4_a_branch_named_on_a_refused_stores_resource_names_the_stores_cause() {
     );
     assert_eq!(
         rows(&diagnostics).last().copied(),
-        Some(("check.type", 15, 15)),
+        Some(("src/main.mw", "check.type", 15, 15)),
         "{:#?}",
         messages(&diagnostics),
     );
@@ -545,11 +521,11 @@ fn a4_a_branch_named_on_a_refused_stores_resource_names_the_stores_cause() {
     );
 }
 
-/// R20 · `Bound` — a root refused for crossing a fixed compiler-owned bound keeps
+/// `Bound` — a root refused for crossing a fixed compiler-owned bound keeps
 /// its name and reuses its own `check.resource_limit` cause. It must not claim an
 /// identity admission failure.
 #[test]
-fn r20_bound_a_root_refused_for_a_key_tuple_bound_reuses_its_own_cause() {
+fn a_root_refused_for_a_key_tuple_bound_reuses_its_own_cause() {
     let mut source = String::from(
         "module main\n\n\
          resource Widget {\n\
@@ -603,12 +579,12 @@ const CYCLE_SOURCES: [(&str, &str); 1] = [(
      }\n",
 )];
 
-/// R20 · `ValueCycle` — the one refusal site that pushes no diagnostic of its own.
+/// `ValueCycle` — the one refusal site that pushes no diagnostic of its own.
 /// Its cause is the `check.recursion` report from the value-cycle pass, which runs
 /// after lowering, so this class asserts set membership and that the steer carries
 /// that cause — never an identity admission claim.
 #[test]
-fn r20_value_cycle_a_root_refused_for_a_value_cycle_names_the_recursion_cause() {
+fn a_root_refused_for_a_value_cycle_names_the_recursion_cause() {
     let sources: Vec<(&str, String)> = CYCLE_SOURCES
         .iter()
         .map(|(path, source)| (*path, (*source).to_string()))
@@ -622,17 +598,13 @@ fn r20_value_cycle_a_root_refused_for_a_value_cycle_names_the_recursion_cause() 
     };
 
     assert_never_out_of_scope(&diagnostics, "books");
-    for row in &diagnostics {
-        assert!(
-            !row.message().contains("failed identity admission"),
-            "a value cycle is not an identity gap: {:#?}",
-            messages(&diagnostics),
-        );
-    }
-    assert!(
-        diagnostics
-            .iter()
-            .any(|row| row.code() == "check.recursion"),
+    assert_not_steered_to_identity(&diagnostics);
+    assert_eq!(
+        rows(&diagnostics),
+        vec![
+            ("src/main.mw", "check.recursion", 17, 9),
+            ("src/main.mw", "check.recursion", 3, 8),
+        ],
         "the covering pass reports the cycle: {:#?}",
         rows(&diagnostics),
     );
@@ -657,12 +629,12 @@ fn r20_value_cycle_a_root_refused_for_a_value_cycle_names_the_recursion_cause() 
 // member makes a false statement about the source.
 // ---------------------------------------------------------------------------
 
-/// R21 — the over-suppression guard, and R15's mutation-kill partner. A field that
+/// the over-suppression guard, and R15's mutation-kill partner. A field that
 /// really is not declared still says so. Member granularity must distinguish a
 /// member the compiler refused from one the source never wrote; suppressing both
 /// would trade a false absence for a missing report.
 #[test]
-fn r21_a_genuinely_absent_field_is_still_reported_as_absent() {
+fn a_genuinely_absent_field_is_still_reported_as_absent() {
     let diagnostics = diagnostics(
         "module main\n\n\
          resource Widget {\n\
@@ -683,12 +655,12 @@ fn r21_a_genuinely_absent_field_is_still_reported_as_absent() {
     );
 }
 
-/// R15 — a resource member the compiler refused, then named. The member is dropped
+/// a resource member the compiler refused, then named. The member is dropped
 /// from the record and the record survives, so the constructor reports that the
 /// resource has no such field — four lines after the compiler diagnosed that field's
 /// type.
 #[test]
-fn r15_a_refused_resource_member_is_not_absent_at_its_use() {
+fn a_refused_resource_member_is_not_absent_at_its_use() {
     let diagnostics = diagnostics(
         "module main\n\n\
          resource Widget {\n\
@@ -711,16 +683,19 @@ fn r15_a_refused_resource_member_is_not_absent_at_its_use() {
     );
     assert_eq!(
         rows(&diagnostics),
-        vec![("check.unsupported", 5, 10), ("check.unsupported", 9, 38)],
+        vec![
+            ("src/main.mw", "check.unsupported", 5, 10),
+            ("src/main.mw", "check.unsupported", 9, 38)
+        ],
     );
 }
 
-/// R19 — a refused resource member must not narrow the identity-gap anchor set. A
+/// a refused resource member must not narrow the identity-gap anchor set. A
 /// member dropped from the record is never anchored, so the durable graph reports
 /// fewer `check.durable_identity` rows than the same program with a valid member
 /// type, and the mint action that consumes those rows mints an incomplete ledger.
 #[test]
-fn r19_a_refused_member_does_not_narrow_the_identity_gap_set() {
+fn a_refused_member_does_not_narrow_the_identity_gap_set() {
     let anchors = |field: &str| {
         let source = format!(
             "module main\n\n\
@@ -754,12 +729,12 @@ fn r19_a_refused_member_does_not_narrow_the_identity_gap_set() {
 // is steered to the cause instead).
 // ---------------------------------------------------------------------------
 
-/// R5 — a struct refused for a bad field. The construction resolves through the
+/// a struct refused for a bad field. The construction resolves through the
 /// struct table, not through annotation resolution, so it reached its own
 /// not-in-scope report: `Point` is not in scope, of a struct declared six lines
 /// above whose field the compiler had just diagnosed.
 #[test]
-fn r5_a_refused_struct_is_not_out_of_scope_at_its_construction() {
+fn a_refused_struct_is_not_out_of_scope_at_its_construction() {
     let diagnostics = diagnostics(
         "module main\n\n\
          struct Point {\n\
@@ -775,16 +750,19 @@ fn r5_a_refused_struct_is_not_out_of_scope_at_its_construction() {
     assert_never_out_of_scope(&diagnostics, "Point");
     assert_eq!(
         rows(&diagnostics),
-        vec![("check.unsupported", 4, 8), ("check.unsupported", 9, 15)],
+        vec![
+            ("src/main.mw", "check.unsupported", 4, 8),
+            ("src/main.mw", "check.unsupported", 9, 15)
+        ],
         "the field reports the cause and the construction is steered to it",
     );
 }
 
-/// R10 — an enum refused for a bad payload. A qualified `Enum::member` is a third
+/// an enum refused for a bad payload. A qualified `Enum::member` is a third
 /// resolution path again, and it reported the *spelling* as unsupported rather than
 /// the enum this project declared and the compiler refused.
 #[test]
-fn r10_a_refused_enum_steers_its_qualified_use_to_the_payload_report() {
+fn a_refused_enum_steers_its_qualified_use_to_the_payload_report() {
     let diagnostics = diagnostics(
         "module main\n\n\
          enum Shape {\n\
@@ -806,14 +784,17 @@ fn r10_a_refused_enum_steers_its_qualified_use_to_the_payload_report() {
     );
     assert_eq!(
         rows(&diagnostics),
-        vec![("check.unsupported", 4, 15), ("check.unsupported", 9, 15)],
+        vec![
+            ("src/main.mw", "check.unsupported", 4, 15),
+            ("src/main.mw", "check.unsupported", 9, 15)
+        ],
     );
 }
 
-/// R6 — an alias over an unknown target. Today the annotation blames the language;
+/// an alias over an unknown target. Today the annotation blames the language;
 /// the alias's own `check.type` report two lines above is never connected to it.
 #[test]
-fn r6_a_refused_alias_steers_its_annotation_to_the_alias_report() {
+fn a_refused_alias_steers_its_annotation_to_the_alias_report() {
     let diagnostics = diagnostics(
         "module main\n\n\
          alias Count = Nope\n\n\
@@ -825,15 +806,18 @@ fn r6_a_refused_alias_steers_its_annotation_to_the_alias_report() {
     assert_no_subset_gap(&diagnostics);
     assert_eq!(
         rows(&diagnostics),
-        vec![("check.type", 3, 1), ("check.type", 5, 16)],
+        vec![
+            ("src/main.mw", "check.type", 3, 1),
+            ("src/main.mw", "check.type", 5, 16)
+        ],
         "the alias reports the cause and the annotation is steered to it",
     );
 }
 
-/// R7 — a cyclic alias chain. The steer carries `check.recursion`, the code of the
+/// a cyclic alias chain. The steer carries `check.recursion`, the code of the
 /// report the reader must act on, not a subset-gap phrase.
 #[test]
-fn r7_a_cyclic_alias_steers_its_annotation_to_the_recursion_report() {
+fn a_cyclic_alias_steers_its_annotation_to_the_recursion_report() {
     let diagnostics = diagnostics(
         "module main\n\n\
          alias A = B\n\
@@ -847,17 +831,17 @@ fn r7_a_cyclic_alias_steers_its_annotation_to_the_recursion_report() {
     assert_eq!(
         rows(&diagnostics),
         vec![
-            ("check.recursion", 3, 7),
-            ("check.recursion", 4, 7),
-            ("check.recursion", 6, 16),
+            ("src/main.mw", "check.recursion", 3, 7),
+            ("src/main.mw", "check.recursion", 4, 7),
+            ("src/main.mw", "check.recursion", 6, 16),
         ],
     );
 }
 
-/// R11 — a nominal type whose interval admits no values. The declaration is refused
+/// a nominal type whose interval admits no values. The declaration is refused
 /// for a `check.type` and the annotation reuses that code.
 #[test]
-fn r11_a_refused_nominal_steers_its_annotation_to_the_interval_report() {
+fn a_refused_nominal_steers_its_annotation_to_the_interval_report() {
     let diagnostics = diagnostics(
         "module main\n\n\
          type Age: int in 10..=0\n\n\
@@ -869,16 +853,19 @@ fn r11_a_refused_nominal_steers_its_annotation_to_the_interval_report() {
     assert_no_subset_gap(&diagnostics);
     assert_eq!(
         rows(&diagnostics),
-        vec![("check.type", 3, 18), ("check.type", 5, 16)],
+        vec![
+            ("src/main.mw", "check.type", 3, 18),
+            ("src/main.mw", "check.type", 5, 16)
+        ],
     );
 }
 
-/// R26 — the cascade split. A refused declaration in one parameter must not absorb
+/// the cascade split. A refused declaration in one parameter must not absorb
 /// a genuinely missing name in the next: each parameter is rejected at its own span
 /// with its own cause. Base: two identical subset-gap rows, so the real absence and
 /// the project's own refusal read the same.
 #[test]
-fn r26_a_refused_type_does_not_absorb_a_genuine_absence_beside_it() {
+fn a_refused_type_does_not_absorb_a_genuine_absence_beside_it() {
     let diagnostics = diagnostics(
         "module main\n\n\
          alias Count = Nope\n\n\
@@ -890,20 +877,20 @@ fn r26_a_refused_type_does_not_absorb_a_genuine_absence_beside_it() {
     assert_eq!(
         rows(&diagnostics),
         vec![
-            ("check.type", 3, 1),
-            ("check.type", 5, 16),
-            ("check.unsupported", 5, 26),
+            ("src/main.mw", "check.type", 3, 1),
+            ("src/main.mw", "check.type", 5, 16),
+            ("src/main.mw", "check.unsupported", 5, 26),
         ],
         "`a` is steered to the alias's cause; `b` names a type nothing declared and \
          keeps the subset-gap report",
     );
 }
 
-/// R27 — the merge never widens. A refused alias used inside a generic application
+/// the merge never widens. A refused alias used inside a generic application
 /// must not be described as the cause of anything but itself: no row may claim the
 /// genuinely absent `AlsoMissing` was refused.
 #[test]
-fn r27_a_refused_type_is_never_named_as_another_names_cause() {
+fn a_refused_type_is_never_named_as_another_names_cause() {
     let diagnostics = diagnostics(
         "module main\n\n\
          struct Pair<A, B> {\n\
@@ -925,18 +912,21 @@ fn r27_a_refused_type_is_never_named_as_another_names_cause() {
     }
     assert_eq!(
         rows(&diagnostics),
-        vec![("check.type", 8, 1), ("check.type", 10, 16)],
+        vec![
+            ("src/main.mw", "check.type", 8, 1),
+            ("src/main.mw", "check.type", 10, 16)
+        ],
     );
 }
 
-/// R13 — a generic template's defect is reported at its declaration.
+/// a generic template's defect is reported at its declaration.
 ///
 /// A template's member types are resolved per instantiation, so a member naming an
 /// undeclared type used to be reported only at a *construction* site, blaming the
 /// construction. The declaring cause was reported zero times — the same invariant
 /// broken downward rather than upward.
 #[test]
-fn r13_a_refused_template_is_reported_at_its_declaration() {
+fn a_refused_template_is_reported_at_its_declaration() {
     let diagnostics = diagnostics(
         "module main\n\n\
          struct Pair<A, B> {\n\
@@ -951,7 +941,10 @@ fn r13_a_refused_template_is_reported_at_its_declaration() {
 
     assert_eq!(
         rows(&diagnostics),
-        vec![("check.type", 5, 13), ("check.type", 9, 15)],
+        vec![
+            ("src/main.mw", "check.type", 5, 13),
+            ("src/main.mw", "check.type", 9, 15)
+        ],
         "the member reports the cause and the construction is steered to it",
     );
 }
@@ -959,7 +952,7 @@ fn r13_a_refused_template_is_reported_at_its_declaration() {
 /// The same template with no use at all. A declaration nothing constructs used to
 /// compile clean at exit zero, because the only report was at a construction site.
 #[test]
-fn r13_a_refused_template_is_reported_even_with_no_use() {
+fn a_refused_template_is_reported_even_with_no_use() {
     let diagnostics = diagnostics(
         "module main\n\n\
          struct Pair<A, B> {\n\
@@ -971,14 +964,17 @@ fn r13_a_refused_template_is_reported_even_with_no_use() {
          }\n",
     );
 
-    assert_eq!(rows(&diagnostics), vec![("check.type", 5, 13)]);
+    assert_eq!(
+        rows(&diagnostics),
+        vec![("src/main.mw", "check.type", 5, 13)]
+    );
 }
 
-/// R14 — the same template named in an annotation. The generic application resolves
+/// the same template named in an annotation. The generic application resolves
 /// its head through the template table, so it reported a subset gap for a template
 /// this project declared.
 #[test]
-fn r14_a_refused_template_steers_its_annotation_to_the_member_report() {
+fn a_refused_template_steers_its_annotation_to_the_member_report() {
     let diagnostics = diagnostics(
         "module main\n\n\
          struct Pair<A, B> {\n\
@@ -993,15 +989,18 @@ fn r14_a_refused_template_steers_its_annotation_to_the_member_report() {
     assert_no_subset_gap(&diagnostics);
     assert_eq!(
         rows(&diagnostics),
-        vec![("check.type", 5, 13), ("check.type", 8, 16)],
+        vec![
+            ("src/main.mw", "check.type", 5, 13),
+            ("src/main.mw", "check.type", 8, 16)
+        ],
     );
 }
 
-/// R25 · named types — a refused nominal still occupies its name, so a redeclaration
+/// named types — a refused nominal still occupies its name, so a redeclaration
 /// conflicts. The duplicate check reads the ledger, which retains the refused
 /// occurrence, rather than the accepted-only table it used to scan.
 #[test]
-fn r25_a_refused_nominal_occupies_its_name() {
+fn a_refused_nominal_occupies_its_name() {
     let diagnostics = diagnostics(
         "module main\n\n\
          type Age: int in 10..=0\n\
@@ -1011,21 +1010,24 @@ fn r25_a_refused_nominal_occupies_its_name() {
          }\n",
     );
 
-    assert!(
-        diagnostics
-            .iter()
-            .any(|row| row.code() == "check.name_conflict"),
+    assert_eq!(
+        rows(&diagnostics),
+        vec![
+            ("src/main.mw", "check.type", 3, 18),
+            ("src/main.mw", "check.name_conflict", 4, 6),
+            ("src/main.mw", "check.type", 6, 16),
+        ],
         "the refused first declaration still holds the name: {:#?}",
         rows(&diagnostics),
     );
 }
 
-/// R25 · roots — a refused store root still occupies its placement name, so a second
+/// roots — a refused store root still occupies its placement name, so a second
 /// store of that name is the repeat it always was. The duplicate check reads the
 /// ledger, which retains the refused occurrence, rather than a list only admitted
 /// roots reach.
 #[test]
-fn r25_a_refused_root_occupies_its_placement_name() {
+fn a_refused_root_occupies_its_placement_name() {
     let diagnostics = diagnostics(
         "module main\n\n\
          resource Widget {\n\
@@ -1044,13 +1046,13 @@ fn r25_a_refused_root_occupies_its_placement_name() {
     );
 }
 
-/// R25 · members — a resource member occupies its name against a repeat. Two
+/// members — a resource member occupies its name against a repeat. Two
 /// members of one name have no unambiguous slot in the record, and a ledger that
 /// retains every occurrence is what lets the repeat be seen at all: accumulating
 /// the members in a plain vector let both through, and the first silently won every
 /// later lookup.
 #[test]
-fn r25_a_resource_member_occupies_its_name() {
+fn a_resource_member_occupies_its_name() {
     let diagnostics = diagnostics(
         "module main\n\n\
          resource Widget {\n\
@@ -1063,23 +1065,21 @@ fn r25_a_resource_member_occupies_its_name() {
          }\n",
     );
 
-    assert!(
-        diagnostics
-            .iter()
-            .any(|row| row.code() == "check.name_conflict"),
+    assert_eq!(
+        rows(&diagnostics),
+        vec![("src/main.mw", "check.name_conflict", 5, 1)],
         "the second member of one name is a repeat, not a second slot: {:#?}",
         messages(&diagnostics),
     );
 }
 
 // ---------------------------------------------------------------------------
-// Function signatures — I-5
+// Function signatures
 //
-// A refused parameter type pushes no parameter, and the signature is pushed
-// anyway with a short parameter list while the image index advances past it.
-// Today `FunctionRegistryOutcome::Refused` withholds the whole registry, so
-// nothing observes either corruption; deleting that suppression (design §3) is
-// what makes both reachable, which is why the fix and the deletion are one row.
+// A signature is refused whole. A parameter type the compiler cannot resolve
+// pushes no parameter, so admitting the short list would report the call as
+// carrying the wrong number of arguments, and the image index must not advance
+// past a signature that was never built.
 // ---------------------------------------------------------------------------
 
 /// The scheduler-ordered red for the truncated-signature arity corruption. A
@@ -1091,7 +1091,7 @@ fn r25_a_resource_member_occupies_its_name() {
 /// reported as an arity mismatch — a fabricated statement about the call, derived
 /// from the compiler's own truncation of the declaration.
 #[test]
-fn i5_a_refused_parameter_type_never_truncates_its_signature() {
+fn a_refused_parameter_type_never_truncates_its_signature() {
     let diagnostics = diagnostics(
         "module main\n\n\
          fn helper(a: Nope, b: int): int {\n\
@@ -1112,7 +1112,10 @@ fn i5_a_refused_parameter_type_never_truncates_its_signature() {
     }
     assert_eq!(
         rows(&diagnostics),
-        vec![("check.unsupported", 3, 14), ("check.unsupported", 8, 12)],
+        vec![
+            ("src/main.mw", "check.unsupported", 3, 14),
+            ("src/main.mw", "check.unsupported", 8, 12)
+        ],
         "the parameter reports the cause and the call is steered to it",
     );
 }
@@ -1189,13 +1192,13 @@ fn a_return_type_refused_behind_an_accepted_duplicate_reports_its_cause_once() {
 // false statements about a file the reader can see.
 // ---------------------------------------------------------------------------
 
-/// R8 — a module whose header disagrees with its path is refused, not absent.
+/// a module whose header disagrees with its path is refused, not absent.
 ///
 /// The import names the refusal instead of denying the module exists, and the
 /// qualified call is steered to the header report rather than told its callee is
 /// out of scope.
 #[test]
-fn r8_a_module_refused_for_its_header_is_not_absent_at_its_import() {
+fn a_module_refused_for_its_header_is_not_absent_at_its_import() {
     let diagnostics = diagnostics_of(&files(&[
         (
             "src/main.mw",
@@ -1221,9 +1224,9 @@ fn r8_a_module_refused_for_its_header_is_not_absent_at_its_import() {
     assert_eq!(
         rows(&diagnostics),
         vec![
-            ("check.module_path", 1, 1),
-            ("check.import", 3, 1),
-            ("check.module_path", 6, 12),
+            ("src/helper.mw", "check.module_path", 1, 1),
+            ("src/main.mw", "check.import", 3, 1),
+            ("src/main.mw", "check.module_path", 6, 12),
         ],
         "the header reports the cause, the import names it, and the call is \
          steered to it: {:#?}",
@@ -1231,7 +1234,7 @@ fn r8_a_module_refused_for_its_header_is_not_absent_at_its_import() {
     );
 }
 
-/// R9 — the same for a module that did not parse. Its cause is the syntax report
+/// the same for a module that did not parse. Its cause is the syntax report
 /// an earlier stage already made, so the import and the call name that report
 /// rather than denying the module or its callee exists.
 ///
@@ -1240,7 +1243,7 @@ fn r8_a_module_refused_for_its_header_is_not_absent_at_its_import() {
 /// stage's failure and never reaches the semantic terminal, so the fabrications
 /// this red kills are the ones an editor is shown.
 #[test]
-fn r9_a_module_refused_for_a_parse_error_is_not_absent_at_its_import() {
+fn a_module_refused_for_a_parse_error_is_not_absent_at_its_import() {
     let diagnostics = analyzed(&[
         (
             "src/main.mw",
@@ -1265,12 +1268,17 @@ fn r9_a_module_refused_for_a_parse_error_is_not_absent_at_its_import() {
     assert_no_absent_module(&diagnostics, "helper");
     let observed = rows(&diagnostics);
     assert_eq!(
-        observed[0].0, "parse.syntax",
-        "the parse stage reports the cause first: {observed:?}",
+        (observed[0].0, observed[0].1),
+        ("src/helper.mw", "parse.syntax"),
+        "the parse stage reports the cause first, in the module it refused: \
+         {observed:?}",
     );
     assert_eq!(
         observed[1..],
-        [("check.import", 3, 1), ("parse.syntax", 6, 12)],
+        [
+            ("src/main.mw", "check.import", 3, 1),
+            ("src/main.mw", "parse.syntax", 6, 12)
+        ],
         "the import names the parse report and the call is steered to it: {:#?}",
         messages(&diagnostics),
     );
@@ -1279,7 +1287,7 @@ fn r9_a_module_refused_for_a_parse_error_is_not_absent_at_its_import() {
 /// The same for a file that is not UTF-8: it never entered parsing, and the stage
 /// that refused it is the decode, so that is the report the steer names.
 #[test]
-fn r9_a_module_refused_for_invalid_utf8_is_not_absent_at_its_import() {
+fn a_module_refused_for_invalid_utf8_is_not_absent_at_its_import() {
     let manifest = Manifest::parse("edition = \"2026\"\n").expect("valid manifest");
     let main = "module main\n\n\
                 use helper\n\n\
@@ -1298,7 +1306,10 @@ fn r9_a_module_refused_for_invalid_utf8_is_not_absent_at_its_import() {
     assert_no_absent_module(&diagnostics, "helper");
     assert_eq!(
         rows(&diagnostics)[1..],
-        [("check.import", 3, 1), ("check.unsupported", 6, 12)],
+        [
+            ("src/main.mw", "check.import", 3, 1),
+            ("src/main.mw", "check.unsupported", 6, 12)
+        ],
         "the import names the decode report and the call is steered to it: {:#?}",
         messages(&diagnostics),
     );
@@ -1318,7 +1329,10 @@ fn a_genuinely_absent_module_is_still_reported_as_absent() {
         .to_string(),
     )]));
 
-    assert_eq!(rows(&diagnostics), vec![("check.import", 3, 1)]);
+    assert_eq!(
+        rows(&diagnostics),
+        vec![("src/main.mw", "check.import", 3, 1)]
+    );
     assert!(
         diagnostics[0]
             .message()
@@ -1340,13 +1354,13 @@ fn assert_no_absent_module(diagnostics: &[SourceDiagnostic], name: &str) {
     }
 }
 
-/// R12 — a refused signature stops its own declaration, not the whole project.
+/// a refused signature stops its own declaration, not the whole project.
 ///
 /// The lane's mutation-kill target: an unrelated body must still lower and report
 /// its own error. Withholding the registry silenced every body in the project, so
 /// one bad annotation hid every other diagnostic behind it.
 #[test]
-fn r12_a_refused_signature_does_not_silence_an_unrelated_body() {
+fn a_refused_signature_does_not_silence_an_unrelated_body() {
     let diagnostics = diagnostics(
         "module main\n\n\
          fn helper(a: Nope): int {\n\
@@ -1359,14 +1373,17 @@ fn r12_a_refused_signature_does_not_silence_an_unrelated_body() {
 
     assert_eq!(
         rows(&diagnostics),
-        vec![("check.unsupported", 3, 14), ("check.type", 8, 12)],
+        vec![
+            ("src/main.mw", "check.unsupported", 3, 14),
+            ("src/main.mw", "check.type", 8, 12)
+        ],
         "the refused signature reports its own cause and the unrelated body still \
          reports its own: {:#?}",
         messages(&diagnostics),
     );
 }
 
-/// R16 — the mutation-kill partner: reusing a cause never lets a body through.
+/// the mutation-kill partner: reusing a cause never lets a body through.
 ///
 /// A `Binding::Refused` lookup fails its body exactly as a `Binding::Absent` one
 /// does. If it ever did not, an unavailable artifact would become available and a
@@ -1374,7 +1391,7 @@ fn r12_a_refused_signature_does_not_silence_an_unrelated_body() {
 /// diagnostic refusal — never a compiled program and never the empty-terminal
 /// invariant.
 #[test]
-fn r16_a_reused_cause_never_admits_the_body_that_reused_it() {
+fn a_reused_cause_never_admits_the_body_that_reused_it() {
     let source = "module main\n\n\
                   fn helper(a: Nope): int {\n\
                   \x20   return 1\n\
@@ -1387,7 +1404,10 @@ fn r16_a_reused_cause_never_admits_the_body_that_reused_it() {
             let diagnostics: Vec<SourceDiagnostic> = diagnostics.into_iter().collect();
             assert_eq!(
                 rows(&diagnostics),
-                vec![("check.unsupported", 3, 14), ("check.unsupported", 8, 12)],
+                vec![
+                    ("src/main.mw", "check.unsupported", 3, 14),
+                    ("src/main.mw", "check.unsupported", 8, 12)
+                ],
                 "the call reuses the signature's cause and still refuses: {:#?}",
                 messages(&diagnostics),
             );
@@ -1403,11 +1423,11 @@ fn r16_a_reused_cause_never_admits_the_body_that_reused_it() {
 // name, so every use in the body reports a fabricated absence — once per use.
 // ---------------------------------------------------------------------------
 
-/// R23 — the non-generic path, unmasked by deleting the whole-registry
+/// the non-generic path, unmasked by deleting the whole-registry
 /// suppression. This red exists to prove R12 introduced no regression: with every
 /// body now lowering, a refused parameter must not make its own name unknown.
 #[test]
-fn r23_a_refused_parameter_is_not_out_of_scope_in_its_own_body() {
+fn a_refused_parameter_is_not_out_of_scope_in_its_own_body() {
     let diagnostics = diagnostics(
         "module main\n\n\
          fn helper(p: Nope, t: int): int {\n\
@@ -1423,16 +1443,16 @@ fn r23_a_refused_parameter_is_not_out_of_scope_in_its_own_body() {
     assert_never_out_of_scope(&diagnostics, "p");
     assert_eq!(
         rows(&diagnostics),
-        vec![("check.unsupported", 3, 14)],
+        vec![("src/main.mw", "check.unsupported", 3, 14)],
         "the parameter type reports the cause and its uses reuse it: {:#?}",
         messages(&diagnostics),
     );
 }
 
-/// R22 — the generic path, which bypasses the signature registry and so amplified
+/// the generic path, which bypasses the signature registry and so amplified
 /// per use today. Two uses of the refused parameter add no further row.
 #[test]
-fn r22_a_refused_generic_parameter_is_reported_once_not_once_per_use() {
+fn a_refused_generic_parameter_is_reported_once_not_once_per_use() {
     let diagnostics = diagnostics(
         "module main\n\n\
          fn helper<T>(p: Nope, t: T): int {\n\
@@ -1449,7 +1469,7 @@ fn r22_a_refused_generic_parameter_is_reported_once_not_once_per_use() {
     assert_eq!(
         rows(&diagnostics)
             .iter()
-            .filter(|(_, line, _)| *line == 4 || *line == 5)
+            .filter(|(_, _, line, _)| *line == 4 || *line == 5)
             .count(),
         0,
         "the two uses of the refused parameter add no row of their own: {:#?}",
@@ -1457,7 +1477,7 @@ fn r22_a_refused_generic_parameter_is_reported_once_not_once_per_use() {
     );
     assert_eq!(
         rows(&diagnostics)[0],
-        ("check.unsupported", 3, 17),
+        ("src/main.mw", "check.unsupported", 3, 17),
         "the parameter type reports the cause once, at its own span: {:#?}",
         messages(&diagnostics),
     );
@@ -1486,10 +1506,12 @@ fn a_nested_group_repeating_a_member_name_is_a_name_conflict() {
          }\n",
     );
 
-    assert!(
-        diagnostics
-            .iter()
-            .any(|row| row.code() == "check.name_conflict"),
+    assert_eq!(
+        rows(&diagnostics),
+        vec![
+            ("src/main.mw", "check.name_conflict", 7, 1),
+            ("src/main.mw", "check.type", 14, 15),
+        ],
         "the nested group repeats `body`, which the group already declares: {:#?}",
         messages(&diagnostics),
     );
@@ -1503,7 +1525,7 @@ fn a_nested_group_repeating_a_member_name_is_a_name_conflict() {
 // binding refused for its annotation was unknown at every use — once per use.
 // ---------------------------------------------------------------------------
 
-/// R24's local sibling: a binding refused for its type annotation is not out of
+/// A binding refused for its type annotation is not out of
 /// scope at its uses, and the two uses add no row of their own.
 #[test]
 fn a_binding_refused_for_its_annotation_is_not_out_of_scope_at_its_uses() {
@@ -1520,7 +1542,7 @@ fn a_binding_refused_for_its_annotation_is_not_out_of_scope_at_its_uses() {
     assert_never_out_of_scope(&diagnostics, "x");
     assert_eq!(
         rows(&diagnostics),
-        vec![("check.unsupported", 4, 14)],
+        vec![("src/main.mw", "check.unsupported", 4, 14)],
         "the annotation reports the cause and its uses reuse it: {:#?}",
         messages(&diagnostics),
     );
