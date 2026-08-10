@@ -128,6 +128,30 @@ fn client_emits_the_kinded_stderr_line_and_no_stdout() {
     );
 }
 
+/// `check` names the exhausted bound in the same words its stderr siblings use. It
+/// reported only that the project could not be checked, which is the outcome, not the
+/// cause: a reader had no way to tell an exhausted bound from any other refusal.
+#[test]
+fn check_emits_the_same_kinded_stderr_line_as_its_siblings() {
+    let dir = TempDir::new("check-stderr");
+    over_bound_project(&dir.root);
+    let checked = run_in(&dir.root, &["check", "."]);
+    assert!(!checked.status.success());
+    let checked_stderr = String::from_utf8(checked.stderr).expect("utf8 stderr");
+    assert_eq!(
+        checked_stderr,
+        "cli.compiler_resource_limit: the compiler reached a fixed resource limit: the \
+         function table is full\n"
+    );
+
+    let generated = run_in(&dir.root, &["client", "typescript"]);
+    assert_eq!(
+        checked_stderr,
+        String::from_utf8(generated.stderr).expect("utf8 stderr"),
+        "one bound must read the same whichever command reports it on stderr"
+    );
+}
+
 /// A9: single-file `marrow fmt` admits at most the compiler's `ProjectFileBytes`
 /// module byte limit, refusing with that admission's exact typed code from the stat
 /// alone — before any open, read, or allocation. The oversized target is unreadable

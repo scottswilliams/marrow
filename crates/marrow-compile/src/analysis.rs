@@ -123,6 +123,37 @@ pub enum AnalysisResourceLimit {
     ActiveCallRenderBytes { limit: u64 },
 }
 
+impl AnalysisResourceLimit {
+    /// The sentence fragment a person reads for the exhausted bound, lowercase and
+    /// unpunctuated. A compile-side bound answers in
+    /// [`ResourceLimitKind`](crate::ResourceLimitKind)'s own words, so one bound reads
+    /// the same whichever owner reports it. No Rust variant name reaches a reader.
+    pub fn description(&self) -> &'static str {
+        match self {
+            AnalysisResourceLimit::Compile(limit) => limit.kind().description(),
+            AnalysisResourceLimit::SnapshotFactCount { .. } => "the analysis fact table is full",
+            AnalysisResourceLimit::SnapshotFactBytes { .. } => {
+                "the analysis facts hold too much text to retain"
+            }
+            AnalysisResourceLimit::DocumentSymbolCount { .. } => {
+                "one file declares too many symbols"
+            }
+            AnalysisResourceLimit::DocumentSymbolDepth { .. } => {
+                "one file's declarations are nested too deeply"
+            }
+            AnalysisResourceLimit::CompletionCandidateCount { .. } => {
+                "one completion query has too many candidates"
+            }
+            AnalysisResourceLimit::CompletionRenderBytes { .. } => {
+                "one completion query renders too much text"
+            }
+            AnalysisResourceLimit::ActiveCallRenderBytes { .. } => {
+                "one signature query renders too much text"
+            }
+        }
+    }
+}
+
 /// Why analysis produced no snapshot. Both arms echo the caller revision exactly and
 /// carry no source-shaped payload. `Invariant` dominates a diagnostic set; a resource
 /// limit surfaces only when no invariant and no complete diagnostic set exist.

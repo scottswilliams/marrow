@@ -160,13 +160,27 @@ fn term_paint(style: Style, text: &str) -> String {
 
 /// A fixed analysis-floor failure with no diagnostic to report: an aggregate bound or an
 /// opaque compiler-coherence failure. Reported as one fixed code line with no location.
+/// An exhausted bound names itself in the bound owner's own words, as `image` and
+/// `client` report it; an opaque invariant has nothing to name.
 fn report_analysis_failure(failure: &AnalysisFailure) -> ExitCode {
-    let code = match failure {
-        AnalysisFailure::ResourceLimit { .. } => Code::CliCompilerResourceLimit,
-        AnalysisFailure::Invariant { .. } => Code::CliCompilerInvariant,
-    };
-    report_simple_error(code.as_str(), "the project could not be checked");
+    match failure {
+        AnalysisFailure::ResourceLimit { limit, .. } => report_simple_error(
+            Code::CliCompilerResourceLimit.as_str(),
+            &resource_limit_message(limit.description()),
+        ),
+        AnalysisFailure::Invariant { .. } => report_simple_error(
+            Code::CliCompilerInvariant.as_str(),
+            "the project could not be checked",
+        ),
+    }
     ExitCode::FAILURE
+}
+
+/// The stderr sentence naming an exhausted fixed bound, in the words `image` and
+/// `client` print. `run` and `test` report the same bound as an operational record on
+/// stdout, whose text projection is the description alone.
+fn resource_limit_message(description: &str) -> String {
+    format!("the compiler reached a fixed resource limit: {description}")
 }
 
 /// A compile failure on the clean-analysis path. A clean floor makes the diagnostic arm
@@ -179,9 +193,9 @@ fn report_compile_failure(failure: &CompileFailure) -> ExitCode {
                 eprintln!("{}", diagnostic_line(diagnostic));
             }
         }
-        CompileFailure::ResourceLimit(_) => report_simple_error(
+        CompileFailure::ResourceLimit(limit) => report_simple_error(
             Code::CliCompilerResourceLimit.as_str(),
-            "the project could not be checked",
+            &resource_limit_message(limit.kind().description()),
         ),
         CompileFailure::Invariant(_) => report_simple_error(
             Code::CliCompilerInvariant.as_str(),
