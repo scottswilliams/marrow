@@ -115,14 +115,15 @@ fn source_diagnostic_fields_stay_private() {
     let body = diag
         .split_once("pub struct SourceDiagnostic {")
         .expect("the public diagnostic type is declared")
-        .1
-        .split_once('}')
-        .expect("the declaration is closed")
-        .0;
+        .1;
+    // The declaration ends at the first line that is exactly the closing brace, so a
+    // doc comment or attribute containing `}` cannot truncate the field list and let a
+    // newly added public field pass unseen.
     let fields: Vec<&str> = body
         .lines()
         .map(str::trim)
-        .filter(|line| !line.is_empty() && !line.starts_with("//"))
+        .take_while(|line| *line != "}")
+        .filter(|line| !line.is_empty() && !line.starts_with("//") && !line.starts_with("#["))
         .map(|line| {
             line.split_once(':')
                 .expect("a struct field declares a type")
@@ -134,6 +135,26 @@ fn source_diagnostic_fields_stay_private() {
         ["file", "payload"],
         "the privacy doctests in lib.rs name these exact fields; update them together"
     );
+
+    // The doctests are the enforcement; this gate only pins the names they must use,
+    // so assert they actually name each declared field rather than trusting the note.
+    let lib = fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("src")
+            .join("lib.rs"),
+    )
+    .expect("read the crate root");
+    let doctests = lib
+        .split_once("pub mod source_diagnostic_privacy_doctests {")
+        .expect("the privacy doctest module is declared")
+        .1;
+    for field in fields {
+        assert!(
+            doctests.contains(&format!("diagnostic.{field}")),
+            "the privacy doctests must read `diagnostic.{field}`, or a renamed field \
+             silently loses its compile_fail proof"
+        );
+    }
 }
 
 /// The collector is one concrete private type: no generic collector or the
