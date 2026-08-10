@@ -12,7 +12,7 @@ use crate::diagnostic::{SyntaxError, SyntaxErrorSink};
 use crate::token::{is_trivia, is_unfixed_duration_unit};
 use crate::{
     Argument, BinaryOp, CompoundAssignOp, DiagnosticReason, ExpectedSyntax, Expression,
-    InterpolationPart, Keyword, LiteralKind, NESTING_DEPTH_LIMIT, NESTING_LIMIT, PARSE_SYNTAX,
+    InterpolationPart, Keyword, LiteralKind, NESTING_DEPTH_LIMIT,
     ParseDiagnosticReason, Recovery, SourceSpan, Token, TokenKind, UnaryOp, UnsupportedSyntax,
     duration_unit_seconds, is_expression_callable_keyword, is_expression_path_segment_keyword,
 };
@@ -75,7 +75,7 @@ pub(crate) struct ExprParser<'a> {
     /// How deep the recursive descent currently is. Each parenthesized,
     /// unary-operand, or interpolated sub-expression descends one level;
     /// exceeding [`NESTING_DEPTH_LIMIT`] stops the recursion with a located
-    /// [`NESTING_LIMIT`] error before the native stack can overflow.
+    /// [`crate::NESTING_LIMIT`] error before the native stack can overflow.
     depth: usize,
     /// The zero-width position to report a missing operand when nothing has been
     /// consumed yet — just past the `=`/keyword/operator the caller stripped, or
@@ -183,8 +183,7 @@ impl<'a> ExprParser<'a> {
         help: Option<String>,
     ) {
         self.sink.push(SyntaxError::new(
-            PARSE_SYNTAX,
-            DiagnosticReason::Parser(reason),
+                        DiagnosticReason::Parser(reason),
             message,
             help,
             span,
@@ -254,7 +253,7 @@ impl<'a> ExprParser<'a> {
     /// single `expression` call descends one logical level; the recursive entries
     /// — a parenthesized sub-expression, a unary operand, and an interpolated
     /// expression — each route through here, so deeply nested source stops with a
-    /// located [`NESTING_LIMIT`] error at the offending token rather than
+    /// located [`crate::NESTING_LIMIT`] error at the offending token rather than
     /// overflowing the stack. The counter is decremented on the way back up so a
     /// wide-but-shallow expression is never penalized.
     fn descend(&mut self, parse: impl FnOnce(&mut Self) -> Expression) -> Expression {
@@ -310,8 +309,7 @@ impl<'a> ExprParser<'a> {
                 |token| token.span,
             );
         self.sink.push(SyntaxError::new(
-            NESTING_LIMIT,
-            DiagnosticReason::Parser(ParseDiagnosticReason::NestingLimit),
+                        DiagnosticReason::Parser(ParseDiagnosticReason::NestingLimit),
             format!("expression nests deeper than the limit of {NESTING_DEPTH_LIMIT}"),
             None,
             span,

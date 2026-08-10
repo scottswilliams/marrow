@@ -10,7 +10,7 @@ use crate::token::{
 };
 use crate::{
     DiagnosticReason, Keyword, LexedSource, LexerDiagnosticReason, NESTING_DEPTH_LIMIT,
-    NESTING_LIMIT, ObsoleteOperator, PARSE_SYNTAX, ParseDiagnosticReason, SourceSpan, Token,
+    ObsoleteOperator, ParseDiagnosticReason, SourceSpan, Token,
     TokenKind,
 };
 
@@ -61,11 +61,11 @@ struct Lexer<'a, 'c> {
     open_delimiters: usize,
     /// Open `{` block depth, the brace analogue of the removed indent stack. A `{`
     /// that would open a block deeper than [`NESTING_DEPTH_LIMIT`] reports
-    /// [`NESTING_LIMIT`]; braces do not suppress `NEWLINE` (statements end at the
+    /// [`crate::NESTING_LIMIT`]; braces do not suppress `NEWLINE` (statements end at the
     /// line break inside a block).
     brace_depth: usize,
     /// Set once the brace nesting limit is first crossed, so a run of over-deep
-    /// braces reports [`NESTING_LIMIT`] a single time rather than per brace.
+    /// braces reports [`crate::NESTING_LIMIT`] a single time rather than per brace.
     reported_nesting_limit: bool,
 }
 
@@ -158,8 +158,7 @@ impl<'a, 'c> Lexer<'a, 'c> {
         }
         self.reported_nesting_limit = true;
         self.sink.push(SyntaxError::new(
-            NESTING_LIMIT,
-            DiagnosticReason::Parser(ParseDiagnosticReason::NestingLimit),
+                        DiagnosticReason::Parser(ParseDiagnosticReason::NestingLimit),
             format!("source nests deeper than the limit of {NESTING_DEPTH_LIMIT}"),
             None,
             span,
@@ -525,8 +524,7 @@ impl<'a, 'c> Lexer<'a, 'c> {
     /// anchored at the over-deep opener rather than the enclosing hole.
     fn report_interpolation_nesting_limit(&mut self, line: Line<'a>, offending: usize) {
         self.sink.push(SyntaxError::new(
-            NESTING_LIMIT,
-            DiagnosticReason::Parser(ParseDiagnosticReason::NestingLimit),
+                        DiagnosticReason::Parser(ParseDiagnosticReason::NestingLimit),
             format!("interpolation nests deeper than the limit of {NESTING_DEPTH_LIMIT}"),
             None,
             self.span(line, offending, line.end_byte),
@@ -879,8 +877,7 @@ impl<'a, 'c> Lexer<'a, 'c> {
         help: Option<String>,
     ) {
         self.sink.push(SyntaxError::new(
-            PARSE_SYNTAX,
-            DiagnosticReason::Lexer(reason),
+                        DiagnosticReason::Lexer(reason),
             message,
             help,
             span,

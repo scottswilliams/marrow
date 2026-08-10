@@ -117,6 +117,23 @@ fn the_collector_is_concrete_not_generic() {
     }
 }
 
+/// The code is derived from the typed reason at the one error constructor, so
+/// a code/reason mismatch is unrepresentable rather than merely unwritten: no
+/// production site passes a code beside a reason.
+#[test]
+fn the_error_constructor_derives_its_code_from_the_reason() {
+    let sources = production_sources();
+    let all: String = sources.iter().map(|(_, text)| text.as_str()).collect();
+    assert!(
+        all.contains("pub(crate) fn new(\n        reason: DiagnosticReason,"),
+        "expected the reason-first error constructor; if it was renamed, update this scan"
+    );
+    assert!(
+        all.contains("code: reason.code(),"),
+        "expected the derived code; if the mapping moved, update this scan"
+    );
+}
+
 /// The compiler owns invalid UTF-8: every syntax entry point takes `&str`, so
 /// non-UTF-8 input is unrepresentable to this crate by API shape. The pinned
 /// signatures keep that contract conspicuous against a byte-slice entry point.

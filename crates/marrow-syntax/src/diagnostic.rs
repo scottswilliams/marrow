@@ -134,15 +134,16 @@ impl NonEmptyCompleteSyntaxDiagnostics {
 pub(crate) struct SyntaxError(Diagnostic);
 
 impl SyntaxError {
+    /// The code is derived from the typed reason, never passed beside it: the
+    /// reason owns the mapping, so a code/reason mismatch is unrepresentable.
     pub(crate) fn new(
-        code: &'static str,
         reason: DiagnosticReason,
         message: impl Into<String>,
         help: Option<String>,
         span: SourceSpan,
     ) -> Self {
         Self(Diagnostic {
-            code,
+            code: reason.code(),
             reason,
             severity: Severity::Error,
             message: message.into(),
@@ -161,6 +162,16 @@ impl SyntaxError {
 }
 
 impl DiagnosticReason {
+    /// The dotted code a diagnostic carrying this reason renders under. Every
+    /// lexical finding is `parse.syntax`; a declaration-parser reason maps
+    /// through [`ParseDiagnosticReason::code`].
+    fn code(&self) -> &'static str {
+        match self {
+            Self::Lexer(_) => crate::PARSE_SYNTAX,
+            Self::Parser(reason) => reason.code(),
+        }
+    }
+
     /// Heap bytes owned by the reason payload. Every current variant carries
     /// only `Copy` data, so the charge is zero; the exhaustive matches force a
     /// future owning variant to declare its charge here.
@@ -347,6 +358,9 @@ impl SyntaxDiagnosticCollector {
     /// Consume the owner into its bounded result: the stable
     /// `(line, start, producer rank, ordinal)` sort makes position dominate
     /// with lexer-first ties, and unwraps each row's error-fixed diagnostic.
+    /// This is the one ordering owner for every entry point, so a lexing-only
+    /// entry point reports position order too: raw emission order is not
+    /// observable anywhere on the public surface.
     pub(crate) fn finish(self) -> SyntaxDiagnostics {
         match self.state {
             CollectorState::Retaining {
