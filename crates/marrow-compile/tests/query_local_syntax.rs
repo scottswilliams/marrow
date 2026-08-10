@@ -312,6 +312,23 @@ fn expression_charge() -> usize {
     GROWTH * size_of::<Expression>() + own
 }
 
+/// The largest charge in a `(kind, bytes, source bytes)` table, per source byte, taken
+/// with `div_ceil` so integer division never rounds a charge down.
+fn worst_charge(charges: Vec<(&'static str, usize, usize)>, floor: usize) -> usize {
+    charges
+        .into_iter()
+        .map(|(_, bytes, source_bytes)| bytes.div_ceil(source_bytes))
+        .fold(floor, usize::max)
+}
+
+/// The heap one content byte of a statement line can buy: the densest expression node,
+/// or any other kind a statement line holds, whichever is larger. Taking the maximum
+/// makes the accounting sound by construction rather than by the assertion below, which
+/// records that the expression node is in fact the one that wins.
+fn content_byte_charge() -> usize {
+    worst_charge(statement_line_content_charges(), expression_charge())
+}
+
 /// The heap one source byte of a block of statements can buy.
 ///
 /// A `Statement` is the widest node the parser stores in a vector, and it is stored in
@@ -319,27 +336,36 @@ fn expression_charge() -> usize {
 /// spends on one statement — no two statements share a line, `statements` never builds
 /// one from an empty line, and every statement is closed either by its own newline or by
 /// its block's `}` — so a statement line of `L` bytes charges one statement slot plus
-/// `L - 1` content bytes at the expression rate. That is largest at `L = 2`.
+/// `L - 1` content bytes at the content rate. That is largest at `L = 2`.
 fn statement_line_charge() -> usize {
-    (GROWTH * size_of::<Statement>() + expression_charge()) / 2
+    (GROWTH * size_of::<Statement>() + content_byte_charge()) / 2
+}
+
+/// The heap one source byte of a file can buy: a statement line, or anything the parser
+/// builds outside one, whichever is larger.
+fn source_byte_charge() -> usize {
+    worst_charge(declaration_level_charges(), statement_line_charge())
 }
 
 /// Everything else a statement line can hold, with what its slot and own allocations
-/// cost and the source bytes the grammar makes it pay for exclusively — a separator, a
-/// keyword, or its own name token. Each must charge no more per byte than the densest
-/// expression node, which is what licenses charging every content byte at that one rate.
+/// cost and the fewest source bytes the grammar admits for one. Each minimum is the
+/// construct's own spelling, exclusive of any child node's bytes.
 fn statement_line_content_charges() -> Vec<(&'static str, usize, usize)> {
     vec![
+        // A sole positional argument carries no separator of its own, so it is charged
+        // against the first byte of its own value — deliberately double-charged.
         (
             "Argument",
             GROWTH * size_of::<Argument>() + string_bytes(1),
-            2,
+            1,
         ),
+        // `a:b`: the type annotation is mandatory, not an `Option`.
         (
             "KeyParam",
-            GROWTH * size_of::<KeyParam>() + string_bytes(1) + vec_bytes::<SourceSpan>(1),
-            2,
+            GROWTH * size_of::<KeyParam>() + string_bytes(1),
+            3,
         ),
+        // A member-path name and its own block.
         (
             "MatchArm",
             GROWTH * size_of::<MatchArm>()
@@ -348,7 +374,9 @@ fn statement_line_content_charges() -> Vec<(&'static str, usize, usize)> {
                 + string_bytes(1),
             3,
         ),
-        ("ElseIf", GROWTH * size_of::<ElseIf>(), 4),
+        // `else if`.
+        ("ElseIf", GROWTH * size_of::<ElseIf>(), 7),
+        // The `const` keyword each chained binding carries.
         (
             "IfConstBinding",
             GROWTH * size_of::<IfConstBinding>() + string_bytes(1),
@@ -357,22 +385,23 @@ fn statement_line_content_charges() -> Vec<(&'static str, usize, usize)> {
         (
             "ArmBinding",
             GROWTH * size_of::<ArmBinding>() + string_bytes(1),
-            2,
+            1,
         ),
         (
             "ForName",
             GROWTH * size_of::<ForName>() + string_bytes(1),
-            2,
+            1,
         ),
+        // The `//` marker.
         (
             "Comment",
             GROWTH * size_of::<Comment>() + string_bytes(1),
-            3,
+            2,
         ),
         (
             "TypeExpr",
             GROWTH * size_of::<TypeExpr>() + string_bytes(1),
-            2,
+            1,
         ),
         (
             "InterpolationPart",
@@ -383,9 +412,7 @@ fn statement_line_content_charges() -> Vec<(&'static str, usize, usize)> {
     ]
 }
 
-/// Everything the parser builds outside a statement line, on the same terms. Each is
-/// introduced by a keyword or its own name token, and each must charge no more per byte
-/// than a statement line, which is what makes the statement line the maximum.
+/// Everything the parser builds outside a statement line, on the same terms.
 fn declaration_level_charges() -> Vec<(&'static str, usize, usize)> {
     vec![
         // The shortest declaration keyword is `fn`.
@@ -394,6 +421,7 @@ fn declaration_level_charges() -> Vec<(&'static str, usize, usize)> {
             GROWTH * size_of::<Declaration>() + string_bytes(1),
             2,
         ),
+        // `use`.
         (
             "UseDecl",
             GROWTH * size_of::<UseDecl>() + string_bytes(1) + vec_bytes::<SourceSpan>(1),
@@ -412,17 +440,17 @@ fn declaration_level_charges() -> Vec<(&'static str, usize, usize)> {
         (
             "EnumPayloadField",
             GROWTH * size_of::<EnumPayloadField>() + string_bytes(1),
-            2,
+            1,
         ),
         (
             "ParamDecl",
             GROWTH * size_of::<ParamDecl>() + string_bytes(1),
-            2,
+            1,
         ),
         (
             "TypeParamDecl",
             GROWTH * size_of::<TypeParamDecl>() + string_bytes(1),
-            2,
+            1,
         ),
         // `index` is the keyword an index declaration pays for exclusively.
         (
@@ -456,7 +484,7 @@ fn diagnostic_charge() -> usize {
 /// The accounted worst case of one query-local parse.
 fn accounted_query_parse_transient() -> usize {
     MAX_ADMITTED_FILE_BYTES
-        * (statement_line_charge() + LIVE_TOKEN_VECTORS * GROWTH * size_of::<Token>())
+        * (source_byte_charge() + LIVE_TOKEN_VECTORS * GROWTH * size_of::<Token>())
         + diagnostic_charge()
 }
 
@@ -968,23 +996,21 @@ fn container_growth_stays_within_the_accounted_factor() {
 #[test]
 fn the_query_parse_transient_closes_under_the_exported_term() {
     let expression = expression_charge();
-    for (kind, bytes, source_bytes) in statement_line_content_charges() {
-        assert!(
-            bytes / source_bytes <= expression,
-            "{kind} charges {} bytes per source byte, over the {expression} a statement \
-             line's content bytes are charged at",
-            bytes / source_bytes
-        );
-    }
+    assert_eq!(
+        content_byte_charge(),
+        expression,
+        "a statement line now holds something denser per byte than an expression node; \
+         the derivation still closes over it, but the prose naming the expression node \
+         as the densest content is stale"
+    );
     let line = statement_line_charge();
-    for (kind, bytes, source_bytes) in declaration_level_charges() {
-        assert!(
-            bytes / source_bytes <= line,
-            "{kind} charges {} bytes per source byte, over the {line} a statement line \
-             charges, so the statement line is no longer the maximum",
-            bytes / source_bytes
-        );
-    }
+    assert_eq!(
+        source_byte_charge(),
+        line,
+        "something outside a statement line now charges more per byte than one; the \
+         derivation still closes over it, but the prose naming the statement line as \
+         the maximum is stale"
+    );
     assert_eq!(
         expression, 376,
         "the densest expression node's charge moved"

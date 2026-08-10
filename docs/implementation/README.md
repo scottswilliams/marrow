@@ -132,10 +132,12 @@ three steps. A `Statement` is the widest node the parser stores in a vector, and
 the grammar spends at least two source bytes on one — a content byte and a line
 terminator no other statement uses — so one source byte buys at most half a
 statement slot plus one content byte. A content byte buys at most one expression
-node in its widest placement plus that node's own allocations; every other kind a
-statement line can hold, and every kind outside one, charges less per byte, which
-is asserted rather than argued. The tokens and the collector are live beside the
-tree. Multiplying by the 1 MiB per-file admission ceiling gives the figure.
+node in its widest placement plus that node's own allocations; the rate is taken
+as the maximum over that node and every other kind a statement line can hold, and
+the file rate as the maximum over the statement line and everything outside one,
+so the accounting is sound by construction. The tokens and the collector are live
+beside the tree. Multiplying by the 1 MiB per-file admission ceiling gives the
+figure.
 
 Three properties of this term matter to a consumer. It charges allocated
 capacity, so a `maximum resident set size` sample is a floor and not a check —
