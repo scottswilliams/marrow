@@ -1821,7 +1821,7 @@ mod completion {
         match statement {
             Statement::Const { name, ty, .. } | Statement::Var { name, ty, .. } => Some(Binding {
                 name: name.clone(),
-                ty: ty.as_ref(),
+                ty: ty.as_deref(),
             }),
             Statement::PlaceBinding { name, .. } => Some(Binding {
                 name: name.clone(),
@@ -1829,13 +1829,13 @@ mod completion {
             }),
             Statement::LetElse { name, ty, .. } => Some(Binding {
                 name: name.clone(),
-                ty: ty.as_ref(),
+                ty: ty.as_deref(),
             }),
             Statement::Checked { bind, .. } => match bind {
                 marrow_syntax::CheckedBind::Const { name, ty, .. }
                 | marrow_syntax::CheckedBind::Var { name, ty, .. } => Some(Binding {
                     name: name.clone(),
-                    ty: ty.as_ref(),
+                    ty: ty.as_deref(),
                 }),
                 marrow_syntax::CheckedBind::Return => None,
             },
@@ -1930,7 +1930,7 @@ mod completion {
                 if contains(then_block.span, offset) {
                     scope.locals.push(Binding {
                         name: name.clone(),
-                        ty: ty.as_ref(),
+                        ty: ty.as_deref(),
                     });
                     return locate_block(then_block, offset, scope);
                 }

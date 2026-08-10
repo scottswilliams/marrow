@@ -376,7 +376,7 @@ fn format_const(decl: &ConstDecl) -> String {
     out.push_str(&format!(
         "const {}{} = {}",
         decl.name,
-        format_type_annotation(&decl.ty),
+        format_type_annotation(decl.ty.as_ref()),
         format_opt_expression_at(decl.value.as_ref(), 0)
     ));
     out
@@ -723,7 +723,7 @@ fn format_function(source: &str, decl: &FunctionDecl) -> String {
         decl.name,
         format_type_params(&decl.type_params),
         format_params(&decl.params),
-        format_type_annotation(&decl.return_type)
+        format_type_annotation(decl.return_type.as_ref())
     ));
     append_braced_body(
         &mut out,
@@ -1125,7 +1125,7 @@ fn format_statement_with_comments(
             name, ty, value, ..
         } => format!(
             "{pad}const {name}{} = {}",
-            format_type_annotation(ty),
+            format_type_annotation(ty.as_deref()),
             format_expression_at(value, level)
         ),
         Statement::Var {
@@ -1142,7 +1142,7 @@ fn format_statement_with_comments(
             format!(
                 "{pad}var {name}{}{}{value}",
                 format_key_params(keys),
-                format_type_annotation(ty),
+                format_type_annotation(ty.as_deref()),
             )
         }
         Statement::Assign { target, value, .. } => match compound_assign_fold(target, value) {
@@ -1225,7 +1225,7 @@ fn format_statement_with_comments(
             return format_if_const(
                 ctx,
                 name,
-                ty,
+                ty.as_deref(),
                 value,
                 then_block,
                 else_ifs,
@@ -1265,7 +1265,7 @@ fn format_statement_with_comments(
                 *order,
                 iterable,
                 step.as_ref(),
-                bound.as_ref(),
+                bound.as_deref(),
                 body,
             );
         }
@@ -1352,7 +1352,7 @@ fn format_statement_with_comments(
                 comments,
                 level,
             };
-            return format_let_else(ctx, *is_var, name, ty, value, else_block);
+            return format_let_else(ctx, *is_var, name, ty.as_deref(), value, else_block);
         }
         // The formatter is invoked on parsed source and the CLI gates emission on
         // `!has_errors`, so this renders only in a best-effort `format_source` over
@@ -1389,7 +1389,7 @@ fn format_if(
 fn format_if_const(
     ctx: StatementFormatContext<'_, '_>,
     name: &str,
-    ty: &Option<TypeExpr>,
+    ty: Option<&TypeExpr>,
     value: &Expression,
     then_block: &Block,
     else_ifs: &[ElseIf],
@@ -1430,7 +1430,7 @@ fn format_if_const_chain(
             format!(
                 "const {}{} = {}",
                 binding.name,
-                format_type_annotation(&binding.ty),
+                format_type_annotation(binding.ty.as_ref()),
                 format_expression_at(&binding.value, ctx.level)
             )
         })
@@ -1455,7 +1455,7 @@ fn format_let_else(
     ctx: StatementFormatContext<'_, '_>,
     is_var: bool,
     name: &str,
-    ty: &Option<TypeExpr>,
+    ty: Option<&TypeExpr>,
     value: &Expression,
     else_block: &Block,
 ) -> String {
@@ -1638,10 +1638,10 @@ fn format_checked(
     let pad = INDENT.repeat(ctx.level);
     let prefix = match bind {
         CheckedBind::Const { name, ty, .. } => {
-            format!("const {name}{} = ", format_type_annotation(ty))
+            format!("const {name}{} = ", format_type_annotation(ty.as_deref()))
         }
         CheckedBind::Var { name, ty, .. } => {
-            format!("var {name}{} = ", format_type_annotation(ty))
+            format!("var {name}{} = ", format_type_annotation(ty.as_deref()))
         }
         CheckedBind::Return => "return ".to_string(),
     };
@@ -1676,7 +1676,7 @@ fn format_checked(
     out
 }
 
-fn format_type_annotation(ty: &Option<TypeExpr>) -> String {
+fn format_type_annotation(ty: Option<&TypeExpr>) -> String {
     match ty {
         Some(ty) => format!(": {ty}"),
         None => String::new(),

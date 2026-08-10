@@ -43,7 +43,7 @@ impl<'a> FnLowerer<'a> {
             Statement::Const {
                 name, ty, value, ..
             } => {
-                self.lower_binding(name, ty.as_ref(), value, false);
+                self.lower_binding(name, ty.as_deref(), value, false);
                 Flow::Fallthrough
             }
             Statement::Var {
@@ -66,7 +66,7 @@ impl<'a> FnLowerer<'a> {
                     ));
                     return Flow::Fallthrough;
                 };
-                self.lower_binding(name, ty.as_ref(), value, true);
+                self.lower_binding(name, ty.as_deref(), value, true);
                 Flow::Fallthrough
             }
             Statement::Assign { target, value, .. } => {
@@ -122,7 +122,7 @@ impl<'a> FnLowerer<'a> {
                 ..
             } => self.lower_if_const(
                 name,
-                ty.as_ref(),
+                ty.as_deref(),
                 value,
                 then_block,
                 else_ifs,
@@ -155,7 +155,7 @@ impl<'a> FnLowerer<'a> {
                 value,
                 else_block,
                 ..
-            } => self.lower_let_else(*is_var, name, ty.as_ref(), value, else_block),
+            } => self.lower_let_else(*is_var, name, ty.as_deref(), value, else_block),
             Statement::Require {
                 condition,
                 value,
@@ -177,7 +177,7 @@ impl<'a> FnLowerer<'a> {
                 *order,
                 iterable,
                 step.as_ref(),
-                bound.as_ref(),
+                bound.as_deref(),
                 body,
                 *span,
             ),
@@ -2741,7 +2741,7 @@ impl<'a> FnLowerer<'a> {
         match bind {
             CheckedBind::Const { name, ty, .. } | CheckedBind::Var { name, ty, .. } => {
                 let mutable = matches!(bind, CheckedBind::Var { .. });
-                let target = self.coerce_int_result(ty.as_ref(), int, span)?;
+                let target = self.coerce_int_result(ty.as_deref(), int, span)?;
                 let slot = self.alloc_slot(span)?;
                 self.push(Instr::LocalSet(slot), span);
                 Some(Local {

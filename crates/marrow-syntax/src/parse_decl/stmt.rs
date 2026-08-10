@@ -387,10 +387,12 @@ impl<'a, 'c> StmtParser<'a, 'c> {
                 if let Some(block) = &on_more {
                     end = block.span;
                 }
-                let bound = bound_head.map(|(limit, from)| TraversalBound {
-                    limit,
-                    from,
-                    on_more,
+                let bound = bound_head.map(|(limit, from)| {
+                    Box::new(TraversalBound {
+                        limit,
+                        from,
+                        on_more,
+                    })
                 });
                 Some(Statement::For {
                     binding,
@@ -576,7 +578,7 @@ impl<'a, 'c> StmtParser<'a, 'c> {
             } => Statement::IfConst {
                 name,
                 name_span,
-                ty,
+                ty: ty.map(Box::new),
                 value,
                 then_block,
                 else_ifs,
@@ -1437,7 +1439,7 @@ fn parse_checked_bind(source: &str, prefix: &[Token], sink: &mut SyntaxSink<'_>)
             CheckedBind::Var {
                 name,
                 name_span,
-                ty,
+                ty: ty.map(Box::new),
             }
         }
         // `const`, and the detection-guaranteed-unreachable fallback, both bind a
@@ -1447,7 +1449,7 @@ fn parse_checked_bind(source: &str, prefix: &[Token], sink: &mut SyntaxSink<'_>)
             CheckedBind::Const {
                 name,
                 name_span,
-                ty,
+                ty: ty.map(Box::new),
             }
         }
     }

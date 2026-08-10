@@ -420,7 +420,7 @@ fn const_type(source_type: &str) -> TypeExpr {
     else {
         panic!("expected const");
     };
-    ty.expect("a type annotation")
+    *ty.expect("a type annotation")
 }
 
 #[test]
@@ -586,7 +586,7 @@ fn the_unspaced_generic_assign_split_parses() {
         panic!("expected const");
     };
     assert!(
-        matches!(ty, Some(TypeExpr::Apply { ref head, .. }) if head == "Map"),
+        matches!(ty.as_deref(), Some(TypeExpr::Apply { head, .. }) if head == "Map"),
         "the type is Map<string, int>: {ty:#?}"
     );
 }

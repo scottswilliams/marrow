@@ -2178,7 +2178,7 @@ mod generic_cache_boundary_tests {
                 &CheckedBind::Const {
                     name: "result".to_string(),
                     name_span: span(),
-                    ty: Some(annotation),
+                    ty: Some(Box::new(annotation)),
                 },
                 &operation,
                 Some(&handler),
@@ -2325,7 +2325,7 @@ mod generic_cache_boundary_tests {
                 Statement::Const {
                     name: "later_generic".to_string(),
                     name_span: span(),
-                    ty: Some(TypeExpr::Apply {
+                    ty: Some(Box::new(TypeExpr::Apply {
                         head: "Option".to_string(),
                         head_span: span(),
                         args: vec![TypeExpr::Name {
@@ -2334,7 +2334,7 @@ mod generic_cache_boundary_tests {
                             span: span(),
                         }],
                         span: span(),
-                    }),
+                    })),
                     value: Expression::Absent { span: span() },
                     span: span(),
                 },

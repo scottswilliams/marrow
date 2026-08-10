@@ -1069,6 +1069,14 @@ fn container_growth_stays_within_the_accounted_factor() {
 /// headroom over it rather than equalling it.
 #[test]
 fn the_query_parse_transient_closes_under_the_exported_term() {
+    eprintln!(
+        "Statement {}, Expression {}, TypeExpr {}, Declaration {}, Token {}",
+        size_of::<Statement>(),
+        size_of::<Expression>(),
+        size_of::<TypeExpr>(),
+        size_of::<Declaration>(),
+        size_of::<Token>()
+    );
     let expression = expression_charge();
     assert_eq!(
         content_byte_charge(),
@@ -1089,10 +1097,10 @@ fn the_query_parse_transient_closes_under_the_exported_term() {
         expression, 376,
         "the densest expression node's charge moved"
     );
-    assert_eq!(line, 740, "the densest source byte's charge moved");
+    assert_eq!(line, 524, "the densest source byte's charge moved");
     let accounted = accounted_query_parse_transient();
     assert_eq!(
-        accounted, 914_358_400,
+        accounted, 687_865_984,
         "the accounted query-local parse transient moved; re-derive the term before \
          changing this number"
     );

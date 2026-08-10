@@ -197,6 +197,9 @@ fn parse_const_or_var(
         }
     };
 
+    // The annotation is boxed out of the statement: most statements write none, and
+    // every statement in the file pays the width of the widest variant.
+    let ty = ty.map(Box::new);
     match value {
         Some(value) => {
             let span = join_spans(keyword.span, value.span());

@@ -718,12 +718,22 @@ pub enum CommentPlacement {
     Trailing,
 }
 
+/// One statement of a block.
+///
+/// A block holds its statements inline, so every variant pays the width of the widest
+/// one for each statement in the file — the dominant term in what a parse of a
+/// maximum-size file costs. Payloads that are both wide and rare are therefore held
+/// behind a `Box`: a type annotation, which most statements do not write, and a `for`
+/// loop's bounded-traversal clause, which almost no statement carries. Widening this
+/// enum is a cost paid per statement in the file, not per statement that uses the field;
+/// `marrow-compile`'s `no_node_family_exceeds_the_declared_source_byte_cap` is where that
+/// cost is bounded.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Statement {
     Const {
         name: String,
         name_span: SourceSpan,
-        ty: Option<TypeExpr>,
+        ty: Option<Box<TypeExpr>>,
         value: Expression,
         span: SourceSpan,
     },
@@ -731,7 +741,7 @@ pub enum Statement {
         name: String,
         name_span: SourceSpan,
         keys: Vec<KeyParam>,
-        ty: Option<TypeExpr>,
+        ty: Option<Box<TypeExpr>>,
         value: Option<Expression>,
         span: SourceSpan,
     },
@@ -806,7 +816,7 @@ pub enum Statement {
     IfConst {
         name: String,
         name_span: SourceSpan,
-        ty: Option<TypeExpr>,
+        ty: Option<Box<TypeExpr>>,
         value: Expression,
         then_block: Block,
         else_ifs: Vec<ElseIf>,
@@ -832,7 +842,7 @@ pub enum Statement {
         is_var: bool,
         name: String,
         name_span: SourceSpan,
-        ty: Option<TypeExpr>,
+        ty: Option<Box<TypeExpr>>,
         value: Expression,
         else_block: Block,
         span: SourceSpan,
@@ -870,7 +880,7 @@ pub enum Statement {
         /// mandatory `on more` block, present only when the head carried `at most`.
         /// The checker requires it for a durable root/branch place and rejects it on a
         /// range or local-collection iterable.
-        bound: Option<TraversalBound>,
+        bound: Option<Box<TraversalBound>>,
         body: Block,
         span: SourceSpan,
     },
@@ -918,12 +928,12 @@ pub enum CheckedBind {
     Const {
         name: String,
         name_span: SourceSpan,
-        ty: Option<TypeExpr>,
+        ty: Option<Box<TypeExpr>>,
     },
     Var {
         name: String,
         name_span: SourceSpan,
-        ty: Option<TypeExpr>,
+        ty: Option<Box<TypeExpr>>,
     },
     Return,
 }
