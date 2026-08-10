@@ -168,7 +168,10 @@ impl FactSpan {
         // the admission ceiling is inside it (`the_admission_ceiling_fits_the_fact_
         // coordinate_domain`), so a widened ceiling is a failing debug assertion here
         // rather than facts that quietly stop resolving.
-        debug_assert!(span.end_byte <= u32::MAX as usize, "a span leaves the domain");
+        debug_assert!(
+            span.end_byte <= u32::MAX as usize,
+            "a span leaves the domain"
+        );
         Self {
             start: span.start_byte.min(u32::MAX as usize) as u32,
             end: span.end_byte.min(u32::MAX as usize) as u32,
@@ -3326,7 +3329,11 @@ mod fact_ledger_tests {
         for (file, span) in &snapshot.dependency_gaps {
             assert!(span.end as usize <= extent(*file));
         }
-        for target in snapshot.hover_facts.iter().filter_map(|fact| fact.definition) {
+        for target in snapshot
+            .hover_facts
+            .iter()
+            .filter_map(|fact| fact.definition)
+        {
             let len = extent(target.file);
             assert!(target.name_span.end as usize <= len);
             assert!(target.decl_range.end as usize <= len);
