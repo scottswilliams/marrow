@@ -976,3 +976,52 @@ fn r25_a_refused_root_occupies_its_placement_name() {
         messages(&diagnostics),
     );
 }
+
+// ---------------------------------------------------------------------------
+// Function signatures — I-5
+//
+// A refused parameter type pushes no parameter, and the signature is pushed
+// anyway with a short parameter list while the image index advances past it.
+// Today `FunctionRegistryOutcome::Refused` withholds the whole registry, so
+// nothing observes either corruption; deleting that suppression (design §3) is
+// what makes both reachable, which is why the fix and the deletion are one row.
+// ---------------------------------------------------------------------------
+
+/// The scheduler-ordered red for the truncated-signature arity corruption. A
+/// function whose parameter type was refused must be refused whole: no signature
+/// with a short parameter list may enter the table, and the image index must not
+/// advance past a signature that was never built.
+///
+/// With a short list admitted, a call carrying the written number of arguments is
+/// reported as an arity mismatch — a fabricated statement about the call, derived
+/// from the compiler's own truncation of the declaration.
+#[test]
+#[ignore = "sequenced behind the function ledger and the `CompleteFunctionRegistry` \
+            amendment (design §3): `FunctionRegistryOutcome::Refused` withholds the \
+            registry today, so no call resolves against the truncated signature and \
+            the corruption is unobservable through the production pipeline"]
+fn i5_a_refused_parameter_type_never_truncates_its_signature() {
+    let diagnostics = diagnostics(
+        "module main\n\n\
+         fn helper(a: Nope, b: int): int {\n\
+         \x20   return b\n\
+         }\n\n\
+         pub fn other(): int {\n\
+         \x20   return helper(1, 2)\n\
+         }\n",
+    );
+
+    for row in &diagnostics {
+        assert!(
+            !row.message().contains("argument"),
+            "`helper` is written with two parameters; no row may describe the call \
+             as carrying the wrong number of them: {:#?}",
+            messages(&diagnostics),
+        );
+    }
+    assert_eq!(
+        rows(&diagnostics),
+        vec![("check.unsupported", 3, 14), ("check.unsupported", 8, 12)],
+        "the parameter reports the cause and the call is steered to it",
+    );
+}
