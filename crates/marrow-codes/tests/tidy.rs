@@ -887,6 +887,25 @@ fn native_lifecycle_open_is_existing_only_and_owner_inseparable() {
     );
     let acquired = acquire[0].0;
     let bound = bind[0].0;
+    // Acquiring the lock creates the store directory's lock entry and writes a marker into
+    // it. A platform where no store directory can be admitted at all is a property of the
+    // build, decidable without touching any path, so it is decided before that write rather
+    // than after it — otherwise every refused open on such a platform leaves an inherited
+    // unclean obligation behind in a store it could never have opened.
+    let decided = lifecycle_product[ordinary..]
+        .find("decide_before_locking(dir)")
+        .map(|offset| offset + ordinary)
+        .expect("the ordinary open settles its pre-lock decisions in one place");
+    assert!(
+        decided < acquired,
+        "an open's pre-lock decisions must be settled before it takes the owner lock",
+    );
+    let before_locking = fn_body(lifecycle_product, "fn decide_before_locking(dir: &Path)")
+        .expect("the pre-lock decision owner exists");
+    assert!(
+        before_locking.contains("qualified_platform("),
+        "an open must refuse an unqualified platform before it takes the owner lock",
+    );
     // Provisioning admits the directory it built before publishing it, so an admission may
     // sit above the ordinary open; inside the open there must be none before the lock.
     assert!(
@@ -970,6 +989,29 @@ fn native_lifecycle_open_is_existing_only_and_owner_inseparable() {
     // would hand a contender an I/O refusal where the exclusion verdict applies.
     let lock_acquire = fn_body(&lower_owner, "fn acquire(dir: &Path)")
         .expect("the lower owner exposes lock acquisition");
+    // Exclusion rests on the store directory node, which no replacement of the directory's
+    // own children changes. Every name inside the directory — the marker and the engine file
+    // both — can be unlinked and recreated, so a lock taken only on those names is divided by
+    // replacing them, and replacing both at once divides it entirely.
+    let directory_locked = lock_acquire
+        .find("directory_node.try_lock()")
+        .expect("lock acquisition takes the store directory node's lock");
+    let marker_opened = lock_acquire
+        .find("open_marker(")
+        .expect("lock acquisition opens the marker entry");
+    assert!(
+        directory_locked < marker_opened,
+        "exclusion must be taken on the store directory node before any name inside it is \
+         opened",
+    );
+    let quarantined =
+        fn_body(&lower_owner, "fn drop(&mut self)").expect("the owner lock decides its own drop");
+    for handle in ["self.directory_node.take()", "self.file.take()"] {
+        assert!(
+            quarantined.contains(handle),
+            "quarantine must retain every handle exclusion rests on, including {handle}",
+        );
+    }
     let locked = lock_acquire
         .find("file.try_lock()")
         .expect("lock acquisition takes the advisory lock");
