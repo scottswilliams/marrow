@@ -553,6 +553,84 @@ fn a_generation_a_checkout_landed_reverts_the_publication() {
     assert!(!project.exists("ids.pending"));
 }
 
+/// The same checkout, one record earlier. A publication interrupted before its
+/// `Installing` record has mutated no artifact either, so the reverted reading
+/// means exactly what it means in the `Installing` window and settles the same
+/// way. The two windows classify one writer identically.
+#[test]
+fn a_generation_a_checkout_landed_before_the_installing_record_reverts_the_publication() {
+    let _serial = serialized();
+    let project = Project::new("checkout-generation-prepared");
+    project.write_meta("ids", b"base");
+    project.write_meta("ids.publish.stage", b"successor");
+    Crash::new(&project, Some(b"base"), b"successor")
+        .witness_base("ids")
+        .witness_next("ids.publish.stage")
+        .plant();
+    fs::remove_file(project.meta().join("ids")).expect("the checkout replaces the entry");
+    project.write_meta("ids", b"another branch's generation");
+
+    let settled = project.guard().recover_ids().expect("recovery runs");
+    assert_eq!(settled, Some(IdsPublication::ConcurrentChange));
+    assert_eq!(
+        project.read_meta("ids").as_deref(),
+        Some(&b"another branch's generation"[..]),
+        "the publication left the other writer's bytes exactly as it found them"
+    );
+    assert!(!project.exists("ids.publish.stage"));
+    assert!(!project.exists("ids.pending"));
+}
+
+/// The absent arm of the same window: the plan was admitted against no artifact
+/// and one appeared before the `Installing` record. The destination is taken, so
+/// the publication settles without installing rather than being retained.
+#[test]
+fn a_destination_taken_before_the_installing_record_reverts_the_publication() {
+    let _serial = serialized();
+    let project = Project::new("destination-taken-prepared");
+    project.write_meta("ids", b"another writer's generation");
+    project.write_meta("ids.publish.stage", b"successor");
+    Crash::new(&project, None, b"successor").plant();
+
+    let settled = project.guard().recover_ids().expect("recovery runs");
+    assert_eq!(settled, Some(IdsPublication::ConcurrentChange));
+    assert_eq!(
+        project.read_meta("ids").as_deref(),
+        Some(&b"another writer's generation"[..])
+    );
+    assert!(!project.exists("ids.publish.stage"));
+    assert!(!project.exists("ids.pending"));
+}
+
+/// The window admits exactly two readings. A state only this publication's own
+/// mutations could have produced — the successor already committed while no
+/// `Installing` record exists — stays retained corruption, so the shared rule
+/// widened the classification of an outside writer and nothing else.
+#[test]
+fn an_installed_successor_before_the_installing_record_is_retained() {
+    let _serial = serialized();
+    let project = Project::new("installed-before-installing");
+    project.write_meta("ids", b"base");
+    project.write_meta("ids.publish.stage", b"successor");
+    let planted = Crash::new(&project, Some(b"base"), b"successor")
+        .witness_base("ids")
+        .witness_next("ids.publish.stage");
+    let meta = project.meta();
+    fs::rename(meta.join("ids"), meta.join("ids.swap")).expect("stage the swap");
+    fs::rename(meta.join("ids.publish.stage"), meta.join("ids")).expect("install the successor");
+    fs::rename(meta.join("ids.swap"), meta.join("ids.publish.stage"))
+        .expect("land the displaced generation at the stage name");
+    planted.plant();
+
+    let refusal = project
+        .guard()
+        .recover_ids()
+        .expect_err("an installed successor with no `Installing` record is retained corruption");
+    assert_eq!(refusal.refusal(), IdsRefusal::Corrupt);
+    assert_eq!(project.read_meta("ids").as_deref(), Some(&b"successor"[..]));
+    assert!(project.exists("ids.pending"), "the marker keeps gating");
+}
+
 /// A publication that reached `Installing` and found the destination taken
 /// settles as a concurrent change without touching the artifact.
 #[test]

@@ -416,7 +416,7 @@ impl<'a> Session<'a> {
         loop {
             match self.phase() {
                 1 => {
-                    self.require_prepared()?;
+                    self.require_pre_mutation_map()?;
                     self.append(INSTALLING, &[])?;
                 }
                 INSTALLING => {
@@ -445,11 +445,31 @@ impl<'a> Session<'a> {
         Ok(())
     }
 
-    /// At `Prepared` the artifact must still be exactly what the header binds:
-    /// nothing has been installed, so the map admits one reading only.
-    fn require_prepared(&self) -> Result<(), IdsPublicationError> {
+    /// The pre-mutation window rule, shared with [`Self::install`]: a `Prepared`
+    /// reading proceeds to the mutation, a `Reverted` reading settles the
+    /// publication without installing, and every other reading is retained
+    /// corruption.
+    ///
+    /// Phase 1 and the `Installing` window classify a foreign generation the
+    /// same way because this publication has mutated no artifact in either: it
+    /// has created its own stage and nothing else, so a `Reverted` reading —
+    /// the stage still the exact successor at one link, the artifact neither the
+    /// successor nor the generation the header binds — cannot be its own work.
+    /// It is the outside writer the destination-refusing arms exist for, and the
+    /// same fact the pre-claim recapture in `publish_admitted` already reports as
+    /// a concurrent change. Splitting the two windows would make an ordinary
+    /// `git checkout` landing microseconds earlier the difference between a
+    /// settled publication and a project retained as corrupt.
+    ///
+    /// Nothing else is admitted, and the terminal is still named in one place:
+    /// this window only lets the driver reach `Installing`, where the map
+    /// decides. A reading in which the artifact is the successor, or the stage
+    /// is gone, names a state only this publication's own mutations could
+    /// produce, and none has run.
+    fn require_pre_mutation_map(&self) -> Result<(), IdsPublicationError> {
         match self.read_map(1)? {
             MapState::Prepared => self.require_prepared_bytes(),
+            MapState::Reverted => Ok(()),
             _ => Err(MapFault::OffMap { phase: 1 }.into()),
         }
     }
@@ -457,6 +477,8 @@ impl<'a> Session<'a> {
     /// Install the successor, or settle without installing it. The map decides:
     /// a crash between the `Installing` record and the mutation leaves the
     /// `Prepared` reading, and a crash after it leaves the installed reading.
+    /// The two readings this window shares with phase 1 are the ones
+    /// [`Self::require_pre_mutation_map`] states the rule for.
     fn install(&self) -> Result<Terminal, IdsPublicationError> {
         match self.read_map(INSTALLING)? {
             MapState::Prepared => {
