@@ -467,11 +467,14 @@ impl AnalysisSnapshot {
     /// source order, each nested enum member under its enum, projected from the parsed
     /// AST's existing declared-name spans and declaration ranges. An unknown file is a
     /// typed [`QueryError`]; a file that did not parse is [`Unavailability::Syntax`]; a
-    /// cleanly-parsed file with no declarations is a truthful `Present` empty outline.
+    /// cleanly-parsed file whose outline crossed [`MAX_DOCUMENT_SYMBOLS_PER_FILE`] or
+    /// [`MAX_SYMBOL_DEPTH`] is [`Unavailability::Bounded`], with nothing partial retained
+    /// for it and every other query for that same file unaffected; a cleanly-parsed file
+    /// with no declarations is a truthful `Present` empty outline.
     ///
     /// This is a pure projection: it reclassifies nothing and reads no resolved semantic
-    /// identity. The outline is retained per snapshot and bounded per file by
-    /// [`MAX_DOCUMENT_SYMBOLS_PER_FILE`] and [`MAX_SYMBOL_DEPTH`] at snapshot admission.
+    /// identity. The outline is retained per snapshot and bounded per file at snapshot
+    /// admission; the bound refuses that file's outline alone, never the snapshot.
     pub fn document_symbols(&self, file: &FileIdentity) -> Result<Fact<&[DeclSymbol]>, QueryError> {
         let (file, _) = self.locate(file)?;
         if self.broken_files.contains(&file) {
@@ -1258,19 +1261,18 @@ fn symbol_bytes(symbols: &[DeclSymbol]) -> u64 {
         .sum()
 }
 
-/// Which per-file declaration-hierarchy bound a projection exhausted. Internal to the
-/// projection; [`analyze`] maps it to the matching [`AnalysisResourceLimit`].
-pub(crate) enum SymbolLimit {
-    Count,
-    Depth,
-}
+/// A projection exhausted a per-file declaration-hierarchy bound. Which of the two —
+/// [`MAX_DOCUMENT_SYMBOLS_PER_FILE`] or [`MAX_SYMBOL_DEPTH`] — is not carried: the
+/// consequence is the same either way, that file's outline is unavailable and nothing
+/// partial is retained for it, and no consumer distinguishes them.
+pub(crate) struct SymbolBoundExceeded;
 
 /// Project one module file's declarations into its declaration-hierarchy outline, or the
 /// first per-file bound the outline would exceed. A pure projection over existing name
 /// spans and declaration ranges: it reclassifies nothing.
 pub(crate) fn project_document_symbols(
     declarations: &[Declaration],
-) -> Result<Box<[DeclSymbol]>, SymbolLimit> {
+) -> Result<Box<[DeclSymbol]>, SymbolBoundExceeded> {
     let mut builder = SymbolProjection { count: 0 };
     declarations
         .iter()
@@ -1287,13 +1289,13 @@ struct SymbolProjection {
 
 impl SymbolProjection {
     /// Admit one more node at `depth`, enforcing both per-file bounds before it is built.
-    fn admit(&mut self, depth: u16) -> Result<(), SymbolLimit> {
+    fn admit(&mut self, depth: u16) -> Result<(), SymbolBoundExceeded> {
         if depth > MAX_SYMBOL_DEPTH {
-            return Err(SymbolLimit::Depth);
+            return Err(SymbolBoundExceeded);
         }
         self.count += 1;
         if self.count > MAX_DOCUMENT_SYMBOLS_PER_FILE {
-            return Err(SymbolLimit::Count);
+            return Err(SymbolBoundExceeded);
         }
         Ok(())
     }
@@ -1302,7 +1304,7 @@ impl SymbolProjection {
         &mut self,
         declaration: &Declaration,
         depth: u16,
-    ) -> Result<DeclSymbol, SymbolLimit> {
+    ) -> Result<DeclSymbol, SymbolBoundExceeded> {
         self.admit(depth)?;
         let leaf = |name: &str, kind: DeclKind, name_span: SourceSpan, full_range: SourceSpan| {
             DeclSymbol {
@@ -1368,14 +1370,18 @@ impl SymbolProjection {
         &mut self,
         members: &[EnumMember],
         depth: u16,
-    ) -> Result<Box<[DeclSymbol]>, SymbolLimit> {
+    ) -> Result<Box<[DeclSymbol]>, SymbolBoundExceeded> {
         members
             .iter()
             .map(|member| self.member(member, depth))
             .collect()
     }
 
-    fn member(&mut self, member: &EnumMember, depth: u16) -> Result<DeclSymbol, SymbolLimit> {
+    fn member(
+        &mut self,
+        member: &EnumMember,
+        depth: u16,
+    ) -> Result<DeclSymbol, SymbolBoundExceeded> {
         self.admit(depth)?;
         let children = self.members(&member.members, depth + 1)?;
         Ok(DeclSymbol {
@@ -2885,6 +2891,13 @@ mod fact_ledger_tests {
     /// The count-bounded families — hover facts, dependency gaps, and document-symbol
     /// nodes — share one ceiling, so charging the whole ceiling at the widest of their
     /// unit sizes bounds every mixture of them.
+    ///
+    /// The two per-file `FileRef` lists — `broken_files` and `symbol_bounded_files` —
+    /// share the single `max_files()` term at the end. That closes because they are
+    /// disjoint by construction, not by coincidence: `broken_files` holds files that did
+    /// not parse, and only cleanly-parsed modules are offered to the outline projection
+    /// (`compile.rs` filters `!module.broken` before it runs), so no file can appear in
+    /// both and their lengths sum to at most one file count.
     fn worst_case_retained_bytes(fact_unit: u64, symbol_outline_unit: u64) -> u64 {
         MAX_SNAPSHOT_FACT_COUNT * fact_unit
             + MAX_SNAPSHOT_FACT_BYTES
@@ -2932,8 +2945,17 @@ mod fact_ledger_tests {
             broken_files: _,
             dependency_gaps: _,
             document_symbols: _,
-            symbol_bounded_files: _,
+            symbol_bounded_files,
         } = empty_snapshot();
+        // Named rather than discarded: this list is the one retained field with no term
+        // of its own. It shares `broken_files`' single per-file term, which closes only
+        // because the two are disjoint by construction — a file that did not parse is
+        // never offered to the outline projection — so a reader checking the term against
+        // the field set must see the sharing rather than assume a missing term.
+        assert!(
+            symbol_bounded_files.is_empty(),
+            "the accounting fixture retains nothing",
+        );
 
         let accounted = worst_case_retained_bytes(
             fact_unit(),

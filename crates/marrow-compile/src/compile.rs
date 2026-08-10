@@ -1039,21 +1039,20 @@ fn drive(project: &ProjectInput, mode: TestMode) -> Result<Driven, CompileResour
     // Project each cleanly-parsed module's declaration hierarchy from its parse tree — a
     // pure analysis byproduct of the one traversal, orthogonal to the semantic outcome
     // and ignored by the production compile's projection. A broken module contributes no
-    // outline (a `document_symbols` query for it is syntax-unavailable). The first per-file
-    // bound overflow stops projection: the analysis snapshot refuses the whole snapshot on
-    // it, so no partial outline set is retained.
+    // outline (a `document_symbols` query for it is syntax-unavailable).
     //
-    // Deliberately no early-out on a crossed global ceiling, unlike the hover family. The
-    // projection is the one owner of the per-file count and depth bounds, which keep
-    // precedence over the global ceilings whatever the module order, so it must run for
-    // every module regardless; charging the outline it already built is a walk over
-    // existing nodes with no allocation, and it is what lets a Bytes crossing strengthen
-    // to Count once the composed count crosses. Each outline is dropped as it is charged,
-    // so the live peak is one module's outline either way.
+    // A module whose outline crosses a per-file count or depth bound is recorded here and
+    // skipped: that file's outline becomes an unavailable fact, so nothing partial is
+    // retained for it, while every other module still contributes its complete outline and
+    // every other query for that same file still answers. The bound is per file and its
+    // consequence is per file; it refuses no other fact and no snapshot.
     //
-    // A module whose outline crosses a per-file bound is recorded and skipped rather
-    // than ending the projection: nothing partial is retained for it, and every other
-    // module still contributes its complete outline.
+    // Deliberately no early-out on a crossed global ceiling, unlike the hover family: the
+    // projection must visit every module to record each per-file crossing, charging the
+    // outline it already built is a walk over existing nodes with no allocation, and it is
+    // what lets a Bytes crossing strengthen to Count once the composed count crosses. Each
+    // outline is dropped as it is charged, so the live peak is one module's outline either
+    // way.
     let mut symbol_bounded_files: Vec<FileRef> = Vec::new();
     for module in &clean {
         match crate::analysis::project_document_symbols(&module.ast.declarations) {

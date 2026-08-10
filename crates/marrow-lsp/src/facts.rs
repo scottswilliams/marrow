@@ -292,9 +292,11 @@ fn to_signature_help(active: &ActiveCall) -> SignatureHelp {
 }
 
 /// The declaration-hierarchy outline of a document, or `None` (LSP `null`) for an
-/// unavailable (unparseable) or unknown file. A pure projection of the compiler's
-/// document-symbol fact; the per-file count/depth bounds are enforced at snapshot
-/// admission, so a query here carries no resource refusal.
+/// unknown file or one whose outline is unavailable — because the file did not parse, or
+/// because it crossed a per-file count or depth bound and nothing was retained for it. A
+/// pure projection of the compiler's document-symbol fact: the bound is enforced at
+/// snapshot admission and its consequence is that one file's outline, so a query here
+/// carries no resource refusal and no other file's outline is affected.
 pub fn document_symbols(
     snapshot: &AnalysisSnapshot,
     file: &FileIdentity,

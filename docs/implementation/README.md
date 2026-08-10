@@ -225,17 +225,26 @@ minted by exactly one phase at the point that phase completes and taken by name 
 every phase that depends on it:
 
 ```text
-CompleteTypeRegistry ─┬─> FunctionRegistry ─┬─> AcceptedQueuedTemplateProofs ─┐
-                      │                     ├─> CompleteDeclaredFunctionBodies┤
-                      │                     └─> CompleteDeclaredTestBodies ───┤
-                      │                                                       v
-                      │                                    CompleteLoweredFunctionSet
-                      │                                                       │
-                      │                                              AcyclicCallGraph
-                      │                                              │         │
-                      │                             AmbientTransactionClosure  │
-                      └─> value cycles          transaction ownership     mixed tests
+CompleteTypeRegistry ─┬─> CompleteFunctionRegistry ─┬─> AcceptedQueuedTemplateProofs ─┐
+                      │                             ├─> CompleteDeclaredFunctionBodies┤
+                      │                             └─> CompleteDeclaredTestBodies    │
+                      │                                                               v
+                      │                                            CompleteLoweredFunctionSet
+                      │                                                               │
+                      │                                                      AcyclicCallGraph
+                      │                                                      │         │
+                      │                                     AmbientTransactionClosure  │
+                      └─> value cycles                  transaction ownership     mixed tests
 ```
+
+The artifact named for the function registry is the proof type
+`CompleteFunctionRegistry`, which carries the resolved signature table it proves
+complete; the table's own type is `FunctionRegistry`.
+
+`CompleteDeclaredTestBodies` is not a prerequisite of `CompleteLoweredFunctionSet`: a
+duplicate test title is a declaration refusal, not a lowering refusal, so the indices
+actually minted stay dense and a call graph keyed by index over them is exact. It
+withholds the instance drain alone.
 
 An ordinary source refusal withholds exactly the artifacts that depend on it and no
 others, so every independent phase whose own prerequisites still exist runs and
