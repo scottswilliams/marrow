@@ -807,14 +807,10 @@ fn drive(project: &ProjectInput, mode: TestMode) -> Result<Driven, CompileResour
         .collect();
     broken_modules.extend(non_utf8_modules);
 
-    // Only cleanly-parsed modules enter analysis; a module with a parse error is
-    // skipped as a dependent unit (its parse diagnostics are already recorded). A module
-    // that did parse — cleanly or with recovery — keeps its parse tree for the editor
-    // completion query, which classifies positions over recovered incomplete forms in a
-    // broken file. A non-UTF-8 file never produced a `Module`, so it has no retained tree
-    // and a completion query in it is syntax-unavailable.
-    let (clean, broken_parsed): (Vec<Module>, Vec<Module>) =
-        parsed.into_iter().partition(|module| !module.broken);
+    // Only cleanly-parsed modules enter analysis; a module with a parse error is skipped
+    // as a dependent unit, its parse diagnostics and broken status already recorded. Its
+    // tree is dropped here rather than carried: no query reads a retained tree.
+    let clean: Vec<Module> = parsed.into_iter().filter(|module| !module.broken).collect();
 
     // Project each cleanly-parsed module's declaration hierarchy from its parse tree — a
     // pure analysis byproduct of the one traversal, orthogonal to the semantic outcome
@@ -843,10 +839,10 @@ fn drive(project: &ProjectInput, mode: TestMode) -> Result<Driven, CompileResour
     check_structural_resource_bounds(&clean, &mut structural);
 
     let semantic = run_semantic(&clean, project, mode, broken_modules, &mut facts);
-    // Every parse tree dies with this traversal: a completion or active-call query
-    // re-parses the one file it names from the snapshot's own retained bytes.
+    // Release every remaining tree before the terminals seal, so the traversal's peak
+    // does not overlap the retained set. A completion or active-call query re-parses the
+    // one file it names from the snapshot's own retained bytes.
     drop(clean);
-    drop(broken_parsed);
     Ok(Driven {
         parse: parse.finish(),
         structural: structural.finish(),
