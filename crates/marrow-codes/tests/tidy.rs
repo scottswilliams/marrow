@@ -887,9 +887,18 @@ fn native_lifecycle_open_is_existing_only_and_owner_inseparable() {
     );
     let acquired = acquire[0].0;
     let bound = bind[0].0;
-    let admit_directory = lifecycle_product
+    // Provisioning admits the directory it built before publishing it, so an admission may
+    // sit above the ordinary open; inside the open there must be none before the lock.
+    assert!(
+        lifecycle_product
+            .match_indices("AdmittedStoreDir::admit(")
+            .all(|(at, _)| at < ordinary || at > acquired),
+        "an open must admit the store directory only under the physical owner",
+    );
+    let admit_directory = lifecycle_product[acquired..]
         .find("AdmittedStoreDir::admit(")
-        .expect("the store directory is retained for admission");
+        .map(|offset| offset + acquired)
+        .expect("the store directory is retained for admission under the owner");
     for (label, read) in [
         ("directory admission", admit_directory),
         (
