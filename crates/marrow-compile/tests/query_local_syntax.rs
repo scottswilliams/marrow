@@ -50,11 +50,13 @@ use marrow_compile::{
 };
 use marrow_project::{CaptureLimits, CapturedFile, FileIdentity, Manifest, ProjectInput};
 use marrow_syntax::{
-    Argument, ArmBinding, BinaryOp, Block, Comment, Declaration, ElseIf, EnumMember,
-    EnumPayloadField, Expression, ForName, IfConstBinding, IndexArg, IndexDecl, InterpolationPart,
-    KeyParam, LiteralKind, MatchArm, NameSegment, ParamDecl, ResourceMember,
-    SYNTAX_DIAGNOSTIC_COUNT_LIMIT, SYNTAX_DIAGNOSTIC_OWNED_BYTES_LIMIT, SourceSpan, Statement,
-    SupportSpelling, Token, TypeExpr, TypeParamDecl, UnaryOp, UseDecl,
+    AliasDecl, Argument, ArmBinding, BinaryOp, Block, Comment, ConstDecl, Declaration, ElseIf,
+    EnumDecl, EnumMember, EnumPayloadField, Expression, FieldDecl, ForName, FunctionDecl,
+    GroupDecl, IfConstBinding, IndexArg, IndexDecl, InterpolationPart, KeyParam, LiteralKind,
+    MatchArm, ModuleDecl, NameSegment, NominalDecl, ParamDecl, ResourceDecl, ResourceMember,
+    SYNTAX_DIAGNOSTIC_COUNT_LIMIT, SYNTAX_DIAGNOSTIC_OWNED_BYTES_LIMIT, SavedRoot, SourceSpan,
+    Statement, StoreDecl, StructDecl, SupportSpelling, TestDecl, Token, TypeExpr, TypeParamDecl,
+    UnaryOp, UseDecl,
 };
 
 /// The largest file drive admission lets through — the worst case a query-local parse can
@@ -1647,6 +1649,206 @@ fn every_charged_family_names_all_of_its_fields() {
     let _ = |value: &SupportSpelling| {
         let SupportSpelling { name, span } = value;
         let _ = (name, span);
+    };
+
+    // The declaration internals. `Declaration` is charged by `size_of` alone, and a
+    // variant's payload lives inline in the enum, so a widened field does move that row.
+    // A field that owns a heap buffer does not: `docs: Vec<String>` and `supports` were
+    // each an allocation per declaration that no row charged, and both were reachable
+    // only through these types. Naming the fields is what makes the next one a build
+    // failure — the same guarantee the tables above carry, extended past the enum.
+    let _ = |value: &Declaration| match value {
+        Declaration::Alias(inner) => {
+            let _ = inner;
+        }
+        Declaration::Nominal(inner) => {
+            let _ = inner;
+        }
+        Declaration::Const(inner) => {
+            let _ = inner;
+        }
+        Declaration::Resource(inner) => {
+            let _ = inner;
+        }
+        Declaration::Struct(inner) => {
+            let _ = inner;
+        }
+        Declaration::Store(inner) => {
+            let _ = inner;
+        }
+        Declaration::Function(inner) => {
+            let _ = inner;
+        }
+        Declaration::Enum(inner) => {
+            let _ = inner;
+        }
+        Declaration::Test(inner) => {
+            let _ = inner;
+        }
+    };
+    let _ = |value: &ModuleDecl| {
+        let ModuleDecl { segments, span } = value;
+        let _ = (segments, span);
+    };
+    let _ = |value: &AliasDecl| {
+        let AliasDecl {
+            docs,
+            name,
+            name_span,
+            ty,
+            span,
+        } = value;
+        let _ = (docs, name, name_span, ty, span);
+    };
+    let _ = |value: &NominalDecl| {
+        let NominalDecl {
+            docs,
+            name,
+            name_span,
+            base,
+            interval,
+            supports,
+            span,
+        } = value;
+        let _ = (docs, name, name_span, base, interval, supports, span);
+    };
+    let _ = |value: &ConstDecl| {
+        let ConstDecl {
+            docs,
+            name,
+            name_span,
+            ty,
+            value: initializer,
+            span,
+        } = value;
+        let _ = (docs, name, name_span, ty, initializer, span);
+    };
+    let _ = |value: &ResourceDecl| {
+        let ResourceDecl {
+            docs,
+            name,
+            name_span,
+            members,
+            comments,
+            span,
+        } = value;
+        let _ = (docs, name, name_span, members, comments, span);
+    };
+    let _ = |value: &StructDecl| {
+        let StructDecl {
+            docs,
+            name,
+            name_span,
+            type_params,
+            members,
+            comments,
+            span,
+        } = value;
+        let _ = (docs, name, name_span, type_params, members, comments, span);
+    };
+    let _ = |value: &StoreDecl| {
+        let StoreDecl {
+            docs,
+            root,
+            resource,
+            resource_span,
+            indexes,
+            comments,
+            span,
+        } = value;
+        let _ = (docs, root, resource, resource_span, indexes, comments, span);
+    };
+    let _ = |value: &SavedRoot| {
+        let SavedRoot { root, keys, span } = value;
+        let _ = (root, keys, span);
+    };
+    let _ = |value: &FunctionDecl| {
+        let FunctionDecl {
+            docs,
+            public,
+            name,
+            name_span,
+            type_params,
+            params,
+            return_type,
+            body,
+            span,
+        } = value;
+        let _ = (
+            docs,
+            public,
+            name,
+            name_span,
+            type_params,
+            params,
+            return_type,
+            body,
+            span,
+        );
+    };
+    let _ = |value: &TestDecl| {
+        let TestDecl {
+            docs,
+            name,
+            name_span,
+            body,
+            span,
+        } = value;
+        let _ = (docs, name, name_span, body, span);
+    };
+    let _ = |value: &EnumDecl| {
+        let EnumDecl {
+            docs,
+            public,
+            name,
+            name_span,
+            type_params,
+            members,
+            comments,
+            span,
+        } = value;
+        let _ = (
+            docs,
+            public,
+            name,
+            name_span,
+            type_params,
+            members,
+            comments,
+            span,
+        );
+    };
+    let _ = |value: &FieldDecl| {
+        let FieldDecl {
+            docs,
+            required,
+            name,
+            name_span,
+            keys,
+            ty,
+            span,
+        } = value;
+        let _ = (docs, required, name, name_span, keys, ty, span);
+    };
+    let _ = |value: &GroupDecl| {
+        let GroupDecl {
+            docs,
+            name,
+            name_span,
+            keys,
+            members,
+            comments,
+            span,
+        } = value;
+        let _ = (docs, name, name_span, keys, members, comments, span);
+    };
+    let _ = |value: &Block| {
+        let Block {
+            statements,
+            comments,
+            span,
+        } = value;
+        let _ = (statements, comments, span);
     };
 }
 
