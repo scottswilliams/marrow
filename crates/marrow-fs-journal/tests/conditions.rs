@@ -240,12 +240,19 @@ fn public_signature_spans(source: &str) -> Vec<(usize, String)> {
         let mut depth = 0i32;
         let mut cursor = index;
         while cursor < chars.len() {
+            let field = shape == SpanShape::Field;
             match chars[cursor] {
                 '(' | '[' => depth += 1,
                 ')' | ']' => depth -= 1,
                 '{' if is_use => depth += 1,
                 '}' if is_use => depth -= 1,
-                ',' | '}' if depth <= 0 && shape == SpanShape::Field => break,
+                // A field's own comma closes it, so its generic arguments must
+                // be counted too: `pub pair: Pair<u8, Handle>` would otherwise
+                // end at the argument comma and hide everything after it. The
+                // `>` of a `->` closes nothing.
+                '<' if field => depth += 1,
+                '>' if field && chars[cursor - 1] != '-' => depth -= 1,
+                ',' | '}' if depth <= 0 && field => break,
                 '{' | ';' if depth <= 0 => break,
                 _ => {}
             }
@@ -708,6 +715,8 @@ fn the_descriptor_gate_catches_every_laundering_form() {
              pub fn after_a_quoting_literal() -> {owned} {{ todo!() }}\n"
         ),
         format!("pub struct Row {{\n    pub first: u8,\n    pub second: {owned},\n}}\n"),
+        format!("pub struct Row {{\n    pub pair: Pair<u8, {owned}>,\n    pub tail: u8,\n}}\n"),
+        format!("pub struct Row(pub Vec<{owned}>);\n"),
     ];
     for source in planted {
         let sources = vec![(PathBuf::from("planted.rs"), source.clone())];
@@ -724,14 +733,18 @@ fn the_descriptor_gate_catches_every_laundering_form() {
 #[test]
 fn a_public_field_span_ends_at_its_own_declaration() {
     let owned = ["Owned", "Fd"].concat();
-    let source = format!("pub struct Row {{\n    pub first: u8,\n    pub second: {owned},\n}}\n");
+    let source = format!(
+        "pub struct Row {{\n    pub first: u8,\n    pub pair: Pair<u8, {owned}>,\n    \
+         pub last: fn(u8) -> u8,\n}}\n"
+    );
     let spans = public_signature_spans(&source);
     assert_eq!(
         spans,
         [
             (1, "pub struct Row".to_string()),
             (2, "pub first: u8".to_string()),
-            (3, format!("pub second: {owned}")),
+            (3, format!("pub pair: Pair<u8, {owned}>")),
+            (4, "pub last: fn(u8) -> u8".to_string()),
         ],
     );
 }
