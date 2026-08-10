@@ -1172,6 +1172,46 @@ fn documented_entry_names() -> Vec<String> {
         .collect()
 }
 
+/// A name a developer's entry already carries is recognized in the spellings
+/// version control actually produces: a CRLF checkout leaves each line with a
+/// trailing carriage return, and a leading `/` anchors a pattern to the ignore
+/// file's own directory, which is exactly where these entries are. Both name
+/// the same entry, so neither may earn a second copy — an entry that grew one
+/// on every checkout style would grow one forever.
+#[test]
+fn a_carriage_return_or_anchored_spelling_earns_no_second_copy() {
+    let _serial = serialized();
+    for (tag, render) in [
+        (
+            "crlf",
+            (|entry: &str| format!("{entry}\r\n")) as fn(&str) -> String,
+        ),
+        ("anchored", |entry: &str| format!("/{entry}\n")),
+        ("anchored-crlf", |entry: &str| format!("/{entry}\r\n")),
+    ] {
+        let project = Project::new(&format!("ignore-{tag}"));
+        let planted: String = String::from_utf8_lossy(WRITTEN_IGNORE)
+            .lines()
+            .map(|line| {
+                if line.starts_with('#') {
+                    format!("{line}\n")
+                } else {
+                    render(line)
+                }
+            })
+            .collect();
+        project.write_meta(".gitignore", planted.as_bytes());
+
+        drop(project.guard());
+
+        assert_eq!(
+            project.read_meta(".gitignore"),
+            Some(planted.into_bytes()),
+            "the {tag} spelling of every name earned a second copy of at least one of them"
+        );
+    }
+}
+
 /// Whether the ignore entry already carries every name is a read-only
 /// question, so the owner asks it read-only. A developer's checkout can carry
 /// that entry unwritable, and an owner that opened it for writing to decide a
