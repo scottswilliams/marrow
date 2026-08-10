@@ -2703,8 +2703,7 @@ mod tests {
         Artifacts, BoundedDiagnostics, Built, CompileFailure, CompileStage,
         CompleteDeclaredFunctionBodies, CompleteDeclaredTestBodies, CompleteFunctionRegistry,
         CompleteLoweredFunctionSet, CompleteTypeRegistry, DeclarationExit, Driven, InvariantCause,
-        RegistryPhases,
-        SemanticOutcome, analyze_outcome,
+        RegistryPhases, SemanticOutcome, analyze_outcome,
     };
     use crate::diag::{DiagnosticCollector, MAX_DIAGNOSTIC_COUNT, SourceDiagnostic};
     use crate::types::{
