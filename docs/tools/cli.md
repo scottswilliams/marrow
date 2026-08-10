@@ -94,6 +94,12 @@ cross a fixed retention ceiling (4096 diagnostics or 1 MiB of retained diagnosti
 text per compile stage) is reported as a single `cli.compiler_resource_limit` line
 rather than a truncated diagnostic listing.
 
+A fixed image bound is separate from a diagnostic. A project can check clean and
+still exceed what the program image admits — more than 256 exported functions, for
+instance. `check` then reports no diagnostic at all and prints one
+`cli.compiler_resource_limit` line naming the exhausted bound, in the same words
+`run`, `test`, and `client` use for it, and exits `1`.
+
 A project that checks clean is compiled and independently verified, and `check`
 summarizes each exported (`pub fn`) function's durable
 [access demand](../language/durable-places.md#access-demand) — the durable places

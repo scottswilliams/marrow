@@ -195,6 +195,13 @@ so no snapshot exists to query. The densest queryable tree therefore comes from 
 file whose nodes charge neither ceiling: a module that failed to parse, or names
 that never resolve.
 
+The two per-file outline bounds are narrower than that. A file whose declaration
+hierarchy crosses `MAX_DOCUMENT_SYMBOLS_PER_FILE` or `MAX_SYMBOL_DEPTH` keeps its
+snapshot: its own `document_symbols` becomes `Unavailable(Bounded)`, and every
+other query for that file and every query for every other file is unaffected. No
+truncated outline is retained — nothing at all is retained for that file — but one
+oversized file no longer closes a project to its editor.
+
 `MAX_ANALYSIS_FACT_TRANSIENT_BYTES` covers the peak attributable to producing
 facts. Its dominant part is accounted: the live fact payload the ledger holds
 while retaining is at most **21,176,320 bytes**, an arithmetic property of
@@ -210,6 +217,61 @@ the count ceiling inside a single body).
 Both are distinct from the analysis **build** transient: `drive` materializes
 every module's tree at once because cross-module resolution needs them. That
 working set is named, not closed, by the bounded-fact work.
+
+## Semantic availability and the image-policy fence
+
+One semantic pass in `marrow-compile` produces eight private proof artifacts, each
+minted by exactly one phase at the point that phase completes and taken by name by
+every phase that depends on it:
+
+```text
+CompleteTypeRegistry ─┬─> FunctionRegistry ─┬─> AcceptedQueuedTemplateProofs ─┐
+                      │                     ├─> CompleteDeclaredFunctionBodies┤
+                      │                     └─> CompleteDeclaredTestBodies ───┤
+                      │                                                       v
+                      │                                    CompleteLoweredFunctionSet
+                      │                                                       │
+                      │                                              AcyclicCallGraph
+                      │                                              │         │
+                      │                             AmbientTransactionClosure  │
+                      └─> value cycles          transaction ownership     mixed tests
+```
+
+An ordinary source refusal withholds exactly the artifacts that depend on it and no
+others, so every independent phase whose own prerequisites still exist runs and
+reports. A refused function signature, for example, withholds the function
+registry — and therefore every body — while constant evaluation and the value-cycle
+audit, which need only the type registry, still run. No phase is eligible because
+the diagnostic set happens to be empty; each takes its own typed prerequisite. An
+unavailable artifact never produces a substitute: no image entry, index, export,
+test slot, or dependent fact is fabricated from a missing prerequisite.
+
+`CompleteLoweredFunctionSet` and `AcyclicCallGraph` make their claim over the
+functions that took an image index. A generic instance whose index was reserved but
+never minted is outside that claim, and the instance drain runs only with
+`AcceptedQueuedTemplateProofs`, `CompleteDeclaredFunctionBodies`, and
+`CompleteDeclaredTestBodies` together — the artifacts that carry the drain's real
+precondition, which is that every declared body took the index reserved for it.
+
+The pass ends at a fence taken in exact order. A compiler-coherence invariant has
+already returned. A non-empty diagnostic terminal — rows, or a terminal that
+reported its own diagnostic ceiling — is the outcome. An empty terminal with any
+artifact unavailable is an invariant, because an unavailable artifact always
+follows a refusal that reported. Only an empty terminal with all eight artifacts
+available is a checked program:
+
+```text
+semantic invariant > semantic diagnostic state (complete or overflow)
+```
+
+The image is encoded strictly after that fence, in the production projection alone.
+So an image count or byte ceiling — the export table, the constant pool, the
+function table — is a verdict about the artifact `compile` produces, never a
+statement about the meaning of the program: it is unrepresentable in the semantic
+outcome, and the analysis path, which never encodes, cannot reach one. A project
+that crosses an image ceiling yields an ordinary snapshot with no diagnostic and
+every query answering, while `compile`, `run`, `test`, `check`, and `client` all
+report the same bound in the same words.
 
 ## Identity mutation admission
 

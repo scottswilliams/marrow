@@ -12,9 +12,10 @@ caller can raise them.
 |---|---:|---|
 | Source nesting | 256 levels | `check.nesting_limit` at the offending span |
 
-Source nesting counts indentation blocks and expression nesting such as
-parentheses, unary expressions, and binary operands. The parser fails closed
-before native stack overflow.
+Source nesting counts braced blocks — a function body, a loop or conditional
+body, a transaction region — and expression nesting such as parentheses, unary
+expressions, and binary operands. Each enclosing brace or bracket deepens the
+count by one. The parser fails closed before native stack overflow.
 
 ## Program-Image Bounds
 
