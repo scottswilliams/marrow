@@ -17,7 +17,10 @@ use marrow_syntax::{
 };
 
 use crate::analysis::{AnalysisFactCollector, BoundedAnalysisFacts, FactSink, FileRef};
-use crate::decl::{DeclarationLedgerFull, MAX_DECLARATION_LEDGER_BYTES};
+use crate::decl::{
+    Binding, DeclarationLedgerFull, DeclarationNamespace, DeclarationOccurrence, Declared,
+    MAX_DECLARATION_LEDGER_BYTES, SourceStage, refuse, refuse_at_earlier_stage,
+};
 use crate::demand::DurableNaming;
 use crate::diag::{
     BoundedDiagnostics, CompileDiagnosticLimit, DiagnosticCollector, SourceDiagnostic,
@@ -26,7 +29,8 @@ use crate::durable::DurableRegistry;
 use crate::konst::ConstRegistry;
 use crate::lower::{
     BodyOutcome, DeclaredFn, FnLowerer, FunctionRegistry, FunctionRegistryOutcome, GenericRegistry,
-    is_durable_place_op, is_mutation_instr, is_reserved_builtin_name, reserved_builtin_name,
+    ModuleBinding, ModuleLedger, is_durable_place_op, is_mutation_instr, is_reserved_builtin_name,
+    reserved_builtin_name,
 };
 use crate::types::BuildError;
 use crate::types::{GenericInvariant, TypeRegistry};
@@ -548,6 +552,16 @@ enum TestMode {
 /// module's syntax diagnostics are absorbed into the drive's parse collector
 /// the moment the file is parsed (A5), so no per-module diagnostic state ever
 /// accumulates with the file count.
+/// A project module that never reached the semantic pass, with the stage that
+/// refused it. It is still a module of the project: the module ledger declares it
+/// refused so a `use` or a qualified call into it names that stage's report.
+struct UnparsedModule {
+    name: String,
+    file: FileIdentity,
+    at: FileRef,
+    stage: SourceStage,
+}
+
 struct Module {
     file: FileIdentity,
     /// This module's position in the project's own module order — the coordinate every
@@ -994,7 +1008,11 @@ fn drive(project: &ProjectInput, mode: TestMode) -> Result<Driven, CompileResour
     let admitted = DriveInputAdmission::check(project)?;
     let mut parse = DiagnosticCollector::new();
     let mut facts = AnalysisFactCollector::new(project);
-    let mut non_utf8_modules: BTreeSet<String> = BTreeSet::new();
+    // Every project module an earlier stage refused whole, with the stage that
+    // reported why. They are modules of this project that the semantic pass never
+    // sees, so the module ledger declares them refused and a `use` or qualified call
+    // into one names that stage's report instead of denying the file exists.
+    let mut unparsed: Vec<UnparsedModule> = Vec::new();
 
     // Pass one decodes and classifies UTF-8 only, appending each invalid
     // file's one typed row immediately, so invalid rows form a canonical-order
@@ -1014,7 +1032,12 @@ fn drive(project: &ProjectInput, mode: TestMode) -> Result<Driven, CompileResour
                     error.error_len(),
                 ));
                 facts.admit_broken(at);
-                non_utf8_modules.insert(name);
+                unparsed.push(UnparsedModule {
+                    name,
+                    file,
+                    at,
+                    stage: SourceStage::Decode,
+                });
             }
         }
     }
@@ -1034,6 +1057,12 @@ fn drive(project: &ProjectInput, mode: TestMode) -> Result<Driven, CompileResour
         parse.absorb_syntax(&file, result.diagnostics);
         if broken {
             facts.admit_broken(at);
+            unparsed.push(UnparsedModule {
+                name: name.clone(),
+                file: file.clone(),
+                at,
+                stage: SourceStage::Parse,
+            });
         }
         parsed.push(Module {
             file,
@@ -1043,17 +1072,6 @@ fn drive(project: &ProjectInput, mode: TestMode) -> Result<Driven, CompileResour
             broken,
         });
     }
-
-    // The dotted names of modules that did not parse — a syntax error in a parsed
-    // module, or a non-UTF-8 file that never entered parsing. A qualified call to one
-    // of these is a dependency gap; the resilient analysis records it as an unavailable
-    // fact.
-    let mut broken_modules: BTreeSet<String> = parsed
-        .iter()
-        .filter(|module| module.broken)
-        .map(|module| module.name.clone())
-        .collect();
-    broken_modules.extend(non_utf8_modules);
 
     // Only cleanly-parsed modules enter analysis; a module with a parse error is skipped
     // as a dependent unit, its parse diagnostics and broken status already recorded. Its
@@ -1094,7 +1112,7 @@ fn drive(project: &ProjectInput, mode: TestMode) -> Result<Driven, CompileResour
     let mut structural = DiagnosticCollector::new();
     check_structural_resource_bounds(&clean, &mut structural);
 
-    let semantic = run_semantic(&clean, project, mode, broken_modules, &mut facts);
+    let semantic = run_semantic(&clean, project, mode, &unparsed, &mut facts);
     // Release every remaining tree before the terminals seal, so the traversal's peak
     // does not overlap the retained set. A completion or active-call query re-parses the
     // one file it names from the snapshot's own retained bytes.
@@ -1117,7 +1135,7 @@ fn run_semantic(
     parsed: &[Module],
     project: &ProjectInput,
     mode: TestMode,
-    broken_modules: BTreeSet<String>,
+    unparsed: &[UnparsedModule],
     facts: &mut AnalysisFactCollector,
 ) -> SemanticOutcome {
     /// A path's segments in the dotted spelling this crate identifies modules by. The
@@ -1140,24 +1158,51 @@ fn run_semantic(
     // path-derived name (with `::` as the dotted separator). A file with no header
     // is a single-file script: it keeps a path-derived identity for its own scope
     // and its exports, but is not importable by module path.
-    let mut module_names: BTreeSet<String> = BTreeSet::new();
+    //
+    // A refused module keeps its dotted path: the file is in the project whether or
+    // not it was admitted, so denying that the project contains it is a false
+    // statement about a file the reader can see. Module order is not observed —
+    // nothing takes a slot from this ledger — so the stage-refused modules are
+    // declared first and the header-checked ones after.
+    let mut modules = ModuleLedger::new(DeclarationNamespace::Module);
+    for module in unparsed {
+        let refusal = refuse_at_earlier_stage(
+            Declared::whole_file(&module.name, &module.file, module.at),
+            module.stage,
+        );
+        if modules
+            .declare(module.name.clone(), DeclarationOccurrence::Refused(refusal))
+            .is_err()
+        {
+            return SemanticOutcome::ResourceLimit(ledger_full());
+        }
+    }
     for module in parsed {
-        if let Some(header) = &module.ast.module {
-            let declared = dotted_module_path(&header.segments);
-            if declared == module.name {
-                module_names.insert(module.name.clone());
-            } else {
-                diagnostics.push(SourceDiagnostic::at(
-                    Code::CheckModulePath.as_str(),
-                    &module.file,
-                    header.span,
-                    format!(
-                        "module header `{}` does not match its path; expected `module {}`",
-                        marrow_syntax::name_path_spelling(&header.segments),
-                        module.name.replace('.', "::")
-                    ),
-                ));
-            }
+        let Some(header) = &module.ast.module else {
+            continue;
+        };
+        let declared = dotted_module_path(&header.segments);
+        let occurrence = if declared == module.name {
+            DeclarationOccurrence::Accepted(ModuleBinding)
+        } else {
+            DeclarationOccurrence::Refused(refuse(
+                &mut diagnostics,
+                Declared {
+                    name: &module.name,
+                    file: &module.file,
+                    at: module.at,
+                    span: header.span,
+                },
+                Code::CheckModulePath.as_str(),
+                format!(
+                    "module header `{}` does not match its path; expected `module {}`",
+                    marrow_syntax::name_path_spelling(&header.segments),
+                    module.name.replace('.', "::")
+                ),
+            ))
+        };
+        if modules.declare(module.name.clone(), occurrence).is_err() {
+            return SemanticOutcome::ResourceLimit(ledger_full());
         }
     }
 
@@ -1174,17 +1219,33 @@ fn run_semantic(
                 .next()
                 .unwrap_or(target.as_str())
                 .to_string();
-            if !module_names.contains(&target) {
-                diagnostics.push(SourceDiagnostic::at(
-                    Code::CheckImport.as_str(),
-                    &module.file,
-                    use_decl.span,
-                    format!(
-                        "no module `{}` in this project",
-                        marrow_syntax::name_path_spelling(&use_decl.segments)
-                    ),
-                ));
-                continue;
+            let spelling = marrow_syntax::name_path_spelling(&use_decl.segments);
+            match modules.lookup(&target) {
+                Binding::Accepted(ModuleBinding) => {}
+                // The project contains the module and refused it. The import fails
+                // for that cause, which it names, rather than denying the module.
+                Binding::Refused(_, summary) => {
+                    diagnostics.push(SourceDiagnostic::at(
+                        Code::CheckImport.as_str(),
+                        &module.file,
+                        use_decl.span,
+                        format!(
+                            "`{spelling}` is a module of this project, but its declaration \
+                             was refused, so this import binds nothing. {}",
+                            summary.correction()
+                        ),
+                    ));
+                    continue;
+                }
+                Binding::Absent => {
+                    diagnostics.push(SourceDiagnostic::at(
+                        Code::CheckImport.as_str(),
+                        &module.file,
+                        use_decl.span,
+                        format!("no module `{spelling}` in this project"),
+                    ));
+                    continue;
+                }
             }
             if bindings.iter().any(|(seg, _)| seg == &segment) {
                 diagnostics.push(SourceDiagnostic::at(
@@ -1353,9 +1414,8 @@ fn run_semantic(
         &mut draft,
         &durable,
         &functions,
-        module_names,
+        modules,
         imports,
-        broken_modules,
         &mut diagnostics,
     ) {
         Ok(FunctionRegistryOutcome::Complete(signatures)) => {
@@ -2730,7 +2790,7 @@ mod tests {
     };
     use marrow_codes::Code;
     use marrow_syntax::SourceSpan;
-    use std::collections::{BTreeMap, BTreeSet};
+    use std::collections::BTreeMap;
 
     /// The minting guard rejects every input class whose dotted join would break
     /// the ExportId payload's injectivity, even though the current capture path
@@ -3074,9 +3134,8 @@ mod tests {
                 &mut draft,
                 &durable,
                 &[],
-                BTreeSet::new(),
+                crate::lower::ModuleLedger::new(crate::decl::DeclarationNamespace::Module),
                 BTreeMap::new(),
-                BTreeSet::new(),
                 &mut diagnostics,
             )
             .expect("an empty project resolves every signature");
@@ -3581,14 +3640,27 @@ mod driver_agreement {
             !dependent.is_empty(),
             "the dependent module must be analyzed against the absent base: {semantic:?}",
         );
-        let missing_family = [
+        // A reference into a module the parse stage refused is causal, not absent: the
+        // import names that stage's report and the qualified call is steered to it,
+        // carrying the declaring code. Neither denies the module or its callee exists.
+        let referring_family = [
             marrow_codes::Code::CheckImport.as_str(),
-            marrow_codes::Code::CheckType.as_str(),
+            marrow_codes::Code::ParseSyntax.as_str(),
         ];
         assert!(
-            dependent.iter().all(|d| missing_family.contains(&d.code())),
-            "a reference to a parse-failed module reduces to the ordinary missing-reference \
-             family (check.import / check.type), never a fabricated or invariant code: {dependent:?}",
+            dependent
+                .iter()
+                .all(|d| referring_family.contains(&d.code())),
+            "a reference to a parse-failed module reduces to the import failure and the \
+             steer to its parse report, never a fabricated or invariant code: {dependent:?}",
+        );
+        assert!(
+            dependent
+                .iter()
+                .all(|d| !d.message().contains("is not in scope")
+                    && !d.message().contains("no module")),
+            "the base module is a file of this project; no row may deny it or its \
+             callee: {dependent:?}",
         );
 
         // Byte-identical: the production compile projects only the base module's parse

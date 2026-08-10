@@ -16,6 +16,7 @@
 use std::cell::Cell;
 use std::collections::BTreeMap;
 
+use marrow_codes::Code;
 use marrow_project::FileIdentity;
 use marrow_syntax::SourceSpan;
 
@@ -50,6 +51,10 @@ pub(crate) struct DeclarationLedgerFull;
 pub(crate) enum DeclarationNamespace {
     Constant,
     DurableRoot,
+    /// The project's importable modules, keyed by dotted path. A module is refused
+    /// when its header disagrees with its path, and when the stage that produced its
+    /// source refused it outright.
+    Module,
     NamedType,
     /// The members of one resource record or one of its unkeyed groups, keyed by
     /// the owner they are written in. A member is the one declaration this line
@@ -111,6 +116,42 @@ pub(crate) enum RefusalReport {
     /// A different pass or a different occurrence made the report. The steer names
     /// the code and makes no claim about where the row sits.
     ByCoveringPass,
+    /// A stage that ran before the semantic pass refused the whole source this
+    /// declaration was written in, and already reported why. The steer names that
+    /// stage, because the reader looks for the report in the refused source rather
+    /// than at the declaration that names it.
+    ByEarlierStage(SourceStage),
+}
+
+/// A stage that produces module source before the semantic pass reads it, with the
+/// diagnostic code it refuses a whole module with.
+///
+/// One owner for both facts: a caller names the stage, never the code, so a retained
+/// cause cannot cite a report that stage does not make.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SourceStage {
+    /// The file's bytes are not UTF-8, so it never entered parsing.
+    Decode,
+    /// The file is not well-formed Marrow.
+    Parse,
+}
+
+impl SourceStage {
+    /// The code this stage refuses a whole module with.
+    pub(crate) fn code(self) -> &'static str {
+        match self {
+            Self::Decode => Code::CheckUnsupported.as_str(),
+            Self::Parse => Code::ParseSyntax.as_str(),
+        }
+    }
+
+    /// How the steer names this stage's work, as the reader met it.
+    fn past_participle(self) -> &'static str {
+        match self {
+            Self::Decode => "read",
+            Self::Parse => "parsed",
+        }
+    }
 }
 
 /// Push the diagnostic that refuses `name` and summarize it from the same triple,
@@ -182,6 +223,28 @@ pub(crate) fn refuse_first(
 /// with the covering report named, so this constructor cannot become the way a
 /// refusal escapes reporting altogether.
 pub(crate) fn refuse_covered(at: Declared<'_>, code: &'static str) -> DeclarationRefusalSummary {
+    covered(at, code, RefusalReport::ByCoveringPass)
+}
+
+/// The same coupling for a declaration whose whole source an earlier stage refused
+/// and reported.
+///
+/// The stage owns the code, so this cannot cite a report the named stage does not
+/// make. Re-deriving the stage's own row here would either double-report it or
+/// re-plumb that stage to hand its rows back for nothing: the row already stands in
+/// the terminal the reader is shown.
+pub(crate) fn refuse_at_earlier_stage(
+    at: Declared<'_>,
+    stage: SourceStage,
+) -> DeclarationRefusalSummary {
+    covered(at, stage.code(), RefusalReport::ByEarlierStage(stage))
+}
+
+fn covered(
+    at: Declared<'_>,
+    code: &'static str,
+    report: RefusalReport,
+) -> DeclarationRefusalSummary {
     DeclarationRefusalSummary {
         name: at.name.to_string(),
         code,
@@ -189,7 +252,7 @@ pub(crate) fn refuse_covered(at: Declared<'_>, code: &'static str) -> Declaratio
         span: at.span,
         further: 0,
         gap: None,
-        report: RefusalReport::ByCoveringPass,
+        report,
         steered: Cell::new(false),
     }
 }
@@ -205,26 +268,15 @@ pub(crate) fn declaration_refused(
     refusal: &DeclarationRefusalSummary,
 ) -> SourceDiagnostic {
     let name = refusal.name();
-    let code = refusal.code();
-    // The steer sends the reader to the cause, so it may name a location only when
-    // the cause was reported at this declaration. A covered class — a value cycle
-    // the later cycle pass reports, or an anchor an earlier occurrence reported —
-    // has its row somewhere else entirely, and claiming it sits at this declaration
-    // would send the reader to a row that is not there.
-    let fix = match refusal.report() {
-        RefusalReport::AtDeclaration => {
-            format!("Correct the `{code}` report at the declaration of `{name}`.")
-        }
-        RefusalReport::ByCoveringPass => format!("Correct the reported `{code}`."),
-    };
     SourceDiagnostic::at(
-        code,
+        refusal.code(),
         file,
         span,
         format!(
             "`{name}` was declared, but its declaration was refused. A refused \
              declaration keeps its name and binds no value, so this use cannot \
-             resolve. {fix}"
+             resolve. {}",
+            refusal.correction()
         ),
     )
 }
@@ -237,6 +289,25 @@ pub(crate) struct Declared<'a> {
     pub(crate) file: &'a FileIdentity,
     pub(crate) at: FileRef,
     pub(crate) span: SourceSpan,
+}
+
+impl<'a> Declared<'a> {
+    /// A declaration whose whole source an earlier stage refused, so it has no span
+    /// of its own: a file that did not decode or did not parse produced no construct
+    /// to point at, and the report the reader follows is that stage's.
+    pub(crate) fn whole_file(name: &'a str, file: &'a FileIdentity, at: FileRef) -> Self {
+        Self {
+            name,
+            file,
+            at,
+            span: SourceSpan {
+                start_byte: 0,
+                end_byte: 0,
+                line: 1,
+                column: 1,
+            },
+        }
+    }
 }
 
 impl DeclarationRefusalSummary {
@@ -267,10 +338,27 @@ impl DeclarationRefusalSummary {
         self.gap.as_ref()
     }
 
-    /// Where the report carrying this cause was made, which bounds what the steer
-    /// may claim about it.
-    pub(crate) fn report(&self) -> RefusalReport {
-        self.report
+    /// What the reader has to correct, phrased so it names a location only where a
+    /// report actually sits.
+    ///
+    /// A steer sends the reader to the cause. Most refusals report at the
+    /// declaration itself and can say so; a covered class — a value cycle the later
+    /// cycle pass reports, an anchor an earlier occurrence reported, a source an
+    /// earlier stage refused whole — has its row somewhere else entirely, and
+    /// claiming it sits at this declaration would send the reader to a row that is
+    /// not there.
+    pub(crate) fn correction(&self) -> String {
+        let (name, code) = (self.name(), self.code());
+        match self.report {
+            RefusalReport::AtDeclaration => {
+                format!("Correct the `{code}` report at the declaration of `{name}`.")
+            }
+            RefusalReport::ByCoveringPass => format!("Correct the reported `{code}`."),
+            RefusalReport::ByEarlierStage(stage) => format!(
+                "Correct the `{code}` reports `{name}` received when it was {}.",
+                stage.past_participle()
+            ),
+        }
     }
 
     /// Whether this use site is the one that reports the cause. `true` on the first
@@ -506,14 +594,6 @@ impl<K: Ord + Clone, T> DeclarationLedger<K, T> {
         self.index.keys()
     }
 
-    /// The accepted declarations in source order, one per key: exactly the
-    /// occurrences [`Self::lookup`] answers with, so what a namespace builds from
-    /// this iterator and what a use site resolves against cannot disagree.
-    ///
-    /// A namespace whose order is observed — image slot order, field order — reads
-    /// its accepted set from here rather than accumulating a parallel vector beside
-    /// the ledger, which is what keeps the ledger the single authority for which
-    /// declarations survived.
     /// The refused declarations in source order, one per key — the merged summary
     /// each refused key answers with.
     ///
@@ -534,6 +614,14 @@ impl<K: Ord + Clone, T> DeclarationLedger<K, T> {
             })
     }
 
+    /// The accepted declarations in source order, one per key: exactly the
+    /// occurrences [`Self::lookup`] answers with, so what a namespace builds from
+    /// this iterator and what a use site resolves against cannot disagree.
+    ///
+    /// A namespace whose order is observed — image slot order, field order — reads
+    /// its accepted set from here rather than accumulating a parallel vector beside
+    /// the ledger, which is what keeps the ledger the single authority for which
+    /// declarations survived.
     pub(crate) fn accepted(&self) -> impl Iterator<Item = (&K, &T)> {
         self.occurrences
             .iter()

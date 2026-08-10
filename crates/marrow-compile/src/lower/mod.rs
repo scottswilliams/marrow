@@ -180,6 +180,10 @@ pub(crate) enum CallResolution<'a> {
     /// A function with the name exists in the target module but is not `pub`, so it
     /// is not callable across the module boundary.
     NotPublic,
+    /// The qualifying prefix names a module this project contains and refused, so no
+    /// scope to resolve `item` in exists. The module's declaration reported the
+    /// cause; this call reuses it.
+    ModuleRefused(&'a DeclarationRefusalSummary),
     /// No function with that name is reachable from the calling module.
     NotFound,
 }
@@ -248,12 +252,12 @@ pub(super) fn refusal_summary<'r>(
     match id.namespace() {
         DeclarationNamespace::NamedType => records.refusal(id),
         DeclarationNamespace::DurableRoot => durable.refusal(id),
-        // A constant is looked up by its own name at its own use site, and a
-        // resource member by its owner and its own name, so neither travels
-        // through type resolution and no handle of one reaches here.
-        DeclarationNamespace::Constant | DeclarationNamespace::ResourceMember => {
-            Err(DeclarationIndexDrift)
-        }
+        // A constant is looked up by its own name at its own use site, a resource
+        // member by its owner and its own name, and a module by its dotted path, so
+        // none travels through type resolution and no handle of one reaches here.
+        DeclarationNamespace::Constant
+        | DeclarationNamespace::Module
+        | DeclarationNamespace::ResourceMember => Err(DeclarationIndexDrift),
     }
 }
 
@@ -389,7 +393,8 @@ pub(crate) use self::builtins::{
 };
 pub(crate) use self::durable::{is_durable_place_op, is_mutation_instr};
 pub(crate) use self::registry::{
-    DeclaredFn, FunctionRegistry, FunctionRegistryOutcome, GenericRegistry,
+    DeclaredFn, FunctionRegistry, FunctionRegistryOutcome, GenericRegistry, ModuleBinding,
+    ModuleLedger,
 };
 pub(crate) use self::types::parse_int;
 

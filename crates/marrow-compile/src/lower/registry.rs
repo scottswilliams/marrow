@@ -2,6 +2,8 @@
 
 use super::*;
 
+use crate::decl::{DeclarationLedger, DeclarationNamespace};
+
 /// One declared function paired with where it was declared: the file identity its
 /// diagnostics point into, the snapshot coordinate its editor facts are retained
 /// under, and its dotted module.
@@ -12,20 +14,30 @@ pub(crate) struct DeclaredFn<'p> {
     pub(crate) decl: &'p FunctionDecl,
 }
 
+/// What an importable module name binds to.
+///
+/// The binding carries no payload: module scope resolves a name *through* the dotted
+/// path, and every signature carries its own module string, so nothing is looked up
+/// on the module itself. It exists to make the accepted set a typed ledger entry
+/// rather than a bare name in a set, which is what lets a refused module answer with
+/// its cause instead of reading as a module the project does not contain.
+pub(crate) struct ModuleBinding;
+
+/// The project's modules keyed by dotted path: importable when accepted, and refused
+/// with the cause when the header disagrees with the path or the stage that produced
+/// the source refused it whole. A file with no `module` header is a script — it is
+/// not a module of this namespace at all, and naming it is a genuine absence.
+pub(crate) type ModuleLedger = DeclarationLedger<String, ModuleBinding>;
+
 /// The project's functions and the module scope a call resolves against: every
 /// function signature (resolved before body lowering so a forward call resolves),
-/// the set of module names, and each module's `use` bindings. Names are unique
-/// within a module (a duplicate is rejected before this is built).
-#[derive(Default)]
+/// the module ledger, and each module's `use` bindings. Names are unique within a
+/// module (a duplicate is rejected before this is built).
 pub(crate) struct FunctionRegistry {
     sigs: Vec<FnSignature>,
-    modules: BTreeSet<String>,
+    modules: ModuleLedger,
     /// `module -> [(final-segment binding, dotted target module)]`.
     imports: BTreeMap<String, Vec<(String, String)>>,
-    /// The dotted names of project modules that did not parse. A qualified call whose
-    /// target module is one of these is a dependency gap — an editor fact that is
-    /// unavailable because a required owner is invalid, never simply absent.
-    broken_modules: BTreeSet<String>,
 }
 
 pub(crate) struct TemplateProofOutcome {
@@ -44,6 +56,18 @@ pub(crate) enum FunctionRegistryOutcome {
     Refused,
 }
 
+impl Default for FunctionRegistry {
+    /// The registry of a project with no modules, functions, or imports. The module
+    /// ledger carries its namespace tag, so there is no untagged empty ledger.
+    fn default() -> Self {
+        Self {
+            sigs: Vec::new(),
+            modules: ModuleLedger::new(DeclarationNamespace::Module),
+            imports: BTreeMap::new(),
+        }
+    }
+}
+
 impl FunctionRegistry {
     /// Resolve every function's signature in declaration order. The i-th function
     /// takes image index `i`, matching the order [`FnLowerer::lower`] adds them.
@@ -54,9 +78,8 @@ impl FunctionRegistry {
         draft: &mut ImageDraft,
         durable: &DurableRegistry,
         functions: &[DeclaredFn<'_>],
-        modules: BTreeSet<String>,
+        modules: ModuleLedger,
         imports: BTreeMap<String, Vec<(String, String)>>,
-        broken_modules: BTreeSet<String>,
         diagnostics: &mut DiagnosticCollector,
     ) -> Result<FunctionRegistryOutcome, LowerInvariant> {
         let mut sigs = Vec::with_capacity(functions.len());
@@ -144,7 +167,6 @@ impl FunctionRegistry {
             sigs,
             modules,
             imports,
-            broken_modules,
         }))
     }
 
@@ -185,25 +207,13 @@ impl FunctionRegistry {
         prefix: &[NameSegment],
         item: &str,
     ) -> CallResolution<'_> {
-        let module = if let [single] = prefix {
-            if let Some((_, target)) = self
-                .imports
-                .get(current)
-                .and_then(|bindings| bindings.iter().find(|(seg, _)| seg == single.text()))
-            {
-                target.clone()
-            } else if self.modules.contains(single.text()) {
-                single.text().to_string()
-            } else {
-                return CallResolution::NotFound;
-            }
-        } else {
-            let dotted = dotted_module_path(prefix);
-            if self.modules.contains(&dotted) {
-                dotted
-            } else {
-                return CallResolution::NotFound;
-            }
+        let module = match self.prefix_module(current, prefix) {
+            ModuleResolution::Accepted(module) => module,
+            // The prefix names a module this project contains and refused. The
+            // declaration reported the cause, so the call reuses it rather than
+            // resolving into a scope that does not exist.
+            ModuleResolution::Refused(summary) => return CallResolution::ModuleRefused(summary),
+            ModuleResolution::Absent => return CallResolution::NotFound,
         };
         match self
             .sigs
@@ -219,42 +229,46 @@ impl FunctionRegistry {
     /// The dotted module a `::`-qualified prefix names from within `current`, shared
     /// with generic-call resolution so both read module scope one way.
     pub(super) fn resolved_module(&self, current: &str, prefix: &[NameSegment]) -> Option<String> {
-        if let [single] = prefix {
-            if let Some((_, target)) = self
-                .imports
-                .get(current)
-                .and_then(|bindings| bindings.iter().find(|(seg, _)| seg == single.text()))
-            {
-                Some(target.clone())
-            } else if self.modules.contains(single.text()) {
-                Some(single.text().to_string())
-            } else {
-                None
-            }
-        } else {
-            let dotted = dotted_module_path(prefix);
-            self.modules.contains(&dotted).then_some(dotted)
+        match self.prefix_module(current, prefix) {
+            ModuleResolution::Accepted(module) => Some(module),
+            ModuleResolution::Refused(_) | ModuleResolution::Absent => None,
         }
     }
 
-    /// Whether a qualified call's `prefix` names a project module that did not parse.
-    /// A failed `use` leaves no binding, so a broken dependency presents as a direct
-    /// reference to the broken module name; a surviving binding to a since-broken
-    /// target is resolved through its dotted target.
-    pub(super) fn names_broken_module(&self, current: &str, prefix: &[NameSegment]) -> bool {
-        if let [single] = prefix {
+    /// What a `::`-qualified prefix names from within `current`: an importable
+    /// module, a module this project contains and refused, or nothing.
+    ///
+    /// A failed `use` leaves no binding, so a refused dependency presents as a direct
+    /// reference to its own name; a surviving binding to a since-refused target is
+    /// resolved through its dotted target. One owner for both call resolution and
+    /// generic-call resolution, so the two cannot disagree about module scope.
+    fn prefix_module(&self, current: &str, prefix: &[NameSegment]) -> ModuleResolution<'_> {
+        let dotted = if let [single] = prefix {
             match self
                 .imports
                 .get(current)
                 .and_then(|bindings| bindings.iter().find(|(seg, _)| seg == single.text()))
             {
-                Some((_, target)) => self.broken_modules.contains(target),
-                None => self.broken_modules.contains(single.text()),
+                Some((_, target)) => target.clone(),
+                None => single.text().to_string(),
             }
         } else {
-            self.broken_modules.contains(&dotted_module_path(prefix))
+            dotted_module_path(prefix)
+        };
+        match self.modules.lookup(&dotted) {
+            Binding::Accepted(ModuleBinding) => ModuleResolution::Accepted(dotted),
+            Binding::Refused(_, summary) => ModuleResolution::Refused(summary),
+            Binding::Absent => ModuleResolution::Absent,
         }
     }
+}
+
+/// What a qualified prefix names: an importable dotted module, the cause a module of
+/// this project was refused for, or nothing.
+enum ModuleResolution<'a> {
+    Accepted(String),
+    Refused(&'a DeclarationRefusalSummary),
+    Absent,
 }
 
 /// The dotted module name a multi-segment `::` prefix spells. A module path joins on

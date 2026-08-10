@@ -13,7 +13,9 @@
 
 use std::collections::BTreeMap;
 
-use marrow_compile::{CompileFailure, ResourceLimitKind, SourceDiagnostic, compile};
+use marrow_compile::{
+    CompileFailure, InputRevision, ResourceLimitKind, SourceDiagnostic, analyze, compile,
+};
 use marrow_project::{CaptureLimits, CapturedFile, IdentityAnchor, Manifest, ProjectInput};
 
 fn project(source: &str) -> ProjectInput {
@@ -85,11 +87,31 @@ fn serialize_ids(minted: &BTreeMap<IdentityAnchor, String>) -> String {
 }
 
 fn diagnostics(source: &str) -> Vec<SourceDiagnostic> {
-    match compile(&project(source)) {
+    diagnostics_of(&project(source))
+}
+
+fn diagnostics_of(project: &ProjectInput) -> Vec<SourceDiagnostic> {
+    match compile(project) {
         Ok(compiled) => panic!("expected a refused declaration, compiled: {compiled:?}"),
         Err(CompileFailure::Diagnostics(diagnostics)) => diagnostics.into_iter().collect(),
         Err(other) => panic!("expected source diagnostics, got {other:?}"),
     }
+}
+
+/// Every row the resilient analysis snapshot reports, across all three stages.
+///
+/// The staged production projection returns the first non-empty stage, so a project
+/// whose dependency did not parse never projects its semantic terminal. The snapshot
+/// is the production path that does observe it, and it is what an editor renders.
+fn analyzed(sources: &[(&str, String)]) -> Vec<SourceDiagnostic> {
+    snapshot_diagnostics(files(sources))
+}
+
+fn snapshot_diagnostics(input: ProjectInput) -> Vec<SourceDiagnostic> {
+    let Ok(snapshot) = analyze(std::sync::Arc::new(input), InputRevision::new(1)) else {
+        panic!("a resilient analysis snapshot is produced");
+    };
+    snapshot.diagnostics().to_vec()
 }
 
 /// Every row, as `(code, line, column)` — the typed shape a red asserts.
@@ -1052,4 +1074,165 @@ fn i5_a_refused_parameter_type_never_truncates_its_signature() {
         vec![("check.unsupported", 3, 14), ("check.unsupported", 8, 12)],
         "the parameter reports the cause and the call is steered to it",
     );
+}
+
+// ---------------------------------------------------------------------------
+// Modules — I-1
+//
+// A module the project contains but did not admit — a header that disagrees
+// with its path, a file that did not parse, a file that is not UTF-8 — is
+// dropped from the module set, so a `use` of it reports that the project has no
+// such module and a qualified call reports the callee out of scope. Both are
+// false statements about a file the reader can see.
+// ---------------------------------------------------------------------------
+
+/// R8 — a module whose header disagrees with its path is refused, not absent.
+///
+/// The import names the refusal instead of denying the module exists, and the
+/// qualified call is steered to the header report rather than told its callee is
+/// out of scope.
+#[test]
+fn r8_a_module_refused_for_its_header_is_not_absent_at_its_import() {
+    let diagnostics = diagnostics_of(&files(&[
+        (
+            "src/main.mw",
+            "module main\n\n\
+             use helper\n\n\
+             pub fn run(): int {\n\
+             \x20   return helper::twice(2)\n\
+             }\n"
+            .to_string(),
+        ),
+        (
+            "src/helper.mw",
+            "module wrong\n\n\
+             pub fn twice(n: int): int {\n\
+             \x20   return n\n\
+             }\n"
+            .to_string(),
+        ),
+    ]));
+
+    assert_never_out_of_scope(&diagnostics, "helper::twice");
+    assert_no_absent_module(&diagnostics, "helper");
+    assert_eq!(
+        rows(&diagnostics),
+        vec![
+            ("check.module_path", 1, 1),
+            ("check.import", 3, 1),
+            ("check.module_path", 6, 12),
+        ],
+        "the header reports the cause, the import names it, and the call is \
+         steered to it: {:#?}",
+        messages(&diagnostics),
+    );
+}
+
+/// R9 — the same for a module that did not parse. Its cause is the syntax report
+/// an earlier stage already made, so the import and the call name that report
+/// rather than denying the module or its callee exists.
+///
+/// Asserted through the resilient analysis snapshot, which is the production path
+/// that observes these rows: the staged production projection returns the parse
+/// stage's failure and never reaches the semantic terminal, so the fabrications
+/// this red kills are the ones an editor is shown.
+#[test]
+fn r9_a_module_refused_for_a_parse_error_is_not_absent_at_its_import() {
+    let diagnostics = analyzed(&[
+        (
+            "src/main.mw",
+            "module main\n\n\
+             use helper\n\n\
+             pub fn run(): int {\n\
+             \x20   return helper::twice(2)\n\
+             }\n"
+            .to_string(),
+        ),
+        (
+            "src/helper.mw",
+            "module helper\n\n\
+             pub fn twice(n: int): int {\n\
+             \x20   return n +\n\
+             }\n"
+            .to_string(),
+        ),
+    ]);
+
+    assert_never_out_of_scope(&diagnostics, "helper::twice");
+    assert_no_absent_module(&diagnostics, "helper");
+    let observed = rows(&diagnostics);
+    assert_eq!(
+        observed[0].0, "parse.syntax",
+        "the parse stage reports the cause first: {observed:?}",
+    );
+    assert_eq!(
+        observed[1..],
+        [("check.import", 3, 1), ("parse.syntax", 6, 12)],
+        "the import names the parse report and the call is steered to it: {:#?}",
+        messages(&diagnostics),
+    );
+}
+
+/// The same for a file that is not UTF-8: it never entered parsing, and the stage
+/// that refused it is the decode, so that is the report the steer names.
+#[test]
+fn r9_a_module_refused_for_invalid_utf8_is_not_absent_at_its_import() {
+    let manifest = Manifest::parse("edition = \"2026\"\n").expect("valid manifest");
+    let main = "module main\n\n\
+                use helper\n\n\
+                pub fn run(): int {\n\
+                \x20   return helper::twice(2)\n\
+                }\n";
+    let captured = vec![
+        CapturedFile::new("src/helper.mw".to_string(), vec![0xff, 0xfe, 0x00]),
+        CapturedFile::new("src/main.mw".to_string(), main.as_bytes().to_vec()),
+    ];
+    let input = marrow_project::capture(&manifest, captured, None, &CaptureLimits::DEFAULT)
+        .expect("capture project");
+    let diagnostics = snapshot_diagnostics(input);
+
+    assert_never_out_of_scope(&diagnostics, "helper::twice");
+    assert_no_absent_module(&diagnostics, "helper");
+    assert_eq!(
+        rows(&diagnostics)[1..],
+        [("check.import", 3, 1), ("check.unsupported", 6, 12)],
+        "the import names the decode report and the call is steered to it: {:#?}",
+        messages(&diagnostics),
+    );
+}
+
+/// The mutation-kill partner: a `use` of a module the project genuinely does not
+/// contain still says so. The causal arm must not swallow a real absence.
+#[test]
+fn a_genuinely_absent_module_is_still_reported_as_absent() {
+    let diagnostics = diagnostics_of(&files(&[(
+        "src/main.mw",
+        "module main\n\n\
+         use helper\n\n\
+         pub fn run(): int {\n\
+         \x20   return 1\n\
+         }\n"
+        .to_string(),
+    )]));
+
+    assert_eq!(rows(&diagnostics), vec![("check.import", 3, 1)]);
+    assert!(
+        diagnostics[0]
+            .message()
+            .contains("no module `helper` in this project"),
+        "the project contains no such file, so the absence is the truth: {:#?}",
+        messages(&diagnostics),
+    );
+}
+
+/// A module the project contains is never described as one it does not contain.
+fn assert_no_absent_module(diagnostics: &[SourceDiagnostic], name: &str) {
+    for row in diagnostics {
+        assert!(
+            !row.message()
+                .contains(&format!("no module `{name}` in this project")),
+            "`{name}` is a file of this project; no row may deny it: {:#?}",
+            messages(diagnostics),
+        );
+    }
 }
