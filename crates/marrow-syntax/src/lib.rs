@@ -1062,20 +1062,52 @@ mod statement_recursion_depth {
                         .chain(zero_divisor.as_ref().map(block_depth)),
                 )
             }
-            Statement::Const { .. }
-            | Statement::Var { .. }
-            | Statement::Assign { .. }
-            | Statement::CompoundAssign { .. }
-            | Statement::Delete { .. }
-            | Statement::PlaceBinding { .. }
-            | Statement::Unset { .. }
-            | Statement::Return { .. }
-            | Statement::Break { .. }
-            | Statement::Continue { .. }
-            | Statement::Assert { .. }
-            | Statement::Expr { .. }
-            | Statement::Require { .. }
-            | Statement::Error { .. } => 0,
+            Statement::Const {
+                name: _,
+                name_span: _,
+                ty: _,
+                value: _,
+                span: _,
+            }
+            | Statement::Var {
+                name: _,
+                name_span: _,
+                keys: _,
+                ty: _,
+                value: _,
+                span: _,
+            }
+            | Statement::Assign {
+                target: _,
+                value: _,
+                span: _,
+            }
+            | Statement::CompoundAssign {
+                target: _,
+                op: _,
+                op_span: _,
+                value: _,
+                span: _,
+            }
+            | Statement::Delete { path: _, span: _ }
+            | Statement::PlaceBinding {
+                name: _,
+                name_span: _,
+                place: _,
+                span: _,
+            }
+            | Statement::Unset { place: _, span: _ }
+            | Statement::Return { value: _, span: _ }
+            | Statement::Break { span: _ }
+            | Statement::Continue { span: _ }
+            | Statement::Assert { value: _, span: _ }
+            | Statement::Expr { value: _, span: _ }
+            | Statement::Require {
+                condition: _,
+                value: _,
+                span: _,
+            }
+            | Statement::Error { span: _ } => 0,
         }
     }
 
