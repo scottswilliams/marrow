@@ -20,11 +20,11 @@ pub use ast::{
     AliasDecl, Argument, ArmBinding, BinaryOp, Block, CheckedBind, Comment, CommentMarker,
     CommentPlacement, CompoundAssignOp, ConstDecl, Declaration, ElseIf, EnumDecl, EnumMember,
     EnumPayloadField, Expression, FieldDecl, ForBinding, ForName, FunctionDecl, GroupDecl,
-    IdentityTypeExpr, IfConstBinding, IndexDecl, InterpolationPart, KeyParam, LiteralKind,
-    LoopOrder, MatchArm, ModuleDecl, NominalDecl, ParamDecl, ParsedSource, RangeExpr, Recovery,
-    ResourceDecl, ResourceMember, SavedRoot, SourceFile, Statement, StoreDecl, StructDecl,
-    SupportSpelling, TestDecl, TraversalBound, TypeConstraint, TypeExpr, TypeParamDecl, UnaryOp,
-    UseDecl, range_expr,
+    IdentityTypeExpr, IfConstBinding, IndexArg, IndexDecl, InterpolationPart, KeyParam,
+    LiteralKind, LoopOrder, MatchArm, ModuleDecl, NameSegment, NominalDecl, ParamDecl,
+    ParsedSource, RangeExpr, Recovery, ResourceDecl, ResourceMember, SavedRoot, SourceFile,
+    Statement, StoreDecl, StructDecl, SupportSpelling, TestDecl, TraversalBound, TypeConstraint,
+    TypeExpr, TypeParamDecl, UnaryOp, UseDecl, name_path_spelling, range_expr,
 };
 pub use diagnostic::{
     CompleteSyntaxDiagnostics, Diagnose, Diagnostic, DiagnosticReason, ExpectedSyntax,

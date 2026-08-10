@@ -106,12 +106,9 @@ fn parses_reference_sample_structure() {
                             && field.ty.to_string() == "instant"
                 ))
     )));
-    assert!(
-        store
-            .indexes
-            .iter()
-            .any(|index| index.name == "byShelf" && index.args == ["shelf", "id"] && !index.unique)
-    );
+    assert!(store.indexes.iter().any(|index| index.name == "byShelf"
+        && crate::common::index_arg_paths(&index.args) == ["shelf", "id"]
+        && !index.unique));
 
     let add = parsed.file.function("add").expect("add function");
     assert!(add.public);

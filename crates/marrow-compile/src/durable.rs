@@ -1481,8 +1481,9 @@ impl<'a> IdentityResolver<'a> {
         let mut ok = true;
         let mut seen_args: Vec<&str> = Vec::with_capacity(index.args.len());
         for (position, arg) in index.args.iter().enumerate() {
-            let span = index.arg_spans.get(position).copied().unwrap_or(index.span);
-            if seen_args.contains(&arg.as_str()) {
+            let span = arg.span;
+            let arg = arg.path.as_str();
+            if seen_args.contains(&arg) {
                 self.reject_index(
                     span,
                     format!(

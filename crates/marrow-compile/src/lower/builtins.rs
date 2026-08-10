@@ -267,9 +267,9 @@ pub(super) fn collection_ctor_call(expr: &Expression) -> Option<(&'static str, &
         return None;
     };
     match &**callee {
-        Expression::Name { segments, .. } => match segments.as_slice() {
-            [n] if n == "List" => Some(("List", args)),
-            [n] if n == "Map" => Some(("Map", args)),
+        Expression::Name { segments, .. } => match &segments[..] {
+            [n] if n.text() == "List" => Some(("List", args)),
+            [n] if n.text() == "Map" => Some(("Map", args)),
             _ => None,
         },
         _ => None,
@@ -295,14 +295,14 @@ pub(super) fn builtin_arity(
 /// `some(..)`/`ok(..)`/`err(..)`. Returns `None` for anything else.
 pub(super) fn constructor_kind(expr: &Expression) -> Option<CtorKind> {
     match expr {
-        Expression::Name { segments, .. } if matches!(segments.as_slice(), [n] if n == "none") => {
+        Expression::Name { segments, .. } if matches!(&segments[..], [n] if n.text() == "none") => {
             Some(CtorKind::None)
         }
         Expression::Call { callee, .. } => match &**callee {
-            Expression::Name { segments, .. } => match segments.as_slice() {
-                [n] if n == "some" => Some(CtorKind::Some),
-                [n] if n == "ok" => Some(CtorKind::Ok),
-                [n] if n == "err" => Some(CtorKind::Err),
+            Expression::Name { segments, .. } => match &segments[..] {
+                [n] if n.text() == "some" => Some(CtorKind::Some),
+                [n] if n.text() == "ok" => Some(CtorKind::Ok),
+                [n] if n.text() == "err" => Some(CtorKind::Err),
                 _ => None,
             },
             _ => None,
@@ -318,11 +318,11 @@ pub(super) fn constructor_kind(expr: &Expression) -> Option<CtorKind> {
 pub(super) fn split_dotted_head(expr: &Expression) -> Option<(&str, SourceSpan, Vec<&str>)> {
     match expr {
         Expression::Name { segments, span, .. } if segments.len() == 1 => {
-            Some((segments[0].as_str(), *span, Vec::new()))
+            Some((segments[0].text(), *span, Vec::new()))
         }
         Expression::Field { base, name, .. } => {
             let (head, span, mut names) = split_dotted_head(base)?;
-            names.push(name.as_str());
+            names.push(&**name);
             Some((head, span, names))
         }
         _ => None,

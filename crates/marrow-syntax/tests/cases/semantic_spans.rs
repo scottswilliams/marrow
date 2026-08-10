@@ -186,38 +186,37 @@ fn parser_retains_every_semantic_site_span() {
     assert_within(store.span, root_key.name_span, "store root key");
     assert_name_type(source, &root_key.ty, "int", &["int"]);
     assert_eq!(store.indexes.len(), 2);
-    for index in &store.indexes {
-        assert_eq!(index.args.len(), index.arg_spans.len());
-        assert_eq!(index.args.len(), index.arg_segment_spans.len());
-    }
-    assert_eq!(store.indexes[0].args, ["value"]);
-    assert_site(source, store.indexes[0].arg_spans[0], "value");
-    assert_segments(source, &store.indexes[0].arg_segment_spans[0], &["value"]);
+    // An argument carries its own span and its own segment spans, so the suite no
+    // longer asserts three vectors are the same length — the type says so.
+    assert_eq!(
+        crate::common::index_arg_paths(&store.indexes[0].args),
+        ["value"]
+    );
+    let single = &store.indexes[0].args[0];
+    assert_site(source, single.span, "value");
+    assert_segments(source, &single.segment_spans, &["value"]);
     assert_within(
-        store.indexes[0].arg_spans[0],
-        store.indexes[0].arg_segment_spans[0][0],
+        single.span,
+        single.segment_spans[0],
         "single-segment index argument",
     );
-    assert_eq!(store.indexes[1].args, ["value", "meta.code"]);
-    assert_site(source, store.indexes[1].arg_spans[0], "value");
-    assert_segments(source, &store.indexes[1].arg_segment_spans[0], &["value"]);
+    assert_eq!(
+        crate::common::index_arg_paths(&store.indexes[1].args),
+        ["value", "meta.code"]
+    );
+    let first = &store.indexes[1].args[0];
+    assert_site(source, first.span, "value");
+    assert_segments(source, &first.segment_spans, &["value"]);
     assert_within(
-        store.indexes[1].arg_spans[0],
-        store.indexes[1].arg_segment_spans[0][0],
+        first.span,
+        first.segment_spans[0],
         "first multi-argument index path",
     );
-    assert_site(source, store.indexes[1].arg_spans[1], "meta.code");
-    assert_segments(
-        source,
-        &store.indexes[1].arg_segment_spans[1],
-        &["meta", "code"],
-    );
-    for segment in &store.indexes[1].arg_segment_spans[1] {
-        assert_within(
-            store.indexes[1].arg_spans[1],
-            *segment,
-            "dotted index-path segment",
-        );
+    let dotted = &store.indexes[1].args[1];
+    assert_site(source, dotted.span, "meta.code");
+    assert_segments(source, &dotted.segment_spans, &["meta", "code"]);
+    for segment in &dotted.segment_spans {
+        assert_within(dotted.span, *segment, "dotted index-path segment");
     }
 
     let [input, table, qualified, odd] = probe.params.as_slice() else {
@@ -282,7 +281,7 @@ fn parser_retains_every_semantic_site_span() {
     else {
         panic!("unresolved parenthesized spelling must remain one name type");
     };
-    assert_eq!(text, "Foo(bar)");
+    assert_eq!(&**text, "Foo(bar)");
     assert_site(source, *span, "Foo(bar)");
     assert_within(probe.span, *span, "non-name-shaped type");
     assert!(
@@ -297,7 +296,7 @@ fn parser_retains_every_semantic_site_span() {
     else {
         panic!("const statement");
     };
-    assert_eq!(name, "local");
+    assert_eq!(&**name, "local");
     assert_site(source, *name_span, "local");
     assert_within(statements[0].span(), *name_span, "local const binder");
 
@@ -311,7 +310,7 @@ fn parser_retains_every_semantic_site_span() {
     else {
         panic!("var statement");
     };
-    assert_eq!(name, "mutable");
+    assert_eq!(&**name, "mutable");
     assert_site(source, *name_span, "mutable");
     assert_within(statements[1].span(), *name_span, "local var binder");
     let [slot] = keys.as_slice() else {
@@ -332,7 +331,7 @@ fn parser_retains_every_semantic_site_span() {
     else {
         panic!("if const statement");
     };
-    assert_eq!(name, "present");
+    assert_eq!(&**name, "present");
     assert_site(source, *name_span, "present");
     assert_within(statements[2].span(), *name_span, "if-const binder");
 
@@ -363,7 +362,7 @@ fn parser_retains_every_semantic_site_span() {
     else {
         panic!("let-else");
     };
-    assert_eq!(name, "fallback");
+    assert_eq!(&**name, "fallback");
     assert_site(source, *name_span, "fallback");
     assert_within(statements[4].span(), *name_span, "const let-else binder");
 
@@ -377,7 +376,7 @@ fn parser_retains_every_semantic_site_span() {
         panic!("var let-else");
     };
     assert!(*is_var);
-    assert_eq!(name, "fallbackVar");
+    assert_eq!(&**name, "fallbackVar");
     assert_site(source, *name_span, "fallbackVar");
     assert_within(statements[5].span(), *name_span, "var let-else binder");
 
@@ -390,7 +389,7 @@ fn parser_retains_every_semantic_site_span() {
     else {
         panic!("checked const binding");
     };
-    assert_eq!(name, "checkedConst");
+    assert_eq!(&**name, "checkedConst");
     assert_site(source, *name_span, "checkedConst");
     assert_within(statements[6].span(), *name_span, "checked const binder");
 
@@ -403,7 +402,7 @@ fn parser_retains_every_semantic_site_span() {
     else {
         panic!("checked var binding");
     };
-    assert_eq!(name, "checkedVar");
+    assert_eq!(&**name, "checkedVar");
     assert_site(source, *name_span, "checkedVar");
     assert_within(statements[7].span(), *name_span, "checked var binder");
 
@@ -422,17 +421,12 @@ fn parser_retains_every_semantic_site_span() {
     let [positional, named] = args.as_slice() else {
         panic!("expected one positional and one named argument");
     };
-    for argument in args {
-        assert_eq!(
-            argument.name.is_some(),
-            argument.name_span.is_some(),
-            "argument names and name spans must be parallel"
-        );
-    }
+    // A name and its span are one value, so there is no parallel-length invariant left
+    // for this suite to assert.
     assert_eq!(positional.name, None);
-    assert_eq!(positional.name_span, None);
-    assert_eq!(named.name.as_deref(), Some("named"));
-    let named_span = named.name_span.expect("named argument span");
+    let named_name = named.name.as_ref().expect("named argument");
+    assert_eq!(named_name.text(), "named");
+    let named_span = named_name.span();
     assert_site(source, named_span, "named");
     assert_within(*call_span, named_span, "named argument");
     let line_start = source[..named_span.start_byte]

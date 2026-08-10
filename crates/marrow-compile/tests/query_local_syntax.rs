@@ -35,8 +35,8 @@ use marrow_compile::{
 use marrow_project::{CaptureLimits, CapturedFile, FileIdentity, Manifest, ProjectInput};
 use marrow_syntax::{
     Argument, ArmBinding, BinaryOp, Comment, Declaration, ElseIf, EnumMember, EnumPayloadField,
-    Expression, ForName, IfConstBinding, IndexDecl, InterpolationPart, KeyParam, LiteralKind,
-    MatchArm, ParamDecl, ResourceMember, SYNTAX_DIAGNOSTIC_COUNT_LIMIT,
+    Expression, ForName, IfConstBinding, IndexArg, IndexDecl, InterpolationPart, KeyParam,
+    LiteralKind, MatchArm, NameSegment, ParamDecl, ResourceMember, SYNTAX_DIAGNOSTIC_COUNT_LIMIT,
     SYNTAX_DIAGNOSTIC_OWNED_BYTES_LIMIT, SourceSpan, Statement, Token, TypeExpr, TypeParamDecl,
     UnaryOp, UseDecl,
 };
@@ -127,9 +127,20 @@ fn vec_bytes<T>(len: usize) -> usize {
     MIN_ELEMENT_CAPACITY.max(GROWTH * len) * size_of::<T>()
 }
 
-/// The worst-case bytes a retained spelling of `len` source bytes holds.
+/// The worst-case bytes a retained growable spelling of `len` source bytes holds.
 fn string_bytes(len: usize) -> usize {
     MIN_BYTE_CAPACITY.max(GROWTH * len)
+}
+
+/// The bytes an exactly-sized `Box<[T]>` of `len` elements holds. A boxed slice has no
+/// capacity field, so there is no growth slack to charge and no minimum capacity floor.
+fn boxed_slice_bytes<T>(len: usize) -> usize {
+    len * size_of::<T>()
+}
+
+/// The bytes an exactly-sized `Box<str>` of `len` source bytes holds, on the same terms.
+fn boxed_str_bytes(len: usize) -> usize {
+    len
 }
 
 /// What one expression node allocates directly: not the slot it occupies in its parent,
@@ -145,16 +156,14 @@ fn expression_own_bytes(expression: &Expression) -> usize {
             kind: _,
             text: _,
             span: _,
-        } => string_bytes(1),
-        // One segment costs a name vector, a parallel span vector, and the spelling —
-        // the densest expression node the grammar admits per source byte, because a
-        // one-character identifier buys all three at minimum capacity.
+        } => boxed_str_bytes(1),
+        // One segment costs its slot in the exactly-sized path and its own spelling. No
+        // `Expression` retains a growable string, so every spelling here is exact.
         Expression::Name {
             segments: _,
-            segment_spans: _,
             span: _,
-        } => vec_bytes::<String>(1) + vec_bytes::<SourceSpan>(1) + string_bytes(1),
-        Expression::SavedRoot { name: _, span: _ } => string_bytes(1),
+        } => boxed_slice_bytes::<NameSegment>(1) + boxed_str_bytes(1),
+        Expression::SavedRoot { name: _, span: _ } => boxed_str_bytes(1),
         Expression::Absent { span: _ } => 0,
         // An argument or key vector's buffer is charged to its elements' slots, and a
         // boxed operand to that operand's own slot, so an operator node owns nothing.
@@ -176,14 +185,14 @@ fn expression_own_bytes(expression: &Expression) -> usize {
             name_span: _,
             quoted: _,
             span: _,
-        } => string_bytes(1),
+        } => boxed_str_bytes(1),
         Expression::OptionalField {
             base: _,
             name: _,
             name_span: _,
             quoted: _,
             span: _,
-        } => string_bytes(1),
+        } => boxed_str_bytes(1),
         Expression::Unary {
             op: _,
             operand: _,
@@ -230,16 +239,15 @@ fn expression_variants() -> Vec<Expression> {
     vec![
         Expression::Literal {
             kind: LiteralKind::Integer,
-            text: "1".to_string(),
+            text: "1".into(),
             span,
         },
         Expression::Name {
-            segments: vec!["a".to_string()],
-            segment_spans: vec![span],
+            segments: Box::new([NameSegment::new("a", span)]),
             span,
         },
         Expression::SavedRoot {
-            name: "a".to_string(),
+            name: "a".into(),
             span,
         },
         Expression::Absent { span },
@@ -257,14 +265,14 @@ fn expression_variants() -> Vec<Expression> {
         },
         Expression::Field {
             base: leaf(),
-            name: "a".to_string(),
+            name: "a".into(),
             name_span: span,
             quoted: false,
             span,
         },
         Expression::OptionalField {
             base: leaf(),
-            name: "a".to_string(),
+            name: "a".into(),
             name_span: span,
             quoted: false,
             span,
@@ -394,7 +402,7 @@ fn statement_line_content_charges() -> Vec<(&'static str, usize, usize)> {
         // against the first byte of its own value — deliberately double-charged.
         (
             "Argument",
-            GROWTH * size_of::<Argument>() + string_bytes(1),
+            GROWTH * size_of::<Argument>() + boxed_str_bytes(1),
             1,
         ),
         // `a:b`: the type annotation is mandatory, not an `Option`.
@@ -407,9 +415,8 @@ fn statement_line_content_charges() -> Vec<(&'static str, usize, usize)> {
         (
             "MatchArm",
             GROWTH * size_of::<MatchArm>()
-                + vec_bytes::<String>(1)
-                + vec_bytes::<SourceSpan>(1)
-                + string_bytes(1),
+                + boxed_slice_bytes::<NameSegment>(1)
+                + boxed_str_bytes(1),
             3,
         ),
         // `else if`.
@@ -465,25 +472,30 @@ fn declaration_level_charges() -> Vec<(&'static str, usize, usize)> {
             GROWTH * size_of::<UseDecl>() + string_bytes(1) + vec_bytes::<SourceSpan>(1),
             3,
         ),
+        // `a:b` — a field's type annotation is mandatory (a `TypeExpr`, not an
+        // `Option`), and a group's own spelling is `a{}`. Three source bytes either way,
+        // on the same rule as `KeyParam`.
         (
             "ResourceMember",
             GROWTH * size_of::<ResourceMember>() + string_bytes(1),
-            1,
+            3,
         ),
         (
             "EnumMember",
             GROWTH * size_of::<EnumMember>() + string_bytes(1),
             1,
         ),
+        // `a:b`; a payload field's annotation is mandatory.
         (
             "EnumPayloadField",
             GROWTH * size_of::<EnumPayloadField>() + string_bytes(1),
-            1,
+            3,
         ),
+        // `a:b`; a parameter's annotation is mandatory.
         (
             "ParamDecl",
             GROWTH * size_of::<ParamDecl>() + string_bytes(1),
-            1,
+            3,
         ),
         (
             "TypeParamDecl",
@@ -495,10 +507,9 @@ fn declaration_level_charges() -> Vec<(&'static str, usize, usize)> {
             "IndexDecl",
             GROWTH * size_of::<IndexDecl>()
                 + string_bytes(1)
-                + vec_bytes::<String>(1)
-                + vec_bytes::<SourceSpan>(1)
-                + vec_bytes::<Vec<SourceSpan>>(1)
-                + vec_bytes::<SourceSpan>(1),
+                + boxed_slice_bytes::<IndexArg>(1)
+                + string_bytes(1)
+                + boxed_slice_bytes::<SourceSpan>(1),
             5,
         ),
     ]
@@ -1077,30 +1088,29 @@ fn the_query_parse_transient_closes_under_the_exported_term() {
         size_of::<Declaration>(),
         size_of::<Token>()
     );
-    let expression = expression_charge();
+    assert_eq!(
+        expression_charge(),
+        240,
+        "the expression node's charge moved"
+    );
     assert_eq!(
         content_byte_charge(),
-        expression,
-        "a statement line now holds something denser per byte than an expression node; \
-         the derivation still closes over it, but the prose naming the expression node \
-         as the densest content is stale"
+        241,
+        "the densest content byte's charge moved"
     );
-    let line = statement_line_charge();
+    assert_eq!(
+        statement_line_charge(),
+        448,
+        "the densest statement line's charge moved"
+    );
     assert_eq!(
         source_byte_charge(),
-        line,
-        "something outside a statement line now charges more per byte than one; the \
-         derivation still closes over it, but the prose naming the statement line as \
-         the maximum is stale"
+        448,
+        "the densest source byte's charge moved"
     );
-    assert_eq!(
-        expression, 376,
-        "the densest expression node's charge moved"
-    );
-    assert_eq!(line, 524, "the densest source byte's charge moved");
     let accounted = accounted_query_parse_transient();
     assert_eq!(
-        accounted, 687_865_984,
+        accounted, 608_174_208,
         "the accounted query-local parse transient moved; re-derive the term before \
          changing this number"
     );
@@ -1134,7 +1144,10 @@ fn no_node_family_exceeds_the_declared_source_byte_cap() {
         .iter()
         .max_by_key(|(_, charge)| *charge)
         .expect("the family list is not empty");
-    eprintln!("widest node family: {} at {} bytes/source byte", widest.0, widest.1);
+    eprintln!(
+        "widest node family: {} at {} bytes/source byte",
+        widest.0, widest.1
+    );
     assert_eq!(
         source_byte_charge(),
         widest.1,

@@ -559,7 +559,7 @@ impl<'a> FnLowerer<'a> {
         let Expression::Name { segments, .. } = &**callee else {
             return None;
         };
-        if segments.as_slice() != ["exists"] {
+        if !matches!(&segments[..], [callee] if callee.text() == "exists") {
             return None;
         }
         let [arg] = args.as_slice() else {
@@ -571,10 +571,11 @@ impl<'a> FnLowerer<'a> {
         let Expression::Name { segments, .. } = &arg.value else {
             return None;
         };
-        let [name] = segments.as_slice() else {
+        let [name] = &segments[..] else {
             return None;
         };
-        self.lookup_place(name).map(PlaceLocal::key_path_slots)
+        self.lookup_place(name.text())
+            .map(PlaceLocal::key_path_slots)
     }
 
     /// Whether `name` names an in-scope `place`.
@@ -582,7 +583,7 @@ impl<'a> FnLowerer<'a> {
         matches!(
             expr,
             Expression::Name { segments, .. }
-                if matches!(segments.as_slice(), [name] if self.lookup_place(name).is_some())
+                if matches!(&segments[..], [name] if self.lookup_place(name.text()).is_some())
         )
     }
 
@@ -751,10 +752,10 @@ impl<'a> FnLowerer<'a> {
     fn place_entry_target(&self, expr: &Expression) -> Option<DurNode<'a>> {
         match expr {
             Expression::Name { segments, .. } => {
-                let [name] = segments.as_slice() else {
+                let [name] = &segments[..] else {
                     return None;
                 };
-                self.place_node(self.lookup_place(name)?)
+                self.place_node(self.lookup_place(name.text())?)
             }
             Expression::Keyed { base, .. } => {
                 let Expression::Field {
@@ -796,10 +797,10 @@ impl<'a> FnLowerer<'a> {
     ) -> Option<(Vec<DurKey<'e>>, DurNode<'a>)> {
         match expr {
             Expression::Name { segments, .. } => {
-                let [name] = segments.as_slice() else {
+                let [name] = &segments[..] else {
                     return None;
                 };
-                let place = self.lookup_place(name)?;
+                let place = self.lookup_place(name.text())?;
                 let keys = place.bound_keys();
                 let node = self.place_node(place)?;
                 Some((keys, node))
@@ -1439,12 +1440,14 @@ impl<'a> FnLowerer<'a> {
     /// Non-emitting: it only inspects the binding environment and the call spelling.
     fn identity_operand_root(&self, expr: &Expression) -> Option<u16> {
         match expr {
-            Expression::Name { segments, .. } => match segments.as_slice() {
-                [name] => self.lookup(name).and_then(|local| local.ty.bare_identity()),
+            Expression::Name { segments, .. } => match &segments[..] {
+                [name] => self
+                    .lookup(name.text())
+                    .and_then(|local| local.ty.bare_identity()),
                 _ => None,
             },
             Expression::Call { callee, .. } => match &**callee {
-                Expression::Name { segments, .. } if matches!(segments.as_slice(), [n] if n == "Id") => {
+                Expression::Name { segments, .. } if matches!(&segments[..], [n] if n.text() == "Id") => {
                     Some(0)
                 }
                 _ => None,
@@ -1583,8 +1586,8 @@ impl<'a> FnLowerer<'a> {
         // already reported at the binding; its `exists` use is a consequence, not a
         // fresh misuse, so it adds no diagnostic.
         if let Expression::Name { segments, .. } = &arg.value
-            && let [name] = segments.as_slice()
-            && self.poisoned_bindings.contains(name.as_str())
+            && let [name] = &segments[..]
+            && self.poisoned_bindings.contains(name.text())
         {
             self.failed = true;
             return None;
@@ -2097,10 +2100,11 @@ impl<'a> FnLowerer<'a> {
             ));
             return;
         };
-        let [name] = segments.as_slice() else {
+        let [name] = &segments[..] else {
             self.fail(unsupported(self.file, *base_span, "this assignment target"));
             return;
         };
+        let name = name.text();
         let Some(local) = self.lookup(name) else {
             self.fail(name_error(self.file, *base_span, name));
             return;
@@ -2191,10 +2195,11 @@ impl<'a> FnLowerer<'a> {
             self.fail(unsupported(self.file, base.span(), "this `unset` target"));
             return;
         };
-        let [name] = segments.as_slice() else {
+        let [name] = &segments[..] else {
             self.fail(unsupported(self.file, *base_span, "this `unset` target"));
             return;
         };
+        let name = name.text();
         let Some(local) = self.lookup(name) else {
             self.fail(name_error(self.file, *base_span, name));
             return;

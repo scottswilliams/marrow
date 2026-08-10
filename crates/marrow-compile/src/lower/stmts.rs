@@ -545,19 +545,20 @@ impl<'a> FnLowerer<'a> {
             ));
             return None;
         };
-        let [name] = segments.as_slice() else {
+        let [name] = &segments[..] else {
             self.fail(unsupported(self.file, *span, "this assignment target"));
             return None;
         };
+        let name = name.text();
         let Some(local) = self.lookup(name) else {
-            if self.poisoned_bindings.contains(name.as_str()) {
+            if self.poisoned_bindings.contains(name) {
                 self.failed = true;
             } else {
                 self.fail(name_error(self.file, *span, name));
             }
             return None;
         };
-        Some((local.slot, local.ty, local.mutable, *span, name.clone()))
+        Some((local.slot, local.ty, local.mutable, *span, name.to_string()))
     }
 
     /// Resolve a place expression to its chain of present composite containers rooted
@@ -568,12 +569,13 @@ impl<'a> FnLowerer<'a> {
     fn resolve_place_chain(&mut self, target: &Expression) -> Option<PlaceChain> {
         match target {
             Expression::Name { segments, span, .. } => {
-                let [name] = segments.as_slice() else {
+                let [name] = &segments[..] else {
                     self.fail(unsupported(self.file, *span, "this assignment target"));
                     return None;
                 };
+                let name = name.text();
                 let Some(local) = self.lookup(name) else {
-                    if self.poisoned_bindings.contains(name.as_str()) {
+                    if self.poisoned_bindings.contains(name) {
                         self.failed = true;
                     } else {
                         self.fail(name_error(self.file, *span, name));
@@ -584,7 +586,7 @@ impl<'a> FnLowerer<'a> {
                     slot: local.slot,
                     mutable: local.mutable,
                     root_span: *span,
-                    root_name: name.clone(),
+                    root_name: name.to_string(),
                     ty: local.ty,
                     indices: Vec::new(),
                 })
@@ -1177,7 +1179,7 @@ impl<'a> FnLowerer<'a> {
 
         for (position, arm) in arms.iter().enumerate() {
             let is_last = position + 1 == arm_count;
-            let [member] = arm.path.as_slice() else {
+            let [member] = &arm.path[..] else {
                 self.fail(unsupported(
                     self.file,
                     arm.span,
@@ -1185,6 +1187,7 @@ impl<'a> FnLowerer<'a> {
                 ));
                 continue;
             };
+            let member = member.text();
             let Some(variant_index) = variants.iter().position(|(name, _)| name == member) else {
                 self.fail(SourceDiagnostic::at(
                     Code::CheckMatchArm.as_str(),
@@ -1621,10 +1624,10 @@ impl<'a> FnLowerer<'a> {
         let Expression::Name { segments, .. } = base else {
             return None;
         };
-        let [name] = segments.as_slice() else {
+        let [name] = &segments[..] else {
             return None;
         };
-        self.place_node(self.lookup_place(name)?)
+        self.place_node(self.lookup_place(name.text())?)
     }
 
     /// The durable node an entry-address expression addresses, resolved against the named
@@ -1747,10 +1750,10 @@ impl<'a> FnLowerer<'a> {
         let Expression::Name { segments, .. } = place_base else {
             return None;
         };
-        let [name] = segments.as_slice() else {
+        let [name] = &segments[..] else {
             return None;
         };
-        let place = self.lookup_place(name)?;
+        let place = self.lookup_place(name.text())?;
         // The place's key-path — evaluated once at its binding, including an entry-identity
         // operand captured into the root's key columns — is the traversal's ancestor path.
         // An identity-captured slot carries its root as a typed identity column, which the

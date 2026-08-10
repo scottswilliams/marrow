@@ -1572,7 +1572,7 @@ pub enum ActiveCallOutcome {
 /// class is derived purely positionally.
 mod completion {
     use marrow_syntax::{
-        Block, Declaration, EnumDecl, EnumMember, Expression, FunctionDecl, Recovery,
+        Block, Declaration, EnumDecl, EnumMember, Expression, FunctionDecl, NameSegment, Recovery,
         ResourceMember, SourceFile, SourceSpan, Statement, TypeExpr,
     };
 
@@ -2298,7 +2298,7 @@ mod completion {
         let Expression::Name { segments, .. } = base else {
             return None;
         };
-        let [name] = segments.as_slice() else {
+        let [name] = &segments[..] else {
             return None;
         };
         let binding = scope
@@ -2306,7 +2306,7 @@ mod completion {
             .iter()
             .rev()
             .chain(scope.params.iter())
-            .find(|binding| &binding.name == name)?;
+            .find(|binding| binding.name == name.text())?;
         match binding.ty? {
             TypeExpr::Name { text, .. } => Some(text.as_str()),
             _ => None,
@@ -2324,7 +2324,7 @@ mod completion {
             .declarations
             .iter()
             .find_map(|declaration| match declaration {
-                Declaration::Enum(item) if &item.name == enum_name => Some(item),
+                Declaration::Enum(item) if item.name == enum_name.text() => Some(item),
                 _ => None,
             })
         else {
@@ -2347,10 +2347,15 @@ mod completion {
 
     /// Walk the qualified segments after the enum name into the member tree, returning the
     /// reached node's immediate members. An unresolvable segment yields `None`.
-    fn resolve_enum_members<'a>(item: &'a EnumDecl, rest: &[String]) -> Option<&'a [EnumMember]> {
+    fn resolve_enum_members<'a>(
+        item: &'a EnumDecl,
+        rest: &[NameSegment],
+    ) -> Option<&'a [EnumMember]> {
         let mut members = item.members.as_slice();
         for segment in rest {
-            let member = members.iter().find(|member| &member.name == segment)?;
+            let member = members
+                .iter()
+                .find(|member| member.name == segment.text())?;
             members = member.members.as_slice();
         }
         Some(members)
@@ -2566,13 +2571,13 @@ mod active_call {
         let Expression::Name { segments, .. } = callee else {
             return None;
         };
-        let [name] = segments.as_slice() else {
+        let [name] = &segments[..] else {
             return None;
         };
         file.declarations
             .iter()
             .find_map(|declaration| match declaration {
-                Declaration::Function(function) if &function.name == name => Some(function),
+                Declaration::Function(function) if function.name == name.text() => Some(function),
                 _ => None,
             })
     }

@@ -710,7 +710,12 @@ fn format_index_decl(index: &crate::IndexDecl, level: usize) -> String {
     out.push_str(&format!(
         "{pad}index {}[{}]{unique}",
         index.name,
-        index.args.join(", ")
+        index
+            .args
+            .iter()
+            .map(|arg| arg.path.as_str())
+            .collect::<Vec<_>>()
+            .join(", ")
     ));
     out
 }
@@ -1080,7 +1085,7 @@ struct StatementFormatContext<'source, 'comments> {
 /// times, which is what makes the compound-assign fold provably sound.
 fn plain_local_name(expression: &Expression) -> Option<&str> {
     match expression {
-        Expression::Name { segments, .. } if segments.len() == 1 => Some(&segments[0]),
+        Expression::Name { segments, .. } if segments.len() == 1 => Some(segments[0].text()),
         _ => None,
     }
 }
@@ -1608,7 +1613,10 @@ fn format_match(
                     .join(", ")
             )
         };
-        let head = format!("{arm_pad}{}{bindings} =>", arm.path.join("::"));
+        let head = format!(
+            "{arm_pad}{}{bindings} =>",
+            crate::name_path_spelling(&arm.path)
+        );
         out.push('\n');
         out.push_str(&head);
         // An arm body is a braced multiline block cuddled after `=>`.
@@ -1738,8 +1746,8 @@ fn format_expression_layout(expression: &Expression, level: usize, layout: Layou
             text,
             ..
         } => format_duration_words(text),
-        Expression::Literal { text, .. } => text.clone(),
-        Expression::Name { segments, .. } => segments.join("::"),
+        Expression::Literal { text, .. } => text.to_string(),
+        Expression::Name { segments, .. } => crate::name_path_spelling(segments),
         Expression::SavedRoot { name, .. } => format!("^{name}"),
         Expression::Absent { .. } => "absent".to_string(),
         // Reachable only in a best-effort `format_source` over input that failed to
@@ -1921,7 +1929,7 @@ fn field_segment(name: &str, quoted: bool) -> String {
 fn format_argument_at(argument: &Argument, level: usize, layout: Layout) -> String {
     let mut out = String::new();
     if let Some(name) = &argument.name {
-        out.push_str(name);
+        out.push_str(name.text());
         out.push_str(": ");
     }
     out.push_str(&format_expression_layout(&argument.value, level, layout));

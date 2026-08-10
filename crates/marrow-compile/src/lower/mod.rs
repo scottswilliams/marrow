@@ -51,9 +51,9 @@ use marrow_project::FileIdentity;
 use crate::analysis::{DefinitionTarget, FactSink, FileRef};
 use marrow_syntax::{
     Argument, BinaryOp, Block, CheckedBind, ElseIf, Expression, ForBinding, FunctionDecl,
-    InterpolationPart, LiteralKind, MatchArm, RangeExpr, SourceSpan, Statement, TraversalBound,
-    TypeExpr, UnaryOp, decode_interpolation_text, decode_string_literal, duration_unit_seconds,
-    range_expr,
+    InterpolationPart, LiteralKind, MatchArm, NameSegment, RangeExpr, SourceSpan, Statement,
+    TraversalBound, TypeExpr, UnaryOp, decode_interpolation_text, decode_string_literal,
+    duration_unit_seconds, range_expr,
 };
 
 use crate::diag::{BoundedDiagnostics, DiagnosticCollector, SourceDiagnostic};
@@ -1041,8 +1041,7 @@ mod generic_cache_boundary_tests {
 
     fn name(name: &str) -> Expression {
         Expression::Name {
-            segments: vec![name.to_string()],
-            segment_spans: vec![span()],
+            segments: Box::new([NameSegment::new(name, span())]),
             span: span(),
         }
     }
@@ -1718,8 +1717,7 @@ mod generic_cache_boundary_tests {
             slot: 0,
         });
         let args = [Argument {
-            name: Some("value".to_string()),
-            name_span: Some(span()),
+            name: Some(NameSegment::new("value", span())),
             value: name("item"),
         }];
 
@@ -1788,8 +1786,7 @@ mod generic_cache_boundary_tests {
             slot: 0,
         });
         let args = [Argument {
-            name: Some("value".to_string()),
-            name_span: Some(span()),
+            name: Some(NameSegment::new("value", span())),
             value: name("item"),
         }];
 
@@ -1929,8 +1926,7 @@ mod generic_cache_boundary_tests {
             slot: 0,
         });
         let args = [Argument {
-            name: Some("value".to_string()),
-            name_span: Some(span()),
+            name: Some(NameSegment::new("value", span())),
             value: name("item"),
         }];
 
@@ -2005,20 +2001,21 @@ mod generic_cache_boundary_tests {
         let parts = [
             InterpolationPart::Expr(Expression::Call {
                 callee: Box::new(Expression::Name {
-                    segments: vec!["Option".to_string(), "some".to_string()],
-                    segment_spans: vec![span(), span()],
+                    segments: Box::new([
+                        NameSegment::new("Option", span()),
+                        NameSegment::new("some", span()),
+                    ]),
                     span: span(),
                 }),
                 args: vec![Argument {
-                    name: Some("value".to_string()),
-                    name_span: Some(span()),
+                    name: Some(NameSegment::new("value", span())),
                     value: name("item"),
                 }],
                 multiline: false,
                 span: span(),
             }),
             InterpolationPart::Text {
-                text: "later-sentinel".to_string(),
+                text: "later-sentinel".into(),
                 span: span(),
             },
         ];
@@ -2084,8 +2081,7 @@ mod generic_cache_boundary_tests {
                 .lower_ctor_as(
                     CtorKind::None,
                     &Expression::Name {
-                        segments: vec!["none".to_string()],
-                        segment_spans: vec![span()],
+                        segments: Box::new([NameSegment::new("none", span())]),
                         span: span(),
                     },
                     LTy::Enum {
@@ -2141,7 +2137,7 @@ mod generic_cache_boundary_tests {
         );
         let integer = |text: &str| Expression::Literal {
             kind: LiteralKind::Integer,
-            text: text.to_string(),
+            text: text.into(),
             span: span(),
         };
         let operation = Expression::Binary {
@@ -2164,7 +2160,7 @@ mod generic_cache_boundary_tests {
             statements: vec![Statement::Expr {
                 value: Expression::Literal {
                     kind: LiteralKind::String,
-                    text: "handler-sentinel".to_string(),
+                    text: "handler-sentinel".into(),
                     span: span(),
                 },
                 span: span(),
@@ -2230,7 +2226,7 @@ mod generic_cache_boundary_tests {
         );
         let condition = Expression::Literal {
             kind: LiteralKind::Bool,
-            text: "true".to_string(),
+            text: "true".into(),
             span: span(),
         };
         let empty = Block {
@@ -2341,7 +2337,7 @@ mod generic_cache_boundary_tests {
                 Statement::Expr {
                     value: Expression::Literal {
                         kind: LiteralKind::String,
-                        text: "later-sentinel".to_string(),
+                        text: "later-sentinel".into(),
                         span: span(),
                     },
                     span: span(),

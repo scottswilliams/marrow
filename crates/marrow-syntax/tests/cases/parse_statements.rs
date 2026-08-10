@@ -28,7 +28,7 @@ fn parses_simple_statements_in_function_bodies() {
         matches!(
             &statements[0],
             Statement::Const { name, ty: Some(ty), value: Expression::Literal { .. }, .. }
-                if name == "title" && ty.to_string() == "string"
+                if &**name == "title" && ty.to_string() == "string"
         ),
         "stmt 0: {:?}",
         statements[0]
@@ -37,7 +37,7 @@ fn parses_simple_statements_in_function_bodies() {
         matches!(
             &statements[1],
             Statement::Var { name, ty: Some(ty), value: Some(_), .. }
-                if name == "count" && ty.to_string() == "int"
+                if &**name == "count" && ty.to_string() == "int"
         ),
         "stmt 1: {:?}",
         statements[1]
@@ -46,7 +46,7 @@ fn parses_simple_statements_in_function_bodies() {
         matches!(
             &statements[2],
             Statement::Assign { target: Expression::Name { segments, .. }, .. }
-                if segments == &["count"]
+                if crate::common::segment_texts(segments) == ["count"]
         ),
         "stmt 2: {:?}",
         statements[2]
@@ -66,7 +66,7 @@ fn parses_simple_statements_in_function_bodies() {
         matches!(
             &statements[4],
             Statement::Return { value: Some(Expression::Name { segments, .. }), .. }
-                if segments == &["count"]
+                if crate::common::segment_texts(segments) == ["count"]
         ),
         "stmt 4: {:?}",
         statements[4]
@@ -119,13 +119,13 @@ fn if_const_accepts_a_type_annotation() {
             title.body.statements[0]
         );
     };
-    assert_eq!(name, "pages");
+    assert_eq!(&**name, "pages");
     assert!(
         matches!(ty, Some(ty) if ty.to_string() == "int"),
         "expected the `: int` annotation to be bound, got {ty:?}"
     );
     assert!(
-        matches!(value, Expression::Field { name, .. } if name == "pages"),
+        matches!(value, Expression::Field { name, .. } if &**name == "pages"),
         "binding value: {value:?}"
     );
 }
@@ -171,7 +171,7 @@ fn parses_a_type_keyword_as_a_path_segment() {
             &main.body.statements[0],
             Statement::Return { value: Some(Expression::Call { callee, .. }), .. }
                 if matches!(callee.as_ref(),
-                    Expression::Name { segments, .. } if segments == &["std", "bytes", "length"])
+                    Expression::Name { segments, .. } if crate::common::segment_texts(segments) == ["std", "bytes", "length"])
         ),
         "{:#?}",
         main.body.statements[0]
@@ -198,7 +198,7 @@ fn parses_a_type_keyword_as_a_leading_path_segment() {
             &main.body.statements[0],
             Statement::Return { value: Some(Expression::Call { callee, .. }), .. }
                 if matches!(callee.as_ref(),
-                    Expression::Name { segments, .. } if segments == &["bytes", "length"])
+                    Expression::Name { segments, .. } if crate::common::segment_texts(segments) == ["bytes", "length"])
         ),
         "{:#?}",
         main.body.statements[0]
@@ -224,7 +224,7 @@ fn parses_keyed_var_declaration() {
     else {
         panic!("expected var, got {:?}", tally.body.statements[0]);
     };
-    assert_eq!(name, "counts");
+    assert_eq!(&**name, "counts");
     assert_eq!(keys.len(), 1);
     assert_eq!(keys[0].name, "name");
     assert_eq!(keys[0].ty.to_string(), "string");
@@ -260,7 +260,7 @@ fn comment_lines_inside_a_multi_line_keyed_var_key_list_are_skipped() {
     let Statement::Var { name, keys, ty, .. } = &tally.body.statements[0] else {
         panic!("expected var, got {:?}", tally.body.statements[0]);
     };
-    assert_eq!(name, "scores");
+    assert_eq!(&**name, "scores");
     assert_eq!(
         keys.iter()
             .map(|key| (key.name.clone(), key.ty.to_string()))
@@ -426,14 +426,14 @@ fn parses_saved_writes_and_var_without_value() {
     let statements = &save.body.statements;
     assert_eq!(statements.len(), 3, "{statements:#?}");
     assert!(
-        matches!(&statements[0], Statement::Var { name, value: None, .. } if name == "book"),
+        matches!(&statements[0], Statement::Var { name, value: None, .. } if &**name == "book"),
         "stmt 0: {:?}",
         statements[0]
     );
     assert!(
         matches!(
             &statements[1],
-            Statement::Assign { target: Expression::Field { name, .. }, .. } if name == "title"
+            Statement::Assign { target: Expression::Field { name, .. }, .. } if &**name == "title"
         ),
         "stmt 1: {:?}",
         statements[1]
@@ -797,7 +797,7 @@ fn parses_compound_assignment_from_single_operator_token() {
                     op,
                     value: Expression::Literal { .. },
                     ..
-                } if segments == &["i"] && *op == expected_op
+                } if crate::common::segment_texts(segments) == ["i"] && *op == expected_op
             ),
             "{:#?}",
             f.body.statements[0]
@@ -871,7 +871,7 @@ fn parses_checked_arithmetic_forms() {
             ..
         } => {
             assert!(
-                matches!(bind, CheckedBind::Const { name, ty: Some(_), .. } if name == "q"),
+                matches!(bind, CheckedBind::Const { name, ty: Some(_), .. } if &**name == "q"),
                 "{bind:#?}"
             );
             assert!(out_of_range.is_some() && zero_divisor.is_some());
@@ -886,7 +886,7 @@ fn parses_checked_arithmetic_forms() {
             ..
         } => {
             assert!(
-                matches!(bind, CheckedBind::Var { name, ty: None, .. } if name == "r"),
+                matches!(bind, CheckedBind::Var { name, ty: None, .. } if &**name == "r"),
                 "{bind:#?}"
             );
             assert!(out_of_range.is_some() && zero_divisor.is_none());
@@ -983,7 +983,7 @@ fn parses_a_place_binding() {
         matches!(
             &main.body.statements[0],
             Statement::PlaceBinding { name, place: Expression::Keyed { .. }, .. }
-                if name == "book"
+                if &**name == "book"
         ),
         "stmt 0: {:?}",
         main.body.statements[0]

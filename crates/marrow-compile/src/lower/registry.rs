@@ -161,23 +161,23 @@ impl FunctionRegistry {
     pub(super) fn resolve_qualified(
         &self,
         current: &str,
-        prefix: &[String],
+        prefix: &[NameSegment],
         item: &str,
     ) -> CallResolution<'_> {
         let module = if let [single] = prefix {
             if let Some((_, target)) = self
                 .imports
                 .get(current)
-                .and_then(|bindings| bindings.iter().find(|(seg, _)| seg == single))
+                .and_then(|bindings| bindings.iter().find(|(seg, _)| seg == single.text()))
             {
                 target.clone()
-            } else if self.modules.contains(single) {
-                single.clone()
+            } else if self.modules.contains(single.text()) {
+                single.text().to_string()
             } else {
                 return CallResolution::NotFound;
             }
         } else {
-            let dotted = prefix.join(".");
+            let dotted = dotted_module_path(prefix);
             if self.modules.contains(&dotted) {
                 dotted
             } else {
@@ -197,21 +197,21 @@ impl FunctionRegistry {
 
     /// The dotted module a `::`-qualified prefix names from within `current`, shared
     /// with generic-call resolution so both read module scope one way.
-    pub(super) fn resolved_module(&self, current: &str, prefix: &[String]) -> Option<String> {
+    pub(super) fn resolved_module(&self, current: &str, prefix: &[NameSegment]) -> Option<String> {
         if let [single] = prefix {
             if let Some((_, target)) = self
                 .imports
                 .get(current)
-                .and_then(|bindings| bindings.iter().find(|(seg, _)| seg == single))
+                .and_then(|bindings| bindings.iter().find(|(seg, _)| seg == single.text()))
             {
                 Some(target.clone())
-            } else if self.modules.contains(single) {
-                Some(single.clone())
+            } else if self.modules.contains(single.text()) {
+                Some(single.text().to_string())
             } else {
                 None
             }
         } else {
-            let dotted = prefix.join(".");
+            let dotted = dotted_module_path(prefix);
             self.modules.contains(&dotted).then_some(dotted)
         }
     }
@@ -220,20 +220,31 @@ impl FunctionRegistry {
     /// A failed `use` leaves no binding, so a broken dependency presents as a direct
     /// reference to the broken module name; a surviving binding to a since-broken
     /// target is resolved through its dotted target.
-    pub(super) fn names_broken_module(&self, current: &str, prefix: &[String]) -> bool {
+    pub(super) fn names_broken_module(&self, current: &str, prefix: &[NameSegment]) -> bool {
         if let [single] = prefix {
             match self
                 .imports
                 .get(current)
-                .and_then(|bindings| bindings.iter().find(|(seg, _)| seg == single))
+                .and_then(|bindings| bindings.iter().find(|(seg, _)| seg == single.text()))
             {
                 Some((_, target)) => self.broken_modules.contains(target),
-                None => self.broken_modules.contains(single),
+                None => self.broken_modules.contains(single.text()),
             }
         } else {
-            self.broken_modules.contains(&prefix.join("."))
+            self.broken_modules.contains(&dotted_module_path(prefix))
         }
     }
+}
+
+/// The dotted module name a multi-segment `::` prefix spells. A module path joins on
+/// `.`, unlike a name path, so this is the registry's own spelling and not the syntax
+/// crate's `::` join.
+fn dotted_module_path(prefix: &[NameSegment]) -> String {
+    prefix
+        .iter()
+        .map(NameSegment::text)
+        .collect::<Vec<_>>()
+        .join(".")
 }
 
 /// One generic function template: the source declaration plus its type-parameter

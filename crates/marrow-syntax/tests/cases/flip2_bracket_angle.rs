@@ -88,7 +88,7 @@ fn a_branch_chain_nests_keyed_and_field_nodes() {
     let Expression::Field { base, name, .. } = &**base else {
         panic!("expected .obs field");
     };
-    assert_eq!(name, "obs");
+    assert_eq!(&**name, "obs");
     assert!(matches!(&**base, Expression::Keyed { .. }), "visits keyed");
 }
 
@@ -242,7 +242,10 @@ fn index_declarations_are_bracketed() {
     );
     let store = parsed.file.store("books").expect("store");
     assert_eq!(store.indexes.len(), 2, "two indexes: {store:#?}");
-    assert_eq!(store.indexes[0].args, vec!["shelf", "id"]);
+    assert_eq!(
+        crate::common::index_arg_paths(&store.indexes[0].args),
+        ["shelf", "id"]
+    );
     assert!(store.indexes[1].unique, "byIsbn is unique");
 }
 

@@ -494,10 +494,8 @@ fn comment_lines_inside_a_multi_line_index_argument_list_are_skipped() {
     );
     let store = parsed.file.store("books").expect("books store");
     assert!(
-        store
-            .indexes
-            .iter()
-            .any(|index| index.name == "byShelf" && index.args == ["shelf", "id"]),
+        store.indexes.iter().any(|index| index.name == "byShelf"
+            && crate::common::index_arg_paths(&index.args) == ["shelf", "id"]),
         "{:#?}",
         store.indexes
     );

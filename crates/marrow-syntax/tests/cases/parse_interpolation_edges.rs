@@ -369,7 +369,7 @@ fn escaped_nested_strings_carry_structural_characters_as_content() {
         parts
             .iter()
             .filter_map(|part| match part {
-                InterpolationPart::Text { text, .. } => Some(text.clone()),
+                InterpolationPart::Text { text, .. } => Some(text.to_string()),
                 InterpolationPart::Expr(_) => None,
             })
             .collect()
@@ -477,7 +477,7 @@ fn a_lone_closing_brace_is_literal_interpolation_text() {
         panic!("expected interpolation, got {:?}", decl.value);
     };
     assert!(
-        matches!(&parts[..], [InterpolationPart::Text { text, .. }] if text == "book }"),
+        matches!(&parts[..], [InterpolationPart::Text { text, .. }] if &**text == "book }"),
         "expected the closing brace to stay text: {parts:#?}"
     );
 }

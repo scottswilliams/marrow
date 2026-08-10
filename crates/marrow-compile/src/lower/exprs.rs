@@ -95,11 +95,11 @@ impl<'a> FnLowerer<'a> {
         }
         match expr {
             Expression::Literal { kind, text, span } => self.lower_literal(*kind, text, *span),
-            Expression::Name { segments, span, .. } => match segments.as_slice() {
+            Expression::Name { segments, span, .. } => match &segments[..] {
                 // `none` is a reserved Option constructor; it needs an expected type
                 // (an annotation, argument, return, or coerced position) to know its
                 // instantiation, so a bare `none` in value position is a type error.
-                [name] if name == "none" => {
+                [name] if name.text() == "none" => {
                     self.fail(SourceDiagnostic::at(
                         Code::CheckType.as_str(),
                         self.file,
@@ -109,6 +109,7 @@ impl<'a> FnLowerer<'a> {
                     None
                 }
                 [name] => {
+                    let name = name.text();
                     // An integer-bound value built-in (`maxInt`/`minInt`) folds to a
                     // constant `int` load. It is reserved, so no local, parameter, or
                     // constant can shadow it; resolving it first keeps a bare use of the
@@ -155,7 +156,7 @@ impl<'a> FnLowerer<'a> {
                     }
                     // A binding whose initializer failed left this name unbound; the
                     // initializer already reported the cause, so a later use is silent.
-                    if self.poisoned_bindings.contains(name.as_str()) {
+                    if self.poisoned_bindings.contains(name) {
                         self.failed = true;
                         return None;
                     }
@@ -175,8 +176,8 @@ impl<'a> FnLowerer<'a> {
                     None
                 }
                 // `Enum::member` for a payloadless member is an enum value.
-                [enum_name, variant] if self.records.enum_by_name(enum_name).is_some() => {
-                    self.lower_enum_construct(enum_name, variant, &[], *span)
+                [enum_name, variant] if self.records.enum_by_name(enum_name.text()).is_some() => {
+                    self.lower_enum_construct(enum_name.text(), variant.text(), &[], *span)
                 }
                 _ => {
                     self.fail(unsupported(self.file, *span, "a qualified name"));
@@ -220,7 +221,7 @@ impl<'a> FnLowerer<'a> {
                     // value; it is only valid in statement position.
                     let name = match callee.as_ref() {
                         Expression::Name { segments, .. } if segments.len() == 1 => {
-                            segments[0].as_str()
+                            segments[0].text()
                         }
                         _ => "unreachable",
                     };
@@ -1095,19 +1096,14 @@ impl<'a> FnLowerer<'a> {
         args: &[Argument],
         span: SourceSpan,
     ) -> Option<CallResult> {
-        let Expression::Name {
-            segments,
-            segment_spans,
-            ..
-        } = callee
-        else {
+        let Expression::Name { segments, .. } = callee else {
             // `Age.checked(n)`: the nominal range test, the one member call the
             // subset admits. Any other field-shaped callee stays unsupported.
             if let Expression::Field { base, name, .. } = callee {
-                if name == "checked"
+                if &**name == "checked"
                     && let Expression::Name { segments, .. } = &**base
-                    && let [type_name] = segments.as_slice()
-                    && let Some((id, _)) = self.records.nominal_by_name(type_name)
+                    && let [type_name] = &segments[..]
+                    && let Some((id, _)) = self.records.nominal_by_name(type_name.text())
                 {
                     return self
                         .lower_checked_nominal(id, args, span)
@@ -1118,7 +1114,7 @@ impl<'a> FnLowerer<'a> {
                 // and resolved through the one type-namespace owner (the store's resource and
                 // its executable branch tree).
                 if let Some((resource, head_span, mut path)) = split_dotted_head(base) {
-                    path.push(name.as_str());
+                    path.push(&**name);
                     if let Some(branch) = self.executable_branch_path(resource, &path) {
                         let display = branch_ctor_display(resource, &path);
                         return self
@@ -1162,29 +1158,29 @@ impl<'a> FnLowerer<'a> {
             self.fail(unsupported(self.file, span, "this call"));
             return None;
         };
-        let generic_enum_template = match segments.as_slice() {
+        let generic_enum_template = match &segments[..] {
             [enum_name, _] => self
                 .records
-                .type_template_by_name(enum_name)
+                .type_template_by_name(enum_name.text())
                 .filter(|template| self.records.template_is_enum(*template)),
             _ => None,
         };
         // The origin of a definition/hover fact is the callee's leaf name segment, not
         // the whole call. A degenerate empty path falls back to the call span.
-        let callee_span = segment_spans.last().copied().unwrap_or(span);
-        match (segments.as_slice(), generic_enum_template) {
-            ([name], _) => self.lower_unqualified_call(name, args, span, callee_span),
+        let callee_span = segments.last().map_or(span, NameSegment::span);
+        match (&segments[..], generic_enum_template) {
+            ([name], _) => self.lower_unqualified_call(name.text(), args, span, callee_span),
             // `Enum::member(payload...)` constructs a payload-carrying enum value.
-            ([enum_name, item], _) if self.records.enum_by_name(enum_name).is_some() => self
-                .lower_enum_construct(enum_name, item, args, span)
+            ([enum_name, item], _) if self.records.enum_by_name(enum_name.text()).is_some() => self
+                .lower_enum_construct(enum_name.text(), item.text(), args, span)
                 .map(CallResult::Value),
             // A generic enum template's variant infers its instantiation from the
             // payload values.
             ([_, item], Some(template)) => self
-                .lower_generic_enum_construct(template, item, args, span)
+                .lower_generic_enum_construct(template, item.text(), args, span)
                 .map(CallResult::Value),
             ([prefix @ .., item], _) => {
-                self.lower_qualified_call(prefix, item, args, span, callee_span)
+                self.lower_qualified_call(prefix, item.text(), args, span, callee_span)
             }
             ([], _) => {
                 self.fail(unsupported(self.file, span, "this call"));
@@ -1389,7 +1385,7 @@ impl<'a> FnLowerer<'a> {
     /// `use` bindings and the project module set, to a `pub` function.
     fn lower_qualified_call(
         &mut self,
-        prefix: &[String],
+        prefix: &[NameSegment],
         item: &str,
         args: &[Argument],
         span: SourceSpan,
@@ -1447,7 +1443,7 @@ impl<'a> FnLowerer<'a> {
                 }
                 let path = prefix
                     .iter()
-                    .map(String::as_str)
+                    .map(NameSegment::text)
                     .chain(std::iter::once(item))
                     .collect::<Vec<_>>()
                     .join("::");
@@ -1860,6 +1856,7 @@ impl<'a> FnLowerer<'a> {
                 ));
                 return None;
             };
+            let arg_name = arg_name.text();
             if record.field(arg_name).is_none() && record.group(arg_name).is_none() {
                 self.fail(SourceDiagnostic::at(
                     Code::CheckType.as_str(),
@@ -1879,7 +1876,7 @@ impl<'a> FnLowerer<'a> {
         for (field_name, field_ty, required) in field_plan {
             let arg = args
                 .iter()
-                .find(|a| a.name.as_deref() == Some(field_name.as_str()));
+                .find(|a| a.name.as_ref().map(NameSegment::text) == Some(field_name.as_str()));
             let bare = garg_to_lty(field_ty);
             let expected = if required { bare } else { bare.to_optional() };
             match arg {
@@ -1926,7 +1923,7 @@ impl<'a> FnLowerer<'a> {
         for (group_name, group_type, has_required, leaves) in group_plan {
             let arg = args
                 .iter()
-                .find(|a| a.name.as_deref() == Some(group_name.as_str()));
+                .find(|a| a.name.as_ref().map(NameSegment::text) == Some(group_name.as_str()));
             if let Some(argument) = arg {
                 self.lower_as(
                     &argument.value,
@@ -2025,6 +2022,7 @@ impl<'a> FnLowerer<'a> {
                 ));
                 return None;
             };
+            let arg_name = arg_name.text();
             if branch.field(arg_name).is_none() {
                 self.fail(SourceDiagnostic::at(
                     Code::CheckType.as_str(),
@@ -2041,7 +2039,7 @@ impl<'a> FnLowerer<'a> {
         for field in &branch.fields {
             let arg = args
                 .iter()
-                .find(|a| a.name.as_deref() == Some(field.name.as_str()));
+                .find(|a| a.name.as_ref().map(NameSegment::text) == Some(field.name.as_str()));
             let bare = LTy::bare_scalar(field.scalar);
             let expected = if field.required {
                 bare
@@ -2125,6 +2123,7 @@ impl<'a> FnLowerer<'a> {
                 ));
                 return None;
             };
+            let arg_name = arg_name.text();
             if !leaf_plan.iter().any(|(name, _, _)| name == arg_name) {
                 self.fail(SourceDiagnostic::at(
                     Code::CheckType.as_str(),
@@ -2139,7 +2138,7 @@ impl<'a> FnLowerer<'a> {
         for (leaf_name, leaf_ty, required) in leaf_plan {
             let arg = args
                 .iter()
-                .find(|a| a.name.as_deref() == Some(leaf_name.as_str()));
+                .find(|a| a.name.as_ref().map(NameSegment::text) == Some(leaf_name.as_str()));
             let bare = garg_to_lty(leaf_ty);
             let expected = if required { bare } else { bare.to_optional() };
             match arg {
@@ -2200,6 +2199,7 @@ impl<'a> FnLowerer<'a> {
                 ok = false;
                 continue;
             };
+            let arg_name = arg_name.text();
             if info.field(arg_name).is_none() {
                 self.fail(SourceDiagnostic::at(
                     Code::CheckType.as_str(),
@@ -2210,7 +2210,7 @@ impl<'a> FnLowerer<'a> {
                 ok = false;
                 continue;
             }
-            if !seen.insert(arg_name.as_str()) {
+            if !seen.insert(arg_name) {
                 self.fail(SourceDiagnostic::at(
                     Code::CheckType.as_str(),
                     self.file,
@@ -2232,7 +2232,7 @@ impl<'a> FnLowerer<'a> {
         for (field_name, field_ty) in field_plan {
             let arg = args
                 .iter()
-                .find(|a| a.name.as_deref() == Some(field_name.as_str()));
+                .find(|a| a.name.as_ref().map(NameSegment::text) == Some(field_name.as_str()));
             match arg {
                 Some(argument) => {
                     self.lower_as(&argument.value, garg_to_lty(field_ty))?;
@@ -2293,7 +2293,7 @@ impl<'a> FnLowerer<'a> {
         for (field_name, field_ty) in &fields {
             let Some(argument) = args
                 .iter()
-                .find(|a| a.name.as_deref() == Some(field_name.as_str()))
+                .find(|a| a.name.as_ref().map(NameSegment::text) == Some(field_name.as_str()))
             else {
                 self.fail(SourceDiagnostic::at(
                     Code::CheckType.as_str(),
@@ -2391,7 +2391,7 @@ impl<'a> FnLowerer<'a> {
         for (field_name, field_ty) in &payload {
             let Some(argument) = args
                 .iter()
-                .find(|a| a.name.as_deref() == Some(field_name.as_str()))
+                .find(|a| a.name.as_ref().map(NameSegment::text) == Some(field_name.as_str()))
             else {
                 self.fail(SourceDiagnostic::at(
                     Code::CheckType.as_str(),
@@ -2473,6 +2473,7 @@ impl<'a> FnLowerer<'a> {
                 ok = false;
                 continue;
             };
+            let arg_name = arg_name.text();
             if !field_names.iter().any(|name| name == arg_name) {
                 self.fail(SourceDiagnostic::at(
                     Code::CheckType.as_str(),
@@ -2483,7 +2484,7 @@ impl<'a> FnLowerer<'a> {
                 ok = false;
                 continue;
             }
-            if !seen.insert(arg_name.as_str()) {
+            if !seen.insert(arg_name) {
                 self.fail(SourceDiagnostic::at(
                     Code::CheckType.as_str(),
                     self.file,
@@ -2629,6 +2630,7 @@ impl<'a> FnLowerer<'a> {
                     ok = false;
                     continue;
                 };
+                let arg_name = arg_name.text();
                 if !plan.iter().any(|(name, _)| name == arg_name) {
                     self.fail(SourceDiagnostic::at(
                         Code::CheckType.as_str(),
@@ -2639,7 +2641,7 @@ impl<'a> FnLowerer<'a> {
                     ok = false;
                     continue;
                 }
-                if !seen.insert(arg_name.as_str()) {
+                if !seen.insert(arg_name) {
                     self.fail(SourceDiagnostic::at(
                         Code::CheckType.as_str(),
                         self.file,
@@ -2655,7 +2657,7 @@ impl<'a> FnLowerer<'a> {
             for (field_name, scalar) in &plan {
                 let arg = args
                     .iter()
-                    .find(|a| a.name.as_deref() == Some(field_name.as_str()));
+                    .find(|a| a.name.as_ref().map(NameSegment::text) == Some(field_name.as_str()));
                 match arg {
                     Some(argument) => {
                         self.lower_as(&argument.value, LTy::bare_scalar(*scalar))?;

@@ -163,19 +163,18 @@ pub struct ConstDecl {
 pub enum Expression {
     Literal {
         kind: LiteralKind,
-        text: String,
+        text: Box<str>,
         span: SourceSpan,
     },
     /// A name path of one or more `::`-separated identifiers, such as `x` or
     /// `std::math::PI`.
     Name {
-        segments: Vec<String>,
-        segment_spans: Vec<SourceSpan>,
+        segments: Box<[NameSegment]>,
         span: SourceSpan,
     },
     /// A saved-data root such as `^books`. Postfix key lookups and field access
     /// build the rest of a saved path on top of this.
-    SavedRoot { name: String, span: SourceSpan },
+    SavedRoot { name: Box<str>, span: SourceSpan },
     /// The empty-optional primary value `absent`: assignable to any `T?` place and
     /// inert until resolved.
     Absent { span: SourceSpan },
@@ -204,7 +203,7 @@ pub enum Expression {
     /// written as a quoted segment (for data names that are not identifiers).
     Field {
         base: Box<Expression>,
-        name: String,
+        name: Box<str>,
         name_span: SourceSpan,
         quoted: bool,
         span: SourceSpan,
@@ -213,7 +212,7 @@ pub enum Expression {
     /// chain to absent rather than failing the read.
     OptionalField {
         base: Box<Expression>,
-        name: String,
+        name: Box<str>,
         name_span: SourceSpan,
         quoted: bool,
         span: SourceSpan,
@@ -366,19 +365,67 @@ pub fn range_expr(expr: &Expression) -> Option<RangeExpr<'_>> {
     }
 }
 
+/// One `::`-separated segment of a name path: the segment's spelling and the source
+/// span of that spelling, held as one value.
+///
+/// The spelling and the span used to be two vectors walked in step, which made an
+/// unequal length representable and left the correspondence to whichever construction
+/// site happened to push both. A path is a sequence of these instead, so a segment
+/// without a span — or a span without a segment — cannot be built.
+///
+/// `text` is a `Box<str>`: a segment is built once from a token and never appended to,
+/// so it carries no spare capacity. No `Expression` retains a growable string.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NameSegment {
+    text: Box<str>,
+    span: SourceSpan,
+}
+
+impl NameSegment {
+    /// A segment cannot be built without the span it was spelled at, which is the
+    /// invariant the two parallel vectors could not state.
+    pub fn new(text: &str, span: SourceSpan) -> Self {
+        Self {
+            text: text.into(),
+            span,
+        }
+    }
+
+    pub fn text(&self) -> &str {
+        &self.text
+    }
+
+    pub fn span(&self) -> SourceSpan {
+        self.span
+    }
+}
+
+/// The `::`-joined source spelling of a name path.
+pub fn name_path_spelling(segments: &[NameSegment]) -> String {
+    let mut out = String::new();
+    for (index, segment) in segments.iter().enumerate() {
+        if index > 0 {
+            out.push_str("::");
+        }
+        out.push_str(segment.text());
+    }
+    out
+}
+
 /// `Text` keeps `{{`/`}}` escaped as written; decoding happens downstream.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InterpolationPart {
-    Text { text: String, span: SourceSpan },
+    Text { text: Box<str>, span: SourceSpan },
     Expr(Expression),
 }
 
 /// One argument in a call expression. `name` is set for named arguments
-/// (`title: draft`).
+/// (`title: draft`), and carries the span it was spelled at: a name without a span,
+/// or a span without a name, was representable while the two were separate `Option`s
+/// and is not now.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Argument {
-    pub name: Option<String>,
-    pub name_span: Option<SourceSpan>,
+    pub name: Option<NameSegment>,
     pub value: Expression,
 }
 
@@ -585,14 +632,19 @@ pub struct IndexDecl {
     pub docs: Vec<String>,
     pub name: String,
     pub name_span: SourceSpan,
-    pub args: Vec<String>,
-    /// The source span of each argument, parallel to `args`, so a per-argument
-    /// diagnostic points at the offending path rather than the whole `index` line.
-    pub arg_spans: Vec<SourceSpan>,
-    /// One source span per dotted path segment, parallel to `args`.
-    pub arg_segment_spans: Vec<Vec<SourceSpan>>,
+    pub args: Box<[IndexArg]>,
     pub unique: bool,
     pub span: SourceSpan,
+}
+
+/// One argument of an `index` declaration: a dotted field path as written, with the
+/// span of the whole path and one span per dotted segment, so a per-argument or
+/// per-segment diagnostic points at the offending path rather than the `index` line.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IndexArg {
+    pub path: String,
+    pub span: SourceSpan,
+    pub segment_spans: Box<[SourceSpan]>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -942,8 +994,7 @@ pub enum CheckedBind {
 /// the checker walks it against that enum's member tree.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MatchArm {
-    pub path: Vec<String>,
-    pub path_spans: Vec<SourceSpan>,
+    pub path: Box<[NameSegment]>,
     /// Positional payload bindings the arm introduces (`circle(r)` binds `r`),
     /// empty for a bare arm. The checker matches them against the member's payload
     /// arity and binds each to a fresh local in payload declaration order.
@@ -1093,8 +1144,10 @@ pub enum TypeExpr {
         segment_spans: Vec<SourceSpan>,
         span: SourceSpan,
     },
-    /// `Id(^root)`, a saved-store identity type.
-    Identity(IdentityTypeExpr),
+    /// `Id(^root)`, a saved-store identity type. Boxed: it is five spans wide and the
+    /// rarest annotation form, and every annotation in a file pays the width of the
+    /// widest variant.
+    Identity(Box<IdentityTypeExpr>),
     /// `T?`, an optional value type.
     Optional {
         inner: Box<TypeExpr>,

@@ -82,7 +82,7 @@ fn member_dot_eof_recovers_base() {
         panic!("expected a Member recovery node, got {value:?}");
     };
     assert!(
-        matches!(base.as_ref(), Expression::Name { segments, .. } if segments == &["book"]),
+        matches!(base.as_ref(), Expression::Name { segments, .. } if crate::common::segment_texts(segments) == ["book"]),
         "expected the recovered base to be the receiver `book`, got {base:?}"
     );
 }
@@ -100,7 +100,7 @@ fn member_optional_dot_eof_recovers_base() {
         panic!("expected an OptionalMember recovery node, got {value:?}");
     };
     assert!(
-        matches!(base.as_ref(), Expression::Name { segments, .. } if segments == &["book"]),
+        matches!(base.as_ref(), Expression::Name { segments, .. } if crate::common::segment_texts(segments) == ["book"]),
         "expected the recovered base to be the receiver `book`, got {base:?}"
     );
 }
@@ -119,7 +119,7 @@ fn path_colon_colon_eof_retains_segments() {
         panic!("expected a Path recovery node, got {value:?}");
     };
     assert!(
-        matches!(base.as_ref(), Expression::Name { segments, .. } if segments == &["Role"]),
+        matches!(base.as_ref(), Expression::Name { segments, .. } if crate::common::segment_texts(segments) == ["Role"]),
         "expected the recovered base to retain the segment `Role`, got {base:?}"
     );
 }
@@ -135,7 +135,7 @@ fn incomplete_call_empty_arg_list_recovers_call() {
         panic!("expected a recovered Call node, got {value:?}");
     };
     assert!(
-        matches!(callee.as_ref(), Expression::Name { segments, .. } if segments == &["getOr"]),
+        matches!(callee.as_ref(), Expression::Name { segments, .. } if crate::common::segment_texts(segments) == ["getOr"]),
         "expected the callee `getOr`, got {callee:?}"
     );
     assert!(args.is_empty(), "expected no arguments, got {args:?}");
@@ -151,7 +151,7 @@ fn incomplete_call_trailing_comma_recovers_call() {
         panic!("expected a recovered Call node, got {value:?}");
     };
     assert!(
-        matches!(callee.as_ref(), Expression::Name { segments, .. } if segments == &["getOr"]),
+        matches!(callee.as_ref(), Expression::Name { segments, .. } if crate::common::segment_texts(segments) == ["getOr"]),
         "expected the callee `getOr`, got {callee:?}"
     );
     assert_eq!(
@@ -160,7 +160,7 @@ fn incomplete_call_trailing_comma_recovers_call() {
         "expected the one parsed argument, got {args:?}"
     );
     assert!(
-        matches!(&args[0].value, Expression::Name { segments, .. } if segments == &["reached"]),
+        matches!(&args[0].value, Expression::Name { segments, .. } if crate::common::segment_texts(segments) == ["reached"]),
         "expected the retained argument `reached`, got {:?}",
         args[0].value
     );
@@ -209,7 +209,7 @@ fn parses_top_level_multi_line_const_value() {
     let Expression::Name { segments, .. } = callee.as_ref() else {
         panic!("expected a name callee, got {callee:?}");
     };
-    assert_eq!(segments.as_slice(), &["some", "call"]);
+    assert_eq!(crate::common::segment_texts(segments), ["some", "call"]);
     assert_eq!(args.len(), 2, "expected two arguments");
 }
 
@@ -229,21 +229,21 @@ fn parses_interpolation_into_text_and_expression_parts() {
     };
     assert_eq!(parts.len(), 3, "{parts:#?}");
     assert!(
-        matches!(&parts[0], InterpolationPart::Text { text, .. } if text == "book "),
+        matches!(&parts[0], InterpolationPart::Text { text, .. } if &**text == "book "),
         "part 0: {:?}",
         parts[0]
     );
     assert!(
         matches!(
             &parts[1],
-            InterpolationPart::Expr(Expression::Name { segments, .. }) if segments == &["id"]
+            InterpolationPart::Expr(Expression::Name { segments, .. }) if crate::common::segment_texts(segments) == ["id"]
         ),
         "part 1: {:?}",
         parts[1]
     );
     // `{{ready}}` stays escaped inside literal text.
     assert!(
-        matches!(&parts[2], InterpolationPart::Text { text, .. } if text == ": {{ready}}"),
+        matches!(&parts[2], InterpolationPart::Text { text, .. } if &**text == ": {{ready}}"),
         "part 2: {:?}",
         parts[2]
     );
@@ -272,7 +272,7 @@ fn parses_interpolation_with_embedded_call_path() {
     assert!(
         matches!(
             parts.last(),
-            Some(InterpolationPart::Expr(Expression::Field { name, .. })) if name == "title"
+            Some(InterpolationPart::Expr(Expression::Field { name, .. })) if &**name == "title"
         ),
         "last embedded expr should be a field access: {parts:#?}"
     );
@@ -293,17 +293,17 @@ fn parses_calls_paths_and_field_access() {
     let Some(Expression::Field { base, name, .. }) = &decl.value else {
         panic!("expected field access, got {:?}", decl.value);
     };
-    assert_eq!(name, "title");
+    assert_eq!(&**name, "title");
     let Expression::Keyed { base, keys, .. } = base.as_ref() else {
         panic!("expected keyed access under field, got {base:?}");
     };
     assert_eq!(keys.len(), 1);
     assert!(
-        matches!(base.as_ref(), Expression::SavedRoot { name, .. } if name == "books"),
+        matches!(base.as_ref(), Expression::SavedRoot { name, .. } if &**name == "books"),
         "expected saved root base, got {base:?}"
     );
     assert!(
-        matches!(&keys[0], Expression::Name { segments, .. } if segments == &["id"]),
+        matches!(&keys[0], Expression::Name { segments, .. } if crate::common::segment_texts(segments) == ["id"]),
         "expected id key, got {:?}",
         keys[0]
     );
@@ -350,7 +350,7 @@ fn quoted_field_segments_are_parse_errors() {
         panic!("expected const declaration");
     };
     assert!(
-        matches!(&decl.value, Some(Expression::Field { name, quoted: false, .. }) if name == "title"),
+        matches!(&decl.value, Some(Expression::Field { name, quoted: false, .. }) if &**name == "title"),
         "plain field should be unquoted: {:?}",
         decl.value
     );
@@ -495,8 +495,14 @@ fn parses_named_call_arguments() {
         panic!("expected call, got {:?}", decl.value);
     };
     assert_eq!(args.len(), 2);
-    assert_eq!(args[0].name.as_deref(), Some("book"));
-    assert_eq!(args[1].name.as_deref(), Some("total"));
+    assert_eq!(
+        args[0].name.as_ref().map(marrow_syntax::NameSegment::text),
+        Some("book")
+    );
+    assert_eq!(
+        args[1].name.as_ref().map(marrow_syntax::NameSegment::text),
+        Some("total")
+    );
 }
 
 #[test]
@@ -536,8 +542,12 @@ fn out_and_inout_parse_as_ordinary_names() {
         panic!("expected call, got {:?}", decl.value);
     };
     assert_eq!(args.len(), 2);
-    assert!(matches!(&args[0].value, Expression::Name { segments, .. } if segments == &["out"]));
-    assert!(matches!(&args[1].value, Expression::Name { segments, .. } if segments == &["inout"]));
+    assert!(
+        matches!(&args[0].value, Expression::Name { segments, .. } if crate::common::segment_texts(segments) == ["out"])
+    );
+    assert!(
+        matches!(&args[1].value, Expression::Name { segments, .. } if crate::common::segment_texts(segments) == ["inout"])
+    );
 }
 
 #[test]
@@ -680,7 +690,7 @@ fn parses_conversion_and_constructor_calls() {
         panic!("expected conversion call, got {:?}", decl.value);
     };
     assert!(
-        matches!(callee.as_ref(), Expression::Name { segments, .. } if segments == &["int"]),
+        matches!(callee.as_ref(), Expression::Name { segments, .. } if crate::common::segment_texts(segments) == ["int"]),
         "expected int callee, got {callee:?}"
     );
 
@@ -697,7 +707,7 @@ fn parses_conversion_and_constructor_calls() {
         panic!("expected identity constructor call, got {:?}", decl.value);
     };
     assert!(
-        matches!(callee.as_ref(), Expression::Name { segments, .. } if segments == &["Id"]),
+        matches!(callee.as_ref(), Expression::Name { segments, .. } if crate::common::segment_texts(segments) == ["Id"]),
         "expected Id callee, got {callee:?}"
     );
 
@@ -715,7 +725,7 @@ fn parses_conversion_and_constructor_calls() {
         panic!("expected constructor call, got {:?}", decl.value);
     };
     assert!(
-        matches!(callee.as_ref(), Expression::Name { segments, .. } if segments == &["shelf", "make"]),
+        matches!(callee.as_ref(), Expression::Name { segments, .. } if crate::common::segment_texts(segments) == ["shelf", "make"]),
         "expected shelf::make callee, got {callee:?}"
     );
     assert_eq!(args.len(), 1);

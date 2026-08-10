@@ -680,13 +680,13 @@ fn build_identity(
             "unexpected tokens after `Id(...)`",
         ));
     }
-    Ok(TypeExpr::Identity(IdentityTypeExpr {
+    Ok(TypeExpr::Identity(Box::new(IdentityTypeExpr {
         root: root.text(source).to_string(),
         keyword_span: tokens[0].span,
         caret_span: tokens[caret].span,
         root_span: root.span,
         span,
-    }))
+    })))
 }
 
 /// The whitespace-free source spelling of a type-token slice. The stored spelling

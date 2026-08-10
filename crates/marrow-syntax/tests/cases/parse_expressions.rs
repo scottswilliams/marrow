@@ -93,10 +93,14 @@ fn parses_const_values_into_expression_nodes() {
                 Some(Expression::Literal { kind, text, .. }),
             ) => {
                 assert_eq!(*kind, *expected_kind, "{source:?}");
-                assert_eq!(text, expected_text, "{source:?}");
+                assert_eq!(&**text, *expected_text, "{source:?}");
             }
             (Expectation::Name(expected_segments), Some(Expression::Name { segments, .. })) => {
-                assert_eq!(segments.as_slice(), *expected_segments, "{source:?}");
+                assert_eq!(
+                    crate::common::segment_texts(segments),
+                    *expected_segments,
+                    "{source:?}"
+                );
             }
             (expected, actual) => panic!("expected {expected:?} for {source:?}, got {actual:?}"),
         }
@@ -218,7 +222,7 @@ fn parses_const_operator_expressions_with_precedence() {
         "left should be the multiply, got {left:?}"
     );
     assert!(
-        matches!(right.as_ref(), Expression::Literal { text, .. } if text == "1"),
+        matches!(right.as_ref(), Expression::Literal { text, .. } if &**text == "1"),
         "right should be literal 1, got {right:?}"
     );
 }
@@ -415,7 +419,7 @@ fn absence_operators_parse_in_expression_position() {
         panic!("expected `??` to parse as coalesce");
     };
     assert!(
-        matches!(left.as_ref(), Expression::OptionalField { name, .. } if name == "pages"),
+        matches!(left.as_ref(), Expression::OptionalField { name, .. } if &**name == "pages"),
         "expected `?.` to parse as an optional field read: {left:?}"
     );
 }
@@ -500,7 +504,7 @@ fn chained_coalesce_is_right_associative() {
         panic!("expected `??` to parse as coalesce");
     };
     assert!(
-        matches!(left.as_ref(), Expression::OptionalField { name, .. } if name == "pages"),
+        matches!(left.as_ref(), Expression::OptionalField { name, .. } if &**name == "pages"),
         "expected the left operand to be the `?.` read: {left:?}"
     );
     assert!(
@@ -650,7 +654,7 @@ fn parses_the_is_operator() {
     let Expression::Name { segments, .. } = right.as_ref() else {
         panic!("expected a name on the right, got {right:?}");
     };
-    assert_eq!(segments, &["Cat", "tiger"]);
+    assert_eq!(crate::common::segment_texts(segments), ["Cat", "tiger"]);
 }
 
 #[test]
@@ -667,5 +671,8 @@ fn a_three_segment_member_path_parses_as_one_name() {
     let Expression::Name { segments, .. } = value else {
         panic!("expected a name return, got {value:?}");
     };
-    assert_eq!(segments, &["Cat", "tiger", "bengal"]);
+    assert_eq!(
+        crate::common::segment_texts(&segments),
+        ["Cat", "tiger", "bengal"]
+    );
 }

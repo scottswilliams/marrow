@@ -74,16 +74,16 @@ fn identity_records_the_root_and_its_spans() {
     let marrow_syntax::ResourceMember::Field(field) = &resource.members[0] else {
         panic!("expected a field");
     };
-    let TypeExpr::Identity(IdentityTypeExpr {
+    let TypeExpr::Identity(identity) = &field.ty else {
+        panic!("expected an identity");
+    };
+    let IdentityTypeExpr {
         root,
         keyword_span,
         caret_span,
         root_span,
         span,
-    }) = &field.ty
-    else {
-        panic!("expected an identity");
-    };
+    } = identity.as_ref();
     // Every recorded span addresses exactly its part of the spelling, so tooling
     // reaches the constructor and the saved root without re-lexing.
     assert_eq!(root, "books");

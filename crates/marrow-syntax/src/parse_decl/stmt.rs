@@ -707,8 +707,7 @@ impl<'a, 'c> StmtParser<'a, 'c> {
         };
         let block = self.parse_clause_body();
         Some(MatchArm {
-            path: pattern.path,
-            path_spans: pattern.path_spans,
+            path: pattern.path.into_boxed_slice(),
             bindings: pattern
                 .bindings
                 .into_iter()

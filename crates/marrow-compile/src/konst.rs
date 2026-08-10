@@ -154,7 +154,7 @@ fn literal_value(
                     None
                 }
             },
-            LiteralKind::Bool => Some(ConstScalar::Bool(text == "true")),
+            LiteralKind::Bool => Some(ConstScalar::Bool(&**text == "true")),
             LiteralKind::String => match decode_string_literal(text) {
                 Ok(decoded) => Some(ConstScalar::Text(decoded)),
                 Err(_) => {
@@ -208,9 +208,10 @@ fn literal_value(
         // admitted; every other name stays a non-literal that a later
         // constant-expression lane will handle.
         Expression::Name { segments, .. }
-            if segments.len() == 1 && crate::lower::builtin_const_int(&segments[0]).is_some() =>
+            if segments.len() == 1
+                && crate::lower::builtin_const_int(segments[0].text()).is_some() =>
         {
-            crate::lower::builtin_const_int(&segments[0]).map(ConstScalar::Int)
+            crate::lower::builtin_const_int(segments[0].text()).map(ConstScalar::Int)
         }
         other => {
             diagnostics.push(SourceDiagnostic::at(

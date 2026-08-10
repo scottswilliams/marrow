@@ -201,3 +201,17 @@ pub fn reference_sample() -> String {
         .expect("sample.md should contain a Marrow code block")
         .source
 }
+
+/// The spellings of a parsed name path, so a suite asserts a path against a plain
+/// `["a", "b"]` without restating each segment's span.
+pub fn segment_texts(segments: &[marrow_syntax::NameSegment]) -> Vec<&str> {
+    segments
+        .iter()
+        .map(marrow_syntax::NameSegment::text)
+        .collect()
+}
+
+/// The dotted paths of an `index` declaration's arguments, on the same terms.
+pub fn index_arg_paths(args: &[marrow_syntax::IndexArg]) -> Vec<&str> {
+    args.iter().map(|arg| arg.path.as_str()).collect()
+}

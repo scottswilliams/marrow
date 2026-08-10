@@ -12,9 +12,9 @@ use crate::diagnostic::{SyntaxError, SyntaxErrorSink};
 use crate::token::{is_trivia, is_unfixed_duration_unit};
 use crate::{
     Argument, BinaryOp, CompoundAssignOp, DiagnosticReason, ExpectedSyntax, Expression,
-    InterpolationPart, Keyword, LiteralKind, NESTING_DEPTH_LIMIT, ParseDiagnosticReason, Recovery,
-    SourceSpan, Token, TokenKind, UnaryOp, UnsupportedSyntax, duration_unit_seconds,
-    is_expression_callable_keyword, is_expression_path_segment_keyword,
+    InterpolationPart, Keyword, LiteralKind, NESTING_DEPTH_LIMIT, NameSegment,
+    ParseDiagnosticReason, Recovery, SourceSpan, Token, TokenKind, UnaryOp, UnsupportedSyntax,
+    duration_unit_seconds, is_expression_callable_keyword, is_expression_path_segment_keyword,
 };
 
 /// The remedy shared by the comparison and equality non-associative levels: the
@@ -766,7 +766,7 @@ impl<'a> ExprParser<'a> {
                         let span = join_spans(expr.span(), name_span);
                         expr = Expression::Field {
                             base: Box::new(expr),
-                            name,
+                            name: name.into(),
                             name_span,
                             quoted,
                             span,
@@ -793,7 +793,7 @@ impl<'a> ExprParser<'a> {
                         let span = join_spans(expr.span(), name_span);
                         expr = Expression::OptionalField {
                             base: Box::new(expr),
-                            name,
+                            name: name.into(),
                             name_span,
                             quoted,
                             span,
@@ -988,27 +988,23 @@ impl<'a> ExprParser<'a> {
 
     fn argument(&mut self) -> Result<Argument, Expression> {
         self.recover_removed_argument_mode();
-        let (name, name_span) = if matches!(self.peek(), Some(TokenKind::Identifier))
+        let name = if matches!(self.peek(), Some(TokenKind::Identifier))
             && matches!(self.peek_at(1), Some(TokenKind::Colon))
         {
             let identifier = self.advance();
             self.advance();
-            (
-                Some(identifier.text(self.source).to_string()),
-                Some(identifier.span),
-            )
+            Some(NameSegment::new(
+                identifier.text(self.source),
+                identifier.span,
+            ))
         } else {
-            (None, None)
+            None
         };
         let value = self.expression();
         if value.is_error() {
             return Err(value);
         }
-        Ok(Argument {
-            name,
-            name_span,
-            value,
-        })
+        Ok(Argument { name, value })
     }
 
     fn recover_removed_argument_mode(&mut self) {
@@ -1076,8 +1072,7 @@ impl<'a> ExprParser<'a> {
             {
                 self.advance();
                 Expression::Name {
-                    segments: vec![text.to_string()],
-                    segment_spans: vec![token.span],
+                    segments: Box::new([NameSegment::new(text, token.span)]),
                     span: token.span,
                 }
             }
@@ -1101,7 +1096,7 @@ impl<'a> ExprParser<'a> {
                 }
                 self.advance();
                 Expression::SavedRoot {
-                    name: name.text(self.source).to_string(),
+                    name: name.text(self.source).into(),
                     span: join_spans(token.span, name.span),
                 }
             }
@@ -1161,7 +1156,7 @@ impl<'a> ExprParser<'a> {
         self.advance();
         Expression::Literal {
             kind,
-            text: token.text(self.source).to_string(),
+            text: token.text(self.source).into(),
             span: token.span,
         }
     }
@@ -1186,7 +1181,7 @@ impl<'a> ExprParser<'a> {
             self.advance();
             return Expression::Literal {
                 kind: LiteralKind::DurationWords,
-                text,
+                text: text.into(),
                 span,
             };
         }
@@ -1223,7 +1218,7 @@ impl<'a> ExprParser<'a> {
                 TokenKind::InterpolationText => {
                     self.advance();
                     parts.push(InterpolationPart::Text {
-                        text: token.text(self.source).to_string(),
+                        text: token.text(self.source).into(),
                         span: token.span,
                     });
                 }
@@ -1290,8 +1285,7 @@ impl<'a> ExprParser<'a> {
 
     fn name_expr(&mut self) -> Expression {
         let first = self.advance();
-        let mut segments = vec![first.text(self.source).to_string()];
-        let mut segment_spans = vec![first.span];
+        let mut segments = vec![NameSegment::new(first.text(self.source), first.span)];
         let mut end = first.span;
         while matches!(self.peek(), Some(TokenKind::DoubleColon)) {
             self.advance();
@@ -1307,8 +1301,7 @@ impl<'a> ExprParser<'a> {
                     None,
                 );
                 let base = Expression::Name {
-                    segments,
-                    segment_spans,
+                    segments: segments.into_boxed_slice(),
                     span: join_spans(first.span, end),
                 };
                 return recovery_node(base, gap, |base| Recovery::Path { base });
@@ -1329,13 +1322,11 @@ impl<'a> ExprParser<'a> {
                 );
             }
             self.advance();
-            segments.push(segment.text(self.source).to_string());
-            segment_spans.push(segment.span);
+            segments.push(NameSegment::new(segment.text(self.source), segment.span));
             end = segment.span;
         }
         Expression::Name {
-            segments,
-            segment_spans,
+            segments: segments.into_boxed_slice(),
             span: join_spans(first.span, end),
         }
     }

@@ -40,7 +40,7 @@ fn parses_a_range_for_by_step() {
     let Some(Expression::Literal { text, .. }) = step.as_ref() else {
         panic!("expected an integer step literal, got {step:?}");
     };
-    assert_eq!(text, "2");
+    assert_eq!(&**text, "2");
 }
 
 #[test]
@@ -103,7 +103,7 @@ fn parses_a_bounded_traversal_head_and_on_more_block() {
     let Expression::Literal { text, .. } = &bound.limit else {
         panic!("expected an integer limit literal, got {:?}", bound.limit);
     };
-    assert_eq!(text, "2");
+    assert_eq!(&**text, "2");
     assert_eq!(bound.from, None);
     assert!(
         bound.on_more.is_some(),
@@ -235,9 +235,9 @@ fn parses_if_const_binding_guard() {
     else {
         panic!("expected if statement, got {:?}", title.body.statements[0]);
     };
-    assert_eq!(name, "title");
+    assert_eq!(&**name, "title");
     assert!(
-        matches!(value, Expression::Field { name, .. } if name == "title"),
+        matches!(value, Expression::Field { name, .. } if &**name == "title"),
         "binding value: {value:?}"
     );
     assert_eq!(then_block.statements.len(), 1);
@@ -407,7 +407,7 @@ fn reversed_is_a_head_slot_keyword() {
     let (order, iterable) = for_stmt(&parsed).expect("for");
     assert_eq!(order, LoopOrder::Reversed);
     assert!(
-        matches!(&iterable, Expression::Name { segments, .. } if segments.as_slice() == ["reversed"]),
+        matches!(&iterable, Expression::Name { segments, .. } if crate::common::segment_texts(segments) == ["reversed"]),
         "{iterable:?}"
     );
 
@@ -680,7 +680,7 @@ fn nested_compound_at_end_of_body_parses_without_panic() {
     let statements = &run.body.statements;
     assert_eq!(statements.len(), 2, "{statements:#?}");
     assert!(
-        matches!(&statements[0], Statement::Const { name, .. } if name == "ready"),
+        matches!(&statements[0], Statement::Const { name, .. } if &**name == "ready"),
         "stmt 0: {:?}",
         statements[0]
     );
@@ -733,7 +733,7 @@ fn parses_a_match_statement_with_bare_member_arms() {
     assert!(matches!(scrutinee, Expression::Name { .. }));
     let paths: Vec<Vec<&str>> = arms
         .iter()
-        .map(|arm| arm.path.iter().map(String::as_str).collect())
+        .map(|arm| crate::common::segment_texts(&arm.path))
         .collect();
     assert_eq!(paths, [vec!["active"], vec!["archived"]]);
     // Each arm carries its own block.
@@ -761,7 +761,7 @@ fn parses_a_match_arm_that_is_a_qualified_member_path() {
     };
     let paths: Vec<Vec<&str>> = arms
         .iter()
-        .map(|arm| arm.path.iter().map(String::as_str).collect())
+        .map(|arm| crate::common::segment_texts(&arm.path))
         .collect();
     assert_eq!(paths, [vec!["tiger", "bengal"], vec!["lion"]]);
 }

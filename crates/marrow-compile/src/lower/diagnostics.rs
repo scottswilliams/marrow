@@ -95,8 +95,8 @@ pub(super) fn dead_list_index_literal(key: &Expression) -> Option<String> {
 /// or `None` when the base is a compound expression that has no single-name spelling.
 pub(super) fn simple_base_label(base: &Expression) -> Option<&str> {
     match base {
-        Expression::Name { segments, .. } => match segments.as_slice() {
-            [name] => Some(name.as_str()),
+        Expression::Name { segments, .. } => match &segments[..] {
+            [name] => Some(name.text()),
             _ => None,
         },
         _ => None,
@@ -109,15 +109,15 @@ pub(super) fn simple_base_label(base: &Expression) -> Option<&str> {
 /// `_` placeholder.
 pub(super) fn simple_value_spelling(value: &Expression) -> Option<String> {
     match value {
-        Expression::Name { segments, .. } => match segments.as_slice() {
-            [name] => Some(name.clone()),
+        Expression::Name { segments, .. } => match &segments[..] {
+            [name] => Some(name.text().to_string()),
             _ => None,
         },
         Expression::Literal {
             kind: LiteralKind::Integer,
             text,
             ..
-        } => Some(text.clone()),
+        } => Some(text.to_string()),
         Expression::Unary {
             op: UnaryOp::Neg,
             operand,

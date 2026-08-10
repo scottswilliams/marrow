@@ -5,7 +5,9 @@
 use super::params::{match_angle, match_bracket, match_paren, parse_type_params_tokens};
 use super::tokens::{line_span_or, parse_type, split_top_level_commas, strip_comment_tokens};
 use super::{MemberHead, ParseError, ParseResult};
-use crate::ast::{EnumPayloadField, IndexDecl, KeyParam, SavedRoot, TypeParamDecl};
+use crate::ast::{
+    EnumPayloadField, IndexArg, IndexDecl, KeyParam, NameSegment, SavedRoot, TypeParamDecl,
+};
 use crate::diagnostic::{ExpectedSyntax, ParseDiagnosticReason, SourceSpan};
 use crate::parse_expr::join_spans;
 use crate::token::{Keyword, Token, TokenKind};
@@ -245,23 +247,18 @@ fn parse_enum_payload_tokens(source: &str, inner: &[Token]) -> ParseResult<Vec<E
 /// the header is not a member path (`identifier ("::" identifier)*`). The
 /// scrutinee supplies the enum, so an arm header carries no enum prefix — it is a
 /// relative path the checker walks against the scrutinee enum's member tree.
-pub(super) fn arm_member_path(
-    source: &str,
-    tokens: &[Token],
-) -> Option<(Vec<String>, Vec<SourceSpan>)> {
+pub(super) fn arm_member_path(source: &str, tokens: &[Token]) -> Option<Vec<NameSegment>> {
     if tokens.is_empty() {
         return None;
     }
     let mut segments = Vec::new();
-    let mut spans = Vec::new();
     for (index, token) in tokens.iter().enumerate() {
         // Even positions are identifiers, odd positions the `::` separators.
         if index.is_multiple_of(2) {
             if token.kind != TokenKind::Identifier {
                 return None;
             }
-            segments.push(token.text(source).to_string());
-            spans.push(token.span);
+            segments.push(NameSegment::new(token.text(source), token.span));
         } else if token.kind != TokenKind::DoubleColon {
             return None;
         }
@@ -270,14 +267,13 @@ pub(super) fn arm_member_path(
     if tokens.len().is_multiple_of(2) {
         return None;
     }
-    Some((segments, spans))
+    Some(segments)
 }
 
 /// A parsed match-arm header: the member path relative to the scrutinee enum and
 /// its positional payload bindings (empty for a bare arm).
 pub(super) struct ArmPattern {
-    pub path: Vec<String>,
-    pub path_spans: Vec<SourceSpan>,
+    pub path: Vec<NameSegment>,
     pub bindings: Vec<(String, SourceSpan)>,
 }
 
@@ -302,12 +298,8 @@ pub(super) fn arm_pattern(source: &str, tokens: &[Token]) -> Option<ArmPattern> 
             (&tokens[..open], bindings)
         }
     };
-    let (path, path_spans) = arm_member_path(source, path_tokens)?;
-    Some(ArmPattern {
-        path,
-        path_spans,
-        bindings,
-    })
+    let path = arm_member_path(source, path_tokens)?;
+    Some(ArmPattern { path, bindings })
 }
 
 /// Parse the inside of a match-arm binding list: a comma-separated run of bare
@@ -531,16 +523,16 @@ pub(super) fn parse_index_tokens(source: &str, tokens: &[Token]) -> ParseResult<
         ));
     }
     let mut args = Vec::new();
-    let mut arg_spans = Vec::new();
-    let mut arg_segment_spans = Vec::new();
     for part in split_top_level_commas(&inner) {
-        let (arg, segment_spans) = field_path(source, part).ok_or(ParseError::new(
+        let (path, segment_spans) = field_path(source, part).ok_or(ParseError::new(
             ParseDiagnosticReason::Expected(ExpectedSyntax::IndexFieldPath),
             "expected index field path",
         ))?;
-        args.push(arg);
-        arg_spans.push(line_span_or(part, part[0].span));
-        arg_segment_spans.push(segment_spans);
+        args.push(IndexArg {
+            path,
+            span: line_span_or(part, part[0].span),
+            segment_spans: segment_spans.into_boxed_slice(),
+        });
     }
     let tail = &rest[close + 1..];
     let unique = match tail {
@@ -557,9 +549,7 @@ pub(super) fn parse_index_tokens(source: &str, tokens: &[Token]) -> ParseResult<
         docs: Vec::new(),
         name,
         name_span,
-        args,
-        arg_spans,
-        arg_segment_spans,
+        args: args.into_boxed_slice(),
         unique,
         span: SourceSpan::default(),
     })

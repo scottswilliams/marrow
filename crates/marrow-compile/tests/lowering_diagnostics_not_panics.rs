@@ -37,7 +37,8 @@ fn generic_enum_dispatch_binds_one_template_lookup() {
         .expect("next owner boundary remains present")
         .0;
     assert_eq!(
-        body.matches("type_template_by_name(enum_name)").count(),
+        body.matches("type_template_by_name(enum_name.text())")
+            .count(),
         1,
         "the immutable successful lookup must be consumed directly"
     );
