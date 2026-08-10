@@ -563,7 +563,10 @@ fn install_untracked_ignore(meta: &AdmittedDir) -> Result<(), IdsPublicationErro
         Err(error) => return Err(error.into()),
     };
     // A file larger than the read bound is not this owner's, and the part of it
-    // that decides the question was never read, so it is left as found.
+    // that decides the question was never read, so it is left as found. The
+    // same check bounds an entry this owner's own appends pushed past the bound:
+    // past it no acquisition can see the names it already wrote, so without
+    // stopping here every acquisition would append them again forever.
     if found.len() > IGNORE_READ_CEILING {
         return Ok(());
     }
