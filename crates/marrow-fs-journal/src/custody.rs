@@ -153,11 +153,15 @@ pub enum CustodyError {
     WrongNodeKind { op: &'static str, found: NodeKind },
     /// The entry's identity changed between admission and use.
     IdentityDrift { op: &'static str },
-    /// The entry exists as a regular file whose permission bits do not carry
-    /// the owner access the operation requires, so no open can reach it. A
-    /// crash inside the create-then-`fchmod` window under an owner-stripping
-    /// umask leaves exactly this state; restoring `required` on the entry, or
-    /// removing it, is an operator action.
+    /// The entry exists as a regular file whose owner bits do not carry the
+    /// access the operation requires, so no process those bits bind can open
+    /// it. A crash inside the create-then-`fchmod` window under an
+    /// owner-stripping umask leaves exactly this state on an entry this crate
+    /// created. An entry another user owns whose owner bits fall short is the
+    /// same observation from outside, and the observed mode alone cannot tell
+    /// the two apart, so the refusal reports what it saw and what the open
+    /// required and leaves the repair — restoring `required`, or removing the
+    /// entry — to whoever owns it.
     ModeDenied {
         /// The refused operation.
         op: &'static str,
@@ -206,7 +210,7 @@ impl fmt::Display for CustodyError {
             } => write!(
                 formatter,
                 "{op} found an entry whose mode {found:o} denies the required {required:o}; \
-                 an operator must restore mode {required:o} on the entry or remove it"
+                 its owner must restore mode {required:o} on the entry or remove it"
             ),
             Self::Io { op, source } => write!(formatter, "{op} failed: {source}"),
         }
@@ -492,7 +496,11 @@ mod tests {
     /// The mode reading of a refused open, pinned per case. It is what a crash
     /// inside the create-then-`fchmod` window leaves behind on either
     /// qualified platform, so it is asserted here without depending on the
-    /// running process's own override capability.
+    /// running process's own override capability. The observed mode is the
+    /// whole of the evidence — no uid is read, on the entry or on this
+    /// process — so an entry another user owns whose owner bits fall short is
+    /// read the same way, and the refusal attributes the repair to the entry's
+    /// owner rather than to the caller.
     #[test]
     fn a_stripped_mode_is_read_as_the_typed_mode_refusal() {
         for (found, required) in [
