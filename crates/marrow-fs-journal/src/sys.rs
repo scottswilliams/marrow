@@ -177,11 +177,11 @@ mod imp {
     /// stat-then-unlink window the witnessed discard carries, and the reason
     /// the safety claim needs an exclusive or private admitted parent. A
     /// successful unlink is followed by a directory `fsync` whose refusal is
-    /// discarded: the refusal that stopped the creation is what must reach the
-    /// caller, so this is the one entry mutation of this crate that does not
-    /// propagate its sync. A failed witness or unlink, or a crash before the
-    /// sync takes effect, leaves the entry as never-linked debris, which the
-    /// pending-journal classification reads as preclaim.
+    /// discarded, because the refusal that stopped the creation is what must
+    /// reach the caller; the claim path drops a failed witnessed discard whole,
+    /// sync included, for that same reason. A failed witness or unlink, or a
+    /// crash before the sync takes effect, leaves the entry as never-linked
+    /// debris, which the pending-journal classification reads as preclaim.
     fn remove_created(dir: &DirHandle, name: &str, file: &FileHandle) {
         let (Ok(created), Ok(Some(present))) = (fstat_file(file), stat_entry(dir, name)) else {
             return;
