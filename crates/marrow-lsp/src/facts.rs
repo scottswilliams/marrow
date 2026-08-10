@@ -550,6 +550,12 @@ mod absence_gate {
     /// extent would blank the rest of the file silently.
     fn production_lines(source: &str) -> Vec<&str> {
         let code = code_only(source);
+        assert_eq!(
+            code.lines().count(),
+            source.lines().count(),
+            "the blanked view must keep every line boundary; a shorter view would end \
+             the zip below early and blank the rest of the file silently"
+        );
         let mut lines = source.lines().zip(code.lines()).peekable();
         let mut kept = Vec::new();
         while let Some((line, structure)) = lines.next() {
