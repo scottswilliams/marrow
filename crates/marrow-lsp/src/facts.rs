@@ -408,18 +408,23 @@ mod absence_gate {
 
     /// The production lines of a source: every line outside a `#[cfg(test)]`
     /// item. Test code and this gate's own token lists legitimately name the
-    /// forbidden surface, so an annotated item is skipped from its attribute to
-    /// the closing brace at the attribute's own indentation — which formatted
-    /// sources guarantee. Production code that follows a test-only helper is
-    /// still scanned.
+    /// forbidden surface, so a block-opening annotated item is skipped from its
+    /// attribute to the closing brace at the attribute's own indentation, which
+    /// formatted sources guarantee. Production code that follows a test-only
+    /// helper is still scanned. Any other annotated form stays in the scanned
+    /// region: a false positive fails loudly, where guessing its extent could
+    /// blank the rest of the file silently.
     fn production_lines(source: &str) -> Vec<&str> {
-        let mut lines = source.lines();
+        let mut lines = source.lines().peekable();
         let mut kept = Vec::new();
         while let Some(line) = lines.next() {
             let Some(indent) = line.strip_suffix("#[cfg(test)]").map(str::len) else {
                 kept.push(line);
                 continue;
             };
+            if !lines.peek().is_some_and(|next| next.ends_with('{')) {
+                continue;
+            }
             let close = format!("{}}}", " ".repeat(indent));
             for skipped in lines.by_ref() {
                 if skipped == close {
