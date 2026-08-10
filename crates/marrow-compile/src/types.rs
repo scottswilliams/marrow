@@ -7183,22 +7183,31 @@ fn build_group_leaves(
         let field = match member {
             ResourceMember::Field(field) => field,
             ResourceMember::Group(inner) => {
-                let what = if inner.keys.is_empty() {
-                    "a nested group"
-                } else {
-                    "a keyed branch inside a group"
-                };
                 let at = Declared {
                     name: &inner.name,
                     file,
                     at: declared.at,
                     span: inner.span,
                 };
-                let refusal = refuse_row(diagnostics, at, unsupported(file, inner.span, what));
-                registry.members.declare(
-                    MemberKey::leaf(record, &group.name, &inner.name),
-                    DeclarationOccurrence::Refused(refusal),
-                )?;
+                let key = MemberKey::leaf(record, &group.name, &inner.name);
+                // A member occupies its name whether or not it was accepted, so a
+                // repeat here is a name conflict exactly as it is at a leaf below.
+                // The nested group is refused either way; the repeat is the thing
+                // the reader has to fix first.
+                let row = if registry.members.declared(&key) {
+                    member_conflict(file, inner.span, &anchor, &inner.name)
+                } else {
+                    let what = if inner.keys.is_empty() {
+                        "a nested group"
+                    } else {
+                        "a keyed branch inside a group"
+                    };
+                    unsupported(file, inner.span, what)
+                };
+                let refusal = refuse_row(diagnostics, at, row);
+                registry
+                    .members
+                    .declare(key, DeclarationOccurrence::Refused(refusal))?;
                 continue;
             }
         };

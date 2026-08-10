@@ -1355,3 +1355,35 @@ fn r22_a_refused_generic_parameter_is_reported_once_not_once_per_use() {
         messages(&diagnostics),
     );
 }
+
+/// The sibling of the leaf probe, inside an unkeyed group: a nested group repeats a
+/// name the group already declares, so it is a name conflict rather than a second
+/// entry under one interned name. The nested group is refused either way — the
+/// beta line does not admit one — but the repeat is what the reader has to fix.
+#[test]
+fn a_nested_group_repeating_a_member_name_is_a_name_conflict() {
+    let diagnostics = diagnostics(
+        "module main\n\n\
+         resource Widget {\n\
+         \x20   required name: string\n\
+         \x20   notes {\n\
+         \x20       required body: string\n\
+         \x20       body {\n\
+         \x20           required text: string\n\
+         \x20       }\n\
+         \x20   }\n\
+         }\n\n\
+         pub fn make(): int {\n\
+         \x20   const w = Widget(name: \"a\")\n\
+         \x20   return 1\n\
+         }\n",
+    );
+
+    assert!(
+        diagnostics
+            .iter()
+            .any(|row| row.code() == "check.name_conflict"),
+        "the nested group repeats `body`, which the group already declares: {:#?}",
+        messages(&diagnostics),
+    );
+}
