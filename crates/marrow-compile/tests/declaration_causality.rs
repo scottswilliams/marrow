@@ -515,6 +515,76 @@ fn r20_value_cycle_a_root_refused_for_a_value_cycle_names_the_recursion_cause() 
     }
 }
 
+// ---------------------------------------------------------------------------
+// Resource members — I-7
+//
+// The one namespace that drops a *member* and keeps the declaration, so the record
+// survives with a silently narrowed field set and every lookup of the dropped
+// member makes a false statement about the source.
+// ---------------------------------------------------------------------------
+
+/// R21 — the over-suppression guard, and R15's mutation-kill partner. A field that
+/// really is not declared still says so. Member granularity must distinguish a
+/// member the compiler refused from one the source never wrote; suppressing both
+/// would trade a false absence for a missing report.
+#[test]
+fn r21_a_genuinely_absent_field_is_still_reported_as_absent() {
+    let diagnostics = diagnostics(
+        "module main\n\n\
+         resource Widget {\n\
+         \x20   required name: string\n\
+         }\n\n\
+         pub fn make(): int {\n\
+         \x20   const w = Widget(name: \"a\", nope: 1)\n\
+         \x20   return 1\n\
+         }\n",
+    );
+
+    assert!(
+        diagnostics
+            .iter()
+            .any(|row| row.message().contains("has no field `nope`")),
+        "`nope` is declared nowhere; the record must still say so: {:#?}",
+        messages(&diagnostics),
+    );
+}
+
+/// R15 — a resource member the compiler refused, then named. The member is dropped
+/// from the record and the record survives, so the constructor reports that the
+/// resource has no such field — four lines after the compiler diagnosed that field's
+/// type.
+#[test]
+#[ignore = "sequenced behind the resource-member ledger (I-7, design §2.3 and E5b): \
+            `RecordInfo::fields` and `GroupInfo::fields` must answer a `Binding` at \
+            the eleven `has no field` sites before a refused member can be told \
+            apart from an absent one"]
+fn r15_a_refused_resource_member_is_not_absent_at_its_use() {
+    let diagnostics = diagnostics(
+        "module main\n\n\
+         resource Widget {\n\
+         \x20   required name: string\n\
+         \x20   bad: Nope\n\
+         }\n\n\
+         pub fn make(): int {\n\
+         \x20   const w = Widget(name: \"a\", bad: 1)\n\
+         \x20   return 1\n\
+         }\n",
+    );
+
+    assert!(
+        !messages(&diagnostics)
+            .iter()
+            .any(|message| message.contains("has no field `bad`")),
+        "`bad` is declared four lines above and was refused there; no row may say \
+         the resource has no such field: {:#?}",
+        messages(&diagnostics),
+    );
+    assert_eq!(
+        rows(&diagnostics),
+        vec![("check.unsupported", 5, 10), ("check.unsupported", 9, 38)],
+    );
+}
+
 /// R19 — a refused resource member must not narrow the identity-gap anchor set. A
 /// member dropped from the record is never anchored, so the durable graph reports
 /// fewer `check.durable_identity` rows than the same program with a valid member
