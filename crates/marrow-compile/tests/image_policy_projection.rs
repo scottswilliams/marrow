@@ -23,20 +23,25 @@ use marrow_compile::{
     InputRevision, MAX_COMPLETION_CANDIDATES, ResourceLimitKind, analyze, compile,
     compile_with_tests,
 };
-use marrow_project::{CaptureLimits, CapturedFile, FileIdentity, Manifest, ProjectInput};
+use marrow_project::{FileIdentity, ProjectInput};
 
+#[path = "common/project.rs"]
+mod common_project;
+#[path = "common/source_projection.rs"]
+mod source_projection;
+
+/// The suite's fixtures generate their sources, so they are borrowed into the shared
+/// capture helper's `&str` pairs at each call.
 fn project(files: &[(&str, String)]) -> ProjectInput {
     project_with_ids(files, None)
 }
 
 fn project_with_ids(files: &[(&str, String)], ids: Option<&[u8]>) -> ProjectInput {
-    let manifest = Manifest::parse("edition = \"2026\"\n").expect("valid manifest");
-    let captured = files
+    let borrowed: Vec<(&str, &str)> = files
         .iter()
-        .map(|(path, source)| CapturedFile::new(path.to_string(), source.as_bytes().to_vec()))
+        .map(|(path, source)| (*path, source.as_str()))
         .collect();
-    marrow_project::capture(&manifest, captured, ids, &CaptureLimits::DEFAULT)
-        .expect("capture project")
+    common_project::project_with_ids(&borrowed, ids)
 }
 
 fn main_file() -> FileIdentity {
@@ -292,21 +297,15 @@ const ALL_KINDS: &[ResourceLimitKind] = &[
     ResourceLimitKind::ProjectSourceBytes,
 ];
 
-/// The variant names the owner declares, read from its source. Doc comments are stripped
-/// before the body is read, so a `{` or a variant name inside prose cannot widen or
-/// truncate the body, and the count is the enum's own truth rather than a number this
-/// test remembers.
+/// The variant names the owner declares, read from its source through the shared
+/// production projection, so a `{` or a variant name inside a comment, a string, or a
+/// test module cannot widen or truncate the body — and the count is the enum's own truth
+/// rather than a number this test remembers. The projection is the one answer to what
+/// counts as code; a hand-rolled comment strip here was a weaker second one.
 fn declared_kind_names() -> Vec<String> {
     let source = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/compile.rs"))
         .expect("the owner's source is readable from its own crate");
-    let code: String = source
-        .lines()
-        .map(|line| {
-            let trimmed = line.trim_start();
-            if trimmed.starts_with("//") { "" } else { line }
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
+    let code = source_projection::production_code(&source);
     let header = "pub enum ResourceLimitKind {";
     let start = code
         .find(header)
@@ -469,79 +468,214 @@ fn corpus() -> Vec<Corpus> {
     ]
 }
 
-/// Everything a caller observes about the image `compile_with_tests` accepted or refused:
-/// the refused kind and its bound, or the accepted byte count, the `ImageId`, the export
+/// Everything a caller observes about the image `compile_with_tests` accepted or
+/// refused, read through the typed public surface rather than a `{:?}` rendering: the
+/// refused kind and its bound, or the accepted byte count, the `ImageId`, the export
 /// directory, the test directory, and the durable naming join. Diagnostics are
 /// deliberately absent — phase continuation changes diagnostic sets by design, while none
 /// of these six may move.
-fn image_digest(input: &ProjectInput) -> String {
+///
+/// A `Debug` derive is not part of this contract. Pinning rendered `{:?}` text made every
+/// derive on `ExportEntry`, `TestEntry`, `ExportId`, or `LedgerIdBytes` a golden change,
+/// so a formatting edit read as an image-projection regression and a real regression read
+/// as formatting. Each fact is compared as itself instead.
+#[derive(Debug, PartialEq, Eq)]
+enum ImageDigest {
+    /// `(kind name, bound)`. The kind is rendered by name only so the frozen table stays
+    /// a const; the enum's own variant set is pinned separately by red 3.
+    Refused(String, u64),
+    Accepted {
+        bytes: usize,
+        image_id: String,
+        /// `(module, item, export id in hex)`.
+        exports: Vec<(String, String, String)>,
+        /// `(title, module, file, line, column)`.
+        tests: Vec<(String, String, String, u32, u32)>,
+        /// The compiler-owned ledger-id-to-spelling join. It publishes no typed
+        /// enumeration — `demand_sentence` is its whole public surface, and it needs a
+        /// demand set no caller of `compile_with_tests` holds — so this one field is
+        /// still its rendering. It is the only golden a derive can churn.
+        naming: String,
+    },
+    /// No corpus entry may report a diagnostic or an invariant; both are named so a
+    /// failure says which happened.
+    Diagnostics,
+    Invariant,
+}
+
+fn image_digest(input: &ProjectInput) -> ImageDigest {
     match compile_with_tests(input) {
-        Ok(compiled) => format!(
-            "ok bytes={} id={} exports={:?} tests={:?} naming={:?}",
-            compiled.image.bytes.len(),
-            compiled.image.image_id.to_hex(),
-            compiled.exports,
-            compiled.tests,
-            compiled.naming,
-        ),
+        Ok(compiled) => ImageDigest::Accepted {
+            bytes: compiled.image.bytes.len(),
+            image_id: compiled.image.image_id.to_hex(),
+            exports: compiled
+                .exports
+                .iter()
+                .map(|export| {
+                    (
+                        export.module.clone(),
+                        export.item.clone(),
+                        export.id.to_hex(),
+                    )
+                })
+                .collect(),
+            tests: compiled
+                .tests
+                .iter()
+                .map(|test| {
+                    (
+                        test.name.clone(),
+                        test.module.clone(),
+                        test.file.clone(),
+                        test.line,
+                        test.column,
+                    )
+                })
+                .collect(),
+            naming: format!("{:?}", compiled.naming),
+        },
         Err(CompileFailure::ResourceLimit(limit)) => {
-            format!("limit kind={:?} bound={}", limit.kind(), limit.limit())
+            ImageDigest::Refused(format!("{:?}", limit.kind()), limit.limit())
         }
-        Err(CompileFailure::Diagnostics(_)) => {
-            "diagnostics (no corpus entry may report a diagnostic)".to_string()
-        }
-        Err(CompileFailure::Invariant(_)) => "invariant".to_string(),
+        Err(CompileFailure::Diagnostics(_)) => ImageDigest::Diagnostics,
+        Err(CompileFailure::Invariant(_)) => ImageDigest::Invariant,
     }
 }
+
+/// One frozen corpus entry, in the const-constructible shape [`ImageDigest`] is compared
+/// against.
+struct FrozenDigest {
+    name: &'static str,
+    bytes: usize,
+    image_id: &'static str,
+    /// `(module, item, export id in hex)`.
+    exports: &'static [(&'static str, &'static str, &'static str)],
+    /// `(title, module, file, line, column)`.
+    tests: &'static [(&'static str, &'static str, &'static str, u32, u32)],
+    naming: &'static str,
+}
+
+impl FrozenDigest {
+    fn expected(&self) -> ImageDigest {
+        ImageDigest::Accepted {
+            bytes: self.bytes,
+            image_id: self.image_id.to_string(),
+            exports: self
+                .exports
+                .iter()
+                .map(|(module, item, id)| (module.to_string(), item.to_string(), id.to_string()))
+                .collect(),
+            tests: self
+                .tests
+                .iter()
+                .map(|(name, module, file, line, column)| {
+                    (
+                        name.to_string(),
+                        module.to_string(),
+                        file.to_string(),
+                        *line,
+                        *column,
+                    )
+                })
+                .collect(),
+            naming: self.naming.to_string(),
+        }
+    }
+}
+
+const F_ID: &str = "13e67fafae418c8c50bbc520d97f63360a8ad63c1ad066300cfd15b09a858ffc";
+const G_ID: &str = "ef57adc8aece6d659330e3615306d07f90ea88b9b47f9c2b52c86e35b140bba8";
+const NOOP_ID: &str = "acc0e4892dc9149eef25a215d6fd6304ea6382d717452ed67a7662bb77995f19";
+
+/// The empty durable join, as the one field with no typed public projection renders it.
+const NO_NAMING: &str = "DurableNaming { by_id: {} }";
 
 /// The digests the base produced, pinned. Regenerating them is not a repair: a change
 /// here is a change to what `compile` reports about an image, and it is a contract change
 /// reviewed as one.
-const FROZEN_DIGESTS: &[(&str, &str)] = &[
-    (
-        "unit",
-        "ok bytes=241 id=75054e7c9d536984fe524c510504a1f840234e369a5e4fb66745a70708b67a7d exports=[ExportEntry { module: \"main\", item: \"f\", id: ExportId([19, 230, 127, 175, 174, 65, 140, 140, 80, 187, 197, 32, 217, 127, 99, 54, 10, 138, 214, 60, 26, 208, 102, 48, 12, 253, 21, 176, 154, 133, 143, 252]) }] tests=[] naming=DurableNaming { by_id: {} }",
-    ),
-    (
-        "multi-module",
-        "ok bytes=397 id=9720941f296e9fa79d36ca8d8eb05049fd6d76e828ed2cff51f0fc4883a554bb exports=[ExportEntry { module: \"main\", item: \"f\", id: ExportId([19, 230, 127, 175, 174, 65, 140, 140, 80, 187, 197, 32, 217, 127, 99, 54, 10, 138, 214, 60, 26, 208, 102, 48, 12, 253, 21, 176, 154, 133, 143, 252]) }, ExportEntry { module: \"other\", item: \"g\", id: ExportId([239, 87, 173, 200, 174, 206, 109, 101, 147, 48, 227, 97, 83, 6, 208, 127, 144, 234, 136, 185, 180, 127, 156, 43, 82, 200, 110, 53, 177, 64, 187, 168]) }] tests=[] naming=DurableNaming { by_id: {} }",
-    ),
-    (
-        "tests",
-        "ok bytes=462 id=c614971142d05f7e18acc3c3f32207a5575f5beda03eb47da4a77df9c040474b exports=[ExportEntry { module: \"main\", item: \"f\", id: ExportId([19, 230, 127, 175, 174, 65, 140, 140, 80, 187, 197, 32, 217, 127, 99, 54, 10, 138, 214, 60, 26, 208, 102, 48, 12, 253, 21, 176, 154, 133, 143, 252]) }] tests=[TestEntry { name: \"one\", module: \"main\", file: \"src/main.mw\", line: 7, column: 6 }, TestEntry { name: \"two\", module: \"main\", file: \"src/main.mw\", line: 11, column: 6 }] naming=DurableNaming { by_id: {} }",
-    ),
-    (
-        "durable",
-        "ok bytes=430 id=ab026b325171aef8996b70df12d79574a09a6ae7e7ee9f3e6c9366503e6a428b exports=[ExportEntry { module: \"main\", item: \"noop\", id: ExportId([172, 192, 228, 137, 45, 201, 20, 158, 239, 37, 162, 21, 214, 253, 99, 4, 234, 99, 130, 215, 23, 69, 46, 214, 122, 118, 98, 187, 119, 153, 95, 25]) }] tests=[] naming=DurableNaming { by_id: {LedgerIdBytes([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3]): (Child, \"tag\"), LedgerIdBytes([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 4]): (Child, \"note\"), LedgerIdBytes([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 5]): (Root, \"wide\")} }",
-    ),
-    ("over-exports", "limit kind=Exports bound=256"),
-    ("over-consts", "limit kind=Consts bound=1024"),
-    ("over-functions", "limit kind=Functions bound=4096"),
+const FROZEN_ACCEPTED: &[FrozenDigest] = &[
+    FrozenDigest {
+        name: "unit",
+        bytes: 241,
+        image_id: "75054e7c9d536984fe524c510504a1f840234e369a5e4fb66745a70708b67a7d",
+        exports: &[("main", "f", F_ID)],
+        tests: &[],
+        naming: NO_NAMING,
+    },
+    FrozenDigest {
+        name: "multi-module",
+        bytes: 397,
+        image_id: "9720941f296e9fa79d36ca8d8eb05049fd6d76e828ed2cff51f0fc4883a554bb",
+        exports: &[("main", "f", F_ID), ("other", "g", G_ID)],
+        tests: &[],
+        naming: NO_NAMING,
+    },
+    FrozenDigest {
+        name: "tests",
+        bytes: 462,
+        image_id: "c614971142d05f7e18acc3c3f32207a5575f5beda03eb47da4a77df9c040474b",
+        exports: &[("main", "f", F_ID)],
+        tests: &[
+            ("one", "main", "src/main.mw", 7, 6),
+            ("two", "main", "src/main.mw", 11, 6),
+        ],
+        naming: NO_NAMING,
+    },
+    FrozenDigest {
+        name: "durable",
+        bytes: 430,
+        image_id: "ab026b325171aef8996b70df12d79574a09a6ae7e7ee9f3e6c9366503e6a428b",
+        exports: &[("main", "noop", NOOP_ID)],
+        tests: &[],
+        naming: "DurableNaming { by_id: {LedgerIdBytes([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, \
+                 0, 0, 0, 0, 3]): (Child, \"tag\"), LedgerIdBytes([0, 0, 0, 0, 0, 0, 0, 0, \
+                 0, 0, 0, 0, 0, 0, 0, 4]): (Child, \"note\"), LedgerIdBytes([0, 0, 0, 0, 0, \
+                 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 5]): (Root, \"wide\")} }",
+    },
+];
+
+/// The corpus entries the projection refuses, and the exact bound each reports.
+const FROZEN_REFUSED: &[(&str, &str, u64)] = &[
+    ("over-exports", "Exports", 256),
+    ("over-consts", "Consts", 1024),
+    ("over-functions", "Functions", 4096),
 ];
 
 /// Red 4. Over the frozen corpus, the six things `compile` reports about an image are
-/// byte-identical to the values the base produced.
+/// identical to the values the base produced, fact by fact.
 #[test]
 fn the_image_projection_is_byte_identical_to_the_base() {
-    let actual: Vec<(String, String)> = corpus()
+    let expected: Vec<(String, ImageDigest)> = FROZEN_ACCEPTED
+        .iter()
+        .map(|frozen| (frozen.name.to_string(), frozen.expected()))
+        .chain(FROZEN_REFUSED.iter().map(|(name, kind, bound)| {
+            (
+                name.to_string(),
+                ImageDigest::Refused(kind.to_string(), *bound),
+            )
+        }))
+        .collect();
+    let actual: Vec<(String, ImageDigest)> = corpus()
         .into_iter()
         .map(|entry| {
             let input = project_with_ids(&entry.files, entry.ids.as_deref());
             (entry.name.to_string(), image_digest(&input))
         })
         .collect();
-    let expected: Vec<(String, String)> = FROZEN_DIGESTS
-        .iter()
-        .map(|(name, digest)| (name.to_string(), digest.to_string()))
-        .collect();
     assert_eq!(
-        actual,
-        expected,
-        "the image projection moved; the actual table is:\n{}",
-        actual
-            .iter()
-            .map(|(name, digest)| format!("    (\n        {name:?},\n        {digest:?},\n    ),"))
-            .collect::<Vec<_>>()
-            .join("\n"),
+        actual.len(),
+        expected.len(),
+        "every corpus entry is pinned exactly once",
     );
+    for (actual, expected) in actual.iter().zip(&expected) {
+        assert_eq!(
+            actual.0, expected.0,
+            "the corpus order and the frozen order must agree",
+        );
+        assert_eq!(
+            actual.1, expected.1,
+            "the image projection moved for `{}`",
+            actual.0,
+        );
+    }
 }
