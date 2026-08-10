@@ -188,3 +188,50 @@ fn a_storeless_project_grows_no_metadata_directory() {
         "a project that mints nothing grows no metadata directory"
     );
 }
+
+/// The deleted publisher stays deleted. `cmd_run` reached for its own
+/// temporary file, rename, and directory sync, and swept every `ids.tmp.*`
+/// sibling it found; the CLI now names the ledger only as read-only evidence
+/// (the commit steer's Git-index probe) and never spells a publication entry or
+/// the metadata directory. Re-growing a second publication model here would
+/// have to bring one of these tokens back.
+#[test]
+fn the_cli_holds_no_second_publication_model() {
+    let run = include_str!("../src/cmd_run.rs");
+    for primitive in [
+        "sync_all",
+        "sync_data",
+        "fs::rename",
+        "create_dir_all",
+        "read_dir",
+        "ids.tmp",
+    ] {
+        assert!(
+            !run.contains(primitive),
+            "`cmd_run.rs` reached for `{primitive}`; publication belongs to the adapter's owner"
+        );
+    }
+
+    for (name, source) in [
+        ("cmd_run.rs", run),
+        ("project.rs", include_str!("../src/project.rs")),
+        ("cmd_check.rs", include_str!("../src/cmd_check.rs")),
+        ("cmd_test.rs", include_str!("../src/cmd_test.rs")),
+        ("cmd_fmt.rs", include_str!("../src/cmd_fmt.rs")),
+        ("cmd_client.rs", include_str!("../src/cmd_client.rs")),
+        ("cmd_image.rs", include_str!("../src/cmd_image.rs")),
+        ("cmd_import.rs", include_str!("../src/cmd_import.rs")),
+    ] {
+        for entry in [
+            "ids.pending",
+            "ids.publish.stage",
+            "publish.lock",
+            "META_DIR",
+        ] {
+            assert!(
+                !source.contains(entry),
+                "`{name}` spells the publication entry `{entry}`; those names have one owner"
+            );
+        }
+    }
+}
