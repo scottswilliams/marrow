@@ -252,16 +252,33 @@ fn emr_dir() -> Option<PathBuf> {
 }
 
 /// The `(file, code)` pairs of a `check` run's diagnostic lines, in report order.
-/// Each diagnostic line is `file:line:column: code: message`.
+/// A diagnostic line is exactly `file:line:column: code: message`, so the location's
+/// line and column must parse as numbers and the code must be a dotted lowercase
+/// identifier. A `code: message` line whose prose happens to carry a period — an
+/// operational refusal naming a `.mw` file, say — is not a diagnostic and is not
+/// counted as one.
 fn reported_order(stderr: &str) -> Vec<(&str, &str)> {
+    fn code_word(word: &str) -> bool {
+        !word.is_empty()
+            && word
+                .chars()
+                .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '_')
+    }
+
     stderr
         .lines()
         .filter_map(|line| {
-            let mut fields = line.splitn(5, ": ");
+            let mut fields = line.splitn(3, ": ");
             let located = fields.next()?;
             let code = fields.next()?;
-            let file = located.split(':').next()?;
-            code.contains('.').then_some((file, code))
+            fields.next()?;
+            // The file may itself contain colons, so the position is read from the end.
+            let mut position = located.rsplitn(3, ':');
+            position.next()?.parse::<u32>().ok()?;
+            position.next()?.parse::<u32>().ok()?;
+            let file = position.next()?;
+            let (namespace, name) = code.split_once('.')?;
+            (code_word(namespace) && code_word(name)).then_some((file, code))
         })
         .collect()
 }

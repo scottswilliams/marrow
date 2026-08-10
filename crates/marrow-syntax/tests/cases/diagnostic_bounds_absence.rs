@@ -164,10 +164,10 @@ fn the_constructor_parameter_scan_is_insensitive_to_formatting() {
         constructor_parameters("fn new(make: fn(u8) -> u8, span: SourceSpan) -> Self {"),
         "make: fn(u8) -> u8, span: SourceSpan"
     );
-    assert!(
-        constructor_parameters("fn new(reason: DiagnosticReason, code: &'static str) -> Self {")
-            .contains("code"),
-        "a code parameter must be visible to the gate below"
+    assert_eq!(
+        constructor_parameters("fn new(reason: DiagnosticReason, code: &'static str) -> Self {"),
+        "reason: DiagnosticReason, code: &'static str",
+        "a code parameter must reach the gate below spelled exactly as declared"
     );
 }
 
@@ -183,14 +183,16 @@ fn the_error_constructor_derives_its_code_from_the_reason() {
         .find_map(|(_, text)| text.split_once("impl SyntaxError {"))
         .expect("the private error type declares an inherent impl")
         .1;
-    let parameters = constructor_parameters(inherent);
-    assert!(
-        parameters.starts_with("reason: DiagnosticReason,"),
-        "the error constructor must take the typed reason first: `{parameters}`"
-    );
-    assert!(
-        !parameters.contains("code"),
-        "the error constructor must accept no code beside the reason: `{parameters}`"
+    // The whole list is pinned rather than probed for the substring `code`, which a
+    // parameter or type merely spelling those four letters would satisfy and a code
+    // smuggled inside a carrier type would not: any parameter added beside the reason
+    // fails this, whatever it is named.
+    assert_eq!(
+        constructor_parameters(inherent),
+        "reason: DiagnosticReason, message: impl Into<String>, help: Option<String>, \
+         span: SourceSpan",
+        "the error constructor takes the typed reason and no code beside it; if its \
+         shape changed for another reason, update this pin"
     );
     let all: String = sources.iter().map(|(_, text)| text.as_str()).collect();
     assert!(
