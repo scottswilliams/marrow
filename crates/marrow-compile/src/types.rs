@@ -6997,7 +6997,19 @@ fn fill_record(
                     at: declared.at,
                     span: field.span,
                 };
-                let occurrence = if field.keys.is_empty() {
+                let occurrence = if registry
+                    .members
+                    .declared(&MemberKey::field(&resource.name, &field.name))
+                {
+                    // Two members of one name have no unambiguous slot in the
+                    // record; the first declaration stands and the repeat is a
+                    // precise rejection rather than a silently dropped member.
+                    DeclarationOccurrence::Refused(refuse_row(
+                        diagnostics,
+                        at,
+                        member_conflict(file, field.span, &resource.name, &field.name),
+                    ))
+                } else if field.keys.is_empty() {
                     resource_member(draft, registry, at, field, "this field type", diagnostics)?
                 } else {
                     // A keyed scalar leaf (`tags(pos: int): string`) is a keyed
@@ -7076,6 +7088,22 @@ fn fill_record(
     info.fields = fields;
     info.groups = groups;
     Ok(())
+}
+
+/// The row rejecting a second member of one name in `owner`, which has no
+/// unambiguous slot in the record the owner materializes.
+fn member_conflict(
+    file: &FileIdentity,
+    span: SourceSpan,
+    owner: &str,
+    member: &str,
+) -> SourceDiagnostic {
+    SourceDiagnostic::at(
+        Code::CheckNameConflict.as_str(),
+        file,
+        span,
+        format!("`{owner}` already declares a member `{member}`"),
+    )
 }
 
 /// Resolve one resource member's declared type to the value it binds, or to the
@@ -7180,22 +7208,32 @@ fn build_group_leaves(
             at: declared.at,
             span: field.span,
         };
-        let occurrence = if field.keys.is_empty() {
-            resource_member(
-                draft,
-                registry,
-                at,
-                field,
-                "this group field type",
-                diagnostics,
-            )?
-        } else {
-            DeclarationOccurrence::Refused(refuse_row(
-                diagnostics,
-                at,
-                unsupported(file, field.span, "a keyed field"),
-            ))
-        };
+        let occurrence =
+            if registry
+                .members
+                .declared(&MemberKey::leaf(record, &group.name, &field.name))
+            {
+                DeclarationOccurrence::Refused(refuse_row(
+                    diagnostics,
+                    at,
+                    member_conflict(file, field.span, &anchor, &field.name),
+                ))
+            } else if field.keys.is_empty() {
+                resource_member(
+                    draft,
+                    registry,
+                    at,
+                    field,
+                    "this group field type",
+                    diagnostics,
+                )?
+            } else {
+                DeclarationOccurrence::Refused(refuse_row(
+                    diagnostics,
+                    at,
+                    unsupported(file, field.span, "a keyed field"),
+                ))
+            };
         registry.members.declare(
             MemberKey::leaf(record, &group.name, &field.name),
             occurrence,

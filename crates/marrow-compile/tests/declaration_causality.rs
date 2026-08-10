@@ -977,6 +977,34 @@ fn r25_a_refused_root_occupies_its_placement_name() {
     );
 }
 
+/// R25 · members — a resource member occupies its name against a repeat. Two
+/// members of one name have no unambiguous slot in the record, and a ledger that
+/// retains every occurrence is what lets the repeat be seen at all: accumulating
+/// the members in a plain vector let both through, and the first silently won every
+/// later lookup.
+#[test]
+fn r25_a_resource_member_occupies_its_name() {
+    let diagnostics = diagnostics(
+        "module main\n\n\
+         resource Widget {\n\
+         \x20   required name: string\n\
+         \x20   required name: int\n\
+         }\n\n\
+         pub fn make(): int {\n\
+         \x20   const w = Widget(name: \"a\")\n\
+         \x20   return 1\n\
+         }\n",
+    );
+
+    assert!(
+        diagnostics
+            .iter()
+            .any(|row| row.code() == "check.name_conflict"),
+        "the second member of one name is a repeat, not a second slot: {:#?}",
+        messages(&diagnostics),
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Function signatures — I-5
 //
