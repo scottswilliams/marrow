@@ -1246,3 +1246,54 @@ fn run_renders_a_located_manifest_fault_as_an_unlocated_record() {
         format!("{}: {}\n", error.code().as_str(), error.message())
     );
 }
+
+/// One command prints one path spelling. `fmt` reports a captured module under the
+/// root it was given joined to the module's project-relative identity, with no `.`
+/// component: from inside a project the finding reads `src/main.mw`, exactly as
+/// `check` reports it, and the `--write` hint it prints is runnable as shown. Naming
+/// the root from elsewhere keeps the join, so that hint stays runnable too.
+#[test]
+fn fmt_reports_a_captured_module_under_one_path_spelling() {
+    let temp = TempDir::new("fmt-path-spelling");
+    let project = temp.join("app");
+    write(&project.join("marrow.toml"), "edition = \"2026\"\n");
+    write(
+        &project.join("src").join("main.mw"),
+        "pub fn main() {\n        return\n}\n",
+    );
+
+    let inside = Command::new(MARROW)
+        .args(["fmt", "--check", "."])
+        .current_dir(&project)
+        .output()
+        .expect("run marrow binary");
+    assert!(!inside.status.success());
+    assert_eq!(
+        String::from_utf8(inside.stderr).expect("utf8 stderr"),
+        "src/main.mw: not formatted; run marrow fmt --write src/main.mw to format it\n",
+        "a `.` root must not print a `./`-prefixed path that `check` never prints"
+    );
+
+    let outside = Command::new(MARROW)
+        .args(["fmt", "--check", "app"])
+        .current_dir(&*temp)
+        .output()
+        .expect("run marrow binary");
+    assert!(!outside.status.success());
+    assert_eq!(
+        String::from_utf8(outside.stderr).expect("utf8 stderr"),
+        "app/src/main.mw: not formatted; run marrow fmt --write app/src/main.mw to format it\n",
+        "a named root stays joined so the printed hint is runnable as shown"
+    );
+
+    let checked = Command::new(MARROW)
+        .args(["check", "."])
+        .current_dir(&project)
+        .output()
+        .expect("run marrow binary");
+    let check_stderr = String::from_utf8(checked.stderr).expect("utf8 stderr");
+    assert!(
+        check_stderr.is_empty() || check_stderr.contains("src/main.mw:"),
+        "`check` reports the same project-relative spelling: {check_stderr}"
+    );
+}

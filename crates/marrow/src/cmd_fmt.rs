@@ -127,8 +127,9 @@ fn fmt_project(dir: &Path, mode: FmtMode) -> ExitCode {
     let mut any_error = false;
     let mut any_needs_formatting = false;
     for module in input.modules() {
-        let file = dir.join(module.identity().as_str());
-        let label = file.display().to_string();
+        let label = captured_module_path(dir, module.identity().as_str())
+            .display()
+            .to_string();
         let Ok(source) = std::str::from_utf8(module.source()) else {
             report_simple_error(
                 Code::IoRead.as_str(),
@@ -149,6 +150,19 @@ fn fmt_project(dir: &Path, mode: FmtMode) -> ExitCode {
     } else {
         ExitCode::SUCCESS
     }
+}
+
+/// The path a captured module is reported and written under: the capture root joined
+/// to the module's project-relative identity, with `.` components dropped. The join is
+/// what keeps `--write` and the `--write` hint correct for a root named from elsewhere
+/// (`marrow fmt --check app` reports `app/src/main.mw`); dropping `.` is what keeps the
+/// common in-project spelling identical to the `src/main.mw` that capture and `check`
+/// report, so one command does not print a path two ways.
+fn captured_module_path(root: &Path, identity: &str) -> PathBuf {
+    root.join(identity)
+        .components()
+        .filter(|component| !matches!(component, std::path::Component::CurDir))
+        .collect()
 }
 
 /// Render a project-capture failure as a typed line: a located manifest fault
