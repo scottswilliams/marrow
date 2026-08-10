@@ -588,6 +588,17 @@ const G_ID: &str = "ef57adc8aece6d659330e3615306d07f90ea88b9b47f9c2b52c86e35b140
 const NOOP_ID: &str = "acc0e4892dc9149eef25a215d6fd6304ea6382d717452ed67a7662bb77995f19";
 
 /// The empty durable join, as the one field with no typed public projection renders it.
+///
+/// `DurableNaming` publishes the two demand renderings and nothing that enumerates the
+/// join itself, so a derived `Debug` is what a golden can read here. It is not a stable
+/// surface, and it is pinned knowing that: this string also carries `LedgerIdBytes`'s own
+/// derived `Debug` and the crate-private `PathSigil`'s variant names, so a representation
+/// change to either rewrites these goldens without any change to what `compile` reports
+/// about an image — a diff to read as churn and regenerate, not as a contract change.
+///
+/// Adding a typed projection to spell the join would settle that, and the only caller it
+/// would ever have is this file. The crate does not carry a public entry point for a test
+/// to read, so the churn is the cheaper of the two.
 const NO_NAMING: &str = "DurableNaming { by_id: {} }";
 
 /// The digests the base produced, pinned. Regenerating them is not a repair: a change
