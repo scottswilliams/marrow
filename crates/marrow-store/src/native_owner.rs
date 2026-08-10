@@ -757,6 +757,97 @@ mod tests {
         }
     }
 
+    /// The decoder admits before it indexes. A contender reads a marker it did not
+    /// write, so a byte pattern that aborts the decode would replace the exclusion
+    /// verdict with a process abort. Every prefix length of both layouts, at every
+    /// version and state tag, either decodes to a whole layout or reports no identity.
+    #[test]
+    fn no_marker_byte_pattern_can_abort_the_decoder() {
+        let widest = BOUND_BYTES.max(LEGACY_BOUND_BYTES);
+        for version in [LEGACY_BOUND_VERSION, LOCK_VERSION, 0x02, 0xFF] {
+            for tag in [0x00, PENDING_TAG, BOUND_TAG, 0xFF] {
+                let mut bytes = Vec::with_capacity(widest);
+                bytes.extend_from_slice(LOCK_MAGIC);
+                bytes.push(version);
+                bytes.push(tag);
+                bytes.resize(widest, 0xA5);
+                for len in 0..=widest {
+                    assert!(
+                        NativeLockOwner::decode(&bytes[..len]).is_none()
+                            || matches!(len, PENDING_BYTES | BOUND_BYTES | LEGACY_BOUND_BYTES),
+                        "a {len}-byte marker at version {version:#04x} tag {tag:#04x} decoded \
+                         outside a whole layout",
+                    );
+                }
+            }
+        }
+    }
+
+    /// Every marker a contender can meet under a live holder still yields exactly the
+    /// exclusion verdict. The contender did not write these bytes and is owed no verdict
+    /// about them: each truncation of both layouts, each state tag, a foreign magic, plain
+    /// garbage, and a marker carrying a second link all read as `store.locked`. A second
+    /// link in particular does not divide exclusion — every opener of either name locks the
+    /// same node — so refusing on it would convert contention into an I/O verdict.
+    #[cfg(unix)]
+    #[test]
+    fn every_marker_a_contender_can_meet_still_yields_the_exclusion_verdict() {
+        let scratch = Scratch::new("contender-marker-sweep");
+        NativeEngineOwner::provision(&scratch.0).expect("provision");
+        let held = open_existing(&scratch.0, [0x5D; 16]).expect("open owner");
+        let marker = scratch.0.join(NATIVE_LOCK_FILE);
+
+        let mut bodies: Vec<Vec<u8>> = Vec::new();
+        for instance in [None, Some([0x5E; 16])] {
+            let encoded = NativeLockOwner {
+                pid: 4242,
+                instance,
+                acquired_unix_secs: 7,
+            }
+            .encode();
+            for len in 0..=encoded.len() {
+                bodies.push(encoded[..len].to_vec());
+            }
+        }
+        for tag in 0..=u8::MAX {
+            bodies.push(vec![
+                LOCK_MAGIC[0],
+                LOCK_MAGIC[1],
+                LOCK_MAGIC[2],
+                LOCK_MAGIC[3],
+                LOCK_VERSION,
+                tag,
+            ]);
+        }
+        bodies.push(b"XXXX\x01\x02".to_vec());
+        bodies.push(b"not a marker at all".to_vec());
+
+        for body in &bodies {
+            std::fs::write(&marker, body).expect("rewrite the marker under the holder");
+            match contend(&scratch.0) {
+                NativeOwnerAcquireError::Lock(error @ NativeLockError::StoreInUse { .. }) => {
+                    assert_eq!(
+                        error.code(),
+                        Code::StoreLocked.as_str(),
+                        "a {}-byte marker changed the verdict",
+                        body.len(),
+                    );
+                }
+                other => panic!(
+                    "a {}-byte marker changed the verdict: {other}",
+                    body.len(),
+                ),
+            }
+        }
+
+        std::fs::hard_link(&marker, scratch.0.join("marker-alias")).expect("add a second link");
+        match contend(&scratch.0) {
+            NativeOwnerAcquireError::Lock(NativeLockError::StoreInUse { .. }) => {}
+            other => panic!("a multiply-linked marker preempted the exclusion verdict: {other}"),
+        }
+        drop(held);
+    }
+
     /// The marker layout this build writes round-trips, and the layout it replaced
     /// still reads as the bound owner it recorded. A stored marker outlives the
     /// process that wrote it, so an older holder's bytes must stay legible.

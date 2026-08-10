@@ -235,6 +235,53 @@ fn a_contender_is_locked_out_whatever_state_the_holder_head_is_in() {
     }
 }
 
+/// The third door into a held store: the lock entry itself. A contender reaches the holder
+/// through the owner marker, so whatever the marker's bytes say — and however many names
+/// reach it — the verdict a contender receives is the exclusion that applies to it, never a
+/// verdict about the holder's marker. A second link does not divide exclusion (every opener
+/// of either name locks the same node) and the marker's bytes are read only for the holder's
+/// identity, which a contender may lose without losing the verdict.
+#[cfg(unix)]
+#[test]
+fn a_contender_is_locked_out_whatever_state_the_holder_marker_is_in() {
+    let (dir, store) = provisioned("contender-marker");
+    let held = open(&store, schemas(), sites()).expect("the holder opens the store");
+    let marker = store.join(marrow_lifecycle::LOCK_FILE);
+
+    for (tag, body) in [
+        ("empty", b"".as_slice()),
+        ("magic-and-version-only", b"MWSL\x01"),
+        ("truncated-pending", b"MWSL\x01\x01\x00\x00"),
+        ("truncated-bound", b"MWSL\x01\x02\x00\x00\x00\x01"),
+        ("unknown-tag", b"MWSL\x01\x7f\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00\x00\x01"),
+        ("foreign-magic", b"XXXX\x01\x01"),
+        ("garbage", b"not a marker at all"),
+    ] {
+        std::fs::write(&marker, body).expect("rewrite the holder's marker");
+        match open(&store, schemas(), sites()) {
+            Err(OpenError::Lock(error)) => assert_eq!(
+                error.code(),
+                "store.locked",
+                "a contender meeting a {tag} holder marker must be told the store is locked",
+            ),
+            Ok(_) => panic!("a contender opened a held store whose marker is {tag}"),
+            Err(other) => panic!("a {tag} holder marker preempted exclusion with {other}"),
+        }
+    }
+
+    std::fs::hard_link(&marker, dir.path.join("marker-alias")).expect("add a second marker link");
+    match open(&store, schemas(), sites()) {
+        Err(OpenError::Lock(error)) => assert_eq!(
+            error.code(),
+            "store.locked",
+            "a second link to the holder's marker must not preempt exclusion",
+        ),
+        Ok(_) => panic!("a contender opened a held store through a multiply-linked marker"),
+        Err(other) => panic!("a multiply-linked holder marker preempted exclusion with {other}"),
+    }
+    drop(held);
+}
+
 /// The exact envelope ceiling, driven at N and N+1. The largest envelope the encoder can
 /// produce — a writer toolchain at its own bound — is exactly 126 bytes and opens; one byte
 /// more is refused as a representational limit rather than as corruption, which is what
