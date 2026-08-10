@@ -797,7 +797,7 @@ fn parameter_with_wrapped_angle_type_and_a_following_parameter_parses_both() {
 
 #[test]
 fn trailing_doc_with_no_following_parameter_is_reported() {
-    // A dangling `;;` run after the last parameter documents nothing; it must be
+    // A dangling `///` run after the last parameter documents nothing; it must be
     // reported rather than silently dropped.
     let source = "module app\nfn f(\n    a: int,\n    /// orphaned doc\n) {\n    return\n}\n";
     let parsed = parse_source(source);
