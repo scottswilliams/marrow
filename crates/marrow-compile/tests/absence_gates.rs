@@ -234,25 +234,64 @@ fn no_parse_tree_is_retained_for_a_query() {
     );
 }
 
-/// Every editor-fact producer writes through the one scoped sink borrow. Neither a raw
-/// mutable fact vector parameter nor a producer-owned staging carrier survives, so a
-/// fact cannot be retained — or even allocated in bulk — without passing the ledger's
-/// ceilings at the push that produced it. A staged carrier is the same defect in a
-/// different shape: it makes one body's live fact set a function of the body's length
-/// rather than of the snapshot ceiling.
+/// The hover fact — the family this row's staging defect belonged to — is not nameable
+/// outside the ledger's own module, so a producer-owned carrier for it is a build error
+/// rather than a scan finding.
+///
+/// `HoverFact` is module-private, not `pub(crate)`. Neither `hover_facts: Vec<HoverFact>`
+/// on a lowering struct nor `&mut Vec<HoverFact>` on a helper can be written anywhere
+/// else in the crate, which is the property the deleted staging violated: it made one
+/// body's live fact set a function of the body's length rather than of the snapshot
+/// ceiling. This gate keeps the declaration at that visibility.
+#[test]
+fn the_hover_fact_is_not_nameable_outside_the_ledger() {
+    let widened: Vec<(PathBuf, usize)> = occurrences("pub(crate) struct HoverFact")
+        .into_iter()
+        .chain(occurrences("pub struct HoverFact"))
+        .collect();
+    assert!(
+        widened.is_empty(),
+        "widening `HoverFact` past its module lets a producer declare a carrier for it \
+         again: {widened:?}"
+    );
+    assert_eq!(
+        occurrences("struct HoverFact").len(),
+        1,
+        "expected exactly one `HoverFact` declaration; if it moved, move this gate"
+    );
+}
+
+/// The fact families whose types stay public or crate-visible cannot be closed by
+/// visibility, so they are closed by owner: no field or parameter carrying one of them
+/// in bulk is declared outside `analysis.rs`, which is where the ledger and its one
+/// bounded document-symbol outline live.
+///
+/// This is a scan over the shapes it names, not a proof about every possible carrier — a
+/// producer that wrapped a fact in a struct of its own would pass it. The hover family,
+/// which is the one this row's defect belonged to, is closed structurally instead, by
+/// `the_hover_fact_is_not_nameable_outside_the_ledger`.
 #[test]
 fn no_fact_carrier_outside_the_ledger_exists() {
     for forbidden in [
-        "&mut Vec<HoverFact",
         "&mut Vec<crate::analysis::HoverFact",
         "&mut Vec<(FileIdentity, SourceSpan)>",
-        "&mut Vec<DeclSymbol",
         "Vec<(SourceSpan, Box<str>",
     ] {
         let found = occurrences(forbidden);
         assert!(
             found.is_empty(),
             "editor facts must flow through the scoped sink: `{forbidden}` at {found:?}"
+        );
+    }
+    for carrier in ["Vec<DeclSymbol", "Vec<(FileRef, FactSpan)"] {
+        let found: Vec<(PathBuf, usize)> = occurrences(carrier)
+            .into_iter()
+            .filter(|(path, _)| path.file_name().is_none_or(|name| name != "analysis.rs"))
+            .collect();
+        assert!(
+            found.is_empty(),
+            "only the ledger's own module carries editor facts in bulk: `{carrier}` at \
+             {found:?}"
         );
     }
 }

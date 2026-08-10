@@ -722,7 +722,13 @@ fn fact_limit_failure(limit: AnalysisFactLimit) -> AnalysisResourceLimit {
 
 /// One retained editor fact: a resolved local or parameter use site and the canonical
 /// display of its value type. Held per snapshot and queried by [`AnalysisSnapshot::hover`].
-pub(crate) struct HoverFact {
+///
+/// Private to this module, not `pub(crate)`: a producer outside the ledger cannot name
+/// the type, so it cannot declare a field or a parameter that carries hover facts in
+/// bulk. That makes the staging defect this row deleted unrepresentable rather than
+/// merely scanned for. Producers reach the ledger through [`FactSink::hover`], which
+/// takes the parts and admits at the push.
+struct HoverFact {
     file: FileRef,
     span: FactSpan,
     display: Box<str>,
@@ -802,10 +808,10 @@ pub(crate) enum AnalysisFactLimit {
 /// ledger used while collecting is not retained.
 #[derive(Default)]
 pub(crate) struct RetainedFacts {
-    pub(crate) hover_facts: Box<[HoverFact]>,
-    pub(crate) broken_files: Box<[FileRef]>,
-    pub(crate) dependency_gaps: Box<[(FileRef, FactSpan)]>,
-    pub(crate) document_symbols: Box<[(FileRef, Box<[DeclSymbol]>)]>,
+    hover_facts: Box<[HoverFact]>,
+    broken_files: Box<[FileRef]>,
+    dependency_gaps: Box<[(FileRef, FactSpan)]>,
+    document_symbols: Box<[(FileRef, Box<[DeclSymbol]>)]>,
 }
 
 /// The finished terminal of one fact ledger: the complete retained set, or the typed
