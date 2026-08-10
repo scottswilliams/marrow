@@ -37,7 +37,8 @@ use crate::analysis::FileRef;
 use crate::decl::{
     Binding, DeclarationBudget, DeclarationIndexDrift, DeclarationLedger, DeclarationLedgerFull,
     DeclarationNamespace, DeclarationOccurrence, DeclarationRefusalId, DeclarationRefusalSummary,
-    DeclarationSite, declaration_refused, refuse, refuse_covered, refuse_first, refuse_row,
+    DeclarationSite, DeclareError, declaration_refused, refuse, refuse_covered, refuse_first,
+    refuse_row,
 };
 use crate::diag::{BoundedDiagnostics, DiagnosticCollector, SourceDiagnostic};
 use crate::scalar::ScalarType;
@@ -300,6 +301,17 @@ impl From<DeclarationLedgerFull> for BuildError {
 impl From<DeclarationIndexDrift> for BuildError {
     fn from(drift: DeclarationIndexDrift) -> Self {
         Self::Invariant(drift.into())
+    }
+}
+
+/// A ledger's two ways of refusing to record an occurrence, routed to the same two
+/// arms every other build failure takes.
+impl From<DeclareError> for BuildError {
+    fn from(error: DeclareError) -> Self {
+        match error {
+            DeclareError::LedgerFull(full) => full.into(),
+            DeclareError::IndexDrift(drift) => drift.into(),
+        }
     }
 }
 
@@ -5485,7 +5497,7 @@ fn register_type_templates(
     enums: &[(FileRef, FileIdentity, &EnumDecl)],
     resources: &[(FileRef, FileIdentity, &ResourceDecl)],
     diagnostics: &mut DiagnosticCollector,
-) -> Result<(), DeclarationLedgerFull> {
+) -> Result<(), DeclareError> {
     let type_param_names =
         |params: &[marrow_syntax::TypeParamDecl]| -> Vec<(String, Option<TypeConstraint>)> {
             params
@@ -5850,7 +5862,7 @@ fn build_alias_table(
     structs: &[(FileRef, FileIdentity, &StructDecl)],
     enums: &[(FileRef, FileIdentity, &EnumDecl)],
     diagnostics: &mut DiagnosticCollector,
-) -> Result<BTreeMap<String, TypeExpr>, DeclarationLedgerFull> {
+) -> Result<BTreeMap<String, TypeExpr>, DeclareError> {
     let mut raw: BTreeMap<String, TypeExpr> = BTreeMap::new();
     for (at, file, decl) in aliases {
         let declared = DeclarationSite {
@@ -6113,7 +6125,7 @@ fn validate_alias_targets(
     registry: &mut TypeRegistry,
     aliases: &[(FileRef, FileIdentity, &AliasDecl)],
     diagnostics: &mut DiagnosticCollector,
-) -> Result<(), DeclarationLedgerFull> {
+) -> Result<(), DeclareError> {
     let mut refused: Vec<String> = Vec::new();
     for (at, file, decl) in aliases {
         let Some(expanded) = registry.aliases.get(&decl.name) else {
@@ -6191,7 +6203,7 @@ fn build_nominals(
     structs: &[(FileRef, FileIdentity, &StructDecl)],
     enums: &[(FileRef, FileIdentity, &EnumDecl)],
     diagnostics: &mut DiagnosticCollector,
-) -> Result<Vec<NominalInfo>, DeclarationLedgerFull> {
+) -> Result<Vec<NominalInfo>, DeclareError> {
     let mut built: Vec<NominalInfo> = Vec::new();
     for (at, file, decl) in nominals {
         let declared = DeclarationSite {
@@ -6426,7 +6438,7 @@ fn declare_structs<'a>(
     structs: &'a [(FileRef, FileIdentity, &StructDecl)],
     resources: &[(FileRef, FileIdentity, &ResourceDecl)],
     diagnostics: &mut DiagnosticCollector,
-) -> Result<Vec<ReservedStruct<'a>>, DeclarationLedgerFull> {
+) -> Result<Vec<ReservedStruct<'a>>, DeclareError> {
     let mut reserved: Vec<ReservedStruct<'a>> = Vec::new();
     for (at, file, decl) in structs {
         let declared = DeclarationSite {
@@ -6657,7 +6669,7 @@ fn declare_enums<'a>(
     enums: &'a [(FileRef, FileIdentity, &EnumDecl)],
     resources: &[(FileRef, FileIdentity, &ResourceDecl)],
     diagnostics: &mut DiagnosticCollector,
-) -> Result<Vec<ReservedEnum<'a>>, DeclarationLedgerFull> {
+) -> Result<Vec<ReservedEnum<'a>>, DeclareError> {
     let mut reserved: Vec<ReservedEnum<'a>> = Vec::new();
     for (at, file, decl) in enums {
         let declared = DeclarationSite {
@@ -6938,7 +6950,7 @@ fn declare_records<'a>(
     registry: &mut TypeRegistry,
     resources: &'a [(FileRef, FileIdentity, &ResourceDecl)],
     diagnostics: &mut DiagnosticCollector,
-) -> Result<Vec<(FileRef, FileIdentity, &'a ResourceDecl)>, DeclarationLedgerFull> {
+) -> Result<Vec<(FileRef, FileIdentity, &'a ResourceDecl)>, DeclareError> {
     let mut survivors = Vec::new();
     for (at, file, resource) in resources {
         let declared = DeclarationSite {

@@ -10,9 +10,11 @@
 //! The retained summary is the only owned retention this module adds, and it is
 //! charged at `declare` against the pass's one [`DeclarationBudget`], whose ceiling
 //! is [`MAX_DECLARATION_LEDGER_BYTES`]. The charge is per refused *key*: re-refusing
-//! a key already in the ledger increments a bounded occurrence count and costs
-//! nothing, which is what holds amplification to the number of refused declarations
-//! rather than the number of uses.
+//! a key already in the ledger increments a bounded occurrence count and retains no
+//! second summary, which is what holds amplification to the number of refused
+//! declarations rather than the number of uses. A merge that adopts an identity gap
+//! the first refusal did not carry retains that gap's path and is charged for it, so
+//! the ceiling bounds what the ledger holds rather than what it first charged.
 
 use std::borrow::Borrow;
 use std::cell::Cell;
@@ -41,6 +43,31 @@ pub(crate) const MAX_DECLARATION_LEDGER_BYTES: usize = MAX_DIAGNOSTIC_BYTES;
 /// rather than dropping a key and fabricating an absence at its uses.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct DeclarationLedgerFull;
+
+/// Why an occurrence could not be recorded.
+///
+/// Both arms stop the pass at the invariant boundary rather than dropping the key:
+/// a namespace that swallowed either would answer a later lookup with a fabricated
+/// absence, which is the defect this module exists to remove. Drift reaches this
+/// channel because a repeat of a refused key is merged through the lookup index, so
+/// `declare` reads that index exactly as `lookup` and `refusal` do.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DeclareError {
+    LedgerFull(DeclarationLedgerFull),
+    IndexDrift(DeclarationIndexDrift),
+}
+
+impl From<DeclarationLedgerFull> for DeclareError {
+    fn from(full: DeclarationLedgerFull) -> Self {
+        Self::LedgerFull(full)
+    }
+}
+
+impl From<DeclarationIndexDrift> for DeclareError {
+    fn from(drift: DeclarationIndexDrift) -> Self {
+        Self::IndexDrift(drift)
+    }
+}
 
 /// The one retention budget every declaration ledger of a pass charges against.
 ///
@@ -434,9 +461,23 @@ impl DeclarationRefusalSummary {
             + self.gap.as_ref().map_or(0, |gap| gap.path.len())
     }
 
-    /// Merge a further refusal of the same key into this summary. Exhaustive by
-    /// destructure so a new field cannot be silently left unmerged.
-    fn merge(&mut self, other: Self) {
+    /// Merge a further refusal of the same key into this summary, charging what the
+    /// merge newly retains against `budget`. Exhaustive by destructure so a new field
+    /// cannot be silently left unmerged.
+    ///
+    /// Adopting a gap is the one retention a merge adds — every other field is `Copy`
+    /// or discarded — and it is charged before it is held, so the ceiling bounds what
+    /// the pass retains rather than only what its first refusal charged. No production
+    /// producer reaches this arm today: the one class that carries a gap is a durable
+    /// root, and that namespace rejects a repeated placement name before declaring it,
+    /// so a second occurrence never reaches the ledger. The charge stands regardless —
+    /// it is what the summary would owe — and a namespace that later admits a repeated
+    /// gap-carrying refusal inherits the accounting rather than a hole in it.
+    fn merge(
+        &mut self,
+        other: Self,
+        budget: &DeclarationBudget,
+    ) -> Result<(), DeclarationLedgerFull> {
         let Self {
             name: _,
             code: _,
@@ -445,13 +486,17 @@ impl DeclarationRefusalSummary {
             report: _,
             steered: _,
         } = other;
-        // The first refusal is the reported cause; a later one only raises the
-        // count. A gap arriving with a later occurrence still completes the
-        // identity class, which renders from the gap rather than the code.
-        self.further = self.further.saturating_add(further).saturating_add(1);
-        if self.gap.is_none() {
-            self.gap = gap;
+        // A gap arriving with a later occurrence still completes the identity class,
+        // which renders from the gap rather than the code.
+        if self.gap.is_none()
+            && let Some(gap) = gap
+        {
+            budget.charge(gap.path.len())?;
+            self.gap = Some(gap);
         }
+        // The first refusal is the reported cause; a later one only raises the count.
+        self.further = self.further.saturating_add(further).saturating_add(1);
+        Ok(())
     }
 }
 
@@ -564,7 +609,7 @@ impl<K: Ord + Clone, T> DeclarationLedger<K, T> {
         &mut self,
         key: K,
         occurrence: DeclarationOccurrence<T>,
-    ) -> Result<(), DeclarationLedgerFull> {
+    ) -> Result<(), DeclareError> {
         let position = self.occurrences.len();
         let occurrence = match occurrence {
             DeclarationOccurrence::Accepted(value) => {
@@ -579,10 +624,7 @@ impl<K: Ord + Clone, T> DeclarationLedger<K, T> {
             // second occurrence is recorded.
             DeclarationOccurrence::Refused(summary) => {
                 match self.index.get(&key).and_then(|entry| entry.refused) {
-                    Some(id) => {
-                        self.merge_refusal(id, summary);
-                        return Ok(());
-                    }
+                    Some(id) => return self.merge_refusal(id, summary),
                     None => {
                         self.budget.charge(summary.retained_owned_bytes())?;
                         let id = DeclarationRefusalId {
@@ -607,14 +649,26 @@ impl<K: Ord + Clone, T> DeclarationLedger<K, T> {
     }
 
     /// Fold a further refusal of an already-refused key into the summary `id`
-    /// addresses. Drift leaves the merged summary untouched: the first refusal
-    /// remains the reported cause, which is what a steer reads.
-    fn merge_refusal(&mut self, id: DeclarationRefusalId, summary: DeclarationRefusalSummary) {
-        let Some(at) = self.refusals.get(id.index as usize).copied() else {
-            return;
-        };
-        if let Some((_, DeclarationOccurrence::Refused(first))) = self.occurrences.get_mut(at) {
-            first.merge(summary);
+    /// addresses.
+    ///
+    /// An id the index holds that addresses no refusal is layer 1 and the index
+    /// disagreeing, reported here exactly as [`Self::lookup`] and [`Self::refusal`]
+    /// report it. Returning quietly instead would leave the occurrence count and the
+    /// retained cause disagreeing with what the source wrote, with nothing said.
+    fn merge_refusal(
+        &mut self,
+        id: DeclarationRefusalId,
+        summary: DeclarationRefusalSummary,
+    ) -> Result<(), DeclareError> {
+        let at = *self
+            .refusals
+            .get(id.index as usize)
+            .ok_or(DeclarationIndexDrift)?;
+        match self.occurrences.get_mut(at) {
+            Some((_, DeclarationOccurrence::Refused(first))) => {
+                Ok(first.merge(summary, &self.budget)?)
+            }
+            _ => Err(DeclarationIndexDrift.into()),
         }
     }
 
@@ -995,11 +1049,74 @@ mod tests {
             let summary = refused(&key, &mut diagnostics);
             match ledger.declare(key, DeclarationOccurrence::Refused(summary)) {
                 Ok(()) => declared += 1,
-                Err(DeclarationLedgerFull) => break,
+                Err(DeclareError::LedgerFull(DeclarationLedgerFull)) => break,
+                Err(other) => panic!("expected the ceiling, got {other:?}"),
             }
             assert!(declared < 4096, "the ceiling must bind before this");
         }
         assert!(ledger.budget.spent() <= MAX_DECLARATION_LEDGER_BYTES);
+    }
+
+    /// The adopted path is a retention the merged summary did not previously hold,
+    /// and the ceiling bounds what the pass retains, not what it first charged. A
+    /// merge that adopted it for free would let the declared ceiling be crossed by
+    /// exactly the bytes §4's term exists to account for.
+    #[test]
+    fn adopting_a_gap_on_merge_charges_its_path() {
+        let mut ledger = ledger();
+        ledger
+            .declare(
+                "a".to_string(),
+                DeclarationOccurrence::Refused(refusal("a")),
+            )
+            .expect("within budget");
+        let after_first = ledger.budget.spent();
+        let gap = IdentityGap {
+            kind: marrow_project::IdentityKind::Root,
+            path: "holders.id".to_string(),
+            retired: false,
+        };
+        ledger
+            .declare(
+                "a".to_string(),
+                DeclarationOccurrence::Refused(refusal("a").with_gap(gap.clone())),
+            )
+            .expect("within budget");
+        assert_eq!(ledger.budget.spent(), after_first + gap.path.len());
+        match ledger.lookup(&"a".to_string()) {
+            Ok(Binding::Refused(_, summary)) => {
+                assert_eq!(
+                    summary.gap().map(|gap| gap.path.as_str()),
+                    Some("holders.id")
+                );
+            }
+            other => panic!("expected a refusal, got {other:?}"),
+        }
+    }
+
+    /// A merge whose index entry addresses no refusal is the same layer-1/index
+    /// incoherence `lookup` and `refusal` report. Returning quietly would leave the
+    /// occurrence count and the retained cause disagreeing with what the source
+    /// wrote, with nothing said.
+    #[test]
+    fn a_merge_into_a_drifted_refusal_is_reported_not_swallowed() {
+        let mut ledger = ledger();
+        ledger
+            .declare(
+                "a".to_string(),
+                DeclarationOccurrence::Refused(refusal("a")),
+            )
+            .expect("within budget");
+        // Layer 1 and the index disagree: the id the index holds for `a` addresses
+        // no position in the refusal list.
+        ledger.refusals.clear();
+        assert_eq!(
+            ledger.declare(
+                "a".to_string(),
+                DeclarationOccurrence::Refused(refusal("a")),
+            ),
+            Err(DeclareError::IndexDrift(DeclarationIndexDrift)),
+        );
     }
 
     #[test]

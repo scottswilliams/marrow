@@ -19,7 +19,8 @@ use marrow_syntax::{
 use crate::analysis::{AnalysisFactCollector, BoundedAnalysisFacts, FactSink, FileRef};
 use crate::decl::{
     Binding, DeclarationBudget, DeclarationLedgerFull, DeclarationNamespace, DeclarationOccurrence,
-    DeclarationSite, MAX_DECLARATION_LEDGER_BYTES, SourceStage, refuse, refuse_at_earlier_stage,
+    DeclarationSite, DeclareError, MAX_DECLARATION_LEDGER_BYTES, SourceStage, refuse,
+    refuse_at_earlier_stage,
 };
 use crate::demand::DurableNaming;
 use crate::diag::{
@@ -812,6 +813,15 @@ impl From<DeclarationLedgerFull> for SemanticOutcome {
     }
 }
 
+/// A ledger's two ways of refusing to record an occurrence reach the pass outcome
+/// through the one place a build's failure arms are routed, so a ledger error and a
+/// registry error cannot become different outcomes.
+impl From<DeclareError> for SemanticOutcome {
+    fn from(error: DeclareError) -> Self {
+        BuildError::from(error).into()
+    }
+}
+
 /// The one place a registry build's two failure arms become pass outcomes, so the
 /// five builders that return [`BuildError`] cannot disagree about either.
 impl From<BuildError> for SemanticOutcome {
@@ -1219,11 +1229,10 @@ fn run_semantic(
             DeclarationSite::whole_file(&module.name, &module.file, module.at),
             module.stage,
         );
-        if modules
-            .declare(module.name.clone(), DeclarationOccurrence::Refused(refusal))
-            .is_err()
+        if let Err(error) =
+            modules.declare(module.name.clone(), DeclarationOccurrence::Refused(refusal))
         {
-            return DeclarationLedgerFull.into();
+            return error.into();
         }
     }
     for module in parsed {
@@ -1250,8 +1259,8 @@ fn run_semantic(
                 ),
             ))
         };
-        if modules.declare(module.name.clone(), occurrence).is_err() {
-            return DeclarationLedgerFull.into();
+        if let Err(error) = modules.declare(module.name.clone(), occurrence) {
+            return error.into();
         }
     }
 

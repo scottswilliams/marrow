@@ -14,8 +14,8 @@ use marrow_syntax::{
 
 use crate::analysis::FileRef;
 use crate::decl::{
-    Binding, DeclarationBudget, DeclarationIndexDrift, DeclarationLedger, DeclarationLedgerFull,
-    DeclarationNamespace, DeclarationOccurrence, DeclarationRefusalSummary, DeclarationSite,
+    Binding, DeclarationBudget, DeclarationIndexDrift, DeclarationLedger, DeclarationNamespace,
+    DeclarationOccurrence, DeclarationRefusalSummary, DeclarationSite, DeclareError,
     ModuleScopedName, refuse, refuse_row,
 };
 use crate::diag::{DiagnosticCollector, SourceDiagnostic};
@@ -102,7 +102,7 @@ impl ConstRegistry {
         types: &TypeRegistry,
         diagnostics: &mut DiagnosticCollector,
         budget: DeclarationBudget,
-    ) -> Result<Self, DeclarationLedgerFull> {
+    ) -> Result<Self, DeclareError> {
         let mut entries: DeclarationLedger<ConstKey, ConstScalar> =
             DeclarationLedger::new(DeclarationNamespace::Constant, budget);
         for (module, at, file, decl) in consts {
