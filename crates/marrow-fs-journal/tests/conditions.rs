@@ -9,6 +9,9 @@
 //!    decision.
 //! 3. No `rustix` type escapes this crate's public API: the token appears in
 //!    exactly one private module, and that module exports nothing `pub`.
+//!    Every source scan reads the code with comment and literal contents
+//!    blanked, so a comment naming a forbidden token is documentation rather
+//!    than a violation; the one deliberate prose assertion says so.
 //! 4. Darwin sync discipline: every sync is a plain `fsync`; the
 //!    full-flush and `sync_all`/`sync_data` spellings are absent because no
 //!    current envelope claims power-loss durability, and the crate docs keep
@@ -103,17 +106,27 @@ fn code_only(source: &str) -> Vec<char> {
                     }
                 }
             }
-            // A `'` opens a character literal only when it closes within one
-            // escape or one character; otherwise it introduces a lifetime.
+            // A `'` opens a character literal only when an escape follows or
+            // the third character closes it; otherwise it introduces a
+            // lifetime or a loop label, which is code and stays. A literal
+            // that is not consumed whole would leave its closing quote — or,
+            // for `'"'`, a bare double quote — in the output, and the string
+            // branch above would then blank every following line of code to
+            // the next quote.
             '\'' if two(1) == Some('\\') || two(2) == Some('\'') => {
+                out.push(' ');
+                index += 1;
                 while index < chars.len() {
                     let inner = chars[index];
-                    out.push(' ');
+                    out.push(if inner == '\n' { '\n' } else { ' ' });
                     index += 1;
-                    if inner == '\\' && index < chars.len() {
-                        out.push(' ');
-                        index += 1;
-                    } else if inner == '\'' && out.len() > 1 {
+                    if inner == '\\' {
+                        if index < chars.len() {
+                            let escaped = chars[index];
+                            out.push(if escaped == '\n' { '\n' } else { ' ' });
+                            index += 1;
+                        }
+                    } else if inner == '\'' {
                         break;
                     }
                 }
@@ -125,6 +138,14 @@ fn code_only(source: &str) -> Vec<char> {
         }
     }
     out
+}
+
+/// [`code_only`] as text, for the whole-file token scans. Every scan that
+/// forbids a token reads this rather than the raw file: the crate's own
+/// documentation names the tokens it forbids and why, and a comment saying so
+/// is not a violation.
+fn code_text(source: &str) -> String {
+    code_only(source).into_iter().collect()
 }
 
 fn word_at(chars: &[char], index: usize) -> Option<String> {
@@ -143,13 +164,47 @@ fn next_code_char(chars: &[char], from: usize) -> Option<char> {
     chars[from..].iter().copied().find(|ch| !ch.is_whitespace())
 }
 
+/// The word beginning at the first non-whitespace character at or after `from`.
+fn next_code_word(chars: &[char], from: usize) -> Option<String> {
+    let offset = chars[from..].iter().position(|ch| !ch.is_whitespace())?;
+    word_at(chars, from + offset)
+}
+
+/// The index of the `;` that terminates the declaration starting at `from`, or
+/// the end of the source.
+fn statement_end(chars: &[char], from: usize) -> usize {
+    chars[from..]
+        .iter()
+        .position(|&ch| ch == ';')
+        .map_or(chars.len(), |offset| from + offset)
+}
+
+/// What closes a span a `pub` opens. An item's signature runs to the `{` or
+/// `;` that closes it; a struct field's declaration runs to its own `,`, to
+/// the struct's closing `}`, or to a tuple struct's `;`. Reading a field as an
+/// item would run its span past the whole struct to the next block, so one
+/// field would report every following field's type as its own.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SpanShape {
+    Item,
+    Field,
+}
+
+/// The keywords a public item may open with. Anything else after `pub` is a
+/// field of a struct or of an enum variant.
+const ITEM_KEYWORDS: [&str; 14] = [
+    "fn", "struct", "enum", "union", "trait", "type", "const", "static", "mod", "use", "unsafe",
+    "async", "extern", "macro",
+];
+
 /// Every public item's whole signature span, whitespace-collapsed: from the
-/// `pub` or `impl` keyword that opens the item to the `{` or `;` that closes
-/// its signature. Scanning physical lines instead would let a wrapped
+/// `pub` or `impl` keyword that opens the item to the punctuation that closes
+/// its declaration. Scanning physical lines instead would let a wrapped
 /// signature — rustfmt splits a long parameter list across lines — carry a
 /// forbidden token past the gate on a line that names no public item.
 /// Restricted visibilities (`pub(crate)` and friends) are not public API and
-/// open no span.
+/// open no span. An `impl` block also contributes the associated types its
+/// body binds: a trait impl hands those to callers without spelling `pub`.
 fn public_signature_spans(source: &str) -> Vec<(usize, String)> {
     let chars = code_only(source);
     let mut spans: Vec<(usize, String)> = Vec::new();
@@ -166,19 +221,21 @@ fn public_signature_spans(source: &str) -> Vec<(usize, String)> {
             continue;
         };
         let after = index + word.chars().count();
-        let opens_item = match word.as_str() {
-            "impl" => true,
-            "pub" => next_code_char(&chars, after) != Some('('),
-            _ => false,
+        let following = next_code_word(&chars, after);
+        let shape = match word.as_str() {
+            "impl" => Some(SpanShape::Item),
+            "pub" if next_code_char(&chars, after) == Some('(') => None,
+            "pub" => Some(match &following {
+                Some(next) if ITEM_KEYWORDS.contains(&next.as_str()) => SpanShape::Item,
+                _ => SpanShape::Field,
+            }),
+            _ => None,
         };
-        if !opens_item {
+        let Some(shape) = shape else {
             index = after;
             continue;
-        }
-        let is_use = word == "pub" && {
-            let rest: String = chars[after..].iter().collect();
-            rest.trim_start().starts_with("use ")
         };
+        let is_use = following.as_deref() == Some("use");
         let mut span = String::new();
         let mut depth = 0i32;
         let mut cursor = index;
@@ -188,56 +245,151 @@ fn public_signature_spans(source: &str) -> Vec<(usize, String)> {
                 ')' | ']' => depth -= 1,
                 '{' if is_use => depth += 1,
                 '}' if is_use => depth -= 1,
-                '{' if depth <= 0 => break,
-                ';' if depth <= 0 => break,
+                ',' | '}' if depth <= 0 && shape == SpanShape::Field => break,
+                '{' | ';' if depth <= 0 => break,
                 _ => {}
             }
             span.push(chars[cursor]);
             cursor += 1;
         }
         spans.push((line, span.split_whitespace().collect::<Vec<_>>().join(" ")));
+        if word == "impl" && chars.get(cursor) == Some(&'{') {
+            spans.extend(associated_type_spans(&chars, cursor, line));
+        }
         index = after;
     }
     spans
 }
 
-/// Type aliases, at any visibility, whose right-hand side names one of
-/// `tokens`. A public signature spelling such an alias hands out exactly the
-/// aliased type, so the alias name joins the red list. The closure is taken to
-/// a fixed point so an alias of an alias cannot launder the token either.
+/// The associated types bound directly in the `impl` body opening at `open`.
+/// Only depth-one declarations count: a `type` alias inside a method body is
+/// local and reaches no caller.
+fn associated_type_spans(chars: &[char], open: usize, open_line: usize) -> Vec<(usize, String)> {
+    let mut spans: Vec<(usize, String)> = Vec::new();
+    let mut line = open_line;
+    let mut depth = 0i32;
+    let mut index = open;
+    while index < chars.len() {
+        match chars[index] {
+            '\n' => line += 1,
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth <= 0 {
+                    break;
+                }
+            }
+            _ if depth == 1 && word_at(chars, index).as_deref() == Some("type") => {
+                let end = statement_end(chars, index);
+                let declaration: String = chars[index..end].iter().collect();
+                spans.push((
+                    line,
+                    declaration.split_whitespace().collect::<Vec<_>>().join(" "),
+                ));
+            }
+            _ => {}
+        }
+        index += 1;
+    }
+    spans
+}
+
+/// One name a source binds to a type spelling.
+struct AliasBinding {
+    /// The bound local name.
+    name: String,
+    /// The spelling it stands for: a type alias's right-hand side, or the path
+    /// a `use` rename renames.
+    spelling: String,
+}
+
+/// Every alias binding in one already-blanked source: `type NAME = SPELLING;`
+/// and each `use PATH as NAME` rename, both at any visibility. A rename is the
+/// idiomatic aliasing form and a private `use` opens no public span, so
+/// collecting the bound name here is what stops
+/// `use <descriptor path> as Handle;` from laundering a descriptor into a
+/// public signature.
+fn alias_bindings(chars: &[char]) -> Vec<AliasBinding> {
+    let mut bindings: Vec<AliasBinding> = Vec::new();
+    let mut index = 0usize;
+    while index < chars.len() {
+        let Some(word) = word_at(chars, index) else {
+            index += 1;
+            continue;
+        };
+        let after = index + word.chars().count();
+        if word != "type" && word != "use" {
+            index = after;
+            continue;
+        }
+        let end = statement_end(chars, after);
+        let declaration: String = chars[after..end].iter().collect();
+        if word == "type" {
+            if let Some((name, spelling)) = declaration.split_once('=') {
+                let name = name.trim().split(['<', ' ']).next().unwrap_or_default();
+                if !name.is_empty() {
+                    bindings.push(AliasBinding {
+                        name: name.to_string(),
+                        spelling: spelling.to_string(),
+                    });
+                }
+            }
+        } else {
+            bindings.extend(rename_bindings(&declaration));
+        }
+        index = end;
+    }
+    bindings
+}
+
+/// The `as NAME` renames of one `use` declaration. Splitting on the group
+/// punctuation keeps each rename judged by the path it actually renames, so a
+/// harmless rename beside a descriptor import in one braced group is not
+/// red-listed with it.
+fn rename_bindings(declaration: &str) -> Vec<AliasBinding> {
+    let mut bindings: Vec<AliasBinding> = Vec::new();
+    for segment in declaration.split([',', '{', '}']) {
+        let mut path = String::new();
+        let mut words = segment.split_whitespace();
+        while let Some(word) = words.next() {
+            if word != "as" {
+                path.push_str(word);
+                continue;
+            }
+            if let Some(name) = words.next() {
+                bindings.push(AliasBinding {
+                    name: name.to_string(),
+                    spelling: path.clone(),
+                });
+            }
+            break;
+        }
+    }
+    bindings
+}
+
+/// Every locally bound name that stands for one of `tokens`. A public
+/// signature spelling such a name hands out exactly the named type, so the
+/// name joins the red list. The bindings are lexed once per source and the
+/// closure is then taken to a fixed point, so an alias of an alias cannot
+/// launder the token either.
 fn descriptor_aliases(sources: &[(PathBuf, String)], tokens: &[String]) -> Vec<String> {
+    let bindings: Vec<AliasBinding> = sources
+        .iter()
+        .flat_map(|(_, contents)| alias_bindings(&code_only(contents)))
+        .collect();
     let mut red: Vec<String> = tokens.to_vec();
     let mut aliases: Vec<String> = Vec::new();
     loop {
         let before = aliases.len();
-        for (_, contents) in sources {
-            let chars = code_only(contents);
-            let mut index = 0usize;
-            while index < chars.len() {
-                let Some(word) = word_at(&chars, index) else {
-                    index += 1;
-                    continue;
-                };
-                let after = index + word.chars().count();
-                if word != "type" {
-                    index = after;
-                    continue;
-                }
-                let tail: String = chars[after..].iter().collect();
-                let declaration = tail.split(';').next().unwrap_or_default();
-                let Some((name, right)) = declaration.split_once('=') else {
-                    index = after;
-                    continue;
-                };
-                let name = name.trim().split(['<', ' ']).next().unwrap_or_default();
-                if !name.is_empty()
-                    && red.iter().any(|token| right.contains(token.as_str()))
-                    && !aliases.iter().any(|known| known == name)
-                {
-                    aliases.push(name.to_string());
-                    red.push(name.to_string());
-                }
-                index = after;
+        for binding in &bindings {
+            if !aliases.iter().any(|known| *known == binding.name)
+                && red
+                    .iter()
+                    .any(|token| binding.spelling.contains(token.as_str()))
+            {
+                aliases.push(binding.name.clone());
+                red.push(binding.name.clone());
             }
         }
         if aliases.len() == before {
@@ -353,7 +505,7 @@ fn no_rustix_type_escapes_the_public_api() {
     // The token is confined to the one private adapter module.
     let naming: Vec<&Path> = sources
         .iter()
-        .filter(|(_, contents)| contents.contains("rustix"))
+        .filter(|(_, contents)| code_text(contents).contains("rustix"))
         .map(|(path, _)| path.as_path())
         .collect();
     assert_eq!(
@@ -371,6 +523,7 @@ fn no_rustix_type_escapes_the_public_api() {
         .iter()
         .find(|(path, _)| path.ends_with("lib.rs"))
         .expect("lib.rs exists");
+    let lib = code_text(lib);
     assert!(
         lib.contains("mod sys;") && !lib.contains("pub mod sys"),
         "the sys module must be private"
@@ -383,6 +536,7 @@ fn no_rustix_type_escapes_the_public_api() {
         .iter()
         .find(|(path, _)| path.ends_with("sys.rs"))
         .expect("sys.rs exists");
+    let sys = code_text(sys);
     for declaration in [
         "pub fn",
         "pub struct",
@@ -416,8 +570,9 @@ fn every_sync_is_a_plain_fsync_and_the_darwin_disclaimer_stands() {
     ];
     let mut violations: Vec<String> = Vec::new();
     for (path, contents) in crate_sources() {
+        let code = code_text(&contents);
         for pattern in &forbidden {
-            if contents.contains(pattern.as_str()) {
+            if code.contains(pattern.as_str()) {
                 violations.push(format!("{}: {pattern}", path.display()));
             }
         }
@@ -428,6 +583,7 @@ fn every_sync_is_a_plain_fsync_and_the_darwin_disclaimer_stands() {
         violations.join("\n")
     );
 
+    // The disclaimer is prose, so this one assertion reads the raw file.
     let (_, lib) = crate_sources()
         .into_iter()
         .find(|(path, _)| path.ends_with("lib.rs"))
@@ -443,9 +599,10 @@ fn the_crate_contains_no_unsafe_code() {
     // The workspace forbids `unsafe_code` by lint; this scan keeps the
     // absence conspicuous from the conformance suite as well.
     for (path, contents) in crate_sources() {
+        let code = code_text(&contents);
         for pattern in ["unsafe ", "unsafe{"] {
             assert!(
-                !contents.contains(pattern),
+                !code.contains(pattern),
                 "{} contains unsafe code",
                 path.display()
             );
@@ -456,30 +613,64 @@ fn the_crate_contains_no_unsafe_code() {
 /// The third leg of the escape red-list: no raw descriptor reaches the public
 /// API. The public custody types wrap their descriptors in private fields
 /// (`sys` handles), so descriptor tokens may appear in private plumbing but
-/// never in a public item's signature or a trait-impl header, where they would
-/// hand the descriptor to callers. The scan is span-based rather than
-/// line-based, and it red-lists any alias of a forbidden type as well, so
-/// neither rustfmt wrapping nor an alias launders a descriptor out. The tokens
-/// are concatenated so a widened scan cannot match this file.
+/// never where they would hand a descriptor to callers.
+///
+/// The scan covers each public item's whole declaration span, each `impl`
+/// header, and each associated type an `impl` body binds; it red-lists every
+/// local name that stands for a forbidden type, whether bound by a `type`
+/// alias or by a `use ... as` rename at any visibility. So neither rustfmt
+/// wrapping, nor an alias, nor a rename launders a descriptor out. It does not
+/// see through macro expansion, which is why the crate declares no macros —
+/// the assertion below keeps that true. The tokens are concatenated so a
+/// widened scan cannot match this file.
 #[test]
 fn no_raw_descriptor_escapes_a_public_signature_or_impl() {
-    let mut tokens = vec![
+    let sources = crate_sources();
+    for (path, contents) in &sources {
+        assert!(
+            !code_text(contents).contains(&["macro_", "rules!"].concat()),
+            "{} declares a macro: the span scan reads source text, so a public \
+             item produced by macro expansion would bypass this gate",
+            path.display()
+        );
+    }
+    let violations = descriptor_violations(&sources);
+    assert!(
+        violations.is_empty(),
+        "a raw descriptor reached a public signature or impl:\n{}",
+        violations.join("\n")
+    );
+}
+
+/// The forbidden descriptor spellings. The tokens are concatenated so a
+/// widened scan cannot match this file.
+fn descriptor_tokens() -> Vec<String> {
+    vec![
         ["As", "Fd"].concat(),
-        ["AsRaw", "Fd"].concat(),
-        ["as_raw", "_fd"].concat(),
-        ["into_raw", "_fd"].concat(),
+        // `Raw` + `Fd` also covers `AsRawFd`, `FromRawFd`, and `IntoRawFd`.
         ["Raw", "Fd"].concat(),
         ["Owned", "Fd"].concat(),
         ["Borrowed", "Fd"].concat(),
-        // The module path itself: a `pub use` of it re-exports the whole
-        // descriptor family under this crate's name.
-        ["std::os::", "fd"].concat(),
-    ];
-    let sources = crate_sources();
-    tokens.extend(descriptor_aliases(&sources, &tokens));
+        ["as_raw", "_fd"].concat(),
+        ["from_raw", "_fd"].concat(),
+        ["into_raw", "_fd"].concat(),
+        // The module paths themselves: a `pub use` of any of them re-exports
+        // the whole descriptor family under this crate's name. `os::unix::io`
+        // is the older spelling of `os::fd`, and the Unix prelude re-exports
+        // that same family; the `std` prefix is left off so a path reached
+        // through a renamed root is caught as well.
+        ["os::", "fd"].concat(),
+        ["os::unix::", "io"].concat(),
+        ["os::unix::", "prelude"].concat(),
+    ]
+}
 
+/// Every descriptor escape in `sources`, located and named.
+fn descriptor_violations(sources: &[(PathBuf, String)]) -> Vec<String> {
+    let mut tokens = descriptor_tokens();
+    tokens.extend(descriptor_aliases(sources, &tokens));
     let mut violations: Vec<String> = Vec::new();
-    for (path, contents) in &sources {
+    for (path, contents) in sources {
         for (line, span) in public_signature_spans(contents) {
             for token in &tokens {
                 if span.contains(token.as_str()) {
@@ -488,10 +679,76 @@ fn no_raw_descriptor_escapes_a_public_signature_or_impl() {
             }
         }
     }
-    assert!(
-        violations.is_empty(),
-        "a raw descriptor reached a public signature or impl:\n{}",
-        violations.join("\n")
+    violations
+}
+
+/// The descriptor gate's own coverage, pinned by planting each laundering form
+/// it exists to catch. A gate that quietly stopped matching one of these forms
+/// would keep passing over a crate that had already handed a descriptor out.
+#[test]
+fn the_descriptor_gate_catches_every_laundering_form() {
+    let owned = ["Owned", "Fd"].concat();
+    let module = ["std::os::", "fd"].concat();
+    let older = ["std::os::unix::", "io"].concat();
+    let prelude = ["std::os::unix::", "prelude"].concat();
+    let planted = [
+        format!("pub fn direct() -> {owned} {{ todo!() }}\n"),
+        format!("pub use {module}::*;\n"),
+        format!("pub use {older}::*;\n"),
+        format!("pub use {prelude}::*;\n"),
+        format!("use {module}::{owned} as Handle;\npub fn renamed() -> Handle {{ todo!() }}\n"),
+        format!("type Held = {owned};\npub fn aliased() -> Held {{ todo!() }}\n"),
+        format!(
+            "use {module}::{owned} as Handle;\ntype Held = Handle;\n\
+             pub fn chained() -> Held {{ todo!() }}\n"
+        ),
+        format!("impl Custody for Journal {{\n    type Handle = {owned};\n}}\n"),
+        format!(
+            "fn is_quote(ch: char) -> bool {{ ch == '\"' }}\n\
+             pub fn after_a_quoting_literal() -> {owned} {{ todo!() }}\n"
+        ),
+        format!("pub struct Row {{\n    pub first: u8,\n    pub second: {owned},\n}}\n"),
+    ];
+    for source in planted {
+        let sources = vec![(PathBuf::from("planted.rs"), source.clone())];
+        assert!(
+            !descriptor_violations(&sources).is_empty(),
+            "the descriptor gate missed a planted escape:\n{source}"
+        );
+    }
+}
+
+/// A public field's span covers its own declaration alone. A span that ran to
+/// the next block would report every following field's type as this field's,
+/// naming the wrong line and the wrong item.
+#[test]
+fn a_public_field_span_ends_at_its_own_declaration() {
+    let owned = ["Owned", "Fd"].concat();
+    let source = format!("pub struct Row {{\n    pub first: u8,\n    pub second: {owned},\n}}\n");
+    let spans = public_signature_spans(&source);
+    assert_eq!(
+        spans,
+        [
+            (1, "pub struct Row".to_string()),
+            (2, "pub first: u8".to_string()),
+            (3, format!("pub second: {owned}")),
+        ],
+    );
+}
+
+/// Comment and literal blanking consumes each literal whole and preserves
+/// every other character, including a lifetime's quote and a string's opening
+/// quote. A character literal holding a double quote is the sharp case:
+/// leaving any of it behind would blank the code from there to the next quote
+/// anywhere in the file.
+#[test]
+fn blanking_consumes_literals_whole_and_leaves_lifetimes_alone() {
+    let source = "let a = '\\''; let b: &'x u8; let c = '\"'; let d = \"s\";";
+    let blanked = code_text(source);
+    assert_eq!(blanked.chars().count(), source.chars().count());
+    assert_eq!(
+        blanked,
+        "let a =     ; let b: &'x u8; let c =    ; let d = \"  ;"
     );
 }
 
