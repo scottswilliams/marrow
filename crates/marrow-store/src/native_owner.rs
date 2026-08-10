@@ -1,9 +1,23 @@
 //! Opaque ownership of one native engine and its process owner lock.
 //!
-//! The store directory is the unit of ownership. This module alone derives the
+//! The store directory is the unit of ownership, and it is also the node exclusion
+//! rests on: the advisory lock is taken on the canonicalized directory itself
+//! before any name inside it is opened, and the `lock` marker's own lock stands
+//! behind it. A lock resting only on names inside the directory does not survive
+//! their replacement, and the two replaceable nodes a holder locks — the marker
+//! and the engine file — can be replaced together. This module alone derives the
 //! `lock` and `store.redb` paths, acquires the advisory lock before admission or
 //! engine open, and keeps that lock inseparable from the native engine. An
-//! indeterminate commit irreversibly quarantines the lock until process exit.
+//! indeterminate commit irreversibly quarantines every node it rests on until
+//! process exit.
+//!
+//! What that establishes and what it does not: while a holder is live, no second
+//! owner of the same store directory node can be constructed, whatever a writer
+//! inside that directory does to its children. It is not exclusion over a
+//! *path*. A writer that replaces the store directory node itself — moving it
+//! aside and publishing another directory under the same name — leaves two owners
+//! of two different directories that one path reaches in turn, which is the
+//! custody split the storage reference records.
 //!
 //! Acquisition is separate from binding so nothing above this module has to read
 //! a byte of the store directory to decide exclusion. [`NativeEngineOwner::acquire_existing`]
@@ -198,6 +212,9 @@ enum DropDisposition {
 }
 
 struct OwnerLock {
+    /// The store directory node's own advisory lock, taken before any name inside the
+    /// directory is opened. See [`OwnerLock::acquire`].
+    directory_node: Option<File>,
     file: Option<File>,
     disposition: DropDisposition,
 }
@@ -213,7 +230,34 @@ impl OwnerLock {
     /// nonempty marker — a crashed holder's, whether it had bound its instance or
     /// not, or bytes this build cannot read — is the inherited unclean obligation
     /// this acquisition carries until a full audit discharges it.
+    ///
+    /// Exclusion is taken on the store directory node itself, before any name inside that
+    /// directory is opened. A lock resting only on names inside the directory does not
+    /// survive their replacement: the marker and the engine file are each replaceable by
+    /// unlinking the name and creating another node under it, which hands a contender a node
+    /// no holder holds. Each replacement alone is still refused by the other node's lock,
+    /// but replacing both leaves neither — the state a whole-directory restore over a live
+    /// store also produces. The directory node is the one node in the store that no
+    /// replacement of its own children changes, and acquisition pinned it by canonicalizing
+    /// before asking for this lock, so exclusion rests on it and the marker's lock stands
+    /// behind it.
     fn acquire(dir: &Path) -> Result<AcquiredLock, NativeLockError> {
+        let directory_node = open_directory_node(dir).map_err(NativeLockError::Io)?;
+        match directory_node.try_lock() {
+            Ok(()) => {}
+            Err(std::fs::TryLockError::WouldBlock) => {
+                // A contender is owed the exclusion verdict and nothing else: a marker it
+                // cannot read or that is not there costs it the holder's identity, never
+                // the verdict itself.
+                return Err(NativeLockError::StoreInUse {
+                    owner: read_named_owner(dir),
+                });
+            }
+            Err(std::fs::TryLockError::Error(error)) => {
+                return Err(NativeLockError::Io(error));
+            }
+        }
+
         let mut file = open_marker(dir).map_err(NativeLockError::Io)?;
 
         match file.try_lock() {
@@ -253,6 +297,7 @@ impl OwnerLock {
 
         Ok(AcquiredLock {
             lock: OwnerLock {
+                directory_node: Some(directory_node),
                 file: Some(file),
                 disposition: DropDisposition::PreserveUnclean,
             },
@@ -303,9 +348,15 @@ impl Drop for OwnerLock {
                     let _ = file.sync_all();
                 }
             }
+            // Quarantine is exclusion for the rest of this process's life, so every handle
+            // the exclusion rests on is retained. Releasing the directory node while the
+            // marker's lock is leaked would leave the quarantine standing on a name that a
+            // writer inside the directory can replace.
             DropDisposition::Quarantine => {
-                if let Some(file) = self.file.take() {
-                    std::mem::forget(file);
+                for handle in [self.directory_node.take(), self.file.take()] {
+                    if let Some(handle) = handle {
+                        std::mem::forget(handle);
+                    }
                 }
             }
         }
@@ -527,6 +578,36 @@ impl ByteEngine for NativeEngineOwner {
     fn audit_integrity(&mut self) -> Result<(), StoreError> {
         self.engine_mut().audit_integrity()
     }
+}
+
+/// Open the store directory itself as the node exclusion is taken on. Nothing is read or
+/// written through this handle: it exists so that the advisory lock rests on the one node in
+/// the store that a writer inside the store directory cannot replace under its own name. The
+/// path was canonicalized before acquisition asked for it, so the node this reaches is the
+/// directory the owner is about to hold.
+#[cfg(unix)]
+fn open_directory_node(dir: &Path) -> std::io::Result<File> {
+    File::open(dir)
+}
+
+/// The marker's custody rests on node identity and link counts, which this crate reads
+/// through the Unix metadata it has, and the directory node is opened as an ordinary handle
+/// only on platforms where that is defined. A platform without them is refused rather than
+/// served by a weaker check.
+#[cfg(not(unix))]
+fn open_directory_node(_dir: &Path) -> std::io::Result<File> {
+    Err(marker_refusal(
+        "the store directory is admitted on Unix platforms only",
+    ))
+}
+
+/// The holder identity the store directory's marker names, read without creating the entry
+/// and without locking it. A contender refused at the directory node is owed the exclusion
+/// verdict; the identity is the detail attached to it, so every failure to read one is an
+/// absent identity rather than a different verdict.
+fn read_named_owner(dir: &Path) -> Option<NativeLockOwner> {
+    let mut file = File::open(dir.join(NATIVE_LOCK_FILE)).ok()?;
+    read_owner(&mut file)
 }
 
 /// Open the store directory's owner marker, creating it when absent, as that directory's
@@ -1105,6 +1186,30 @@ mod tests {
             0,
             "quarantine retains the nonempty owner marker",
         );
+    }
+
+    /// Quarantine retains every node the exclusion rests on, not only the marker. A
+    /// quarantine standing on the marker alone would end the moment that name is unlinked
+    /// and another node created under it — the replacement the directory node exists to
+    /// survive — so the store would become openable again before this process exits.
+    #[cfg(unix)]
+    #[test]
+    fn quarantine_survives_the_replacement_of_the_marker_it_leaked() {
+        let scratch = Scratch::new("quarantine-replaced-marker");
+        NativeEngineOwner::provision(&scratch.0).expect("provision");
+        let owner = open_existing(&scratch.0, [17; 16]).expect("open owner");
+        drop(
+            owner
+                .reopen_existing_and_audit()
+                .expect("reopen and audit under retained lock"),
+        );
+
+        std::fs::remove_file(scratch.0.join(NATIVE_LOCK_FILE))
+            .expect("remove the quarantined marker");
+        assert!(matches!(
+            contend(&scratch.0),
+            NativeOwnerAcquireError::Lock(NativeLockError::StoreInUse { .. }),
+        ));
     }
 
     #[test]

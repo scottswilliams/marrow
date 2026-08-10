@@ -306,11 +306,8 @@ fn replacing_every_replaceable_node_a_holder_locks_admits_no_second_owner() {
     // engine byte for byte, and an inode no holder locks.
     let (_donor, donor_store) = provisioned("compound-fault-donor");
     let fresh = store.join("fresh-engine");
-    std::fs::copy(
-        donor_store.join(marrow_lifecycle::ENGINE_FILE),
-        &fresh,
-    )
-    .expect("copy a fresh engine into the held store directory");
+    std::fs::copy(donor_store.join(marrow_lifecycle::ENGINE_FILE), &fresh)
+        .expect("copy a fresh engine into the held store directory");
     std::fs::rename(&fresh, store.join(marrow_lifecycle::ENGINE_FILE))
         .expect("publish the fresh engine under the engine's name");
     std::fs::remove_file(store.join(marrow_lifecycle::LOCK_FILE)).expect("remove the marker");
@@ -378,6 +375,10 @@ fn a_store_directory_that_denies_access_refuses_as_a_permission_denial() {
 /// marker lock the holder is not holding, at the cost of leaving an unclean obligation
 /// behind in an intact store. The marker is a cooperating owner's own custody, not a defence
 /// against an actor who can rewrite the store directory.
+///
+/// Only the two doors that take the store directory node itself out of reach — removing it,
+/// and denying this process the read the lock's open requires — refuse instead, and each
+/// refuses as what it is rather than as a claim about the store's contents.
 #[cfg(unix)]
 #[test]
 fn no_door_into_a_held_store_admits_a_second_owner() {
@@ -403,6 +404,13 @@ fn no_door_into_a_held_store_admits_a_second_owner() {
         damage,
         expected,
     };
+    fn chmod_marker(store: &Path, mode: u32) {
+        std::fs::set_permissions(
+            store.join(marrow_lifecycle::LOCK_FILE),
+            std::fs::Permissions::from_mode(mode),
+        )
+        .expect("chmod the marker");
+    }
     let doors = vec![
         door(
             "the marker deleted under the holder",
@@ -442,7 +450,7 @@ fn no_door_into_a_held_store_admits_a_second_owner() {
                 std::fs::remove_file(&marker).expect("remove the marker");
                 std::os::unix::fs::symlink(store.join("elsewhere"), &marker).expect("link");
             }),
-            Verdict::Refused(&["store.io"]),
+            Verdict::Locked,
         ),
         door(
             "a directory standing in for the marker",
@@ -451,20 +459,33 @@ fn no_door_into_a_held_store_admits_a_second_owner() {
                 std::fs::remove_file(&marker).expect("remove the marker");
                 std::fs::create_dir(&marker).expect("a directory in place of the marker");
             }),
-            Verdict::Refused(&["store.io"]),
+            Verdict::Locked,
         ),
         door(
-            "a marker whose own mode denies the open",
+            "a marker whose own mode denies every open",
+            Box::new(|store: &Path| chmod_marker(store, 0o000)),
+            Verdict::Locked,
+        ),
+        door(
+            "a marker whose own mode denies the write the open requires",
+            Box::new(|store: &Path| chmod_marker(store, 0o400)),
+            Verdict::Locked,
+        ),
+        door(
+            "a marker whose own mode denies the read the open requires",
+            Box::new(|store: &Path| chmod_marker(store, 0o200)),
+            Verdict::Locked,
+        ),
+        door(
+            "the store directory stripped of the read its own lock needs",
             Box::new(|store: &Path| {
-                std::fs::set_permissions(
-                    store.join(marrow_lifecycle::LOCK_FILE),
-                    std::fs::Permissions::from_mode(0o000),
-                )
-                .expect("chmod the marker");
+                std::fs::set_permissions(store, std::fs::Permissions::from_mode(0o300))
+                    .expect("chmod the store directory");
             }),
-            // A process that may open it regardless (a privileged test runner) still meets
-            // the holder and is told so; one that may not cannot see the door at all.
-            Verdict::Refused(&["store.io", "store.locked"]),
+            // A process that may read it regardless (a privileged test runner) reaches the
+            // directory node and meets the holder; one that may not cannot reach it at all,
+            // and is told that rather than anything about the store.
+            Verdict::Refused(&["store.permission_denied", "store.locked"]),
         ),
         door(
             "the store directory removed under the holder",

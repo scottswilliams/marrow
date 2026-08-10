@@ -38,6 +38,10 @@ impl From<NativeLockOwner> for LockOwner {
 pub enum LockError {
     /// Another live process owns the store.
     StoreInUse { owner: Option<LockOwner> },
+    /// This process is denied the access taking the lock requires, so the lock was never
+    /// asked for. Nothing about the store was established: a failure to reach the store
+    /// directory or its lock entry is not an observation of either.
+    AccessDenied(std::io::Error),
     /// The lock file or directory could not be accessed.
     Io(std::io::Error),
 }
@@ -48,6 +52,11 @@ impl From<NativeLockError> for LockError {
             NativeLockError::StoreInUse { owner } => Self::StoreInUse {
                 owner: owner.map(LockOwner::from),
             },
+            // The one place a lock failure is classified. A denial is its own state, so the
+            // code below is a match on the state rather than a second reading of the error.
+            NativeLockError::Io(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {
+                Self::AccessDenied(error)
+            }
             NativeLockError::Io(error) => Self::Io(error),
         }
     }
@@ -58,6 +67,7 @@ impl LockError {
     pub fn code(&self) -> &'static str {
         match self {
             Self::StoreInUse { .. } => Code::StoreLocked.as_str(),
+            Self::AccessDenied(_) => Code::StorePermissionDenied.as_str(),
             Self::Io(_) => Code::StoreIo.as_str(),
         }
     }
@@ -87,6 +97,10 @@ impl std::fmt::Display for LockError {
             Self::StoreInUse { owner: None } => write!(
                 formatter,
                 "the store is already open by another process; close it, then retry",
+            ),
+            Self::AccessDenied(error) => write!(
+                formatter,
+                "access to the store directory or its lock is denied: {error}",
             ),
             Self::Io(error) => write!(formatter, "the store lock could not be taken: {error}"),
         }
