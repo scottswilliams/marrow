@@ -464,6 +464,7 @@ fn keeper<'a>(text: &'a str) -> char {
     let c_raw = cr"forbidden_shape in a C raw string \";
     let byte_escaped = b"forbidden_shape with an escaped backslash \\";
     let tick = '\'';
+    let ticked = ['\'','a', adjacent_call()];
     forbidden_shape();
     'x'
 }
@@ -490,6 +491,18 @@ fn after(): {}
     assert!(
         code.contains("fn keeper<'a>(text: &'a str)"),
         "lifetimes are code, not char literals:\n{code}",
+    );
+    assert_eq!(
+        code.matches('\'').count(),
+        2,
+        "the only quotes the projection keeps are the two lifetime ticks. An escaped-quote \
+         literal measured from the backslash rather than past the escape's payload returns \
+         3 for the four bytes of `'\\''`, leaving a stray quote that pairs with the next \
+         one and blanks the code between them:\n{code}",
+    );
+    assert!(
+        code.contains("adjacent_call()"),
+        "the call beside a pair of char literals is code and survives whole:\n{code}",
     );
     assert!(
         code.contains("fn after"),

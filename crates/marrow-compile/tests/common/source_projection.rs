@@ -132,7 +132,11 @@ pub fn raw_string_open(bytes: &[u8], index: usize) -> Option<(usize, usize)> {
 /// lifetime (`'a`) instead — which is ordinary code and must not be blanked.
 pub fn char_literal_len(rest: &[u8]) -> Option<usize> {
     if rest.get(1) == Some(&b'\\') {
-        let end = rest.iter().skip(2).position(|byte| *byte == b'\'')? + 3;
+        // The byte after the backslash belongs to the escape — in `'\''` it is a quote —
+        // so the closing quote is the first one beyond it. Searching from the backslash
+        // instead measures `'\''` as three bytes and leaves its fourth, a bare quote, in
+        // the projection, where it pairs with the next quote and blanks the code between.
+        let end = rest.iter().skip(3).position(|byte| *byte == b'\'')? + 4;
         return Some(end);
     }
     // A one-character literal closes immediately; anything else after the quote is a
