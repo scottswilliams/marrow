@@ -44,15 +44,24 @@
 //! ```text
 //! Prepared absent:    target absent;   stage=next               each nlink 1
 //! Prepared replace:   target=base;     stage=next               each nlink 1
+//! Prepared, either:   or the reverted reading below
 //! Installing absent:  the Prepared map, or target=stage=next    nlink 2
 //! Installing replace: the Prepared map, or target=next; stage=base
+//! Reverted reading:   stage=next nlink 1; target neither the successor nor
+//!                     the generation the header binds
 //! Settled installed:  the Installing map's installed reading, or target=next
 //!                     nlink 1 with the stage absent after the exact cleanup
-//! Settled reverted:   the Installing map's reverted reading, or the artifact
-//!                     untouched with the stage absent after the exact cleanup
+//! Settled reverted:   the reverted reading, or the artifact untouched with
+//!                     the stage absent after the exact cleanup
 //! ```
 //!
-//! The reverted terminal is what a destination refusal or a continuously proven
+//! `Prepared` and `Installing` admit the same two readings because neither has
+//! mutated an artifact: the publication has created its own stage and nothing
+//! else, so a reverted reading in either is an outside writer's and settles the
+//! same way. Only the mutation between them can produce an installed reading.
+//!
+//! The reverted terminal is what the reverted reading, a destination refusal, or
+//! a continuously proven
 //! third live inode settles into: the successor is not installed, the artifact
 //! keeps whatever the concurrent writer left, and the outcome is
 //! [`IdsPublication::ConcurrentChange`]. It is a recorded terminal rather than
