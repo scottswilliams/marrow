@@ -283,8 +283,11 @@ const ITEM_KEYWORDS: [&str; 14] = [
 /// signature — rustfmt splits a long parameter list across lines — carry a
 /// forbidden token past the gate on a line that names no public item.
 /// Restricted visibilities (`pub(crate)` and friends) are not public API and
-/// open no span. An `impl` block also contributes the associated types its
-/// body binds: a trait impl hands those to callers without spelling `pub`.
+/// open no span. A body that binds caller-visible declarations without
+/// spelling `pub` contributes them too: an `impl` block its associated types,
+/// and a public trait every method, associated type, and associated constant
+/// it declares — a trait method's signature is public API of the trait, and
+/// nothing inside a trait body spells `pub`.
 fn public_signature_spans(source: &str) -> Vec<(usize, String)> {
     let chars = code_only(source);
     let mut spans: Vec<(usize, String)> = Vec::new();
@@ -315,43 +318,68 @@ fn public_signature_spans(source: &str) -> Vec<(usize, String)> {
             index = after;
             continue;
         };
-        let is_use = following.as_deref() == Some("use");
-        let mut span = String::new();
-        let mut depth = 0i32;
-        let mut cursor = index;
-        while cursor < chars.len() {
-            let field = shape == SpanShape::Field;
-            match chars[cursor] {
-                '(' | '[' => depth += 1,
-                ')' | ']' => depth -= 1,
-                '{' if is_use => depth += 1,
-                '}' if is_use => depth -= 1,
-                // A field's own comma closes it, so its generic arguments must
-                // be counted too: `pub pair: Pair<u8, Handle>` would otherwise
-                // end at the argument comma and hide everything after it. The
-                // `>` of a `->` closes nothing.
-                '<' if field => depth += 1,
-                '>' if field && chars[cursor - 1] != '-' => depth -= 1,
-                ',' | '}' if depth <= 0 && field => break,
-                '{' | ';' if depth <= 0 => break,
-                _ => {}
-            }
-            span.push(chars[cursor]);
-            cursor += 1;
-        }
-        spans.push((line, span.split_whitespace().collect::<Vec<_>>().join(" ")));
-        if word == "impl" && chars.get(cursor) == Some(&'{') {
-            spans.extend(associated_type_spans(&chars, cursor, line));
+        let (span, cursor) = span_at(&chars, index, shape);
+        spans.push((line, span));
+        let body_keywords: &[&str] = match (word.as_str(), following.as_deref()) {
+            ("impl", _) => &["type"],
+            ("pub", Some("trait")) => &["fn", "type", "const"],
+            _ => &[],
+        };
+        if !body_keywords.is_empty() && chars.get(cursor) == Some(&'{') {
+            spans.extend(body_item_spans(&chars, cursor, line, body_keywords));
         }
         index = after;
     }
     spans
 }
 
-/// The associated types bound directly in the `impl` body opening at `open`.
-/// Only depth-one declarations count: a `type` alias inside a method body is
-/// local and reaches no caller.
-fn associated_type_spans(chars: &[char], open: usize, open_line: usize) -> Vec<(usize, String)> {
+/// The span the declaration at `start` occupies, whitespace-collapsed, and the
+/// index of the punctuation that closes it.
+fn span_at(chars: &[char], start: usize, shape: SpanShape) -> (String, usize) {
+    let word = word_at(chars, start).unwrap_or_default();
+    let after = start + word.chars().count();
+    let is_use = word == "use" || next_code_word(chars, after).as_deref() == Some("use");
+    let field = shape == SpanShape::Field;
+    let mut span = String::new();
+    let mut depth = 0i32;
+    let mut cursor = start;
+    while cursor < chars.len() {
+        match chars[cursor] {
+            '(' | '[' => depth += 1,
+            ')' | ']' => depth -= 1,
+            '{' if is_use => depth += 1,
+            '}' if is_use => depth -= 1,
+            // A field's own comma closes it, so its generic arguments must be
+            // counted too: `pub pair: Pair<u8, Handle>` would otherwise end at
+            // the argument comma and hide everything after it. The `>` of a
+            // `->` closes nothing.
+            '<' if field => depth += 1,
+            '>' if field && chars[cursor - 1] != '-' => depth -= 1,
+            ',' | '}' if depth <= 0 && field => break,
+            '{' | ';' if depth <= 0 => break,
+            _ => {}
+        }
+        span.push(chars[cursor]);
+        cursor += 1;
+    }
+    (
+        span.split_whitespace().collect::<Vec<_>>().join(" "),
+        cursor,
+    )
+}
+
+/// The caller-visible declarations opening with one of `keywords` directly
+/// inside the body at `open`. Only depth-one declarations count: an item
+/// inside a method body is local and reaches no caller. Each span ends where
+/// an item signature ends, so a defaulted trait method contributes its
+/// signature rather than its body, and a signature opening with `async`,
+/// `unsafe`, or `extern` is still reached at its `fn`.
+fn body_item_spans(
+    chars: &[char],
+    open: usize,
+    open_line: usize,
+    keywords: &[&str],
+) -> Vec<(usize, String)> {
     let mut spans: Vec<(usize, String)> = Vec::new();
     let mut line = open_line;
     let mut depth = 0i32;
@@ -366,13 +394,10 @@ fn associated_type_spans(chars: &[char], open: usize, open_line: usize) -> Vec<(
                     break;
                 }
             }
-            _ if depth == 1 && word_at(chars, index).as_deref() == Some("type") => {
-                let end = statement_end(chars, index);
-                let declaration: String = chars[index..end].iter().collect();
-                spans.push((
-                    line,
-                    declaration.split_whitespace().collect::<Vec<_>>().join(" "),
-                ));
+            _ if depth == 1
+                && word_at(chars, index).is_some_and(|word| keywords.contains(&word.as_str())) =>
+            {
+                spans.push((line, span_at(chars, index, SpanShape::Item).0));
             }
             _ => {}
         }
@@ -703,10 +728,12 @@ fn the_crate_contains_no_unsafe_code() {
 /// never where they would hand a descriptor to callers.
 ///
 /// The scan covers each public item's whole declaration span, each `impl`
-/// header, and each associated type an `impl` body binds; it red-lists every
-/// local name that stands for a forbidden type, whether bound by a `type`
-/// alias or by a `use ... as` rename at any visibility. So neither rustfmt
-/// wrapping, nor an alias, nor a rename launders a descriptor out. It does not
+/// header, each associated type an `impl` body binds, and every method,
+/// associated type, and associated constant a public trait declares; it
+/// red-lists every local name that stands for a forbidden type, whether bound
+/// by a `type` alias or by a `use ... as` rename at any visibility. So neither
+/// rustfmt wrapping, nor a trait body that spells no `pub`, nor an alias, nor
+/// a rename launders a descriptor out. It does not
 /// see through macro expansion, which is why the crate declares no macros —
 /// the assertion below keeps that true. The tokens are concatenated so a
 /// widened scan cannot match this file.
@@ -790,6 +817,13 @@ fn the_descriptor_gate_catches_every_laundering_form() {
              pub fn chained() -> Held {{ todo!() }}\n"
         ),
         format!("impl Custody for Journal {{\n    type Handle = {owned};\n}}\n"),
+        format!("pub trait Escape {{\n    fn fd(&self) -> {owned};\n}}\n"),
+        format!("pub trait Escape {{\n    type Handle = {owned};\n}}\n"),
+        format!("pub trait Escape {{\n    const HELD: {owned};\n}}\n"),
+        format!(
+            "pub trait Escape {{\n    fn fd(&self) -> {owned} {{\n        todo!()\n    }}\n}}\n"
+        ),
+        format!("pub trait Escape {{\n    async fn fd(&self) -> {owned};\n}}\n"),
         format!(
             "fn is_quote(ch: char) -> bool {{ ch == '\"' }}\n\
              pub fn after_a_quoting_literal() -> {owned} {{ todo!() }}\n"
