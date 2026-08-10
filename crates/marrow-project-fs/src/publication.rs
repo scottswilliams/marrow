@@ -18,15 +18,18 @@
 //! ids.pending            the durable publication marker
 //! ids.pending.create     the marker's pre-claim alias
 //! publish.lock           the cooperative project-metadata write lock
-//! .gitignore             keeps that lock out of version control
+//! .gitignore             keeps the other four out of version control
 //! ```
 //!
 //! The directory and the ledger's entry name are [`marrow_project::META_DIR`]
 //! and [`marrow_project::IDS_ENTRY`]; the four derived names are built from the
 //! latter here, so no spelling of the ledger's location exists twice.
-//! `publish.lock` is machine-local runtime state and is never committed, and
-//! the write owner writes the ignore entry that keeps it out of version
-//! control, so no project carries a hand-written line for it.
+//! `ids` is the one committed artifact. The lock is machine-local runtime
+//! state, and the three transient names are a publication in flight or the
+//! debris an interrupted one left; the write owner writes the ignore entry
+//! naming all four, so no project carries a hand-written line and no checkout
+//! carries an entry that would make a fresh clone read a ledger this protocol
+//! calls indeterminate.
 //!
 //! # Protocol
 //!
@@ -56,8 +59,10 @@
 //! an abandoned journal because the frame's only exit is its terminal phase.
 //! Reaching it takes a writer the guard does not exclude, which is a writer
 //! that took no lock: `.marrow/ids` is committed, so an ordinary Git operation
-//! creates or replaces it, while the untracked stage name reaches the same
-//! readings only through a hand edit.
+//! creates or replaces it. The stage name is covered by the ignore entry this
+//! owner writes, so an ordinary Git operation neither tracks nor recreates it,
+//! and a writer reaches the same readings there through an edit outside the
+//! lock — or through a project whose ignore entry predates that coverage.
 //! Which terminal a mutation reached is read back from the map rather than
 //! decided from the mutation's own outcome, so the driver, the mutations, and
 //! the crash-tail derivation cannot disagree about what was installed.
@@ -100,16 +105,19 @@ pub use marker::IdsPublicationMarker;
 const STAGE_SUFFIX: &str = ".publish.stage";
 /// The cooperative project-metadata write lock's entry name.
 const LOCK_NAME: &str = "publish.lock";
-/// The version-control ignore entry the write owner keeps beside the lock.
+/// The version-control ignore entry the write owner keeps beside the entries
+/// it names.
 const IGNORE_NAME: &str = ".gitignore";
-/// The comment the written ignore block carries above the lock's entry name.
+/// The comment the written ignore block carries above the entry names.
 const IGNORE_COMMENT: &str = "\
-# Machine-written by Marrow. The cooperative project-metadata write lock is
-# machine-local runtime state that no checkout carries.
+# Machine-written by Marrow. The cooperative write lock is machine-local runtime
+# state, and the other entries are a publication in flight or the debris an
+# interrupted one left. No checkout carries any of them; only `ids` is committed.
 ";
 /// How much of an existing ignore entry is read to decide whether it already
-/// names the lock. A file this owner wrote is three lines; anything past this
-/// bound belongs to whoever wrote it and is left exactly as found.
+/// names every entry this owner keeps untracked. A file this owner wrote is
+/// seven lines; anything past this bound belongs to whoever wrote it and is
+/// left exactly as found.
 const IGNORE_READ_CEILING: usize = 4096;
 
 /// The fixed stage entry's spelling. The frozen row header embeds it and the
@@ -448,7 +456,7 @@ impl ProjectMetadataWriteGuard {
             Err(error) => return Err(error.into()),
         };
         let lock = CacheLock::acquire(&meta, &admitted_name(LOCK_NAME))?;
-        install_lock_ignore(&meta)?;
+        install_untracked_ignore(&meta)?;
         let ledger = admitted_name(IDS_ENTRY);
         Ok(Self {
             journal: PendingName::derive(&ledger)
@@ -529,17 +537,18 @@ fn admit_created_meta(
     Ok(admitted)
 }
 
-/// Keep the machine-local write lock out of version control from the owner
-/// that creates it, so a project carries no hand-written ignore line and a
+/// Keep every entry no checkout may carry out of version control from the owner
+/// that creates them, so a project carries no hand-written ignore line and a
 /// fresh clone is correct without one.
 ///
-/// The entry is completed rather than rewritten: the lock's entry name is
-/// appended only when the file does not already carry it, so a second
-/// acquisition writes nothing, whatever a developer added survives, and the
-/// empty file a crash between the create and the fill leaves is finished by
-/// the next acquisition. It runs under the write lock, so one process at a
-/// time is inside it and two first publications cannot both append.
-fn install_lock_ignore(meta: &AdmittedDir) -> Result<(), IdsPublicationError> {
+/// The entry is completed rather than rewritten: a name is appended only when
+/// the file does not already carry it, so a second acquisition writes nothing,
+/// whatever a developer added survives, an entry that predates a name gains
+/// exactly that name, and the empty file a crash between the create and the
+/// fill leaves is finished by the next acquisition. It runs under the write
+/// lock, so one process at a time is inside it and two first publications
+/// cannot both append.
+fn install_untracked_ignore(meta: &AdmittedDir) -> Result<(), IdsPublicationError> {
     let name = admitted_name(IGNORE_NAME);
     let (created, found) = match meta.create_file_excl(&name) {
         Ok(created) => (Some(created), Vec::new()),
@@ -555,11 +564,14 @@ fn install_lock_ignore(meta: &AdmittedDir) -> Result<(), IdsPublicationError> {
     };
     // A file larger than the read bound is not this owner's, and the part of it
     // that decides the question was never read, so it is left as found.
-    if found.len() > IGNORE_READ_CEILING
-        || found
-            .split(|byte| *byte == b'\n')
-            .any(|line| line == LOCK_NAME.as_bytes())
-    {
+    if found.len() > IGNORE_READ_CEILING {
+        return Ok(());
+    }
+    let missing: Vec<String> = untracked_entry_names()
+        .into_iter()
+        .filter(|entry| !ignore_names_entry(&found, entry))
+        .collect();
+    if missing.is_empty() {
         return Ok(());
     }
     let mut block = String::new();
@@ -567,8 +579,10 @@ fn install_lock_ignore(meta: &AdmittedDir) -> Result<(), IdsPublicationError> {
         block.push('\n');
     }
     block.push_str(IGNORE_COMMENT);
-    block.push_str(LOCK_NAME);
-    block.push('\n');
+    for entry in missing {
+        block.push_str(&entry);
+        block.push('\n');
+    }
     let mut entry = match created {
         Some(created) => created,
         None => meta.open_file(&name)?,
@@ -577,6 +591,39 @@ fn install_lock_ignore(meta: &AdmittedDir) -> Result<(), IdsPublicationError> {
     entry.sync()?;
     meta.sync()?;
     Ok(())
+}
+
+/// Every `.marrow` entry this protocol can leave that no checkout may carry:
+/// the machine-local write lock, the successor stage, and the journal owner's
+/// two marker names. Each is derived from the same constant the protocol
+/// mutates through, so a renamed or added transient reaches the ignore entry
+/// with it rather than through a second hand-kept list.
+fn untracked_entry_names() -> Vec<String> {
+    let ledger = admitted_name(IDS_ENTRY);
+    let journal =
+        PendingName::derive(&ledger).expect("the fixed journal names are admitted spellings");
+    vec![
+        LOCK_NAME.to_owned(),
+        stage_spelling(),
+        journal.pending().as_str().to_owned(),
+        journal.claim().as_str().to_owned(),
+    ]
+}
+
+/// Whether the bytes read from the ignore entry already name `entry`.
+///
+/// A line matches without a trailing carriage return, which a CRLF checkout
+/// leaves, and without the optional leading `/` that anchors a pattern to the
+/// ignore file's own directory. Both spell exactly what this owner would
+/// append, and a semantic duplicate is the one thing an entry shared with a
+/// developer must not accumulate. The form this owner writes stays the bare
+/// name.
+fn ignore_names_entry(found: &[u8], entry: &str) -> bool {
+    found.split(|byte| *byte == b'\n').any(|line| {
+        let line = line.strip_suffix(b"\r").unwrap_or(line);
+        let line = line.strip_prefix(b"/").unwrap_or(line);
+        line == entry.as_bytes()
+    })
 }
 
 /// Admit one of this module's fixed entry names.

@@ -15,7 +15,8 @@ my_app/
                    project declares durable data)
     publish.lock   zero-byte entry the tools lock while writing metadata;
                    machine-local, never committed
-    .gitignore     keeps that lock untracked; written by the tools
+    .gitignore     keeps the lock and the transient publication entries
+                   untracked; written by the tools
   src/             source root (required for any source file)
     main.mw        path-derived name `main`
     shelf/
@@ -25,13 +26,24 @@ my_app/
 `.marrow` is the project's behind-the-scenes metadata directory. It holds
 machine-written artifacts only, and developers do not read or edit its contents.
 The identity ledger `.marrow/ids` is part of the program and travels with the
-source. The zero-byte `publish.lock` the tools lock while writing metadata is
-machine-local runtime state that no checkout carries, and the tools keep it that
-way themselves: the write owner writes `.marrow/.gitignore` naming the lock when
-it creates the lock, so a project adds no ignore line by hand and a clone that
-carries neither entry is still correct — the next publication writes both.
-Committing that ignore entry alongside the ledger is the tidier habit, and
-leaving it untracked changes nothing about how the lock is treated.
+source; it is the only entry a checkout carries.
+
+The zero-byte `publish.lock` the tools lock while writing metadata is
+machine-local runtime state. The three transient entries a publication passes
+through — `ids.publish.stage`, `ids.pending`, and `ids.pending.create` — are
+either a publication in flight or the debris an interrupted one left. No
+checkout carries any of the four, and the write owner keeps them untracked
+itself: when it takes the lock it writes `.marrow/.gitignore` naming every one
+of them, so a project adds no ignore line by hand and a clone that carries
+neither the lock nor the ignore entry is still correct — the next publication
+writes both. A project whose ignore entry predates a name gains exactly that
+name on the next publication.
+
+One bound is worth naming: the write owner reads at most 4 KiB of an existing
+`.marrow/.gitignore` to decide what is missing. A larger file is left exactly as
+found, names and all, because the part that decides the question was never read.
+Committing the ignore entry alongside the ledger is the tidier habit, and
+leaving it untracked changes nothing about how these entries are treated.
 
 A lock that travelled with a checkout would be worse than absent: an ordinary
 Git operation that deletes and recreates a tracked entry replaces the inode, and
@@ -156,14 +168,14 @@ stale-publication refusal.
 
 Because `publish.lock` is never committed, a fresh clone reaches its first
 publication with the lock absent, which is the ordinary case: taking the write
-lock creates `.marrow`, the lock entry, and the `.marrow/.gitignore` line that
-keeps the lock untracked when any of them is missing. Two commands racing that
-first publication are still serialized — the lock entry is opened rather than
-exclusively created, so the process that loses the race locks the same entry the
-winner created and reports `io.write` naming the contended write lock, never a
-half-published ledger. The ignore entry is written under that lock and only
-where a line naming the lock is absent, so repeated publications leave it
-unchanged and a race writes it once.
+lock creates `.marrow`, the lock entry, and the `.marrow/.gitignore` lines that
+keep the untracked entries untracked when any of them is missing. Two commands
+racing that first publication are still serialized — the lock entry is opened
+rather than exclusively created, so the process that loses the race locks the
+same entry the winner created and reports `io.write` naming the contended write
+lock, never a half-published ledger. The ignore entry is written under that lock
+and only for the names it does not already carry, so repeated publications leave
+it unchanged and a race writes it once.
 
 Publication is serialized and crash-recoverable. The successor is written and
 synced to the fixed `.marrow/ids.publish.stage`, a durable marker is claimed at

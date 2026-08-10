@@ -1011,7 +1011,7 @@ fn concurrent_first_publications_serialize_on_the_write_lock() {
         );
         assert_eq!(
             project.read_meta(".gitignore").as_deref(),
-            Some(LOCK_IGNORE),
+            Some(WRITTEN_IGNORE),
             "the race leaves exactly one written ignore entry in round {round}"
         );
         assert!(!project.exists("ids.publish.stage"));
@@ -1031,14 +1031,19 @@ fn concurrent_first_publications_serialize_on_the_write_lock() {
 /// The exact artifact the write owner keeps beside the lock. The front-door
 /// metadata snapshot in `crates/marrow/tests/durable_identity.rs` pins the same
 /// bytes, so a change here is a change a developer's checkout would see.
-const LOCK_IGNORE: &[u8] =
-    b"# Machine-written by Marrow. The cooperative project-metadata write lock is\n\
-# machine-local runtime state that no checkout carries.\npublish.lock\n";
+const WRITTEN_IGNORE: &[u8] = b"\
+# Machine-written by Marrow. The cooperative write lock is machine-local runtime\n\
+# state, and the other entries are a publication in flight or the debris an\n\
+# interrupted one left. No checkout carries any of them; only `ids` is committed.\n\
+publish.lock\n\
+ids.publish.stage\n\
+ids.pending\n\
+ids.pending.create\n";
 
 /// The first acquisition writes the entry; every later one leaves it byte for
 /// byte alone, because the owner appends only what is missing.
 #[test]
-fn the_write_owner_writes_the_lock_ignore_once() {
+fn the_write_owner_writes_the_ignore_entry_once() {
     let _serial = serialized();
     let project = Project::new("ignore-once");
     assert!(!project.meta().exists(), "the project starts from a clone");
@@ -1047,7 +1052,7 @@ fn the_write_owner_writes_the_lock_ignore_once() {
         let guard = project.guard();
         assert_eq!(
             project.read_meta(".gitignore").as_deref(),
-            Some(LOCK_IGNORE),
+            Some(WRITTEN_IGNORE),
             "acquisition {acquisition} did not leave the exact ignore entry"
         );
         drop(guard);
@@ -1058,14 +1063,14 @@ fn the_write_owner_writes_the_lock_ignore_once() {
 /// the create and the fill leaves is finished, a line this owner did not write
 /// is kept, and neither grows a second copy.
 #[test]
-fn the_lock_ignore_is_completed_rather_than_rewritten() {
+fn the_ignore_entry_is_completed_rather_than_rewritten() {
     let _serial = serialized();
     let crashed = Project::new("ignore-crashed");
     crashed.write_meta(".gitignore", b"");
     drop(crashed.guard());
     assert_eq!(
         crashed.read_meta(".gitignore").as_deref(),
-        Some(LOCK_IGNORE),
+        Some(WRITTEN_IGNORE),
         "the empty entry a crash leaves is finished by the next acquisition"
     );
 
@@ -1073,7 +1078,7 @@ fn the_lock_ignore_is_completed_rather_than_rewritten() {
     edited.write_meta(".gitignore", b"notes");
     drop(edited.guard());
     let mut expected = b"notes\n".to_vec();
-    expected.extend_from_slice(LOCK_IGNORE);
+    expected.extend_from_slice(WRITTEN_IGNORE);
     assert_eq!(
         edited.read_meta(".gitignore"),
         Some(expected.clone()),
@@ -1087,6 +1092,86 @@ fn the_lock_ignore_is_completed_rather_than_rewritten() {
     );
 }
 
+/// The written block names every entry the protocol can leave beside the
+/// committed ledger, not the lock alone. The expectation is read from the
+/// module's own fixed entry-name table and cross-checked against the pure
+/// owner's ledger spelling, this adapter's stage spelling, and the journal
+/// owner's derived marker names, so a protocol that grows a seventh name fails
+/// here until the block covers it.
+///
+/// The uncovered names are not theoretical debris: crash debris under a
+/// transient name that no ignore entry covers is offered by `git add -A`,
+/// committed, and then recreated by every checkout of the result — and a
+/// committed `ids.pending` makes every read-only front door refuse on every
+/// clone, because a marker is exactly what says the ledger is indeterminate.
+#[test]
+fn the_written_ignore_names_every_transient_the_protocol_can_leave() {
+    let _serial = serialized();
+    let documented = documented_entry_names();
+    assert_eq!(
+        documented.len(),
+        6,
+        "the module documents {documented:?}; the table is the source of this expectation"
+    );
+
+    let ledger = marrow_project::IDS_ENTRY;
+    let derived = PendingName::derive(&name(ledger)).expect("the fixed base name derives");
+    for spelling in [
+        ledger,
+        &crate::publication::stage_spelling(),
+        derived.pending().as_str(),
+        derived.claim().as_str(),
+        ".gitignore",
+    ] {
+        assert!(
+            documented.iter().any(|entry| entry == spelling),
+            "the fixed entry-name table does not document `{spelling}`, so it cannot be the \
+             list this kat reads: {documented:?}"
+        );
+    }
+
+    let project = Project::new("ignore-covers-transients");
+    drop(project.guard());
+    let written = project.read_meta(".gitignore").expect("the ignore entry");
+
+    for entry in documented {
+        // The ledger is the one committed artifact, and the ignore entry
+        // carries itself into the checkout that needs it.
+        if entry == ledger || entry == ".gitignore" {
+            continue;
+        }
+        assert!(
+            written
+                .split(|byte| *byte == b'\n')
+                .any(|line| line == entry.as_bytes()),
+            "the written ignore entry does not name `{entry}`, which the protocol can leave \
+             in `.marrow`: {}",
+            String::from_utf8_lossy(&written)
+        );
+    }
+}
+
+/// The fixed entry names the publication module documents, read from the first
+/// fenced block of its own module documentation.
+fn documented_entry_names() -> Vec<String> {
+    let source = include_str!("publication.rs");
+    let (_, rest) = source
+        .split_once("//! ```text\n")
+        .expect("the fixed entry-name table opens the module documentation");
+    let (table, _) = rest
+        .split_once("//! ```")
+        .expect("the fixed entry-name table closes");
+    table
+        .lines()
+        .filter_map(|line| {
+            line.trim_start()
+                .strip_prefix("//!")
+                .and_then(|body| body.split_whitespace().next())
+                .map(str::to_owned)
+        })
+        .collect()
+}
+
 /// Whether the ignore entry already carries every name is a read-only
 /// question, so the owner asks it read-only. A developer's checkout can carry
 /// that entry unwritable, and an owner that opened it for writing to decide a
@@ -1097,7 +1182,7 @@ fn the_lock_ignore_is_completed_rather_than_rewritten() {
 fn a_complete_unwritable_ignore_entry_leaves_the_owner_working() {
     let _serial = serialized();
     let project = Project::new("ignore-unwritable");
-    project.write_meta(".gitignore", LOCK_IGNORE);
+    project.write_meta(".gitignore", WRITTEN_IGNORE);
     let path = project.meta().join(".gitignore");
     set_mode(&path, 0o444);
     // A withheld write that binds nothing would leave this kat asserting an
@@ -1126,7 +1211,7 @@ fn a_complete_unwritable_ignore_entry_leaves_the_owner_working() {
 
     assert_eq!(
         project.read_meta(".gitignore").as_deref(),
-        Some(LOCK_IGNORE),
+        Some(WRITTEN_IGNORE),
         "the read-only decision wrote to the entry it only had to read"
     );
     set_mode(&path, 0o600);
@@ -1136,7 +1221,7 @@ fn a_complete_unwritable_ignore_entry_leaves_the_owner_working() {
 /// The entry is installed under the write lock, so however the seats interleave
 /// exactly one of them appends and the rest find the lock already named.
 #[test]
-fn concurrent_acquisitions_write_one_lock_ignore() {
+fn concurrent_acquisitions_write_one_ignore_entry() {
     use std::sync::Barrier;
 
     let _serial = serialized();
@@ -1178,7 +1263,7 @@ fn concurrent_acquisitions_write_one_lock_ignore() {
 
         assert_eq!(
             project.read_meta(".gitignore").as_deref(),
-            Some(LOCK_IGNORE),
+            Some(WRITTEN_IGNORE),
             "round {round} wrote the ignore entry more than once"
         );
     }

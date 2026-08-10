@@ -529,41 +529,50 @@ fn the_external_inventory_is_unchanged_from_the_clean_tree() {
     );
 }
 
-/// The cooperative project-metadata write lock is machine-local runtime state,
-/// so no checkout carries it. This pins the repository ignore entry and the
-/// absence of a tracked lock: a tracked lock would be deleted and recreated by
-/// ordinary Git operations, replacing the inode a holder is excluding on.
+/// The cooperative write lock is machine-local runtime state and the three
+/// transient publication entries are a publication in flight or the debris an
+/// interrupted one left, so no checkout carries any of them. This pins the
+/// repository ignore entry and their absence from the index: a tracked lock
+/// would be deleted and recreated by ordinary Git operations, replacing the
+/// inode a holder is excluding on, and a tracked marker would make every
+/// read-only command refuse in every clone.
 ///
 /// The write owner writes each project's own `.marrow/.gitignore`, which is
-/// what an outside project relies on. This repository keeps its entry too: the
-/// projects under `apps/` are dogfooded in place, and one line covering every
-/// depth is what keeps a lock created there out of the index whether or not
-/// that project has been published from yet.
+/// what an outside project relies on. This repository keeps its entries too:
+/// the projects under `apps/` are dogfooded in place, and one line per name
+/// covering every depth is what keeps an entry created there out of the index
+/// whether or not that project has been published from yet.
 #[test]
-fn the_cooperative_write_lock_is_never_committed() {
+fn the_transient_metadata_entries_are_never_committed() {
     let root = workspace_root();
     let ignore = read(&root, ".gitignore");
-    assert!(
-        ignore
-            .lines()
-            .any(|line| line.trim() == "**/.marrow/publish.lock"),
-        "the repository must ignore the machine-local `.marrow/publish.lock` at any depth"
-    );
-
-    // Tracked-file evidence needs a repository; a source tarball has none, and
-    // the ignore entry above is the gate either way.
-    let listed = Command::new("git")
-        .arg("-C")
-        .arg(&root)
-        .args(["ls-files", "--", "*publish.lock"])
-        .output();
-    if let Ok(output) = listed
-        && output.status.success()
-    {
-        let tracked = String::from_utf8_lossy(&output.stdout);
+    for entry in [
+        "publish.lock",
+        "ids.publish.stage",
+        "ids.pending",
+        "ids.pending.create",
+    ] {
+        let pattern = format!("**/.marrow/{entry}");
         assert!(
-            tracked.trim().is_empty(),
-            "the machine-local write lock must not be tracked: {tracked}"
+            ignore.lines().any(|line| line.trim() == pattern),
+            "the repository must ignore `.marrow/{entry}` at any depth"
         );
+
+        // Tracked-file evidence needs a repository; a source tarball has none,
+        // and the ignore entry above is the gate either way.
+        let listed = Command::new("git")
+            .arg("-C")
+            .arg(&root)
+            .args(["ls-files", "--", &format!("*{entry}")])
+            .output();
+        if let Ok(output) = listed
+            && output.status.success()
+        {
+            let tracked = String::from_utf8_lossy(&output.stdout);
+            assert!(
+                tracked.trim().is_empty(),
+                "`.marrow/{entry}` must not be tracked: {tracked}"
+            );
+        }
     }
 }
