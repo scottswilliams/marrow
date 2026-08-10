@@ -159,6 +159,7 @@ pub enum CustodyError {
     /// umask leaves exactly this state; restoring `required` on the entry, or
     /// removing it, is an operator action.
     ModeDenied {
+        /// The refused operation.
         op: &'static str,
         /// The entry's observed permission bits.
         found: u32,
