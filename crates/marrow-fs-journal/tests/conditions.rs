@@ -57,15 +57,96 @@ fn crate_sources() -> Vec<(PathBuf, String)> {
     files
 }
 
-/// The source with comment and literal *contents* blanked out, so an item scan
-/// cannot be steered by prose or by a string that spells an item keyword.
 /// Every removed character becomes a space and every newline survives, so
 /// newline counting still yields the original line numbers.
+fn blank(ch: char) -> char {
+    if ch == '\n' { '\n' } else { ' ' }
+}
+
+/// A string literal opened by a prefix. `r`, `br`, and `cr` open a raw
+/// literal, which no escape ends and whose close is a quote followed by
+/// exactly the hashes it opened with; `b` and `c` open an ordinary escaped
+/// literal under a prefix.
+struct PrefixedLiteral {
+    /// The index of the opening `"`.
+    quote: usize,
+    /// The hash count the close must repeat.
+    hashes: usize,
+    raw: bool,
+}
+
+/// The prefixed string literal opening at `index`, if one does. Reading a raw
+/// string as an ordinary one is a false-negative generator for every scan
+/// below: `r"a\"` ends at its quote where an escaped reading runs past it, and
+/// `r#"a " b"#` carries an interior quote as content, so either spelling
+/// leaves an unterminated string that blanks every following line of code. A
+/// byte *character* literal needs no prefix here — the character arm consumes
+/// `b'…'` whole from its quote, leaving behind only the `b`, which no scan
+/// matches.
+fn prefixed_literal(chars: &[char], index: usize) -> Option<PrefixedLiteral> {
+    let word = word_at(chars, index)?;
+    let raw = match word.as_str() {
+        "r" | "br" | "cr" => true,
+        "b" | "c" => false,
+        _ => return None,
+    };
+    let mut quote = index + word.chars().count();
+    let mut hashes = 0usize;
+    while raw && chars.get(quote) == Some(&'#') {
+        hashes += 1;
+        quote += 1;
+    }
+    (chars.get(quote) == Some(&'"')).then_some(PrefixedLiteral { quote, hashes, raw })
+}
+
+/// Blank one prefixed literal, returning the index to resume from. A raw
+/// literal is consumed whole, since nothing inside it is code; a prefixed
+/// escaped literal loses only its prefix, leaving its quote to the ordinary
+/// string reading below.
+fn blank_prefixed(
+    chars: &[char],
+    start: usize,
+    literal: &PrefixedLiteral,
+    out: &mut Vec<char>,
+) -> usize {
+    let mut index = start;
+    let through = if literal.raw {
+        literal.quote
+    } else {
+        literal.quote - 1
+    };
+    while index <= through {
+        out.push(blank(chars[index]));
+        index += 1;
+    }
+    if !literal.raw {
+        return index;
+    }
+    while index < chars.len() {
+        let closes = chars[index] == '"'
+            && (1..=literal.hashes).all(|offset| chars.get(index + offset) == Some(&'#'));
+        out.push(blank(chars[index]));
+        index += 1;
+        if closes {
+            out.extend(std::iter::repeat_n(' ', literal.hashes));
+            index += literal.hashes;
+            break;
+        }
+    }
+    index
+}
+
+/// The source with comment and literal *contents* blanked out, so an item scan
+/// cannot be steered by prose or by a string that spells an item keyword.
 fn code_only(source: &str) -> Vec<char> {
     let chars: Vec<char> = source.chars().collect();
     let mut out: Vec<char> = Vec::with_capacity(chars.len());
     let mut index = 0;
     while index < chars.len() {
+        if let Some(literal) = prefixed_literal(&chars, index) {
+            index = blank_prefixed(&chars, index, &literal, &mut out);
+            continue;
+        }
         let ch = chars[index];
         let two = |offset: usize| chars.get(index + offset).copied();
         match ch {
@@ -85,7 +166,7 @@ fn code_only(source: &str) -> Vec<char> {
                     } else if chars[index] == '*' && chars.get(index + 1) == Some(&'/') {
                         depth -= 1;
                     }
-                    out.push(if chars[index] == '\n' { '\n' } else { ' ' });
+                    out.push(blank(chars[index]));
                     index += 1;
                 }
             }
@@ -94,7 +175,7 @@ fn code_only(source: &str) -> Vec<char> {
                 index += 1;
                 while index < chars.len() {
                     let inner = chars[index];
-                    out.push(if inner == '\n' { '\n' } else { ' ' });
+                    out.push(blank(inner));
                     index += 1;
                     if inner == '\\' {
                         if index < chars.len() {
@@ -118,12 +199,11 @@ fn code_only(source: &str) -> Vec<char> {
                 index += 1;
                 while index < chars.len() {
                     let inner = chars[index];
-                    out.push(if inner == '\n' { '\n' } else { ' ' });
+                    out.push(blank(inner));
                     index += 1;
                     if inner == '\\' {
                         if index < chars.len() {
-                            let escaped = chars[index];
-                            out.push(if escaped == '\n' { '\n' } else { ' ' });
+                            out.push(blank(chars[index]));
                             index += 1;
                         }
                     } else if inner == '\'' {
@@ -763,6 +843,48 @@ fn blanking_consumes_literals_whole_and_leaves_lifetimes_alone() {
         blanked,
         "let a =     ; let b: &'x u8; let c =    ; let d = \"  ;"
     );
+}
+
+/// Raw and byte string literals are consumed whole, so a source that spells
+/// one keeps every following line readable as code. Reading a raw string as an
+/// ordinary one leaves an unterminated literal behind, and an unterminated
+/// literal blanks the rest of the file: one raw string in `src/` would disable
+/// every source condition in this suite at once. Each case plants a forbidden
+/// token inside the literal — which must stay invisible — and a real violation
+/// after it, which must survive verbatim.
+#[test]
+fn blanking_consumes_raw_and_byte_literals_whole() {
+    let hidden = ["Owned", "Fd"].concat();
+    let literals = [
+        format!(r#"r"{hidden}\""#),
+        format!(r##"r#"{hidden} " one"#"##),
+        format!(r###"r##"{hidden} "# two"##"###),
+        format!(r#"b"{hidden}\"""#),
+        format!(r##"br#"{hidden} " three"#"##),
+        format!(r##"cr#"{hidden}"#"##),
+        format!(r#"c"{hidden}""#),
+    ];
+    let code = format!("pub fn kept() -> {hidden} {{ 0 }}");
+    for literal in literals {
+        let source = format!("const PROBE: &str = {literal};\n{code}\n");
+        let blanked = code_text(&source);
+        assert_eq!(
+            blanked.chars().count(),
+            source.chars().count(),
+            "blanking {literal} changed the character count"
+        );
+        let mut lines = blanked.lines();
+        let literal_line = lines.next().expect("the literal's line");
+        assert!(
+            !literal_line.contains(hidden.as_str()),
+            "the contents of {literal} survived as code: {literal_line}"
+        );
+        assert_eq!(
+            lines.next(),
+            Some(code.as_str()),
+            "the code after {literal} was blanked"
+        );
+    }
 }
 
 /// The Linux qualification leg: the `linux_raw` backend must actually be in
