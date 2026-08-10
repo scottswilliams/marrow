@@ -11,15 +11,19 @@
 //! negative — that a refused name is never called out of scope — which is the
 //! fabrication these fixtures exist to kill.
 
-use marrow_compile::{CompileFailure, SourceDiagnostic, compile};
+use marrow_compile::{CompileFailure, ResourceLimitKind, SourceDiagnostic, compile};
 use marrow_project::{CaptureLimits, CapturedFile, Manifest, ProjectInput};
 
 fn project(source: &str) -> ProjectInput {
+    files(&[("src/main.mw", source.to_string())])
+}
+
+fn files(sources: &[(&str, String)]) -> ProjectInput {
     let manifest = Manifest::parse("edition = \"2026\"\n").expect("valid manifest");
-    let captured = vec![CapturedFile::new(
-        "src/main.mw".to_string(),
-        source.as_bytes().to_vec(),
-    )];
+    let captured = sources
+        .iter()
+        .map(|(path, source)| CapturedFile::new(path.to_string(), source.as_bytes().to_vec()))
+        .collect();
     marrow_project::capture(&manifest, captured, None, &CaptureLimits::DEFAULT)
         .expect("capture project")
 }
@@ -159,4 +163,39 @@ fn r25_a_refused_constant_occupies_its_name_when_declared_second() {
         vec![("check.name_conflict", 4, 1)],
         "the accepted first declaration answers the use; only the conflict reports",
     );
+}
+
+/// E9 — the retained names are bounded. A project whose refused declarations would
+/// retain more than the ledger's declared ceiling stops with the typed resource
+/// limit. It never drops a key to stay under budget, which is the one outcome that
+/// would put a fabricated absence back at every use of the dropped name.
+///
+/// Neither the image bounds nor the diagnostic ceiling bounds this retention: a
+/// refused declaration never reaches the encoder, and a collector at its ceiling
+/// keeps admitting and discarding while the pass runs on.
+#[test]
+fn e9_crossing_the_ledger_ceiling_is_a_typed_resource_limit() {
+    // Each refused constant retains its name plus the summary's fixed footprint, so
+    // wide names cross the 1 MiB ceiling in a project well inside the capture
+    // limits. `1 + 2` is a non-literal value, refused with `check.unsupported`.
+    let wide = "n".repeat(1000);
+    let module = |module: &str, from: usize| {
+        let mut source = format!("module {module}\n\n");
+        for index in from..from + 600 {
+            source.push_str(&format!("const {wide}{index} = 1 + 2\n"));
+        }
+        source
+    };
+    let project = files(&[
+        ("src/main.mw", module("main", 0)),
+        ("src/more.mw", module("more", 600)),
+    ]);
+
+    match compile(&project) {
+        Err(CompileFailure::ResourceLimit(limit)) => {
+            assert_eq!(limit.kind(), ResourceLimitKind::DeclarationLedgerBytes);
+            assert_eq!(limit.kind().detail(), "DeclarationLedgerBytes");
+        }
+        other => panic!("expected the ledger's typed ceiling, got {other:?}"),
+    }
 }
