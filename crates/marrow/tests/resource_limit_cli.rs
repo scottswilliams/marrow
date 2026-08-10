@@ -81,7 +81,9 @@ fn run_text_emits_the_kinded_resource_limit_record() {
     assert!(!output.status.success(), "an exhausted bound fails the run");
     assert_eq!(
         String::from_utf8(output.stdout).expect("utf8 stdout"),
-        "cli.compiler_resource_limit: Functions\n"
+        "cli.compiler_resource_limit: the function table is full\n",
+        "text output names the bound in words; the Rust variant name stays on the \
+         machine-readable `kind_detail` surface"
     );
 }
 
@@ -121,7 +123,8 @@ fn client_emits_the_kinded_stderr_line_and_no_stdout() {
     );
     assert_eq!(
         String::from_utf8(output.stderr).expect("utf8 stderr"),
-        "cli.compiler_resource_limit: the compiler reached a fixed resource limit (Functions)\n"
+        "cli.compiler_resource_limit: the compiler reached a fixed resource limit: the \
+         function table is full\n"
     );
 }
 

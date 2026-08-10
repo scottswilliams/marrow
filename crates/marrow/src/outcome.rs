@@ -59,12 +59,16 @@ pub(crate) enum Record {
         cause_code: &'static str,
     },
     /// Family 4 specialization: an aggregate compiler resource-limit outcome. Unlike a
-    /// bare operational error it carries the typed kind detail — which fixed bound was
+    /// bare operational error it carries the typed kind — which fixed bound was
     /// exhausted — so a caller (or a bound-raise audit) can bisect which limit fired
-    /// without re-running. `kind_detail` is a frozen identifier from
-    /// [`marrow_compile::ResourceLimitKind::detail`]; the record still carries no numeric
-    /// limit and no source location. The code is always `cli.compiler_resource_limit`.
-    CompilerResourceLimit { kind_detail: &'static str },
+    /// without re-running. Holding the kind rather than one rendering of it lets the
+    /// JSONL surface keep the frozen
+    /// [`detail`](marrow_compile::ResourceLimitKind::detail) identifier while text
+    /// output reads as prose. The record still carries no numeric limit and no source
+    /// location. The code is always `cli.compiler_resource_limit`.
+    CompilerResourceLimit {
+        kind: marrow_compile::ResourceLimitKind,
+    },
 }
 
 impl Record {
@@ -105,9 +109,10 @@ impl Record {
                  the store's current state (cause: {cause}, {cause_code})",
                 marrow_codes::Code::RunOutcomeUnknown.as_str(),
             ),
-            Record::CompilerResourceLimit { kind_detail } => format!(
-                "{}: {kind_detail}",
-                marrow_codes::Code::CliCompilerResourceLimit.as_str()
+            Record::CompilerResourceLimit { kind } => format!(
+                "{}: {}",
+                marrow_codes::Code::CliCompilerResourceLimit.as_str(),
+                kind.description()
             ),
         }
     }
@@ -161,10 +166,10 @@ impl Record {
                 json_string(cause_code),
                 json_string(marrow_codes::Code::RunOutcomeUnknown.as_str()),
             ),
-            Record::CompilerResourceLimit { kind_detail } => format!(
+            Record::CompilerResourceLimit { kind } => format!(
                 r#"{{"code":{},"kind":"run","kind_detail":{},"outcome":"error"}}"#,
                 json_string(marrow_codes::Code::CliCompilerResourceLimit.as_str()),
-                json_string(kind_detail),
+                json_string(kind.detail()),
             ),
         }
     }
@@ -607,14 +612,15 @@ mod tests {
         );
     }
 
-    /// The compiler resource-limit record carries the typed kind detail on the frozen
-    /// JSONL surface (keys in ascending byte order: `code`, `kind`, `kind_detail`,
-    /// `outcome`) and in text output, so which aggregate bound fired is legible without
-    /// re-running.
+    /// The compiler resource-limit record projects one typed kind two ways: the frozen
+    /// `kind_detail` identifier on the JSONL surface (keys in ascending byte order:
+    /// `code`, `kind`, `kind_detail`, `outcome`), and the kind's own words in text, so
+    /// which aggregate bound fired is legible to a tool and to a person without
+    /// re-running — and no Rust variant name reaches the terminal.
     #[test]
-    fn compiler_resource_limit_carries_the_kind_detail() {
+    fn compiler_resource_limit_projects_the_kind_for_each_surface() {
         let record = Record::CompilerResourceLimit {
-            kind_detail: "Exports",
+            kind: marrow_compile::ResourceLimitKind::Exports,
         };
         assert_eq!(
             record.to_jsonl(&[], &[]),
@@ -622,7 +628,7 @@ mod tests {
         );
         assert_eq!(
             record.to_text(&[], &[]),
-            "cli.compiler_resource_limit: Exports"
+            "cli.compiler_resource_limit: the export table is full"
         );
     }
 

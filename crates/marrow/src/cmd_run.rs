@@ -286,13 +286,11 @@ fn compiler_invariant_record() -> Record {
 }
 
 /// The operational record for a compiler resource-limit outcome. It carries the typed
-/// kind detail — which fixed aggregate bound was exhausted — so an operator can bisect
-/// the limit; the numeric bound and any source location stay internal, and no image is
+/// kind — which fixed aggregate bound was exhausted — so an operator can bisect the
+/// limit; the numeric bound and any source location stay internal, and no image is
 /// produced.
 fn compiler_resource_limit_record(limit: marrow_compile::CompileResourceLimit) -> Record {
-    Record::CompilerResourceLimit {
-        kind_detail: limit.kind().detail(),
-    }
+    Record::CompilerResourceLimit { kind: limit.kind() }
 }
 
 /// What the `run` mint pre-pass did with a compile failure.
