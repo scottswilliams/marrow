@@ -400,13 +400,22 @@ impl DurableRegistry {
     /// A store this project declared and the compiler refused answers `Refused`, so
     /// the use is steered to that store's own cause rather than told the form is one
     /// the language does not support.
+    ///
+    /// `Absent` here means *no store binds this resource*, which only the missing
+    /// projection entry establishes. A projection entry naming a placement the ledger
+    /// does not know is the two having drifted — they are written in the same
+    /// `declare` call — and is reported rather than answered, exactly as the ledger
+    /// reports its own incoherence instead of fabricating an absence at the use site.
     pub(crate) fn root_by_resource(
         &self,
         resource: &str,
     ) -> Result<RootBinding<'_>, DeclarationIndexDrift> {
-        match self.by_resource.get(resource) {
-            Some(name) => self.root(name),
-            None => Ok(RootBinding::Absent),
+        let Some(name) = self.by_resource.get(resource) else {
+            return Ok(RootBinding::Absent);
+        };
+        match self.root(name)? {
+            RootBinding::Absent => Err(DeclarationIndexDrift),
+            binding => Ok(binding),
         }
     }
 
@@ -2404,5 +2413,28 @@ store ^holders[id: int]: Holder
         let after = draft.encode().expect("rejected draft still encodes");
         assert_eq!(after.bytes, before.bytes);
         assert_eq!(after.image_id, before.image_id);
+    }
+
+    /// The projection is appended in the same `declare` call as the ledger entry, so
+    /// a resource naming a placement the ledger does not know is the two having
+    /// drifted. Answering `Absent` there would put a fabricated absence back at the
+    /// use site — the defect this projection exists to remove — reached through the
+    /// projection instead of through the executable list.
+    #[test]
+    fn a_projection_naming_an_unknown_placement_is_drift_not_absence() {
+        let mut registry = DurableRegistry::empty(DeclarationBudget::default());
+        registry
+            .by_resource
+            .insert("Holder".to_string(), "holders".to_string());
+        assert!(matches!(
+            registry.root_by_resource("Holder"),
+            Err(DeclarationIndexDrift)
+        ));
+        // A resource no store binds has no projection entry at all, which is the
+        // genuine absence and stays one.
+        assert!(matches!(
+            registry.root_by_resource("Unbound"),
+            Ok(RootBinding::Absent)
+        ));
     }
 }
