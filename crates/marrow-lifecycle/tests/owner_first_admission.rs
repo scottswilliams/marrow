@@ -253,7 +253,10 @@ fn a_contender_is_locked_out_whatever_state_the_holder_marker_is_in() {
         ("magic-and-version-only", b"MWSL\x01"),
         ("truncated-pending", b"MWSL\x01\x01\x00\x00"),
         ("truncated-bound", b"MWSL\x01\x02\x00\x00\x00\x01"),
-        ("unknown-tag", b"MWSL\x01\x7f\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00\x00\x01"),
+        (
+            "unknown-tag",
+            b"MWSL\x01\x7f\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00\x00\x01",
+        ),
         ("foreign-magic", b"XXXX\x01\x01"),
         ("garbage", b"not a marker at all"),
     ] {
@@ -307,15 +310,27 @@ fn no_door_into_a_held_store_admits_a_second_owner() {
         Refused(&'static [&'static str]),
     }
 
-    let doors: Vec<(&str, Box<dyn Fn(&Path)>, Verdict)> = vec![
-        (
+    /// One door: how a held store is damaged, and the verdict the next open must reach.
+    struct Door {
+        name: &'static str,
+        damage: Box<dyn Fn(&Path)>,
+        expected: Verdict,
+    }
+
+    let door = |name, damage: Box<dyn Fn(&Path)>, expected| Door {
+        name,
+        damage,
+        expected,
+    };
+    let doors = vec![
+        door(
             "the marker deleted under the holder",
             Box::new(|store: &Path| {
                 std::fs::remove_file(store.join(marrow_lifecycle::LOCK_FILE)).expect("remove");
             }),
             Verdict::Locked,
         ),
-        (
+        door(
             "a fresh node renamed over the marker's name",
             Box::new(|store: &Path| {
                 let decoy = store.join("decoy");
@@ -324,7 +339,7 @@ fn no_door_into_a_held_store_admits_a_second_owner() {
             }),
             Verdict::Locked,
         ),
-        (
+        door(
             "the store directory stripped of write access",
             Box::new(|store: &Path| {
                 std::fs::set_permissions(store, std::fs::Permissions::from_mode(0o500))
@@ -332,14 +347,14 @@ fn no_door_into_a_held_store_admits_a_second_owner() {
             }),
             Verdict::Locked,
         ),
-        (
+        door(
             "the engine deleted under the holder",
             Box::new(|store: &Path| {
                 std::fs::remove_file(store.join(marrow_lifecycle::ENGINE_FILE)).expect("remove");
             }),
             Verdict::Locked,
         ),
-        (
+        door(
             "a symbolic link standing in for the marker",
             Box::new(|store: &Path| {
                 let marker = store.join(marrow_lifecycle::LOCK_FILE);
@@ -348,7 +363,7 @@ fn no_door_into_a_held_store_admits_a_second_owner() {
             }),
             Verdict::Refused(&["store.io"]),
         ),
-        (
+        door(
             "a directory standing in for the marker",
             Box::new(|store: &Path| {
                 let marker = store.join(marrow_lifecycle::LOCK_FILE);
@@ -357,7 +372,7 @@ fn no_door_into_a_held_store_admits_a_second_owner() {
             }),
             Verdict::Refused(&["store.io"]),
         ),
-        (
+        door(
             "a marker whose own mode denies the open",
             Box::new(|store: &Path| {
                 std::fs::set_permissions(
@@ -370,7 +385,7 @@ fn no_door_into_a_held_store_admits_a_second_owner() {
             // the holder and is told so; one that may not cannot see the door at all.
             Verdict::Refused(&["store.io", "store.locked"]),
         ),
-        (
+        door(
             "the store directory removed under the holder",
             Box::new(|store: &Path| {
                 std::fs::remove_dir_all(store).expect("remove the store directory");
@@ -379,22 +394,27 @@ fn no_door_into_a_held_store_admits_a_second_owner() {
         ),
     ];
 
-    for (door, damage, expected) in doors {
+    for Door {
+        name,
+        damage,
+        expected,
+    } in doors
+    {
         let (_dir, store) = provisioned("held-store-doors");
         let held = open(&store, schemas(), sites()).expect("the holder opens the store");
         damage(&store);
 
         match open(&store, schemas(), sites()) {
-            Ok(_) => panic!("{door} admitted a second owner of a held store"),
+            Ok(_) => panic!("{name} admitted a second owner of a held store"),
             Err(error) => match expected {
                 Verdict::Locked => assert_eq!(
                     error.code(),
                     "store.locked",
-                    "{door} must yield the exclusion verdict, got {error}",
+                    "{name} must yield the exclusion verdict, got {error}",
                 ),
                 Verdict::Refused(codes) => assert!(
                     codes.contains(&error.code()),
-                    "{door} must refuse as one of {codes:?}, got {} ({error})",
+                    "{name} must refuse as one of {codes:?}, got {} ({error})",
                     error.code(),
                 ),
             },

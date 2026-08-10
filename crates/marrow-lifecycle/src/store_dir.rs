@@ -259,13 +259,13 @@ impl AdmittedStoreDir {
     /// separate resolution of three paths.
     pub(crate) fn is_complete(&self) -> Result<bool, AdmissionError> {
         for name in [ENGINE_FILE, ENVELOPE_FILE, HEAD_FILE] {
-            let present = self
-                .dir
-                .stat_entry(&entry_name(name))
-                .map_err(|error| AdmissionError {
-                    entry: StoreEntry::Directory,
-                    fault: AdmissionFault::Custody(error),
-                })?;
+            let present =
+                self.dir
+                    .stat_entry(&entry_name(name))
+                    .map_err(|error| AdmissionError {
+                        entry: StoreEntry::Directory,
+                        fault: AdmissionFault::Custody(error),
+                    })?;
             if present.is_none() {
                 return Ok(false);
             }

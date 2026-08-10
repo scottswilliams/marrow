@@ -864,10 +864,7 @@ mod tests {
                         body.len(),
                     );
                 }
-                other => panic!(
-                    "a {}-byte marker changed the verdict: {other}",
-                    body.len(),
-                ),
+                other => panic!("a {}-byte marker changed the verdict: {other}", body.len(),),
             }
         }
 
