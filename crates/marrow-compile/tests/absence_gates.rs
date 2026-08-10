@@ -452,7 +452,10 @@ fn without_literals(source: &str) -> String {
     while index < bytes.len() {
         let rest = &bytes[index..];
         if rest.starts_with(b"//") {
-            let end = rest.iter().position(|byte| *byte == b'\n').unwrap_or(rest.len());
+            let end = rest
+                .iter()
+                .position(|byte| *byte == b'\n')
+                .unwrap_or(rest.len());
             blank!(end);
         } else if rest.starts_with(b"/*") {
             let mut depth = 0usize;
@@ -476,9 +479,10 @@ fn without_literals(source: &str) -> String {
             && !index
                 .checked_sub(1)
                 .is_some_and(|previous| is_ident_byte(bytes[previous]))
-            && rest[1..].iter().position(|byte| *byte != b'#').is_some_and(|hashes| {
-                rest.get(1 + hashes) == Some(&b'"')
-            })
+            && rest[1..]
+                .iter()
+                .position(|byte| *byte != b'#')
+                .is_some_and(|hashes| rest.get(1 + hashes) == Some(&b'"'))
         {
             let hashes = rest[1..].iter().position(|byte| *byte != b'#').unwrap_or(0);
             let mut closer = Vec::with_capacity(hashes + 1);
@@ -780,8 +784,16 @@ fn the_driver_carries_no_profile_dependent_guard() {
 #[test]
 fn no_attempt_or_receipt_vocabulary_exists() {
     for shape in [
-        "attempt", "Attempt", "receipt", "Receipt", "epoch", "Epoch", "candidate_key",
-        "CandidateKey", "terminal_token", "TerminalToken",
+        "attempt",
+        "Attempt",
+        "receipt",
+        "Receipt",
+        "epoch",
+        "Epoch",
+        "candidate_key",
+        "CandidateKey",
+        "terminal_token",
+        "TerminalToken",
     ] {
         let found = production_occurrences(shape);
         assert!(

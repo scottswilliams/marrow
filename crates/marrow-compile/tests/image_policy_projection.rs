@@ -99,7 +99,9 @@ fn over_consts() -> Probes {
     let mut source = String::from("module main\n\n");
     for index in 0..1025u32 {
         let literal = index + 1_000;
-        source.push_str(&format!("fn f{index}(): int {{\n    return {literal}\n}}\n\n"));
+        source.push_str(&format!(
+            "fn f{index}(): int {{\n    return {literal}\n}}\n\n"
+        ));
     }
     probes(source)
 }
@@ -512,18 +514,9 @@ const FROZEN_DIGESTS: &[(&str, &str)] = &[
         "durable",
         "ok bytes=430 id=ab026b325171aef8996b70df12d79574a09a6ae7e7ee9f3e6c9366503e6a428b exports=[ExportEntry { module: \"main\", item: \"noop\", id: ExportId([172, 192, 228, 137, 45, 201, 20, 158, 239, 37, 162, 21, 214, 253, 99, 4, 234, 99, 130, 215, 23, 69, 46, 214, 122, 118, 98, 187, 119, 153, 95, 25]) }] tests=[] naming=DurableNaming { by_id: {LedgerIdBytes([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3]): (Child, \"tag\"), LedgerIdBytes([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 4]): (Child, \"note\"), LedgerIdBytes([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 5]): (Root, \"wide\")} }",
     ),
-    (
-        "over-exports",
-        "limit kind=Exports bound=256",
-    ),
-    (
-        "over-consts",
-        "limit kind=Consts bound=1024",
-    ),
-    (
-        "over-functions",
-        "limit kind=Functions bound=4096",
-    ),
+    ("over-exports", "limit kind=Exports bound=256"),
+    ("over-consts", "limit kind=Consts bound=1024"),
+    ("over-functions", "limit kind=Functions bound=4096"),
 ];
 
 /// Red 4. Over the frozen corpus, the six things `compile` reports about an image are

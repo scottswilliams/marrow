@@ -754,13 +754,15 @@ impl DriveInputAdmission {
     }
 }
 
-/// The outcome of the semantic pass over the cleanly-parsed modules: a complete image,
+/// The outcome of the semantic pass over the cleanly-parsed modules: a checked program,
 /// or the accumulated failure tagged with the stage that produced it.
 enum SemanticOutcome {
     /// Every semantic artifact was available and no diagnostic stands: the program is
     /// checked. It carries the draft, not an image — encoding is the production
-    /// projection's step, taken after this fence.
-    Checked(CheckedProgram),
+    /// projection's step, taken after this fence. The draft dominates this enum's size,
+    /// and every refusal arm would otherwise pay for it, so the checked program is
+    /// carried behind one allocation taken exactly once per clean compile.
+    Checked(Box<CheckedProgram>),
     Diagnostics(BoundedDiagnostics, CompileStage),
     Invariant(InvariantCause),
 }
@@ -1368,7 +1370,7 @@ fn run_semantic(
                 &mut draft,
                 &records,
                 &durable,
-                &signatures,
+                signatures,
                 &generics,
                 &constants,
                 facts.sink(template.at()),
@@ -1429,7 +1431,7 @@ fn run_semantic(
                             &mut draft,
                             &records,
                             &durable,
-                            &signatures,
+                            signatures,
                             &generics,
                             &constants,
                             &mut diagnostics,
@@ -1547,7 +1549,7 @@ fn run_semantic(
                         &mut draft,
                         &records,
                         &durable,
-                        &signatures,
+                        signatures,
                         &generics,
                         &constants,
                         &mut diagnostics,
@@ -1621,7 +1623,7 @@ fn run_semantic(
                     &mut draft,
                     &records,
                     &durable,
-                    &signatures,
+                    signatures,
                     &generics,
                     &constants,
                     &mut diagnostics,
@@ -1754,12 +1756,12 @@ fn run_semantic(
     if !artifacts.all_available() {
         return SemanticOutcome::Invariant(InvariantCause::UnavailableWithoutReport);
     }
-    SemanticOutcome::Checked(CheckedProgram {
+    SemanticOutcome::Checked(Box::new(CheckedProgram {
         draft,
         exports,
         tests,
         naming: durable.naming(),
-    })
+    }))
 }
 
 /// The complete diagnostic picture the editor analysis snapshot consumes: every stage's
@@ -2790,14 +2792,14 @@ mod tests {
         ));
 
         // A precheck row suppresses the semantic invariant.
-        for semantic in [SemanticOutcome::Invariant(proof_clone_cause())] {
-            let Analyzed::Diagnostics(rows) =
-                analyze_outcome(finished(vec![row(3)]), empty_terminal(), semantic)
-            else {
-                panic!("prechecks suppress the semantic failure")
-            };
-            assert_eq!(rows, vec![row(3)]);
-        }
+        let Analyzed::Diagnostics(rows) = analyze_outcome(
+            finished(vec![row(3)]),
+            empty_terminal(),
+            SemanticOutcome::Invariant(proof_clone_cause()),
+        ) else {
+            panic!("prechecks suppress the semantic failure")
+        };
+        assert_eq!(rows, vec![row(3)]);
 
         // A semantic empty terminal with empty prechecks is an empty snapshot.
         let Analyzed::Diagnostics(rows) = analyze_outcome(

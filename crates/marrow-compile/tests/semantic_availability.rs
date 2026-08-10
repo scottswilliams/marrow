@@ -311,8 +311,9 @@ pub fn driver(): int {
     return 0
 }
 "#;
-    let built = compile(&project(&[("src/main.mw", with_broken_test)]))
-        .unwrap_or_else(|failure| panic!("a broken test body cannot refuse a production compile: {failure:?}"));
+    let built = compile(&project(&[("src/main.mw", with_broken_test)])).unwrap_or_else(|failure| {
+        panic!("a broken test body cannot refuse a production compile: {failure:?}")
+    });
     let baseline = compile(&project(&[("src/main.mw", production_only)]))
         .unwrap_or_else(|failure| panic!("the baseline compiles: {failure:?}"));
     assert_eq!(
@@ -355,7 +356,9 @@ fn a_reserved_but_unlowered_instance_never_reaches_the_encoder() {
 fn a_limited_terminal_reports_its_own_bound_over_an_image_ceiling() {
     let mut source = String::from("module main\n\n");
     for index in 0..4097 {
-        source.push_str(&format!("fn f{index}(): int {{\n    return missing()\n}}\n\n"));
+        source.push_str(&format!(
+            "fn f{index}(): int {{\n    return missing()\n}}\n\n"
+        ));
     }
     match compile(&project(&[("src/main.mw", &source)])) {
         Err(CompileFailure::ResourceLimit(limit)) => assert!(
