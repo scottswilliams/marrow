@@ -112,7 +112,12 @@ No parse tree is retained. Completion and signature-help queries re-parse exactl
 one already-admitted file's already-retained bytes; the tree is transient, enters
 no collector, and contributes no diagnostic. Parseability is never inferred from
 such a parse — the snapshot's own broken-file record answers that — and the parse
-is bounded by the 1 MiB per-file admission ceiling that already ran.
+is bounded by drive admission, which refuses a file whose accounted parse charge
+exceeds `MAX_QUERY_PARSE_TRANSIENT_BYTES` before any file is parsed. The charge is
+the file's byte length times the per-source-byte rate `marrow-syntax` publishes for
+the representation its parser builds, so the refusal is arithmetic over two known
+numbers rather than a measurement, and a widened representation narrows what is
+admitted without a length being edited.
 
 **Accounted transient terms.** Two working-set terms sit beside the retention
 term for a consumer sizing a heap. Both are accounted from pinned ceilings and
@@ -120,32 +125,44 @@ the representation, not measured on a fixture; measurements corroborate them and
 live with the lane's evidence.
 
 ```text
-MAX_QUERY_PARSE_TRANSIENT_BYTES    <= 896 MiB
+MAX_QUERY_PARSE_TRANSIENT_BYTES    <= 364 MiB
 MAX_ANALYSIS_FACT_TRANSIENT_BYTES  <=  25 MiB
 ```
 
 `MAX_QUERY_PARSE_TRANSIENT_BYTES` is the working set of **one** query-local parse
-of one maximum admitted file: the tree, the lexer's token vector, the expression
-parser's bounded token copy, and the syntax collector's bounded rows, live
-together. The accounted figure is **914,358,272 bytes** (872 MiB), derived in
-three steps. A `Statement` is the widest node the parser stores in a vector, and
-the grammar spends at least two source bytes on one — a content byte and a line
-terminator no other statement uses — so one source byte buys at most half a
-statement slot plus one content byte. A content byte buys at most one expression
-node in its widest placement plus that node's own allocations; the rate is taken
-as the maximum over that node and every other kind a statement line can hold, and
-the file rate as the maximum over the statement line and everything outside one,
-so the accounting is sound by construction. The tokens and the collector are live
-beside the tree. Multiplying by the 1 MiB per-file admission ceiling gives the
-figure.
+of one maximum admitted file: the tree, the lexer's token slice, the block
+measurement that sizes each statement list, and the syntax collector's bounded
+rows, live together. The accounted figure is **335,544,352 bytes** (320 MiB),
+0.5x a 640 MiB owned-heap ceiling.
+
+The invariant it rests on is a **declared cap of 320 bytes per source byte, over
+every node family the parser builds** — not a single total. The derived figure is
+a maximum over roughly twenty families, so shrinking the widest one promotes the
+next; a total stated on its own would let a widened field hide behind whichever
+family happened not to be deciding it. The cap is asserted per family, and the
+charge tables destructure exhaustively, so a new field or variant fails to build
+before it can widen anything.
+
+The derivation runs in three steps. A `Statement` is the widest node the parser
+stores in a list, and the grammar spends at least two source bytes on one — a
+content byte and a line terminator no other statement uses — so one source byte
+buys at most half a statement slot plus one content byte. A content byte buys at
+most one call argument, expression node, or annotation in its widest placement
+plus that node's own allocations. The token slice and the collector are live
+beside the tree. Multiplying by the admitted length gives the figure. The slot is
+charged once rather than doubled: a statement list is allocated at the measured
+count of content lines its block opens directly and is held as a `Box<[Statement]>`,
+which has no capacity field for slack to live in.
 
 Three properties of this term matter to a consumer. It charges allocated
 capacity, so a `maximum resident set size` sample is a floor and not a check —
-amortized growth slack is paid for by an allocator and never becomes resident.
-It **exceeds a 640 MiB owned-heap ceiling**, and it is published that way rather
-than narrowed to a comfortable measurement: three earlier passes each published a
-measured term and each was beaten by a denser admissible file. And it bounds one
-live parse, not a session — repeated queries are not free.
+amortized growth slack is paid for by an allocator and never becomes resident. It
+bounds one live parse, not a session: repeated queries are not free. And it is a
+**capacity** bound only — it says the parse fits in the heap it is allowed and says
+nothing about how long the answer takes. On the recorded host the densest maximum
+admitted shape answers a completion query in 70 ms worst of five after a warm
+query, down from 112 ms before the representation was shrunk; that is an
+improvement and not immediacy, and the worst-shape latency case stays open.
 
 Queryability itself depends on more than the admission ceiling. A file is
 queryable only if its project yields a snapshot, and a single file that crosses

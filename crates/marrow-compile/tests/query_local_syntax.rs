@@ -10,15 +10,23 @@
 //! so a divergence is a failing assertion rather than an assumption.
 //!
 //! **The parse-transient term.** `MAX_QUERY_PARSE_TRANSIENT_BYTES` is derived from the
-//! per-file admission ceiling and the representation the parser builds, not measured on
-//! a fixture. Three earlier attempts to publish a measured term were each beaten by a
+//! length this crate admits and the representation the parser builds, not measured on a
+//! fixture. Three earlier attempts to publish a measured term were each beaten by a
 //! denser admissible file; the accounting below closes over the grammar instead, and the
 //! measurements are kept only as corroborating samples that must fall under it.
 //!
-//! **Latency.** The trade this policy accepts is a lex-and-parse per query in exchange
-//! for retaining no tree. The budget is pinned at the maximum file the project owner
-//! admits, in the densest shape a query can be handed, and it is asserted only in the
-//! optimized profile the server ships in — every profile records the measurement.
+//! What the accounting closes over is a **declared cap per node family**
+//! ([`MAX_SOURCE_BYTE_CHARGE`]), not a single total. The derived figure is a maximum over
+//! roughly twenty families, so shrinking the widest one promotes the next; a total would
+//! let a widened field hide behind whichever family happened not to be deciding it.
+//!
+//! **Latency is a separate requirement and this file does not establish it.** The budget
+//! below is a regression fence over the densest shape a query can be handed, asserted only
+//! in the optimized profile the server ships in; every profile records the measurement. A
+//! green capacity bound says the parse fits in the heap it is allowed, and says nothing
+//! about whether the answer arrives quickly enough to read as immediate. A maximum
+//! admitted file in its densest shape still does not, and closing that is owned elsewhere
+//! — see [`QUERY_BUDGET_MS`].
 //!
 //! Parseability itself is never inferred from a query-local parse: `broken_files` stays
 //! the snapshot's independent record, which is why a recovered-broken file still
@@ -59,21 +67,26 @@ const H_OWNED_BYTES: usize = 640 * 1024 * 1024;
 ///
 /// The number is derived from the densest shape a query can be handed, which is the same
 /// shape the parse-transient term is derived over: single-byte statement lines in a file
-/// whose module does not parse. On the recorded host that shape measures 112 ms worst of
-/// nine after a warm query (123 ms in a process that had already built other
-/// maximum-size fixtures), so the budget is twice that, rounded up, leaving room for a
-/// machine roughly half as fast and for ordinary run-to-run variation.
+/// whose module does not parse. On the recorded host that shape measures 70 ms worst of
+/// five after a warm query, over three runs, so the budget is twice that, rounded up,
+/// leaving room for a machine roughly half as fast and for ordinary run-to-run variation.
 ///
-/// It is a regression fence, not an immediacy claim. A maximum admitted file in its
-/// densest shape does **not** answer inside the ~100 ms at which a response reads as
-/// immediate; immediacy is carried by [`ORDINARY_QUERY_BUDGET_MS`], which is what an
-/// editor session spends nearly all of its queries against. Earlier passes recorded
-/// 15.3 ms for the parse alone and then 49 ms for a whole query over a comment-padded
-/// file; both were fixture-bound, and neither is the worst case.
+/// **It is a regression fence, not an immediacy claim, and shrinking the representation
+/// did not make it one.** The same measurement was 112 ms before the parsed representation
+/// was shrunk, so a smaller tree is cheaper to build — but a maximum admitted file in its
+/// densest shape still does not answer inside the ~100 ms at which a response reads as
+/// immediate on a machine half this one's speed, which is what the budget leaves room for.
+/// A green capacity bound is not evidence about latency; do not read one for the other.
+/// Immediacy is carried today by [`ORDINARY_QUERY_BUDGET_MS`], which is what an editor
+/// session spends nearly all of its queries against.
 ///
-/// A parse cache is not the remedy if this fails: that would be a second retention owner
-/// and would reopen the bound this policy closes.
-const QUERY_BUDGET_MS: u128 = 250;
+/// Closing the worst-shape case needs a different change, not a smaller node: parsing only
+/// the declaration whose body contains the cursor, with every declaration header built and
+/// no other body parsed. That is a separate lane and is not attempted here.
+///
+/// A parse cache is not the remedy either: that would be a second retention owner and
+/// would reopen the bound this policy closes.
+const QUERY_BUDGET_MS: u128 = 150;
 
 /// The same budget for a file of ordinary size, which is what an editor session actually
 /// spends nearly all of its queries on.
