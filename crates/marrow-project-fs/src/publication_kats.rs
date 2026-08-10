@@ -1052,3 +1052,179 @@ fn the_settled_terminal_is_decided_in_exactly_one_place() {
         "both terminal decisions must live inside `terminal_of_map`"
     );
 }
+
+// ===== Faulted mutations =====================================================
+//
+// Every entry mutation the protocol performs — the stage's `create`, the absent
+// arm's `link`, the replace arm's `exchange`, and the exact `unlink` of the
+// stage and the marker — happens in the admitted metadata directory, so a
+// directory whose owner bits withhold write refuses all four. That is a real
+// refusal from the production path rather than an injected one, and it needs no
+// seam: the fault is applied from outside the protocol, between two production
+// calls, and the phase the planted journal has reached selects which mutation
+// meets it.
+//
+// Two operations cannot be faulted this way, and neither can be faulted at all
+// without a test-only seam inside the protocol: the stage's `append` and every
+// `sync`. Both act on a descriptor this process already holds and was already
+// granted, so no external state refuses them — mode bits are checked when the
+// name is resolved, not when an open file is written or flushed. Their refusal
+// paths are the two `?` operators in `stage_successor` around `file.append` and
+// `file.sync`, and the `meta.sync()` calls that follow each mutation.
+
+/// Withdraw write access to the metadata directory, restoring it on drop.
+///
+/// `None` when the bits do not bind this process — under the mode-override
+/// capability, or on a filesystem that carries no mode bits, nothing outside
+/// the protocol can refuse its mutations.
+struct RefusingMeta {
+    path: PathBuf,
+}
+
+impl RefusingMeta {
+    fn apply(project: &Project) -> Option<Self> {
+        let path = project.meta();
+        set_mode(&path, 0o500);
+        let probe = path.join("write-probe");
+        if fs::write(&probe, b"").is_ok() {
+            fs::remove_file(&probe).ok();
+            set_mode(&path, 0o700);
+            return None;
+        }
+        Some(Self { path })
+    }
+}
+
+impl Drop for RefusingMeta {
+    fn drop(&mut self) {
+        set_mode(&self.path, 0o700);
+    }
+}
+
+/// A refused stage creation is an ordinary refusal: nothing was staged and
+/// nothing was claimed, so the project is exactly as it was.
+#[test]
+fn a_refused_stage_creation_stages_and_claims_nothing() {
+    let _serial = serialized();
+    let project = Project::new("fault-create");
+    let plan = project.plan("Book", 1);
+    let guard = project.guard();
+    let Some(_fault) = RefusingMeta::apply(&project) else {
+        return;
+    };
+
+    let refusal = guard
+        .publish_ids(plan)
+        .expect_err("a refused create is an ordinary refusal");
+    assert_eq!(refusal.refusal(), IdsRefusal::Custody);
+    assert_eq!(refusal.code(), Code::IoWrite);
+    assert!(!project.exists("ids"), "no artifact was written");
+    assert!(!project.exists("ids.publish.stage"));
+    assert!(!project.exists("ids.pending"));
+    assert!(!project.exists("ids.pending.create"));
+    assert_eq!(ids_publication_marker(project.path()), None);
+}
+
+/// A refused link retains the claimed publication: the artifact is untouched,
+/// the successor is still staged, and the marker keeps gating until a later
+/// recovery can finish.
+#[test]
+fn a_refused_link_retains_the_claimed_publication() {
+    let _serial = serialized();
+    let project = Project::new("fault-link");
+    project.write_meta("ids.publish.stage", b"successor");
+    Crash::new(&project, None, b"successor")
+        .installing()
+        .plant();
+    let guard = project.guard();
+    let Some(_fault) = RefusingMeta::apply(&project) else {
+        return;
+    };
+
+    let refusal = guard
+        .recover_ids()
+        .expect_err("a refused link cannot settle the publication");
+    assert_eq!(refusal.refusal(), IdsRefusal::Custody);
+    assert!(!project.exists("ids"), "no artifact was written");
+    assert_eq!(
+        project.read_meta("ids.publish.stage").as_deref(),
+        Some(&b"successor"[..])
+    );
+    assert_eq!(
+        ids_publication_marker(project.path()),
+        Some(IdsPublicationMarker::Claimed),
+        "the marker keeps gating capture"
+    );
+}
+
+/// A refused exchange leaves the bound generation committed. The replace arm
+/// mutates in one atomic step, so a refusal means it did not happen at all.
+#[test]
+fn a_refused_exchange_retains_the_bound_generation() {
+    let _serial = serialized();
+    let project = Project::new("fault-exchange");
+    project.write_meta("ids", b"base");
+    project.write_meta("ids.publish.stage", b"successor");
+    Crash::new(&project, Some(b"base"), b"successor")
+        .installing()
+        .plant();
+    let guard = project.guard();
+    let Some(_fault) = RefusingMeta::apply(&project) else {
+        return;
+    };
+
+    let refusal = guard
+        .recover_ids()
+        .expect_err("a refused exchange cannot settle the publication");
+    assert_eq!(refusal.refusal(), IdsRefusal::Custody);
+    assert_eq!(project.read_meta("ids").as_deref(), Some(&b"base"[..]));
+    assert_eq!(
+        project.read_meta("ids.publish.stage").as_deref(),
+        Some(&b"successor"[..])
+    );
+    assert!(project.exists("ids.pending"));
+}
+
+/// A refused stage cleanup stops before the marker is unlinked. The successor
+/// is installed and the terminal is recorded, so the publication is finishable
+/// — but only the final marker unlink ends it, and that has not happened.
+#[test]
+fn a_refused_stage_cleanup_keeps_the_publication_unfinished() {
+    let _serial = serialized();
+    let project = Project::new("fault-unlink");
+    project.write_meta("ids.publish.stage", b"successor");
+    fs::hard_link(
+        project.meta().join("ids.publish.stage"),
+        project.meta().join("ids"),
+    )
+    .expect("link the staged successor into place");
+    Crash::new(&project, None, b"successor")
+        .installing()
+        .settled(0)
+        .plant();
+    let guard = project.guard();
+    let Some(fault) = RefusingMeta::apply(&project) else {
+        return;
+    };
+
+    let refusal = guard
+        .recover_ids()
+        .expect_err("a refused unlink cannot finish the publication");
+    assert_eq!(refusal.refusal(), IdsRefusal::Custody);
+    assert_eq!(project.read_meta("ids").as_deref(), Some(&b"successor"[..]));
+    assert!(project.exists("ids.publish.stage"), "the alias is retained");
+    assert!(
+        project.exists("ids.pending"),
+        "the publication is unfinished"
+    );
+
+    // Restoring the directory lets the same recovery finish it: the refusal
+    // interrupted the protocol without moving it off its map.
+    drop(fault);
+    assert_eq!(
+        guard.recover_ids().expect("recovery runs"),
+        Some(IdsPublication::Published)
+    );
+    assert!(!project.exists("ids.publish.stage"));
+    assert!(!project.exists("ids.pending"));
+}
