@@ -49,6 +49,15 @@ fn every_read_only_front_door_reports_the_pending_marker() {
         vec!["test"],
         vec!["image", "--out", "out"],
         vec!["client", "typescript"],
+        vec![
+            "import",
+            "--store",
+            "store",
+            "--jsonl",
+            "rows.jsonl",
+            "--root",
+            "counters",
+        ],
     ] {
         let outcome = workspace.marrow(&args);
         let text = format!("{}{}", outcome.stdout_text(), outcome.stderr_text());
@@ -172,6 +181,43 @@ fn a_published_ledger_is_stable_across_runs() {
         fs::read(workspace.path(".marrow/publish.lock")).expect("the rendezvous entry"),
         b"",
         "the write lock is a zero-byte rendezvous entry"
+    );
+}
+
+/// `run` reports the publication owner's own refusal code rather than a
+/// classification of its own. A metadata directory whose owner bits withhold
+/// write refuses the write lock itself, which is an `io.write` fault and not the
+/// pending-publication state a live marker names. This reaches the recovery
+/// `run` performs before it captures; the second recovery, before entropy, is
+/// reachable only when a marker appears between the two, and it passes the same
+/// code through.
+#[test]
+fn a_refused_write_lock_reports_the_owner_s_code_rather_than_the_pending_marker() {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let workspace = project().materialize("ids-lock-refused");
+    fs::create_dir_all(workspace.path(".marrow")).expect("create the metadata directory");
+    // A live marker sends `run` to the publication owner, and a directory that
+    // refuses writes stops it at the lock rather than at the marker.
+    fs::write(workspace.path(".marrow/ids.pending"), b"").expect("plant the marker");
+    let meta = workspace.path(".marrow");
+    fs::set_permissions(&meta, fs::Permissions::from_mode(0o500)).expect("withhold write");
+    let binds = fs::write(meta.join("write-probe"), b"").is_err();
+
+    let outcome = workspace.marrow(&["run", "answer"]);
+    let text = format!("{}{}", outcome.stdout_text(), outcome.stderr_text());
+    fs::set_permissions(&meta, fs::Permissions::from_mode(0o700)).expect("restore write");
+    if !binds {
+        return;
+    }
+
+    assert!(
+        !outcome.success(),
+        "run succeeded over a refused lock: {text}"
+    );
+    assert!(
+        text.contains("io.write"),
+        "run reported its own classification instead of the publication owner's code: {text}"
     );
 }
 

@@ -313,11 +313,13 @@ fn publish_admitted<'a>(
     let journal = match claimed {
         Ok(journal) => journal,
         Err(refusal) => {
-            // Nothing is durably claimed, so this is an ordinary refusal — but
-            // only after the stage this call created is gone and its absence is
-            // durable. A refusal that left the stage behind would leave the
-            // project in the manual unclaimed state instead.
-            discard_stage(guard, stage)?;
+            // Nothing is durably claimed, so this is an ordinary refusal. The
+            // stage this call created is removed first, and its absence made
+            // durable, so the project does not keep the manual unclaimed state.
+            // A discard that itself refuses leaves that state behind and is
+            // reported by the next command, but it never replaces the
+            // durability-relevant cause with its own unlink error.
+            let _ = discard_stage(guard, stage);
             return Err(refusal.into());
         }
     };
@@ -361,7 +363,9 @@ fn stage_successor(
     match filled {
         Ok(()) => Ok(identity),
         Err(refusal) => {
-            discard_stage(guard, identity)?;
+            // As above: the cause that refused the stage outranks a refusal
+            // from the cleanup that follows it.
+            let _ = discard_stage(guard, identity);
             Err(refusal)
         }
     }
@@ -670,8 +674,14 @@ impl<'a> Session<'a> {
             }
             // The one state a dead process cannot be given the benefit of: the
             // successor is installed and the stage holds neither the displaced
-            // generation nor the successor itself.
-            (Some(target), Some(_), _) if target.identity() == next => {
+            // generation nor the successor itself, so a third inode is live.
+            // Any other unexpected reading beside an installed successor is
+            // off-map rather than a third inode.
+            (Some(target), Some(staged), base)
+                if target.identity() == next
+                    && staged.identity() != next
+                    && Some(staged.identity()) != base =>
+            {
                 Err(MapFault::ThirdInode.into())
             }
             (Some(target), None, _) if target.identity() == next && target.nlink() == 1 => {

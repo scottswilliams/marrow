@@ -40,9 +40,10 @@
 //! Prepared replace:   target=base;     stage=next               each nlink 1
 //! Installing absent:  the Prepared map, or target=stage=next    nlink 2
 //! Installing replace: the Prepared map, or target=next; stage=base
-//! Settled installed:  target=next nlink 1, stage absent after exact cleanup
-//! Settled reverted:   target neither next nor cleaned by this owner;
-//!                     stage=next until exact cleanup
+//! Settled installed:  the Installing map's installed reading, or target=next
+//!                     nlink 1 with the stage absent after the exact cleanup
+//! Settled reverted:   the Installing map's reverted reading, or the artifact
+//!                     untouched with the stage absent after the exact cleanup
 //! ```
 //!
 //! The reverted terminal is what a destination refusal or a continuously proven
@@ -393,7 +394,10 @@ impl From<HeaderCorruption> for IdsPublicationError {
 ///
 /// The guard is the cross-kind seam: identity publication is the first kind
 /// under it, and a later lineage kind takes the same lock and the same admitted
-/// directory rather than opening a second write owner.
+/// directory rather than opening a second write owner. The admitted directory
+/// and the lock are shared as they stand; the three kind-1 entry names are
+/// fields, so a second kind extends this struct rather than instantiating a
+/// second one per kind.
 #[derive(Debug)]
 pub struct ProjectMetadataWriteGuard {
     meta: AdmittedDir,

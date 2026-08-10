@@ -363,8 +363,8 @@ fn mint_missing_identities(
     // Before entropy as well as before capture: entropy drawn against a ledger
     // whose committed generation is still undecided would be admitted against
     // the wrong state.
-    if crate::project::recover_identity_publication(Path::new(".")).is_err() {
-        return MintOutcome::Failed(marrow_codes::Code::ProjectIdsPublicationPending.as_str());
+    if let Err(failure) = crate::project::recover_identity_publication(Path::new(".")) {
+        return MintOutcome::Failed(failure.code);
     }
     let publication = match project.admit_identity_mints_with(first, rest, |exact_count| {
         let mut candidates = Vec::with_capacity(exact_count);
