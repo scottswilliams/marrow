@@ -277,17 +277,19 @@ const ITEM_KEYWORDS: [&str; 14] = [
     "async", "extern", "macro",
 ];
 
-/// Every public item's whole signature span, whitespace-collapsed: from the
-/// `pub` or `impl` keyword that opens the item to the punctuation that closes
-/// its declaration. Scanning physical lines instead would let a wrapped
-/// signature — rustfmt splits a long parameter list across lines — carry a
-/// forbidden token past the gate on a line that names no public item.
+/// Every public item's whole signature span, whitespace-collapsed and in
+/// source-line order: from the `pub` or `impl` keyword that opens the item to
+/// the punctuation that closes its declaration. Scanning physical lines would
+/// instead let a wrapped signature — rustfmt splits a long parameter list
+/// across lines — carry a forbidden token past the gate on a line that names
+/// no public item.
 /// Restricted visibilities (`pub(crate)` and friends) are not public API and
 /// open no span. A body that binds caller-visible declarations without
-/// spelling `pub` contributes them too: an `impl` block its associated types,
-/// and a public trait every method, associated type, and associated constant
-/// it declares — a trait method's signature is public API of the trait, and
-/// nothing inside a trait body spells `pub`.
+/// spelling `pub` contributes them too: an `impl` block and a public trait each
+/// contribute every method, associated type, and associated constant they
+/// declare — a trait method's signature is public API of the trait, an `impl`
+/// of a public trait reaches every caller of that trait, and nothing inside a
+/// trait body spells `pub`.
 fn public_signature_spans(source: &str) -> Vec<(usize, String)> {
     let chars = code_only(source);
     let mut spans: Vec<(usize, String)> = Vec::new();
@@ -321,8 +323,7 @@ fn public_signature_spans(source: &str) -> Vec<(usize, String)> {
         let (span, cursor) = span_at(&chars, index, shape);
         spans.push((line, span));
         let body_keywords: &[&str] = match (word.as_str(), following.as_deref()) {
-            ("impl", _) => &["type"],
-            ("pub", Some("trait")) => &["fn", "type", "const"],
+            ("impl", _) | ("pub", Some("trait")) => &["fn", "type", "const"],
             _ => &[],
         };
         if !body_keywords.is_empty() && chars.get(cursor) == Some(&'{') {
@@ -330,6 +331,10 @@ fn public_signature_spans(source: &str) -> Vec<(usize, String)> {
         }
         index = after;
     }
+    // A body's declarations are collected when its header is reached, so scan
+    // order interleaves them with the outer scan's; sorting by line makes a
+    // reported violation list read in source order.
+    spans.sort_by_key(|(line, _)| *line);
     spans
 }
 
@@ -349,12 +354,15 @@ fn span_at(chars: &[char], start: usize, shape: SpanShape) -> (String, usize) {
             ')' | ']' => depth -= 1,
             '{' if is_use => depth += 1,
             '}' if is_use => depth -= 1,
-            // A field's own comma closes it, so its generic arguments must be
-            // counted too: `pub pair: Pair<u8, Handle>` would otherwise end at
-            // the argument comma and hide everything after it. The `>` of a
-            // `->` closes nothing.
-            '<' if field => depth += 1,
-            '>' if field && chars[cursor - 1] != '-' => depth -= 1,
+            // Generic arguments are counted for every shape. A field's own
+            // comma closes it, so `pub pair: Pair<u8, Handle>` would otherwise
+            // end at the argument comma; an item ends at its `{`, so
+            // `pub fn f() -> Wrapper<{N}, Handle>`, a where-clause bound, and
+            // an `impl` header carrying a const-generic block would otherwise
+            // end inside the argument list — and an `impl` would then scan that
+            // block as its body. The `>` of a `->` closes nothing.
+            '<' => depth += 1,
+            '>' if chars[cursor - 1] != '-' => depth -= 1,
             ',' | '}' if depth <= 0 && field => break,
             '{' | ';' if depth <= 0 => break,
             _ => {}
@@ -374,6 +382,11 @@ fn span_at(chars: &[char], start: usize, shape: SpanShape) -> (String, usize) {
 /// an item signature ends, so a defaulted trait method contributes its
 /// signature rather than its body, and a signature opening with `async`,
 /// `unsafe`, or `extern` is still reached at its `fn`.
+///
+/// A declaration a visibility keyword opens belongs to the outer scan and is
+/// left to it: `pub` there already opens a span, and a restricted visibility
+/// deliberately opens none. Reading it here would report an inherent `pub fn`
+/// twice and would red-list a `pub(crate)` method that reaches no caller.
 fn body_item_spans(
     chars: &[char],
     open: usize,
@@ -384,6 +397,7 @@ fn body_item_spans(
     let mut line = open_line;
     let mut depth = 0i32;
     let mut index = open;
+    let mut visibility_open = false;
     while index < chars.len() {
         match chars[index] {
             '\n' => line += 1,
@@ -394,11 +408,17 @@ fn body_item_spans(
                     break;
                 }
             }
-            _ if depth == 1
-                && word_at(chars, index).is_some_and(|word| keywords.contains(&word.as_str())) =>
-            {
-                spans.push((line, span_at(chars, index, SpanShape::Item).0));
-            }
+            _ if depth == 1 => match word_at(chars, index).as_deref() {
+                Some("pub") => visibility_open = true,
+                Some(word) if keywords.contains(&word) => {
+                    if visibility_open {
+                        visibility_open = false;
+                    } else {
+                        spans.push((line, span_at(chars, index, SpanShape::Item).0));
+                    }
+                }
+                _ => {}
+            },
             _ => {}
         }
         index += 1;
@@ -728,8 +748,8 @@ fn the_crate_contains_no_unsafe_code() {
 /// never where they would hand a descriptor to callers.
 ///
 /// The scan covers each public item's whole declaration span, each `impl`
-/// header, each associated type an `impl` body binds, and every method,
-/// associated type, and associated constant a public trait declares; it
+/// header, and every method, associated type, and associated constant an
+/// `impl` body binds or a public trait declares; it
 /// red-lists every local name that stands for a forbidden type, whether bound
 /// by a `type` alias or by a `use ... as` rename at any visibility. So neither
 /// rustfmt wrapping, nor a trait body that spells no `pub`, nor an alias, nor
@@ -802,6 +822,7 @@ fn descriptor_violations(sources: &[(PathBuf, String)]) -> Vec<String> {
 #[test]
 fn the_descriptor_gate_catches_every_laundering_form() {
     let owned = ["Owned", "Fd"].concat();
+    let raw = ["Raw", "Fd"].concat();
     let module = ["std::os::", "fd"].concat();
     let older = ["std::os::unix::", "io"].concat();
     let prelude = ["std::os::unix::", "prelude"].concat();
@@ -831,14 +852,27 @@ fn the_descriptor_gate_catches_every_laundering_form() {
         format!("pub struct Row {{\n    pub first: u8,\n    pub second: {owned},\n}}\n"),
         format!("pub struct Row {{\n    pub pair: Pair<u8, {owned}>,\n    pub tail: u8,\n}}\n"),
         format!("pub struct Row(pub Vec<{owned}>);\n"),
+        format!("pub fn generic() -> Wrapper<{{N}}, {owned}> {{ todo!() }}\n"),
+        format!(
+            "pub fn bounded<T>(value: T) -> T\nwhere\n    T: Into<Wrapper<{{N}}, {owned}>>,\n\
+             {{\n    value\n}}\n"
+        ),
+        format!("impl Custody<{{ SIZE }}> for Journal {{\n    type Handle = {owned};\n}}\n"),
+        format!("impl Foreign for Journal {{\n    const RAW: {raw} = 3;\n}}\n"),
+        format!("impl Foreign for Journal {{\n    fn raw(&self) -> {owned} {{ todo!() }}\n}}\n"),
     ];
-    for source in planted {
-        let sources = vec![(PathBuf::from("planted.rs"), source.clone())];
-        assert!(
-            !descriptor_violations(&sources).is_empty(),
-            "the descriptor gate missed a planted escape:\n{source}"
-        );
-    }
+    let missed: Vec<String> = planted
+        .into_iter()
+        .filter(|source| {
+            descriptor_violations(&[(PathBuf::from("planted.rs"), source.clone())]).is_empty()
+        })
+        .collect();
+    assert!(
+        missed.is_empty(),
+        "the descriptor gate missed {} planted escapes:\n{}",
+        missed.len(),
+        missed.join("---\n")
+    );
 }
 
 /// A public field's span covers its own declaration alone. A span that ran to
@@ -859,6 +893,27 @@ fn a_public_field_span_ends_at_its_own_declaration() {
             (2, "pub first: u8".to_string()),
             (3, format!("pub pair: Pair<u8, {owned}>")),
             (4, "pub last: fn(u8) -> u8".to_string()),
+        ],
+    );
+}
+
+/// An `impl` body contributes each declaration exactly once, and only the
+/// declarations that reach a caller: a `pub` method is spanned by the outer
+/// scan that reads its visibility, and a `pub(crate)` method is public API of
+/// nothing and is spanned by neither scan.
+#[test]
+fn an_impl_body_spans_each_declaration_once_and_skips_restricted_visibility() {
+    let owned = ["Owned", "Fd"].concat();
+    let source = format!(
+        "impl Journal {{\n    pub(crate) fn hidden(&self) -> {owned} {{ todo!() }}\n    \
+         pub fn shown(&self) -> u8 {{ 0 }}\n    fn bare(&self) -> u8 {{ 0 }}\n}}\n"
+    );
+    assert_eq!(
+        public_signature_spans(&source),
+        [
+            (1, "impl Journal".to_string()),
+            (3, "pub fn shown(&self) -> u8".to_string()),
+            (4, "fn bare(&self) -> u8".to_string()),
         ],
     );
 }
