@@ -306,6 +306,11 @@ pub struct AnalysisSnapshot {
     /// `broken_files` — and a `document_symbols` query for it is
     /// [`Unavailability::Syntax`], not an absent tree.
     document_symbols: Box<[(FileRef, Box<[DeclSymbol]>)]>,
+    /// Files whose outline crossed [`MAX_DOCUMENT_SYMBOLS_PER_FILE`] or
+    /// [`MAX_SYMBOL_DEPTH`]. Nothing is retained for such a file, so its
+    /// `document_symbols` is [`Unavailability::Bounded`]; every other query for it, and
+    /// every query for every other file, is unaffected.
+    symbol_bounded_files: Box<[FileRef]>,
 }
 
 impl AnalysisSnapshot {
@@ -483,6 +488,9 @@ impl AnalysisSnapshot {
         let (file, _) = self.locate(file)?;
         if self.broken_files.contains(&file) {
             return Ok(Fact::Unavailable(Unavailability::Syntax));
+        }
+        if self.symbol_bounded_files.contains(&file) {
+            return Ok(Fact::Unavailable(Unavailability::Bounded));
         }
         match self
             .document_symbols
@@ -669,19 +677,6 @@ pub fn analyze(
         }
         Analyzed::Diagnostics(diagnostics) => diagnostics,
     };
-    // A per-file declaration-hierarchy bound overflow transactionally refuses the whole
-    // snapshot rather than admitting a partial or truncated outline.
-    if let Some(limit) = analysis.symbol_limit {
-        let limit = match limit {
-            SymbolLimit::Count => AnalysisResourceLimit::DocumentSymbolCount {
-                limit: MAX_DOCUMENT_SYMBOLS_PER_FILE,
-            },
-            SymbolLimit::Depth => AnalysisResourceLimit::DocumentSymbolDepth {
-                limit: MAX_SYMBOL_DEPTH,
-            },
-        };
-        return Err(AnalysisFailure::ResourceLimit { revision, limit });
-    }
     // The fact ledger admitted every fact against its ceilings at the push, so the
     // sealed terminal is either the complete retained set or the typed limit that
     // discarded it. Project the limit through one exhaustive translation, mirroring the
@@ -709,6 +704,7 @@ pub fn analyze(
         broken_files,
         dependency_gaps,
         document_symbols,
+        symbol_bounded_files: analysis.symbol_bounded_files,
     }))
 }
 
@@ -1142,6 +1138,10 @@ pub enum Unavailability {
     /// The fact reads a project-global owner contributed by a module that did not
     /// parse, so the owner is incomplete.
     Dependency,
+    /// The fact crossed a fixed per-file bound, so it was never retained. No truncated
+    /// value is ever published in its place, and no other fact — in this file or any
+    /// other — is affected.
+    Bounded,
 }
 
 /// Why a hover or definition query could not be resolved to a position at all. Distinct
@@ -2944,6 +2944,7 @@ mod fact_ledger_tests {
             broken_files: _,
             dependency_gaps: _,
             document_symbols: _,
+            symbol_bounded_files: _,
         } = empty_snapshot();
 
         let accounted = worst_case_retained_bytes(
@@ -3065,6 +3066,7 @@ mod fact_ledger_tests {
             broken_files: Box::default(),
             dependency_gaps: Box::default(),
             document_symbols: Box::default(),
+            symbol_bounded_files: Box::default(),
         }
     }
 

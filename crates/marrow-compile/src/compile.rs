@@ -645,10 +645,12 @@ struct Driven {
     /// reconstructed from retained diagnostics, so a Limited parse terminal cannot
     /// erase it.
     facts: BoundedAnalysisFacts,
-    /// The first per-file declaration-hierarchy bound a module's outline exceeded, if
-    /// any. The analysis snapshot refuses transactionally on it; the production compile
-    /// ignores it (symbol bounds are analysis-only and never fail compilation).
-    symbol_limit: Option<crate::analysis::SymbolLimit>,
+    /// The modules whose declaration outline crossed a per-file bound. Nothing is
+    /// retained for such a module, so the snapshot reports its outline as bounded-
+    /// unavailable; every other module's outline is unaffected. The production compile
+    /// ignores this entirely (symbol bounds are analysis-only and never fail
+    /// compilation).
+    symbol_bounded_files: Vec<FileRef>,
 }
 
 /// Allocation-free admission for one compiler drive.
@@ -1018,14 +1020,15 @@ fn drive(project: &ProjectInput, mode: TestMode) -> Result<Driven, CompileResour
     // existing nodes with no allocation, and it is what lets a Bytes crossing strengthen
     // to Count once the composed count crosses. Each outline is dropped as it is charged,
     // so the live peak is one module's outline either way.
-    let mut symbol_limit: Option<crate::analysis::SymbolLimit> = None;
+    //
+    // A module whose outline crosses a per-file bound is recorded and skipped rather
+    // than ending the projection: nothing partial is retained for it, and every other
+    // module still contributes its complete outline.
+    let mut symbol_bounded_files: Vec<FileRef> = Vec::new();
     for module in &clean {
         match crate::analysis::project_document_symbols(&module.ast.declarations) {
             Ok(symbols) => facts.admit_symbols(module.at, symbols),
-            Err(limit) => {
-                symbol_limit = Some(limit);
-                break;
-            }
+            Err(_) => symbol_bounded_files.push(module.at),
         }
     }
 
@@ -1048,7 +1051,7 @@ fn drive(project: &ProjectInput, mode: TestMode) -> Result<Driven, CompileResour
         structural: structural.finish(),
         semantic,
         facts: facts.finish(),
-        symbol_limit,
+        symbol_bounded_files,
     })
 }
 
@@ -1778,7 +1781,7 @@ pub(crate) enum Analyzed {
 pub(crate) struct ProjectAnalysis {
     pub(crate) outcome: Analyzed,
     pub(crate) facts: BoundedAnalysisFacts,
-    pub(crate) symbol_limit: Option<crate::analysis::SymbolLimit>,
+    pub(crate) symbol_bounded_files: Box<[FileRef]>,
 }
 
 /// Drive the analysis pass over a project — test bodies included, per the editor
@@ -1796,12 +1799,12 @@ pub(crate) fn analyze_project(
     // fact survives even when the parse stage's diagnostic payload was discarded by a
     // limit.
     let facts = driven.facts;
-    let symbol_limit = driven.symbol_limit;
+    let symbol_bounded_files = driven.symbol_bounded_files.into_boxed_slice();
     let outcome = analyze_outcome(driven.parse, driven.structural, driven.semantic);
     Ok(ProjectAnalysis {
         outcome,
         facts,
-        symbol_limit,
+        symbol_bounded_files,
     })
 }
 
@@ -2619,7 +2622,7 @@ mod tests {
             facts: crate::analysis::BoundedAnalysisFacts::Complete(
                 crate::analysis::RetainedFacts::default(),
             ),
-            symbol_limit: None,
+            symbol_bounded_files: Vec::new(),
         }
     }
 
@@ -2842,10 +2845,6 @@ mod tests {
         fn assert_worker_type<T: Send + Sync + 'static>() {}
 
         assert_worker_type::<super::CompileInvariant>();
-    }
-
-    fn resource(kind: super::ResourceLimitKind) -> super::CompileResourceLimit {
-        super::CompileResourceLimit::new(kind, 64)
     }
 
     /// The frozen kind-detail surface: each aggregate bound names itself with a stable

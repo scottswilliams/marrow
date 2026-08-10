@@ -9,10 +9,11 @@
 use std::sync::Arc;
 
 use marrow_compile::{
-    AnalysisFailure, AnalysisResourceLimit, InputRevision, MAX_DOCUMENT_SYMBOLS_PER_FILE,
-    MAX_SNAPSHOT_FACT_BYTES, MAX_SNAPSHOT_FACT_COUNT, MAX_SYMBOL_DEPTH, analyze,
+    AnalysisFailure, AnalysisResourceLimit, AnalysisSnapshot, Fact, InputRevision,
+    MAX_DOCUMENT_SYMBOLS_PER_FILE, MAX_SNAPSHOT_FACT_BYTES, MAX_SNAPSHOT_FACT_COUNT,
+    MAX_SYMBOL_DEPTH, Unavailability, analyze,
 };
-use marrow_project::{CaptureLimits, CapturedFile, Manifest, ProjectInput};
+use marrow_project::{CaptureLimits, CapturedFile, FileIdentity, Manifest, ProjectInput};
 
 /// Capture a project at limits wide enough for the fixture, exactly as the pure
 /// project owner admits one. The compiler's own drive admission still applies the
@@ -80,6 +81,23 @@ fn symbol_module(index: usize, members: usize, name_bytes: usize) -> (String, St
 
 fn analyze_files(files: Vec<(String, String)>, revision: u64) -> Result<(), AnalysisFailure> {
     analyze(captured(files), InputRevision::new(revision)).map(|_| ())
+}
+
+fn analyze_snapshot(
+    files: Vec<(String, String)>,
+    revision: u64,
+) -> Result<Arc<AnalysisSnapshot>, AnalysisFailure> {
+    analyze(captured(files), InputRevision::new(revision))
+}
+
+fn identity(path: &str) -> FileIdentity {
+    FileIdentity::validate(path).expect("canonical identity").0
+}
+
+/// The revision a failure echoes, for a panic message: `AnalysisFailure` is
+/// deliberately not `Debug`.
+fn failure_label(failure: &AnalysisFailure) -> String {
+    format!("a failure at revision {}", failure.revision().get())
 }
 
 fn expect_snapshot(files: Vec<(String, String)>, revision: u64) {
@@ -192,28 +210,37 @@ fn count_wins_a_simultaneous_crossing() {
     }
 }
 
-/// The per-file declaration-hierarchy bounds keep precedence over the global fact
-/// bounds: a file over `MAX_DOCUMENT_SYMBOLS_PER_FILE` refuses with the per-file
-/// count limit even when the project would also cross the global ceilings.
+/// A per-file declaration-hierarchy bound is no longer a whole-snapshot refusal: the
+/// crossing file's outline is simply never retained, so the snapshot is produced and
+/// that one fact is bounded-unavailable. Nothing partial is retained for it, which is
+/// the invariant the transactional refusal used to carry.
 #[test]
-fn the_per_file_symbol_bound_keeps_precedence() {
+fn the_per_file_symbol_bound_bounds_one_fact_not_the_snapshot() {
     let files = vec![symbol_module(
         0,
         MAX_DOCUMENT_SYMBOLS_PER_FILE as usize + 4,
         100,
     )];
-    match expect_limit(files, 15) {
-        AnalysisResourceLimit::DocumentSymbolCount { limit } => {
-            assert_eq!(limit, MAX_DOCUMENT_SYMBOLS_PER_FILE);
-        }
-        other => panic!("expected DocumentSymbolCount, got {}", other.description()),
-    }
+    let snapshot = match analyze_snapshot(files, 15) {
+        Ok(snapshot) => snapshot,
+        Err(failure) => panic!(
+            "a per-file symbol bound still yields a snapshot, got {failure}",
+            failure = failure_label(&failure)
+        ),
+    };
+    assert!(
+        matches!(
+            snapshot.document_symbols(&identity("src/module_0.mw")),
+            Ok(Fact::Unavailable(Unavailability::Bounded))
+        ),
+        "the crossing file's outline is bounded-unavailable",
+    );
 }
 
-/// A nesting overflow still transactionally refuses the whole snapshot; no partial
-/// outline survives into a snapshot.
+/// A nesting overflow likewise bounds only that file's outline; no partial outline
+/// survives into a snapshot.
 #[test]
-fn the_symbol_depth_bound_refuses_transactionally() {
+fn the_symbol_depth_bound_bounds_one_fact() {
     let levels = MAX_SYMBOL_DEPTH as usize + 4;
     let mut source = String::from("module module_0\n\nenum Deep {\n");
     for level in 0..levels {
@@ -227,10 +254,18 @@ fn the_symbol_depth_bound_refuses_transactionally() {
         source.push_str("}\n");
     }
     source.push_str("}\n");
-    match expect_limit(vec![module_file(0, source)], 16) {
-        AnalysisResourceLimit::DocumentSymbolDepth { limit } => {
-            assert_eq!(limit, MAX_SYMBOL_DEPTH);
-        }
-        other => panic!("expected DocumentSymbolDepth, got {}", other.description()),
-    }
+    let snapshot = match analyze_snapshot(vec![module_file(0, source)], 16) {
+        Ok(snapshot) => snapshot,
+        Err(failure) => panic!(
+            "a per-file symbol depth bound still yields a snapshot, got {failure}",
+            failure = failure_label(&failure)
+        ),
+    };
+    assert!(
+        matches!(
+            snapshot.document_symbols(&identity("src/module_0.mw")),
+            Ok(Fact::Unavailable(Unavailability::Bounded))
+        ),
+        "the crossing file's outline is bounded-unavailable",
+    );
 }

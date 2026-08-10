@@ -465,6 +465,7 @@ fn label<T>(fact: &Result<Fact<T>, QueryError>) -> &'static str {
         Ok(Fact::Absent) => "Absent",
         Ok(Fact::Unavailable(Unavailability::Syntax)) => "Unavailable(Syntax)",
         Ok(Fact::Unavailable(Unavailability::Dependency)) => "Unavailable(Dependency)",
+        Ok(Fact::Unavailable(Unavailability::Bounded)) => "Unavailable(Bounded)",
         Err(QueryError::UnknownFile) => "Err(UnknownFile)",
         Err(QueryError::OffsetOutOfRange) => "Err(OffsetOutOfRange)",
     }

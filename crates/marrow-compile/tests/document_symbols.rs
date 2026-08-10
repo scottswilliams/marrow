@@ -6,9 +6,8 @@
 use std::sync::Arc;
 
 use marrow_compile::{
-    AnalysisFailure, AnalysisResourceLimit, AnalysisSnapshot, DeclKind, DeclSymbol, Fact,
-    InputRevision, MAX_DOCUMENT_SYMBOLS_PER_FILE, MAX_SYMBOL_DEPTH, QueryError, Unavailability,
-    analyze, compile_with_tests,
+    AnalysisSnapshot, DeclKind, DeclSymbol, Fact, InputRevision, MAX_DOCUMENT_SYMBOLS_PER_FILE,
+    MAX_SYMBOL_DEPTH, QueryError, Unavailability, analyze, compile_with_tests,
 };
 use marrow_project::{CaptureLimits, CapturedFile, FileIdentity, Manifest, ProjectInput};
 
@@ -236,24 +235,46 @@ fn many_symbols_source() -> String {
     source
 }
 
+/// A per-file symbol bound makes that file's outline unavailable — it does not refuse
+/// the snapshot. Nothing partial is retained for the crossing file, every other file's
+/// outline is present, and the project's diagnostics are complete.
 #[test]
-fn per_file_symbol_count_overflow_refuses_the_snapshot() {
+fn per_file_symbol_count_overflow_bounds_only_that_files_outline() {
     let source = many_symbols_source();
-    let failure = analyze(
-        Arc::new(project(&[("src/app.mw", &source)])),
+    let snapshot = analyze(
+        Arc::new(project(&[
+            ("src/app.mw", &source),
+            (
+                "src/other.mw",
+                "module other
+
+pub fn h(): int {
+    return 1
+}
+",
+            ),
+        ])),
         InputRevision::new(3),
     )
-    .err()
-    .expect("a symbol-count overflow produces no snapshot");
+    .unwrap_or_else(|_| panic!("a symbol-count overflow still yields a snapshot"));
     assert!(
         matches!(
-            failure,
-            AnalysisFailure::ResourceLimit {
-                limit: AnalysisResourceLimit::DocumentSymbolCount { limit },
-                ..
-            } if limit == MAX_DOCUMENT_SYMBOLS_PER_FILE,
+            snapshot.document_symbols(&identity("src/app.mw")),
+            Ok(Fact::Unavailable(Unavailability::Bounded))
         ),
-        "expected a DocumentSymbolCount refusal",
+        "the crossing file's outline is bounded-unavailable",
+    );
+    assert!(
+        matches!(
+            snapshot.document_symbols(&identity("src/other.mw")),
+            Ok(Fact::Present(_))
+        ),
+        "every other file's outline is unaffected",
+    );
+    assert_eq!(
+        snapshot.diagnostics(),
+        &[],
+        "a symbol bound contributes no diagnostic",
     );
 }
 
@@ -289,22 +310,18 @@ fn deeply_nested_enum_source() -> String {
 }
 
 #[test]
-fn per_file_symbol_depth_overflow_refuses_the_snapshot() {
+fn per_file_symbol_depth_overflow_bounds_only_that_files_outline() {
     let source = deeply_nested_enum_source();
-    let failure = analyze(
+    let snapshot = analyze(
         Arc::new(project(&[("src/app.mw", &source)])),
         InputRevision::new(5),
     )
-    .err()
-    .expect("a symbol-depth overflow produces no snapshot");
+    .unwrap_or_else(|_| panic!("a symbol-depth overflow still yields a snapshot"));
     assert!(
         matches!(
-            failure,
-            AnalysisFailure::ResourceLimit {
-                limit: AnalysisResourceLimit::DocumentSymbolDepth { limit },
-                ..
-            } if limit == MAX_SYMBOL_DEPTH,
+            snapshot.document_symbols(&identity("src/app.mw")),
+            Ok(Fact::Unavailable(Unavailability::Bounded))
         ),
-        "expected a DocumentSymbolDepth refusal",
+        "the crossing file's outline is bounded-unavailable",
     );
 }

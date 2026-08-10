@@ -228,6 +228,7 @@ fn no_parse_tree_is_retained_for_a_query() {
             "broken_files",
             "dependency_gaps",
             "document_symbols",
+            "symbol_bounded_files",
         ],
         "a new retained snapshot field changes the exported retention term; \
          update the accounting and this gate together"

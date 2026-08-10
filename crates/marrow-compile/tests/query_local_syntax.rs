@@ -655,6 +655,9 @@ fn render_completions(outcome: Result<CompletionOutcome, QueryError>) -> String 
         Ok(CompletionOutcome::Ready(Fact::Unavailable(Unavailability::Dependency))) => {
             "unavailable:dependency".to_string()
         }
+        Ok(CompletionOutcome::Ready(Fact::Unavailable(Unavailability::Bounded))) => {
+            "unavailable:bounded".to_string()
+        }
         Ok(CompletionOutcome::Ready(Fact::Present(completions))) => {
             let class = match completions.class() {
                 PositionClass::ExpressionName => "expr",
@@ -683,6 +686,9 @@ fn render_active_call(outcome: Result<ActiveCallOutcome, QueryError>) -> String 
         }
         Ok(ActiveCallOutcome::Ready(Fact::Unavailable(Unavailability::Dependency))) => {
             "unavailable:dependency".to_string()
+        }
+        Ok(ActiveCallOutcome::Ready(Fact::Unavailable(Unavailability::Bounded))) => {
+            "unavailable:bounded".to_string()
         }
         Ok(ActiveCallOutcome::Ready(Fact::Present(call))) => {
             let params: Vec<&str> = call.params().iter().map(|piece| piece.label()).collect();

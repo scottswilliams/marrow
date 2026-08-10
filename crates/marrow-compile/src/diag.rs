@@ -439,6 +439,11 @@ impl DiagnosticCollector {
     }
 
     /// Logical emptiness: a Limited owner retains no rows but is never empty.
+    ///
+    /// Test-only since the phase-eligibility gates that used to consult it were
+    /// deleted: production code reads emptiness from the finished
+    /// [`BoundedDiagnostics`] terminal, never from a live collector.
+    #[cfg(test)]
     pub(crate) fn is_empty(&self) -> bool {
         match &self.state {
             CollectorState::Retaining { rows, .. } => rows.is_empty(),
