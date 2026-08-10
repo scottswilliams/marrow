@@ -1173,8 +1173,10 @@ fn container_growth_stays_within_the_accounted_factor() {
 
 /// A one-element container of `T` fits what [`vec_bytes`] charges one element of `T`.
 ///
-/// `reserve` takes the same amortized-growth path `push` does, so this exercises the
-/// floor without needing a value of every node type.
+/// `reserve` on an empty vector takes the same amortized-growth path `push` does, so this
+/// exercises the floor without needing a value of every node type. `with_capacity(1)`
+/// would allocate exactly one slot, which is the opposite of what is being observed.
+#[allow(clippy::reserve_after_initialization)]
 #[track_caller]
 fn assert_minimum_capacity_is_accounted<T>(label: &str) {
     let mut values: Vec<T> = Vec::new();
