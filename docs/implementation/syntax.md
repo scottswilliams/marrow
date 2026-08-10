@@ -30,14 +30,25 @@ if the published constant drifts from it.
 The AST keeps its allocations exactly sized where it can. A block's statement
 list and the file's declaration list are `Box<[T]>`, allocated once at a measured
 count, so amortized growth slack cannot survive into a finished tree. The pass
-that measures a block's statement-line count is also the one that decides the
-parser structures that block: it stops measuring at the nesting limit, and the
-parser builds exactly the blocks that carry a measurement, so no second depth
-counter exists to disagree with it and a block sized at nothing and grown by
-doubling is not representable. Every path — a module or import name, a `match`
-arm, an `index` argument, a name expression — is a `Box<[NameSegment]>` rather
-than a spelling beside a parallel span vector, so an unequal length is not
+that measures a statement count is also the one that decides the parser
+structures the region it counted: it stops measuring at the nesting limit, and
+the parser builds exactly the brace-delimited regions that carry a measurement —
+a block, and a `match` body, whose arm list is sized the same way — so no second
+counter disagrees with it about what the tree holds and a list sized at nothing
+and grown by doubling is not representable. Every path — a module or import name,
+a `match` arm, an `index` argument, a name expression — is a `Box<[NameSegment]>`
+rather than a spelling beside a parallel span vector, so an unequal length is not
 representable.
+
+How deep the parser descends is a separate bound with a separate owner. A
+measurement is keyed on a `{`, so it can only refuse a body that opens one, and a
+trailing clause takes a single inline statement in place of a block (`else`
+followed by an `if` on the next line, a `match` arm whose body is a statement).
+Such a nest recurses without opening a brace. The statement parser therefore
+counts frames as well: every descent passes one counter that stops at the nesting
+limit, so the typed limit trips before the native stack does on every path, and
+the depth of a parsed tree is bounded by that limit rather than by how long the
+file is.
 
 The formatter consumes parser-owned structure. It must preserve comments and
 reparse to an equivalent AST; source formatting is not a semantic pass.

@@ -82,8 +82,9 @@ pub const MAX_RETAINED_SNAPSHOTS: usize = 2;
 pub const OUTBOUND_CREDITS: usize = OUTBOUND_QUEUE_CAPACITY + 1 + RECEIPT_QUEUE_CAPACITY;
 
 /// The stack size for each spawned server thread. The analysis worker parses untrusted
-/// source, whose recursion the parser bounds with a typed depth limit that trips far
-/// inside this stack.
+/// source, whose recursion the parser bounds by counting frames against a typed depth
+/// limit that trips far inside this stack — on every recursive path, and at a depth that
+/// does not move with the length of the file.
 pub const THREAD_STACK_BYTES: usize = 256 * 1024 * 1024;
 
 /// The fixed owned retained-capacity ceiling `H_owned`, in bytes. The checked term sum

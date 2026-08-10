@@ -12,12 +12,17 @@
 //! One pass with a brace stack measures every block in a body, so the body costs a
 //! single walk of its tokens rather than one walk per block.
 //!
-//! This pass owns which blocks the statement parser structures. Its stack is bounded by
-//! [`NESTING_DEPTH_LIMIT`] rather than by the source, so a `{` nested past the limit is
-//! left unmeasured, and the parser refuses exactly the blocks that carry no measurement
-//! instead of counting depth a second time. A block whose statement count is unknown is
-//! therefore never built, and no second counter exists to disagree with this one about
-//! which blocks the tree holds.
+//! This pass owns which brace-delimited regions the statement parser structures. Its
+//! stack is bounded by [`NESTING_DEPTH_LIMIT`] rather than by the source, so a `{` nested
+//! past the limit is left unmeasured, and the parser structures exactly the regions that
+//! carry a measurement — a block, and a `match` body. A region whose statement count is
+//! unknown is therefore never built, and no second counter disagrees with this one about
+//! which regions the tree holds.
+//!
+//! It does not own how deep the descent goes, and cannot: this pass is keyed on a `{`, so
+//! it has nothing to say about a trailing clause that takes a single inline statement in
+//! place of a block. Bounding the native stack is a separate question with a separate
+//! owner, the frame counter in `stmt`.
 
 use crate::NESTING_DEPTH_LIMIT;
 use crate::token::{Token, TokenKind};
@@ -300,27 +305,30 @@ mod tests {
             "a `match` brace and an arm brace each take one level of the limit"
         );
 
-        // What the parser builds agrees, because the measurement is the only thing it
-        // asks. A second depth counter that skipped the `match` brace would structure
-        // one more level than was measured, and size that level's block at nothing.
+        // What the parser builds agrees, because the measurement is what it asks about
+        // its own brace as well as about its arms' braces. A `match` that structured its
+        // body without asking would build one more level than was measured, and grow an
+        // arm list sized at nothing.
         let parsed = crate::parse_source(&source);
         let Some(crate::Declaration::Function(function)) = parsed.file.declarations.first() else {
             panic!("the fixture declares one function");
         };
         let mut block = &function.body;
         let mut structured = 0usize;
-        while let Some(crate::Statement::Match { arms, .. }) = block.statements.first() {
-            let Some(arm) = arms.first() else {
-                break;
+        let arms_of_the_deepest_match = loop {
+            let Some(crate::Statement::Match { arms, .. }) = block.statements.first() else {
+                panic!("every level of the fixture is a `match`");
             };
+            let Some(arm) = arms.first() else {
+                break arms.len();
+            };
+            structured += 1;
             block = &arm.block;
-            if !block.statements.is_empty() {
-                structured += 1;
-            }
-        }
-        assert!(
-            block.statements.is_empty(),
-            "the deepest arm is past the limit and fails closed"
+        };
+        assert_eq!(
+            arms_of_the_deepest_match, 0,
+            "the deepest `match` sits at the limit, so its own body is past it and fails \
+             closed with no arms rather than with arms whose blocks are skipped"
         );
         assert_eq!(
             structured,

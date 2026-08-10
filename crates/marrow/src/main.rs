@@ -148,8 +148,9 @@ fn not_yet_supported(command: &str) -> ExitCode {
 }
 
 /// The stack the parse/format pipeline runs on. 256 MiB comfortably holds the
-/// recursion the typed parser limit permits — 256 nested parser frames — with wide
-/// margin, so the limit always trips before the stack does.
+/// recursion the typed parser limit permits — 256 nested parser frames on every
+/// path that recurses, whether or not it opens a brace — with wide margin, so the
+/// limit always trips before the stack does, at any admitted file length.
 const WORKER_STACK_BYTES: usize = 256 * 1024 * 1024;
 
 /// Run `command` on a worker thread with [`WORKER_STACK_BYTES`] of stack and

@@ -56,13 +56,17 @@ use parse_decl::DeclParser;
 pub const PARSE_SYNTAX: &str = Code::ParseSyntax.as_str();
 
 /// The maximum nesting depth the front end will structure before it stops and
-/// reports [`NESTING_LIMIT`]. Two layers enforce it for `{ … }` blocks (`if`,
-/// resource groups, enum members, …): the lexer reports the located finding when
-/// the brace depth first exceeds the limit, and the recursive-descent parser skips
-/// an over-deep block rather than descending into it, so the AST — and every later
-/// walk over it — stays bounded no matter how deep the source nests. The
-/// expression parser enforces it for token-level nesting (parentheses, unary and
-/// binary operands) on a single line. Deeper source fails closed with a located
+/// reports [`NESTING_LIMIT`].
+///
+/// Three layers enforce it. The lexer reports the located finding when the brace
+/// depth first exceeds the limit. The statement parser bounds its own descent by
+/// counting frames, so a nest that opens no brace — a trailing clause takes a
+/// single inline statement in place of a block — is refused at the same depth as
+/// one that does. The expression parser enforces it for token-level nesting
+/// (parentheses, unary and binary operands) on a single line.
+///
+/// The AST — and every later walk over it — therefore stays bounded no matter how
+/// deep or how long the source is, and deeper source fails closed with a located
 /// diagnostic rather than overflowing the native stack. 256 follows the
 /// Clang/rustc convention; it is fixed in v0.1, not configurable.
 pub const NESTING_DEPTH_LIMIT: usize = 256;
@@ -909,5 +913,292 @@ mod nesting_limit {
             !codes(nested_resource_groups(NESTING_DEPTH_LIMIT - 1)).contains(&NESTING_LIMIT),
             "resource-group nesting just under the limit should parse without the nesting error"
         );
+    }
+}
+
+/// What bounds the statement parser's recursion.
+///
+/// A brace-delimited nest is refused by the pass that measures it. A trailing clause
+/// takes a single inline statement instead of a block, so a nest can recurse through
+/// `else`, a `match` arm, an `on more` arm, or a checked arm without opening a brace
+/// for that pass to refuse. These pin that the typed depth limit — and not the
+/// admitted file length — is what stops every one of those paths.
+#[cfg(test)]
+mod statement_recursion_depth {
+    use super::{
+        Block, CheckedBind, Declaration, NESTING_DEPTH_LIMIT, NESTING_LIMIT, ParsedSource,
+        Statement, parse_source,
+    };
+
+    fn parse_on_large_stack(source: String) -> ParsedSource {
+        std::thread::Builder::new()
+            .stack_size(256 * 1024 * 1024)
+            .spawn(move || parse_source(&source))
+            .expect("spawn parse worker")
+            .join()
+            .expect("parse worker did not panic")
+    }
+
+    /// The longest chain of nested statement blocks the parse built, which is the depth
+    /// the recursive descent reached and the depth every later walk over the tree must
+    /// itself recurse to.
+    ///
+    /// **The enforcement artifact.** The match over `Statement` is exhaustive and names
+    /// every field, so a new variant — or a new block on an existing one — fails to
+    /// build here rather than quietly adding a recursion path with no bound.
+    fn block_depth(block: &Block) -> usize {
+        1 + block
+            .statements
+            .iter()
+            .map(statement_depth)
+            .max()
+            .unwrap_or(0)
+    }
+
+    fn deepest(blocks: impl IntoIterator<Item = usize>) -> usize {
+        blocks.into_iter().max().unwrap_or(0)
+    }
+
+    fn statement_depth(statement: &Statement) -> usize {
+        match statement {
+            Statement::If {
+                condition: _,
+                then_block,
+                else_ifs,
+                else_block,
+                span: _,
+            } => deepest(
+                [block_depth(then_block)]
+                    .into_iter()
+                    .chain(else_ifs.iter().map(|arm| block_depth(&arm.block)))
+                    .chain(else_block.as_ref().map(block_depth)),
+            ),
+            Statement::IfConst {
+                name: _,
+                name_span: _,
+                ty: _,
+                value: _,
+                then_block,
+                else_ifs,
+                else_block,
+                span: _,
+            }
+            | Statement::IfConstChain {
+                bindings: _,
+                condition: _,
+                then_block,
+                else_ifs,
+                else_block,
+                span: _,
+            } => deepest(
+                [block_depth(then_block)]
+                    .into_iter()
+                    .chain(else_ifs.iter().map(|arm| block_depth(&arm.block)))
+                    .chain(else_block.as_ref().map(block_depth)),
+            ),
+            Statement::LetElse {
+                is_var: _,
+                name: _,
+                name_span: _,
+                ty: _,
+                value: _,
+                else_block,
+                span: _,
+            } => block_depth(else_block),
+            Statement::While {
+                condition: _,
+                body,
+                span: _,
+            }
+            | Statement::Transaction { body, span: _ } => block_depth(body),
+            Statement::For {
+                binding: _,
+                order: _,
+                iterable: _,
+                step: _,
+                bound,
+                body,
+                span: _,
+            } => deepest(
+                [block_depth(body)].into_iter().chain(
+                    bound
+                        .as_ref()
+                        .and_then(|bound| bound.on_more.as_ref())
+                        .map(block_depth),
+                ),
+            ),
+            Statement::Match {
+                scrutinee: _,
+                arms,
+                span: _,
+            } => deepest(arms.iter().map(|arm| block_depth(&arm.block))),
+            Statement::Checked {
+                bind,
+                op: _,
+                out_of_range,
+                zero_divisor,
+                span: _,
+            } => {
+                match bind {
+                    CheckedBind::Const {
+                        name: _,
+                        name_span: _,
+                        ty: _,
+                    }
+                    | CheckedBind::Var {
+                        name: _,
+                        name_span: _,
+                        ty: _,
+                    }
+                    | CheckedBind::Return => {}
+                }
+                deepest(
+                    out_of_range
+                        .as_ref()
+                        .map(block_depth)
+                        .into_iter()
+                        .chain(zero_divisor.as_ref().map(block_depth)),
+                )
+            }
+            Statement::Const { .. }
+            | Statement::Var { .. }
+            | Statement::Assign { .. }
+            | Statement::CompoundAssign { .. }
+            | Statement::Delete { .. }
+            | Statement::PlaceBinding { .. }
+            | Statement::Unset { .. }
+            | Statement::Return { .. }
+            | Statement::Break { .. }
+            | Statement::Continue { .. }
+            | Statement::Assert { .. }
+            | Statement::Expr { .. }
+            | Statement::Require { .. }
+            | Statement::Error { .. } => 0,
+        }
+    }
+
+    /// The deepest tree [`NESTING_DEPTH_LIMIT`] frames of descent can build, counted in
+    /// `Block` nodes. Two of them cost no frame: the function body the descent starts
+    /// from, and the empty block the refusal stands in place of the clause it declined to
+    /// structure. The point of the bound is that it is a constant — the count below must
+    /// not move with the length of the file.
+    const DEEPEST_BOUNDED_TREE: usize = NESTING_DEPTH_LIMIT + 2;
+
+    /// The deepest statement nest in any function body of `source`.
+    fn parsed_depth(source: String) -> (usize, bool) {
+        let parsed = parse_on_large_stack(source);
+        let reported = parsed
+            .diagnostics
+            .as_complete()
+            .expect("the fixtures stay under the diagnostic ceilings")
+            .as_slice()
+            .iter()
+            .any(|diagnostic| diagnostic.code == NESTING_LIMIT);
+        let depth = parsed
+            .file
+            .declarations
+            .iter()
+            .map(|declaration| match declaration {
+                Declaration::Function(function) => block_depth(&function.body),
+                Declaration::Test(test) => block_depth(&test.body),
+                _ => 0,
+            })
+            .max()
+            .unwrap_or(0);
+        (depth, reported)
+    }
+
+    /// A body of `levels` `match` statements, each nested inside the previous one's
+    /// single arm. The arm bodies are inline statements, not blocks, so the arm side of
+    /// the nest opens no brace of its own.
+    fn inline_match_arms(levels: usize) -> String {
+        let mut source = String::from("module app\n\nfn main() {\n");
+        for _ in 0..levels {
+            source.push_str("match a {\nb => ");
+        }
+        source.push_str("return\n");
+        for _ in 0..levels {
+            source.push_str("}\n");
+        }
+        source.push_str("}\n");
+        source
+    }
+
+    /// A body of `levels` `if` statements, each the inline body of the previous one's
+    /// `else`. No brace appears anywhere in the nest.
+    fn brace_free_else_chain(levels: usize) -> String {
+        let mut source = String::from("module app\n\nfn main() {\n");
+        for _ in 0..levels {
+            source.push_str("if a\nelse\n");
+        }
+        source.push_str("return\n}\n");
+        source
+    }
+
+    /// Every clause whose body may be a single inline statement, as a nest that recurses
+    /// through that clause alone.
+    fn inline_clause_nests(levels: usize) -> Vec<(&'static str, String)> {
+        vec![
+            ("inline match arms", inline_match_arms(levels)),
+            ("brace-free else chain", brace_free_else_chain(levels)),
+        ]
+    }
+
+    /// The recursion stops at the typed limit on every inline-clause path, and the tree
+    /// it hands on is bounded by that limit rather than by how long the file is.
+    #[test]
+    fn an_inline_clause_nest_stops_at_the_typed_limit() {
+        for (label, source) in inline_clause_nests(NESTING_DEPTH_LIMIT * 4) {
+            let (depth, reported) = parsed_depth(source);
+            assert!(
+                depth <= DEEPEST_BOUNDED_TREE,
+                "{label} built a tree {depth} blocks deep, past the typed limit of \
+                 {NESTING_DEPTH_LIMIT} — the descent on that path is bounded by the \
+                 file's length, not by the limit"
+            );
+            assert!(
+                reported,
+                "{label} nests past the limit and must refuse with a located \
+                 `{NESTING_LIMIT}` finding rather than silently truncating"
+            );
+        }
+    }
+
+    /// The length of the file does not decide the depth. Four lengths, one bound: if the
+    /// admitted file length were what kept the recursion off the native stack, this is
+    /// where that dependency would show up as a depth that tracks the source.
+    #[test]
+    fn the_depth_limit_and_not_the_file_length_stops_the_descent() {
+        for multiple in [2usize, 4, 8, 16] {
+            let levels = NESTING_DEPTH_LIMIT * multiple;
+            for (label, source) in inline_clause_nests(levels) {
+                let bytes = source.len();
+                let (depth, _) = parsed_depth(source);
+                assert!(
+                    depth <= DEEPEST_BOUNDED_TREE,
+                    "{label} at {levels} levels ({bytes} source bytes) built a tree \
+                     {depth} blocks deep; the depth follows the file's length"
+                );
+            }
+        }
+    }
+
+    /// An inline-clause nest just under the limit is structured in full, so the refusal
+    /// above is the limit doing its work and not the parser refusing to descend at all.
+    #[test]
+    fn an_inline_clause_nest_under_the_limit_is_structured_in_full() {
+        let levels = NESTING_DEPTH_LIMIT / 2;
+        for (label, source) in inline_clause_nests(levels) {
+            let (depth, reported) = parsed_depth(source);
+            assert!(
+                depth >= levels,
+                "{label} at {levels} levels built only {depth} blocks, so the parser \
+                 refuses nests the limit admits"
+            );
+            assert!(
+                !reported,
+                "{label} at {levels} levels is inside the limit and must not report it"
+            );
+        }
     }
 }
