@@ -444,7 +444,7 @@ impl<'a> Session<'a> {
     /// At `Prepared` the artifact must still be exactly what the header binds:
     /// nothing has been installed, so the map admits one reading only.
     fn require_prepared(&self) -> Result<(), IdsPublicationError> {
-        match self.read_map()? {
+        match self.read_map(1)? {
             MapState::Prepared => self.require_prepared_bytes(),
             _ => Err(MapFault::OffMap { phase: 1 }.into()),
         }
@@ -454,7 +454,7 @@ impl<'a> Session<'a> {
     /// a crash between the `Installing` record and the mutation leaves the
     /// `Prepared` reading, and a crash after it leaves the installed reading.
     fn install(&self) -> Result<Terminal, IdsPublicationError> {
-        match self.read_map()? {
+        match self.read_map(INSTALLING)? {
             MapState::Prepared => {
                 self.require_prepared_bytes()?;
                 match self.header.base {
@@ -539,7 +539,7 @@ impl<'a> Session<'a> {
     /// marker and sync. Only that final directory sync ends the publication.
     fn settle(&mut self) -> Result<IdsPublication, IdsPublicationError> {
         let terminal = self.terminal.ok_or(MapFault::MissingTerminal)?;
-        let map = self.read_map()?;
+        let map = self.read_map(SETTLED)?;
         match (terminal, map) {
             (Terminal::Installed, MapState::Installed) => {
                 self.clean_stage(self.displaced_identity())?;
@@ -620,8 +620,10 @@ impl<'a> Session<'a> {
 
     /// Read the closed artifact map from name-to-inode mappings, link counts,
     /// and exact sizes. Byte runs are compared separately, at the points where
-    /// an exact comparison decides a mutation.
-    fn read_map(&self) -> Result<MapState, IdsPublicationError> {
+    /// an exact comparison decides a mutation. `phase` names the reader for an
+    /// off-map refusal and is supplied rather than read from the journal,
+    /// because the tail-derivation probe reads the map with no live journal.
+    fn read_map(&self, phase: u8) -> Result<MapState, IdsPublicationError> {
         let target = self.stat(self.guard.ledger_name())?;
         let staged = self.stat(self.guard.stage_name())?;
         let next = self.header.next_inode;
@@ -679,10 +681,7 @@ impl<'a> Session<'a> {
                 Ok(MapState::Reverted)
             }
             (Some(target), None, _) if target.identity() != next => Ok(MapState::RevertedClean),
-            _ => Err(MapFault::OffMap {
-                phase: self.phase(),
-            }
-            .into()),
+            _ => Err(MapFault::OffMap { phase }.into()),
         }
     }
 
@@ -787,7 +786,7 @@ fn pending_terminal(
         terminal: None,
         journal: None,
     };
-    match probe.read_map()? {
+    match probe.read_map(INSTALLING)? {
         MapState::Installed => Ok(Terminal::Installed),
         MapState::Reverted => Ok(Terminal::Reverted),
         MapState::Prepared | MapState::InstalledClean | MapState::RevertedClean => {

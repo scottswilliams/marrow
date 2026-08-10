@@ -144,10 +144,13 @@ impl<'a> IdsPublicationPending<'a> {
     /// # Errors
     ///
     /// Returns the fresh refusal when the publication still cannot settle. The
-    /// marker is retained either way, so a later process recovers it.
+    /// marker is retained, and a recovery that refuses quarantines publication
+    /// in this process exactly as a drop does: the retained handles go either
+    /// way, so a fresh process is what settles the marker next.
     pub fn recover(mut self) -> Result<IdsPublication, IdsPublicationError> {
-        self.armed = false;
-        self.session.drive()
+        let settled = self.session.drive();
+        self.armed = settled.is_err();
+        settled
     }
 }
 

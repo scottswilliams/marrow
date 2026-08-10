@@ -818,3 +818,29 @@ fn the_publication_owner_enumerates_no_directory() {
         }
     }
 }
+
+/// An unclassifiable map under an incomplete terminal record is a typed
+/// refusal, not a panic. Deriving the unique next record reads the artifact map
+/// with no live journal, so a reader that reached for one would fail here
+/// instead of retaining the state.
+#[test]
+fn an_off_map_state_under_an_incomplete_tail_refuses_without_panicking() {
+    let _serial = serialized();
+    let project = Project::new("off-map-tail");
+    project.write_meta("ids.publish.stage", b"successor");
+    let planted = Crash::new(&project, None, b"successor")
+        .installing()
+        .partial(settled_record(0), 6)
+        .witness_next("ids.publish.stage");
+    // Neither the artifact nor the stage is where any phase could have left it.
+    fs::remove_file(project.meta().join("ids.publish.stage")).expect("remove the stage");
+    planted.plant();
+
+    let refusal = project
+        .guard()
+        .recover_ids()
+        .expect_err("an unclassifiable map is retained corruption");
+    assert_eq!(refusal.refusal(), IdsRefusal::Corrupt);
+    assert!(!project.exists("ids"), "no artifact was written");
+    assert!(project.exists("ids.pending"), "the marker keeps gating");
+}
