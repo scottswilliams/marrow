@@ -3,9 +3,9 @@
 //! and function declarations and delegates statement and expression parsing.
 
 use super::FunctionHead;
-use super::block_lines::BlockLines;
 use super::head::{parse_enum_head, parse_resource_head, parse_store_head, parse_struct_head};
 use super::params::parse_function_head;
+use super::statement_capacity::StatementCapacity;
 use super::stmt::StmtParser;
 use super::tokens::{
     PathNameError, comment_from_token, doc_comment_text, find_top_level_equal, gap_after,
@@ -50,7 +50,7 @@ impl<'a, 'c> DeclParser<'a, 'c> {
             source,
             tokens,
             pos: 0,
-            declarations: Vec::with_capacity(BlockLines::measure(tokens).body()),
+            declarations: Vec::with_capacity(StatementCapacity::measure(tokens).body()),
             sink,
             depth: 0,
         }

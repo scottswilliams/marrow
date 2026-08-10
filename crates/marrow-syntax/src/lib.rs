@@ -106,14 +106,14 @@ pub const MAX_PARSE_BYTES_PER_SOURCE_BYTE: usize = 552;
 pub const MAX_PARSE_FIXED_BYTES: usize = 2 * SYNTAX_DIAGNOSTIC_COUNT_LIMIT * 256
     + 2 * SYNTAX_DIAGNOSTIC_OWNED_BYTES_LIMIT
     + size_of::<Token>()
-    + MAX_BLOCK_MEASUREMENT_BYTES;
+    + MAX_STATEMENT_CAPACITY_BYTES;
 
 /// What sizing a body's statement lists holds beyond its per-source-byte charge: an
-/// open-block stack the nesting limit bounds, and the smallest non-zero capacity its
-/// block vector takes. Published because it is part of [`MAX_PARSE_FIXED_BYTES`] and is
+/// open-region stack the nesting limit bounds, and the smallest non-zero capacity its
+/// region vector takes. Published because it is part of [`MAX_PARSE_FIXED_BYTES`] and is
 /// derived from a private frame this crate owns, so a caller accounting the fixed charge
 /// consumes it rather than restating it.
-pub const MAX_BLOCK_MEASUREMENT_BYTES: usize = parse_decl::BLOCK_MEASUREMENT_FIXED_BYTES;
+pub const MAX_STATEMENT_CAPACITY_BYTES: usize = parse_decl::STATEMENT_CAPACITY_FIXED_BYTES;
 
 /// The heap [`parse_source`] can allocate for a file of `source_bytes`.
 ///

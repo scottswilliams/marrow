@@ -1,19 +1,20 @@
-//! How many statements each `{ … }` block of a function body can hold, measured
-//! before the body is parsed so every statement list is allocated once at its final
-//! size.
+//! How many statements each brace-delimited *region* of a token slice can hold —
+//! a `{ … }` block, a `match` body, and the slice itself — measured before the slice is
+//! parsed so every statement list is allocated once at its final size.
 //!
-//! A block holds at most one statement per *statement start* it opens directly: a
-//! significant token at the block's own brace depth that follows a boundary — the
-//! block's own `{`, a `NEWLINE`, or the `}` closing a nested block. A newline is not
-//! the only boundary because a compound statement's body closes on a `}`, which leaves
-//! the cursor mid-line and the parser free to structure another statement from the same
-//! line (`if a {} if b {}`); counting lines would size such a block at one and leave the
-//! rest of it to be grown by doubling, which is what this pass exists to prevent.
+//! A region holds at most one statement per *statement start* it opens directly: a
+//! significant token at the region's own brace depth that follows a boundary — the
+//! region's own `{`, a `NEWLINE`, or a `}`. A newline is not the only boundary because a
+//! compound statement's body closes on a `}`, which leaves the cursor mid-line and the
+//! parser free to structure another statement from the same line (`if a {} if b {}`);
+//! counting lines would size such a region at one and leave the rest of it to be grown
+//! by doubling, which is what this pass exists to prevent. A `}` that closes no region
+//! is a boundary on the same terms — the parser skips it and structures what follows.
 //!
-//! Counting only a block's own starts is what makes the total sound: a nested start
-//! belongs to exactly one block, so summed over every block in a body the count is the
-//! body's own start count, where counting each block's whole extent would count a nested
-//! start once per enclosing block and over-reserve by the nesting depth.
+//! Counting only a region's own starts is what makes the total sound: a nested start
+//! belongs to exactly one region, so summed over every region in a slice the count is
+//! the slice's own start count, where counting each region's whole extent would count a
+//! nested start once per enclosing region and over-reserve by the nesting depth.
 //!
 //! A start costs at least two source bytes — its own token and the boundary separating
 //! it from the previous one — which is the bound the per-source-byte parse charge is
@@ -24,8 +25,8 @@
 //! is counted. Over-reserving a slot cannot make the list grow, and the two-byte floor
 //! holds for a counted start whether or not the parser spends it.
 //!
-//! One pass with a brace stack measures every block in a body, so the body costs a
-//! single walk of its tokens rather than one walk per block.
+//! One pass with a brace stack measures every region in a slice, so the slice costs a
+//! single walk of its tokens rather than one walk per region.
 //!
 //! This pass owns which brace-delimited regions the statement parser structures. Its
 //! stack is bounded by [`NESTING_DEPTH_LIMIT`] rather than by the source, so a `{` nested
@@ -42,25 +43,25 @@
 use crate::NESTING_DEPTH_LIMIT;
 use crate::token::{Token, TokenKind};
 
-/// What one measurement holds regardless of the body's length: the open-block stack,
+/// What one measurement holds regardless of the body's length: the open-region stack,
 /// which the nesting limit bounds rather than the source, and the smallest non-zero
-/// capacity its block vector takes. Both are constants, so they are charged once in
+/// capacity its region vector takes. Both are constants, so they are charged once in
 /// [`crate::MAX_PARSE_FIXED_BYTES`] rather than per source byte.
 pub(crate) const FIXED_BYTES: usize =
-    NESTING_DEPTH_LIMIT * size_of::<Frame>() + MIN_BLOCK_CAPACITY * size_of::<(u32, u32)>();
+    NESTING_DEPTH_LIMIT * size_of::<Frame>() + MIN_REGION_CAPACITY * size_of::<(u32, u32)>();
 
 /// The standard library's minimum non-zero capacity for an element of this width.
-const MIN_BLOCK_CAPACITY: usize = 4;
+const MIN_REGION_CAPACITY: usize = 4;
 
-/// The measured statement capacity of a body and of each block inside it.
-pub(super) struct BlockLines {
-    /// Statement starts directly in the body, outside every nested block.
+/// The measured statement capacity of a token slice and of each region inside it.
+pub(super) struct StatementCapacity {
+    /// Statement starts directly in the slice, outside every nested region.
     body: usize,
-    /// `(index of the `{`, statement starts directly in that block)`, by token index.
-    blocks: Box<[(u32, u32)]>,
+    /// `(index of the `{`, statement starts directly in that region)`, by token index.
+    regions: Box<[(u32, u32)]>,
 }
 
-/// One open block while measuring: where its `{` sits, the starts counted so far, and
+/// One open region while measuring: where its `{` sits, the starts counted so far, and
 /// whether a statement is already in progress.
 struct Frame {
     open: u32,
@@ -71,16 +72,16 @@ struct Frame {
     in_statement: bool,
 }
 
-impl BlockLines {
+impl StatementCapacity {
     pub(super) fn measure(tokens: &[Token]) -> Self {
         let mut body = Frame::new(0);
-        let mut open_blocks: Vec<Frame> = Vec::with_capacity(NESTING_DEPTH_LIMIT);
-        let mut blocks: Vec<(u32, u32)> = Vec::new();
+        let mut open_regions: Vec<Frame> = Vec::with_capacity(NESTING_DEPTH_LIMIT);
+        let mut regions: Vec<(u32, u32)> = Vec::new();
         // Open `{`s this pass left unmeasured. Measuring stops at the limit, so every
-        // unmeasured `{` sits inside the innermost measured block and a plain count
+        // unmeasured `{` sits inside the innermost measured region and a plain count
         // keeps the stack aligned: their `}` closes one of them and never pops a
         // measured frame. Popping for one would credit the rest of that measured
-        // block's starts to its parent and leave the block itself to grow from nothing.
+        // region's starts to its parent and leave the region itself to grow from nothing.
         let mut unmeasured = 0usize;
         for (index, token) in tokens.iter().enumerate() {
             match token.kind {
@@ -89,15 +90,15 @@ impl BlockLines {
                         unmeasured += 1;
                         continue;
                     }
-                    current(&mut body, &mut open_blocks).begin_statement();
+                    current(&mut body, &mut open_regions).begin_statement();
                     // Past the limit the parser skips the block rather than structuring
                     // it, so measuring deeper would size lists that are never built —
                     // and would make this stack grow with the source rather than with a
                     // fixed bound. The whole skipped extent is one statement of the
                     // block that holds it: the one begun above, and nothing within.
                     match u32::try_from(index) {
-                        Ok(open) if open_blocks.len() < NESTING_DEPTH_LIMIT => {
-                            open_blocks.push(Frame::new(open));
+                        Ok(open) if open_regions.len() < NESTING_DEPTH_LIMIT => {
+                            open_regions.push(Frame::new(open));
                         }
                         _ => unmeasured = 1,
                     }
@@ -108,8 +109,8 @@ impl BlockLines {
                         if unmeasured > 0 {
                             continue;
                         }
-                    } else if let Some(frame) = open_blocks.pop() {
-                        blocks.push((frame.open, frame.statements));
+                    } else if let Some(frame) = open_regions.pop() {
+                        regions.push((frame.open, frame.statements));
                     }
                     // A closed nested block ends the statement that held it, so the next
                     // significant token on the same line begins another one. A `}` that
@@ -117,44 +118,44 @@ impl BlockLines {
                     // it and structures what follows it on the same line, so letting the
                     // statement in progress run past it would leave every one of those
                     // uncounted.
-                    current(&mut body, &mut open_blocks).in_statement = false;
+                    current(&mut body, &mut open_regions).in_statement = false;
                 }
                 TokenKind::Newline => {
-                    current(&mut body, &mut open_blocks).in_statement = false;
+                    current(&mut body, &mut open_regions).in_statement = false;
                 }
                 TokenKind::Eof => {}
                 _ => {
                     if unmeasured == 0 {
-                        current(&mut body, &mut open_blocks).begin_statement();
+                        current(&mut body, &mut open_regions).begin_statement();
                     }
                 }
             }
         }
-        // A block left open at the end of the slice still gets its measurement: an
+        // A region left open at the end of the slice still gets its measurement: an
         // unclosed `{` holding a body's worth of statements would otherwise be the one
         // shape whose statement list is allocated by growing.
-        while let Some(frame) = open_blocks.pop() {
-            blocks.push((frame.open, frame.statements));
+        while let Some(frame) = open_regions.pop() {
+            regions.push((frame.open, frame.statements));
         }
-        blocks.sort_unstable_by_key(|(open, _)| *open);
+        regions.sort_unstable_by_key(|(open, _)| *open);
         Self {
             body: body.statements as usize,
-            blocks: blocks.into_boxed_slice(),
+            regions: regions.into_boxed_slice(),
         }
     }
 
-    /// The statement capacity of the body itself.
+    /// The statement capacity of the slice itself.
     pub(super) fn body(&self) -> usize {
         self.body
     }
 
-    /// The statement capacity of the block whose `{` is at `open`, or `None` when this
-    /// pass left that block unmeasured because it nests past [`NESTING_DEPTH_LIMIT`].
-    /// The parser builds exactly the blocks that answer `Some` here.
-    pub(super) fn block(&self, open: usize) -> Option<usize> {
+    /// The statement capacity of the region whose `{` is at `open`, or `None` when this
+    /// pass left that region unmeasured because it nests past [`NESTING_DEPTH_LIMIT`].
+    /// The parser builds exactly the regions that answer `Some` here.
+    pub(super) fn region(&self, open: usize) -> Option<usize> {
         let open = u32::try_from(open).ok()?;
-        match self.blocks.binary_search_by_key(&open, |(at, _)| *at) {
-            Ok(index) => Some(self.blocks[index].1 as usize),
+        match self.regions.binary_search_by_key(&open, |(at, _)| *at) {
+            Ok(index) => Some(self.regions[index].1 as usize),
             Err(_) => None,
         }
     }
@@ -178,8 +179,8 @@ impl Frame {
     }
 }
 
-fn current<'f>(body: &'f mut Frame, open_blocks: &'f mut [Frame]) -> &'f mut Frame {
-    open_blocks.last_mut().unwrap_or(body)
+fn current<'f>(body: &'f mut Frame, open_regions: &'f mut [Frame]) -> &'f mut Frame {
+    open_regions.last_mut().unwrap_or(body)
 }
 
 #[cfg(test)]
@@ -189,7 +190,7 @@ mod tests {
 
     /// A source's tokens, and the indices of its `{`s within the one function body it
     /// holds — the slice `DeclParser` hands the statement parser, which is what
-    /// [`BlockLines::measure`] runs over.
+    /// [`StatementCapacity::measure`] runs over.
     struct Body {
         tokens: Box<[Token]>,
         opens: Vec<usize>,
@@ -227,8 +228,8 @@ mod tests {
             Self { tokens, opens }
         }
 
-        fn measure(&self) -> BlockLines {
-            BlockLines::measure(&self.tokens)
+        fn measure(&self) -> StatementCapacity {
+            StatementCapacity::measure(&self.tokens)
         }
     }
 
@@ -261,26 +262,26 @@ mod tests {
     fn a_block_past_the_limit_closes_no_measured_frame() {
         let statements = 64;
         let body = Body::of(&nested_to_the_limit(statements));
-        let lines = body.measure();
+        let capacity = body.measure();
 
         let innermost = body.opens[NESTING_DEPTH_LIMIT - 1];
         let parent = body.opens[NESTING_DEPTH_LIMIT - 2];
         let past_the_limit = body.opens[NESTING_DEPTH_LIMIT];
 
         assert_eq!(
-            lines.block(innermost),
+            capacity.region(innermost),
             Some(statements + 1),
             "the innermost measured block holds the over-limit `if` and every statement \
              line after it"
         );
         assert_eq!(
-            lines.block(parent),
+            capacity.region(parent),
             Some(1),
             "its parent holds one statement — the `if` that opens the innermost block — \
              and must not be sized at its child's line count"
         );
         assert_eq!(
-            lines.block(past_the_limit),
+            capacity.region(past_the_limit),
             None,
             "a block past the limit is not measured, so the parser does not build it"
         );
@@ -291,10 +292,10 @@ mod tests {
     #[test]
     fn the_limit_decides_exactly_which_blocks_are_measured() {
         let body = Body::of(&nested_to_the_limit(4));
-        let lines = body.measure();
+        let capacity = body.measure();
         for (depth, open) in body.opens.iter().enumerate() {
             assert_eq!(
-                lines.block(*open).is_some(),
+                capacity.region(*open).is_some(),
                 depth < NESTING_DEPTH_LIMIT,
                 "the block at depth {depth} disagrees with the limit"
             );
@@ -319,11 +320,11 @@ mod tests {
         source.push_str("}\n");
 
         let body = Body::of(&source);
-        let lines = body.measure();
+        let capacity = body.measure();
         let measured = body
             .opens
             .iter()
-            .filter(|open| lines.block(**open).is_some())
+            .filter(|open| capacity.region(**open).is_some())
             .count();
         assert_eq!(
             measured, NESTING_DEPTH_LIMIT,
@@ -398,7 +399,7 @@ mod tests {
         let units = 64;
         let source = format!("module m\n\n{}\n", "fn f(){} ".repeat(units));
         let tokens = crate::lex_source(&source).tokens;
-        let measured = BlockLines::measure(&tokens).body();
+        let measured = StatementCapacity::measure(&tokens).body();
         let structured = crate::parse_source(&source).file.declarations.len();
 
         assert_eq!(
@@ -422,7 +423,7 @@ mod tests {
         let units = 64;
         let source = format!("module m\n{}\n", "const x = 1 }".repeat(units));
         let tokens = crate::lex_source(&source).tokens;
-        let measured = BlockLines::measure(&tokens).body();
+        let measured = StatementCapacity::measure(&tokens).body();
         let structured = crate::parse_source(&source).file.declarations.len();
 
         assert_eq!(
@@ -443,13 +444,13 @@ mod tests {
     fn the_measurements_sum_to_the_starts_they_came_from() {
         let statements = 32;
         let body = Body::of(&nested_to_the_limit(statements));
-        let lines = body.measure();
+        let capacity = body.measure();
         let total: usize = body
             .opens
             .iter()
-            .filter_map(|open| lines.block(*open))
+            .filter_map(|open| capacity.region(*open))
             .sum::<usize>()
-            + lines.body();
+            + capacity.body();
         // One `if a {` per level, the over-limit `if a {}` inside the innermost, and the
         // trailing statement lines. Each opens exactly one statement, in one block.
         let starts = NESTING_DEPTH_LIMIT + 1 + statements;
@@ -468,13 +469,13 @@ mod tests {
             let filler = unit.repeat(512);
             let source = format!("module m\n\nfn f() {{\n{filler}\n}}\n");
             let body = Body::of(&source);
-            let lines = body.measure();
+            let capacity = body.measure();
             let total: usize = body
                 .opens
                 .iter()
-                .filter_map(|open| lines.block(*open))
+                .filter_map(|open| capacity.region(*open))
                 .sum::<usize>()
-                + lines.body();
+                + capacity.body();
             assert!(
                 total * 2 <= source.len(),
                 "{unit:?} measured {total} starts from {} source bytes, under the two \

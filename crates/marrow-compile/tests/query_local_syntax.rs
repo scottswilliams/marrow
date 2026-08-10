@@ -610,7 +610,7 @@ fn accounted_query_parse_transient() -> usize {
     MAX_ADMITTED_FILE_BYTES * (source_byte_charge() + TOKEN_CHARGE + BLOCK_MEASUREMENT_CHARGE)
         + TOKEN_CHARGE
         + DIAGNOSTICS
-        + marrow_syntax::MAX_BLOCK_MEASUREMENT_BYTES
+        + marrow_syntax::MAX_STATEMENT_CAPACITY_BYTES
 }
 
 fn captured(files: Vec<(&str, Vec<u8>)>) -> Arc<ProjectInput> {
@@ -1741,7 +1741,7 @@ fn the_admitted_length_and_the_exported_term_agree_with_the_derivation() {
         "the rate `marrow-syntax` publishes drifted from the rate derived here"
     );
     assert_eq!(
-        TOKEN_CHARGE + DIAGNOSTICS + marrow_syntax::MAX_BLOCK_MEASUREMENT_BYTES,
+        TOKEN_CHARGE + DIAGNOSTICS + marrow_syntax::MAX_STATEMENT_CAPACITY_BYTES,
         marrow_syntax::MAX_PARSE_FIXED_BYTES,
         "the length-independent parse charge drifted from the one derived here"
     );

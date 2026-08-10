@@ -10,19 +10,19 @@
 //! statement parser, `statement_lines` parses single statement lines, and
 //! `tokens` holds the low-level token-slice helpers shared across all of them.
 
-mod block_lines;
 mod body;
 mod cursor;
 mod decl;
 mod head;
 mod members;
 mod params;
+mod statement_capacity;
 mod statement_lines;
 mod stmt;
 mod tokens;
 
-pub(crate) use block_lines::FIXED_BYTES as BLOCK_MEASUREMENT_FIXED_BYTES;
 pub(crate) use decl::DeclParser;
+pub(crate) use statement_capacity::FIXED_BYTES as STATEMENT_CAPACITY_FIXED_BYTES;
 
 use crate::ast::{KeyParam, ParamDecl, TypeExpr, TypeParamDecl};
 use crate::diagnostic::{ParseDiagnosticReason, SourceSpan};

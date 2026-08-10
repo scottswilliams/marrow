@@ -4,8 +4,8 @@
 //! or `}`, and a trailing clause (`else`, `on more`, a checked arm, a match arm)
 //! takes either a braced block or a single inline statement.
 
-use super::block_lines::BlockLines;
 use super::head::arm_pattern;
+use super::statement_capacity::StatementCapacity;
 use super::statement_lines::{parse_for_header, parse_if_const_head, parse_simple_statement};
 use super::tokens::{
     comment_from_token, expr_of, expr_of_after, find_top_level_equal, first_line_end,
@@ -66,7 +66,7 @@ pub(super) struct StmtParser<'a, 'c> {
     /// before parsing so every statement list is allocated at its final size. A list
     /// grown by pushing would hold up to its own size again in amortized slack, and
     /// the body's outermost block is the largest list a file can produce.
-    capacities: BlockLines,
+    capacities: StatementCapacity,
     /// Line comments for the block currently being parsed, in source order.
     /// Each nested block swaps in a fresh accumulator (see `parse_nested_block`)
     /// so a comment lands in the block it appears in.
@@ -77,7 +77,7 @@ pub(super) struct StmtParser<'a, 'c> {
     /// How many statement bodies deep the descent currently sits.
     ///
     /// This is a different question from which blocks the tree holds, and needs its own
-    /// answer. [`BlockLines`] owns the second: it is keyed on a `{`, so it can only
+    /// answer. [`StatementCapacity`] owns the second: it is keyed on a `{`, so it can only
     /// refuse a body that opens one. A trailing clause takes a *single inline statement*
     /// in place of a block (`else`\n`if …`, `b => match …`), and that statement may open
     /// a clause of its own, so a nest can recurse to any depth the file's length admits
@@ -95,7 +95,7 @@ impl<'a, 'c> StmtParser<'a, 'c> {
             source,
             tokens,
             pos: 0,
-            capacities: BlockLines::measure(tokens),
+            capacities: StatementCapacity::measure(tokens),
             comments: Vec::new(),
             sink,
             depth: 0,
@@ -708,7 +708,7 @@ impl<'a, 'c> StmtParser<'a, 'c> {
             );
             return (Vec::new(), start);
         }
-        let Some(capacity) = self.capacities.block(self.pos) else {
+        let Some(capacity) = self.capacities.region(self.pos) else {
             return (Vec::new(), self.skipped_block().span);
         };
         match self.descend(|parser| parser.measured_match_arms(capacity)) {
@@ -1235,7 +1235,7 @@ impl<'a, 'c> StmtParser<'a, 'c> {
         // already reported the located nesting-limit finding). Asking the pass that sized
         // the block whether it exists is what keeps the two from disagreeing about which
         // blocks the tree holds.
-        let Some(capacity) = self.capacities.block(self.pos) else {
+        let Some(capacity) = self.capacities.region(self.pos) else {
             return self.skipped_block();
         };
         // A brace at a depth the measurement admits can still sit under enough inline
