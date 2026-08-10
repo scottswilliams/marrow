@@ -69,17 +69,18 @@ impl SourceFile {
     }
 }
 
+/// `module a::b`. The path is a sequence of [`NameSegment`]s, so its spelling and the
+/// spans that spelling was written at cannot disagree; [`name_path_spelling`] renders it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ModuleDecl {
-    pub name: String,
-    pub segment_spans: Vec<SourceSpan>,
+    pub segments: Box<[NameSegment]>,
     pub span: SourceSpan,
 }
 
+/// `use a::b`, on the same terms as [`ModuleDecl`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UseDecl {
-    pub name: String,
-    pub segment_spans: Vec<SourceSpan>,
+    pub segments: Box<[NameSegment]>,
     pub span: SourceSpan,
 }
 
@@ -405,10 +406,20 @@ impl NameSegment {
 
 /// The `::`-joined source spelling of a name path.
 pub fn name_path_spelling(segments: &[NameSegment]) -> String {
+    joined(segments, "::")
+}
+
+/// The `.`-joined source spelling of a field path, which is how the grammar separates
+/// the segments of one.
+pub fn field_path_spelling(segments: &[NameSegment]) -> String {
+    joined(segments, ".")
+}
+
+fn joined(segments: &[NameSegment], separator: &str) -> String {
     let mut out = String::new();
     for (index, segment) in segments.iter().enumerate() {
         if index > 0 {
-            out.push_str("::");
+            out.push_str(separator);
         }
         out.push_str(segment.text());
     }
@@ -640,14 +651,15 @@ pub struct IndexDecl {
     pub span: SourceSpan,
 }
 
-/// One argument of an `index` declaration: a dotted field path as written, with the
-/// span of the whole path and one span per dotted segment, so a per-argument or
-/// per-segment diagnostic points at the offending path rather than the `index` line.
+/// One argument of an `index` declaration: a dotted field path, with the span of the
+/// whole path, so a per-argument or per-segment diagnostic points at the offending path
+/// rather than the `index` line. The path is a sequence of [`NameSegment`]s for the same
+/// reason a name path is — a segment without its span is not representable — and
+/// [`field_path_spelling`] renders it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IndexArg {
-    pub path: String,
+    pub segments: Box<[NameSegment]>,
     pub span: SourceSpan,
-    pub segment_spans: Box<[SourceSpan]>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

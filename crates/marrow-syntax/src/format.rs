@@ -96,7 +96,7 @@ fn format_parsed(source: &str, file: &crate::ast::SourceFile) -> String {
         sections.push(FormatSection {
             span: module.span,
             leading_line: module.span.line,
-            text: format!("module {}", module.name),
+            text: format!("module {}", crate::name_path_spelling(&module.segments)),
             kind: FormatSectionKind::Item,
             trailing_comment_line: TrailingCommentLine::Last,
         });
@@ -159,7 +159,10 @@ fn format_use_block(uses: &[crate::ast::UseDecl]) -> Option<FormatSection> {
     let anchor = uses
         .iter()
         .min_by_key(|use_decl| use_decl.span.start_byte)?;
-    let mut names: Vec<&str> = uses.iter().map(|use_decl| use_decl.name.as_str()).collect();
+    let mut names: Vec<String> = uses
+        .iter()
+        .map(|use_decl| crate::name_path_spelling(&use_decl.segments))
+        .collect();
     names.sort_unstable();
     names.dedup();
     let text = names
@@ -713,7 +716,7 @@ fn format_index_decl(index: &crate::IndexDecl, level: usize) -> String {
         index
             .args
             .iter()
-            .map(|arg| arg.path.as_str())
+            .map(|arg| crate::field_path_spelling(&arg.segments))
             .collect::<Vec<_>>()
             .join(", ")
     ));

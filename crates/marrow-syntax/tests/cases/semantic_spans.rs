@@ -55,6 +55,22 @@ fn assert_segments(source: &str, spans: &[SourceSpan], spellings: &[&str]) {
     );
 }
 
+/// A path holds its segments and their spans as one value, so this asserts the
+/// spellings and their sites together — the length equality `assert_segments` has to
+/// state for two parallel vectors is what the type now carries.
+fn assert_path(source: &str, segments: &[marrow_syntax::NameSegment], spellings: &[&str]) {
+    assert_eq!(
+        crate::common::segment_texts(segments),
+        spellings,
+        "path segments"
+    );
+    let spans: Vec<SourceSpan> = segments
+        .iter()
+        .map(marrow_syntax::NameSegment::span)
+        .collect();
+    assert_segments(source, &spans, spellings);
+}
+
 fn assert_within(outer: SourceSpan, inner: SourceSpan, subject: &str) {
     assert!(
         outer.start_byte <= inner.start_byte && inner.end_byte <= outer.end_byte,
@@ -141,19 +157,17 @@ fn parser_retains_every_semantic_site_span() {
     );
 
     let module = parsed.file.module.as_ref().expect("module");
-    assert_eq!(module.name, "app::semantic");
-    assert_segments(source, &module.segment_spans, &["app", "semantic"]);
-    for segment in &module.segment_spans {
-        assert_within(module.span, *segment, "module segment");
+    assert_path(source, &module.segments, &["app", "semantic"]);
+    for segment in &module.segments {
+        assert_within(module.span, segment.span(), "module segment");
     }
 
     let [import] = parsed.file.uses.as_slice() else {
         panic!("expected one import");
     };
-    assert_eq!(import.name, "std::bytes");
-    assert_segments(source, &import.segment_spans, &["std", "bytes"]);
-    for segment in &import.segment_spans {
-        assert_within(import.span, *segment, "import segment");
+    assert_path(source, &import.segments, &["std", "bytes"]);
+    for segment in &import.segments {
+        assert_within(import.span, segment.span(), "import segment");
     }
 
     let [
@@ -194,10 +208,10 @@ fn parser_retains_every_semantic_site_span() {
     );
     let single = &store.indexes[0].args[0];
     assert_site(source, single.span, "value");
-    assert_segments(source, &single.segment_spans, &["value"]);
+    assert_path(source, &single.segments, &["value"]);
     assert_within(
         single.span,
-        single.segment_spans[0],
+        single.segments[0].span(),
         "single-segment index argument",
     );
     assert_eq!(
@@ -206,17 +220,17 @@ fn parser_retains_every_semantic_site_span() {
     );
     let first = &store.indexes[1].args[0];
     assert_site(source, first.span, "value");
-    assert_segments(source, &first.segment_spans, &["value"]);
+    assert_path(source, &first.segments, &["value"]);
     assert_within(
         first.span,
-        first.segment_spans[0],
+        first.segments[0].span(),
         "first multi-argument index path",
     );
     let dotted = &store.indexes[1].args[1];
     assert_site(source, dotted.span, "meta.code");
-    assert_segments(source, &dotted.segment_spans, &["meta", "code"]);
-    for segment in &dotted.segment_spans {
-        assert_within(dotted.span, *segment, "dotted index-path segment");
+    assert_path(source, &dotted.segments, &["meta", "code"]);
+    for segment in &dotted.segments {
+        assert_within(dotted.span, segment.span(), "dotted index-path segment");
     }
 
     let [input, table, qualified, odd] = probe.params.as_slice() else {

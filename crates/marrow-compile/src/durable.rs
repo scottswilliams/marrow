@@ -1479,10 +1479,10 @@ impl<'a> IdentityResolver<'a> {
         let mut leading_key = false;
         let trailing_start = index.args.len().saturating_sub(keys.len());
         let mut ok = true;
-        let mut seen_args: Vec<&str> = Vec::with_capacity(index.args.len());
-        for (position, arg) in index.args.iter().enumerate() {
-            let span = arg.span;
-            let arg = arg.path.as_str();
+        let mut seen_args: Vec<String> = Vec::with_capacity(index.args.len());
+        for (position, component) in index.args.iter().enumerate() {
+            let span = component.span;
+            let arg = marrow_syntax::field_path_spelling(&component.segments);
             if seen_args.contains(&arg) {
                 self.reject_index(
                     span,
@@ -1495,8 +1495,10 @@ impl<'a> IdentityResolver<'a> {
                 ok = false;
                 continue;
             }
-            seen_args.push(arg);
-            if arg.contains('.') {
+            seen_args.push(arg.clone());
+            // A path of more than one segment reaches through a member. The segments are
+            // the path, so this asks the path rather than scanning a rendered spelling.
+            if component.segments.len() > 1 {
                 self.reject_index(
                     span,
                     format!(
@@ -1508,6 +1510,7 @@ impl<'a> IdentityResolver<'a> {
                 ok = false;
                 continue;
             }
+            let arg = arg.as_str();
             if let Some((_, key_id, scalar)) = keys.iter().find(|(name, _, _)| name == arg) {
                 if !index.unique && position < trailing_start {
                     leading_key = true;

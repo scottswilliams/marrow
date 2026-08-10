@@ -326,12 +326,8 @@ impl<'a, 'c> DeclParser<'a, 'c> {
             );
         } else {
             match name {
-                Ok((name, segment_spans)) => {
-                    file.module = Some(ModuleDecl {
-                        name,
-                        segment_spans,
-                        span,
-                    });
+                Ok(segments) => {
+                    file.module = Some(ModuleDecl { segments, span });
                 }
                 Err(PathNameError::ReservedSegment(reserved)) => {
                     self.report_reserved_path_segment(reserved);
@@ -349,11 +345,7 @@ impl<'a, 'c> DeclParser<'a, 'c> {
         let span = self.header_span();
         let header = self.take_header_line();
         match import_name(self.source, &header[1..]) {
-            Ok((name, segment_spans)) => file.uses.push(UseDecl {
-                name,
-                segment_spans,
-                span,
-            }),
+            Ok(segments) => file.uses.push(UseDecl { segments, span }),
             Err(PathNameError::ReservedSegment(reserved)) => {
                 self.report_reserved_path_segment(reserved);
             }

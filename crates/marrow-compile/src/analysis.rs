@@ -2242,13 +2242,11 @@ mod completion {
             });
         }
         for use_decl in &file.uses {
-            let segment = use_decl
-                .name
-                .rsplit("::")
-                .next()
-                .unwrap_or(use_decl.name.as_str());
+            let Some(segment) = use_decl.segments.last() else {
+                continue;
+            };
             candidates.push(Candidate {
-                label: segment.to_string(),
+                label: segment.text().to_string(),
                 kind: CandidateKind::Module,
                 detail: String::new(),
             });

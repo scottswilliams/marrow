@@ -64,8 +64,12 @@ fn parses_reference_sample_structure() {
         parsed.diagnostics
     );
     assert_eq!(
-        parsed.file.module.as_ref().map(|m| m.name.as_str()),
-        Some("shelf::sample")
+        parsed
+            .file
+            .module
+            .as_ref()
+            .map(|m| marrow_syntax::name_path_spelling(&m.segments)),
+        Some("shelf::sample".to_string())
     );
 
     let book = parsed.file.resource("Book").expect("Book resource");

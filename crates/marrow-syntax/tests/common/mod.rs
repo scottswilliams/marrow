@@ -212,6 +212,8 @@ pub fn segment_texts(segments: &[marrow_syntax::NameSegment]) -> Vec<&str> {
 }
 
 /// The dotted paths of an `index` declaration's arguments, on the same terms.
-pub fn index_arg_paths(args: &[marrow_syntax::IndexArg]) -> Vec<&str> {
-    args.iter().map(|arg| arg.path.as_str()).collect()
+pub fn index_arg_paths(args: &[marrow_syntax::IndexArg]) -> Vec<String> {
+    args.iter()
+        .map(|arg| marrow_syntax::field_path_spelling(&arg.segments))
+        .collect()
 }

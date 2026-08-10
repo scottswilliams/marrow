@@ -7,7 +7,7 @@ use std::borrow::Cow;
 use super::{ParseError, ParseResult};
 use crate::NESTING_DEPTH_LIMIT;
 use crate::ast::{
-    Comment, CommentMarker, CommentPlacement, Expression, IdentityTypeExpr, TypeExpr,
+    Comment, CommentMarker, CommentPlacement, Expression, IdentityTypeExpr, NameSegment, TypeExpr,
 };
 use crate::diagnostic::{
     DiagnosticReason, DiscardingSyntaxErrorSink, ExpectedSyntax, ParseDiagnosticReason, SourceSpan,
@@ -37,15 +37,19 @@ pub(super) fn first_line_end(source: &str, start: usize) -> usize {
 pub(super) fn doc_comment_text(text: &str) -> String {
     text.strip_prefix("///").unwrap_or(text).trim().to_string()
 }
-fn qualified_name(source: &str, tokens: &[Token]) -> Option<(String, Vec<SourceSpan>)> {
+/// The segments of a `::`-qualified path, each carrying the span it was spelled at.
+/// The whole spelling is checked against the path grammar before any segment is built,
+/// so a segment list is only ever produced for a path the grammar admits.
+fn qualified_name(source: &str, tokens: &[Token]) -> Option<Box<[NameSegment]>> {
     let first = tokens.first()?;
     let last = tokens.last()?;
     let text = &source[first.span.start_byte..last.span.end_byte];
     is_qualified_name(text).then(|| {
-        (
-            text.to_string(),
-            tokens.iter().step_by(2).map(|token| token.span).collect(),
-        )
+        tokens
+            .iter()
+            .step_by(2)
+            .map(|token| NameSegment::new(token.text(source), token.span))
+            .collect()
     })
 }
 /// Why a `use`/`module` path failed to parse: a reserved word stands where a
@@ -58,7 +62,7 @@ pub(super) enum PathNameError {
 pub(super) fn module_name(
     source: &str,
     tokens: &[Token],
-) -> Result<(String, Vec<SourceSpan>), PathNameError> {
+) -> Result<Box<[NameSegment]>, PathNameError> {
     if let Some(reserved) = reserved_segment(tokens) {
         return Err(PathNameError::ReservedSegment(*reserved));
     }
@@ -67,7 +71,7 @@ pub(super) fn module_name(
 pub(super) fn import_name(
     source: &str,
     tokens: &[Token],
-) -> Result<(String, Vec<SourceSpan>), PathNameError> {
+) -> Result<Box<[NameSegment]>, PathNameError> {
     // A project may declare `module std::bytes`, so the reserved type word `bytes`
     // stays legal as that import's final segment; a reserved segment in any other
     // position is the path error. This is a path-shape allowance, not a shipped

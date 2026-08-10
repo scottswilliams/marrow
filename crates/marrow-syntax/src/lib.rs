@@ -24,7 +24,7 @@ pub use ast::{
     LiteralKind, LoopOrder, MatchArm, ModuleDecl, NameSegment, NominalDecl, ParamDecl,
     ParsedSource, RangeExpr, Recovery, ResourceDecl, ResourceMember, SavedRoot, SourceFile,
     Statement, StoreDecl, StructDecl, SupportSpelling, TestDecl, TraversalBound, TypeConstraint,
-    TypeExpr, TypeParamDecl, UnaryOp, UseDecl, name_path_spelling, range_expr,
+    TypeExpr, TypeParamDecl, UnaryOp, UseDecl, field_path_spelling, name_path_spelling, range_expr,
 };
 pub use diagnostic::{
     CompleteSyntaxDiagnostics, Diagnose, Diagnostic, DiagnosticReason, ExpectedSyntax,

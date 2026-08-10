@@ -524,14 +524,13 @@ pub(super) fn parse_index_tokens(source: &str, tokens: &[Token]) -> ParseResult<
     }
     let mut args = Vec::new();
     for part in split_top_level_commas(&inner) {
-        let (path, segment_spans) = field_path(source, part).ok_or(ParseError::new(
+        let segments = field_path(source, part).ok_or(ParseError::new(
             ParseDiagnosticReason::Expected(ExpectedSyntax::IndexFieldPath),
             "expected index field path",
         ))?;
         args.push(IndexArg {
-            path,
+            segments,
             span: line_span_or(part, part[0].span),
-            segment_spans: segment_spans.into_boxed_slice(),
         });
     }
     let tail = &rest[close + 1..];
@@ -556,7 +555,7 @@ pub(super) fn parse_index_tokens(source: &str, tokens: &[Token]) -> ParseResult<
 }
 
 /// Validate a dotted field path (`field` or `field.sub`) and return its text.
-fn field_path(source: &str, tokens: &[Token]) -> Option<(String, Vec<SourceSpan>)> {
+fn field_path(source: &str, tokens: &[Token]) -> Option<Box<[NameSegment]>> {
     if tokens.is_empty() {
         return None;
     }
@@ -574,12 +573,13 @@ fn field_path(source: &str, tokens: &[Token]) -> Option<(String, Vec<SourceSpan>
     if expect_segment {
         return None;
     }
-    let start = tokens[0].span.start_byte;
-    let end = tokens[tokens.len() - 1].span.end_byte;
-    Some((
-        source[start..end].to_string(),
-        tokens.iter().step_by(2).map(|token| token.span).collect(),
-    ))
+    Some(
+        tokens
+            .iter()
+            .step_by(2)
+            .map(|token| NameSegment::new(token.text(source), token.span))
+            .collect(),
+    )
 }
 
 /// Parse a `required? name [keys]? (: type)?` resource member head into a field

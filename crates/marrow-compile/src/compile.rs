@@ -905,6 +905,18 @@ fn run_semantic(
     broken_modules: BTreeSet<String>,
     facts: &mut AnalysisFactCollector,
 ) -> SemanticOutcome {
+    /// A path's segments in the dotted spelling this crate identifies modules by. The
+    /// source spells the same path with `::`; the two are different representations of
+    /// one path, so this builds the identity from the segments rather than rewriting the
+    /// separators of a rendered spelling.
+    fn dotted_module_path(segments: &[marrow_syntax::NameSegment]) -> String {
+        segments
+            .iter()
+            .map(marrow_syntax::NameSegment::text)
+            .collect::<Vec<_>>()
+            .join(".")
+    }
+
     let mut diagnostics = DiagnosticCollector::new();
     // Store roots whose durable identity failed admission, steered to their identity
     // reports once each across the whole compile rather than at every reference.
@@ -917,7 +929,7 @@ fn run_semantic(
     let mut module_names: BTreeSet<String> = BTreeSet::new();
     for module in parsed {
         if let Some(header) = &module.ast.module {
-            let declared = header.name.replace("::", ".");
+            let declared = dotted_module_path(&header.segments);
             if declared == module.name {
                 module_names.insert(module.name.clone());
             } else {
@@ -927,7 +939,7 @@ fn run_semantic(
                     header.span,
                     format!(
                         "module header `{}` does not match its path; expected `module {}`",
-                        header.name,
+                        marrow_syntax::name_path_spelling(&header.segments),
                         module.name.replace('.', "::")
                     ),
                 ));
@@ -942,7 +954,7 @@ fn run_semantic(
     for module in parsed {
         let bindings = imports.entry(module.name.clone()).or_default();
         for use_decl in &module.ast.uses {
-            let target = use_decl.name.replace("::", ".");
+            let target = dotted_module_path(&use_decl.segments);
             let segment = target
                 .rsplit('.')
                 .next()
@@ -953,7 +965,10 @@ fn run_semantic(
                     Code::CheckImport.as_str(),
                     &module.file,
                     use_decl.span,
-                    format!("no module `{}` in this project", use_decl.name),
+                    format!(
+                        "no module `{}` in this project",
+                        marrow_syntax::name_path_spelling(&use_decl.segments)
+                    ),
                 ));
                 continue;
             }
