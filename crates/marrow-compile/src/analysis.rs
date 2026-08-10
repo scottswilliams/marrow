@@ -2948,6 +2948,56 @@ mod fact_ledger_tests {
         );
     }
 
+    /// The exported term for the peak attributable to producing facts.
+    const MAX_ANALYSIS_FACT_TRANSIENT_BYTES: u64 = 25 * 1024 * 1024;
+
+    /// Amortized growth plus the one buffer a `Vec` still holds while it copies into its
+    /// successor: a growing collection is live at three times its admitted length.
+    const GROWTH_AND_COPY: u64 = 3;
+
+    /// The **live fact payload** — everything the ledger holds while it is retaining — is
+    /// an arithmetic property of its own ceilings, not a property of the workload that
+    /// filled it.
+    ///
+    /// This is what keeps `MAX_ANALYSIS_FACT_TRANSIENT_BYTES` from being hostage to
+    /// fixture choice. Admission stops at [`MAX_SNAPSHOT_FACT_COUNT`] and
+    /// [`MAX_SNAPSHOT_FACT_BYTES`] at the push that produced each fact, so no body,
+    /// however wide, can make the payload larger than this; a denser fixture can only
+    /// reach the ceiling sooner. Every charged spelling is held in an exactly sized
+    /// `Box<str>`, so the byte ceiling is the physical figure and not only a logical one.
+    ///
+    /// What it does **not** cover, and what the lane's measured differential does: the
+    /// producer-side rendering of one display at a time, which is built and freed as it
+    /// is charged, and the checker's own working set, which is not fact state.
+    #[test]
+    fn the_live_fact_payload_is_bounded_by_the_ledger_ceilings() {
+        // Every counted family shares one ceiling, so charging the whole ceiling at the
+        // widest of their unit sizes bounds every mixture of them.
+        let counted = GROWTH_AND_COPY * MAX_SNAPSHOT_FACT_COUNT * fact_unit();
+        // Broken-module status and the per-module spelling table are bounded by project
+        // admission, not by the fact count.
+        let per_file = GROWTH_AND_COPY
+            * max_files()
+            * (size_of::<FileRef>() as u64
+                + size_of::<u32>() as u64
+                + size_of::<(FileRef, Box<[DeclSymbol]>)>() as u64);
+        // One module's outline is live before it is charged, bounded by its own per-file
+        // node ceiling and dropped as it is admitted.
+        let outline =
+            GROWTH_AND_COPY * MAX_DOCUMENT_SYMBOLS_PER_FILE * size_of::<DeclSymbol>() as u64;
+        let payload = counted + MAX_SNAPSHOT_FACT_BYTES + per_file + outline;
+        assert_eq!(
+            payload, 21_176_320,
+            "the accounted live fact payload moved; re-derive the exported transient \
+             term before changing this number"
+        );
+        assert!(
+            payload <= MAX_ANALYSIS_FACT_TRANSIENT_BYTES,
+            "accounted live fact payload {payload} exceeds the exported \
+             MAX_ANALYSIS_FACT_TRANSIENT_BYTES {MAX_ANALYSIS_FACT_TRANSIENT_BYTES}"
+        );
+    }
+
     /// The compaction is load-bearing, not cosmetic: the same accounting against the
     /// representation this row replaced does **not** close.
     ///
