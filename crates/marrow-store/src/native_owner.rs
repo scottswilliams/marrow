@@ -76,19 +76,23 @@ impl NativeLockOwner {
         bytes
     }
 
+    /// The owner a marker names, or `None` for any byte string that is not a whole layout
+    /// this build reads. Every access is bounds-checked: the bytes are a contender's input,
+    /// so a length this decoder does not expect must reach a verdict rather than an abort.
     fn decode(bytes: &[u8]) -> Option<Self> {
-        if bytes.len() < 5 || &bytes[0..4] != LOCK_MAGIC {
+        let field = |from: usize, to: usize| bytes.get(from..to);
+        let byte = |at: usize| bytes.get(at).copied();
+        if field(0, 4)? != LOCK_MAGIC {
             return None;
         }
-        let field = |from: usize, to: usize| bytes.get(from..to);
-        match bytes[4] {
+        match byte(4)? {
             LEGACY_BOUND_VERSION if bytes.len() == LEGACY_BOUND_BYTES => Some(Self {
                 pid: u32::from_be_bytes(field(5, 9)?.try_into().ok()?),
                 instance: Some(field(9, 25)?.try_into().ok()?),
                 acquired_unix_secs: u64::from_be_bytes(field(25, 33)?.try_into().ok()?),
             }),
             LOCK_VERSION => {
-                let instance = match (bytes[5], bytes.len()) {
+                let instance = match (byte(5)?, bytes.len()) {
                     (PENDING_TAG, PENDING_BYTES) => None,
                     (BOUND_TAG, BOUND_BYTES) => Some(field(18, 34)?.try_into().ok()?),
                     _ => return None,
@@ -226,7 +230,14 @@ impl OwnerLock {
             }
         }
 
-        let prior_unclean = file.metadata().map_err(NativeLockError::Io)?.len() != 0;
+        // Only now that exclusion is settled. A second link to the marker leaves the bytes
+        // this acquisition is about to publish rewritable under a name the owner does not
+        // hold, so it is refused — but it does not divide exclusion (every opener of either
+        // name locks the same node), and refusing on it ahead of the lock would hand a
+        // contender an I/O verdict where the exclusion verdict applies.
+        let held = file.metadata().map_err(NativeLockError::Io)?;
+        admit_held_marker(&held).map_err(NativeLockError::Io)?;
+        let prior_unclean = held.len() != 0;
         write_owner(
             &mut file,
             NativeLockOwner {
@@ -514,19 +525,23 @@ impl ByteEngine for NativeEngineOwner {
     }
 }
 
-/// Open the store directory's owner marker, creating it when absent, and admit it
-/// as that directory's own regular single-link entry.
+/// Open the store directory's owner marker, creating it when absent, as that directory's
+/// own regular file.
 ///
-/// The entry is classified before the open so a link standing in for the marker is
-/// refused rather than created through, and the opened node is compared against the
-/// entry afterwards, so the handle every later read, write, and lock call uses is
-/// the one the directory names. This is one process's custody of its own store
-/// directory, not a defence against a hostile writer inside it: that actor already
+/// The entry is classified before the open, so in the ordinary case a link standing in for
+/// the marker is refused rather than created through; a link planted between that
+/// classification and the open can still be created through, and the comparison of the
+/// opened node against the entry afterwards is what refuses it. Either way the handle every
+/// later read, write, and lock call uses is the node the directory names. How many names
+/// reach that node is deliberately not decided here: a second link does not divide
+/// exclusion, so it is admitted after the lock. This is one process's custody of its own
+/// store directory, not a defence against a hostile writer inside it: that actor already
 /// holds the store's bytes.
+#[cfg(unix)]
 fn open_marker(dir: &Path) -> std::io::Result<File> {
     let path = dir.join(NATIVE_LOCK_FILE);
     match std::fs::symlink_metadata(&path) {
-        Ok(named) => admit_marker_entry(&named)?,
+        Ok(named) => admit_marker_node(&named)?,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(error) => return Err(error),
     }
@@ -537,7 +552,7 @@ fn open_marker(dir: &Path) -> std::io::Result<File> {
         .truncate(false)
         .open(&path)?;
     let opened = file.metadata()?;
-    admit_marker_entry(&opened)?;
+    admit_marker_node(&opened)?;
     if !names_same_node(&std::fs::symlink_metadata(&path)?, &opened) {
         return Err(marker_refusal(
             "the store lock entry does not name the opened marker",
@@ -546,14 +561,41 @@ fn open_marker(dir: &Path) -> std::io::Result<File> {
     Ok(file)
 }
 
-fn admit_marker_entry(entry: &Metadata) -> std::io::Result<()> {
-    if !entry.file_type().is_file() {
-        return Err(marker_refusal("the store lock is not a regular file"));
+/// The marker's custody rests on link counts and node identity, which this crate reads
+/// through the Unix metadata it has. A platform without them is refused rather than served
+/// by a weaker check.
+#[cfg(not(unix))]
+fn open_marker(_dir: &Path) -> std::io::Result<File> {
+    Err(marker_refusal(
+        "the store lock is admitted on Unix platforms only",
+    ))
+}
+
+#[cfg(unix)]
+fn admit_marker_node(entry: &Metadata) -> std::io::Result<()> {
+    if entry.file_type().is_file() {
+        Ok(())
+    } else {
+        Err(marker_refusal("the store lock is not a regular file"))
     }
-    if !is_single_link(entry) {
-        return Err(marker_refusal("the store lock carries more than one link"));
+}
+
+/// The marker admission that may run only once exclusion is settled: the bytes an owner
+/// publishes must be reachable under exactly the name it holds.
+#[cfg(unix)]
+fn admit_held_marker(entry: &Metadata) -> std::io::Result<()> {
+    if std::os::unix::fs::MetadataExt::nlink(entry) == 1 {
+        Ok(())
+    } else {
+        Err(marker_refusal("the store lock carries more than one link"))
     }
-    Ok(())
+}
+
+#[cfg(not(unix))]
+fn admit_held_marker(_entry: &Metadata) -> std::io::Result<()> {
+    Err(marker_refusal(
+        "the store lock is admitted on Unix platforms only",
+    ))
 }
 
 fn marker_refusal(message: &'static str) -> std::io::Error {
@@ -561,24 +603,9 @@ fn marker_refusal(message: &'static str) -> std::io::Error {
 }
 
 #[cfg(unix)]
-fn is_single_link(entry: &Metadata) -> bool {
-    std::os::unix::fs::MetadataExt::nlink(entry) == 1
-}
-
-#[cfg(not(unix))]
-fn is_single_link(_entry: &Metadata) -> bool {
-    true
-}
-
-#[cfg(unix)]
 fn names_same_node(named: &Metadata, opened: &Metadata) -> bool {
     use std::os::unix::fs::MetadataExt;
     named.dev() == opened.dev() && named.ino() == opened.ino()
-}
-
-#[cfg(not(unix))]
-fn names_same_node(named: &Metadata, _opened: &Metadata) -> bool {
-    !named.file_type().is_symlink()
 }
 
 /// The holder identity a marker carries, or `None` when it carries none this build
