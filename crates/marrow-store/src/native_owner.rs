@@ -353,10 +353,11 @@ impl Drop for OwnerLock {
             // marker's lock is leaked would leave the quarantine standing on a name that a
             // writer inside the directory can replace.
             DropDisposition::Quarantine => {
-                for handle in [self.directory_node.take(), self.file.take()] {
-                    if let Some(handle) = handle {
-                        std::mem::forget(handle);
-                    }
+                for handle in [self.directory_node.take(), self.file.take()]
+                    .into_iter()
+                    .flatten()
+                {
+                    std::mem::forget(handle);
                 }
             }
         }
