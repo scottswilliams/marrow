@@ -90,8 +90,7 @@ impl RowHeader {
             parent: self.parent,
             journal_inode: self.journal_inode,
         };
-        let stage = stage_spelling();
-        let stage = stage.as_bytes();
+        let stage = stage_spelling().as_bytes();
         let mut bytes = Vec::with_capacity(
             COMMON_LEN + 16 + 2 + stage.len() + 8 + self.base_bytes.len() + self.next_bytes.len(),
         );

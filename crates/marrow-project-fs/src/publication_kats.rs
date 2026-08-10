@@ -1252,7 +1252,7 @@ fn the_written_ignore_names_every_transient_the_protocol_can_leave() {
     let derived = PendingName::derive(&name(ledger)).expect("the fixed base name derives");
     for spelling in [
         ledger,
-        &crate::publication::stage_spelling(),
+        crate::publication::stage_spelling(),
         derived.pending().as_str(),
         derived.claim().as_str(),
         ".gitignore",

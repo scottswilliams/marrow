@@ -90,6 +90,7 @@ mod protocol;
 
 use std::fmt;
 use std::path::Path;
+use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use marrow_codes::Code;
@@ -137,8 +138,14 @@ const IGNORE_READ_CEILING: usize = 4096;
 /// The fixed stage entry's spelling. The frozen row header embeds it and the
 /// guard admits it, and both take it from here so the ledger's entry name has
 /// one owner across the pure/adapter boundary.
-pub(crate) fn stage_spelling() -> String {
-    format!("{IDS_ENTRY}{STAGE_SUFFIX}")
+///
+/// The spelling is joined from the pure owner's constant once per process
+/// rather than spelled as a literal here, so a rename there moves it; the row
+/// header encodes and decodes it on every publication and every recovery, and
+/// neither should pay for the join.
+pub(crate) fn stage_spelling() -> &'static str {
+    static STAGE: OnceLock<String> = OnceLock::new();
+    STAGE.get_or_init(|| format!("{IDS_ENTRY}{STAGE_SUFFIX}"))
 }
 /// The fixed bound on either byte run the header carries.
 const LEDGER_BYTE_CEILING: usize = MAX_IDS_BYTES;
@@ -475,7 +482,7 @@ impl ProjectMetadataWriteGuard {
         Ok(Self {
             journal: PendingName::derive(&ledger)
                 .expect("the fixed journal names are admitted spellings"),
-            stage: admitted_name(&stage_spelling()),
+            stage: admitted_name(stage_spelling()),
             ledger,
             meta,
             _lock: lock,
@@ -682,7 +689,7 @@ fn untracked_entry_names() -> Vec<String> {
         PendingName::derive(&ledger).expect("the fixed journal names are admitted spellings");
     vec![
         LOCK_NAME.to_owned(),
-        stage_spelling(),
+        stage_spelling().to_owned(),
         journal.pending().as_str().to_owned(),
         journal.claim().as_str().to_owned(),
     ]
