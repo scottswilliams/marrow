@@ -808,39 +808,49 @@ fn ledger_full() -> CompileResourceLimit {
 /// order: every later phase resolves annotations through it.
 struct CompleteTypeRegistry;
 
-/// Every declared function signature resolved, as a zero-size proof token.
-///
-/// `Artifacts.functions` holds this, not the table. [`CompleteFunctionRegistry`] is
-/// its only minter, so the property the artifact set protects — a resolved signature
-/// table nothing vouches for is unrepresentable at `encode` — is preserved verbatim:
-/// the encode gate consumes the token, and the token cannot be forged outside the
-/// owner that reads the ledger to mint it.
-struct SignaturesComplete;
+/// The signature table and the proof that it is complete, kept in their own module
+/// so the proof's private field is out of reach of every other line in this file.
+mod signatures {
+    use super::FunctionRegistry;
 
-/// The sole owner of the resolved signature table.
-///
-/// The table is always built: a signature refused for a parameter or return type is
-/// a refused ledger entry, not a withheld table, so a call to it reuses that cause
-/// while every unrelated body still lowers and reports its own errors. Availability
-/// and the value are minted by this one owner, and the availability proof
-/// ([`SignaturesComplete`]) is zero-sized and unforgeable outside it.
-struct CompleteFunctionRegistry(FunctionRegistry);
+    /// Every declared function signature resolved, as a zero-size proof token.
+    ///
+    /// `Artifacts.functions` holds this, not the table. The private field is what
+    /// makes the property the artifact set protects — a resolved signature table
+    /// nothing vouches for is unrepresentable at `encode` — a compile-time one: the
+    /// token has no literal form outside this module, so
+    /// [`CompleteFunctionRegistry::complete`] below is the only expression in the
+    /// crate that produces one. A fieldless unit struct would be constructible by
+    /// name anywhere the type is visible, which is the whole of the encode gate.
+    pub(super) struct SignaturesComplete(());
 
-impl CompleteFunctionRegistry {
-    /// The resolved signature table every dependent phase resolves call sites
-    /// through. Always available: a refused signature answers with its cause.
-    fn signatures(&self) -> &FunctionRegistry {
-        &self.0
-    }
+    /// The sole owner of the resolved signature table.
+    ///
+    /// The table is always built: a signature refused for a parameter or return type
+    /// is a refused ledger entry, not a withheld table, so a call to it reuses that
+    /// cause while every unrelated body still lowers and reports its own errors.
+    /// Availability and the value are minted by this one owner.
+    pub(super) struct CompleteFunctionRegistry(pub(super) FunctionRegistry);
 
-    /// The completeness proof, `Some` exactly when every declared signature was
-    /// accepted. Read from the ledger, not from a flag the build loop maintained.
-    fn complete(&self) -> Option<SignaturesComplete> {
-        self.0
-            .every_signature_accepted()
-            .then_some(SignaturesComplete)
+    impl CompleteFunctionRegistry {
+        /// The resolved signature table every dependent phase resolves call sites
+        /// through. Always available: a refused signature answers with its cause.
+        pub(super) fn signatures(&self) -> &FunctionRegistry {
+            &self.0
+        }
+
+        /// The completeness proof, `Some` exactly when every declared signature was
+        /// accepted. Read from the ledger, not from a flag the build loop
+        /// maintained.
+        pub(super) fn complete(&self) -> Option<SignaturesComplete> {
+            self.0
+                .every_signature_accepted()
+                .then_some(SignaturesComplete(()))
+        }
     }
 }
+
+use signatures::{CompleteFunctionRegistry, SignaturesComplete};
 
 /// Every generic template's once-checked proof was accepted and no instantiation
 /// limit stopped the pass, so the queued instance set is trustworthy.
@@ -3091,6 +3101,11 @@ mod tests {
     /// the artifact set protects, that a resolved signature table nothing vouches for
     /// is unrepresentable at encode, is preserved verbatim while the table itself
     /// stays available to every phase that resolves call sites through it.
+    ///
+    /// Unforgeability is enforced by the token's private field rather than asserted
+    /// here: `SignaturesComplete(())` has no literal form outside the `signatures`
+    /// module, so writing one in this file does not compile. Zero size is what this
+    /// test still owns — the proof must cost the artifact set nothing.
     #[test]
     fn the_signature_completeness_proof_is_zero_sized() {
         assert_eq!(std::mem::size_of::<SignaturesComplete>(), 0);
