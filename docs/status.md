@@ -100,9 +100,9 @@ immutable `AnalysisSnapshot` carrying the complete per-file diagnostic set and
 selective hover, definition, checked-format, completion, signature-help, and
 document-symbol queries as typed present, absent, or syntax/dependency-unavailable
 facts. Every editor fact is admitted against the snapshot's fact count and byte
-ceilings as it is produced, so a project whose facts would exceed a public snapshot
-bound is refused as a typed resource limit rather than materialized and then
-rejected; the snapshot retains no parse tree, and completion and signature-help
+ceilings at the push that produced it — no producer stages its own — so a project
+whose facts would exceed a public snapshot bound is refused as a typed resource
+limit rather than materialized and then rejected; the snapshot retains no parse tree, and completion and signature-help
 queries re-parse the one file they name. The
 independent verifier (`marrow-verify`) is the only image decoder and rejects a
 malformed or hostile image in bounded phases — envelope, table closure,

@@ -120,6 +120,35 @@ fn a_valid_module_keeps_hover_facts_past_a_sibling_parse_error() {
     }
 }
 
+/// A fact is admitted where it is derived, and a later failure of the pass that derived
+/// it does not retract it. A body that fails to type-check still answers hover for the
+/// uses that resolved before the failure — the resilience an editor needs most while a
+/// file is being written — and the same law is why the once-checked template pass keeps
+/// the facts it derived even though its throwaway draft and registry clone are rewound.
+#[test]
+fn a_body_that_fails_to_check_keeps_the_facts_it_already_derived() {
+    let source = "module main
+
+pub fn f(x: int): int {
+    var t: int = x
+    return \"not an int\"
+}
+";
+    let snapshot = snap(&[("src/main.mw", source)]);
+    assert!(
+        !snapshot.diagnostics().is_empty(),
+        "the fixture's body fails to check"
+    );
+    let use_offset = offset_of(source, "= x") + "= ".len();
+    match snapshot.hover(&identity("src/main.mw"), use_offset) {
+        Ok(Fact::Present(hover)) => assert_eq!(hover.display(), "int"),
+        other => panic!(
+            "expected the resolved use's fact to survive the body's failure, got {}",
+            label(&other)
+        ),
+    }
+}
+
 #[test]
 fn hover_on_a_same_module_call_shows_the_resolved_signature() {
     let source = "pub fn add(a: int, b: int): int {\n    return a\n}\n\n\
