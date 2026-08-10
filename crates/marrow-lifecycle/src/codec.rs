@@ -56,28 +56,28 @@ impl FormatError {
     }
 }
 
+/// A rejection reads as the predicate of the artifact that carried it: the caller knows
+/// which artifact it was reading and names it, so composing the two produces one sentence
+/// with one subject.
 impl std::fmt::Display for FormatError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            FormatError::BadMagic => write!(f, "not a Marrow store artifact (bad magic)"),
-            FormatError::UnknownVersion { found } => {
-                write!(f, "unsupported store artifact version {found}")
+            FormatError::BadMagic => {
+                write!(f, "does not begin with a Marrow store artifact's magic")
             }
-            FormatError::Truncated => write!(f, "the store artifact is truncated"),
-            FormatError::TrailingBytes => write!(f, "the store artifact has trailing bytes"),
+            FormatError::UnknownVersion { found } => {
+                write!(f, "records version {found}, which this build does not read")
+            }
+            FormatError::Truncated => write!(f, "is truncated"),
+            FormatError::TrailingBytes => write!(f, "has trailing bytes after its last field"),
             FormatError::LengthOverflow { field } => {
-                write!(f, "the store artifact field {field} exceeds its bound")
+                write!(f, "exceeds the bound its {field} field allows")
             }
             FormatError::UnknownDiscriminant { field } => {
-                write!(
-                    f,
-                    "the store artifact field {field} has an unknown discriminant"
-                )
+                write!(f, "has an unknown discriminant in its {field} field")
             }
-            FormatError::DigestMismatch => write!(f, "the store artifact digest does not match"),
-            FormatError::Malformed { reason } => {
-                write!(f, "the store artifact is malformed: {reason}")
-            }
+            FormatError::DigestMismatch => write!(f, "does not match its sealing digest"),
+            FormatError::Malformed { reason } => write!(f, "is malformed: {reason}"),
         }
     }
 }

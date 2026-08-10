@@ -122,8 +122,10 @@ pub enum AdmissionFault {
     MultiplyLinked { links: u64 },
     /// The entry changed under the owner between its pre-read witness and its recheck.
     Unstable(Instability),
-    /// The bytes are not a well-formed container, including a file beyond the exact ceiling
-    /// its own recorded version selects.
+    /// The file is larger than the exact ceiling its own recorded version selects, so it is
+    /// refused before its bytes are allocated for.
+    OverCeiling { ceiling: u64 },
+    /// The bytes are not a well-formed container.
     Format(FormatError),
 }
 
@@ -148,14 +150,37 @@ impl AdmissionError {
     pub fn code(&self) -> &'static str {
         match &self.fault {
             AdmissionFault::Format(error) => error.code(),
+            AdmissionFault::OverCeiling { .. } => Code::StoreLimit.as_str(),
             AdmissionFault::MultiplyLinked { .. } | AdmissionFault::Unstable(_) => {
                 Code::StoreCorruption.as_str()
             }
-            AdmissionFault::Custody(CustodyError::ModeDenied { .. }) => {
-                Code::StorePermissionDenied.as_str()
-            }
-            AdmissionFault::Custody(_) => Code::StoreIo.as_str(),
+            AdmissionFault::Custody(error) => custody_code(error),
         }
+    }
+}
+
+/// The code a custody refusal reports. A substitution — a link, a node of the wrong kind, a
+/// name that no longer resolves, an identity that drifted — is the store directory not
+/// holding the artifact admission requires, which is the verdict its multiply-linked and
+/// unstable siblings already reach; owner bits that deny the open are a permission refusal;
+/// and only an unclassified failure of the operation itself is I/O.
+///
+/// A platform this build's descriptor-rooted adapter does not qualify, and a filesystem that
+/// cannot provide an operation's required semantics, are neither a property of the store nor
+/// of this process's access to it: no store can be opened here at all. They report as I/O
+/// because no dotted code distinguishes them today; the refusal names the platform in prose.
+fn custody_code(error: &CustodyError) -> &'static str {
+    match error {
+        CustodyError::ModeDenied { .. } => Code::StorePermissionDenied.as_str(),
+        CustodyError::SymlinkRefused { .. }
+        | CustodyError::WrongNodeKind { .. }
+        | CustodyError::NotADirectory { .. }
+        | CustodyError::IdentityDrift { .. }
+        | CustodyError::NotFound { .. }
+        | CustodyError::AlreadyExists { .. } => Code::StoreCorruption.as_str(),
+        CustodyError::UnqualifiedPlatform { .. }
+        | CustodyError::Unsupported { .. }
+        | CustodyError::Io { .. } => Code::StoreIo.as_str(),
     }
 }
 
@@ -163,6 +188,11 @@ impl std::fmt::Display for AdmissionError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let entry = self.entry.label();
         match &self.fault {
+            AdmissionFault::Custody(CustodyError::UnqualifiedPlatform { os, arch }) => write!(
+                formatter,
+                "the store {entry} cannot be admitted on {os}/{arch}: this build admits a store \
+                 directory on macOS, or on Linux for x86_64 and aarch64, only",
+            ),
             AdmissionFault::Custody(error) => {
                 write!(
                     formatter,
@@ -176,6 +206,11 @@ impl std::fmt::Display for AdmissionError {
             AdmissionFault::Unstable(instability) => {
                 write!(formatter, "the store {entry} {}", instability.describe())
             }
+            AdmissionFault::OverCeiling { ceiling } => write!(
+                formatter,
+                "the store {entry} is larger than the {ceiling}-byte ceiling the version it \
+                 records allows",
+            ),
             AdmissionFault::Format(error) => write!(formatter, "the store {entry} {error}"),
         }
     }
@@ -228,21 +263,21 @@ impl AdmittedStoreDir {
         artifact: Artifact,
         ceiling: impl FnOnce(&[u8; ARTIFACT_PREFIX_BYTES]) -> Result<u64, FormatError>,
     ) -> Result<Vec<u8>, AdmissionFault> {
-        let entry = artifact.entry();
         let name = artifact.name();
         let file = self.dir.open_file(&name).map_err(AdmissionFault::Custody)?;
         let opened = file.stat().map_err(AdmissionFault::Custody)?;
         require_single_link(&opened)?;
 
         let ceiling = ceiling(&read_prefix(&file)?).map_err(AdmissionFault::Format)?;
+        let over_ceiling = || AdmissionFault::OverCeiling { ceiling };
         if opened.size() > ceiling {
-            return Err(over_ceiling(entry));
+            return Err(over_ceiling());
         }
 
-        let bound = usize::try_from(ceiling.saturating_add(1)).map_err(|_| over_ceiling(entry))?;
+        let bound = usize::try_from(ceiling.saturating_add(1)).map_err(|_| over_ceiling())?;
         let bytes = file.read_prefix(bound).map_err(AdmissionFault::Custody)?;
         if bytes.len() as u64 > ceiling {
-            return Err(over_ceiling(entry));
+            return Err(over_ceiling());
         }
 
         let reread = file.stat().map_err(AdmissionFault::Custody)?;
@@ -280,12 +315,6 @@ fn require_single_link(stat: &EntryStat) -> Result<(), AdmissionFault> {
             links: stat.nlink(),
         })
     }
-}
-
-fn over_ceiling(entry: StoreEntry) -> AdmissionFault {
-    AdmissionFault::Format(FormatError::LengthOverflow {
-        field: entry.label(),
-    })
 }
 
 /// The engine database path within `dir`.

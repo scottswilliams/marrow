@@ -174,7 +174,7 @@ impl std::fmt::Display for ProvisionImageError {
             ),
             ProvisionImageError::Entropy(error) => write!(f, "{error}"),
             ProvisionImageError::Head(error) => {
-                write!(f, "the store head could not be built: {error}")
+                write!(f, "the store head could not be built: it {error}")
             }
             ProvisionImageError::Provision(error) => write!(f, "{error}"),
         }

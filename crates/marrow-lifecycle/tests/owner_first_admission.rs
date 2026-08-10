@@ -492,7 +492,9 @@ fn the_head_ceiling_admits_its_maximum_and_refuses_one_byte_more() {
 
 /// An artifact reached through a symbolic link is refused, not followed. The store directory
 /// names its artifacts; a link standing in for one names bytes outside the directory the
-/// owner holds, so admission refuses it rather than reading through it.
+/// owner holds, so admission refuses it rather than reading through it — as the store
+/// directory not holding the artifact, which is what its multiply-linked sibling below also
+/// reports.
 #[cfg(unix)]
 #[test]
 fn a_symbolic_link_standing_in_for_an_artifact_is_refused() {
@@ -505,10 +507,10 @@ fn a_symbolic_link_standing_in_for_an_artifact_is_refused() {
 
         match open(&store, schemas(), sites()) {
             Ok(_) => panic!("admission followed a symbolic link standing in for the {artifact}"),
-            Err(error) => assert_ne!(
+            Err(error) => assert_eq!(
                 error.code(),
-                "store.locked",
-                "a linked {artifact} is a substitution refusal, not contention",
+                "store.corruption",
+                "a linked {artifact} is a substitution refusal, not contention or I/O: {error}",
             ),
         }
     }
@@ -516,7 +518,8 @@ fn a_symbolic_link_standing_in_for_an_artifact_is_refused() {
 
 /// An artifact carrying a second hard link is refused. A one-link regular file is the whole
 /// of the artifact's reachability under the owner's directory; a second link is a name the
-/// owner does not hold, through which the bytes admission just checked can be rewritten.
+/// owner does not hold, through which the bytes admission just checked can be rewritten. It
+/// reports as the same refusal its symbolic-link sibling above reaches.
 #[cfg(unix)]
 #[test]
 fn a_second_hard_link_to_an_artifact_is_refused() {
@@ -528,11 +531,41 @@ fn a_second_hard_link_to_an_artifact_is_refused() {
 
         match open(&store, schemas(), sites()) {
             Ok(_) => panic!("admission accepted a multiply-linked {artifact}"),
-            Err(error) => assert_ne!(
+            Err(error) => assert_eq!(
                 error.code(),
-                "store.locked",
-                "a multiply-linked {artifact} is a substitution refusal, not contention",
+                "store.corruption",
+                "a multiply-linked {artifact} is a substitution refusal, not contention: {error}",
             ),
+        }
+    }
+}
+
+/// One refusal, one subject. An admission refusal composes the artifact it names with the
+/// rejection that artifact reached, so what reaches a user is a single sentence about a
+/// single thing rather than two subjects stacked.
+#[test]
+fn an_admission_refusal_reads_as_one_sentence_about_one_artifact() {
+    for (artifact, damage, expected) in [
+        (
+            "head",
+            Box::new(|bytes: &mut Vec<u8>| bytes[7] ^= 0xFF) as Box<dyn Fn(&mut Vec<u8>)>,
+            "the store head does not match its sealing digest",
+        ),
+        (
+            "envelope",
+            Box::new(|bytes: &mut Vec<u8>| bytes[4] = 0x7F),
+            "the store envelope records version 127, which this build does not read",
+        ),
+    ] {
+        let (_dir, store) = provisioned(&format!("one-subject-{artifact}"));
+        let path = store.join(artifact);
+        let mut bytes = std::fs::read(&path).expect("read artifact");
+        damage(&mut bytes);
+        std::fs::write(&path, &bytes).expect("write damaged artifact");
+
+        match open(&store, schemas(), sites()) {
+            Ok(_) => panic!("a damaged {artifact} was admitted"),
+            Err(error) => assert_eq!(error.to_string(), expected),
         }
     }
 }
