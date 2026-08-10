@@ -168,6 +168,9 @@ impl FactSpan {
         // the admission ceiling is inside it (`the_admission_ceiling_fits_the_fact_
         // coordinate_domain`), so a widened ceiling is a failing debug assertion here
         // rather than facts that quietly stop resolving.
+        // Profiles cannot disagree: no admitted span reaches the saturating branch. The
+        // drive refuses a file past `MAX_PARSED_FILE_BYTES`, which is orders below
+        // `u32::MAX`, so the reachable domain is identical either way.
         debug_assert!(
             span.end_byte <= u32::MAX as usize,
             "a span leaves the domain"
@@ -922,6 +925,9 @@ impl AnalysisFactCollector {
     /// names a module of the project this ledger was built over, so the lookup is total;
     /// an absent one would under-charge silently rather than refuse.
     fn spelling_bytes(&self, file: FileRef) -> u64 {
+        // Profiles cannot disagree: `file_bytes` is sized at this ledger's own project
+        // and every `FileRef` the drive mints indexes that project, so the `unwrap_or`
+        // is unreachable and neither profile ever reads its zero.
         debug_assert!(
             file.index() < self.file_bytes.len(),
             "a coordinate names a module of this ledger's own project"

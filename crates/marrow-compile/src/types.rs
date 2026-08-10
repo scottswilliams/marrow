@@ -298,10 +298,11 @@ pub(crate) enum GenericCacheInvariant {
     /// `(template, args)` key to a row that does not carry that key: the secondary
     /// index diverged from its append-order authority vector.
     MintIndexDrift,
-    /// A mint appended a `(template, args)` key that `type_index` already held. A mint
-    /// reaches the append only on a dedup miss, so a displaced key means the dedup probe
-    /// and the index disagree — the same divergence `MintIndexDrift` names, observed at
-    /// the write. Rejected here so a duplicate instantiation row can never be admitted.
+    /// A mint or reserve appended a `(template, args)` key that `type_index` or
+    /// `fn_index` already held. It reaches the append only on a dedup miss, so a
+    /// displaced key means the dedup probe and the index disagree — the same divergence
+    /// `MintIndexDrift` names, observed at the write. Rejected so a duplicate
+    /// instantiation row can never be admitted.
     MintKeyAlreadyPresent,
 }
 
@@ -1354,6 +1355,9 @@ impl DisplayScratch {
 
     fn leave_row(&mut self, row: usize) {
         let active = &mut self.active_rows[row];
+        // Profiles cannot disagree: the write is idempotent. Only a caller whose
+        // `enter_row` returned true leaves, and clearing an already-clear slot is the
+        // same state either way.
         debug_assert_eq!(*active, 1);
         *active = 0;
     }
@@ -1367,6 +1371,7 @@ impl DisplayScratch {
 
     fn leave_collection(&mut self, index: u16) {
         let active = &mut self.active_collections[index as usize];
+        // Idempotent on the same terms as `leave_row`.
         debug_assert_eq!(*active, 1);
         *active = 0;
     }
@@ -1942,6 +1947,9 @@ impl TypeMetadataView<'_> {
     where
         I: DoubleEndedIterator<Item = GArg>,
     {
+        // Profiles cannot disagree: the drain loop below empties `tasks` on every path
+        // that returns `Ok`, and a `?` leaves entries behind only after an invariant that
+        // has already ended the compile.
         debug_assert!(scratch.tasks.is_empty());
         let generic_parent = match owner {
             Some(id) => {
@@ -2197,6 +2205,9 @@ impl TypeMetadataView<'_> {
         self.validate_args_with(&inst.args, Some(inst.id), scratch)?;
         self.registry
             .validate_inst_body_metadata(inst.template, &inst.args, inst.id, body)?;
+        // Profiles cannot disagree: nothing here branches on the flag. The
+        // `validate_args_with` call above visits this row, and this restates that
+        // postcondition beside the `Ok` it returns either way.
         debug_assert!(scratch.seen_rows[index]);
         Ok(Some(body))
     }
@@ -4557,12 +4568,20 @@ impl TypeRegistry {
             args,
             func,
         };
-        // Keep the lookup-only reuse index in lockstep with its authority; a reserve
-        // only appends on a dedup miss, so this key is new.
+        // Keep the lookup-only reuse index in lockstep with its authority. A reserve
+        // only appends on a dedup miss, so this key is new; a pre-existing entry means
+        // the dedup probe and the index disagree. Reject it as a typed invariant on the
+        // same terms as the type mint: the append below reserves an image function index
+        // and queues a body for it, so a duplicate key would mint a second reservation
+        // and a second lowering for one instantiation.
         let displaced = generics
             .fn_index
             .insert((inst.template, inst.args.clone()), row);
-        debug_assert!(displaced.is_none(), "fn reserve index key already present");
+        if displaced.is_some() {
+            return Err(
+                GenericInvariant::CacheState(GenericCacheInvariant::MintKeyAlreadyPresent).into(),
+            );
+        }
         generics.fn_insts.push(inst.clone());
         generics.fn_queue.push_back(inst);
         Ok(func)
@@ -4710,6 +4729,10 @@ impl TypeRegistry {
         }
         drop(collections);
 
+        // Profiles cannot disagree: the drift these two restate is already a typed
+        // release outcome. The reuse probe above compares the looked-up row against the
+        // spec it carries and rejects a mismatch as `MintIndexDrift`, so an index that
+        // fell out of step with the draft is refused at the next read in either profile.
         let id = draft.add_collection_type(spec.definition());
         debug_assert_eq!(id.index() as usize, cache_index);
         let mut collections = self.collections.borrow_mut();
@@ -6921,11 +6944,15 @@ fn render_best_effort_display(
             match frame {
                 BestEffortDisplayFrame::Text(text) => output.push_str(text),
                 BestEffortDisplayFrame::LeaveRow(row) => {
+                    // Profiles cannot disagree: `leave_row` takes the frame's own row,
+                    // not the popped one, so nothing here reads what this compares. The
+                    // pop keeps `entered` in step for the unwind path below.
                     let removed = entered.pop();
                     debug_assert_eq!(removed, Some(DisplayNode::Row(row)));
                     display.leave_row(row);
                 }
                 BestEffortDisplayFrame::LeaveCollection(index) => {
+                    // Unread on the same terms as the row arm above.
                     let removed = entered.pop();
                     debug_assert_eq!(removed, Some(DisplayNode::Collection(index)));
                     display.leave_collection(index);
@@ -7191,6 +7218,9 @@ fn render_validated_display_arg(
             match frame {
                 ValidatedDisplayFrame::Text(text) => output.push_str(text),
                 ValidatedDisplayFrame::Leave(node) => {
+                    // Profiles cannot disagree: `leave` takes the frame's own node, so
+                    // nothing here reads what this compares; the pop keeps `entered` in
+                    // step for the unwind path below.
                     let removed = entered.pop();
                     debug_assert_eq!(removed, Some(node));
                     display.leave(node);
@@ -7384,6 +7414,7 @@ fn render_validated_anchor_arg(
             match frame {
                 ValidatedAnchorFrame::Text(text) => output.push_str(text),
                 ValidatedAnchorFrame::Leave(node) => {
+                    // Unread on the same terms as the validated-display walker above.
                     let removed = entered.pop();
                     debug_assert_eq!(removed, Some(node));
                     display.leave(node);

@@ -653,35 +653,69 @@ fn no_phase_runs_on_an_empty_diagnostic_set() {
     );
 }
 
-/// The compiler driver and the lowering owner it drives. A guard that decides one of
-/// their outcomes decides what the compiler proved about a program.
-const DRIVER_FILES: &[&str] = &["compile.rs", "lower/mod.rs", "lower/registry.rs"];
+/// The `debug_assert` sites this crate deliberately keeps, with the exact count each
+/// file carries. Every one was audited and each is annotated at its line with why the
+/// two profiles cannot disagree about it: the guarded condition is unreachable inside a
+/// bound the crate already enforces, the write it precedes is idempotent, or nothing
+/// downstream reads the value it compares.
+///
+/// The counts are exact in both directions. A new site fails this gate, and so does a
+/// removed one, so the list cannot drift into naming sites that no longer exist and
+/// silently licensing new ones in their place.
+const PROFILE_GUARD_ALLOWLIST: &[(&str, usize)] = &[("types.rs", 10), ("analysis.rs", 2)];
 
-/// A reserved index that does not match the minted one is a typed invariant in every
-/// profile. A `debug_assert` family guard would make the release build disagree with the
-/// debug build about what the compiler proved, so none decides an outcome in the driver.
+/// A profile-dependent guard makes the release build disagree with the debug build about
+/// what the compiler proved. None may decide an outcome anywhere in this crate.
+///
+/// The gate was once scoped to the driver files by name, which said nothing about the
+/// checker and analysis owners where every such guard in the crate actually lives. It
+/// reads the whole production inventory instead, so a guard added to a file no list here
+/// names is a failure rather than a review miss.
 #[test]
-fn the_driver_carries_no_profile_dependent_guard() {
-    for file in DRIVER_FILES {
-        let code = production_code_of(file);
-        for shape in [
-            "debug_assert",
-            "cfg!(debug_assertions)",
-            "#[cfg(debug_assertions)]",
-        ] {
-            let lines: Vec<usize> = code
-                .lines()
-                .enumerate()
-                .filter(|(_, line)| line.contains(shape))
-                .map(|(index, _)| index + 1)
-                .collect();
-            assert!(
-                lines.is_empty(),
-                "a profile-dependent guard must not decide a compiler outcome: \
-                 {shape} in {file} at {lines:?}",
-            );
+fn no_profile_dependent_guard_decides_a_compiler_outcome() {
+    // A conditional-compilation form has no audited use at all: unlike `debug_assert`,
+    // it changes which code exists rather than which checks run.
+    for shape in ["cfg!(debug_assertions)", "#[cfg(debug_assertions)]"] {
+        let found = production_occurrences(shape);
+        assert!(
+            found.is_empty(),
+            "a profile-dependent guard must not decide a compiler outcome: {shape} at \
+             {found:?}",
+        );
+    }
+
+    let mut counted: Vec<(String, usize)> = Vec::new();
+    for path in src_files() {
+        if is_test_only_file(&path) {
+            continue;
+        }
+        let source = fs::read_to_string(&path).expect("read source file");
+        let code = production_code(&source);
+        let hits = code
+            .lines()
+            .filter(|line| line.contains("debug_assert"))
+            .count();
+        if hits > 0 {
+            let name = path
+                .strip_prefix(Path::new(env!("CARGO_MANIFEST_DIR")).join("src"))
+                .expect("a source under this crate's src")
+                .to_string_lossy()
+                .into_owned();
+            counted.push((name, hits));
         }
     }
+    counted.sort();
+    let mut expected: Vec<(String, usize)> = PROFILE_GUARD_ALLOWLIST
+        .iter()
+        .map(|(file, count)| ((*file).to_string(), *count))
+        .collect();
+    expected.sort();
+    assert_eq!(
+        counted, expected,
+        "the audited `debug_assert` sites moved. A new one needs the audit the allowlist \
+         records — that the two profiles cannot disagree about it — and a removed one \
+         needs its count dropped so this list keeps saying what is actually there",
+    );
 }
 
 /// The row derives no pending-diagnostic representation and mints no per-artifact cause
