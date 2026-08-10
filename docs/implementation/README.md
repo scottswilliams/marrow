@@ -149,14 +149,17 @@ The invariant it rests on is a **declared cap of 512 bytes per source byte, over
 every node family the parser builds** — not a single total. The derived maximum is
 481, over roughly twenty families, so shrinking the widest one promotes the next;
 a total stated on its own would let a widened field hide behind whichever family
-happened not to be deciding it. The cap is asserted per family, and the charge
-tables destructure exhaustively, so a new field or variant fails to build before it
-can widen anything.
+happened not to be deciding it. The cap is asserted per family. A widened field
+moves its family's row, because the row is derived from the representation's
+width; a field that owns a heap buffer is invisible to that width, so every
+priced family also names all of its fields in a typechecked pattern, and adding
+one fails to build until it is written down and priced.
 
 The derivation runs in three steps. A `Statement` is the widest node the parser
-stores in a list, and the grammar spends at least two source bytes on one — a
-content byte and a line terminator no other statement uses — so a statement line
-charges one slot plus one content byte per further byte; which line length is worst
+stores in a list, and the grammar spends at least two source bytes on one — its own
+token and the boundary that separates it from the previous statement, a newline or
+the `}` closing a nested block — so a statement charges one slot plus one content
+byte per further byte; which length is worst
 depends on which of the two is wider, and both regimes are taken. A content byte
 buys at most one call argument, expression node, or annotation in its widest
 placement plus that node's own allocations. A container slot is charged at the

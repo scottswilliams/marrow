@@ -54,7 +54,7 @@ use marrow_syntax::{
     EnumPayloadField, Expression, ForName, IfConstBinding, IndexArg, IndexDecl, InterpolationPart,
     KeyParam, LiteralKind, MatchArm, NameSegment, ParamDecl, ResourceMember,
     SYNTAX_DIAGNOSTIC_COUNT_LIMIT, SYNTAX_DIAGNOSTIC_OWNED_BYTES_LIMIT, SourceSpan, Statement,
-    Token, TypeExpr, TypeParamDecl, UnaryOp, UseDecl,
+    SupportSpelling, Token, TypeExpr, TypeParamDecl, UnaryOp, UseDecl,
 };
 
 /// The largest file drive admission lets through — the worst case a query-local parse can
@@ -541,6 +541,23 @@ fn declaration_level_charges() -> Vec<(&'static str, usize, usize)> {
                 + boxed_slice_bytes::<NameSegment>(1)
                 + boxed_str_bytes(1),
             5,
+        ),
+        // Every declaration node retains its `///` doc lines as a `Vec<String>`, which
+        // is an allocation per declaration and a `String` per line. The marker is the
+        // three bytes a line pays exclusively; its trailing newline is not counted, so
+        // the rate is charged against a shorter line than the grammar admits.
+        (
+            "a declaration's doc lines",
+            vec_bytes::<String>(1) + string_bytes(1),
+            3,
+        ),
+        // `supports a, b`: one capability spelling and the comma separating it from the
+        // previous one. The first carries no comma of its own, so it is charged against
+        // the first byte of its own name — deliberately double-charged, like `Argument`.
+        (
+            "SupportSpelling",
+            vec_bytes::<SupportSpelling>(1) + string_bytes(1),
+            1,
         ),
     ]
 }
@@ -1383,8 +1400,13 @@ fn the_query_parse_transient_closes_under_the_exported_term() {
 /// of them widens that family's charge, and this fails at that family — before the
 /// widening can be absorbed by the distance between the derived maximum and the exported
 /// term, and whether or not the family that grew is the one currently deciding the
-/// maximum. `expression_own_bytes` and the two charge tables destructure exhaustively, so
-/// a genuinely new field or variant fails to build here first.
+/// maximum.
+///
+/// A widened field is caught two ways. Its family's slot is charged from `size_of`, so a
+/// wider field moves the row here. Its *own allocations* are not visible to `size_of` at
+/// all — a new `Vec<String>` costs 24 bytes of slot and an unbounded heap buffer — so
+/// those are caught by [`every_charged_family_names_all_of_its_fields`], which fails to
+/// build until the new field is written down and priced.
 #[test]
 fn no_node_family_exceeds_the_declared_source_byte_cap() {
     let families = source_byte_charges_by_family();
@@ -1410,6 +1432,184 @@ fn no_node_family_exceeds_the_declared_source_byte_cap() {
         "the derived maximum disagrees with the widest family, so the layered charge \
          functions and the flat family list have drifted apart"
     );
+}
+
+/// **The enforcement artifact for the charge tables.** Every family the tables price
+/// names all of its fields here, so adding one fails to build until it is priced.
+///
+/// A charge row is a width lookup: `size_of` moves when a field widens, but it says
+/// nothing about a field that owns a heap buffer, and a row's `+ string_bytes(1)` term is
+/// a hand-written statement of which fields those are. Two families carrying exactly that
+/// shape — every declaration's `docs: Vec<String>` and a nominal's `supports` — had no row
+/// at all while both tables were only lookups. Naming the fields is what makes that
+/// omission a build failure rather than a silent under-charge.
+///
+/// The patterns are typechecked and never run; a closure body is the smallest place to
+/// write one without constructing a value of every family. `NameSegment` is absent
+/// because its fields are private: a visibility boundary already stops a field from being
+/// added and read without the crate noticing.
+#[test]
+fn every_charged_family_names_all_of_its_fields() {
+    let _ = |value: &Argument| {
+        let Argument { name, value } = value;
+        let _ = (name, value);
+    };
+    let _ = |value: &KeyParam| {
+        let KeyParam {
+            name,
+            name_span,
+            ty,
+        } = value;
+        let _ = (name, name_span, ty);
+    };
+    let _ = |value: &MatchArm| {
+        let MatchArm {
+            path,
+            bindings,
+            block,
+            span,
+        } = value;
+        let _ = (path, bindings, block, span);
+    };
+    let _ = |value: &ElseIf| {
+        let ElseIf { condition, block } = value;
+        let _ = (condition, block);
+    };
+    let _ = |value: &IfConstBinding| {
+        let IfConstBinding {
+            name,
+            name_span,
+            ty,
+            value: bound,
+        } = value;
+        let _ = (name, name_span, ty, bound);
+    };
+    let _ = |value: &ArmBinding| {
+        let ArmBinding { name, span } = value;
+        let _ = (name, span);
+    };
+    let _ = |value: &ForName| {
+        let ForName { name, span } = value;
+        let _ = (name, span);
+    };
+    let _ = |value: &Comment| {
+        let Comment {
+            text,
+            placement,
+            marker,
+            span,
+        } = value;
+        let _ = (text, placement, marker, span);
+    };
+    let _ = |value: &TypeExpr| match value {
+        TypeExpr::Name {
+            text,
+            segment_spans,
+            span,
+        } => {
+            let _ = (text, segment_spans, span);
+        }
+        TypeExpr::Identity(inner) => {
+            let _ = inner;
+        }
+        TypeExpr::Optional { inner, span } => {
+            let _ = (inner, span);
+        }
+        TypeExpr::Apply {
+            head,
+            head_span,
+            args,
+            span,
+        } => {
+            let _ = (head, head_span, args, span);
+        }
+        TypeExpr::Incomplete { span } => {
+            let _ = span;
+        }
+    };
+    let _ = |value: &InterpolationPart| match value {
+        InterpolationPart::Text { text, span } => {
+            let _ = (text, span);
+        }
+        InterpolationPart::Expr(inner) => {
+            let _ = inner;
+        }
+    };
+    let _ = |value: &UseDecl| {
+        let UseDecl { segments, span } = value;
+        let _ = (segments, span);
+    };
+    let _ = |value: &ResourceMember| match value {
+        ResourceMember::Field(inner) => {
+            let _ = inner;
+        }
+        ResourceMember::Group(inner) => {
+            let _ = inner;
+        }
+    };
+    let _ = |value: &EnumMember| {
+        let EnumMember {
+            docs,
+            name,
+            name_span,
+            category,
+            payload,
+            members,
+            comments,
+            span,
+        } = value;
+        let _ = (
+            docs, name, name_span, category, payload, members, comments, span,
+        );
+    };
+    let _ = |value: &EnumPayloadField| {
+        let EnumPayloadField {
+            name,
+            name_span,
+            ty,
+            span,
+        } = value;
+        let _ = (name, name_span, ty, span);
+    };
+    let _ = |value: &ParamDecl| {
+        let ParamDecl {
+            docs,
+            name,
+            name_span,
+            keys,
+            ty,
+        } = value;
+        let _ = (docs, name, name_span, keys, ty);
+    };
+    let _ = |value: &TypeParamDecl| {
+        let TypeParamDecl {
+            name,
+            name_span,
+            constraint,
+            constraint_span,
+            span,
+        } = value;
+        let _ = (name, name_span, constraint, constraint_span, span);
+    };
+    let _ = |value: &IndexDecl| {
+        let IndexDecl {
+            docs,
+            name,
+            name_span,
+            args,
+            unique,
+            span,
+        } = value;
+        let _ = (docs, name, name_span, args, unique, span);
+    };
+    let _ = |value: &IndexArg| {
+        let IndexArg { segments, span } = value;
+        let _ = (segments, span);
+    };
+    let _ = |value: &SupportSpelling| {
+        let SupportSpelling { name, span } = value;
+        let _ = (name, span);
+    };
 }
 
 /// The lexer emits at most one token per source byte, which is the half of
