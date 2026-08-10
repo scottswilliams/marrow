@@ -2157,14 +2157,14 @@ mod generic_cache_boundary_tests {
             span: span(),
         };
         let handler = Block {
-            statements: vec![Statement::Expr {
+            statements: Box::new([Statement::Expr {
                 value: Expression::Literal {
                     kind: LiteralKind::String,
                     text: "handler-sentinel".into(),
                     span: span(),
                 },
                 span: span(),
-            }],
+            }]),
             comments: Vec::new(),
             span: span(),
         };
@@ -2230,7 +2230,7 @@ mod generic_cache_boundary_tests {
             span: span(),
         };
         let empty = Block {
-            statements: Vec::new(),
+            statements: Box::new([]),
             comments: Vec::new(),
             span: span(),
         };
@@ -2312,7 +2312,7 @@ mod generic_cache_boundary_tests {
             slot: 0,
         });
         let block = Block {
-            statements: vec![
+            statements: Box::new([
                 Statement::Match {
                     scrutinee: name("value"),
                     arms: Vec::new(),
@@ -2346,7 +2346,7 @@ mod generic_cache_boundary_tests {
                     value: name("value"),
                     span: span(),
                 },
-            ],
+            ]),
             comments: Vec::new(),
             span: span(),
         };

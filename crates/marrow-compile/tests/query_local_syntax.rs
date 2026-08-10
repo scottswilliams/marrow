@@ -98,8 +98,10 @@ const ORDINARY_QUERY_BUDGET_MS: u128 = 10;
 ///
 /// The term is a consequence of [`MAX_SOURCE_BYTE_CHARGE`], not an independent number:
 /// the cap is the invariant and this is what the cap costs at the admission ceiling.
-const MAX_QUERY_PARSE_TRANSIENT_BYTES: usize =
-    MAX_ADMITTED_FILE_BYTES * (MAX_SOURCE_BYTE_CHARGE + TOKEN_CHARGE) + TOKEN_CHARGE + DIAGNOSTICS;
+const MAX_QUERY_PARSE_TRANSIENT_BYTES: usize = MAX_ADMITTED_FILE_BYTES
+    * (MAX_SOURCE_BYTE_CHARGE + TOKEN_CHARGE + BLOCK_MEASUREMENT_CHARGE)
+    + TOKEN_CHARGE
+    + DIAGNOSTICS;
 
 /// **The invariant of this file.** No node family the parser builds may charge more than
 /// this many heap bytes per source byte it exclusively requires.
@@ -110,6 +112,16 @@ const MAX_QUERY_PARSE_TRANSIENT_BYTES: usize =
 /// therefore asserts this per family, and the cap sits deliberately above the derived
 /// maximum so one future field costs a review rather than a re-derivation of the ceiling.
 const MAX_SOURCE_BYTE_CHARGE: usize = 320;
+
+/// The exported term keeps a third of the owned-heap ceiling in reserve, so a later
+/// widening inside the cap cannot quietly re-approach it. Both sides are constants, so
+/// this is checked when the file is built rather than when it is run: a cap raised far
+/// enough to break it fails to compile, and raising it anyway is a decision about
+/// `H_owned` rather than a representation detail.
+const _: () = assert!(
+    MAX_QUERY_PARSE_TRANSIENT_BYTES * 3 <= H_OWNED_BYTES * 2,
+    "the exported parse-transient term is over two thirds of the owned-heap ceiling"
+);
 
 /// Amortized container growth. Every container in a parse tree is built by pushing —
 /// none is pre-sized from an exact count and none is shrunk — and the standard library
@@ -357,14 +369,20 @@ fn content_byte_charge() -> usize {
 
 /// The heap one source byte of a block of statements can buy.
 ///
-/// A `Statement` is the widest node the parser stores in a vector, and it is stored in
+/// A `Statement` is the widest node the parser stores in a list, and it is stored in
 /// exactly one: a block's statement list. Two source bytes are the least the grammar
 /// spends on one statement — no two statements share a line, `statements` never builds
 /// one from an empty line, and every statement is closed either by its own newline or by
 /// its block's `}` — so a statement line of `L` bytes charges one statement slot plus
 /// `L - 1` content bytes at the content rate. That is largest at `L = 2`.
+///
+/// The slot is charged once, not with the growth factor: a block's statement list is
+/// allocated at the measured count of content lines the block opens directly and handed
+/// to `Box<[Statement]>` at close, so it neither grows nor keeps slack. Measuring each
+/// block's own lines rather than its whole extent is what keeps this sound — the other
+/// count would reserve a nested line once per enclosing block.
 fn statement_line_charge() -> usize {
-    (GROWTH * size_of::<Statement>() + content_byte_charge()) / 2
+    (size_of::<Statement>() + content_byte_charge()) / 2
 }
 
 /// The heap one source byte of a file can buy: a statement line, or anything the parser
@@ -460,12 +478,11 @@ fn statement_line_content_charges() -> Vec<(&'static str, usize, usize)> {
 /// Everything the parser builds outside a statement line, on the same terms.
 fn declaration_level_charges() -> Vec<(&'static str, usize, usize)> {
     vec![
-        // The shortest declaration keyword is `fn`.
-        (
-            "Declaration",
-            GROWTH * size_of::<Declaration>() + string_bytes(1),
-            2,
-        ),
+        // The shortest declaration keyword is `fn`. The slot is charged once for the
+        // same reason a statement's is: the declaration list is allocated at the file's
+        // top-level content-line count, which a declaration always occupies at least one
+        // of, and handed to `Box<[Declaration]>` at close.
+        ("Declaration", size_of::<Declaration>() + string_bytes(1), 2),
         // `use`.
         (
             "UseDecl",
@@ -480,10 +497,13 @@ fn declaration_level_charges() -> Vec<(&'static str, usize, usize)> {
             GROWTH * size_of::<ResourceMember>() + string_bytes(1),
             3,
         ),
+        // A member occupies its own line: the declaration-body frame reports one member
+        // per line, exactly as no two statements share one. An identifier and its
+        // newline are two source bytes.
         (
             "EnumMember",
             GROWTH * size_of::<EnumMember>() + string_bytes(1),
-            1,
+            2,
         ),
         // `a:b`; a payload field's annotation is mandatory.
         (
@@ -515,16 +535,14 @@ fn declaration_level_charges() -> Vec<(&'static str, usize, usize)> {
     ]
 }
 
-/// How many token allocations are live beside the tree at the peak: the lexer's vector
-/// for the whole file, plus the one filtered copy an expression parse holds.
-/// `ExprParser::parse_complete` builds no further parser and the declaration parser holds
-/// at most one at a time.
-const LIVE_TOKEN_VECTORS: usize = 2;
+/// How many token allocations are live beside the tree at the peak: the lexer's, and
+/// only the lexer's. The expression parser borrows the caller's slice and skips trivia
+/// with its cursor rather than collecting a filtered copy of it.
+const LIVE_TOKEN_VECTORS: usize = 1;
 
-/// The capacity slack one live token allocation carries. A `Vec` grown by pushing holds
-/// the amortized growth factor; a slice handed to `Box<[Token]>` at close holds none,
-/// because a `Box<[T]>` has no capacity field to hold any.
-const TOKEN_VECTOR_SLACK: usize = GROWTH;
+/// The capacity slack one live token allocation carries. The lexer hands its tokens to
+/// `Box<[Token]>` at close, and a `Box<[T]>` has no capacity field to hold slack in.
+const TOKEN_VECTOR_SLACK: usize = 1;
 
 /// What the lexed tokens charge per source byte.
 ///
@@ -534,6 +552,16 @@ const TOKEN_VECTOR_SLACK: usize = GROWTH;
 /// token cost of a source byte, and the trailing sentinel is one further token charged
 /// outside the per-byte term.
 const TOKEN_CHARGE: usize = LIVE_TOKEN_VECTORS * TOKEN_VECTOR_SLACK * size_of::<Token>();
+
+/// What measuring a body's block capacities charges per source byte.
+///
+/// The parser measures each `{ … }` block's own statement-line count before parsing it,
+/// so a statement list is allocated once at its final size instead of growing. The
+/// measurement holds one `(token index, line count)` pair per block, still in the vector
+/// it was pushed into when the peak is taken, and a block costs at least the two source
+/// bytes of its own braces. Its open-block stack is bounded by the nesting limit rather
+/// than by the source, so it is a constant and not a per-byte charge.
+const BLOCK_MEASUREMENT_CHARGE: usize = GROWTH * size_of::<(u32, u32)>() / 2;
 
 /// The syntax collector's own retention, which is live beside the tree until
 /// `parse_source` returns. Both of its ceilings are pinned by `marrow-syntax`; a row is
@@ -552,7 +580,9 @@ const DIAGNOSTICS: usize = GROWTH * SYNTAX_DIAGNOSTIC_COUNT_LIMIT * DIAGNOSTIC_R
 /// differ in one factor only, which is what makes the cap — rather than this figure —
 /// the thing a reviewer has to agree with.
 fn accounted_query_parse_transient() -> usize {
-    MAX_ADMITTED_FILE_BYTES * (source_byte_charge() + TOKEN_CHARGE) + TOKEN_CHARGE + DIAGNOSTICS
+    MAX_ADMITTED_FILE_BYTES * (source_byte_charge() + TOKEN_CHARGE + BLOCK_MEASUREMENT_CHARGE)
+        + TOKEN_CHARGE
+        + DIAGNOSTICS
 }
 
 fn captured(files: Vec<(&str, Vec<u8>)>) -> Arc<ProjectInput> {
@@ -908,9 +938,10 @@ fn name_chain_file() -> Vec<u8> {
     source.into_bytes()
 }
 
-/// The bytes a parsed file's block statement vectors hold, which is the accounting's
+/// The bytes a parsed file's block statement lists hold, which is the accounting's
 /// dominant term and the one a corroborating sample can count exactly rather than
-/// sample through a resident set.
+/// sample through a resident set. Each list is exactly sized, so its length is its
+/// whole cost.
 fn statement_vector_bytes(source: &[u8]) -> usize {
     let text = std::str::from_utf8(source).expect("the fixture is UTF-8");
     marrow_syntax::parse_source(text)
@@ -918,8 +949,8 @@ fn statement_vector_bytes(source: &[u8]) -> usize {
         .declarations
         .iter()
         .map(|declaration| match declaration {
-            Declaration::Function(function) => function.body.statements.capacity(),
-            Declaration::Test(test) => test.body.statements.capacity(),
+            Declaration::Function(function) => function.body.statements.len(),
+            Declaration::Test(test) => test.body.statements.len(),
             _ => 0,
         })
         .sum::<usize>()
@@ -1100,17 +1131,17 @@ fn the_query_parse_transient_closes_under_the_exported_term() {
     );
     assert_eq!(
         statement_line_charge(),
-        448,
+        276,
         "the densest statement line's charge moved"
     );
     assert_eq!(
         source_byte_charge(),
-        448,
+        276,
         "the densest source byte's charge moved"
     );
     let accounted = accounted_query_parse_transient();
     assert_eq!(
-        accounted, 608_174_208,
+        accounted, 335_544_352,
         "the accounted query-local parse transient moved; re-derive the term before \
          changing this number"
     );
@@ -1156,18 +1187,6 @@ fn no_node_family_exceeds_the_declared_source_byte_cap() {
     );
 }
 
-/// The exported term keeps a third of the owned-heap ceiling in reserve, so a later
-/// widening inside the cap cannot quietly re-approach it. A cap raised far enough to
-/// break this is a decision about `H_owned`, not a representation detail.
-#[test]
-fn the_exported_term_stays_well_under_the_owned_heap_ceiling() {
-    assert!(
-        MAX_QUERY_PARSE_TRANSIENT_BYTES * 3 <= H_OWNED_BYTES * 2,
-        "the exported {MAX_QUERY_PARSE_TRANSIENT_BYTES} bytes are over two thirds of the \
-         {H_OWNED_BYTES}-byte owned-heap ceiling"
-    );
-}
-
 /// The lexer emits at most one token per source byte, which is the half of
 /// [`TOKEN_CHARGE`] that a type cannot carry: `Box<[Token]>` makes growth slack
 /// unrepresentable, but nothing in the type stops the lexer from emitting two tokens for
@@ -1188,22 +1207,34 @@ fn the_token_vector_holds_at_most_one_token_per_source_byte() {
     }
 }
 
+/// What the derivation predicts a maximum admitted file's statement lists can hold: one
+/// exactly-sized statement slot per two source bytes. It is the accounting's single
+/// largest sub-term, and the one a corroborating sample can count exactly rather than
+/// sample through a resident set.
+fn statement_list_term() -> usize {
+    MAX_ADMITTED_FILE_BYTES * size_of::<Statement>() / 2
+}
+
 /// The corroborating samples: every maximum-size shape reachable here is queryable, and
-/// each one's statement vectors — the accounting's dominant term, counted exactly rather
-/// than sampled through a resident set — stay under the derived bound.
+/// each one's statement lists stay under what the derivation predicts for them.
 ///
-/// The statement-dense shape is the densest of them and it is the one the derivation
-/// predicts, which is the point: the term was derived first and the sample fell under it,
-/// rather than the sample being searched for and published as a term.
+/// The densest sample is compared against [`statement_list_term`] rather than against the
+/// whole exported term, which also covers expressions, tokens, diagnostics, and the cap's
+/// deliberate headroom. Being close to that sub-term is the evidence that the derivation
+/// still describes what the parser builds; being under it is the evidence that the
+/// derivation is not optimistic. The term was derived first and the samples fell under
+/// it, rather than a sample being searched for and published as a term.
 #[test]
 fn every_maximum_admitted_shape_stays_under_the_derived_bound() {
+    let predicted = statement_list_term();
     let mut densest = 0;
     for (label, bytes) in maximum_admitted_shapes() {
         let statements = statement_vector_bytes(&bytes);
-        eprintln!("{label}: statement vectors hold {statements} bytes");
+        eprintln!("{label}: statement lists hold {statements} bytes of a predicted {predicted}");
         assert!(
-            statements <= MAX_QUERY_PARSE_TRANSIENT_BYTES,
-            "{label} holds {statements} bytes of statement vectors alone, over the term"
+            statements <= predicted,
+            "{label} holds {statements} bytes of statement lists, over the predicted \
+             {predicted} — the derivation is optimistic about what a block can hold"
         );
         densest = densest.max(statements);
         let path = "src/shape.mw";
@@ -1214,8 +1245,9 @@ fn every_maximum_admitted_shape_stays_under_the_derived_bound() {
         );
     }
     assert!(
-        densest > MAX_QUERY_PARSE_TRANSIENT_BYTES / 2,
-        "no sample reaches half the derived bound, so the derivation has drifted far \
-         from what the parser actually builds and should be re-derived"
+        densest * 10 >= predicted * 9,
+        "the densest sample holds {densest} bytes against a predicted {predicted}, so the \
+         derivation has drifted far from what the parser actually builds and should be \
+         re-derived"
     );
 }

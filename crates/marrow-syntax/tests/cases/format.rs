@@ -286,10 +286,7 @@ fn compound_assign_fold_is_idempotent_and_reparses() {
 
     let body = reparsed_run_body(&once);
     assert!(
-        matches!(
-            body.statements.as_slice(),
-            [Statement::CompoundAssign { .. }]
-        ),
+        matches!(body.statements[..], [Statement::CompoundAssign { .. }]),
         "folded output must re-parse to a compound assignment: {:#?}",
         body.statements
     );

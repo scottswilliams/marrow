@@ -6,7 +6,10 @@ use crate::{SourceSpan, SyntaxDiagnostics};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LexedSource {
-    pub tokens: Vec<Token>,
+    /// The whole file's tokens, exactly sized. A `Box<[Token]>` has no capacity field,
+    /// so the amortized growth slack a pushed `Vec` would still hold at close — up to
+    /// the vector's own size again, beside a live parse tree — is not representable.
+    pub tokens: Box<[Token]>,
     pub diagnostics: SyntaxDiagnostics,
 }
 

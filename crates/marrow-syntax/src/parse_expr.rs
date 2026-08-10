@@ -68,9 +68,13 @@ fn recovery_node(
     }
 }
 
-pub(crate) struct ExprParser<'a> {
+pub(crate) struct ExprParser<'a, 's> {
     source: &'a str,
-    tokens: Vec<Token>,
+    /// The caller's tokens, borrowed rather than copied: a filtered copy would put a
+    /// second token allocation of the file's own size beside the tree at the peak.
+    /// Trivia is skipped by the cursor instead, so [`Self::pos`] always rests on a
+    /// significant token or past the end.
+    tokens: &'a [Token],
     pos: usize,
     /// How deep the recursive descent currently is. Each parenthesized,
     /// unary-operand, or interpolated sub-expression descends one level;
@@ -83,34 +87,57 @@ pub(crate) struct ExprParser<'a> {
     /// consumed token to anchor to; this keeps the diagnostic on a real 1-based
     /// position rather than the line-0 default.
     gap: SourceSpan,
+    /// The span of the last significant token consumed, for the zero-width gap a
+    /// missing operand or unclosed delimiter is reported at. Recorded on consumption
+    /// rather than recovered by stepping back, since the token before the cursor may
+    /// be skipped trivia.
+    last_consumed: Option<SourceSpan>,
     /// Where failures report: the caller's live scoped sink, or a discarding
     /// sink for a silent probe. Every finding is written directly; the parser
     /// owns no diagnostic batch of its own.
-    sink: &'a mut dyn SyntaxErrorSink,
+    sink: &'s mut dyn SyntaxErrorSink,
 }
 
-impl<'a> ExprParser<'a> {
+impl<'a, 's> ExprParser<'a, 's> {
     /// Build a parser whose missing-leading-operand diagnostics anchor at `gap`
     /// and whose failures report through `sink`.
     pub(crate) fn new(
         source: &'a str,
-        tokens: &[Token],
+        tokens: &'a [Token],
         gap: SourceSpan,
-        sink: &'a mut dyn SyntaxErrorSink,
+        sink: &'s mut dyn SyntaxErrorSink,
     ) -> Self {
-        let tokens = tokens
-            .iter()
-            .copied()
-            .filter(|token| !is_trivia(token.kind))
-            .collect();
-        Self {
+        let mut parser = Self {
             source,
             tokens,
             pos: 0,
             depth: 0,
             gap,
+            last_consumed: None,
             sink,
+        };
+        parser.skip_trivia();
+        parser
+    }
+
+    /// Advance the cursor past any trivia, restoring the invariant that it rests on a
+    /// significant token or at the end of the slice.
+    fn skip_trivia(&mut self) {
+        while self
+            .tokens
+            .get(self.pos)
+            .is_some_and(|token| is_trivia(token.kind))
+        {
+            self.pos += 1;
         }
+    }
+
+    /// The significant tokens from the cursor onward. The cursor rests on a significant
+    /// token, so the first item is the current one.
+    fn upcoming(&self) -> impl Iterator<Item = &Token> {
+        self.tokens[self.pos..]
+            .iter()
+            .filter(|token| !is_trivia(token.kind))
     }
 
     /// Parse the whole slice as one expression, classifying the outcome.
@@ -210,16 +237,13 @@ impl<'a> ExprParser<'a> {
     /// past the last consumed token, or the caller's `gap` anchor when nothing has
     /// been consumed. Always a valid 1-based position.
     fn gap_span(&self) -> SourceSpan {
-        match self.pos.checked_sub(1) {
-            Some(prev) => {
-                let end = self.tokens[prev].span;
-                SourceSpan {
-                    start_byte: end.end_byte,
-                    end_byte: end.end_byte,
-                    line: end.line,
-                    column: end.column,
-                }
-            }
+        match self.last_consumed {
+            Some(end) => SourceSpan {
+                start_byte: end.end_byte,
+                end_byte: end.end_byte,
+                line: end.line,
+                column: end.column,
+            },
             None => self.gap,
         }
     }
@@ -229,7 +253,11 @@ impl<'a> ExprParser<'a> {
     }
 
     fn peek_at(&self, offset: usize) -> Option<TokenKind> {
-        self.tokens.get(self.pos + offset).map(|token| token.kind)
+        self.peek_token_at(offset).map(|token| token.kind)
+    }
+
+    fn peek_token_at(&self, offset: usize) -> Option<Token> {
+        self.upcoming().nth(offset).copied()
     }
 
     fn peek_is_contextual(&self, text: &str) -> bool {
@@ -241,6 +269,8 @@ impl<'a> ExprParser<'a> {
     fn advance(&mut self) -> Token {
         let token = self.tokens[self.pos];
         self.pos += 1;
+        self.last_consumed = Some(token.span);
+        self.skip_trivia();
         token
     }
 
@@ -298,7 +328,12 @@ impl<'a> ExprParser<'a> {
         let span = self
             .tokens
             .get(self.pos)
-            .or_else(|| self.tokens.last())
+            .or_else(|| {
+                self.tokens
+                    .iter()
+                    .rev()
+                    .find(|token| !is_trivia(token.kind))
+            })
             .map_or(
                 SourceSpan {
                     start_byte: 0,
@@ -694,7 +729,7 @@ impl<'a> ExprParser<'a> {
                             (ExpectedSyntax::CloseBracket, "expected `]`")
                         };
                         self.expected_delimiter_at_gap(expected, message);
-                        let end = self.tokens[self.pos - 1].span;
+                        let end = self.last_consumed.unwrap_or(open.span);
                         let span = join_spans(expr.span(), end);
                         let multiline = end.line > open.span.line;
                         self.leave_chain(levels);
@@ -736,7 +771,7 @@ impl<'a> ExprParser<'a> {
                             (ExpectedSyntax::CloseParen, "expected `)`")
                         };
                         self.expected_delimiter_at_gap(expected, message);
-                        let end = self.tokens[self.pos - 1].span;
+                        let end = self.last_consumed.unwrap_or(open.span);
                         let span = join_spans(expr.span(), end);
                         let multiline = parsed_args.trailing_comma || end.line > open.span.line;
                         self.leave_chain(levels);
@@ -1167,7 +1202,7 @@ impl<'a> ExprParser<'a> {
     /// identifier is otherwise a parse error, so an ordinary name spelling a unit is
     /// unaffected. A month or year word is refused — those spans are not fixed.
     fn integer_or_duration_words(&mut self, token: Token) -> Expression {
-        let Some(next) = self.tokens.get(self.pos + 1).copied() else {
+        let Some(next) = self.peek_token_at(1) else {
             return self.literal(token, LiteralKind::Integer);
         };
         if next.kind != TokenKind::Identifier {

@@ -1516,7 +1516,7 @@ impl<'a> IdentityResolver<'a> {
                     component: DurableIndexComponent::Key(*key_id),
                     scalar: *scalar,
                 });
-            } else if let Some(leaf) = fields.iter().find(|leaf| &leaf.name == arg) {
+            } else if let Some(leaf) = fields.iter().find(|leaf| leaf.name == arg) {
                 let Some(scalar) = leaf.scalar else {
                     self.reject_index(
                         span,

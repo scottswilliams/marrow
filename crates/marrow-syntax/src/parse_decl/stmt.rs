@@ -4,6 +4,7 @@
 //! or `}`, and a trailing clause (`else`, `on more`, a checked arm, a match arm)
 //! takes either a braced block or a single inline statement.
 
+use super::block_lines::BlockLines;
 use super::head::arm_pattern;
 use super::statement_lines::{parse_for_header, parse_if_const_head, parse_simple_statement};
 use super::tokens::{
@@ -61,6 +62,11 @@ pub(super) struct StmtParser<'a, 'c> {
     source: &'a str,
     tokens: &'a [Token],
     pos: usize,
+    /// How many statements the body and each of its blocks can hold, measured once
+    /// before parsing so every statement list is allocated at its final size. A list
+    /// grown by pushing would hold up to its own size again in amortized slack, and
+    /// the body's outermost block is the largest list a file can produce.
+    capacities: BlockLines,
     /// Line comments for the block currently being parsed, in source order.
     /// Each nested block swaps in a fresh accumulator (see `parse_nested_block`)
     /// so a comment lands in the block it appears in.
@@ -81,14 +87,15 @@ impl<'a, 'c> StmtParser<'a, 'c> {
             source,
             tokens,
             pos: 0,
+            capacities: BlockLines::measure(tokens),
             comments: Vec::new(),
             sink,
             depth: 0,
         }
     }
 
-    pub(super) fn parse_block(mut self) -> (Vec<Statement>, Vec<Comment>) {
-        let statements = self.statements();
+    pub(super) fn parse_block(mut self) -> (Box<[Statement]>, Vec<Comment>) {
+        let statements = self.statements(self.capacities.body());
         (statements, std::mem::take(&mut self.comments))
     }
 
@@ -180,8 +187,11 @@ impl<'a, 'c> StmtParser<'a, 'c> {
         );
     }
 
-    fn statements(&mut self) -> Vec<Statement> {
-        let mut statements = Vec::new();
+    /// Parse statements until the block closes. `capacity` is the measured number of
+    /// content lines this block opens; a block holds at most one statement per such
+    /// line, so the list is allocated once and never grows.
+    fn statements(&mut self, capacity: usize) -> Box<[Statement]> {
+        let mut statements = Vec::with_capacity(capacity);
         while let Some(kind) = self.peek() {
             match kind {
                 TokenKind::Eof | TokenKind::RightBrace => break,
@@ -196,7 +206,7 @@ impl<'a, 'c> StmtParser<'a, 'c> {
                 _ => statements.extend(self.statement()),
             }
         }
-        statements
+        statements.into_boxed_slice()
     }
 
     fn skip_newlines(&mut self) {
@@ -1138,7 +1148,7 @@ impl<'a, 'c> StmtParser<'a, 'c> {
                 }
             };
             Block {
-                statements: Vec::new(),
+                statements: Box::new([]),
                 comments: leading.into_iter().collect(),
                 span: point,
             }
@@ -1156,15 +1166,16 @@ impl<'a, 'c> StmtParser<'a, 'c> {
             let start = self.tokens[self.pos].span;
             let end = self.skip_block();
             return Block {
-                statements: Vec::new(),
+                statements: Box::new([]),
                 comments: Vec::new(),
                 span: join_spans(start, end),
             };
         }
         self.depth += 1;
+        let capacity = self.capacities.block(self.pos);
         let start = self.advance().span; // `{`
         let outer = std::mem::take(&mut self.comments);
-        let statements = self.statements();
+        let statements = self.statements(capacity);
         let comments = std::mem::replace(&mut self.comments, outer);
         let end = if matches!(self.peek(), Some(TokenKind::RightBrace)) {
             self.advance().span

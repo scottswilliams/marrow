@@ -161,7 +161,7 @@ fn parser_retains_every_semantic_site_span() {
         Declaration::Resource(_),
         Declaration::Store(store),
         Declaration::Function(probe),
-    ] = parsed.file.declarations.as_slice()
+    ] = &parsed.file.declarations[..]
     else {
         panic!(
             "unexpected declaration corpus: {:#?}",
@@ -472,7 +472,7 @@ fn parser_retains_type_constraint_and_nominal_support_spans() {
         Declaration::Function(compare),
         Declaration::Function(ordered),
         Declaration::Nominal(delta),
-    ] = parsed.file.declarations.as_slice()
+    ] = &parsed.file.declarations[..]
     else {
         panic!(
             "unexpected declaration corpus: {:#?}",
@@ -552,7 +552,7 @@ fn malformed_nodes_retain_real_fallback_spans_and_remain_unavailable() {
         Declaration::Const(top_const),
         Declaration::Store(store),
         Declaration::Function(function),
-    ] = parsed.file.declarations.as_slice()
+    ] = &parsed.file.declarations[..]
     else {
         panic!(
             "unexpected recovered declaration corpus: {:#?}",
@@ -574,7 +574,7 @@ fn malformed_nodes_retain_real_fallback_spans_and_remain_unavailable() {
             bind: const_bind, ..
         },
         Statement::Checked { bind: var_bind, .. },
-    ] = function.body.statements.as_slice()
+    ] = &function.body.statements[..]
     else {
         panic!(
             "unexpected recovered statement corpus: {:#?}",

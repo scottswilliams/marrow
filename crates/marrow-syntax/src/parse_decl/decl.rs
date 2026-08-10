@@ -3,6 +3,7 @@
 //! and function declarations and delegates statement and expression parsing.
 
 use super::FunctionHead;
+use super::block_lines::BlockLines;
 use super::head::{parse_enum_head, parse_resource_head, parse_store_head, parse_struct_head};
 use super::params::parse_function_head;
 use super::stmt::StmtParser;
@@ -30,6 +31,10 @@ pub(crate) struct DeclParser<'a, 'c> {
     pub(super) source: &'a str,
     pub(super) tokens: &'a [Token],
     pub(super) pos: usize,
+    /// The file's declarations, allocated once at the file's top-level line count —
+    /// a declaration occupies at least one such line — so the list never grows and
+    /// carries no amortized slack into the finished tree.
+    declarations: Vec<Declaration>,
     pub(super) sink: SyntaxSink<'c>,
     /// Nested member-block depth (resource groups, enum categories). The lexer
     /// reports the nesting-limit diagnostic; this second layer stops the recursive
@@ -44,6 +49,7 @@ impl<'a, 'c> DeclParser<'a, 'c> {
             source,
             tokens,
             pos: 0,
+            declarations: Vec::with_capacity(BlockLines::measure(tokens).body()),
             sink,
             depth: 0,
         }
@@ -79,7 +85,7 @@ impl<'a, 'c> DeclParser<'a, 'c> {
             }
         }
         self.flush_docs_as_comments(&mut docs, &mut file.comments);
-
+        file.declarations = self.declarations.into_boxed_slice();
         file
     }
 
@@ -114,21 +120,21 @@ impl<'a, 'c> DeclParser<'a, 'c> {
                 let trailing_comment = self.peek_header_trailing_comment();
                 let decl_docs = self.take_docs_for_current_item(docs, &mut file.comments);
                 let decl = self.parse_const(decl_docs);
-                file.declarations.push(Declaration::Const(decl));
+                self.declarations.push(Declaration::Const(decl));
                 file.comments.extend(trailing_comment);
             }
             Some(TokenKind::Keyword(Keyword::Alias)) if self.keyword_introduces_decl() => {
                 let trailing_comment = self.peek_header_trailing_comment();
                 let decl_docs = self.take_docs_for_current_item(docs, &mut file.comments);
                 let decl = self.parse_alias(decl_docs);
-                file.declarations.push(Declaration::Alias(decl));
+                self.declarations.push(Declaration::Alias(decl));
                 file.comments.extend(trailing_comment);
             }
             Some(TokenKind::Keyword(Keyword::Type)) if self.keyword_introduces_decl() => {
                 let trailing_comment = self.peek_header_trailing_comment();
                 let decl_docs = self.take_docs_for_current_item(docs, &mut file.comments);
                 let decl = self.parse_nominal(decl_docs);
-                file.declarations.push(Declaration::Nominal(decl));
+                self.declarations.push(Declaration::Nominal(decl));
                 file.comments.extend(trailing_comment);
             }
             Some(TokenKind::Keyword(Keyword::Resource)) if self.keyword_introduces_decl() => {
@@ -142,7 +148,7 @@ impl<'a, 'c> DeclParser<'a, 'c> {
                     has_body,
                     trailing_comment,
                 );
-                file.declarations.push(Declaration::Resource(resource));
+                self.declarations.push(Declaration::Resource(resource));
             }
             Some(TokenKind::Keyword(Keyword::Struct)) if self.keyword_introduces_decl() => {
                 let trailing_comment = self.peek_header_trailing_comment();
@@ -155,7 +161,7 @@ impl<'a, 'c> DeclParser<'a, 'c> {
                     has_body,
                     trailing_comment,
                 );
-                file.declarations.push(Declaration::Struct(decl));
+                self.declarations.push(Declaration::Struct(decl));
             }
             Some(TokenKind::Keyword(Keyword::Store)) if self.keyword_introduces_decl() => {
                 let trailing_comment = self.peek_header_trailing_comment();
@@ -168,7 +174,7 @@ impl<'a, 'c> DeclParser<'a, 'c> {
                     has_body,
                     trailing_comment,
                 );
-                file.declarations.push(Declaration::Store(store));
+                self.declarations.push(Declaration::Store(store));
             }
             Some(TokenKind::Keyword(Keyword::Test)) if self.keyword_introduces_decl() => {
                 let trailing_comment = self.peek_header_trailing_comment();
@@ -181,7 +187,7 @@ impl<'a, 'c> DeclParser<'a, 'c> {
                     has_body,
                     trailing_comment,
                 );
-                file.declarations.push(Declaration::Test(test));
+                self.declarations.push(Declaration::Test(test));
             }
             _ if self.starts_enum_header() => {
                 let trailing_comment = self.peek_header_trailing_comment();
@@ -194,7 +200,7 @@ impl<'a, 'c> DeclParser<'a, 'c> {
                     has_body,
                     trailing_comment,
                 );
-                file.declarations.push(Declaration::Enum(decl));
+                self.declarations.push(Declaration::Enum(decl));
             }
             _ if self.starts_function_header() => {
                 let trailing_comment = self.peek_header_trailing_comment();
@@ -207,7 +213,7 @@ impl<'a, 'c> DeclParser<'a, 'c> {
                     has_body,
                     trailing_comment,
                 );
-                file.declarations.push(Declaration::Function(function));
+                self.declarations.push(Declaration::Function(function));
             }
             // `pub` gates only `fn` and `enum`; a `pub resource`/`pub store` is
             // reported at the `pub` token, which is then dropped so the rest of the
@@ -909,7 +915,7 @@ impl<'a, 'c> DeclParser<'a, 'c> {
                 "expected a `{ … }` function body",
             );
             Block {
-                statements: Vec::new(),
+                statements: Box::new([]),
                 comments: Vec::new(),
                 span,
             }
@@ -958,7 +964,7 @@ impl<'a, 'c> DeclParser<'a, 'c> {
                 "expected a `{ … }` test body",
             );
             Block {
-                statements: Vec::new(),
+                statements: Box::new([]),
                 comments: Vec::new(),
                 span,
             }
@@ -991,7 +997,7 @@ impl<'a, 'c> DeclParser<'a, 'c> {
             // cascading a parse error onto each following declaration.
             self.report_unclosed_block(open.span);
             return Block {
-                statements: Vec::new(),
+                statements: Box::new([]),
                 comments: Vec::new(),
                 span: SourceSpan {
                     start_byte: open.span.start_byte,

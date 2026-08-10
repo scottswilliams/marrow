@@ -10,6 +10,7 @@
 //! statement parser, `statement_lines` parses single statement lines, and
 //! `tokens` holds the low-level token-slice helpers shared across all of them.
 
+mod block_lines;
 mod body;
 mod cursor;
 mod decl;

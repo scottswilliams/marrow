@@ -24,7 +24,7 @@ pub fn lex_source(source: &str) -> LexedSource {
 
 /// Lex through a caller-scoped sink, for the entry points that share one
 /// collector between the lexer and a parser.
-pub(crate) fn lex_tokens(source: &str, sink: SyntaxSink<'_>) -> Vec<Token> {
+pub(crate) fn lex_tokens(source: &str, sink: SyntaxSink<'_>) -> Box<[Token]> {
     Lexer::new(source, sink).lex()
 }
 
@@ -81,7 +81,7 @@ impl<'a, 'c> Lexer<'a, 'c> {
         }
     }
 
-    fn lex(mut self) -> Vec<Token> {
+    fn lex(mut self) -> Box<[Token]> {
         // `Line` is `Copy`, so index the line stack rather than holding a borrow
         // across the mutating body. `self.lines` stays intact for `eof_span`.
         for index in 0..self.lines.len() {
@@ -109,7 +109,7 @@ impl<'a, 'c> Lexer<'a, 'c> {
         }
 
         self.push(TokenKind::Eof, self.eof_span());
-        self.tokens
+        self.tokens.into_boxed_slice()
     }
 
     /// Emit the `NEWLINE` that ends a physical line, unless the line is continued.
