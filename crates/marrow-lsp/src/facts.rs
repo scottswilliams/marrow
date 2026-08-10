@@ -723,6 +723,69 @@ after_item
         }
     }
 
+    /// Every top-level item a crate source declares outside a `#[cfg(test)]` item: its
+    /// own line, read from [`code_only`] so a header spelled inside a fixture literal is
+    /// not mistaken for one. A top-level item opens at column zero, which nothing inside
+    /// an item — test module included — does, and it ends its own line with `{` (a
+    /// block) or `;` (a `mod`/`use` declaration). A header carrying the `#[cfg(test)]`
+    /// attribute on the line above is the skipped item itself and is not one of these.
+    fn top_level_production_items(source: &str) -> Vec<&str> {
+        let code = code_only(source);
+        let structure: Vec<&str> = code.lines().collect();
+        source
+            .lines()
+            .zip(&structure)
+            .enumerate()
+            .filter(|(index, (_, line))| {
+                let line = line.trim_end();
+                line.starts_with(|first: char| first.is_ascii_alphabetic())
+                    && (line.ends_with('{') || line.ends_with(';'))
+                    && index
+                        .checked_sub(1)
+                        .and_then(|above| structure.get(above))
+                        .is_none_or(|above| above.trim() != "#[cfg(test)]")
+            })
+            .map(|(_, (line, _))| line)
+            .collect()
+    }
+
+    /// The over-skip direction, which the `#[test]` canary above cannot see: a
+    /// `#[cfg(test)]` extent read as *longer* than it is, or a runaway blank in
+    /// [`code_only`], drops production lines from the scanned region. Every gate below
+    /// then passes over a region that no longer holds the code it is asking about — the
+    /// vacuous pass, where the scanner proves nothing and says nothing.
+    ///
+    /// The sentinels are derived per file rather than listed, so this covers files no
+    /// list here names and needs no maintenance when a module gains an item. A file that
+    /// offers no sentinel is a file this gate does not cover, and it says so rather than
+    /// quietly narrowing to the files that still happen to qualify.
+    #[test]
+    fn every_top_level_item_survives_the_production_scan() {
+        let mut uncovered: Vec<PathBuf> = Vec::new();
+        for (path, source) in crate_sources() {
+            let expected = top_level_production_items(&source);
+            if expected.is_empty() {
+                uncovered.push(path);
+                continue;
+            }
+            let kept = production_lines(&source);
+            for item in expected {
+                assert!(
+                    kept.contains(&item),
+                    "the production scan of {} dropped the top-level item `{}`, so the \
+                     gates below are scanning less than the file's production code",
+                    path.display(),
+                    item.trim(),
+                );
+            }
+        }
+        assert!(
+            uncovered.is_empty(),
+            "every crate source must offer a top-level item this gate can follow; these \
+             no longer do: {uncovered:?}",
+        );
+    }
+
     #[test]
     fn no_ranking_snippet_commit_or_resolve_surface() {
         scan(FORBIDDEN_FIELD_SETTERS);
