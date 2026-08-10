@@ -48,7 +48,8 @@ pub use analysis::{
 };
 pub use compile::{
     CompileFailure, CompileInvariant, CompileResourceLimit, Compiled, CompiledTests, ExportEntry,
-    NonEmptySourceDiagnostics, ResourceLimitKind, TestEntry, compile, compile_with_tests,
+    MAX_PARSED_FILE_BYTES, MAX_QUERY_PARSE_TRANSIENT_BYTES, NonEmptySourceDiagnostics,
+    ResourceLimitKind, TestEntry, compile, compile_with_tests,
 };
 pub use demand::{DemandSummary, DurableNaming, RootDemand};
 pub use diag::{IdentityGap, SourceDiagnostic};

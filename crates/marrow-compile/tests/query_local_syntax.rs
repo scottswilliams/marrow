@@ -29,8 +29,9 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use marrow_compile::{
-    ActiveCallOutcome, AnalysisSnapshot, CompletionOutcome, Fact, InputRevision, PositionClass,
-    QueryError, Unavailability, analyze,
+    ActiveCallOutcome, AnalysisFailure, AnalysisSnapshot, CompletionOutcome, Fact, InputRevision,
+    MAX_PARSED_FILE_BYTES, MAX_QUERY_PARSE_TRANSIENT_BYTES, PositionClass, QueryError,
+    Unavailability, analyze,
 };
 use marrow_project::{CaptureLimits, CapturedFile, FileIdentity, Manifest, ProjectInput};
 use marrow_syntax::{
@@ -98,11 +99,6 @@ const ORDINARY_QUERY_BUDGET_MS: u128 = 10;
 ///
 /// The term is a consequence of [`MAX_SOURCE_BYTE_CHARGE`], not an independent number:
 /// the cap is the invariant and this is what the cap costs at the admission ceiling.
-const MAX_QUERY_PARSE_TRANSIENT_BYTES: usize = MAX_ADMITTED_FILE_BYTES
-    * (MAX_SOURCE_BYTE_CHARGE + TOKEN_CHARGE + BLOCK_MEASUREMENT_CHARGE)
-    + TOKEN_CHARGE
-    + DIAGNOSTICS;
-
 /// **The invariant of this file.** No node family the parser builds may charge more than
 /// this many heap bytes per source byte it exclusively requires.
 ///
@@ -1213,6 +1209,75 @@ fn the_token_vector_holds_at_most_one_token_per_source_byte() {
 /// sample through a resident set.
 fn statement_list_term() -> usize {
     MAX_ADMITTED_FILE_BYTES * size_of::<Statement>() / 2
+}
+
+/// A file whose accounted parse charge is over the ceiling is refused **before** it is
+/// parsed, rather than materialized and then found to be too large.
+///
+/// The charge is computable from the file's byte length alone: the per-source-byte rate
+/// is a constant `marrow-syntax` publishes for the representation it builds, and the
+/// length is known at capture. That is what lets the gate be fail-closed — there is
+/// nothing to measure and nothing to allocate first.
+///
+/// The gate sits at drive admission, which runs before any module is parsed, so it
+/// bounds the drive's own parse and every query-local re-parse a snapshot later serves.
+/// Reaching it needs a project captured with a wider per-file ceiling than the
+/// production default; every file admitted under `CaptureLimits::DEFAULT` is inside it,
+/// which is the relation `MAX_PARSED_FILE_BYTES` pins at build time.
+#[test]
+fn an_over_ceiling_file_is_refused_before_it_is_parsed() {
+    // Comment filler: the gate reads the file's length and nothing else, so the fixture
+    // only has to be long.
+    let mut source = String::from("module wide\n\n");
+    while source.len() <= MAX_PARSED_FILE_BYTES {
+        source.push_str("// filler line carrying ordinary comment text\n");
+    }
+    assert!(source.len() > MAX_PARSED_FILE_BYTES);
+    let manifest = Manifest::parse("edition = \"2026\"\n").expect("valid manifest");
+    let files = vec![CapturedFile::new(
+        "src/wide.mw".to_string(),
+        source.into_bytes(),
+    )];
+    let limits = CaptureLimits::new(4096, 8 * MAX_PARSED_FILE_BYTES, 64 << 20);
+    let input = Arc::new(
+        marrow_project::capture(&manifest, files, None, &limits)
+            .expect("the fixture is inside the widened capture envelope"),
+    );
+    match analyze(input, InputRevision::new(1)) {
+        Ok(_) => panic!("an over-ceiling file must be refused, not parsed"),
+        Err(AnalysisFailure::ResourceLimit { limit, .. }) => {
+            assert_eq!(
+                limit.description(),
+                "one source file is too large",
+                "the refusal names the file's size, not a downstream consequence of \
+                 having parsed it"
+            );
+        }
+        Err(AnalysisFailure::Invariant { .. }) => {
+            panic!("an over-ceiling file is a resource refusal, not an invariant failure")
+        }
+    }
+}
+
+/// The exported term is what the admitted length costs, and the accounting closes under
+/// it. Both sides are constants of this crate and of `marrow-syntax`, so a widened
+/// representation narrows what is admitted rather than silently costing more heap.
+#[test]
+fn the_admitted_length_and_the_exported_term_agree_with_the_derivation() {
+    assert_eq!(
+        MAX_PARSED_FILE_BYTES, MAX_ADMITTED_FILE_BYTES,
+        "the length this crate parses moved away from the length this file derives over"
+    );
+    assert_eq!(
+        MAX_SOURCE_BYTE_CHARGE + TOKEN_CHARGE + BLOCK_MEASUREMENT_CHARGE,
+        marrow_syntax::MAX_PARSE_BYTES_PER_SOURCE_BYTE,
+        "the rate `marrow-syntax` publishes drifted from the rate derived here"
+    );
+    assert_eq!(
+        TOKEN_CHARGE + DIAGNOSTICS,
+        marrow_syntax::MAX_PARSE_FIXED_BYTES,
+        "the length-independent parse charge drifted from the one derived here"
+    );
 }
 
 /// The corroborating samples: every maximum-size shape reachable here is queryable, and

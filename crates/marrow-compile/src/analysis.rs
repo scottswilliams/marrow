@@ -589,10 +589,13 @@ impl AnalysisSnapshot {
 /// when the tree was retained. Parsing is a pure function of the source bytes, so a
 /// query's outcome does not depend on when the parse ran.
 ///
-/// Its peak is bounded by the project owner's 1 MiB per-file admission ceiling, which
-/// the drive has already enforced, so this needs no refusal arm of its own. The
-/// precedent is [`AnalysisSnapshot::format`], which already re-derives a tree per
-/// query through the syntax owner's `check_format`.
+/// Its peak is charged before it is incurred, and by an owner that runs before any file
+/// is parsed: [`crate::MAX_PARSED_FILE_BYTES`] is the longest file drive admission
+/// accepts, and it is derived from [`crate::MAX_QUERY_PARSE_TRANSIENT_BYTES`] and the
+/// rate `marrow-syntax` publishes for the representation it builds. Every file a
+/// snapshot holds therefore has an accounted parse charge under that ceiling, and this
+/// needs no refusal arm of its own — an arm here would be unreachable, and an
+/// unreachable refusal is a claim no test can keep honest.
 fn query_local_parse(source: &[u8]) -> Option<marrow_syntax::SourceFile> {
     let source = std::str::from_utf8(source).ok()?;
     Some(marrow_syntax::parse_source(source).file)

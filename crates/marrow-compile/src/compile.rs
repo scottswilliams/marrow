@@ -650,6 +650,31 @@ impl AdmittedModules {
     }
 }
 
+/// The longest source file this crate parses.
+///
+/// Every parse of an admitted file — the drive's own, and each query-local re-parse a
+/// snapshot serves — is bounded by what this length costs, so it is the one number that
+/// decides [`MAX_QUERY_PARSE_TRANSIENT_BYTES`]. Admission compares the *charge* rather
+/// than the length, so a widened parse representation narrows what is admitted without
+/// anyone editing this constant.
+pub const MAX_PARSED_FILE_BYTES: usize = 1 << 20;
+
+/// The heap one parse of a maximum admitted file may allocate.
+///
+/// Derived, not chosen: it is what [`MAX_PARSED_FILE_BYTES`] costs at the per-source-byte
+/// rate `marrow-syntax` publishes for the representation its parser builds.
+/// `marrow-compile`'s `the_query_parse_transient_closes_under_the_exported_term`
+/// re-derives that rate from the representation and fails if the published constant
+/// drifts from it.
+pub const MAX_QUERY_PARSE_TRANSIENT_BYTES: usize =
+    marrow_syntax::max_parse_bytes(MAX_PARSED_FILE_BYTES);
+
+/// This crate never offers to parse a file the project owner would refuse to capture.
+/// The two ceilings are set by different owners for different reasons — one bounds a
+/// captured project, the other bounds this crate's heap — so the relation between them
+/// is checked here rather than either copying the other's number.
+const _: () = assert!(MAX_PARSED_FILE_BYTES <= CaptureLimits::DEFAULT.max_file_bytes());
+
 impl DriveInputAdmission {
     fn check(project: &ProjectInput) -> Result<AdmittedModules, CompileResourceLimit> {
         let limits = CaptureLimits::DEFAULT;
@@ -661,13 +686,16 @@ impl DriveInputAdmission {
             ));
         }
 
-        if modules
-            .iter()
-            .any(|module| module.source().len() > limits.max_file_bytes())
-        {
+        // Refuse before materializing: what a file's parse costs is arithmetic over its
+        // byte length and a pinned rate, so an over-ceiling file is turned away here
+        // rather than parsed and found to be too large afterwards. The reader is given
+        // the length they can act on, not the heap figure it was derived from.
+        if modules.iter().any(|module| {
+            marrow_syntax::max_parse_bytes(module.source().len()) > MAX_QUERY_PARSE_TRANSIENT_BYTES
+        }) {
             return Err(CompileResourceLimit::new(
                 ResourceLimitKind::ProjectFileBytes,
-                limits.max_file_bytes() as u64,
+                MAX_PARSED_FILE_BYTES as u64,
             ));
         }
 

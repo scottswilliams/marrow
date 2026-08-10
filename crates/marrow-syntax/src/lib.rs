@@ -72,6 +72,41 @@ pub const NESTING_DEPTH_LIMIT: usize = 256;
 /// operator already reads, even though the front end raises it.
 pub const NESTING_LIMIT: &str = Code::CheckNestingLimit.as_str();
 
+/// The heap [`parse_source`] allocates for one source byte, at the widest shape the
+/// grammar admits.
+///
+/// **Declared, not measured.** The figure is a cap over every node family the parser
+/// builds — the widest one decides it, so shrinking that family promotes the next —
+/// plus the file's token slice and the block measurement that sizes each statement
+/// list. `marrow-compile`'s `no_node_family_exceeds_the_declared_source_byte_cap`
+/// re-derives it from the representation and fails if this constant drifts from it or
+/// if any family widens past it.
+///
+/// The cap sits above the derived maximum on purpose: one field added to one node
+/// costs a review here rather than a re-derivation of every ceiling built on it.
+///
+/// It charges allocated capacity, not resident pages. Two things sit outside it: the
+/// caller's source bytes, which the parser borrows, and per-allocation allocator
+/// overhead.
+pub const MAX_PARSE_BYTES_PER_SOURCE_BYTE: usize = 360;
+
+/// The heap [`parse_source`] allocates regardless of the file's length: the diagnostic
+/// collector's two ceilings, and the token slice's zero-width `Eof` sentinel, which is
+/// the one token that covers no source byte.
+pub const MAX_PARSE_FIXED_BYTES: usize = 2 * SYNTAX_DIAGNOSTIC_COUNT_LIMIT * 256
+    + 2 * SYNTAX_DIAGNOSTIC_OWNED_BYTES_LIMIT
+    + size_of::<Token>();
+
+/// The heap [`parse_source`] can allocate for a file of `source_bytes`.
+///
+/// Computable before the file is parsed, and before it is even read: the rate is a
+/// constant of the representation and the length is known at capture. A caller with a
+/// heap bound of its own can therefore refuse a file rather than materialize it and
+/// discover the cost afterwards.
+pub const fn max_parse_bytes(source_bytes: usize) -> usize {
+    source_bytes * MAX_PARSE_BYTES_PER_SOURCE_BYTE + MAX_PARSE_FIXED_BYTES
+}
+
 pub fn is_reserved_word(text: &str) -> bool {
     token::keyword(text).is_some()
 }
