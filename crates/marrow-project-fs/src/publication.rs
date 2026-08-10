@@ -45,11 +45,14 @@
 //!                     stage=next until exact cleanup
 //! ```
 //!
-//! The reverted terminal is the arm a destination refusal or a continuously
-//! proven third live inode settles into: the successor is not installed, the
-//! artifact keeps whatever the concurrent writer left, and the outcome is
+//! The reverted terminal is what a destination refusal or a continuously proven
+//! third live inode settles into: the successor is not installed, the artifact
+//! keeps whatever the concurrent writer left, and the outcome is
 //! [`IdsPublication::ConcurrentChange`]. It is a recorded terminal rather than
 //! an abandoned journal because the frame's only exit is its terminal phase.
+//! Which terminal a mutation reached is read back from the map rather than
+//! decided from the mutation's own outcome, so the driver, the mutations, and
+//! the crash-tail derivation cannot disagree about what was installed.
 //!
 //! Every state outside that map is retained corruption. In particular
 //! `target=next` with a third inode at the stage name is, after process death,

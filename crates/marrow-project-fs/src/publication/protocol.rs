@@ -462,12 +462,17 @@ impl<'a> Session<'a> {
                     Some(base) => self.exchange_replace(base),
                 }
             }
-            MapState::Installed => Ok(Terminal::Installed),
-            MapState::Reverted => Ok(Terminal::Reverted),
-            MapState::InstalledClean | MapState::RevertedClean => {
-                Err(MapFault::OffMap { phase: INSTALLING }.into())
-            }
+            settled => terminal_of_map(settled),
         }
+    }
+
+    /// Re-read the artifact map and name the terminal it settled into.
+    ///
+    /// The mutations call this instead of deciding a terminal from their own
+    /// outcome: a refused destination and a returned exchange each leave a map,
+    /// and the map is what recovery would read after a crash at the same point.
+    fn terminal_from_map(&self) -> Result<Terminal, IdsPublicationError> {
+        terminal_of_map(self.read_map(INSTALLING)?)
     }
 
     /// The absent arm: one destination-refusing hard link. A refused
@@ -493,9 +498,11 @@ impl<'a> Session<'a> {
                     self.header.next_bytes.len(),
                 )?;
                 meta.sync()?;
-                Ok(Terminal::Installed)
+                self.terminal_from_map()
             }
-            Err(CustodyError::AlreadyExists { .. }) => Ok(Terminal::Reverted),
+            // The artifact this plan was admitted against as absent now
+            // exists, so the map — not this refusal — names the terminal.
+            Err(CustodyError::AlreadyExists { .. }) => self.terminal_from_map(),
             Err(error) => Err(error.into()),
         }
     }
@@ -518,7 +525,7 @@ impl<'a> Session<'a> {
         }
         if staged.identity() == base {
             meta.sync()?;
-            return Ok(Terminal::Installed);
+            return self.terminal_from_map();
         }
         let third = staged.identity();
         meta.exchange(self.guard.ledger_name(), self.guard.stage_name())?;
@@ -529,7 +536,7 @@ impl<'a> Session<'a> {
                 if restored.identity() == third && returned.identity() == next =>
             {
                 meta.sync()?;
-                Ok(Terminal::Reverted)
+                self.terminal_from_map()
             }
             _ => Err(MapFault::ExchangeUncertain.into()),
         }
@@ -786,7 +793,19 @@ fn pending_terminal(
         terminal: None,
         journal: None,
     };
-    match probe.read_map(INSTALLING)? {
+    probe.terminal_from_map()
+}
+
+/// The one place a settled artifact map is turned into a terminal.
+///
+/// Every reader shares it: the phase driver, a mutation that found the
+/// destination taken or exchanged a successor back out, and the tail derivation
+/// that must reproduce the exact record a crash was appending. A second answer
+/// anywhere could record an installed successor over a map that says nothing
+/// was installed, and the `(terminal, map)` check in `settle` would then retain
+/// the project as corrupt instead of publishing.
+fn terminal_of_map(map: MapState) -> Result<Terminal, IdsPublicationError> {
+    match map {
         MapState::Installed => Ok(Terminal::Installed),
         MapState::Reverted => Ok(Terminal::Reverted),
         MapState::Prepared | MapState::InstalledClean | MapState::RevertedClean => {

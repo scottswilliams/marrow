@@ -555,6 +555,32 @@ fn an_incomplete_installing_record_is_truncated_to_the_unique_next_record() {
     assert_eq!(project.read_meta("ids").as_deref(), Some(&b"successor"[..]));
 }
 
+/// The reverted side of the same derivation. The unique legal next record is
+/// the terminal the artifact map names, so a crash part-way through the
+/// terminal record of a publication that never installed resumes as reverted
+/// rather than as an install.
+#[test]
+fn an_incomplete_terminal_record_over_a_reverted_map_resumes_as_reverted() {
+    let _serial = serialized();
+    let project = Project::new("tail-settled-reverted");
+    project.write_meta("ids", b"another writer's generation");
+    project.write_meta("ids.publish.stage", b"successor");
+    Crash::new(&project, None, b"successor")
+        .installing()
+        .partial(settled_record(1), 6)
+        .plant();
+
+    let settled = project.guard().recover_ids().expect("recovery runs");
+    assert_eq!(settled, Some(IdsPublication::ConcurrentChange));
+    assert_eq!(
+        project.read_meta("ids").as_deref(),
+        Some(&b"another writer's generation"[..]),
+        "a reverted publication leaves the artifact exactly as it found it"
+    );
+    assert!(!project.exists("ids.publish.stage"));
+    assert!(!project.exists("ids.pending"));
+}
+
 #[test]
 fn an_incomplete_terminal_record_is_truncated_against_the_artifact_map() {
     let _serial = serialized();
@@ -999,4 +1025,30 @@ fn the_publication_names_derive_from_the_pure_owner_s_spellings() {
             );
         }
     }
+}
+
+/// The terminal has one decision point. A mutation that finds its destination
+/// taken, an exchange that returned a successor back out, the phase driver, and
+/// the tail derivation all name their terminal by classifying the artifact map,
+/// so every `Terminal` a publication can settle into is constructed in exactly
+/// one place. A second construction is how a successor gets recorded as
+/// installed over a map that says nothing was installed.
+#[test]
+fn the_settled_terminal_is_decided_in_exactly_one_place() {
+    let protocol = include_str!("publication/protocol.rs");
+    let decisions = protocol.matches("Ok(Terminal::").count();
+    assert_eq!(
+        decisions, 2,
+        "the protocol builds a terminal outcome in {decisions} places; the closed map \
+         classifier `terminal_of_map` is the only one that may"
+    );
+    let classifier = protocol
+        .split_once("fn terminal_of_map")
+        .map(|(_, body)| body)
+        .expect("the classifier is present");
+    assert_eq!(
+        classifier.matches("Ok(Terminal::").count(),
+        2,
+        "both terminal decisions must live inside `terminal_of_map`"
+    );
 }
