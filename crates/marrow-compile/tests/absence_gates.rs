@@ -178,3 +178,120 @@ fn the_collector_is_concrete_not_generic() {
         "expected the concrete collector; if it was renamed, update this scan"
     );
 }
+
+// --- Bounded analysis facts: the retention shapes this design deletes ---
+
+/// No snapshot field retains a parse tree. The completion and active-call queries
+/// re-parse exactly one already-admitted file's already-retained bytes per query, so
+/// the syntax owner's tree type is never a retained analysis field and the retired
+/// per-module tree carrier does not reappear.
+#[test]
+fn no_parse_tree_is_retained_for_a_query() {
+    for forbidden in ["CompletionModule", "marrow_syntax::SourceFile"] {
+        let found = occurrences(forbidden);
+        assert!(
+            found.is_empty(),
+            "a retained parse tree must not exist: `{forbidden}` at {found:?}"
+        );
+    }
+}
+
+/// Every editor-fact producer writes through the one scoped sink borrow. No raw
+/// mutable fact vector parameter survives, so a fact cannot be retained without
+/// passing the ledger's ceilings at the push.
+#[test]
+fn no_mutable_fact_vector_parameter_exists() {
+    for forbidden in [
+        "&mut Vec<HoverFact",
+        "&mut Vec<crate::analysis::HoverFact",
+        "&mut Vec<(FileIdentity, SourceSpan)>",
+        "&mut Vec<DeclSymbol",
+    ] {
+        let found = occurrences(forbidden);
+        assert!(
+            found.is_empty(),
+            "editor facts must flow through the scoped sink: `{forbidden}` at {found:?}"
+        );
+    }
+}
+
+/// The fact ledger is one concrete private owner, structurally the sibling of the
+/// diagnostic collector: no generic collector shape and no second diagnostic owner.
+#[test]
+fn the_fact_ledger_is_one_concrete_owner() {
+    let mut declared = false;
+    for path in src_files() {
+        let source = fs::read_to_string(&path).expect("read source file");
+        declared |= source.contains("struct AnalysisFactCollector");
+        for forbidden in ["AnalysisFactCollector<", "AnalysisDiagnosticCollector"] {
+            assert!(
+                !source.contains(forbidden),
+                "{} declares a forbidden collector shape: `{forbidden}`",
+                path.display()
+            );
+        }
+    }
+    assert!(
+        declared,
+        "expected the concrete analysis fact ledger; if it was renamed, update this scan"
+    );
+}
+
+/// The retired attempt/receipt/epoch fact-transaction vocabulary does not reappear. A
+/// snapshot bound crossing refuses the whole snapshot and drops every fact together;
+/// there is no partial publication to unwind, so no transaction protocol exists to
+/// unwind it.
+#[test]
+fn no_fact_transaction_protocol_vocabulary_exists() {
+    for forbidden in [
+        "FactAttempt",
+        "FactReceipt",
+        "FactEpoch",
+        "FactTransaction",
+        "TerminalToken",
+        "DriveOwner",
+    ] {
+        let found = occurrences(forbidden);
+        assert!(
+            found.is_empty(),
+            "the retired attempt/receipt protocol must not reappear: `{forbidden}` at {found:?}"
+        );
+    }
+}
+
+/// The compact fact coordinate is derived and owned here: it is an index into the
+/// snapshot's own input module order, never a second file-identity family and never
+/// an edge into the project owner's identity type.
+#[test]
+fn no_shadow_file_identity_family_exists() {
+    for forbidden in ["ProjectFileId", "FileIdentityTable", "FileIdTable"] {
+        let found = occurrences(forbidden);
+        assert!(
+            found.is_empty(),
+            "no shadow file-ID family may exist: `{forbidden}` at {found:?}"
+        );
+    }
+}
+
+/// The compact fact coordinates declare exactly the private field the crate's
+/// `compile_fail` privacy doctests rely on. A tuple newtype with a private field
+/// cannot be constructed or destructured outside the crate; pinning the declaration
+/// here keeps the doctests from passing for the wrong reason after a rename.
+#[test]
+fn fact_coordinates_declare_private_fields() {
+    let analysis = fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("src")
+            .join("analysis.rs"),
+    )
+    .expect("read the analysis fact owner");
+    for declaration in [
+        "pub(crate) struct FileRef(u16);",
+        "pub(crate) struct DefTargetRef(u16);",
+    ] {
+        assert!(
+            analysis.contains(declaration),
+            "expected the compact coordinate declaration `{declaration}`"
+        );
+    }
+}
