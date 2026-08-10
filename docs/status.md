@@ -65,6 +65,16 @@ server (`marrow-lsp`); and the `marrow` CLI. The
 - The formatter canonicalizes a left-anchored self-update to compound assignment
   (`x = x + e` becomes `x += e`) and owns the `use` block (sorted, deduplicated,
   one import per line); it never reorders declarations.
+- A declaration the compiler refuses keeps its name. Its cause is reported once at
+  the declaration, the first use of the name is steered to that report under the
+  declaring code, and later uses fail silently; no use of a declared name is
+  reported as a name that is not in scope. This holds for modules, types, generic
+  templates, resource members, store roots, constants, function signatures,
+  parameters, and local bindings. A refused declaration also occupies its name, so a
+  redeclaration is a name conflict in either order. Structs and enums are refused as
+  whole declarations rather than per member, so a construction of a refused struct
+  reports the declaration's cause and does not additionally report an undeclared
+  field ([Refused declarations](language/modules-and-functions.md#refused-declarations)).
 - Reference pages state how idiomatic Marrow is written
   ([Idioms](language/idioms.md)) and the closed surface laws — the sigil economy,
   the grep contract, and the no-synonym law

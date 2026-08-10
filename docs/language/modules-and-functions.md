@@ -244,3 +244,24 @@ allowed local binding.
 
 Module-level declarations cannot redefine built-ins such as `exists`, `Id`, or
 `string`.
+
+## Refused Declarations
+
+A declaration the compiler refuses still occupies its name. The refusal is reported
+once, at the declaration; a later declaration of the same name is a name conflict
+whether or not the earlier one was accepted; and a use of the name is reported
+against the declaration's own cause rather than as a name that is not in scope. This
+holds for every declared name — modules, types, generic templates, resource members,
+store roots, constants, function signatures, parameters, and local bindings.
+
+A module is refused when its `module` header disagrees with its source-root-relative
+path, and when the file did not decode as UTF-8 or did not parse. A `use` of a
+refused module reports the refusal rather than reporting that the project has no such
+module, and a qualified call into it is reported against the same cause. A file with
+no `module` header is a script rather than a module: naming it in a `use` is a
+genuine absence.
+
+A resource member is refused on its own, so the resource keeps its other members and
+a use of the refused member names its cause. A struct or an enum is refused as a
+whole declaration, so a construction of one reports the declaration's refusal and
+does not additionally report a field the type never declared.

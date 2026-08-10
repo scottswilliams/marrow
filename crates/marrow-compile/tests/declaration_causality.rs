@@ -1387,3 +1387,34 @@ fn a_nested_group_repeating_a_member_name_is_a_name_conflict() {
         messages(&diagnostics),
     );
 }
+
+// ---------------------------------------------------------------------------
+// Local bindings — I-8
+//
+// A local binding whose initializer failed is recorded, so a later use reuses
+// that cause. The annotation branch beside it returned without recording, so a
+// binding refused for its annotation was unknown at every use — once per use.
+// ---------------------------------------------------------------------------
+
+/// R24's local sibling: a binding refused for its type annotation is not out of
+/// scope at its uses, and the two uses add no row of their own.
+#[test]
+fn a_binding_refused_for_its_annotation_is_not_out_of_scope_at_its_uses() {
+    let diagnostics = diagnostics(
+        "module main\n\n\
+         pub fn read(): int {\n\
+         \x20   const x: Nope = 1\n\
+         \x20   const a = x\n\
+         \x20   const b = x\n\
+         \x20   return 1\n\
+         }\n",
+    );
+
+    assert_never_out_of_scope(&diagnostics, "x");
+    assert_eq!(
+        rows(&diagnostics),
+        vec![("check.unsupported", 4, 14)],
+        "the annotation reports the cause and its uses reuse it: {:#?}",
+        messages(&diagnostics),
+    );
+}

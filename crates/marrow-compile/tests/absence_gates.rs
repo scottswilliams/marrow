@@ -830,3 +830,300 @@ fn every_covered_refusal_names_its_covering_report() {
          and be added here deliberately: {sites:?}"
     );
 }
+
+/// E6 — the module and signature namespaces' parallel probe sets are gone, not
+/// merely unused.
+///
+/// Each answered one part of a question its ledger now answers whole: is this
+/// dotted path a module of the project, did it parse, did every signature resolve,
+/// and did the region behind the signature table run at all. Leaving any of them
+/// reachable would let a caller reconstruct the answer from probes again, which is
+/// how a module the reader can see came to be reported as one the project does not
+/// contain.
+#[test]
+fn the_module_and_signature_probes_are_deleted() {
+    for deleted in [
+        "broken_modules",
+        "names_broken_module",
+        "module_names",
+        "FunctionRegistryOutcome",
+        "RegistryPhases::unavailable",
+    ] {
+        let found = production_occurrences(deleted);
+        assert!(
+            found.is_empty(),
+            "`{deleted}` is replaced by the declaration ledger and must not exist: {found:?}"
+        );
+    }
+}
+
+/// E7 — the ledger owns no diagnostic terminal.
+///
+/// A refusal's row and its retained summary are one statement in the namespace's
+/// own collector. A collector constructed inside `decl.rs` would be a second
+/// terminal whose rows nothing seals, so a retained cause could name a report no
+/// stage ever reports.
+#[test]
+fn the_declaration_ledger_constructs_no_diagnostic_collector() {
+    let code = production_code_of("decl.rs");
+    for shape in ["DiagnosticCollector::new(", ".finish()"] {
+        assert!(
+            !code.contains(shape),
+            "`decl.rs` must not own a diagnostic terminal: `{shape}` is present",
+        );
+    }
+}
+
+/// E2 — a declaration builder cannot push a diagnostic and drop the key.
+///
+/// The shape this lane exists to kill is `diagnostics.push(row); continue;` inside
+/// a block that builds a namespace: the row reports the cause once, and every later
+/// lookup of the dropped name then reads as *never declared*. Refusing through
+/// `refuse`/`refuse_row`/`refuse_first` makes the pushed row and the retained
+/// summary one statement, so a raw push that leaves such a block without declaring
+/// is the defect reappearing.
+///
+/// Scanned over the production projection — comments, every string spelling, and
+/// `#[cfg(test)]` items blanked, offsets preserved — by brace depth rather than by
+/// line, and bounded to blocks that declare, over an exact allowlist of the one
+/// category that legitimately drops nothing: a report about a name an earlier
+/// declaration already holds, and a `use` import, which is not a ledger namespace
+/// at all. Both leave the name answerable, so neither can fabricate an absence.
+#[test]
+fn no_declaration_builder_pushes_a_row_and_drops_the_key() {
+    let allowed = [
+        ("compile.rs", "Code::CheckImport"),
+        ("compile.rs", "Code::CheckImport"),
+        ("compile.rs", "Code::CheckImport"),
+        ("durable.rs", "Code::CheckType"),
+        ("konst.rs", "Code::CheckNameConflict"),
+        ("types.rs", "Code::CheckNameConflict"),
+        ("types.rs", "Code::CheckNameConflict"),
+        ("types.rs", "Code::CheckNameConflict"),
+        ("types.rs", "Code::CheckNameConflict"),
+        ("types.rs", "Code::CheckNameConflict"),
+        ("types.rs", "Code::CheckNameConflict"),
+        ("types.rs", "Code::CheckNameConflict"),
+        ("types.rs", "Code::CheckNameConflict"),
+        ("types.rs", "Code::CheckNameConflict"),
+        ("types.rs", "Code::CheckType"),
+    ];
+    let found = declaration_drop_sites();
+    let shapes: Vec<(&str, &str)> = found
+        .iter()
+        .map(|(file, _, code)| (file.as_str(), code.as_str()))
+        .collect();
+    assert_eq!(
+        shapes, allowed,
+        "a declaration builder pushed a row and left its block without declaring the \
+         key. Refuse through `refuse`/`refuse_row`/`refuse_first` so the pushed row \
+         and the retained cause are one statement; a site that genuinely drops \
+         nothing is added here deliberately: {found:?}",
+    );
+}
+
+/// The plant-probe for the scan above, in every direction it could disable itself:
+/// reading literals or comments as code, missing a drop that sits on another line,
+/// mistaking a refusal for a drop, mistaking a report-only check for a builder, and
+/// finding no declaring block in the real tree at all.
+#[test]
+fn the_declaration_drop_scan_finds_a_planted_drop_and_only_a_real_one() {
+    let planted = r##"
+fn build(diagnostics: &mut DiagnosticCollector) {
+    for item in items {
+        let commentary = "diagnostics.push(row); continue;";
+        let raw = r#"diagnostics.push(row); continue;"#;
+        // diagnostics.push(row); continue;
+        if bad {
+            diagnostics.push(SourceDiagnostic::at(
+                Code::CheckUnsupported.as_str(),
+                file,
+                span,
+                message,
+            ));
+            continue;
+        }
+        ledger.declare(key, occurrence)?;
+    }
+}
+"##;
+    assert_eq!(
+        drop_sites_in(&production_code(planted)),
+        vec![(8, "Code::CheckUnsupported".to_string())],
+        "the planted drop is found, and the three literal and comment copies of it \
+         are not",
+    );
+
+    let refused = r##"
+fn build(diagnostics: &mut DiagnosticCollector) {
+    for item in items {
+        let occurrence = match resolve(item) {
+            Ok(value) => DeclarationOccurrence::Accepted(value),
+            Err(_) => DeclarationOccurrence::Refused(refuse_row(diagnostics, at, row)),
+        };
+        ledger.declare(key, occurrence)?;
+    }
+}
+"##;
+    assert!(
+        drop_sites_in(&production_code(refused)).is_empty(),
+        "refusing through the one constructor is not a drop",
+    );
+
+    // A block that never declares is not a declaration builder, so a report-only
+    // check that pushes and continues is not this defect.
+    let report_only = r##"
+fn reject_duplicates(diagnostics: &mut DiagnosticCollector) {
+    for item in items {
+        if seen {
+            diagnostics.push(row);
+            continue;
+        }
+    }
+}
+"##;
+    assert!(
+        drop_sites_in(&production_code(report_only)).is_empty(),
+        "a check that declares nothing is not a declaration builder",
+    );
+
+    // The scan must reach declaring blocks in the real tree; if every ledger owner
+    // were renamed out from under it, it would pass by scanning nothing.
+    let blocks = declaring_block_count();
+    assert!(
+        blocks >= 6,
+        "the scan must see the real declaration builders; it found only {blocks}",
+    );
+}
+
+/// Every production site at which a row is pushed and the enclosing declaring block
+/// is left without declaring the key, as `(file name, line, pushed code)`.
+fn declaration_drop_sites() -> Vec<(String, usize, String)> {
+    let mut found = Vec::new();
+    for path in src_files() {
+        if is_test_only_file(&path) {
+            continue;
+        }
+        let name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .expect("a source file name")
+            .to_string();
+        let source = fs::read_to_string(&path).expect("read source file");
+        for (line, code) in drop_sites_in(&production_code(&source)) {
+            found.push((name.clone(), line, code));
+        }
+    }
+    found
+}
+
+/// How many declaring blocks the scan finds across production code, so the gate can
+/// prove it is scanning something.
+fn declaring_block_count() -> usize {
+    let mut count = 0;
+    for path in src_files() {
+        if is_test_only_file(&path) {
+            continue;
+        }
+        let source = fs::read_to_string(&path).expect("read source file");
+        count += declaring_blocks(&production_code(&source)).len();
+    }
+    count
+}
+
+/// The `(open, close)` byte offsets of every block whose own statements call
+/// `declare(` — the blocks that build a namespace.
+fn declaring_blocks(code: &str) -> Vec<(usize, usize)> {
+    let bytes = code.as_bytes();
+    let mut opens: Vec<usize> = Vec::new();
+    let mut blocks: Vec<(usize, usize)> = Vec::new();
+    for (at, byte) in bytes.iter().enumerate() {
+        match byte {
+            b'{' => opens.push(at),
+            b'}' => {
+                if let Some(open) = opens.pop()
+                    && code[open + 1..at].contains(".declare(")
+                {
+                    blocks.push((open, at));
+                }
+            }
+            _ => {}
+        }
+    }
+    blocks.sort_unstable();
+    blocks
+}
+
+/// The 1-based line and pushed code of every `diagnostics.push(` inside a declaring
+/// block whose own statement list leaves that block — by `continue`, `break`, or
+/// `return` — before reaching a `declare(`.
+fn drop_sites_in(code: &str) -> Vec<(usize, String)> {
+    let mut sites: Vec<(usize, String)> = Vec::new();
+    for (open, close) in declaring_blocks(code) {
+        let body = &code[open + 1..close];
+        let mut at = 0usize;
+        while let Some(hit) = body[at..].find("diagnostics.push(") {
+            let push = at + hit;
+            at = push + 1;
+            if leaves_without_declaring(body, push) {
+                sites.push((
+                    code[..open + 1 + push].lines().count(),
+                    pushed_code(&body[push..]),
+                ));
+            }
+        }
+    }
+    sites.sort_unstable();
+    sites.dedup();
+    sites
+}
+
+/// The `Code::` constant a pushed row names, which is what the allowlist is keyed
+/// on: a site that starts reporting a different cause is a different contract and
+/// has to be looked at again. `?` when the row is built elsewhere.
+fn pushed_code(rest: &str) -> String {
+    let window = &rest[..rest.len().min(160)];
+    match window.find("Code::") {
+        Some(at) => {
+            let tail = &window[at..];
+            let end = tail
+                .find(|c: char| !(c.is_alphanumeric() || c == '_' || c == ':'))
+                .unwrap_or(tail.len());
+            tail[..end].to_string()
+        }
+        None => "?".to_string(),
+    }
+}
+
+/// Whether the statement list containing `push` reaches `continue`/`break`/`return`
+/// at its own nesting level before any `declare(` at that level.
+fn leaves_without_declaring(body: &str, push: usize) -> bool {
+    let bytes = body.as_bytes();
+    let mut depth = 0i32;
+    let mut at = push;
+    while at < bytes.len() {
+        match bytes[at] {
+            b'{' => depth += 1,
+            // The end of the statement list this push sits in.
+            b'}' if depth == 0 => return false,
+            b'}' => depth -= 1,
+            _ if depth == 0 => {
+                let rest = &body[at..];
+                if rest.starts_with(".declare(") {
+                    return false;
+                }
+                for exit in ["continue", "break", "return"] {
+                    if rest.starts_with(exit)
+                        && !rest[exit.len()..]
+                            .starts_with(|c: char| c.is_alphanumeric() || c == '_')
+                    {
+                        return true;
+                    }
+                }
+            }
+            _ => {}
+        }
+        at += 1;
+    }
+    false
+}

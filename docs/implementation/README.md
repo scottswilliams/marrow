@@ -225,21 +225,30 @@ minted by exactly one phase at the point that phase completes and taken by name 
 every phase that depends on it:
 
 ```text
-CompleteTypeRegistry ─┬─> CompleteFunctionRegistry ─┬─> AcceptedQueuedTemplateProofs ─┐
-                      │                             ├─> CompleteDeclaredFunctionBodies┤
-                      │                             └─> CompleteDeclaredTestBodies    │
-                      │                                                               v
-                      │                                            CompleteLoweredFunctionSet
-                      │                                                               │
-                      │                                                      AcyclicCallGraph
-                      │                                                      │         │
-                      │                                     AmbientTransactionClosure  │
-                      └─> value cycles                  transaction ownership     mixed tests
+CompleteTypeRegistry ─┬─> SignaturesComplete ────────┬─> AcceptedQueuedTemplateProofs ─┐
+                      │                              ├─> CompleteDeclaredFunctionBodies┤
+                      │                              └─> CompleteDeclaredTestBodies    │
+                      │                                                                v
+                      │                                             CompleteLoweredFunctionSet
+                      │                                                                │
+                      │                                                       AcyclicCallGraph
+                      │                                                       │         │
+                      │                                      AmbientTransactionClosure  │
+                      └─> value cycles                   transaction ownership     mixed tests
 ```
 
-The artifact named for the function registry is the proof type
-`CompleteFunctionRegistry`, which carries the resolved signature table it proves
-complete; the table's own type is `FunctionRegistry`.
+The artifact named for the function registry is `SignaturesComplete`, a zero-size
+proof that every declared signature resolved. `CompleteFunctionRegistry` is its sole
+minter and the sole owner of the resolved signature table, whose own type is
+`FunctionRegistry`; `encode` consumes the proof, never the table, so a resolved
+signature table nothing vouches for stays unrepresentable at encode.
+
+The signature table itself is always built. A signature the compiler refused — a
+parameter or return type it could not resolve — is a refused entry in the table's
+declaration ledger rather than a withheld table, so the phases below it still run: a
+call to the refused function reuses its declaration's cause, and every unrelated body
+lowers and reports its own errors. The proof is withheld, which is what fences the
+program off from `encode`.
 
 `CompleteDeclaredTestBodies` is not a prerequisite of `CompleteLoweredFunctionSet`: a
 duplicate test title is a declaration refusal, not a lowering refusal, so the indices
@@ -248,10 +257,10 @@ withholds the instance drain alone.
 
 An ordinary source refusal withholds exactly the artifacts that depend on it and no
 others, so every independent phase whose own prerequisites still exist runs and
-reports. A refused function signature, for example, withholds the function
-registry — and therefore every body — while constant evaluation and the value-cycle
-audit, which need only the type registry, still run. No phase is eligible because
-the diagnostic set happens to be empty; each takes its own typed prerequisite. An
+reports. A refused function signature, for example, withholds `SignaturesComplete`
+and refuses that one declaration's body, while every other body, constant
+evaluation, and the value-cycle audit still run. No phase is eligible because the
+diagnostic set happens to be empty; each takes its own typed prerequisite. An
 unavailable artifact never produces a substitute: no image entry, index, export,
 test slot, or dependent fact is fabricated from a missing prerequisite.
 

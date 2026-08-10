@@ -316,6 +316,10 @@ impl<'a> FnLowerer<'a> {
                 Ok(expected) => expected,
                 Err(refusal) => {
                     self.reject_resolution(refusal, annotation.span(), "this type annotation");
+                    // The binding keeps its name. Its annotation reported the
+                    // cause, so a later use reuses it and fails silently — the
+                    // record its two siblings below already keep.
+                    self.poisoned_bindings.insert(name.to_string());
                     return;
                 }
             };

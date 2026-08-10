@@ -104,6 +104,25 @@ A value has no methods; an operation on a value is an ordinary function call.
 Write `trim(s)`.
 ```
 
+### Refused declaration
+
+A declaration the compiler refused keeps its name. Its cause is reported once, at
+the declaration, and the first use of the name is steered to that report, carrying
+the *declaring* code so one code leads to one fix; later uses of the same name fail
+silently. The message never describes the name as out of scope — the reader can see
+it declared — and it names a location only where a report actually sits.
+
+```text
+check.unsupported — `limit` was declared, but its declaration was refused.
+A refused declaration keeps its name and binds no value, so this use cannot
+resolve. Correct the `check.unsupported` report at the declaration of `limit`.
+```
+
+Where another pass or an earlier stage made the report, the steer names the code
+without claiming a location: *Correct the reported `check.recursion`.* for a cause
+the value-cycle pass reports after lowering, and *Correct the `parse.syntax` reports
+`helper` received when it was parsed.* for a module the parse stage refused whole.
+
 ## Enforcement
 
 The renderer conforms to this page; the typed-code tests beside each family prove
