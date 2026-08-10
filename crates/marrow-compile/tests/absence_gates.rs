@@ -565,6 +565,7 @@ fn the_production_scanner_still_sees_the_real_compiler() {
 /// files no list here names and needs no maintenance when a file gains a declaration.
 #[test]
 fn the_projection_reaches_the_end_of_every_scanned_file() {
+    let mut unqualified: Vec<PathBuf> = Vec::new();
     for path in src_files() {
         if is_test_only_file(&path) {
             continue;
@@ -572,19 +573,38 @@ fn the_projection_reaches_the_end_of_every_scanned_file() {
         let source = fs::read_to_string(&path).expect("read source file");
         let code = production_code(&source);
         let Some(sentinel) = last_production_item(&source) else {
+            unqualified.push(path);
             continue;
         };
-        let offset = source
-            .rfind(sentinel)
-            .expect("the sentinel is a line of the source");
+        // Searched in the projection, not the source: a match in the source can land in a
+        // region the projection blanks — the same header text inside a test module — and
+        // the gate would then be asking about the tail of the test code it deliberately
+        // erased. Every byte of the projection outside a blanked region is the source's.
+        let offset = code.rfind(&sentinel).unwrap_or_else(|| {
+            panic!(
+                "the projection lost the tail of {}: the file's last production item \
+                 header `{sentinel}` did not survive blanking",
+                path.display(),
+            )
+        });
         assert_eq!(
-            &code[offset..offset + sentinel.len()],
+            &source[offset..offset + sentinel.len()],
             sentinel,
-            "the projection lost the tail of {}: the file's last production item \
-             header `{sentinel}` did not survive blanking",
+            "the projection moved the tail of {}: `{sentinel}` survived at a byte offset \
+             that is not the one it occupies in the source, so a reported line number \
+             would not be the source's own",
             path.display(),
         );
     }
+    // A file with no qualifying sentinel is skipped, and a skipped file is a file this
+    // gate does not cover. No scanned file is skipped today; if one stops qualifying —
+    // its last production item gains a string, a comment, or a char literal — the gate
+    // says so instead of quietly narrowing to the files that still happen to qualify.
+    assert!(
+        unqualified.is_empty(),
+        "every scanned file must offer a sentinel this gate can follow to its end; \
+         these no longer do: {unqualified:?}",
+    );
 }
 
 /// The image is produced at exactly one place. `CheckedProgram::encode` is the only

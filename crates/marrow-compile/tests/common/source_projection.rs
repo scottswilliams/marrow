@@ -154,7 +154,18 @@ pub fn char_literal_len(rest: &[u8]) -> Option<usize> {
 /// `source` with every `#[cfg(test)]` item blanked as well: what the crate compiles when
 /// it is built as a dependency, which is the only code a production absence gate is about.
 pub fn production_code(source: &str) -> String {
-    let mut code = without_literals(source);
+    without_cfg_test_items(&without_literals(source))
+}
+
+/// `code` with every `#[cfg(test)]` item — block or single-statement — blanked to spaces,
+/// byte offsets and line breaks preserved.
+///
+/// Applied to the literal-blanked projection it completes it, and applied to raw source it
+/// answers, independently of that projection, which lines are production code. A gate that
+/// asks whether the projection kept a line must take the line from somewhere the projection
+/// did not choose, or it proves only that the projection agrees with itself.
+pub fn without_cfg_test_items(code: &str) -> String {
+    let mut code = code.to_string();
     const MARKER: &str = "#[cfg(test)]";
     while let Some(start) = code.find(MARKER) {
         let bytes = code.as_bytes();
@@ -183,9 +194,19 @@ pub fn production_code(source: &str) -> String {
         } else {
             (cursor + 1).min(bytes.len())
         };
+        // A char is replaced by as many spaces as it occupied bytes. Applied to the
+        // literal-blanked projection the region is already ASCII either way, but applied
+        // to raw source a multi-byte char in a test comment would otherwise shorten the
+        // text and shift every offset after it off the source's own.
         let blanked: String = code[start..end]
             .chars()
-            .map(|c| if c == '\n' { '\n' } else { ' ' })
+            .map(|c| {
+                if c == '\n' {
+                    "\n".to_string()
+                } else {
+                    " ".repeat(c.len_utf8())
+                }
+            })
             .collect();
         code.replace_range(start..end, &blanked);
     }
@@ -200,22 +221,33 @@ pub fn is_test_only_file(path: &Path) -> bool {
         .is_some_and(|name| name.ends_with("_tests.rs"))
 }
 
-/// The last item header in `source`'s production region — the region before the first
-/// top-level `#[cfg(test)]`. A header is a column-0 line opening a block; lines carrying
-/// a quote, a comment, or a lifetime are excluded so the sentinel is text the projection
-/// must reproduce byte for byte.
-pub fn last_production_item(source: &str) -> Option<&str> {
-    let production = source
-        .split_once("\n#[cfg(test)]")
-        .map_or(source, |(before, _)| before);
-    production
+/// The last item header in `source`'s production code: a column-0 line opening a block,
+/// outside every `#[cfg(test)]` item. Lines carrying a string, a comment, or a char
+/// literal are excluded so the sentinel is text the projection must reproduce byte for
+/// byte; a lifetime tick is such text, and excluding it too would leave a file whose only
+/// column-0 header is an `impl<'a>` with no sentinel at all.
+///
+/// The test region is removed by blanking rather than by truncating at the first
+/// `#[cfg(test)]`: that marker also spells a test-only `use`, after which thousands of
+/// lines of production code follow, and truncating there leaves the whole tail unexamined.
+pub fn last_production_item(source: &str) -> Option<String> {
+    without_cfg_test_items(source)
         .lines()
         .filter(|line| {
             line.starts_with(|first: char| first.is_ascii_alphabetic())
                 && line.ends_with('{')
                 && !line.contains('"')
-                && !line.contains('\'')
                 && !line.contains("//")
+                && !contains_char_literal(line)
         })
         .next_back()
+        .map(str::to_string)
+}
+
+/// Whether any quote in `line` opens a char literal rather than a lifetime.
+fn contains_char_literal(line: &str) -> bool {
+    let bytes = line.as_bytes();
+    (0..bytes.len())
+        .filter(|index| bytes[*index] == b'\'')
+        .any(|index| char_literal_len(&bytes[index..]).is_some())
 }
