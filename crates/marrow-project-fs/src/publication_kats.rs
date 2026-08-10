@@ -1532,7 +1532,11 @@ fn concurrent_acquisitions_write_one_ignore_entry() {
     const THREADS: usize = 8;
     const ROUNDS: usize = 12;
     /// Each seat needs one uncontended acquisition; the bound turns a livelock
-    /// into a failure rather than a hung suite.
+    /// into a failure rather than a hung suite. A seat that yields between
+    /// attempts retries about once per seat ahead of it: the worst seat in this
+    /// suite reached attempt 8 of 8 threads across all rounds, three orders of
+    /// magnitude inside the bound. Without the yield the same worst seat reached
+    /// 10, so the bound is generous either way and no measurement rides on it.
     const ATTEMPTS: usize = 10_000;
 
     for round in 0..ROUNDS {
@@ -1552,12 +1556,19 @@ fn concurrent_acquisitions_write_one_ignore_entry() {
                                 drop(guard);
                                 return;
                             }
-                            Err(refusal) => assert_eq!(
-                                refusal.refusal(),
-                                IdsRefusal::Contended,
-                                "seat {seat} attempt {attempt} of round {round} reported \
-                                 {refusal:?} rather than the contention it is in"
-                            ),
+                            Err(refusal) => {
+                                assert_eq!(
+                                    refusal.refusal(),
+                                    IdsRefusal::Contended,
+                                    "seat {seat} attempt {attempt} of round {round} reported \
+                                     {refusal:?} rather than the contention it is in"
+                                );
+                                // The lock is uncontended for a few syscalls at
+                                // a time, so a seat that spun would burn its
+                                // whole slice racing the holder it is waiting
+                                // for.
+                                std::thread::yield_now();
+                            }
                         }
                     }
                     panic!("seat {seat} of round {round} never acquired the write lock");
