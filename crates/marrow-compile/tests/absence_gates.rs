@@ -334,3 +334,44 @@ fn fact_coordinates_declare_private_fields() {
         );
     }
 }
+
+/// The public definition fact declares exactly the private fields the crate's coordinate
+/// privacy doctests name, so a rename cannot leave a `compile_fail` block passing for the
+/// wrong reason.
+#[test]
+fn definition_fact_fields_stay_private() {
+    let analysis = fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("src")
+            .join("analysis.rs"),
+    )
+    .expect("read the analysis fact owner");
+    let body = analysis
+        .split_once("pub struct Definition {")
+        .expect("the public definition fact is declared")
+        .1;
+    let fields: Vec<&str> = body
+        .lines()
+        .map(str::trim)
+        .take_while(|line| *line != "}")
+        .filter(|line| !line.is_empty() && !line.starts_with("//") && !line.starts_with("#["))
+        .map(|line| {
+            line.split_once(':')
+                .expect("a struct field declares a type")
+                .0
+        })
+        .collect();
+    assert_eq!(fields, ["file", "name_span", "declaration_range"]);
+
+    let lib = fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("src")
+            .join("lib.rs"),
+    )
+    .expect("read the crate root");
+    let doctests = lib
+        .split_once("pub mod fact_coordinate_privacy_doctests {")
+        .expect("the coordinate privacy doctest module is declared")
+        .1;
+    assert!(doctests.contains("definition.file"));
+}

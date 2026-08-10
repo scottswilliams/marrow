@@ -92,6 +92,14 @@ query's whole snapshot exceeded its bounds or a completion or signature-help que
 in-scope candidate set or rendered display exceeded its per-query cap. A capped query is
 refused whole, never returned as a truncated candidate list or signature.
 
+A held snapshot retains no parse tree: completion and signature-help queries
+re-parse the single file they name from the snapshot's own retained bytes. The
+measured cost on the recorded host is under a millisecond for a 64 KiB file and
+about 50 ms for a file at the 1 MiB per-file admission ceiling; the compiler pins
+both with budget tests. Parse results are not cached — a cache would be a second
+retention owner — so a session's retained memory stays bounded by the snapshot's
+own accounted footprint rather than by how many files have been queried.
+
 ## Installed editor artifact
 
 An installed Visual Studio Code extension packages this server for editor use. It lives

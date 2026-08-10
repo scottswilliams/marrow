@@ -24,7 +24,7 @@ direction.
 | `marrow-project` | Pure project-input owner: manifest schema, contained discovery, immutable captured input, the read-only `.marrow/ids` semantic ledger, and the sole admitted identity-mutation/canonical-serialization path from an exact validated capture to an affine publication plan | — |
 | `marrow-project-fs` | Bounded physical project-input adapter: opened-handle admission of the project root, manifest, source tree, and identity ledger under fixed byte/visited-entry/depth bounds, one iterative sorted source walk, the consumer-neutral root-relative overlay input, and the capture-failure presentation facade; feeds root-relative bytes to `marrow-project` and depends only on it and `marrow-codes` | [Projects](../tools/projects.md) |
 | `marrow-syntax` | Lexer, parser, AST, formatter, and source diagnostics; owns the checked-format policy (`check_format`/`FormatRefusal`) both the CLI and the analysis snapshot consume | [Syntax](syntax.md) |
-| `marrow-compile` | Storeless subset checker, language scalar vocabulary, and lowering to a program-image draft: it emits the whole durable graph's operation sites and lowers named `place` bindings with a once-evaluated key tuple and structured present-entry analysis. One dependency-resilient driver serves both the production compile (first-non-empty-stage projection) and the editor analysis floor: a revisioned immutable `AnalysisSnapshot` holding the caller's `ProjectInput`, the complete per-file diagnostic set, and selective hover/definition/format queries returning typed present/absent/unavailable facts with FIDB01-bounded file identities and full spans | — |
+| `marrow-compile` | Storeless subset checker, language scalar vocabulary, and lowering to a program-image draft: it emits the whole durable graph's operation sites and lowers named `place` bindings with a once-evaluated key tuple and structured present-entry analysis. One dependency-resilient driver serves both the production compile (first-non-empty-stage projection) and the editor analysis floor: a revisioned immutable `AnalysisSnapshot` holding the caller's `ProjectInput`, the complete per-file diagnostic set, and selective hover/definition/format queries returning typed present/absent/unavailable facts with FIDB01-bounded file identities and full spans. One private fact ledger admits every retained editor fact against the snapshot's count and byte ceilings before it allocates, seals once into an opaque terminal, and retains no parse tree; see [Bounded analysis facts](#bounded-analysis-facts) | — |
 | `marrow-image` | Canonical program-image container, typed draft, encoder, and image-id digest; a durable graph node's derived semantic path and a durable operation site's closed whole-payload/field-leaf target; the durable access-demand model (operation class, atom, and the `DemandSetId` demand-set identity); the deployment-ceiling descriptor whose read/write coverage and 32-byte ceiling-id are both derived from a demand union, binding a ceiling to its verified image; and the host-neutral wire interface descriptor, its closed transfer graph, and the `InterfaceId` interface identity | — |
 | `marrow-verify` | The only image decoder and the phased verifier producing the sealed `VerifiedImage`; it resolves each operation site's semantic path against its own reconstructed node set and re-derives the site rather than trusting a compiler-side summary, and reconstructs each export's access demand from the sealed sites its call closure reaches | — |
 | `marrow-vm` | Stack VM over the sealed instruction tape, with source-mapped runtime faults and a distinct durable-execution outcome: an incomplete invocation retains its fault code/span and independently carries known-old, known-new, unknown, or a pending opaque recovery fact. The ephemeral-attachment executor derives the store schema and site table from a verified image and runs a durable test against a freshly minted attachment | — |
@@ -49,6 +49,59 @@ One typed owner defines each semantic fact. Downstream crates consume stable
 typed projections rather than matching source spellings, diagnostic prose,
 raw paths, or serialized messages. When a needed fact is missing, add it to the
 upstream owner; do not reconstruct it in the CLI, LSP, or tests.
+
+## Bounded analysis facts
+
+One private ledger in `marrow-compile` owns every retained editor fact. A hover
+fact, a dependency gap, and a document-symbol node are each admitted against the
+snapshot's typed count and byte ceilings **when they are produced**, before the
+retained collection grows. Crossing a ceiling discards the whole payload,
+including the already-admitted prefix, and the ledger seals into an opaque
+terminal that `analyze` projects through one exhaustive translation to the public
+`SnapshotFactCount` or `SnapshotFactBytes` limit. Count keeps precedence over
+bytes. No partial fact set is published under any provenance, and the ledger's
+internal saturated totals are never published: a published total would be a
+fabricated count.
+
+The observable bounds are unchanged:
+
+```text
+MAX_SNAPSHOT_FACT_COUNT       = 65_536
+MAX_SNAPSHOT_FACT_BYTES       = 4 MiB
+MAX_DOCUMENT_SYMBOLS_PER_FILE = 4096
+MAX_SYMBOL_DEPTH              = 16
+MAX_COMPLETION_CANDIDATES     = 512
+MAX_COMPLETION_RENDER_BYTES   = 256 KiB
+MAX_ACTIVE_CALL_RENDER_BYTES  = 64 KiB
+```
+
+So are the logical byte charges: a hover fact charges its display plus the file
+spelling of an optional definition target; a document-symbol module charges its
+owner file spelling once plus every retained symbol-name spelling; dependency
+gaps carry only fixed-size references and spans, so the count bound charges them.
+Broken-module status is not a public fact row and is bounded by the 4096-file
+project admission limit. A smaller physical representation never widens the
+accepted fact bytes.
+
+Retained facts name their file by a snapshot-local index into the project's own
+module order and their definition target by an index into a per-snapshot target
+table, and they carry spans in the coordinate domain the project owner already
+admits. These are representations, not identities: only the snapshot that minted
+one can resolve it, through the same coordinate validator every query uses.
+
+**Measured retention term.** The accounted physical footprint of one live
+`AnalysisSnapshot` is at most **11,378,688 bytes**, against an exported term of
+`MAX_ANALYSIS_SNAPSHOT_RETAINED_BYTES <= 12 MiB`. The accounting excludes the
+caller-shared `Arc<ProjectInput>`, whose up-to-64 MiB of source is the caller's
+charge and is shared rather than copied. It is an arithmetic property of the
+pinned ceilings and the retained representation, re-derived by an exhaustive
+field destructure that fails to build when a retained field is added.
+
+No parse tree is retained. Completion and signature-help queries re-parse exactly
+one already-admitted file's already-retained bytes; the tree is transient, enters
+no collector, and contributes no diagnostic. Parseability is never inferred from
+such a parse — the snapshot's own broken-file record answers that — and the parse
+is bounded by the 1 MiB per-file admission ceiling that already ran.
 
 ## Identity mutation admission
 
