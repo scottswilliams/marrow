@@ -686,12 +686,13 @@ fn maximum_admitted_file() -> Vec<u8> {
 ///
 /// It is not the worst case, and the reasoning that once made it look like one was
 /// wrong. A file is queryable only if the project it belongs to yields a snapshot at
-/// all, and both the analysis fact ceiling and the diagnostic ceiling refuse `analyze`
-/// outright when a single file crosses them — a 1 MiB file of resolving statements
-/// refuses with `the analysis fact table is full`, and a 1 MiB file of unresolved names
-/// refuses with `too many diagnostics to retain`. Neither yields a snapshot, so neither
-/// can be queried. The densest *queryable* tree therefore comes from a file whose nodes
-/// charge neither ceiling: a module that failed to parse, or names that never resolve.
+/// all, and a maximum-size file whose statements resolve reaches a ceiling that refuses
+/// `analyze` outright — the fact table, the image, or the interned string table,
+/// depending on the shape — while one whose names do not resolve refuses with
+/// `too many diagnostics to retain`. Neither yields a snapshot, so neither can be
+/// queried. The densest *queryable* tree therefore comes from a file whose nodes charge
+/// neither the fact ceiling nor the diagnostic ceiling: a module that failed to parse,
+/// or names that never resolve inside one that did.
 /// [`statement_dense_file`] is that shape, and it is denser than this one.
 ///
 /// One deliberate type error keeps the whole-image byte ceiling (which a 1 MiB dense
