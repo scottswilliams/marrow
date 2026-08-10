@@ -17,7 +17,8 @@ use std::sync::{Mutex, MutexGuard, OnceLock};
 
 use marrow_codes::Code;
 use marrow_fs_journal::{
-    AdmittedDir, EntryName, FsIdentity, JournalKind, PendingName, encode_header, encode_record,
+    AdmittedDir, CustodyError, EntryName, FsIdentity, JournalKind, PendingName, encode_header,
+    encode_record,
 };
 use marrow_project::{IdentityAnchor, IdentityKind, LedgerPublicationPlan};
 
@@ -25,8 +26,8 @@ use crate::capture::capture_project;
 use crate::overlay::OverlaySnapshot;
 use crate::publication::header::RowHeader;
 use crate::publication::{
-    IdsPublication, IdsPublicationMarker, IdsPublishOutcome, IdsRefusal, ProjectMetadataWriteGuard,
-    ids_publication_marker,
+    IdsPublication, IdsPublicationError, IdsPublicationMarker, IdsPublishOutcome, IdsRefusal,
+    ProjectMetadataWriteGuard, ids_publication_marker,
 };
 
 const MANIFEST: &[u8] = b"edition = \"2026\"\n";
@@ -1064,34 +1065,49 @@ fn the_settled_terminal_is_decided_in_exactly_one_place() {
 // calls, and the phase the planted journal has reached selects which mutation
 // meets it.
 //
-// Two operations cannot be faulted this way, and neither can be faulted at all
-// without a test-only seam inside the protocol: the stage's `append` and every
-// `sync`. Both act on a descriptor this process already holds and was already
-// granted, so no external state refuses them — mode bits are checked when the
-// name is resolved, not when an open file is written or flushed. Their refusal
-// paths are the two `?` operators in `stage_successor` around `file.append` and
-// `file.sync`, and the `meta.sync()` calls that follow each mutation.
+// Two operations are outside what withdrawing directory write can reach: the
+// stage's `append` and every `sync`. Both act on a descriptor this process
+// already holds, and mode bits are checked when a name is resolved rather than
+// when an open file is written or flushed, so no change to those bits refuses
+// them. That is a statement about mode bits, not about the operations: a full
+// filesystem, an exceeded quota, a revoked mount, a media error, and a lowered
+// `RLIMIT_FSIZE` each refuse a write or a flush on an already-open descriptor.
+// Installing one of those from inside this binary needs privileged setup this
+// suite does not assume, or — for the file-size limit, whose refusal arrives as
+// `SIGXFSZ` first — a signal disposition this workspace's `forbid(unsafe_code)`
+// rules out. So the paths they would exercise are untested here rather than
+// unreachable: the two `?` operators in `stage_successor` around `file.append`
+// and `file.sync`, the `meta.sync()` calls that follow each mutation, and the
+// `discard_stage` precedence rule that only a fault on those reaches.
 
 /// Withdraw write access to the metadata directory, restoring it on drop.
 ///
-/// `None` when the bits do not bind this process — under the mode-override
-/// capability, or on a filesystem that carries no mode bits, nothing outside
-/// the protocol can refuse its mutations.
+/// A withdrawal that binds nothing would leave every kat below asserting a
+/// refusal that never happened, so it panics instead of reporting green. Mode
+/// bits do not bind a process holding the mode-override capability (`root`, or
+/// `CAP_DAC_OVERRIDE` on Linux), and a filesystem that carries no mode bits
+/// does not enforce them at all; `withdrawn_directory_write_binds_this_process`
+/// is the control that names the cause once.
 struct RefusingMeta {
     path: PathBuf,
 }
 
 impl RefusingMeta {
-    fn apply(project: &Project) -> Option<Self> {
+    fn apply(project: &Project) -> Self {
         let path = project.meta();
         set_mode(&path, 0o500);
         let probe = path.join("write-probe");
         if fs::write(&probe, b"").is_ok() {
             fs::remove_file(&probe).ok();
             set_mode(&path, 0o700);
-            return None;
+            panic!(
+                "withdrawing owner write from {} did not refuse a write inside it, so this \
+                 fault kat would assert a refusal that never happened. Run the suite as a \
+                 process the mode bits bind, on a filesystem that carries them.",
+                path.display()
+            );
         }
-        Some(Self { path })
+        Self { path }
     }
 }
 
@@ -1099,6 +1115,41 @@ impl Drop for RefusingMeta {
     fn drop(&mut self) {
         set_mode(&self.path, 0o700);
     }
+}
+
+/// The custody operation a refusal names, read from the typed error rather than
+/// from its rendered message. A fault kat that asserted only the refusal class
+/// would be satisfied by a refusal from any earlier operation in the same call,
+/// including the guard's own lock and the marker claim.
+fn refused_operation(error: &IdsPublicationError) -> &'static str {
+    let source = std::error::Error::source(error).expect("a custody refusal carries its source");
+    let custody = source
+        .downcast_ref::<CustodyError>()
+        .expect("a custody refusal's source is the custody error");
+    match custody {
+        CustodyError::UnqualifiedPlatform { .. } => "platform",
+        CustodyError::Unsupported { op }
+        | CustodyError::AlreadyExists { op }
+        | CustodyError::NotFound { op }
+        | CustodyError::SymlinkRefused { op }
+        | CustodyError::NotADirectory { op }
+        | CustodyError::WrongNodeKind { op, .. }
+        | CustodyError::IdentityDrift { op }
+        | CustodyError::ModeDenied { op, .. }
+        | CustodyError::Io { op, .. } => op,
+    }
+}
+
+/// The control for the four faulted-mutation kats: withdrawing owner write from
+/// the metadata directory must actually refuse a write inside it. Without it a
+/// suite running where mode bits bind nothing would report four green checks
+/// that observed no refusal at all.
+#[test]
+fn withdrawn_directory_write_binds_this_process() {
+    let _serial = serialized();
+    let project = Project::new("mode-control");
+    fs::create_dir_all(project.meta()).expect("create the metadata directory");
+    let _fault = RefusingMeta::apply(&project);
 }
 
 /// A refused stage creation is an ordinary refusal: nothing was staged and
@@ -1109,15 +1160,18 @@ fn a_refused_stage_creation_stages_and_claims_nothing() {
     let project = Project::new("fault-create");
     let plan = project.plan("Book", 1);
     let guard = project.guard();
-    let Some(_fault) = RefusingMeta::apply(&project) else {
-        return;
-    };
+    let _fault = RefusingMeta::apply(&project);
 
     let refusal = guard
         .publish_ids(plan)
         .expect_err("a refused create is an ordinary refusal");
     assert_eq!(refusal.refusal(), IdsRefusal::Custody);
     assert_eq!(refusal.code(), Code::IoWrite);
+    assert_eq!(
+        refused_operation(&refusal),
+        "create file",
+        "the stage creation is the operation that refused: {refusal}"
+    );
     assert!(!project.exists("ids"), "no artifact was written");
     assert!(!project.exists("ids.publish.stage"));
     assert!(!project.exists("ids.pending"));
@@ -1137,14 +1191,17 @@ fn a_refused_link_retains_the_claimed_publication() {
         .installing()
         .plant();
     let guard = project.guard();
-    let Some(_fault) = RefusingMeta::apply(&project) else {
-        return;
-    };
+    let _fault = RefusingMeta::apply(&project);
 
     let refusal = guard
         .recover_ids()
         .expect_err("a refused link cannot settle the publication");
     assert_eq!(refusal.refusal(), IdsRefusal::Custody);
+    assert_eq!(
+        refused_operation(&refusal),
+        "link",
+        "the absent arm's link is the operation that refused: {refusal}"
+    );
     assert!(!project.exists("ids"), "no artifact was written");
     assert_eq!(
         project.read_meta("ids.publish.stage").as_deref(),
@@ -1169,14 +1226,17 @@ fn a_refused_exchange_retains_the_bound_generation() {
         .installing()
         .plant();
     let guard = project.guard();
-    let Some(_fault) = RefusingMeta::apply(&project) else {
-        return;
-    };
+    let _fault = RefusingMeta::apply(&project);
 
     let refusal = guard
         .recover_ids()
         .expect_err("a refused exchange cannot settle the publication");
     assert_eq!(refusal.refusal(), IdsRefusal::Custody);
+    assert_eq!(
+        refused_operation(&refusal),
+        "exchange",
+        "the replace arm's exchange is the operation that refused: {refusal}"
+    );
     assert_eq!(project.read_meta("ids").as_deref(), Some(&b"base"[..]));
     assert_eq!(
         project.read_meta("ids.publish.stage").as_deref(),
@@ -1203,14 +1263,17 @@ fn a_refused_stage_cleanup_keeps_the_publication_unfinished() {
         .settled(0)
         .plant();
     let guard = project.guard();
-    let Some(fault) = RefusingMeta::apply(&project) else {
-        return;
-    };
+    let fault = RefusingMeta::apply(&project);
 
     let refusal = guard
         .recover_ids()
         .expect_err("a refused unlink cannot finish the publication");
     assert_eq!(refusal.refusal(), IdsRefusal::Custody);
+    assert_eq!(
+        refused_operation(&refusal),
+        "unlink",
+        "the exact stage cleanup is the operation that refused: {refusal}"
+    );
     assert_eq!(project.read_meta("ids").as_deref(), Some(&b"successor"[..]));
     assert!(project.exists("ids.publish.stage"), "the alias is retained");
     assert!(
