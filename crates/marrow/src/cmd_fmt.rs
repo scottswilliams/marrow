@@ -157,7 +157,15 @@ fn fmt_project(dir: &Path, mode: FmtMode) -> ExitCode {
 /// what keeps `--write` and the `--write` hint correct for a root named from elsewhere
 /// (`marrow fmt --check app` reports `app/src/main.mw`); dropping `.` is what keeps the
 /// common in-project spelling identical to the `src/main.mw` that capture and `check`
-/// report, so one command does not print a path two ways.
+/// report.
+///
+/// This governs formatting findings only. A project-capture refusal is rendered by the
+/// capture presentation facade, which spells a per-file or project-total source bound
+/// root-relative whatever root the caller named, and `fmt` prints that verbatim rather
+/// than re-spelling a path it does not own. So one `marrow fmt --check app` run can
+/// print `app/src/main.mw` for a formatting finding and ``project.capture_limit:
+/// `src/big.mw` `` for a capture refusal; the refusal is byte-identical to the line
+/// `marrow check app` prints for the same project.
 fn captured_module_path(root: &Path, identity: &str) -> PathBuf {
     root.join(identity)
         .components()

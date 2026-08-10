@@ -1247,19 +1247,26 @@ fn run_renders_a_located_manifest_fault_as_an_unlocated_record() {
     );
 }
 
-/// One command prints one path spelling. `fmt` reports a captured module under the
-/// root it was given joined to the module's project-relative identity, with no `.`
-/// component: from inside a project the finding reads `src/main.mw`, exactly as
-/// `check` reports it, and the `--write` hint it prints is runnable as shown. Naming
-/// the root from elsewhere keeps the join, so that hint stays runnable too.
+/// One command prints one path spelling for each owner of a path. `fmt` reports a
+/// captured module under the root it was given joined to the module's project-relative
+/// identity, with no `.` component: from inside a project the finding reads
+/// `src/main.mw`, exactly as `check` reports it, and the `--write` hint it prints is
+/// runnable as shown. Naming the root from elsewhere keeps the join, so that hint stays
+/// runnable too.
+///
+/// The join is `fmt`'s own finding. A line `fmt` prints on another owner's behalf keeps
+/// that owner's spelling: a project-capture refusal comes from the capture presentation
+/// facade project-relative under any root, byte-identical to the line `check` prints for
+/// the same project. The one file below is unformatted *and* out of scope, so both
+/// reporters can be read against each other directly.
 #[test]
 fn fmt_reports_a_captured_module_under_one_path_spelling() {
     let temp = TempDir::new("fmt-path-spelling");
     let project = temp.join("app");
-    write(&project.join("marrow.toml"), "edition = \"2026\"\n");
+    write(&project.join("marrow.toml"), VALID_MANIFEST);
     write(
         &project.join("src").join("main.mw"),
-        "pub fn main() {\n        return\n}\n",
+        "pub fn main() {\n        undefined()\n}\n",
     );
 
     let inside = Command::new(MARROW)
@@ -1286,14 +1293,57 @@ fn fmt_reports_a_captured_module_under_one_path_spelling() {
         "a named root stays joined so the printed hint is runnable as shown"
     );
 
-    let checked = Command::new(MARROW)
+    const DIAGNOSTIC: &str = "src/main.mw:2:9: check.type: `undefined` is not in scope\n";
+    let checked_inside = Command::new(MARROW)
         .args(["check", "."])
         .current_dir(&project)
         .output()
         .expect("run marrow binary");
-    let check_stderr = String::from_utf8(checked.stderr).expect("utf8 stderr");
+    assert!(!checked_inside.status.success());
+    assert_eq!(
+        String::from_utf8(checked_inside.stderr).expect("utf8 stderr"),
+        DIAGNOSTIC,
+        "`check` reports the module under the same project-relative spelling"
+    );
+
+    let checked_outside = Command::new(MARROW)
+        .args(["check", "app"])
+        .current_dir(&*temp)
+        .output()
+        .expect("run marrow binary");
+    assert!(!checked_outside.status.success());
+    assert_eq!(
+        String::from_utf8(checked_outside.stderr).expect("utf8 stderr"),
+        DIAGNOSTIC,
+        "a diagnostic carries no runnable hint, so `check` joins no root"
+    );
+
+    // The capture facade's own refusal, printed verbatim by both commands.
+    let heavy = temp.join("heavy");
+    write(&heavy.join("marrow.toml"), VALID_MANIFEST);
+    let oversized = format!("// {}\n", "a".repeat(SOURCE_FILE_BYTES_LIMIT as usize - 3));
+    write(&heavy.join("src").join("big.mw"), &oversized);
+
+    let refused_fmt = Command::new(MARROW)
+        .args(["fmt", "--check", "heavy"])
+        .current_dir(&*temp)
+        .output()
+        .expect("run marrow binary");
+    assert!(!refused_fmt.status.success());
+    let refusal = String::from_utf8(refused_fmt.stderr).expect("utf8 stderr");
     assert!(
-        check_stderr.is_empty() || check_stderr.contains("src/main.mw:"),
-        "`check` reports the same project-relative spelling: {check_stderr}"
+        refusal.contains("`src/big.mw`") && !refusal.contains("heavy/src/big.mw"),
+        "the capture refusal keeps the facade's project-relative spelling: {refusal}"
+    );
+
+    let refused_check = Command::new(MARROW)
+        .args(["check", "heavy"])
+        .current_dir(&*temp)
+        .output()
+        .expect("run marrow binary");
+    assert_eq!(
+        refusal,
+        String::from_utf8(refused_check.stderr).expect("utf8 stderr"),
+        "one refusal reads the same whichever command prints it"
     );
 }
