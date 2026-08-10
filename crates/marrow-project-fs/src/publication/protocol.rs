@@ -445,27 +445,29 @@ impl<'a> Session<'a> {
         Ok(())
     }
 
-    /// The pre-mutation window rule, shared with [`Self::install`]: a `Prepared`
-    /// reading proceeds to the mutation, a `Reverted` reading settles the
-    /// publication without installing, and every other reading is retained
-    /// corruption.
+    /// The window before any artifact mutation: this publication has created
+    /// its own stage and touched nothing else.
     ///
-    /// Phase 1 and the `Installing` window classify a foreign generation the
-    /// same way because this publication has mutated no artifact in either: it
-    /// has created its own stage and nothing else, so a `Reverted` reading —
-    /// the stage still the exact successor at one link, the artifact neither the
-    /// successor nor the generation the header binds — cannot be its own work.
-    /// It is the outside writer the destination-refusing arms exist for, and the
-    /// same fact the pre-claim recapture in `publish_admitted` already reports as
-    /// a concurrent change. Splitting the two windows would make an ordinary
-    /// `git checkout` landing microseconds earlier the difference between a
-    /// settled publication and a project retained as corrupt.
+    /// Two readings are admitted. `Prepared` is the state the header binds, and
+    /// its exact byte runs are compared here. `Reverted` — the stage still the
+    /// exact successor at one link, the artifact neither the successor nor the
+    /// generation the header binds — cannot be this publication's own work,
+    /// because no mutation of the artifact has run. It is the outside writer
+    /// the destination-refusing arms exist for, and the same fact the pre-claim
+    /// recapture in `publish_admitted` reports as a concurrent change. The
+    /// `Installing` window reads that writer identically, so which record an
+    /// ordinary `git checkout` lands between does not decide whether the
+    /// project settles or is retained.
     ///
-    /// Nothing else is admitted, and the terminal is still named in one place:
-    /// this window only lets the driver reach `Installing`, where the map
-    /// decides. A reading in which the artifact is the successor, or the stage
-    /// is gone, names a state only this publication's own mutations could
-    /// produce, and none has run.
+    /// Admitting a reading names no terminal. The driver appends `Installing`
+    /// and the map is read again there, where `terminal_of_map` decides; that
+    /// window admits one reading more than this one, because the mutation
+    /// between them can leave the successor installed.
+    ///
+    /// Every other reading is retained. An installed artifact names a mutation
+    /// that has not run. An absent stage — which an outside writer sweeping the
+    /// ignored transient can also produce — leaves nothing this publication may
+    /// settle on or clean, and the `Installing` window refuses it too.
     fn require_pre_mutation_map(&self) -> Result<(), IdsPublicationError> {
         match self.read_map(1)? {
             MapState::Prepared => self.require_prepared_bytes(),
@@ -477,8 +479,8 @@ impl<'a> Session<'a> {
     /// Install the successor, or settle without installing it. The map decides:
     /// a crash between the `Installing` record and the mutation leaves the
     /// `Prepared` reading, and a crash after it leaves the installed reading.
-    /// The two readings this window shares with phase 1 are the ones
-    /// [`Self::require_pre_mutation_map`] states the rule for.
+    /// The two readings that reach here unmutated are the ones
+    /// [`Self::require_pre_mutation_map`] admits, classified the same way.
     fn install(&self) -> Result<Terminal, IdsPublicationError> {
         match self.read_map(INSTALLING)? {
             MapState::Prepared => {

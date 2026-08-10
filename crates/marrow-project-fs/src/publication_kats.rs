@@ -629,6 +629,10 @@ fn an_installed_successor_before_the_installing_record_is_retained() {
     assert_eq!(refusal.refusal(), IdsRefusal::Corrupt);
     assert_eq!(project.read_meta("ids").as_deref(), Some(&b"successor"[..]));
     assert!(project.exists("ids.pending"), "the marker keeps gating");
+    assert_eq!(
+        ids_publication_marker(project.path()),
+        Some(IdsPublicationMarker::Claimed)
+    );
 }
 
 /// A publication that reached `Installing` and found the destination taken
@@ -1533,10 +1537,11 @@ fn concurrent_acquisitions_write_one_ignore_entry() {
     const ROUNDS: usize = 12;
     /// Each seat needs one uncontended acquisition; the bound turns a livelock
     /// into a failure rather than a hung suite. A seat that yields between
-    /// attempts retries about once per seat ahead of it: the worst seat in this
-    /// suite reached attempt 8 of 8 threads across all rounds, three orders of
-    /// magnitude inside the bound. Without the yield the same worst seat reached
-    /// 10, so the bound is generous either way and no measurement rides on it.
+    /// attempts retries about once per seat ahead of it, so the bound sits far
+    /// above what contention costs and nothing here measures anything: on the
+    /// run this was written against the worst seat reached attempt 8 with the
+    /// yield and 10 without, on a machine and scheduler neither number is a
+    /// property of.
     const ATTEMPTS: usize = 10_000;
 
     for round in 0..ROUNDS {
@@ -1622,11 +1627,16 @@ fn the_publication_names_derive_from_the_pure_owner_s_spellings() {
         include_str!("publication/header.rs"),
         include_str!("publication/marker.rs"),
     ] {
-        for literal in ["\".marrow\"", "\"ids\""] {
+        // The opening quote alone, so a derived spelling — `"ids.publish.stage"`,
+        // `"ids.pending"`, `".marrow/ids"` — is caught as well as the bare name.
+        // Matching the closed literal `"ids"` would have let every suffixed
+        // spelling this owner derives through.
+        for literal in ["\".marrow", "\"ids"] {
             assert!(
                 !source.contains(literal),
-                "the publication owner spells {literal} itself; `.marrow` and the ledger's \
-                 entry name have one owner in `marrow_project`"
+                "the publication owner spells a name opening {literal} itself; `.marrow` and \
+                 the ledger's entry name have one owner in `marrow_project`, and every \
+                 transient is derived from them"
             );
         }
     }

@@ -1377,18 +1377,34 @@ mod tests {
     ///
     /// A hostile store mutation makes redb's own traversal panic; the adapter
     /// contains it and returns the typed error the case asserts. The default
-    /// hook would still print that panic, and in the coordinated child it prints
-    /// to inherited stderr, so it lands in the workspace test log reading
-    /// exactly like a real store panic to anything scanning that log. The hook
-    /// is replaced only across `body` and restored immediately, so a panic
-    /// anywhere else still reports in full.
+    /// hook would still print that panic, and the coordinated child inherits the
+    /// parent's stderr, so it lands in the workspace test log reading exactly
+    /// like a real store panic to anything scanning that log.
+    ///
+    /// Suppression is unconditional across `body`, so an unexpected panic there
+    /// loses its report too; the typed code each case asserts afterwards is what
+    /// carries the contract, not the absence of output. The window is the one
+    /// call and no wider: the hook is restored through a guard, so a panic that
+    /// escapes `body` cannot leave the process silent for everything after it.
+    /// The hook is process-global, which is sound here only because the sole
+    /// caller is the single-threaded child the parent spawns with `--exact`.
     #[cfg(unix)]
     fn without_panic_report<T>(body: impl FnOnce() -> T) -> T {
-        let previous = std::panic::take_hook();
+        type PanicHook = Box<dyn Fn(&std::panic::PanicHookInfo<'_>) + Sync + Send>;
+
+        struct RestoreHook(Option<PanicHook>);
+
+        impl Drop for RestoreHook {
+            fn drop(&mut self) {
+                if let Some(previous) = self.0.take() {
+                    std::panic::set_hook(previous);
+                }
+            }
+        }
+
+        let _restore = RestoreHook(Some(std::panic::take_hook()));
         std::panic::set_hook(Box::new(|_| {}));
-        let outcome = body();
-        std::panic::set_hook(previous);
-        outcome
+        body()
     }
 
     #[cfg(unix)]

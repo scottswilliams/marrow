@@ -44,25 +44,25 @@
 //! ```text
 //! Prepared absent:    target absent;   stage=next               each nlink 1
 //! Prepared replace:   target=base;     stage=next               each nlink 1
-//! Prepared, either:   or the reverted reading below
-//! Installing absent:  the Prepared map, or target=stage=next    nlink 2
-//! Installing replace: the Prepared map, or target=next; stage=base
-//! Reverted reading:   stage=next nlink 1; target neither the successor nor
-//!                     the generation the header binds
-//! Settled installed:  the Installing map's installed reading, or target=next
-//!                     nlink 1 with the stage absent after the exact cleanup
+//! Reverted:           stage=next nlink 1; target present and neither the
+//!                     successor nor the generation the header binds
+//! Phase Prepared:     the Prepared map, or the reverted map
+//! Phase Installing:   either of those, or target=stage=next     nlink 2
+//!                     (absent arm) or target=next; stage=base (replace arm)
+//! Settled installed:  the installed reading, or target=next nlink 1 with the
+//!                     stage absent after the exact cleanup
 //! Settled reverted:   the reverted reading, or the artifact untouched with
 //!                     the stage absent after the exact cleanup
 //! ```
 //!
-//! `Prepared` and `Installing` admit the same two readings because neither has
-//! mutated an artifact: the publication has created its own stage and nothing
-//! else, so a reverted reading in either is an outside writer's and settles the
-//! same way. Only the mutation between them can produce an installed reading.
+//! Both `Prepared` and `Installing` can be read before any artifact mutation
+//! has run, so both admit the reverted reading and classify the outside writer
+//! that produced it the same way. `Installing` admits one reading more, because
+//! the mutation between them can leave the successor installed.
 //!
-//! The reverted terminal is what the reverted reading, a destination refusal, or
-//! a continuously proven
-//! third live inode settles into: the successor is not installed, the artifact
+//! The reverted terminal is what the reverted reading, a destination refusal,
+//! or a continuously proven third live inode settles into: the successor is not
+//! installed, the artifact
 //! keeps whatever the concurrent writer left, and the outcome is
 //! [`IdsPublication::ConcurrentChange`]. It is a recorded terminal rather than
 //! an abandoned journal because the frame's only exit is its terminal phase.
@@ -148,10 +148,12 @@ const IGNORE_READ_CEILING: usize = 4096;
 /// guard admits it, and both take it from here so the ledger's entry name has
 /// one owner across the pure/adapter boundary.
 ///
-/// The spelling is joined from the pure owner's constant once per process
-/// rather than spelled as a literal here, so a rename there moves it; the row
-/// header encodes and decodes it on every publication and every recovery, and
-/// neither should pay for the join.
+/// The join is from the pure owner's constant rather than a literal here, so
+/// the source has one spelling of the ledger's entry name; the encoded form in
+/// a durable header is frozen, and a rename of that constant would decode every
+/// header already on disk as a `StageNameDrift` header corruption. It
+/// is performed once per process because the row header encodes and decodes it
+/// on every publication and every recovery.
 pub(crate) fn stage_spelling() -> &'static str {
     static STAGE: OnceLock<String> = OnceLock::new();
     STAGE.get_or_init(|| format!("{IDS_ENTRY}{STAGE_SUFFIX}"))
