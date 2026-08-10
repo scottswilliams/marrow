@@ -675,10 +675,12 @@ impl Driven {
     /// failure, byte-identical to the historical staged early-return (a
     /// stage's rows are never sorted, deduped, or merged with a later
     /// stage's, so no cross-stage limit strengthening can occur: a limit
-    /// arises only within the stage whose own collector crossed it). The
-    /// structural stage retains the `Parse` tag. A semantic diagnostics
-    /// terminal that is complete and empty is the empty-boundary invariant. A
-    /// fully clean pass yields the image.
+    /// arises only within the stage whose own collector crossed it). The parse
+    /// and structural stages carry no stage tag: an empty terminal passes over
+    /// and a non-empty one is already the failure, so only a semantic stage can
+    /// reach the tagged empty boundary. A semantic diagnostics terminal that is
+    /// complete and empty is that empty-boundary invariant. A fully clean pass
+    /// yields the image.
     fn into_built(self) -> Result<Built, CompileFailure> {
         if let Some(failure) = stage_failure(self.parse) {
             return Err(failure);
