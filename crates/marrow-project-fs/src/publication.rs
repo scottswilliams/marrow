@@ -114,6 +114,15 @@ const IGNORE_COMMENT: &str = "\
 # state, and the other entries are a publication in flight or the debris an
 # interrupted one left. No checkout carries any of them; only `ids` is committed.
 ";
+/// The opening every comment this owner has written begins with, and the whole
+/// of what tells an entry this owner wrote from a developer's own file.
+///
+/// The comment's remaining words describe the name set it was written above, so
+/// they change when that set does and a completed entry would stop matching its
+/// own header. This prefix does not, so it stays the mark: an entry that
+/// carries it gains only the names it lacks, and one that does not carries the
+/// comment in full above them.
+const IGNORE_COMMENT_MARK: &str = "# Machine-written by Marrow.";
 /// How much of an existing ignore entry is read to decide whether it already
 /// names every entry this owner keeps untracked. A file this owner wrote is
 /// seven lines; anything past this bound belongs to whoever wrote it and is
@@ -544,10 +553,12 @@ fn admit_created_meta(
 /// The entry is completed rather than rewritten: a name is appended only when
 /// the file does not already carry it, so a second acquisition writes nothing,
 /// whatever a developer added survives, an entry that predates a name gains
-/// exactly that name, and the empty file a crash between the create and the
-/// fill leaves is finished by the next acquisition. It runs under the write
-/// lock, so one process at a time is inside it and two first publications
-/// cannot both append.
+/// exactly that name and nothing else, and the empty file a crash between the
+/// create and the fill leaves is finished by the next acquisition. An entry
+/// this owner wrote under an earlier name set is completed under the comment it
+/// already carries, so no entry ends up with a second comment standing over a
+/// stale first block. It runs under the write lock, so one process at a time is
+/// inside it and two first publications cannot both append.
 ///
 /// The block is a convenience the owner maintains when it can, so an entry it
 /// cannot write is left exactly as found — like one past the read bound — and
@@ -587,7 +598,13 @@ fn install_untracked_ignore(meta: &AdmittedDir) -> Result<(), IdsPublicationErro
     if found.last().is_some_and(|byte| *byte != b'\n') {
         block.push('\n');
     }
-    block.push_str(IGNORE_COMMENT);
+    // An entry that already carries this owner's comment gains only the names,
+    // so an entry written above an earlier name set is completed under the
+    // header it has. A second copy of the comment would leave the entry with
+    // two of them, the first standing over a name set the file no longer has.
+    if !ignore_carries_comment(&found) {
+        block.push_str(IGNORE_COMMENT);
+    }
     for entry in missing {
         block.push_str(&entry);
         block.push('\n');
@@ -646,20 +663,29 @@ fn untracked_entry_names() -> Vec<String> {
     ]
 }
 
+/// The bytes read from the ignore entry as lines, each without the trailing
+/// carriage return a CRLF checkout leaves.
+fn ignore_lines(found: &[u8]) -> impl Iterator<Item = &[u8]> {
+    found
+        .split(|byte| *byte == b'\n')
+        .map(|line| line.strip_suffix(b"\r").unwrap_or(line))
+}
+
 /// Whether the bytes read from the ignore entry already name `entry`.
 ///
-/// A line matches without a trailing carriage return, which a CRLF checkout
-/// leaves, and without the optional leading `/` that anchors a pattern to the
-/// ignore file's own directory. Both spell exactly what this owner would
-/// append, and a semantic duplicate is the one thing an entry shared with a
-/// developer must not accumulate. The form this owner writes stays the bare
-/// name.
+/// A line matches without the optional leading `/` that anchors a pattern to
+/// the ignore file's own directory, as well as without the carriage return.
+/// Every such spelling names exactly what this owner would append, and a
+/// semantic duplicate is the one thing an entry shared with a developer must
+/// not accumulate. The form this owner writes stays the bare name.
 fn ignore_names_entry(found: &[u8], entry: &str) -> bool {
-    found.split(|byte| *byte == b'\n').any(|line| {
-        let line = line.strip_suffix(b"\r").unwrap_or(line);
-        let line = line.strip_prefix(b"/").unwrap_or(line);
-        line == entry.as_bytes()
-    })
+    ignore_lines(found).any(|line| line.strip_prefix(b"/").unwrap_or(line) == entry.as_bytes())
+}
+
+/// Whether the bytes read from the ignore entry already carry this owner's
+/// comment, in any wording it has been written with.
+fn ignore_carries_comment(found: &[u8]) -> bool {
+    ignore_lines(found).any(|line| line.starts_with(IGNORE_COMMENT_MARK.as_bytes()))
 }
 
 /// Admit one of this module's fixed entry names.

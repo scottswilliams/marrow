@@ -1040,6 +1040,62 @@ ids.publish.stage\n\
 ids.pending\n\
 ids.pending.create\n";
 
+/// The exact entry an earlier build of this owner wrote: its header line above
+/// the lock's name alone. A project that published before the three transient
+/// names joined the block carries this on disk.
+const PREVIOUS_FORMAT_IGNORE: &[u8] = b"\
+# Machine-written by Marrow. The cooperative project-metadata write lock is\n\
+# machine-local runtime state that no checkout carries.\n\
+publish.lock\n";
+
+/// Exactly what the previous format becomes: the three names it lacks, appended
+/// under the header already there. A second header above a stale first block
+/// would leave a developer's checkout carrying two Marrow-written comments, the
+/// first of them describing a name set the file no longer has.
+const UPGRADED_IGNORE: &[u8] = b"\
+# Machine-written by Marrow. The cooperative project-metadata write lock is\n\
+# machine-local runtime state that no checkout carries.\n\
+publish.lock\n\
+ids.publish.stage\n\
+ids.pending\n\
+ids.pending.create\n";
+
+/// An entry this owner wrote under an earlier name set is completed in place:
+/// the names it lacks are appended, and the comment it already carries is not
+/// written a second time. The bytes are pinned exactly, and a second
+/// acquisition adds nothing to them.
+///
+/// This is also what holds the comment's stable opening in place. The owner
+/// tells its own entry from a developer's file by that opening alone, so a
+/// reword that reached it would stop recognizing every entry written before the
+/// reword — and this kat, whose planted entry carries the earlier wording, is
+/// where that shows up.
+#[test]
+fn an_entry_written_under_an_earlier_name_set_gains_only_the_missing_names() {
+    let _serial = serialized();
+    let project = Project::new("ignore-upgrade");
+    project.write_meta(".gitignore", PREVIOUS_FORMAT_IGNORE);
+
+    drop(project.guard());
+    assert_ignore_entry(&project, UPGRADED_IGNORE, "completing the previous format");
+
+    drop(project.guard());
+    assert_ignore_entry(&project, UPGRADED_IGNORE, "a second acquisition");
+}
+
+/// Assert the ignore entry's exact bytes, rendering both sides as the text they
+/// are so a mismatch reads as the entry a developer's checkout would carry.
+fn assert_ignore_entry(project: &Project, expected: &[u8], what: &str) {
+    let found = project.read_meta(".gitignore").unwrap_or_default();
+    assert_eq!(
+        found,
+        expected,
+        "{what} left\n{}\nrather than\n{}",
+        String::from_utf8_lossy(&found),
+        String::from_utf8_lossy(expected)
+    );
+}
+
 /// The first acquisition writes the entry; every later one leaves it byte for
 /// byte alone, because the owner appends only what is missing.
 #[test]
@@ -1262,14 +1318,6 @@ fn withhold_write(path: &Path) {
         path.display()
     );
 }
-
-/// The exact entry an earlier build of this owner wrote: its header line above
-/// the lock's name alone. A project that published before the three transient
-/// names joined the block carries this on disk.
-const PREVIOUS_FORMAT_IGNORE: &[u8] = b"\
-# Machine-written by Marrow. The cooperative project-metadata write lock is\n\
-# machine-local runtime state that no checkout carries.\n\
-publish.lock\n";
 
 /// An ignore entry this owner cannot write is left as found, exactly as one
 /// past the read bound is, and no publication or recovery is refused for it.

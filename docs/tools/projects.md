@@ -37,13 +37,17 @@ itself: when it takes the lock it writes `.marrow/.gitignore` naming every one
 of them, so a project adds no ignore line by hand and a clone that carries
 neither the lock nor the ignore entry is still correct — the next publication
 writes both. A project whose ignore entry predates a name gains exactly that
-name on the next publication.
+name on the next publication, appended under the comment already there rather
+than under a second one.
 
-One bound is worth naming: the write owner reads at most 4 KiB of an existing
-`.marrow/.gitignore` to decide what is missing. A larger file is left exactly as
-found, names and all, because the part that decides the question was never read.
-Committing the ignore entry alongside the ledger is the tidier habit, and
-leaving it untracked changes nothing about how these entries are treated.
+Two cases leave an existing entry exactly as found, names and all. The write
+owner reads at most 4 KiB of an existing `.marrow/.gitignore` to decide what is
+missing, so a larger file is left alone: the part that decides the question was
+never read. An entry the tools cannot write — one a checkout carries read-only,
+say — is left alone for the same reason it is written at all. The entry is a
+convenience, so no publication or recovery is refused over one that cannot be
+completed. Committing the ignore entry alongside the ledger is the tidier habit,
+and leaving it untracked changes nothing about how these entries are treated.
 
 A lock that travelled with a checkout would be worse than absent: an ordinary
 Git operation that deletes and recreates a tracked entry replaces the inode, and
