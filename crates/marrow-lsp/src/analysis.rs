@@ -322,6 +322,28 @@ mod tests {
         fs::remove_dir_all(&dir).ok();
     }
 
+    /// The editor door passes through the same publication gate every other
+    /// front door does: while a claim is live the committed ledger is whichever
+    /// generation recovery settles on, so analysis refuses rather than reading
+    /// one that is about to be replaced.
+    #[test]
+    fn a_live_publication_marker_is_a_capture_rejection() {
+        let dir = temp_dir("ids-pending");
+        write_project(&dir, &[("src/main.mw", "module main\n")]);
+        fs::create_dir_all(dir.join(".marrow")).unwrap();
+        fs::write(dir.join(".marrow/ids.pending"), b"").unwrap();
+
+        let root = root_for(&dir);
+        match run_analysis(&root, &[], InputRevision::new(1)) {
+            AnalysisOutcome::Capture(rejection) => {
+                let evidence = rejection.evidence.expect("rendered evidence");
+                assert_eq!(evidence.code, "project.ids_publication_pending");
+            }
+            other => panic!("expected capture rejection, got {}", label(&other)),
+        }
+        fs::remove_dir_all(&dir).ok();
+    }
+
     fn label(outcome: &AnalysisOutcome) -> &'static str {
         match outcome {
             AnalysisOutcome::Snapshot(_) => "snapshot",
