@@ -51,6 +51,12 @@ pub(crate) enum DeclarationNamespace {
     Constant,
     DurableRoot,
     NamedType,
+    /// The members of one resource record or one of its unkeyed groups, keyed by
+    /// the owner they are written in. A member is the one declaration this line
+    /// refuses *without* refusing what contains it, so the containing record
+    /// survives with a narrowed member set and every lookup of the refused member
+    /// would otherwise read as never written.
+    ResourceMember,
 }
 
 /// A `Copy` handle to one refused declaration, valid only in the ledger that
@@ -499,6 +505,51 @@ impl<K: Ord + Clone, T> DeclarationLedger<K, T> {
     pub(crate) fn keys(&self) -> impl Iterator<Item = &K> {
         self.index.keys()
     }
+
+    /// The accepted declarations in source order, one per key: exactly the
+    /// occurrences [`Self::lookup`] answers with, so what a namespace builds from
+    /// this iterator and what a use site resolves against cannot disagree.
+    ///
+    /// A namespace whose order is observed — image slot order, field order — reads
+    /// its accepted set from here rather than accumulating a parallel vector beside
+    /// the ledger, which is what keeps the ledger the single authority for which
+    /// declarations survived.
+    /// The refused declarations in source order, one per key — the merged summary
+    /// each refused key answers with.
+    ///
+    /// A namespace whose *declared* set is observed independently of its accepted
+    /// set reads it from here and `accepted()` together: a refused declaration is
+    /// still a declaration the source wrote, and a derivation that walks only the
+    /// accepted set silently narrows what it derives.
+    pub(crate) fn refused(&self) -> impl Iterator<Item = (&K, &DeclarationRefusalSummary)> {
+        self.occurrences
+            .iter()
+            .filter_map(|(key, occurrence)| match occurrence {
+                DeclarationOccurrence::Refused(summary)
+                    if matches!(self.index.get(key), Some(Selected::Refused(_))) =>
+                {
+                    Some((key, summary))
+                }
+                _ => None,
+            })
+    }
+
+    pub(crate) fn accepted(&self) -> impl Iterator<Item = (&K, &T)> {
+        self.occurrences
+            .iter()
+            .enumerate()
+            .filter_map(move |(at, (key, occurrence))| match occurrence {
+                DeclarationOccurrence::Accepted(value)
+                    if matches!(
+                        self.index.get(key),
+                        Some(Selected::Accepted(first)) if *first == at
+                    ) =>
+                {
+                    Some((key, value))
+                }
+                _ => None,
+            })
+    }
 }
 
 #[cfg(test)]
@@ -671,6 +722,30 @@ mod tests {
             .expect("within budget");
         let keys: Vec<&str> = ledger.keys().map(String::as_str).collect();
         assert_eq!(keys, vec!["a", "b"]);
+    }
+
+    /// `accepted()` is what an order-observing namespace builds from, so it must
+    /// answer exactly what `lookup` does: source order, refusals skipped, and one
+    /// row per key even when a key is declared twice.
+    #[test]
+    fn accepted_is_source_order_one_row_per_key() {
+        let mut ledger = ledger();
+        for (key, occurrence) in [
+            ("b".to_string(), DeclarationOccurrence::Accepted(1)),
+            (
+                "a".to_string(),
+                DeclarationOccurrence::Refused(refusal("a")),
+            ),
+            ("c".to_string(), DeclarationOccurrence::Accepted(2)),
+            ("b".to_string(), DeclarationOccurrence::Accepted(3)),
+        ] {
+            ledger.declare(key, occurrence).expect("within budget");
+        }
+        let accepted: Vec<(&str, u32)> = ledger
+            .accepted()
+            .map(|(key, value)| (key.as_str(), *value))
+            .collect();
+        assert_eq!(accepted, vec![("b", 1), ("c", 2)]);
     }
 
     #[test]

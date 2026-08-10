@@ -248,9 +248,12 @@ pub(super) fn refusal_summary<'r>(
     match id.namespace() {
         DeclarationNamespace::NamedType => records.refusal(id),
         DeclarationNamespace::DurableRoot => durable.refusal(id),
-        // A constant is looked up by its own name at its own use site and never
-        // travels through type resolution, so no handle of one reaches here.
-        DeclarationNamespace::Constant => Err(DeclarationIndexDrift),
+        // A constant is looked up by its own name at its own use site, and a
+        // resource member by its owner and its own name, so neither travels
+        // through type resolution and no handle of one reaches here.
+        DeclarationNamespace::Constant | DeclarationNamespace::ResourceMember => {
+            Err(DeclarationIndexDrift)
+        }
     }
 }
 
@@ -1020,6 +1023,36 @@ impl<'a> FnLowerer<'a> {
             false => self.failed = true,
         }
         true
+    }
+
+    /// The same steer for a member of a resource record or one of its unkeyed
+    /// groups, named by its owner. `false` means the owner never declared the
+    /// member, which is the one case a "has no field" report may describe.
+    ///
+    /// `owner` is a resource record's name, or the `Record.group` anchor of an
+    /// unkeyed group.
+    fn steer_refused_member(&mut self, owner: &str, member: &str, span: SourceSpan) -> bool {
+        let Binding::Refused(_, summary) = self.records.member(owner, member) else {
+            return false;
+        };
+        match summary.steer_once() {
+            true => {
+                let row = declaration_refused(self.file, span, summary);
+                self.fail(row);
+            }
+            false => self.failed = true,
+        }
+        true
+    }
+
+    /// The same steer for a member a projection already resolved to its refusal
+    /// handle.
+    fn steer_refused_member_id(&mut self, id: DeclarationRefusalId, span: SourceSpan) {
+        match self.records.refused_member_steer(id, self.file, span) {
+            Ok(Some(row)) => self.fail(row),
+            Ok(None) => self.failed = true,
+            Err(drift) => self.record_invariant(LowerInvariant::from(drift)),
+        }
     }
 
     fn record_invariant(&mut self, invariant: LowerInvariant) {

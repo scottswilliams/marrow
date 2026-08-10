@@ -772,6 +772,16 @@ fn build_one(
             value: resolver.build_value_shape(records, metadata, field.ty, 1),
         })
         .collect();
+    // A member the type registry refused is still a member this resource declares,
+    // so its identity anchor belongs to the resource's anchor set. It is resolved
+    // here and contributes no node to the member tree, whose typed invariant stays
+    // "built members only" — a refused member has no value shape to encode. Without
+    // it the anchor set narrows exactly where a program is already wrong, and the
+    // mint action that consumes these reports would write a ledger that is missing
+    // the anchor the corrected program needs.
+    for member in records.refused_members(&store.resource) {
+        resolver.resolve(IdentityKind::Field, &format!("{}.{member}", store.resource));
+    }
     let groups_and_branches =
         resolver.build_extras(draft, records, &resource.members, &store.resource);
 

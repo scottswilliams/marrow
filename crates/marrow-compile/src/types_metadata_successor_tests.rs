@@ -51,6 +51,7 @@ fn enum_template(template_name: &str, param: &str) -> TypeTemplate {
 fn test_registry(templates: Vec<TypeTemplate>) -> TypeRegistry {
     TypeRegistry {
         named: DeclarationLedger::new(DeclarationNamespace::NamedType),
+        members: DeclarationLedger::new(DeclarationNamespace::ResourceMember),
         aliases: BTreeMap::new(),
         nominals: Vec::new(),
         structs: Vec::new(),

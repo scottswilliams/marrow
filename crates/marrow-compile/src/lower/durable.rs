@@ -256,6 +256,17 @@ impl<'a> DurNode<'a> {
         }
     }
 
+    /// The member-ledger owner whose declared members back this node's fields: the
+    /// resource record a root materializes. A keyed branch's fields are the durable
+    /// graph's own keyed layer, where a refused member refuses the whole root, so a
+    /// branch owns no member ledger.
+    fn member_owner(&self) -> Option<&str> {
+        match self {
+            DurNode::Root(root) => Some(&root.resource),
+            DurNode::Branch(_) => None,
+        }
+    }
+
     fn no_field_message(&self, field: &str) -> String {
         match self {
             DurNode::Root(root) => format!("`{}` has no field `{field}`", root.name),
@@ -842,7 +853,11 @@ impl<'a> FnLowerer<'a> {
     fn resolve_place_group_address<'e>(
         &mut self,
         expr: &'e Expression,
-    ) -> Option<(Vec<DurKey<'e>>, &'a crate::durable::DurableGroup)> {
+    ) -> Option<(
+        Vec<DurKey<'e>>,
+        &'a crate::durable::DurableRoot,
+        &'a crate::durable::DurableGroup,
+    )> {
         let Expression::Field { base, name, .. } = expr else {
             return None;
         };
@@ -851,7 +866,7 @@ impl<'a> FnLowerer<'a> {
             return None;
         };
         let group = root.group(name)?;
-        Some((keys, group))
+        Some((keys, root, group))
     }
 
     /// Resolve a place-rooted durable access — a bare place name/pin, or a place extended by
@@ -888,14 +903,19 @@ impl<'a> FnLowerer<'a> {
                 // A group-leaf address: the base resolves to a root-level group on the place
                 // root, and this selector names one of its leaves. Resolved before the
                 // entry-address forms because its base is a group address, not an entry.
-                if let Some((keys, group)) = self.resolve_place_group_address(base) {
+                if let Some((keys, root, group)) = self.resolve_place_group_address(base) {
                     let Some((slot, leaf)) = group.field_index(field_name) else {
-                        self.fail(SourceDiagnostic::at(
-                            Code::CheckType.as_str(),
-                            self.file,
-                            *name_span,
-                            format!("group `{}` has no field `{field_name}`", group.name),
-                        ));
+                        // The group's anchor `Resource.group` is the leaf ledger's
+                        // owner, so a refused leaf is steered to its own cause.
+                        let owner = format!("{}.{}", root.resource, group.name);
+                        if !self.steer_refused_member(&owner, field_name, *name_span) {
+                            self.fail(SourceDiagnostic::at(
+                                Code::CheckType.as_str(),
+                                self.file,
+                                *name_span,
+                                format!("group `{}` has no field `{field_name}`", group.name),
+                            ));
+                        }
                         return None;
                     };
                     return Some(DurablePlace {
@@ -939,12 +959,20 @@ impl<'a> FnLowerer<'a> {
                         span: *span,
                     });
                 }
-                self.fail(SourceDiagnostic::at(
-                    Code::CheckType.as_str(),
-                    self.file,
-                    *name_span,
-                    node.no_field_message(field_name),
-                ));
+                // A member the compiler refused is declared: it left the record's
+                // accepted set but keeps its name, so the address is steered to the
+                // refusal rather than told the root has no such field.
+                if !node
+                    .member_owner()
+                    .is_some_and(|owner| self.steer_refused_member(owner, field_name, *name_span))
+                {
+                    self.fail(SourceDiagnostic::at(
+                        Code::CheckType.as_str(),
+                        self.file,
+                        *name_span,
+                        node.no_field_message(field_name),
+                    ));
+                }
                 None
             }
             _ => None,
@@ -1224,12 +1252,17 @@ impl<'a> FnLowerer<'a> {
                 // because its base is a group address, not an entry address.
                 if let Some((keys, group)) = self.resolve_group_address(root, base) {
                     let Some((slot, leaf)) = group.field_index(field_name) else {
-                        self.fail(SourceDiagnostic::at(
-                            Code::CheckType.as_str(),
-                            self.file,
-                            *name_span,
-                            format!("group `{}` has no field `{field_name}`", group.name),
-                        ));
+                        // The group's anchor `Resource.group` is the leaf ledger's
+                        // owner, so a refused leaf is steered to its own cause.
+                        let owner = format!("{}.{}", root.resource, group.name);
+                        if !self.steer_refused_member(&owner, field_name, *name_span) {
+                            self.fail(SourceDiagnostic::at(
+                                Code::CheckType.as_str(),
+                                self.file,
+                                *name_span,
+                                format!("group `{}` has no field `{field_name}`", group.name),
+                            ));
+                        }
                         return None;
                     };
                     return Some(DurablePlace {
@@ -1273,12 +1306,20 @@ impl<'a> FnLowerer<'a> {
                         span: *span,
                     });
                 }
-                self.fail(SourceDiagnostic::at(
-                    Code::CheckType.as_str(),
-                    self.file,
-                    *name_span,
-                    node.no_field_message(field_name),
-                ));
+                // A member the compiler refused is declared: it left the record's
+                // accepted set but keeps its name, so the address is steered to the
+                // refusal rather than told the root has no such field.
+                if !node
+                    .member_owner()
+                    .is_some_and(|owner| self.steer_refused_member(owner, field_name, *name_span))
+                {
+                    self.fail(SourceDiagnostic::at(
+                        Code::CheckType.as_str(),
+                        self.file,
+                        *name_span,
+                        node.no_field_message(field_name),
+                    ));
+                }
                 None
             }
             _ => None,

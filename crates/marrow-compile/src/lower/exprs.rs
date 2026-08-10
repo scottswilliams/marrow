@@ -1889,12 +1889,17 @@ impl<'a> FnLowerer<'a> {
             };
             let arg_name = arg_name.text();
             if record.field(arg_name).is_none() && record.group(arg_name).is_none() {
-                self.fail(SourceDiagnostic::at(
-                    Code::CheckType.as_str(),
-                    self.file,
-                    argument.value.span(),
-                    format!("`{name}` has no field `{arg_name}`"),
-                ));
+                // A member the compiler refused is declared: it left the record's
+                // accepted set but keeps its name, so the use is steered to the
+                // refusal rather than told the resource has no such field.
+                if !self.steer_refused_member(name, arg_name, argument.value.span()) {
+                    self.fail(SourceDiagnostic::at(
+                        Code::CheckType.as_str(),
+                        self.file,
+                        argument.value.span(),
+                        format!("`{name}` has no field `{arg_name}`"),
+                    ));
+                }
                 return None;
             }
         }
@@ -2156,12 +2161,16 @@ impl<'a> FnLowerer<'a> {
             };
             let arg_name = arg_name.text();
             if !leaf_plan.iter().any(|(name, _, _)| name == arg_name) {
-                self.fail(SourceDiagnostic::at(
-                    Code::CheckType.as_str(),
-                    self.file,
-                    argument.value.span(),
-                    format!("`{display}` has no field `{arg_name}`"),
-                ));
+                // The group's anchor `Resource.group` is the leaf ledger's owner, so
+                // a refused leaf is steered to its own cause here too.
+                if !self.steer_refused_member(&display, arg_name, argument.value.span()) {
+                    self.fail(SourceDiagnostic::at(
+                        Code::CheckType.as_str(),
+                        self.file,
+                        argument.value.span(),
+                        format!("`{display}` has no field `{arg_name}`"),
+                    ));
+                }
                 return None;
             }
         }
@@ -3157,6 +3166,13 @@ impl<'a> FnLowerer<'a> {
                             field_span,
                             format!("group has no field `{name}`"),
                         ));
+                        return None;
+                    }
+                    // The member is declared and its declaration was refused, so it
+                    // binds nothing here. The first use carries the steer to that
+                    // cause; every later one fails silently against the same key.
+                    ProductFieldProjection::RefusedMember(id) => {
+                        self.steer_refused_member_id(id, field_span);
                         return None;
                     }
                     ProductFieldProjection::Absent => {}

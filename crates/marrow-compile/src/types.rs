@@ -29,8 +29,8 @@ use marrow_image::{
 };
 use marrow_project::FileIdentity;
 use marrow_syntax::{
-    AliasDecl, EnumDecl, EnumMember, Expression, GroupDecl, LiteralKind, NominalDecl, ResourceDecl,
-    ResourceMember, SourceSpan, StructDecl, TypeExpr, UnaryOp, range_expr,
+    AliasDecl, EnumDecl, EnumMember, Expression, FieldDecl, GroupDecl, LiteralKind, NominalDecl,
+    ResourceDecl, ResourceMember, SourceSpan, StructDecl, TypeExpr, UnaryOp, range_expr,
 };
 
 use crate::analysis::FileRef;
@@ -485,8 +485,15 @@ pub(crate) enum ProductFieldProjection {
         index: u16,
         ty: TypeId,
     },
+    /// The record owns no member of this name and never declared one.
     MissingRecordField,
+    /// The group owns no leaf of this name and never declared one.
     MissingGroupField,
+    /// The owner declared this member and the compiler refused the declaration, so
+    /// the member is not projectable and the use is steered to that cause. A
+    /// separate variant from the missing ones because reporting a refused member as
+    /// absent is a false statement about the source.
+    RefusedMember(DeclarationRefusalId),
     Absent,
 }
 
@@ -1121,6 +1128,47 @@ fn field_index<'f>(fields: &'f [FieldInfo], name: &str) -> Option<(u16, &'f Fiel
         .map(|(index, field)| (index as u16, field))
 }
 
+/// Which resource member one ledger entry is: the record or unkeyed group that
+/// writes it, and the member's own name.
+///
+/// The key lives on [`TypeRegistry`] rather than inside [`RecordInfo`] because a
+/// record projection is cloned to cross a borrow, and a cloned refusal summary
+/// would carry its own report-once flag — one refused member would then steer at
+/// every use instead of once.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) struct MemberKey {
+    owner: String,
+    member: String,
+}
+
+impl MemberKey {
+    /// A top-level member of the resource record `record`.
+    pub(crate) fn field(record: &str, member: &str) -> Self {
+        Self {
+            owner: record.to_string(),
+            member: member.to_string(),
+        }
+    }
+
+    /// A leaf of one unkeyed group. The owner is the group's anchor
+    /// `Record.group` — the same spelling the group's image record type carries —
+    /// so a leaf and a top-level member of the same name never share a key.
+    pub(crate) fn leaf(record: &str, group: &str, member: &str) -> Self {
+        Self {
+            owner: format!("{record}.{group}"),
+            member: member.to_string(),
+        }
+    }
+
+    fn owns(&self, owner: &str) -> bool {
+        self.owner == owner
+    }
+
+    fn member(&self) -> &str {
+        &self.member
+    }
+}
+
 /// What kind of named type a declared name binds. The ledger's accepted payload:
 /// enough to say what a name already is when a second declaration takes it, and
 /// nothing the kind-specific tables already own.
@@ -1150,6 +1198,15 @@ pub(crate) struct TypeRegistry {
     /// a broken type — and is retained here, so the use that can no longer resolve
     /// is steered to the cause instead of being told the name was never written.
     named: DeclarationLedger<String, NamedTypeKind>,
+    /// Every member declared by a resource record or one of its unkeyed groups,
+    /// accepted or refused, in declaration order.
+    ///
+    /// This is the authority for which members survived and in what order:
+    /// `RecordInfo::fields` and `GroupInfo::fields` are read out of `accepted()`,
+    /// so the record cannot hold a member the ledger does not, and a member the
+    /// compiler refused answers `Refused` at the lookups that would otherwise
+    /// report the record as having no such field.
+    members: DeclarationLedger<MemberKey, FieldInfo>,
     /// `alias name -> alias-free expanded target`. Cyclic aliases are reported
     /// at build and never enter this map.
     aliases: BTreeMap<String, TypeExpr>,
@@ -1191,6 +1248,7 @@ impl Default for TypeRegistry {
     fn default() -> Self {
         Self {
             named: DeclarationLedger::new(DeclarationNamespace::NamedType),
+            members: DeclarationLedger::new(DeclarationNamespace::ResourceMember),
             aliases: BTreeMap::new(),
             nominals: Vec::new(),
             structs: Vec::new(),
@@ -2808,12 +2866,24 @@ impl TypeMetadataSession<'_> {
                             ty: group.type_id,
                         });
                     }
-                    Ok(ProductFieldProjection::MissingRecordField)
+                    Ok(match self.view.registry.member(&info.name, name) {
+                        Binding::Refused(id, _) => ProductFieldProjection::RefusedMember(id),
+                        Binding::Accepted(_) | Binding::Absent => {
+                            ProductFieldProjection::MissingRecordField
+                        }
+                    })
                 }
                 RecordMetadataOwner::Group(record, group) => {
-                    let info = &self.view.registry.records[record].groups[group];
+                    let owner = &self.view.registry.records[record];
+                    let info = &owner.groups[group];
                     let Some((index, field)) = info.field(name) else {
-                        return Ok(ProductFieldProjection::MissingGroupField);
+                        let anchor = format!("{}.{}", owner.name, info.name);
+                        return Ok(match self.view.registry.member(&anchor, name) {
+                            Binding::Refused(id, _) => ProductFieldProjection::RefusedMember(id),
+                            Binding::Accepted(_) | Binding::Absent => {
+                                ProductFieldProjection::MissingGroupField
+                            }
+                        });
                     };
                     self.view.validate_args_with(
                         std::slice::from_ref(&field.ty),
@@ -4959,6 +5029,57 @@ impl TypeRegistry {
         }
     }
 
+    /// The accepted members of `owner`, in declaration order.
+    ///
+    /// `owner` is a resource record's name, or the `Record.group` anchor of one of
+    /// its unkeyed groups. This is what a record's field list is built from, so
+    /// the record and the ledger cannot disagree about which members survived.
+    pub(crate) fn accepted_members(&self, owner: &str) -> Vec<FieldInfo> {
+        self.members
+            .accepted()
+            .filter(|(key, _)| key.owns(owner))
+            .map(|(_, info)| info.clone())
+            .collect()
+    }
+
+    /// The members `owner` declared and the compiler refused, in declaration order.
+    ///
+    /// A refused member is still a member the source wrote, so a derivation over a
+    /// resource's declared members — the durable identity anchors, above all —
+    /// reads this beside `accepted_members` rather than narrowing to the accepted
+    /// set alone.
+    pub(crate) fn refused_members(&self, owner: &str) -> Vec<&str> {
+        self.members
+            .refused()
+            .filter(|(key, _)| key.owns(owner))
+            .map(|(key, _)| key.member())
+            .collect()
+    }
+
+    /// What the member `member` of `owner` binds: an accepted member, the refusal
+    /// its declaration reported, or a genuine absence.
+    ///
+    /// A lookup that would report "has no field" reads this first, so the one
+    /// namespace that refuses a member without refusing what contains it cannot
+    /// make a false statement about the source.
+    pub(crate) fn member(&self, owner: &str, member: &str) -> Binding<'_, FieldInfo> {
+        self.members.lookup(&MemberKey::field(owner, member))
+    }
+
+    /// The same steer for a member a projection already resolved to a refusal
+    /// handle, so the owner's name is not spelled a second time at the use site.
+    pub(crate) fn refused_member_steer(
+        &self,
+        id: DeclarationRefusalId,
+        file: &FileIdentity,
+        span: SourceSpan,
+    ) -> Result<Option<SourceDiagnostic>, DeclarationIndexDrift> {
+        let summary = self.members.refusal(id)?;
+        Ok(summary
+            .steer_once()
+            .then(|| declaration_refused(file, span, summary)))
+    }
+
     /// The refusal a named-type or template handle addresses. Every other
     /// namespace's handle is drift here, checked by the ledger's own tag.
     pub(crate) fn refusal(
@@ -5039,6 +5160,7 @@ impl TypeRegistry {
             build_alias_table(&mut named, aliases, resources, structs, enums, diagnostics)?;
         let mut registry = Self {
             named,
+            members: DeclarationLedger::new(DeclarationNamespace::ResourceMember),
             aliases: aliases_table,
             nominals: Vec::new(),
             structs: Vec::new(),
@@ -6838,12 +6960,16 @@ fn fill_records(
 }
 
 /// Fill one reserved record (`registry.records[index]`) from its resource
-/// declaration: resolve each field against the full registry and fill both the
-/// registry info and the image record. A resource field is a scalar, nominal scalar,
-/// dense struct, or closed enum value (`Option`/`Result`/a user `enum`). A collection,
-/// keyed field, or unknown spelling is not admitted; an unkeyed group is materialized
-/// separately below. A bad member is `check.unsupported` and only that member is
-/// skipped (the record keeps its other fields).
+/// declaration: declare each member into the registry's member ledger and fill both
+/// the registry info and the image record from what the ledger accepted. A resource
+/// field is a scalar, nominal scalar, dense struct, or closed enum value
+/// (`Option`/`Result`/a user `enum`). A collection, keyed field, or unknown spelling
+/// is not admitted; an unkeyed group is materialized separately below.
+///
+/// A refused member is `check.unsupported` at its own span and only that member
+/// leaves the accepted set — the record keeps its other members. The refusal stays
+/// in the ledger, so a later use of that member is steered to the cause rather than
+/// told the record has no such field.
 fn fill_record(
     draft: &mut ImageDraft,
     registry: &mut TypeRegistry,
@@ -6851,77 +6977,49 @@ fn fill_record(
     declared: Declared<'_>,
     resource: &ResourceDecl,
     diagnostics: &mut DiagnosticCollector,
-) -> Result<(), GenericInvariant> {
+) -> Result<(), BuildError> {
     let file = declared.file;
     let type_id = registry.records[index].type_id;
-    let mut fields = Vec::new();
-    let mut field_defs = Vec::new();
     let mut groups = Vec::new();
     let mut group_slot_defs = Vec::new();
     for member in &resource.members {
         match member {
             ResourceMember::Field(field) => {
-                if !field.keys.is_empty() {
+                let at = Declared {
+                    name: &field.name,
+                    file,
+                    at: declared.at,
+                    span: field.span,
+                };
+                let occurrence = if field.keys.is_empty() {
+                    resource_member(draft, registry, at, field, "this field type", diagnostics)?
+                } else {
                     // A keyed scalar leaf (`tags(pos: int): string`) is a keyed
                     // positional layer, not yet part of the beta durable graph. It is
-                    // reported so the shape is a precise rejection, not a silent drop.
-                    diagnostics.push(unsupported(file, field.span, "a keyed field"));
-                    continue;
-                }
-                // A resource field is a value drawn from the closed acyclic durable
-                // value set: a scalar, a nominal scalar, a dense struct, or a closed
-                // enum (`Option`/`Result`/a user `enum`). A collection is not a durable
-                // field value; an abstract parameter never reaches a concrete record.
-                let field_ty = match registry.resolve_garg(
-                    draft,
-                    &field.ty,
-                    MintSite {
-                        file,
-                        span: field.ty.span(),
-                    },
-                ) {
-                    Ok(
-                        ty @ (GArg::Scalar(_) | GArg::Nominal(_) | GArg::Struct(_) | GArg::Enum(_)),
-                    ) => ty,
-                    // A field type that resolves but is outside the durable value
-                    // set is a genuine subset gap; one that names a refused
-                    // declaration is steered to that declaration's own cause.
-                    Ok(_) => {
-                        diagnostics.push(unsupported(file, field.ty.span(), "this field type"));
-                        continue;
-                    }
-                    Err(ResolveError::Refusal(refused)) => {
-                        if let Some(row) = registry.member_refusal_row(
-                            refused,
-                            file,
-                            field.ty.span(),
-                            "this field type",
-                        )? {
-                            diagnostics.push(row);
-                        }
-                        continue;
-                    }
-                    Err(ResolveError::Invariant(invariant)) => return Err(invariant),
+                    // refused so the shape is a precise rejection, not a silent drop.
+                    DeclarationOccurrence::Refused(refuse_row(
+                        diagnostics,
+                        at,
+                        unsupported(file, field.span, "a keyed field"),
+                    ))
                 };
-                let field_name_id = draft.intern_string(&field.name);
-                field_defs.push(FieldDef {
-                    name: field_name_id,
-                    ty: field_ty.image(),
-                    required: field.required,
-                });
-                fields.push(FieldInfo {
-                    name: field.name.clone(),
-                    ty: field_ty,
-                    required: field.required,
-                });
+                registry
+                    .members
+                    .declare(MemberKey::field(&resource.name, &field.name), occurrence)?;
             }
             ResourceMember::Group(group) if group.keys.is_empty() => {
                 // An unkeyed `group` is a nested sub-record value: its scalar/enum
                 // leaves become a group record type, and the containing value gains one
                 // required slot holding that record. Its durable identity is owned
                 // separately by `durable.rs`; this is the materialized-value side only.
-                let (leaf_fields, leaf_defs) =
-                    build_group_leaves(draft, registry, group, declared, diagnostics)?;
+                let (leaf_fields, leaf_defs) = build_group_leaves(
+                    draft,
+                    registry,
+                    &resource.name,
+                    group,
+                    declared,
+                    diagnostics,
+                )?;
                 let anchor = format!("{}.{}", resource.name, group.name);
                 let group_name_id = draft.intern_string(&anchor);
                 let group_type_id = draft.add_record_type(RecordTypeDef {
@@ -6949,6 +7047,18 @@ fn fill_record(
             }
         }
     }
+    // The ledger is the authority for which members survived and in what order, so
+    // the record's fields and the image slots are read out of it rather than
+    // accumulated beside it.
+    let fields = registry.accepted_members(&resource.name);
+    let mut field_defs: Vec<FieldDef> = fields
+        .iter()
+        .map(|field| FieldDef {
+            name: draft.intern_string(&field.name),
+            ty: field.ty.image(),
+            required: field.required,
+        })
+        .collect();
     // The record is group-inclusive: its top-level field slots followed by one
     // group-record slot per unkeyed group, in declaration order. The verifier ties the
     // field slots to the durable member tree's fields and each trailing group slot to a
@@ -6962,21 +7072,79 @@ fn fill_record(
     Ok(())
 }
 
+/// Resolve one resource member's declared type to the value it binds, or to the
+/// refusal the member ledger retains.
+///
+/// A resource member is a value drawn from the closed acyclic durable value set: a
+/// scalar, a nominal scalar, a dense struct, or a closed enum (`Option`/`Result`/a
+/// user `enum`). A collection is not a durable member value; an abstract parameter
+/// never reaches a concrete record.
+fn resource_member(
+    draft: &mut ImageDraft,
+    registry: &TypeRegistry,
+    at: Declared<'_>,
+    field: &FieldDecl,
+    subject: &str,
+    diagnostics: &mut DiagnosticCollector,
+) -> Result<DeclarationOccurrence<FieldInfo>, GenericInvariant> {
+    let file = at.file;
+    Ok(
+        match registry.resolve_garg(
+            draft,
+            &field.ty,
+            MintSite {
+                file,
+                span: field.ty.span(),
+            },
+        ) {
+            Ok(ty @ (GArg::Scalar(_) | GArg::Nominal(_) | GArg::Struct(_) | GArg::Enum(_))) => {
+                DeclarationOccurrence::Accepted(FieldInfo {
+                    name: field.name.clone(),
+                    ty,
+                    required: field.required,
+                })
+            }
+            // A member type that resolves but is outside the durable value set is a
+            // genuine subset gap; one that names a refused declaration is steered to
+            // that declaration's own cause.
+            Ok(_) => DeclarationOccurrence::Refused(refuse_row(
+                diagnostics,
+                at,
+                unsupported(file, field.ty.span(), subject),
+            )),
+            Err(ResolveError::Refusal(refused)) => {
+                match registry.member_refusal_row(refused, file, field.ty.span(), subject)? {
+                    Some(row) => DeclarationOccurrence::Refused(refuse_row(diagnostics, at, row)),
+                    // The shared instantiation limit reports once, at the
+                    // monomorphization owner; this member is refused for a cause that
+                    // pass owns.
+                    None => DeclarationOccurrence::Refused(refuse_covered(
+                        at,
+                        Code::CheckInstantiationLimit.as_str(),
+                    )),
+                }
+            }
+            Err(ResolveError::Invariant(invariant)) => return Err(invariant),
+        },
+    )
+}
+
 /// The direct scalar/enum leaves of an unkeyed group, in declaration order,
 /// returning both the registry field infos and the image field defs. A keyed leaf,
 /// a nested group or keyed branch inside the group, or a non-value leaf type is a
-/// precise `check.unsupported` that skips only that leaf. Nested groups and
-/// group-scoped branches are deferred; reporting keeps them from silently dropping.
+/// precise `check.unsupported` that refuses only that leaf. Nested groups and
+/// group-scoped branches are deferred; refusing them keeps them from silently
+/// dropping, and keeps the leaf name answerable at its uses.
 fn build_group_leaves(
     draft: &mut ImageDraft,
-    registry: &TypeRegistry,
+    registry: &mut TypeRegistry,
+    record: &str,
     group: &GroupDecl,
     declared: Declared<'_>,
     diagnostics: &mut DiagnosticCollector,
-) -> Result<(Vec<FieldInfo>, Vec<FieldDef>), GenericInvariant> {
+) -> Result<(Vec<FieldInfo>, Vec<FieldDef>), BuildError> {
     let file = declared.file;
-    let mut fields = Vec::new();
-    let mut field_defs = Vec::new();
+    let anchor = format!("{record}.{}", group.name);
     for member in &group.members {
         let field = match member {
             ResourceMember::Field(field) => field,
@@ -6986,52 +7154,56 @@ fn build_group_leaves(
                 } else {
                     "a keyed branch inside a group"
                 };
-                diagnostics.push(unsupported(file, inner.span, what));
-                continue;
-            }
-        };
-        if !field.keys.is_empty() {
-            diagnostics.push(unsupported(file, field.span, "a keyed field"));
-            continue;
-        }
-        let field_ty = match registry.resolve_garg(
-            draft,
-            &field.ty,
-            MintSite {
-                file,
-                span: field.ty.span(),
-            },
-        ) {
-            Ok(ty @ (GArg::Scalar(_) | GArg::Nominal(_) | GArg::Struct(_) | GArg::Enum(_))) => ty,
-            Ok(_) => {
-                diagnostics.push(unsupported(file, field.ty.span(), "this group field type"));
-                continue;
-            }
-            Err(ResolveError::Refusal(refused)) => {
-                if let Some(row) = registry.member_refusal_row(
-                    refused,
+                let at = Declared {
+                    name: &inner.name,
                     file,
-                    field.ty.span(),
-                    "this group field type",
-                )? {
-                    diagnostics.push(row);
-                }
+                    at: declared.at,
+                    span: inner.span,
+                };
+                let refusal = refuse_row(diagnostics, at, unsupported(file, inner.span, what));
+                registry.members.declare(
+                    MemberKey::leaf(record, &group.name, &inner.name),
+                    DeclarationOccurrence::Refused(refusal),
+                )?;
                 continue;
             }
-            Err(ResolveError::Invariant(invariant)) => return Err(invariant),
         };
-        let field_name_id = draft.intern_string(&field.name);
-        field_defs.push(FieldDef {
-            name: field_name_id,
-            ty: field_ty.image(),
-            required: field.required,
-        });
-        fields.push(FieldInfo {
-            name: field.name.clone(),
-            ty: field_ty,
-            required: field.required,
-        });
+        let at = Declared {
+            name: &field.name,
+            file,
+            at: declared.at,
+            span: field.span,
+        };
+        let occurrence = if field.keys.is_empty() {
+            resource_member(
+                draft,
+                registry,
+                at,
+                field,
+                "this group field type",
+                diagnostics,
+            )?
+        } else {
+            DeclarationOccurrence::Refused(refuse_row(
+                diagnostics,
+                at,
+                unsupported(file, field.span, "a keyed field"),
+            ))
+        };
+        registry.members.declare(
+            MemberKey::leaf(record, &group.name, &field.name),
+            occurrence,
+        )?;
     }
+    let fields = registry.accepted_members(&anchor);
+    let field_defs = fields
+        .iter()
+        .map(|leaf| FieldDef {
+            name: draft.intern_string(&leaf.name),
+            ty: leaf.ty.image(),
+            required: leaf.required,
+        })
+        .collect();
     Ok((fields, field_defs))
 }
 
@@ -8406,6 +8578,7 @@ mod instantiation_state_tests {
     fn registry(templates: Vec<TypeTemplate>) -> TypeRegistry {
         TypeRegistry {
             named: DeclarationLedger::new(DeclarationNamespace::NamedType),
+            members: DeclarationLedger::new(DeclarationNamespace::ResourceMember),
             aliases: BTreeMap::new(),
             nominals: Vec::new(),
             structs: Vec::new(),

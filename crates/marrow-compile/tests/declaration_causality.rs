@@ -554,10 +554,6 @@ fn r21_a_genuinely_absent_field_is_still_reported_as_absent() {
 /// resource has no such field — four lines after the compiler diagnosed that field's
 /// type.
 #[test]
-#[ignore = "sequenced behind the resource-member ledger (I-7, design §2.3 and E5b): \
-            `RecordInfo::fields` and `GroupInfo::fields` must answer a `Binding` at \
-            the eleven `has no field` sites before a refused member can be told \
-            apart from an absent one"]
 fn r15_a_refused_resource_member_is_not_absent_at_its_use() {
     let diagnostics = diagnostics(
         "module main\n\n\
@@ -590,10 +586,6 @@ fn r15_a_refused_resource_member_is_not_absent_at_its_use() {
 /// fewer `check.durable_identity` rows than the same program with a valid member
 /// type, and the mint action that consumes those rows mints an incomplete ledger.
 #[test]
-#[ignore = "sequenced behind resource-member granularity (I-7, design §2.3): the \
-            member is dropped by the type registry before the durable resolver \
-            walks it, so the anchor is restored only once `RecordInfo::fields` is \
-            itself a ledger"]
 fn r19_a_refused_member_does_not_narrow_the_identity_gap_set() {
     let anchors = |field: &str| {
         let source = format!(
