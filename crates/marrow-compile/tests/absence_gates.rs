@@ -414,3 +414,379 @@ fn definition_fact_fields_stay_private() {
         .1;
     assert!(doctests.contains("definition.file"));
 }
+
+// ---- Structural scans over production code only.
+//
+// A text gate that matches raw lines silently disables itself the moment the shape it
+// forbids appears inside a comment, a string, or a test module: the scan then reports a
+// hit it must ignore, someone narrows the needle, and the gate stops seeing real code.
+// So these scans run over a projection of the source in which every comment, string,
+// char literal, and `#[cfg(test)]` item has been blanked to spaces — byte offsets and
+// line breaks preserved — and the projection itself carries plant probes below.
+
+/// `source` with every comment and string/char literal replaced by spaces. Byte offsets
+/// and newlines are preserved, so a match's line number is the source's own.
+fn without_literals(source: &str) -> String {
+    let bytes = source.as_bytes();
+    let mut out = vec![b' '; bytes.len()];
+    let mut index = 0;
+    // Copy `count` bytes through unchanged.
+    macro_rules! keep {
+        ($count:expr) => {{
+            let count = $count;
+            out[index..index + count].copy_from_slice(&bytes[index..index + count]);
+            index += count;
+        }};
+    }
+    // Blank `count` bytes, keeping their newlines so line numbers survive.
+    macro_rules! blank {
+        ($count:expr) => {{
+            for offset in index..(index + $count).min(bytes.len()) {
+                if bytes[offset] == b'\n' {
+                    out[offset] = b'\n';
+                }
+            }
+            index = (index + $count).min(bytes.len());
+        }};
+    }
+    while index < bytes.len() {
+        let rest = &bytes[index..];
+        if rest.starts_with(b"//") {
+            let end = rest.iter().position(|byte| *byte == b'\n').unwrap_or(rest.len());
+            blank!(end);
+        } else if rest.starts_with(b"/*") {
+            let mut depth = 0usize;
+            let mut cursor = 0usize;
+            while cursor < rest.len() {
+                if rest[cursor..].starts_with(b"/*") {
+                    depth += 1;
+                    cursor += 2;
+                } else if rest[cursor..].starts_with(b"*/") {
+                    depth -= 1;
+                    cursor += 2;
+                    if depth == 0 {
+                        break;
+                    }
+                } else {
+                    cursor += 1;
+                }
+            }
+            blank!(cursor);
+        } else if rest[0] == b'r'
+            && !index
+                .checked_sub(1)
+                .is_some_and(|previous| is_ident_byte(bytes[previous]))
+            && rest[1..].iter().position(|byte| *byte != b'#').is_some_and(|hashes| {
+                rest.get(1 + hashes) == Some(&b'"')
+            })
+        {
+            let hashes = rest[1..].iter().position(|byte| *byte != b'#').unwrap_or(0);
+            let mut closer = Vec::with_capacity(hashes + 1);
+            closer.push(b'"');
+            closer.extend(std::iter::repeat_n(b'#', hashes));
+            let body = &rest[2 + hashes..];
+            let end = body
+                .windows(closer.len())
+                .position(|window| window == closer.as_slice())
+                .map_or(rest.len(), |offset| 2 + hashes + offset + closer.len());
+            blank!(end);
+        } else if rest[0] == b'"' {
+            let mut cursor = 1usize;
+            while cursor < rest.len() {
+                match rest[cursor] {
+                    b'\\' => cursor += 2,
+                    b'"' => {
+                        cursor += 1;
+                        break;
+                    }
+                    _ => cursor += 1,
+                }
+            }
+            blank!(cursor);
+        } else if rest[0] == b'\'' && char_literal_len(rest).is_some() {
+            let len = char_literal_len(rest).unwrap_or(1);
+            blank!(len);
+        } else {
+            keep!(1);
+        }
+    }
+    String::from_utf8(out).expect("blanking preserves UTF-8 boundaries")
+}
+
+fn is_ident_byte(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || byte == b'_'
+}
+
+/// The length of a char literal starting at `rest`, or `None` when the quote opens a
+/// lifetime (`'a`) instead — which is ordinary code and must not be blanked.
+fn char_literal_len(rest: &[u8]) -> Option<usize> {
+    if rest.get(1) == Some(&b'\\') {
+        let end = rest.iter().skip(2).position(|byte| *byte == b'\'')? + 3;
+        return Some(end);
+    }
+    // A one-character literal closes immediately; anything else after the quote is a
+    // lifetime name. The character may be multi-byte, so its width is read from the
+    // leading byte rather than assumed to be one.
+    let width = match rest.get(1)? {
+        byte if *byte < 0x80 => 1,
+        byte if byte >> 5 == 0b110 => 2,
+        byte if byte >> 4 == 0b1110 => 3,
+        _ => 4,
+    };
+    (rest.get(1 + width) == Some(&b'\'')).then_some(2 + width)
+}
+
+/// `source` with every `#[cfg(test)]` item blanked as well: what the crate compiles when
+/// it is built as a dependency, which is the only code a production absence gate is about.
+fn production_code(source: &str) -> String {
+    let mut code = without_literals(source);
+    const MARKER: &str = "#[cfg(test)]";
+    while let Some(start) = code.find(MARKER) {
+        let bytes = code.as_bytes();
+        let mut cursor = start + MARKER.len();
+        while cursor < bytes.len() && bytes[cursor] != b'{' && bytes[cursor] != b';' {
+            cursor += 1;
+        }
+        let end = if bytes.get(cursor) == Some(&b'{') {
+            let mut depth = 0usize;
+            let mut scan = cursor;
+            while scan < bytes.len() {
+                match bytes[scan] {
+                    b'{' => depth += 1,
+                    b'}' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            scan += 1;
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+                scan += 1;
+            }
+            scan
+        } else {
+            (cursor + 1).min(bytes.len())
+        };
+        let blanked: String = code[start..end]
+            .chars()
+            .map(|c| if c == '\n' { '\n' } else { ' ' })
+            .collect();
+        code.replace_range(start..end, &blanked);
+    }
+    code
+}
+
+/// Files whose whole contents are test code: they are included behind `#[cfg(test)]` at
+/// their module declaration, so their own text carries no production shape.
+fn is_test_only_file(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.ends_with("_tests.rs"))
+}
+
+/// Every `(file, line)` at which `needle` appears in production code.
+fn production_occurrences(needle: &str) -> Vec<(PathBuf, usize)> {
+    let mut found = Vec::new();
+    for path in src_files() {
+        if is_test_only_file(&path) {
+            continue;
+        }
+        let source = fs::read_to_string(&path).expect("read source file");
+        let code = production_code(&source);
+        for (index, line) in code.lines().enumerate() {
+            if line.contains(needle) {
+                found.push((path.clone(), index + 1));
+            }
+        }
+    }
+    found
+}
+
+fn production_code_of(file: &str) -> String {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("src").join(file);
+    production_code(&fs::read_to_string(path).expect("read source file"))
+}
+
+/// The scanner sees code and only code. Each probe is a shape a literal-blind scan would
+/// get wrong: a needle hidden in a comment or a string reads as a hit, and a needle in
+/// real code beside them must still be found.
+#[test]
+fn the_production_scanner_reads_code_and_not_prose() {
+    let sample = r##"
+// forbidden_shape in a line comment
+/* forbidden_shape in a block /* nested */ comment */
+fn keeper<'a>(text: &'a str) -> char {
+    let quoted = "forbidden_shape in a string";
+    let raw = r#"forbidden_shape in a raw string"#;
+    let tick = '\'';
+    forbidden_shape();
+    'x'
+}
+
+#[cfg(test)]
+mod tests {
+    fn hidden() {
+        forbidden_shape();
+    }
+}
+
+#[cfg(test)]
+#[path = "elsewhere.rs"]
+mod elsewhere;
+
+fn after(): {}
+"##;
+    let code = production_code(sample);
+    assert_eq!(
+        code.matches("forbidden_shape").count(),
+        1,
+        "exactly the one real call site survives:\n{code}",
+    );
+    assert!(
+        code.contains("fn keeper<'a>(text: &'a str)"),
+        "lifetimes are code, not char literals:\n{code}",
+    );
+    assert!(
+        code.contains("fn after"),
+        "scanning continues past a blanked test module:\n{code}",
+    );
+    assert!(
+        !code.contains("mod tests"),
+        "the test module is blanked:\n{code}",
+    );
+    assert!(
+        !code.contains("elsewhere.rs"),
+        "an out-of-line test module declaration is blanked:\n{code}",
+    );
+    assert_eq!(
+        code.len(),
+        sample.len(),
+        "byte offsets are preserved so a reported line is the source's own",
+    );
+    assert_eq!(
+        code.lines().count(),
+        sample.lines().count(),
+        "line numbering is preserved",
+    );
+}
+
+/// The projection over the real tree still contains the production shapes it must see,
+/// and no longer contains the test-only ones. A scanner that blanked too much would pass
+/// every absence gate below while proving nothing.
+#[test]
+fn the_production_scanner_still_sees_the_real_compiler() {
+    let compile = production_code_of("compile.rs");
+    for shape in [
+        "fn drive(",
+        "fn analyze_project(",
+        "enum SemanticOutcome",
+        "struct Artifacts",
+        "fn all_available(",
+    ] {
+        assert!(
+            compile.contains(shape),
+            "the projection lost a production shape: {shape}",
+        );
+    }
+    let diag = production_code_of("diag.rs");
+    assert!(
+        diag.contains("fn absorb("),
+        "the projection lost the collector's production surface",
+    );
+    assert!(
+        !diag.contains("fn expect_complete("),
+        "a test-only helper must not survive the projection",
+    );
+}
+
+/// The image is produced at exactly one place. `CheckedProgram::encode` is the only
+/// caller of `ImageDraft::encode`, and `Driven::into_built` is the only caller of that —
+/// so the production projection is the single point at which an image-policy verdict can
+/// be taken, and no analysis or tooling path can reach one.
+#[test]
+fn the_image_is_encoded_at_exactly_one_call_site() {
+    let draft_calls = production_occurrences("draft.encode()");
+    assert_eq!(
+        draft_calls.len(),
+        1,
+        "ImageDraft::encode has exactly one production call site: {draft_calls:?}",
+    );
+    let all_calls = production_occurrences(".encode()");
+    assert_eq!(
+        all_calls.len(),
+        2,
+        "only the draft call and the checked program's wrapper may encode: {all_calls:?}",
+    );
+    assert!(
+        production_occurrences("ImageDraft::encode").is_empty(),
+        "the encoder is reached through the draft, not by an explicit path",
+    );
+}
+
+/// No phase runs on the strength of an empty diagnostic set. Each continued phase takes
+/// its own typed prerequisite, so the only `diagnostics.is_empty()` left in the compiler
+/// driver is the non-empty diagnostic set's own constructor guard — and the collector's
+/// `is_empty` is test-only, so a production caller cannot reintroduce the pattern at all.
+#[test]
+fn no_phase_runs_on_an_empty_diagnostic_set() {
+    let found = production_occurrences("diagnostics.is_empty()");
+    assert_eq!(
+        found.len(),
+        1,
+        "only NonEmptySourceDiagnostics may ask whether a row set is empty: {found:?}",
+    );
+    let diag = production_code_of("diag.rs");
+    assert!(
+        !diag.contains("fn is_empty(&self) -> bool {\n        self.rows.is_empty()"),
+        "the collector's is_empty must stay behind cfg(test): the projection blanks it",
+    );
+}
+
+/// The compiler driver and the lowering owner it drives. A guard that decides one of
+/// their outcomes decides what the compiler proved about a program.
+const DRIVER_FILES: &[&str] = &["compile.rs", "lower/mod.rs", "lower/registry.rs"];
+
+/// A reserved index that does not match the minted one is a typed invariant in every
+/// profile. A `debug_assert` family guard would make the release build disagree with the
+/// debug build about what the compiler proved, so none decides an outcome in the driver.
+#[test]
+fn the_driver_carries_no_profile_dependent_guard() {
+    for file in DRIVER_FILES {
+        let code = production_code_of(file);
+        for shape in [
+            "debug_assert",
+            "cfg!(debug_assertions)",
+            "#[cfg(debug_assertions)]",
+        ] {
+            let lines: Vec<usize> = code
+                .lines()
+                .enumerate()
+                .filter(|(_, line)| line.contains(shape))
+                .map(|(index, _)| index + 1)
+                .collect();
+            assert!(
+                lines.is_empty(),
+                "a profile-dependent guard must not decide a compiler outcome: \
+                 {shape} in {file} at {lines:?}",
+            );
+        }
+    }
+}
+
+/// The row derives no pending-diagnostic representation and mints no per-artifact cause
+/// carrier. The substrate exports no receipt, terminal token, epoch, or candidate key,
+/// and this row does not invent one.
+#[test]
+fn no_attempt_or_receipt_vocabulary_exists() {
+    for shape in [
+        "attempt", "Attempt", "receipt", "Receipt", "epoch", "Epoch", "candidate_key",
+        "CandidateKey", "terminal_token", "TerminalToken",
+    ] {
+        let found = production_occurrences(shape);
+        assert!(
+            found.is_empty(),
+            "no per-artifact cause carrier vocabulary may exist: {shape} at {found:?}",
+        );
+    }
+}
