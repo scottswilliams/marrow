@@ -17,6 +17,7 @@ use marrow_syntax::{
 };
 
 use crate::analysis::{AnalysisFactCollector, BoundedAnalysisFacts, FactSink, FileRef};
+use crate::decl::{DeclarationLedgerFull, MAX_DECLARATION_LEDGER_BYTES};
 use crate::demand::DurableNaming;
 use crate::diag::{
     BoundedDiagnostics, CompileDiagnosticLimit, DiagnosticCollector, SourceDiagnostic,
@@ -219,6 +220,12 @@ pub enum ResourceLimitKind {
     /// The captured project's aggregate source bytes exceed the production compiler
     /// drive envelope.
     ProjectSourceBytes,
+    /// The declaration ledgers' retained refusals crossed their shared byte ceiling.
+    /// Neither the image bounds nor the diagnostic ceiling bounds this retention — a
+    /// refused declaration never reaches the encoder, and a diagnostic collector at
+    /// its ceiling keeps admitting and discarding while the pass runs on — so the
+    /// term carries its own declared bound.
+    DeclarationLedgerBytes,
 }
 
 impl ResourceLimitKind {
@@ -249,6 +256,7 @@ impl ResourceLimitKind {
             ResourceLimitKind::ProjectFiles => "ProjectFiles",
             ResourceLimitKind::ProjectFileBytes => "ProjectFileBytes",
             ResourceLimitKind::ProjectSourceBytes => "ProjectSourceBytes",
+            ResourceLimitKind::DeclarationLedgerBytes => "DeclarationLedgerBytes",
         }
     }
 
@@ -280,6 +288,7 @@ impl ResourceLimitKind {
             ResourceLimitKind::ProjectFiles => "the project has too many source files",
             ResourceLimitKind::ProjectFileBytes => "one source file is too large",
             ResourceLimitKind::ProjectSourceBytes => "the project's source is too large",
+            ResourceLimitKind::DeclarationLedgerBytes => "the declaration ledger is full",
         }
     }
 }
@@ -765,6 +774,19 @@ enum SemanticOutcome {
     Checked(Box<CheckedProgram>),
     Diagnostics(BoundedDiagnostics, CompileStage),
     Invariant(InvariantCause),
+    /// A fixed compiler-owned bound the semantic pass exhausted before it could
+    /// finish, with no single source construct at fault. The pass stops here rather
+    /// than dropping what it can no longer retain and fabricating an absence at
+    /// every later use of it.
+    ResourceLimit(CompileResourceLimit),
+}
+
+/// The declaration ledgers' shared retention ceiling, as its public record.
+fn ledger_full() -> CompileResourceLimit {
+    CompileResourceLimit::new(
+        ResourceLimitKind::DeclarationLedgerBytes,
+        MAX_DECLARATION_LEDGER_BYTES as u64,
+    )
 }
 
 /// The type registry resolved every declared type. Root of the artifact dependency
@@ -954,6 +976,7 @@ impl Driven {
             SemanticOutcome::Invariant(cause) => {
                 Err(CompileFailure::Invariant(CompileInvariant(cause)))
             }
+            SemanticOutcome::ResourceLimit(limit) => Err(CompileFailure::ResourceLimit(limit)),
         }
     }
 }
@@ -1360,19 +1383,22 @@ fn run_semantic(
 
     // Module-private constants, evaluated before body lowering so a reference folds
     // to its value.
-    let const_decls: Vec<(String, FileIdentity, &ConstDecl)> = parsed
+    let const_decls: Vec<(String, FileRef, FileIdentity, &ConstDecl)> = parsed
         .iter()
         .flat_map(|module| {
             module.ast.declarations.iter().filter_map(|decl| {
                 if let Declaration::Const(konst) = decl {
-                    Some((module.name.clone(), module.file.clone(), konst))
+                    Some((module.name.clone(), module.at, module.file.clone(), konst))
                 } else {
                     None
                 }
             })
         })
         .collect();
-    let constants = ConstRegistry::build(&const_decls, &records, &mut diagnostics);
+    let constants = match ConstRegistry::build(&const_decls, &records, &mut diagnostics) {
+        Ok(constants) => constants,
+        Err(DeclarationLedgerFull) => return SemanticOutcome::ResourceLimit(ledger_full()),
+    };
 
     // Everything from the template proof to the instance drain resolves call sites
     // through the function registry, so the whole region runs only when that artifact
@@ -2067,6 +2093,13 @@ fn analyze_outcome(
         // and is never encoded here, so no image-policy bound is reachable from the
         // analysis path at all.
         SemanticOutcome::Invariant(..) | SemanticOutcome::Checked(_) => {}
+        // A semantic bound the pass could not run past. It is a resource limit for
+        // the same reason a precheck one is — no source construct is at fault — and
+        // it yields to a real precheck diagnostic like the other semantic arms.
+        SemanticOutcome::ResourceLimit(limit) if !precheck_present => {
+            return Analyzed::ResourceLimit(limit);
+        }
+        SemanticOutcome::ResourceLimit(..) => {}
     }
     match union.finish() {
         BoundedDiagnostics::Complete { rows, .. } => Analyzed::Diagnostics(rows),
@@ -3247,6 +3280,7 @@ mod tests {
             (ProjectFiles, "ProjectFiles"),
             (ProjectFileBytes, "ProjectFileBytes"),
             (ProjectSourceBytes, "ProjectSourceBytes"),
+            (DeclarationLedgerBytes, "DeclarationLedgerBytes"),
         ] {
             assert_eq!(kind.detail(), detail);
         }
@@ -3382,7 +3416,7 @@ mod driver_agreement {
                 BoundedDiagnostics::Complete { rows, .. } => Some(rows.clone()),
                 BoundedDiagnostics::Limited { .. } => Some(Vec::new()),
             },
-            SemanticOutcome::Invariant(..) => Some(Vec::new()),
+            SemanticOutcome::Invariant(..) | SemanticOutcome::ResourceLimit(..) => Some(Vec::new()),
         }
     }
 

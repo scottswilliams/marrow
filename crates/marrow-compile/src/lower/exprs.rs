@@ -150,9 +150,25 @@ impl<'a> FnLowerer<'a> {
                         return None;
                     }
                     // A module-private constant, folded to a constant load. Locals
-                    // and parameters shadow it (checked first).
-                    if let Some(value) = self.consts.get(self.module, name).cloned() {
-                        return Some(self.lower_const_value(&value, *span));
+                    // and parameters shadow it (checked first). A constant the
+                    // declaration pass refused still holds its name here, so the use
+                    // is steered to that cause rather than told the name is unknown.
+                    let consts = self.consts;
+                    match consts.lookup(self.module, name) {
+                        Binding::Accepted(value) => {
+                            let value = value.clone();
+                            return Some(self.lower_const_value(&value, *span));
+                        }
+                        Binding::Refused(refusal) => {
+                            if refusal.steer_once() {
+                                let row = declaration_refused(self.file, *span, refusal);
+                                self.fail(row);
+                            } else {
+                                self.failed = true;
+                            }
+                            return None;
+                        }
+                        Binding::Absent => {}
                     }
                     // A binding whose initializer failed left this name unbound; the
                     // initializer already reported the cause, so a later use is silent.
@@ -164,7 +180,8 @@ impl<'a> FnLowerer<'a> {
                         .locals
                         .iter()
                         .map(|local| local.name.as_str())
-                        .chain(self.functions.module_function_names(self.module));
+                        .chain(self.functions.module_function_names(self.module))
+                        .chain(consts.names_in(self.module));
                     let suggestion = nearest_name(name, candidates);
                     self.fail(name_not_in_scope(
                         self.file,

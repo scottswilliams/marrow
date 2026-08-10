@@ -13,12 +13,14 @@
 //! occurrence count and costs nothing, which is what holds amplification to the
 //! number of refused declarations rather than the number of uses.
 
+use std::cell::Cell;
 use std::collections::BTreeMap;
 
+use marrow_project::FileIdentity;
 use marrow_syntax::SourceSpan;
 
 use crate::analysis::FileRef;
-use crate::diag::{IdentityGap, MAX_DIAGNOSTIC_BYTES};
+use crate::diag::{DiagnosticCollector, IdentityGap, MAX_DIAGNOSTIC_BYTES, SourceDiagnostic};
 
 /// The most owned bytes every declaration ledger in one pass may retain together.
 ///
@@ -57,32 +59,65 @@ pub(crate) struct DeclarationRefusalSummary {
     span: SourceSpan,
     further: u16,
     gap: Option<IdentityGap>,
-    steered: bool,
+    /// Whether a use site has already been steered to this cause. A `Cell` because
+    /// the flag is the report-once record and every namespace ledger is read through
+    /// a shared reference during lowering; the alternative is the parallel
+    /// `&mut BTreeSet<String>` of steered names this ledger replaces.
+    steered: Cell<bool>,
+}
+
+/// Push the diagnostic that refuses `name` and summarize it from the same triple,
+/// so a retained refusal cannot describe a report that was never made.
+///
+/// This is the only way a [`DeclarationRefusalSummary`] is built outside the
+/// ledger's own merge, which is what makes "push the diagnostic and `continue`"
+/// inexpressible against a ledger: the pushed row and the retained summary are one
+/// statement.
+pub(crate) fn refuse(
+    diagnostics: &mut DiagnosticCollector,
+    at: Declared<'_>,
+    code: &'static str,
+    message: String,
+) -> DeclarationRefusalSummary {
+    refuse_row(
+        diagnostics,
+        at,
+        SourceDiagnostic::at(code, at.file, at.span, message),
+    )
+}
+
+/// The same coupling for a refusal whose row a shared renderer already built: the
+/// summary's code is read off the row that is pushed in the same statement, never
+/// restated by the caller.
+pub(crate) fn refuse_row(
+    diagnostics: &mut DiagnosticCollector,
+    at: Declared<'_>,
+    row: SourceDiagnostic,
+) -> DeclarationRefusalSummary {
+    let summary = DeclarationRefusalSummary {
+        name: at.name.to_string(),
+        code: row.code(),
+        file: at.at,
+        span: at.span,
+        further: 0,
+        gap: None,
+        steered: Cell::new(false),
+    };
+    diagnostics.push(row);
+    summary
+}
+
+/// Where one declaration is written: its name, its file in both the owned spelling
+/// a diagnostic renders and the `Copy` coordinate a summary retains, and its span.
+#[derive(Clone, Copy)]
+pub(crate) struct Declared<'a> {
+    pub(crate) name: &'a str,
+    pub(crate) file: &'a FileIdentity,
+    pub(crate) at: FileRef,
+    pub(crate) span: SourceSpan,
 }
 
 impl DeclarationRefusalSummary {
-    /// The only constructor. `code`, `file`, and `span` are the same triple the
-    /// caller passed to the [`crate::diag::SourceDiagnostic`] it pushed for this
-    /// refusal, so a summary cannot describe a refusal that was never reported.
-    pub(crate) fn refused(name: &str, code: &'static str, file: FileRef, span: SourceSpan) -> Self {
-        Self {
-            name: name.to_string(),
-            code,
-            file,
-            span,
-            further: 0,
-            gap: None,
-            steered: false,
-        }
-    }
-
-    /// Attach the typed identity gap this refusal carried. Only the identity class
-    /// retains a gap copy; every other cause renders from `(code, file, span)`.
-    pub(crate) fn with_gap(mut self, gap: IdentityGap) -> Self {
-        self.gap = Some(gap);
-        self
-    }
-
     pub(crate) fn name(&self) -> &str {
         &self.name
     }
@@ -93,32 +128,12 @@ impl DeclarationRefusalSummary {
         self.code
     }
 
-    pub(crate) fn file(&self) -> FileRef {
-        self.file
-    }
-
-    pub(crate) fn span(&self) -> SourceSpan {
-        self.span
-    }
-
-    pub(crate) fn gap(&self) -> Option<&IdentityGap> {
-        self.gap.as_ref()
-    }
-
-    /// Further refused occurrences of this key beyond the first, saturating.
-    pub(crate) fn further(&self) -> u16 {
-        self.further
-    }
-
-    /// Whether this refusal has already steered a use site. `true` on the first
-    /// call only, so many uses of one refused key report the cause once and fail
-    /// silently thereafter.
-    pub(crate) fn steer_once(&mut self) -> bool {
-        if self.steered {
-            return false;
-        }
-        self.steered = true;
-        true
+    /// Whether this use site is the one that reports the cause. `true` on the first
+    /// call only, so many uses of one refused key report it once and fail silently
+    /// thereafter — the property that holds amplification to the number of refused
+    /// declarations rather than the number of uses.
+    pub(crate) fn steer_once(&self) -> bool {
+        !self.steered.replace(true)
     }
 
     /// The owned bytes this summary retains: the declared name, the optional gap
@@ -311,39 +326,6 @@ impl<K: Ord + Clone, T> DeclarationLedger<K, T> {
         }
     }
 
-    /// The merged refusal `key` resolves to, for the caller that must record a
-    /// steer against it.
-    pub(crate) fn refusal_mut(&mut self, key: &K) -> Option<&mut DeclarationRefusalSummary> {
-        let at = match self.index.get(key)? {
-            Selected::Accepted(_) => return None,
-            Selected::Refused(id) => *self.refusals.get(id.0 as usize)?,
-        };
-        match self.occurrences.get_mut(at) {
-            Some((_, DeclarationOccurrence::Refused(summary))) => Some(summary),
-            _ => None,
-        }
-    }
-
-    /// The refusal id `key` resolves to, for a consumer that carries the cause as
-    /// a `Copy` handle.
-    pub(crate) fn refusal_id(&self, key: &K) -> Option<DeclarationRefusalId> {
-        match self.index.get(key)? {
-            Selected::Accepted(_) => None,
-            Selected::Refused(id) => Some(*id),
-        }
-    }
-
-    /// Every accepted declaration, in source order — the order a namespace's
-    /// dependent tables (record indexes, root ids) are built in.
-    pub(crate) fn accepted(&self) -> impl Iterator<Item = (&K, &T)> {
-        self.occurrences
-            .iter()
-            .filter_map(|(key, occurrence)| match occurrence {
-                DeclarationOccurrence::Accepted(value) => Some((key, value)),
-                DeclarationOccurrence::Refused(_) => None,
-            })
-    }
-
     /// Every declared key, accepted or refused — the did-you-mean corpus, so a
     /// near-miss on a refused name still suggests it.
     pub(crate) fn keys(&self) -> impl Iterator<Item = &K> {
@@ -354,7 +336,6 @@ impl<K: Ord + Clone, T> DeclarationLedger<K, T> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use marrow_project::IdentityKind;
 
     fn span() -> SourceSpan {
         SourceSpan {
@@ -369,8 +350,25 @@ mod tests {
         FileRef::admitted(0)
     }
 
+    /// Every summary in these tests is minted through the one production
+    /// constructor, so the pushed row and the retained cause stay coupled here too.
     fn refusal(name: &str) -> DeclarationRefusalSummary {
-        DeclarationRefusalSummary::refused(name, "check.type", file(), span())
+        refused(name, &mut DiagnosticCollector::new())
+    }
+
+    fn refused(name: &str, diagnostics: &mut DiagnosticCollector) -> DeclarationRefusalSummary {
+        let (identity, _) = FileIdentity::validate("src/main.mw").expect("a valid source path");
+        refuse(
+            diagnostics,
+            Declared {
+                name,
+                file: &identity,
+                at: file(),
+                span: span(),
+            },
+            "check.type",
+            "refused".to_string(),
+        )
     }
 
     fn ledger() -> DeclarationLedger<String, u32> {
@@ -464,9 +462,12 @@ mod tests {
             .expect("within budget");
         assert_eq!(ledger.owned_bytes, after_first);
         match ledger.lookup(&"a".to_string()) {
-            Binding::Refused(summary) => assert_eq!(summary.further(), 1),
+            // The second refusal folds into the first: one retained summary, one
+            // reportable cause, and a bounded count of the occurrences behind it.
+            Binding::Refused(summary) => assert_eq!(summary.further, 1),
             other => panic!("expected a refusal, got {other:?}"),
         }
+        assert_eq!(ledger.occurrences.len(), 1);
     }
 
     #[test]
@@ -479,28 +480,13 @@ mod tests {
             )
             .expect("within budget");
         let key = "a".to_string();
-        assert!(ledger.refusal_mut(&key).expect("refused").steer_once());
-        assert!(!ledger.refusal_mut(&key).expect("refused").steer_once());
-        assert!(!ledger.refusal_mut(&key).expect("refused").steer_once());
-    }
-
-    #[test]
-    fn accepted_iterates_in_source_order_and_skips_refusals() {
-        let mut ledger = ledger();
-        ledger
-            .declare("b".to_string(), DeclarationOccurrence::Accepted(1))
-            .expect("within budget");
-        ledger
-            .declare(
-                "a".to_string(),
-                DeclarationOccurrence::Refused(refusal("a")),
-            )
-            .expect("within budget");
-        ledger
-            .declare("c".to_string(), DeclarationOccurrence::Accepted(2))
-            .expect("within budget");
-        let accepted: Vec<&str> = ledger.accepted().map(|(key, _)| key.as_str()).collect();
-        assert_eq!(accepted, vec!["b", "c"]);
+        let steers = |ledger: &DeclarationLedger<String, u32>| match ledger.lookup(&key) {
+            Binding::Refused(summary) => summary.steer_once(),
+            other => panic!("expected a refusal, got {other:?}"),
+        };
+        assert!(steers(&ledger));
+        assert!(!steers(&ledger));
+        assert!(!steers(&ledger));
     }
 
     #[test]
@@ -520,26 +506,14 @@ mod tests {
     }
 
     #[test]
-    fn only_the_identity_class_retains_a_gap() {
-        let plain = refusal("a");
-        assert!(plain.gap().is_none());
-        let gap = IdentityGap {
-            kind: IdentityKind::Root,
-            path: "books".to_string(),
-            retired: false,
-        };
-        let identity = refusal("books").with_gap(gap);
-        assert_eq!(identity.gap().map(|gap| gap.path.as_str()), Some("books"));
-    }
-
-    #[test]
     fn crossing_the_byte_ceiling_is_a_typed_limit_not_a_dropped_key() {
         let mut ledger: DeclarationLedger<String, u32> = DeclarationLedger::default();
         let wide = "n".repeat(4096);
+        let mut diagnostics = DiagnosticCollector::new();
         let mut declared = 0usize;
         loop {
             let key = format!("{wide}{declared}");
-            let summary = DeclarationRefusalSummary::refused(&key, "check.type", file(), span());
+            let summary = refused(&key, &mut diagnostics);
             match ledger.declare(key, DeclarationOccurrence::Refused(summary)) {
                 Ok(()) => declared += 1,
                 Err(DeclarationLedgerFull) => break,

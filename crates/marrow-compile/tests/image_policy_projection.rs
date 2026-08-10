@@ -242,6 +242,9 @@ enum Owner {
     /// Decided by `ImageDraft::encode` over the production image. The analysis path never
     /// encodes, so no kind in this set is reachable from `analyze`.
     ImagePolicy,
+    /// Decided by the semantic pass over what it must retain to answer later lookups,
+    /// before any image is drafted. Reachable from `analyze`.
+    Semantic,
 }
 
 fn owner_of(kind: ResourceLimitKind) -> Owner {
@@ -252,6 +255,7 @@ fn owner_of(kind: ResourceLimitKind) -> Owner {
         ResourceLimitKind::DiagnosticCount | ResourceLimitKind::DiagnosticBytes => {
             Owner::Projection
         }
+        ResourceLimitKind::DeclarationLedgerBytes => Owner::Semantic,
         ResourceLimitKind::Strings
         | ResourceLimitKind::StringBytes
         | ResourceLimitKind::Consts
@@ -295,6 +299,7 @@ const ALL_KINDS: &[ResourceLimitKind] = &[
     ResourceLimitKind::ProjectFiles,
     ResourceLimitKind::ProjectFileBytes,
     ResourceLimitKind::ProjectSourceBytes,
+    ResourceLimitKind::DeclarationLedgerBytes,
 ];
 
 /// The variant names the owner declares, read from its source through the shared
@@ -344,7 +349,12 @@ fn every_resource_limit_kind_has_exactly_one_owner() {
     let analysis_reachable: Vec<ResourceLimitKind> = ALL_KINDS
         .iter()
         .copied()
-        .filter(|kind| matches!(owner_of(*kind), Owner::DriveInput | Owner::Projection))
+        .filter(|kind| {
+            matches!(
+                owner_of(*kind),
+                Owner::DriveInput | Owner::Projection | Owner::Semantic
+            )
+        })
         .collect();
     assert_eq!(
         analysis_reachable,
@@ -354,8 +364,9 @@ fn every_resource_limit_kind_has_exactly_one_owner() {
             ResourceLimitKind::ProjectFiles,
             ResourceLimitKind::ProjectFileBytes,
             ResourceLimitKind::ProjectSourceBytes,
+            ResourceLimitKind::DeclarationLedgerBytes,
         ],
-        "the analysis path reaches exactly the drive-input and diagnostic bounds",
+        "the analysis path reaches exactly the drive-input, diagnostic, and semantic bounds",
     );
     assert!(
         ALL_KINDS

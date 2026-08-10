@@ -599,7 +599,7 @@ fn image_too_large_is_an_aggregate_resource_limit() {
 fn every_resource_limit_kind_describes_itself_without_its_variant_name() {
     use marrow_compile::ResourceLimitKind as Kind;
 
-    const EVERY_KIND: [Kind; 21] = [
+    const EVERY_KIND: [Kind; 22] = [
         Kind::Strings,
         Kind::Consts,
         Kind::Types,
@@ -621,6 +621,7 @@ fn every_resource_limit_kind_describes_itself_without_its_variant_name() {
         Kind::ProjectFiles,
         Kind::ProjectFileBytes,
         Kind::ProjectSourceBytes,
+        Kind::DeclarationLedgerBytes,
     ];
 
     for kind in EVERY_KIND {
@@ -647,6 +648,7 @@ fn every_resource_limit_kind_describes_itself_without_its_variant_name() {
             | Kind::DurableDepth
             | Kind::DiagnosticCount
             | Kind::DiagnosticBytes
+            | Kind::DeclarationLedgerBytes
             | Kind::ProjectFiles
             | Kind::ProjectFileBytes
             | Kind::ProjectSourceBytes => {}

@@ -6,12 +6,17 @@
 //! subset restricts a constant's value to a scalar literal (optionally a negated
 //! integer literal); richer constant expressions land in a later lane.
 
-use std::collections::BTreeMap;
-
 use marrow_codes::Code;
 use marrow_project::FileIdentity;
-use marrow_syntax::{ConstDecl, Expression, LiteralKind, TypeExpr, UnaryOp, decode_string_literal};
+use marrow_syntax::{
+    ConstDecl, Expression, LiteralKind, SourceSpan, TypeExpr, UnaryOp, decode_string_literal,
+};
 
+use crate::analysis::FileRef;
+use crate::decl::{
+    Binding, DeclarationLedger, DeclarationLedgerFull, DeclarationOccurrence,
+    DeclarationRefusalSummary, Declared, refuse, refuse_row,
+};
 use crate::diag::{DiagnosticCollector, SourceDiagnostic};
 use crate::lower::parse_int;
 use crate::scalar::ScalarType;
@@ -36,41 +41,71 @@ impl ConstScalar {
     }
 }
 
-/// The module-private constants of a project: `module -> [(name, value)]`.
+/// A constant's key: module-private, so the same name in two modules is two
+/// constants.
+type ConstKey = (String, String);
+
+/// The module-private constants of a project, accepted and refused alike.
+///
+/// A refused constant stays in the ledger under its own name, so a later use is
+/// steered to the cause the declaration already reported instead of being told the
+/// name does not exist.
 #[derive(Default)]
 pub(crate) struct ConstRegistry {
-    entries: BTreeMap<String, Vec<(String, ConstScalar)>>,
+    entries: DeclarationLedger<ConstKey, ConstScalar>,
 }
 
 impl ConstRegistry {
-    /// The constant named `name` visible in `module`, if any.
-    pub(crate) fn get(&self, module: &str, name: &str) -> Option<&ConstScalar> {
+    /// What the constant named `name` binds in `module`: its folded value, the
+    /// refusal that stands in its place, or a genuine absence.
+    pub(crate) fn lookup(&self, module: &str, name: &str) -> Binding<'_, ConstScalar> {
+        self.entries.lookup(&(module.to_string(), name.to_string()))
+    }
+
+    /// Every constant name declared in `module`, refused ones included — the
+    /// did-you-mean corpus, so a near miss on a refused name still suggests it.
+    pub(crate) fn names_in(&self, module: &str) -> impl Iterator<Item = &str> {
         self.entries
-            .get(module)?
-            .iter()
-            .find(|(entry_name, _)| entry_name == name)
-            .map(|(_, value)| value)
+            .keys()
+            .filter(move |(declared, _)| declared == module)
+            .map(|(_, name)| name.as_str())
     }
 
     /// Evaluate every module constant to its folded scalar value, reporting a typed
     /// diagnostic for a non-literal value, a type-annotation mismatch, or a
-    /// duplicate name within one module. `consts` pairs each declaration with its
-    /// dotted module and its file identity (for the diagnostic span).
+    /// duplicate name within one module, and retaining every refused name.
+    ///
+    /// `consts` pairs each declaration with its dotted module and its file in both
+    /// representations: the owned identity a diagnostic renders and the `Copy`
+    /// coordinate the ledger retains.
     pub(crate) fn build(
-        consts: &[(String, FileIdentity, &ConstDecl)],
+        consts: &[(String, FileRef, FileIdentity, &ConstDecl)],
         types: &TypeRegistry,
         diagnostics: &mut DiagnosticCollector,
-    ) -> Self {
-        let mut entries: BTreeMap<String, Vec<(String, ConstScalar)>> = BTreeMap::new();
-        for (module, file, decl) in consts {
+    ) -> Result<Self, DeclarationLedgerFull> {
+        let mut entries: DeclarationLedger<ConstKey, ConstScalar> = DeclarationLedger::default();
+        for (module, at, file, decl) in consts {
+            let key = (module.clone(), decl.name.clone());
+            let declared = Declared {
+                name: &decl.name,
+                file,
+                at: *at,
+                span: decl.span,
+            };
+            // A reserved built-in name is refused before evaluation: the constant
+            // would be shadowed by the compiler's own intercept and never reached.
             if crate::lower::is_reserved_builtin_name(&decl.name) {
-                diagnostics.push(crate::lower::reserved_builtin_name(
-                    file, decl.span, &decl.name,
-                ));
+                let refusal = refuse_row(
+                    diagnostics,
+                    declared,
+                    crate::lower::reserved_builtin_name(file, decl.span, &decl.name),
+                );
+                entries.declare(key, DeclarationOccurrence::Refused(refusal))?;
                 continue;
             }
-            let module_entries = entries.entry(module.clone()).or_default();
-            if module_entries.iter().any(|(name, _)| name == &decl.name) {
+            // A refused declaration still occupies its name, so the redeclaration
+            // conflicts whichever of the two the compiler could evaluate.
+            if entries.declared(&key) {
                 diagnostics.push(SourceDiagnostic::at(
                     Code::CheckNameConflict.as_str(),
                     file,
@@ -82,40 +117,46 @@ impl ConstRegistry {
                 ));
                 continue;
             }
-            let Some(value) = evaluate(file, decl, types, diagnostics) else {
-                continue;
+            let occurrence = match evaluate(declared, decl, types, diagnostics) {
+                Ok(value) => DeclarationOccurrence::Accepted(value),
+                Err(refusal) => DeclarationOccurrence::Refused(refusal),
             };
-            module_entries.push((decl.name.clone(), value));
+            entries.declare(key, occurrence)?;
         }
-        Self { entries }
+        Ok(Self { entries })
     }
 }
 
 /// Evaluate one constant declaration to its folded value, checking a type
-/// annotation when present.
+/// annotation when present. Every failure arm reports its cause and hands back the
+/// summary built from that same report.
 fn evaluate(
-    file: &FileIdentity,
+    declared: Declared<'_>,
     decl: &ConstDecl,
     types: &TypeRegistry,
     diagnostics: &mut DiagnosticCollector,
-) -> Option<ConstScalar> {
+) -> Result<ConstScalar, DeclarationRefusalSummary> {
     let Some(expression) = &decl.value else {
-        diagnostics.push(unsupported(file, decl, "a constant without a value"));
-        return None;
+        return Err(unsupported(
+            diagnostics,
+            declared,
+            declared.span,
+            "a constant without a value",
+        ));
     };
-    let value = literal_value(file, expression, diagnostics)?;
+    let value = literal_value(declared, expression, diagnostics)?;
     if let Some(annotation) = &decl.ty {
-        let declared = match types.expand(annotation) {
+        let annotated = match types.expand(annotation) {
             TypeExpr::Name { text, .. } => ScalarType::from_spelling(&text),
             _ => None,
         };
-        match declared {
+        match annotated {
             Some(scalar) if scalar == value.scalar() => {}
             Some(scalar) => {
-                diagnostics.push(SourceDiagnostic::at(
+                return Err(refuse(
+                    diagnostics,
+                    declared,
                     Code::CheckType.as_str(),
-                    file,
-                    decl.span,
                     format!(
                         "constant `{}` is declared `{}` but its value is `{}`",
                         decl.name,
@@ -123,59 +164,60 @@ fn evaluate(
                         value.scalar().spelling()
                     ),
                 ));
-                return None;
             }
             None => {
-                diagnostics.push(unsupported(file, decl, "this constant type"));
-                return None;
+                return Err(unsupported(
+                    diagnostics,
+                    declared,
+                    declared.span,
+                    "this constant type",
+                ));
             }
         }
     }
-    Some(value)
+    Ok(value)
 }
 
-/// Fold a scalar literal (or a negated integer literal) to its value.
+/// Fold a scalar literal (or a negated integer literal) to its value. The refusal
+/// carries the span of the offending expression, which for a nested literal is
+/// narrower than the declaration's.
 fn literal_value(
-    file: &FileIdentity,
+    declared: Declared<'_>,
     expression: &Expression,
     diagnostics: &mut DiagnosticCollector,
-) -> Option<ConstScalar> {
+) -> Result<ConstScalar, DeclarationRefusalSummary> {
+    let out_of_range = |diagnostics: &mut DiagnosticCollector, span: SourceSpan| {
+        refuse_at(
+            diagnostics,
+            declared,
+            span,
+            Code::CheckType.as_str(),
+            "integer literal is out of the 64-bit range".to_string(),
+        )
+    };
     match expression {
         Expression::Literal { kind, text, span } => match kind {
             LiteralKind::Integer => match parse_int(text) {
-                Some(value) => Some(ConstScalar::Int(value)),
-                None => {
-                    diagnostics.push(SourceDiagnostic::at(
-                        Code::CheckType.as_str(),
-                        file,
-                        *span,
-                        "integer literal is out of the 64-bit range".to_string(),
-                    ));
-                    None
-                }
+                Some(value) => Ok(ConstScalar::Int(value)),
+                None => Err(out_of_range(diagnostics, *span)),
             },
-            LiteralKind::Bool => Some(ConstScalar::Bool(&**text == "true")),
+            LiteralKind::Bool => Ok(ConstScalar::Bool(&**text == "true")),
             LiteralKind::String => match decode_string_literal(text) {
-                Ok(decoded) => Some(ConstScalar::Text(decoded)),
-                Err(_) => {
-                    diagnostics.push(SourceDiagnostic::at(
-                        Code::CheckUnsupported.as_str(),
-                        file,
-                        *span,
-                        "this string literal is not yet supported on the beta line".to_string(),
-                    ));
-                    None
-                }
-            },
-            _ => {
-                diagnostics.push(SourceDiagnostic::at(
-                    Code::CheckUnsupported.as_str(),
-                    file,
+                Ok(decoded) => Ok(ConstScalar::Text(decoded)),
+                Err(_) => Err(unsupported(
+                    diagnostics,
+                    declared,
                     *span,
-                    "this literal is not yet supported in a constant".to_string(),
-                ));
-                None
-            }
+                    "this string literal",
+                )),
+            },
+            _ => Err(refuse_at(
+                diagnostics,
+                declared,
+                *span,
+                Code::CheckUnsupported.as_str(),
+                "this literal is not yet supported in a constant".to_string(),
+            )),
         },
         // A negated integer literal is the one non-atomic constant form the subset
         // folds, so `const MIN = -1` is expressible.
@@ -183,25 +225,18 @@ fn literal_value(
             op: UnaryOp::Neg,
             operand,
             span,
-        } => match literal_value(file, operand, diagnostics)? {
-            ConstScalar::Int(value) => value.checked_neg().map(ConstScalar::Int).or_else(|| {
-                diagnostics.push(SourceDiagnostic::at(
-                    Code::CheckType.as_str(),
-                    file,
-                    *span,
-                    "integer literal is out of the 64-bit range".to_string(),
-                ));
-                None
-            }),
-            other => {
-                diagnostics.push(SourceDiagnostic::at(
-                    Code::CheckType.as_str(),
-                    file,
-                    *span,
-                    format!("cannot negate a `{}` constant", other.scalar().spelling()),
-                ));
-                None
-            }
+        } => match literal_value(declared, operand, diagnostics)? {
+            ConstScalar::Int(value) => match value.checked_neg() {
+                Some(negated) => Ok(ConstScalar::Int(negated)),
+                None => Err(out_of_range(diagnostics, *span)),
+            },
+            other => Err(refuse_at(
+                diagnostics,
+                declared,
+                *span,
+                Code::CheckType.as_str(),
+                format!("cannot negate a `{}` constant", other.scalar().spelling()),
+            )),
         },
         // An integer-bound value built-in (`maxInt`/`minInt`) is a compile-time `int`
         // value, so `const CAP = maxInt` folds to that bound. Only these bare names are
@@ -211,25 +246,49 @@ fn literal_value(
             if segments.len() == 1
                 && crate::lower::builtin_const_int(segments[0].text()).is_some() =>
         {
-            crate::lower::builtin_const_int(segments[0].text()).map(ConstScalar::Int)
+            match crate::lower::builtin_const_int(segments[0].text()) {
+                Some(value) => Ok(ConstScalar::Int(value)),
+                None => Err(unsupported(
+                    diagnostics,
+                    declared,
+                    segments[0].span(),
+                    "this constant value",
+                )),
+            }
         }
-        other => {
-            diagnostics.push(SourceDiagnostic::at(
-                Code::CheckUnsupported.as_str(),
-                file,
-                other.span(),
-                "a constant must be a scalar literal on the beta line".to_string(),
-            ));
-            None
-        }
+        other => Err(refuse_at(
+            diagnostics,
+            declared,
+            other.span(),
+            Code::CheckUnsupported.as_str(),
+            "a constant must be a scalar literal on the beta line".to_string(),
+        )),
     }
 }
 
-fn unsupported(file: &FileIdentity, decl: &ConstDecl, subject: &str) -> SourceDiagnostic {
-    SourceDiagnostic::at(
+/// Refuse `declared` at a span inside its declaration rather than at the
+/// declaration's own.
+fn refuse_at(
+    diagnostics: &mut DiagnosticCollector,
+    declared: Declared<'_>,
+    span: SourceSpan,
+    code: &'static str,
+    message: String,
+) -> DeclarationRefusalSummary {
+    refuse(diagnostics, Declared { span, ..declared }, code, message)
+}
+
+fn unsupported(
+    diagnostics: &mut DiagnosticCollector,
+    declared: Declared<'_>,
+    span: SourceSpan,
+    subject: &str,
+) -> DeclarationRefusalSummary {
+    refuse_at(
+        diagnostics,
+        declared,
+        span,
         Code::CheckUnsupported.as_str(),
-        file,
-        decl.span,
         format!("{subject} is not yet supported on the beta line"),
     )
 }

@@ -56,6 +56,7 @@ use marrow_syntax::{
     duration_unit_seconds, range_expr,
 };
 
+use crate::decl::{Binding, DeclarationRefusalSummary};
 use crate::diag::{BoundedDiagnostics, DiagnosticCollector, SourceDiagnostic};
 use crate::durable::DurableRegistry;
 use crate::konst::{ConstRegistry, ConstScalar};

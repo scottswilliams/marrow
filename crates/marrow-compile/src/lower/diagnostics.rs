@@ -408,6 +408,32 @@ pub(super) fn identity_admission_failed(
     )
 }
 
+/// A use of a name whose declaration the compiler refused. The declaration already
+/// reported the cause, so this row steers the reader to it and reuses its code,
+/// carrying the declaration's typed identity to the use site. Reporting a bare
+/// not-in-scope name here would describe a declaration the reader can see as absent.
+///
+/// Emitted once per refused key, at the first use; later uses of the same key fail
+/// silently, so the row count is bounded by refused declarations, not by uses.
+pub(super) fn declaration_refused(
+    file: &FileIdentity,
+    span: SourceSpan,
+    refusal: &DeclarationRefusalSummary,
+) -> SourceDiagnostic {
+    let name = refusal.name();
+    SourceDiagnostic::at(
+        refusal.code(),
+        file,
+        span,
+        format!(
+            "`{name}` was declared, but its declaration was refused. A refused \
+             declaration keeps its name and binds no value, so this use cannot \
+             resolve. Correct the `{}` report at the declaration of `{name}`.",
+            refusal.code()
+        ),
+    )
+}
+
 pub(super) fn checked_arm_error(
     file: &FileIdentity,
     span: SourceSpan,
