@@ -50,11 +50,11 @@ use marrow_compile::{
 };
 use marrow_project::{CaptureLimits, CapturedFile, FileIdentity, Manifest, ProjectInput};
 use marrow_syntax::{
-    Argument, ArmBinding, BinaryOp, Comment, Declaration, ElseIf, EnumMember, EnumPayloadField,
-    Expression, ForName, IfConstBinding, IndexArg, IndexDecl, InterpolationPart, KeyParam,
-    LiteralKind, MatchArm, NameSegment, ParamDecl, ResourceMember, SYNTAX_DIAGNOSTIC_COUNT_LIMIT,
-    SYNTAX_DIAGNOSTIC_OWNED_BYTES_LIMIT, SourceSpan, Statement, Token, TypeExpr, TypeParamDecl,
-    UnaryOp, UseDecl,
+    Argument, ArmBinding, BinaryOp, Block, Comment, Declaration, ElseIf, EnumMember,
+    EnumPayloadField, Expression, ForName, IfConstBinding, IndexArg, IndexDecl, InterpolationPart,
+    KeyParam, LiteralKind, MatchArm, NameSegment, ParamDecl, ResourceMember,
+    SYNTAX_DIAGNOSTIC_COUNT_LIMIT, SYNTAX_DIAGNOSTIC_OWNED_BYTES_LIMIT, SourceSpan, Statement,
+    Token, TypeExpr, TypeParamDecl, UnaryOp, UseDecl,
 };
 
 /// The largest file drive admission lets through — the worst case a query-local parse can
@@ -1013,6 +1013,10 @@ fn name_chain_file() -> Vec<u8> {
 /// dominant term and the one a corroborating sample can count exactly rather than
 /// sample through a resident set. Each list is exactly sized, so its length is its
 /// whole cost.
+///
+/// Every list counts, not only a body's outermost one. A shape can put its whole cost
+/// in nested blocks — the two desynchronizing shapes do — and summing only the top
+/// level would report such a file at one statement and call the bound met.
 fn statement_vector_bytes(source: &[u8]) -> usize {
     let text = std::str::from_utf8(source).expect("the fixture is UTF-8");
     marrow_syntax::parse_source(text)
@@ -1020,12 +1024,125 @@ fn statement_vector_bytes(source: &[u8]) -> usize {
         .declarations
         .iter()
         .map(|declaration| match declaration {
-            Declaration::Function(function) => function.body.statements.len(),
-            Declaration::Test(test) => test.body.statements.len(),
+            Declaration::Function(function) => block_statements(&function.body),
+            Declaration::Test(test) => block_statements(&test.body),
             _ => 0,
         })
         .sum::<usize>()
         * size_of::<Statement>()
+}
+
+/// The statements held by `block` and by every block nested inside it.
+///
+/// The match is exhaustive and names every field, so a new statement variant — or a new
+/// block on an existing one — fails to build here rather than being counted as zero.
+fn block_statements(block: &Block) -> usize {
+    block.statements.len()
+        + block
+            .statements
+            .iter()
+            .map(nested_statements)
+            .sum::<usize>()
+}
+
+fn nested_statements(statement: &Statement) -> usize {
+    let clauses = |then_block: &Block, else_ifs: &[ElseIf], else_block: &Option<Block>| {
+        block_statements(then_block)
+            + else_ifs
+                .iter()
+                .map(|arm| block_statements(&arm.block))
+                .sum::<usize>()
+            + else_block.as_ref().map_or(0, block_statements)
+    };
+    match statement {
+        Statement::If {
+            condition: _,
+            then_block,
+            else_ifs,
+            else_block,
+            span: _,
+        } => clauses(then_block, else_ifs, else_block),
+        Statement::IfConst {
+            name: _,
+            name_span: _,
+            ty: _,
+            value: _,
+            then_block,
+            else_ifs,
+            else_block,
+            span: _,
+        }
+        | Statement::IfConstChain {
+            bindings: _,
+            condition: _,
+            then_block,
+            else_ifs,
+            else_block,
+            span: _,
+        } => clauses(then_block, else_ifs, else_block),
+        Statement::LetElse {
+            is_var: _,
+            name: _,
+            name_span: _,
+            ty: _,
+            value: _,
+            else_block,
+            span: _,
+        } => block_statements(else_block),
+        Statement::While {
+            condition: _,
+            body,
+            span: _,
+        }
+        | Statement::Transaction { body, span: _ } => block_statements(body),
+        Statement::For {
+            binding: _,
+            order: _,
+            iterable: _,
+            step: _,
+            bound,
+            body,
+            span: _,
+        } => {
+            block_statements(body)
+                + bound
+                    .as_ref()
+                    .and_then(|bound| bound.on_more.as_ref())
+                    .map_or(0, block_statements)
+        }
+        Statement::Match {
+            scrutinee: _,
+            arms,
+            span: _,
+        } => arms
+            .iter()
+            .map(|arm| block_statements(&arm.block))
+            .sum::<usize>(),
+        Statement::Checked {
+            bind: _,
+            op: _,
+            out_of_range,
+            zero_divisor,
+            span: _,
+        } => {
+            out_of_range.as_ref().map_or(0, block_statements)
+                + zero_divisor.as_ref().map_or(0, block_statements)
+        }
+        Statement::Const { .. }
+        | Statement::Var { .. }
+        | Statement::Assign { .. }
+        | Statement::CompoundAssign { .. }
+        | Statement::Delete { .. }
+        | Statement::PlaceBinding { .. }
+        | Statement::Unset { .. }
+        | Statement::Return { .. }
+        | Statement::Break { .. }
+        | Statement::Continue { .. }
+        | Statement::Assert { .. }
+        | Statement::Expr { .. }
+        | Statement::Require { .. }
+        | Statement::Error { .. } => 0,
+    }
 }
 
 /// The worst wall time of five completion queries over `path`, after one warm query.
@@ -1409,6 +1526,30 @@ fn the_admitted_length_and_the_exported_term_agree_with_the_derivation() {
         "admitted length {MAX_PARSED_FILE_BYTES} bytes at {} bytes/source byte, against a \
          declared ceiling of {MAX_QUERY_PARSE_TRANSIENT_BYTES}",
         marrow_syntax::MAX_PARSE_BYTES_PER_SOURCE_BYTE
+    );
+}
+
+/// A statement list nested inside a block is counted.
+///
+/// **The enforcement artifact for the sample itself.** Both desynchronizing shapes put
+/// their whole cost in nested blocks, so a sample that summed only a body's outermost
+/// list would report them at one statement each and pass its bound by a factor of
+/// hundreds of thousands — measuring nothing, on exactly the shapes it exists to fence.
+#[test]
+fn the_statement_list_sample_counts_the_lists_inside_nested_blocks() {
+    let statements = 64;
+    let mut source = String::from("module m\n\nfn f() {\nif a {\n");
+    for _ in 0..statements {
+        source.push_str("a\n");
+    }
+    source.push_str("}\n}\n");
+
+    let counted = statement_vector_bytes(source.as_bytes()) / size_of::<Statement>();
+    assert_eq!(
+        counted,
+        statements + 1,
+        "the sample counted {counted} statements where the file holds the `if` and the \
+         {statements} statements of its nested block, so it does not descend"
     );
 }
 
