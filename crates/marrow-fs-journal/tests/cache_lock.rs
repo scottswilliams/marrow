@@ -89,6 +89,8 @@ fn a_symlink_lock_entry_is_refused_as_a_symlink() {
     std::os::unix::fs::symlink("elsewhere", scratch.path().join("lock")).expect("create symlink");
     assert!(matches!(
         CacheLock::acquire(&dir, &name("lock")),
-        Err(LockError::Custody(CustodyError::SymlinkRefused { op: "open lock" }))
+        Err(LockError::Custody(CustodyError::SymlinkRefused {
+            op: "open lock"
+        }))
     ));
 }
