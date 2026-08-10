@@ -74,11 +74,6 @@ pub(super) struct StmtParser<'a, 'c> {
     /// The declaration parser's scoped sink, reborrowed for the body's duration
     /// so a malformed statement line reports directly to the one live collector.
     sink: &'a mut SyntaxSink<'c>,
-    /// Nested `{ … }` block depth. The lexer reports the nesting-limit diagnostic;
-    /// this second layer stops the recursive descent at [`NESTING_DEPTH_LIMIT`] so a
-    /// pathologically deep brace nest skips its body rather than overflowing the
-    /// native stack, keeping the AST (and every later walk over it) bounded.
-    depth: usize,
 }
 
 impl<'a, 'c> StmtParser<'a, 'c> {
@@ -90,7 +85,6 @@ impl<'a, 'c> StmtParser<'a, 'c> {
             capacities: BlockLines::measure(tokens),
             comments: Vec::new(),
             sink,
-            depth: 0,
         }
     }
 
@@ -1159,10 +1153,12 @@ impl<'a, 'c> StmtParser<'a, 'c> {
     /// body token slice. A fresh comment accumulator is swapped in for the duration
     /// so this nested block's comments do not leak into the parent block.
     fn parse_braced_block(&mut self) -> Block {
-        // Fail closed past the nesting limit: skip the block's tokens without
-        // recursing (the lexer already reported the located nesting-limit finding),
-        // so a deep brace nest cannot overflow the stack or grow the AST with depth.
-        if self.depth >= crate::NESTING_DEPTH_LIMIT {
+        // Fail closed on a block the measurement left unmeasured: it nests past the
+        // limit, so descending would recurse without a bound and grow a statement list
+        // it has no count for (the lexer already reported the located nesting-limit
+        // finding). Asking the pass that sized the block whether it exists is what
+        // keeps the two from disagreeing about which blocks the tree holds.
+        let Some(capacity) = self.capacities.block(self.pos) else {
             let start = self.tokens[self.pos].span;
             let end = self.skip_block();
             return Block {
@@ -1170,9 +1166,7 @@ impl<'a, 'c> StmtParser<'a, 'c> {
                 comments: Vec::new(),
                 span: join_spans(start, end),
             };
-        }
-        self.depth += 1;
-        let capacity = self.capacities.block(self.pos);
+        };
         let start = self.advance().span; // `{`
         let outer = std::mem::take(&mut self.comments);
         let statements = self.statements(capacity);
@@ -1182,7 +1176,6 @@ impl<'a, 'c> StmtParser<'a, 'c> {
         } else {
             statements.last().map_or(start, Statement::span)
         };
-        self.depth -= 1;
         Block {
             statements,
             comments,
