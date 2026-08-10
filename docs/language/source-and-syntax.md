@@ -341,10 +341,16 @@ refused with a typed resource-limit outcome — `marrow check` reports
 `cli.compiler_resource_limit` and `marrow fmt` reports `fmt.diagnostic_limit` —
 never a truncated or partial diagnostic listing.
 
-Reported diagnostics are deterministic and byte-stable across runs. Parse
-diagnostics appear in source order within a file, files are reported in the
-project's canonical order, and invalid-UTF-8 refusals form the leading group.
+Reported diagnostics are deterministic and byte-stable across runs. They are
+grouped by the stage that produced them, in this order: invalid-UTF-8 refusals,
+then parse diagnostics, then the later checks. Within the first two groups the
+files appear in the order capture assigns them — [ordered by
+identity](../tools/projects.md#discovery-bounds-and-faults), not by the order the
+filesystem reports them — and a file's own parse diagnostics appear in source
+order.
+
 Diagnostics from the later checks — name resolution, types, and durable
-identity — are reported in the order the checker traverses declarations, which
-is not source order: an alias error later in a file can precede a type error
-earlier in it.
+identity — are reported in the order the checker traverses declarations. That
+order is neither source order within a file nor identity order across files: an
+alias error later in a file can precede a type error earlier in it, and a
+diagnostic in a later-sorting file can precede one in an earlier-sorting file.

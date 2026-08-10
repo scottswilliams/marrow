@@ -250,3 +250,121 @@ fn emr_dir() -> Option<PathBuf> {
         .ok()?;
     dir.join("marrow.toml").is_file().then_some(dir)
 }
+
+/// The `(file, code)` pairs of a `check` run's diagnostic lines, in report order.
+/// Each diagnostic line is `file:line:column: code: message`.
+fn reported_order(stderr: &str) -> Vec<(&str, &str)> {
+    stderr
+        .lines()
+        .filter_map(|line| {
+            let mut fields = line.splitn(5, ": ");
+            let located = fields.next()?;
+            let code = fields.next()?;
+            let file = located.split(':').next()?;
+            code.contains('.').then_some((file, code))
+        })
+        .collect()
+}
+
+/// Diagnostics are grouped by the stage that produced them: invalid-UTF-8 refusals,
+/// then parse diagnostics, then the later checks. The first two groups run in
+/// capture's identity order across files, so a refusal in the last-sorting file still
+/// leads and a parse error in the first-sorting file still precedes a later check
+/// elsewhere. `docs/language/source-and-syntax.md` states this order; this pins it.
+#[test]
+fn diagnostics_are_grouped_by_stage_then_ordered_by_file_identity() {
+    let project = Project::new()
+        .source(
+            "src/alpha.mw",
+            "module alpha\n\npub fn a(): int {\n    return @@@\n}\n",
+        )
+        .source(
+            "src/mid.mw",
+            "module mid\n\npub fn m(): int {\n    return missingInM\n}\n",
+        )
+        .source("src/zeta.mw", "module zeta\n\n\u{fffd}");
+    // The last source is written through a byte path so it is genuinely invalid UTF-8.
+    let workspace = project.materialize("stage-order");
+    std::fs::write(
+        workspace.path("src/zeta.mw"),
+        b"module zeta\n\n\xff\xfe\xff".as_slice(),
+    )
+    .expect("write an invalid-UTF-8 source");
+
+    let output = workspace.marrow(&["check"]);
+    assert!(
+        !output.success(),
+        "a project with diagnostics fails the check"
+    );
+    let stderr = output.stderr_text();
+    let reported = reported_order(&stderr);
+
+    assert_eq!(
+        reported.first(),
+        Some(&("src/zeta.mw", "check.unsupported")),
+        "the invalid-UTF-8 refusal leads even though `zeta` sorts last: {stderr}"
+    );
+    let parse_end = reported
+        .iter()
+        .rposition(|(_, code)| *code == "parse.syntax")
+        .expect("the parse stage reported");
+    assert!(
+        reported[1..=parse_end]
+            .iter()
+            .all(|(file, code)| *file == "src/alpha.mw" && *code == "parse.syntax"),
+        "the parse group follows the refusals, in identity order: {stderr}"
+    );
+    assert_eq!(
+        reported.get(parse_end + 1),
+        Some(&("src/mid.mw", "check.type")),
+        "the later checks follow the parse stage: {stderr}"
+    );
+}
+
+/// The later checks are reported in declaration-traversal order, which is neither
+/// source order within a file nor identity order across files: an alias error at a
+/// later line precedes a body error at an earlier one, and a diagnostic in the
+/// later-sorting `zeta` precedes one in the earlier-sorting `alpha`. Both halves of
+/// the claim in `docs/language/source-and-syntax.md` are pinned here.
+#[test]
+fn the_later_checks_reorder_within_and_across_files() {
+    let across = Project::new()
+        .source(
+            "src/alpha.mw",
+            "module alpha\n\npub fn a(): int {\n    return missingInA\n}\n",
+        )
+        .source(
+            "src/zeta.mw",
+            "module wrongName\n\npub fn z(): int {\n    return 0\n}\n",
+        )
+        .run_cli("later-across", &["check"]);
+    let stderr = across.stderr_text();
+    assert_eq!(
+        reported_order(&stderr),
+        vec![
+            ("src/zeta.mw", "check.module_path"),
+            ("src/alpha.mw", "check.type"),
+        ],
+        "a later-sorting file's check precedes an earlier-sorting file's: {stderr}"
+    );
+
+    let within = Project::new()
+        .source(
+            "src/app.mw",
+            "module app\n\npub fn a(): int {\n    return missingHere\n}\n\nalias Bad = NoSuchType\n",
+        )
+        .run_cli("later-within", &["check"]);
+    let stderr = within.stderr_text();
+    let lines: Vec<&str> = stderr
+        .lines()
+        .filter(|line| line.contains(": check."))
+        .collect();
+    assert_eq!(
+        lines,
+        vec![
+            "src/app.mw:7:1: check.type: alias `Bad` does not name a known type: `NoSuchType`",
+            "src/app.mw:4:12: check.type: `missingHere` is not in scope",
+        ],
+        "the line-7 alias error precedes the line-4 body error: {stderr}"
+    );
+}
