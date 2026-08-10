@@ -13,8 +13,7 @@
 use std::sync::Arc;
 
 use marrow_compile::{
-    AnalysisFailure, AnalysisResourceLimit, CompileFailure, InputRevision, ResourceLimitKind,
-    SourceDiagnostic, analyze, compile_with_tests,
+    CompileFailure, InputRevision, ResourceLimitKind, SourceDiagnostic, analyze, compile_with_tests,
 };
 use marrow_project::{CaptureLimits, CapturedFile, Manifest, ProjectInput};
 
@@ -67,23 +66,23 @@ fn assert_single_module_agreement(files: &[(&str, &str)]) {
                 "the snapshot echoes the revision"
             );
         }
-        CompileView::ResourceLimit(kind) => {
-            let failure = analyze(Arc::new(project(files)), revision)
-                .err()
-                .unwrap_or_else(|| panic!("a resource-limit project has no snapshot: {files:?}"));
-            let AnalysisFailure::ResourceLimit {
-                revision: echoed,
-                limit: AnalysisResourceLimit::Compile(limit),
-            } = failure
-            else {
-                panic!("expected a compile-side resource limit for {files:?}");
-            };
+        // An image-policy bound is the production projection's verdict, not semantic
+        // unavailability: the compile refuses with its kind while the analysis path —
+        // which never encodes — yields an ordinary snapshot with no diagnostic at all.
+        CompileView::ResourceLimit(_) => {
+            let snapshot = analyze(Arc::new(project(files)), revision).unwrap_or_else(|_| {
+                panic!("an image-policy bound still yields a snapshot: {files:?}")
+            });
             assert_eq!(
-                limit.kind(),
-                kind,
-                "same aggregate bound through both paths"
+                snapshot.diagnostics(),
+                &[],
+                "an image-policy bound produces no diagnostic: {files:?}",
             );
-            assert_eq!(echoed, revision, "the failure echoes the revision");
+            assert_eq!(
+                snapshot.revision(),
+                revision,
+                "the snapshot echoes the revision"
+            );
         }
     }
 }
@@ -129,14 +128,25 @@ fn a_semantic_stop_agrees() {
 
 #[test]
 fn a_driven_resource_limit_agrees() {
-    // MAX_FUNCTIONS is 4096; declaring more exhausts the aggregate function bound with
-    // no single construct at fault, so both paths surface a locationless resource limit.
+    // Each body returns a distinct literal, so this project crosses MAX_CONSTS (1024)
+    // before any other aggregate bound — `check_bounds` consults the constant table
+    // first. The fixture states the kind that actually fires rather than the function
+    // bound it once claimed.
     let mut source = String::new();
     for index in 0..4097 {
         source.push_str(&format!(
             "pub fn f{index}(): int {{\n    return {index}\n}}\n"
         ));
     }
+    let input = project(&[("src/main.mw", &source)]);
+    let CompileView::ResourceLimit(kind) = compile_view(&input) else {
+        panic!("an over-bound project refuses with a resource limit");
+    };
+    assert_eq!(
+        kind,
+        ResourceLimitKind::Consts,
+        "the constant table is the first aggregate bound this project crosses",
+    );
     assert_single_module_agreement(&[("src/main.mw", &source)]);
 }
 

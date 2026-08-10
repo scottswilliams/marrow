@@ -24,8 +24,8 @@ use crate::diag::{
 use crate::durable::DurableRegistry;
 use crate::konst::ConstRegistry;
 use crate::lower::{
-    DeclaredFn, FnLowerer, FunctionRegistry, GenericRegistry, is_durable_place_op,
-    is_mutation_instr, is_reserved_builtin_name, reserved_builtin_name,
+    BodyOutcome, DeclaredFn, FnLowerer, FunctionRegistry, FunctionRegistryBuild, GenericRegistry,
+    is_durable_place_op, is_mutation_instr, is_reserved_builtin_name, reserved_builtin_name,
 };
 use crate::types::{GenericInvariant, TypeRegistry};
 
@@ -145,6 +145,7 @@ impl CompileInvariant {
             InvariantCause::EmptyDiagnostics(stage) => {
                 let _ = stage;
             }
+            InvariantCause::UnavailableWithoutReport | InvariantCause::ReservedIndexMismatch => {}
             InvariantCause::ImageBuild(error) => {
                 let _ = error;
             }
@@ -382,7 +383,6 @@ impl std::error::Error for CompileFailure {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CompileStage {
     TypeInstantiation,
-    FunctionSignatures,
     TemplateProof,
     BodyLowering,
     PostLoweringValidation,
@@ -392,6 +392,16 @@ enum CompileStage {
 enum InvariantCause {
     Generic(GenericInvariant),
     EmptyDiagnostics(CompileStage),
+    /// A semantic artifact was unavailable, yet the semantic pass finished with a
+    /// complete and empty diagnostic terminal. An unavailable artifact is always the
+    /// consequence of a refusal that reported, so reaching the fence with nothing to
+    /// report is a compiler-coherence failure — the generalization of
+    /// [`InvariantCause::EmptyDiagnostics`] to the continued phase set.
+    UnavailableWithoutReport,
+    /// A generic instance took an image index other than the one the registry
+    /// reserved for it, so a call site would name a different function than the one
+    /// the image carries.
+    ReservedIndexMismatch,
     /// An image-build variant unreachable from a coherent compiler: a producer-state
     /// contradiction (an invalid cross-reference, a site path shorter than its
     /// minimum, a local count below the parameter count) or a per-construct bound a
@@ -429,10 +439,10 @@ fn stage_failure(diagnostics: BoundedDiagnostics) -> Option<CompileFailure> {
 /// reference, a too-short site path, a local count below the parameters) is likewise
 /// unreachable from a coherent compiler; both are opaque invariants. The match has no
 /// wildcard, so a new image-build variant forces an explicit classification here.
-fn image_build_outcome(error: ImageBuildError) -> SemanticOutcome {
+fn image_build_outcome(error: ImageBuildError) -> ImagePolicyOutcome {
     use marrow_image::bounds;
     let aggregate = |kind: ResourceLimitKind, limit: usize| {
-        SemanticOutcome::ResourceLimit(CompileResourceLimit::new(kind, limit as u64))
+        ImagePolicyOutcome::ResourceLimit(CompileResourceLimit::new(kind, limit as u64))
     };
     match error {
         // Aggregate whole-program counts and the byte ceiling: no single offender.
@@ -496,9 +506,21 @@ fn image_build_outcome(error: ImageBuildError) -> SemanticOutcome {
         | ImageBuildError::SitePathTooDeep
         | ImageBuildError::LocalCountBelowParams
         | ImageBuildError::InvalidReference(_) => {
-            SemanticOutcome::Invariant(InvariantCause::ImageBuild(error))
+            ImagePolicyOutcome::Invariant(InvariantCause::ImageBuild(error))
         }
     }
+}
+
+/// Why the production projection produced no image from a semantically checked
+/// program. This is the verdict of the projection alone: it is taken strictly after
+/// the semantic fence, and it is deliberately not an arm of [`SemanticOutcome`], so a
+/// public image-policy excess can never be mistaken for — or represented as — semantic
+/// unavailability. The analysis path never constructs one.
+enum ImagePolicyOutcome {
+    /// A fixed whole-program aggregate bound, with no single source construct at fault.
+    ResourceLimit(CompileResourceLimit),
+    /// A producer-state contradiction or a bound a source precheck already owns.
+    Invariant(InvariantCause),
 }
 
 /// Whether a compilation includes the project's `test` declarations. A production
@@ -733,13 +755,133 @@ impl DriveInputAdmission {
 /// The outcome of the semantic pass over the cleanly-parsed modules: a complete image,
 /// or the accumulated failure tagged with the stage that produced it.
 enum SemanticOutcome {
-    Built(Built),
+    /// Every semantic artifact was available and no diagnostic stands: the program is
+    /// checked. It carries the draft, not an image — encoding is the production
+    /// projection's step, taken after this fence.
+    Checked(CheckedProgram),
     Diagnostics(BoundedDiagnostics, CompileStage),
-    /// An aggregate resource bound; its stage is not retained (no public
-    /// outcome distinguishes it, and the empty-boundary invariant below is the
-    /// only stage consumer).
-    ResourceLimit(CompileResourceLimit),
     Invariant(InvariantCause),
+}
+
+/// The type registry resolved every declared type. Root of the artifact dependency
+/// order: every later phase resolves annotations through it.
+struct CompleteTypeRegistry;
+
+/// Every declared function signature resolved, so the registry indexes the whole
+/// monomorphic function set. This is the enumeration's `FunctionRegistry` artifact;
+/// it is named for the completeness property to leave the type name
+/// [`FunctionRegistry`] to the registry value itself. It is one artifact, not one per
+/// declaration: a single refused parameter type makes the whole registry unavailable,
+/// because every call site resolves through it.
+struct CompleteFunctionRegistry;
+
+/// Every generic template's once-checked proof was accepted and no instantiation
+/// limit stopped the pass, so the queued instance set is trustworthy.
+struct AcceptedQueuedTemplateProofs;
+
+/// Every declared non-generic function body lowered into the draft.
+struct CompleteDeclaredFunctionBodies;
+
+/// Every declared test body lowered into the draft, with no duplicate-title skip.
+/// A skip leaves a reserved index unminted — `base` counts declared tests including
+/// duplicates — so this artifact, not the diagnostic set, is what the instance drain
+/// requires. Vacuously available when tests are excluded.
+struct CompleteDeclaredTestBodies;
+
+/// Every body that entered lowering produced an image function, and the instance
+/// drain, if it ran, completed.
+///
+/// **The claim is over the MINTED lowered set.** Indices actually minted are dense, so
+/// a call graph keyed by index over this set is exact. Reserved-but-undrained instance
+/// indices are outside the claim: when the drain was gated off, a call into an
+/// unminted instance is simply absent from the graph. A traversal may therefore miss a
+/// cycle through such an index — it can never fabricate one — and an undrained drain
+/// already leaves an artifact unavailable, which fences the program off from `encode`.
+struct CompleteLoweredFunctionSet(Vec<LoweredFn>);
+
+impl CompleteLoweredFunctionSet {
+    /// The functions that took an image index, in index order.
+    fn functions(&self) -> &[LoweredFn] {
+        &self.0
+    }
+}
+
+/// No function in the minted lowered set reaches itself by direct calls.
+///
+/// **The claim is over the MINTED lowered set**, exactly as
+/// [`CompleteLoweredFunctionSet`] defines it: acyclicity is established for the
+/// functions that took an image index, not for reserved-but-undrained instances.
+struct AcyclicCallGraph;
+
+/// Every export entry that mutates durable state owns its transaction region, so the
+/// requires-ambient-transaction fixpoint converged with nothing to report.
+struct AmbientTransactionClosure;
+
+/// The eight semantic artifacts of one pass, each present exactly when its phase ran
+/// to completion. `encode` consumes all eight.
+struct Artifacts {
+    types: Option<CompleteTypeRegistry>,
+    functions: Option<CompleteFunctionRegistry>,
+    template_proofs: Option<AcceptedQueuedTemplateProofs>,
+    function_bodies: Option<CompleteDeclaredFunctionBodies>,
+    test_bodies: Option<CompleteDeclaredTestBodies>,
+    lowered: Option<CompleteLoweredFunctionSet>,
+    call_graph: Option<AcyclicCallGraph>,
+    transactions: Option<AmbientTransactionClosure>,
+}
+
+impl Artifacts {
+    /// Whether every artifact is available. Written as an exhaustive destructure so a
+    /// ninth artifact is a build error here rather than a silently ignored field.
+    fn all_available(&self) -> bool {
+        let Artifacts {
+            types,
+            functions,
+            template_proofs,
+            function_bodies,
+            test_bodies,
+            lowered,
+            call_graph,
+            transactions,
+        } = self;
+        types.is_some()
+            && functions.is_some()
+            && template_proofs.is_some()
+            && function_bodies.is_some()
+            && test_bodies.is_some()
+            && lowered.is_some()
+            && call_graph.is_some()
+            && transactions.is_some()
+    }
+}
+
+/// A semantically checked program, immediately before the production projection
+/// encodes it. Holding the draft here rather than an [`EncodedImage`] is what keeps
+/// the image-policy verdict out of the semantic outcome: the analysis path consumes
+/// this value without ever encoding, so no image is allocated on it and no public
+/// image bound is reachable from it.
+struct CheckedProgram {
+    draft: ImageDraft,
+    exports: Vec<ExportEntry>,
+    tests: Vec<TestEntry>,
+    naming: DurableNaming,
+}
+
+impl CheckedProgram {
+    /// The production projection: encode the checked draft into canonical image bytes.
+    /// This is the single point at which a public image-policy bound is consulted, and
+    /// [`Driven::into_built`] is its only caller.
+    fn encode(self) -> Result<Built, ImagePolicyOutcome> {
+        match self.draft.encode() {
+            Ok(image) => Ok(Built {
+                image,
+                exports: self.exports,
+                tests: self.tests,
+                naming: self.naming,
+            }),
+            Err(error) => Err(image_build_outcome(error)),
+        }
+    }
 }
 
 impl Driven {
@@ -762,14 +904,21 @@ impl Driven {
             return Err(failure);
         }
         match self.semantic {
-            SemanticOutcome::Built(built) => Ok(built),
+            SemanticOutcome::Checked(program) => match program.encode() {
+                Ok(built) => Ok(built),
+                Err(ImagePolicyOutcome::ResourceLimit(limit)) => {
+                    Err(CompileFailure::ResourceLimit(limit))
+                }
+                Err(ImagePolicyOutcome::Invariant(cause)) => {
+                    Err(CompileFailure::Invariant(CompileInvariant(cause)))
+                }
+            },
             SemanticOutcome::Diagnostics(diagnostics, stage) => match stage_failure(diagnostics) {
                 Some(failure) => Err(failure),
                 None => Err(CompileFailure::Invariant(CompileInvariant(
                     InvariantCause::EmptyDiagnostics(stage),
                 ))),
             },
-            SemanticOutcome::ResourceLimit(limit) => Err(CompileFailure::ResourceLimit(limit)),
             SemanticOutcome::Invariant(cause) => {
                 Err(CompileFailure::Invariant(CompileInvariant(cause)))
             }
@@ -1126,7 +1275,17 @@ fn run_semantic(
             return SemanticOutcome::Invariant(InvariantCause::Generic(invariant));
         }
     };
-    let signatures = match FunctionRegistry::build(
+    // The type registry resolved every declared type: every later phase resolves its
+    // annotations through it.
+    let types = Some(CompleteTypeRegistry);
+
+    // A refused signature no longer stops the pass. The registry is withheld, which
+    // makes every phase that resolves call sites through it unavailable, while the
+    // phases that need only the type registry — constant evaluation and the
+    // value-containment audit below — still run in their existing positions, so a
+    // signature refusal and an independent constant or value-cycle error are all
+    // reported instead of only the first.
+    let (signatures, function_registry) = match FunctionRegistry::build(
         &records,
         &mut draft,
         &durable,
@@ -1136,16 +1295,10 @@ fn run_semantic(
         broken_modules,
         &mut diagnostics,
     ) {
-        Ok(Some(signatures)) => signatures,
-        Ok(None) => {
-            records
-                .take_generic_diagnostics()
-                .merge_into(&mut diagnostics);
-            return SemanticOutcome::Diagnostics(
-                diagnostics.finish(),
-                CompileStage::FunctionSignatures,
-            );
+        Ok(FunctionRegistryBuild::Complete(signatures)) => {
+            (Some(signatures), Some(CompleteFunctionRegistry))
         }
+        Ok(FunctionRegistryBuild::Refused) => (None, None),
         Err(invariant) => {
             return SemanticOutcome::Invariant(InvariantCause::Generic(invariant));
         }
@@ -1189,73 +1342,205 @@ fn run_semantic(
         .collect();
     let constants = ConstRegistry::build(&const_decls, &records, &mut diagnostics);
 
-    // Once-checked template pass: every generic function's body is type-checked once
-    // against its type parameters' constraints — independently of whether or how it
-    // is instantiated — so an unconstrained parameter used with `==`/`<`, or any
-    // other constraint violation, is caught here rather than per instantiation.
-    for template in generics.templates() {
-        let outcome = match FnLowerer::check_template(
-            &mut draft,
-            &records,
-            &durable,
-            &signatures,
-            &generics,
-            &constants,
-            facts.sink(template.at()),
-            &mut admission_steered,
-            template,
-        ) {
-            Ok(outcome) => outcome,
-            Err(invariant) => {
-                return SemanticOutcome::Invariant(InvariantCause::Generic(invariant));
-            }
-        };
-        diagnostics.absorb(outcome.diagnostics);
-        records.adopt_generic_diagnostics(outcome.generic);
-        if records.has_instantiation_limit() {
-            break;
-        }
-    }
-    if records.has_instantiation_limit() {
-        records
-            .take_generic_diagnostics()
-            .merge_into(&mut diagnostics);
-        return SemanticOutcome::Diagnostics(diagnostics.finish(), CompileStage::TemplateProof);
-    }
-
-    // Generic instances are image functions with no stable identity, indexed after
-    // every monomorphic function and test. `base` is that boundary; the shared
-    // `Monomorph` assigns each distinct instance the next index from `base` in
-    // discovery order, so draining its queue in order appends them to the image in
-    // index order.
-    let test_count: u16 = if mode == TestMode::Include {
-        parsed
-            .iter()
-            .flat_map(|module| &module.ast.declarations)
-            .filter(|decl| matches!(decl, Declaration::Test(_)))
-            .count() as u16
-    } else {
-        0
-    };
-    let base = signatures.concrete_count() + test_count;
-    records.set_fn_base(base);
-
-    // Lower each function, in the same order the registry assigned indices, minting
-    // an export for each public function from its declaration path and recording its
-    // direct-call edges for recursion detection. Other declarations are handled
-    // above or not yet admitted. Generic templates are skipped here — they are
-    // monomorphized on demand and drained below.
+    // Everything from the template proof to the instance drain resolves call sites
+    // through the function registry, so the whole region runs only when that artifact
+    // is available. Each phase records its own artifact as it completes; the phases
+    // below the region need only the type registry and run either way.
+    let mut template_proofs = None;
+    let mut function_bodies = None;
+    let mut test_bodies = None;
+    let mut drain_complete = true;
+    let mut call_graph = None;
+    let mut transactions = None;
     let mut exports: Vec<ExportEntry> = Vec::new();
+    let mut tests: Vec<TestEntry> = Vec::new();
     let mut lowered: Vec<LoweredFn> = Vec::new();
-    'function_bodies: for module in parsed {
-        for declaration in &module.ast.declarations {
-            match declaration {
-                Declaration::Function(function) if !function.type_params.is_empty() => {
-                    // A generic template is not lowered in place.
-                    let _ = function;
+    if let Some(signatures) = &signatures {
+        // Once-checked template pass: every generic function's body is type-checked once
+        // against its type parameters' constraints — independently of whether or how it
+        // is instantiated — so an unconstrained parameter used with `==`/`<`, or any
+        // other constraint violation, is caught here rather than per instantiation.
+        for template in generics.templates() {
+            let outcome = match FnLowerer::check_template(
+                &mut draft,
+                &records,
+                &durable,
+                &signatures,
+                &generics,
+                &constants,
+                facts.sink(template.at()),
+                &mut admission_steered,
+                template,
+            ) {
+                Ok(outcome) => outcome,
+                Err(invariant) => {
+                    return SemanticOutcome::Invariant(InvariantCause::Generic(invariant));
                 }
-                Declaration::Function(function) => {
-                    let result = match FnLowerer::lower(
+            };
+            diagnostics.absorb(outcome.diagnostics);
+            records.adopt_generic_diagnostics(outcome.generic);
+            if records.has_instantiation_limit() {
+                break;
+            }
+        }
+        if records.has_instantiation_limit() {
+            records
+                .take_generic_diagnostics()
+                .merge_into(&mut diagnostics);
+            return SemanticOutcome::Diagnostics(diagnostics.finish(), CompileStage::TemplateProof);
+        }
+        template_proofs = Some(AcceptedQueuedTemplateProofs);
+
+        // Generic instances are image functions with no stable identity, indexed after
+        // every monomorphic function and test. `base` is that boundary; the shared
+        // `Monomorph` assigns each distinct instance the next index from `base` in
+        // discovery order, so draining its queue in order appends them to the image in
+        // index order.
+        let test_count: u16 = if mode == TestMode::Include {
+            parsed
+                .iter()
+                .flat_map(|module| &module.ast.declarations)
+                .filter(|decl| matches!(decl, Declaration::Test(_)))
+                .count() as u16
+        } else {
+            0
+        };
+        let base = signatures.concrete_count() + test_count;
+        records.set_fn_base(base);
+
+        // Lower each function, in the same order the registry assigned indices, minting
+        // an export for each public function from its declaration path and recording its
+        // direct-call edges for recursion detection. Other declarations are handled
+        // above or not yet admitted. Generic templates are skipped here — they are
+        // monomorphized on demand and drained below.
+        let mut bodies_complete = true;
+        'function_bodies: for module in parsed {
+            for declaration in &module.ast.declarations {
+                match declaration {
+                    Declaration::Function(function) if !function.type_params.is_empty() => {
+                        // A generic template is not lowered in place.
+                        let _ = function;
+                    }
+                    Declaration::Function(function) => {
+                        let result = match FnLowerer::lower(
+                            &mut draft,
+                            &records,
+                            &durable,
+                            &signatures,
+                            &generics,
+                            &constants,
+                            &mut diagnostics,
+                            facts.sink(module.at),
+                            &mut admission_steered,
+                            &module.file,
+                            &module.name,
+                            function,
+                        ) {
+                            Ok(BodyOutcome::Lowered(result)) => result,
+                            Ok(BodyOutcome::Refused) => {
+                                bodies_complete = false;
+                                if records.has_instantiation_limit() {
+                                    break 'function_bodies;
+                                }
+                                continue;
+                            }
+                            Err(invariant) => {
+                                return SemanticOutcome::Invariant(InvariantCause::Generic(
+                                    invariant,
+                                ));
+                            }
+                        };
+                        lowered.push(LoweredFn {
+                            index: result.func.index(),
+                            file: module.file.clone(),
+                            name: function.name.clone(),
+                            span: function.span,
+                            callees: result.callees,
+                            is_export: function.public,
+                            is_test: false,
+                            unwrapped_mutations: result.unwrapped_mutations,
+                            unwrapped_calls: result.unwrapped_calls,
+                            has_direct_durable_op: result.has_direct_durable_op,
+                            owns_transaction: result.owns_transaction,
+                            code: result.code,
+                            code_spans: result.code_spans,
+                        });
+                        if function.public {
+                            // The injectivity owner's own guard: every dotted module
+                            // segment and the item must be ASCII identifiers before an
+                            // ExportId is minted over them (see marrow-image::export_id).
+                            // Unreachable through the current capture path, which already
+                            // constrains both; kept so the id payload's injectivity never
+                            // silently rests on an upstream layer alone.
+                            if !valid_export_path(&module.name, &function.name) {
+                                diagnostics.push(SourceDiagnostic::at(
+                                    Code::CheckModulePath.as_str(),
+                                    &module.file,
+                                    function.span,
+                                    format!(
+                                        "export `{}` in module `{}` is not an ASCII \
+                                     identifier path, so it cannot be exported",
+                                        function.name, module.name
+                                    ),
+                                ));
+                                continue;
+                            }
+                            let id = ExportId::of_local(&module.name, &function.name);
+                            draft.add_export(id, result.func);
+                            exports.push(ExportEntry {
+                                module: module.name.clone(),
+                                item: function.name.clone(),
+                                id,
+                            });
+                        }
+                        if records.has_instantiation_limit() {
+                            break 'function_bodies;
+                        }
+                    }
+                    // Constants are evaluated into the const registry above; aliases,
+                    // resources, and stores are handled by their own registries; test
+                    // declarations are lowered separately below, after every function
+                    // has an index.
+                    Declaration::Alias(_)
+                    | Declaration::Nominal(_)
+                    | Declaration::Const(_)
+                    | Declaration::Resource(_)
+                    | Declaration::Struct(_)
+                    | Declaration::Enum(_)
+                    | Declaration::Store(_)
+                    | Declaration::Test(_) => {}
+                }
+            }
+        }
+
+        // Lower each `test "name"` body into a storeless, zero-argument function and
+        // bind its title into the TEST-ENTRY table (only when tests are included). Tests
+        // are lowered after every function so their bodies' calls resolve and their own
+        // indices follow the functions'. Titles are unique across the project.
+        function_bodies = bodies_complete.then_some(CompleteDeclaredFunctionBodies);
+
+        // A duplicate title skips its body, which leaves the index reserved for it in
+        // `base` unminted: that is the instance drain's real precondition, carried here
+        // rather than inferred from an empty diagnostic set. With tests excluded the
+        // artifact holds vacuously.
+        let mut declared_tests_complete = true;
+        if mode == TestMode::Include && !records.has_instantiation_limit() {
+            'test_bodies: for module in parsed {
+                for declaration in &module.ast.declarations {
+                    let Declaration::Test(test) = declaration else {
+                        continue;
+                    };
+                    if tests.iter().any(|existing| existing.name == test.name) {
+                        diagnostics.push(SourceDiagnostic::at(
+                            Code::CheckNameConflict.as_str(),
+                            &module.file,
+                            test.name_span,
+                            format!("a test named `{}` is already declared", test.name),
+                        ));
+                        declared_tests_complete = false;
+                        continue;
+                    }
+                    let result = match FnLowerer::lower_test(
                         &mut draft,
                         &records,
                         &durable,
@@ -1267,12 +1552,14 @@ fn run_semantic(
                         &mut admission_steered,
                         &module.file,
                         &module.name,
-                        function,
+                        &test.name,
+                        &test.body,
                     ) {
-                        Ok(Some(result)) => result,
-                        Ok(None) => {
+                        Ok(BodyOutcome::Lowered(result)) => result,
+                        Ok(BodyOutcome::Refused) => {
+                            declared_tests_complete = false;
                             if records.has_instantiation_limit() {
-                                break 'function_bodies;
+                                break 'test_bodies;
                             }
                             continue;
                         }
@@ -1283,11 +1570,11 @@ fn run_semantic(
                     lowered.push(LoweredFn {
                         index: result.func.index(),
                         file: module.file.clone(),
-                        name: function.name.clone(),
-                        span: function.span,
+                        name: test.name.clone(),
+                        span: test.name_span,
                         callees: result.callees,
-                        is_export: function.public,
-                        is_test: false,
+                        is_export: false,
+                        is_test: true,
                         unwrapped_mutations: result.unwrapped_mutations,
                         unwrapped_calls: result.unwrapped_calls,
                         has_direct_durable_op: result.has_direct_durable_op,
@@ -1295,75 +1582,39 @@ fn run_semantic(
                         code: result.code,
                         code_spans: result.code_spans,
                     });
-                    if function.public {
-                        // The injectivity owner's own guard: every dotted module
-                        // segment and the item must be ASCII identifiers before an
-                        // ExportId is minted over them (see marrow-image::export_id).
-                        // Unreachable through the current capture path, which already
-                        // constrains both; kept so the id payload's injectivity never
-                        // silently rests on an upstream layer alone.
-                        if !valid_export_path(&module.name, &function.name) {
-                            diagnostics.push(SourceDiagnostic::at(
-                                Code::CheckModulePath.as_str(),
-                                &module.file,
-                                function.span,
-                                format!(
-                                    "export `{}` in module `{}` is not an ASCII \
-                                     identifier path, so it cannot be exported",
-                                    function.name, module.name
-                                ),
-                            ));
-                            continue;
-                        }
-                        let id = ExportId::of_local(&module.name, &function.name);
-                        draft.add_export(id, result.func);
-                        exports.push(ExportEntry {
-                            module: module.name.clone(),
-                            item: function.name.clone(),
-                            id,
-                        });
-                    }
+                    let name_id = draft.intern_string(&test.name);
+                    draft.add_test_entry(name_id, result.func);
+                    tests.push(TestEntry {
+                        name: test.name.clone(),
+                        module: module.name.clone(),
+                        file: module.file.as_str().to_string(),
+                        line: test.name_span.line,
+                        column: test.name_span.column,
+                    });
                     if records.has_instantiation_limit() {
-                        break 'function_bodies;
+                        break 'test_bodies;
                     }
                 }
-                // Constants are evaluated into the const registry above; aliases,
-                // resources, and stores are handled by their own registries; test
-                // declarations are lowered separately below, after every function
-                // has an index.
-                Declaration::Alias(_)
-                | Declaration::Nominal(_)
-                | Declaration::Const(_)
-                | Declaration::Resource(_)
-                | Declaration::Struct(_)
-                | Declaration::Enum(_)
-                | Declaration::Store(_)
-                | Declaration::Test(_) => {}
             }
         }
-    }
 
-    // Lower each `test "name"` body into a storeless, zero-argument function and
-    // bind its title into the TEST-ENTRY table (only when tests are included). Tests
-    // are lowered after every function so their bodies' calls resolve and their own
-    // indices follow the functions'. Titles are unique across the project.
-    let mut tests: Vec<TestEntry> = Vec::new();
-    if mode == TestMode::Include && !records.has_instantiation_limit() {
-        'test_bodies: for module in parsed {
-            for declaration in &module.ast.declarations {
-                let Declaration::Test(test) = declaration else {
-                    continue;
-                };
-                if tests.iter().any(|existing| existing.name == test.name) {
-                    diagnostics.push(SourceDiagnostic::at(
-                        Code::CheckNameConflict.as_str(),
-                        &module.file,
-                        test.name_span,
-                        format!("a test named `{}` is already declared", test.name),
-                    ));
-                    continue;
-                }
-                let result = match FnLowerer::lower_test(
+        // Drain the generic instantiation worklist: lower each monomorphized instance's
+        // body into the image, in the order the instances were minted (so each instance's
+        // image index equals the one the registry reserved). Lowering an instance body
+        // may mint further instances, which the loop continues to drain. Only run when the
+        // monomorphic pass is clean, so every function and test has already consumed its
+        // image index and instances append after them. The precondition is that every
+        // declared body took the index reserved for it — carried by the three artifacts
+        // below, not by an empty diagnostic set.
+        test_bodies = declared_tests_complete.then_some(CompleteDeclaredTestBodies);
+        if template_proofs.is_some()
+            && function_bodies.is_some()
+            && test_bodies.is_some()
+            && !records.has_instantiation_limit()
+        {
+            while let Some((template_index, args, reserved)) = records.next_fn_pending() {
+                let template = &generics.templates()[template_index];
+                let result = match FnLowerer::lower_instance(
                     &mut draft,
                     &records,
                     &durable,
@@ -1371,32 +1622,35 @@ fn run_semantic(
                     &generics,
                     &constants,
                     &mut diagnostics,
-                    facts.sink(module.at),
+                    FactSink::Discarding,
                     &mut admission_steered,
-                    &module.file,
-                    &module.name,
-                    &test.name,
-                    &test.body,
+                    template,
+                    &args,
                 ) {
-                    Ok(Some(result)) => result,
-                    Ok(None) => {
-                        if records.has_instantiation_limit() {
-                            break 'test_bodies;
-                        }
-                        continue;
+                    Ok(BodyOutcome::Lowered(result)) => result,
+                    Ok(BodyOutcome::Refused) => {
+                        drain_complete = false;
+                        break;
                     }
                     Err(invariant) => {
                         return SemanticOutcome::Invariant(InvariantCause::Generic(invariant));
                     }
                 };
+                // The registry reserved this index before the body was lowered; the draft
+                // assigned the one the body actually took. A divergence means the image
+                // would carry an instance under an index some call site does not name, so
+                // it is a typed invariant in release exactly as in debug.
+                if result.func.index() != reserved {
+                    return SemanticOutcome::Invariant(InvariantCause::ReservedIndexMismatch);
+                }
                 lowered.push(LoweredFn {
                     index: result.func.index(),
-                    file: module.file.clone(),
-                    name: test.name.clone(),
-                    span: test.name_span,
+                    file: template.source_file().clone(),
+                    name: template.name().to_string(),
+                    span: template.span(),
                     callees: result.callees,
                     is_export: false,
-                    is_test: true,
+                    is_test: false,
                     unwrapped_mutations: result.unwrapped_mutations,
                     unwrapped_calls: result.unwrapped_calls,
                     has_direct_durable_op: result.has_direct_durable_op,
@@ -1404,70 +1658,7 @@ fn run_semantic(
                     code: result.code,
                     code_spans: result.code_spans,
                 });
-                let name_id = draft.intern_string(&test.name);
-                draft.add_test_entry(name_id, result.func);
-                tests.push(TestEntry {
-                    name: test.name.clone(),
-                    module: module.name.clone(),
-                    file: module.file.as_str().to_string(),
-                    line: test.name_span.line,
-                    column: test.name_span.column,
-                });
-                if records.has_instantiation_limit() {
-                    break 'test_bodies;
-                }
             }
-        }
-    }
-
-    // Drain the generic instantiation worklist: lower each monomorphized instance's
-    // body into the image, in the order the instances were minted (so each instance's
-    // image index equals the one the registry reserved). Lowering an instance body
-    // may mint further instances, which the loop continues to drain. Only run when the
-    // monomorphic pass is clean, so every function and test has already consumed its
-    // image index and instances append after them.
-    if diagnostics.is_empty() && !records.has_instantiation_limit() {
-        while let Some((template_index, args, reserved)) = records.next_fn_pending() {
-            let template = &generics.templates()[template_index];
-            let result = match FnLowerer::lower_instance(
-                &mut draft,
-                &records,
-                &durable,
-                &signatures,
-                &generics,
-                &constants,
-                &mut diagnostics,
-                FactSink::Discarding,
-                &mut admission_steered,
-                template,
-                &args,
-            ) {
-                Ok(Some(result)) => result,
-                Ok(None) => break,
-                Err(invariant) => {
-                    return SemanticOutcome::Invariant(InvariantCause::Generic(invariant));
-                }
-            };
-            debug_assert_eq!(
-                result.func.index(),
-                reserved,
-                "instance image index must match its reserved index"
-            );
-            lowered.push(LoweredFn {
-                index: result.func.index(),
-                file: template.source_file().clone(),
-                name: template.name().to_string(),
-                span: template.span(),
-                callees: result.callees,
-                is_export: false,
-                is_test: false,
-                unwrapped_mutations: result.unwrapped_mutations,
-                unwrapped_calls: result.unwrapped_calls,
-                has_direct_durable_op: result.has_direct_durable_op,
-                owns_transaction: result.owns_transaction,
-                code: result.code,
-                code_spans: result.code_spans,
-            });
         }
     }
 
@@ -1494,8 +1685,15 @@ fn run_semantic(
     // verifier independently rejects any cycle that still reaches it (image.closure),
     // so this is a source-facing check, not the trust boundary. Only run it once
     // every function, test, and generic instance lowered, so the indices are aligned.
-    if diagnostics.is_empty() {
-        reject_recursion(&lowered, &mut diagnostics);
+    // The lowered set is complete when every body that entered lowering produced an
+    // image function and the drain, if it ran, finished. A duplicate test title is a
+    // declaration refusal, not a lowering refusal — the minted indices stay dense — so
+    // it does not withhold this artifact; it withholds only the drain above.
+    let lowered_set = (template_proofs.is_some() && function_bodies.is_some() && drain_complete)
+        .then_some(CompleteLoweredFunctionSet(lowered));
+
+    if let Some(set) = &lowered_set {
+        call_graph = reject_recursion(set, &mut diagnostics);
     }
 
     // A function that mutates durable state carries a checked requires-ambient-
@@ -1504,8 +1702,8 @@ fn run_semantic(
     // the image, carries the diagnostic; the verifier reconstructs the same closure and
     // rejects a tampered image (image.flow) as defense in depth. Run once the call
     // graph is acyclic so the effect fixpoint terminates and indices are aligned.
-    if diagnostics.is_empty() {
-        reject_missing_transaction(&lowered, &mut diagnostics);
+    if let (Some(set), Some(acyclic)) = (&lowered_set, &call_graph) {
+        transactions = reject_missing_transaction(set, acyclic, &mut diagnostics);
     }
 
     // The remaining transaction-ownership laws — exactly one region per mutating export,
@@ -1517,34 +1715,48 @@ fn run_semantic(
     // image (image.flow) as defense in depth. Run once the call graph is acyclic and no
     // requires-ambient-transaction report already stands, so the closures converge and a
     // single mutation cannot cascade into an ownership report.
-    if diagnostics.is_empty() {
-        reject_transaction_ownership(&lowered, &mut diagnostics);
+    if let (Some(set), Some(closure)) = (&lowered_set, &transactions) {
+        reject_transaction_ownership(set, closure, &mut diagnostics);
     }
 
     // A test body reaches durable data in one of two disjoint ways — directly, or by
     // driving exports — and may not do both. Reported at check time so the source
     // carries the diagnostic; the verifier's test-entry phase rejects a mixed image
     // (image.test_entry) as defense in depth. Run once the call graph is acyclic.
-    if diagnostics.is_empty() {
-        reject_mixed_test_bodies(&lowered, &mut diagnostics);
+    if let (Some(set), Some(acyclic)) = (&lowered_set, &call_graph) {
+        reject_mixed_test_bodies(set, acyclic, &mut diagnostics);
     }
 
-    if !diagnostics.is_empty() {
-        return SemanticOutcome::Diagnostics(
-            diagnostics.finish(),
-            CompileStage::PostLoweringValidation,
-        );
+    // The semantic fence, in exact order. An invariant has already returned above. A
+    // non-empty terminal — rows, or a Limited terminal reporting its own diagnostic
+    // bound — is the diagnostic outcome. An empty terminal with any artifact
+    // unavailable is an invariant: an unavailable artifact always follows a refusal
+    // that reported. Only an empty terminal with all eight artifacts available is a
+    // checked program, and the image-policy verdict is taken strictly after this
+    // point, in the production projection alone.
+    let artifacts = Artifacts {
+        types,
+        functions: function_registry,
+        template_proofs,
+        function_bodies,
+        test_bodies,
+        lowered: lowered_set,
+        call_graph,
+        transactions,
+    };
+    let terminal = diagnostics.finish();
+    if !terminal.is_empty() {
+        return SemanticOutcome::Diagnostics(terminal, CompileStage::PostLoweringValidation);
     }
-
-    match draft.encode() {
-        Ok(image) => SemanticOutcome::Built(Built {
-            image,
-            exports,
-            tests,
-            naming: durable.naming(),
-        }),
-        Err(error) => image_build_outcome(error),
+    if !artifacts.all_available() {
+        return SemanticOutcome::Invariant(InvariantCause::UnavailableWithoutReport);
     }
+    SemanticOutcome::Checked(CheckedProgram {
+        draft,
+        exports,
+        tests,
+        naming: durable.naming(),
+    })
 }
 
 /// The complete diagnostic picture the editor analysis snapshot consumes: every stage's
@@ -1618,15 +1830,12 @@ fn analyze_outcome(
         SemanticOutcome::Invariant(cause) if !precheck_present => {
             return Analyzed::Invariant(CompileInvariant(cause));
         }
-        SemanticOutcome::ResourceLimit(limit) if !precheck_present => {
-            return Analyzed::ResourceLimit(limit);
-        }
         SemanticOutcome::Diagnostics(semantic, _) => union.absorb(semantic),
-        // With prechecks present the semantic invariant or resource limit is
-        // suppressed: the precheck union is the analysis result.
-        SemanticOutcome::Invariant(..)
-        | SemanticOutcome::ResourceLimit(..)
-        | SemanticOutcome::Built(_) => {}
+        // With prechecks present the semantic invariant is suppressed: the precheck
+        // union is the analysis result. A checked program contributes no diagnostic —
+        // and is never encoded here, so no image-policy bound is reachable from the
+        // analysis path at all.
+        SemanticOutcome::Invariant(..) | SemanticOutcome::Checked(_) => {}
     }
     match union.finish() {
         BoundedDiagnostics::Complete { rows, .. } => Analyzed::Diagnostics(rows),
@@ -1678,7 +1887,11 @@ fn reject_duplicate_functions(parsed: &[Module], diagnostics: &mut DiagnosticCol
 /// mutual recursion cycle. A function is on a cycle exactly when it can reach
 /// itself by following direct calls, so each function is checked for reachability
 /// back to itself over the edge set.
-fn reject_recursion(lowered: &[LoweredFn], diagnostics: &mut DiagnosticCollector) {
+fn reject_recursion(
+    lowered: &CompleteLoweredFunctionSet,
+    diagnostics: &mut DiagnosticCollector,
+) -> Option<AcyclicCallGraph> {
+    let lowered = lowered.functions();
     // Adjacency by image index. Indices are dense (0..lowered.len()) and each
     // function appears once, so a plain vec keyed by index is exact.
     let mut callees: Vec<&[u16]> = vec![&[]; lowered.len()];
@@ -1687,6 +1900,7 @@ fn reject_recursion(lowered: &[LoweredFn], diagnostics: &mut DiagnosticCollector
             callees[function.index as usize] = &function.callees;
         }
     }
+    let mut reported = false;
     for function in lowered {
         if reaches_self(function.index, &callees) {
             diagnostics.push(SourceDiagnostic::at(
@@ -1695,8 +1909,10 @@ fn reject_recursion(lowered: &[LoweredFn], diagnostics: &mut DiagnosticCollector
                 function.span,
                 format!("`{}` is part of a recursive call cycle", function.name),
             ));
+            reported = true;
         }
     }
+    (!reported).then_some(AcyclicCallGraph)
 }
 
 /// Whether `start` can reach itself by following direct calls.
@@ -1732,7 +1948,14 @@ fn reaches_self(start: u16, callees: &[&[u16]]) -> bool {
 /// therefore reported only where a caller cannot satisfy it — at an export entry, at
 /// the specific unwrapped mutation or call-site span. A test entry receives its
 /// ambient transaction from the test harness and is likewise exempt.
-fn reject_missing_transaction(lowered: &[LoweredFn], diagnostics: &mut DiagnosticCollector) {
+/// `_acyclic` is the prerequisite, not an unused argument: the monotone fixpoint
+/// below terminates only over an acyclic call graph.
+fn reject_missing_transaction(
+    lowered: &CompleteLoweredFunctionSet,
+    _acyclic: &AcyclicCallGraph,
+    diagnostics: &mut DiagnosticCollector,
+) -> Option<AmbientTransactionClosure> {
+    let lowered = lowered.functions();
     let count = lowered.len();
     let mut by_index: Vec<Option<&LoweredFn>> = vec![None; count];
     for function in lowered {
@@ -1773,6 +1996,7 @@ fn reject_missing_transaction(lowered: &[LoweredFn], diagnostics: &mut Diagnosti
     // Report at export entries only. Deduplicate by source position so a single write
     // that lowers to several instructions (an upsert's replace and create arms share
     // one span) yields one diagnostic.
+    let mut reported = false;
     for function in lowered {
         if !function.is_export {
             continue;
@@ -1789,6 +2013,7 @@ fn reject_missing_transaction(lowered: &[LoweredFn], diagnostics: &mut Diagnosti
                      in a `transaction { … }` block."
                         .to_string(),
                 ));
+                reported = true;
             }
         }
         for (callee, span) in &function.unwrapped_calls {
@@ -1809,9 +2034,11 @@ fn reject_missing_transaction(lowered: &[LoweredFn], diagnostics: &mut Diagnosti
                          the call in a `transaction {{ … }}` block."
                     ),
                 ));
+                reported = true;
             }
         }
     }
+    (!reported).then_some(AmbientTransactionClosure)
 }
 
 /// The three-state ownership lattice a mutating export's region walks.
@@ -1859,7 +2086,15 @@ fn instr_successors(code: &[Instr], index: usize) -> Vec<usize> {
 /// exactly one the verifier would reject at image.flow: the checker is never stricter
 /// than the boundary. The requires-ambient-transaction pass runs first and already
 /// covers a durable mutation outside any region, so this pass need not restate it.
-fn reject_transaction_ownership(lowered: &[LoweredFn], diagnostics: &mut DiagnosticCollector) {
+/// `_closure` is the prerequisite, not an unused argument: an unsatisfied
+/// requires-ambient-transaction report already stands otherwise, and a single
+/// unwrapped mutation would cascade into a second ownership report.
+fn reject_transaction_ownership(
+    lowered: &CompleteLoweredFunctionSet,
+    _closure: &AmbientTransactionClosure,
+    diagnostics: &mut DiagnosticCollector,
+) {
+    let lowered = lowered.functions();
     let count = lowered.len();
     let mut by_index: Vec<Option<&LoweredFn>> = vec![None; count];
     for function in lowered {
@@ -2098,7 +2333,14 @@ fn owner_lattice_violation(
 /// session the direct operation needs. Only a directly-owned transaction counts as a
 /// driven owner; because a transaction owner is never reached through a helper, the
 /// test body's direct call edges carry the whole relation.
-fn reject_mixed_test_bodies(lowered: &[LoweredFn], diagnostics: &mut DiagnosticCollector) {
+/// `_acyclic` is the prerequisite, not an unused argument: the reachability walk
+/// below terminates only over an acyclic call graph.
+fn reject_mixed_test_bodies(
+    lowered: &CompleteLoweredFunctionSet,
+    _acyclic: &AcyclicCallGraph,
+    diagnostics: &mut DiagnosticCollector,
+) {
+    let lowered = lowered.functions();
     let count = lowered.len();
     let mut owns_transaction = vec![false; count];
     for function in lowered {
@@ -2288,7 +2530,6 @@ mod tests {
     fn stage_label(stage: CompileStage) -> &'static str {
         match stage {
             CompileStage::TypeInstantiation => "type instantiation",
-            CompileStage::FunctionSignatures => "function signatures",
             CompileStage::TemplateProof => "template proof",
             CompileStage::BodyLowering => "body lowering",
             CompileStage::PostLoweringValidation => "post-lowering validation",
@@ -2442,19 +2683,6 @@ mod tests {
             panic!("the parse stage's own rows are the failure")
         };
         assert_eq!(diagnostics.as_slice(), std::slice::from_ref(&parse_row));
-
-        let failure = driven(
-            finished(vec![parse_row.clone()]),
-            empty_terminal(),
-            SemanticOutcome::ResourceLimit(resource(super::ResourceLimitKind::Functions)),
-        )
-        .into_built()
-        .map(|_| ())
-        .expect_err("a parse-stage row fails compilation");
-        assert!(
-            matches!(failure, CompileFailure::Diagnostics(_)),
-            "diagnostics dominate an independent later resource candidate"
-        );
     }
 
     /// Diagnostics preserve their collector order and allocation behind a
@@ -2514,7 +2742,6 @@ mod tests {
     fn an_empty_semantic_terminal_is_an_exact_invariant_at_every_stage() {
         for stage in [
             CompileStage::TypeInstantiation,
-            CompileStage::FunctionSignatures,
             CompileStage::TemplateProof,
             CompileStage::BodyLowering,
             CompileStage::PostLoweringValidation,
@@ -2558,20 +2785,9 @@ mod tests {
             ),
             Analyzed::Invariant(_)
         ));
-        assert!(matches!(
-            analyze_outcome(
-                empty_terminal(),
-                empty_terminal(),
-                SemanticOutcome::ResourceLimit(resource(super::ResourceLimitKind::Functions)),
-            ),
-            Analyzed::ResourceLimit(_)
-        ));
 
-        // A precheck row suppresses the semantic invariant and resource limit.
-        for semantic in [
-            SemanticOutcome::Invariant(proof_clone_cause()),
-            SemanticOutcome::ResourceLimit(resource(super::ResourceLimitKind::Functions)),
-        ] {
+        // A precheck row suppresses the semantic invariant.
+        for semantic in [SemanticOutcome::Invariant(proof_clone_cause())] {
             let Analyzed::Diagnostics(rows) =
                 analyze_outcome(finished(vec![row(3)]), empty_terminal(), semantic)
             else {
@@ -2665,33 +2881,6 @@ mod tests {
         }
     }
 
-    /// A semantic resource limit with clean earlier stages is the lowest arm
-    /// of the `Invariant > Diagnostics > ResourceLimit` precedence.
-    #[test]
-    fn resource_limit_surfaces_with_no_invariant_and_no_diagnostics() {
-        let failure = driven(
-            empty_terminal(),
-            empty_terminal(),
-            SemanticOutcome::ResourceLimit(resource(super::ResourceLimitKind::Functions)),
-        )
-        .into_built()
-        .map(|_| ())
-        .expect_err("a resource limit must not build");
-        let CompileFailure::ResourceLimit(limit) = failure else {
-            panic!("an aggregate bound with no diagnostics is a resource limit")
-        };
-        assert_eq!(limit.kind(), super::ResourceLimitKind::Functions);
-        assert_eq!(limit.limit(), 64);
-        assert_eq!(
-            format!("{limit}"),
-            "compiler resource limit reached",
-            "the limit's display carries no location or count"
-        );
-    }
-
-    /// A stage terminal past the count ceiling reaches the boundary as the
-    /// displacing resource limit; no partial `Diagnostics` candidate
-    /// survives.
     #[test]
     fn a_limited_stage_terminal_is_the_displacing_resource_limit() {
         let mut collector = DiagnosticCollector::new();
@@ -2726,21 +2915,21 @@ mod tests {
     #[test]
     fn image_build_errors_classify_without_a_fabricated_location() {
         let aggregate = super::image_build_outcome(marrow_image::ImageBuildError::TooManyFunctions);
-        let super::SemanticOutcome::ResourceLimit(limit) = aggregate else {
+        let super::ImagePolicyOutcome::ResourceLimit(limit) = aggregate else {
             panic!("an aggregate count is a resource limit")
         };
         assert_eq!(limit.kind(), super::ResourceLimitKind::Functions);
 
         let prechecked = super::image_build_outcome(marrow_image::ImageBuildError::TooManyLocals);
         assert!(
-            matches!(prechecked, super::SemanticOutcome::Invariant(_)),
+            matches!(prechecked, super::ImagePolicyOutcome::Invariant(_)),
             "a compiler draft past the source-prechecked local bound is an opaque invariant"
         );
 
         let contradiction =
             super::image_build_outcome(marrow_image::ImageBuildError::InvalidReference("x"));
         assert!(
-            matches!(contradiction, super::SemanticOutcome::Invariant(_)),
+            matches!(contradiction, super::ImagePolicyOutcome::Invariant(_)),
             "a producer-state contradiction is an opaque invariant, not a diagnostic"
         );
     }
@@ -2817,12 +3006,12 @@ mod driver_agreement {
             return Some(rows);
         }
         match &driven.semantic {
-            SemanticOutcome::Built(_) => None,
+            SemanticOutcome::Checked(_) => None,
             SemanticOutcome::Diagnostics(diagnostics, _) => match diagnostics {
                 BoundedDiagnostics::Complete { rows, .. } => Some(rows.clone()),
                 BoundedDiagnostics::Limited { .. } => Some(Vec::new()),
             },
-            SemanticOutcome::ResourceLimit(..) | SemanticOutcome::Invariant(..) => Some(Vec::new()),
+            SemanticOutcome::Invariant(..) => Some(Vec::new()),
         }
     }
 

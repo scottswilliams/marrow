@@ -35,6 +35,15 @@ pub(crate) struct TemplateProofOutcome {
     pub(crate) generic: GenericDiagnostics,
 }
 
+/// Whether every declared signature resolved. A refused signature has already pushed
+/// its diagnostic; the registry is withheld because a partial signature table cannot
+/// resolve call sites, which makes the whole `CompleteFunctionRegistry` artifact
+/// unavailable rather than leaving the caller to read that from an untyped `None`.
+pub(crate) enum FunctionRegistryBuild {
+    Complete(FunctionRegistry),
+    Refused,
+}
+
 impl FunctionRegistry {
     /// Resolve every function's signature in declaration order. The i-th function
     /// takes image index `i`, matching the order [`FnLowerer::lower`] adds them.
@@ -49,7 +58,7 @@ impl FunctionRegistry {
         imports: BTreeMap<String, Vec<(String, String)>>,
         broken_modules: BTreeSet<String>,
         diagnostics: &mut DiagnosticCollector,
-    ) -> Result<Option<Self>, LowerInvariant> {
+    ) -> Result<FunctionRegistryBuild, LowerInvariant> {
         let mut sigs = Vec::with_capacity(functions.len());
         let mut accepted = true;
         // Only monomorphic functions take an image index and enter the signature
@@ -119,7 +128,10 @@ impl FunctionRegistry {
             });
             index += 1;
         }
-        Ok(accepted.then_some(Self {
+        if !accepted {
+            return Ok(FunctionRegistryBuild::Refused);
+        }
+        Ok(FunctionRegistryBuild::Complete(Self {
             sigs,
             modules,
             imports,

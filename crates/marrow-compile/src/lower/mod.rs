@@ -180,7 +180,17 @@ pub(crate) enum CallResolution<'a> {
     NotFound,
 }
 
-type LowerResult = Result<Option<Lowered>, LowerInvariant>;
+/// Whether a body produced an image function. A refused body is the ordinary
+/// outcome of a source error inside it: its diagnostics are already pushed, it
+/// consumed no image index, and the phase artifact that depends on every declared
+/// body having lowered is thereby unavailable. Naming the two cases keeps that
+/// consequence at the call site instead of leaving it to an untyped `None`.
+pub(crate) enum BodyOutcome {
+    Lowered(Lowered),
+    Refused,
+}
+
+type LowerResult = Result<BodyOutcome, LowerInvariant>;
 
 /// Which lowering pass a body is in: an ordinary or instance body that emits an
 /// image function and monomorphizes its generic calls, or the once-checked template
@@ -325,7 +335,9 @@ pub(crate) use self::builtins::{
     builtin_const_int, builtin_value_names, is_reserved_builtin_name, reserved_builtin_name,
 };
 pub(crate) use self::durable::{is_durable_place_op, is_mutation_instr};
-pub(crate) use self::registry::{DeclaredFn, FunctionRegistry, GenericRegistry};
+pub(crate) use self::registry::{
+    DeclaredFn, FunctionRegistry, FunctionRegistryBuild, GenericRegistry,
+};
 pub(crate) use self::types::parse_int;
 
 impl<'a> FnLowerer<'a> {
@@ -430,7 +442,7 @@ impl<'a> FnLowerer<'a> {
     /// and the indices of the functions it calls directly. Export minting is the
     /// caller's job: it holds the dotted module name needed to compute the export's
     /// [`marrow_image::ExportId`]. A function that fails to lower pushes its
-    /// diagnostics and returns `None`.
+    /// diagnostics and returns [`BodyOutcome::Refused`].
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn lower(
         draft: &'a mut ImageDraft,
@@ -624,9 +636,11 @@ impl<'a> FnLowerer<'a> {
                                 annotation.span(),
                                 "this return type",
                             ));
-                            return Ok(None);
+                            return Ok(BodyOutcome::Refused);
                         }
-                        Err(ResolveError::Refusal(ResolveRefusal::Limit)) => return Ok(None),
+                        Err(ResolveError::Refusal(ResolveRefusal::Limit)) => {
+                            return Ok(BodyOutcome::Refused);
+                        }
                         Err(ResolveError::Invariant(invariant)) => return Err(invariant),
                     }
                 }
@@ -775,13 +789,13 @@ impl<'a> FnLowerer<'a> {
 
     /// Intern the function name and source, add the lowered function to the draft,
     /// and return its identity — the shared tail of function and test lowering. A
-    /// body that failed to lower returns `None`.
+    /// body that failed to lower returns [`BodyOutcome::Refused`].
     fn finish(mut self, name: &str, params: Vec<ImageType>, ret_ref: ImageType) -> LowerResult {
         if let Some(invariant) = self.invariant {
             return Err(invariant);
         }
         if self.failed || self.terminal_rejection() {
-            return Ok(None);
+            return Ok(BodyOutcome::Refused);
         }
         let name_id = self.draft.intern_string(name);
         let source_id = self.draft.intern_string(self.file.as_str());
@@ -799,7 +813,7 @@ impl<'a> FnLowerer<'a> {
             code: code.clone(),
             spans,
         });
-        Ok(Some(Lowered {
+        Ok(BodyOutcome::Lowered(Lowered {
             func: func_id,
             callees: std::mem::take(&mut self.calls),
             unwrapped_mutations: std::mem::take(&mut self.unwrapped_mutations),
@@ -1402,7 +1416,7 @@ mod generic_cache_boundary_tests {
         assert_eq!(lowerer.diagnostics.probe_rows()[0].span(), request_span);
         assert!(matches!(
             lowerer.finish("rejected", Vec::new(), ImageType::Unit),
-            Ok(None)
+            Ok(BodyOutcome::Refused)
         ));
 
         let after = draft.encode().expect("rejected draft still encodes");
