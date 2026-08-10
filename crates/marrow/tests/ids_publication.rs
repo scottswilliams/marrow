@@ -202,14 +202,25 @@ fn a_refused_write_lock_reports_the_owner_s_code_rather_than_the_pending_marker(
     fs::write(workspace.path(".marrow/ids.pending"), b"").expect("plant the marker");
     let meta = workspace.path(".marrow");
     fs::set_permissions(&meta, fs::Permissions::from_mode(0o500)).expect("withhold write");
-    let binds = fs::write(meta.join("write-probe"), b"").is_err();
+    let probe = meta.join("write-probe");
+    let binds = fs::write(&probe, b"").is_err();
 
     let outcome = workspace.marrow(&["run", "answer"]);
     let text = format!("{}{}", outcome.stdout_text(), outcome.stderr_text());
     fs::set_permissions(&meta, fs::Permissions::from_mode(0o700)).expect("restore write");
-    if !binds {
-        return;
-    }
+    fs::remove_file(&probe).ok();
+    // A withdrawal that binds nothing would leave the assertions below reading
+    // an ordinary successful run, so it fails rather than reporting green. Mode
+    // bits do not bind a process holding the mode-override capability (`root`,
+    // or `CAP_DAC_OVERRIDE` on Linux), and a filesystem carrying no mode bits
+    // does not enforce them at all.
+    assert!(
+        binds,
+        "withdrawing owner write from {} did not refuse a write inside it, so this check \
+         never ran. Run the suite as a process the mode bits bind, on a filesystem that \
+         carries them.",
+        meta.display()
+    );
 
     assert!(
         !outcome.success(),
