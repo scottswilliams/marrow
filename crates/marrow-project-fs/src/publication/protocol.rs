@@ -520,8 +520,9 @@ impl<'a> Session<'a> {
     /// the stage name; anything else there is a third live inode that this
     /// process — and only this process, which has just proven the pre-exchange
     /// reading — may exchange back. Unlike the ledger, the stage name is one of
-    /// the transients the write owner's ignore entry covers, so an ordinary Git
-    /// operation neither tracks nor recreates it: reaching the exchange-back arm
+    /// the transients the write owner's ignore entry covers, so in a repository
+    /// that neither tracks it already nor predates that coverage an ordinary Git
+    /// operation neither tracks nor recreates it. Reaching the exchange-back arm
     /// takes a writer editing the metadata directory outside the lock between
     /// this exchange and the stat below.
     fn exchange_replace(&self, base: FsIdentity) -> Result<Terminal, IdsPublicationError> {

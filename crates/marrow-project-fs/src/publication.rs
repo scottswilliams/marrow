@@ -60,9 +60,10 @@
 //! Reaching it takes a writer the guard does not exclude, which is a writer
 //! that took no lock: `.marrow/ids` is committed, so an ordinary Git operation
 //! creates or replaces it. The stage name is covered by the ignore entry this
-//! owner writes, so an ordinary Git operation neither tracks nor recreates it,
-//! and a writer reaches the same readings there through an edit outside the
-//! lock — or through a project whose ignore entry predates that coverage.
+//! owner writes, so an ordinary Git operation neither tracks nor recreates it —
+//! except in a repository that tracks the name anyway, which a force-add or a
+//! commit predating that coverage leaves. A writer otherwise reaches the same
+//! readings there through an edit outside the lock.
 //! Which terminal a mutation reached is read back from the map rather than
 //! decided from the mutation's own outcome, so the driver, the mutations, and
 //! the crash-tail derivation cannot disagree about what was installed.
