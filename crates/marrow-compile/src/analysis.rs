@@ -79,14 +79,14 @@ pub const MAX_ACTIVE_CALL_RENDER_BYTES: u64 = 64 * 1024;
 /// second input bound.
 pub const MAX_FORMAT_OUTPUT_BYTES: u64 = 4 * 1024 * 1024;
 
-/// The largest number of declaration-hierarchy symbols one module file admits before its
-/// snapshot is transactionally refused as a [`AnalysisResourceLimit::DocumentSymbolCount`].
-/// Every projected node — each top-level declaration and each nested enum member — counts
-/// once. No partial or truncated outline is retained.
+/// The largest number of declaration-hierarchy symbols one module file admits before that
+/// file's outline becomes [`Unavailability::Bounded`]. Every projected node — each
+/// top-level declaration and each nested enum member — counts once. No partial or
+/// truncated outline is retained, and no other file and no other query is affected.
 pub const MAX_DOCUMENT_SYMBOLS_PER_FILE: u64 = 4_096;
 
-/// The largest declaration-hierarchy nesting depth one module file admits before its
-/// snapshot is refused as a [`AnalysisResourceLimit::DocumentSymbolDepth`]. Top-level
+/// The largest declaration-hierarchy nesting depth one module file admits before that
+/// file's outline becomes [`Unavailability::Bounded`]. Top-level
 /// declarations sit at depth one; enum members deepen the tree by one level each. The
 /// parser admits far deeper enum-member nesting, so this analysis bound is reachable and
 /// fails a pathological outline closed rather than recursing without limit.
@@ -206,12 +206,6 @@ pub enum AnalysisResourceLimit {
     SnapshotFactCount { limit: u64 },
     /// The retained fact byte footprint exceeded [`MAX_SNAPSHOT_FACT_BYTES`].
     SnapshotFactBytes { limit: u64 },
-    /// One module file's declaration-hierarchy symbol count exceeded
-    /// [`MAX_DOCUMENT_SYMBOLS_PER_FILE`].
-    DocumentSymbolCount { limit: u64 },
-    /// One module file's declaration-hierarchy nesting depth exceeded
-    /// [`MAX_SYMBOL_DEPTH`].
-    DocumentSymbolDepth { limit: u16 },
     /// One completion query's in-scope candidate set exceeded
     /// [`MAX_COMPLETION_CANDIDATES`]. A query-local refusal (never a truncated prefix),
     /// not a retained snapshot bound.
@@ -237,12 +231,6 @@ impl AnalysisResourceLimit {
             AnalysisResourceLimit::SnapshotFactCount { .. } => "the analysis fact table is full",
             AnalysisResourceLimit::SnapshotFactBytes { .. } => {
                 "the analysis facts hold too much text to retain"
-            }
-            AnalysisResourceLimit::DocumentSymbolCount { .. } => {
-                "one file declares too many symbols"
-            }
-            AnalysisResourceLimit::DocumentSymbolDepth { .. } => {
-                "one file's declarations are nested too deeply"
             }
             AnalysisResourceLimit::CompletionCandidateCount { .. } => {
                 "one completion query has too many candidates"
