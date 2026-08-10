@@ -803,6 +803,19 @@ fn durable_execution_failure_has_no_generic_collapse_surface() {
     }
 }
 
+/// The source of one function, from its signature to its own closing brace — whichever of
+/// the module-level or `impl`-level indentation closes it first. Enough to assert what a
+/// phase does and does not reach.
+fn fn_body<'a>(source: &'a str, signature: &str) -> Option<&'a str> {
+    let start = source.find(signature)?;
+    let rest = &source[start..];
+    let end = ["\n}\n", "\n    }\n"]
+        .iter()
+        .filter_map(|close| rest.find(close))
+        .min()?;
+    Some(&rest[..end])
+}
+
 /// Native access is a two-layer opaque owner: the storage layer owns the real
 /// lock plus engine, the kernel owns the scoped semantic store, and lifecycle
 /// can only provision, open, delegate sessions, or consume recovery.
@@ -852,12 +865,100 @@ fn native_lifecycle_open_is_existing_only_and_owner_inseparable() {
         "the sole create-capable call must remain inside provisioning",
     );
 
+    // Ordinary open enters through the opaque kernel owner once, in two ordered phases:
+    // exclusion is taken first, and everything the store directory contains is read between
+    // that acquisition and the engine open. Any read hoisted above the acquisition would put
+    // a verdict about the holder's bytes ahead of the exclusion a contender is owed.
+    let acquire = lifecycle_product
+        .match_indices("NativeStore::acquire_existing(")
+        .collect::<Vec<_>>();
     assert_eq!(
-        lifecycle_product
-            .match_indices("NativeStore::open_existing_admitted(")
-            .count(),
+        acquire.len(),
         1,
         "ordinary lifecycle open enters only through the opaque kernel owner",
+    );
+    let bind = lifecycle_product
+        .match_indices(".bind_and_open_existing(")
+        .collect::<Vec<_>>();
+    assert_eq!(
+        bind.len(),
+        1,
+        "the acquired owner is bound and opened exactly once",
+    );
+    let acquired = acquire[0].0;
+    let bound = bind[0].0;
+    let admit_directory = lifecycle_product
+        .find("AdmittedStoreDir::admit(")
+        .expect("the store directory is retained for admission");
+    for (label, read) in [
+        ("directory admission", admit_directory),
+        (
+            "the envelope read",
+            lifecycle_product
+                .find("decode_envelope(&admitted)")
+                .expect("the envelope is read from the retained directory"),
+        ),
+        (
+            "the head read",
+            lifecycle_product
+                .find("decode_head(&admitted)")
+                .expect("the head is read from the retained directory"),
+        ),
+    ] {
+        assert!(
+            acquired < read,
+            "{label} must happen under the physical owner, not ahead of it",
+        );
+    }
+    assert!(
+        acquired < admit_directory && admit_directory < bound,
+        "the store directory must be retained between acquisition and the engine open",
+    );
+    assert!(
+        !lifecycle_product.contains("std::fs::read(store_dir::")
+            && !lifecycle_product.contains("std::fs::read(&store_dir::"),
+        "lifecycle artifacts must be admitted through the retained directory, not path-read",
+    );
+
+    // The two-phase lower owner. Acquisition takes the lock and does nothing else: naming a
+    // store or reaching the engine there would put work that can fail ahead of the exclusion
+    // verdict, which is exactly the ordering this row exists to forbid.
+    let acquire_body = fn_body(&lower_owner, "pub fn acquire_existing(")
+        .expect("the lower owner exposes an acquisition phase");
+    assert!(
+        !acquire_body.contains("NativeEngine::") && !acquire_body.contains("instance"),
+        "owner acquisition must make no engine call and name no store instance",
+    );
+    assert!(
+        lower_owner.contains("pub fn bind_and_open_existing<R>(")
+            && fn_body(&lower_owner, "pub fn bind_and_open_existing<R>(")
+                .is_some_and(|body| body.contains("NativeEngine::open_existing(")),
+        "the existing-only engine open must live in the binding phase",
+    );
+    assert!(
+        lower_owner.contains("fn acquire(dir: &Path) -> Result<AcquiredLock, NativeLockError>"),
+        "lock acquisition must require no store instance",
+    );
+    assert!(
+        lower_owner.contains("pub instance: Option<[u8; 16]>"),
+        "a holder that has not bound its store must not be projected as naming one",
+    );
+    assert!(
+        lower_owner.contains("owner: read_owner(&mut file),"),
+        "a contention verdict must not depend on the marker decoding",
+    );
+
+    // Every artifact ceiling is derived beside the encoder it bounds, so a layout change
+    // that moves the maximum cannot leave the admission bound behind.
+    let envelope = std::fs::read_to_string(root.join("crates/marrow-lifecycle/src/envelope.rs"))
+        .expect("read the envelope codec");
+    let head = std::fs::read_to_string(root.join("crates/marrow-lifecycle/src/head.rs"))
+        .expect("read the head codec");
+    assert!(
+        envelope.contains("pub const MAX_ENVELOPE_FILE_BYTES: u64 = 30 + MAX_TOOLCHAIN_BYTES")
+            && head.contains("MAX_HEAD_MAP_ENTRIES as u64 * (16 + 4)")
+            && head.contains("+ MAX_ACCEPTED_CEILING_BYTES as u64"),
+        "an artifact file ceiling must be derived from the bounds its own decoder enforces",
     );
     assert!(
         lifecycle_product.contains("owner.resolve_recovery(recovery)")
@@ -918,15 +1019,22 @@ fn native_lifecycle_open_is_existing_only_and_owner_inseparable() {
         "the lower owner exposes a detach or quarantine re-arm seam",
     );
 
-    let owner_write = lower_owner
-        .find("write_owner(&mut file, owner)")
+    let acquire_lock = fn_body(&lower_owner, "fn acquire(dir: &Path)")
+        .expect("owner-lock acquisition owner exists");
+    let owner_write = acquire_lock
+        .find("write_owner(")
         .expect("owner descriptor write exists");
-    let directory_sync = lower_owner
+    let directory_sync = acquire_lock
         .find("sync_dir(dir).map_err(NativeLockError::Io)?")
         .expect("owner-lock directory sync exists");
     assert!(
         owner_write < directory_sync,
         "owner-lock acquisition must durably publish the lock-file directory entry before returning",
+    );
+    assert!(
+        fn_body(&lower_owner, "fn write_owner(")
+            .is_some_and(|body| body.matches("sync_all()").count() == 2),
+        "the owner marker must be made durable around every rewrite of its body",
     );
 
     assert!(
