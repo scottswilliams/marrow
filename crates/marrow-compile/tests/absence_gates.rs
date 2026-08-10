@@ -810,14 +810,16 @@ fn every_covered_refusal_names_its_covering_report() {
         .collect();
     // The definition, the two durable classes that use it — a repeated project-wide
     // identity anchor, reported by the first store to reach it, and a durable value
-    // cycle, reported by `types::reject_value_cycles` after lowering — and the two
-    // declaration sites of the shared instantiation limit, which the monomorphization
-    // owner reports once for the whole pass rather than at each struct field or
-    // resource member that hit it.
+    // cycle, reported by `types::reject_value_cycles` after lowering — the signature
+    // whose annotation names a cause an earlier use already steered to or the shared
+    // instantiation limit, and the two declaration sites of that same limit, which
+    // the monomorphization owner reports once for the whole pass rather than at each
+    // struct field or resource member that hit it.
     let allowed = [
         "decl.rs",
         "durable.rs",
         "durable.rs",
+        "registry.rs",
         "types.rs",
         "types.rs",
     ];

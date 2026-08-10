@@ -2,7 +2,11 @@
 
 use super::*;
 
-use crate::decl::{DeclarationLedger, DeclarationNamespace};
+use crate::decl::{
+    Binding, DeclarationLedger, DeclarationNamespace, DeclarationOccurrence,
+    DeclarationRefusalSummary, Declared, refuse_covered, refuse_first,
+};
+use crate::types::BuildError;
 
 /// One declared function paired with where it was declared: the file identity its
 /// diagnostics point into, the snapshot coordinate its editor facts are retained
@@ -29,12 +33,15 @@ pub(crate) struct ModuleBinding;
 /// not a module of this namespace at all, and naming it is a genuine absence.
 pub(crate) type ModuleLedger = DeclarationLedger<String, ModuleBinding>;
 
+/// One function's key in the signature namespace: its dotted module and its name.
+pub(crate) type FnKey = (String, String);
+
 /// The project's functions and the module scope a call resolves against: every
 /// function signature (resolved before body lowering so a forward call resolves),
-/// the module ledger, and each module's `use` bindings. Names are unique within a
-/// module (a duplicate is rejected before this is built).
+/// the module ledger, and each module's `use` bindings. A duplicate name in one
+/// module is reported by its own check before this is built.
 pub(crate) struct FunctionRegistry {
-    sigs: Vec<FnSignature>,
+    sigs: DeclarationLedger<FnKey, FnSignature>,
     modules: ModuleLedger,
     /// `module -> [(final-segment binding, dotted target module)]`.
     imports: BTreeMap<String, Vec<(String, String)>>,
@@ -47,21 +54,12 @@ pub(crate) struct TemplateProofOutcome {
     pub(crate) generic: GenericDiagnostics,
 }
 
-/// Whether every declared signature resolved. A refused signature has already pushed
-/// its diagnostic; the registry is withheld because a partial signature table cannot
-/// resolve call sites, which makes the whole `CompleteFunctionRegistry` artifact
-/// unavailable rather than leaving the caller to read that from an untyped `None`.
-pub(crate) enum FunctionRegistryOutcome {
-    Complete(FunctionRegistry),
-    Refused,
-}
-
 impl Default for FunctionRegistry {
-    /// The registry of a project with no modules, functions, or imports. The module
-    /// ledger carries its namespace tag, so there is no untagged empty ledger.
+    /// The registry of a project with no modules, functions, or imports. Each ledger
+    /// carries its namespace tag, so there is no untagged empty ledger.
     fn default() -> Self {
         Self {
-            sigs: Vec::new(),
+            sigs: DeclarationLedger::new(DeclarationNamespace::Function),
             modules: ModuleLedger::new(DeclarationNamespace::Module),
             imports: BTreeMap::new(),
         }
@@ -69,9 +67,22 @@ impl Default for FunctionRegistry {
 }
 
 impl FunctionRegistry {
-    /// Resolve every function's signature in declaration order. The i-th function
-    /// takes image index `i`, matching the order [`FnLowerer::lower`] adds them.
-    /// `functions` pairs each declaration with its dotted module name.
+    /// Resolve every function's signature in declaration order.
+    ///
+    /// A signature is refused whole: one parameter or return type the compiler
+    /// could not resolve refuses the declaration and takes no image index, so no
+    /// signature with a short parameter list enters the table and no later
+    /// declaration inherits an index that was never minted. The declaration keeps
+    /// its name, so a call to it reuses that cause rather than reading as unknown.
+    ///
+    /// **Slot order.** `index` is an image coordinate: the i-th accepted signature
+    /// must be the function the draft's i-th monomorphic slot holds. The counter
+    /// below advances once per accepted occurrence, in the source order
+    /// [`DeclarationLedger::accepted_occurrences`] walks, and `lower_declared_functions`
+    /// visits the same declarations in the same order and refuses exactly the ones
+    /// refused here — a body whose parameter or return annotation does not resolve
+    /// refuses before it takes a slot. So the ledger's accepted occurrences and the
+    /// image's monomorphic slots are the same sequence.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn build(
         records: &TypeRegistry,
@@ -81,21 +92,25 @@ impl FunctionRegistry {
         modules: ModuleLedger,
         imports: BTreeMap<String, Vec<(String, String)>>,
         diagnostics: &mut DiagnosticCollector,
-    ) -> Result<FunctionRegistryOutcome, LowerInvariant> {
-        let mut sigs = Vec::with_capacity(functions.len());
-        let mut accepted = true;
+    ) -> Result<FunctionRegistry, BuildError> {
+        let mut sigs = DeclarationLedger::new(DeclarationNamespace::Function);
         // Only monomorphic functions take an image index and enter the signature
         // table; a generic function is a template with no single image entry (its
         // per-application instances are minted lazily), so it is skipped here and
-        // resolved through the separate [`GenericRegistry`]. The concrete index runs
-        // over non-generic functions only, matching the order [`FnLowerer::lower`]
-        // adds them into the image FUNCTIONS table.
+        // resolved through the separate [`GenericRegistry`].
         let mut index: u16 = 0;
         for declared in functions {
             let (file, module, function) = (&declared.file, &declared.module, declared.decl);
             if !function.type_params.is_empty() {
                 continue;
             }
+            let at = Declared {
+                name: &function.name,
+                file,
+                at: declared.at,
+                span: function.name_span,
+            };
+            let mut refusal: Option<DeclarationRefusalSummary> = None;
             let mut params = Vec::with_capacity(function.params.len());
             for param in &function.params {
                 let site = MintSite {
@@ -104,20 +119,18 @@ impl FunctionRegistry {
                 };
                 match param_type(records, draft, durable, &param.ty, TypeEnv::EMPTY, site) {
                     Ok(ty) => params.push(ty),
-                    Err(ResolveError::Refusal(refusal)) => {
-                        if let Some(row) = annotation_refusal_row(
+                    Err(ResolveError::Refusal(refused)) => {
+                        let refused = annotation_refusal_row(
                             records,
                             durable,
-                            refusal,
+                            refused,
                             file,
                             param.ty.span(),
                             "this parameter type",
-                        )? {
-                            diagnostics.push(row);
-                        }
-                        accepted = false;
+                        )?;
+                        refuse_annotation(&mut refusal, diagnostics, at, refused);
                     }
-                    Err(ResolveError::Invariant(invariant)) => return Err(invariant),
+                    Err(ResolveError::Invariant(invariant)) => return Err(invariant.into()),
                 }
             }
             let ret = match &function.return_type {
@@ -128,73 +141,91 @@ impl FunctionRegistry {
                         span: annotation.span(),
                     };
                     match resolve_type(records, draft, durable, annotation, TypeEnv::EMPTY, site) {
-                        Err(ResolveError::Refusal(refusal)) => {
-                            if let Some(row) = annotation_refusal_row(
+                        Err(ResolveError::Refusal(refused)) => {
+                            let refused = annotation_refusal_row(
                                 records,
                                 durable,
-                                refusal,
+                                refused,
                                 file,
                                 annotation.span(),
                                 "this return type",
-                            )? {
-                                diagnostics.push(row);
-                            }
-                            accepted = false;
+                            )?;
+                            refuse_annotation(&mut refusal, diagnostics, at, refused);
                             RetType::Unit
                         }
-                        Err(ResolveError::Invariant(invariant)) => return Err(invariant),
+                        Err(ResolveError::Invariant(invariant)) => return Err(invariant.into()),
                         Ok(ty) => RetType::Value(ty),
                     }
                 }
             };
-            sigs.push(FnSignature {
-                name: function.name.clone(),
-                module: module.clone(),
-                at: declared.at,
-                index,
-                params,
-                ret,
-                public: function.public,
-                name_span: function.name_span,
-                decl_range: decl_range(function),
-            });
-            index += 1;
+            let occurrence = match refusal {
+                Some(refusal) => DeclarationOccurrence::Refused(refusal),
+                None => {
+                    let signature = FnSignature {
+                        module: module.clone(),
+                        at: declared.at,
+                        index,
+                        params,
+                        ret,
+                        public: function.public,
+                        name_span: function.name_span,
+                        decl_range: decl_range(function),
+                    };
+                    index += 1;
+                    DeclarationOccurrence::Accepted(signature)
+                }
+            };
+            sigs.declare((module.clone(), function.name.clone()), occurrence)?;
         }
-        if !accepted {
-            return Ok(FunctionRegistryOutcome::Refused);
-        }
-        Ok(FunctionRegistryOutcome::Complete(Self {
+        Ok(Self {
             sigs,
             modules,
             imports,
-        }))
+        })
+    }
+
+    /// Whether every declared signature was accepted — the completeness predicate
+    /// read from the ledger rather than from a flag the build loop maintained.
+    pub(crate) fn every_signature_accepted(&self) -> bool {
+        self.sigs.refused().next().is_none()
     }
 
     /// The number of monomorphic functions, which is the number of image FUNCTIONS
-    /// entries lowered before tests and generic instantiations.
+    /// entries lowered before tests and generic instantiations. One per accepted
+    /// occurrence, not per accepted name: a repeated function name is reported by
+    /// its own duplicate check and both declarations still lower a body.
     pub(crate) fn concrete_count(&self) -> u16 {
-        self.sigs.len() as u16
+        self.sigs.accepted_occurrences().count() as u16
     }
 
-    /// The names of every function declared in `module`, so an unresolved call can
-    /// offer the nearest one as a did-you-mean. Used for both an unqualified call (the
-    /// caller's own module) and a qualified call (the resolved target module).
+    /// The names of every function declared in `module`, accepted or refused, so an
+    /// unresolved call can offer the nearest one as a did-you-mean. Used for both an
+    /// unqualified call (the caller's own module) and a qualified call (the resolved
+    /// target module). A refused name is still a name the source wrote, so a
+    /// near-miss on one still suggests it.
     pub(super) fn module_function_names<'s>(
         &'s self,
         module: &'s str,
     ) -> impl Iterator<Item = &'s str> {
         self.sigs
-            .iter()
-            .filter(move |sig| sig.module == module)
-            .map(|sig| sig.name.as_str())
+            .keys()
+            .filter(move |(owner, _)| owner == module)
+            .map(|(_, name)| name.as_str())
     }
 
     /// Resolve an unqualified call from within `module`: a function of that name in
-    /// the same module.
-    pub(super) fn same_module(&self, module: &str, name: &str) -> Option<&FnSignature> {
-        self.sigs
-            .iter()
-            .find(|sig| sig.name == name && sig.module == module)
+    /// the same module, or the cause its declaration was refused for.
+    pub(super) fn same_module(&self, module: &str, name: &str) -> Binding<'_, FnSignature> {
+        self.sigs.lookup(&(module.to_string(), name.to_string()))
+    }
+
+    /// Whether the signature of `name` in `module` was refused.
+    ///
+    /// The body-lowering driver asks before lowering: a refused signature bound no
+    /// parameter types, so its body has none to bind and re-resolving its annotation
+    /// would report the same cause a second time.
+    pub(crate) fn signature_refused(&self, module: &str, name: &str) -> bool {
+        matches!(self.same_module(module, name), Binding::Refused(..))
     }
 
     /// Resolve a `::`-qualified call `prefix::item` from within `current`. A single
@@ -215,14 +246,16 @@ impl FunctionRegistry {
             ModuleResolution::Refused(summary) => return CallResolution::ModuleRefused(summary),
             ModuleResolution::Absent => return CallResolution::NotFound,
         };
-        match self
-            .sigs
-            .iter()
-            .find(|sig| sig.name == item && sig.module == module)
-        {
-            Some(sig) if sig.public || sig.module == current => CallResolution::Found(sig),
-            Some(_) => CallResolution::NotPublic,
-            None => CallResolution::NotFound,
+        match self.sigs.lookup(&(module.clone(), item.to_string())) {
+            Binding::Accepted(sig) if sig.public || sig.module == current => {
+                CallResolution::Found(sig)
+            }
+            Binding::Accepted(_) => CallResolution::NotPublic,
+            // A refused signature is not callable from anywhere, so visibility is
+            // not the question: the declaration reported its cause and this call
+            // reuses it.
+            Binding::Refused(_, summary) => CallResolution::SignatureRefused(summary),
+            Binding::Absent => CallResolution::NotFound,
         }
     }
 
@@ -269,6 +302,28 @@ enum ModuleResolution<'a> {
     Accepted(String),
     Refused(&'a DeclarationRefusalSummary),
     Absent,
+}
+
+/// Fold one annotation refusal into the signature's retained cause.
+///
+/// The row is pushed where this site owns it, and the first cause is what the
+/// declaration keeps, so a signature refused for several annotations steers its uses
+/// to the first thing the reader has to fix.
+fn refuse_annotation(
+    refusal: &mut Option<DeclarationRefusalSummary>,
+    diagnostics: &mut DiagnosticCollector,
+    at: Declared<'_>,
+    refused: AnnotationRefusal,
+) {
+    match refused.row {
+        Some(row) => refuse_first(refusal, diagnostics, at, row),
+        // The row is owed elsewhere — to the use that already steered to this cause,
+        // or to the monomorphization owner that reports the shared instantiation
+        // limit once. The signature is refused all the same, under the code that
+        // covering report carries.
+        None if refusal.is_none() => *refusal = Some(refuse_covered(at, refused.code)),
+        None => {}
+    }
 }
 
 /// The dotted module name a multi-segment `::` prefix spells. A module path joins on

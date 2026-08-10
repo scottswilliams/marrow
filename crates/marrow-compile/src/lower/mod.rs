@@ -115,7 +115,6 @@ enum CallResult {
 /// A resolved function signature, keyed by index (the image FUNCTIONS position,
 /// which equals declaration order).
 pub(crate) struct FnSignature {
-    name: String,
     /// The dotted module the function is declared in (path-derived).
     module: String,
     index: u16,
@@ -180,6 +179,10 @@ pub(crate) enum CallResolution<'a> {
     /// A function with the name exists in the target module but is not `pub`, so it
     /// is not callable across the module boundary.
     NotPublic,
+    /// A function of that name is declared in the target module and its signature
+    /// was refused, so it is callable from nowhere. The declaration reported the
+    /// cause; this call reuses it.
+    SignatureRefused(&'a DeclarationRefusalSummary),
     /// The qualifying prefix names a module this project contains and refused, so no
     /// scope to resolve `item` in exists. The module's declaration reported the
     /// cause; this call reuses it.
@@ -253,18 +256,30 @@ pub(super) fn refusal_summary<'r>(
         DeclarationNamespace::NamedType => records.refusal(id),
         DeclarationNamespace::DurableRoot => durable.refusal(id),
         // A constant is looked up by its own name at its own use site, a resource
-        // member by its owner and its own name, and a module by its dotted path, so
-        // none travels through type resolution and no handle of one reaches here.
+        // member by its owner and its own name, a module by its dotted path, and a
+        // function by its module and name, so none travels through type resolution
+        // and no handle of one reaches here.
         DeclarationNamespace::Constant
+        | DeclarationNamespace::Function
         | DeclarationNamespace::Module
         | DeclarationNamespace::ResourceMember => Err(DeclarationIndexDrift),
     }
 }
 
-/// The row a type-annotation position reports for a resolution refusal, once per
-/// refused key: the causal steer for a refused declaration, the subset-gap phrase
-/// for a genuine gap, and `None` for the shared instantiation limit and for a
-/// refused key some earlier use already steered.
+/// What a type-annotation position does with a resolution refusal.
+///
+/// `row` is the report this site owns, once per refused key: the causal steer for a
+/// refused declaration, the subset-gap phrase for a genuine gap, and `None` where
+/// the report is owed elsewhere — to the use that already steered to this cause, or
+/// to the monomorphization owner that reports the shared instantiation limit once.
+/// `code` carries the cause either way, so a declaration refused for an annotation
+/// it could not resolve retains a cause even when it owes no row.
+pub(super) struct AnnotationRefusal {
+    pub(super) row: Option<SourceDiagnostic>,
+    pub(super) code: &'static str,
+}
+
+/// The refusal a type-annotation position reports.
 ///
 /// The signature-building and return-type sites have no `FnLowerer`, so they take
 /// this directly; `reject_resolution` is the same decision inside one.
@@ -275,18 +290,29 @@ pub(super) fn annotation_refusal_row(
     file: &FileIdentity,
     span: SourceSpan,
     subject: &str,
-) -> Result<Option<SourceDiagnostic>, LowerInvariant> {
-    match refusal {
-        ResolveRefusal::Limit => Ok(None),
-        ResolveRefusal::Unsupported => Ok(Some(unsupported(file, span, subject))),
+) -> Result<AnnotationRefusal, LowerInvariant> {
+    Ok(match refusal {
+        ResolveRefusal::Limit => AnnotationRefusal {
+            row: None,
+            code: Code::CheckInstantiationLimit.as_str(),
+        },
+        ResolveRefusal::Unsupported => {
+            let row = unsupported(file, span, subject);
+            AnnotationRefusal {
+                code: row.code(),
+                row: Some(row),
+            }
+        }
         ResolveRefusal::RefusedDeclaration(id) => {
             let summary = refusal_summary(records, durable, id)?;
-            Ok(match summary.steer_once() {
-                true => Some(declaration_refused(file, span, summary)),
-                false => None,
-            })
+            AnnotationRefusal {
+                code: summary.code(),
+                row: summary
+                    .steer_once()
+                    .then(|| declaration_refused(file, span, summary)),
+            }
         }
-    }
+    })
 }
 
 pub(crate) struct FnLowerer<'a> {
@@ -393,8 +419,7 @@ pub(crate) use self::builtins::{
 };
 pub(crate) use self::durable::{is_durable_place_op, is_mutation_instr};
 pub(crate) use self::registry::{
-    DeclaredFn, FunctionRegistry, FunctionRegistryOutcome, GenericRegistry, ModuleBinding,
-    ModuleLedger,
+    DeclaredFn, FunctionRegistry, GenericRegistry, ModuleBinding, ModuleLedger,
 };
 pub(crate) use self::types::parse_int;
 
@@ -687,7 +712,9 @@ impl<'a> FnLowerer<'a> {
                                 file,
                                 annotation.span(),
                                 "this return type",
-                            )? {
+                            )?
+                            .row
+                            {
                                 diagnostics.push(row);
                             }
                             return Ok(BodyOutcome::Refused);
@@ -717,6 +744,14 @@ impl<'a> FnLowerer<'a> {
 
         // Params occupy the first slots, pre-initialized to their type: a bare
         // scalar, a bare nominal (int-shaped), or a bare struct record ref.
+        //
+        // One entry per source parameter, in source order: the bound parameter's
+        // lowered type, or `None` for one whose type was refused. The image's
+        // parameter list is built from this rather than from a positional zip
+        // against `locals`, which body lowering also grows — a dropped parameter
+        // would otherwise shift the correspondence and give the image a signature
+        // the source never wrote.
+        let mut declared_params: Vec<Option<LTy>> = Vec::with_capacity(function.params.len());
         for param in &function.params {
             if !param.keys.is_empty() {
                 lowerer.fail(unsupported(file, function.span, "a keyed parameter"));
@@ -728,11 +763,18 @@ impl<'a> FnLowerer<'a> {
                 if lowerer.terminal_rejection() {
                     return lowerer.finish(&function.name, Vec::new(), ImageType::Unit);
                 }
+                // The parameter keeps its name. Its type was reported at the
+                // annotation, so a use of it in the body reuses that cause and
+                // fails silently instead of calling a name the reader can see
+                // written unknown, once per use.
+                lowerer.poisoned_bindings.insert(param.name.clone());
+                declared_params.push(None);
                 continue;
             };
             let Some(slot) = lowerer.alloc_slot(param.ty.span()) else {
                 return lowerer.finish(&function.name, Vec::new(), ImageType::Unit);
             };
+            declared_params.push(Some(ty));
             lowerer.locals.push(Local {
                 name: param.name.clone(),
                 ty,
@@ -775,16 +817,21 @@ impl<'a> FnLowerer<'a> {
             }
         }
 
-        let params: Vec<ImageType> = function
-            .params
+        // A nominal param erases to its base int in the image; in-language callers
+        // passed the type, and the entry guard emitted above revalidates the
+        // interval against out-of-language callers. A struct param carries its image
+        // record ref (`ImageType::Record`).
+        let Some(params) = declared_params
             .iter()
-            .zip(&lowerer.locals)
-            // A nominal param erases to its base int in the image; in-language
-            // callers passed the type, and the entry guard emitted above
-            // revalidates the interval against out-of-language callers. A struct
-            // param carries its image record ref (`ImageType::Record`).
-            .map(|(_, local)| local.ty.image())
-            .collect();
+            .map(|ty| ty.as_ref().map(|ty| ty.image()))
+            .collect::<Option<Vec<ImageType>>>()
+        else {
+            // A refused parameter has no image type, so this function has no
+            // parameter list to emit. The body already failed; refusing the list
+            // here is what keeps a shortened one from ever being read as the
+            // signature the source wrote.
+            return lowerer.finish(&function.name, Vec::new(), ImageType::Unit);
+        };
         let ret_ref = match ret {
             RetType::Unit => ImageType::Unit,
             RetType::Value(ty) => ty.image(),
@@ -1003,9 +1050,23 @@ impl<'a> FnLowerer<'a> {
         // declaration's own cause, once, rather than described as a form the
         // language does not support.
         match annotation_refusal_row(self.records, self.durable, refusal, file, span, subject) {
-            Ok(Some(row)) => self.fail(row),
-            Ok(None) => self.failed = true,
+            Ok(AnnotationRefusal { row: Some(row), .. }) => self.fail(row),
+            Ok(AnnotationRefusal { row: None, .. }) => self.failed = true,
             Err(invariant) => self.record_invariant(invariant),
+        }
+    }
+
+    /// Steer one use of a refused declaration to the cause its declaration
+    /// reported, once per refused key: the first use carries the row and every
+    /// later one fails silently, which is what holds amplification to the number of
+    /// refused declarations rather than the number of uses.
+    fn steer_refusal(&mut self, summary: &DeclarationRefusalSummary, span: SourceSpan) {
+        match summary.steer_once() {
+            true => {
+                let row = declaration_refused(self.file, span, summary);
+                self.fail(row);
+            }
+            false => self.failed = true,
         }
     }
 
@@ -1020,13 +1081,7 @@ impl<'a> FnLowerer<'a> {
         let Binding::Refused(_, summary) = self.records.named_type(name) else {
             return false;
         };
-        match summary.steer_once() {
-            true => {
-                let row = declaration_refused(self.file, span, summary);
-                self.fail(row);
-            }
-            false => self.failed = true,
-        }
+        self.steer_refusal(summary, span);
         true
     }
 
@@ -1040,13 +1095,7 @@ impl<'a> FnLowerer<'a> {
         let Binding::Refused(_, summary) = self.records.member(owner, member) else {
             return false;
         };
-        match summary.steer_once() {
-            true => {
-                let row = declaration_refused(self.file, span, summary);
-                self.fail(row);
-            }
-            false => self.failed = true,
-        }
+        self.steer_refusal(summary, span);
         true
     }
 

@@ -51,6 +51,10 @@ pub(crate) struct DeclarationLedgerFull;
 pub(crate) enum DeclarationNamespace {
     Constant,
     DurableRoot,
+    /// One function signature per `(module, name)`. A signature refused for a
+    /// parameter or return type keeps its name, so a call reuses that cause instead
+    /// of reading the project's whole call table as withheld.
+    Function,
     /// The project's importable modules, keyed by dotted path. A module is refused
     /// when its header disagrees with its path, and when the stage that produced its
     /// source refused it outright.
@@ -614,6 +618,22 @@ impl<K: Ord + Clone, T> DeclarationLedger<K, T> {
             })
     }
 
+    /// Every accepted occurrence in source order, including a repeat of a key an
+    /// earlier occurrence already answers.
+    ///
+    /// The function table is the one namespace that needs this: a repeated function
+    /// name is reported by its own duplicate check and still lowers a body, so the
+    /// image slot count follows the occurrences the source wrote rather than the
+    /// names that survived. Every other namespace reads [`Self::accepted`].
+    pub(crate) fn accepted_occurrences(&self) -> impl Iterator<Item = (&K, &T)> {
+        self.occurrences
+            .iter()
+            .filter_map(|(key, occurrence)| match occurrence {
+                DeclarationOccurrence::Accepted(value) => Some((key, value)),
+                DeclarationOccurrence::Refused(_) => None,
+            })
+    }
+
     /// The accepted declarations in source order, one per key: exactly the
     /// occurrences [`Self::lookup`] answers with, so what a namespace builds from
     /// this iterator and what a use site resolves against cannot disagree.
@@ -622,6 +642,9 @@ impl<K: Ord + Clone, T> DeclarationLedger<K, T> {
     /// its accepted set from here rather than accumulating a parallel vector beside
     /// the ledger, which is what keeps the ledger the single authority for which
     /// declarations survived.
+    ///
+    /// A namespace whose *occurrences* take slots rather than its keys reads
+    /// [`Self::accepted_occurrences`] instead.
     pub(crate) fn accepted(&self) -> impl Iterator<Item = (&K, &T)> {
         self.occurrences
             .iter()

@@ -35,10 +35,14 @@ fn codes(rows: &[SourceDiagnostic]) -> Vec<&str> {
     rows.iter().map(SourceDiagnostic::code).collect()
 }
 
-/// Red 7. A refused function signature makes `FunctionRegistry` unavailable, so no
-/// body is lowered — but constant evaluation and the value-cycle audit depend only on
-/// `CompleteTypeRegistry`, so both still run and report, in their existing positions.
-/// The base stops at the signature stage and reports the signature row alone.
+/// Red 7. A refused function signature refuses that declaration alone.
+///
+/// The signature table is always built, so an unrelated body still lowers and
+/// reports its own error, and constant evaluation and the value-cycle audit run in
+/// their existing positions. The base stopped at the signature stage and reported
+/// the signature row alone; IMGDECL01's amendment to the artifact contract (design
+/// §3) replaced the withheld table with a refused ledger entry, so `driver`'s own
+/// unresolved call is now reported beside the three declaration refusals.
 #[test]
 fn signature_refusal_keeps_independent_checks_runnable() {
     let rows = diagnostics(
@@ -61,9 +65,14 @@ pub fn driver(): int {
     );
     assert_eq!(
         codes(&rows),
-        vec!["check.unsupported", "check.unsupported", "check.recursion"],
-        "the signature refusal, the constant refusal, and the value cycle all \
-         report, in semantic order: {rows:#?}",
+        vec![
+            "check.unsupported",
+            "check.unsupported",
+            "check.type",
+            "check.recursion",
+        ],
+        "the signature refusal, the constant refusal, the unrelated body's own \
+         unresolved call, and the value cycle all report, in semantic order: {rows:#?}",
     );
 }
 

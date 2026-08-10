@@ -28,8 +28,8 @@ use crate::diag::{
 use crate::durable::DurableRegistry;
 use crate::konst::ConstRegistry;
 use crate::lower::{
-    BodyOutcome, DeclaredFn, FnLowerer, FunctionRegistry, FunctionRegistryOutcome, GenericRegistry,
-    ModuleBinding, ModuleLedger, is_durable_place_op, is_mutation_instr, is_reserved_builtin_name,
+    BodyOutcome, DeclaredFn, FnLowerer, FunctionRegistry, GenericRegistry, ModuleBinding,
+    ModuleLedger, is_durable_place_op, is_mutation_instr, is_reserved_builtin_name,
     reserved_builtin_name,
 };
 use crate::types::BuildError;
@@ -808,21 +808,37 @@ fn ledger_full() -> CompileResourceLimit {
 /// order: every later phase resolves annotations through it.
 struct CompleteTypeRegistry;
 
-/// Every declared function signature resolved, so the registry indexes the whole
-/// monomorphic function set. This is the enumeration's `FunctionRegistry` artifact;
-/// it is named for the completeness property to leave the type name
-/// [`FunctionRegistry`] to the registry value itself. It is one artifact, not one per
-/// declaration: a single refused parameter type makes the whole registry unavailable,
-/// because every call site resolves through it.
+/// Every declared function signature resolved, as a zero-size proof token.
 ///
-/// It carries the table it proves complete, so availability and the value are one
-/// binding: a resolved signature table that no artifact vouches for is unrepresentable.
+/// `Artifacts.functions` holds this, not the table. [`CompleteFunctionRegistry`] is
+/// its only minter, so the property the artifact set protects — a resolved signature
+/// table nothing vouches for is unrepresentable at `encode` — is preserved verbatim:
+/// the encode gate consumes the token, and the token cannot be forged outside the
+/// owner that reads the ledger to mint it.
+struct SignaturesComplete;
+
+/// The sole owner of the resolved signature table.
+///
+/// The table is always built: a signature refused for a parameter or return type is
+/// a refused ledger entry, not a withheld table, so a call to it reuses that cause
+/// while every unrelated body still lowers and reports its own errors. Availability
+/// and the value are minted by this one owner, and the availability proof
+/// ([`SignaturesComplete`]) is zero-sized and unforgeable outside it.
 struct CompleteFunctionRegistry(FunctionRegistry);
 
 impl CompleteFunctionRegistry {
-    /// The resolved signature table every dependent phase resolves call sites through.
+    /// The resolved signature table every dependent phase resolves call sites
+    /// through. Always available: a refused signature answers with its cause.
     fn signatures(&self) -> &FunctionRegistry {
         &self.0
+    }
+
+    /// The completeness proof, `Some` exactly when every declared signature was
+    /// accepted. Read from the ledger, not from a flag the build loop maintained.
+    fn complete(&self) -> Option<SignaturesComplete> {
+        self.0
+            .every_signature_accepted()
+            .then_some(SignaturesComplete)
     }
 }
 
@@ -872,7 +888,7 @@ struct AmbientTransactionClosure;
 /// to completion. `encode` consumes all eight.
 struct Artifacts {
     types: Option<CompleteTypeRegistry>,
-    functions: Option<CompleteFunctionRegistry>,
+    functions: Option<SignaturesComplete>,
     template_proofs: Option<AcceptedQueuedTemplateProofs>,
     function_bodies: Option<CompleteDeclaredFunctionBodies>,
     test_bodies: Option<CompleteDeclaredTestBodies>,
@@ -1403,13 +1419,11 @@ fn run_semantic(
     // annotations through it.
     let types = Some(CompleteTypeRegistry);
 
-    // A refused signature no longer stops the pass. The registry is withheld, which
-    // makes every phase that resolves call sites through it unavailable, while the
-    // phases that need only the type registry — constant evaluation and the
-    // value-containment audit below — still run in their existing positions, so a
-    // signature refusal and an independent constant or value-cycle error are all
-    // reported instead of only the first.
-    let function_registry = match FunctionRegistry::build(
+    // The signature table is always built. A refused signature is a refused ledger
+    // entry, so every phase below still resolves call sites — a call to the refused
+    // function reuses its declaration's cause, and every unrelated body lowers and
+    // reports its own errors instead of being silenced by one bad annotation.
+    let signatures = match FunctionRegistry::build(
         &records,
         &mut draft,
         &durable,
@@ -1418,14 +1432,15 @@ fn run_semantic(
         imports,
         &mut diagnostics,
     ) {
-        Ok(FunctionRegistryOutcome::Complete(signatures)) => {
-            Some(CompleteFunctionRegistry(signatures))
-        }
-        Ok(FunctionRegistryOutcome::Refused) => None,
-        Err(invariant) => {
+        Ok(signatures) => CompleteFunctionRegistry(signatures),
+        Err(BuildError::Invariant(invariant)) => {
             return SemanticOutcome::Invariant(InvariantCause::Generic(invariant));
         }
+        Err(BuildError::LedgerFull(DeclarationLedgerFull)) => {
+            return SemanticOutcome::ResourceLimit(ledger_full());
+        }
     };
+    let function_registry = signatures.complete();
     // Generic functions are templates with no image index; they are monomorphized at
     // each call site and once-checked below against their constraints.
     let generic_functions: Vec<DeclaredFn<'_>> = parsed
@@ -1469,34 +1484,27 @@ fn run_semantic(
     };
 
     // Everything from the template proof to the instance drain resolves call sites
-    // through the function registry, so the whole region runs only when that artifact
-    // is available. The phases below the region need only the type registry and run
-    // either way.
-    let phases = match &function_registry {
-        Some(registry) => {
-            let resolution = Resolution {
-                records: &records,
-                durable: &durable,
-                signatures: registry.signatures(),
-                generics: &generics,
-                constants: &constants,
-            };
-            match registry_phases(
-                parsed,
-                mode,
-                resolution,
-                &mut draft,
-                &mut diagnostics,
-                facts,
-            ) {
-                Ok(phases) => phases,
-                Err(PhaseStop::StageDiagnostics(stage)) => {
-                    return SemanticOutcome::Diagnostics(diagnostics.finish(), stage);
-                }
-                Err(PhaseStop::Invariant(cause)) => return SemanticOutcome::Invariant(cause),
-            }
+    // through the signature table, which is always available.
+    let resolution = Resolution {
+        records: &records,
+        durable: &durable,
+        signatures: signatures.signatures(),
+        generics: &generics,
+        constants: &constants,
+    };
+    let phases = match registry_phases(
+        parsed,
+        mode,
+        resolution,
+        &mut draft,
+        &mut diagnostics,
+        facts,
+    ) {
+        Ok(phases) => phases,
+        Err(PhaseStop::StageDiagnostics(stage)) => {
+            return SemanticOutcome::Diagnostics(diagnostics.finish(), stage);
         }
-        None => RegistryPhases::unavailable(),
+        Err(PhaseStop::Invariant(cause)) => return SemanticOutcome::Invariant(cause),
     };
     let RegistryPhases {
         template_proofs,
@@ -1624,21 +1632,6 @@ struct RegistryPhases {
     lowered_set: Option<CompleteLoweredFunctionSet>,
     exports: Vec<ExportEntry>,
     tests: Vec<TestEntry>,
-}
-
-impl RegistryPhases {
-    /// What the region produces when the function registry is unavailable: no phase in
-    /// it ran, so it minted no artifact, no image function, no export, and no test entry.
-    fn unavailable() -> Self {
-        RegistryPhases {
-            template_proofs: None,
-            function_bodies: None,
-            test_bodies: None,
-            lowered_set: None,
-            exports: Vec::new(),
-            tests: Vec::new(),
-        }
-    }
 }
 
 /// How a declaration-lowering loop ended.
@@ -1854,6 +1847,18 @@ fn lower_declared_functions(
             };
             if !function.type_params.is_empty() {
                 // A generic template is not lowered in place.
+                continue;
+            }
+            if resolution
+                .signatures
+                .signature_refused(&module.name, &function.name)
+            {
+                // The signature was refused and reported at the annotation it could
+                // not resolve. Lowering the body would resolve the same annotation
+                // again and report it a second time, and there is no parameter list
+                // to bind, so the declaration is refused whole: it takes no image
+                // index, exactly as a body refused for its own error does.
+                exit = DeclarationExit::Refused;
                 continue;
             }
             let result = match FnLowerer::lower(
@@ -2781,7 +2786,7 @@ mod tests {
         Artifacts, BoundedDiagnostics, Built, CompileFailure, CompileStage,
         CompleteDeclaredFunctionBodies, CompleteDeclaredTestBodies, CompleteFunctionRegistry,
         CompleteLoweredFunctionSet, CompleteTypeRegistry, DeclarationExit, Driven, InvariantCause,
-        RegistryPhases, SemanticOutcome, analyze_outcome,
+        SemanticOutcome, SignaturesComplete, analyze_outcome,
     };
     use crate::diag::{DiagnosticCollector, MAX_DIAGNOSTIC_COUNT, SourceDiagnostic};
     use crate::types::{
@@ -3061,39 +3066,17 @@ mod tests {
         assert!(!DeclarationExit::StoppedOnInstantiationLimit.complete());
     }
 
-    /// An unavailable function registry runs no phase in the region behind it, so the
-    /// region's result must withhold every artifact and mint no export or test entry. The
-    /// destructure is exhaustive and every field is named: a field silently constructed
-    /// as available — or a field added later and defaulted to available — fails here by
-    /// name rather than by letting a downstream phase run on a fact no phase produced.
+    /// The IMGFAIL01 amendment (design §3): availability and the value are minted by
+    /// one owner, and the availability proof is zero-sized.
+    ///
+    /// `Artifacts.functions` holds the proof token, never the table, so what `encode`
+    /// consumes cannot be forged outside [`CompleteFunctionRegistry`] — the property
+    /// the artifact set protects, that a resolved signature table nothing vouches for
+    /// is unrepresentable at encode, is preserved verbatim while the table itself
+    /// stays available to every phase that resolves call sites through it.
     #[test]
-    fn an_unavailable_registry_region_produces_no_artifact_and_no_entry() {
-        let RegistryPhases {
-            template_proofs,
-            function_bodies,
-            test_bodies,
-            lowered_set,
-            exports,
-            tests,
-        } = RegistryPhases::unavailable();
-        assert!(
-            template_proofs.is_none(),
-            "no template proof was accepted: the proof phase never ran",
-        );
-        assert!(
-            function_bodies.is_none(),
-            "no declared function body lowered: the body phase never ran",
-        );
-        assert!(
-            test_bodies.is_none(),
-            "no declared test body lowered: the test-body phase never ran",
-        );
-        assert!(
-            lowered_set.is_none(),
-            "the drain never ran, so no complete lowered set exists to build facts over",
-        );
-        assert!(exports.is_empty(), "no export was minted: {exports:?}");
-        assert!(tests.is_empty(), "no test entry was bound: {tests:?}");
+    fn the_signature_completeness_proof_is_zero_sized() {
+        assert_eq!(std::mem::size_of::<SignaturesComplete>(), 0);
     }
 
     /// The fence's positive direction. Production cannot reach it — an unavailable
@@ -3129,7 +3112,7 @@ mod tests {
                 &mut diagnostics,
             )
             .expect("an empty project builds an empty durable registry");
-            let built = crate::lower::FunctionRegistry::build(
+            let signatures = crate::lower::FunctionRegistry::build(
                 &records,
                 &mut draft,
                 &durable,
@@ -3139,14 +3122,11 @@ mod tests {
                 &mut diagnostics,
             )
             .expect("an empty project resolves every signature");
-            let crate::lower::FunctionRegistryOutcome::Complete(signatures) = built else {
-                panic!("an empty declaration set refuses no signature")
-            };
             CompleteFunctionRegistry(signatures)
         };
         let available = || Artifacts {
             types: Some(CompleteTypeRegistry),
-            functions: Some(complete_registry()),
+            functions: complete_registry().complete(),
             template_proofs: Some(AcceptedQueuedTemplateProofs),
             function_bodies: Some(CompleteDeclaredFunctionBodies),
             test_bodies: Some(CompleteDeclaredTestBodies),

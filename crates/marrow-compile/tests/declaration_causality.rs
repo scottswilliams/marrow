@@ -1046,10 +1046,6 @@ fn r25_a_resource_member_occupies_its_name() {
 /// reported as an arity mismatch — a fabricated statement about the call, derived
 /// from the compiler's own truncation of the declaration.
 #[test]
-#[ignore = "sequenced behind the function ledger and the `CompleteFunctionRegistry` \
-            amendment (design §3): `FunctionRegistryOutcome::Refused` withholds the \
-            registry today, so no call resolves against the truncated signature and \
-            the corruption is unobservable through the production pipeline"]
 fn i5_a_refused_parameter_type_never_truncates_its_signature() {
     let diagnostics = diagnostics(
         "module main\n\n\
@@ -1235,4 +1231,127 @@ fn assert_no_absent_module(diagnostics: &[SourceDiagnostic], name: &str) {
             messages(diagnostics),
         );
     }
+}
+
+/// R12 — a refused signature stops its own declaration, not the whole project.
+///
+/// The lane's mutation-kill target: an unrelated body must still lower and report
+/// its own error. Withholding the registry silenced every body in the project, so
+/// one bad annotation hid every other diagnostic behind it.
+#[test]
+fn r12_a_refused_signature_does_not_silence_an_unrelated_body() {
+    let diagnostics = diagnostics(
+        "module main\n\n\
+         fn helper(a: Nope): int {\n\
+         \x20   return 1\n\
+         }\n\n\
+         pub fn other(): int {\n\
+         \x20   return missingFn()\n\
+         }\n",
+    );
+
+    assert_eq!(
+        rows(&diagnostics),
+        vec![("check.unsupported", 3, 14), ("check.type", 8, 12)],
+        "the refused signature reports its own cause and the unrelated body still \
+         reports its own: {:#?}",
+        messages(&diagnostics),
+    );
+}
+
+/// R16 — the mutation-kill partner: reusing a cause never lets a body through.
+///
+/// A `Binding::Refused` lookup fails its body exactly as a `Binding::Absent` one
+/// does. If it ever did not, an unavailable artifact would become available and a
+/// fabricated image would reach `encode`, so the outcome is asserted to be the
+/// diagnostic refusal — never a compiled program and never the empty-terminal
+/// invariant.
+#[test]
+fn r16_a_reused_cause_never_admits_the_body_that_reused_it() {
+    let source = "module main\n\n\
+                  fn helper(a: Nope): int {\n\
+                  \x20   return 1\n\
+                  }\n\n\
+                  pub fn other(): int {\n\
+                  \x20   return helper(1)\n\
+                  }\n";
+    match compile(&project(source)) {
+        Err(CompileFailure::Diagnostics(diagnostics)) => {
+            let diagnostics: Vec<SourceDiagnostic> = diagnostics.into_iter().collect();
+            assert_eq!(
+                rows(&diagnostics),
+                vec![("check.unsupported", 3, 14), ("check.unsupported", 8, 12)],
+                "the call reuses the signature's cause and still refuses: {:#?}",
+                messages(&diagnostics),
+            );
+        }
+        other => panic!("a reused cause must still refuse the program, got {other:?}"),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Function parameters — I-13
+//
+// A parameter whose type is refused pushes no local and leaves no record of the
+// name, so every use in the body reports a fabricated absence — once per use.
+// ---------------------------------------------------------------------------
+
+/// R23 — the non-generic path, unmasked by deleting the whole-registry
+/// suppression. This red exists to prove R12 introduced no regression: with every
+/// body now lowering, a refused parameter must not make its own name unknown.
+#[test]
+fn r23_a_refused_parameter_is_not_out_of_scope_in_its_own_body() {
+    let diagnostics = diagnostics(
+        "module main\n\n\
+         fn helper(p: Nope, t: int): int {\n\
+         \x20   const a = p\n\
+         \x20   const b = p\n\
+         \x20   return t\n\
+         }\n\n\
+         pub fn other(): int {\n\
+         \x20   return 2\n\
+         }\n",
+    );
+
+    assert_never_out_of_scope(&diagnostics, "p");
+    assert_eq!(
+        rows(&diagnostics),
+        vec![("check.unsupported", 3, 14)],
+        "the parameter type reports the cause and its uses reuse it: {:#?}",
+        messages(&diagnostics),
+    );
+}
+
+/// R22 — the generic path, which bypasses the signature registry and so amplified
+/// per use today. Two uses of the refused parameter add no further row.
+#[test]
+fn r22_a_refused_generic_parameter_is_reported_once_not_once_per_use() {
+    let diagnostics = diagnostics(
+        "module main\n\n\
+         fn helper<T>(p: Nope, t: T): int {\n\
+         \x20   const a = p\n\
+         \x20   const b = p\n\
+         \x20   return 1\n\
+         }\n\n\
+         pub fn other(): int {\n\
+         \x20   return helper(1, 2)\n\
+         }\n",
+    );
+
+    assert_never_out_of_scope(&diagnostics, "p");
+    assert_eq!(
+        rows(&diagnostics)
+            .iter()
+            .filter(|(_, line, _)| *line == 4 || *line == 5)
+            .count(),
+        0,
+        "the two uses of the refused parameter add no row of their own: {:#?}",
+        messages(&diagnostics),
+    );
+    assert_eq!(
+        rows(&diagnostics)[0],
+        ("check.unsupported", 3, 17),
+        "the parameter type reports the cause once, at its own span: {:#?}",
+        messages(&diagnostics),
+    );
 }

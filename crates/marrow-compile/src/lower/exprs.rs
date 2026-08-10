@@ -1363,18 +1363,28 @@ impl<'a> FnLowerer<'a> {
                 .lower_constructor(name, args, span)
                 .map(CallResult::Value);
         }
-        if let Some(sig) = self.functions.same_module(self.module, name) {
-            let (index, params, ret, target) = (
-                sig.index,
-                sig.params.clone(),
-                sig.ret,
-                sig.definition_target(),
-            );
-            if self.collects_hover() {
-                let display = signature_display(name, &params, ret, self.records);
-                self.record_hover(callee_span, display.into(), Some(target));
+        match self.functions.same_module(self.module, name) {
+            Binding::Accepted(sig) => {
+                let (index, params, ret, target) = (
+                    sig.index,
+                    sig.params.clone(),
+                    sig.ret,
+                    sig.definition_target(),
+                );
+                if self.collects_hover() {
+                    let display = signature_display(name, &params, ret, self.records);
+                    self.record_hover(callee_span, display.into(), Some(target));
+                }
+                return self.lower_function_call(index, &params, ret, args, span);
             }
-            return self.lower_function_call(index, &params, ret, args, span);
+            // A call to a function whose signature this project refused is not an
+            // unknown callable and not an arity mismatch: no signature was built, so
+            // the call reuses the declaration's own cause.
+            Binding::Refused(_, summary) => {
+                self.steer_refusal(summary, span);
+                return None;
+            }
+            Binding::Absent => {}
         }
         // A same-module generic function is monomorphized at the call site (its type
         // arguments inferred from the arguments), resolved before the collection
@@ -1457,6 +1467,10 @@ impl<'a> FnLowerer<'a> {
                 ));
                 None
             }
+            CallResolution::SignatureRefused(summary) => {
+                self.steer_refusal(summary, span);
+                None
+            }
             CallResolution::ModuleRefused(summary) => {
                 // A qualified call into a module this project refused is a dependency
                 // gap, not a plain name error: the callee is unavailable because a
@@ -1464,12 +1478,7 @@ impl<'a> FnLowerer<'a> {
                 // editor queries, and steer the first such call to the module's own
                 // cause rather than reporting a callee of a module that has no scope.
                 self.facts.gap(callee_span);
-                if summary.steer_once() {
-                    let row = declaration_refused(self.file, span, summary);
-                    self.fail(row);
-                } else {
-                    self.failed = true;
-                }
+                self.steer_refusal(summary, span);
                 None
             }
             CallResolution::NotFound => {
