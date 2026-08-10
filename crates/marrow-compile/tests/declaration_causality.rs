@@ -517,3 +517,27 @@ fn r19_a_refused_member_does_not_narrow_the_identity_gap_set() {
         "a refused member narrowed the anchor set from {valid:#?} to {refused:#?}",
     );
 }
+
+/// R25 · roots — a refused store root still occupies its placement name, so a second
+/// store of that name is the repeat it always was. The duplicate check reads the
+/// ledger, which retains the refused occurrence, rather than a list only admitted
+/// roots reach.
+#[test]
+fn r25_a_refused_root_occupies_its_placement_name() {
+    let diagnostics = diagnostics(
+        "module main\n\n\
+         resource Widget {\n\
+         \x20   required name: string\n\
+         }\n\n\
+         store ^items[id: int]: Missing\n\
+         store ^items[id: int]: Widget\n",
+    );
+
+    assert!(
+        diagnostics.iter().any(|row| row
+            .message()
+            .contains("`^items` is declared more than once")),
+        "the refused first declaration still holds the name: {:#?}",
+        messages(&diagnostics),
+    );
+}

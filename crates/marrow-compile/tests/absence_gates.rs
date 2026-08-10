@@ -742,3 +742,80 @@ fn no_attempt_or_receipt_vocabulary_exists() {
         );
     }
 }
+
+/// E6 — the durable registry's parallel steering machinery is gone, not merely
+/// unused.
+///
+/// Each of these answered one part of a question the ledger now answers whole: was
+/// this root declared, was it parked, was it refused, and has a use of it already
+/// been steered. Leaving any of them reachable would let a caller reconstruct the
+/// four-way answer from probes again, which is how nine refusal causes came to share
+/// one steer.
+#[test]
+fn the_durable_steering_probes_are_deleted() {
+    for deleted in [
+        "admission_failed_roots",
+        "admission_failed_root_named",
+        "not_yet_executable_root_named",
+        "admission_steered",
+        "StoreBuild::IdentityIncomplete",
+        "StoreBuild::Rejected",
+    ] {
+        let found = production_occurrences(deleted);
+        assert!(
+            found.is_empty(),
+            "`{deleted}` is replaced by the declaration ledger and must not exist: {found:?}"
+        );
+    }
+}
+
+/// The plant-probe for the scan above, in both directions: it must find a needle that
+/// is present in production code, and must not find one that appears only inside a
+/// string literal. A scan that cannot fail is not a gate.
+#[test]
+fn the_deletion_scan_reads_production_code_and_only_production_code() {
+    assert!(
+        !production_occurrences("fn refuse_store").is_empty(),
+        "the scan must see production code; if `refuse_store` was renamed, update this probe"
+    );
+    assert!(
+        production_occurrences("failed identity admission").is_empty(),
+        "the scan must not read string literals: that phrase exists only inside one"
+    );
+}
+
+/// E5c — a refusal summary built without a report of its own names the pass that
+/// covers it, on an exact allowlist.
+///
+/// `refuse_covered` is the one constructor that mints a retained cause without
+/// pushing the row that reports it. Two shapes need it and no third may: a cause
+/// whose owning pass runs later, and a cause an earlier occurrence of the same
+/// project-wide anchor already reported. Left open, it would become the way a
+/// refusal escapes being reported at all — a refused declaration with no diagnostic
+/// anywhere, which is worse than the fabricated absence this lane removes.
+#[test]
+fn every_covered_refusal_names_its_covering_report() {
+    let calls = production_occurrences("refuse_covered(");
+    let sites: Vec<(String, usize)> = calls
+        .iter()
+        .map(|(path, line)| {
+            (
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .expect("a source file name")
+                    .to_string(),
+                *line,
+            )
+        })
+        .collect();
+    // The definition, and the two durable classes that use it: a repeated
+    // project-wide identity anchor, reported by the first store to reach it, and a
+    // durable value cycle, reported by `types::reject_value_cycles` after lowering.
+    let allowed = ["decl.rs", "durable.rs", "durable.rs"];
+    let names: Vec<&str> = sites.iter().map(|(name, _)| name.as_str()).collect();
+    assert_eq!(
+        names, allowed,
+        "a new `refuse_covered` call site must name the pass that reports its cause \
+         and be added here deliberately: {sites:?}"
+    );
+}
