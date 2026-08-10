@@ -10,16 +10,23 @@
 //! ```
 //!
 //! A store is COMPLETE only when the directory exists and all three of `store.redb`,
-//! `envelope`, and `head` are present; the lock is transient (held while a process owns the
-//! store, left behind after an unclean shutdown).
+//! `envelope`, and `head` are present. The lock is not one of them and says nothing about
+//! completeness: provision does not write it, the first open creates it, and from then on it
+//! persists — empty after a clean close, carrying the crashed holder's descriptor after an
+//! unclean one.
 //!
-//! Once the physical owner is held, [`AdmittedStoreDir`] is how the directory's own
-//! artifacts are read. It retains the directory as a descriptor and reads each child from
-//! it: no path is resolved twice, no link is followed, a child reachable under a second
-//! name is refused, and the exact ceiling the child's own recorded version selects is
-//! applied before its bytes are allocated for. The descriptor-rooted operations themselves
-//! belong to `marrow-fs-journal`, the workspace's sole owner of them; what lives here is
-//! the admission protocol laid over them.
+//! Once the physical owner is held, [`AdmittedStoreDir`] is how the `envelope` and the
+//! `head` are read. It retains the directory as a descriptor and reads each of those two
+//! children from it: the child is opened without following a link, must be a regular file
+//! reachable under exactly one name, and the exact ceiling its own recorded version selects
+//! is applied before its bytes are allocated for. The descriptor-rooted operations
+//! themselves belong to `marrow-fs-journal`, the workspace's sole owner of them; what lives
+//! here is the admission protocol laid over them.
+//!
+//! Two paths into the same directory are outside that protocol and are resolved by path
+//! instead: `store.redb`, which `marrow-store` opens as part of holding the engine, and the
+//! `lock` entry it owns. Neither is admitted from the retained descriptor, so what this
+//! module establishes covers the two artifacts it reads and no more.
 
 use std::path::Path;
 
@@ -218,9 +225,12 @@ impl std::fmt::Display for AdmissionError {
 
 impl std::error::Error for AdmissionError {}
 
-/// The store directory retained as a descriptor while its physical owner is held. Every
-/// artifact read is relative to it, so the directory a read reaches is the one the owner
-/// locked rather than whatever the original path spells at that instant.
+/// The store directory retained as a descriptor while its physical owner is held. Each
+/// artifact read is relative to that descriptor, so the whole admission snapshot reaches one
+/// directory rather than re-resolving the path per read. The descriptor is obtained by
+/// resolving the canonical path the physical owner reported, and no identity witness crosses
+/// that boundary, so the directory it reaches is established to be one directory — not
+/// established to be the same node the owner's lock is held over.
 pub(crate) struct AdmittedStoreDir {
     dir: AdmittedDir,
 }
@@ -333,16 +343,22 @@ pub fn head_path(dir: &Path) -> std::path::PathBuf {
 }
 
 /// The owner lock file path within `dir`.
-#[cfg(test)]
-pub fn lock_path(dir: &Path) -> std::path::PathBuf {
+pub(crate) fn lock_path(dir: &Path) -> std::path::PathBuf {
     dir.join(LOCK_FILE)
+}
+
+/// Whether `dir` names an owner lock entry at all. Read without following a link and
+/// without creating anything: this decides only whether the directory has ever been opened
+/// as a store, never what the entry holds.
+pub(crate) fn lock_entry_present(dir: &Path) -> bool {
+    std::fs::symlink_metadata(lock_path(dir)).is_ok()
 }
 
 /// Whether all three durable artifacts (engine, envelope, head) are present in `dir`. A
 /// store missing any one is incomplete — never published as complete — so a crash mid-build
 /// (which leaves a temp directory, never a partial destination) can never be mistaken for a
-/// finished store. The lock is deliberately excluded: it is transient, not a completeness
-/// signal.
+/// finished store. The lock is deliberately excluded: provision does not write it, so a
+/// complete store may carry no lock and its presence is no evidence of completeness.
 pub fn artifacts_present(dir: &Path) -> bool {
     engine_path(dir).is_file() && envelope_path(dir).is_file() && head_path(dir).is_file()
 }

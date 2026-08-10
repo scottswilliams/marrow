@@ -685,27 +685,47 @@ fn an_artifact_rewritten_under_a_read_is_never_admitted_spliced() {
     });
 }
 
-/// A refused open publishes no store artifact. Taking the owner lock is what makes exclusion
-/// decidable before anything is read, so the lock entry itself may appear; the engine,
-/// envelope, and head never do.
+/// An open aimed at a directory that is not a store writes nothing into it — not even the
+/// owner lock the acquisition would otherwise create. Exclusion is still decided before
+/// anything a store *contains* is read: a directory that has been opened as a store before
+/// carries the lock entry, and an open of one of those takes the lock first, whatever state
+/// its artifacts are in.
 #[test]
-fn a_refused_open_publishes_no_store_artifact() {
+fn an_open_of_a_directory_that_is_not_a_store_writes_nothing_into_it() {
     let dir = TempDir::new("refused-publishes-nothing");
     let store = dir.store();
     std::fs::create_dir_all(&store).expect("an existing but empty store directory");
+    std::fs::write(store.join("notes.txt"), b"unrelated").expect("an unrelated file");
 
+    for _ in 0..2 {
+        assert!(matches!(
+            open(&store, schemas(), sites()),
+            Err(OpenError::Incomplete),
+        ));
+        let mut names = std::fs::read_dir(&store)
+            .expect("read the refused directory")
+            .flatten()
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        names.sort();
+        assert_eq!(
+            names,
+            vec!["notes.txt".to_string()],
+            "a refused open wrote into a directory that is not a store",
+        );
+    }
+
+    // A store that has been opened before keeps its lock entry, and losing an artifact does
+    // not move the completeness verdict ahead of the owner: the lock is still taken first.
+    let (_dir, complete) = provisioned("refused-after-first-open");
+    drop(open(&complete, schemas(), sites()).expect("the first open creates the lock entry"));
+    std::fs::remove_file(complete.join(marrow_lifecycle::HEAD_FILE)).expect("remove the head");
     assert!(matches!(
-        open(&store, schemas(), sites()),
+        open(&complete, schemas(), sites()),
         Err(OpenError::Incomplete),
     ));
-    let mut names = std::fs::read_dir(&store)
-        .expect("read the refused directory")
-        .flatten()
-        .map(|entry| entry.file_name().to_string_lossy().into_owned())
-        .collect::<Vec<_>>();
-    names.sort();
     assert!(
-        names.iter().all(|name| name == marrow_lifecycle::LOCK_FILE),
-        "a refused open published a store artifact: {names:?}",
+        complete.join(marrow_lifecycle::LOCK_FILE).exists(),
+        "an open that took the owner lock keeps the entry it locked",
     );
 }

@@ -345,12 +345,20 @@ pub(crate) fn open_admitted<R>(
     sites: Vec<SiteSpec>,
     admit: impl FnOnce(&LogicalHead) -> Result<(), R>,
 ) -> Result<OpenStore, AdmitError<R>> {
-    // Only the directory's own existence is decided ahead of the owner: a path with no store
-    // at it has no lock to take. Everything the store directory *contains* — whether it is
-    // complete, whether its artifacts decode — is read under the owner below, so no state of
-    // those artifacts can preempt the exclusion verdict a contender is owed.
-    if preflight(dir) == Preflight::Absent {
-        return Err(AdmitError::Open(OpenError::NotProvisioned));
+    // Only the directory's own existence — and, when it holds no owner lock entry at all,
+    // its completeness — is decided ahead of the owner. Acquiring creates that entry, so
+    // without this second condition an open aimed at an ordinary directory would leave one
+    // behind in a directory that is not a store. A store with a live holder always has the
+    // entry (a holder creates it before it locks), so the condition is unreachable while a
+    // holder is live and cannot preempt the exclusion verdict a contender is owed. What the
+    // directory *contains* — whether its artifacts are present, whether they decode — is
+    // otherwise read under the owner below.
+    match preflight(dir) {
+        Preflight::Absent => return Err(AdmitError::Open(OpenError::NotProvisioned)),
+        Preflight::Incomplete if !store_dir::lock_entry_present(dir) => {
+            return Err(AdmitError::Open(OpenError::Incomplete));
+        }
+        Preflight::Incomplete | Preflight::Complete => {}
     }
 
     // Acquiring pins the store directory to its canonical path and takes the lock without
