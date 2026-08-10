@@ -24,7 +24,7 @@ use crate::diag::{
 use crate::durable::DurableRegistry;
 use crate::konst::ConstRegistry;
 use crate::lower::{
-    BodyOutcome, DeclaredFn, FnLowerer, FunctionRegistry, FunctionRegistryBuild, GenericRegistry,
+    BodyOutcome, DeclaredFn, FnLowerer, FunctionRegistry, FunctionRegistryOutcome, GenericRegistry,
     is_durable_place_op, is_mutation_instr, is_reserved_builtin_name, reserved_builtin_name,
 };
 use crate::types::{GenericInvariant, TypeRegistry};
@@ -777,7 +777,17 @@ struct CompleteTypeRegistry;
 /// [`FunctionRegistry`] to the registry value itself. It is one artifact, not one per
 /// declaration: a single refused parameter type makes the whole registry unavailable,
 /// because every call site resolves through it.
-struct CompleteFunctionRegistry;
+///
+/// It carries the table it proves complete, so availability and the value are one
+/// binding: a resolved signature table that no artifact vouches for is unrepresentable.
+struct CompleteFunctionRegistry(FunctionRegistry);
+
+impl CompleteFunctionRegistry {
+    /// The resolved signature table every dependent phase resolves call sites through.
+    fn signatures(&self) -> &FunctionRegistry {
+        &self.0
+    }
+}
 
 /// Every generic template's once-checked proof was accepted and no instantiation
 /// limit stopped the pass, so the queued instance set is trustworthy.
@@ -1308,7 +1318,7 @@ fn run_semantic(
     // value-containment audit below — still run in their existing positions, so a
     // signature refusal and an independent constant or value-cycle error are all
     // reported instead of only the first.
-    let (signatures, function_registry) = match FunctionRegistry::build(
+    let function_registry = match FunctionRegistry::build(
         &records,
         &mut draft,
         &durable,
@@ -1318,10 +1328,10 @@ fn run_semantic(
         broken_modules,
         &mut diagnostics,
     ) {
-        Ok(FunctionRegistryBuild::Complete(signatures)) => {
-            (Some(signatures), Some(CompleteFunctionRegistry))
+        Ok(FunctionRegistryOutcome::Complete(signatures)) => {
+            Some(CompleteFunctionRegistry(signatures))
         }
-        Ok(FunctionRegistryBuild::Refused) => (None, None),
+        Ok(FunctionRegistryOutcome::Refused) => None,
         Err(invariant) => {
             return SemanticOutcome::Invariant(InvariantCause::Generic(invariant));
         }
@@ -1367,323 +1377,43 @@ fn run_semantic(
 
     // Everything from the template proof to the instance drain resolves call sites
     // through the function registry, so the whole region runs only when that artifact
-    // is available. Each phase records its own artifact as it completes; the phases
-    // below the region need only the type registry and run either way.
-    let mut template_proofs = None;
-    let mut function_bodies = None;
-    let mut test_bodies = None;
-    let mut drain_complete = true;
-    let mut call_graph = None;
-    let mut transactions = None;
-    let mut exports: Vec<ExportEntry> = Vec::new();
-    let mut tests: Vec<TestEntry> = Vec::new();
-    let mut lowered: Vec<LoweredFn> = Vec::new();
-    if let Some(signatures) = &signatures {
-        // Once-checked template pass: every generic function's body is type-checked once
-        // against its type parameters' constraints — independently of whether or how it
-        // is instantiated — so an unconstrained parameter used with `==`/`<`, or any
-        // other constraint violation, is caught here rather than per instantiation.
-        for template in generics.templates() {
-            let outcome = match FnLowerer::check_template(
-                &mut draft,
-                &records,
-                &durable,
-                signatures,
-                &generics,
-                &constants,
-                facts.sink(template.at()),
-                &mut admission_steered,
-                template,
-            ) {
-                Ok(outcome) => outcome,
-                Err(invariant) => {
-                    return SemanticOutcome::Invariant(InvariantCause::Generic(invariant));
-                }
+    // is available. The phases below the region need only the type registry and run
+    // either way.
+    let phases = match &function_registry {
+        Some(registry) => {
+            let resolution = Resolution {
+                records: &records,
+                durable: &durable,
+                signatures: registry.signatures(),
+                generics: &generics,
+                constants: &constants,
             };
-            diagnostics.absorb(outcome.diagnostics);
-            records.adopt_generic_diagnostics(outcome.generic);
-            if records.has_instantiation_limit() {
-                break;
-            }
-        }
-        if records.has_instantiation_limit() {
-            records
-                .take_generic_diagnostics()
-                .merge_into(&mut diagnostics);
-            return SemanticOutcome::Diagnostics(diagnostics.finish(), CompileStage::TemplateProof);
-        }
-        template_proofs = Some(AcceptedQueuedTemplateProofs);
-
-        // Generic instances are image functions with no stable identity, indexed after
-        // every monomorphic function and test. `base` is that boundary; the shared
-        // `Monomorph` assigns each distinct instance the next index from `base` in
-        // discovery order, so draining its queue in order appends them to the image in
-        // index order.
-        let test_count: u16 = if mode == TestMode::Include {
-            parsed
-                .iter()
-                .flat_map(|module| &module.ast.declarations)
-                .filter(|decl| matches!(decl, Declaration::Test(_)))
-                .count() as u16
-        } else {
-            0
-        };
-        let base = signatures.concrete_count() + test_count;
-        records.set_fn_base(base);
-
-        // Lower each function, in the same order the registry assigned indices, minting
-        // an export for each public function from its declaration path and recording its
-        // direct-call edges for recursion detection. Other declarations are handled
-        // above or not yet admitted. Generic templates are skipped here — they are
-        // monomorphized on demand and drained below.
-        let mut bodies_complete = true;
-        'function_bodies: for module in parsed {
-            for declaration in &module.ast.declarations {
-                match declaration {
-                    Declaration::Function(function) if !function.type_params.is_empty() => {
-                        // A generic template is not lowered in place.
-                        let _ = function;
-                    }
-                    Declaration::Function(function) => {
-                        let result = match FnLowerer::lower(
-                            &mut draft,
-                            &records,
-                            &durable,
-                            signatures,
-                            &generics,
-                            &constants,
-                            &mut diagnostics,
-                            facts.sink(module.at),
-                            &mut admission_steered,
-                            &module.file,
-                            &module.name,
-                            function,
-                        ) {
-                            Ok(BodyOutcome::Lowered(result)) => result,
-                            Ok(BodyOutcome::Refused) => {
-                                bodies_complete = false;
-                                if records.has_instantiation_limit() {
-                                    break 'function_bodies;
-                                }
-                                continue;
-                            }
-                            Err(invariant) => {
-                                return SemanticOutcome::Invariant(InvariantCause::Generic(
-                                    invariant,
-                                ));
-                            }
-                        };
-                        lowered.push(LoweredFn {
-                            index: result.func.index(),
-                            file: module.file.clone(),
-                            name: function.name.clone(),
-                            span: function.span,
-                            callees: result.callees,
-                            is_export: function.public,
-                            is_test: false,
-                            unwrapped_mutations: result.unwrapped_mutations,
-                            unwrapped_calls: result.unwrapped_calls,
-                            has_direct_durable_op: result.has_direct_durable_op,
-                            owns_transaction: result.owns_transaction,
-                            code: result.code,
-                            code_spans: result.code_spans,
-                        });
-                        if function.public {
-                            // The injectivity owner's own guard: every dotted module
-                            // segment and the item must be ASCII identifiers before an
-                            // ExportId is minted over them (see marrow-image::export_id).
-                            // Unreachable through the current capture path, which already
-                            // constrains both; kept so the id payload's injectivity never
-                            // silently rests on an upstream layer alone.
-                            if !valid_export_path(&module.name, &function.name) {
-                                diagnostics.push(SourceDiagnostic::at(
-                                    Code::CheckModulePath.as_str(),
-                                    &module.file,
-                                    function.span,
-                                    format!(
-                                        "export `{}` in module `{}` is not an ASCII \
-                                     identifier path, so it cannot be exported",
-                                        function.name, module.name
-                                    ),
-                                ));
-                                continue;
-                            }
-                            let id = ExportId::of_local(&module.name, &function.name);
-                            draft.add_export(id, result.func);
-                            exports.push(ExportEntry {
-                                module: module.name.clone(),
-                                item: function.name.clone(),
-                                id,
-                            });
-                        }
-                        if records.has_instantiation_limit() {
-                            break 'function_bodies;
-                        }
-                    }
-                    // Constants are evaluated into the const registry above; aliases,
-                    // resources, and stores are handled by their own registries; test
-                    // declarations are lowered separately below, after every function
-                    // has an index.
-                    Declaration::Alias(_)
-                    | Declaration::Nominal(_)
-                    | Declaration::Const(_)
-                    | Declaration::Resource(_)
-                    | Declaration::Struct(_)
-                    | Declaration::Enum(_)
-                    | Declaration::Store(_)
-                    | Declaration::Test(_) => {}
+            match registry_phases(
+                parsed,
+                mode,
+                resolution,
+                &mut draft,
+                &mut diagnostics,
+                facts,
+                &mut admission_steered,
+            ) {
+                Ok(phases) => phases,
+                Err(PhaseStop::StageDiagnostics(stage)) => {
+                    return SemanticOutcome::Diagnostics(diagnostics.finish(), stage);
                 }
+                Err(PhaseStop::Invariant(cause)) => return SemanticOutcome::Invariant(cause),
             }
         }
-
-        // Lower each `test "name"` body into a storeless, zero-argument function and
-        // bind its title into the TEST-ENTRY table (only when tests are included). Tests
-        // are lowered after every function so their bodies' calls resolve and their own
-        // indices follow the functions'. Titles are unique across the project.
-        function_bodies = bodies_complete.then_some(CompleteDeclaredFunctionBodies);
-
-        // A duplicate title skips its body, which leaves the index reserved for it in
-        // `base` unminted: that is the instance drain's real precondition, carried here
-        // rather than inferred from an empty diagnostic set. With tests excluded the
-        // artifact holds vacuously.
-        let mut declared_tests_complete = true;
-        if mode == TestMode::Include && !records.has_instantiation_limit() {
-            'test_bodies: for module in parsed {
-                for declaration in &module.ast.declarations {
-                    let Declaration::Test(test) = declaration else {
-                        continue;
-                    };
-                    if tests.iter().any(|existing| existing.name == test.name) {
-                        diagnostics.push(SourceDiagnostic::at(
-                            Code::CheckNameConflict.as_str(),
-                            &module.file,
-                            test.name_span,
-                            format!("a test named `{}` is already declared", test.name),
-                        ));
-                        declared_tests_complete = false;
-                        continue;
-                    }
-                    let result = match FnLowerer::lower_test(
-                        &mut draft,
-                        &records,
-                        &durable,
-                        signatures,
-                        &generics,
-                        &constants,
-                        &mut diagnostics,
-                        facts.sink(module.at),
-                        &mut admission_steered,
-                        &module.file,
-                        &module.name,
-                        &test.name,
-                        &test.body,
-                    ) {
-                        Ok(BodyOutcome::Lowered(result)) => result,
-                        Ok(BodyOutcome::Refused) => {
-                            declared_tests_complete = false;
-                            if records.has_instantiation_limit() {
-                                break 'test_bodies;
-                            }
-                            continue;
-                        }
-                        Err(invariant) => {
-                            return SemanticOutcome::Invariant(InvariantCause::Generic(invariant));
-                        }
-                    };
-                    lowered.push(LoweredFn {
-                        index: result.func.index(),
-                        file: module.file.clone(),
-                        name: test.name.clone(),
-                        span: test.name_span,
-                        callees: result.callees,
-                        is_export: false,
-                        is_test: true,
-                        unwrapped_mutations: result.unwrapped_mutations,
-                        unwrapped_calls: result.unwrapped_calls,
-                        has_direct_durable_op: result.has_direct_durable_op,
-                        owns_transaction: result.owns_transaction,
-                        code: result.code,
-                        code_spans: result.code_spans,
-                    });
-                    let name_id = draft.intern_string(&test.name);
-                    draft.add_test_entry(name_id, result.func);
-                    tests.push(TestEntry {
-                        name: test.name.clone(),
-                        module: module.name.clone(),
-                        file: module.file.as_str().to_string(),
-                        line: test.name_span.line,
-                        column: test.name_span.column,
-                    });
-                    if records.has_instantiation_limit() {
-                        break 'test_bodies;
-                    }
-                }
-            }
-        }
-
-        // Drain the generic instantiation worklist: lower each monomorphized instance's
-        // body into the image, in the order the instances were minted (so each instance's
-        // image index equals the one the registry reserved). Lowering an instance body
-        // may mint further instances, which the loop continues to drain. Only run when the
-        // monomorphic pass is clean, so every function and test has already consumed its
-        // image index and instances append after them. The precondition is that every
-        // declared body took the index reserved for it — carried by the three artifacts
-        // below, not by an empty diagnostic set.
-        test_bodies = declared_tests_complete.then_some(CompleteDeclaredTestBodies);
-        if template_proofs.is_some()
-            && function_bodies.is_some()
-            && test_bodies.is_some()
-            && !records.has_instantiation_limit()
-        {
-            while let Some((template_index, args, reserved)) = records.next_fn_pending() {
-                let template = &generics.templates()[template_index];
-                let result = match FnLowerer::lower_instance(
-                    &mut draft,
-                    &records,
-                    &durable,
-                    signatures,
-                    &generics,
-                    &constants,
-                    &mut diagnostics,
-                    FactSink::Discarding,
-                    &mut admission_steered,
-                    template,
-                    &args,
-                ) {
-                    Ok(BodyOutcome::Lowered(result)) => result,
-                    Ok(BodyOutcome::Refused) => {
-                        drain_complete = false;
-                        break;
-                    }
-                    Err(invariant) => {
-                        return SemanticOutcome::Invariant(InvariantCause::Generic(invariant));
-                    }
-                };
-                // The registry reserved this index before the body was lowered; the draft
-                // assigned the one the body actually took. A divergence means the image
-                // would carry an instance under an index some call site does not name, so
-                // it is a typed invariant in release exactly as in debug.
-                if result.func.index() != reserved {
-                    return SemanticOutcome::Invariant(InvariantCause::ReservedIndexMismatch);
-                }
-                lowered.push(LoweredFn {
-                    index: result.func.index(),
-                    file: template.source_file().clone(),
-                    name: template.name().to_string(),
-                    span: template.span(),
-                    callees: result.callees,
-                    is_export: false,
-                    is_test: false,
-                    unwrapped_mutations: result.unwrapped_mutations,
-                    unwrapped_calls: result.unwrapped_calls,
-                    has_direct_durable_op: result.has_direct_durable_op,
-                    owns_transaction: result.owns_transaction,
-                    code: result.code,
-                    code_spans: result.code_spans,
-                });
-            }
-        }
-    }
+        None => RegistryPhases::unavailable(),
+    };
+    let RegistryPhases {
+        template_proofs,
+        function_bodies,
+        test_bodies,
+        lowered_set,
+        exports,
+        tests,
+    } = phases;
 
     // Report any diagnostics recorded while minting generic type instantiations
     // (the shared instantiation limit) and reject a value-containment cycle over the
@@ -1708,16 +1438,9 @@ fn run_semantic(
     // verifier independently rejects any cycle that still reaches it (image.closure),
     // so this is a source-facing check, not the trust boundary. Only run it once
     // every function, test, and generic instance lowered, so the indices are aligned.
-    // The lowered set is complete when every body that entered lowering produced an
-    // image function and the drain, if it ran, finished. A duplicate test title is a
-    // declaration refusal, not a lowering refusal — the minted indices stay dense — so
-    // it does not withhold this artifact; it withholds only the drain above.
-    let lowered_set = (template_proofs.is_some() && function_bodies.is_some() && drain_complete)
-        .then_some(CompleteLoweredFunctionSet(lowered));
-
-    if let Some(set) = &lowered_set {
-        call_graph = reject_recursion(set, &mut diagnostics);
-    }
+    let call_graph = lowered_set
+        .as_ref()
+        .and_then(|set| reject_recursion(set, &mut diagnostics));
 
     // A function that mutates durable state carries a checked requires-ambient-
     // transaction effect: it is callable only inside a `transaction` block or from
@@ -1725,9 +1448,10 @@ fn run_semantic(
     // the image, carries the diagnostic; the verifier reconstructs the same closure and
     // rejects a tampered image (image.flow) as defense in depth. Run once the call
     // graph is acyclic so the effect fixpoint terminates and indices are aligned.
-    if let (Some(set), Some(acyclic)) = (&lowered_set, &call_graph) {
-        transactions = reject_missing_transaction(set, acyclic, &mut diagnostics);
-    }
+    let transactions = lowered_set
+        .as_ref()
+        .zip(call_graph.as_ref())
+        .and_then(|(set, acyclic)| reject_missing_transaction(set, acyclic, &mut diagnostics));
 
     // The remaining transaction-ownership laws — exactly one region per mutating export,
     // committed on every path with no durable operation after the commit; a `transaction`
@@ -1776,6 +1500,491 @@ fn run_semantic(
         tests,
         naming: durable.naming(),
     }))
+}
+
+/// Everything the registry-dependent phases resolve names through. Shared and read-only
+/// for the whole region: the type registry records an instantiation behind its own
+/// interior mutability, so no phase needs to own it.
+#[derive(Clone, Copy)]
+struct Resolution<'a, 'p> {
+    records: &'a TypeRegistry,
+    durable: &'a DurableRegistry,
+    signatures: &'a FunctionRegistry,
+    generics: &'a GenericRegistry<'p>,
+    constants: &'a ConstRegistry,
+}
+
+/// A registry-dependent phase ended the whole semantic pass. The caller owns the
+/// diagnostic collector, so a stop names the outcome instead of sealing the terminal.
+enum PhaseStop {
+    /// The shared instantiation limit stopped this stage. Its diagnostics are already
+    /// merged into the caller's collector.
+    StageDiagnostics(CompileStage),
+    Invariant(InvariantCause),
+}
+
+/// What the phases that resolve through the function registry produced: their artifacts,
+/// the image content they minted, and the export and test-entry tables they filled.
+struct RegistryPhases {
+    template_proofs: Option<AcceptedQueuedTemplateProofs>,
+    function_bodies: Option<CompleteDeclaredFunctionBodies>,
+    test_bodies: Option<CompleteDeclaredTestBodies>,
+    lowered_set: Option<CompleteLoweredFunctionSet>,
+    exports: Vec<ExportEntry>,
+    tests: Vec<TestEntry>,
+}
+
+impl RegistryPhases {
+    /// What the region produces when the function registry is unavailable: no phase in
+    /// it ran, so it minted no artifact, no image function, no export, and no test entry.
+    fn unavailable() -> Self {
+        RegistryPhases {
+            template_proofs: None,
+            function_bodies: None,
+            test_bodies: None,
+            lowered_set: None,
+            exports: Vec::new(),
+            tests: Vec::new(),
+        }
+    }
+}
+
+/// How a declaration-lowering loop ended.
+///
+/// Only [`DeclarationExit::Exhausted`] mints the set's completeness artifact. A refusal
+/// leaves the refused declaration's reserved index unminted; a stop on the shared
+/// instantiation limit leaves the whole unvisited suffix unminted, which is the same
+/// hole once per declaration after the stop. The exit is named so neither can mint a
+/// completeness artifact over a truncated set: a flag cleared at the refusal site alone
+/// would leave the limit stop claiming a complete set.
+#[derive(Clone, Copy)]
+enum DeclarationExit {
+    /// Every declaration in the set took the index reserved for it.
+    Exhausted,
+    /// A body was refused; its reserved index was never minted.
+    Refused,
+    /// The shared instantiation limit stopped the loop, leaving its unvisited suffix
+    /// unlowered.
+    StoppedOnInstantiationLimit,
+}
+
+impl DeclarationExit {
+    /// Whether every declaration in the set took the index reserved for it.
+    fn complete(self) -> bool {
+        matches!(self, DeclarationExit::Exhausted)
+    }
+}
+
+/// The declared monomorphic function bodies, lowered into the draft.
+struct LoweredFunctions {
+    lowered: Vec<LoweredFn>,
+    exports: Vec<ExportEntry>,
+    exit: DeclarationExit,
+}
+
+/// The declared test bodies, lowered into the draft and bound into the test-entry table.
+struct LoweredTests {
+    lowered: Vec<LoweredFn>,
+    entries: Vec<TestEntry>,
+    exit: DeclarationExit,
+}
+
+/// Run every phase that resolves call sites through the complete function registry: the
+/// once-checked template proof, the declared function bodies, the declared test bodies,
+/// and the generic instance drain. Each phase records its own artifact as it completes;
+/// none is inferred from the diagnostic set.
+fn registry_phases(
+    parsed: &[Module],
+    mode: TestMode,
+    resolution: Resolution<'_, '_>,
+    draft: &mut ImageDraft,
+    diagnostics: &mut DiagnosticCollector,
+    facts: &mut AnalysisFactCollector,
+    admission_steered: &mut BTreeSet<String>,
+) -> Result<RegistryPhases, PhaseStop> {
+    let records = resolution.records;
+
+    // Once-checked template pass: every generic function's body is type-checked once
+    // against its type parameters' constraints — independently of whether or how it is
+    // instantiated — so an unconstrained parameter used with `==`/`<`, or any other
+    // constraint violation, is caught here rather than per instantiation.
+    for template in resolution.generics.templates() {
+        let outcome = FnLowerer::check_template(
+            draft,
+            records,
+            resolution.durable,
+            resolution.signatures,
+            resolution.generics,
+            resolution.constants,
+            facts.sink(template.at()),
+            admission_steered,
+            template,
+        )
+        .map_err(|invariant| PhaseStop::Invariant(InvariantCause::Generic(invariant)))?;
+        diagnostics.absorb(outcome.diagnostics);
+        records.adopt_generic_diagnostics(outcome.generic);
+        if records.has_instantiation_limit() {
+            break;
+        }
+    }
+    if records.has_instantiation_limit() {
+        records.take_generic_diagnostics().merge_into(diagnostics);
+        return Err(PhaseStop::StageDiagnostics(CompileStage::TemplateProof));
+    }
+    let template_proofs = Some(AcceptedQueuedTemplateProofs);
+
+    // Generic instances are image functions with no stable identity, indexed after every
+    // monomorphic function and test. `base` is that boundary; the shared `Monomorph`
+    // assigns each distinct instance the next index from `base` in discovery order, so
+    // draining its queue in order appends them to the image in index order.
+    let test_count: u16 = if mode == TestMode::Include {
+        parsed
+            .iter()
+            .flat_map(|module| &module.ast.declarations)
+            .filter(|decl| matches!(decl, Declaration::Test(_)))
+            .count() as u16
+    } else {
+        0
+    };
+    records.set_fn_base(resolution.signatures.concrete_count() + test_count);
+
+    let functions = lower_declared_functions(
+        parsed,
+        resolution,
+        draft,
+        diagnostics,
+        facts,
+        admission_steered,
+    )?;
+    let function_bodies = functions
+        .exit
+        .complete()
+        .then_some(CompleteDeclaredFunctionBodies);
+
+    let tests = lower_declared_tests(
+        parsed,
+        mode,
+        resolution,
+        draft,
+        diagnostics,
+        facts,
+        admission_steered,
+    )?;
+    let test_bodies = tests.exit.complete().then_some(CompleteDeclaredTestBodies);
+
+    let mut lowered = functions.lowered;
+    lowered.extend(tests.lowered);
+
+    // Drain the generic instantiation worklist: lower each monomorphized instance's body
+    // into the image, in the order the instances were minted (so each instance's image
+    // index equals the one the registry reserved). Lowering an instance body may mint
+    // further instances, which the loop continues to drain. Its precondition is that
+    // every declared body took the index reserved for it, so instances append after
+    // them — carried by the three artifacts above, not by an empty diagnostic set.
+    let mut drain_lowered_every_instance = true;
+    if template_proofs.is_some() && function_bodies.is_some() && test_bodies.is_some() {
+        while let Some((template_index, args, reserved)) = records.next_fn_pending() {
+            let template = &resolution.generics.templates()[template_index];
+            let result = match FnLowerer::lower_instance(
+                draft,
+                records,
+                resolution.durable,
+                resolution.signatures,
+                resolution.generics,
+                resolution.constants,
+                diagnostics,
+                FactSink::Discarding,
+                admission_steered,
+                template,
+                &args,
+            ) {
+                Ok(BodyOutcome::Lowered(result)) => result,
+                Ok(BodyOutcome::Refused) => {
+                    drain_lowered_every_instance = false;
+                    break;
+                }
+                Err(invariant) => {
+                    return Err(PhaseStop::Invariant(InvariantCause::Generic(invariant)));
+                }
+            };
+            // The registry reserved this index before the body was lowered; the draft
+            // assigned the one the body actually took. A divergence means the image would
+            // carry an instance under an index some call site does not name, so it is a
+            // typed invariant in release exactly as in debug.
+            if result.func.index() != reserved {
+                return Err(PhaseStop::Invariant(InvariantCause::ReservedIndexMismatch));
+            }
+            lowered.push(LoweredFn {
+                index: result.func.index(),
+                file: template.source_file().clone(),
+                name: template.name().to_string(),
+                span: template.span(),
+                callees: result.callees,
+                is_export: false,
+                is_test: false,
+                unwrapped_mutations: result.unwrapped_mutations,
+                unwrapped_calls: result.unwrapped_calls,
+                has_direct_durable_op: result.has_direct_durable_op,
+                owns_transaction: result.owns_transaction,
+                code: result.code,
+                code_spans: result.code_spans,
+            });
+        }
+    }
+
+    // The lowered set is complete when the template proofs were accepted, every declared
+    // function body lowered, and the drain — if it ran — lowered every instance it was
+    // offered. A duplicate test title is a declaration refusal, not a lowering refusal:
+    // the minted indices stay dense, so it withholds only the drain.
+    let lowered_set =
+        (template_proofs.is_some() && function_bodies.is_some() && drain_lowered_every_instance)
+            .then_some(CompleteLoweredFunctionSet(lowered));
+
+    Ok(RegistryPhases {
+        template_proofs,
+        function_bodies,
+        test_bodies,
+        lowered_set,
+        exports: functions.exports,
+        tests: tests.entries,
+    })
+}
+
+/// Lower each declared monomorphic function, in the same order the registry assigned
+/// indices, minting an export for each public function from its declaration path and
+/// recording its direct-call edges for recursion detection. Generic templates are
+/// skipped — they are monomorphized on demand and drained separately.
+fn lower_declared_functions(
+    parsed: &[Module],
+    resolution: Resolution<'_, '_>,
+    draft: &mut ImageDraft,
+    diagnostics: &mut DiagnosticCollector,
+    facts: &mut AnalysisFactCollector,
+    admission_steered: &mut BTreeSet<String>,
+) -> Result<LoweredFunctions, PhaseStop> {
+    let records = resolution.records;
+    let mut lowered: Vec<LoweredFn> = Vec::new();
+    let mut exports: Vec<ExportEntry> = Vec::new();
+    let mut exit = DeclarationExit::Exhausted;
+    for module in parsed {
+        for declaration in &module.ast.declarations {
+            let Declaration::Function(function) = declaration else {
+                // Constants are evaluated into the const registry before this pass;
+                // aliases, nominals, records, resources, and stores are handled by their
+                // own registries; test declarations are lowered after every function has
+                // an index.
+                continue;
+            };
+            if !function.type_params.is_empty() {
+                // A generic template is not lowered in place.
+                continue;
+            }
+            let result = match FnLowerer::lower(
+                draft,
+                records,
+                resolution.durable,
+                resolution.signatures,
+                resolution.generics,
+                resolution.constants,
+                diagnostics,
+                facts.sink(module.at),
+                admission_steered,
+                &module.file,
+                &module.name,
+                function,
+            ) {
+                Ok(BodyOutcome::Lowered(result)) => result,
+                Ok(BodyOutcome::Refused) => {
+                    if records.has_instantiation_limit() {
+                        return Ok(LoweredFunctions {
+                            lowered,
+                            exports,
+                            exit: DeclarationExit::StoppedOnInstantiationLimit,
+                        });
+                    }
+                    exit = DeclarationExit::Refused;
+                    continue;
+                }
+                Err(invariant) => {
+                    return Err(PhaseStop::Invariant(InvariantCause::Generic(invariant)));
+                }
+            };
+            lowered.push(LoweredFn {
+                index: result.func.index(),
+                file: module.file.clone(),
+                name: function.name.clone(),
+                span: function.span,
+                callees: result.callees,
+                is_export: function.public,
+                is_test: false,
+                unwrapped_mutations: result.unwrapped_mutations,
+                unwrapped_calls: result.unwrapped_calls,
+                has_direct_durable_op: result.has_direct_durable_op,
+                owns_transaction: result.owns_transaction,
+                code: result.code,
+                code_spans: result.code_spans,
+            });
+            if function.public {
+                // The injectivity owner's own guard: every dotted module segment and the
+                // item must be ASCII identifiers before an ExportId is minted over them
+                // (see marrow-image::export_id). Unreachable through the current capture
+                // path, which already constrains both; kept so the id payload's
+                // injectivity never silently rests on an upstream layer alone.
+                if valid_export_path(&module.name, &function.name) {
+                    let id = ExportId::of_local(&module.name, &function.name);
+                    draft.add_export(id, result.func);
+                    exports.push(ExportEntry {
+                        module: module.name.clone(),
+                        item: function.name.clone(),
+                        id,
+                    });
+                } else {
+                    diagnostics.push(SourceDiagnostic::at(
+                        Code::CheckModulePath.as_str(),
+                        &module.file,
+                        function.span,
+                        format!(
+                            "export `{}` in module `{}` is not an ASCII identifier path, \
+                             so it cannot be exported",
+                            function.name, module.name
+                        ),
+                    ));
+                    continue;
+                }
+            }
+            if records.has_instantiation_limit() {
+                return Ok(LoweredFunctions {
+                    lowered,
+                    exports,
+                    exit: DeclarationExit::StoppedOnInstantiationLimit,
+                });
+            }
+        }
+    }
+    Ok(LoweredFunctions {
+        lowered,
+        exports,
+        exit,
+    })
+}
+
+/// Lower each `test "name"` body into a storeless, zero-argument function and bind its
+/// title into the TEST-ENTRY table. Tests are lowered after every function so their
+/// bodies' calls resolve and their own indices follow the functions'. Titles are unique
+/// across the project; a duplicate title skips its body, which leaves the index reserved
+/// for it unminted. With tests excluded no test is declared to lower, so the set is
+/// vacuously exhausted.
+fn lower_declared_tests(
+    parsed: &[Module],
+    mode: TestMode,
+    resolution: Resolution<'_, '_>,
+    draft: &mut ImageDraft,
+    diagnostics: &mut DiagnosticCollector,
+    facts: &mut AnalysisFactCollector,
+    admission_steered: &mut BTreeSet<String>,
+) -> Result<LoweredTests, PhaseStop> {
+    let records = resolution.records;
+    let mut lowered: Vec<LoweredFn> = Vec::new();
+    let mut entries: Vec<TestEntry> = Vec::new();
+    if mode != TestMode::Include {
+        return Ok(LoweredTests {
+            lowered,
+            entries,
+            exit: DeclarationExit::Exhausted,
+        });
+    }
+    if records.has_instantiation_limit() {
+        return Ok(LoweredTests {
+            lowered,
+            entries,
+            exit: DeclarationExit::StoppedOnInstantiationLimit,
+        });
+    }
+    let mut exit = DeclarationExit::Exhausted;
+    for module in parsed {
+        for declaration in &module.ast.declarations {
+            let Declaration::Test(test) = declaration else {
+                continue;
+            };
+            if entries.iter().any(|existing| existing.name == test.name) {
+                diagnostics.push(SourceDiagnostic::at(
+                    Code::CheckNameConflict.as_str(),
+                    &module.file,
+                    test.name_span,
+                    format!("a test named `{}` is already declared", test.name),
+                ));
+                exit = DeclarationExit::Refused;
+                continue;
+            }
+            let result = match FnLowerer::lower_test(
+                draft,
+                records,
+                resolution.durable,
+                resolution.signatures,
+                resolution.generics,
+                resolution.constants,
+                diagnostics,
+                facts.sink(module.at),
+                admission_steered,
+                &module.file,
+                &module.name,
+                &test.name,
+                &test.body,
+            ) {
+                Ok(BodyOutcome::Lowered(result)) => result,
+                Ok(BodyOutcome::Refused) => {
+                    if records.has_instantiation_limit() {
+                        return Ok(LoweredTests {
+                            lowered,
+                            entries,
+                            exit: DeclarationExit::StoppedOnInstantiationLimit,
+                        });
+                    }
+                    exit = DeclarationExit::Refused;
+                    continue;
+                }
+                Err(invariant) => {
+                    return Err(PhaseStop::Invariant(InvariantCause::Generic(invariant)));
+                }
+            };
+            lowered.push(LoweredFn {
+                index: result.func.index(),
+                file: module.file.clone(),
+                name: test.name.clone(),
+                span: test.name_span,
+                callees: result.callees,
+                is_export: false,
+                is_test: true,
+                unwrapped_mutations: result.unwrapped_mutations,
+                unwrapped_calls: result.unwrapped_calls,
+                has_direct_durable_op: result.has_direct_durable_op,
+                owns_transaction: result.owns_transaction,
+                code: result.code,
+                code_spans: result.code_spans,
+            });
+            let name_id = draft.intern_string(&test.name);
+            draft.add_test_entry(name_id, result.func);
+            entries.push(TestEntry {
+                name: test.name.clone(),
+                module: module.name.clone(),
+                file: module.file.as_str().to_string(),
+                line: test.name_span.line,
+                column: test.name_span.column,
+            });
+            if records.has_instantiation_limit() {
+                return Ok(LoweredTests {
+                    lowered,
+                    entries,
+                    exit: DeclarationExit::StoppedOnInstantiationLimit,
+                });
+            }
+        }
+    }
+    Ok(LoweredTests {
+        lowered,
+        entries,
+        exit,
+    })
 }
 
 /// The complete diagnostic picture the editor analysis snapshot consumes: every stage's
@@ -2490,8 +2699,8 @@ mod tests {
         AcceptedQueuedTemplateProofs, AcyclicCallGraph, AmbientTransactionClosure, Analyzed,
         Artifacts, BoundedDiagnostics, Built, CompileFailure, CompileStage,
         CompleteDeclaredFunctionBodies, CompleteDeclaredTestBodies, CompleteFunctionRegistry,
-        CompleteLoweredFunctionSet, CompleteTypeRegistry, Driven, InvariantCause, SemanticOutcome,
-        analyze_outcome,
+        CompleteLoweredFunctionSet, CompleteTypeRegistry, DeclarationExit, Driven, InvariantCause,
+        SemanticOutcome, analyze_outcome,
     };
     use crate::diag::{DiagnosticCollector, MAX_DIAGNOSTIC_COUNT, SourceDiagnostic};
     use crate::types::{
@@ -2500,6 +2709,7 @@ mod tests {
     };
     use marrow_codes::Code;
     use marrow_syntax::SourceSpan;
+    use std::collections::{BTreeMap, BTreeSet};
 
     /// The minting guard rejects every input class whose dotted join would break
     /// the ExportId payload's injectivity, even though the current capture path
@@ -2755,6 +2965,19 @@ mod tests {
         assert_eq!(recovered, expected);
     }
 
+    /// A completeness artifact is minted for a declaration set only when every
+    /// declaration in it took the index reserved for it. A stop on the shared
+    /// instantiation limit leaves the loop's unvisited suffix unlowered, so it mints
+    /// nothing — the artifact's documented claim would otherwise be false for every
+    /// declaration after the stop, leaving the truncated set's honesty resting entirely
+    /// on the caller's separate limit return.
+    #[test]
+    fn only_an_exhausted_declaration_set_is_complete() {
+        assert!(DeclarationExit::Exhausted.complete());
+        assert!(!DeclarationExit::Refused.complete());
+        assert!(!DeclarationExit::StoppedOnInstantiationLimit.complete());
+    }
+
     /// The fence's positive direction. Production cannot reach it — an unavailable
     /// artifact always follows a refusal that reported, so the terminal is non-empty and
     /// the diagnostic arm wins — which is exactly why the rule needs a direct test:
@@ -2763,9 +2986,49 @@ mod tests {
     /// destructure is load-bearing, and the all-available base is checked to be checked.
     #[test]
     fn an_empty_terminal_with_a_withheld_artifact_is_an_invariant() {
+        // Built through the production registry owners over an empty project rather
+        // than hand-assembled: the artifact is only meaningful over a table the real
+        // builder accepted.
+        let complete_registry = || {
+            let mut draft = marrow_image::ImageDraft::new();
+            let mut diagnostics = DiagnosticCollector::new();
+            let records = crate::types::TypeRegistry::build(
+                &mut draft,
+                &[],
+                &[],
+                &[],
+                &[],
+                &[],
+                &mut diagnostics,
+            );
+            let durable = crate::durable::DurableRegistry::build(
+                &mut draft,
+                &records,
+                &[],
+                &[],
+                None,
+                &mut diagnostics,
+            )
+            .expect("an empty project builds an empty durable registry");
+            let built = crate::lower::FunctionRegistry::build(
+                &records,
+                &mut draft,
+                &durable,
+                &[],
+                BTreeSet::new(),
+                BTreeMap::new(),
+                BTreeSet::new(),
+                &mut diagnostics,
+            )
+            .expect("an empty project resolves every signature");
+            let crate::lower::FunctionRegistryOutcome::Complete(signatures) = built else {
+                panic!("an empty declaration set refuses no signature")
+            };
+            CompleteFunctionRegistry(signatures)
+        };
         let available = || Artifacts {
             types: Some(CompleteTypeRegistry),
-            functions: Some(CompleteFunctionRegistry),
+            functions: Some(complete_registry()),
             template_proofs: Some(AcceptedQueuedTemplateProofs),
             function_bodies: Some(CompleteDeclaredFunctionBodies),
             test_bodies: Some(CompleteDeclaredTestBodies),
@@ -2778,7 +3041,9 @@ mod tests {
             "an empty terminal with every artifact available is a checked program"
         );
 
-        let withhold: [(&str, fn(&mut Artifacts)); 8] = [
+        /// One artifact withheld from an otherwise complete set, by name.
+        type Withhold = (&'static str, fn(&mut Artifacts));
+        let withhold: [Withhold; 8] = [
             ("types", |a| a.types = None),
             ("functions", |a| a.functions = None),
             ("template_proofs", |a| a.template_proofs = None),

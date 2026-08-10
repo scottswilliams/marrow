@@ -336,7 +336,7 @@ pub(crate) use self::builtins::{
 };
 pub(crate) use self::durable::{is_durable_place_op, is_mutation_instr};
 pub(crate) use self::registry::{
-    DeclaredFn, FunctionRegistry, FunctionRegistryBuild, GenericRegistry,
+    DeclaredFn, FunctionRegistry, FunctionRegistryOutcome, GenericRegistry,
 };
 pub(crate) use self::types::parse_int;
 

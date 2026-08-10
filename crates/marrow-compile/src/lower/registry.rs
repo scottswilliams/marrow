@@ -39,7 +39,7 @@ pub(crate) struct TemplateProofOutcome {
 /// its diagnostic; the registry is withheld because a partial signature table cannot
 /// resolve call sites, which makes the whole `CompleteFunctionRegistry` artifact
 /// unavailable rather than leaving the caller to read that from an untyped `None`.
-pub(crate) enum FunctionRegistryBuild {
+pub(crate) enum FunctionRegistryOutcome {
     Complete(FunctionRegistry),
     Refused,
 }
@@ -58,7 +58,7 @@ impl FunctionRegistry {
         imports: BTreeMap<String, Vec<(String, String)>>,
         broken_modules: BTreeSet<String>,
         diagnostics: &mut DiagnosticCollector,
-    ) -> Result<FunctionRegistryBuild, LowerInvariant> {
+    ) -> Result<FunctionRegistryOutcome, LowerInvariant> {
         let mut sigs = Vec::with_capacity(functions.len());
         let mut accepted = true;
         // Only monomorphic functions take an image index and enter the signature
@@ -129,9 +129,9 @@ impl FunctionRegistry {
             index += 1;
         }
         if !accepted {
-            return Ok(FunctionRegistryBuild::Refused);
+            return Ok(FunctionRegistryOutcome::Refused);
         }
-        Ok(FunctionRegistryBuild::Complete(Self {
+        Ok(FunctionRegistryOutcome::Complete(Self {
             sigs,
             modules,
             imports,
