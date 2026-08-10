@@ -325,8 +325,8 @@ pub(crate) struct DiagnosticCollector {
 
 #[derive(Debug)]
 enum CollectorState {
+    /// The retained count is `rows.len()`; it is never carried beside them.
     Retaining {
-        count: usize,
         owned_bytes: usize,
         rows: Vec<SourceDiagnostic>,
     },
@@ -338,12 +338,12 @@ enum CollectorState {
 }
 
 /// The finished terminal of one collector: the complete ordered payload with
-/// its exact totals, or the typed limit with saturated totals and no payload.
-/// Complete is empty exactly when its count is zero; Limited owns no vector.
+/// its exact byte total, or the typed limit with saturated totals and no
+/// payload. A Complete terminal's count is `rows.len()`; a Limited one has no
+/// vector to count, so it carries its saturated total.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum BoundedDiagnostics {
     Complete {
-        count: usize,
         owned_bytes: usize,
         rows: Vec<SourceDiagnostic>,
     },
@@ -358,7 +358,7 @@ impl BoundedDiagnostics {
     /// Logical emptiness: a Limited terminal retains no rows but is never
     /// empty — its limit displaced at least one row.
     pub(crate) fn is_empty(&self) -> bool {
-        matches!(self, BoundedDiagnostics::Complete { count: 0, .. })
+        matches!(self, BoundedDiagnostics::Complete { rows, .. } if rows.is_empty())
     }
 
     /// Test support: the complete rows, or a panic on a limited terminal.
@@ -432,7 +432,6 @@ impl DiagnosticCollector {
     pub(crate) fn new() -> Self {
         Self {
             state: CollectorState::Retaining {
-                count: 0,
                 owned_bytes: 0,
                 rows: Vec::new(),
             },
@@ -442,7 +441,7 @@ impl DiagnosticCollector {
     /// Logical emptiness: a Limited owner retains no rows but is never empty.
     pub(crate) fn is_empty(&self) -> bool {
         match &self.state {
-            CollectorState::Retaining { count, .. } => *count == 0,
+            CollectorState::Retaining { rows, .. } => rows.is_empty(),
             CollectorState::Limited { .. } => false,
         }
     }
@@ -459,11 +458,9 @@ impl DiagnosticCollector {
     /// re-materializes.
     pub(crate) fn absorb(&mut self, finished: BoundedDiagnostics) {
         match finished {
-            BoundedDiagnostics::Complete {
-                count,
-                owned_bytes,
-                rows,
-            } => self.admit(count, owned_bytes, RowSource::Many(rows)),
+            BoundedDiagnostics::Complete { owned_bytes, rows } => {
+                self.admit(rows.len(), owned_bytes, RowSource::Many(rows))
+            }
             BoundedDiagnostics::Limited {
                 count,
                 owned_bytes,
@@ -515,15 +512,9 @@ impl DiagnosticCollector {
     /// Seal this owner into its terminal. Total: every state has a terminal.
     pub(crate) fn finish(self) -> BoundedDiagnostics {
         match self.state {
-            CollectorState::Retaining {
-                count,
-                owned_bytes,
-                rows,
-            } => BoundedDiagnostics::Complete {
-                count,
-                owned_bytes,
-                rows,
-            },
+            CollectorState::Retaining { owned_bytes, rows } => {
+                BoundedDiagnostics::Complete { owned_bytes, rows }
+            }
             CollectorState::Limited {
                 count,
                 owned_bytes,
@@ -541,12 +532,8 @@ impl DiagnosticCollector {
     /// already-retained prefix row — and Count wins a simultaneous crossing.
     fn admit(&mut self, added_count: usize, added_bytes: usize, incoming: RowSource) {
         match &mut self.state {
-            CollectorState::Retaining {
-                count,
-                owned_bytes,
-                rows,
-            } => {
-                let new_count = count.saturating_add(added_count);
+            CollectorState::Retaining { owned_bytes, rows } => {
+                let new_count = rows.len().saturating_add(added_count);
                 let new_bytes = owned_bytes.saturating_add(added_bytes);
                 if new_count > MAX_DIAGNOSTIC_COUNT {
                     self.state = limited_state(
@@ -565,7 +552,6 @@ impl DiagnosticCollector {
                         },
                     );
                 } else {
-                    *count = new_count;
                     *owned_bytes = new_bytes;
                     match incoming {
                         RowSource::One(row) => rows.push(row),
@@ -593,10 +579,8 @@ impl DiagnosticCollector {
         inherited: CompileDiagnosticLimit,
     ) {
         match &mut self.state {
-            CollectorState::Retaining {
-                count, owned_bytes, ..
-            } => {
-                let new_count = count.saturating_add(added_count);
+            CollectorState::Retaining { owned_bytes, rows } => {
+                let new_count = rows.len().saturating_add(added_count);
                 let new_bytes = owned_bytes.saturating_add(added_bytes);
                 let limit = if new_count > MAX_DIAGNOSTIC_COUNT {
                     CompileDiagnosticLimit::Count {
@@ -623,12 +607,8 @@ impl DiagnosticCollector {
     #[cfg(test)]
     pub(crate) fn probe(&self) -> CollectorProbe {
         match &self.state {
-            CollectorState::Retaining {
-                count,
-                owned_bytes,
-                rows,
-            } => CollectorProbe {
-                count: *count,
+            CollectorState::Retaining { owned_bytes, rows } => CollectorProbe {
+                count: rows.len(),
                 owned_bytes: *owned_bytes,
                 limit: None,
                 rows: rows.clone(),
