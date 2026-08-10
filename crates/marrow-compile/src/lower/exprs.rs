@@ -1157,6 +1157,23 @@ impl<'a> FnLowerer<'a> {
                             .lower_group_constructor(resource, group_name, head_span, args, span)
                             .map(CallResult::Value);
                     }
+                    // The store this resource backs was declared and refused, so its
+                    // branch tree was never built: whether `Resource.member(…)` names
+                    // one of its branches is not knowable here, and calling the form
+                    // unsupported would blame the language for the store's own
+                    // reported defect.
+                    if let RootBinding::Refused(_, summary) =
+                        self.durable.root_by_resource(resource)
+                    {
+                        match summary.steer_once() {
+                            true => {
+                                let row = declaration_refused(self.file, span, summary);
+                                self.fail(row);
+                            }
+                            false => self.failed = true,
+                        }
+                        return None;
+                    }
                 }
                 // A method-shaped call on a value: `s.trim()`. Member syntax reaches
                 // fields and constructor paths only, so this is not a call the subset
@@ -2008,7 +2025,9 @@ impl<'a> FnLowerer<'a> {
         resource: &str,
         path: &[&str],
     ) -> Option<&'a crate::durable::DurableBranch> {
-        let root = self.durable.root_by_resource(resource)?;
+        let RootBinding::Executable(root) = self.durable.root_by_resource(resource) else {
+            return None;
+        };
         let (first, rest) = path.split_first()?;
         let mut branch = root.branch(first)?;
         for name in rest {
@@ -3139,17 +3158,43 @@ impl<'a> FnLowerer<'a> {
                         // A keyed branch of the resource this whole-entry record materializes
                         // from is not a projectable field: steer to the durable-path form
                         // rather than reporting a bare missing field.
-                        if let Some(root) = self.durable.root_by_record(ty)
-                            && root.branch(name).is_some()
+                        if let Some(resource) = self
+                            .records
+                            .record_by_type(ty)
+                            .map(|info| info.name.clone())
                         {
-                            self.fail(branch_not_a_field(
-                                self.file,
-                                field_span,
-                                name,
-                                &root.resource,
-                                &root.name,
-                            ));
-                            return None;
+                            match self.durable.root_by_resource(&resource) {
+                                RootBinding::Executable(root) if root.branch(name).is_some() => {
+                                    self.fail(branch_not_a_field(
+                                        self.file,
+                                        field_span,
+                                        name,
+                                        &root.resource,
+                                        &root.name,
+                                    ));
+                                    return None;
+                                }
+                                // The store this resource backs was declared and
+                                // refused, so its branch tree was never built and
+                                // whether `name` is one of its branches is not
+                                // knowable here. Reporting the record as having no
+                                // such field would state that as fact; the store's
+                                // own cause is what the reader has to fix first.
+                                RootBinding::Refused(_, summary) => {
+                                    match summary.steer_once() {
+                                        true => {
+                                            let row =
+                                                declaration_refused(self.file, field_span, summary);
+                                            self.fail(row);
+                                        }
+                                        false => self.failed = true,
+                                    }
+                                    return None;
+                                }
+                                RootBinding::Executable(_)
+                                | RootBinding::NotYetExecutable
+                                | RootBinding::Absent => {}
+                            }
                         }
                         self.fail(SourceDiagnostic::at(
                             Code::CheckType.as_str(),

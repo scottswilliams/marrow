@@ -4947,6 +4947,12 @@ impl TypeRegistry {
         self.records.iter().find(|info| info.name == name)
     }
 
+    /// The resource record whose image record type is `ty`, if `ty` is one — the
+    /// name a durable lookup keyed on the resource takes.
+    pub(crate) fn record_by_type(&self, ty: TypeId) -> Option<&RecordInfo> {
+        self.records.iter().find(|info| info.type_id == ty)
+    }
+
     pub(crate) fn struct_by_name(&self, name: &str) -> Option<&StructInfo> {
         self.structs.iter().find(|info| info.name == name)
     }

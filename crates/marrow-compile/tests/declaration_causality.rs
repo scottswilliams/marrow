@@ -411,6 +411,73 @@ fn r18_a_refused_root_is_offered_as_a_did_you_mean() {
     );
 }
 
+/// A4 — a resource-keyed durable lookup answers the store's refusal, not an
+/// absence. The branch constructor `Resource.branch(…)` resolves through the store
+/// backing `Resource`; scanning the executable roots for it answered `None` for a
+/// refused store, so the call fell through to the method-shaped-call report and
+/// blamed the language for the store's own reported defect.
+#[test]
+fn a4_a_branch_constructor_of_a_refused_store_names_the_stores_cause() {
+    let diagnostics = diagnostics(
+        "module main\n\n\
+         resource Widget {\n\
+         \x20   required name: string\n\n\
+         \x20   notes[nid: int] {\n\
+         \x20       required body: string\n\
+         \x20   }\n\
+         }\n\n\
+         store ^items[id: int]: Widget\n\n\
+         pub fn make(): int {\n\
+         \x20   const n = Widget.notes(body: \"x\")\n\
+         \x20   return 1\n\
+         }\n",
+    );
+
+    assert_no_subset_gap(&diagnostics);
+    assert_eq!(
+        rows(&diagnostics).last().copied(),
+        Some(("check.durable_identity", 14, 15)),
+        "the constructor is steered to the store's own cause: {:#?}",
+        messages(&diagnostics),
+    );
+}
+
+/// A4 — the same for the record-keyed steer. A materialized resource value names a
+/// member that is neither a field nor, as far as this compilation knows, a branch:
+/// the store that would have built the branch tree was refused, so reporting the
+/// record as having no such field states as fact something the compiler cannot know.
+#[test]
+fn a4_a_branch_named_on_a_refused_stores_resource_names_the_stores_cause() {
+    let diagnostics = diagnostics(
+        "module main\n\n\
+         resource Widget {\n\
+         \x20   required name: string\n\n\
+         \x20   notes[nid: int] {\n\
+         \x20       required body: string\n\
+         \x20   }\n\
+         }\n\n\
+         store ^items[id: int]: Widget\n\n\
+         pub fn make(): int {\n\
+         \x20   const w = Widget(name: \"a\")\n\
+         \x20   const b = w.notes\n\
+         \x20   return 1\n\
+         }\n",
+    );
+
+    assert!(
+        !messages(&diagnostics)
+            .iter()
+            .any(|message| message.contains("has no field `notes`")),
+        "`notes` is declared eight lines above; no row may say the record has no \
+         such member: {:#?}",
+        messages(&diagnostics),
+    );
+    assert_eq!(
+        rows(&diagnostics).last().copied(),
+        Some(("check.durable_identity", 15, 15)),
+    );
+}
+
 /// R20 · `Bound` — a root refused for crossing a fixed compiler-owned bound keeps
 /// its name and reuses its own `check.resource_limit` cause. It must not claim an
 /// identity admission failure.

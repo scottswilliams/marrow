@@ -25,7 +25,7 @@
 //! its member tree, and — for the executable subset — its operation sites to the draft, and
 //! exposes the resolved sites the function lowerer emits against.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use marrow_codes::Code;
 use marrow_image::{
@@ -308,6 +308,16 @@ pub(crate) enum RootBinding<'a> {
 pub(crate) struct DurableRegistry {
     roots: Vec<DurableRoot>,
     declared: DeclarationLedger<String, DeclaredRoot>,
+    /// Lookup-only projection `resource name -> placement name`, appended in the
+    /// same `declare` call as the ledger entry so the two cannot drift.
+    ///
+    /// The ledger stays the sole authority for what a placement name binds; this
+    /// only lets a resource-keyed lookup reach it. Scanning the executable list
+    /// instead answered `None` for a refused store, which reads as *no store binds
+    /// this resource* — the fabricated absence this row removes. A resource here
+    /// whose placement the ledger does not know is [`DeclarationIndexDrift`], not a
+    /// neighbouring root.
+    by_resource: BTreeMap<String, String>,
     /// The durable-path naming join for every admitted graph node, `(ledger id, sigil,
     /// simple name)`, accumulated across the project's admitted stores. The
     /// [`DurableNaming`] the demand sentence spells paths through is built from this.
@@ -319,6 +329,7 @@ impl Default for DurableRegistry {
         Self {
             roots: Vec::new(),
             declared: DeclarationLedger::new(DeclarationNamespace::DurableRoot),
+            by_resource: BTreeMap::new(),
             naming: Vec::new(),
         }
     }
@@ -373,16 +384,29 @@ impl DurableRegistry {
         }
     }
 
-    /// The executable flat keyed root whose backing resource is `resource`, if any — the
-    /// owner of a branch constructor `Resource.branch(…)`. Each store binds one resource,
-    /// so at most one executable root matches a resource name.
-    pub(crate) fn root_by_resource(&self, resource: &str) -> Option<&DurableRoot> {
-        self.roots.iter().find(|root| root.resource == resource)
+    /// What the resource `resource` binds as a store root: the same four-way answer
+    /// [`DurableRegistry::root`] gives, reached through the resource projection.
+    ///
+    /// The owner of a branch constructor `Resource.branch(…)` and of the branch steer
+    /// on a materialized entry value. Each store binds one resource and the first
+    /// declaration of a resource stands, so a resource name selects at most one root.
+    /// A store this project declared and the compiler refused answers `Refused`, so
+    /// the use is steered to that store's own cause rather than told the form is one
+    /// the language does not support.
+    pub(crate) fn root_by_resource(&self, resource: &str) -> RootBinding<'_> {
+        match self.by_resource.get(resource) {
+            Some(name) => self.root(name),
+            None => RootBinding::Absent,
+        }
     }
 
     /// The executable flat keyed root whose whole-payload entry site is `entry_site`, if
     /// any — the owner a source-local root `place` resolves its fields against. Each root
     /// has a distinct entry site, so at most one matches.
+    ///
+    /// Structurally unreachable for a refused store: an entry site is minted while a
+    /// store's graph is admitted, so no refused declaration has one and a `Refused`
+    /// arm here would have no producer.
     pub(crate) fn root_by_entry_site(&self, entry_site: u16) -> Option<&DurableRoot> {
         self.roots.iter().find(|root| root.entry_site == entry_site)
     }
@@ -390,16 +414,11 @@ impl DurableRegistry {
     /// The executable root whose declaration-ordered RootId is `root_id` — the root an
     /// entry identity `Id(^root)` carries, so a `place` bound to an identity operand can
     /// recover the root's ordered key scalars for the columns the identity spreads into.
+    ///
+    /// Structurally unreachable for a refused store: a RootId names a row in the
+    /// draft's DURABLE table, which only an admitted store writes.
     pub(crate) fn root_by_id(&self, root_id: u16) -> Option<&DurableRoot> {
         self.roots.iter().find(|root| root.root_id == root_id)
-    }
-
-    /// The executable root whose whole-entry record is the image type `ty`, if any — the
-    /// owner that recognizes a keyed branch named on a materialized entry record value read
-    /// through `if const b = ^root(k)`, so a `b.branch[…]` chain steers to the durable-path
-    /// form. Each root has a distinct record type, so at most one matches.
-    pub(crate) fn root_by_record(&self, ty: marrow_image::TypeId) -> Option<&DurableRoot> {
-        self.roots.iter().find(|root| root.record == ty)
     }
 
     /// The executable branch whose materialized entry record is the image type `ty`, if
@@ -407,6 +426,10 @@ impl DurableRegistry {
     /// through `if const n = ^root(k)….branch(bk)`. Searches every executable root's whole
     /// recursive branch tree; each branch has its own materialized record type, so at most
     /// one branch matches.
+    ///
+    /// Structurally unreachable for a refused store: a branch's materialized record
+    /// type is minted while the store's graph is admitted, so a refused declaration
+    /// has none to be found by.
     pub(crate) fn branch_by_record(&self, ty: marrow_image::TypeId) -> Option<&DurableBranch> {
         fn find(branches: &[DurableBranch], ty: marrow_image::TypeId) -> Option<&DurableBranch> {
             for branch in branches {
@@ -507,6 +530,14 @@ impl DurableRegistry {
                     }
                     StoreBuild::Refused(refusal) => DeclarationOccurrence::Refused(refusal),
                 };
+                // The resource projection is appended in the same statement as the
+                // ledger entry, so a store cannot be declared without being reachable
+                // by the resource it binds. The first store to bind a resource owns
+                // the projection, matching the ledger's first-declaration-wins.
+                registry
+                    .by_resource
+                    .entry(store.resource.clone())
+                    .or_insert_with(|| store.root.root.clone());
                 registry
                     .declared
                     .declare(store.root.root.clone(), occurrence)?;
