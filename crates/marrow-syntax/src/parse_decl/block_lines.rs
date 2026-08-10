@@ -110,11 +110,13 @@ impl BlockLines {
                         }
                     } else if let Some(frame) = open_blocks.pop() {
                         blocks.push((frame.open, frame.statements));
-                    } else {
-                        continue;
                     }
                     // A closed nested block ends the statement that held it, so the next
-                    // significant token on the same line begins another one.
+                    // significant token on the same line begins another one. A `}` that
+                    // closes no frame is a boundary on the same terms: the parser skips
+                    // it and structures what follows it on the same line, so letting the
+                    // statement in progress run past it would leave every one of those
+                    // uncounted.
                     current(&mut body, &mut open_blocks).in_statement = false;
                 }
                 TokenKind::Newline => {
@@ -403,6 +405,30 @@ mod tests {
             structured, units,
             "the parser structures one declaration per `fn f(){{}}`, all on one line \
              (the `module` header is its own field, not a declaration)"
+        );
+        assert!(
+            measured >= structured,
+            "the file was measured at {measured} declarations and the parser built \
+             {structured} of them, so the list it was handed grew by doubling"
+        );
+    }
+
+    /// A `}` that closes nothing is still a boundary. The declaration parser skips it and
+    /// structures whatever follows it on the same line, so a measurement that let the
+    /// statement in progress run past it counts one declaration for a whole file of them
+    /// and hands the parser a list that grows by doubling for the rest of the file.
+    #[test]
+    fn declarations_after_an_unmatched_brace_are_each_measured() {
+        let units = 64;
+        let source = format!("module m\n{}\n", "const x = 1 }".repeat(units));
+        let tokens = crate::lex_source(&source).tokens;
+        let measured = BlockLines::measure(&tokens).body();
+        let structured = crate::parse_source(&source).file.declarations.len();
+
+        assert_eq!(
+            structured, units,
+            "the parser structures one declaration per `const x = 1`, each separated \
+             from the next only by a `}}` that closes nothing"
         );
         assert!(
             measured >= structured,
