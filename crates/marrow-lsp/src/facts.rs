@@ -409,11 +409,12 @@ mod absence_gate {
     /// The production lines of a source: every line outside a `#[cfg(test)]`
     /// item. Test code and this gate's own token lists legitimately name the
     /// forbidden surface, so a block-opening annotated item is skipped from its
-    /// attribute to the closing brace at the attribute's own indentation, which
-    /// formatted sources guarantee. Production code that follows a test-only
-    /// helper is still scanned. Any other annotated form stays in the scanned
-    /// region: a false positive fails loudly, where guessing its extent could
-    /// blank the rest of the file silently.
+    /// attribute to the closing brace at the attribute's own indentation (with an
+    /// optional `;` for an annotated initializer), which formatted sources
+    /// guarantee. Production code that follows a test-only helper is still
+    /// scanned. Any other annotated form stays in the scanned region, and an
+    /// unterminated one panics: a false positive fails loudly, where guessing its
+    /// extent would blank the rest of the file silently.
     fn production_lines(source: &str) -> Vec<&str> {
         let mut lines = source.lines().peekable();
         let mut kept = Vec::new();
@@ -426,11 +427,14 @@ mod absence_gate {
                 continue;
             }
             let close = format!("{}}}", " ".repeat(indent));
-            for skipped in lines.by_ref() {
-                if skipped == close {
-                    break;
-                }
-            }
+            let closed = lines
+                .by_ref()
+                .any(|skipped| skipped == close || skipped.strip_prefix(&close) == Some(";"));
+            assert!(
+                closed,
+                "a `#[cfg(test)]` item opened at indent {indent} has no closing `{close}`; \
+                 without it this scan would blank the rest of the file and silently pass"
+            );
         }
         kept
     }
@@ -473,6 +477,57 @@ mod absence_gate {
         );
     }
 
+    /// The scanned region covers a violation anywhere outside a `#[cfg(test)]`
+    /// item — before one, between two, and after the last — so a forbidden token
+    /// cannot hide behind position in the file.
+    #[test]
+    fn the_scanned_region_covers_the_whole_file_outside_test_items() {
+        let source = "\
+before_item
+#[cfg(test)]
+mod first {
+    hidden_in_first
+}
+between_items
+#[cfg(test)]
+mod second {
+    hidden_in_second
+}
+after_items
+";
+        assert_eq!(
+            production_lines(source),
+            ["before_item", "between_items", "after_items"]
+        );
+    }
+
+    /// A `#[cfg(test)]` item whose closing brace carries a trailing `;` still ends
+    /// the skipped region, and one that never closes panics rather than blanking
+    /// the rest of the file — the silent failure this scanner exists to avoid.
+    #[test]
+    fn an_unterminated_test_item_fails_loudly() {
+        let terminated = "\
+#[cfg(test)]
+const FIXTURES: Fixtures = Fixtures {
+    hidden: 1,
+};
+after_item
+";
+        assert_eq!(production_lines(terminated), ["after_item"]);
+
+        let unterminated = "\
+#[cfg(test)]
+mod never_closed {
+    hidden
+ }
+after_item
+";
+        assert!(
+            std::panic::catch_unwind(|| production_lines(unterminated)).is_err(),
+            "an unterminated test item must fail loudly, never blank the remainder"
+        );
+    }
+
     #[test]
     fn no_ranking_snippet_commit_or_resolve_surface() {
         scan(FORBIDDEN_FIELD_SETTERS);
@@ -485,15 +540,11 @@ mod absence_gate {
 
     /// The one severity owner is the diagnostic payload: no server source
     /// classifies a code to reconstruct severity. The forbidden names are the
-    /// deleted registry severity surface, spelled via `concat!` so this gate's
-    /// own text never matches.
+    /// deleted registry severity surface; this gate lives inside a `#[cfg(test)]`
+    /// module, which [`production_lines`] drops, so the names are spelled plainly.
     #[test]
     fn severity_comes_from_the_payload_never_the_code() {
-        scan(&[
-            concat!("Severity", "Class"),
-            concat!("severity", "_class"),
-            concat!("fn severity", "_of"),
-        ]);
+        scan(&["SeverityClass", "severity_class", "fn severity_of"]);
         let facts = std::fs::read_to_string(src_root().join("facts.rs")).expect("read facts.rs");
         assert!(
             facts.contains("to_lsp_severity(diagnostic.severity())"),
