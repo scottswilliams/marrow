@@ -349,3 +349,91 @@ fn the_analysis_union_orders_parse_rows_before_semantic_rows() {
         .collect();
     assert_eq!(files, vec!["src/a.mw", "src/a.mw", "src/b.mw"]);
 }
+
+/// Every sentence fragment `AnalysisResourceLimit::description` hands a reader, pinned
+/// exactly. The five analysis-owned bounds ship hand-written prose that reaches a user
+/// through three CLI commands and the language server, so a reworded fragment is a
+/// user-visible change and belongs in a review of what it now says, not in whatever lane
+/// happened to touch the file. The sixth arm delegates, and its law — a compile-side
+/// bound reads the same whichever owner reports it — is asserted below against a limit
+/// the production path produced.
+///
+/// The match is exhaustive and each arm is written out, so a new bound cannot land
+/// without a fragment stated here.
+#[test]
+fn every_analysis_resource_limit_description_is_pinned() {
+    let analysis_owned = [
+        (
+            AnalysisResourceLimit::SnapshotFactCount { limit: 1 },
+            "the analysis fact table is full",
+        ),
+        (
+            AnalysisResourceLimit::SnapshotFactBytes { limit: 1 },
+            "the analysis facts hold too much text to retain",
+        ),
+        (
+            AnalysisResourceLimit::CompletionCandidateCount { limit: 1 },
+            "one completion query has too many candidates",
+        ),
+        (
+            AnalysisResourceLimit::CompletionRenderBytes { limit: 1 },
+            "one completion query renders too much text",
+        ),
+        (
+            AnalysisResourceLimit::ActiveCallRenderBytes { limit: 1 },
+            "one signature query renders too much text",
+        ),
+    ];
+    for (limit, expected) in &analysis_owned {
+        // Exhaustiveness anchor: a new variant makes this match non-exhaustive, so it
+        // cannot land without an arm here and a fragment in the table above.
+        match limit {
+            AnalysisResourceLimit::Compile(_)
+            | AnalysisResourceLimit::SnapshotFactCount { .. }
+            | AnalysisResourceLimit::SnapshotFactBytes { .. }
+            | AnalysisResourceLimit::CompletionCandidateCount { .. }
+            | AnalysisResourceLimit::CompletionRenderBytes { .. }
+            | AnalysisResourceLimit::ActiveCallRenderBytes { .. } => {}
+        }
+        assert_eq!(&limit.description(), expected);
+    }
+
+    let spellings: Vec<&str> = analysis_owned
+        .iter()
+        .map(|(limit, _)| limit.description())
+        .collect();
+    let mut sorted = spellings.clone();
+    sorted.sort_unstable();
+    sorted.dedup();
+    assert_eq!(
+        sorted.len(),
+        analysis_owned.len(),
+        "each analysis-owned bound must be distinguishable by the sentence a reader sees"
+    );
+
+    // The delegating arm: a compile-side bound answers in `ResourceLimitKind`'s own
+    // words, so the same exhausted bound reads identically whether `compile` or
+    // `analyze` reported it.
+    assert_one_error_per_at_sign();
+    let input = project(vec![(
+        "src/main.mw".to_string(),
+        at_sign_lines(SYNTAX_DIAGNOSTIC_COUNT_LIMIT + 1),
+    )]);
+    let failure = analyze(Arc::new(input), InputRevision::new(31))
+        .err()
+        .expect("analysis shares the compile diagnostic ceiling");
+    let AnalysisFailure::ResourceLimit {
+        limit: analysis, ..
+    } = failure
+    else {
+        panic!("expected the shared compile diagnostic limit");
+    };
+    let AnalysisResourceLimit::Compile(compile_limit) = analysis else {
+        panic!("expected the delegating arm");
+    };
+    assert_eq!(
+        analysis.description(),
+        compile_limit.kind().description(),
+        "the delegating arm adds no words of its own"
+    );
+}
