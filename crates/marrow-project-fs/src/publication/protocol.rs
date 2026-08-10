@@ -505,7 +505,12 @@ impl<'a> Session<'a> {
                 self.terminal_from_map()
             }
             // The artifact this plan was admitted against as absent now
-            // exists, so the map — not this refusal — names the terminal.
+            // exists, so the map — not this refusal — names the terminal. The
+            // writer that put it there is outside the guard, because no
+            // cooperating Marrow process can hold the write lock at the same
+            // time. `.marrow/ids` is a committed file, so an ordinary `git
+            // checkout`, `stash pop`, or `pull` landing between the map read
+            // and this link is what reaches here.
             Err(CustodyError::AlreadyExists { .. }) => self.terminal_from_map(),
             Err(error) => Err(error.into()),
         }
@@ -514,7 +519,10 @@ impl<'a> Session<'a> {
     /// The replace arm: one atomic exchange. The displaced generation lands at
     /// the stage name; anything else there is a third live inode that this
     /// process — and only this process, which has just proven the pre-exchange
-    /// reading — may exchange back.
+    /// reading — may exchange back. Unlike the ledger, the stage name is not a
+    /// tracked file, so no Git operation puts an inode there: reaching the
+    /// exchange-back arm takes a writer editing the metadata directory by hand
+    /// between this exchange and the stat below.
     fn exchange_replace(&self, base: FsIdentity) -> Result<Terminal, IdsPublicationError> {
         let meta = self.meta();
         let next = self.header.next_inode;

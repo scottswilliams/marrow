@@ -519,6 +519,40 @@ fn recovery_settles_a_reverted_publication_as_a_concurrent_change() {
     assert!(!project.exists("ids.pending"));
 }
 
+/// The ledger is a committed file, so an ordinary Git operation — a checkout, a
+/// `stash pop`, a pull — can replace it with another branch's generation while a
+/// publication is claimed. That is the writer the destination-refusing arms
+/// exist for, and its replace-arm reading is reverted: the successor is not
+/// installed and every byte of the artifact is the other writer's, including
+/// where the plan bound a generation of its own.
+#[test]
+fn a_generation_a_checkout_landed_reverts_the_publication() {
+    let _serial = serialized();
+    let project = Project::new("checkout-generation");
+    project.write_meta("ids", b"base");
+    project.write_meta("ids.publish.stage", b"successor");
+    Crash::new(&project, Some(b"base"), b"successor")
+        .installing()
+        .witness_base("ids")
+        .witness_next("ids.publish.stage")
+        .plant();
+    // A checkout replaces the tracked entry rather than rewriting it in place,
+    // so the ledger is a fresh inode carrying neither the successor nor the
+    // generation the header binds.
+    fs::remove_file(project.meta().join("ids")).expect("the checkout replaces the entry");
+    project.write_meta("ids", b"another branch's generation");
+
+    let settled = project.guard().recover_ids().expect("recovery runs");
+    assert_eq!(settled, Some(IdsPublication::ConcurrentChange));
+    assert_eq!(
+        project.read_meta("ids").as_deref(),
+        Some(&b"another branch's generation"[..]),
+        "the publication left the other writer's bytes exactly as it found them"
+    );
+    assert!(!project.exists("ids.publish.stage"));
+    assert!(!project.exists("ids.pending"));
+}
+
 /// A publication that reached `Installing` and found the destination taken
 /// settles as a concurrent change without touching the artifact.
 #[test]

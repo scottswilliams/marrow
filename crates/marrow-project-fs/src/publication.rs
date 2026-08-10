@@ -54,6 +54,10 @@
 //! keeps whatever the concurrent writer left, and the outcome is
 //! [`IdsPublication::ConcurrentChange`]. It is a recorded terminal rather than
 //! an abandoned journal because the frame's only exit is its terminal phase.
+//! Reaching it takes a writer the guard does not exclude, which is a writer
+//! that took no lock: `.marrow/ids` is committed, so an ordinary Git operation
+//! creates or replaces it, while the untracked stage name reaches the same
+//! readings only through a hand edit.
 //! Which terminal a mutation reached is read back from the map rather than
 //! decided from the mutation's own outcome, so the driver, the mutations, and
 //! the crash-tail derivation cannot disagree about what was installed.
