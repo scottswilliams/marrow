@@ -5,10 +5,9 @@
 //!
 //! **Outcome agreement.** Parsing is a pure function of the source bytes, so an outcome
 //! derived from a per-query parse equals the one the superseded retained trees produced.
-//! This file
-//! freezes a corpus of rendered outcomes covering the classification cases the retained
-//! trees served — clean files, a recovered-broken file, a file that never decoded — so a
-//! divergence is a failing assertion rather than an assumption.
+//! This file freezes a corpus of rendered outcomes covering the classification cases
+//! those trees served — clean files, a recovered-broken file, a file that never decoded —
+//! so a divergence is a failing assertion rather than an assumption.
 //!
 //! **Latency.** The trade this policy accepts is a lex-and-parse per query in exchange
 //! for retaining no tree. The budget is pinned at the maximum file the project owner

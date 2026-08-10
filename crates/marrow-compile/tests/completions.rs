@@ -1,10 +1,9 @@
 //! The analysis snapshot classifies a completion position purely positionally over a
 //! query-local parse of the named file's own retained bytes, and enumerates the complete
-//! in-scope candidate namespace for that
-//! class. The query runs on a broken file over recovered incomplete forms, fails soft on
-//! an unresolvable base, refuses an over-cap namespace as a query-local resource limit
-//! rather than truncating, and distinguishes an invalid coordinate from a legitimate
-//! absence.
+//! in-scope candidate namespace for that class. The query runs on a broken file over
+//! recovered incomplete forms, fails soft on an unresolvable base, refuses an over-cap
+//! namespace as a query-local resource limit rather than truncating, and distinguishes
+//! an invalid coordinate from a legitimate absence.
 
 use std::sync::Arc;
 

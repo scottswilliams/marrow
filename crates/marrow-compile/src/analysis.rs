@@ -501,12 +501,12 @@ impl AnalysisSnapshot {
     ///
     /// The position class is derived purely positionally from the checker's resolution
     /// model over a parse of this file's own retained bytes — never from the trigger
-    /// character, document text, or a token scan. The candidate set is the complete in-scope namespace for the
-    /// class: locals and parameters in scope before the offset, module functions, consts,
-    /// built-ins, imported module names, and enum type names for an expression name; the
-    /// base type's declared fields after `.`/`?.`; an enum's immediate members after `::`;
-    /// named types, generic templates, built-in type names, and in-scope type parameters
-    /// in a type annotation.
+    /// character, document text, or a token scan. The candidate set is the complete
+    /// in-scope namespace for the class: locals and parameters in scope before the
+    /// offset, module functions, consts, built-ins, imported module names, and enum type
+    /// names for an expression name; the base type's declared fields after `.`/`?.`; an
+    /// enum's immediate members after `::`; named types, generic templates, built-in type
+    /// names, and in-scope type parameters in a type annotation.
     ///
     /// The set is never prefix-filtered, ranked, or truncated: an over-cap namespace is a
     /// query-local [`CompletionOutcome::Refused`], never a truncated prefix. The parse
@@ -547,12 +547,11 @@ impl AnalysisSnapshot {
     ///
     /// The enclosing call and active index are derived purely positionally over a parse
     /// of this file's own retained bytes — never from the trigger character or a
-    /// document-text scan. The
-    /// callee resolves to a same-module function or generic template declared in the file;
-    /// a generic callee presents its source template signature. The parameter pieces are
-    /// separately rendered from the declared spellings so no consumer substring-searches
-    /// the signature display, and each piece composes the signature so a consumer can mark
-    /// the active one.
+    /// document-text scan. The callee resolves to a same-module function or generic
+    /// template declared in the file, and a generic callee presents its source template
+    /// signature. The parameter pieces are separately rendered from the declared
+    /// spellings so no consumer substring-searches the signature display, and each piece
+    /// composes the signature so a consumer can mark the active one.
     ///
     /// An unknown file or an out-of-range offset is a typed [`QueryError`]. A file that
     /// produced no parse tree (a non-UTF-8 file) is [`Unavailability::Syntax`]. A broken
