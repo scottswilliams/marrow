@@ -482,10 +482,20 @@ fn a4_a_branch_constructor_of_a_refused_store_names_the_stores_cause() {
     );
 
     assert_no_subset_gap(&diagnostics);
+    // The identity class is the one refusal whose cause is a report *family*
+    // rather than a single row, so its steer names that family — the same row
+    // every other reference to a store refused for a missing identity receives.
     assert_eq!(
         rows(&diagnostics).last().copied(),
-        Some(("check.durable_identity", 14, 15)),
+        Some(("check.type", 14, 15)),
         "the constructor is steered to the store's own cause: {:#?}",
+        messages(&diagnostics),
+    );
+    assert!(
+        messages(&diagnostics)
+            .last()
+            .is_some_and(|message| message.contains("failed identity admission")),
+        "{:#?}",
         messages(&diagnostics),
     );
 }
@@ -522,7 +532,16 @@ fn a4_a_branch_named_on_a_refused_stores_resource_names_the_stores_cause() {
     );
     assert_eq!(
         rows(&diagnostics).last().copied(),
-        Some(("check.durable_identity", 15, 15)),
+        Some(("check.type", 15, 15)),
+        "{:#?}",
+        messages(&diagnostics),
+    );
+    assert!(
+        messages(&diagnostics)
+            .last()
+            .is_some_and(|message| message.contains("failed identity admission")),
+        "{:#?}",
+        messages(&diagnostics),
     );
 }
 

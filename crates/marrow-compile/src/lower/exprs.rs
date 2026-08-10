@@ -1182,13 +1182,7 @@ impl<'a> FnLowerer<'a> {
                         Err(drift) => return self.ledger_drift(drift),
                     };
                     if let RootBinding::Refused(_, summary) = backing {
-                        match summary.steer_once() {
-                            true => {
-                                let row = declaration_refused(self.file, span, summary);
-                                self.fail(row);
-                            }
-                            false => self.failed = true,
-                        }
+                        self.steer_refusal(summary, span);
                         return None;
                     }
                 }
@@ -3235,14 +3229,7 @@ impl<'a> FnLowerer<'a> {
                                 // such field would state that as fact; the store's
                                 // own cause is what the reader has to fix first.
                                 RootBinding::Refused(_, summary) => {
-                                    match summary.steer_once() {
-                                        true => {
-                                            let row =
-                                                declaration_refused(self.file, field_span, summary);
-                                            self.fail(row);
-                                        }
-                                        false => self.failed = true,
-                                    }
+                                    self.steer_refusal(summary, field_span);
                                     return None;
                                 }
                                 RootBinding::Executable(_)
