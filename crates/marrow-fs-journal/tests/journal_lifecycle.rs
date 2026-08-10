@@ -422,6 +422,18 @@ fn hostile_umask_helper() {
     // The scratch root itself was created under the hostile umask; restore
     // owner access so the subject under test is entry creation inside it.
     set_mode(scratch.path(), 0o700);
+
+    // The control: an ordinary creation that restores no mode must show the
+    // hostile umask actually applied. Without it a shell that ignored
+    // `umask 0277` would make every assertion below vacuously green.
+    let control = scratch.path().join("control");
+    std::fs::File::create(&control).expect("create the umask control");
+    assert_eq!(
+        std::fs::metadata(&control).expect("stat control").mode() & 0o7777,
+        0o400,
+        "umask 0277 did not apply, so this leg proves nothing"
+    );
+
     let dir = root(&scratch);
 
     let file = dir.create_file_excl(&name("probe")).expect("create probe");

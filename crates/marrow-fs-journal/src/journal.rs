@@ -528,7 +528,9 @@ pub fn claim<'d>(
     };
     // Every refusal before the link leaves a never-linked claim file:
     // preclaim by the protocol's own law, so it is discarded under witness
-    // before the refusal returns.
+    // before the refusal returns. The discard is best-effort: whatever a
+    // failed discard leaves behind is still classifiable preclaim, and the
+    // original refusal is what propagates.
     let bytes = match write_claim_file(
         dir,
         name,
@@ -540,14 +542,18 @@ pub fn claim<'d>(
     ) {
         Ok(bytes) => bytes,
         Err(refusal) => {
-            discard_witnessed(dir, name.claim(), &file)?;
+            // The refusal the caller must see is the one that stopped the
+            // claim; a discard that itself fails leaves debris classification
+            // owns, and must not replace a durability-relevant refusal with
+            // its own unlink error.
+            let _ = discard_witnessed(dir, name.claim(), &file);
             return Err(refusal);
         }
     };
     match dir.link(name.claim(), name.pending()) {
         Ok(()) => {}
         Err(collision @ CustodyError::AlreadyExists { .. }) => {
-            discard_witnessed(dir, name.claim(), &file)?;
+            let _ = discard_witnessed(dir, name.claim(), &file);
             return Err(JournalError::Custody(collision));
         }
         // Any other link failure leaves the link's outcome uncertain — the

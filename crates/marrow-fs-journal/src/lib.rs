@@ -30,6 +30,14 @@
 //! [`CacheLock`]; malicious same-UID mutation outside that custody remains an
 //! explicit limitation.
 //!
+//! One crash window is classifiable only in principle. Entry creation is an
+//! `openat` whose mode the process umask masks, followed by an `fchmod` that
+//! restores the exact documented mode; a crash between the two leaves an entry
+//! carrying the masked mode. Classification pins the inode it reports through a
+//! held descriptor, so it must open the debris for reading — and a umask that
+//! strips owner read (`0477`, say) leaves debris this crate cannot open, and so
+//! cannot classify. Removing such debris is an operator action.
+//!
 //! # Durability envelope
 //!
 //! The established claim is atomic publication plus process- and OS-crash

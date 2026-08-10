@@ -161,9 +161,26 @@ mod imp {
         // The open-time mode is masked by the process umask; the exact 0600
         // the claim law rechecks is restored on the creating descriptor
         // before any use, so no umask can manufacture a wrong-mode claim.
-        rustix::fs::fchmod(&file, file_mode())
-            .map_err(|errno| map("create file", Reading::Plain, errno))?;
+        if let Err(errno) = rustix::fs::fchmod(&file, file_mode()) {
+            remove_created(dir, name, &file);
+            return Err(map("create file", Reading::Plain, errno));
+        }
         Ok(file)
+    }
+
+    /// Best-effort removal of an entry this call created and is about to
+    /// refuse, so a refused creation returns no entry the caller was never
+    /// handed. The name is unlinked only while it still maps to the created
+    /// inode, so a racing replacement is never removed. If the witnessing stat
+    /// or the unlink itself fails the entry survives as never-linked debris,
+    /// which the pending-journal classification reads as preclaim.
+    fn remove_created(dir: &DirHandle, name: &str, file: &FileHandle) {
+        let (Ok(created), Ok(Some(present))) = (fstat_file(file), stat_entry(dir, name)) else {
+            return;
+        };
+        if present.identity == created.identity {
+            let _ = rustix::fs::unlinkat(dir, name, AtFlags::empty());
+        }
     }
 
     pub(crate) fn open_file(dir: &DirHandle, name: &str) -> Result<FileHandle, CustodyError> {
@@ -187,15 +204,19 @@ mod imp {
 
     pub(crate) fn open_lock_file(dir: &DirHandle, name: &str) -> Result<FileHandle, CustodyError> {
         let flags = OFlags::RDWR | OFlags::CREATE | OFlags::NOFOLLOW | OFlags::CLOEXEC;
-        let file = rustix::fs::openat(dir, name, flags, file_mode())
+        rustix::fs::openat(dir, name, flags, file_mode())
             .map(File::from)
-            .map_err(|errno| map("open lock", Reading::Nofollow, errno))?;
-        // A just-created lock entry carries the umask-masked mode; a
-        // wrong-mode entry would refuse the next same-user reopen. Restoring
-        // 0600 on the descriptor is idempotent for an existing entry.
-        rustix::fs::fchmod(&file, file_mode())
-            .map_err(|errno| map("open lock", Reading::Plain, errno))?;
-        Ok(file)
+            .map_err(|errno| map("open lock", Reading::Nofollow, errno))
+    }
+
+    /// Restore the lock entry's exact `0600`. A just-created entry carries the
+    /// umask-masked mode, and a wrong-mode entry would refuse the next
+    /// same-user reopen; the call is idempotent for an existing entry. The
+    /// caller applies it only after admitting the node as a regular file, so a
+    /// planted non-regular node is refused before any mode is written.
+    pub(crate) fn restore_lock_mode(file: &FileHandle) -> Result<(), CustodyError> {
+        rustix::fs::fchmod(file, file_mode())
+            .map_err(|errno| map("open lock", Reading::Plain, errno))
     }
 
     /// `flock(LOCK_EX | LOCK_NB)`. `Ok(false)` reports a held lock.
@@ -487,6 +508,10 @@ mod imp {
 
     pub(crate) fn open_lock_file(dir: &DirHandle, _name: &str) -> Result<FileHandle, CustodyError> {
         match *dir {}
+    }
+
+    pub(crate) fn restore_lock_mode(file: &FileHandle) -> Result<(), CustodyError> {
+        match *file {}
     }
 
     pub(crate) fn try_lock_exclusive(file: &FileHandle) -> Result<bool, CustodyError> {

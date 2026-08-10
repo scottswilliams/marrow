@@ -16,6 +16,12 @@ use crate::sys;
 /// and must stay disjoint from them; that namespace discipline is cooperative
 /// and belongs to the consumer.
 ///
+/// Release is not instantaneous across a concurrent process spawn. A child
+/// forked while the lock is held shares the underlying open file, so dropping
+/// the holder releases the exclusion only once the child's close-on-exec
+/// descriptor closes at `exec`. A holder that releases and immediately
+/// reacquires during that window may observe [`LockError::Held`].
+///
 /// ```compile_fail
 /// fn duplicate(lock: marrow_fs_journal::CacheLock) {
 ///     let _second = lock.clone();
@@ -46,6 +52,10 @@ impl CacheLock {
                 found: stat.kind,
             }));
         }
+        // Only a node already admitted as a regular file has its mode
+        // restored, so a planted non-regular node is refused with its mode
+        // untouched.
+        sys::restore_lock_mode(&handle)?;
         // The name must still map to the locked inode: without this recheck a
         // racing unlink-and-recreate would leave this holder excluding nobody
         // on an orphaned inode.
