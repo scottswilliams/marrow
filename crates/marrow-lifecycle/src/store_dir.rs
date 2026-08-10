@@ -383,6 +383,65 @@ mod tests {
         assert_eq!(lock_path(dir), Path::new("/stores/app/lock"));
     }
 
+    /// Each custody refusal is reported as itself. Two ways of substituting the same
+    /// artifact reach the same verdict, owner bits that deny the open are a permission
+    /// refusal rather than either, and a platform this build cannot admit a store directory
+    /// on names the operating system and architecture it refused on — the build is not
+    /// narrowed, so the refusal is the only place a user meets the narrowing.
+    #[test]
+    fn each_custody_refusal_is_reported_as_itself() {
+        let refusal = |fault| AdmissionError {
+            entry: StoreEntry::Envelope,
+            fault,
+        };
+        for (fault, code) in [
+            (
+                CustodyError::SymlinkRefused { op: "open file" },
+                Code::StoreCorruption.as_str(),
+            ),
+            (
+                CustodyError::WrongNodeKind {
+                    op: "open file",
+                    found: marrow_fs_journal::NodeKind::Directory,
+                },
+                Code::StoreCorruption.as_str(),
+            ),
+            (
+                CustodyError::NotFound { op: "open file" },
+                Code::StoreCorruption.as_str(),
+            ),
+            (
+                CustodyError::ModeDenied {
+                    op: "open file",
+                    found: 0o400,
+                    required: 0o600,
+                },
+                Code::StorePermissionDenied.as_str(),
+            ),
+        ] {
+            assert_eq!(refusal(AdmissionFault::Custody(fault)).code(), code);
+        }
+
+        // The sibling that reaches the same verdict without going through custody: a second
+        // link to the artifact is the same "the directory does not hold this artifact"
+        // observation a substituted node makes.
+        assert_eq!(
+            refusal(AdmissionFault::MultiplyLinked { links: 2 }).code(),
+            Code::StoreCorruption.as_str(),
+        );
+
+        let unqualified = refusal(AdmissionFault::Custody(CustodyError::UnqualifiedPlatform {
+            os: "freebsd",
+            arch: "riscv64",
+        }));
+        assert_eq!(unqualified.code(), Code::StoreIo.as_str());
+        let rendered = unqualified.to_string();
+        assert!(
+            rendered.contains("freebsd/riscv64"),
+            "a platform refusal must name the platform it refused on: {rendered}",
+        );
+    }
+
     /// Each artifact an admission read names resolves to exactly the frozen entry name, is
     /// admissible as one normal relative component, and reports itself under that name.
     #[test]
