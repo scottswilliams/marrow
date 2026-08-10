@@ -26,10 +26,15 @@ fn mode_of(path: &Path) -> u32 {
     std::fs::metadata(path).expect("stat entry").mode() & 0o7777
 }
 
-/// Whether permission bits actually deny this process the access a mode
-/// withholds. A process holding the override capability, or a filesystem that
-/// carries no mode bits, opens a mode-`0000` entry anyway.
-fn mode_bits_deny_this_process(scratch: &Scratch) -> bool {
+/// Require that permission bits actually deny this process the access a mode
+/// withholds.
+///
+/// A check that planted a stripped mode nothing enforces would assert a refusal
+/// that never happened, so this panics rather than reporting green. Mode bits do
+/// not bind a process holding the mode-override capability (`root`, or
+/// `CAP_DAC_OVERRIDE` on Linux), and a filesystem that carries no mode bits does
+/// not enforce them at all.
+fn require_mode_bits_bind(scratch: &Scratch) {
     let probe = scratch.path().join("deny-probe");
     std::fs::write(&probe, b"").expect("plant the probe");
     set_mode(&probe, 0o000);
@@ -40,7 +45,12 @@ fn mode_bits_deny_this_process(scratch: &Scratch) -> bool {
         .is_err();
     set_mode(&probe, 0o600);
     std::fs::remove_file(&probe).expect("remove the probe");
-    denied
+    assert!(
+        denied,
+        "mode 0000 under {} did not refuse a read-write open, so this check never ran. Run \
+         the suite as a process the mode bits bind, on a filesystem that carries them.",
+        scratch.path().display()
+    );
 }
 
 #[test]
@@ -118,17 +128,13 @@ fn distinct_names_lock_independently() {
 /// A process holding the mode-override capability (`root`, or
 /// `CAP_DAC_OVERRIDE` on Linux) is bound by none of those bits: its reopen
 /// succeeds, the mode restore reaches the stripped entry, and acquisition
-/// returns it to `0600` on its own. That is the case the probe below detects
-/// before anything is planted, and it is why this leg asserts nothing there.
+/// returns it to `0600` on its own. Under such a process the planted modes
+/// refuse nothing, so this check would assert a refusal that never happened;
+/// the control below fails loudly there rather than reporting green.
 #[test]
 fn a_mode_stripped_lock_entry_names_the_operator_action() {
     let scratch = Scratch::new("mode-stripped-lock");
-    if !mode_bits_deny_this_process(&scratch) {
-        // A process holding the override capability, or a filesystem that
-        // ignores mode bits, opens the planted entry regardless; the reading
-        // itself is pinned by the crate's own classification test.
-        return;
-    }
+    require_mode_bits_bind(&scratch);
     let dir = root(&scratch);
     let path = scratch.path().join("lock");
 

@@ -535,11 +535,7 @@ fn read_only_preclaim_debris_is_classified_and_discardable() {
 #[test]
 fn write_only_preclaim_debris_names_the_operator_action() {
     let scratch = Scratch::new("preclaim-writeonly");
-    if !mode_bits_deny_this_process(&scratch) {
-        // The crate's own classification test pins the reading itself; this
-        // leg needs mode bits that actually deny.
-        return;
-    }
+    require_mode_bits_bind(&scratch);
     let dir = root(&scratch);
     let names = pending_name("store");
     let claim_path = scratch.path().join("store.pending.create");
@@ -961,17 +957,27 @@ fn set_mode(path: &std::path::Path, mode: u32) {
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).expect("set mode");
 }
 
-/// Whether permission bits actually deny this process the access a mode
-/// withholds. A process holding the override capability, or a filesystem that
-/// carries no mode bits, opens a mode-`0000` entry anyway.
-fn mode_bits_deny_this_process(scratch: &Scratch) -> bool {
+/// Require that permission bits actually deny this process the access a mode
+/// withholds.
+///
+/// A check that planted a stripped mode nothing enforces would assert a refusal
+/// that never happened, so this panics rather than reporting green. Mode bits do
+/// not bind a process holding the mode-override capability (`root`, or
+/// `CAP_DAC_OVERRIDE` on Linux), and a filesystem that carries no mode bits does
+/// not enforce them at all.
+fn require_mode_bits_bind(scratch: &Scratch) {
     let probe = scratch.path().join("deny-probe");
     std::fs::write(&probe, b"").expect("plant the probe");
     set_mode(&probe, 0o000);
     let denied = std::fs::File::open(&probe).is_err();
     set_mode(&probe, 0o600);
     std::fs::remove_file(&probe).expect("remove the probe");
-    denied
+    assert!(
+        denied,
+        "mode 0000 under {} did not refuse a read open, so this check never ran. Run the \
+         suite as a process the mode bits bind, on a filesystem that carries them.",
+        scratch.path().display()
+    );
 }
 
 fn assert_corrupt(dir: &AdmittedDir, names: &PendingName, expected: &CorruptionReason) {
