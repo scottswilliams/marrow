@@ -52,6 +52,11 @@ pub use lock::{LockError, LockOwner};
 // privileged caller (the companion runner's `import` command) can name and mint the full-store
 // grant a trusted bulk import runs under without depending on the kernel directly.
 pub use marrow_kernel::durable::InvocationGrant;
+// The typed custody refusal an [`AdmissionFault::Custody`] carries. It belongs to
+// `marrow-fs-journal`, the workspace's sole owner of descriptor-rooted filesystem operations,
+// and is re-exported here so a caller matching that variant can name its payload without
+// taking an edge to the adapter crate itself.
+pub use marrow_fs_journal::CustodyError;
 pub use provision::{
     OpenError, OpenStore, Preflight, ProvisionError, ProvisionRequest, Provisioned, open,
     preflight, provision,

@@ -926,8 +926,16 @@ fn native_lifecycle_open_is_existing_only_and_owner_inseparable() {
     let acquire_body = fn_body(&lower_owner, "pub fn acquire_existing(")
         .expect("the lower owner exposes an acquisition phase");
     assert!(
-        !acquire_body.contains("NativeEngine::") && !acquire_body.contains("instance"),
-        "owner acquisition must make no engine call and name no store instance",
+        !acquire_body.contains("NativeEngine::"),
+        "owner acquisition must make no engine call",
+    );
+    assert!(
+        // Call and binding shapes, not the bare word: an instance is passed, bound, or
+        // destructured through one of these, while prose may name the concept freely.
+        !["instance:", "instance,", "instance)", "instance ="]
+            .iter()
+            .any(|shape| acquire_body.contains(shape)),
+        "owner acquisition must name no store instance",
     );
     assert!(
         lower_owner.contains("pub fn bind_and_open_existing<R>(")
@@ -946,6 +954,37 @@ fn native_lifecycle_open_is_existing_only_and_owner_inseparable() {
     assert!(
         lower_owner.contains("owner: read_owner(&mut file),"),
         "a contention verdict must not depend on the marker decoding",
+    );
+
+    // Exclusion is settled before anything about the marker entry beyond its own node is
+    // admitted. A second link does not divide exclusion, so checking it ahead of the lock
+    // would hand a contender an I/O refusal where the exclusion verdict applies.
+    let lock_acquire = fn_body(&lower_owner, "fn acquire(dir: &Path)")
+        .expect("the lower owner exposes lock acquisition");
+    let locked = lock_acquire
+        .find("file.try_lock()")
+        .expect("lock acquisition takes the advisory lock");
+    let held_admission = lock_acquire
+        .find("admit_held_marker(")
+        .expect("the held-marker admission runs inside lock acquisition");
+    assert!(
+        locked < held_admission,
+        "the marker's link admission must run after exclusion is decided, not before it",
+    );
+    let open_marker = fn_body(&lower_owner, "fn open_marker(dir: &Path)")
+        .expect("the lower owner opens the marker entry");
+    assert!(
+        !open_marker.contains("admit_held_marker("),
+        "opening the marker must not decide anything that belongs after the lock",
+    );
+
+    // The marker a contender reads is bytes it did not write, so the decoder admits before
+    // it indexes: every access goes through a checked lookup.
+    let decode = fn_body(&lower_owner, "fn decode(bytes: &[u8])")
+        .expect("the lower owner decodes the marker");
+    assert!(
+        !decode.contains("bytes["),
+        "the owner-marker decoder must reach every byte through a checked lookup",
     );
 
     // Every artifact ceiling is derived beside the encoder it bounds, so a layout change

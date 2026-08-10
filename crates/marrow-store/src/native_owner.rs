@@ -205,6 +205,7 @@ struct OwnerLock {
 struct AcquiredLock {
     lock: OwnerLock,
     prior_unclean: bool,
+    acquired_unix_secs: u64,
 }
 
 impl OwnerLock {
@@ -238,12 +239,13 @@ impl OwnerLock {
         let held = file.metadata().map_err(NativeLockError::Io)?;
         admit_held_marker(&held).map_err(NativeLockError::Io)?;
         let prior_unclean = held.len() != 0;
+        let acquired_unix_secs = now_unix_secs();
         write_owner(
             &mut file,
             NativeLockOwner {
                 pid: std::process::id(),
                 instance: None,
-                acquired_unix_secs: now_unix_secs(),
+                acquired_unix_secs,
             },
         )
         .map_err(NativeLockError::Io)?;
@@ -255,19 +257,19 @@ impl OwnerLock {
                 disposition: DropDisposition::PreserveUnclean,
             },
             prior_unclean,
+            acquired_unix_secs,
         })
     }
 
     /// Publish the store instance this held lock is now open against, so a
-    /// contender and a crash forensic both name the exact store.
-    fn bind(&mut self, instance: [u8; 16]) -> Result<(), NativeLockError> {
+    /// contender and a crash forensic both name the exact store. Binding adds
+    /// the instance to the record acquisition wrote and changes nothing else,
+    /// so the acquisition time it carries is the one acquisition observed.
+    fn bind(&mut self, instance: [u8; 16], acquired_unix_secs: u64) -> Result<(), NativeLockError> {
         let file = self
             .file
             .as_mut()
             .expect("a held owner lock retains its marker");
-        let acquired_unix_secs = read_owner(file)
-            .map(|owner| owner.acquired_unix_secs)
-            .unwrap_or_else(now_unix_secs);
         write_owner(
             file,
             NativeLockOwner {
@@ -343,6 +345,7 @@ pub struct NativeEngineOwner {
 pub struct PendingNativeEngineOwner {
     lock: OwnerLock,
     prior_unclean: bool,
+    acquired_unix_secs: u64,
     directory: PathBuf,
 }
 
@@ -364,7 +367,7 @@ impl PendingNativeEngineOwner {
         admit: impl FnOnce() -> Result<(), R>,
     ) -> Result<NativeEngineOwner, NativeOwnerOpenError<R>> {
         self.lock
-            .bind(instance)
+            .bind(instance, self.acquired_unix_secs)
             .map_err(NativeOwnerOpenError::Lock)?;
         admit().map_err(NativeOwnerOpenError::Refused)?;
 
@@ -414,6 +417,7 @@ impl NativeEngineOwner {
         Ok(PendingNativeEngineOwner {
             lock: acquired.lock,
             prior_unclean: acquired.prior_unclean,
+            acquired_unix_secs: acquired.acquired_unix_secs,
             directory,
         })
     }

@@ -56,12 +56,13 @@ pub enum StoreEntry {
 }
 
 impl StoreEntry {
-    /// The entry's name in prose.
+    /// The entry's name in prose. An artifact is named by the entry name it occupies, so a
+    /// refusal a user reads names the file they can go and look at.
     pub fn label(self) -> &'static str {
         match self {
             StoreEntry::Directory => "directory",
-            StoreEntry::Envelope => "envelope",
-            StoreEntry::Head => "head",
+            StoreEntry::Envelope => ENVELOPE_FILE,
+            StoreEntry::Head => HEAD_FILE,
         }
     }
 }
