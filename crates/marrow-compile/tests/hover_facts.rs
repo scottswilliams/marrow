@@ -123,8 +123,11 @@ fn a_valid_module_keeps_hover_facts_past_a_sibling_parse_error() {
 /// A fact is admitted where it is derived, and a later failure of the pass that derived
 /// it does not retract it. A body that fails to type-check still answers hover for the
 /// uses that resolved before the failure — the resilience an editor needs most while a
-/// file is being written — and the same law is why the once-checked template pass keeps
-/// the facts it derived even though its throwaway draft and registry clone are rewound.
+/// file is being written.
+///
+/// This is the ordinary monomorphic body. The once-checked template pass is the second
+/// half of the same law and is covered by
+/// `a_failed_template_proof_keeps_the_facts_it_already_derived`.
 #[test]
 fn a_body_that_fails_to_check_keeps_the_facts_it_already_derived() {
     let source = "module main
@@ -144,6 +147,44 @@ pub fn f(x: int): int {
         Ok(Fact::Present(hover)) => assert_eq!(hover.display(), "int"),
         other => panic!(
             "expected the resolved use's fact to survive the body's failure, got {}",
+            label(&other)
+        ),
+    }
+}
+
+/// The template half of the same law. A generic function's body is proved once, against
+/// its type parameters' constraints, before any instantiation; that pass admits its
+/// facts through the same sink at the push that produced each one, and then rewinds its
+/// throwaway draft rows and registry clone. The rewind restores the draft and the
+/// registry and nothing else, so the facts the proof already admitted survive its
+/// failure and reach the published snapshot.
+///
+/// The fixture's `==` over an unconstrained parameter is a constraint violation the
+/// proof reports without ever instantiating the template, so the hover asserted here is
+/// one the proof derived and no instantiation could have re-derived.
+#[test]
+fn a_failed_template_proof_keeps_the_facts_it_already_derived() {
+    let source = "module main
+
+pub fn same<T>(a: T, b: T): bool {
+    var left: T = a
+    return left == b
+}
+
+pub fn run(): bool {
+    return same(1, 2)
+}
+";
+    let snapshot = snap(&[("src/main.mw", source)]);
+    assert!(
+        !snapshot.diagnostics().is_empty(),
+        "the fixture's template proof fails on the unconstrained `==`"
+    );
+    let use_offset = offset_of(source, "= a") + "= ".len();
+    match snapshot.hover(&identity("src/main.mw"), use_offset) {
+        Ok(Fact::Present(hover)) => assert_eq!(hover.display(), "T"),
+        other => panic!(
+            "expected the template proof's own fact to survive its failure, got {}",
             label(&other)
         ),
     }
