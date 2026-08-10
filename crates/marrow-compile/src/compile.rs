@@ -2703,6 +2703,7 @@ mod tests {
         Artifacts, BoundedDiagnostics, Built, CompileFailure, CompileStage,
         CompleteDeclaredFunctionBodies, CompleteDeclaredTestBodies, CompleteFunctionRegistry,
         CompleteLoweredFunctionSet, CompleteTypeRegistry, DeclarationExit, Driven, InvariantCause,
+        RegistryPhases,
         SemanticOutcome, analyze_outcome,
     };
     use crate::diag::{DiagnosticCollector, MAX_DIAGNOSTIC_COUNT, SourceDiagnostic};
@@ -2979,6 +2980,41 @@ mod tests {
         assert!(DeclarationExit::Exhausted.complete());
         assert!(!DeclarationExit::Refused.complete());
         assert!(!DeclarationExit::StoppedOnInstantiationLimit.complete());
+    }
+
+    /// An unavailable function registry runs no phase in the region behind it, so the
+    /// region's result must withhold every artifact and mint no export or test entry. The
+    /// destructure is exhaustive and every field is named: a field silently constructed
+    /// as available — or a field added later and defaulted to available — fails here by
+    /// name rather than by letting a downstream phase run on a fact no phase produced.
+    #[test]
+    fn an_unavailable_registry_region_produces_no_artifact_and_no_entry() {
+        let RegistryPhases {
+            template_proofs,
+            function_bodies,
+            test_bodies,
+            lowered_set,
+            exports,
+            tests,
+        } = RegistryPhases::unavailable();
+        assert!(
+            template_proofs.is_none(),
+            "no template proof was accepted: the proof phase never ran",
+        );
+        assert!(
+            function_bodies.is_none(),
+            "no declared function body lowered: the body phase never ran",
+        );
+        assert!(
+            test_bodies.is_none(),
+            "no declared test body lowered: the test-body phase never ran",
+        );
+        assert!(
+            lowered_set.is_none(),
+            "the drain never ran, so no complete lowered set exists to build facts over",
+        );
+        assert!(exports.is_empty(), "no export was minted: {exports:?}");
+        assert!(tests.is_empty(), "no test entry was bound: {tests:?}");
     }
 
     /// The fence's positive direction. Production cannot reach it — an unavailable
