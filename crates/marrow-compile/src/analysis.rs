@@ -808,8 +808,10 @@ pub(crate) enum AnalysisFactLimit {
 /// ledger used while collecting is not retained.
 #[derive(Default)]
 pub(crate) struct RetainedFacts {
+    /// Private to this module because [`HoverFact`] is: the type a producer must not be
+    /// able to name is not reachable through this field either.
     hover_facts: Box<[HoverFact]>,
-    broken_files: Box<[FileRef]>,
+    pub(crate) broken_files: Box<[FileRef]>,
     dependency_gaps: Box<[(FileRef, FactSpan)]>,
     document_symbols: Box<[(FileRef, Box<[DeclSymbol]>)]>,
 }
