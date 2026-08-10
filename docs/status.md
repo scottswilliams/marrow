@@ -65,12 +65,13 @@ server (`marrow-lsp`); and the `marrow` CLI. The
 - The formatter canonicalizes a left-anchored self-update to compound assignment
   (`x = x + e` becomes `x += e`) and owns the `use` block (sorted, deduplicated,
   one import per line); it never reorders declarations.
-- A declaration the compiler refuses keeps its name. Its cause is reported once at
-  the declaration, the first use of the name is steered to that report under the
-  declaring code, and later uses fail silently; no use of a declared name is
-  reported as a name that is not in scope. This holds for modules, types, generic
-  templates, resource members, store roots, constants, function signatures,
-  parameters, and local bindings. A refused declaration also occupies its name, so a
+- A declaration the compiler refuses keeps its name: no use of a declared name is
+  reported as a name that is not in scope, and the cause is reported once at the
+  declaration. For modules, types, generic templates, resource members, store roots,
+  constants, and function signatures, the first use of the name is additionally
+  steered to that report under the declaring code, and later uses fail silently. A
+  refused parameter or local binding reports at its declaration only; each of its
+  uses fails silently and adds no row. A refused declaration also occupies its name, so a
   redeclaration is a name conflict in either order. Structs and enums are refused as
   whole declarations rather than per member, so a construction of a refused struct
   reports the declaration's cause and does not additionally report an undeclared

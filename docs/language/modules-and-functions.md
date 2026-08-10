@@ -249,10 +249,17 @@ Module-level declarations cannot redefine built-ins such as `exists`, `Id`, or
 
 A declaration the compiler refuses still occupies its name. The refusal is reported
 once, at the declaration; a later declaration of the same name is a name conflict
-whether or not the earlier one was accepted; and a use of the name is reported
-against the declaration's own cause rather than as a name that is not in scope. This
-holds for every declared name — modules, types, generic templates, resource members,
-store roots, constants, function signatures, parameters, and local bindings.
+whether or not the earlier one was accepted; and no use of the name is reported as a
+name that is not in scope. This holds for every declared name — modules, types,
+generic templates, resource members, store roots, constants, function signatures,
+parameters, and local bindings.
+
+The use site is treated two ways. For a module, type, generic template, resource
+member, store root, constant, or function signature, the first use of the refused
+name carries a row of its own that names the declaration's cause and reuses its
+diagnostic code; every later use of the same name fails silently. For a parameter or
+a local binding, the declaration's row is the only one: each use fails silently and
+adds nothing.
 
 A module is refused when its `module` header disagrees with its source-root-relative
 path, and when the file did not decode as UTF-8 or did not parse. A `use` of a

@@ -225,16 +225,18 @@ minted by exactly one phase at the point that phase completes and taken by name 
 every phase that depends on it:
 
 ```text
-CompleteTypeRegistry ─┬─> SignaturesComplete ────────┬─> AcceptedQueuedTemplateProofs ─┐
-                      │                              ├─> CompleteDeclaredFunctionBodies┤
-                      │                              └─> CompleteDeclaredTestBodies    │
-                      │                                                                v
-                      │                                             CompleteLoweredFunctionSet
-                      │                                                                │
-                      │                                                       AcyclicCallGraph
-                      │                                                       │         │
-                      │                                      AmbientTransactionClosure  │
-                      └─> value cycles                   transaction ownership     mixed tests
+CompleteTypeRegistry ─┬─> SignaturesComplete ──────────────────────────> (encode only)
+                      │
+                      ├─> AcceptedQueuedTemplateProofs ─┐
+                      ├─> CompleteDeclaredFunctionBodies┤
+                      ├─> CompleteDeclaredTestBodies    │
+                      │                                 v
+                      │                  CompleteLoweredFunctionSet
+                      │                                 │
+                      │                        AcyclicCallGraph
+                      │                        │             │
+                      │       AmbientTransactionClosure      │
+                      └─> value cycles   transaction ownership    mixed tests
 ```
 
 The artifact named for the function registry is `SignaturesComplete`, a zero-size

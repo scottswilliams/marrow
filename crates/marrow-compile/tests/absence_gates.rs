@@ -2,6 +2,7 @@
 //! bounded-diagnostic design deletes must not reappear. Each scan matches an
 //! exact type or call shape, never a spelling proxy.
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -779,8 +780,9 @@ fn the_deletion_scan_reads_production_code_and_only_production_code() {
         "the scan must see production code; if `refuse_store` was renamed, update this probe"
     );
     assert!(
-        production_occurrences("failed identity admission").is_empty(),
-        "the scan must not read string literals: that phrase exists only inside one"
+        production_occurrences("{}.{}").is_empty(),
+        "the scan must not read string literals: this format spelling exists only \
+         inside one, and it is not a sentence a diagnostic rewording could delete"
     );
 }
 
@@ -891,34 +893,32 @@ fn the_declaration_ledger_constructs_no_diagnostic_collector() {
 /// at all. Both leave the name answerable, so neither can fabricate an absence.
 #[test]
 fn no_declaration_builder_pushes_a_row_and_drops_the_key() {
-    let allowed = [
-        ("compile.rs", "Code::CheckImport"),
-        ("compile.rs", "Code::CheckImport"),
-        ("compile.rs", "Code::CheckImport"),
-        ("durable.rs", "Code::CheckType"),
-        ("konst.rs", "Code::CheckNameConflict"),
-        ("types.rs", "Code::CheckNameConflict"),
-        ("types.rs", "Code::CheckNameConflict"),
-        ("types.rs", "Code::CheckNameConflict"),
-        ("types.rs", "Code::CheckNameConflict"),
-        ("types.rs", "Code::CheckNameConflict"),
-        ("types.rs", "Code::CheckNameConflict"),
-        ("types.rs", "Code::CheckNameConflict"),
-        ("types.rs", "Code::CheckNameConflict"),
-        ("types.rs", "Code::CheckNameConflict"),
-        ("types.rs", "Code::CheckType"),
-    ];
+    // Keyed by `(file, reported code)` with an exact count, not by position: two
+    // sites in one file reporting the same cause are indistinguishable in a
+    // positional list, so one could be swapped for the other with the list still
+    // matching, and any reordering of a file would read as a change.
+    let allowed: BTreeMap<(&str, &str), usize> = BTreeMap::from([
+        (("compile.rs", "Code::CheckImport"), 3),
+        // The whole pass stops on the shared instantiation limit, merging the
+        // monomorphization owner's rows into the terminal and returning: no
+        // declaration is dropped because no declaration is reached.
+        (("compile.rs", "?"), 1),
+        (("durable.rs", "Code::CheckType"), 1),
+        (("konst.rs", "Code::CheckNameConflict"), 1),
+        (("types.rs", "Code::CheckNameConflict"), 9),
+        (("types.rs", "Code::CheckType"), 1),
+    ]);
     let found = declaration_drop_sites();
-    let shapes: Vec<(&str, &str)> = found
-        .iter()
-        .map(|(file, _, code)| (file.as_str(), code.as_str()))
-        .collect();
+    let mut shapes: BTreeMap<(&str, &str), usize> = BTreeMap::new();
+    for (file, _, code) in &found {
+        *shapes.entry((file.as_str(), code.as_str())).or_default() += 1;
+    }
     assert_eq!(
         shapes, allowed,
-        "a declaration builder pushed a row and left its block without declaring the \
-         key. Refuse through `refuse`/`refuse_row`/`refuse_first` so the pushed row \
-         and the retained cause are one statement; a site that genuinely drops \
-         nothing is added here deliberately: {found:?}",
+        "a declaration builder wrote a diagnostic and left its block without \
+         declaring the key. Refuse through `refuse`/`refuse_row`/`refuse_first` so \
+         the pushed row and the retained cause are one statement; a site that \
+         genuinely drops nothing is added here deliberately: {found:?}",
     );
 }
 
@@ -952,6 +952,65 @@ fn build(diagnostics: &mut DiagnosticCollector) {
         vec![(8, "Code::CheckUnsupported".to_string())],
         "the planted drop is found, and the three literal and comment copies of it \
          are not",
+    );
+
+    // The two ways a receiver-spelled scan disables itself: rebinding the collector,
+    // and handing it to a helper that reports on the block's behalf. Both are the
+    // same drop written differently, and both are permanent probes here.
+    let aliased = r##"
+fn build(diagnostics: &mut DiagnosticCollector) {
+    for item in items {
+        let sink = &mut *diagnostics;
+        if bad {
+            sink.push(SourceDiagnostic::at(
+                Code::CheckUnsupported.as_str(),
+                file,
+                span,
+                message,
+            ));
+            continue;
+        }
+        ledger.declare(key, occurrence)?;
+    }
+}
+"##;
+    assert_eq!(
+        drop_sites_in(&production_code(aliased)),
+        vec![(6, "Code::CheckUnsupported".to_string())],
+        "a rebound receiver is the same drop and must be found",
+    );
+
+    let delegated = r##"
+fn build(diagnostics: &mut DiagnosticCollector) {
+    for item in items {
+        if bad {
+            report_the_defect(diagnostics, at, Code::CheckUnsupported.as_str());
+            continue;
+        }
+        ledger.declare(key, occurrence)?;
+    }
+}
+"##;
+    assert_eq!(
+        drop_sites_in(&production_code(delegated)),
+        vec![(5, "Code::CheckUnsupported".to_string())],
+        "handing the collector to a helper is the same drop and must be found",
+    );
+
+    let coupled = r##"
+fn build(diagnostics: &mut DiagnosticCollector) {
+    for item in items {
+        if bad {
+            refuse_first(&mut refusal, diagnostics, at, row);
+            continue;
+        }
+        ledger.declare(key, occurrence)?;
+    }
+}
+"##;
+    assert!(
+        drop_sites_in(&production_code(coupled)).is_empty(),
+        "a coupling constructor retains the cause it reports and is not a drop",
     );
 
     let refused = r##"
@@ -1054,21 +1113,135 @@ fn declaring_blocks(code: &str) -> Vec<(usize, usize)> {
     blocks
 }
 
-/// The 1-based line and pushed code of every `diagnostics.push(` inside a declaring
-/// block whose own statement list leaves that block — by `continue`, `break`, or
-/// `return` — before reaching a `declare(`.
+/// The constructors that couple a pushed row to the retained cause. A call handing
+/// the collector to one of these is the sanctioned refusal, not a drop: the summary
+/// it returns is what the block goes on to declare, and a block that discards it
+/// still fails this scan through the `declare(` it never reaches.
+const COUPLING_CONSTRUCTORS: &[&str] = &[
+    "refuse",
+    "refuse_row",
+    "refuse_first",
+    "refuse_covered",
+    "refuse_store",
+    "refuse_annotation",
+    "refuse_at_earlier_stage",
+];
+
+/// The names that stand for the diagnostic collector inside one block: its own
+/// identifier, plus every simple rebinding of it.
+///
+/// A rebinding is what defeats a receiver-spelled scan — `let sink = &mut
+/// *diagnostics; sink.push(row); continue;` is the same drop written differently —
+/// so the alias is followed rather than the spelling trusted.
+fn collector_names(body: &str) -> Vec<&str> {
+    let mut names = vec!["diagnostics"];
+    let mut at = 0usize;
+    while let Some(hit) = body[at..].find("let ") {
+        let start = at + hit + "let ".len();
+        at = start;
+        let rest = &body[start..];
+        let end = rest
+            .find(|c: char| !(c.is_alphanumeric() || c == '_'))
+            .unwrap_or(rest.len());
+        let (name, tail) = (&rest[..end], rest[end..].trim_start());
+        let Some(value) = tail.strip_prefix('=') else {
+            continue;
+        };
+        let value = value.trim_start();
+        for bound in names.clone() {
+            for prefix in ["&mut *", "&mut ", "&*", "&", ""] {
+                let spelled = format!("{prefix}{bound}");
+                if value.starts_with(&spelled)
+                    && !value[spelled.len()..]
+                        .starts_with(|c: char| c.is_alphanumeric() || c == '_' || c == '.')
+                {
+                    if !name.is_empty() && !names.contains(&name) {
+                        names.push(name);
+                    }
+                    break;
+                }
+            }
+        }
+    }
+    names
+}
+
+/// The callee name of the call whose argument list encloses `at`, if any: the
+/// identifier before the nearest unmatched `(` to the left.
+fn enclosing_callee(body: &str, at: usize) -> Option<&str> {
+    let bytes = body.as_bytes();
+    let mut depth = 0i32;
+    let mut cursor = at;
+    while cursor > 0 {
+        cursor -= 1;
+        match bytes[cursor] {
+            b')' => depth += 1,
+            b'(' if depth == 0 => {
+                let head = &body[..cursor];
+                let start = head
+                    .rfind(|c: char| !(c.is_alphanumeric() || c == '_'))
+                    .map_or(0, |boundary| boundary + 1);
+                return Some(&head[start..]);
+            }
+            b'(' => depth -= 1,
+            b'{' | b'}' | b';' => return None,
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Every offset inside `body` at which the diagnostic collector is written to: a
+/// `.push(` on a collector name, and a call handing a collector name to a callee
+/// that is not one of the coupling constructors.
+///
+/// Both forms are needed. A scan for `diagnostics.push(` alone is defeated by
+/// rebinding the receiver, and a scan for the receiver alone is defeated by handing
+/// the collector to a helper that pushes on the block's behalf. `.push(` on
+/// something else — a vector of parameters, of variants, of rows being built — is
+/// not a report and is not read here.
+fn collector_writes(body: &str) -> Vec<usize> {
+    let mut writes: Vec<usize> = Vec::new();
+    for name in collector_names(body) {
+        let mut at = 0usize;
+        while let Some(hit) = body[at..].find(name) {
+            let start = at + hit;
+            at = start + 1;
+            let before = body[..start].chars().next_back();
+            let rest = &body[start + name.len()..];
+            if before.is_some_and(|c| c.is_alphanumeric() || c == '_' || c == '.') {
+                continue;
+            }
+            if rest.starts_with(".push(") {
+                writes.push(start);
+                continue;
+            }
+            if rest.starts_with(|c: char| c.is_alphanumeric() || c == '_' || c == '.') {
+                continue;
+            }
+            match enclosing_callee(body, start) {
+                Some(callee) if !COUPLING_CONSTRUCTORS.contains(&callee) => writes.push(start),
+                _ => {}
+            }
+        }
+    }
+    writes.sort_unstable();
+    writes.dedup();
+    writes
+}
+
+/// The 1-based line and pushed code of every write to the diagnostic collector
+/// inside a declaring block whose own statement list leaves that block — by
+/// `continue`, `break`, or `return` — before reaching a `declare(`.
 fn drop_sites_in(code: &str) -> Vec<(usize, String)> {
     let mut sites: Vec<(usize, String)> = Vec::new();
     for (open, close) in declaring_blocks(code) {
         let body = &code[open + 1..close];
-        let mut at = 0usize;
-        while let Some(hit) = body[at..].find("diagnostics.push(") {
-            let push = at + hit;
-            at = push + 1;
-            if leaves_without_declaring(body, push) {
+        for write in collector_writes(body) {
+            if leaves_without_declaring(body, write) {
                 sites.push((
-                    code[..open + 1 + push].lines().count(),
-                    pushed_code(&body[push..]),
+                    code[..open + 1 + write].lines().count(),
+                    pushed_code(&body[write..]),
                 ));
             }
         }

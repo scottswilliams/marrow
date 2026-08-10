@@ -522,10 +522,12 @@ impl<K, T> DeclarationLedger<K, T> {
 impl<K: Ord + Clone, T> DeclarationLedger<K, T> {
     /// Record one occurrence of `key`.
     ///
-    /// The first accepted occurrence wins the lookup, preserving
-    /// first-declaration-wins; a refused occurrence still occupies the name, so a
-    /// later duplicate of a refused key is a name conflict exactly as a duplicate
-    /// of an accepted one is.
+    /// The key's *first* occurrence wins the lookup, accepted or refused. A refused
+    /// declaration occupies its name from where it is written, so a later duplicate
+    /// of a refused key is a name conflict exactly as a duplicate of an accepted one
+    /// is, and a later accepted duplicate does not displace the refusal any more than
+    /// it would displace an earlier acceptance. Every such shape is separately
+    /// reported by its namespace's own duplicate check.
     pub(crate) fn declare(
         &mut self,
         key: K,
@@ -584,8 +586,8 @@ impl<K: Ord + Clone, T> DeclarationLedger<K, T> {
         }
     }
 
-    /// What `key` resolves to: its first accepted occurrence, else the merged
-    /// refusal for the key, else a genuine absence.
+    /// What `key` resolves to: its first occurrence — the accepted value, or the
+    /// merged refusal — else a genuine absence.
     ///
     /// Drift between layer 1 and the index is reported, never answered: `Absent` is
     /// a statement about the source — that nothing declared this key — and a ledger
@@ -671,9 +673,10 @@ impl<K: Ord + Clone, T> DeclarationLedger<K, T> {
             })
     }
 
-    /// The accepted declarations in source order, one per key: exactly the
-    /// occurrences [`Self::lookup`] answers with, so what a namespace builds from
-    /// this iterator and what a use site resolves against cannot disagree.
+    /// The accepted declarations in source order, one per key, and only where the
+    /// key's first occurrence is that acceptance: exactly the occurrences
+    /// [`Self::lookup`] answers with, so what a namespace builds from this iterator
+    /// and what a use site resolves against cannot disagree.
     ///
     /// A namespace whose order is observed — image slot order, field order — reads
     /// its accepted set from here rather than accumulating a parallel vector beside

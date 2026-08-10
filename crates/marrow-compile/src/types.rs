@@ -253,6 +253,14 @@ impl ResolveRefusal {
     /// reported at its own declaration site — and it is bounded to sub-parts of a
     /// single annotation, because argument and parameter lists reject per element
     /// at each element's own span rather than folding across them.
+    ///
+    /// **Known limit.** A generic *argument list* still folds through one join, so
+    /// `Pair<Bad, AlsoMissing>` reports the first argument and says nothing about
+    /// the second: the reader fixes one, recompiles, and meets the other. The
+    /// collapse loses a steer, never a cause — every refused declaration was already
+    /// reported at its own declaration — and it is strictly narrower than the
+    /// whole-annotation fold it replaced. Splitting the report per argument is a
+    /// separate change to the diagnostic surface.
     fn join(self, other: Self) -> Self {
         match (self, other) {
             (Self::Limit, _) | (_, Self::Limit) => Self::Limit,
