@@ -1169,13 +1169,82 @@ mod statement_recursion_depth {
         source
     }
 
-    /// Every clause whose body may be a single inline statement, as a nest that recurses
+    /// A body of `levels` bounded `for` loops, each the inline body of the previous
+    /// one's `on more` arm. Each loop's own body is an empty braced block, whose descent
+    /// closes before the `on more` arm is read.
+    fn on_more_chain(levels: usize) -> String {
+        let mut source = String::from("module app\n\nfn main() {\n");
+        for _ in 0..levels {
+            source.push_str("for a in b at most 8 {\n} on more ");
+        }
+        source.push_str("return\n}\n");
+        source
+    }
+
+    /// A body of `levels` `checked` operations, each the inline body of the previous
+    /// one's `on out_of_range` arm. No brace appears anywhere in the nest.
+    fn checked_arm_chain(levels: usize) -> String {
+        let mut source = String::from("module app\n\nfn main() {\n");
+        for _ in 0..levels {
+            source.push_str("const p: int = checked a * b\non out_of_range ");
+        }
+        source.push_str("return\n}\n");
+        source
+    }
+
+    /// One clause whose body may be a single inline statement, as a nest that recurses
     /// through that clause alone.
+    struct InlineClause {
+        label: &'static str,
+        /// Frames of [`NESTING_DEPTH_LIMIT`] one level of this shape holds open at once.
+        ///
+        /// A frame is held only while its descent is on the native stack. An `else`
+        /// chain, an `on more` chain, and a `checked` arm chain each hold one open — the
+        /// clause's own inline statement. A `for` body's braced descent returns before
+        /// its `on more` arm is read, so the loop body costs the chain no held frame. An
+        /// inline `match` arm holds two: the `match` body its arms sit in, and the arm's
+        /// inline statement.
+        frames_per_level: usize,
+        /// The deepest nest of this shape the limit admits, as a literal. Asserted
+        /// against the derivation from `frames_per_level` below, so neither the limit
+        /// nor a shape's frame cost can change without one of the two moving.
+        admitted_levels: usize,
+        build: fn(usize) -> String,
+    }
+
+    /// Every clause whose body may be a single inline statement.
+    const INLINE_CLAUSES: [InlineClause; 4] = [
+        InlineClause {
+            label: "inline match arms",
+            frames_per_level: 2,
+            admitted_levels: 128,
+            build: inline_match_arms,
+        },
+        InlineClause {
+            label: "brace-free else chain",
+            frames_per_level: 1,
+            admitted_levels: 256,
+            build: brace_free_else_chain,
+        },
+        InlineClause {
+            label: "on more chain",
+            frames_per_level: 1,
+            admitted_levels: 256,
+            build: on_more_chain,
+        },
+        InlineClause {
+            label: "checked arm chain",
+            frames_per_level: 1,
+            admitted_levels: 256,
+            build: checked_arm_chain,
+        },
+    ];
+
     fn inline_clause_nests(levels: usize) -> Vec<(&'static str, String)> {
-        vec![
-            ("inline match arms", inline_match_arms(levels)),
-            ("brace-free else chain", brace_free_else_chain(levels)),
-        ]
+        INLINE_CLAUSES
+            .iter()
+            .map(|clause| (clause.label, (clause.build)(levels)))
+            .collect()
     }
 
     /// The recursion stops at the typed limit on every inline-clause path, and the tree
@@ -1217,21 +1286,46 @@ mod statement_recursion_depth {
         }
     }
 
-    /// An inline-clause nest just under the limit is structured in full, so the refusal
-    /// above is the limit doing its work and not the parser refusing to descend at all.
+    /// The limit admits exactly the levels a shape's frames pay for, structures every
+    /// one of them, and refuses the next. The boundary is pinned per shape rather than
+    /// sampled somewhere below it: a nest at `NESTING_DEPTH_LIMIT / 2` lands on the last
+    /// admitted `match` level only because the limit is even and an arm happens to cost
+    /// two frames, and it lands nowhere near the boundary of a one-frame shape.
     #[test]
-    fn an_inline_clause_nest_under_the_limit_is_structured_in_full() {
-        let levels = NESTING_DEPTH_LIMIT / 2;
-        for (label, source) in inline_clause_nests(levels) {
-            let (depth, reported) = parsed_depth(source);
+    fn an_inline_clause_nest_is_structured_in_full_up_to_the_level_its_frames_pay_for() {
+        for clause in &INLINE_CLAUSES {
+            let InlineClause {
+                label,
+                frames_per_level,
+                admitted_levels,
+                build,
+            } = clause;
+            assert_eq!(
+                *admitted_levels,
+                NESTING_DEPTH_LIMIT / frames_per_level,
+                "{label} holds {frames_per_level} frames a level, so a limit of \
+                 {NESTING_DEPTH_LIMIT} pays for a level count other than the \
+                 {admitted_levels} pinned here"
+            );
+
+            let (depth, reported) = parsed_depth(build(*admitted_levels));
             assert!(
-                depth >= levels,
-                "{label} at {levels} levels built only {depth} blocks, so the parser \
-                 refuses nests the limit admits"
+                depth >= *admitted_levels,
+                "{label} at {admitted_levels} levels built only {depth} blocks, so the \
+                 parser refuses nests the limit admits"
             );
             assert!(
                 !reported,
-                "{label} at {levels} levels is inside the limit and must not report it"
+                "{label} at {admitted_levels} levels is the last the limit admits and \
+                 must not report it"
+            );
+
+            let past = admitted_levels + 1;
+            let (_, reported) = parsed_depth(build(past));
+            assert!(
+                reported,
+                "{label} at {past} levels is one past what its frames pay for and must \
+                 refuse with a located `{NESTING_LIMIT}` finding"
             );
         }
     }
