@@ -225,7 +225,7 @@ impl<'a, 'c> StmtParser<'a, 'c> {
         self.error_span_reason(
             span,
             ParseDiagnosticReason::DocCommentWithoutTarget,
-            "a `;;` doc comment must precede a declaration, member, or parameter",
+            "a `///` doc comment must precede a declaration, member, or parameter",
         );
     }
 
