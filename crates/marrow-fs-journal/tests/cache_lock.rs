@@ -5,7 +5,7 @@
 mod common;
 
 use common::Scratch;
-use marrow_fs_journal::{AdmittedDir, CacheLock, EntryName, LockError, NodeKind};
+use marrow_fs_journal::{AdmittedDir, CacheLock, CustodyError, EntryName, LockError, NodeKind};
 
 fn name(spelling: &str) -> EntryName {
     EntryName::admit(spelling).expect("test names are admissible")
@@ -79,13 +79,16 @@ fn distinct_names_lock_independently() {
     let _second = CacheLock::acquire(&dir, &name("two")).expect("lock two");
 }
 
+/// A symbolic link at the lock name is refused by the `NOFOLLOW` open itself,
+/// before any node-kind classification, so the exact typed refusal is the
+/// symlink one rather than a wrong-node-kind reading of the link's target.
 #[test]
-fn a_symlink_lock_entry_is_refused() {
+fn a_symlink_lock_entry_is_refused_as_a_symlink() {
     let scratch = Scratch::new("symlink-lock");
     let dir = root(&scratch);
     std::os::unix::fs::symlink("elsewhere", scratch.path().join("lock")).expect("create symlink");
     assert!(matches!(
         CacheLock::acquire(&dir, &name("lock")),
-        Err(LockError::Custody(_))
+        Err(LockError::Custody(CustodyError::SymlinkRefused { op: "open lock" }))
     ));
 }

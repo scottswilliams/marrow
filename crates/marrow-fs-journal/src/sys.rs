@@ -212,8 +212,10 @@ mod imp {
     /// Restore the lock entry's exact `0600`. A just-created entry carries the
     /// umask-masked mode, and a wrong-mode entry would refuse the next
     /// same-user reopen; the call is idempotent for an existing entry. The
-    /// caller applies it only after admitting the node as a regular file, so a
-    /// planted non-regular node is refused before any mode is written.
+    /// caller admits the node as a regular file first, so a planted
+    /// non-regular node is refused before any mode is written and no refusal
+    /// that a non-regular node can reach stands between the open and this
+    /// restore.
     pub(crate) fn restore_lock_mode(file: &FileHandle) -> Result<(), CustodyError> {
         rustix::fs::fchmod(file, file_mode())
             .map_err(|errno| map("open lock", Reading::Plain, errno))

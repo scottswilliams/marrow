@@ -12,13 +12,18 @@ mod common;
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 
 use common::Scratch;
-use marrow_fs_journal::{AdmittedDir, CacheLock, EntryName, LockError};
+use marrow_fs_journal::{AdmittedDir, CacheLock, CustodyError, EntryName, LockError, NodeKind};
 
-/// A planted non-regular lock entry is refused with its mode untouched: the
-/// mode restore runs only after the node is admitted as a regular file, so
-/// acquisition never writes a mode onto a node it goes on to reject.
+/// A planted non-regular lock entry is refused as the wrong node kind, with
+/// its mode untouched. The classification is asserted as its exact typed
+/// variant: `flock` on a FIFO refuses with the platform's
+/// unsupported-semantics errno, so an acquisition that locked before it
+/// classified would tell the consumer this platform is unqualified rather than
+/// that this node is a FIFO. The mode restore likewise runs only after the
+/// node is admitted as a regular file, so acquisition never writes a mode onto
+/// a node it goes on to reject.
 #[test]
-fn a_non_regular_lock_entry_is_refused_with_its_mode_untouched() {
+fn a_non_regular_lock_entry_is_refused_as_the_wrong_node_kind_with_its_mode_untouched() {
     let scratch = Scratch::new("fifo-lock");
     let path = scratch.path().join("lock");
     let planted = std::process::Command::new("mkfifo")
@@ -31,10 +36,17 @@ fn a_non_regular_lock_entry_is_refused_with_its_mode_untouched() {
 
     let name = EntryName::admit("lock").expect("test names are admissible");
     let dir = AdmittedDir::admit_trusted_root(scratch.path()).expect("admit the scratch root");
-    assert!(matches!(
-        CacheLock::acquire(&dir, &name),
-        Err(LockError::Custody(_))
-    ));
+    assert!(
+        matches!(
+            CacheLock::acquire(&dir, &name),
+            Err(LockError::Custody(CustodyError::WrongNodeKind {
+                op: "lock",
+                found: NodeKind::Other,
+            }))
+        ),
+        "a planted FIFO is refused as the wrong node kind, not as unsupported \
+         platform semantics",
+    );
     assert_eq!(
         std::fs::metadata(&path)
             .expect("stat the planted node")

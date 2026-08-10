@@ -37,20 +37,27 @@ pub struct CacheLock {
 
 impl CacheLock {
     /// Acquire the lock on `name` inside `dir`, creating the lock entry if
-    /// absent. A held lock refuses with [`LockError::Held`]; an entry whose
-    /// identity drifted between locking and verification refuses with a typed
-    /// custody error rather than holding an orphaned inode.
+    /// absent. A node of the wrong kind refuses with
+    /// [`CustodyError::WrongNodeKind`]; a held lock refuses with
+    /// [`LockError::Held`]; an entry whose identity drifted between locking and
+    /// verification refuses with a typed custody error rather than holding an
+    /// orphaned inode.
     pub fn acquire(dir: &AdmittedDir, name: &EntryName) -> Result<Self, LockError> {
         let handle = sys::open_lock_file(&dir.handle, name.as_str())?;
-        if !sys::try_lock_exclusive(&handle)? {
-            return Err(LockError::Held);
-        }
+        // The node kind is classified on the opened handle before the lock is
+        // attempted. `flock` on the one non-regular node this open accepts — a
+        // FIFO — refuses with the platform's unsupported-semantics errno, so a
+        // later classification would report a planted FIFO as unsupported
+        // platform semantics instead of the wrong node kind it is.
         let stat = sys::fstat_file(&handle)?;
         if stat.kind != NodeKind::Regular {
             return Err(LockError::Custody(CustodyError::WrongNodeKind {
                 op: "lock",
                 found: stat.kind,
             }));
+        }
+        if !sys::try_lock_exclusive(&handle)? {
+            return Err(LockError::Held);
         }
         // Only a node already admitted as a regular file has its mode
         // restored, so a planted non-regular node is refused with its mode
