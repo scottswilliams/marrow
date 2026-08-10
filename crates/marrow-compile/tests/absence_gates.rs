@@ -183,17 +183,56 @@ fn the_collector_is_concrete_not_generic() {
 
 /// No snapshot field retains a parse tree. The completion and active-call queries
 /// re-parse exactly one already-admitted file's already-retained bytes per query, so
-/// the syntax owner's tree type is never a retained analysis field and the retired
-/// per-module tree carrier does not reappear.
+/// the retired per-module tree carrier does not reappear and the snapshot's retained
+/// field set stays exactly the accounted one.
+///
+/// The retained-bytes accounting destructures these same fields exhaustively, so a new
+/// field is already a build error there; this gate names the set a reader can check
+/// against the exported retention term without reading the accounting.
 #[test]
 fn no_parse_tree_is_retained_for_a_query() {
-    for forbidden in ["CompletionModule", "marrow_syntax::SourceFile"] {
-        let found = occurrences(forbidden);
-        assert!(
-            found.is_empty(),
-            "a retained parse tree must not exist: `{forbidden}` at {found:?}"
-        );
-    }
+    let found = occurrences("CompletionModule");
+    assert!(
+        found.is_empty(),
+        "the retired per-module tree carrier must not exist: {found:?}"
+    );
+
+    let analysis = fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("src")
+            .join("analysis.rs"),
+    )
+    .expect("read the analysis fact owner");
+    let body = analysis
+        .split_once("pub struct AnalysisSnapshot {")
+        .expect("the snapshot type is declared")
+        .1;
+    let fields: Vec<&str> = body
+        .lines()
+        .map(str::trim)
+        .take_while(|line| *line != "}")
+        .filter(|line| !line.is_empty() && !line.starts_with("//") && !line.starts_with("#["))
+        .map(|line| {
+            line.split_once(':')
+                .expect("a struct field declares a type")
+                .0
+        })
+        .collect();
+    assert_eq!(
+        fields,
+        [
+            "input",
+            "revision",
+            "diagnostics",
+            "hover_facts",
+            "definition_targets",
+            "broken_files",
+            "dependency_gaps",
+            "document_symbols",
+        ],
+        "a new retained snapshot field changes the exported retention term; \
+         update the accounting and this gate together"
+    );
 }
 
 /// Every editor-fact producer writes through the one scoped sink borrow. No raw

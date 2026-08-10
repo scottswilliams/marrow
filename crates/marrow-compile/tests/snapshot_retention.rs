@@ -95,7 +95,9 @@ fn expect_limit(files: Vec<(String, String)>, revision: u64) -> AnalysisResource
             );
             limit
         }
-        Err(AnalysisFailure::Invariant { .. }) => panic!("expected a resource limit, got Invariant"),
+        Err(AnalysisFailure::Invariant { .. }) => {
+            panic!("expected a resource limit, got Invariant")
+        }
         Ok(()) => panic!("expected a resource limit, got a snapshot"),
     }
 }
@@ -171,7 +173,10 @@ fn count_wins_a_simultaneous_crossing() {
         AnalysisResourceLimit::SnapshotFactCount { limit } => {
             assert_eq!(limit, MAX_SNAPSHOT_FACT_COUNT);
         }
-        other => panic!("expected SnapshotFactCount to win, got {}", other.description()),
+        other => panic!(
+            "expected SnapshotFactCount to win, got {}",
+            other.description()
+        ),
     }
 }
 
@@ -180,7 +185,11 @@ fn count_wins_a_simultaneous_crossing() {
 /// count limit even when the project would also cross the global ceilings.
 #[test]
 fn the_per_file_symbol_bound_keeps_precedence() {
-    let files = vec![symbol_module(0, MAX_DOCUMENT_SYMBOLS_PER_FILE as usize + 4, 100)];
+    let files = vec![symbol_module(
+        0,
+        MAX_DOCUMENT_SYMBOLS_PER_FILE as usize + 4,
+        100,
+    )];
     match expect_limit(files, 15) {
         AnalysisResourceLimit::DocumentSymbolCount { limit } => {
             assert_eq!(limit, MAX_DOCUMENT_SYMBOLS_PER_FILE);

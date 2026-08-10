@@ -92,6 +92,49 @@ pub const MAX_DOCUMENT_SYMBOLS_PER_FILE: u64 = 4_096;
 /// fails a pathological outline closed rather than recursing without limit.
 pub const MAX_SYMBOL_DEPTH: u16 = 16;
 
+/// One retained fact's file, as a position in the snapshot's own
+/// [`ProjectInput::modules`] order.
+///
+/// It is not an identity, a table, or a ledger: it is a coordinate that only the
+/// snapshot which minted it can resolve, through [`AnalysisSnapshot::module_of`]. The
+/// drive mints one per module while iterating that same order, and
+/// [`crate::compile::DriveInputAdmission`] has already proved the project holds at
+/// most 4096 modules before the first fact allocates, so the domain is in range by
+/// construction.
+///
+/// The compaction is load-bearing, not cosmetic: a [`FileIdentity`] is an owned
+/// spelling of up to 4096 bytes, and one clone per retained fact is up to 256 MiB of
+/// retention at the pinned fact-count ceiling. Its *logical* charge is unchanged —
+/// [`AnalysisFactCollector`] still charges a definition target's file spelling and a
+/// document-symbol module's owner spelling exactly as before.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) struct FileRef(u16);
+
+impl FileRef {
+    /// The coordinate for the module at `index` in the drive's own iteration of
+    /// [`ProjectInput::modules`]. Private to the crate and minted only there.
+    pub(crate) fn at(index: usize) -> Option<Self> {
+        u16::try_from(index).ok().map(Self)
+    }
+
+    fn index(self) -> usize {
+        self.0 as usize
+    }
+
+    /// Resolve this coordinate against the project whose module order minted it.
+    #[cfg(test)]
+    #[track_caller]
+    pub(crate) fn of(self, project: &ProjectInput) -> &FileIdentity {
+        project.modules()[self.index()].identity()
+    }
+}
+
+/// One retained hover fact's definition target, as a position in the snapshot's own
+/// definition-target table. Many call sites resolve to one declaration, so the target
+/// is retained once and referenced rather than cloned per fact.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) struct DefTargetRef(u16);
+
 /// A fixed analysis resource bound that produced no snapshot. It wraps CRES01's shipped
 /// [`CompileResourceLimit`] verbatim for a compile-side aggregate bound, and names the
 /// snapshot fact bounds directly. Closed and exhaustively matchable.
@@ -183,28 +226,29 @@ impl AnalysisFailure {
 /// revision, and the complete diagnostic set for the project in compiler order. The
 /// input is the caller's same `Arc<ProjectInput>`, shared not copied, so a clone is O(1)
 /// and the source bytes are charged once.
+///
+/// Every retained collection is a boxed slice: a snapshot is immutable, so the
+/// growth capacity an amortized `Vec` carries is not part of its retained state and
+/// is not charged to the caller who holds one.
 pub struct AnalysisSnapshot {
     input: Arc<ProjectInput>,
     revision: InputRevision,
-    diagnostics: Vec<SourceDiagnostic>,
-    hover_facts: Vec<HoverFact>,
-    /// The identities of input files that did not parse. A hover query in one of these
-    /// is [`Unavailability::Syntax`], not `Absent`.
-    broken_files: Vec<FileIdentity>,
+    diagnostics: Box<[SourceDiagnostic]>,
+    hover_facts: Box<[HoverFact]>,
+    /// Each distinct definition target once. A hover fact references its target by
+    /// position here rather than owning a copy of it.
+    definition_targets: Box<[DefinitionTarget]>,
+    /// The input files that did not parse. A hover query in one of these is
+    /// [`Unavailability::Syntax`], not `Absent`.
+    broken_files: Box<[FileRef]>,
     /// `(file, callee span)` for qualified calls whose target module did not parse. A
     /// query at one of these positions is [`Unavailability::Dependency`], not `Absent`.
-    dependency_gaps: Vec<(FileIdentity, marrow_syntax::SourceSpan)>,
+    dependency_gaps: Box<[(FileRef, SourceSpan)]>,
     /// The declaration-hierarchy outline of each cleanly-parsed module file, in source
     /// declaration order. A file that did not parse has no entry — it is in
     /// `broken_files` — and a `document_symbols` query for it is
     /// [`Unavailability::Syntax`], not an absent tree.
-    document_symbols: Vec<(FileIdentity, Vec<DeclSymbol>)>,
-    /// Every parsed module's tree — cleanly parsed and recovered-broken alike — retained
-    /// for the per-query completion re-resolution. A `completions` query re-resolves the
-    /// position class and its candidate namespace over these trees per call; it retains no
-    /// per-position candidate set. A non-UTF-8 file has no entry, so a completion query in
-    /// it is [`Unavailability::Syntax`].
-    completion_modules: Vec<CompletionModule>,
+    document_symbols: Box<[(FileRef, Box<[DeclSymbol]>)]>,
 }
 
 impl AnalysisSnapshot {
@@ -235,22 +279,36 @@ impl AnalysisSnapshot {
             .filter(move |diagnostic| diagnostic.file() == file)
     }
 
-    /// Resolve the source bytes of an input file, or a typed query error if the file is
-    /// not one of the snapshot's analyzed inputs.
-    fn source_of(&self, file: &FileIdentity) -> Result<&[u8], QueryError> {
+    /// The one coordinate validator: resolve an input file to its snapshot-local
+    /// [`FileRef`] and its source bytes, or a typed query error when the file is not
+    /// one of the snapshot's analyzed inputs. Every fact query and every retained
+    /// span resolves through here, so a fact can only ever index bytes this snapshot
+    /// holds.
+    fn locate(&self, file: &FileIdentity) -> Result<(FileRef, &[u8]), QueryError> {
         self.input
             .modules()
             .iter()
-            .find(|module| module.identity() == file)
-            .map(|module| module.source())
+            .enumerate()
+            .find(|(_, module)| module.identity() == file)
+            .and_then(|(index, module)| FileRef::at(index).map(|at| (at, module.source())))
             .ok_or(QueryError::UnknownFile)
+    }
+
+    /// Resolve a coordinate this snapshot minted back to the file it names. Drive
+    /// admission bounds the module count below the coordinate domain, so every
+    /// retained coordinate names a module of this snapshot's own input.
+    fn identity_of(&self, file: FileRef) -> Option<&FileIdentity> {
+        self.input
+            .modules()
+            .get(file.index())
+            .map(|module| module.identity())
     }
 
     /// Whether an offset falls in a dependency-gap span for `file` — a qualified call
     /// whose target module did not parse, so the fact is unavailable, not absent.
-    fn dependency_gap_at(&self, file: &FileIdentity, offset: u32) -> bool {
+    fn dependency_gap_at(&self, file: FileRef, offset: u32) -> bool {
         self.dependency_gaps.iter().any(|(gap_file, span)| {
-            gap_file == file && span.start_byte as u32 <= offset && offset < span.end_byte as u32
+            *gap_file == file && span.start_byte as u32 <= offset && offset < span.end_byte as u32
         })
     }
 
@@ -265,27 +323,32 @@ impl AnalysisSnapshot {
     /// collected once at the template (never per instance), and a template-parameter use
     /// renders by its declared spelling.
     pub fn hover(&self, file: &FileIdentity, offset: usize) -> Result<Fact<Hover>, QueryError> {
-        let source = self.source_of(file)?;
+        let (file, source) = self.locate(file)?;
         if offset > source.len() {
             return Err(QueryError::OffsetOutOfRange);
         }
-        if self.broken_files.iter().any(|broken| broken == file) {
+        if self.broken_files.contains(&file) {
             return Ok(Fact::Unavailable(Unavailability::Syntax));
         }
         let offset = offset as u32;
         if self.dependency_gap_at(file, offset) {
             return Ok(Fact::Unavailable(Unavailability::Dependency));
         }
-        match self.hover_facts.iter().find(|fact| {
-            &fact.file == file
-                && fact.span.start_byte as u32 <= offset
-                && offset < fact.span.end_byte as u32
-        }) {
+        match self.fact_at(file, offset) {
             Some(fact) => Ok(Fact::Present(Hover {
-                display: fact.display.clone(),
+                display: fact.display.to_string(),
             })),
             None => Ok(Fact::Absent),
         }
+    }
+
+    /// The first retained fact spanning `offset` in `file`, in collection order.
+    fn fact_at(&self, file: FileRef, offset: u32) -> Option<&HoverFact> {
+        self.hover_facts.iter().find(|fact| {
+            fact.file == file
+                && fact.span.start_byte as u32 <= offset
+                && offset < fact.span.end_byte as u32
+        })
     }
 
     /// The definition target at a byte offset: for a resolved function callee spanning
@@ -302,33 +365,32 @@ impl AnalysisSnapshot {
         file: &FileIdentity,
         offset: usize,
     ) -> Result<Fact<Definition>, QueryError> {
-        let source = self.source_of(file)?;
+        let (file, source) = self.locate(file)?;
         if offset > source.len() {
             return Err(QueryError::OffsetOutOfRange);
         }
-        if self.broken_files.iter().any(|broken| broken == file) {
+        if self.broken_files.contains(&file) {
             return Ok(Fact::Unavailable(Unavailability::Syntax));
         }
         let offset = offset as u32;
         if self.dependency_gap_at(file, offset) {
             return Ok(Fact::Unavailable(Unavailability::Dependency));
         }
-        let target = self.hover_facts.iter().find_map(|fact| {
-            if &fact.file == file
-                && fact.span.start_byte as u32 <= offset
-                && offset < fact.span.end_byte as u32
-            {
-                fact.definition.as_ref()
-            } else {
-                None
-            }
-        });
+        let target = self
+            .fact_at(file, offset)
+            .and_then(|fact| fact.definition)
+            .and_then(|target| self.definition_targets.get(target.0 as usize));
         match target {
-            Some(target) => Ok(Fact::Present(Definition {
-                file: target.file.clone(),
-                name_span: target.name_span,
-                declaration_range: target.decl_range,
-            })),
+            // A retained target always names a module of this snapshot's own input,
+            // so an unresolvable coordinate is not absence — it is no fact at all.
+            Some(target) => match self.identity_of(target.file) {
+                Some(identity) => Ok(Fact::Present(Definition {
+                    file: identity.clone(),
+                    name_span: target.name_span,
+                    declaration_range: target.decl_range,
+                })),
+                None => Ok(Fact::Absent),
+            },
             None => Ok(Fact::Absent),
         }
     }
@@ -339,7 +401,7 @@ impl AnalysisSnapshot {
     /// bounded by [`MAX_FORMAT_OUTPUT_BYTES`] as a query-local refusal (never retained
     /// in the snapshot). An unknown file is a typed [`QueryError`].
     pub fn format(&self, file: &FileIdentity) -> Result<FormatOutcome, QueryError> {
-        let source = self.source_of(file)?;
+        let (_, source) = self.locate(file)?;
         let Ok(source) = std::str::from_utf8(source) else {
             // A non-UTF-8 file cannot be lexed. A parse-invalid refusal carries
             // real nonempty syntax evidence, which an undecodable file has
@@ -367,16 +429,16 @@ impl AnalysisSnapshot {
     /// identity. The outline is retained per snapshot and bounded per file by
     /// [`MAX_DOCUMENT_SYMBOLS_PER_FILE`] and [`MAX_SYMBOL_DEPTH`] at snapshot admission.
     pub fn document_symbols(&self, file: &FileIdentity) -> Result<Fact<&[DeclSymbol]>, QueryError> {
-        self.source_of(file)?;
-        if self.broken_files.iter().any(|broken| broken == file) {
+        let (file, _) = self.locate(file)?;
+        if self.broken_files.contains(&file) {
             return Ok(Fact::Unavailable(Unavailability::Syntax));
         }
         match self
             .document_symbols
             .iter()
-            .find(|(symbol_file, _)| symbol_file == file)
+            .find(|(symbol_file, _)| *symbol_file == file)
         {
-            Some((_, symbols)) => Ok(Fact::Present(symbols.as_slice())),
+            Some((_, symbols)) => Ok(Fact::Present(symbols)),
             // A validated input that is neither broken nor retained did not parse cleanly;
             // the honest outcome is the same syntax-unavailable verdict, never a fabricated
             // empty tree.
@@ -415,22 +477,18 @@ impl AnalysisSnapshot {
         file: &FileIdentity,
         offset: usize,
     ) -> Result<CompletionOutcome, QueryError> {
-        let source = self.source_of(file)?;
+        let (_, source) = self.locate(file)?;
         if offset > source.len() {
             return Err(QueryError::OffsetOutOfRange);
         }
-        let Some(module) = self
-            .completion_modules
-            .iter()
-            .find(|module| &module.file == file)
-        else {
-            // A validated input file with no retained parse tree never parsed (a non-UTF-8
-            // file). The honest verdict is syntax-unavailable, never a fabricated empty set.
+        let Some(tree) = query_local_parse(source) else {
+            // A validated input file that cannot be decoded never produced a tree. The
+            // honest verdict is syntax-unavailable, never a fabricated empty set.
             return Ok(CompletionOutcome::Ready(Fact::Unavailable(
                 Unavailability::Syntax,
             )));
         };
-        Ok(completion::resolve(module, offset as u32))
+        Ok(completion::resolve(&tree, offset as u32))
     }
 
     /// The active-call fact at a byte offset: the innermost enclosing call's callee
@@ -456,23 +514,37 @@ impl AnalysisSnapshot {
         file: &FileIdentity,
         offset: usize,
     ) -> Result<ActiveCallOutcome, QueryError> {
-        let source = self.source_of(file)?;
+        let (_, source) = self.locate(file)?;
         if offset > source.len() {
             return Err(QueryError::OffsetOutOfRange);
         }
-        let Some(module) = self
-            .completion_modules
-            .iter()
-            .find(|module| &module.file == file)
-        else {
-            // A validated input file with no retained parse tree never parsed (a non-UTF-8
-            // file). The honest verdict is syntax-unavailable, never a fabricated absence.
+        let Some(tree) = query_local_parse(source) else {
+            // A validated input file that cannot be decoded never produced a tree. The
+            // honest verdict is syntax-unavailable, never a fabricated absence.
             return Ok(ActiveCallOutcome::Ready(Fact::Unavailable(
                 Unavailability::Syntax,
             )));
         };
-        Ok(active_call::resolve(module, source, offset as u32))
+        Ok(active_call::resolve(&tree, source, offset as u32))
     }
+}
+
+/// Parse exactly one already-admitted file's already-retained bytes for one query.
+///
+/// The tree is transient: it is never retained, never enters a collector, and
+/// contributes no diagnostic. `broken_files` stays the independent record of
+/// parseability — no query infers parseability from this parse, and a recovered
+/// broken file still classifies positions over its recovered forms, exactly as it did
+/// when the tree was retained. Parsing is a pure function of the source bytes, so a
+/// query's outcome does not depend on when the parse ran.
+///
+/// Its peak is bounded by the project owner's 1 MiB per-file admission ceiling, which
+/// the drive has already enforced, so this needs no refusal arm of its own. The
+/// precedent is [`AnalysisSnapshot::format`], which already re-derives a tree per
+/// query through the syntax owner's `check_format`.
+fn query_local_parse(source: &[u8]) -> Option<marrow_syntax::SourceFile> {
+    let source = std::str::from_utf8(source).ok()?;
+    Some(marrow_syntax::parse_source(source).file)
 }
 
 /// The outcome of a checked whole-document format query.
@@ -556,75 +628,389 @@ pub fn analyze(
         };
         return Err(AnalysisFailure::ResourceLimit { revision, limit });
     }
-    // Enforce the snapshot fact publication bounds before retention: an overflow
-    // transactionally refuses the whole snapshot as a resource limit rather than admitting
-    // a truncated or partial fact set. Retained declaration-hierarchy symbols charge the
-    // same count and byte bounds as hover/definition facts.
-    let retained_symbols: u64 = analysis
-        .document_symbols
-        .iter()
-        .map(|(_, symbols)| symbol_count(symbols))
-        .sum();
-    if analysis.hover_facts.len() as u64 + retained_symbols > MAX_SNAPSHOT_FACT_COUNT {
-        return Err(AnalysisFailure::ResourceLimit {
-            revision,
-            limit: AnalysisResourceLimit::SnapshotFactCount {
-                limit: MAX_SNAPSHOT_FACT_COUNT,
-            },
-        });
-    }
-    let symbol_fact_bytes: u64 = analysis
-        .document_symbols
-        .iter()
-        .map(|(file, symbols)| file.as_str().len() as u64 + symbol_bytes(symbols))
-        .sum();
-    let fact_bytes: u64 = analysis
-        .hover_facts
-        .iter()
-        .map(|fact| fact.retained_bytes() as u64)
-        .sum::<u64>()
-        + symbol_fact_bytes;
-    if fact_bytes > MAX_SNAPSHOT_FACT_BYTES {
-        return Err(AnalysisFailure::ResourceLimit {
-            revision,
-            limit: AnalysisResourceLimit::SnapshotFactBytes {
-                limit: MAX_SNAPSHOT_FACT_BYTES,
-            },
-        });
-    }
+    // The fact ledger admitted every fact against its ceilings at the push, so the
+    // sealed terminal is either the complete retained set or the typed limit that
+    // discarded it. Project the limit through one exhaustive translation, mirroring the
+    // diagnostic owner's failure boundary; no partial fact set is ever published.
+    let facts = match analysis.facts {
+        BoundedAnalysisFacts::Complete(facts) => facts,
+        BoundedAnalysisFacts::Limited { limit } => {
+            return Err(AnalysisFailure::ResourceLimit {
+                revision,
+                limit: fact_limit_failure(limit),
+            });
+        }
+    };
+    let RetainedFacts {
+        hover_facts,
+        definition_targets,
+        broken_files,
+        dependency_gaps,
+        document_symbols,
+    } = facts;
     Ok(Arc::new(AnalysisSnapshot {
         input,
         revision,
-        diagnostics,
-        hover_facts: analysis.hover_facts,
-        broken_files: analysis.broken_files,
-        dependency_gaps: analysis.dependency_gaps,
-        document_symbols: analysis.document_symbols,
-        completion_modules: analysis.completion_modules,
+        diagnostics: diagnostics.into_boxed_slice(),
+        hover_facts,
+        definition_targets,
+        broken_files,
+        dependency_gaps,
+        document_symbols,
     }))
+}
+
+/// Map the ledger's typed ceiling to its public resource-limit record: the one
+/// failure-boundary translation, exhaustive over both kinds. The ledger's saturated
+/// count and byte totals stay internal — a published saturated total would be exactly
+/// the fabricated count the typed limits exist to prevent.
+fn fact_limit_failure(limit: AnalysisFactLimit) -> AnalysisResourceLimit {
+    match limit {
+        AnalysisFactLimit::Count { limit } => AnalysisResourceLimit::SnapshotFactCount { limit },
+        AnalysisFactLimit::Bytes { limit } => AnalysisResourceLimit::SnapshotFactBytes { limit },
+    }
 }
 
 /// One retained editor fact: a resolved local or parameter use site and the canonical
 /// display of its value type. Held per snapshot and queried by [`AnalysisSnapshot::hover`].
 pub(crate) struct HoverFact {
-    pub(crate) file: FileIdentity,
-    pub(crate) span: marrow_syntax::SourceSpan,
-    pub(crate) display: String,
+    file: FileRef,
+    span: SourceSpan,
+    display: Box<str>,
     /// The definition target when this fact is a resolved function callee; `None` for a
     /// local or parameter use.
-    pub(crate) definition: Option<crate::lower::DefinitionTarget>,
+    definition: Option<DefTargetRef>,
 }
 
-impl HoverFact {
-    /// The retained byte footprint of this fact: its rendered display plus any retained
-    /// definition-target file path. The spans and identities are otherwise fixed-size
-    /// and charged by the count bound.
-    fn retained_bytes(&self) -> usize {
-        self.display.len()
-            + self
-                .definition
-                .as_ref()
-                .map_or(0, |target| target.file.as_str().len())
+/// The editor definition target of a resolved function callee: the file it is declared
+/// in, its declared-name span (the selection range), and its header-through-body range.
+/// Retained once per distinct target and referenced by position from every hover fact
+/// that resolves to it.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) struct DefinitionTarget {
+    pub(crate) file: FileRef,
+    pub(crate) name_span: SourceSpan,
+    pub(crate) decl_range: SourceSpan,
+}
+
+/// Which typed ceiling the analysis fact ledger crossed. Maps exhaustively to
+/// [`AnalysisResourceLimit::SnapshotFactCount`] / [`AnalysisResourceLimit::SnapshotFactBytes`]
+/// at the failure boundary.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum AnalysisFactLimit {
+    Count { limit: u64 },
+    Bytes { limit: u64 },
+}
+
+/// The complete retained fact set of one snapshot, sealed by the ledger's single
+/// `finish`. Every collection is a boxed slice, so the amortized growth capacity the
+/// ledger used while collecting is not retained.
+#[derive(Default)]
+pub(crate) struct RetainedFacts {
+    pub(crate) hover_facts: Box<[HoverFact]>,
+    pub(crate) definition_targets: Box<[DefinitionTarget]>,
+    pub(crate) broken_files: Box<[FileRef]>,
+    pub(crate) dependency_gaps: Box<[(FileRef, SourceSpan)]>,
+    pub(crate) document_symbols: Box<[(FileRef, Box<[DeclSymbol]>)]>,
+}
+
+/// The finished terminal of one fact ledger: the complete retained set, or the typed
+/// ceiling that discarded it.
+///
+/// A Limited terminal carries the ceiling and nothing else. The ledger's saturated
+/// count and byte totals stay strictly internal: they exist so a ledger that has
+/// already crossed keeps composing later input without unbounded growth, and
+/// publishing one would be exactly the fabricated total the typed limits prevent.
+pub(crate) enum BoundedAnalysisFacts {
+    Complete(RetainedFacts),
+    Limited { limit: AnalysisFactLimit },
+}
+
+impl BoundedAnalysisFacts {
+    /// Test support: the complete retained set, or a panic on a limited terminal.
+    #[cfg(test)]
+    #[track_caller]
+    pub(crate) fn expect_complete(&self) -> &RetainedFacts {
+        match self {
+            BoundedAnalysisFacts::Complete(facts) => facts,
+            BoundedAnalysisFacts::Limited { limit } => {
+                panic!("expected a complete fact terminal, got {limit:?}")
+            }
+        }
+    }
+}
+
+/// The one live private analysis-fact owner.
+///
+/// It is the structural sibling of the diagnostic collector: every fact is admitted
+/// against the typed count and byte ceilings **at the push**, so no fact set larger
+/// than a public snapshot bound is ever materialized. Crossing a ceiling discards the
+/// whole payload — the incoming fact and every already-admitted one — because a
+/// crossing refuses the whole snapshot; there is no partial publication to unwind and
+/// therefore no transaction, epoch, or receipt protocol.
+///
+/// Count retains precedence over bytes, and a `Bytes` limit strengthens to `Count`
+/// once the composed count crosses; `Count` never weakens.
+pub(crate) struct AnalysisFactCollector {
+    /// The spelling length of each admitted module, by [`FileRef`]. The ledger owns
+    /// the logical byte charges, which are stated over file *spellings* and stay
+    /// exact even though the compact representation no longer stores one per fact.
+    file_bytes: Vec<u32>,
+    state: FactState,
+}
+
+enum FactState {
+    Retaining {
+        /// The running admitted count. Unlike the diagnostic owner's `rows.len()`,
+        /// this total spans four collections plus the nested document-symbol nodes,
+        /// so recomputing it per admission would be quadratic.
+        count: u64,
+        bytes: u64,
+        facts: RetainingFacts,
+    },
+    Limited {
+        count: u64,
+        bytes: u64,
+        limit: AnalysisFactLimit,
+    },
+}
+
+/// The growable form of the retained set, before `finish` seals it.
+#[derive(Default)]
+struct RetainingFacts {
+    hover_facts: Vec<HoverFact>,
+    definition_targets: Vec<DefinitionTarget>,
+    /// Each distinct definition target's position, keyed by its file and the byte its
+    /// declared name starts at. Two declarations in one file cannot begin their names
+    /// at the same byte, so the key is exact.
+    target_index: std::collections::BTreeMap<(u16, usize), DefTargetRef>,
+    broken_files: Vec<FileRef>,
+    dependency_gaps: Vec<(FileRef, SourceSpan)>,
+    document_symbols: Vec<(FileRef, Box<[DeclSymbol]>)>,
+}
+
+impl RetainingFacts {
+    fn seal(self) -> RetainedFacts {
+        RetainedFacts {
+            hover_facts: self.hover_facts.into_boxed_slice(),
+            definition_targets: self.definition_targets.into_boxed_slice(),
+            broken_files: self.broken_files.into_boxed_slice(),
+            dependency_gaps: self.dependency_gaps.into_boxed_slice(),
+            document_symbols: self.document_symbols.into_boxed_slice(),
+        }
+    }
+
+    /// Retain `target` once, returning its position. A call site that resolves to an
+    /// already-retained declaration reuses it rather than cloning the target per fact.
+    fn intern(&mut self, target: DefinitionTarget) -> Option<DefTargetRef> {
+        let key = (target.file.0, target.name_span.start_byte);
+        if let Some(existing) = self.target_index.get(&key) {
+            return Some(*existing);
+        }
+        let at = DefTargetRef(u16::try_from(self.definition_targets.len()).ok()?);
+        self.definition_targets.push(target);
+        self.target_index.insert(key, at);
+        Some(at)
+    }
+}
+
+impl AnalysisFactCollector {
+    /// A fresh ledger over `project`'s admitted modules. Drive admission runs before
+    /// this, so the module count is already inside the [`FileRef`] domain.
+    pub(crate) fn new(project: &ProjectInput) -> Self {
+        Self {
+            file_bytes: project
+                .modules()
+                .iter()
+                .map(|module| module.identity().as_str().len() as u32)
+                .collect(),
+            state: FactState::Retaining {
+                count: 0,
+                bytes: 0,
+                facts: RetainingFacts::default(),
+            },
+        }
+    }
+
+    /// Whether a ceiling has already been crossed. The drive stops rendering fact
+    /// displays once this is true: the whole snapshot is already refused, so every
+    /// further render is waste. This is an allocation bound, not a protocol.
+    pub(crate) fn is_limited(&self) -> bool {
+        matches!(self.state, FactState::Limited { .. })
+    }
+
+    /// A scoped borrow for one body's lowering, so a producer writes facts through the
+    /// ledger rather than into a vector of its own.
+    pub(crate) fn sink(&mut self, file: FileRef) -> FactSink<'_> {
+        FactSink::Retaining { ledger: self, file }
+    }
+
+    /// The logical byte charge of one file's spelling.
+    fn spelling_bytes(&self, file: FileRef) -> u64 {
+        self.file_bytes.get(file.index()).copied().unwrap_or(0) as u64
+    }
+
+    /// Retain one hover fact. Charges one count and its display plus the file spelling
+    /// of its optional definition target — the logical charge, unchanged by the compact
+    /// representation that no longer stores that spelling per fact.
+    pub(crate) fn admit_hover(
+        &mut self,
+        file: FileRef,
+        span: SourceSpan,
+        display: Box<str>,
+        definition: Option<DefinitionTarget>,
+    ) {
+        let bytes =
+            display.len() as u64 + definition.map_or(0, |target| self.spelling_bytes(target.file));
+        self.admit(1, bytes, |facts| {
+            let definition = definition.and_then(|target| facts.intern(target));
+            facts.hover_facts.push(HoverFact {
+                file,
+                span,
+                display,
+                definition,
+            });
+        });
+    }
+
+    /// Retain one dependency gap. It carries only fixed-size references and a span, so
+    /// the count bound charges it and it charges no bytes.
+    pub(crate) fn admit_gap(&mut self, file: FileRef, span: SourceSpan) {
+        self.admit(1, 0, |facts| facts.dependency_gaps.push((file, span)));
+    }
+
+    /// Retain one module's declaration-hierarchy outline. Charges one count per
+    /// projected node, counting nested members, and its owner file spelling once plus
+    /// every retained symbol-name spelling.
+    pub(crate) fn admit_symbols(&mut self, file: FileRef, symbols: Box<[DeclSymbol]>) {
+        let count = symbol_count(&symbols);
+        let bytes = self.spelling_bytes(file) + symbol_bytes(&symbols);
+        self.admit(count, bytes, |facts| {
+            facts.document_symbols.push((file, symbols));
+        });
+    }
+
+    /// Record that a module did not parse. Broken-module status is not a public fact
+    /// row: it is one coordinate per module, bounded by the same 4096-file admission
+    /// limit that bounds the coordinate domain, so it charges neither ceiling.
+    pub(crate) fn admit_broken(&mut self, file: FileRef) {
+        if let FactState::Retaining { facts, .. } = &mut self.state {
+            facts.broken_files.push(file);
+        }
+    }
+
+    /// Seal this ledger into its terminal. Total: every state has a terminal.
+    pub(crate) fn finish(self) -> BoundedAnalysisFacts {
+        match self.state {
+            FactState::Retaining { facts, .. } => BoundedAnalysisFacts::Complete(facts.seal()),
+            FactState::Limited { limit, .. } => BoundedAnalysisFacts::Limited { limit },
+        }
+    }
+
+    /// Admit one contribution against both ceilings before `retain` may allocate for
+    /// it. Crossing discards the whole payload, including the admitted prefix, and
+    /// Count wins a simultaneous crossing.
+    fn admit(
+        &mut self,
+        added_count: u64,
+        added_bytes: u64,
+        retain: impl FnOnce(&mut RetainingFacts),
+    ) {
+        match &mut self.state {
+            FactState::Retaining {
+                count,
+                bytes,
+                facts,
+            } => {
+                let new_count = count.saturating_add(added_count);
+                let new_bytes = bytes.saturating_add(added_bytes);
+                if new_count > MAX_SNAPSHOT_FACT_COUNT {
+                    self.state = limited_facts(
+                        new_count,
+                        new_bytes,
+                        AnalysisFactLimit::Count {
+                            limit: MAX_SNAPSHOT_FACT_COUNT,
+                        },
+                    );
+                } else if new_bytes > MAX_SNAPSHOT_FACT_BYTES {
+                    self.state = limited_facts(
+                        new_count,
+                        new_bytes,
+                        AnalysisFactLimit::Bytes {
+                            limit: MAX_SNAPSHOT_FACT_BYTES,
+                        },
+                    );
+                } else {
+                    *count = new_count;
+                    *bytes = new_bytes;
+                    retain(facts);
+                }
+            }
+            FactState::Limited {
+                count,
+                bytes,
+                limit,
+            } => {
+                *count = count
+                    .saturating_add(added_count)
+                    .min(MAX_SNAPSHOT_FACT_COUNT + 1);
+                *bytes = bytes
+                    .saturating_add(added_bytes)
+                    .min(MAX_SNAPSHOT_FACT_BYTES + 1);
+                if matches!(limit, AnalysisFactLimit::Bytes { .. })
+                    && *count > MAX_SNAPSHOT_FACT_COUNT
+                {
+                    *limit = AnalysisFactLimit::Count {
+                        limit: MAX_SNAPSHOT_FACT_COUNT,
+                    };
+                }
+            }
+        }
+    }
+}
+
+/// The saturated Limited state: totals cap at ceiling plus one, so later input keeps
+/// composing without unbounded growth. The whole retained payload is dropped here — it
+/// never re-materializes.
+fn limited_facts(count: u64, bytes: u64, limit: AnalysisFactLimit) -> FactState {
+    FactState::Limited {
+        count: count.min(MAX_SNAPSHOT_FACT_COUNT + 1),
+        bytes: bytes.min(MAX_SNAPSHOT_FACT_BYTES + 1),
+        limit,
+    }
+}
+
+/// The scoped borrow one body's lowering writes its editor facts through.
+///
+/// A producer never holds a fact vector, so no fact can be retained without passing the
+/// ledger's ceilings. A body whose facts duplicate an already-collected template's is
+/// given the `Discarding` state rather than a scratch vector nobody reads.
+pub(crate) enum FactSink<'a> {
+    Retaining {
+        ledger: &'a mut AnalysisFactCollector,
+        file: FileRef,
+    },
+    /// This body's facts duplicate a template's, which were collected once at the
+    /// template proof. Nothing is retained and nothing is allocated.
+    Discarding,
+}
+
+impl FactSink<'_> {
+    /// Retain one dependency gap in this sink's file. Gaps are written as they are
+    /// discovered, so one survives even when the body it sits in fails to lower.
+    pub(crate) fn gap(&mut self, span: SourceSpan) {
+        if let FactSink::Retaining { ledger, file } = self {
+            ledger.admit_gap(*file, span);
+        }
+    }
+
+    /// Whether rendering further fact displays is already waste: this sink discards, or
+    /// the ledger has already refused the whole snapshot.
+    pub(crate) fn is_limited(&self) -> bool {
+        match self {
+            FactSink::Retaining { ledger, .. } => ledger.is_limited(),
+            FactSink::Discarding => true,
+        }
     }
 }
 
@@ -708,11 +1094,11 @@ pub enum DeclKind {
 /// floor. A pure projection of the parsed AST — it carries no resolved type, effect, or
 /// durable-anchor spelling.
 pub struct DeclSymbol {
-    name: String,
+    name: Box<str>,
     kind: DeclKind,
     name_span: SourceSpan,
     full_range: SourceSpan,
-    children: Vec<DeclSymbol>,
+    children: Box<[DeclSymbol]>,
 }
 
 impl DeclSymbol {
@@ -777,7 +1163,7 @@ pub(crate) enum SymbolLimit {
 /// spans and declaration ranges: it reclassifies nothing.
 pub(crate) fn project_document_symbols(
     declarations: &[Declaration],
-) -> Result<Vec<DeclSymbol>, SymbolLimit> {
+) -> Result<Box<[DeclSymbol]>, SymbolLimit> {
     let mut builder = SymbolProjection { count: 0 };
     declarations
         .iter()
@@ -811,66 +1197,56 @@ impl SymbolProjection {
         depth: u16,
     ) -> Result<DeclSymbol, SymbolLimit> {
         self.admit(depth)?;
-        let leaf = |name: String, kind: DeclKind, name_span: SourceSpan, full_range: SourceSpan| {
+        let leaf = |name: &str, kind: DeclKind, name_span: SourceSpan, full_range: SourceSpan| {
             DeclSymbol {
-                name,
+                name: name.into(),
                 kind,
                 name_span,
                 full_range,
-                children: Vec::new(),
+                children: Box::default(),
             }
         };
         let symbol = match declaration {
-            Declaration::Alias(alias) => leaf(
-                alias.name.clone(),
-                DeclKind::Alias,
-                alias.name_span,
-                alias.span,
-            ),
+            Declaration::Alias(alias) => {
+                leaf(&alias.name, DeclKind::Alias, alias.name_span, alias.span)
+            }
             Declaration::Nominal(nominal) => leaf(
-                nominal.name.clone(),
+                &nominal.name,
                 DeclKind::Nominal,
                 nominal.name_span,
                 nominal.span,
             ),
             // A `const` declaration carries no separate name span in the AST, so its
             // selection range is its full declaration range.
-            Declaration::Const(konst) => {
-                leaf(konst.name.clone(), DeclKind::Const, konst.span, konst.span)
-            }
+            Declaration::Const(konst) => leaf(&konst.name, DeclKind::Const, konst.span, konst.span),
             Declaration::Resource(resource) => leaf(
-                resource.name.clone(),
+                &resource.name,
                 DeclKind::Resource,
                 resource.name_span,
                 resource.span,
             ),
-            Declaration::Struct(item) => leaf(
-                item.name.clone(),
-                DeclKind::Struct,
-                item.name_span,
-                item.span,
-            ),
+            Declaration::Struct(item) => {
+                leaf(&item.name, DeclKind::Struct, item.name_span, item.span)
+            }
             // A store's declared name is its saved-root spelling; its name span covers
             // the `^root` sigiled root.
             Declaration::Store(store) => leaf(
-                store.root.root.clone(),
+                &store.root.root,
                 DeclKind::Store,
                 store.root.span,
                 store.span,
             ),
             Declaration::Function(function) => leaf(
-                function.name.clone(),
+                &function.name,
                 DeclKind::Function,
                 function.name_span,
                 function.span,
             ),
-            Declaration::Test(test) => {
-                leaf(test.name.clone(), DeclKind::Test, test.name_span, test.span)
-            }
+            Declaration::Test(test) => leaf(&test.name, DeclKind::Test, test.name_span, test.span),
             Declaration::Enum(item) => {
                 let children = self.members(&item.members, depth + 1)?;
                 DeclSymbol {
-                    name: item.name.clone(),
+                    name: item.name.as_str().into(),
                     kind: DeclKind::Enum,
                     name_span: item.name_span,
                     full_range: item.span,
@@ -885,7 +1261,7 @@ impl SymbolProjection {
         &mut self,
         members: &[EnumMember],
         depth: u16,
-    ) -> Result<Vec<DeclSymbol>, SymbolLimit> {
+    ) -> Result<Box<[DeclSymbol]>, SymbolLimit> {
         members
             .iter()
             .map(|member| self.member(member, depth))
@@ -896,21 +1272,13 @@ impl SymbolProjection {
         self.admit(depth)?;
         let children = self.members(&member.members, depth + 1)?;
         Ok(DeclSymbol {
-            name: member.name.clone(),
+            name: member.name.as_str().into(),
             kind: DeclKind::EnumMember,
             name_span: member.name_span,
             full_range: member.span,
             children,
         })
     }
-}
-
-/// One parsed module's tree retained for the per-query completion re-resolution. Every
-/// module that produced a parse tree — cleanly parsed and recovered-broken alike — has
-/// one; a non-UTF-8 file that never parsed has none.
-pub(crate) struct CompletionModule {
-    pub(crate) file: FileIdentity,
-    pub(crate) ast: marrow_syntax::SourceFile,
 }
 
 /// The closed set of completion position classes, derived purely positionally from the
@@ -1096,8 +1464,8 @@ mod completion {
     use crate::scalar::ScalarType;
 
     use super::{
-        AnalysisResourceLimit, Candidate, CandidateKind, CompletionModule, CompletionOutcome,
-        Completions, Fact, MAX_COMPLETION_CANDIDATES, MAX_COMPLETION_RENDER_BYTES, PositionClass,
+        AnalysisResourceLimit, Candidate, CandidateKind, CompletionOutcome, Completions, Fact,
+        MAX_COMPLETION_CANDIDATES, MAX_COMPLETION_RENDER_BYTES, PositionClass,
     };
 
     /// One in-scope binding: its spelling and, when annotated, its declared type node
@@ -1129,9 +1497,8 @@ mod completion {
         TypeAnnotation,
     }
 
-    /// Classify the offset over a module's retained tree and enumerate the class namespace.
-    pub(super) fn resolve(module: &CompletionModule, offset: u32) -> CompletionOutcome {
-        let file = &module.ast;
+    /// Classify the offset over the queried file's tree and enumerate the class namespace.
+    pub(super) fn resolve(file: &SourceFile, offset: u32) -> CompletionOutcome {
         let mut scope = Scope::default();
         let Some(located) = locate_file(file, offset, &mut scope) else {
             return CompletionOutcome::Ready(Fact::Absent);
@@ -1966,8 +2333,8 @@ mod active_call {
 
     use super::completion::{contains, declaration_contains};
     use super::{
-        ActiveCall, ActiveCallOutcome, AnalysisResourceLimit, CompletionModule, Fact,
-        MAX_ACTIVE_CALL_RENDER_BYTES, ParamPiece,
+        ActiveCall, ActiveCallOutcome, AnalysisResourceLimit, Fact, MAX_ACTIVE_CALL_RENDER_BYTES,
+        ParamPiece,
     };
 
     /// One call node reached during collection: its callee expression, its arguments
@@ -1979,12 +2346,7 @@ mod active_call {
         span: SourceSpan,
     }
 
-    pub(super) fn resolve(
-        module: &CompletionModule,
-        source: &[u8],
-        offset: u32,
-    ) -> ActiveCallOutcome {
-        let file = &module.ast;
+    pub(super) fn resolve(file: &SourceFile, source: &[u8], offset: u32) -> ActiveCallOutcome {
         let Some(declaration) = file
             .declarations
             .iter()

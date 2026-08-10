@@ -126,9 +126,9 @@ impl<'a> FnLowerer<'a> {
                         // retained: the type spelling is O(type depth), and a divergent
                         // monomorphization would otherwise render it for each of O(N)
                         // discarded instances (Σ = O(N²)).
-                        if self.collect_hover {
+                        if self.collects_hover() {
                             let display = self.hover_type_display(ty);
-                            self.record_hover(*span, display, None);
+                            self.record_hover(*span, display.into(), None);
                         }
                         self.push(Instr::LocalGet(slot), *span);
                         return Some(ty);
@@ -1337,9 +1337,9 @@ impl<'a> FnLowerer<'a> {
                 sig.ret,
                 sig.definition_target(),
             );
-            if self.collect_hover {
+            if self.collects_hover() {
                 let display = signature_display(name, &params, ret, self.records);
-                self.record_hover(callee_span, display, Some(target));
+                self.record_hover(callee_span, display.into(), Some(target));
             }
             return self.lower_function_call(index, &params, ret, args, span);
         }
@@ -1403,9 +1403,9 @@ impl<'a> FnLowerer<'a> {
                     sig.ret,
                     sig.definition_target(),
                 );
-                if self.collect_hover {
+                if self.collects_hover() {
                     let display = signature_display(item, &params, ret, self.records);
-                    self.record_hover(callee_span, display, Some(target));
+                    self.record_hover(callee_span, display.into(), Some(target));
                 }
                 self.lower_function_call(index, &params, ret, args, span)
             }
@@ -1424,8 +1424,7 @@ impl<'a> FnLowerer<'a> {
                 // required owner is invalid. Record the gap at the callee leaf for
                 // editor queries; the ordinary name diagnostic still reports it.
                 if self.functions.names_broken_module(self.module, prefix) {
-                    let file = self.file.clone();
-                    self.dependency_gaps.push((file, callee_span));
+                    self.facts.gap(callee_span);
                 }
                 // A qualified generic function is resolved through the same module
                 // scope and monomorphized, after the monomorphic table misses.
@@ -1515,7 +1514,7 @@ impl<'a> FnLowerer<'a> {
     /// template's canonical signature display and its definition target. The target is
     /// the source template, never a minted instance.
     fn record_generic_call(&mut self, index: usize, callee_span: SourceSpan) {
-        if !self.collect_hover {
+        if !self.collects_hover() {
             return;
         }
         let (display, target) = {
@@ -1524,13 +1523,13 @@ impl<'a> FnLowerer<'a> {
             (
                 generic_signature_display(decl),
                 DefinitionTarget {
-                    file: template.file.clone(),
+                    file: template.at,
                     name_span: decl.name_span,
                     decl_range: decl_range(decl),
                 },
             )
         };
-        self.record_hover(callee_span, display, Some(target));
+        self.record_hover(callee_span, display.into(), Some(target));
     }
 
     /// Lower a call to a generic function: infer each type argument from the call's

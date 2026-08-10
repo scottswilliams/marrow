@@ -12,10 +12,11 @@ use marrow_codes::Code;
 use marrow_image::{EncodedImage, ExportId, ImageBuildError, ImageDraft, Instr};
 use marrow_project::{CaptureLimits, FileIdentity, ProjectInput};
 use marrow_syntax::{
-    AliasDecl, ConstDecl, Declaration, EnumDecl, FunctionDecl, NominalDecl, ResourceDecl,
-    ResourceMember, SourceFile, SourceSpan, StoreDecl, StructDecl, parse_source,
+    AliasDecl, ConstDecl, Declaration, EnumDecl, NominalDecl, ResourceDecl, ResourceMember,
+    SourceFile, SourceSpan, StoreDecl, StructDecl, parse_source,
 };
 
+use crate::analysis::{AnalysisFactCollector, BoundedAnalysisFacts, FactSink, FileRef};
 use crate::demand::DurableNaming;
 use crate::diag::{
     BoundedDiagnostics, CompileDiagnosticLimit, DiagnosticCollector, SourceDiagnostic,
@@ -23,8 +24,8 @@ use crate::diag::{
 use crate::durable::DurableRegistry;
 use crate::konst::ConstRegistry;
 use crate::lower::{
-    FnLowerer, FunctionRegistry, GenericRegistry, is_durable_place_op, is_mutation_instr,
-    is_reserved_builtin_name, reserved_builtin_name,
+    DeclaredFn, FnLowerer, FunctionRegistry, GenericRegistry, is_durable_place_op,
+    is_mutation_instr, is_reserved_builtin_name, reserved_builtin_name,
 };
 use crate::types::{GenericInvariant, TypeRegistry};
 
@@ -517,6 +518,9 @@ enum TestMode {
 /// accumulates with the file count.
 struct Module {
     file: FileIdentity,
+    /// This module's position in the project's own module order — the coordinate every
+    /// editor fact this module produces is retained under.
+    at: FileRef,
     name: String,
     ast: SourceFile,
     broken: bool,
@@ -611,31 +615,18 @@ struct Driven {
     structural: BoundedDiagnostics,
     /// The semantic pass over the cleanly-parsed modules.
     semantic: SemanticOutcome,
-    /// The identities of input files that did not decode or parse, in
-    /// diagnostic order (invalid-UTF-8 files first, then broken parsed files).
-    /// Populated directly from decode and parse status — never reconstructed
-    /// from retained diagnostics, so a Limited parse terminal cannot erase it.
-    /// Bounded by drive admission.
-    broken_files: Vec<FileIdentity>,
-    /// Editor hover facts collected while lowering the cleanly-parsed bodies. Carried
-    /// out of the traversal orthogonally to the semantic outcome; the production
-    /// compile's projection ignores them and the analysis snapshot consumes them.
-    hover_facts: Vec<crate::analysis::HoverFact>,
-    /// Editor dependency gaps: `(file, callee span)` for qualified calls to modules
-    /// that did not parse. Survive body-lowering failure (threaded, not returned).
-    dependency_gaps: Vec<(FileIdentity, SourceSpan)>,
-    /// The declaration-hierarchy outline of each cleanly-parsed module file, projected
-    /// from its parse tree. Carried orthogonally to the semantic outcome; the production
-    /// compile's projection ignores it and the analysis snapshot consumes it.
-    document_symbols: Vec<(FileIdentity, Vec<crate::analysis::DeclSymbol>)>,
+    /// The editor facts this pass retained, already sealed against the snapshot
+    /// count and byte ceilings: the complete set, or the typed limit that discarded
+    /// it. Carried orthogonally to the semantic outcome; the production compile's
+    /// projection ignores it and the analysis snapshot consumes it. Broken-module
+    /// status inside it comes directly from decode and parse status — never
+    /// reconstructed from retained diagnostics, so a Limited parse terminal cannot
+    /// erase it.
+    facts: BoundedAnalysisFacts,
     /// The first per-file declaration-hierarchy bound a module's outline exceeded, if
     /// any. The analysis snapshot refuses transactionally on it; the production compile
     /// ignores it (symbol bounds are analysis-only and never fail compilation).
     symbol_limit: Option<crate::analysis::SymbolLimit>,
-    /// Every parsed module's tree — cleanly parsed and recovered-broken alike — retained
-    /// for the per-query completion re-resolution. Carried orthogonally to the semantic
-    /// outcome; the production compile's projection ignores it.
-    completion_modules: Vec<crate::analysis::CompletionModule>,
 }
 
 /// Allocation-free admission for one compiler drive.
@@ -744,7 +735,9 @@ impl Driven {
 fn drive(project: &ProjectInput, mode: TestMode) -> Result<Driven, CompileResourceLimit> {
     DriveInputAdmission::check(project)?;
     let mut parse = DiagnosticCollector::new();
-    let mut broken_files: Vec<FileIdentity> = Vec::new();
+    // Admission has proved the module count is inside the coordinate domain, so every
+    // fact this pass retains has a coordinate before the first one allocates.
+    let mut facts = AnalysisFactCollector::new(project);
     let mut non_utf8_modules: BTreeSet<String> = BTreeSet::new();
 
     // Pass one decodes and classifies UTF-8 only, appending each invalid
@@ -752,19 +745,27 @@ fn drive(project: &ProjectInput, mode: TestMode) -> Result<Driven, CompileResour
     // prefix (A5). A non-UTF-8 file never enters parsing, but it is still a
     // project module that did not parse; record it as broken so a qualified
     // call into it is a dependency gap rather than an absence.
-    let mut decoded: Vec<(FileIdentity, String, &str)> = Vec::new();
-    for module in project.modules() {
+    let mut decoded: Vec<(FileIdentity, FileRef, String, &str)> = Vec::new();
+    for (index, module) in project.modules().iter().enumerate() {
         let file = module.identity().clone();
+        // Admission bounds the module count below the coordinate domain, so this is
+        // total for every admitted project.
+        let Some(at) = FileRef::at(index) else {
+            return Err(CompileResourceLimit::new(
+                ResourceLimitKind::ProjectFiles,
+                CaptureLimits::DEFAULT.max_files() as u64,
+            ));
+        };
         let name = module.module().as_str().to_string();
         match std::str::from_utf8(module.source()) {
-            Ok(source) => decoded.push((file, name, source)),
+            Ok(source) => decoded.push((file, at, name, source)),
             Err(error) => {
                 parse.push(SourceDiagnostic::invalid_utf8(
                     &file,
                     error.valid_up_to(),
                     error.error_len(),
                 ));
-                broken_files.push(file);
+                facts.admit_broken(at);
                 non_utf8_modules.insert(name);
             }
         }
@@ -779,15 +780,16 @@ fn drive(project: &ProjectInput, mode: TestMode) -> Result<Driven, CompileResour
     // every syntax producer constructs `Severity::Error` (the private syntax
     // constructor fixes it).
     let mut parsed: Vec<Module> = Vec::new();
-    for (file, name, source) in decoded {
+    for (file, at, name, source) in decoded {
         let result = parse_source(source);
         let broken = result.diagnostics.summary().count() != 0;
         parse.absorb_syntax(&file, result.diagnostics);
         if broken {
-            broken_files.push(file.clone());
+            facts.admit_broken(at);
         }
         parsed.push(Module {
             file,
+            at,
             name,
             ast: result.file,
             broken,
@@ -820,11 +822,10 @@ fn drive(project: &ProjectInput, mode: TestMode) -> Result<Driven, CompileResour
     // outline (a `document_symbols` query for it is syntax-unavailable). The first per-file
     // bound overflow stops projection: the analysis snapshot refuses the whole snapshot on
     // it, so no partial outline set is retained.
-    let mut document_symbols: Vec<(FileIdentity, Vec<crate::analysis::DeclSymbol>)> = Vec::new();
     let mut symbol_limit: Option<crate::analysis::SymbolLimit> = None;
     for module in &clean {
         match crate::analysis::project_document_symbols(&module.ast.declarations) {
-            Ok(symbols) => document_symbols.push((module.file.clone(), symbols)),
+            Ok(symbols) => facts.admit_symbols(module.at, symbols),
             Err(limit) => {
                 symbol_limit = Some(limit);
                 break;
@@ -841,62 +842,36 @@ fn drive(project: &ProjectInput, mode: TestMode) -> Result<Driven, CompileResour
     let mut structural = DiagnosticCollector::new();
     check_structural_resource_bounds(&clean, &mut structural);
 
-    let mut hover_facts = Vec::new();
-    let mut dependency_gaps = Vec::new();
-    let semantic = run_semantic(
-        &clean,
-        project,
-        mode,
-        broken_modules,
-        &mut hover_facts,
-        &mut dependency_gaps,
-    );
-    // Retain every parsed module's tree — cleanly parsed and recovered-broken alike — for
-    // the per-query completion re-resolution. The trees move out of the traversal; nothing
-    // is cloned. The production compile's projection ignores them.
-    let completion_modules: Vec<crate::analysis::CompletionModule> = clean
-        .into_iter()
-        .chain(broken_parsed)
-        .map(|module| crate::analysis::CompletionModule {
-            file: module.file,
-            ast: module.ast,
-        })
-        .collect();
+    let semantic = run_semantic(&clean, project, mode, broken_modules, &mut facts);
+    // Every parse tree dies with this traversal: a completion or active-call query
+    // re-parses the one file it names from the snapshot's own retained bytes.
+    drop(clean);
+    drop(broken_parsed);
     Ok(Driven {
         parse: parse.finish(),
         structural: structural.finish(),
         semantic,
-        broken_files,
-        hover_facts,
-        dependency_gaps,
-        document_symbols,
+        facts: facts.finish(),
         symbol_limit,
-        completion_modules,
     })
 }
 
 /// Analyze the cleanly-parsed modules: build the named types and function signatures,
 /// lower every body, and validate the whole, or return the accumulated failure tagged
 /// with the stage that produced it. Editor hover facts from each monomorphic function and
-/// test body are collected into `hover_facts` as they are lowered, and each generic
+/// test body are admitted to the fact ledger as it is lowered, and each generic
 /// template body's facts once at its template proof.
 fn run_semantic(
     parsed: &[Module],
     project: &ProjectInput,
     mode: TestMode,
     broken_modules: BTreeSet<String>,
-    hover_facts: &mut Vec<crate::analysis::HoverFact>,
-    dependency_gaps: &mut Vec<(FileIdentity, SourceSpan)>,
+    facts: &mut AnalysisFactCollector,
 ) -> SemanticOutcome {
     let mut diagnostics = DiagnosticCollector::new();
     // Store roots whose durable identity failed admission, steered to their identity
     // reports once each across the whole compile rather than at every reference.
     let mut admission_steered: BTreeSet<String> = BTreeSet::new();
-    // A generic instance's callee spans duplicate its template's, whose facts are already
-    // collected once at the template proof, so an instance's dependency gaps (like its
-    // hover facts) are discarded rather than duplicated per instance.
-    let mut discarded_gaps: Vec<(FileIdentity, SourceSpan)> = Vec::new();
-
     // The source-root-relative path is the authority for module identity. A file
     // that declares a `module` header is an importable module and must spell the
     // path-derived name (with `::` as the dotted separator). A file with no header
@@ -964,12 +939,17 @@ fn run_semantic(
 
     // The function signatures paired with their dotted module, in declaration order
     // (the order lowering assigns image indices).
-    let functions: Vec<(FileIdentity, String, &FunctionDecl)> = parsed
+    let functions: Vec<DeclaredFn<'_>> = parsed
         .iter()
         .flat_map(|module| {
             module.ast.declarations.iter().filter_map(|decl| {
                 if let Declaration::Function(function) = decl {
-                    Some((module.file.clone(), module.name.clone(), function))
+                    Some(DeclaredFn {
+                        file: module.file.clone(),
+                        at: module.at,
+                        module: module.name.clone(),
+                        decl: function,
+                    })
                 } else {
                     None
                 }
@@ -1110,14 +1090,19 @@ fn run_semantic(
     };
     // Generic functions are templates with no image index; they are monomorphized at
     // each call site and once-checked below against their constraints.
-    let generic_functions: Vec<(FileIdentity, String, &FunctionDecl)> = parsed
+    let generic_functions: Vec<DeclaredFn<'_>> = parsed
         .iter()
         .flat_map(|module| {
             module.ast.declarations.iter().filter_map(|decl| {
                 if let Declaration::Function(function) = decl
                     && !function.type_params.is_empty()
                 {
-                    Some((module.file.clone(), module.name.clone(), function))
+                    Some(DeclaredFn {
+                        file: module.file.clone(),
+                        at: module.at,
+                        module: module.name.clone(),
+                        decl: function,
+                    })
                 } else {
                     None
                 }
@@ -1154,6 +1139,7 @@ fn run_semantic(
             &signatures,
             &generics,
             &constants,
+            facts.sink(template.at()),
             &mut admission_steered,
             template,
         ) {
@@ -1169,14 +1155,8 @@ fn run_semantic(
         // template's), so a position inside a generic body resolves to the template's fact
         // and the divergent-monomorphization render stays off the O(N²) path.
         for (span, display, definition) in outcome.hover_facts {
-            hover_facts.push(crate::analysis::HoverFact {
-                file: template.source_file().clone(),
-                span,
-                display,
-                definition,
-            });
+            facts.admit_hover(template.at(), span, display, definition);
         }
-        dependency_gaps.extend(outcome.dependency_gaps);
         if records.has_instantiation_limit() {
             break;
         }
@@ -1228,7 +1208,7 @@ fn run_semantic(
                         &generics,
                         &constants,
                         &mut diagnostics,
-                        dependency_gaps,
+                        facts.sink(module.at),
                         &mut admission_steered,
                         &module.file,
                         &module.name,
@@ -1246,12 +1226,7 @@ fn run_semantic(
                         }
                     };
                     for (span, display, definition) in result.hover_facts {
-                        hover_facts.push(crate::analysis::HoverFact {
-                            file: module.file.clone(),
-                            span,
-                            display,
-                            definition,
-                        });
+                        facts.admit_hover(module.at, span, display, definition);
                     }
                     lowered.push(LoweredFn {
                         index: result.func.index(),
@@ -1344,7 +1319,7 @@ fn run_semantic(
                     &generics,
                     &constants,
                     &mut diagnostics,
-                    dependency_gaps,
+                    facts.sink(module.at),
                     &mut admission_steered,
                     &module.file,
                     &module.name,
@@ -1363,12 +1338,7 @@ fn run_semantic(
                     }
                 };
                 for (span, display, definition) in result.hover_facts {
-                    hover_facts.push(crate::analysis::HoverFact {
-                        file: module.file.clone(),
-                        span,
-                        display,
-                        definition,
-                    });
+                    facts.admit_hover(module.at, span, display, definition);
                 }
                 lowered.push(LoweredFn {
                     index: result.func.index(),
@@ -1418,7 +1388,7 @@ fn run_semantic(
                 &generics,
                 &constants,
                 &mut diagnostics,
-                &mut discarded_gaps,
+                FactSink::Discarding,
                 &mut admission_steered,
                 template,
                 &args,
@@ -1546,12 +1516,8 @@ pub(crate) enum Analyzed {
 /// position in one of them is a syntax-unavailable fact, not an absent one).
 pub(crate) struct ProjectAnalysis {
     pub(crate) outcome: Analyzed,
-    pub(crate) hover_facts: Vec<crate::analysis::HoverFact>,
-    pub(crate) dependency_gaps: Vec<(FileIdentity, SourceSpan)>,
-    pub(crate) broken_files: Vec<FileIdentity>,
-    pub(crate) document_symbols: Vec<(FileIdentity, Vec<crate::analysis::DeclSymbol>)>,
+    pub(crate) facts: BoundedAnalysisFacts,
     pub(crate) symbol_limit: Option<crate::analysis::SymbolLimit>,
-    pub(crate) completion_modules: Vec<crate::analysis::CompletionModule>,
 }
 
 /// Drive the analysis pass over a project — test bodies included, per the editor
@@ -1565,24 +1531,16 @@ pub(crate) fn analyze_project(
     project: &ProjectInput,
 ) -> Result<ProjectAnalysis, CompileResourceLimit> {
     let driven = drive(project, TestMode::Include)?;
-    let hover_facts = driven.hover_facts;
-    let dependency_gaps = driven.dependency_gaps;
-    let document_symbols = driven.document_symbols;
+    // The ledger records broken files directly from decode and parse status, so the
+    // fact survives even when the parse stage's diagnostic payload was discarded by a
+    // limit.
+    let facts = driven.facts;
     let symbol_limit = driven.symbol_limit;
-    let completion_modules = driven.completion_modules;
-    // The drive records broken files directly from decode and parse status, so
-    // the fact survives even when the parse stage's diagnostic payload was
-    // discarded by a limit.
-    let broken_files = driven.broken_files;
     let outcome = analyze_outcome(driven.parse, driven.structural, driven.semantic);
     Ok(ProjectAnalysis {
         outcome,
-        hover_facts,
-        dependency_gaps,
-        broken_files,
-        document_symbols,
+        facts,
         symbol_limit,
-        completion_modules,
     })
 }
 
@@ -2368,12 +2326,10 @@ mod tests {
             parse,
             structural,
             semantic,
-            broken_files: Vec::new(),
-            hover_facts: Vec::new(),
-            dependency_gaps: Vec::new(),
-            document_symbols: Vec::new(),
+            facts: crate::analysis::BoundedAnalysisFacts::Complete(
+                crate::analysis::RetainedFacts::default(),
+            ),
             symbol_limit: None,
-            completion_modules: Vec::new(),
         }
     }
 
@@ -2840,14 +2796,14 @@ mod driver_agreement {
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[0].invalid_utf8_facts(), Some((2, Some(1))));
         assert_eq!(rows[1].invalid_utf8_facts(), Some((3, None)));
-        assert_eq!(
-            driven
-                .broken_files
-                .iter()
-                .map(|file| file.as_str())
-                .collect::<Vec<_>>(),
-            vec!["src/mid.mw", "src/tail.mw"],
-        );
+        let broken: Vec<&str> = driven
+            .facts
+            .expect_complete()
+            .broken_files
+            .iter()
+            .map(|at| at.of(&input).as_str())
+            .collect();
+        assert_eq!(broken, vec!["src/mid.mw", "src/tail.mw"]);
     }
 
     /// The diagnostics `compile_with_tests` reports, or `None` for a built image; a

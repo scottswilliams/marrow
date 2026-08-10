@@ -47,6 +47,8 @@ use marrow_image::{
     SpanEntry, TypeId,
 };
 use marrow_project::FileIdentity;
+
+use crate::analysis::{DefinitionTarget, FactSink, FileRef};
 use marrow_syntax::{
     Argument, BinaryOp, Block, CheckedBind, ElseIf, Expression, ForBinding, FunctionDecl,
     InterpolationPart, LiteralKind, MatchArm, RangeExpr, SourceSpan, Statement, TraversalBound,
@@ -116,28 +118,19 @@ pub(crate) struct FnSignature {
     params: Vec<LTy>,
     ret: RetType,
     public: bool,
-    /// The file the function is declared in, for the editor definition target.
-    file: FileIdentity,
+    /// The snapshot coordinate this function's definition target is retained under.
+    at: FileRef,
     /// The span of the function's declared name — the definition selection range.
     name_span: SourceSpan,
     /// The function's header-through-body span — the full definition range.
     decl_range: SourceSpan,
 }
 
-/// The editor definition target of a resolved function callee: the file it is declared
-/// in, its declared-name span (the selection range), and its header-through-body range.
-#[derive(Clone)]
-pub(crate) struct DefinitionTarget {
-    pub(crate) file: FileIdentity,
-    pub(crate) name_span: SourceSpan,
-    pub(crate) decl_range: SourceSpan,
-}
-
 impl FnSignature {
     /// The definition target of this function for an editor definition query.
     pub(super) fn definition_target(&self) -> DefinitionTarget {
         DefinitionTarget {
-            file: self.file.clone(),
+            file: self.at,
             name_span: self.name_span,
             decl_range: self.decl_range,
         }
@@ -180,7 +173,7 @@ pub(crate) struct Lowered {
     pub code_spans: Vec<SourceSpan>,
     /// Editor facts from this body: `(span, hover display, optional definition target)`
     /// for each resolved local/parameter use and function callee.
-    pub hover_facts: Vec<(SourceSpan, String, Option<DefinitionTarget>)>,
+    pub hover_facts: Vec<(SourceSpan, Box<str>, Option<DefinitionTarget>)>,
 }
 
 /// The outcome of resolving a call target against module scope.
@@ -244,10 +237,12 @@ pub(crate) struct FnLowerer<'a> {
     generics: &'a GenericRegistry<'a>,
     consts: &'a ConstRegistry,
     diagnostics: &'a mut DiagnosticCollector,
-    /// The editor dependency-gap sink: `(file, callee span)` for each qualified call to
-    /// a module that did not parse. Threaded in like `diagnostics` so the gap survives
-    /// even when the body it sits in fails to lower (an unresolved call fails the body).
-    dependency_gaps: &'a mut Vec<(FileIdentity, SourceSpan)>,
+    /// The scoped editor-fact borrow for this body. A dependency gap is written
+    /// through it as it is discovered — like a diagnostic — so the gap survives even
+    /// when the body it sits in fails to lower (an unresolved call fails the body).
+    /// Hover facts stage in this body's own buffer and are admitted by the caller only
+    /// when the body lowers, exactly as they were before.
+    facts: FactSink<'a>,
     /// Store roots whose durable identity failed admission that have already had one
     /// reference-site steer emitted this compile. A dropped root is referenced from
     /// many sites; the primary `check.durable_identity` reports name the fix once per
@@ -319,7 +314,7 @@ pub(crate) struct FnLowerer<'a> {
     /// display and its definition target. The caller keeps these for a monomorphic
     /// function or test body and discards them for a generic instance (whose spans
     /// would duplicate the template's).
-    hover_facts: Vec<(SourceSpan, String, Option<DefinitionTarget>)>,
+    hover_facts: Vec<(SourceSpan, Box<str>, Option<DefinitionTarget>)>,
     /// Whether this body's editor hover facts are retained. A monomorphic function or
     /// test body is queried by the editor and collects them; a generic instance and the
     /// template proof pass discard them (an instance's spans duplicate its template's),
@@ -351,7 +346,7 @@ pub(crate) use self::builtins::{
     builtin_const_int, builtin_value_names, is_reserved_builtin_name, reserved_builtin_name,
 };
 pub(crate) use self::durable::{is_durable_place_op, is_mutation_instr};
-pub(crate) use self::registry::{FunctionRegistry, GenericRegistry};
+pub(crate) use self::registry::{DeclaredFn, FunctionRegistry, GenericRegistry};
 pub(crate) use self::types::parse_int;
 
 impl<'a> FnLowerer<'a> {
@@ -367,7 +362,7 @@ impl<'a> FnLowerer<'a> {
         generics: &'a GenericRegistry<'a>,
         consts: &'a ConstRegistry,
         diagnostics: &'a mut DiagnosticCollector,
-        dependency_gaps: &'a mut Vec<(FileIdentity, SourceSpan)>,
+        facts: FactSink<'a>,
         admission_steered: &'a mut BTreeSet<String>,
         file: &'a FileIdentity,
         module: &'a str,
@@ -383,7 +378,7 @@ impl<'a> FnLowerer<'a> {
             generics,
             consts,
             diagnostics,
-            dependency_gaps,
+            facts,
             admission_steered,
             file,
             module,
@@ -415,10 +410,18 @@ impl<'a> FnLowerer<'a> {
     /// Retain one editor hover fact at `span`. Only reached when `collect_hover` — the
     /// caller renders the display inside that guard so a discarded body (a generic
     /// instance, the template proof pass) never pays the O(depth) spelling render.
+    /// Whether this body's hover facts are still worth rendering: it is a body whose
+    /// facts are retained, and no snapshot ceiling has been crossed yet. Once the
+    /// ledger is Limited the whole snapshot is already refused, so every further
+    /// display render is waste.
+    fn collects_hover(&self) -> bool {
+        self.collect_hover && !self.facts.is_limited()
+    }
+
     fn record_hover(
         &mut self,
         span: SourceSpan,
-        display: String,
+        display: Box<str>,
         definition: Option<DefinitionTarget>,
     ) {
         #[cfg(test)]
@@ -459,7 +462,7 @@ impl<'a> FnLowerer<'a> {
         generics: &'a GenericRegistry<'a>,
         consts: &'a ConstRegistry,
         diagnostics: &'a mut DiagnosticCollector,
-        dependency_gaps: &'a mut Vec<(FileIdentity, SourceSpan)>,
+        facts: FactSink<'a>,
         admission_steered: &'a mut BTreeSet<String>,
         file: &'a FileIdentity,
         module: &'a str,
@@ -473,7 +476,7 @@ impl<'a> FnLowerer<'a> {
             generics,
             consts,
             diagnostics,
-            dependency_gaps,
+            facts,
             admission_steered,
             file,
             module,
@@ -499,7 +502,7 @@ impl<'a> FnLowerer<'a> {
         generics: &'a GenericRegistry<'a>,
         consts: &'a ConstRegistry,
         diagnostics: &'a mut DiagnosticCollector,
-        dependency_gaps: &'a mut Vec<(FileIdentity, SourceSpan)>,
+        facts: FactSink<'a>,
         admission_steered: &'a mut BTreeSet<String>,
         template: &'a GenericTemplate<'a>,
         args: &[GArg],
@@ -521,7 +524,7 @@ impl<'a> FnLowerer<'a> {
             generics,
             consts,
             diagnostics,
-            dependency_gaps,
+            facts,
             admission_steered,
             &template.file,
             &template.module,
@@ -550,6 +553,7 @@ impl<'a> FnLowerer<'a> {
         functions: &FunctionRegistry,
         generics: &GenericRegistry,
         consts: &ConstRegistry,
+        facts: FactSink<'_>,
         admission_steered: &mut BTreeSet<String>,
         template: &GenericTemplate,
     ) -> Result<TemplateProofOutcome, LowerInvariant> {
@@ -578,7 +582,6 @@ impl<'a> FnLowerer<'a> {
                 binding: ParamBinding::Abstract(*constraint),
             })
             .collect::<Vec<_>>();
-        let mut dependency_gaps = Vec::new();
         let lowered = FnLowerer::lower_with_env(
             scope.draft(),
             records,
@@ -587,7 +590,7 @@ impl<'a> FnLowerer<'a> {
             generics,
             consts,
             &mut diagnostics,
-            &mut dependency_gaps,
+            facts,
             admission_steered,
             file,
             module,
@@ -610,7 +613,6 @@ impl<'a> FnLowerer<'a> {
             diagnostics: diagnostics.finish(),
             generic: records.take_generic_diagnostics(),
             hover_facts,
-            dependency_gaps,
         })
     }
 
@@ -627,7 +629,7 @@ impl<'a> FnLowerer<'a> {
         generics: &'a GenericRegistry<'a>,
         consts: &'a ConstRegistry,
         diagnostics: &'a mut DiagnosticCollector,
-        dependency_gaps: &'a mut Vec<(FileIdentity, SourceSpan)>,
+        facts: FactSink<'a>,
         admission_steered: &'a mut BTreeSet<String>,
         file: &'a FileIdentity,
         module: &'a str,
@@ -670,7 +672,7 @@ impl<'a> FnLowerer<'a> {
             generics,
             consts,
             diagnostics,
-            dependency_gaps,
+            facts,
             admission_steered,
             file,
             module,
@@ -771,7 +773,7 @@ impl<'a> FnLowerer<'a> {
         generics: &'a GenericRegistry<'a>,
         consts: &'a ConstRegistry,
         diagnostics: &'a mut DiagnosticCollector,
-        dependency_gaps: &'a mut Vec<(FileIdentity, SourceSpan)>,
+        facts: FactSink<'a>,
         admission_steered: &'a mut BTreeSet<String>,
         file: &'a FileIdentity,
         module: &'a str,
@@ -786,7 +788,7 @@ impl<'a> FnLowerer<'a> {
             generics,
             consts,
             diagnostics,
-            dependency_gaps,
+            facts,
             admission_steered,
             file,
             module,
@@ -1362,7 +1364,7 @@ mod generic_cache_boundary_tests {
         generics: &'a GenericRegistry<'a>,
         consts: &'a ConstRegistry,
         diagnostics: &'a mut DiagnosticCollector,
-        dependency_gaps: &'a mut Vec<(FileIdentity, SourceSpan)>,
+        facts: FactSink<'a>,
     ) -> FnLowerer<'a> {
         FnLowerer::new(
             draft,
@@ -1372,7 +1374,7 @@ mod generic_cache_boundary_tests {
             generics,
             consts,
             diagnostics,
-            dependency_gaps,
+            facts,
             // Each test lowers a single body; the admission-steer dedup set is
             // process-scoped test scaffolding, leaked so it outlives the borrow.
             Box::leak(Box::new(BTreeSet::new())),
@@ -1394,7 +1396,6 @@ mod generic_cache_boundary_tests {
         let generics = GenericRegistry::default();
         let consts = ConstRegistry::default();
         let mut diagnostics = DiagnosticCollector::new();
-        let mut dependency_gaps = Vec::new();
         let request_span = SourceSpan {
             start_byte: 40,
             end_byte: 41,
@@ -1409,7 +1410,7 @@ mod generic_cache_boundary_tests {
             &generics,
             &consts,
             &mut diagnostics,
-            &mut dependency_gaps,
+            FactSink::Discarding,
         );
 
         for expected in 0..marrow_image::bounds::MAX_LOCALS {
@@ -1470,7 +1471,6 @@ mod generic_cache_boundary_tests {
         let generics = GenericRegistry::default();
         let consts = ConstRegistry::default();
         let mut diagnostics = DiagnosticCollector::new();
-        let mut dependency_gaps = Vec::new();
         let mut lowerer = lowerer(
             &mut draft,
             &records,
@@ -1479,7 +1479,7 @@ mod generic_cache_boundary_tests {
             &generics,
             &consts,
             &mut diagnostics,
-            &mut dependency_gaps,
+            FactSink::Discarding,
         );
 
         assert!(
@@ -1535,7 +1535,6 @@ mod generic_cache_boundary_tests {
         let generics = GenericRegistry::default();
         let consts = ConstRegistry::default();
         let mut diagnostics = DiagnosticCollector::new();
-        let mut dependency_gaps = Vec::new();
         let mut lowerer = lowerer(
             &mut draft,
             &records,
@@ -1544,7 +1543,7 @@ mod generic_cache_boundary_tests {
             &generics,
             &consts,
             &mut diagnostics,
-            &mut dependency_gaps,
+            FactSink::Discarding,
         );
         lowerer.locals.push(Local {
             name: "value".to_string(),
@@ -1594,7 +1593,6 @@ mod generic_cache_boundary_tests {
         let generics = GenericRegistry::default();
         let consts = ConstRegistry::default();
         let mut diagnostics = DiagnosticCollector::new();
-        let mut dependency_gaps = Vec::new();
         let mut lowerer = lowerer(
             &mut draft,
             &records,
@@ -1603,7 +1601,7 @@ mod generic_cache_boundary_tests {
             &generics,
             &consts,
             &mut diagnostics,
-            &mut dependency_gaps,
+            FactSink::Discarding,
         );
 
         assert!(
@@ -1657,7 +1655,6 @@ mod generic_cache_boundary_tests {
         let generics = GenericRegistry::default();
         let consts = ConstRegistry::default();
         let mut diagnostics = DiagnosticCollector::new();
-        let mut dependency_gaps = Vec::new();
         let mut lowerer = lowerer(
             &mut draft,
             &records,
@@ -1666,7 +1663,7 @@ mod generic_cache_boundary_tests {
             &generics,
             &consts,
             &mut diagnostics,
-            &mut dependency_gaps,
+            FactSink::Discarding,
         );
 
         assert!(
@@ -1735,7 +1732,6 @@ mod generic_cache_boundary_tests {
         let generics = GenericRegistry::default();
         let consts = ConstRegistry::default();
         let mut diagnostics = DiagnosticCollector::new();
-        let mut dependency_gaps = Vec::new();
         let mut lowerer = lowerer(
             &mut draft,
             &records,
@@ -1744,7 +1740,7 @@ mod generic_cache_boundary_tests {
             &generics,
             &consts,
             &mut diagnostics,
-            &mut dependency_gaps,
+            FactSink::Discarding,
         );
         lowerer.reject_unification(
             UnifyError::Invariant(expected),
@@ -1806,7 +1802,6 @@ mod generic_cache_boundary_tests {
         let generics = GenericRegistry::default();
         let consts = ConstRegistry::default();
         let mut diagnostics = DiagnosticCollector::new();
-        let mut dependency_gaps = Vec::new();
         let mut lowerer = lowerer(
             &mut draft,
             &records,
@@ -1815,7 +1810,7 @@ mod generic_cache_boundary_tests {
             &generics,
             &consts,
             &mut diagnostics,
-            &mut dependency_gaps,
+            FactSink::Discarding,
         );
         lowerer.reject_unification(
             UnifyError::Invariant(expected),
@@ -1873,7 +1868,6 @@ mod generic_cache_boundary_tests {
         let generics = GenericRegistry::default();
         let consts = ConstRegistry::default();
         let mut diagnostics = DiagnosticCollector::new();
-        let mut dependency_gaps = Vec::new();
         let mut lowerer = lowerer(
             &mut draft,
             &records,
@@ -1882,7 +1876,7 @@ mod generic_cache_boundary_tests {
             &generics,
             &consts,
             &mut diagnostics,
-            &mut dependency_gaps,
+            FactSink::Discarding,
         );
         assert!(
             lowerer
@@ -1945,7 +1939,6 @@ mod generic_cache_boundary_tests {
         let generics = GenericRegistry::default();
         let consts = ConstRegistry::default();
         let mut diagnostics = DiagnosticCollector::new();
-        let mut dependency_gaps = Vec::new();
         let mut lowerer = lowerer(
             &mut draft,
             &records,
@@ -1954,7 +1947,7 @@ mod generic_cache_boundary_tests {
             &generics,
             &consts,
             &mut diagnostics,
-            &mut dependency_gaps,
+            FactSink::Discarding,
         );
         assert!(
             lowerer
@@ -2020,7 +2013,6 @@ mod generic_cache_boundary_tests {
         let generics = GenericRegistry::default();
         let consts = ConstRegistry::default();
         let mut diagnostics = DiagnosticCollector::new();
-        let mut dependency_gaps = Vec::new();
         let mut lowerer = lowerer(
             &mut draft,
             &records,
@@ -2029,7 +2021,7 @@ mod generic_cache_boundary_tests {
             &generics,
             &consts,
             &mut diagnostics,
-            &mut dependency_gaps,
+            FactSink::Discarding,
         );
         assert!(
             lowerer
@@ -2103,7 +2095,6 @@ mod generic_cache_boundary_tests {
         let generics = GenericRegistry::default();
         let consts = ConstRegistry::default();
         let mut diagnostics = DiagnosticCollector::new();
-        let mut dependency_gaps = Vec::new();
         let mut lowerer = lowerer(
             &mut draft,
             &records,
@@ -2112,7 +2103,7 @@ mod generic_cache_boundary_tests {
             &generics,
             &consts,
             &mut diagnostics,
-            &mut dependency_gaps,
+            FactSink::Discarding,
         );
         assert!(
             lowerer
@@ -2165,7 +2156,6 @@ mod generic_cache_boundary_tests {
         let generics = GenericRegistry::default();
         let consts = ConstRegistry::default();
         let mut diagnostics = DiagnosticCollector::new();
-        let mut dependency_gaps = Vec::new();
         let mut lowerer = lowerer(
             &mut draft,
             &records,
@@ -2174,7 +2164,7 @@ mod generic_cache_boundary_tests {
             &generics,
             &consts,
             &mut diagnostics,
-            &mut dependency_gaps,
+            FactSink::Discarding,
         );
         assert!(
             lowerer
@@ -2255,7 +2245,6 @@ mod generic_cache_boundary_tests {
         let generics = GenericRegistry::default();
         let consts = ConstRegistry::default();
         let mut diagnostics = DiagnosticCollector::new();
-        let mut dependency_gaps = Vec::new();
         let mut lowerer = lowerer(
             &mut draft,
             &records,
@@ -2264,7 +2253,7 @@ mod generic_cache_boundary_tests {
             &generics,
             &consts,
             &mut diagnostics,
-            &mut dependency_gaps,
+            FactSink::Discarding,
         );
         assert!(
             lowerer
@@ -2334,7 +2323,6 @@ mod generic_cache_boundary_tests {
         let generics = GenericRegistry::default();
         let consts = ConstRegistry::default();
         let mut diagnostics = DiagnosticCollector::new();
-        let mut dependency_gaps = Vec::new();
         let mut lowerer = lowerer(
             &mut draft,
             &records,
@@ -2343,7 +2331,7 @@ mod generic_cache_boundary_tests {
             &generics,
             &consts,
             &mut diagnostics,
-            &mut dependency_gaps,
+            FactSink::Discarding,
         );
         assert!(
             lowerer

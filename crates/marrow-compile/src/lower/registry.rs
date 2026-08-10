@@ -2,6 +2,16 @@
 
 use super::*;
 
+/// One declared function paired with where it was declared: the file identity its
+/// diagnostics point into, the snapshot coordinate its editor facts are retained
+/// under, and its dotted module.
+pub(crate) struct DeclaredFn<'p> {
+    pub(crate) file: FileIdentity,
+    pub(crate) at: FileRef,
+    pub(crate) module: String,
+    pub(crate) decl: &'p FunctionDecl,
+}
+
 /// The project's functions and the module scope a call resolves against: every
 /// function signature (resolved before body lowering so a forward call resolves),
 /// the set of module names, and each module's `use` bindings. Names are unique
@@ -29,10 +39,7 @@ pub(crate) struct TemplateProofOutcome {
     /// its declared spelling. Instances never re-collect these (their use-site spans
     /// duplicate the template's), so the divergent-monomorphization O(N²) hot path is not
     /// entered.
-    pub(crate) hover_facts: Vec<(SourceSpan, String, Option<DefinitionTarget>)>,
-    /// Editor dependency gaps from the template body: `(file, callee span)` for each
-    /// qualified call to a module that did not parse.
-    pub(crate) dependency_gaps: Vec<(FileIdentity, SourceSpan)>,
+    pub(crate) hover_facts: Vec<(SourceSpan, Box<str>, Option<DefinitionTarget>)>,
 }
 
 impl FunctionRegistry {
@@ -44,7 +51,7 @@ impl FunctionRegistry {
         records: &TypeRegistry,
         draft: &mut ImageDraft,
         durable: &DurableRegistry,
-        functions: &[(FileIdentity, String, &FunctionDecl)],
+        functions: &[DeclaredFn<'_>],
         modules: BTreeSet<String>,
         imports: BTreeMap<String, Vec<(String, String)>>,
         broken_modules: BTreeSet<String>,
@@ -59,7 +66,8 @@ impl FunctionRegistry {
         // over non-generic functions only, matching the order [`FnLowerer::lower`]
         // adds them into the image FUNCTIONS table.
         let mut index: u16 = 0;
-        for (file, module, function) in functions {
+        for declared in functions {
+            let (file, module, function) = (&declared.file, &declared.module, declared.decl);
             if !function.type_params.is_empty() {
                 continue;
             }
@@ -108,11 +116,11 @@ impl FunctionRegistry {
             sigs.push(FnSignature {
                 name: function.name.clone(),
                 module: module.clone(),
+                at: declared.at,
                 index,
                 params,
                 ret,
                 public: function.public,
-                file: file.clone(),
                 name_span: function.name_span,
                 decl_range: decl_range(function),
             });
@@ -240,6 +248,8 @@ impl FunctionRegistry {
 /// index; each concrete application is a distinct image function.
 pub(crate) struct GenericTemplate<'p> {
     pub(super) file: FileIdentity,
+    /// The snapshot coordinate this template's editor facts are retained under.
+    pub(super) at: FileRef,
     pub(super) module: String,
     pub(super) public: bool,
     pub(super) decl: &'p FunctionDecl,
@@ -257,16 +267,18 @@ pub(crate) struct GenericRegistry<'p> {
 impl<'p> GenericRegistry<'p> {
     /// Collect every generic function (one carrying type parameters) as a template,
     /// paired with its source file and dotted module name.
-    pub(crate) fn build(functions: &[(FileIdentity, String, &'p FunctionDecl)]) -> Self {
+    pub(crate) fn build(functions: &[DeclaredFn<'p>]) -> Self {
         let templates = functions
             .iter()
-            .filter(|(_, _, function)| !function.type_params.is_empty())
-            .map(|(file, module, function)| GenericTemplate {
-                file: file.clone(),
-                module: module.clone(),
-                public: function.public,
-                decl: function,
-                type_params: function
+            .filter(|declared| !declared.decl.type_params.is_empty())
+            .map(|declared| GenericTemplate {
+                file: declared.file.clone(),
+                at: declared.at,
+                module: declared.module.clone(),
+                public: declared.decl.public,
+                decl: declared.decl,
+                type_params: declared
+                    .decl
                     .type_params
                     .iter()
                     .map(|param| {
@@ -306,6 +318,11 @@ impl<'p> GenericRegistry<'p> {
 impl<'p> GenericTemplate<'p> {
     pub(crate) fn source_file(&self) -> &FileIdentity {
         &self.file
+    }
+
+    /// The snapshot coordinate this template's editor facts are retained under.
+    pub(crate) fn at(&self) -> FileRef {
+        self.at
     }
 
     pub(crate) fn name(&self) -> &str {

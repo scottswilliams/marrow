@@ -50,7 +50,7 @@ fn lowerer<'a>(
     generics: &'a GenericRegistry<'a>,
     consts: &'a ConstRegistry,
     diagnostics: &'a mut DiagnosticCollector,
-    dependency_gaps: &'a mut Vec<(FileIdentity, SourceSpan)>,
+    facts: FactSink<'a>,
 ) -> FnLowerer<'a> {
     FnLowerer::new(
         draft,
@@ -60,7 +60,7 @@ fn lowerer<'a>(
         generics,
         consts,
         diagnostics,
-        dependency_gaps,
+        facts,
         // Process-scoped test scaffolding for the admission-steer dedup set.
         Box::leak(Box::new(std::collections::BTreeSet::new())),
         crate::test_main_file_identity(),
@@ -90,7 +90,6 @@ fn collection_mismatch_in_interpolation_stops_before_later_part() {
     let consts = ConstRegistry::default();
     let mut diagnostics = DiagnosticCollector::new();
     let mut draft = ImageDraft::new();
-    let mut dependency_gaps = Vec::new();
     let mut lowerer = lowerer(
         &mut draft,
         &records,
@@ -99,7 +98,7 @@ fn collection_mismatch_in_interpolation_stops_before_later_part() {
         &generics,
         &consts,
         &mut diagnostics,
-        &mut dependency_gaps,
+        FactSink::Discarding,
     );
 
     let result = lowerer.lower_interpolation(parts, *span);
@@ -138,7 +137,6 @@ fn collection_mismatch_in_checked_annotation_stops_before_handler() {
     let consts = ConstRegistry::default();
     let mut diagnostics = DiagnosticCollector::new();
     let mut draft = ImageDraft::new();
-    let mut dependency_gaps = Vec::new();
     let mut lowerer = lowerer(
         &mut draft,
         &records,
@@ -147,7 +145,7 @@ fn collection_mismatch_in_checked_annotation_stops_before_handler() {
         &generics,
         &consts,
         &mut diagnostics,
-        &mut dependency_gaps,
+        FactSink::Discarding,
     );
 
     let flow = lowerer.lower_statement(statement);
@@ -196,7 +194,6 @@ fn collection_mismatch_in_if_const_else_if_condition_is_terminal() {
     let consts = ConstRegistry::default();
     let mut diagnostics = DiagnosticCollector::new();
     let mut draft = ImageDraft::new();
-    let mut dependency_gaps = Vec::new();
     let mut lowerer = lowerer(
         &mut draft,
         &records,
@@ -205,7 +202,7 @@ fn collection_mismatch_in_if_const_else_if_condition_is_terminal() {
         &generics,
         &consts,
         &mut diagnostics,
-        &mut dependency_gaps,
+        FactSink::Discarding,
     );
     lowerer.locals.push(Local {
         name: "maybe".to_string(),
@@ -265,7 +262,6 @@ fn collection_mismatch_in_first_block_statement_stops_later_mint_and_finish() {
     let consts = ConstRegistry::default();
     let mut diagnostics = DiagnosticCollector::new();
     let mut draft = ImageDraft::new();
-    let mut dependency_gaps = Vec::new();
     let mut lowerer = lowerer(
         &mut draft,
         &records,
@@ -274,7 +270,7 @@ fn collection_mismatch_in_first_block_statement_stops_later_mint_and_finish() {
         &generics,
         &consts,
         &mut diagnostics,
-        &mut dependency_gaps,
+        FactSink::Discarding,
     );
 
     let flow = lowerer.lower_block(&function.body);
@@ -342,7 +338,6 @@ fn generic_struct_constructor_transfers_the_registry_witness_error() {
     let generics = GenericRegistry::default();
     let consts = ConstRegistry::default();
     let mut diagnostics = DiagnosticCollector::new();
-    let mut dependency_gaps = Vec::new();
     let mut lowerer = lowerer(
         &mut draft,
         &records,
@@ -351,7 +346,7 @@ fn generic_struct_constructor_transfers_the_registry_witness_error() {
         &generics,
         &consts,
         &mut diagnostics,
-        &mut dependency_gaps,
+        FactSink::Discarding,
     );
 
     assert!(
@@ -384,7 +379,6 @@ fn generic_enum_constructor_transfers_the_registry_witness_error() {
     let generics = GenericRegistry::default();
     let consts = ConstRegistry::default();
     let mut diagnostics = DiagnosticCollector::new();
-    let mut dependency_gaps = Vec::new();
     let mut lowerer = lowerer(
         &mut draft,
         &records,
@@ -393,7 +387,7 @@ fn generic_enum_constructor_transfers_the_registry_witness_error() {
         &generics,
         &consts,
         &mut diagnostics,
-        &mut dependency_gaps,
+        FactSink::Discarding,
     );
 
     assert!(
