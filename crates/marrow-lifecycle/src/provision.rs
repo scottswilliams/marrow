@@ -7,10 +7,14 @@
 //! partially-formed store (the publication-uncertainty boundary). Preflight is strictly
 //! non-creating, so probing a destination never leaves a file behind.
 //!
-//! Open requires a complete store, takes the single-owner lock (naming the live owner on
-//! contention), decodes the envelope and head, and opens the engine through the path kernel.
-//! When the prior shutdown was unclean (a stale owner descriptor in the lock) it runs a full
-//! integrity audit.
+//! Open takes the single-owner lock first (naming the live owner on contention), and only
+//! then reads the store directory at all: completeness, the envelope, and the head are one
+//! admission snapshot taken under that owner, each artifact admitted from the retained
+//! directory within its own byte ceiling. Deciding exclusion ahead of every read is what
+//! keeps a contender's verdict independent of the holder's bytes — a malformed, truncated,
+//! or deleted artifact cannot turn "the store is locked" into a decode or completeness
+//! error. The engine opens last, through the path kernel, and when the prior shutdown was
+//! unclean (a stale owner descriptor in the lock) it runs a full integrity audit.
 //!
 //! **Coverage honesty.** The unclean-open audit covers crash-path corruption only: the fast
 //! open path does not re-verify page checksums, so an externally flipped bit in a
@@ -32,7 +36,7 @@ use crate::envelope::StoreEnvelope;
 use crate::head::LogicalHead;
 use crate::instance::StoreInstanceId;
 use crate::lock::LockError;
-use crate::store_dir::{self, AdmissionError, AdmittedStoreDir, StoreEntry};
+use crate::store_dir::{self, AdmissionError, AdmittedStoreDir, Artifact, StoreEntry};
 
 /// A non-creating classification of a store directory.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -406,7 +410,7 @@ pub(crate) fn open_admitted<R>(
 
 fn decode_envelope(dir: &AdmittedStoreDir) -> Result<StoreEnvelope, OpenError> {
     let bytes = dir
-        .read(StoreEntry::Envelope, crate::envelope::file_ceiling)
+        .read(Artifact::Envelope, crate::envelope::file_ceiling)
         .map_err(OpenError::Admission)?;
     StoreEnvelope::decode(&bytes)
         .map_err(|error| OpenError::Admission(AdmissionError::format(StoreEntry::Envelope, error)))
@@ -414,7 +418,7 @@ fn decode_envelope(dir: &AdmittedStoreDir) -> Result<StoreEnvelope, OpenError> {
 
 fn decode_head(dir: &AdmittedStoreDir) -> Result<LogicalHead, OpenError> {
     let bytes = dir
-        .read(StoreEntry::Head, crate::head::file_ceiling)
+        .read(Artifact::Head, crate::head::file_ceiling)
         .map_err(OpenError::Admission)?;
     LogicalHead::decode(&bytes)
         .map_err(|error| OpenError::Admission(AdmissionError::format(StoreEntry::Head, error)))

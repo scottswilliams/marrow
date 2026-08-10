@@ -57,13 +57,33 @@ impl StoreEntry {
             StoreEntry::Head => "head",
         }
     }
+}
 
-    fn file_name(self) -> &'static str {
+/// The artifacts an owner-held admission read admits. The store directory is not one of
+/// them: it is the root a read is relative to, never a child a read resolves, so it cannot
+/// reach a child-name lookup.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Artifact {
+    Envelope,
+    Head,
+}
+
+impl Artifact {
+    fn entry(self) -> StoreEntry {
         match self {
-            StoreEntry::Directory => ".",
-            StoreEntry::Envelope => ENVELOPE_FILE,
-            StoreEntry::Head => HEAD_FILE,
+            Artifact::Envelope => StoreEntry::Envelope,
+            Artifact::Head => StoreEntry::Head,
         }
+    }
+
+    /// The artifact's frozen directory-entry name. Each is one normal relative component,
+    /// so admission of the name itself cannot fail for any store this crate reads.
+    fn name(self) -> EntryName {
+        let name = match self {
+            Artifact::Envelope => ENVELOPE_FILE,
+            Artifact::Head => HEAD_FILE,
+        };
+        EntryName::admit(name).expect("a store artifact name is one normal component")
     }
 }
 
@@ -193,19 +213,23 @@ impl AdmittedStoreDir {
     /// before the bytes are handed to a decoder.
     pub(crate) fn read(
         &self,
-        entry: StoreEntry,
+        artifact: Artifact,
         ceiling: impl FnOnce(&[u8; ARTIFACT_PREFIX_BYTES]) -> Result<u64, FormatError>,
     ) -> Result<Vec<u8>, AdmissionError> {
-        self.read_bounded(entry, ceiling)
-            .map_err(|fault| AdmissionError { entry, fault })
+        self.read_bounded(artifact, ceiling)
+            .map_err(|fault| AdmissionError {
+                entry: artifact.entry(),
+                fault,
+            })
     }
 
     fn read_bounded(
         &self,
-        entry: StoreEntry,
+        artifact: Artifact,
         ceiling: impl FnOnce(&[u8; ARTIFACT_PREFIX_BYTES]) -> Result<u64, FormatError>,
     ) -> Result<Vec<u8>, AdmissionFault> {
-        let name = admitted_name(entry);
+        let entry = artifact.entry();
+        let name = artifact.name();
         let file = self.dir.open_file(&name).map_err(AdmissionFault::Custody)?;
         let opened = file.stat().map_err(AdmissionFault::Custody)?;
         require_single_link(&opened)?;
@@ -238,12 +262,6 @@ impl AdmittedStoreDir {
             _ => Err(AdmissionFault::Unstable(Instability::ParentMapping)),
         }
     }
-}
-
-/// The artifact names are fixed single components, so admission of the name itself cannot
-/// fail for any store this crate reads.
-fn admitted_name(entry: StoreEntry) -> EntryName {
-    EntryName::admit(entry.file_name()).expect("a store artifact name is one normal component")
 }
 
 fn read_prefix(file: &OpenedFile) -> Result<[u8; ARTIFACT_PREFIX_BYTES], AdmissionFault> {
@@ -319,15 +337,16 @@ mod tests {
         assert_eq!(lock_path(dir), Path::new("/stores/app/lock"));
     }
 
-    /// Each artifact an admission read names resolves to exactly the frozen entry name, and
-    /// each is admissible as one normal relative component.
+    /// Each artifact an admission read names resolves to exactly the frozen entry name, is
+    /// admissible as one normal relative component, and reports itself under that name.
     #[test]
     fn every_admitted_artifact_name_is_the_frozen_entry_name() {
-        for (entry, expected) in [
-            (StoreEntry::Envelope, ENVELOPE_FILE),
-            (StoreEntry::Head, HEAD_FILE),
+        for (artifact, expected) in [
+            (Artifact::Envelope, ENVELOPE_FILE),
+            (Artifact::Head, HEAD_FILE),
         ] {
-            assert_eq!(admitted_name(entry).as_str(), expected);
+            assert_eq!(artifact.name().as_str(), expected);
+            assert_eq!(artifact.entry().label(), expected);
         }
     }
 }
