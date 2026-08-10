@@ -980,6 +980,31 @@ fn build(diagnostics: &mut DiagnosticCollector) {
         "a rebound receiver is the same drop and must be found",
     );
 
+    // The rebinding written `let mut`, which a scan reading the word after `let ` as
+    // the bound name loses entirely.
+    let aliased_mut = r##"
+fn build(diagnostics: &mut DiagnosticCollector) {
+    for item in items {
+        let mut sink = &mut *diagnostics;
+        if bad {
+            sink.push(SourceDiagnostic::at(
+                Code::CheckUnsupported.as_str(),
+                file,
+                span,
+                message,
+            ));
+            continue;
+        }
+        ledger.declare(key, occurrence)?;
+    }
+}
+"##;
+    assert_eq!(
+        drop_sites_in(&production_code(aliased_mut)),
+        vec![(6, "Code::CheckUnsupported".to_string())],
+        "a `let mut` rebinding is the same drop and must be found",
+    );
+
     let delegated = r##"
 fn build(diagnostics: &mut DiagnosticCollector) {
     for item in items {
@@ -1027,6 +1052,123 @@ fn build(diagnostics: &mut DiagnosticCollector) {
     assert!(
         drop_sites_in(&production_code(refused)).is_empty(),
         "refusing through the one constructor is not a drop",
+    );
+
+    // The three ways a scan keyed on the bare identifier disables itself: reaching
+    // the collector through a field of another value, through a field of `self` —
+    // a live production spelling — and through an accessor that returns it. All
+    // three are the same drop, and all three are permanent probes here.
+    let field_of_a_value = r##"
+fn build(cx: &mut Context) {
+    for item in items {
+        if bad {
+            cx.diagnostics.push(SourceDiagnostic::at(
+                Code::CheckUnsupported.as_str(),
+                file,
+                span,
+                message,
+            ));
+            continue;
+        }
+        cx.ledger.declare(key, occurrence)?;
+    }
+}
+"##;
+    assert_eq!(
+        drop_sites_in(&production_code(field_of_a_value)),
+        vec![(5, "Code::CheckUnsupported".to_string())],
+        "a collector reached through a field is the same drop and must be found",
+    );
+
+    let field_of_self = r##"
+fn build(&mut self) {
+    for item in items {
+        if bad {
+            self.diagnostics
+                .push(SourceDiagnostic::at(
+                    Code::CheckUnsupported.as_str(),
+                    file,
+                    span,
+                    message,
+                ));
+            continue;
+        }
+        self.ledger.declare(key, occurrence)?;
+    }
+}
+"##;
+    assert_eq!(
+        drop_sites_in(&production_code(field_of_self)),
+        vec![(5, "Code::CheckUnsupported".to_string())],
+        "a collector reached through a field of `self`, across a line break, is the \
+         same drop and must be found",
+    );
+
+    let accessor = r##"
+fn build(&mut self) {
+    for item in items {
+        if bad {
+            self.diagnostics().push(SourceDiagnostic::at(
+                Code::CheckUnsupported.as_str(),
+                file,
+                span,
+                message,
+            ));
+            continue;
+        }
+        self.ledger.declare(key, occurrence)?;
+    }
+}
+"##;
+    assert_eq!(
+        drop_sites_in(&production_code(accessor)),
+        vec![(5, "Code::CheckUnsupported".to_string())],
+        "a collector reached through an accessor is the same drop and must be found",
+    );
+
+    // A closure moves the write off the statement list: nothing is pushed at the
+    // drop, and the block reports and leaves all the same.
+    let captured = r##"
+fn build(diagnostics: &mut DiagnosticCollector) {
+    for item in items {
+        let mut report = |row| diagnostics.push(row);
+        if bad {
+            report(SourceDiagnostic::at(
+                Code::CheckUnsupported.as_str(),
+                file,
+                span,
+                message,
+            ));
+            continue;
+        }
+        ledger.declare(key, occurrence)?;
+    }
+}
+"##;
+    assert_eq!(
+        drop_sites_in(&production_code(captured)),
+        vec![(6, "Code::CheckUnsupported".to_string())],
+        "a push captured in a closure is the same drop, made where the closure is \
+         called",
+    );
+
+    // `.push(` on anything else is not a report. A receiver-reading scan that took
+    // every push would report the whole tree and be turned off.
+    let unrelated_push = r##"
+fn build(diagnostics: &mut DiagnosticCollector) {
+    for item in items {
+        if bad {
+            params.push(resolved);
+            self.diagnostics_seen.push(name);
+            continue;
+        }
+        ledger.declare(key, occurrence)?;
+    }
+}
+"##;
+    assert!(
+        drop_sites_in(&production_code(unrelated_push)).is_empty(),
+        "a push onto something that is not the collector is not a report",
     );
 
     // A block that never declares is not a declaration builder, so a report-only
@@ -1127,27 +1269,53 @@ const COUPLING_CONSTRUCTORS: &[&str] = &[
     "refuse_at_earlier_stage",
 ];
 
-/// The names that stand for the diagnostic collector inside one block: its own
-/// identifier, plus every simple rebinding of it.
+/// Every `let` binding in `body`, as `(bound name, offset of the bound value)`.
 ///
-/// A rebinding is what defeats a receiver-spelled scan — `let sink = &mut
-/// *diagnostics; sink.push(row); continue;` is the same drop written differently —
-/// so the alias is followed rather than the spelling trusted.
-fn collector_names(body: &str) -> Vec<&str> {
-    let mut names = vec!["diagnostics"];
+/// An optional `mut` is skipped: `let mut sink = &mut *diagnostics;` binds `sink`,
+/// and reading `mut` as the name would lose the alias and disable the scan for
+/// exactly the rebinding it is meant to follow.
+fn let_bindings(body: &str) -> Vec<(&str, usize)> {
+    let mut bindings = Vec::new();
     let mut at = 0usize;
     while let Some(hit) = body[at..].find("let ") {
-        let start = at + hit + "let ".len();
+        let mut start = at + hit + "let ".len();
         at = start;
+        if body[start..].starts_with("mut ") {
+            start += "mut ".len();
+        }
         let rest = &body[start..];
         let end = rest
             .find(|c: char| !(c.is_alphanumeric() || c == '_'))
             .unwrap_or(rest.len());
-        let (name, tail) = (&rest[..end], rest[end..].trim_start());
-        let Some(value) = tail.strip_prefix('=') else {
+        if end == 0 {
+            continue;
+        }
+        let tail_at = start + end;
+        let trimmed = body[tail_at..].trim_start();
+        let Some(value) = trimmed.strip_prefix('=') else {
             continue;
         };
-        let value = value.trim_start();
+        let value_at = body.len() - value.trim_start().len();
+        bindings.push((&rest[..end], value_at));
+    }
+    bindings
+}
+
+/// The names that stand for the diagnostic collector inside one block: its own
+/// identifier, every simple rebinding of it, and every closure that writes to it.
+///
+/// A rebinding is what defeats a receiver-spelled scan — `let sink = &mut
+/// *diagnostics; sink.push(row); continue;` is the same drop written differently —
+/// so the alias is followed rather than the spelling trusted. A closure moves the
+/// write off the statement list entirely: `let mut report = |row|
+/// diagnostics.push(row); … report(row); continue;` reports and drops with no push
+/// in sight at the drop, so a closure whose body writes to the collector binds its
+/// name into this set too.
+fn collector_names<'a>(body: &'a str, closures: &[&'a str]) -> Vec<&'a str> {
+    let mut names = vec!["diagnostics"];
+    names.extend(closures.iter().copied());
+    for (name, value_at) in let_bindings(body) {
+        let value = &body[value_at..];
         for bound in names.clone() {
             for prefix in ["&mut *", "&mut ", "&*", "&", ""] {
                 let spelled = format!("{prefix}{bound}");
@@ -1155,7 +1323,7 @@ fn collector_names(body: &str) -> Vec<&str> {
                     && !value[spelled.len()..]
                         .starts_with(|c: char| c.is_alphanumeric() || c == '_' || c == '.')
                 {
-                    if !name.is_empty() && !names.contains(&name) {
+                    if !names.contains(&name) {
                         names.push(name);
                     }
                     break;
@@ -1164,6 +1332,134 @@ fn collector_names(body: &str) -> Vec<&str> {
         }
     }
     names
+}
+
+/// The names bound to a closure whose body writes to the collector, so a call
+/// through the name counts as the write it performs.
+fn closure_aliases<'a>(body: &'a str, writes: &[usize]) -> Vec<&'a str> {
+    let mut aliases = Vec::new();
+    for (name, value_at) in let_bindings(body) {
+        let Some((start, end)) = closure_extent(body, value_at) else {
+            continue;
+        };
+        if writes.iter().any(|write| (start..end).contains(write)) && !aliases.contains(&name) {
+            aliases.push(name);
+        }
+    }
+    aliases
+}
+
+/// The byte range of the closure bound at `value_at`, if the bound value is one: its
+/// parameter list through its body, to the closing brace of a block body or to the
+/// statement's own `;`.
+fn closure_extent(body: &str, value_at: usize) -> Option<(usize, usize)> {
+    let bytes = body.as_bytes();
+    let mut at = value_at;
+    if body[at..].starts_with("move ") {
+        at += "move ".len();
+    }
+    if *bytes.get(at)? != b'|' {
+        return None;
+    }
+    at += 1;
+    while *bytes.get(at)? != b'|' {
+        at += 1;
+    }
+    at += 1;
+    let mut depth = 0i32;
+    while at < bytes.len() {
+        match bytes[at] {
+            b'{' | b'(' | b'[' => depth += 1,
+            b'}' if depth == 1 => return Some((value_at, at + 1)),
+            b'}' | b')' | b']' => {
+                depth -= 1;
+                if depth < 0 {
+                    return Some((value_at, at));
+                }
+            }
+            b';' if depth == 0 => return Some((value_at, at)),
+            _ => {}
+        }
+        at += 1;
+    }
+    Some((value_at, bytes.len()))
+}
+
+/// Every offset in `body` at which a `.push(` is written on a receiver expression
+/// that names the diagnostic collector, reported at the start of that receiver.
+///
+/// The receiver is read rather than one spelling matched, so a scan keyed on the
+/// bare identifier — which sees `diagnostics.push(` and nothing else — is not
+/// defeated by reaching the same collector through a field (`cx.diagnostics.push(…)`
+/// and `self.diagnostics.push(…)`, a live production spelling) or through an
+/// accessor (`self.diagnostics().push(…)`). A `.push(` on anything else — a vector
+/// of parameters, of variants, of rows being built — is not a report and is not read
+/// here.
+///
+/// A collector reached under an unrelated identifier, such as a `self.diags()`
+/// accessor, is outside this rule: keying on arbitrary accessor names would read
+/// every `.push(` in the tree as a report. Naming the collector field or accessor
+/// `diagnostics` is what keeps it in reach.
+fn receiver_writes(body: &str) -> Vec<usize> {
+    let mut writes = Vec::new();
+    let mut at = 0usize;
+    while let Some(hit) = body[at..].find(".push(") {
+        let push = at + hit;
+        at = push + 1;
+        let start = receiver_start(body, push);
+        if names_the_collector(&body[start..push]) {
+            writes.push(start);
+        }
+    }
+    writes
+}
+
+/// The start offset of the receiver expression whose `.push(` sits at `push`: the
+/// call/field/index chain to its left, with bracketed groups crossed whole and a
+/// line break inside the chain followed.
+fn receiver_start(body: &str, push: usize) -> usize {
+    let bytes = body.as_bytes();
+    let mut at = push;
+    let mut depth = 0i32;
+    while at > 0 {
+        let byte = bytes[at - 1];
+        match byte {
+            b')' | b']' => depth += 1,
+            b'(' | b'[' if depth > 0 => depth -= 1,
+            _ if depth > 0 => {}
+            b'.' | b'?' | b'_' => {}
+            _ if byte.is_ascii_alphanumeric() => {}
+            // A chain broken across lines is one receiver; anything else to the left
+            // of the break ends it.
+            _ if byte.is_ascii_whitespace() => {
+                let head = body[..at].trim_end();
+                if !head.ends_with(|c: char| c.is_alphanumeric() || "_).]".contains(c)) {
+                    return at;
+                }
+                at = head.len() + 1;
+            }
+            _ => return at,
+        }
+        at -= 1;
+    }
+    at
+}
+
+/// Whether `receiver` contains `diagnostics` as a whole identifier.
+fn names_the_collector(receiver: &str) -> bool {
+    let mut at = 0usize;
+    while let Some(hit) = receiver[at..].find("diagnostics") {
+        let start = at + hit;
+        at = start + 1;
+        let before = receiver[..start].chars().next_back();
+        let after = receiver[start + "diagnostics".len()..].chars().next();
+        if !before.is_some_and(|c| c.is_alphanumeric() || c == '_')
+            && !after.is_some_and(|c| c.is_alphanumeric() || c == '_')
+        {
+            return true;
+        }
+    }
+    false
 }
 
 /// The callee name of the call whose argument list encloses `at`, if any: the
@@ -1192,17 +1488,19 @@ fn enclosing_callee(body: &str, at: usize) -> Option<&str> {
 }
 
 /// Every offset inside `body` at which the diagnostic collector is written to: a
-/// `.push(` on a collector name, and a call handing a collector name to a callee
-/// that is not one of the coupling constructors.
+/// `.push(` on any receiver naming the collector, a `.push(` on a collector name, a
+/// call through a closure that writes to it, and a call handing a collector name to
+/// a callee that is not one of the coupling constructors.
 ///
-/// Both forms are needed. A scan for `diagnostics.push(` alone is defeated by
-/// rebinding the receiver, and a scan for the receiver alone is defeated by handing
-/// the collector to a helper that pushes on the block's behalf. `.push(` on
-/// something else — a vector of parameters, of variants, of rows being built — is
-/// not a report and is not read here.
+/// Every form is needed, and each is a way one of the others is defeated. A scan for
+/// `diagnostics.push(` alone is defeated by rebinding the receiver, by reaching the
+/// collector through a field or accessor, and by hiding the push in a closure; a
+/// scan for the receiver alone is defeated by handing the collector to a helper that
+/// pushes on the block's behalf.
 fn collector_writes(body: &str) -> Vec<usize> {
-    let mut writes: Vec<usize> = Vec::new();
-    for name in collector_names(body) {
+    let mut writes = receiver_writes(body);
+    let closures = closure_aliases(body, &writes);
+    for name in collector_names(body, &closures) {
         let mut at = 0usize;
         while let Some(hit) = body[at..].find(name) {
             let start = at + hit;
@@ -1213,6 +1511,12 @@ fn collector_writes(body: &str) -> Vec<usize> {
                 continue;
             }
             if rest.starts_with(".push(") {
+                writes.push(start);
+                continue;
+            }
+            // Calling a closure that writes to the collector is that write, made at
+            // the call rather than where the closure was bound.
+            if rest.starts_with('(') && closures.contains(&name) {
                 writes.push(start);
                 continue;
             }
