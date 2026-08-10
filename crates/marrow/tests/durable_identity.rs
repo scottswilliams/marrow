@@ -14,6 +14,13 @@ use std::process::{Command, Output};
 
 const MARROW: &str = env!("CARGO_BIN_EXE_marrow");
 
+/// The version-control ignore entry the publication owner writes beside the
+/// machine-local write lock. A project adds no line of its own, so these are
+/// the exact bytes a checkout of a published project would carry.
+const META_IGNORE: &[u8] =
+    b"# Machine-written by Marrow. The cooperative project-metadata write lock is\n\
+# machine-local runtime state that no checkout carries.\npublish.lock\n";
+
 /// The counter tracer project: one durable root over one resource.
 const COUNTER_SOURCE: &str = r#"resource Counter {
     required value: int
@@ -339,13 +346,18 @@ pub fn noop(): int {
     assert_eq!(
         published_snapshot,
         vec![
+            // The ignore entry the publication owner writes for the lock below,
+            // so a developer adds no line and a fresh clone is correct without
+            // one. The owner's own kats pin the same bytes.
+            (".gitignore".to_string(), true, META_IGNORE.to_vec()),
             ("ids".to_string(), true, published.clone()),
             // The zero-byte rendezvous entry the publication owner locks while
             // it writes metadata. It is machine-local runtime state that no
             // checkout carries; nothing else appears.
             ("publish.lock".to_string(), true, Vec::new()),
         ],
-        "the first run creates the ledger and the metadata write lock, and nothing else",
+        "the first run creates the ledger, its ignore entry, and the metadata write lock, \
+         and nothing else",
     );
 
     // This repeats the same pre-verifier resolution outcome and must not touch
@@ -799,6 +811,7 @@ fn a_foreign_metadata_sibling_survives_a_publication_untouched() {
     assert_eq!(
         entries,
         vec![
+            ".gitignore".to_string(),
             "ids".to_string(),
             "ids.tmp.99999".to_string(),
             "publish.lock".to_string()

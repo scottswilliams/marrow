@@ -975,8 +975,133 @@ fn concurrent_first_publications_serialize_on_the_write_lock() {
             Some(&b""[..]),
             "the race leaves exactly one zero-byte lock entry"
         );
+        assert_eq!(
+            project.read_meta(".gitignore").as_deref(),
+            Some(LOCK_IGNORE),
+            "the race leaves exactly one written ignore entry in round {round}"
+        );
         assert!(!project.exists("ids.publish.stage"));
         assert!(!project.exists("ids.pending"));
+    }
+}
+
+// ===== The lock's own ignore entry ===========================================
+//
+// The lock is machine-local runtime state, and a lock that travelled with a
+// checkout would exclude nobody: an ordinary Git operation deletes and
+// recreates a tracked entry, replacing the inode a holder is excluding on. The
+// entry that keeps it untracked is written by the owner that creates the lock,
+// so a project carries no hand-written line and a fresh clone is correct
+// without one.
+
+/// The exact artifact the write owner keeps beside the lock. The front-door
+/// metadata snapshot in `crates/marrow/tests/durable_identity.rs` pins the same
+/// bytes, so a change here is a change a developer's checkout would see.
+const LOCK_IGNORE: &[u8] =
+    b"# Machine-written by Marrow. The cooperative project-metadata write lock is\n\
+# machine-local runtime state that no checkout carries.\npublish.lock\n";
+
+/// The first acquisition writes the entry; every later one leaves it byte for
+/// byte alone, because the owner appends only what is missing.
+#[test]
+fn the_write_owner_writes_the_lock_ignore_once() {
+    let _serial = serialized();
+    let project = Project::new("ignore-once");
+    assert!(!project.meta().exists(), "the project starts from a clone");
+
+    for acquisition in 0..3 {
+        let guard = project.guard();
+        assert_eq!(
+            project.read_meta(".gitignore").as_deref(),
+            Some(LOCK_IGNORE),
+            "acquisition {acquisition} did not leave the exact ignore entry"
+        );
+        drop(guard);
+    }
+}
+
+/// The entry is completed rather than rewritten. The empty file a crash between
+/// the create and the fill leaves is finished, a line this owner did not write
+/// is kept, and neither grows a second copy.
+#[test]
+fn the_lock_ignore_is_completed_rather_than_rewritten() {
+    let _serial = serialized();
+    let crashed = Project::new("ignore-crashed");
+    crashed.write_meta(".gitignore", b"");
+    drop(crashed.guard());
+    assert_eq!(
+        crashed.read_meta(".gitignore").as_deref(),
+        Some(LOCK_IGNORE),
+        "the empty entry a crash leaves is finished by the next acquisition"
+    );
+
+    let edited = Project::new("ignore-edited");
+    edited.write_meta(".gitignore", b"notes");
+    drop(edited.guard());
+    let mut expected = b"notes\n".to_vec();
+    expected.extend_from_slice(LOCK_IGNORE);
+    assert_eq!(
+        edited.read_meta(".gitignore"),
+        Some(expected.clone()),
+        "an unterminated foreign line keeps its own line"
+    );
+    drop(edited.guard());
+    assert_eq!(
+        edited.read_meta(".gitignore"),
+        Some(expected),
+        "a second acquisition adds nothing to an entry that already names the lock"
+    );
+}
+
+/// Acquisitions racing one fresh project write one ignore entry between them.
+/// The entry is installed under the write lock, so however the seats interleave
+/// exactly one of them appends and the rest find the lock already named.
+#[test]
+fn concurrent_acquisitions_write_one_lock_ignore() {
+    use std::sync::Barrier;
+
+    let _serial = serialized();
+    const THREADS: usize = 8;
+    const ROUNDS: usize = 12;
+    /// Each seat needs one uncontended acquisition; the bound turns a livelock
+    /// into a failure rather than a hung suite.
+    const ATTEMPTS: usize = 10_000;
+
+    for round in 0..ROUNDS {
+        let project = Project::new(&format!("ignore-race-{round}"));
+        assert!(!project.meta().exists(), "the round starts from a clone");
+        let barrier = Barrier::new(THREADS);
+        let start = &barrier;
+        let root = project.path();
+
+        std::thread::scope(|scope| {
+            for seat in 0..THREADS {
+                scope.spawn(move || {
+                    start.wait();
+                    for attempt in 0..ATTEMPTS {
+                        match ProjectMetadataWriteGuard::acquire(root) {
+                            Ok(guard) => {
+                                drop(guard);
+                                return;
+                            }
+                            Err(refusal) => assert_eq!(
+                                refusal.refusal(),
+                                IdsRefusal::Contended,
+                                "seat {seat} attempt {attempt} of round {round} reported \
+                                 {refusal:?} rather than the contention it is in"
+                            ),
+                        }
+                    }
+                    panic!("seat {seat} of round {round} never acquired the write lock");
+                });
+            }
+        });
+
+        assert_eq!(
+            project.read_meta(".gitignore").as_deref(),
+            Some(LOCK_IGNORE),
+            "round {round} wrote the ignore entry more than once"
+        );
     }
 }
 

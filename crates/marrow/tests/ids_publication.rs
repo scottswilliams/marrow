@@ -221,6 +221,34 @@ fn a_refused_write_lock_reports_the_owner_s_code_rather_than_the_pending_marker(
     );
 }
 
+/// The write owner keeps the machine-local lock out of version control itself.
+/// A project adds no ignore line by hand, so a first publication of a fresh
+/// clone leaves the entry beside the lock it describes, and a run that publishes
+/// again leaves it byte for byte alone.
+#[test]
+fn the_write_owner_ignores_the_machine_local_lock_for_the_project() {
+    let workspace = project().materialize("ids-lock-ignored");
+    assert!(workspace.marrow(&["run", "answer"]).success());
+    let written = fs::read(workspace.path(".marrow/.gitignore")).expect("the ignore entry");
+    assert!(
+        written
+            .split(|byte| *byte == b'\n')
+            .any(|line| line == b"publish.lock"),
+        "the written entry does not name the lock: {}",
+        String::from_utf8_lossy(&written)
+    );
+
+    // A publication that mints again reaches the same owner and writes nothing
+    // further: the entry already names the lock.
+    fs::remove_file(workspace.path(".marrow/ids")).expect("drop the ledger");
+    assert!(workspace.marrow(&["run", "answer"]).success());
+    assert_eq!(
+        fs::read(workspace.path(".marrow/.gitignore")).expect("the ignore entry"),
+        written,
+        "a second publication rewrote the ignore entry"
+    );
+}
+
 /// A fresh clone carries the committed ledger and no lock, because the lock is
 /// machine-local runtime state. That absence is the ordinary first-publish case:
 /// the write owner creates the entry, and the run that needs no mint neither

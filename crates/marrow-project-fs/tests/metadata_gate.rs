@@ -533,6 +533,12 @@ fn the_external_inventory_is_unchanged_from_the_clean_tree() {
 /// so no checkout carries it. This pins the repository ignore entry and the
 /// absence of a tracked lock: a tracked lock would be deleted and recreated by
 /// ordinary Git operations, replacing the inode a holder is excluding on.
+///
+/// The write owner writes each project's own `.marrow/.gitignore`, which is
+/// what an outside project relies on. This repository keeps its entry too: the
+/// projects under `apps/` are dogfooded in place, and one line covering every
+/// depth is what keeps a lock created there out of the index whether or not
+/// that project has been published from yet.
 #[test]
 fn the_cooperative_write_lock_is_never_committed() {
     let root = workspace_root();

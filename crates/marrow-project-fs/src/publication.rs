@@ -9,7 +9,7 @@
 //!
 //! # Names
 //!
-//! Inside the project's `.marrow` directory the protocol uses exactly five
+//! Inside the project's `.marrow` directory the protocol uses exactly six
 //! fixed entry names and enumerates the directory nowhere:
 //!
 //! ```text
@@ -18,12 +18,15 @@
 //! ids.pending            the durable publication marker
 //! ids.pending.create     the marker's pre-claim alias
 //! publish.lock           the cooperative project-metadata write lock
+//! .gitignore             keeps that lock out of version control
 //! ```
 //!
 //! The directory and the ledger's entry name are [`marrow_project::META_DIR`]
 //! and [`marrow_project::IDS_ENTRY`]; the four derived names are built from the
 //! latter here, so no spelling of the ledger's location exists twice.
-//! `publish.lock` is machine-local runtime state and is never committed.
+//! `publish.lock` is machine-local runtime state and is never committed, and
+//! the write owner writes the ignore entry that keeps it out of version
+//! control, so no project carries a hand-written line for it.
 //!
 //! # Protocol
 //!
@@ -93,6 +96,17 @@ pub use marker::IdsPublicationMarker;
 const STAGE_SUFFIX: &str = ".publish.stage";
 /// The cooperative project-metadata write lock's entry name.
 const LOCK_NAME: &str = "publish.lock";
+/// The version-control ignore entry the write owner keeps beside the lock.
+const IGNORE_NAME: &str = ".gitignore";
+/// The comment the written ignore block carries above the lock's entry name.
+const IGNORE_COMMENT: &str = "\
+# Machine-written by Marrow. The cooperative project-metadata write lock is
+# machine-local runtime state that no checkout carries.
+";
+/// How much of an existing ignore entry is read to decide whether it already
+/// names the lock. A file this owner wrote is three lines; anything past this
+/// bound belongs to whoever wrote it and is left exactly as found.
+const IGNORE_READ_CEILING: usize = 4096;
 
 /// The fixed stage entry's spelling. The frozen row header embeds it and the
 /// guard admits it, and both take it from here so the ledger's entry name has
@@ -409,7 +423,8 @@ pub struct ProjectMetadataWriteGuard {
 
 impl ProjectMetadataWriteGuard {
     /// Acquire the exclusive write owner for the project rooted at `root`,
-    /// creating `.marrow` and the lock entry when they are absent.
+    /// creating `.marrow`, the lock entry, and the ignore entry that keeps the
+    /// lock out of version control when they are absent.
     ///
     /// # Errors
     ///
@@ -429,6 +444,7 @@ impl ProjectMetadataWriteGuard {
             Err(error) => return Err(error.into()),
         };
         let lock = CacheLock::acquire(&meta, &admitted_name(LOCK_NAME))?;
+        install_lock_ignore(&meta)?;
         let ledger = admitted_name(IDS_ENTRY);
         Ok(Self {
             journal: PendingName::derive(&ledger)
@@ -507,6 +523,49 @@ fn admit_created_meta(
     // may not have synced yet, and this process is about to write inside.
     root.sync()?;
     Ok(admitted)
+}
+
+/// Keep the machine-local write lock out of version control from the owner
+/// that creates it, so a project carries no hand-written ignore line and a
+/// fresh clone is correct without one.
+///
+/// The entry is completed rather than rewritten: the lock's entry name is
+/// appended only when the file does not already carry it, so a second
+/// acquisition writes nothing, whatever a developer added survives, and the
+/// empty file a crash between the create and the fill leaves is finished by
+/// the next acquisition. It runs under the write lock, so one process at a
+/// time is inside it and two first publications cannot both append.
+fn install_lock_ignore(meta: &AdmittedDir) -> Result<(), IdsPublicationError> {
+    let name = admitted_name(IGNORE_NAME);
+    let (mut entry, found) = match meta.create_file_excl(&name) {
+        Ok(created) => (created, Vec::new()),
+        Err(CustodyError::AlreadyExists { .. }) => {
+            let opened = meta.open_file(&name)?;
+            let found = opened.read_prefix(IGNORE_READ_CEILING + 1)?;
+            (opened, found)
+        }
+        Err(error) => return Err(error.into()),
+    };
+    // A file larger than the read bound is not this owner's, and the part of it
+    // that decides the question was never read, so it is left as found.
+    if found.len() > IGNORE_READ_CEILING
+        || found
+            .split(|byte| *byte == b'\n')
+            .any(|line| line == LOCK_NAME.as_bytes())
+    {
+        return Ok(());
+    }
+    let mut block = String::new();
+    if found.last().is_some_and(|byte| *byte != b'\n') {
+        block.push('\n');
+    }
+    block.push_str(IGNORE_COMMENT);
+    block.push_str(LOCK_NAME);
+    block.push('\n');
+    entry.append(block.as_bytes())?;
+    entry.sync()?;
+    meta.sync()?;
+    Ok(())
 }
 
 /// Admit one of this module's fixed entry names.

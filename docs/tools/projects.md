@@ -15,6 +15,7 @@ my_app/
                    project declares durable data)
     publish.lock   zero-byte entry the tools lock while writing metadata;
                    machine-local, never committed
+    .gitignore     keeps that lock untracked; written by the tools
   src/             source root (required for any source file)
     main.mw        path-derived name `main`
     shelf/
@@ -23,22 +24,21 @@ my_app/
 
 `.marrow` is the project's behind-the-scenes metadata directory. It holds
 machine-written artifacts only, and developers do not read or edit its contents.
-Exactly one of them is committed: the identity ledger `.marrow/ids`, which is
-part of the program and travels with the source. Everything else in the
-directory is machine-local runtime state that no checkout carries — today the
-zero-byte `publish.lock` the tools lock while writing metadata. Add one line to
-the project's `.gitignore`:
-
-```text
-.marrow/publish.lock
-```
+The identity ledger `.marrow/ids` is part of the program and travels with the
+source. The zero-byte `publish.lock` the tools lock while writing metadata is
+machine-local runtime state that no checkout carries, and the tools keep it that
+way themselves: the write owner writes `.marrow/.gitignore` naming the lock when
+it creates the lock, so a project adds no ignore line by hand and a clone that
+carries neither entry is still correct — the next publication writes both.
 
 A lock that travelled with a checkout would be worse than absent: an ordinary
 Git operation that deletes and recreates a tracked entry replaces the inode, and
-a holder of the replaced inode would exclude nobody. Caches and stores never
-live in `.marrow` either. The directory appears when a command first writes
-project metadata; a project that has published no ledger and taken no metadata
-lock has no `.marrow` directory at all.
+a holder of the replaced inode would exclude nobody. Being untracked narrows
+that to deliberate removal — `git clean -x` and a plain `rm` still unlink an
+ignored entry, and a lock unlinked while it is held excludes nobody either.
+Caches and stores never live in `.marrow`. The directory appears when a command
+first writes project metadata; a project that has published no ledger and taken
+no metadata lock has no `.marrow` directory at all.
 
 Source lives under the fixed `src` directory. Every `.mw` file under `src` is
 captured; nothing outside `src` is captured. A project needs no `src` directory
@@ -154,11 +154,14 @@ stale-publication refusal.
 
 Because `publish.lock` is never committed, a fresh clone reaches its first
 publication with the lock absent, which is the ordinary case: taking the write
-lock creates `.marrow` and the lock entry when either is missing. Two commands
-racing that first publication are still serialized — the lock entry is opened
-rather than exclusively created, so the process that loses the race locks the
-same entry the winner created and reports `io.write` naming the contended write
-lock, never a half-published ledger.
+lock creates `.marrow`, the lock entry, and the `.marrow/.gitignore` line that
+keeps the lock untracked when any of them is missing. Two commands racing that
+first publication are still serialized — the lock entry is opened rather than
+exclusively created, so the process that loses the race locks the same entry the
+winner created and reports `io.write` naming the contended write lock, never a
+half-published ledger. The ignore entry is written under that lock and only
+where a line naming the lock is absent, so repeated publications leave it
+unchanged and a race writes it once.
 
 Publication is serialized and crash-recoverable. The successor is written and
 synced to the fixed `.marrow/ids.publish.stage`, a durable marker is claimed at
