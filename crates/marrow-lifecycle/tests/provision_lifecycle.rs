@@ -93,6 +93,12 @@ fn instance() -> StoreInstanceId {
     StoreInstanceId::draw().expect("entropy")
 }
 
+/// The classification of a destination this test can examine. A preflight that cannot look
+/// is a distinct outcome with its own coverage; nothing here reaches it.
+fn classify(dir: &Path) -> Preflight {
+    preflight(dir).expect("this test's destinations are examinable")
+}
+
 /// Kill-point: AFTER the rename the store is complete and reopens. Provision publishes a
 /// complete store; preflight sees Complete; open succeeds and carries the published instance.
 #[test]
@@ -101,10 +107,10 @@ fn provision_publishes_complete_and_open_reopens() {
     let store = dir.store();
     let id = instance();
 
-    assert_eq!(preflight(&store), Preflight::Absent);
+    assert_eq!(classify(&store), Preflight::Absent);
     let provisioned = provision(&store, request(id)).expect("provision");
     assert_eq!(provisioned.instance, id);
-    assert_eq!(preflight(&store), Preflight::Complete);
+    assert_eq!(classify(&store), Preflight::Complete);
 
     let opened = open(&store, schemas(), sites()).expect("open");
     assert_eq!(
@@ -134,7 +140,7 @@ fn a_pre_rename_crash_state_keeps_the_destination_absent() {
     std::fs::create_dir_all(leftover.join("junk")).expect("leftover temp");
 
     assert_eq!(
-        preflight(&store),
+        classify(&store),
         Preflight::Absent,
         "a pre-rename crash never publishes the destination",
     );
@@ -145,7 +151,7 @@ fn a_pre_rename_crash_state_keeps_the_destination_absent() {
         provision(&store, request(id)).expect("provision").instance,
         id
     );
-    assert_eq!(preflight(&store), Preflight::Complete);
+    assert_eq!(classify(&store), Preflight::Complete);
     assert!(
         leftover.exists(),
         "the leftover temp is ignored, not required"
@@ -160,7 +166,7 @@ fn a_failed_preflight_creates_no_file() {
     let store = dir.store();
 
     let before = list(&dir.path);
-    assert_eq!(preflight(&store), Preflight::Absent);
+    assert_eq!(classify(&store), Preflight::Absent);
     assert_eq!(
         list(&dir.path),
         before,
@@ -170,7 +176,7 @@ fn a_failed_preflight_creates_no_file() {
     // Incomplete: a directory with no artifacts.
     std::fs::create_dir_all(&store).expect("mkdir");
     let before = list(&store);
-    assert_eq!(preflight(&store), Preflight::Incomplete);
+    assert_eq!(classify(&store), Preflight::Incomplete);
     assert_eq!(
         list(&store),
         before,
@@ -246,7 +252,7 @@ fn concurrent_provision_has_one_winner_and_one_lineage() {
     });
 
     assert_eq!(winners.len(), 1, "exactly one provisioner wins the race");
-    assert_eq!(preflight(&store), Preflight::Complete);
+    assert_eq!(classify(&store), Preflight::Complete);
     let opened = open(&store, schemas(), sites()).expect("open the survivor");
     assert_eq!(
         opened.envelope.instance, winners[0],

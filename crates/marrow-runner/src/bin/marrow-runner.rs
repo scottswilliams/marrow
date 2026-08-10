@@ -469,8 +469,17 @@ fn import_command(
         return ExitCode::FAILURE;
     };
 
-    // Provision on first import; an existing complete store is imported into as-is.
-    match marrow_lifecycle::preflight(store) {
+    // Provision on first import; an existing complete store is imported into as-is. A
+    // destination that cannot be examined is neither: reporting it as partially formed would
+    // tell an operator to remove a store this process merely could not see.
+    let classified = match marrow_lifecycle::preflight(store) {
+        Ok(classified) => classified,
+        Err(error) => {
+            eprintln!("{}: {error}", error.code());
+            return ExitCode::FAILURE;
+        }
+    };
+    match classified {
         marrow_lifecycle::Preflight::Complete => {}
         marrow_lifecycle::Preflight::Incomplete => {
             eprintln!(

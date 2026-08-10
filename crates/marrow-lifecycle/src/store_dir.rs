@@ -28,10 +28,10 @@
 //! `lock` entry it owns. Neither is admitted from the retained descriptor, so what this
 //! module establishes covers the two artifacts it reads and no more.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use marrow_codes::Code;
-use marrow_fs_journal::{AdmittedDir, CustodyError, EntryName, EntryStat, OpenedFile};
+use marrow_fs_journal::{AdmittedDir, CustodyError, EntryName, EntryStat, NodeKind, OpenedFile};
 
 use crate::codec::{ARTIFACT_PREFIX_BYTES, FormatError};
 
@@ -44,11 +44,14 @@ pub const HEAD_FILE: &str = "head";
 /// The owner lock file name within a store directory.
 pub const LOCK_FILE: &str = marrow_kernel::durable::NATIVE_LOCK_FILE;
 
-/// One entry of a store directory an owner-held admission read names.
+/// One entry of a store directory an owner-held admission names.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StoreEntry {
     /// The store directory itself.
     Directory,
+    /// The ordered-byte engine database. Admission decides only that the directory holds it
+    /// as a regular file; its bytes belong to the storage layer, which opens it by path.
+    Engine,
     /// The persisted envelope.
     Envelope,
     /// The persisted logical head.
@@ -61,9 +64,61 @@ impl StoreEntry {
     pub fn label(self) -> &'static str {
         match self {
             StoreEntry::Directory => "directory",
+            StoreEntry::Engine => ENGINE_FILE,
             StoreEntry::Envelope => ENVELOPE_FILE,
             StoreEntry::Head => HEAD_FILE,
         }
+    }
+}
+
+/// A store directory that could not be examined at all.
+///
+/// This process cannot reach or traverse the directory, so nothing about the store it may
+/// hold was observed: not whether it exists, not whether it is complete, not whether it is
+/// held. A failure to look is reported as itself — never folded into absence, and never into
+/// a claim that what could not be seen is missing or corrupt.
+#[derive(Debug)]
+pub struct StoreAccessError {
+    path: PathBuf,
+    source: std::io::Error,
+}
+
+impl StoreAccessError {
+    pub(crate) fn at(path: &Path, source: std::io::Error) -> Self {
+        Self {
+            path: path.to_path_buf(),
+            source,
+        }
+    }
+
+    /// The store directory that could not be examined.
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    /// The stable dotted code a tool reports.
+    pub fn code(&self) -> &'static str {
+        match self.source.kind() {
+            std::io::ErrorKind::PermissionDenied => Code::StorePermissionDenied.as_str(),
+            _ => Code::StoreIo.as_str(),
+        }
+    }
+}
+
+impl std::fmt::Display for StoreAccessError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "the store directory at {} could not be examined: {}",
+            self.path.display(),
+            self.source,
+        )
+    }
+}
+
+impl std::error::Error for StoreAccessError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.source)
     }
 }
 
@@ -134,6 +189,10 @@ pub enum AdmissionFault {
     /// The entry carries more than one link, so the bytes admission just checked remain
     /// reachable — and rewritable — under a name this owner does not hold.
     MultiplyLinked { links: u64 },
+    /// The store directory maps the artifact's name to a node that is not a regular file,
+    /// so the directory does not hold the artifact — whatever that node would resolve to if
+    /// it were followed.
+    NotAFile { found: NodeKind },
     /// The entry changed under the owner between its pre-read witness and its recheck.
     Unstable(Instability),
     /// The file is larger than the exact ceiling its own recorded version selects, so it is
@@ -165,9 +224,9 @@ impl AdmissionError {
         match &self.fault {
             AdmissionFault::Format(error) => error.code(),
             AdmissionFault::OverCeiling { .. } => Code::StoreLimit.as_str(),
-            AdmissionFault::MultiplyLinked { .. } | AdmissionFault::Unstable(_) => {
-                Code::StoreCorruption.as_str()
-            }
+            AdmissionFault::MultiplyLinked { .. }
+            | AdmissionFault::NotAFile { .. }
+            | AdmissionFault::Unstable(_) => Code::StoreCorruption.as_str(),
             AdmissionFault::Custody(error) => custody_code(error),
         }
     }
@@ -186,6 +245,13 @@ impl AdmissionError {
 fn custody_code(error: &CustodyError) -> &'static str {
     match error {
         CustodyError::ModeDenied { .. } => Code::StorePermissionDenied.as_str(),
+        // The entry's own bits are one way an open is denied; the access this process has to
+        // the path leading to it is the other, and both are the same refusal to a reader.
+        CustodyError::Io { source, .. }
+            if source.kind() == std::io::ErrorKind::PermissionDenied =>
+        {
+            Code::StorePermissionDenied.as_str()
+        }
         CustodyError::SymlinkRefused { .. }
         | CustodyError::WrongNodeKind { .. }
         | CustodyError::NotADirectory { .. }
@@ -196,6 +262,19 @@ fn custody_code(error: &CustodyError) -> &'static str {
         | CustodyError::Unsupported { .. }
         | CustodyError::Io { .. } => Code::StoreIo.as_str(),
     }
+}
+
+/// The typed refusal this build returns for every store-directory admission on a platform
+/// its descriptor-rooted adapter does not qualify, or `Ok(())`.
+///
+/// An open asks before it creates anything. The admission that would refuse anyway runs
+/// after the owner lock and the marker it writes, so refusing only there leaves an inherited
+/// unclean obligation behind in a store this build could never have opened on this platform.
+pub(crate) fn qualified_platform() -> Result<(), AdmissionError> {
+    marrow_fs_journal::qualified_platform().map_err(|error| AdmissionError {
+        entry: StoreEntry::Directory,
+        fault: AdmissionFault::Custody(error),
+    })
 }
 
 impl std::fmt::Display for AdmissionError {
@@ -216,6 +295,10 @@ impl std::fmt::Display for AdmissionError {
             AdmissionFault::MultiplyLinked { links } => write!(
                 formatter,
                 "the store {entry} is reachable under {links} names; admission requires exactly one",
+            ),
+            AdmissionFault::NotAFile { found } => write!(
+                formatter,
+                "the store directory holds a {found} under the {entry} name, not a regular file",
             ),
             AdmissionFault::Unstable(instability) => {
                 write!(formatter, "the store {entry} {}", instability.describe())
@@ -253,21 +336,41 @@ impl AdmittedStoreDir {
             })
     }
 
-    /// Whether the retained directory maps all three durable artifact names to entries. The
-    /// completeness verdict is read through the same descriptor the artifact reads use, so
-    /// it belongs to the one admission snapshot taken under the owner rather than to a
-    /// separate resolution of three paths.
+    /// Whether the retained directory holds all three durable artifacts. The completeness
+    /// verdict is read through the same descriptor the artifact reads use, so it belongs to
+    /// the one admission snapshot taken under the owner rather than to a separate resolution
+    /// of three paths.
+    ///
+    /// A name that maps to nothing leaves the store incomplete. A name that maps to a node
+    /// which is not a regular file is neither complete nor incomplete: the directory holds
+    /// *something* under that name, and it is not the artifact. That is refused as itself,
+    /// naming the entry. Deciding it here is what keeps this verdict and the opener of each
+    /// artifact agreed on what the directory holds — the engine is opened by path, which
+    /// follows a link, so counting a link as the engine present would admit a store whose
+    /// engine bytes live outside the directory the owner holds.
     pub(crate) fn is_complete(&self) -> Result<bool, AdmissionError> {
-        for name in [ENGINE_FILE, ENVELOPE_FILE, HEAD_FILE] {
-            let present =
+        for (entry, name) in [
+            (StoreEntry::Engine, ENGINE_FILE),
+            (StoreEntry::Envelope, ENVELOPE_FILE),
+            (StoreEntry::Head, HEAD_FILE),
+        ] {
+            let mapped =
                 self.dir
                     .stat_entry(&entry_name(name))
                     .map_err(|error| AdmissionError {
                         entry: StoreEntry::Directory,
                         fault: AdmissionFault::Custody(error),
                     })?;
-            if present.is_none() {
+            let Some(mapped) = mapped else {
                 return Ok(false);
+            };
+            if mapped.kind() != NodeKind::Regular {
+                return Err(AdmissionError {
+                    entry,
+                    fault: AdmissionFault::NotAFile {
+                        found: mapped.kind(),
+                    },
+                });
             }
         }
         Ok(true)
@@ -354,11 +457,6 @@ fn require_single_link(stat: &EntryStat) -> Result<(), AdmissionFault> {
     }
 }
 
-/// The engine database path within `dir`.
-pub fn engine_path(dir: &Path) -> std::path::PathBuf {
-    dir.join(ENGINE_FILE)
-}
-
 /// The envelope file path within `dir`.
 pub fn envelope_path(dir: &Path) -> std::path::PathBuf {
     dir.join(ENVELOPE_FILE)
@@ -369,25 +467,42 @@ pub fn head_path(dir: &Path) -> std::path::PathBuf {
     dir.join(HEAD_FILE)
 }
 
-/// The owner lock file path within `dir`.
-pub(crate) fn lock_path(dir: &Path) -> std::path::PathBuf {
-    dir.join(LOCK_FILE)
+/// Whether `dir` maps `name` to an entry at all, following no link and creating nothing.
+///
+/// Only "no such entry" is an observation of the directory's contents. Every other failure
+/// is a failure to look at the directory, and is returned as itself: a directory this
+/// process cannot traverse is not a directory whose entries are missing.
+fn entry_present(dir: &Path, name: &str) -> Result<bool, StoreAccessError> {
+    match std::fs::symlink_metadata(dir.join(name)) {
+        Ok(_) => Ok(true),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(StoreAccessError::at(dir, error)),
+    }
 }
 
-/// Whether `dir` names an owner lock entry at all. Read without following a link and
-/// without creating anything: this decides only whether the directory has ever been opened
-/// as a store, never what the entry holds.
-pub(crate) fn lock_entry_present(dir: &Path) -> bool {
-    std::fs::symlink_metadata(lock_path(dir)).is_ok()
+/// Whether `dir` names an owner lock entry at all. This decides only whether the directory
+/// has ever been opened as a store, never what the entry holds.
+pub(crate) fn lock_entry_present(dir: &Path) -> Result<bool, StoreAccessError> {
+    entry_present(dir, LOCK_FILE)
 }
 
-/// Whether all three durable artifacts (engine, envelope, head) are present in `dir`. A
-/// store missing any one is incomplete — never published as complete — so a crash mid-build
+/// Whether `dir` maps all three durable artifact names (engine, envelope, head) to entries.
+/// A store missing any one is incomplete — never published as complete — so a crash mid-build
 /// (which leaves a temp directory, never a partial destination) can never be mistaken for a
 /// finished store. The lock is deliberately excluded: provision does not write it, so a
 /// complete store may carry no lock and its presence is no evidence of completeness.
-pub fn artifacts_present(dir: &Path) -> bool {
-    engine_path(dir).is_file() && envelope_path(dir).is_file() && head_path(dir).is_file()
+///
+/// This is the coarse question, asked before an owner is held and answered by whether the
+/// name maps to anything. Whether what it maps to is the artifact — a regular file, not a
+/// link out of the directory — is [`AdmittedStoreDir::is_complete`]'s to decide under the
+/// owner, so this never reports a directory as holding an artifact the open would refuse.
+pub(crate) fn artifacts_present(dir: &Path) -> Result<bool, StoreAccessError> {
+    for name in [ENGINE_FILE, ENVELOPE_FILE, HEAD_FILE] {
+        if !entry_present(dir, name)? {
+            return Ok(false);
+        }
+    }
+    Ok(true)
 }
 
 #[cfg(test)]
@@ -402,11 +517,11 @@ mod tests {
         assert_eq!(HEAD_FILE, "head");
         assert_eq!(LOCK_FILE, "lock");
 
+        // The two artifacts provision writes are the only ones this module derives a path
+        // for; the engine and the lock are reached under their own owners' paths.
         let dir = Path::new("/stores/app");
-        assert_eq!(engine_path(dir), Path::new("/stores/app/store.redb"));
         assert_eq!(envelope_path(dir), Path::new("/stores/app/envelope"));
         assert_eq!(head_path(dir), Path::new("/stores/app/head"));
-        assert_eq!(lock_path(dir), Path::new("/stores/app/lock"));
     }
 
     /// Each custody refusal is reported as itself. Two ways of substituting the same

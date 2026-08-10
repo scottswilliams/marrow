@@ -69,7 +69,9 @@ mod journal;
 mod lock;
 mod sys;
 
-pub use custody::{AdmittedDir, CustodyError, EntryStat, FsIdentity, NodeKind, OpenedFile};
+pub use custody::{
+    AdmittedDir, CustodyError, EntryStat, FsIdentity, NodeKind, OpenedFile, qualified_platform,
+};
 pub use entry::{EntryName, EntryNameError};
 pub use frame::{
     DecodedFrame, FrameCorruption, FrameLawError, JournalCommon, JournalKind, PhaseRecord,

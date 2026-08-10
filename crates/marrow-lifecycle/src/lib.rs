@@ -64,5 +64,5 @@ pub use provision::{
 pub use report::{ProvisionApproval, ProvisionImageError, ProvisionReport, provision_image};
 pub use store_dir::{
     AdmissionError, AdmissionFault, ENGINE_FILE, ENVELOPE_FILE, HEAD_FILE, Instability, LOCK_FILE,
-    StoreEntry,
+    StoreAccessError, StoreEntry,
 };

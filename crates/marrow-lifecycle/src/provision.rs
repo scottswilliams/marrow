@@ -36,7 +36,9 @@ use crate::envelope::StoreEnvelope;
 use crate::head::LogicalHead;
 use crate::instance::StoreInstanceId;
 use crate::lock::LockError;
-use crate::store_dir::{self, AdmissionError, AdmittedStoreDir, Artifact, StoreEntry};
+use crate::store_dir::{
+    self, AdmissionError, AdmittedStoreDir, Artifact, StoreAccessError, StoreEntry,
+};
 
 /// A non-creating classification of a store directory.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -54,14 +56,24 @@ pub enum Preflight {
 /// the directory and its artifacts. A missing directory is [`Preflight::Absent`]; a directory
 /// missing any of the engine, envelope, or head is [`Preflight::Incomplete`]; a directory
 /// with all three is [`Preflight::Complete`].
-pub fn preflight(dir: &Path) -> Preflight {
-    if !dir.is_dir() {
-        return Preflight::Absent;
+///
+/// A directory this process cannot examine is none of the three. Its classification is
+/// unknown, and that is returned as a [`StoreAccessError`] rather than resolved by assuming
+/// what could not be seen is not there — which would report an intact store as partially
+/// formed.
+pub fn preflight(dir: &Path) -> Result<Preflight, StoreAccessError> {
+    match std::fs::metadata(dir) {
+        Ok(found) if found.is_dir() => {}
+        Ok(_) => return Ok(Preflight::Absent),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(Preflight::Absent);
+        }
+        Err(error) => return Err(StoreAccessError::at(dir, error)),
     }
-    if store_dir::artifacts_present(dir) {
-        Preflight::Complete
+    if store_dir::artifacts_present(dir)? {
+        Ok(Preflight::Complete)
     } else {
-        Preflight::Incomplete
+        Ok(Preflight::Incomplete)
     }
 }
 
@@ -262,6 +274,11 @@ impl OpenStore {
 pub enum OpenError {
     /// No store exists at the path.
     NotProvisioned,
+    /// The store directory could not be examined at all, so nothing about the store it may
+    /// hold was established. Kept apart from [`OpenError::NotProvisioned`] and
+    /// [`OpenError::Incomplete`] on purpose: those two state what the directory holds, and
+    /// this one states that it could not be seen.
+    Access(StoreAccessError),
     /// The store directory exists but is missing a durable artifact.
     Incomplete,
     /// The store is held by another owner, or the lock could not be taken.
@@ -285,6 +302,7 @@ impl OpenError {
     pub fn code(&self) -> &'static str {
         match self {
             OpenError::NotProvisioned => Code::StoreIo.as_str(),
+            OpenError::Access(error) => error.code(),
             OpenError::Incomplete | OpenError::Corruption { .. } => Code::StoreCorruption.as_str(),
             OpenError::Admission(error) => error.code(),
             OpenError::Lock(error) => error.code(),
@@ -298,6 +316,7 @@ impl std::fmt::Display for OpenError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             OpenError::NotProvisioned => write!(f, "no store exists at the destination"),
+            OpenError::Access(error) => write!(f, "{error}"),
             OpenError::Incomplete => {
                 write!(
                     f,
@@ -314,6 +333,12 @@ impl std::fmt::Display for OpenError {
 }
 
 impl std::error::Error for OpenError {}
+
+impl From<StoreAccessError> for OpenError {
+    fn from(error: StoreAccessError) -> Self {
+        OpenError::Access(error)
+    }
+}
 
 /// A failure to open a store under an admission gate: either the ordinary open failed, or the
 /// gate refused the presented image after the lock was taken and before any engine call. The
@@ -357,21 +382,7 @@ pub(crate) fn open_admitted<R>(
     sites: Vec<SiteSpec>,
     admit: impl FnOnce(&LogicalHead) -> Result<(), R>,
 ) -> Result<OpenStore, AdmitError<R>> {
-    // Only the directory's own existence — and, when it holds no owner lock entry at all,
-    // its completeness — is decided ahead of the owner. Acquiring creates that entry, so
-    // without this second condition an open aimed at an ordinary directory would leave one
-    // behind in a directory that is not a store. A store with a live holder always has the
-    // entry (a holder creates it before it locks), so the condition is unreachable while a
-    // holder is live and cannot preempt the exclusion verdict a contender is owed. What the
-    // directory *contains* — whether its artifacts are present, whether they decode — is
-    // otherwise read under the owner below.
-    match preflight(dir) {
-        Preflight::Absent => return Err(AdmitError::Open(OpenError::NotProvisioned)),
-        Preflight::Incomplete if !store_dir::lock_entry_present(dir) => {
-            return Err(AdmitError::Open(OpenError::Incomplete));
-        }
-        Preflight::Incomplete | Preflight::Complete => {}
-    }
+    decide_before_locking(dir).map_err(AdmitError::Open)?;
 
     // Acquiring pins the store directory to its canonical path and takes the lock without
     // naming an instance or touching the engine. Retaining caller-relative text would allow a
@@ -428,6 +439,29 @@ pub(crate) fn open_admitted<R>(
         envelope,
         head: admitted_head.expect("a successful open completed head admission"),
     })
+}
+
+/// Everything an open settles before it takes the owner lock, and nothing else.
+///
+/// Acquiring the lock creates the `lock` entry and writes a marker into it, so the two
+/// questions decided here are exactly the two whose answers would make that write wrong: a
+/// platform where no store could be admitted at all, and a directory that is not a store —
+/// where the entry would be left behind in an ordinary directory. Neither reads a store
+/// artifact's bytes, so neither can preempt the exclusion verdict a contender is owed: a
+/// store with a live holder always has the lock entry, because a holder creates it before it
+/// locks, so the completeness condition is unreachable while a holder is live.
+///
+/// Nothing here resolves a failure to look into an observation. A directory this process
+/// cannot examine reaches [`OpenError::Access`] rather than a claim about what it holds.
+/// What the directory *contains* — whether its artifacts are the artifacts, whether they
+/// decode — is read under the owner.
+fn decide_before_locking(dir: &Path) -> Result<(), OpenError> {
+    store_dir::qualified_platform().map_err(OpenError::Admission)?;
+    match preflight(dir)? {
+        Preflight::Absent => Err(OpenError::NotProvisioned),
+        Preflight::Incomplete if !store_dir::lock_entry_present(dir)? => Err(OpenError::Incomplete),
+        Preflight::Incomplete | Preflight::Complete => Ok(()),
+    }
 }
 
 fn decode_envelope(dir: &AdmittedStoreDir) -> Result<StoreEnvelope, OpenError> {
@@ -529,6 +563,12 @@ mod tests {
         }
     }
 
+    /// The classification of a directory this test can examine. A preflight that cannot look
+    /// is a distinct outcome with its own coverage; nothing here should reach it.
+    fn classify(dir: &Path) -> Preflight {
+        preflight(dir).expect("this test's directories are examinable")
+    }
+
     #[test]
     fn preflight_classifies_absent_incomplete_complete_without_creating() {
         let base = std::env::temp_dir().join(format!(
@@ -539,7 +579,7 @@ mod tests {
         let dir = base.join("store");
 
         // Absent: no directory. Preflight creates nothing.
-        assert_eq!(preflight(&dir), Preflight::Absent);
+        assert_eq!(classify(&dir), Preflight::Absent);
         assert!(
             !base.exists(),
             "preflight must not create the base directory"
@@ -551,9 +591,9 @@ mod tests {
 
         // Incomplete: the directory exists but lacks artifacts.
         std::fs::create_dir_all(&dir).expect("create dir");
-        assert_eq!(preflight(&dir), Preflight::Incomplete);
+        assert_eq!(classify(&dir), Preflight::Incomplete);
         let before: Vec<_> = read_dir_names(&dir);
-        assert_eq!(preflight(&dir), Preflight::Incomplete);
+        assert_eq!(classify(&dir), Preflight::Incomplete);
         assert_eq!(
             read_dir_names(&dir),
             before,

@@ -617,10 +617,19 @@ fn the_head_ceiling_admits_its_maximum_and_refuses_one_byte_more() {
 /// owner holds, so admission refuses it rather than reading through it — as the store
 /// directory not holding the artifact, which is what its multiply-linked sibling below also
 /// reports.
+///
+/// The engine is in the family even though admission never reads its bytes. Its opener
+/// resolves it by path, which follows a link, so the completeness verdict is what has to
+/// refuse it: without that, a store whose engine bytes live outside the directory the owner
+/// holds would open.
 #[cfg(unix)]
 #[test]
 fn a_symbolic_link_standing_in_for_an_artifact_is_refused() {
-    for artifact in ["envelope", "head"] {
+    for artifact in [
+        marrow_lifecycle::ENVELOPE_FILE,
+        marrow_lifecycle::HEAD_FILE,
+        marrow_lifecycle::ENGINE_FILE,
+    ] {
         let (dir, store) = provisioned(&format!("symlink-{artifact}"));
         let target = dir.path.join(format!("{artifact}-elsewhere"));
         let path = store.join(artifact);

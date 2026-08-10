@@ -233,6 +233,17 @@ pub struct AdmittedDir {
     pub(crate) identity: FsIdentity,
 }
 
+/// Whether this build's adapter qualifies the running platform at all, as the same typed
+/// refusal every custody operation returns when it does not. Nothing is opened, created, or
+/// stated about any path: this is a property of the build.
+///
+/// A caller that must not mutate before it learns the answer asks here first. Every custody
+/// operation refuses on an unqualified platform anyway, so this is not a second gate — it is
+/// the one gate, asked before the caller has anything to undo.
+pub fn qualified_platform() -> Result<(), CustodyError> {
+    sys::qualified_platform()
+}
+
 impl AdmittedDir {
     /// Admit a trusted root directory by path. This is the single path-based
     /// entry into custody: the caller vouches for the path's trust, and the

@@ -123,6 +123,10 @@ mod imp {
         }
     }
 
+    pub(crate) fn qualified_platform() -> Result<(), CustodyError> {
+        Ok(())
+    }
+
     pub(crate) fn open_dir_root(path: &Path) -> Result<DirHandle, CustodyError> {
         rustix::fs::open(path, dir_flags(), Mode::empty())
             .map_err(|errno| map("admit directory", Reading::Nofollow, errno))
@@ -488,6 +492,10 @@ mod imp {
             os: std::env::consts::OS,
             arch: std::env::consts::ARCH,
         }
+    }
+
+    pub(crate) fn qualified_platform() -> Result<(), CustodyError> {
+        Err(refuse())
     }
 
     pub(crate) fn open_dir_root(_path: &Path) -> Result<DirHandle, CustodyError> {
