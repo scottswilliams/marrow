@@ -55,9 +55,10 @@ impl CacheLock {
         // The node kind is classified on the opened handle before the lock is
         // attempted, because `flock` classifies no node kind: on Darwin it
         // refuses the one non-regular node this open accepts — a FIFO — with
-        // the unsupported-semantics errno this crate reads as an unqualified
-        // platform, so an acquisition that locked first would report the
-        // platform rather than name the planted node.
+        // the unsupported-semantics errno this crate reads as
+        // `CustodyError::Unsupported`, so an acquisition that locked first
+        // would report the platform's lock semantics rather than name the
+        // planted node.
         let stat = sys::fstat_file(&handle)?;
         if stat.kind != NodeKind::Regular {
             return Err(LockError::Custody(CustodyError::WrongNodeKind {

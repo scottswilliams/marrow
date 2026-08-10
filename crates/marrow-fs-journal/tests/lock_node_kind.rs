@@ -17,11 +17,11 @@ use marrow_fs_journal::{AdmittedDir, CacheLock, CustodyError, EntryName, LockErr
 /// A planted non-regular lock entry is refused as the wrong node kind, with
 /// its mode untouched. The classification is asserted as its exact typed
 /// variant, because `flock` classifies no node kind: on Darwin it refuses a
-/// FIFO with the unsupported-semantics errno this crate reads as an
-/// unqualified platform, so an acquisition that locked before it classified
-/// would name the platform rather than the planted node. The mode restore runs
-/// only after the node is admitted as a regular file, so a node refused for
-/// its kind keeps the mode it carried.
+/// FIFO with the unsupported-semantics errno this crate reads as
+/// [`CustodyError::Unsupported`], so an acquisition that locked before it
+/// classified would name the platform's lock semantics rather than the planted
+/// node. The mode restore runs only after the node is admitted as a regular
+/// file, so a node refused for its kind keeps the mode it carried.
 #[test]
 fn a_non_regular_lock_entry_is_refused_as_the_wrong_node_kind_with_its_mode_untouched() {
     let scratch = Scratch::new("fifo-lock");
