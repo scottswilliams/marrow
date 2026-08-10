@@ -520,11 +520,14 @@ impl<'a> Session<'a> {
     /// the stage name; anything else there is a third live inode that this
     /// process — and only this process, which has just proven the pre-exchange
     /// reading — may exchange back. Unlike the ledger, the stage name is one of
-    /// the transients the write owner's ignore entry covers, so in a repository
-    /// that neither tracks it already nor predates that coverage an ordinary Git
-    /// operation neither tracks nor recreates it. Reaching the exchange-back arm
-    /// takes a writer editing the metadata directory outside the lock between
-    /// this exchange and the stat below.
+    /// the transients the write owner's ignore entry covers, so an ordinary Git
+    /// operation neither tracks nor recreates it — in a repository that does not
+    /// track it already, and whose ignore entry the owner was able to complete.
+    /// An entry left exactly as found, because it is unwritable, unreadable, or
+    /// past the read bound, gains the name in no name set, and an ordinary
+    /// `git add .` there tracks it. Reaching the exchange-back arm takes a
+    /// writer editing the metadata directory outside the lock between this
+    /// exchange and the stat below.
     fn exchange_replace(&self, base: FsIdentity) -> Result<Terminal, IdsPublicationError> {
         let meta = self.meta();
         let next = self.header.next_inode;
