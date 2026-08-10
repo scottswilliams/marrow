@@ -163,6 +163,13 @@ companion is reported as `cli.installation_damaged`. A durable export run **with
 outcome (exit `1`). Durable execution also runs under source tests against a fresh
 ephemeral attachment, needing no store or companion (see [`marrow test`](#marrow-test)).
 
+Opening a store is narrower than the build. The commands that open one —
+`run --store` and [`import`](#marrow-import) — require macOS, or Linux on
+`x86_64` or `aarch64`; every other command runs on any target the source builds
+for. A build for any other target refuses the open at run time with `store.io`,
+naming the operating system and architecture it refused on, and creates nothing
+in the store directory. See [Install from source](../install.md).
+
 When a fresh durable declaration has no identity in the project's
 [identity ledger](projects.md#the-identity-ledger), `run` still mints one from OS
 entropy and publishes the updated `.marrow/ids` atomically before compiling
@@ -233,7 +240,9 @@ is compiled and independently verified first; import is not a mint path, so a
 missing durable identity is reported and the developer runs `marrow check` before
 importing. Like `marrow run --store`, the terminal never opens the store: it hands
 the verified image and the corpus to the release-verified companion runner, which
-is the sole opener of the store, so the stock install layout is required.
+is the sole opener of the store, so the stock install layout is required. Opening
+the store carries the same platform requirement `run --store` does: macOS, or
+Linux on `x86_64` or `aarch64` (see [Install from source](../install.md)).
 
 The corpus is one JSON object per line, each member a scalar (string, integer, or
 boolean) named exactly as a key column (`--keys`) or a field of the target

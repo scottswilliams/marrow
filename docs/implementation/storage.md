@@ -40,14 +40,35 @@ or adopted.
 An existing-store open is split so that nothing above the storage layer has to
 read a byte of the store directory to decide exclusion.
 
-Acquisition canonicalizes the directory, opens the `lock` entry as that
-directory's own regular file — a link or another node kind standing in for it is
-refused, and the opened node is compared against the entry the directory names —
-and takes the advisory lock. It makes no engine call and is not told which store
-instance it is about to hold. It returns an affine pending owner. Whether the
-entry is reachable under a second name is admitted *after* the lock: a second
-link does not divide exclusion, so refusing on it earlier would convert a
-contender's exclusion verdict into an I/O refusal.
+Acquisition canonicalizes the directory and takes an advisory lock on the
+directory node itself, before it opens any name inside it. It then opens the
+`lock` entry as that directory's own regular file — a link or another node kind
+standing in for it is refused, and the opened node is compared against the entry
+the directory names — and takes a second advisory lock on that entry. It makes no
+engine call and is not told which store instance it is about to hold. It returns
+an affine pending owner. Whether the entry is reachable under a second name is
+admitted *after* the lock: a second link does not divide exclusion, so refusing
+on it earlier would convert a contender's exclusion verdict into an I/O refusal.
+
+Exclusion rests on the directory node because every name inside the directory can
+be replaced. A writer there can unlink the `lock` entry and create another node
+under that name, and can rename a fresh engine file over `store.redb`; each
+replacement alone is refused by the other node's lock, but replacing both leaves
+neither, which is also what a naive whole-directory restore over a live store
+does. The directory node is the one node in the store that no replacement of its
+own children changes, and canonicalization pinned it before the lock was asked
+for.
+
+What that establishes, and what it does not: while a holder is live, no second
+owner of the same store directory node can be constructed, whatever a writer
+inside that directory does to its children. It is not exclusion over a *path*. A
+writer that replaces the store directory node itself — moving it aside and
+publishing another directory under the same name — leaves two live owners of two
+different directories that one path reaches in turn. Nothing here refuses that,
+and no claim is made that it does: a process that can rewrite the store
+directory's parent already holds the store's custody. Exclusion is cooperative
+and advisory throughout; it binds processes that take it, not an actor with write
+access to the directory or its parent.
 
 Binding publishes the store instance the caller has since read, runs the
 caller's zero-capability admission callback, and opens (and, when the prior
@@ -84,12 +105,29 @@ not read is refused at the prefix, with no body read.
 
 Two paths into the same directory are outside that protocol and are resolved by
 path: `store.redb`, which the storage layer opens as part of holding the engine,
-and the `lock` entry it owns.
+and the `lock` entry it owns. Because path resolution follows a link, the
+completeness verdict decides each artifact's node kind through the retained
+descriptor: a name that maps to a node which is not a regular file is refused as
+itself, naming the entry. Without that, a store whose `store.redb` name mapped to
+a link would open on engine bytes outside the directory the owner holds.
 
-Because those descriptor-rooted operations are provided on macOS, and on Linux
-for `x86_64` and `aarch64`, a store open on any other target refuses with a typed
-unqualified-platform refusal naming the operating system and architecture. The
-build itself is not narrowed.
+Two questions are settled before the lock, because acquiring it creates the
+`lock` entry and writes a marker into it: whether this build can admit a store
+directory on this platform at all, and — when the directory holds no lock entry —
+whether the directory is a store rather than an ordinary directory. Neither reads
+an artifact's bytes, and a store with a live holder always has the lock entry, so
+neither can preempt the exclusion verdict a contender is owed.
+
+Neither question resolves a failure to look into an observation. A directory this
+process cannot examine is not a directory whose artifacts are missing: the
+refusal reports the access denial and names the path, and `store.permission_denied`
+is kept distinct from the absent, incomplete, and corrupt verdicts, which state
+what the directory holds.
+
+Because the descriptor-rooted operations are provided on macOS, and on Linux for
+`x86_64` and `aarch64`, a store open on any other target refuses with a typed
+unqualified-platform refusal naming the operating system and architecture, before
+it creates anything in the store directory. The build itself is not narrowed.
 
 ## Commit witness and recovery
 
