@@ -4,14 +4,16 @@
 //! Two properties are pinned here.
 //!
 //! **Outcome agreement.** Parsing is a pure function of the source bytes, so an outcome
-//! derived from a per-query parse equals the one a retained tree produced. This file
+//! derived from a per-query parse equals the one the superseded retained trees produced.
+//! This file
 //! freezes a corpus of rendered outcomes covering the classification cases the retained
 //! trees served — clean files, a recovered-broken file, a file that never decoded — so a
 //! divergence is a failing assertion rather than an assumption.
 //!
 //! **Latency.** The trade this policy accepts is a lex-and-parse per query in exchange
 //! for retaining no tree. The budget is pinned at the maximum file the project owner
-//! admits, because that is the worst case an editor can reach.
+//! admits, because that is the worst case an editor can reach, and it is asserted only in
+//! the optimized profile the server ships in — every profile records the measurement.
 //!
 //! Parseability itself is never inferred from a query-local parse: `broken_files` stays
 //! the snapshot's independent record, which is why a recovered-broken file still
@@ -35,9 +37,14 @@ const MAX_ADMITTED_FILE_BYTES: usize = 1 << 20;
 ///
 /// This is the cost the retention bound buys: the snapshot retains no tree, so a query
 /// lexes and parses the one file it names, then classifies the position over the result.
-/// The budget covers the whole query, not the parse alone. It is set above the measured
-/// worst case with room for ordinary machine variation, and below the threshold at which
-/// a response stops reading as immediate.
+/// The budget covers the whole query, not the parse alone.
+///
+/// The number is derived, not chosen: the measured worst case on the recorded host is
+/// 49 ms, and doubling it leaves room for a machine roughly half as fast and for ordinary
+/// run-to-run variation while staying under the ~100 ms at which a response stops reading
+/// as immediate. The design pass that accepted this trade had measured 15.3 ms for the
+/// parse alone; the whole query, parse plus classification, is the 49 ms recorded here,
+/// and that is the figure the trade stands on.
 ///
 /// A parse cache is not the remedy if this fails: that would be a second retention owner
 /// and would reopen the bound this policy closes.
@@ -244,15 +251,14 @@ fn parseability_is_not_inferred_from_a_query_local_parse() {
     ));
 }
 
-/// A file of exactly the largest admitted size whose facts a snapshot can still hold.
+/// A file of exactly the largest admitted size, reaching it with comment filler after a
+/// substantial declaration set.
 ///
-/// Declaration density is capped by owners outside this row — the image function table
-/// refuses a project of more than 4096 functions, and the snapshot fact ceilings refuse
-/// one whose bodies produce more than 65 536 facts — so a maximum-size file that is
-/// *uniformly* dense in declarations has no snapshot at all to query. The fixture
-/// therefore carries the densest declaration set a snapshot admits and reaches the
-/// admission ceiling with comment filler. The parse a query runs still lexes and parses
-/// every one of the file's bytes, which is what the budget measures.
+/// This is the *latency* worst case of the two maximum-size fixtures measured here: the
+/// query lexes and parses every one of the file's bytes either way, and this shape spends
+/// more of them on lexing than the dense one does. It is not the memory worst case — a
+/// comment byte builds no tree node — so it is not what the parse-transient term is
+/// measured on.
 fn maximum_admitted_file() -> Vec<u8> {
     let mut source = String::from("module big\n\n");
     for index in 0..2_000usize {
@@ -271,6 +277,52 @@ fn maximum_admitted_file() -> Vec<u8> {
     source.into_bytes()
 }
 
+/// A file of exactly the largest admitted size that builds the largest parse tree a
+/// query can be handed, and is queryable. This is the fixture
+/// `MAX_QUERY_PARSE_TRANSIENT_BYTES` is measured over.
+///
+/// A query parses the file it names from that file's own retained bytes, so the only
+/// bound on the tree it builds is the 1 MiB per-file admission ceiling. Nothing else
+/// constrains it: the image and fact ceilings decide whether a *program* compiles or
+/// whether a *snapshot's facts* fit, not whether a query may parse a file, and a file
+/// that did not even parse cleanly is still queried for its recovered forms.
+///
+/// Tree bytes per source byte, not declarations per source byte, is therefore the axis to
+/// maximize. Each body is one operator chain of literals — two source bytes per operator
+/// node and its operand — just under the depth the parser refuses, which is the densest
+/// tree a byte of source can buy. One deliberate type error keeps the whole-image byte
+/// ceiling (which a 1 MiB dense program exceeds) from deciding queryability; the analysis
+/// is resilient, so the project still yields a snapshot and the file still projects its
+/// outline.
+fn dense_admitted_file() -> Vec<u8> {
+    let mut source = String::from("module dense\n\nfn typeError(): int {\n    return \"x\"\n}\n\n");
+    let mut index = 0usize;
+    loop {
+        let mut body = format!("fn f{index}(): int {{\n    return 1");
+        for _ in 0..DENSE_OPERANDS {
+            body.push_str("+1");
+        }
+        body.push_str("\n}\n\n");
+        if source.len() + body.len() > MAX_ADMITTED_FILE_BYTES {
+            break;
+        }
+        source.push_str(&body);
+        index += 1;
+    }
+    // The remainder is shorter than one body; pad it out exactly.
+    while source.len() < MAX_ADMITTED_FILE_BYTES {
+        source.push('\n');
+    }
+    assert_eq!(source.len(), MAX_ADMITTED_FILE_BYTES);
+    source.into_bytes()
+}
+
+/// Operands per body in the dense fixture: below the nesting the parser refuses, so every
+/// body contributes a whole chain rather than an error node. A parser that narrows its
+/// nesting bound fails `a_dense_maximum_admitted_file_is_queryable`, which pins that the
+/// fixture's only diagnostic is its one deliberate type error.
+const DENSE_OPERANDS: usize = 200;
+
 /// The worst wall time of five completion queries over `path`, after one warm query.
 fn worst_query_ms(snapshot: &AnalysisSnapshot, path: &str) -> u128 {
     let file = identity(path);
@@ -285,9 +337,11 @@ fn worst_query_ms(snapshot: &AnalysisSnapshot, path: &str) -> u128 {
     worst
 }
 
-/// A budget is a property of the optimized profile the language server ships in. The
-/// unoptimized profile runs the same code an order of magnitude slower, so the
-/// measurement is recorded there and enforced here.
+/// A budget is a property of the optimized profile the language server ships in, so this
+/// asserts **only** there: the unoptimized profile runs the same code about an order of
+/// magnitude slower, and asserting against it would pin a number no user ever meets. Every
+/// profile records the measurement, so an unoptimized run still reports what it saw; a
+/// caller reading a green unoptimized run has observed the measurement, not the budget.
 #[track_caller]
 fn assert_within_budget(measured: u128, budget: u128, bytes: usize) {
     eprintln!("query-local completion over {bytes} bytes: worst {measured} ms");
@@ -300,12 +354,20 @@ fn assert_within_budget(measured: u128, budget: u128, bytes: usize) {
     );
 }
 
-/// One query over a maximum admitted file stays inside the editor-latency budget.
+/// One query over a maximum admitted file stays inside the editor-latency budget, in
+/// both maximum-size shapes: the comment-padded one, which spends more of its bytes in
+/// the lexer, and the uniformly dense one, which builds the largest tree.
 #[test]
-fn a_query_over_a_maximum_admitted_file_stays_in_budget() {
-    let snapshot = snapshot(vec![("src/big.mw", maximum_admitted_file())]);
+fn a_query_over_a_maximum_admitted_file_stays_in_budget_when_optimized() {
+    let padded = snapshot(vec![("src/big.mw", maximum_admitted_file())]);
     assert_within_budget(
-        worst_query_ms(&snapshot, "src/big.mw"),
+        worst_query_ms(&padded, "src/big.mw"),
+        QUERY_BUDGET_MS,
+        MAX_ADMITTED_FILE_BYTES,
+    );
+    let dense = snapshot(vec![("src/dense.mw", dense_admitted_file())]);
+    assert_within_budget(
+        worst_query_ms(&dense, "src/dense.mw"),
         QUERY_BUDGET_MS,
         MAX_ADMITTED_FILE_BYTES,
     );
@@ -315,7 +377,7 @@ fn a_query_over_a_maximum_admitted_file_stays_in_budget() {
 /// its queries on — stays far inside the budget, so the worst case above is the tail and
 /// not the common cost.
 #[test]
-fn a_query_over_an_ordinary_file_stays_far_inside_the_budget() {
+fn a_query_over_an_ordinary_file_stays_far_inside_the_budget_when_optimized() {
     let mut source = String::from("module ordinary\n\n");
     let filler = "// filler line carrying ordinary comment text for the lexer to scan\n";
     for index in 0..120usize {
@@ -348,4 +410,29 @@ fn a_maximum_admitted_file_yields_a_snapshot() {
         snapshot.document_symbols(&file),
         Ok(Fact::Present(_))
     ));
+}
+
+/// A *uniformly dense* maximum admitted file also yields a snapshot and answers queries.
+/// This is the reachable worst case on the memory axis — every byte builds tree nodes —
+/// and it is the fixture `MAX_QUERY_PARSE_TRANSIENT_BYTES` is measured over. Running this
+/// test alone measures the live parse tree of one such file.
+#[test]
+fn a_dense_maximum_admitted_file_is_queryable() {
+    let snapshot = snapshot(vec![("src/dense.mw", dense_admitted_file())]);
+    let file = identity("src/dense.mw");
+    assert_eq!(
+        snapshot.diagnostics().len(),
+        1,
+        "the fixture's only diagnostic is its one deliberate type error; a parser that \
+         refused this nesting would report one per body and shrink the tree the term \
+         is measured over"
+    );
+    assert!(matches!(
+        snapshot.document_symbols(&file),
+        Ok(Fact::Present(_))
+    ));
+    assert!(
+        snapshot.completions(&file, 64).is_ok(),
+        "the worst case answers the query whose parse the term measures"
+    );
 }

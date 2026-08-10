@@ -240,6 +240,9 @@ impl FunctionRegistry {
 /// names and constraints, held for lazy monomorphization. A template has no image
 /// index; each concrete application is a distinct image function.
 pub(crate) struct GenericTemplate<'p> {
+    /// The file spelling a diagnostic reported against this template names. Distinct
+    /// from `at`: a diagnostic is rendered for a person and carries the identity, while
+    /// a retained fact carries the compact coordinate.
     pub(super) file: FileIdentity,
     /// The snapshot coordinate this template's editor facts are retained under.
     pub(super) at: FileRef,

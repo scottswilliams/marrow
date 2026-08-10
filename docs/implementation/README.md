@@ -84,24 +84,60 @@ project admission limit. A smaller physical representation never widens the
 accepted fact bytes.
 
 Retained facts name their file by a snapshot-local index into the project's own
-module order and their definition target by an index into a per-snapshot target
-table, and they carry spans in the coordinate domain the project owner already
-admits. These are representations, not identities: only the snapshot that minted
-one can resolve it, through the same coordinate validator every query uses.
+module order, carry a definition target inline, and carry spans in the coordinate
+domain the project owner already admits. These are representations, not
+identities: only the snapshot that minted one can resolve it, through the same
+coordinate validator every query uses.
 
-**Measured retention term.** The accounted physical footprint of one live
-`AnalysisSnapshot` is at most **11,378,688 bytes**, against an exported term of
-`MAX_ANALYSIS_SNAPSHOT_RETAINED_BYTES <= 12 MiB`. The accounting excludes the
-caller-shared `Arc<ProjectInput>`, whose up-to-64 MiB of source is the caller's
-charge and is shared rather than copied. It is an arithmetic property of the
-pinned ceilings and the retained representation, re-derived by an exhaustive
-field destructure that fails to build when a retained field is added.
+**Accounted retention term.** The accounted retained representation of one live
+`AnalysisSnapshot` is at most **11,116,544 bytes**, against an exported term of
+`MAX_ANALYSIS_SNAPSHOT_RETAINED_BYTES <= 12 MiB`. It is an arithmetic property of
+the pinned ceilings and the retained representation, not a sampled measurement,
+and the exact figure is asserted rather than only bounded. Two exhaustive
+destructures keep it honest: one over the snapshot's fields, so a new retained
+field fails to build, and one inside each retained fact type's byte charge, so a
+new heap-owning field on a fact fails to build there.
+
+Two things sit outside the accounting. The caller-shared `Arc<ProjectInput>`,
+whose up-to-64 MiB of source is the caller's charge and is shared rather than
+copied. And per-allocation allocator overhead: the term charges structure sizes
+plus charged string bytes, while a snapshot at the count ceiling holds up to
+65,536 separate boxed strings whose allocator rounding and metadata a consumer
+sizing a heap must add on top.
 
 No parse tree is retained. Completion and signature-help queries re-parse exactly
 one already-admitted file's already-retained bytes; the tree is transient, enters
 no collector, and contributes no diagnostic. Parseability is never inferred from
 such a parse — the snapshot's own broken-file record answers that — and the parse
 is bounded by the 1 MiB per-file admission ceiling that already ran.
+
+**Measured transient terms.** Two working-set terms are measured rather than
+accounted, so a consumer sizing a heap reads them beside the retention term.
+Both were measured in the optimized profile on the recorded host; the full
+fingerprint, recipe, and per-run figures live with the lane's evidence.
+
+```text
+MAX_QUERY_PARSE_TRANSIENT_BYTES    <= 160 MiB
+MAX_ANALYSIS_FACT_TRANSIENT_BYTES  <=  25 MiB
+```
+
+`MAX_QUERY_PARSE_TRANSIENT_BYTES` is the live tree of **one** query-local parse
+at the 1 MiB per-file admission ceiling, measured on the densest file a query can
+be handed (145 MB measured). Only that ceiling bounds it: whether a file is
+queryable does not depend on the image or fact ceilings, and a file that did not
+parse cleanly is still queried for its recovered forms. Repeated queries are not
+free — the first reuses the pages the drive's own trees freed, while six
+sequential queries over that file moved the process high-water by 160 MB — so the
+term bounds one live parse, not a session.
+
+`MAX_ANALYSIS_FACT_TRANSIENT_BYTES` is the peak attributable to producing facts,
+measured as the difference between a fact-avalanche workload and an
+identical-shape fact-free control (19 MB measured, on a hover avalanche crossing
+the count ceiling inside a single body).
+
+Both are distinct from, and much smaller than, the analysis **build** transient:
+`drive` materializes every module's tree at once because cross-module resolution
+needs them. That working set is named, not closed, by the bounded-fact work.
 
 ## Identity mutation admission
 

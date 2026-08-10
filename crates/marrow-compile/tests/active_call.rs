@@ -1,6 +1,7 @@
 //! The analysis snapshot answers active-call at a source position with the innermost
 //! enclosing call's callee signature, its typed parameter pieces, and the active argument
-//! index — derived purely positionally over the retained parse tree. The query runs on a
+//! index — derived purely positionally over a query-local parse of the named file's own
+//! retained bytes. The query runs on a
 //! broken file over recovered incomplete-call nodes (the just-opened and just-typed-comma
 //! trigger moments), presents a generic callee's template signature, refuses an over-cap
 //! rendered display as a query-local resource limit rather than truncating, and

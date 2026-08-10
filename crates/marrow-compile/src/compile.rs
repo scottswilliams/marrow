@@ -637,8 +637,21 @@ struct Driven {
 /// retains parser, diagnostic, or fact state.
 struct DriveInputAdmission;
 
+/// Proof that a project passed drive admission: its module count is at most
+/// `max_files`, which is inside the fact coordinate domain. Carrying the count out of
+/// admission is what makes minting a coordinate per module total, so the drive states
+/// the invariant instead of branching on it.
+struct AdmittedModules(u16);
+
+impl AdmittedModules {
+    /// One coordinate per admitted module, in the project's own module order.
+    fn coordinates(&self) -> impl Iterator<Item = FileRef> {
+        (0..self.0).map(FileRef::admitted)
+    }
+}
+
 impl DriveInputAdmission {
-    fn check(project: &ProjectInput) -> Result<(), CompileResourceLimit> {
+    fn check(project: &ProjectInput) -> Result<AdmittedModules, CompileResourceLimit> {
         let limits = CaptureLimits::DEFAULT;
         let modules = project.modules();
         if modules.len() > limits.max_files() {
@@ -675,7 +688,7 @@ impl DriveInputAdmission {
                 limits.max_total_bytes() as u64,
             ));
         }
-        Ok(())
+        Ok(AdmittedModules(modules.len() as u16))
     }
 }
 
@@ -733,10 +746,10 @@ impl Driven {
 /// runs over whatever parsed cleanly; the projection decides what the production
 /// compile reports.
 fn drive(project: &ProjectInput, mode: TestMode) -> Result<Driven, CompileResourceLimit> {
-    DriveInputAdmission::check(project)?;
+    // The admission proof carries one coordinate per module, so every fact this pass
+    // retains has a coordinate before the first one allocates.
+    let admitted = DriveInputAdmission::check(project)?;
     let mut parse = DiagnosticCollector::new();
-    // Admission has proved the module count is inside the coordinate domain, so every
-    // fact this pass retains has a coordinate before the first one allocates.
     let mut facts = AnalysisFactCollector::new(project);
     let mut non_utf8_modules: BTreeSet<String> = BTreeSet::new();
 
@@ -746,16 +759,8 @@ fn drive(project: &ProjectInput, mode: TestMode) -> Result<Driven, CompileResour
     // project module that did not parse; record it as broken so a qualified
     // call into it is a dependency gap rather than an absence.
     let mut decoded: Vec<(FileIdentity, FileRef, String, &str)> = Vec::new();
-    for (index, module) in project.modules().iter().enumerate() {
+    for (at, module) in admitted.coordinates().zip(project.modules()) {
         let file = module.identity().clone();
-        // Admission bounds the module count below the coordinate domain, so this is
-        // total for every admitted project.
-        let Some(at) = FileRef::at(index) else {
-            return Err(CompileResourceLimit::new(
-                ResourceLimitKind::ProjectFiles,
-                CaptureLimits::DEFAULT.max_files() as u64,
-            ));
-        };
         let name = module.module().as_str().to_string();
         match std::str::from_utf8(module.source()) {
             Ok(source) => decoded.push((file, at, name, source)),
@@ -818,6 +823,14 @@ fn drive(project: &ProjectInput, mode: TestMode) -> Result<Driven, CompileResour
     // outline (a `document_symbols` query for it is syntax-unavailable). The first per-file
     // bound overflow stops projection: the analysis snapshot refuses the whole snapshot on
     // it, so no partial outline set is retained.
+    //
+    // Deliberately no early-out on a crossed global ceiling, unlike the hover family. The
+    // projection is the one owner of the per-file count and depth bounds, which keep
+    // precedence over the global ceilings whatever the module order, so it must run for
+    // every module regardless; charging the outline it already built is a walk over
+    // existing nodes with no allocation, and it is what lets a Bytes crossing strengthen
+    // to Count once the composed count crosses. Each outline is dropped as it is charged,
+    // so the live peak is one module's outline either way.
     let mut symbol_limit: Option<crate::analysis::SymbolLimit> = None;
     for module in &clean {
         match crate::analysis::project_document_symbols(&module.ast.declarations) {

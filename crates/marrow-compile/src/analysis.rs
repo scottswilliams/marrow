@@ -16,7 +16,7 @@
 
 use std::sync::Arc;
 
-use marrow_project::{FileIdentity, ProjectInput};
+use marrow_project::{CaptureLimits, FileIdentity, ProjectInput};
 use marrow_syntax::{Declaration, EnumMember, FormatRefusal, SourceSpan};
 
 use crate::compile::{Analyzed, analyze_project};
@@ -96,11 +96,10 @@ pub const MAX_SYMBOL_DEPTH: u16 = 16;
 /// [`ProjectInput::modules`] order.
 ///
 /// It is not an identity, a table, or a ledger: it is a coordinate that only the
-/// snapshot which minted it can resolve, through [`AnalysisSnapshot::module_of`]. The
-/// drive mints one per module while iterating that same order, and
-/// [`crate::compile::DriveInputAdmission`] has already proved the project holds at
-/// most 4096 modules before the first fact allocates, so the domain is in range by
-/// construction.
+/// snapshot which minted it can resolve, through its private `identity_of`. The drive
+/// mints one per module while iterating that same order, carrying out of admission the
+/// proof that the project holds at most 4096 modules before the first fact allocates, so
+/// the domain is in range by construction.
 ///
 /// The compaction is load-bearing, not cosmetic: a [`FileIdentity`] is an owned
 /// spelling of up to 4096 bytes, and one clone per retained fact is up to 256 MiB of
@@ -110,9 +109,23 @@ pub const MAX_SYMBOL_DEPTH: u16 = 16;
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) struct FileRef(u16);
 
+/// The admission ceiling is inside the coordinate domain, so a position in an admitted
+/// project's module order is a coordinate without a fallible conversion. A widened file
+/// ceiling must widen [`FileRef`] with it, and fails to build until it does.
+const _: () = assert!(CaptureLimits::DEFAULT.max_files() <= u16::MAX as usize);
+
 impl FileRef {
-    /// The coordinate for the module at `index` in the drive's own iteration of
-    /// [`ProjectInput::modules`]. Private to the crate and minted only there.
+    /// The coordinate for the `index`-th module of a project the drive has admitted.
+    /// Total: admission proved the module count is at most `max_files`, which the
+    /// assertion above proves is inside this domain.
+    pub(crate) fn admitted(index: u16) -> Self {
+        Self(index)
+    }
+
+    /// The coordinate for the module at `index` in an iteration of
+    /// [`ProjectInput::modules`], or `None` when the position is outside the domain —
+    /// which resolving a caller-supplied file against an admitted snapshot answers as an
+    /// unknown file. Private to the crate.
     pub(crate) fn at(index: usize) -> Option<Self> {
         u16::try_from(index).ok().map(Self)
     }
@@ -132,7 +145,7 @@ impl FileRef {
 /// One retained span, in the coordinate domain the project owner already admits.
 ///
 /// A snapshot's facts only ever span files that passed drive admission, which refuses
-/// any file over [`CaptureLimits::DEFAULT`]'s 1 MiB per-file ceiling, so every retained
+/// any file over `CaptureLimits::DEFAULT`'s 1 MiB per-file ceiling, so every retained
 /// offset is far inside `u32`. The equality of those two domains is pinned by a test,
 /// exactly as the diagnostic owner pins its ceiling against the syntax owner's.
 ///
@@ -150,6 +163,12 @@ pub(crate) struct FactSpan {
 
 impl FactSpan {
     fn of(span: SourceSpan) -> Self {
+        // A saturating offset would collapse a span to `start == end`, making `contains`
+        // always false and every fact at it silently absent. State the domain instead:
+        // the admission ceiling is inside it (`the_admission_ceiling_fits_the_fact_
+        // coordinate_domain`), so a widened ceiling is a failing debug assertion here
+        // rather than facts that quietly stop resolving.
+        debug_assert!(span.end_byte <= u32::MAX as usize, "a span leaves the domain");
         Self {
             start: span.start_byte.min(u32::MAX as usize) as u32,
             end: span.end_byte.min(u32::MAX as usize) as u32,
@@ -478,8 +497,8 @@ impl AnalysisSnapshot {
     /// The completion classification and candidate namespace at a byte offset in a file.
     ///
     /// The position class is derived purely positionally from the checker's resolution
-    /// model over the retained parse tree — never from the trigger character, document
-    /// text, or a token scan. The candidate set is the complete in-scope namespace for the
+    /// model over a parse of this file's own retained bytes — never from the trigger
+    /// character, document text, or a token scan. The candidate set is the complete in-scope namespace for the
     /// class: locals and parameters in scope before the offset, module functions, consts,
     /// built-ins, imported module names, and enum type names for an expression name; the
     /// base type's declared fields after `.`/`?.`; an enum's immediate members after `::`;
@@ -487,9 +506,9 @@ impl AnalysisSnapshot {
     /// in a type annotation.
     ///
     /// The set is never prefix-filtered, ranked, or truncated: an over-cap namespace is a
-    /// query-local [`CompletionOutcome::Refused`], never a truncated prefix. The
-    /// re-resolution is per query over the retained tree and registries — no per-position
-    /// candidate set is retained.
+    /// query-local [`CompletionOutcome::Refused`], never a truncated prefix. The parse
+    /// and the re-resolution over it are per query and transient — no parse tree and no
+    /// per-position candidate set is retained.
     ///
     /// An unknown file or an out-of-range offset is a typed [`QueryError`]. A file that
     /// produced no parse tree (a non-UTF-8 file) is [`Unavailability::Syntax`]. A broken
@@ -523,8 +542,9 @@ impl AnalysisSnapshot {
     /// The active-call fact at a byte offset: the innermost enclosing call's callee
     /// signature, its parameter pieces, and the active argument index the offset sits at.
     ///
-    /// The enclosing call and active index are derived purely positionally over the
-    /// retained parse tree — never from the trigger character or a document-text scan. The
+    /// The enclosing call and active index are derived purely positionally over a parse
+    /// of this file's own retained bytes — never from the trigger character or a
+    /// document-text scan. The
     /// callee resolves to a same-module function or generic template declared in the file;
     /// a generic callee presents its source template signature. The parameter pieces are
     /// separately rendered from the declared spellings so no consumer substring-searches
@@ -898,8 +918,14 @@ impl AnalysisFactCollector {
         FactSink::Retaining { ledger: self, file }
     }
 
-    /// The logical byte charge of one file's spelling.
+    /// The logical byte charge of one file's spelling. Every coordinate the drive mints
+    /// names a module of the project this ledger was built over, so the lookup is total;
+    /// an absent one would under-charge silently rather than refuse.
     fn spelling_bytes(&self, file: FileRef) -> u64 {
+        debug_assert!(
+            file.index() < self.file_bytes.len(),
+            "a coordinate names a module of this ledger's own project"
+        );
         self.file_bytes.get(file.index()).copied().unwrap_or(0) as u64
     }
 
@@ -1362,7 +1388,7 @@ impl SymbolProjection {
 }
 
 /// The closed set of completion position classes, derived purely positionally from the
-/// checker's resolution model over the retained parse tree — never from the trigger
+/// checker's resolution model over the queried file's parse — never from the trigger
 /// character, document text, or a token scan. Each class fixes which namespace
 /// [`AnalysisSnapshot::completions`] enumerates.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -1529,7 +1555,7 @@ pub enum ActiveCallOutcome {
 
 /// The per-query read-only completion re-resolution.
 ///
-/// This is a distinct read-only pass over the retained parse tree. It never drives the
+/// This is a distinct read-only pass over the query-local parse. It never drives the
 /// compile-path lowerer or resolver — whose arms assume post-`has_errors` input and can
 /// raise resolution invariants — so it runs safely on a broken file and leaks no
 /// diagnostic. A partial or unresolvable base yields an empty candidate set; the position
@@ -1549,7 +1575,7 @@ mod completion {
     };
 
     /// One in-scope binding: its spelling and, when annotated, its declared type node
-    /// borrowed from the retained tree. The type node is the fail-soft type-probe: a
+    /// borrowed from that parse. The type node is the fail-soft type-probe: a
     /// bare struct-name annotation (a single-segment [`TypeExpr::Name`]) resolves to that
     /// struct's fields; any other type shape resolves to no fields.
     struct Binding<'a> {
@@ -2397,11 +2423,11 @@ mod completion {
 
 /// The per-query read-only active-call resolution.
 ///
-/// Like [`completion`], a distinct read-only pass over the retained parse tree: it never
+/// Like [`completion`], a distinct read-only pass over the query-local parse: it never
 /// drives the compile-path resolver, so it runs on a broken file over recovered
 /// incomplete-call nodes and leaks no diagnostic. It collects the calls in the enclosing
 /// declaration, selects the innermost whose argument region holds the offset, resolves the
-/// callee to a same-module function or generic template in the retained tree, renders the
+/// callee to a same-module function or generic template in that parse, renders the
 /// callee's canonical signature and parameter pieces from the declared spellings, and
 /// computes the active argument index positionally. A cross-module callee, a built-in, or
 /// an unknown name resolves to no local declaration and is a legitimate absence.
@@ -2523,8 +2549,8 @@ mod active_call {
         Some(index as u16)
     }
 
-    /// Resolve a callee expression to a same-module function or generic template in the
-    /// retained tree. A qualified (cross-module) name, a built-in, or an unknown name
+    /// Resolve a callee expression to a same-module function or generic template in this
+    /// file's parse. A qualified (cross-module) name, a built-in, or an unknown name
     /// resolves to no local declaration on this floor.
     fn resolve_callee<'a>(file: &'a SourceFile, callee: &Expression) -> Option<&'a FunctionDecl> {
         let Expression::Name { segments, .. } = callee else {

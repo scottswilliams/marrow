@@ -95,10 +95,23 @@ refused whole, never returned as a truncated candidate list or signature.
 A held snapshot retains no parse tree: completion and signature-help queries
 re-parse the single file they name from the snapshot's own retained bytes. The
 measured cost on the recorded host is under a millisecond for a 64 KiB file and
-about 50 ms for a file at the 1 MiB per-file admission ceiling; the compiler pins
-both with budget tests. Parse results are not cached — a cache would be a second
-retention owner — so a session's retained memory stays bounded by the snapshot's
-own accounted footprint rather than by how many files have been queried.
+49 ms for a file at the 1 MiB per-file admission ceiling. The compiler pins both
+with budget tests that assert in the optimized profile the server ships in and
+record the measurement in either profile, because the unoptimized profile runs
+the same code about an order of magnitude slower. Parse results are not cached —
+a cache would be a second retention owner — so a session's retained memory stays
+bounded by the snapshot's own accounted footprint rather than by how many files
+have been queried. The transient cost of a parse is separate and is not bounded
+by that footprint; the compiler publishes it as a measured term.
+
+A snapshot answers about its own retained bytes. Every fact and every coordinate
+resolves against the exact source the snapshot was computed from, and a query
+whose offset falls outside those bytes is a typed coordinate error rather than an
+absent fact. Agreement between those bytes and the editor's live document text is
+**not** established here: the server maps positions against its own overlay text,
+and reconciling the two is the revision and document owner's obligation. A stale
+snapshot therefore answers truthfully about an older revision, not about what the
+user is currently looking at.
 
 ## Installed editor artifact
 
