@@ -20,7 +20,8 @@ use std::process::ExitCode;
 use std::rc::Rc;
 
 use marrow_compile::{CompileFailure, ExportEntry, ExportId, SourceDiagnostic, compile};
-use marrow_project::{DurableIdentityId, IdentityAnchor, LedgerPublicationPlan, ProjectInput};
+use marrow_project::{DurableIdentityId, IdentityAnchor, ProjectInput};
+use marrow_project_fs::IdsPublication;
 use marrow_verify::{
     FunctionIndex, ImageType, Scalar, SealedEnumType, SealedRecordType, VerifiedImage,
 };
@@ -51,6 +52,23 @@ pub(crate) fn run(rest: &[String]) -> ExitCode {
         Ok(args) => args,
         Err(code) => return code,
     };
+
+    // A live `.marrow/ids` publication marker makes the committed ledger
+    // indeterminate, so the one command that writes the ledger settles any
+    // interrupted publication before it reads the project. Every other front
+    // door reports the marker instead.
+    if let Err(failure) = crate::project::recover_identity_publication(Path::new(".")) {
+        return emit(
+            args.format,
+            &[Record::OperationalError {
+                code: failure.code,
+                detail: Some(failure.message),
+            }],
+            &[],
+            &[],
+            ExitCode::FAILURE,
+        );
+    }
 
     let project = match capture_project(&PathBuf::from(".")) {
         Ok(project) => project,
@@ -306,8 +324,9 @@ enum MintOutcome {
 
 /// The `marrow run` convenience mint: when a compile failed *only* because
 /// fresh durable declarations have no ledger row, draw one id per missing
-/// anchor from OS entropy and publish the grown ledger atomically
-/// (temp + rename), leaving the artifact untouched on any failure.
+/// anchor from OS entropy and hand the admitted successor to the adapter's
+/// publication owner, which compares it against the filesystem and installs it
+/// or refuses. The artifact is untouched on any refusal.
 ///
 /// This is a live bridge. Caller: `cmd_run` (this file), and nothing else —
 /// `marrow test` and every other path fail precisely, so CI never mutates the
@@ -341,6 +360,12 @@ fn mint_missing_identities(
         return MintOutcome::NotApplicable;
     };
     let rest = anchors.collect();
+    // Before entropy as well as before capture: entropy drawn against a ledger
+    // whose committed generation is still undecided would be admitted against
+    // the wrong state.
+    if crate::project::recover_identity_publication(Path::new(".")).is_err() {
+        return MintOutcome::Failed(marrow_codes::Code::ProjectIdsPublicationPending.as_str());
+    }
     let publication = match project.admit_identity_mints_with(first, rest, |exact_count| {
         let mut candidates = Vec::with_capacity(exact_count);
         for _ in 0..exact_count {
@@ -351,12 +376,17 @@ fn mint_missing_identities(
         Ok(publication) => publication,
         Err(_) => return MintOutcome::Failed(marrow_codes::Code::ProjectIdsMint.as_str()),
     };
-    match publish_ids(Path::new("."), publication) {
-        Ok(()) => {
+    match crate::project::publish_identity_ledger(Path::new("."), publication) {
+        Ok(IdsPublication::Published) => {
             emit_commit_steer(Path::new("."));
             MintOutcome::Minted
         }
-        Err(_) => MintOutcome::Failed(marrow_codes::Code::IoWrite.as_str()),
+        // The ledger was replaced between admission and publication, so the
+        // successor was never installed and the artifact is the other writer's.
+        Ok(IdsPublication::ConcurrentChange) => {
+            MintOutcome::Failed(marrow_codes::Code::ProjectIdsMint.as_str())
+        }
+        Err(failure) => MintOutcome::Failed(failure.code),
     }
 }
 
@@ -437,79 +467,6 @@ fn draw_entropy_id() -> std::io::Result<DurableIdentityId> {
         std::io::ErrorKind::Unsupported,
         "durable identity minting requires an approved OS entropy source on this platform",
     ))
-}
-
-/// Publish `.marrow/ids` atomically and durably: create the project-metadata
-/// directory, sweep temp debris a crashed earlier publish left behind, write a
-/// sibling temp file and sync its data to disk, rename it over the artifact,
-/// then sync the directory so the rename itself survives power loss. A reader
-/// observes either the old complete artifact or the new one — never a torn
-/// write — and the data sync before the rename keeps that true across power
-/// loss (an unsynced rename can be journaled ahead of the data blocks). The
-/// temp file is removed on failure. The publisher writes the admitted successor
-/// only. It does not compare the plan's expected state with the filesystem;
-/// serialized recapture and stale-publication refusal are not implemented here.
-fn publish_ids(root: &Path, publication: LedgerPublicationPlan) -> std::io::Result<()> {
-    publication.visit(|view| {
-        let meta = root.join(marrow_project::META_DIR);
-        std::fs::create_dir_all(&meta)?;
-        sweep_stale_publish_temps(&meta);
-        let target = root.join(marrow_project::IDS_FILE);
-        let temp = root.join(format!(
-            "{}.tmp.{}",
-            marrow_project::IDS_FILE,
-            std::process::id()
-        ));
-        if let Err(error) = write_synced(&temp, view.next()) {
-            let _ = std::fs::remove_file(&temp);
-            return Err(error);
-        }
-        if let Err(error) = std::fs::rename(&temp, &target) {
-            let _ = std::fs::remove_file(&temp);
-            return Err(error);
-        }
-        sync_directory(&meta)
-    })
-}
-
-/// Write `bytes` to `path` and sync the file's data to disk before returning,
-/// so a rename that follows never becomes visible ahead of the content.
-fn write_synced(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    use std::io::Write as _;
-    let mut file = std::fs::File::create(path)?;
-    file.write_all(bytes)?;
-    file.sync_all()
-}
-
-/// Sync a directory so a completed rename inside it survives power loss.
-/// Directory handles are only opennable for sync on Unix; the mint path is
-/// already Unix-gated by the entropy source.
-fn sync_directory(dir: &Path) -> std::io::Result<()> {
-    #[cfg(unix)]
-    std::fs::File::open(dir)?.sync_all()?;
-    #[cfg(not(unix))]
-    let _ = dir;
-    Ok(())
-}
-
-/// Remove `ids.tmp.*` siblings a crashed earlier publish left behind. A crash
-/// between temp write and rename leaves the mint gap open, so the next durable
-/// run republishes and lands here: the committed metadata directory never
-/// accumulates debris. Removal is best-effort — publication must not fail over
-/// housekeeping.
-fn sweep_stale_publish_temps(meta: &Path) {
-    let Ok(entries) = std::fs::read_dir(meta) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        if entry
-            .file_name()
-            .to_str()
-            .is_some_and(|name| name.starts_with("ids.tmp."))
-        {
-            let _ = std::fs::remove_file(entry.path());
-        }
-    }
 }
 
 /// Resolve a caller-supplied export path to its [`ExportId`] through the compiler's

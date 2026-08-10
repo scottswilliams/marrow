@@ -338,8 +338,14 @@ pub fn noop(): int {
     let published_snapshot = metadata_snapshot(&temp);
     assert_eq!(
         published_snapshot,
-        vec![("ids".to_string(), true, published.clone())],
-        "the first run creates exactly one regular metadata artifact",
+        vec![
+            ("ids".to_string(), true, published.clone()),
+            // The zero-byte rendezvous entry the publication owner locks while
+            // it writes metadata. It is created once and committed with the
+            // ledger; nothing else appears.
+            ("publish.lock".to_string(), true, Vec::new()),
+        ],
+        "the first run creates the ledger and the metadata write lock, and nothing else",
     );
 
     // This repeats the same pre-verifier resolution outcome and must not touch
@@ -757,17 +763,21 @@ fn a_mint_inside_a_git_repository_steers_toward_committing_the_ledger() {
     );
 }
 
-/// A stale publish temp left by a crashed earlier run is swept by the next
-/// publish. A crash between temp write and rename leaves the mint gap open
-/// (the rename never happened), so the next durable run mints again and its
-/// publish removes the debris: the committed metadata directory holds only
-/// the ledger.
+/// No broad temporary sweep exists. The publication owner names its own four
+/// entries and enumerates the metadata directory nowhere, so an unrelated
+/// sibling — whatever left it there — survives a publication untouched. A
+/// publisher that swept siblings would be removing entries it cannot prove are
+/// its own, which is exactly what the retained manual states exist to avoid.
 #[test]
-fn a_stale_publish_temp_from_a_crashed_run_is_swept_on_the_next_publish() {
-    let temp = TempDir::new("stale-temp-sweep");
+fn a_foreign_metadata_sibling_survives_a_publication_untouched() {
+    let temp = TempDir::new("foreign-sibling-retained");
     project(&temp, COUNTER_SOURCE);
     fs::create_dir_all(temp.join(".marrow")).expect("metadata directory");
-    fs::write(temp.join(".marrow/ids.tmp.99999"), b"debris from a crash").expect("stale temp");
+    fs::write(
+        temp.join(".marrow/ids.tmp.99999"),
+        b"not this owner's entry",
+    )
+    .expect("sibling");
 
     let set = run_in(&temp, &["run", "set", "--", "hits", "5"]);
     assert!(
@@ -788,7 +798,15 @@ fn a_stale_publish_temp_from_a_crashed_run_is_swept_on_the_next_publish() {
     entries.sort();
     assert_eq!(
         entries,
-        vec!["ids".to_string()],
-        "publish sweeps stale temp siblings"
+        vec![
+            "ids".to_string(),
+            "ids.tmp.99999".to_string(),
+            "publish.lock".to_string()
+        ],
+        "publication touches only the entries it names"
+    );
+    assert_eq!(
+        fs::read(temp.join(".marrow/ids.tmp.99999")).expect("the sibling is retained"),
+        b"not this owner's entry"
     );
 }

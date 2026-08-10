@@ -11,7 +11,7 @@ use std::fmt;
 
 use marrow_fs_journal::{
     AdmittedDir, CustodyError, EntryName, EntryStat, FsIdentity, JournalKind, LiveJournal,
-    PendingState, PhaseRecord, TailState, classify, claim, encode_record,
+    PendingState, PhaseRecord, TailState, claim, classify, encode_record,
 };
 use marrow_project::{LedgerExpectedArtifact, LedgerPublicationPlan, LedgerPublicationView};
 
@@ -88,9 +88,8 @@ impl fmt::Display for MapFault {
                 formatter,
                 "the `.marrow` artifact map is not a state phase {phase} can have produced"
             ),
-            Self::ThirdInode => formatter.write_str(
-                "a third live inode holds the stage name beside an installed successor",
-            ),
+            Self::ThirdInode => formatter
+                .write_str("a third live inode holds the stage name beside an installed successor"),
             Self::BytesDrift { role } => write!(formatter, "{role} is not the exact bound run"),
             Self::ExchangeUncertain => {
                 formatter.write_str("the exchange did not land in a settleable state")
@@ -108,7 +107,10 @@ impl fmt::Display for MapFault {
                 formatter.write_str("the header's inode identity is not the marker's own")
             }
             Self::UnknownPhase { found } => {
-                write!(formatter, "phase tag {found} is outside the kind's registry")
+                write!(
+                    formatter,
+                    "phase tag {found} is outside the kind's registry"
+                )
             }
         }
     }
@@ -206,7 +208,9 @@ pub(super) fn recover(
     let meta = guard.meta();
     let names = guard.journal_names();
     let claim_witness = meta.stat_entry(names.claim())?.map(|stat| stat.identity());
-    let pending_witness = meta.stat_entry(names.pending())?.map(|stat| stat.identity());
+    let pending_witness = meta
+        .stat_entry(names.pending())?
+        .map(|stat| stat.identity());
     match classify(meta, names, JournalKind::Ids)? {
         PendingState::Absent => {
             if meta.stat_entry(guard.stage_name())?.is_some() {
@@ -325,8 +329,8 @@ fn publish_admitted<'a>(
     let mut session = Session::new(guard, header, journal, None);
     match session.drive() {
         Ok(publication) => Ok(IdsPublishOutcome::Settled(publication)),
-        Err(cause) => Ok(IdsPublishOutcome::Pending(IdsPublicationPending::new(
-            session, cause,
+        Err(cause) => Ok(IdsPublishOutcome::Pending(Box::new(
+            IdsPublicationPending::new(session, cause),
         ))),
     }
 }
@@ -377,7 +381,10 @@ fn discard_stage(
             Ok(())
         }
         None => Ok(()),
-        Some(_) => Err(CustodyError::IdentityDrift { op: "stage discard" }.into()),
+        Some(_) => Err(CustodyError::IdentityDrift {
+            op: "stage discard",
+        }
+        .into()),
     }
 }
 
@@ -457,10 +464,9 @@ impl<'a> Session<'a> {
             }
             MapState::Installed => Ok(Terminal::Installed),
             MapState::Reverted => Ok(Terminal::Reverted),
-            MapState::InstalledClean | MapState::RevertedClean => Err(MapFault::OffMap {
-                phase: INSTALLING,
+            MapState::InstalledClean | MapState::RevertedClean => {
+                Err(MapFault::OffMap { phase: INSTALLING }.into())
             }
-            .into()),
         }
     }
 
@@ -569,7 +575,10 @@ impl<'a> Session<'a> {
                 meta.sync()?;
                 Ok(())
             }
-            _ => Err(CustodyError::IdentityDrift { op: "stage cleanup" }.into()),
+            _ => Err(CustodyError::IdentityDrift {
+                op: "stage cleanup",
+            }
+            .into()),
         }
     }
 
@@ -637,7 +646,9 @@ impl<'a> Session<'a> {
             }
             // Installed, absent arm: one inode under both names.
             (Some(target), Some(staged), None)
-                if target.identity() == next && staged.identity() == next && target.nlink() == 2 =>
+                if target.identity() == next
+                    && staged.identity() == next
+                    && target.nlink() == 2 =>
             {
                 Ok(MapState::Installed)
             }

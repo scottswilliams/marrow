@@ -174,8 +174,11 @@ in the store directory. See [Install from source](../install.md).
 
 When a fresh durable declaration has no identity in the project's
 [identity ledger](projects.md#the-identity-ledger), `run` still mints one from OS
-entropy and publishes the updated `.marrow/ids` atomically before compiling
-again — commit that file — and then parks the durable export. Because an identity
+entropy and publishes the updated `.marrow/ids` through the serialized
+crash-recoverable publication protocol before compiling again — commit that
+file — and then parks the durable export. `run` settles any interrupted
+publication before it captures the project or draws entropy; every other command
+reports `project.ids_publication_pending` while a publication marker is live. Because an identity
 is durable once minted, `run` mints and persists it even when the program still
 has unrelated errors: the mint is not gated on an otherwise-clean compile, and
 the recompile then reports whatever genuinely remains. This convenience is

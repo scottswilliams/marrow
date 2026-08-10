@@ -13,6 +13,8 @@ my_app/
   .marrow/         committed project metadata (machine-written)
     ids            durable-identity ledger (present only when the project
                    declares durable data)
+    publish.lock   zero-byte entry the tools lock while writing metadata
+                   (present once the project has published a ledger)
   src/             source root (required for any source file)
     main.mw        path-derived name `main`
     shelf/
@@ -20,9 +22,11 @@ my_app/
 ```
 
 `.marrow` is the project's behind-the-scenes metadata directory. It holds
-committed machine-written artifacts only — today, the identity ledger. Commit
-the directory with the source, like `.github`; caches and stores never live in
-it, so it is never ignored. Developers do not read or edit its contents.
+committed machine-written artifacts only — today, the identity ledger and the
+zero-byte `publish.lock` the tools lock while writing metadata. Commit the
+directory with the source, like `.github`; caches and stores never live in it,
+so it is never ignored. Developers do not read or edit its contents. A project
+that has never published a ledger has no `.marrow` directory at all.
 
 Source lives under the fixed `src` directory. Every `.mw` file under `src` is
 captured; nothing outside `src` is captured. A project needs no `src` directory
@@ -128,12 +132,30 @@ A planning refusal has no entropy or metadata effect; a later candidate or
 binding refusal still has no metadata effect. Each reports `project.ids_mint`.
 
 The resulting one-use publication plan binds the exact captured artifact state
-to the canonical successor and cannot be constructed from raw byte slices. The
-current command-line publisher consumes that plan as a unit and retains the
-existing synchronized temporary-file-and-rename publication. It does not yet
-compare the captured expected state with the filesystem before replacement, so
-the binding is not a stale-publication, replay-prevention, or unique-issuance
-guarantee.
+to the canonical successor and cannot be constructed from raw byte slices. One
+publication owner consumes that plan as a unit: under an exclusive
+project-metadata write lock it re-reads `.marrow/ids` and requires it to be
+byte-for-byte the state the plan was admitted against, then publishes through a
+crash-recoverable protocol. A plan admitted against a generation another writer
+has since replaced is refused without installing anything, so the binding is a
+stale-publication refusal.
+
+Publication is serialized and crash-recoverable. The successor is written and
+synced to the fixed `.marrow/ids.publish.stage`, a durable marker is claimed at
+`.marrow/ids.pending`, the successor is linked or atomically exchanged into
+place, and the marker is removed last. While a marker exists the committed
+ledger is indeterminate, so every read-only command reports
+`project.ids_publication_pending` rather than reading a generation recovery may
+replace; `marrow run` — the one command that writes the ledger — settles the
+interrupted publication before it captures the project or draws entropy. A state
+the protocol cannot have produced, and a publication that was created but never
+durably claimed, are retained exactly as found: no command removes an entry it
+cannot prove is its own, and there is no sweep of temporary files. Removing the
+named entries by hand is the documented way out.
+
+The established durability is atomic publication plus process- and
+operating-system-crash recovery within a file-and-directory-`fsync` envelope.
+Sudden-power-loss durability is not established, on any platform.
 
 A merge that leaves conflict markers, two rows claiming one identity (the
 signature of the same declaration minted independently on two branches), a

@@ -78,10 +78,6 @@ mod kats;
 mod publication_kats;
 
 pub use capture::capture_project;
-pub use publication::{
-    IdsPublication, IdsPublicationError, IdsPublicationMarker, IdsPublicationPending,
-    IdsPublishOutcome, IdsRefusal, ProjectMetadataWriteGuard, ids_publication_marker,
-};
 pub use failure::{
     CaptureFailure, LedgerHome, LinkPosition, PhysicalBound, PhysicalFailure, PhysicalIoError,
     PhysicalKind, PhysicalOperation, PhysicalRefusal, PhysicalRole,
@@ -90,6 +86,10 @@ pub use overlay::{
     OverlayBound, OverlayEntry, OverlayEntryIndex, OverlayFailure, OverlayReason, OverlaySnapshot,
 };
 pub use presentation::CapturePresentation;
+pub use publication::{
+    IdsPublication, IdsPublicationError, IdsPublicationMarker, IdsPublicationPending,
+    IdsPublishOutcome, IdsRefusal, ProjectMetadataWriteGuard, ids_publication_marker,
+};
 
 pub use marrow_codes::Code;
 pub use marrow_project::{CaptureError, FileIdentity, ManifestError, Position, ProjectInput};

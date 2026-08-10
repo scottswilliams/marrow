@@ -25,8 +25,8 @@ use crate::capture::capture_project;
 use crate::overlay::OverlaySnapshot;
 use crate::publication::header::RowHeader;
 use crate::publication::{
-    IdsPublication, IdsPublicationMarker, IdsPublishOutcome, IdsRefusal,
-    ProjectMetadataWriteGuard, ids_publication_marker,
+    IdsPublication, IdsPublicationMarker, IdsPublishOutcome, IdsRefusal, ProjectMetadataWriteGuard,
+    ids_publication_marker,
 };
 
 const MANIFEST: &[u8] = b"edition = \"2026\"\n";
@@ -278,7 +278,11 @@ fn a_publication_installs_the_successor_over_an_absent_artifact() {
         outcome,
         IdsPublishOutcome::Settled(IdsPublication::Published)
     ));
-    assert!(project.read_meta("ids").is_some_and(|bytes| !bytes.is_empty()));
+    assert!(
+        project
+            .read_meta("ids")
+            .is_some_and(|bytes| !bytes.is_empty())
+    );
     assert!(!project.exists("ids.publish.stage"));
     assert!(!project.exists("ids.pending"));
     assert!(!project.exists("ids.pending.create"));
@@ -291,8 +295,13 @@ fn a_publication_replaces_the_exact_captured_generation() {
     let project = Project::new("replace");
     let first = project.plan("Book", 1);
     let guard = project.guard();
-    let settled = guard.publish_ids(first).expect("the first publication runs");
-    assert!(matches!(settled, IdsPublishOutcome::Settled(IdsPublication::Published)));
+    let settled = guard
+        .publish_ids(first)
+        .expect("the first publication runs");
+    assert!(matches!(
+        settled,
+        IdsPublishOutcome::Settled(IdsPublication::Published)
+    ));
     let base = project.read_meta("ids").expect("the first generation");
 
     let second = project.plan("Shelf", 2);
@@ -385,7 +394,9 @@ fn recovery_installs_from_installing_absent_before_the_link() {
     let _serial = serialized();
     let project = Project::new("installing-absent-before");
     project.write_meta("ids.publish.stage", b"successor");
-    Crash::new(&project, None, b"successor").installing().plant();
+    Crash::new(&project, None, b"successor")
+        .installing()
+        .plant();
 
     let settled = project.guard().recover_ids().expect("recovery runs");
     assert_eq!(settled, Some(IdsPublication::Published));
@@ -404,7 +415,9 @@ fn recovery_settles_from_installing_absent_after_the_link() {
         project.meta().join("ids"),
     )
     .expect("link the staged successor into place");
-    Crash::new(&project, None, b"successor").installing().plant();
+    Crash::new(&project, None, b"successor")
+        .installing()
+        .plant();
 
     let settled = project.guard().recover_ids().expect("recovery runs");
     assert_eq!(settled, Some(IdsPublication::Published));
@@ -513,7 +526,9 @@ fn recovery_reverts_when_the_destination_was_taken() {
     let project = Project::new("destination-taken");
     project.write_meta("ids", b"another writer's generation");
     project.write_meta("ids.publish.stage", b"successor");
-    Crash::new(&project, None, b"successor").installing().plant();
+    Crash::new(&project, None, b"successor")
+        .installing()
+        .plant();
 
     let settled = project.guard().recover_ids().expect("recovery runs");
     assert_eq!(settled, Some(IdsPublication::ConcurrentChange));
@@ -730,8 +745,7 @@ fn capture_refuses_while_a_claim_exists() {
         Some(IdsPublicationMarker::Claimed)
     );
     let failure = capture_project(project.path(), OverlaySnapshot::empty())
-        .err()
-        .expect("capture refuses under a live claim");
+        .expect_err("capture refuses under a live claim");
     assert_eq!(
         failure.presentation(project.path()).code(),
         Code::ProjectIdsPublicationPending
@@ -748,8 +762,7 @@ fn capture_refuses_while_an_unclaimed_create_exists() {
         Some(IdsPublicationMarker::Unclaimed)
     );
     let failure = capture_project(project.path(), OverlaySnapshot::empty())
-        .err()
-        .expect("capture refuses under an unclaimed create");
+        .expect_err("capture refuses under an unclaimed create");
     assert_eq!(
         failure.presentation(project.path()).code(),
         Code::ProjectIdsPublicationPending

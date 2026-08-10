@@ -173,17 +173,18 @@ impl fmt::Debug for IdsPublicationPending<'_> {
 pub enum IdsPublishOutcome<'a> {
     /// The publication reached a terminal state and the marker is gone.
     Settled(IdsPublication),
-    /// The publication is durably claimed and did not settle.
-    Pending(IdsPublicationPending<'a>),
+    /// The publication is durably claimed and did not settle. The retained
+    /// guard borrow, live journal, and cause are boxed so an ordinary settled
+    /// publication does not carry them by value.
+    Pending(Box<IdsPublicationPending<'a>>),
 }
 
 impl fmt::Debug for IdsPublishOutcome<'_> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Settled(publication) => formatter
-                .debug_tuple("Settled")
-                .field(publication)
-                .finish(),
+            Self::Settled(publication) => {
+                formatter.debug_tuple("Settled").field(publication).finish()
+            }
             Self::Pending(pending) => formatter.debug_tuple("Pending").field(pending).finish(),
         }
     }

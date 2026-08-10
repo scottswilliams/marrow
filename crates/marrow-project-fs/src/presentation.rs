@@ -87,7 +87,9 @@ impl<'a> CapturePresentation<'a> {
             CaptureFailureKind::Project(error) => sink.write_str(error.message()),
             CaptureFailureKind::Physical(failure) => self.write_physical(sink, failure, os_prose),
             CaptureFailureKind::OverlayInput(failure) => write_overlay(sink, failure.reason()),
-            CaptureFailureKind::IdsPublicationPending(marker) => write_publication_pending(sink, *marker),
+            CaptureFailureKind::IdsPublicationPending(marker) => {
+                write_publication_pending(sink, *marker)
+            }
         }
     }
 

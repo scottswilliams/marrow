@@ -14,7 +14,9 @@ sentence describes access and never grants it.
 directory (including the machine-written `.marrow/ids` identity ledger), compile
 it to canonical image bytes — minting missing durable identities from OS
 entropy into `.marrow/ids` first (a `run`-only convenience; every other path
-fails precisely, and the accepted apply action supersedes it), verify them into
+fails precisely, and the accepted apply action supersedes it) through the
+adapter's publication owner, which `run` also asks to settle any interrupted
+publication before it captures the project or draws entropy, verify them into
 a sealed image, open a store in-process when the export's verified demand is
 nonempty (`--store <path>`; an interim seam that dies with the durable-run
 trough), execute on the VM, and
