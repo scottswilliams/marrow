@@ -452,3 +452,61 @@ fn a_refused_instance_body_withholds_the_lowered_set() {
         );
     }
 }
+
+/// A refused declared function body withholds `CompleteDeclaredFunctionBodies` while no
+/// generic instance is ever queued, so the drain runs over an empty queue and its own
+/// conjunct still holds. The declared-body conjunct is then the only thing standing
+/// between the refusal and a call-graph fact, and the independent recursion cycle in the
+/// second module is not reported.
+///
+/// Dropping that conjunct does not merely add a row. The refused declaration's reserved
+/// index is never minted, so the adjacency the call graph is built over is short by one
+/// and the cycle it walks is partial: it names `cycB` alone, a fabricated fact about a
+/// program the compiler never finished lowering.
+const REFUSED_BODY_BESIDE_AN_INDEPENDENT_CYCLE: &[(&str, &str)] = &[
+    (
+        "src/main.mw",
+        r#"module main
+
+pub fn driver(): int {
+    return missingCall()
+}
+"#,
+    ),
+    (
+        "src/other.mw",
+        r#"module other
+
+fn cycA(): int {
+    return cycB()
+}
+
+fn cycB(): int {
+    return cycA()
+}
+"#,
+    ),
+];
+
+#[test]
+fn a_refused_declared_body_withholds_the_lowered_set() {
+    let rows = diagnostics_over(REFUSED_BODY_BESIDE_AN_INDEPENDENT_CYCLE);
+    assert_eq!(
+        codes(&rows),
+        vec!["check.type"],
+        "the refused body reports its own unresolved call, and the withheld lowered set \
+         produces no call-graph fact over the independent module: {rows:#?}",
+    );
+    for outcome in [
+        outcome_of(compile(&project(REFUSED_BODY_BESIDE_AN_INDEPENDENT_CYCLE))),
+        outcome_of(compile_with_tests(&project(
+            REFUSED_BODY_BESIDE_AN_INDEPENDENT_CYCLE,
+        ))),
+    ] {
+        assert_eq!(
+            outcome,
+            Outcome::Diagnostics,
+            "a reserved-but-unminted declaration index never reaches the encoder",
+        );
+    }
+}
