@@ -152,10 +152,10 @@ impl<'a, 'c> StmtParser<'a, 'c> {
         }
     }
 
-    /// Sole owner of the line-comment decision: a `;;` doc comment in statement
+    /// Sole owner of the line-comment decision: a `///` doc comment in statement
     /// position has no declaration to attach to, so it is reported rather than
     /// retained — a swallowed doc comment is one the formatter cannot place,
-    /// breaking the check-run-format round trip — while an ordinary `;` comment
+    /// breaking the check-run-format round trip — while an ordinary `//` comment
     /// becomes trivia for the current block at the given placement. Returns the
     /// retained comment for callers that place it conditionally; `None` when the
     /// token was a doc comment that has been reported.

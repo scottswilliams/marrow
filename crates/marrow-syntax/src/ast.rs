@@ -1126,7 +1126,7 @@ impl Statement {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ParamDecl {
-    /// `;;` doc lines above this parameter; empty for single-line lists, where
+    /// `///` doc lines above this parameter; empty for single-line lists, where
     /// parameter docs are not written.
     pub docs: Vec<String>,
     pub name: String,

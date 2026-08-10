@@ -290,7 +290,7 @@ impl<'a, 'c> DeclParser<'a, 'c> {
         Vec::new()
     }
 
-    /// Drain accumulated `;;` doc comments that found no following declaration,
+    /// Drain accumulated `///` doc comments that found no following declaration,
     /// member, or parameter to attach to. A dangling doc comment is a syntax error
     /// — a swallowed doc comment is one the formatter cannot place, breaking the
     /// check-run-format round trip — so each is reported and retained as trivia for

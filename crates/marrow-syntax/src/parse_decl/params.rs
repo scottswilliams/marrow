@@ -271,7 +271,7 @@ pub(super) fn match_angle(tokens: &[Token]) -> Option<usize> {
 /// Parse a `name: type` parameter list. Parameters are separated by
 /// commas, and in a multi-line list a line break separates one from the next just
 /// as a comma does, so the list reads cleanly written with commas, without them,
-/// or mixed. A run of `;;` doc lines directly above a parameter is its
+/// or mixed. A run of `///` doc lines directly above a parameter is its
 /// documentation, captured in source order.
 fn parse_params_tokens(source: &str, inner: &[Token]) -> ParseResult<Vec<ParamDecl>> {
     if inner.is_empty() {
@@ -398,7 +398,7 @@ fn reject_removed_parameter_mode(source: &str, tokens: &[Token]) -> ParseResult<
     ))
 }
 
-/// One parameter's tokens: its leading `;;` doc-comment run and the body tokens
+/// One parameter's tokens: its leading `///` doc-comment run and the body tokens
 /// that spell `name: type`.
 struct ParamGroup<'a> {
     docs: Vec<&'a Token>,
@@ -412,7 +412,7 @@ struct ParamGroup<'a> {
 /// boundary is read from token spans rather than a separator token. Depth counts
 /// `(`/`[`/`<` opens so a comma or wrap inside a nested type — a `(...)` identity,
 /// a `[...]` key list, or a `<...>` generic argument list — stays with its
-/// parameter. A leading run of `;;` doc comments attaches to the parameter it
+/// parameter. A leading run of `///` doc comments attaches to the parameter it
 /// precedes.
 fn split_param_groups(inner: &[Token]) -> Vec<ParamGroup<'_>> {
     let mut groups = Vec::new();
@@ -459,7 +459,7 @@ fn split_param_groups(inner: &[Token]) -> Vec<ParamGroup<'_>> {
         }
 
         if token.kind == TokenKind::Comment {
-            // A `;` comment inside the parentheses documents nothing and, like a
+            // A `//` comment inside the parentheses documents nothing and, like a
             // blank line, neither separates nor closes a parameter; the line break
             // to the next parameter is read from the following token's span.
             index += 1;
@@ -485,7 +485,7 @@ fn split_param_groups(inner: &[Token]) -> Vec<ParamGroup<'_>> {
 
     match body_start {
         Some(start) => push_param_group(&mut groups, &mut docs, &inner[start..]),
-        // A `;;` run with no parameter after it documents nothing. Report it as a
+        // A `///` run with no parameter after it documents nothing. Report it as a
         // body-less group so the caller can report the misplaced doc rather than
         // drop it.
         None if !docs.is_empty() => push_param_group(&mut groups, &mut docs, &inner[inner.len()..]),

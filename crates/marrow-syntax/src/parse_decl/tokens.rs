@@ -108,7 +108,7 @@ pub(super) fn push_parse_error(sink: &mut SyntaxSink<'_>, fallback: SourceSpan, 
         span,
     ));
 }
-/// Drop comment tokens from a token slice. A `;` or `;;` line inside an open
+/// Drop comment tokens from a token slice. A `//` or `///` line inside an open
 /// delimiter lexes to a `Comment`/`DocComment` token with no newline; like a
 /// blank line, it does not separate or close anything, so a declaration list
 /// that spans several physical lines reads it as absent. Returns the slice
