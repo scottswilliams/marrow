@@ -435,17 +435,21 @@ fn the_new_member_inherits_the_workspace_package_fields_and_lints() {
 }
 
 #[test]
-fn the_internal_edges_are_exactly_the_three_present_edges() {
+fn the_internal_edges_are_exactly_the_four_present_edges() {
     let root = workspace_root();
     let lock = read(&root, "Cargo.lock");
 
-    // marrow-project-fs depends on exactly the pure owner and the code registry.
+    // marrow-project-fs depends on exactly the pure owner, the code registry,
+    // and the sole descriptor-rooted filesystem publication owner. The journal
+    // edge exists because `.marrow/ids` is a project-root artifact, so its
+    // publication owner is this adapter; a fourth edge is a fresh decision.
     let mut pfs_deps = lock_dependencies(&lock, "marrow-project-fs");
     pfs_deps.sort();
     assert_eq!(
         pfs_deps,
-        ["marrow-codes", "marrow-project"],
-        "marrow-project-fs lock edges must be exactly marrow-codes and marrow-project"
+        ["marrow-codes", "marrow-fs-journal", "marrow-project"],
+        "marrow-project-fs lock edges must be exactly marrow-codes, marrow-fs-journal, \
+         and marrow-project"
     );
 
     // The CLI consumes the adapter.

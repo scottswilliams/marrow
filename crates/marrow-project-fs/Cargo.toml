@@ -10,6 +10,10 @@ authors.workspace = true
 
 [dependencies]
 marrow-codes = { path = "../marrow-codes" }
+# The sole descriptor-rooted filesystem publication owner. `.marrow/ids` is a
+# project-root artifact, so its publication owner is this adapter; the edge is
+# what keeps the rename/link/sync/recovery model single.
+marrow-fs-journal = { path = "../marrow-fs-journal" }
 marrow-project = { path = "../marrow-project" }
 
 [lints]

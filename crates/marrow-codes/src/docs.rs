@@ -311,7 +311,8 @@ a non-UTF-8 command argument.
 Project-capture faults raised while discovering a project's source under `src`
 and reading its committed `.marrow/ids` identity artifact: an invalid contained
 path, a module-identity collision, an exceeded capture bound, a corrupt or
-misplaced identity artifact, or a failed identity mint.
+misplaced identity artifact, a failed identity mint, or a live identity-artifact
+publication marker that makes the committed ledger indeterminate.
 
 | Code | Meaning |
 |---|---|"#
@@ -323,6 +324,7 @@ misplaced identity artifact, or a failed identity mint.
             Code::ProjectIdsCorrupt,
             Code::ProjectIdsMint,
             Code::ProjectIdsLocation,
+            Code::ProjectIdsPublicationPending,
         ]),
         r#"
 ### `wire.*` — kind `tooling`

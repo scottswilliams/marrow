@@ -96,6 +96,12 @@ fn ledger_stage(
 ) -> Result<Option<Vec<u8>>, CaptureFailure> {
     overlay.mark_wrong_role(marrow_project::IDS_FILE);
     overlay.mark_wrong_role(marrow_project::LEGACY_IDS_FILE);
+    // A live publication marker means the committed ledger is whichever
+    // generation recovery settles on, so every read-only front door refuses
+    // here rather than capturing a generation that is about to be replaced.
+    if let Some(marker) = crate::publication::ids_publication_marker(canonical) {
+        return Err(CaptureFailure::from_ids_publication_marker(marker));
+    }
     let home_present = !optional_absent(&canonical.join(marrow_project::IDS_FILE));
     // The ledger has one home. A file at the retired root path is refused with
     // a one-line steer rather than read, so two live ledger locations are

@@ -70,11 +70,18 @@ mod limits;
 mod overlay;
 mod path;
 mod presentation;
+mod publication;
 
 #[cfg(test)]
 mod kats;
+#[cfg(test)]
+mod publication_kats;
 
 pub use capture::capture_project;
+pub use publication::{
+    IdsPublication, IdsPublicationError, IdsPublicationMarker, IdsPublicationPending,
+    IdsPublishOutcome, IdsRefusal, ProjectMetadataWriteGuard, ids_publication_marker,
+};
 pub use failure::{
     CaptureFailure, LedgerHome, LinkPosition, PhysicalBound, PhysicalFailure, PhysicalIoError,
     PhysicalKind, PhysicalOperation, PhysicalRefusal, PhysicalRole,

@@ -259,7 +259,8 @@ a non-UTF-8 command argument.
 Project-capture faults raised while discovering a project's source under `src`
 and reading its committed `.marrow/ids` identity artifact: an invalid contained
 path, a module-identity collision, an exceeded capture bound, a corrupt or
-misplaced identity artifact, or a failed identity mint.
+misplaced identity artifact, a failed identity mint, or a live identity-artifact
+publication marker that makes the committed ledger indeterminate.
 
 | Code | Meaning |
 |---|---|
@@ -269,6 +270,7 @@ misplaced identity artifact, or a failed identity mint.
 | `project.ids_corrupt` | The committed `.marrow/ids` identity artifact is corrupt and is rejected whole, never half-read: unresolved Git conflict markers, a malformed or duplicate row, two rows claiming one `(kind, path)` anchor or one id (the signature of a conflicting double-mint on parallel branches), a retired id reissued by a live row, an inconsistent retirement high-water, a truncated (torn) file missing its end marker, or a size past the fixed artifact bound. `.marrow/ids` is machine-written only: restore it from version control rather than editing it. |
 | `project.ids_mint` | `marrow run` could not admit missing durable identities: a requested anchor was invalid, duplicated, already live, or retired; the successor exceeded the fixed row or canonical-byte bound; the OS entropy source failed; the candidate supplier disagreed with the admitted count; or a candidate collided with a live, retired, or earlier candidate. The `.marrow/ids` artifact is left byte-for-byte unchanged. Correct source, state, capacity, or tool faults before running again; only entropy-source or collision outcomes may differ on another attempt. |
 | `project.ids_location` | The durable-identity ledger was found at its retired project-root path `marrow.ids`. The ledger's home is `.marrow/ids`: move the file (`git mv marrow.ids .marrow/ids`) and commit the move. When files exist at both paths, keep the correct ledger at `.marrow/ids` and delete the root `marrow.ids` — a project has exactly one ledger, and capture fails closed rather than choosing between two. |
+| `project.ids_publication_pending` | A `.marrow/ids` publication marker is live, so the committed identity ledger is indeterminate and no command reads it. `.marrow/ids.pending` means a publication was durably claimed and interrupted: `marrow run` recovers it before it captures the project or draws entropy, and recovery either completes the interrupted publication or settles it without installing. `.marrow/ids.pending.create` alone means a publication was created and never durably claimed: the ledger is untouched, and because nothing can prove that entry belongs to an interrupted run, it is retained rather than removed — delete it and `.marrow/ids.publish.stage` to continue. A publication state outside the protocol's closed map is retained the same way: every byte is kept as found and nothing will be mutated. |
 
 ### `wire.*` — kind `tooling`
 

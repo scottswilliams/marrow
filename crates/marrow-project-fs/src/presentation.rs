@@ -20,6 +20,7 @@ use crate::failure::{
 };
 use crate::overlay::{OverlayBound, OverlayReason};
 use crate::path::OperationalPath;
+use crate::publication::IdsPublicationMarker;
 
 /// The required manifest file, joined to the caller root for a located fault.
 const MANIFEST_FILE: &str = "marrow.toml";
@@ -45,6 +46,7 @@ impl<'a> CapturePresentation<'a> {
             CaptureFailureKind::Project(error) => error.code(),
             CaptureFailureKind::Physical(failure) => physical_code(failure),
             CaptureFailureKind::OverlayInput(_) => Code::ProjectSourcePath,
+            CaptureFailureKind::IdsPublicationPending(_) => Code::ProjectIdsPublicationPending,
         }
     }
 
@@ -85,6 +87,7 @@ impl<'a> CapturePresentation<'a> {
             CaptureFailureKind::Project(error) => sink.write_str(error.message()),
             CaptureFailureKind::Physical(failure) => self.write_physical(sink, failure, os_prose),
             CaptureFailureKind::OverlayInput(failure) => write_overlay(sink, failure.reason()),
+            CaptureFailureKind::IdsPublicationPending(marker) => write_publication_pending(sink, *marker),
         }
     }
 
@@ -345,6 +348,27 @@ fn physical_code(failure: &PhysicalFailure) -> Code {
 /// The Overlay message. Overlay input faults are consumer-neutral and are not
 /// reachable through any current CLI capture; this rendering is for the later
 /// language-server consumer.
+/// Render a live publication marker. The two markers carry different remedies:
+/// a durable claim is recovered by `marrow run`, while an entry that was never
+/// durably claimed is retained for an operator because nothing can prove it
+/// belongs to an interrupted run.
+fn write_publication_pending(
+    sink: &mut impl fmt::Write,
+    marker: IdsPublicationMarker,
+) -> fmt::Result {
+    sink.write_str(match marker {
+        IdsPublicationMarker::Claimed => {
+            "a `.marrow/ids` publication is claimed and unfinished, so the identity ledger is \
+             indeterminate; run `marrow run` to recover it"
+        }
+        IdsPublicationMarker::Unclaimed => {
+            "`.marrow/ids.pending.create` is present from a publication that was never durably \
+             claimed; `.marrow/ids` is unchanged, and removing that entry and \
+             `.marrow/ids.publish.stage` clears it"
+        }
+    })
+}
+
 fn write_overlay(sink: &mut impl fmt::Write, reason: &OverlayReason) -> fmt::Result {
     match reason {
         OverlayReason::Bound {

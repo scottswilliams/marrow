@@ -19,6 +19,7 @@ use marrow_project::{CaptureError, ManifestError};
 use crate::overlay::OverlayFailure;
 use crate::path::OperationalPath;
 use crate::presentation::CapturePresentation;
+use crate::publication::IdsPublicationMarker;
 
 /// A physical filesystem role the adapter admits while capturing a project.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -275,6 +276,9 @@ pub(crate) enum CaptureFailureKind {
     Physical(PhysicalFailure),
     /// Borrowed overlay input or physical membership was refused.
     OverlayInput(OverlayFailure),
+    /// A live `.marrow/ids` publication marker makes the committed ledger
+    /// indeterminate, so no front door reads it.
+    IdsPublicationPending(IdsPublicationMarker),
 }
 
 /// A physical project capture did not produce a pure [`ProjectInput`].
@@ -301,6 +305,12 @@ impl CaptureFailure {
     /// Wrap a physical admission refusal.
     pub(crate) fn from_physical(failure: PhysicalFailure) -> Self {
         Self(CaptureFailureKind::Physical(failure))
+    }
+
+    /// Wrap a live publication marker: capture refuses before it reads a
+    /// generation recovery may replace.
+    pub(crate) fn from_ids_publication_marker(marker: IdsPublicationMarker) -> Self {
+        Self(CaptureFailureKind::IdsPublicationPending(marker))
     }
 
     /// Wrap a borrowed-overlay-input refusal that occurred before capture. This is
@@ -342,4 +352,5 @@ const _: fn() = || {
     assert_send_sync_static::<PhysicalKind>();
     assert_send_sync_static::<PhysicalBound>();
     assert_send_sync_static::<LinkPosition>();
+    assert_send_sync_static::<IdsPublicationMarker>();
 };

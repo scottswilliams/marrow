@@ -339,9 +339,10 @@ fn cargo_dag_respects_the_trust_boundaries() {
     }
 
     // The physical project adapter is the sole filesystem owner below the tool
-    // consumers. It depends only on the pure project-input owner and the
-    // diagnostic-code registry, and the CLI is its only consumer until the
-    // separately owned LSP crate lands its edge.
+    // consumers. It depends on the pure project-input owner, the diagnostic-code
+    // registry, and the sole descriptor-rooted publication owner — `.marrow/ids`
+    // is a project-root artifact, so publishing it belongs here rather than to a
+    // store-lifecycle owner or a second rename/sync/recovery model.
     let project_fs = find("marrow-project-fs");
     let mut project_fs_edges: Vec<(String, bool)> = project_fs.edges.clone();
     project_fs_edges.sort();
@@ -349,9 +350,11 @@ fn cargo_dag_respects_the_trust_boundaries() {
         project_fs_edges,
         [
             ("marrow-codes".to_string(), false),
+            ("marrow-fs-journal".to_string(), false),
             ("marrow-project".to_string(), false),
         ],
-        "marrow-project-fs must depend only on marrow-project and marrow-codes"
+        "marrow-project-fs must depend only on marrow-project, marrow-codes, and \
+         marrow-fs-journal"
     );
     let cli = find("marrow");
     assert!(
