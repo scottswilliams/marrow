@@ -58,12 +58,14 @@ pub const PARSE_SYNTAX: &str = Code::ParseSyntax.as_str();
 /// The maximum nesting depth the front end will structure before it stops and
 /// reports [`NESTING_LIMIT`].
 ///
-/// Three layers enforce it. The lexer reports the located finding when the brace
+/// Four layers enforce it. The lexer reports the located finding when the brace
 /// depth first exceeds the limit. The statement parser bounds its own descent by
 /// counting frames, so a nest that opens no brace — a trailing clause takes a
 /// single inline statement in place of a block — is refused at the same depth as
-/// one that does. The expression parser enforces it for token-level nesting
-/// (parentheses, unary and binary operands) on a single line.
+/// one that does. The declaration parser counts its nested member blocks (resource
+/// groups, enum categories), which have no inline form. The expression parser
+/// enforces it for token-level nesting (parentheses, unary and binary operands) on
+/// a single line.
 ///
 /// The AST — and every later walk over it — therefore stays bounded no matter how
 /// deep or how long the source is, and deeper source fails closed with a located

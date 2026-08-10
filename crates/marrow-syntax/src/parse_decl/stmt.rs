@@ -106,9 +106,9 @@ impl<'a, 'c> StmtParser<'a, 'c> {
     /// level would pass [`crate::NESTING_DEPTH_LIMIT`].
     ///
     /// The sole place the descent deepens. A caller that reaches a nested body any other
-    /// way is unbounded by construction, which is why the two that exist —
-    /// [`StmtParser::parse_braced_block`] and [`StmtParser::inline_statement_block`] —
-    /// both come through here.
+    /// way is unbounded by construction, which is why all three that exist —
+    /// [`StmtParser::parse_braced_block`], [`StmtParser::match_body`], and
+    /// [`StmtParser::inline_statement_block`] — come through here.
     fn descend<T>(&mut self, body: impl FnOnce(&mut Self) -> T) -> Option<T> {
         if self.depth >= crate::NESTING_DEPTH_LIMIT {
             return None;
