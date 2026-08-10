@@ -22,6 +22,7 @@ use crate::demand::DurableNaming;
 use crate::diag::{
     BoundedDiagnostics, CompileDiagnosticLimit, DiagnosticCollector, SourceDiagnostic,
 };
+use crate::durable::DurableBuildError;
 use crate::durable::DurableRegistry;
 use crate::konst::ConstRegistry;
 use crate::lower::{
@@ -1134,7 +1135,6 @@ fn run_semantic(
     let mut diagnostics = DiagnosticCollector::new();
     // Store roots whose durable identity failed admission, steered to their identity
     // reports once each across the whole compile rather than at every reference.
-    let mut admission_steered: BTreeSet<String> = BTreeSet::new();
     // The source-root-relative path is the authority for module identity. A file
     // that declares a `module` header is an importable module and must spell the
     // path-derived name (with `::` as the dotted separator). A file with no header
@@ -1305,12 +1305,14 @@ fn run_semantic(
             .merge_into(&mut diagnostics);
         return SemanticOutcome::Diagnostics(diagnostics.finish(), CompileStage::TypeInstantiation);
     }
-    let stores: Vec<(FileIdentity, &StoreDecl)> = parsed
+    // Each store carries its file in both representations: the owned identity a
+    // diagnostic renders, and the `Copy` coordinate a retained refusal keeps.
+    let stores: Vec<(FileRef, FileIdentity, &StoreDecl)> = parsed
         .iter()
         .flat_map(|module| {
             module.ast.declarations.iter().filter_map(|decl| {
                 if let Declaration::Store(store) = decl {
-                    Some((module.file.clone(), store))
+                    Some((module.at, module.file.clone(), store))
                 } else {
                     None
                 }
@@ -1326,8 +1328,11 @@ fn run_semantic(
         &mut diagnostics,
     ) {
         Ok(durable) => durable,
-        Err(invariant) => {
+        Err(DurableBuildError::Invariant(invariant)) => {
             return SemanticOutcome::Invariant(InvariantCause::Generic(invariant));
+        }
+        Err(DurableBuildError::LedgerFull(DeclarationLedgerFull)) => {
+            return SemanticOutcome::ResourceLimit(ledger_full());
         }
     };
     // The type registry resolved every declared type: every later phase resolves its
@@ -1420,7 +1425,6 @@ fn run_semantic(
                 &mut draft,
                 &mut diagnostics,
                 facts,
-                &mut admission_steered,
             ) {
                 Ok(phases) => phases,
                 Err(PhaseStop::StageDiagnostics(stage)) => {
@@ -1625,7 +1629,6 @@ fn registry_phases(
     draft: &mut ImageDraft,
     diagnostics: &mut DiagnosticCollector,
     facts: &mut AnalysisFactCollector,
-    admission_steered: &mut BTreeSet<String>,
 ) -> Result<RegistryPhases, PhaseStop> {
     let records = resolution.records;
 
@@ -1642,7 +1645,6 @@ fn registry_phases(
             resolution.generics,
             resolution.constants,
             facts.sink(template.at()),
-            admission_steered,
             template,
         )
         .map_err(|invariant| PhaseStop::Invariant(InvariantCause::Generic(invariant)))?;
@@ -1677,28 +1679,13 @@ fn registry_phases(
     };
     records.set_fn_base(resolution.signatures.concrete_count() + test_count);
 
-    let functions = lower_declared_functions(
-        parsed,
-        resolution,
-        draft,
-        diagnostics,
-        facts,
-        admission_steered,
-    )?;
+    let functions = lower_declared_functions(parsed, resolution, draft, diagnostics, facts)?;
     let function_bodies = functions
         .exit
         .complete()
         .then_some(CompleteDeclaredFunctionBodies);
 
-    let tests = lower_declared_tests(
-        parsed,
-        mode,
-        resolution,
-        draft,
-        diagnostics,
-        facts,
-        admission_steered,
-    )?;
+    let tests = lower_declared_tests(parsed, mode, resolution, draft, diagnostics, facts)?;
     let test_bodies = tests.exit.complete().then_some(CompleteDeclaredTestBodies);
 
     let mut lowered = functions.lowered;
@@ -1723,7 +1710,6 @@ fn registry_phases(
                 resolution.constants,
                 diagnostics,
                 FactSink::Discarding,
-                admission_steered,
                 template,
                 &args,
             ) {
@@ -1789,7 +1775,6 @@ fn lower_declared_functions(
     draft: &mut ImageDraft,
     diagnostics: &mut DiagnosticCollector,
     facts: &mut AnalysisFactCollector,
-    admission_steered: &mut BTreeSet<String>,
 ) -> Result<LoweredFunctions, PhaseStop> {
     let records = resolution.records;
     let mut lowered: Vec<LoweredFn> = Vec::new();
@@ -1817,7 +1802,6 @@ fn lower_declared_functions(
                 resolution.constants,
                 diagnostics,
                 facts.sink(module.at),
-                admission_steered,
                 &module.file,
                 &module.name,
                 function,
@@ -1910,7 +1894,6 @@ fn lower_declared_tests(
     draft: &mut ImageDraft,
     diagnostics: &mut DiagnosticCollector,
     facts: &mut AnalysisFactCollector,
-    admission_steered: &mut BTreeSet<String>,
 ) -> Result<LoweredTests, PhaseStop> {
     let records = resolution.records;
     let mut lowered: Vec<LoweredFn> = Vec::new();
@@ -1954,7 +1937,6 @@ fn lower_declared_tests(
                 resolution.constants,
                 diagnostics,
                 facts.sink(module.at),
-                admission_steered,
                 &module.file,
                 &module.name,
                 &test.name,
@@ -2859,6 +2841,7 @@ mod tests {
                 CollectionKind::List => "List owner mismatch",
                 CollectionKind::Map => "Map owner mismatch",
             },
+            GenericInvariant::DurableResourceMissing(_) => "durable resource missing",
         }
     }
 

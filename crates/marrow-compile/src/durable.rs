@@ -39,6 +39,11 @@ use marrow_syntax::{
     TypeExpr,
 };
 
+use crate::analysis::FileRef;
+use crate::decl::{
+    Binding, DeclarationLedger, DeclarationLedgerFull, DeclarationOccurrence,
+    DeclarationRefusalSummary, Declared, refuse_covered, refuse_row,
+};
 use crate::demand::{DurableNaming, PathSigil};
 use crate::diag::{DiagnosticCollector, IdentityGap, SourceDiagnostic};
 use crate::scalar::ScalarType;
@@ -263,22 +268,46 @@ impl DurableRoot {
     }
 }
 
-/// The durable registry: every admitted `store` root, in declaration order. `roots`
-/// holds the flat keyed roots the kernel can serve, addressed by name; `declared_roots`
-/// names every admitted root (executable or parked — a singleton, a composite, or one
-/// bearing groups or branches), so a durable operation over a not-yet-executable shape
-/// reports precisely rather than as "no store". A root's index in the draft's DURABLE
-/// table is its declaration order (RootId), so the two lists stay declaration-ordered.
+/// One `store` declaration the registry admitted: the position of its executable
+/// descriptor when the kernel serves its shape, and nothing more when the root is
+/// parked (a singleton, a nominal-typed field, or a group nested in a branch or
+/// another group). A parked root carries a complete identity and a full site set, so
+/// an operation over it is a precise "not yet executable" rejection rather than an
+/// unknown name.
+pub(crate) struct DeclaredRoot {
+    executable: Option<usize>,
+}
+
+/// What a `^name` reference resolves to in the durable root namespace.
+///
+/// The three failing answers are distinct facts about the source and they are held
+/// apart here rather than recovered by a chain of probes: the kernel cannot yet serve
+/// a declared shape, the declaration itself was refused and already reported its
+/// cause, or no store of that name is declared anywhere.
+pub(crate) enum RootBinding<'a> {
+    /// Admitted, with a complete identity, and kernel-serviceable.
+    Executable(&'a DurableRoot),
+    /// Admitted with a complete identity, but outside the executable subset.
+    NotYetExecutable,
+    /// Declared and refused. The declaration reported the cause; a use reuses it.
+    Refused(&'a DeclarationRefusalSummary),
+    /// No store of this name is declared — the one case a not-in-scope report may
+    /// describe.
+    Absent,
+}
+
+/// The durable registry: every declared `store` root, in declaration order.
+///
+/// `roots` holds the flat keyed roots the kernel can serve; `declared` is the ledger
+/// of every declared placement name, admitted or refused. A refused store keeps its
+/// name there with the cause its declaration reported, so a later `^name` reference
+/// is answered with that cause instead of reading as a name that was never written.
+/// A root's index in the draft's DURABLE table is its declaration order (RootId), so
+/// the executable list stays declaration-ordered.
 #[derive(Default)]
 pub(crate) struct DurableRegistry {
     roots: Vec<DurableRoot>,
-    declared_roots: Vec<String>,
-    /// Placement names of stores whose durable identity failed admission: every identity
-    /// gap was reported precisely as `check.durable_identity`, so the root dropped from
-    /// the registry rather than entering `declared_roots`. Retained so a later reference
-    /// to `^name` is steered to those identity reports instead of a bare not-in-scope
-    /// name error (the ledger confound: an identity-less root reads as an unknown name).
-    admission_failed_roots: Vec<String>,
+    declared: DeclarationLedger<String, DeclaredRoot>,
     /// The durable-path naming join for every admitted graph node, `(ledger id, sigil,
     /// simple name)`, accumulated across the project's admitted stores. The
     /// [`DurableNaming`] the demand sentence spells paths through is built from this.
@@ -293,10 +322,36 @@ impl DurableRegistry {
         DurableNaming::from_entries(self.naming.clone())
     }
 
+    /// What the placement name `name` resolves to: its executable root, a parked
+    /// declaration, the refusal that stands in its place, or a genuine absence. The
+    /// one owner of that four-way answer; every other root lookup projects from it.
+    pub(crate) fn root(&self, name: &str) -> RootBinding<'_> {
+        match self.declared.lookup(&name.to_string()) {
+            Binding::Accepted(declared) => match declared.executable {
+                Some(at) => match self.roots.get(at) {
+                    Some(root) => RootBinding::Executable(root),
+                    // Layer 1 and the executable list disagree. Answering "declared
+                    // but parked" is the truthful reading of an admitted root whose
+                    // descriptor cannot be produced, and it reports rather than
+                    // fabricating an absence.
+                    None => RootBinding::NotYetExecutable,
+                },
+                None => RootBinding::NotYetExecutable,
+            },
+            Binding::Refused(refusal) => RootBinding::Refused(refusal),
+            Binding::Absent => RootBinding::Absent,
+        }
+    }
+
     /// The executable flat keyed root declared with the placement name `name`, if any —
-    /// the owner an entry address `^name[…]` resolves against.
+    /// the owner an entry address `^name[…]` resolves against. The probe-free form, for
+    /// the classifiers that resolve a shape without reporting; a lookup that reports
+    /// takes [`DurableRegistry::root`] so a refused root is not read as an absent one.
     pub(crate) fn root_by_name(&self, name: &str) -> Option<&DurableRoot> {
-        self.roots.iter().find(|root| root.name == name)
+        match self.root(name) {
+            RootBinding::Executable(root) => Some(root),
+            RootBinding::NotYetExecutable | RootBinding::Refused(_) | RootBinding::Absent => None,
+        }
     }
 
     /// The executable flat keyed root whose backing resource is `resource`, if any — the
@@ -348,43 +403,12 @@ impl DurableRegistry {
         self.roots.iter().find_map(|root| find(&root.branches, ty))
     }
 
-    /// Every declared store-root name — admitted, parked, or dropped for a failed
-    /// identity — so a reference to an unknown `^root` can offer the nearest declared
-    /// root as a did-you-mean. The two backing lists are disjoint (a root enters exactly
-    /// one), so the names are unique.
+    /// Every declared store-root name — admitted, parked, or refused — so a reference
+    /// to an unknown `^root` can offer the nearest declared root as a did-you-mean. A
+    /// refused root is in the corpus because it is in the source: dropping it would
+    /// leave a near miss on a name the reader can see with no correction at all.
     pub(crate) fn root_names(&self) -> impl Iterator<Item = &str> {
-        self.declared_roots
-            .iter()
-            .chain(self.admission_failed_roots.iter())
-            .map(String::as_str)
-    }
-
-    /// The name of a declared root of placement `name` that the kernel cannot yet serve (a
-    /// singleton root, a resource declaring a nominal-typed field, or a group nested in a
-    /// branch or another group). `Some` exactly when a root of that name is declared but
-    /// not executable, so the lowerer can distinguish a not-yet-executable operation over a
-    /// named root from an unknown name.
-    pub(crate) fn not_yet_executable_root_named(&self, name: &str) -> Option<&str> {
-        if self.root_by_name(name).is_some() {
-            return None;
-        }
-        self.declared_roots
-            .iter()
-            .find(|declared| declared.as_str() == name)
-            .map(String::as_str)
-    }
-
-    /// Whether a store of placement `name` was declared but dropped from the registry
-    /// because its durable identity failed admission (each gap already reported as
-    /// `check.durable_identity`). `true` exactly when such a root exists, so the lowerer
-    /// steers a reference to `^name` to those identity reports rather than reporting a
-    /// bare unknown name. `resolve_root` consults the admitted roots (`root_by_name`)
-    /// first, so if a later same-named store is admitted its executable root wins and this
-    /// steering never applies — the two vectors need not be globally disjoint.
-    pub(crate) fn admission_failed_root_named(&self, name: &str) -> bool {
-        self.admission_failed_roots
-            .iter()
-            .any(|declared| declared == name)
+        self.declared.keys().map(String::as_str)
     }
 
     /// Build the registry from the project's store declarations, adding each admitted
@@ -406,10 +430,10 @@ impl DurableRegistry {
         draft: &mut ImageDraft,
         records: &TypeRegistry,
         resources: &[(FileIdentity, &ResourceDecl)],
-        stores: &[(FileIdentity, &StoreDecl)],
+        stores: &[(FileRef, FileIdentity, &StoreDecl)],
         ledger: Option<&IdentityLedger>,
         diagnostics: &mut DiagnosticCollector,
-    ) -> Result<Self, GenericInvariant> {
+    ) -> Result<Self, DurableBuildError> {
         if stores.is_empty() {
             return Ok(Self::default());
         }
@@ -421,10 +445,18 @@ impl DurableRegistry {
                 ledger,
                 reported_gaps: &mut reported_identity_gaps,
             };
-            for (file, store) in stores {
-                // A repeated placement name has no unambiguous address and cannot key a second
-                // DURABLE-table row; reject it and keep the first declaration.
-                if registry.declared_roots.contains(&store.root.root) {
+            for (at, file, store) in stores {
+                let declared = Declared {
+                    name: &store.root.root,
+                    file,
+                    at: *at,
+                    span: store.root.span,
+                };
+                // A repeated placement name has no unambiguous address and cannot key a
+                // second DURABLE-table row; reject it and keep the first declaration. A
+                // refused declaration still occupies its name, so the repeat conflicts
+                // whichever of the two the compiler could admit.
+                if registry.declared.declared(&store.root.root) {
                     diagnostics.push(SourceDiagnostic::at(
                         Code::CheckType.as_str(),
                         file,
@@ -437,30 +469,54 @@ impl DurableRegistry {
                     ));
                     continue;
                 }
-                match build_one(
+                let occurrence = match build_one(
                     draft,
                     &mut type_metadata,
                     resources,
-                    file,
+                    declared,
                     store,
                     &mut identity_build,
                     diagnostics,
                 )? {
                     StoreBuild::Admitted(built) => {
                         registry.naming.extend(built.naming);
-                        registry.declared_roots.push(built.name);
-                        if let Some(root) = built.executable {
+                        let executable = built.executable.map(|root| {
                             registry.roots.push(root);
-                        }
+                            registry.roots.len() - 1
+                        });
+                        DeclarationOccurrence::Accepted(DeclaredRoot { executable })
                     }
-                    StoreBuild::IdentityIncomplete(name) => {
-                        registry.admission_failed_roots.push(name)
-                    }
-                    StoreBuild::Rejected => {}
-                }
+                    StoreBuild::Refused(refusal) => DeclarationOccurrence::Refused(refusal),
+                };
+                registry
+                    .declared
+                    .declare(store.root.root.clone(), occurrence)?;
             }
             Ok(registry)
         })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Why the durable registry could not be built at all — as distinct from a store
+/// whose own declaration was refused, which the registry retains and answers with.
+pub(crate) enum DurableBuildError {
+    /// A compiler-owned coherence failure, which aborts the pass at the invariant
+    /// boundary rather than reporting against the source.
+    Invariant(GenericInvariant),
+    /// The declaration ledgers' shared retention ceiling is spent.
+    LedgerFull(DeclarationLedgerFull),
+}
+
+impl From<GenericInvariant> for DurableBuildError {
+    fn from(invariant: GenericInvariant) -> Self {
+        DurableBuildError::Invariant(invariant)
+    }
+}
+
+impl From<DeclarationLedgerFull> for DurableBuildError {
+    fn from(full: DeclarationLedgerFull) -> Self {
+        DurableBuildError::LedgerFull(full)
     }
 }
 
@@ -469,21 +525,103 @@ enum StoreBuild {
     /// The graph is admissible: its identity is complete and its root (with any executable
     /// descriptor) entered the draft.
     Admitted(BuiltRoot),
-    /// The durable graph's identity is incomplete — every gap was reported precisely as
-    /// `check.durable_identity` and the root was dropped. Its placement name is retained so
-    /// a later reference to `^name` steers to those reports rather than a bare not-in-scope
-    /// name error.
-    IdentityIncomplete(String),
-    /// The store failed another admission check (a repeated placement name, caught before
-    /// `build_one`; a missing or mismatched resource; an out-of-range key tuple; a bad key
-    /// scalar). Each pushed its own precise diagnostic; no root and no steering name.
-    Rejected,
+    /// The store was refused, with the cause its declaration reported. There is one
+    /// refusal outcome and no silent one: a store that leaves no trace in the registry
+    /// is what makes every later `^name` reference read as a name never written.
+    Refused(DeclarationRefusalSummary),
+}
+
+/// Why one `store` declaration was refused.
+///
+/// Grouped by what a later `^root` reference must be told, not one variant per site:
+/// only the identity class has a report *family* to send the reader to, and every
+/// other class reuses the single declaring row it pushed. Nine of the ten sites that
+/// mark a durable graph incomplete are not identity gaps, and this is what keeps them
+/// from claiming to be.
+enum DurableRefusal<'a> {
+    /// A durable anchor has no live row in the committed ledger. The one class
+    /// entitled to send a use to the `check.durable_identity` reports.
+    ///
+    /// `report` is false when an earlier store already reported this project-wide
+    /// anchor: the gap still refuses this root, only the reporting is deduplicated.
+    IdentityIncomplete {
+        anchor: IdentityAnchor,
+        retired: bool,
+        report: bool,
+    },
+    /// A field, group leaf, key tuple, or durable value in the root's stored shape is
+    /// outside the closed durable value set.
+    Member { subject: &'a str, span: SourceSpan },
+    /// A managed index violates the closed narrow-index admission rules.
+    Index { message: String, span: SourceSpan },
+    /// A fixed compiler-owned bound on the stored shape was crossed.
+    Bound { message: String, span: SourceSpan },
+    /// A durable value cycle. This is the one refusal that pushes no row of its own:
+    /// its cause is the `check.recursion` report from `types::reject_value_cycles`,
+    /// which runs after lowering so that it also sees the instantiations lowering
+    /// mints. The steer names that code without a location.
+    ValueCycle,
+    /// The store failed admission before its graph was walked: a missing or mismatched
+    /// resource, an out-of-range key tuple, or a key column outside the closed
+    /// orderable durable-key set. Each of these built its own row.
+    Admission { row: SourceDiagnostic },
+}
+
+/// Report one store refusal and summarize it from that same report, so a retained
+/// refusal can never describe a diagnostic that was not made.
+///
+/// Exhaustive by match: a new refusal class is a build error here rather than a class
+/// that silently renders as some other class's cause.
+fn refuse_store(
+    diagnostics: &mut DiagnosticCollector,
+    at: Declared<'_>,
+    refusal: DurableRefusal<'_>,
+) -> DeclarationRefusalSummary {
+    match refusal {
+        DurableRefusal::IdentityIncomplete {
+            anchor,
+            retired,
+            report,
+        } => {
+            let gap = IdentityGap {
+                kind: anchor.kind,
+                path: anchor.path.clone(),
+                retired,
+            };
+            let summary = if report {
+                refuse_row(
+                    diagnostics,
+                    at,
+                    identity_gap(at.file, at.span, anchor.kind, &anchor.path, retired),
+                )
+            } else {
+                // Covered by the first store to reach this project-wide anchor, which
+                // pushed the `check.durable_identity` row this refusal names.
+                refuse_covered(at, Code::CheckDurableIdentity.as_str())
+            };
+            summary.with_gap(gap)
+        }
+        DurableRefusal::Member { subject, span } => {
+            refuse_row(diagnostics, at, unsupported(at.file, span, subject))
+        }
+        DurableRefusal::Index { message, span } => refuse_row(
+            diagnostics,
+            at,
+            SourceDiagnostic::at(Code::CheckType.as_str(), at.file, span, message),
+        ),
+        DurableRefusal::Bound { message, span } => {
+            refuse_row(diagnostics, at, resource_limit(at.file, span, message))
+        }
+        // Covered by `types::reject_value_cycles` (compile.rs), which reports every
+        // durable value cycle after lowering.
+        DurableRefusal::ValueCycle => refuse_covered(at, Code::CheckRecursion.as_str()),
+        DurableRefusal::Admission { row } => refuse_row(diagnostics, at, row),
+    }
 }
 
 /// One store declaration's admitted build: the placement name that entered the draft and,
 /// when the root is a flat kernel-serviceable shape, its executable descriptor.
 struct BuiltRoot {
-    name: String,
     executable: Option<DurableRoot>,
     /// This store's durable-path naming entries — its root placement, stored fields,
     /// managed indexes, groups, and keyed branches — committed only for an admitted graph.
@@ -510,59 +648,71 @@ struct IdentityBuildState<'ledger, 'gaps> {
 /// build outcome. A failing store pushes its diagnostic and commits no root, site, or
 /// application identity, so it cannot corrupt an already-appended root (`build_extras` may
 /// append record types before the gate, which is harmless — the pushed diagnostic fails
-/// compilation). An identity gap yields [`StoreBuild::IdentityIncomplete`] carrying the
-/// placement name; any other rejection yields [`StoreBuild::Rejected`]. The heavy
-/// resolution runs against a local [`IdentityResolver`] and the completeness gate below
-/// precedes every root/site/identity commit, so the draft is touched only once the store
-/// is known admissible.
+/// compilation). Every rejection yields [`StoreBuild::Refused`] carrying the summary of
+/// the report it just made, so no store leaves the registry without a retrievable cause.
+/// The heavy resolution runs against a local [`IdentityResolver`] and the completeness
+/// gate below precedes every root/site/identity commit, so the draft is touched only once
+/// the store is known admissible.
 fn build_one(
     draft: &mut ImageDraft,
     type_metadata: &mut DurableTypeMetadata<'_, '_>,
     resources: &[(FileIdentity, &ResourceDecl)],
-    file: &FileIdentity,
+    declared: Declared<'_>,
     store: &StoreDecl,
     identity_build: &mut IdentityBuildState<'_, '_>,
     diagnostics: &mut DiagnosticCollector,
 ) -> Result<StoreBuild, GenericInvariant> {
+    let file = declared.file;
     let records = type_metadata.records;
     let metadata = &mut *type_metadata.metadata;
+    let refuse = |diagnostics: &mut DiagnosticCollector, row| {
+        Ok(StoreBuild::Refused(refuse_store(
+            diagnostics,
+            declared,
+            DurableRefusal::Admission { row },
+        )))
+    };
     if store.root.keys.len() > bounds::MAX_KEY_COLUMNS {
-        diagnostics.push(resource_limit(
-            file,
-            store.root.span,
-            format!(
-                "a store root key tuple has {} columns; the fixed limit is {}",
-                store.root.keys.len(),
-                bounds::MAX_KEY_COLUMNS
+        return refuse(
+            diagnostics,
+            resource_limit(
+                file,
+                store.root.span,
+                format!(
+                    "a store root key tuple has {} columns; the fixed limit is {}",
+                    store.root.keys.len(),
+                    bounds::MAX_KEY_COLUMNS
+                ),
             ),
-        ));
-        return Ok(StoreBuild::Rejected);
+        );
     }
     // Resolve each root key column's scalar in declared tuple order. A singleton
     // root has no columns.
-    let Some(key_scalars) = resolve_key_scalars(
-        file,
-        store.root.span,
-        &store.root.keys,
-        records,
-        diagnostics,
-    ) else {
-        return Ok(StoreBuild::Rejected);
+    let key_scalars = match resolve_key_scalars(file, store.root.span, &store.root.keys, records) {
+        Ok(scalars) => scalars,
+        Err(row) => return refuse(diagnostics, *row),
     };
     let Some(record) = records.by_name(&store.resource) else {
-        diagnostics.push(SourceDiagnostic::at(
-            Code::CheckType.as_str(),
-            file,
-            store.span,
-            format!("`{}` is not a resource in this project", store.resource),
-        ));
-        return Ok(StoreBuild::Rejected);
+        return refuse(
+            diagnostics,
+            SourceDiagnostic::at(
+                Code::CheckType.as_str(),
+                file,
+                store.span,
+                format!("`{}` is not a resource in this project", store.resource),
+            ),
+        );
     };
+    // The type registry admitted this resource by name, so the declaration it was
+    // built from is in the resource set. A miss is the two owners disagreeing about
+    // the same name, not a fact about the source: reporting it as a refusal would
+    // charge the user for a compiler inconsistency, and staying silent would drop the
+    // root with no cause at all.
     let Some((_, resource)) = resources
         .iter()
         .find(|(_, decl)| decl.name == store.resource)
     else {
-        return Ok(StoreBuild::Rejected);
+        return Err(GenericInvariant::DurableResourceMissing(record.type_id));
     };
 
     // Compiler-owned enum readiness is validated before the first ledger lookup.
@@ -583,7 +733,7 @@ fn build_one(
     // it is walked. A missing or retired anchor is a precise typed diagnostic
     // carrying the `(kind, path)` gap the mint action consumes.
     let mut resolver = IdentityResolver::new(
-        file,
+        declared,
         store.span,
         identity_build.ledger,
         identity_build.reported_gaps,
@@ -688,8 +838,8 @@ fn build_one(
     // (the identity gap is the diagnosis, whatever the shape). The placement name
     // is retained so a reference to `^name` steers to those identity reports
     // rather than reading as an unknown name.
-    if !resolver.complete {
-        return Ok(StoreBuild::IdentityIncomplete(store.root.root.clone()));
+    if let Some(refusal) = resolver.refusal.take() {
+        return Ok(StoreBuild::Refused(refusal));
     }
     // The graph is admissible: its naming entries may now be committed with its root,
     // sites, and identity. A discarded (incomplete) graph never reaches here, so no
@@ -802,7 +952,6 @@ fn build_one(
 
     if !executable {
         return Ok(StoreBuild::Admitted(BuiltRoot {
-            name: store.root.root.clone(),
             executable: None,
             naming,
         }));
@@ -825,7 +974,6 @@ fn build_one(
         .collect();
 
     Ok(StoreBuild::Admitted(BuiltRoot {
-        name: store.root.root.clone(),
         naming,
         executable: Some(DurableRoot {
             name: store.root.root.clone(),
@@ -843,21 +991,24 @@ fn build_one(
 }
 
 /// Resolve each key column's scalar in declared tuple order, rejecting a key type
-/// outside the closed orderable durable-key set. `None` (with a diagnostic) if any
-/// column is not a supported key scalar; a singleton placement has no columns and
-/// yields an empty vector. Shared by root and branch key tuples.
+/// outside the closed orderable durable-key set. A singleton placement has no columns
+/// and yields an empty vector. Shared by root and branch key tuples.
+///
+/// The rejection row is returned rather than pushed: both callers refuse a store with
+/// it, and a refusal is summarized from the row that reports it in one statement, so
+/// the row cannot be spent here and the summary invented separately. It is boxed
+/// because a diagnostic is wide next to a key-scalar vector and this path runs once
+/// per refused store, never per admitted column.
 fn resolve_key_scalars(
     file: &FileIdentity,
     span: SourceSpan,
     keys: &[KeyParam],
     records: &TypeRegistry,
-    diagnostics: &mut DiagnosticCollector,
-) -> Option<Vec<ScalarType>> {
+) -> Result<Vec<ScalarType>, Box<SourceDiagnostic>> {
     let mut scalars = Vec::with_capacity(keys.len());
     for key_param in keys {
         let Some(key) = scalar_of(&records.expand(&key_param.ty)) else {
-            diagnostics.push(unsupported(file, span, "this key type"));
-            return None;
+            return Err(Box::new(unsupported(file, span, "this key type")));
         };
         // The closed orderable durable-key scalar set (frozen at C04): int, string,
         // bool, bytes, date, and instant. `duration` is a span, not an identity, so
@@ -871,30 +1022,35 @@ fn resolve_key_scalars(
                 | ScalarType::Date
                 | ScalarType::Instant
         ) {
-            diagnostics.push(SourceDiagnostic::at(
+            return Err(Box::new(SourceDiagnostic::at(
                 Code::CheckType.as_str(),
                 file,
                 span,
                 "a durable key column must be an orderable durable-key scalar (int, string, bool, bytes, date, or instant)"
                     .to_string(),
-            ));
-            return None;
+            )));
         }
         scalars.push(key);
     }
-    Some(scalars)
+    Ok(scalars)
 }
 
 /// Resolves durable `(kind, path)` anchors against the committed ledger, pushing a
 /// precise `check.durable_identity` diagnostic for each missing or retired anchor,
-/// and building the group/branch member tree. `complete` stays true only while
-/// every anchor resolved; the caller discards the graph when it is false, so an id
+/// and building the group/branch member tree. `refusal` holds the first refusal of
+/// this graph, if any; the caller discards the graph when it is set, so an id
 /// resolved to a placeholder on a gap never reaches the image.
+///
+/// The refusal *is* the incompleteness — a graph with none is complete. The bare
+/// flag this replaces recorded that a graph was refused while forgetting why, which
+/// left every later `^root` reference to guess, and every one of them guessed
+/// "identity gap".
 struct IdentityResolver<'a> {
+    declared: Declared<'a>,
     file: &'a FileIdentity,
     span: SourceSpan,
     ledger: Option<&'a IdentityLedger>,
-    complete: bool,
+    refusal: Option<DeclarationRefusalSummary>,
     /// The durable anchor spellings of enums whose sum/member anchors have already
     /// been resolved, so an enum reachable from several durable fields resolves —
     /// and reports any identity gap — exactly once.
@@ -930,23 +1086,35 @@ enum ValueNode {
 
 impl<'a> IdentityResolver<'a> {
     fn new(
-        file: &'a FileIdentity,
+        declared: Declared<'a>,
         span: SourceSpan,
         ledger: Option<&'a IdentityLedger>,
         reported_identity_gaps: &'a mut BTreeSet<IdentityAnchor>,
         diagnostics: &'a mut DiagnosticCollector,
     ) -> Self {
         Self {
-            file,
+            declared,
+            file: declared.file,
             span,
             ledger,
-            complete: true,
+            refusal: None,
             seen_enums: BTreeSet::new(),
             invariant: None,
             value_path: Vec::new(),
             naming: Vec::new(),
             reported_identity_gaps,
             diagnostics,
+        }
+    }
+
+    /// Refuse this durable graph, reporting `refusal` and keeping the summary of that
+    /// report. The first refusal is the cause a later `^root` reference is steered to;
+    /// a second one still reports at its own site but does not displace it, so the
+    /// steer names the first thing that went wrong rather than the last.
+    fn refuse(&mut self, refusal: DurableRefusal<'_>) {
+        let summary = refuse_store(self.diagnostics, self.declared, refusal);
+        if self.refusal.is_none() {
+            self.refusal = Some(summary);
         }
     }
 
@@ -986,7 +1154,7 @@ impl<'a> IdentityResolver<'a> {
                 // cycle whose distinct prefix crosses the depth bound first hits this
                 // limit and additionally draws `check.recursion` — both truthful.
                 if self.value_path.contains(&ValueNode::Struct(type_id)) {
-                    self.complete = false;
+                    self.refuse(DurableRefusal::ValueCycle);
                     return DurableValueShape::Scalar(ScalarType::Int.image());
                 }
                 if depth > bounds::MAX_DURABLE_VALUE_DEPTH {
@@ -1025,7 +1193,7 @@ impl<'a> IdentityResolver<'a> {
             }
             GArg::Enum(enum_id) => {
                 if self.value_path.contains(&ValueNode::Enum(enum_id)) {
-                    self.complete = false;
+                    self.refuse(DurableRefusal::ValueCycle);
                     return DurableValueShape::Scalar(ScalarType::Int.image());
                 }
                 if depth > bounds::MAX_DURABLE_VALUE_DEPTH {
@@ -1115,8 +1283,10 @@ impl<'a> IdentityResolver<'a> {
         }
     }
 
+    /// A compiler-owned coherence failure aborts the durable build at the invariant
+    /// boundary — `build_one` returns it before the refusal gate is read — so it never
+    /// becomes a refusal of the user's declaration.
     fn remember_invariant(&mut self, invariant: GenericInvariant) {
-        self.complete = false;
         if self.invariant.is_none() {
             self.invariant = Some(invariant);
         }
@@ -1145,18 +1315,15 @@ impl<'a> IdentityResolver<'a> {
     /// and mark the graph incomplete, so its placeholder value shape never reaches
     /// the image.
     fn reject_value(&mut self, subject: &str) {
-        self.complete = false;
-        self.diagnostics
-            .push(unsupported(self.file, self.span, subject));
+        let span = self.span;
+        self.refuse(DurableRefusal::Member { subject, span });
     }
 
     /// Report a durable construct that crosses a fixed compiler-owned resource bound
     /// at `span`, and mark the graph incomplete so its placeholder never reaches the
     /// image.
     fn reject_resource_limit(&mut self, span: SourceSpan, message: String) {
-        self.complete = false;
-        self.diagnostics
-            .push(resource_limit(self.file, span, message));
+        self.refuse(DurableRefusal::Bound { message, span });
     }
 
     /// Resolve one anchor to its live ledger id. On a gap this reports the precise
@@ -1174,12 +1341,13 @@ impl<'a> IdentityResolver<'a> {
         match live {
             Some(id) => LedgerIdBytes::from_bytes(*id.bytes()),
             None => {
-                self.complete = false;
                 let anchor = IdentityAnchor::new(kind, path);
-                if self.reported_identity_gaps.insert(anchor) {
-                    self.diagnostics
-                        .push(identity_gap(self.file, self.span, kind, path, retired));
-                }
+                let report = self.reported_identity_gaps.insert(anchor.clone());
+                self.refuse(DurableRefusal::IdentityIncomplete {
+                    anchor,
+                    retired,
+                    report,
+                });
                 LedgerIdBytes::from_bytes([0u8; 16])
             }
         }
@@ -1265,16 +1433,10 @@ impl<'a> IdentityResolver<'a> {
             );
             return Vec::new();
         }
-        let scalars = match resolve_key_scalars(
-            self.file,
-            group.span,
-            &group.keys,
-            records,
-            self.diagnostics,
-        ) {
-            Some(scalars) => scalars,
-            None => {
-                self.complete = false;
+        let scalars = match resolve_key_scalars(self.file, group.span, &group.keys, records) {
+            Ok(scalars) => scalars,
+            Err(row) => {
+                self.refuse(DurableRefusal::Admission { row: *row });
                 return Vec::new();
             }
         };
@@ -1327,18 +1489,17 @@ impl<'a> IdentityResolver<'a> {
         container: &str,
     ) -> Option<(DurableMemberDef, FieldDef)> {
         if !field.keys.is_empty() {
-            self.complete = false;
-            self.diagnostics
-                .push(unsupported(self.file, field.span, "a keyed field"));
+            self.refuse(DurableRefusal::Member {
+                subject: "a keyed field",
+                span: field.span,
+            });
             return None;
         }
         let Some(scalar) = scalar_of(&records.expand(&field.ty)) else {
-            self.complete = false;
-            self.diagnostics.push(unsupported(
-                self.file,
-                field.span,
-                "a non-scalar field of a group or branch",
-            ));
+            self.refuse(DurableRefusal::Member {
+                subject: "a non-scalar field of a group or branch",
+                span: field.span,
+            });
             return None;
         };
         let id = self.resolve(IdentityKind::Field, &format!("{container}.{}", field.name));
@@ -1582,13 +1743,7 @@ impl<'a> IdentityResolver<'a> {
     /// incomplete, so a rejected index discards the whole graph rather than emitting a
     /// partial one.
     fn reject_index(&mut self, span: SourceSpan, message: String) {
-        self.complete = false;
-        self.diagnostics.push(SourceDiagnostic::at(
-            Code::CheckType.as_str(),
-            self.file,
-            span,
-            message,
-        ));
+        self.refuse(DurableRefusal::Index { message, span });
     }
 }
 
@@ -1930,6 +2085,18 @@ mod generic_enum_shape_tests {
     use crate::types::{MintSite, TypeInstId, TypeInstKind};
     use marrow_syntax::{Declaration, parse_source};
 
+    /// The store declaration these resolvers refuse against. The resolver retains its
+    /// refusal under the declared placement name, so it needs the declaration's
+    /// coordinates even when the test drives only one value-shape walk.
+    fn test_declared() -> Declared<'static> {
+        Declared {
+            name: "probe",
+            file: crate::test_main_file_identity(),
+            at: FileRef::admitted(0),
+            span: SourceSpan::default(),
+        }
+    }
+
     /// A committed reserved enum reaches the durable-shape owner
     /// with its exact member and payload layout. Missing ledger rows may make the
     /// enclosing graph incomplete, but do not turn a Ready enum into an unavailable
@@ -1959,7 +2126,7 @@ mod generic_enum_shape_tests {
         let mut diagnostics = DiagnosticCollector::new();
         let mut reported_identity_gaps = BTreeSet::new();
         let mut resolver = IdentityResolver::new(
-            crate::test_main_file_identity(),
+            test_declared(),
             SourceSpan::default(),
             None,
             &mut reported_identity_gaps,
@@ -1984,7 +2151,7 @@ mod generic_enum_shape_tests {
         );
         assert!(resolver.seen_enums.contains("Option[int]"));
         assert!(
-            !resolver.complete,
+            resolver.refusal.is_some(),
             "the test intentionally supplies no ledger"
         );
         drop(resolver);
@@ -2018,7 +2185,7 @@ mod generic_enum_shape_tests {
         let mut diagnostics = DiagnosticCollector::new();
         let mut reported_identity_gaps = BTreeSet::new();
         let mut resolver = IdentityResolver::new(
-            crate::test_main_file_identity(),
+            test_declared(),
             SourceSpan::default(),
             None,
             &mut reported_identity_gaps,
@@ -2036,7 +2203,7 @@ mod generic_enum_shape_tests {
             })
             .expect("the unavailable enum metadata session opens");
         assert_eq!(shape, DurableValueShape::Scalar(ScalarType::Int.image()));
-        assert!(!resolver.complete);
+        assert!(resolver.refusal.is_some());
         assert!(resolver.seen_enums.is_empty());
         drop(resolver);
         assert_eq!(diagnostics.probe_rows().len(), 1);
@@ -2070,7 +2237,7 @@ mod generic_enum_shape_tests {
         let mut diagnostics = DiagnosticCollector::new();
         let mut reported_identity_gaps = BTreeSet::new();
         let mut resolver = IdentityResolver::new(
-            crate::test_main_file_identity(),
+            test_declared(),
             SourceSpan::default(),
             None,
             &mut reported_identity_gaps,
@@ -2125,7 +2292,7 @@ store ^holders[id: int]: Holder
         let before = draft.encode().expect("seeded draft encodes");
         let mut reported_identity_gaps = BTreeSet::new();
         let mut resolver = IdentityResolver::new(
-            crate::test_main_file_identity(),
+            test_declared(),
             SourceSpan::default(),
             None,
             &mut reported_identity_gaps,

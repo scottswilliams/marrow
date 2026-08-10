@@ -58,7 +58,7 @@ use marrow_syntax::{
 
 use crate::decl::{Binding, DeclarationRefusalSummary};
 use crate::diag::{BoundedDiagnostics, DiagnosticCollector, SourceDiagnostic};
-use crate::durable::DurableRegistry;
+use crate::durable::{DurableRegistry, RootBinding};
 use crate::konst::{ConstRegistry, ConstScalar};
 use crate::scalar::ScalarType;
 use crate::types::{
@@ -253,7 +253,6 @@ pub(crate) struct FnLowerer<'a> {
     /// missing row, so the reference steer fires once per root rather than at every
     /// use, keeping one dropped root from flooding the transcript. Shared across every
     /// body lowered in the compile.
-    admission_steered: &'a mut BTreeSet<String>,
     file: &'a FileIdentity,
     /// The dotted module the function being lowered belongs to; unqualified calls
     /// resolve within it.
@@ -355,7 +354,6 @@ impl<'a> FnLowerer<'a> {
         consts: &'a ConstRegistry,
         diagnostics: &'a mut DiagnosticCollector,
         facts: FactSink<'a>,
-        admission_steered: &'a mut BTreeSet<String>,
         file: &'a FileIdentity,
         module: &'a str,
         ret: RetType,
@@ -370,7 +368,6 @@ impl<'a> FnLowerer<'a> {
             consts,
             diagnostics,
             facts,
-            admission_steered,
             file,
             module,
             type_env: Vec::new(),
@@ -454,7 +451,6 @@ impl<'a> FnLowerer<'a> {
         consts: &'a ConstRegistry,
         diagnostics: &'a mut DiagnosticCollector,
         facts: FactSink<'a>,
-        admission_steered: &'a mut BTreeSet<String>,
         file: &'a FileIdentity,
         module: &'a str,
         function: &FunctionDecl,
@@ -468,7 +464,6 @@ impl<'a> FnLowerer<'a> {
             consts,
             diagnostics,
             facts,
-            admission_steered,
             file,
             module,
             function,
@@ -492,7 +487,6 @@ impl<'a> FnLowerer<'a> {
         consts: &'a ConstRegistry,
         diagnostics: &'a mut DiagnosticCollector,
         facts: FactSink<'a>,
-        admission_steered: &'a mut BTreeSet<String>,
         template: &'a GenericTemplate<'a>,
         args: &[GArg],
     ) -> LowerResult {
@@ -514,7 +508,6 @@ impl<'a> FnLowerer<'a> {
             consts,
             diagnostics,
             facts,
-            admission_steered,
             &template.file,
             &template.module,
             template.decl,
@@ -539,7 +532,6 @@ impl<'a> FnLowerer<'a> {
         generics: &GenericRegistry,
         consts: &ConstRegistry,
         facts: FactSink<'_>,
-        admission_steered: &mut BTreeSet<String>,
         template: &GenericTemplate,
     ) -> Result<TemplateProofOutcome, LowerInvariant> {
         let file = &template.file;
@@ -584,7 +576,6 @@ impl<'a> FnLowerer<'a> {
             consts,
             &mut diagnostics,
             facts,
-            admission_steered,
             file,
             module,
             template.decl,
@@ -613,7 +604,6 @@ impl<'a> FnLowerer<'a> {
         consts: &'a ConstRegistry,
         diagnostics: &'a mut DiagnosticCollector,
         facts: FactSink<'a>,
-        admission_steered: &'a mut BTreeSet<String>,
         file: &'a FileIdentity,
         module: &'a str,
         function: &FunctionDecl,
@@ -657,7 +647,6 @@ impl<'a> FnLowerer<'a> {
             consts,
             diagnostics,
             facts,
-            admission_steered,
             file,
             module,
             ret,
@@ -757,7 +746,6 @@ impl<'a> FnLowerer<'a> {
         consts: &'a ConstRegistry,
         diagnostics: &'a mut DiagnosticCollector,
         facts: FactSink<'a>,
-        admission_steered: &'a mut BTreeSet<String>,
         file: &'a FileIdentity,
         module: &'a str,
         name: &str,
@@ -772,7 +760,6 @@ impl<'a> FnLowerer<'a> {
             consts,
             diagnostics,
             facts,
-            admission_steered,
             file,
             module,
             RetType::Unit,
@@ -998,36 +985,48 @@ impl<'a> FnLowerer<'a> {
         span: SourceSpan,
     ) -> Option<&'a crate::durable::DurableRoot> {
         let durable: &'a DurableRegistry = self.durable;
-        if let Some(root) = durable.root_by_name(name) {
-            return Some(root);
-        }
-        if durable.not_yet_executable_root_named(name).is_some() {
-            self.fail(not_yet_executable(self.file, span, name));
-            return None;
-        }
-        if durable.admission_failed_root_named(name) {
-            // A dropped root is referenced from many sites; the primary
-            // `check.durable_identity` reports name the fix once per missing row. Steer
-            // the first reference to those reports and stay silent at the rest, so one
-            // missing ledger row does not echo an admission failure at every use.
-            if self.admission_steered.insert(name.to_string()) {
-                self.fail(identity_admission_failed(self.file, span, name));
-            } else {
-                self.failed = true;
+        match durable.root(name) {
+            RootBinding::Executable(root) => Some(root),
+            RootBinding::NotYetExecutable => {
+                self.fail(not_yet_executable(self.file, span, name));
+                None
             }
-            return None;
+            RootBinding::Refused(refusal) => {
+                // A refused root is referenced from many sites; the declaration
+                // already reported the cause, so the first reference is steered to it
+                // and the rest fail silently. One refused store does not echo at every
+                // use.
+                if refusal.steer_once() {
+                    // A missing ledger identity is the one refusal with a report
+                    // *family* rather than a single row, so it names that family.
+                    // Every other cause — a refused member, index, bound, value cycle,
+                    // or admission check — reuses the one row it pushed, which is what
+                    // keeps nine of the ten refusal sites from claiming an identity
+                    // failure that was never reported.
+                    let row = match refusal.gap() {
+                        Some(_) => identity_admission_failed(self.file, span, name),
+                        None => declaration_refused(self.file, span, refusal),
+                    };
+                    self.fail(row);
+                } else {
+                    self.failed = true;
+                }
+                None
+            }
+            RootBinding::Absent => {
+                // A genuinely undeclared root: a plain unknown name, with the nearest
+                // declared store root offered when one is a close misspelling.
+                let suggestion = nearest_name(name, durable.root_names());
+                self.fail(name_not_in_scope(
+                    self.file,
+                    span,
+                    name,
+                    suggestion.as_deref(),
+                    NameKind::Root,
+                ));
+                None
+            }
         }
-        // A genuinely undeclared root: a plain unknown name, with the nearest declared
-        // store root offered when one is a close misspelling.
-        let suggestion = nearest_name(name, durable.root_names());
-        self.fail(name_not_in_scope(
-            self.file,
-            span,
-            name,
-            suggestion.as_deref(),
-            NameKind::Root,
-        ));
-        None
     }
 
     fn lookup(&self, name: &str) -> Option<&Local> {
@@ -1354,9 +1353,6 @@ mod generic_cache_boundary_tests {
             consts,
             diagnostics,
             facts,
-            // Each test lowers a single body; the admission-steer dedup set is
-            // process-scoped test scaffolding, leaked so it outlives the borrow.
-            Box::leak(Box::new(BTreeSet::new())),
             crate::test_main_file_identity(),
             "main",
             RetType::Unit,

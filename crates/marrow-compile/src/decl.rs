@@ -107,6 +107,26 @@ pub(crate) fn refuse_row(
     summary
 }
 
+/// The same coupling for a refusal whose report is made by a *different* pass or a
+/// *different* occurrence, named by the caller.
+///
+/// Two shapes need it, and no third may: a cause the site cannot report because the
+/// pass that owns it runs later, and a cause an earlier occurrence of the same
+/// project-wide anchor already reported. Both are on the absence gate's allowlist
+/// with the covering report named, so this constructor cannot become the way a
+/// refusal escapes reporting altogether.
+pub(crate) fn refuse_covered(at: Declared<'_>, code: &'static str) -> DeclarationRefusalSummary {
+    DeclarationRefusalSummary {
+        name: at.name.to_string(),
+        code,
+        file: at.at,
+        span: at.span,
+        further: 0,
+        gap: None,
+        steered: Cell::new(false),
+    }
+}
+
 /// Where one declaration is written: its name, its file in both the owned spelling
 /// a diagnostic renders and the `Copy` coordinate a summary retains, and its span.
 #[derive(Clone, Copy)]
@@ -126,6 +146,23 @@ impl DeclarationRefusalSummary {
     /// use-site assertion carries the declaration's typed identity.
     pub(crate) fn code(&self) -> &'static str {
         self.code
+    }
+
+    /// Attach the identity gap this refusal carries.
+    ///
+    /// Only the identity class does: its steer sends the reader to the
+    /// `check.durable_identity` report family rather than to a single declaring
+    /// row, so the gap is what tells the two classes apart at the use site. The
+    /// retained path is a second copy of one the collector already holds, and §4's
+    /// term charges it as such — which is why no other class carries one.
+    pub(crate) fn with_gap(mut self, gap: IdentityGap) -> Self {
+        self.gap = Some(gap);
+        self
+    }
+
+    /// The identity gap this refusal carries, if it is the identity class.
+    pub(crate) fn gap(&self) -> Option<&IdentityGap> {
+        self.gap.as_ref()
     }
 
     /// Whether this use site is the one that reports the cause. `true` on the first

@@ -501,10 +501,12 @@ store ^second[id: int]: Second
     ];
     let stores = vec![
         (
+            crate::analysis::FileRef::admitted(0),
             crate::test_file_identity("src/main.mw"),
             parsed.file.store("first").expect("first exists"),
         ),
         (
+            crate::analysis::FileRef::admitted(0),
             crate::test_file_identity("src/main.mw"),
             parsed.file.store("second").expect("second exists"),
         ),
@@ -577,7 +579,11 @@ fn invalid_ready_option_argument_stops_before_durable_anchor_resolution() {
         .store("resources")
         .expect("fixture store exists");
     let resources = vec![(crate::test_file_identity("src/main.mw"), resource)];
-    let stores = vec![(crate::test_file_identity("src/main.mw"), store)];
+    let stores = vec![(
+        crate::analysis::FileRef::admitted(0),
+        crate::test_file_identity("src/main.mw"),
+        store,
+    )];
     let mut draft = ImageDraft::new();
     let mut diagnostics = DiagnosticCollector::new();
     let registry =
@@ -620,8 +626,9 @@ fn invalid_ready_option_argument_stops_before_durable_anchor_resolution() {
 
     assert!(matches!(
         outcome,
-        Err(GenericInvariant::TypeArgumentTargetMissing(target))
-            if target == GArg::Struct(orphan)
+        Err(crate::durable::DurableBuildError::Invariant(
+            GenericInvariant::TypeArgumentTargetMissing(target)
+        )) if target == GArg::Struct(orphan)
     ));
     assert_eq!(owner_snapshot(&registry), owner_before);
     assert_eq!(draft_fingerprint(&draft), draft_before);
@@ -1273,6 +1280,10 @@ fn invariant_family_tag(invariant: GenericInvariant) -> u8 {
         } => {
             let _ = (kind, cache_index, draft_index);
             14
+        }
+        GenericInvariant::DurableResourceMissing(type_id) => {
+            let _ = type_id;
+            18
         }
         GenericInvariant::ReadyBodyShapeMismatch(id) => {
             let _ = id;

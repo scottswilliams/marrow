@@ -74,7 +74,11 @@ fn with_minted_ids(sources: &[(&str, String)]) -> ProjectInput {
 fn serialize_ids(minted: &BTreeMap<IdentityAnchor, String>) -> String {
     let mut text = String::from("marrow ids v0\nmachine-written by marrow; do not edit\n");
     for (anchor, id) in minted {
-        text.push_str(&format!("id {} {} {id}\n", anchor.kind.keyword(), anchor.path));
+        text.push_str(&format!(
+            "id {} {} {id}\n",
+            anchor.kind.keyword(),
+            anchor.path
+        ));
     }
     text.push_str(&format!("high-water {}\nend\n", minted.len()));
     text

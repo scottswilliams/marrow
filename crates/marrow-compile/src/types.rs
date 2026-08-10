@@ -351,6 +351,12 @@ pub(crate) enum GenericInvariant {
         cache_index: usize,
         draft_index: usize,
     },
+    /// A `store` names a resource the type registry admitted, but the resource
+    /// declaration it was built from is not in the declaration set the durable build
+    /// walks. The two owners disagree about one name; it is not a fact about the
+    /// source, so it is neither reported against the declaration nor allowed to drop
+    /// the root silently.
+    DurableResourceMissing(marrow_image::TypeId),
 }
 
 /// A row position already proven to be relative to the active fill batch.
@@ -11234,7 +11240,11 @@ store ^holders[id: int]: Holder
                 .expect("store parses");
             let structs = vec![(crate::test_file_identity("src/main.mw"), generic_struct)];
             let resources = vec![(crate::test_file_identity("src/main.mw"), resource)];
-            let stores = vec![(crate::test_file_identity("src/main.mw"), store)];
+            let stores = vec![(
+                crate::analysis::FileRef::admitted(0),
+                crate::test_file_identity("src/main.mw"),
+                store,
+            )];
             let mut draft = ImageDraft::new();
             let mut diagnostics = DiagnosticCollector::new();
             let registry = TypeRegistry::build(
@@ -11279,7 +11289,7 @@ store ^holders[id: int]: Holder
                     None,
                     &mut diagnostics,
                 ),
-                Err(found) if found == expected
+                Err(crate::durable::DurableBuildError::Invariant(found)) if found == expected
             ));
             assert!(diagnostics.is_empty());
             let after = draft.encode().expect("rejected draft still encodes");
