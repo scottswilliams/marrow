@@ -9,7 +9,7 @@
 //!
 //! # Names
 //!
-//! Inside the project's `.marrow` directory the protocol uses exactly four
+//! Inside the project's `.marrow` directory the protocol uses exactly five
 //! fixed entry names and enumerates the directory nowhere:
 //!
 //! ```text
@@ -19,6 +19,11 @@
 //! ids.pending.create     the marker's pre-claim alias
 //! publish.lock           the cooperative project-metadata write lock
 //! ```
+//!
+//! The directory and the ledger's entry name are [`marrow_project::META_DIR`]
+//! and [`marrow_project::IDS_ENTRY`]; the four derived names are built from the
+//! latter here, so no spelling of the ledger's location exists twice.
+//! `publish.lock` is machine-local runtime state and is never committed.
 //!
 //! # Protocol
 //!
@@ -71,20 +76,26 @@ use marrow_fs_journal::{
     AdmittedDir, CacheLock, CorruptionReason, CustodyError, EntryName, JournalError, LockError,
     PendingName, qualified_platform,
 };
-use marrow_project::{LedgerPublicationPlan, MAX_IDS_BYTES};
+use marrow_project::{IDS_ENTRY, LedgerPublicationPlan, MAX_IDS_BYTES, META_DIR};
 
 use header::HeaderCorruption;
 
 pub use marker::IdsPublicationMarker;
 
-/// The project metadata directory, relative to the project root.
-const META_DIR: &str = ".marrow";
-/// The committed ledger's entry name inside the metadata directory.
-const LEDGER_NAME: &str = "ids";
-/// The fixed stage entry name inside the metadata directory.
-const STAGE_NAME: &str = "ids.publish.stage";
+/// The suffix the fixed stage entry adds to the ledger's entry name. The
+/// directory and ledger spellings themselves belong to [`marrow_project`]; this
+/// adapter derives its publication names from that owner rather than repeating
+/// either one.
+const STAGE_SUFFIX: &str = ".publish.stage";
 /// The cooperative project-metadata write lock's entry name.
 const LOCK_NAME: &str = "publish.lock";
+
+/// The fixed stage entry's spelling. The frozen row header embeds it and the
+/// guard admits it, and both take it from here so the ledger's entry name has
+/// one owner across the pure/adapter boundary.
+pub(crate) fn stage_spelling() -> String {
+    format!("{IDS_ENTRY}{STAGE_SUFFIX}")
+}
 /// The fixed bound on either byte run the header carries.
 const LEDGER_BYTE_CEILING: usize = MAX_IDS_BYTES;
 
@@ -407,22 +418,16 @@ impl ProjectMetadataWriteGuard {
         let root_dir = AdmittedDir::admit_trusted_root(root)?;
         let meta = match root_dir.admit_child(&meta_name) {
             Ok(meta) => meta,
-            Err(CustodyError::NotFound { .. }) => {
-                let created = root_dir.create_child_dir(&meta_name)?;
-                // The metadata directory's own entry must be durable before any
-                // entry inside it can be.
-                root_dir.sync()?;
-                created
-            }
+            Err(CustodyError::NotFound { .. }) => admit_created_meta(&root_dir, &meta_name)?,
             Err(error) => return Err(error.into()),
         };
         let lock = CacheLock::acquire(&meta, &admitted_name(LOCK_NAME))?;
-        let ledger = admitted_name(LEDGER_NAME);
+        let ledger = admitted_name(IDS_ENTRY);
         Ok(Self {
             journal: PendingName::derive(&ledger)
                 .expect("the fixed journal names are admitted spellings"),
+            stage: admitted_name(&stage_spelling()),
             ledger,
-            stage: admitted_name(STAGE_NAME),
             meta,
             _lock: lock,
         })
@@ -472,6 +477,29 @@ impl ProjectMetadataWriteGuard {
     fn journal_names(&self) -> &PendingName {
         &self.journal
     }
+}
+
+/// Create the metadata directory and admit it, or admit the one a concurrent
+/// first publication created.
+///
+/// The directory is the shared rendezvous rather than one process's property, so
+/// an occupied destination is re-admitted instead of refused: exclusion belongs
+/// to the write lock inside it, and a loser that refused here would report a
+/// filesystem refusal for what is an ordinary contended first publication.
+fn admit_created_meta(
+    root: &AdmittedDir,
+    name: &EntryName,
+) -> Result<AdmittedDir, IdsPublicationError> {
+    let admitted = match root.create_child_dir(name) {
+        Ok(created) => created,
+        Err(CustodyError::AlreadyExists { .. }) => root.admit_child(name)?,
+        Err(error) => return Err(error.into()),
+    };
+    // The metadata directory's own entry must be durable before any entry
+    // inside it can be, whichever process created it: the winner of the race
+    // may not have synced yet, and this process is about to write inside.
+    root.sync()?;
+    Ok(admitted)
 }
 
 /// Admit one of this module's fixed entry names.

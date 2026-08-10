@@ -175,3 +175,74 @@ fn a_symlink_lock_entry_is_refused_as_a_symlink() {
         }))
     ));
 }
+
+/// The lock entry is created by whoever gets there first, so a fresh directory
+/// with no entry is the ordinary first-acquisition case rather than an error.
+/// Racing acquisitions still see exactly one holder, and every loser reports
+/// the typed contention: a create-if-absent open that reports absence is
+/// reporting the concurrent creation, not an absent entry.
+#[test]
+fn racing_first_acquisitions_report_contention_rather_than_absence() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Barrier, Mutex};
+
+    const THREADS: usize = 4;
+    const ROUNDS: usize = 64;
+
+    let scratch = Scratch::new("lock-first-race");
+    let live = AtomicUsize::new(0);
+    let peak = AtomicUsize::new(0);
+    let held = AtomicUsize::new(0);
+    let custody: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+    for round in 0..ROUNDS {
+        // Each round starts from a directory that carries no lock entry at all.
+        let dir_name = name(&format!("round{round}"));
+        let parent = root(&scratch);
+        let dir = parent
+            .create_child_dir(&dir_name)
+            .expect("create the round");
+        let entry = name("publish.lock");
+        let start = Barrier::new(THREADS);
+
+        std::thread::scope(|scope| {
+            for _ in 0..THREADS {
+                scope.spawn(|| {
+                    start.wait();
+                    match CacheLock::acquire(&dir, &entry) {
+                        Ok(lock) => {
+                            peak.fetch_max(
+                                live.fetch_add(1, Ordering::SeqCst) + 1,
+                                Ordering::SeqCst,
+                            );
+                            live.fetch_sub(1, Ordering::SeqCst);
+                            drop(lock);
+                        }
+                        Err(LockError::Held) => {
+                            held.fetch_add(1, Ordering::SeqCst);
+                        }
+                        Err(LockError::Custody(error)) => custody
+                            .lock()
+                            .expect("collect")
+                            .push(format!("round {round}: {error}")),
+                    }
+                });
+            }
+        });
+    }
+
+    assert_eq!(
+        peak.load(Ordering::SeqCst),
+        1,
+        "two holders of one lock entry were live at once"
+    );
+    let custody = custody.lock().expect("read the refusals");
+    assert!(
+        custody.is_empty(),
+        "a racing first acquisition reported a custody refusal rather than contention: {custody:?}"
+    );
+    assert!(
+        held.load(Ordering::SeqCst) > 0,
+        "no acquisition ever contended, so the race exercised nothing"
+    );
+}

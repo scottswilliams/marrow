@@ -22,7 +22,7 @@
 
 use marrow_fs_journal::{FsIdentity, JournalCommon};
 
-use super::{LEDGER_BYTE_CEILING, STAGE_NAME};
+use super::{LEDGER_BYTE_CEILING, stage_spelling};
 
 /// The 48-byte shared leading common, as the journal owner freezes it.
 const COMMON_LEN: usize = 48;
@@ -90,7 +90,8 @@ impl RowHeader {
             parent: self.parent,
             journal_inode: self.journal_inode,
         };
-        let stage = STAGE_NAME.as_bytes();
+        let stage = stage_spelling();
+        let stage = stage.as_bytes();
         let mut bytes = Vec::with_capacity(
             COMMON_LEN + 16 + 2 + stage.len() + 8 + self.base_bytes.len() + self.next_bytes.len(),
         );
@@ -119,7 +120,7 @@ impl RowHeader {
             return Err(HeaderCorruption::GenerationPresenceMismatch);
         }
         let stage_len = usize::from(reader.byte()?);
-        if reader.take(stage_len)? != STAGE_NAME.as_bytes() {
+        if reader.take(stage_len)? != stage_spelling().as_bytes() {
             return Err(HeaderCorruption::StageNameDrift);
         }
         let base_bytes = reader.run()?.to_vec();

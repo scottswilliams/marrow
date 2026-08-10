@@ -844,3 +844,159 @@ fn an_off_map_state_under_an_incomplete_tail_refuses_without_panicking() {
     assert!(!project.exists("ids"), "no artifact was written");
     assert!(project.exists("ids.pending"), "the marker keeps gating");
 }
+
+// ===== The write owner's exclusion ===========================================
+
+/// The write lock is what serializes publication, so a second owner on one
+/// project reports the contention it is actually in.
+#[test]
+fn a_second_write_owner_on_one_project_reports_contention() {
+    let _serial = serialized();
+    let project = Project::new("contended");
+    let held = project.guard();
+
+    let refusal = ProjectMetadataWriteGuard::acquire(project.path())
+        .expect_err("a second write owner refuses while the first holds the lock");
+    assert_eq!(refusal.refusal(), IdsRefusal::Contended);
+    assert_eq!(refusal.code(), Code::IoWrite);
+    assert!(
+        refusal
+            .to_string()
+            .contains("holds the project-metadata write lock"),
+        "the refusal names the contention: {refusal}"
+    );
+
+    drop(held);
+    ProjectMetadataWriteGuard::acquire(project.path())
+        .expect("the released lock is reacquired by the next owner");
+}
+
+/// A clone carries no lock, so a first publication races an absent `.marrow`
+/// and an absent lock entry. The rendezvous is created rather than owned: at
+/// most one guard is ever live, every loser reports the contention rather than
+/// a filesystem refusal for the directory the winner created, and exactly one
+/// publication installs its successor.
+#[test]
+fn concurrent_first_publications_serialize_on_the_write_lock() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Barrier, Mutex};
+
+    let _serial = serialized();
+    const THREADS: usize = 4;
+    const ROUNDS: usize = 24;
+
+    for round in 0..ROUNDS {
+        let project = Project::new(&format!("first-publish-race-{round}"));
+        assert!(!project.meta().exists(), "the round starts from a clone");
+        let plans: Vec<LedgerPublicationPlan> = (0..THREADS)
+            .map(|seat| project.plan("Book", 1 + u8::try_from(seat).expect("few seats")))
+            .collect();
+
+        let live = AtomicUsize::new(0);
+        let peak = AtomicUsize::new(0);
+        let published = AtomicUsize::new(0);
+        let refusals: Mutex<Vec<(IdsRefusal, String)>> = Mutex::new(Vec::new());
+        let start = Barrier::new(THREADS);
+
+        std::thread::scope(|scope| {
+            for plan in plans {
+                scope.spawn(|| {
+                    start.wait();
+                    match ProjectMetadataWriteGuard::acquire(project.path()) {
+                        Ok(guard) => {
+                            peak.fetch_max(
+                                live.fetch_add(1, Ordering::SeqCst) + 1,
+                                Ordering::SeqCst,
+                            );
+                            if let Ok(IdsPublishOutcome::Settled(IdsPublication::Published)) =
+                                guard.publish_ids(plan)
+                            {
+                                published.fetch_add(1, Ordering::SeqCst);
+                            }
+                            live.fetch_sub(1, Ordering::SeqCst);
+                        }
+                        Err(refusal) => refusals
+                            .lock()
+                            .expect("collect")
+                            .push((refusal.refusal(), refusal.to_string())),
+                    }
+                });
+            }
+        });
+
+        assert_eq!(
+            peak.load(Ordering::SeqCst),
+            1,
+            "two write owners were live at once in round {round}"
+        );
+        assert_eq!(
+            published.load(Ordering::SeqCst),
+            1,
+            "round {round} installed a successor {} times",
+            published.load(Ordering::SeqCst)
+        );
+        for (refusal, message) in refusals.lock().expect("read the refusals").iter() {
+            assert_eq!(
+                *refusal,
+                IdsRefusal::Contended,
+                "a loser of the first-publication race reported {refusal:?} rather than \
+                 the contention it is in (round {round}): {message}"
+            );
+        }
+        assert_eq!(
+            project.read_meta("publish.lock").as_deref(),
+            Some(&b""[..]),
+            "the race leaves exactly one zero-byte lock entry"
+        );
+        assert!(!project.exists("ids.publish.stage"));
+        assert!(!project.exists("ids.pending"));
+    }
+}
+
+// ===== One spelling of the ledger's location =================================
+
+/// `.marrow` and the ledger's entry name belong to the pure owner. This adapter
+/// derives every publication name from those spellings, so a rename there moves
+/// these names with it instead of leaving a second live ledger location behind.
+#[test]
+fn the_publication_names_derive_from_the_pure_owner_s_spellings() {
+    let _serial = serialized();
+    let project = Project::new("one-spelling");
+    let plan = project.plan("Book", 1);
+    assert!(matches!(
+        project
+            .guard()
+            .publish_ids(plan)
+            .expect("the publication runs"),
+        IdsPublishOutcome::Settled(IdsPublication::Published)
+    ));
+
+    let joined = project
+        .path()
+        .join(marrow_project::META_DIR)
+        .join(marrow_project::IDS_ENTRY);
+    assert_eq!(
+        joined,
+        project.path().join(marrow_project::IDS_FILE),
+        "the pure owner's joined path and its two parts are one location"
+    );
+    assert!(
+        fs::read(&joined).is_ok_and(|bytes| !bytes.is_empty()),
+        "the publication installed the successor at the pure owner's path"
+    );
+
+    for source in [
+        include_str!("publication.rs"),
+        include_str!("publication/protocol.rs"),
+        include_str!("publication/header.rs"),
+        include_str!("publication/marker.rs"),
+    ] {
+        for literal in ["\".marrow\"", "\"ids\""] {
+            assert!(
+                !source.contains(literal),
+                "the publication owner spells {literal} itself; `.marrow` and the ledger's \
+                 entry name have one owner in `marrow_project`"
+            );
+        }
+    }
+}

@@ -9,7 +9,7 @@
 use std::io;
 use std::path::Path;
 
-use super::{LEDGER_NAME, META_DIR};
+use marrow_project::{IDS_ENTRY, META_DIR};
 
 /// The two fixed marker spellings the pending journal derives from the ledger's
 /// entry name. They are spelled here rather than derived through
@@ -35,10 +35,10 @@ pub enum IdsPublicationMarker {
 /// Probe the project rooted at `root`, failing closed.
 pub(super) fn probe(root: &Path) -> Option<IdsPublicationMarker> {
     let meta = root.join(META_DIR);
-    if present(&meta.join(format!("{LEDGER_NAME}{PENDING_SUFFIX}"))) {
+    if present(&meta.join(format!("{IDS_ENTRY}{PENDING_SUFFIX}"))) {
         return Some(IdsPublicationMarker::Claimed);
     }
-    if present(&meta.join(format!("{LEDGER_NAME}{CLAIM_SUFFIX}"))) {
+    if present(&meta.join(format!("{IDS_ENTRY}{CLAIM_SUFFIX}"))) {
         return Some(IdsPublicationMarker::Unclaimed);
     }
     None
