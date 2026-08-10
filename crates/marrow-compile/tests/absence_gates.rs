@@ -99,6 +99,43 @@ fn no_raw_syntax_diagnostic_vector_exists() {
     );
 }
 
+/// `SourceDiagnostic` declares exactly the two private fields the crate's
+/// `compile_fail` privacy doctests name. A `compile_fail` block that names a
+/// field which no longer exists still "passes" — it fails to compile for the
+/// wrong reason — so the declared field set is pinned here: renaming or adding
+/// a field fails this gate and forces the doctests to be rewritten with it.
+#[test]
+fn source_diagnostic_fields_stay_private() {
+    let diag = fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("src")
+            .join("diag.rs"),
+    )
+    .expect("read the diagnostic owner");
+    let body = diag
+        .split_once("pub struct SourceDiagnostic {")
+        .expect("the public diagnostic type is declared")
+        .1
+        .split_once('}')
+        .expect("the declaration is closed")
+        .0;
+    let fields: Vec<&str> = body
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && !line.starts_with("//"))
+        .map(|line| {
+            line.split_once(':')
+                .expect("a struct field declares a type")
+                .0
+        })
+        .collect();
+    assert_eq!(
+        fields,
+        ["file", "payload"],
+        "the privacy doctests in lib.rs name these exact fields; update them together"
+    );
+}
+
 /// The collector is one concrete private type: no generic collector or the
 /// retired generic counter family reappears.
 #[test]

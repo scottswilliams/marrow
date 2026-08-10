@@ -81,17 +81,19 @@ pub mod source_diagnostic_privacy_doctests {
     //! `SourceDiagnostic` is opaque: consumers read the frozen accessor set and
     //! can neither reach a payload field nor construct a diagnostic.
     //!
-    //! Field access does not compile:
+    //! Access to either declared field does not compile. The field names are
+    //! pinned by the absence gate `source_diagnostic_fields_stay_private`, so a
+    //! rename must update these doctests instead of voiding them silently.
     //!
     //! ```compile_fail
-    //! fn read(diagnostic: &marrow_compile::SourceDiagnostic) -> &str {
-    //!     &diagnostic.message
+    //! fn read(diagnostic: &marrow_compile::SourceDiagnostic) {
+    //!     let _ = &diagnostic.file;
     //! }
     //! ```
     //!
     //! ```compile_fail
-    //! fn read(diagnostic: &marrow_compile::SourceDiagnostic) -> &str {
-    //!     diagnostic.code
+    //! fn read(diagnostic: &marrow_compile::SourceDiagnostic) {
+    //!     let _ = &diagnostic.payload;
     //! }
     //! ```
     //!
