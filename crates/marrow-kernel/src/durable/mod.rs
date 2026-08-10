@@ -25,7 +25,7 @@ mod store;
 pub use attach::{
     AttachError, AttachmentId, CeilingIdToken, DeploymentCeiling, EphemeralAttachment,
 };
-pub use native_owner::NativeStoreOwner;
+pub use native_owner::{NativeStoreOwner, PendingNativeStoreOwner};
 pub use session_host::SessionHost;
 pub use store::{Durable, DurableStore, ReadSession, TxnSession};
 
@@ -33,8 +33,8 @@ pub use store::{Durable, DurableStore, ReadSession, TxnSession};
 /// classify a native open/audit failure without a direct dependency on the byte-engine
 /// crate (the path kernel stays the engine's only consumer).
 pub use marrow_store::{
-    NATIVE_ENGINE_FILE, NATIVE_LOCK_FILE, NativeLockError, NativeLockOwner, NativeOwnerOpenError,
-    StoreError,
+    NATIVE_ENGINE_FILE, NATIVE_LOCK_FILE, NativeLockError, NativeLockOwner,
+    NativeOwnerAcquireError, NativeOwnerOpenError, StoreError,
 };
 
 /// The opaque native, redb-backed durable-store owner. Named as an alias so a

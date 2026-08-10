@@ -14,8 +14,11 @@ use crate::instance::StoreInstanceId;
 pub struct LockOwner {
     /// The owning process id.
     pub pid: u32,
-    /// The lifecycle store instance held by that process.
-    pub instance: StoreInstanceId,
+    /// The lifecycle store instance held by that process, once that process has
+    /// bound it. A holder that has taken the lock but has not yet read the store
+    /// directory it is opening has no instance to name, and the projection reports
+    /// exactly that rather than inventing one.
+    pub instance: Option<StoreInstanceId>,
     /// The acquisition time in Unix-epoch seconds. Forensic only.
     pub acquired_unix_secs: u64,
 }
@@ -24,7 +27,7 @@ impl From<NativeLockOwner> for LockOwner {
     fn from(owner: NativeLockOwner) -> Self {
         Self {
             pid: owner.pid,
-            instance: StoreInstanceId::from_bytes(owner.instance),
+            instance: owner.instance.map(StoreInstanceId::from_bytes),
             acquired_unix_secs: owner.acquired_unix_secs,
         }
     }
@@ -63,11 +66,23 @@ impl LockError {
 impl std::fmt::Display for LockError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::StoreInUse {
+                owner:
+                    Some(LockOwner {
+                        pid,
+                        instance: Some(instance),
+                        ..
+                    }),
+            } => write!(
+                formatter,
+                "the store is already open by process {pid} (store instance {}); close it, then \
+                 retry",
+                instance.to_hex(),
+            ),
             Self::StoreInUse { owner: Some(owner) } => write!(
                 formatter,
-                "the store is already open by process {} (store instance {}); close it, then retry",
+                "the store is already open by process {}; close it, then retry",
                 owner.pid,
-                owner.instance.to_hex(),
             ),
             Self::StoreInUse { owner: None } => write!(
                 formatter,
@@ -88,12 +103,39 @@ mod tests {
     fn lower_owner_identity_projects_without_changing_bytes() {
         let lower = NativeLockOwner {
             pid: 17,
-            instance: [0xab; 16],
+            instance: Some([0xab; 16]),
             acquired_unix_secs: 23,
         };
         let projected = LockOwner::from(lower);
         assert_eq!(projected.pid, 17);
-        assert_eq!(projected.instance.bytes(), &[0xab; 16]);
+        assert_eq!(
+            projected
+                .instance
+                .expect("a bound owner names its store")
+                .bytes(),
+            &[0xab; 16],
+        );
         assert_eq!(projected.acquired_unix_secs, 23);
+    }
+
+    /// A holder that has taken the lock but not yet bound its store projects with no
+    /// instance, and its diagnostic names the process without claiming a store.
+    #[test]
+    fn an_unbound_owner_projects_and_renders_without_an_instance() {
+        let projected = LockOwner::from(NativeLockOwner {
+            pid: 19,
+            instance: None,
+            acquired_unix_secs: 5,
+        });
+        assert_eq!(projected.instance, None);
+        let rendered = LockError::StoreInUse {
+            owner: Some(projected),
+        }
+        .to_string();
+        assert!(rendered.contains("process 19"), "{rendered}");
+        assert!(
+            !rendered.contains("store instance"),
+            "an unbound holder must not be rendered as naming a store: {rendered}",
+        );
     }
 }

@@ -431,13 +431,13 @@ fn scoped_native_reopen_leaves_a_missing_engine_path_absent() {
     std::fs::create_dir_all(&dir).expect("scratch directory");
     let path = dir.join("store.redb");
     assert!(
-        NativeStore::open_existing_admitted(&dir, [0x61; 16], vec![schema()], sites(), || Ok::<
-            _,
-            std::convert::Infallible,
-        >(
-            ()
-        ),)
-        .is_err(),
+        NativeStore::acquire_existing(&dir)
+            .expect("acquire the owner over a store directory with no engine")
+            .bind_and_open_existing([0x61; 16], vec![schema()], sites(), || Ok::<
+                _,
+                std::convert::Infallible,
+            >(()))
+            .is_err(),
         "a scoped lifecycle reopen must refuse a missing engine",
     );
     assert!(

@@ -42,7 +42,8 @@ pub use mem::MemoryEngine;
 #[cfg(feature = "native")]
 pub use native_owner::{
     NATIVE_ENGINE_FILE, NATIVE_ENGINE_FORMAT_VERSION, NATIVE_LOCK_FILE, NativeEngineOwner,
-    NativeLockError, NativeLockOwner, NativeOwnerOpenError, NativeOwnerTxn, NativeOwnerView,
+    NativeLockError, NativeLockOwner, NativeOwnerAcquireError, NativeOwnerOpenError,
+    NativeOwnerTxn, NativeOwnerView, PendingNativeEngineOwner,
 };
 
 /// Freezes the crate's public surface against removal and rename: every `pub`
@@ -85,6 +86,13 @@ mod public_surface_audit {
             let _format = NATIVE_ENGINE_FORMAT_VERSION;
             let _engine_file = NATIVE_ENGINE_FILE;
             let _lock_file = NATIVE_LOCK_FILE;
+            let _acquire: fn(
+                &std::path::Path,
+            )
+                -> Result<PendingNativeEngineOwner, NativeOwnerAcquireError> =
+                NativeEngineOwner::acquire_existing;
+            let _directory: fn(&PendingNativeEngineOwner) -> &std::path::Path =
+                PendingNativeEngineOwner::directory;
         }
     }
 }

@@ -7,7 +7,10 @@
 
 use std::path::{Path, PathBuf};
 
-use marrow_store::{ByteEngine, NativeEngineOwner, NativeOwnerOpenError, StoreError};
+use marrow_store::{
+    ByteEngine, NativeEngineOwner, NativeOwnerAcquireError, NativeOwnerOpenError,
+    PendingNativeEngineOwner, StoreError,
+};
 
 use super::session_host::SessionHost;
 use super::store::{DurableStore, ReadSession, TxnSession};
@@ -52,36 +55,15 @@ impl NativeStoreOwner {
         NativeEngineOwner::provision(store_dir)
     }
 
-    /// Open an existing persistent store. The zero-capability callback runs
-    /// while the lower owner lock is held and before the engine is opened.
-    pub fn open_existing_admitted<R>(
+    /// Take the lower owner lock over an existing persistent store, making no
+    /// engine call and naming no store instance. The caller reads the store
+    /// directory's own artifacts under the returned owner and binds the instance
+    /// those artifacts name.
+    pub fn acquire_existing(
         store_dir: &Path,
-        instance: [u8; 16],
-        schemas: Vec<StoreSchema>,
-        sites: Vec<SiteSpec>,
-        admit: impl FnOnce() -> Result<(), R>,
-    ) -> Result<Self, NativeOwnerOpenError<R>> {
-        let directory = std::fs::canonicalize(store_dir).map_err(NativeOwnerOpenError::Io)?;
-        let engine = NativeEngineOwner::open_existing_admitted(&directory, instance, admit)?;
-        let ceiling = DemandCoverage {
-            read: true,
-            write: engine.require_write_access("open").is_ok(),
-        };
-        let scope = CommitRecoveryScope::persistent(instance, &directory);
-        let store = DurableStore::from_schemas_with_ceiling_and_recovery_scope(
-            engine,
-            schemas.clone(),
-            sites.clone(),
-            ceiling,
-            scope,
-        );
-        Ok(Self {
-            store: Some(store),
-            directory,
-            instance,
-            schemas,
-            sites,
-        })
+    ) -> Result<PendingNativeStoreOwner, NativeOwnerAcquireError> {
+        NativeEngineOwner::acquire_existing(store_dir)
+            .map(|pending| PendingNativeStoreOwner { pending })
     }
 
     /// Consume an indeterminate commit fact, irreversibly quarantine the lower
@@ -124,6 +106,64 @@ impl NativeStoreOwner {
         self.store
             .as_mut()
             .expect("a live native owner retains its semantic store")
+    }
+}
+
+/// One persistent store's owner lock, held before the store directory has been
+/// read and before any engine call. It is affine: binding it consumes it, and no
+/// engine, session, or recovery scope exists until it has been.
+///
+/// The lower pending owner is private and cannot be detached by safe dependents.
+///
+/// ```compile_fail
+/// use marrow_kernel::durable::PendingNativeStoreOwner;
+/// fn detach(pending: PendingNativeStoreOwner) {
+///     let _lower = pending.pending;
+/// }
+/// ```
+pub struct PendingNativeStoreOwner {
+    pending: PendingNativeEngineOwner,
+}
+
+impl PendingNativeStoreOwner {
+    /// The canonical store directory this owner holds.
+    pub fn directory(&self) -> &Path {
+        self.pending.directory()
+    }
+
+    /// Bind `instance` into the owner marker, run the zero-capability admission
+    /// callback, and open and audit the existing engine under the same lock. The
+    /// recovery scope is minted here, from the instance the caller bound and the
+    /// directory the lock was taken over, so no scope can name a store this owner
+    /// does not hold.
+    pub fn bind_and_open_existing<R>(
+        self,
+        instance: [u8; 16],
+        schemas: Vec<StoreSchema>,
+        sites: Vec<SiteSpec>,
+        admit: impl FnOnce() -> Result<(), R>,
+    ) -> Result<NativeStoreOwner, NativeOwnerOpenError<R>> {
+        let directory = self.pending.directory().to_path_buf();
+        let engine = self.pending.bind_and_open_existing(instance, admit)?;
+        let ceiling = DemandCoverage {
+            read: true,
+            write: engine.require_write_access("open").is_ok(),
+        };
+        let scope = CommitRecoveryScope::persistent(instance, &directory);
+        let store = DurableStore::from_schemas_with_ceiling_and_recovery_scope(
+            engine,
+            schemas.clone(),
+            sites.clone(),
+            ceiling,
+            scope,
+        );
+        Ok(NativeStoreOwner {
+            store: Some(store),
+            directory,
+            instance,
+            schemas,
+            sites,
+        })
     }
 }
 
@@ -185,22 +225,18 @@ mod tests {
 
     fn open_owner(scratch: &Scratch, instance: [u8; 16]) -> NativeStoreOwner {
         NativeStoreOwner::provision(&scratch.0).expect("provision");
-        NativeStoreOwner::open_existing_admitted(
-            &scratch.0,
-            instance,
-            Vec::new(),
-            Vec::new(),
-            || Ok::<_, std::convert::Infallible>(()),
-        )
-        .expect("open native semantic owner")
+        NativeStoreOwner::acquire_existing(&scratch.0)
+            .expect("acquire the owner lock")
+            .bind_and_open_existing(instance, Vec::new(), Vec::new(), || {
+                Ok::<_, std::convert::Infallible>(())
+            })
+            .expect("open native semantic owner")
     }
 
-    fn assert_excluded(path: &Path, instance: [u8; 16]) {
+    fn assert_excluded(path: &Path) {
         assert!(matches!(
-            NativeEngineOwner::open_existing_admitted(path, instance, || {
-                Ok::<_, std::convert::Infallible>(())
-            }),
-            Err(NativeOwnerOpenError::Lock(
+            NativeEngineOwner::acquire_existing(path),
+            Err(NativeOwnerAcquireError::Lock(
                 NativeLockError::StoreInUse { .. }
             ))
         ));
@@ -248,9 +284,9 @@ mod tests {
                     )
                     .expect("a known recovered owner remains usable");
             }
-            assert_excluded(&scratch.0, [0x43; 16]);
+            assert_excluded(&scratch.0);
             drop(owner);
-            assert_excluded(&scratch.0, [0x44; 16]);
+            assert_excluded(&scratch.0);
         }
     }
 
@@ -267,19 +303,19 @@ mod tests {
         let (state, owner) = owner.resolve_recovery(fact);
         assert_eq!(state, DurableCommitState::Unknown);
         assert!(owner.is_none());
-        assert_excluded(&scratch.0, [0x46; 16]);
+        assert_excluded(&scratch.0);
     }
 
     #[test]
     fn generic_unscoped_store_drop_cannot_disarm_a_quarantined_lower_owner() {
         let scratch = Scratch::new("generic-drop");
         NativeEngineOwner::provision(&scratch.0).expect("provision");
-        let owner = NativeEngineOwner::open_existing_admitted(&scratch.0, [0x47; 16], || {
-            Ok::<_, std::convert::Infallible>(())
-        })
-        .expect("open lower owner")
-        .reopen_existing_and_audit()
-        .expect("enter irreversible lower quarantine");
+        let owner = NativeEngineOwner::acquire_existing(&scratch.0)
+            .expect("acquire the owner lock")
+            .bind_and_open_existing([0x47; 16], || Ok::<_, std::convert::Infallible>(()))
+            .expect("open lower owner")
+            .reopen_existing_and_audit()
+            .expect("enter irreversible lower quarantine");
         let store = DurableStore::from_schemas_with_ceiling(
             owner,
             Vec::new(),
@@ -290,6 +326,6 @@ mod tests {
             },
         );
         drop(store);
-        assert_excluded(&scratch.0, [0x48; 16]);
+        assert_excluded(&scratch.0);
     }
 }

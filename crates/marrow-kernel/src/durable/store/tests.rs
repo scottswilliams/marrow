@@ -2303,10 +2303,10 @@ fn sorted(mut cells: Vec<(Vec<u8>, Vec<u8>)>) -> Vec<(Vec<u8>, Vec<u8>)> {
 fn native_indexed() -> (DurableStore<NativeEngineOwner>, TempDir) {
     let temp = TempDir::new("index-maint");
     NativeEngineOwner::provision(&temp.store()).expect("provision native");
-    let engine = NativeEngineOwner::open_existing_admitted(&temp.store(), [0x31; 16], || {
-        Ok::<_, std::convert::Infallible>(())
-    })
-    .expect("open native");
+    let engine = NativeEngineOwner::acquire_existing(&temp.store())
+        .expect("acquire the owner lock")
+        .bind_and_open_existing([0x31; 16], || Ok::<_, std::convert::Infallible>(()))
+        .expect("open native");
     (
         DurableStore::from_engine(engine, indexed_schema(), sites()),
         temp,

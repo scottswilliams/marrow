@@ -22,9 +22,9 @@ use std::path::{Path, PathBuf};
 
 use marrow_codes::Code;
 use marrow_kernel::durable::{
-    CommitRecovery, DemandCoverage, DurableCommitState, InvocationGrant, NativeOwnerOpenError,
-    NativeStore, ReadSession, SessionError, SessionHost, SiteSpec, StoreError, StoreSchema,
-    TxnSession,
+    CommitRecovery, DemandCoverage, DurableCommitState, InvocationGrant, NativeOwnerAcquireError,
+    NativeOwnerOpenError, NativeStore, ReadSession, SessionError, SessionHost, SiteSpec,
+    StoreError, StoreSchema, TxnSession,
 };
 
 use crate::codec::FormatError;
@@ -340,51 +340,58 @@ pub(crate) fn open_admitted<R>(
     sites: Vec<SiteSpec>,
     admit: impl FnOnce(&LogicalHead) -> Result<(), R>,
 ) -> Result<OpenStore, AdmitError<R>> {
-    match preflight(dir) {
-        Preflight::Absent => return Err(AdmitError::Open(OpenError::NotProvisioned)),
-        Preflight::Incomplete => return Err(AdmitError::Open(OpenError::Incomplete)),
-        Preflight::Complete => {}
+    // Only the directory's own existence is decided ahead of the owner: a path with no store
+    // at it has no lock to take. Everything the store directory *contains* — whether it is
+    // complete, whether its artifacts decode — is read under the owner below, so no state of
+    // those artifacts can preempt the exclusion verdict a contender is owed.
+    if preflight(dir) == Preflight::Absent {
+        return Err(AdmitError::Open(OpenError::NotProvisioned));
     }
 
-    // Pin the complete store directory before any callback or engine open. Retaining caller-
-    // relative text would allow a later cwd change to redirect indeterminate-commit recovery
-    // while the original store's owner lock remained held.
-    let dir = std::fs::canonicalize(dir).map_err(|error| AdmitError::Open(OpenError::Io(error)))?;
-    if preflight(&dir) != Preflight::Complete {
+    // Acquiring pins the store directory to its canonical path and takes the lock without
+    // naming an instance or touching the engine. Retaining caller-relative text would allow a
+    // later cwd change to redirect indeterminate-commit recovery while the original store's
+    // owner lock remained held.
+    let pending = NativeStore::acquire_existing(dir).map_err(|error| match error {
+        NativeOwnerAcquireError::Io(error) => AdmitError::Open(OpenError::Io(error)),
+        NativeOwnerAcquireError::Lock(error) => {
+            AdmitError::Open(OpenError::Lock(LockError::from(error)))
+        }
+    })?;
+    let dir = pending.directory().to_path_buf();
+
+    // From here to the engine open, one owner holds the store: the completeness verdict, the
+    // envelope, and the head are one admission snapshot rather than three separately racing
+    // observations.
+    if !store_dir::artifacts_present(&dir) {
         return Err(AdmitError::Open(OpenError::Incomplete));
     }
-
     let envelope = decode_envelope(&dir).map_err(AdmitError::Open)?;
     let mut admitted_head = None;
 
-    // The kernel capsule composes lock, admission, existing-only engine open,
-    // and any required unclean-open audit without exposing its lower owner.
-    let owner = NativeStore::open_existing_admitted(
-        &dir,
-        *envelope.instance.bytes(),
-        schemas,
-        sites,
-        || {
-            // Read and admit the mutable logical head only after the physical
-            // owner lock is held. The callback receives no store capability.
+    // The kernel capsule binds the instance the envelope named into the owner marker, runs
+    // admission, and composes the existing-only engine open with any inherited audit without
+    // exposing its lower owner.
+    let owner = pending
+        .bind_and_open_existing(*envelope.instance.bytes(), schemas, sites, || {
+            // Read and admit the mutable logical head under the same owner. The callback
+            // receives no store capability.
             let head = decode_head(&dir).map_err(Ok)?;
             admit(&head).map_err(Err)?;
             admitted_head = Some(head);
             Ok::<(), Result<OpenError, R>>(())
-        },
-    )
-    .map_err(|error| match error {
-        NativeOwnerOpenError::Io(error) => AdmitError::Open(OpenError::Io(error)),
-        NativeOwnerOpenError::Lock(error) => {
-            AdmitError::Open(OpenError::Lock(LockError::from(error)))
-        }
-        NativeOwnerOpenError::Refused(Ok(error)) => AdmitError::Open(error),
-        NativeOwnerOpenError::Refused(Err(refusal)) => AdmitError::Refused(refusal),
-        NativeOwnerOpenError::Store(StoreError::Corruption { message }) => {
-            AdmitError::Open(OpenError::Corruption { message })
-        }
-        NativeOwnerOpenError::Store(error) => AdmitError::Open(OpenError::Store(error)),
-    })?;
+        })
+        .map_err(|error| match error {
+            NativeOwnerOpenError::Lock(error) => {
+                AdmitError::Open(OpenError::Lock(LockError::from(error)))
+            }
+            NativeOwnerOpenError::Refused(Ok(error)) => AdmitError::Open(error),
+            NativeOwnerOpenError::Refused(Err(refusal)) => AdmitError::Refused(refusal),
+            NativeOwnerOpenError::Store(StoreError::Corruption { message }) => {
+                AdmitError::Open(OpenError::Corruption { message })
+            }
+            NativeOwnerOpenError::Store(error) => AdmitError::Open(OpenError::Store(error)),
+        })?;
 
     Ok(OpenStore {
         owner,
@@ -436,6 +443,35 @@ pub(crate) fn create_private_dir(dir: &Path) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::head::ActiveBinding;
+    use crate::headmap::HeadMap;
+    use marrow_image::LedgerIdBytes;
+
+    /// The smallest complete provision request: one durable node, a two-byte accepted
+    /// ceiling payload, and no store shape.
+    fn test_request(instance: StoreInstanceId) -> ProvisionRequest {
+        let head_map = HeadMap::assign(&[LedgerIdBytes::from_bytes([0x01; 16])]).expect("head map");
+        ProvisionRequest {
+            envelope: StoreEnvelope {
+                instance,
+                writer_toolchain: "0.1.0".into(),
+                engine_kind: crate::envelope::EngineKind::Redb,
+                engine_format_version: 1,
+            },
+            head: LogicalHead::provision(
+                ActiveBinding {
+                    image_format_version: 0,
+                    image_id: [0x11; 32],
+                    durable_contract: [0x22; 32],
+                    interface: [0x33; 32],
+                },
+                vec![0x44, 0x45],
+                head_map,
+            ),
+            schemas: Vec::new(),
+            sites: Vec::new(),
+        }
+    }
 
     struct ScratchDir(std::path::PathBuf);
 
@@ -491,33 +527,67 @@ mod tests {
         let _ = std::fs::remove_dir_all(&base);
     }
 
+    fn open_owner(dir: &Path, instance: [u8; 16]) -> NativeStore {
+        NativeStore::acquire_existing(dir)
+            .expect("acquire the owner")
+            .bind_and_open_existing(instance, Vec::new(), Vec::new(), || {
+                Ok::<_, std::convert::Infallible>(())
+            })
+            .expect("bind and open")
+    }
+
     #[test]
     fn opaque_native_owner_holds_exclusion_and_clean_drop_releases_it() {
         let scratch = ScratchDir::new("opaque-owner");
         NativeStore::provision(&scratch.0).expect("provision native engine");
-        let owner = NativeStore::open_existing_admitted(
-            &scratch.0,
-            [0x51; 16],
-            Vec::new(),
-            Vec::new(),
-            || Ok::<_, std::convert::Infallible>(()),
-        )
-        .expect("open owner");
+        let owner = open_owner(&scratch.0, [0x51; 16]);
         assert!(matches!(
-            NativeStore::open_existing_admitted(
-                &scratch.0,
-                [0x52; 16],
-                Vec::new(),
-                Vec::new(),
-                || Ok::<_, std::convert::Infallible>(()),
-            ),
-            Err(NativeOwnerOpenError::Lock(_)),
+            NativeStore::acquire_existing(&scratch.0),
+            Err(NativeOwnerAcquireError::Lock(_)),
         ));
         drop(owner);
-        NativeStore::open_existing_admitted(&scratch.0, [0x52; 16], Vec::new(), Vec::new(), || {
-            Ok::<_, std::convert::Infallible>(())
+        drop(open_owner(&scratch.0, [0x52; 16]));
+    }
+
+    /// Every admission read and callback happens under one owner, and the pair of artifacts
+    /// the open reports is the snapshot taken under it. A competing open attempted from
+    /// inside the admission callback — the innermost point of the sequence — is refused as
+    /// contention, and an envelope rewritten at that same point does not reach the caller,
+    /// because the envelope is read once under this owner and never re-read behind the head.
+    #[test]
+    fn admission_reads_are_one_snapshot_under_one_owner() {
+        let scratch = ScratchDir::new("one-snapshot");
+        let store = scratch.0.join("store");
+        let original = StoreInstanceId::draw().expect("entropy");
+        provision(&store, test_request(original)).expect("provision");
+
+        let mut contended = None;
+        let opened = open_admitted(&store, Vec::new(), Vec::new(), |head| {
+            contended = Some(match open(&store, Vec::new(), Vec::new()) {
+                Err(OpenError::Lock(error)) => error.code(),
+                Ok(_) => panic!("a competing open ran inside the admission callback"),
+                Err(other) => panic!("admission ran outside its owner: {other}"),
+            });
+            // Rewrite the envelope at the innermost point of the sequence. A second read
+            // behind the head would pick this up; one snapshot cannot.
+            let replacement = StoreEnvelope {
+                instance: StoreInstanceId::draw().expect("entropy"),
+                writer_toolchain: "9.9.9".into(),
+                engine_kind: crate::envelope::EngineKind::Redb,
+                engine_format_version: 1,
+            };
+            std::fs::write(store_dir::envelope_path(&store), replacement.encode())
+                .expect("rewrite the envelope mid-admission");
+            assert_eq!(head.binding.image_id, [0x11; 32]);
+            Ok::<(), std::convert::Infallible>(())
         })
-        .expect("clean drop releases exclusion");
+        .unwrap_or_else(|_| panic!("the open completes under its own owner"));
+
+        assert_eq!(contended, Some("store.locked"));
+        assert_eq!(
+            opened.envelope.instance, original,
+            "the open reports the envelope its owner admitted, not one rewritten behind it",
+        );
     }
 
     fn read_dir_names(dir: &Path) -> Vec<String> {

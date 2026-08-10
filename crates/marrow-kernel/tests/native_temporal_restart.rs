@@ -38,10 +38,10 @@ fn round_trip(tag: &str, scrambled: &[KeyScalar]) -> Vec<(Vec<u8>, Vec<u8>)> {
     let path = scratch(tag);
     NativeEngineOwner::provision(&path).expect("provision native store");
     {
-        let mut engine = NativeEngineOwner::open_existing_admitted(&path, [0x33; 16], || {
-            Ok::<_, std::convert::Infallible>(())
-        })
-        .expect("open native store");
+        let mut engine = NativeEngineOwner::acquire_existing(&path)
+            .expect("acquire the owner lock")
+            .bind_and_open_existing([0x33; 16], || Ok::<_, std::convert::Infallible>(()))
+            .expect("open native store");
         let mut txn = engine.begin().expect("begin");
         for key in scrambled {
             let encoded = encode_key_value(key);
@@ -56,10 +56,10 @@ fn round_trip(tag: &str, scrambled: &[KeyScalar]) -> Vec<(Vec<u8>, Vec<u8>)> {
         // Dropping `engine` closes the file: the next open is a genuine restart.
     }
 
-    let engine = NativeEngineOwner::open_existing_admitted(&path, [0x33; 16], || {
-        Ok::<_, std::convert::Infallible>(())
-    })
-    .expect("reopen native store");
+    let engine = NativeEngineOwner::acquire_existing(&path)
+        .expect("acquire the owner lock")
+        .bind_and_open_existing([0x33; 16], || Ok::<_, std::convert::Infallible>(()))
+        .expect("reopen native store");
     let view = engine.read_view().expect("read view");
     let cells = view.scan_after(&[], &[]).expect("scan");
     let _ = std::fs::remove_dir_all(&path);

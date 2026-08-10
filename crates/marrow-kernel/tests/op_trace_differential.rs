@@ -63,10 +63,10 @@ impl TempDir {
 
 fn native_owner(path: &std::path::Path) -> NativeEngineOwner {
     NativeEngineOwner::provision(path).expect("provision native");
-    NativeEngineOwner::open_existing_admitted(path, [0x32; 16], || {
-        Ok::<_, std::convert::Infallible>(())
-    })
-    .expect("open native")
+    NativeEngineOwner::acquire_existing(path)
+        .expect("acquire the owner lock")
+        .bind_and_open_existing([0x32; 16], || Ok::<_, std::convert::Infallible>(()))
+        .expect("open native")
 }
 
 impl Drop for TempDir {
