@@ -206,11 +206,20 @@ mod imp {
 
     /// Open a file for reading alone: witness-and-inspect custody over debris
     /// whose mode may deny write access must not require more than read.
+    ///
+    /// `O_NONBLOCK` is what keeps this open from outlasting the refusal it is
+    /// taken for. `O_RDONLY` on a FIFO with no writer blocks until a writer
+    /// arrives, and a caller here is deciding a node kind it refuses anything
+    /// but a regular file for — so without the flag a planted FIFO hangs the
+    /// caller indefinitely, under whatever lock it holds, instead of reaching
+    /// [`CustodyError::WrongNodeKind`]. On the regular files that survive that
+    /// witness the flag changes nothing: a regular-file read is never short and
+    /// never returns `EAGAIN`.
     pub(crate) fn open_file_readonly(
         dir: &DirHandle,
         name: &str,
     ) -> Result<FileHandle, CustodyError> {
-        let flags = OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC;
+        let flags = OFlags::RDONLY | OFlags::NONBLOCK | OFlags::NOFOLLOW | OFlags::CLOEXEC;
         rustix::fs::openat(dir, name, flags, Mode::empty())
             .map(File::from)
             .map_err(|errno| map("open file", Reading::Nofollow, errno))
