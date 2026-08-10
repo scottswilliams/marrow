@@ -283,6 +283,44 @@ fn reported_order(stderr: &str) -> Vec<(&str, &str)> {
         .collect()
 }
 
+/// The reader above decides which stderr lines the two order laws below are stated
+/// over, so a reader that silently drops a diagnostic — or admits a line that is not
+/// one — would let those laws pass while describing a different set of lines than the
+/// binary printed. Each probe is a shape a looser reader gets wrong.
+#[test]
+fn the_diagnostic_reader_reads_diagnostics_and_only_diagnostics() {
+    let stderr = "\
+src/a.mw:1:2: check.type: a message
+src/odd:name.mw:30:4: parse.syntax: a file spelling carrying its own colon
+cli.io_read: failed to read src/gone.mw: no such file
+the compiler reached a fixed resource limit: the analysis fact table is full
+src/b.mw:x:4: check.type: a location that is not a number
+src/c.mw:9:9: Check.Type: a dotted code whose words are not lowercase identifiers
+src/d.mw:9:9: check: a code with no namespace
+src/f.mw:9:9: check.type is what it is: a dotted code carrying prose in its own field
+src/e.mw:7:1: check.module_path: the last diagnostic
+";
+    assert_eq!(
+        reported_order(stderr),
+        vec![
+            ("src/a.mw", "check.type"),
+            ("src/odd:name.mw", "parse.syntax"),
+            ("src/e.mw", "check.module_path"),
+        ],
+    );
+
+    // An operational refusal whose prose names a `.mw` file is a `code: message` line
+    // carrying a period, and reading the period as a code separator would count it.
+    assert!(reported_order("cli.io_read: failed to read src/gone.mw: no such file").is_empty());
+    // The position is read from the end, so a colon in the file spelling is not a
+    // location field.
+    assert_eq!(
+        reported_order("a:b:c.mw:1:1: check.type: m"),
+        vec![("a:b:c.mw", "check.type")],
+    );
+    assert!(reported_order("").is_empty());
+}
+
 /// Diagnostics are grouped by the stage that produced them: invalid-UTF-8 refusals,
 /// then parse diagnostics, then the later checks. The first two groups run in
 /// capture's identity order across files, so a refusal in the last-sorting file still
