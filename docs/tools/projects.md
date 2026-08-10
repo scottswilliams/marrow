@@ -30,6 +30,8 @@ machine-local runtime state that no checkout carries, and the tools keep it that
 way themselves: the write owner writes `.marrow/.gitignore` naming the lock when
 it creates the lock, so a project adds no ignore line by hand and a clone that
 carries neither entry is still correct — the next publication writes both.
+Committing that ignore entry alongside the ledger is the tidier habit, and
+leaving it untracked changes nothing about how the lock is treated.
 
 A lock that travelled with a checkout would be worse than absent: an ordinary
 Git operation that deletes and recreates a tracked entry replaces the inode, and
