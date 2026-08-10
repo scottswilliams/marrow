@@ -857,6 +857,24 @@ impl Artifacts {
             && call_graph.is_some()
             && transactions.is_some()
     }
+
+    /// The semantic fence, in exact order, over the pass's finished terminal. An
+    /// invariant returned earlier; a non-empty terminal — rows, or a `Limited` terminal
+    /// reporting its own diagnostic bound — is the diagnostic outcome; an empty terminal
+    /// with any artifact unavailable is an invariant, because an unavailable artifact
+    /// always follows a refusal that reported. `None` is the checked program, and the
+    /// image-policy verdict is taken strictly after that point.
+    fn refusal(&self, terminal: BoundedDiagnostics) -> Option<SemanticOutcome> {
+        if !terminal.is_empty() {
+            return Some(SemanticOutcome::Diagnostics(
+                terminal,
+                CompileStage::PostLoweringValidation,
+            ));
+        }
+        (!self.all_available()).then_some(SemanticOutcome::Invariant(
+            InvariantCause::UnavailableWithoutReport,
+        ))
+    }
 }
 
 /// A semantically checked program, immediately before the production projection
@@ -1749,12 +1767,8 @@ fn run_semantic(
         call_graph,
         transactions,
     };
-    let terminal = diagnostics.finish();
-    if !terminal.is_empty() {
-        return SemanticOutcome::Diagnostics(terminal, CompileStage::PostLoweringValidation);
-    }
-    if !artifacts.all_available() {
-        return SemanticOutcome::Invariant(InvariantCause::UnavailableWithoutReport);
+    if let Some(refusal) = artifacts.refusal(diagnostics.finish()) {
+        return refusal;
     }
     SemanticOutcome::Checked(Box::new(CheckedProgram {
         draft,
@@ -2473,8 +2487,11 @@ fn is_ascii_identifier(text: &str) -> bool {
 mod tests {
     use super::valid_export_path;
     use super::{
-        Analyzed, BoundedDiagnostics, Built, CompileFailure, CompileStage, Driven, InvariantCause,
-        SemanticOutcome, analyze_outcome,
+        AcceptedQueuedTemplateProofs, AcyclicCallGraph, AmbientTransactionClosure, Analyzed,
+        Artifacts, BoundedDiagnostics, Built, CompileFailure, CompileStage,
+        CompleteDeclaredFunctionBodies, CompleteDeclaredTestBodies, CompleteFunctionRegistry,
+        CompleteLoweredFunctionSet, CompleteTypeRegistry, Driven, InvariantCause, SemanticOutcome,
+        analyze_outcome,
     };
     use crate::diag::{DiagnosticCollector, MAX_DIAGNOSTIC_COUNT, SourceDiagnostic};
     use crate::types::{
@@ -2736,6 +2753,56 @@ mod tests {
             "the collector's allocation is recovered without a copy"
         );
         assert_eq!(recovered, expected);
+    }
+
+    /// The fence's positive direction. Production cannot reach it — an unavailable
+    /// artifact always follows a refusal that reported, so the terminal is non-empty and
+    /// the diagnostic arm wins — which is exactly why the rule needs a direct test:
+    /// without one, deleting the availability arm outright leaves the whole workspace
+    /// green. Every artifact is withheld in turn, so each conjunct of the availability
+    /// destructure is load-bearing, and the all-available base is checked to be checked.
+    #[test]
+    fn an_empty_terminal_with_a_withheld_artifact_is_an_invariant() {
+        let available = || Artifacts {
+            types: Some(CompleteTypeRegistry),
+            functions: Some(CompleteFunctionRegistry),
+            template_proofs: Some(AcceptedQueuedTemplateProofs),
+            function_bodies: Some(CompleteDeclaredFunctionBodies),
+            test_bodies: Some(CompleteDeclaredTestBodies),
+            lowered: Some(CompleteLoweredFunctionSet(Vec::new())),
+            call_graph: Some(AcyclicCallGraph),
+            transactions: Some(AmbientTransactionClosure),
+        };
+        assert!(
+            available().refusal(empty_terminal()).is_none(),
+            "an empty terminal with every artifact available is a checked program"
+        );
+
+        let withhold: [(&str, fn(&mut Artifacts)); 8] = [
+            ("types", |a| a.types = None),
+            ("functions", |a| a.functions = None),
+            ("template_proofs", |a| a.template_proofs = None),
+            ("function_bodies", |a| a.function_bodies = None),
+            ("test_bodies", |a| a.test_bodies = None),
+            ("lowered", |a| a.lowered = None),
+            ("call_graph", |a| a.call_graph = None),
+            ("transactions", |a| a.transactions = None),
+        ];
+        for (name, withhold) in withhold {
+            let mut artifacts = available();
+            withhold(&mut artifacts);
+            let refusal = artifacts
+                .refusal(empty_terminal())
+                .unwrap_or_else(|| panic!("withholding {name} must refuse the program"));
+            assert!(
+                matches!(
+                    refusal,
+                    SemanticOutcome::Invariant(InvariantCause::UnavailableWithoutReport)
+                ),
+                "withholding {name} with an empty terminal is the unavailable-without-report \
+                 invariant, not a checked program or a diagnostic outcome"
+            );
+        }
     }
 
     /// A complete-but-empty semantic diagnostics terminal is a private
