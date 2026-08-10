@@ -383,7 +383,7 @@ fn descriptor_aliases(sources: &[(PathBuf, String)], tokens: &[String]) -> Vec<S
     loop {
         let before = aliases.len();
         for binding in &bindings {
-            if !aliases.iter().any(|known| *known == binding.name)
+            if !aliases.contains(&binding.name)
                 && red
                     .iter()
                     .any(|token| binding.spelling.contains(token.as_str()))
