@@ -129,11 +129,7 @@ pub(crate) struct FnSignature {
 impl FnSignature {
     /// The definition target of this function for an editor definition query.
     pub(super) fn definition_target(&self) -> DefinitionTarget {
-        DefinitionTarget {
-            file: self.at,
-            name_span: self.name_span,
-            decl_range: self.decl_range,
-        }
+        DefinitionTarget::new(self.at, self.name_span, self.decl_range)
     }
 }
 

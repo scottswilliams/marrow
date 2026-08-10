@@ -1522,11 +1522,7 @@ impl<'a> FnLowerer<'a> {
             let decl = template.decl;
             (
                 generic_signature_display(decl),
-                DefinitionTarget {
-                    file: template.at,
-                    name_span: decl.name_span,
-                    decl_range: decl_range(decl),
-                },
+                DefinitionTarget::new(template.at, decl.name_span, decl_range(decl)),
             )
         };
         self.record_hover(callee_span, display.into(), Some(target));

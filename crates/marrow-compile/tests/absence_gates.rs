@@ -326,7 +326,7 @@ fn fact_coordinates_declare_private_fields() {
     .expect("read the analysis fact owner");
     for declaration in [
         "pub(crate) struct FileRef(u16);",
-        "pub(crate) struct DefTargetRef(u16);",
+        "pub(crate) struct DefTargetRef(u32);",
     ] {
         assert!(
             analysis.contains(declaration),
