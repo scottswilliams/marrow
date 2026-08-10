@@ -1131,6 +1131,11 @@ pub(crate) enum NamedTypeKind {
     Struct,
     Enum,
     Resource,
+    /// A generic `struct`/`enum`: a template monomorphized on use rather than a
+    /// concrete image type, but the same declared type name. Templates and
+    /// concrete types share one namespace — the registry's own conflict predicate
+    /// scans both — so they share one ledger.
+    Template,
 }
 
 /// The project named-type registry: the transparent aliases, the nominal int
@@ -3389,8 +3394,10 @@ impl TypeRegistry {
                     GenericInvariant::ReservedTemplateMissing(reserved),
                 ))?
         } else {
+            // A head no template answers is either genuinely undeclared or a
+            // template this project declared and the compiler refused.
             self.type_template_by_name(head)
-                .ok_or(ResolveError::Refusal(ResolveRefusal::Unsupported))?
+                .ok_or(ResolveError::Refusal(self.unresolved_named_type(head)))?
         };
         if reserved.is_some() {
             let actual = self.type_templates[template].body.kind();
@@ -5065,7 +5072,7 @@ impl TypeRegistry {
             .filter(|(_, _, decl)| decl.type_params.is_empty())
             .map(|(at, file, decl)| (*at, file.clone(), *decl))
             .collect();
-        register_type_templates(&mut registry, structs, enums, resources, diagnostics);
+        register_type_templates(&mut registry, structs, enums, resources, diagnostics)?;
 
         // Pass one: reserve every value type's image index with empty members and
         // decide name conflicts. The records reserve first (image indices `0..n`),
@@ -5305,7 +5312,7 @@ fn register_type_templates(
     enums: &[(FileRef, FileIdentity, &EnumDecl)],
     resources: &[(FileRef, FileIdentity, &ResourceDecl)],
     diagnostics: &mut DiagnosticCollector,
-) {
+) -> Result<(), DeclarationLedgerFull> {
     let type_param_names =
         |params: &[marrow_syntax::TypeParamDecl]| -> Vec<(String, Option<TypeConstraint>)> {
             params
@@ -5336,12 +5343,25 @@ fn register_type_templates(
                 .iter()
                 .any(|template| template.name == name)
     };
-    for (_at, file, decl) in structs {
+    for (at, file, decl) in structs {
         if decl.type_params.is_empty() {
             continue;
         }
+        let declared = Declared {
+            name: &decl.name,
+            file,
+            at: *at,
+            span: decl.name_span,
+        };
         if is_reserved_type_name(&decl.name) {
-            diagnostics.push(reserved_name(file, decl.name_span, &decl.name));
+            let refusal = refuse_row(
+                diagnostics,
+                declared,
+                reserved_name(file, decl.name_span, &decl.name),
+            );
+            registry
+                .named
+                .declare(decl.name.clone(), DeclarationOccurrence::Refused(refusal))?;
             continue;
         }
         if name_taken(registry, &decl.name) {
@@ -5353,9 +5373,40 @@ fn register_type_templates(
             ));
             continue;
         }
-        let Some(fields) = template_struct_fields(file, decl, diagnostics) else {
-            continue;
+        let mut refusal = None;
+        let fields = template_struct_fields(file, decl, diagnostics, declared, &mut refusal);
+        if let Some(fields) = fields.as_ref() {
+            for (_, ty) in fields {
+                if let Some(row) = unknown_template_member(
+                    registry,
+                    structs,
+                    enums,
+                    resources,
+                    &decl.type_params,
+                    ty,
+                    file,
+                ) {
+                    refuse_first(&mut refusal, diagnostics, declared, row);
+                }
+            }
+        }
+        let fields = match (fields, refusal) {
+            (Some(fields), None) => fields,
+            // Every arm that drops the members, and every member type that names
+            // nothing declared, reported through the accumulator, so a refused
+            // template always carries the cause a use is steered to.
+            (_, Some(refusal)) => {
+                registry
+                    .named
+                    .declare(decl.name.clone(), DeclarationOccurrence::Refused(refusal))?;
+                continue;
+            }
+            (None, None) => continue,
         };
+        registry.named.declare(
+            decl.name.clone(),
+            DeclarationOccurrence::Accepted(NamedTypeKind::Template),
+        )?;
         registry.type_templates.push(TypeTemplate {
             name: decl.name.clone(),
             file: Some(file.clone()),
@@ -5365,12 +5416,25 @@ fn register_type_templates(
             body: TemplateBody::Struct(fields),
         });
     }
-    for (_at, file, decl) in enums {
+    for (at, file, decl) in enums {
         if decl.type_params.is_empty() {
             continue;
         }
+        let declared = Declared {
+            name: &decl.name,
+            file,
+            at: *at,
+            span: decl.name_span,
+        };
         if is_reserved_type_name(&decl.name) {
-            diagnostics.push(reserved_name(file, decl.name_span, &decl.name));
+            let refusal = refuse_row(
+                diagnostics,
+                declared,
+                reserved_name(file, decl.name_span, &decl.name),
+            );
+            registry
+                .named
+                .declare(decl.name.clone(), DeclarationOccurrence::Refused(refusal))?;
             continue;
         }
         if name_taken(registry, &decl.name) {
@@ -5382,9 +5446,42 @@ fn register_type_templates(
             ));
             continue;
         }
-        let Some(variants) = template_enum_variants(file, decl, diagnostics) else {
-            continue;
+        let mut refusal = None;
+        let variants = template_enum_variants(file, decl, diagnostics, declared, &mut refusal);
+        if let Some(variants) = variants.as_ref() {
+            for variant in variants {
+                for payload in &variant.payload {
+                    if let Some(row) = unknown_template_member(
+                        registry,
+                        structs,
+                        enums,
+                        resources,
+                        &decl.type_params,
+                        &payload.ty,
+                        file,
+                    ) {
+                        refuse_first(&mut refusal, diagnostics, declared, row);
+                    }
+                }
+            }
+        }
+        let variants = match (variants, refusal) {
+            (Some(variants), None) => variants,
+            // Every arm that drops the members, and every member type that names
+            // nothing declared, reported through the accumulator, so a refused
+            // template always carries the cause a use is steered to.
+            (_, Some(refusal)) => {
+                registry
+                    .named
+                    .declare(decl.name.clone(), DeclarationOccurrence::Refused(refusal))?;
+                continue;
+            }
+            (None, None) => continue,
         };
+        registry.named.declare(
+            decl.name.clone(),
+            DeclarationOccurrence::Accepted(NamedTypeKind::Template),
+        )?;
         registry.type_templates.push(TypeTemplate {
             name: decl.name.clone(),
             file: Some(file.clone()),
@@ -5393,6 +5490,75 @@ fn register_type_templates(
             type_params: type_param_names(&decl.type_params),
             body: TemplateBody::Enum(variants),
         });
+    }
+    Ok(())
+}
+
+/// The row refusing a generic template's member type that names nothing this
+/// project declares, or `None` when the spelling is resolvable.
+///
+/// A template's member types are resolved per instantiation, so without this check
+/// a template whose member names an undeclared type is registered whole and its
+/// defect is first reported at a *construction* site — blaming the construction for
+/// a declaration's error, and never reporting the declaration at all. The
+/// declaration set is read raw because templates register before the concrete types
+/// reserve, which is also what lets one template name another declared later.
+fn unknown_template_member(
+    registry: &TypeRegistry,
+    structs: &[(FileRef, FileIdentity, &StructDecl)],
+    enums: &[(FileRef, FileIdentity, &EnumDecl)],
+    resources: &[(FileRef, FileIdentity, &ResourceDecl)],
+    params: &[marrow_syntax::TypeParamDecl],
+    ty: &TypeExpr,
+    file: &FileIdentity,
+) -> Option<SourceDiagnostic> {
+    let declares = |name: &str| {
+        params.iter().any(|param| param.name == name)
+            || ScalarType::from_spelling(name).is_some()
+            || registry.aliases.contains_key(name)
+            || registry.nominal_by_name(name).is_some()
+            || resources.iter().any(|(_, _, decl)| decl.name == name)
+            || structs.iter().any(|(_, _, decl)| decl.name == name)
+            || enums.iter().any(|(_, _, decl)| decl.name == name)
+            || registry
+                .type_templates
+                .iter()
+                .any(|template| template.name == name)
+            || matches!(name, "List" | "Map")
+    };
+    match ty {
+        TypeExpr::Name { text, span, .. } => (!declares(text)).then(|| {
+            SourceDiagnostic::at(
+                Code::CheckType.as_str(),
+                file,
+                *span,
+                format!("`{text}` does not name a known type"),
+            )
+        }),
+        TypeExpr::Optional { inner, .. } => {
+            unknown_template_member(registry, structs, enums, resources, params, inner, file)
+        }
+        TypeExpr::Apply {
+            head,
+            head_span,
+            args,
+            ..
+        } => {
+            if !declares(head) {
+                return Some(SourceDiagnostic::at(
+                    Code::CheckType.as_str(),
+                    file,
+                    *head_span,
+                    format!("`{head}` does not name a known type"),
+                ));
+            }
+            args.iter().find_map(|arg| {
+                unknown_template_member(registry, structs, enums, resources, params, arg, file)
+            })
+        }
+        // An entry identity names a store root, resolved by the durable owner, and a
+        // parse-recovery leaf never reaches a `!has_errors` tree.
+        TypeExpr::Identity(_) | TypeExpr::Incomplete { .. } => None,
     }
 }
 
@@ -5403,35 +5569,53 @@ fn template_struct_fields(
     file: &FileIdentity,
     decl: &StructDecl,
     diagnostics: &mut DiagnosticCollector,
+    declared: Declared<'_>,
+    refusal: &mut Option<DeclarationRefusalSummary>,
 ) -> Option<Vec<(String, TypeExpr)>> {
     let mut fields = Vec::new();
     let mut ok = true;
     for member in &decl.members {
         let ResourceMember::Field(field) = member else {
-            diagnostics.push(unsupported(file, member.span(), "a struct group"));
+            refuse_first(
+                refusal,
+                diagnostics,
+                declared,
+                unsupported(file, member.span(), "a struct group"),
+            );
             ok = false;
             continue;
         };
         if !field.keys.is_empty() {
-            diagnostics.push(unsupported(file, field.span, "a keyed struct field"));
+            refuse_first(
+                refusal,
+                diagnostics,
+                declared,
+                unsupported(file, field.span, "a keyed struct field"),
+            );
             ok = false;
             continue;
         }
         if field.required {
-            diagnostics.push(unsupported(
-                file,
-                field.span,
-                "the `required` keyword on a struct field (struct fields are always required)",
-            ));
+            refuse_first(
+                refusal,
+                diagnostics,
+                declared,
+                unsupported(
+                    file,
+                    field.span,
+                    "the `required` keyword on a struct field (struct fields are always required)",
+                ),
+            );
             ok = false;
             continue;
         }
         if matches!(field.ty, TypeExpr::Optional { .. }) {
-            diagnostics.push(unsupported(
-                file,
-                field.ty.span(),
-                "an optional struct field type",
-            ));
+            refuse_first(
+                refusal,
+                diagnostics,
+                declared,
+                unsupported(file, field.ty.span(), "an optional struct field type"),
+            );
             ok = false;
             continue;
         }
@@ -5447,16 +5631,23 @@ fn template_enum_variants(
     file: &FileIdentity,
     decl: &EnumDecl,
     diagnostics: &mut DiagnosticCollector,
+    declared: Declared<'_>,
+    refusal: &mut Option<DeclarationRefusalSummary>,
 ) -> Option<Vec<TemplateVariant>> {
     let mut variants = Vec::new();
     let mut ok = true;
     for member in &decl.members {
         if member.category || !member.members.is_empty() {
-            diagnostics.push(unsupported(
-                file,
-                member.span,
-                "a category or nested member on a generic enum",
-            ));
+            refuse_first(
+                refusal,
+                diagnostics,
+                declared,
+                unsupported(
+                    file,
+                    member.span,
+                    "a category or nested member on a generic enum",
+                ),
+            );
             ok = false;
             continue;
         }

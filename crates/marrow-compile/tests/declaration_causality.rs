@@ -733,6 +733,74 @@ fn r27_a_refused_type_is_never_named_as_another_names_cause() {
     );
 }
 
+/// R13 — a generic template's defect is reported at its declaration.
+///
+/// A template's member types are resolved per instantiation, so a member naming an
+/// undeclared type used to be reported only at a *construction* site, blaming the
+/// construction. The declaring cause was reported zero times — the same invariant
+/// broken downward rather than upward.
+#[test]
+fn r13_a_refused_template_is_reported_at_its_declaration() {
+    let diagnostics = diagnostics(
+        "module main\n\n\
+         struct Pair<A, B> {\n\
+         \x20   first: A\n\
+         \x20   second: Nope\n\
+         }\n\n\
+         pub fn make(): int {\n\
+         \x20   const p = Pair(first: 1, second: 2)\n\
+         \x20   return 1\n\
+         }\n",
+    );
+
+    assert_eq!(
+        rows(&diagnostics),
+        vec![("check.type", 5, 13), ("check.type", 9, 15)],
+        "the member reports the cause and the construction is steered to it",
+    );
+}
+
+/// The same template with no use at all. A declaration nothing constructs used to
+/// compile clean at exit zero, because the only report was at a construction site.
+#[test]
+fn r13_a_refused_template_is_reported_even_with_no_use() {
+    let diagnostics = diagnostics(
+        "module main\n\n\
+         struct Pair<A, B> {\n\
+         \x20   first: A\n\
+         \x20   second: Nope\n\
+         }\n\n\
+         pub fn make(): int {\n\
+         \x20   return 1\n\
+         }\n",
+    );
+
+    assert_eq!(rows(&diagnostics), vec![("check.type", 5, 13)]);
+}
+
+/// R14 — the same template named in an annotation. The generic application resolves
+/// its head through the template table, so it reported a subset gap for a template
+/// this project declared.
+#[test]
+fn r14_a_refused_template_steers_its_annotation_to_the_member_report() {
+    let diagnostics = diagnostics(
+        "module main\n\n\
+         struct Pair<A, B> {\n\
+         \x20   first: A\n\
+         \x20   second: Nope\n\
+         }\n\n\
+         pub fn make(p: Pair<int, int>): int {\n\
+         \x20   return 1\n\
+         }\n",
+    );
+
+    assert_no_subset_gap(&diagnostics);
+    assert_eq!(
+        rows(&diagnostics),
+        vec![("check.type", 5, 13), ("check.type", 8, 16)],
+    );
+}
+
 /// R25 · named types — a refused nominal still occupies its name, so a redeclaration
 /// conflicts. The duplicate check reads the ledger, which retains the refused
 /// occurrence, rather than the accepted-only table it used to scan.
