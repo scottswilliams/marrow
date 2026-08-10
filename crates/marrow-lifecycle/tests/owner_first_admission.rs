@@ -285,18 +285,99 @@ fn a_contender_is_locked_out_whatever_state_the_holder_marker_is_in() {
     drop(held);
 }
 
-/// The whole family, enumerated: every door by which a contender can learn about a held
-/// store, and the verdict each one yields. A door either reaches the directory's own `lock`
-/// entry — and then the verdict is exactly `store.locked`, whatever the marker's bytes, its
-/// link count, the store's other artifacts, or the directory's mode say — or it cannot reach
-/// that entry at all, and then it refuses. No door admits a second owner.
+/// Exclusion rests on the store directory node, and replacing every node inside it that a
+/// holder locks does not divide it.
 ///
-/// Two doors get past the marker and are stopped behind it: a marker deleted under the
-/// holder, and a fresh node renamed over its name. Both let a contender take a lock the
-/// holder is not holding, and the engine's own file lock is what refuses them — so the
-/// verdict is still `store.locked`, at the cost of the contender leaving an unclean
-/// obligation behind in an intact store. The marker is a cooperating owner's own custody,
-/// not a defence against an actor who can rewrite the store directory.
+/// A holder locks two nodes that a writer inside the store directory can replace: the `lock`
+/// marker and the engine file. Each alone is refused by the other — a deleted marker is
+/// stopped at the engine, a replaced engine at the marker — so a single fault reaches the
+/// exclusion verdict either way. Replacing both at once leaves neither, which is a state a
+/// naive whole-directory restore over a live store also produces. The directory node itself
+/// is the one node in the store that no replacement of its own children changes, and the
+/// owner locks it before it opens any name inside it, so the compound fault reaches the same
+/// verdict a single one does.
+#[cfg(unix)]
+#[test]
+fn replacing_every_replaceable_node_a_holder_locks_admits_no_second_owner() {
+    let (_dir, store) = provisioned("compound-fault");
+    let held = open(&store, schemas(), sites()).expect("the holder opens the store");
+
+    // A fresh engine node published over the held one under its own name: a whole store
+    // engine byte for byte, and an inode no holder locks.
+    let (_donor, donor_store) = provisioned("compound-fault-donor");
+    let fresh = store.join("fresh-engine");
+    std::fs::copy(
+        donor_store.join(marrow_lifecycle::ENGINE_FILE),
+        &fresh,
+    )
+    .expect("copy a fresh engine into the held store directory");
+    std::fs::rename(&fresh, store.join(marrow_lifecycle::ENGINE_FILE))
+        .expect("publish the fresh engine under the engine's name");
+    std::fs::remove_file(store.join(marrow_lifecycle::LOCK_FILE)).expect("remove the marker");
+
+    match open(&store, schemas(), sites()) {
+        Err(OpenError::Lock(error)) => assert_eq!(
+            error.code(),
+            "store.locked",
+            "replacing both of the holder's replaceable locked nodes must still yield the \
+             exclusion verdict",
+        ),
+        Ok(_) => panic!(
+            "a second owner opened a held store after both of the holder's replaceable locked \
+             nodes were replaced",
+        ),
+        Err(other) => panic!("the compound replacement preempted exclusion with {other}"),
+    }
+    drop(held);
+}
+
+/// A store directory this process cannot look inside refuses as a permission denial, never
+/// as absence and never as corruption. A predicate that folds a denied look into "the
+/// artifact is not there" reports a complete, intact, live-held store as a partially formed
+/// one, which is a false factual claim about the store and — read as instructions — tells an
+/// operator to remove it.
+#[cfg(unix)]
+#[test]
+fn a_store_directory_that_denies_access_refuses_as_a_permission_denial() {
+    use std::os::unix::fs::PermissionsExt;
+
+    for holder in [false, true] {
+        let tag = if holder { "denied-held" } else { "denied-idle" };
+        let (_dir, store) = provisioned(tag);
+        let held = holder.then(|| open(&store, schemas(), sites()).expect("the holder opens"));
+        std::fs::set_permissions(&store, std::fs::Permissions::from_mode(0o000))
+            .expect("deny access to the store directory");
+
+        // A process holding the mode-override capability is bound by none of those bits, so
+        // only a process they do bind can observe this refusal at all.
+        if std::fs::read_dir(&store).is_err() {
+            match open(&store, schemas(), sites()) {
+                Ok(_) => panic!("a store directory that cannot be looked inside was opened"),
+                Err(error) => assert_eq!(
+                    error.code(),
+                    "store.permission_denied",
+                    "a denied look at a {tag} store must report the denial, not what it could \
+                     not see: {error}",
+                ),
+            }
+        }
+
+        let _ = std::fs::set_permissions(&store, std::fs::Permissions::from_mode(0o700));
+        drop(held);
+    }
+}
+
+/// The whole family, enumerated: every door by which a contender can learn about a held
+/// store, and the verdict each one yields. A door either reaches the store directory node
+/// the owner locks — and then the verdict is exactly `store.locked`, whatever the marker's
+/// bytes, its node kind, its mode, its link count, or the store's other artifacts say — or
+/// it cannot reach that node at all, and then it refuses. No door admits a second owner.
+///
+/// Two doors get past the marker and are stopped behind the directory node: a marker deleted
+/// under the holder, and a fresh node renamed over its name. Both let a contender take a
+/// marker lock the holder is not holding, at the cost of leaving an unclean obligation
+/// behind in an intact store. The marker is a cooperating owner's own custody, not a defence
+/// against an actor who can rewrite the store directory.
 #[cfg(unix)]
 #[test]
 fn no_door_into_a_held_store_admits_a_second_owner() {
