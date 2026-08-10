@@ -38,21 +38,34 @@ impl<'a> FnLowerer<'a> {
         flow
     }
 
+    /// Lower one statement.
+    ///
+    /// Every arm names every field of its variant. A field this walker does not read is
+    /// bound to `_` rather than covered by `..`, so a field added to an existing
+    /// statement stops the build here instead of being silently dropped. That is the
+    /// case the trailing arm cannot catch: a *new variant* falls through to it and
+    /// carries the typed `check.unsupported` outcome, but a new block-bearing field on
+    /// `if`, `while`, `for`, or `match` would leave its statements never lowered and
+    /// never diagnosed — code the compiler accepted and did not compile.
     pub(super) fn lower_statement(&mut self, statement: &Statement) -> Flow {
         match statement {
             Statement::Const {
-                name, ty, value, ..
+                name,
+                name_span: _,
+                ty,
+                value,
+                span: _,
             } => {
                 self.lower_binding(name, ty.as_deref(), value, false);
                 Flow::Fallthrough
             }
             Statement::Var {
                 name,
+                name_span: _,
                 keys,
                 ty,
                 value,
                 span,
-                ..
             } => {
                 if !keys.is_empty() {
                     self.fail(unsupported(self.file, *span, "a keyed local"));
@@ -69,12 +82,20 @@ impl<'a> FnLowerer<'a> {
                 self.lower_binding(name, ty.as_deref(), value, true);
                 Flow::Fallthrough
             }
-            Statement::Assign { target, value, .. } => {
+            Statement::Assign {
+                target,
+                value,
+                span: _,
+            } => {
                 self.lower_assign(target, value);
                 Flow::Fallthrough
             }
             Statement::CompoundAssign {
-                target, op, value, ..
+                target,
+                op,
+                op_span: _,
+                value,
+                span: _,
             } => {
                 self.lower_compound_assign(target, op.binary(), value);
                 Flow::Fallthrough
@@ -82,7 +103,7 @@ impl<'a> FnLowerer<'a> {
             Statement::Return { value, span } => self.lower_return(value.as_ref(), *span),
             Statement::Break { span } => self.lower_break(*span),
             Statement::Continue { span } => self.lower_continue(*span),
-            Statement::Expr { value, .. } => {
+            Statement::Expr { value, span: _ } => {
                 // A call statement may return nothing (no `Pop`); any other expression
                 // statement produces a value that is discarded.
                 if let Expression::Call {
@@ -104,7 +125,7 @@ impl<'a> FnLowerer<'a> {
                 then_block,
                 else_ifs,
                 else_block,
-                ..
+                span: _,
             } => {
                 let mut branches: Vec<(&Expression, &Block)> = vec![(condition, then_block)];
                 for else_if in else_ifs {
@@ -114,12 +135,13 @@ impl<'a> FnLowerer<'a> {
             }
             Statement::IfConst {
                 name,
+                name_span: _,
                 ty,
                 value,
                 then_block,
                 else_ifs,
                 else_block,
-                ..
+                span: _,
             } => self.lower_if_const(
                 name,
                 ty.as_deref(),
@@ -134,7 +156,7 @@ impl<'a> FnLowerer<'a> {
                 then_block,
                 else_ifs,
                 else_block,
-                ..
+                span: _,
             } => {
                 let bindings: Vec<(&str, Option<&TypeExpr>, &Expression)> = bindings
                     .iter()
@@ -151,10 +173,11 @@ impl<'a> FnLowerer<'a> {
             Statement::LetElse {
                 is_var,
                 name,
+                name_span: _,
                 ty,
                 value,
                 else_block,
-                ..
+                span: _,
             } => self.lower_let_else(*is_var, name, ty.as_deref(), value, else_block),
             Statement::Require {
                 condition,
@@ -162,7 +185,9 @@ impl<'a> FnLowerer<'a> {
                 span,
             } => self.lower_require(condition, value, *span),
             Statement::While {
-                condition, body, ..
+                condition,
+                body,
+                span: _,
             } => self.lower_while(condition, body),
             Statement::For {
                 binding,
@@ -194,7 +219,7 @@ impl<'a> FnLowerer<'a> {
                 zero_divisor.as_ref(),
                 *span,
             ),
-            Statement::Transaction { body, .. } => {
+            Statement::Transaction { body, span: _ } => {
                 self.push(Instr::TxnBegin, body.span);
                 self.txn_depth += 1;
                 let body_flow = self.lower_block(body);
@@ -221,7 +246,7 @@ impl<'a> FnLowerer<'a> {
                 name,
                 name_span,
                 place,
-                ..
+                span: _,
             } => {
                 self.lower_place_binding(name, *name_span, place);
                 Flow::Fallthrough
