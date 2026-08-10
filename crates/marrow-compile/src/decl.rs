@@ -1,4 +1,4 @@
-//! Declared-name ledgers: the one way a declared key leaves the accepted set.
+//! DeclarationSite-name ledgers: the one way a declared key leaves the accepted set.
 //!
 //! A namespace that refuses a declaration must not forget it. Dropping the key
 //! makes every later lookup read as *never declared*, so the compiler reports a
@@ -27,7 +27,7 @@ use crate::diag::{DiagnosticCollector, IdentityGap, MAX_DIAGNOSTIC_BYTES, Source
 
 /// The most owned bytes every declaration ledger in one pass may retain together.
 ///
-/// Declared, not derived from a length: the ledger is live concurrently with the
+/// DeclarationSite, not derived from a length: the ledger is live concurrently with the
 /// diagnostic collector, and no retained refusal is worth more than the report that
 /// accompanies it, so the ledger's budget is the collector's. The refused-key count
 /// is otherwise bounded only by the admitted source (`CaptureLimits::DEFAULT`
@@ -126,8 +126,6 @@ impl DeclarationRefusalId {
 pub(crate) struct DeclarationRefusalSummary {
     name: String,
     code: &'static str,
-    file: FileRef,
-    span: SourceSpan,
     further: u16,
     gap: Option<IdentityGap>,
     report: RefusalReport,
@@ -198,7 +196,7 @@ impl SourceStage {
 /// statement.
 pub(crate) fn refuse(
     diagnostics: &mut DiagnosticCollector,
-    at: Declared<'_>,
+    at: DeclarationSite<'_>,
     code: &'static str,
     message: String,
 ) -> DeclarationRefusalSummary {
@@ -214,19 +212,10 @@ pub(crate) fn refuse(
 /// restated by the caller.
 pub(crate) fn refuse_row(
     diagnostics: &mut DiagnosticCollector,
-    at: Declared<'_>,
+    at: DeclarationSite<'_>,
     row: SourceDiagnostic,
 ) -> DeclarationRefusalSummary {
-    let summary = DeclarationRefusalSummary {
-        name: at.name.to_string(),
-        code: row.code(),
-        file: at.at,
-        span: at.span,
-        further: 0,
-        gap: None,
-        report: RefusalReport::AtDeclaration,
-        steered: Cell::new(false),
-    };
+    let summary = covered(at, row.code(), RefusalReport::AtDeclaration);
     diagnostics.push(row);
     summary
 }
@@ -240,7 +229,7 @@ pub(crate) fn refuse_row(
 pub(crate) fn refuse_first(
     refusal: &mut Option<DeclarationRefusalSummary>,
     diagnostics: &mut DiagnosticCollector,
-    at: Declared<'_>,
+    at: DeclarationSite<'_>,
     row: SourceDiagnostic,
 ) {
     match refusal {
@@ -257,7 +246,10 @@ pub(crate) fn refuse_first(
 /// project-wide anchor already reported. Both are on the absence gate's allowlist
 /// with the covering report named, so this constructor cannot become the way a
 /// refusal escapes reporting altogether.
-pub(crate) fn refuse_covered(at: Declared<'_>, code: &'static str) -> DeclarationRefusalSummary {
+pub(crate) fn refuse_covered(
+    at: DeclarationSite<'_>,
+    code: &'static str,
+) -> DeclarationRefusalSummary {
     covered(at, code, RefusalReport::ByCoveringPass)
 }
 
@@ -269,22 +261,20 @@ pub(crate) fn refuse_covered(at: Declared<'_>, code: &'static str) -> Declaratio
 /// re-plumb that stage to hand its rows back for nothing: the row already stands in
 /// the terminal the reader is shown.
 pub(crate) fn refuse_at_earlier_stage(
-    at: Declared<'_>,
+    at: DeclarationSite<'_>,
     stage: SourceStage,
 ) -> DeclarationRefusalSummary {
     covered(at, stage.code(), RefusalReport::ByEarlierStage(stage))
 }
 
 fn covered(
-    at: Declared<'_>,
+    at: DeclarationSite<'_>,
     code: &'static str,
     report: RefusalReport,
 ) -> DeclarationRefusalSummary {
     DeclarationRefusalSummary {
         name: at.name.to_string(),
         code,
-        file: at.at,
-        span: at.span,
         further: 0,
         gap: None,
         report,
@@ -319,14 +309,14 @@ pub(crate) fn declaration_refused(
 /// Where one declaration is written: its name, its file in both the owned spelling
 /// a diagnostic renders and the `Copy` coordinate a summary retains, and its span.
 #[derive(Clone, Copy)]
-pub(crate) struct Declared<'a> {
+pub(crate) struct DeclarationSite<'a> {
     pub(crate) name: &'a str,
     pub(crate) file: &'a FileIdentity,
     pub(crate) at: FileRef,
     pub(crate) span: SourceSpan,
 }
 
-impl<'a> Declared<'a> {
+impl<'a> DeclarationSite<'a> {
     /// A declaration whose whole source an earlier stage refused, so it has no span
     /// of its own: a file that did not decode or did not parse produced no construct
     /// to point at, and the report the reader follows is that stage's.
@@ -418,8 +408,6 @@ impl DeclarationRefusalSummary {
         let Self {
             name: _,
             code: _,
-            file: _,
-            span: _,
             further,
             gap,
             report: _,
@@ -739,7 +727,7 @@ mod tests {
         let (identity, _) = FileIdentity::validate("src/main.mw").expect("a valid source path");
         refuse(
             diagnostics,
-            Declared {
+            DeclarationSite {
                 name,
                 file: &identity,
                 at: file(),

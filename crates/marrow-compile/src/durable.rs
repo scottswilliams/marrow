@@ -42,8 +42,8 @@ use marrow_syntax::{
 use crate::analysis::FileRef;
 use crate::decl::{
     Binding, DeclarationBudget, DeclarationIndexDrift, DeclarationLedger, DeclarationNamespace,
-    DeclarationOccurrence, DeclarationRefusalId, DeclarationRefusalSummary, Declared,
-    refuse_covered, refuse_row,
+    DeclarationOccurrence, DeclarationRefusalId, DeclarationRefusalSummary, DeclarationSite,
+    RefusalReport, refuse_covered, refuse_row,
 };
 use crate::demand::{DurableNaming, PathSigil};
 use crate::diag::{DiagnosticCollector, IdentityGap, SourceDiagnostic};
@@ -290,7 +290,7 @@ pub(crate) enum RootBinding<'a> {
     Executable(&'a DurableRoot),
     /// Admitted with a complete identity, but outside the executable subset.
     NotYetExecutable,
-    /// Declared and refused. The declaration reported the cause; a use reuses it,
+    /// DeclarationSite and refused. The declaration reported the cause; a use reuses it,
     /// carrying the handle that lets a type-resolution result name it.
     Refused(DeclarationRefusalId, &'a DeclarationRefusalSummary),
     /// No store of this name is declared — the one case a not-in-scope report may
@@ -499,7 +499,7 @@ impl DurableRegistry {
                 reported_gaps: &mut reported_identity_gaps,
             };
             for (at, file, store) in stores {
-                let declared = Declared {
+                let declared = DeclarationSite {
                     name: &store.root.root,
                     file,
                     at: *at,
@@ -580,12 +580,13 @@ enum DurableRefusal<'a> {
     /// A durable anchor has no live row in the committed ledger. The one class
     /// entitled to send a use to the `check.durable_identity` reports.
     ///
-    /// `report` is false when an earlier store already reported this project-wide
-    /// anchor: the gap still refuses this root, only the reporting is deduplicated.
+    /// `report` names where the row the steer cites was made: at this declaration,
+    /// or by the earlier store that first reached this project-wide anchor. The gap
+    /// refuses this root either way; only the reporting is deduplicated.
     IdentityIncomplete {
         anchor: IdentityAnchor,
         retired: bool,
-        report: bool,
+        report: RefusalReport,
     },
     /// A field, group leaf, key tuple, or durable value in the root's stored shape is
     /// outside the closed durable value set.
@@ -612,7 +613,7 @@ enum DurableRefusal<'a> {
 /// that silently renders as some other class's cause.
 fn refuse_store(
     diagnostics: &mut DiagnosticCollector,
-    at: Declared<'_>,
+    at: DeclarationSite<'_>,
     refusal: DurableRefusal<'_>,
 ) -> DeclarationRefusalSummary {
     match refusal {
@@ -626,16 +627,15 @@ fn refuse_store(
                 path: anchor.path.clone(),
                 retired,
             };
-            let summary = if report {
-                refuse_row(
+            let summary = match report {
+                RefusalReport::AtDeclaration => refuse_row(
                     diagnostics,
                     at,
                     identity_gap(at.file, at.span, anchor.kind, &anchor.path, retired),
-                )
-            } else {
+                ),
                 // Covered by the first store to reach this project-wide anchor, which
                 // pushed the `check.durable_identity` row this refusal names.
-                refuse_covered(at, Code::CheckDurableIdentity.as_str())
+                _ => refuse_covered(at, Code::CheckDurableIdentity.as_str()),
             };
             summary.with_gap(gap)
         }
@@ -695,7 +695,7 @@ fn build_one(
     draft: &mut ImageDraft,
     type_metadata: &mut DurableTypeMetadata<'_, '_>,
     resources: &[(FileRef, FileIdentity, &ResourceDecl)],
-    declared: Declared<'_>,
+    declared: DeclarationSite<'_>,
     store: &StoreDecl,
     identity_build: &mut IdentityBuildState<'_, '_>,
     diagnostics: &mut DiagnosticCollector,
@@ -1094,7 +1094,7 @@ fn resolve_key_scalars(
 /// left every later `^root` reference to guess, and every one of them guessed
 /// "identity gap".
 struct IdentityResolver<'a> {
-    declared: Declared<'a>,
+    declared: DeclarationSite<'a>,
     file: &'a FileIdentity,
     span: SourceSpan,
     ledger: Option<&'a IdentityLedger>,
@@ -1134,7 +1134,7 @@ enum ValueNode {
 
 impl<'a> IdentityResolver<'a> {
     fn new(
-        declared: Declared<'a>,
+        declared: DeclarationSite<'a>,
         span: SourceSpan,
         ledger: Option<&'a IdentityLedger>,
         reported_identity_gaps: &'a mut BTreeSet<IdentityAnchor>,
@@ -1293,7 +1293,10 @@ impl<'a> IdentityResolver<'a> {
         };
         // Resolve (and gap-report) an enum's anchors only the first time it is
         // reached; a later occurrence looks its ids up quietly.
-        let first_time = self.seen_enums.insert(spelling.clone());
+        let first_time = match self.seen_enums.insert(spelling.clone()) {
+            true => RefusalReport::AtDeclaration,
+            false => RefusalReport::ByCoveringPass,
+        };
         let sum = self.resolve_enum_anchor(IdentityKind::Sum, &spelling, first_time);
         let members = variants
             .iter()
@@ -1348,9 +1351,9 @@ impl<'a> IdentityResolver<'a> {
         &mut self,
         kind: IdentityKind,
         path: &str,
-        report: bool,
+        report: RefusalReport,
     ) -> LedgerIdBytes {
-        if report {
+        if matches!(report, RefusalReport::AtDeclaration) {
             return self.resolve(kind, path);
         }
         match self.ledger.and_then(|ledger| ledger.lookup(kind, path)) {
@@ -1390,7 +1393,10 @@ impl<'a> IdentityResolver<'a> {
             Some(id) => LedgerIdBytes::from_bytes(*id.bytes()),
             None => {
                 let anchor = IdentityAnchor::new(kind, path);
-                let report = self.reported_identity_gaps.insert(anchor.clone());
+                let report = match self.reported_identity_gaps.insert(anchor.clone()) {
+                    true => RefusalReport::AtDeclaration,
+                    false => RefusalReport::ByCoveringPass,
+                };
                 self.refuse(DurableRefusal::IdentityIncomplete {
                     anchor,
                     retired,
@@ -2136,8 +2142,8 @@ mod generic_enum_shape_tests {
     /// The store declaration these resolvers refuse against. The resolver retains its
     /// refusal under the declared placement name, so it needs the declaration's
     /// coordinates even when the test drives only one value-shape walk.
-    fn test_declared() -> Declared<'static> {
-        Declared {
+    fn test_declared() -> DeclarationSite<'static> {
+        DeclarationSite {
             name: "probe",
             file: crate::test_main_file_identity(),
             at: FileRef::admitted(0),

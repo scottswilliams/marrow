@@ -37,7 +37,7 @@ use crate::analysis::FileRef;
 use crate::decl::{
     Binding, DeclarationBudget, DeclarationIndexDrift, DeclarationLedger, DeclarationLedgerFull,
     DeclarationNamespace, DeclarationOccurrence, DeclarationRefusalId, DeclarationRefusalSummary,
-    Declared, declaration_refused, refuse, refuse_covered, refuse_first, refuse_row,
+    DeclarationSite, declaration_refused, refuse, refuse_covered, refuse_first, refuse_row,
 };
 use crate::diag::{BoundedDiagnostics, DiagnosticCollector, SourceDiagnostic};
 use crate::scalar::ScalarType;
@@ -1292,7 +1292,7 @@ struct RowDirectory {
     built_collections: usize,
 }
 
-/// The declared-type population a directory classified. Declared records (with their
+/// The declared-type population a directory classified. DeclarationSite records (with their
 /// groups), structs, and enums, and the groups of each record, are all fixed once
 /// monomorphization begins — the declare phase completes before the first mint — so in
 /// the production pipeline incremental extension only appends generic rows and
@@ -5512,7 +5512,7 @@ fn register_type_templates(
         if decl.type_params.is_empty() {
             continue;
         }
-        let declared = Declared {
+        let declared = DeclarationSite {
             name: &decl.name,
             file,
             at: *at,
@@ -5585,7 +5585,7 @@ fn register_type_templates(
         if decl.type_params.is_empty() {
             continue;
         }
-        let declared = Declared {
+        let declared = DeclarationSite {
             name: &decl.name,
             file,
             at: *at,
@@ -5734,7 +5734,7 @@ fn template_struct_fields(
     file: &FileIdentity,
     decl: &StructDecl,
     diagnostics: &mut DiagnosticCollector,
-    declared: Declared<'_>,
+    declared: DeclarationSite<'_>,
     refusal: &mut Option<DeclarationRefusalSummary>,
 ) -> Option<Vec<(String, TypeExpr)>> {
     let mut fields = Vec::new();
@@ -5796,7 +5796,7 @@ fn template_enum_variants(
     file: &FileIdentity,
     decl: &EnumDecl,
     diagnostics: &mut DiagnosticCollector,
-    declared: Declared<'_>,
+    declared: DeclarationSite<'_>,
     refusal: &mut Option<DeclarationRefusalSummary>,
 ) -> Option<Vec<TemplateVariant>> {
     let mut variants = Vec::new();
@@ -5845,7 +5845,7 @@ fn build_alias_table(
 ) -> Result<BTreeMap<String, TypeExpr>, DeclarationLedgerFull> {
     let mut raw: BTreeMap<String, TypeExpr> = BTreeMap::new();
     for (at, file, decl) in aliases {
-        let declared = Declared {
+        let declared = DeclarationSite {
             name: &decl.name,
             file,
             at: *at,
@@ -5926,7 +5926,7 @@ fn build_alias_table(
             .expect("cyclic alias came from the declaration list");
         let refusal = refuse(
             diagnostics,
-            Declared {
+            DeclarationSite {
                 name,
                 file,
                 at: *at,
@@ -6111,7 +6111,7 @@ fn validate_alias_targets(
         let Some(expanded) = registry.aliases.get(&decl.name) else {
             continue; // duplicate or cyclic: already reported
         };
-        let declared = Declared {
+        let declared = DeclarationSite {
             name: &decl.name,
             file,
             at: *at,
@@ -6186,7 +6186,7 @@ fn build_nominals(
 ) -> Result<Vec<NominalInfo>, DeclarationLedgerFull> {
     let mut built: Vec<NominalInfo> = Vec::new();
     for (at, file, decl) in nominals {
-        let declared = Declared {
+        let declared = DeclarationSite {
             name: &decl.name,
             file,
             at: *at,
@@ -6421,7 +6421,7 @@ fn declare_structs<'a>(
 ) -> Result<Vec<ReservedStruct<'a>>, DeclarationLedgerFull> {
     let mut reserved: Vec<ReservedStruct<'a>> = Vec::new();
     for (at, file, decl) in structs {
-        let declared = Declared {
+        let declared = DeclarationSite {
             name: &decl.name,
             file,
             at: *at,
@@ -6490,7 +6490,7 @@ fn fill_structs(
 ) -> Result<(), BuildError> {
     let mut dropped: Vec<TypeId> = Vec::new();
     for item in reserved {
-        let declared = Declared {
+        let declared = DeclarationSite {
             name: &item.decl.name,
             file: &item.file,
             at: item.at,
@@ -6530,7 +6530,7 @@ type ResolvedStructFields = (Vec<FieldInfo>, Vec<FieldDef>);
 fn struct_fields(
     draft: &mut ImageDraft,
     registry: &TypeRegistry,
-    declared: Declared<'_>,
+    declared: DeclarationSite<'_>,
     decl: &StructDecl,
     diagnostics: &mut DiagnosticCollector,
 ) -> Result<DeclarationOccurrence<ResolvedStructFields>, GenericInvariant> {
@@ -6652,7 +6652,7 @@ fn declare_enums<'a>(
 ) -> Result<Vec<ReservedEnum<'a>>, DeclarationLedgerFull> {
     let mut reserved: Vec<ReservedEnum<'a>> = Vec::new();
     for (at, file, decl) in enums {
-        let declared = Declared {
+        let declared = DeclarationSite {
             name: &decl.name,
             file,
             at: *at,
@@ -6738,7 +6738,7 @@ fn fill_enums(
 ) -> Result<(), BuildError> {
     let mut dropped: Vec<EnumId> = Vec::new();
     for item in reserved {
-        let declared = Declared {
+        let declared = DeclarationSite {
             name: &item.decl.name,
             file: &item.file,
             at: item.at,
@@ -6779,7 +6779,7 @@ type EnumPayload = (Vec<EnumPayloadInfo>, Vec<ScalarType>);
 fn enum_variants(
     draft: &mut ImageDraft,
     registry: &TypeRegistry,
-    declared: Declared<'_>,
+    declared: DeclarationSite<'_>,
     decl: &EnumDecl,
     diagnostics: &mut DiagnosticCollector,
 ) -> Result<DeclarationOccurrence<EnumVariants>, DeclarationIndexDrift> {
@@ -6861,7 +6861,7 @@ fn enum_variants(
 /// returned separately.
 fn enum_payload(
     registry: &TypeRegistry,
-    declared: Declared<'_>,
+    declared: DeclarationSite<'_>,
     member: &EnumMember,
     diagnostics: &mut DiagnosticCollector,
     refusal: &mut Option<DeclarationRefusalSummary>,
@@ -6933,7 +6933,7 @@ fn declare_records<'a>(
 ) -> Result<Vec<(FileRef, FileIdentity, &'a ResourceDecl)>, DeclarationLedgerFull> {
     let mut survivors = Vec::new();
     for (at, file, resource) in resources {
-        let declared = Declared {
+        let declared = DeclarationSite {
             name: &resource.name,
             file,
             at: *at,
@@ -6997,7 +6997,7 @@ fn fill_records(
     // The survivors are in the same order as the reserved records, so record `index`
     // is the one this declaration reserved.
     for (index, (at, file, resource)) in record_decls.iter().enumerate() {
-        let declared = Declared {
+        let declared = DeclarationSite {
             name: &resource.name,
             file,
             at: *at,
@@ -7023,7 +7023,7 @@ fn fill_record(
     draft: &mut ImageDraft,
     registry: &mut TypeRegistry,
     index: usize,
-    declared: Declared<'_>,
+    declared: DeclarationSite<'_>,
     resource: &ResourceDecl,
     diagnostics: &mut DiagnosticCollector,
 ) -> Result<(), BuildError> {
@@ -7034,7 +7034,7 @@ fn fill_record(
     for member in &resource.members {
         match member {
             ResourceMember::Field(field) => {
-                let at = Declared {
+                let at = DeclarationSite {
                     name: &field.name,
                     file,
                     at: declared.at,
@@ -7159,7 +7159,7 @@ fn member_conflict(
 fn resource_member(
     draft: &mut ImageDraft,
     registry: &TypeRegistry,
-    at: Declared<'_>,
+    at: DeclarationSite<'_>,
     field: &FieldDecl,
     subject: &str,
     diagnostics: &mut DiagnosticCollector,
@@ -7217,7 +7217,7 @@ fn build_group_leaves(
     registry: &mut TypeRegistry,
     record: &str,
     group: &GroupDecl,
-    declared: Declared<'_>,
+    declared: DeclarationSite<'_>,
     diagnostics: &mut DiagnosticCollector,
 ) -> Result<(Vec<FieldInfo>, Vec<FieldDef>), BuildError> {
     let file = declared.file;
@@ -7226,7 +7226,7 @@ fn build_group_leaves(
         let field = match member {
             ResourceMember::Field(field) => field,
             ResourceMember::Group(inner) => {
-                let at = Declared {
+                let at = DeclarationSite {
                     name: &inner.name,
                     file,
                     at: declared.at,
@@ -7254,7 +7254,7 @@ fn build_group_leaves(
                 continue;
             }
         };
-        let at = Declared {
+        let at = DeclarationSite {
             name: &field.name,
             file,
             at: declared.at,
@@ -8511,7 +8511,7 @@ mod refusal_join_tests {
         );
         let mut refusal = |name: &str| {
             let (identity, _) = FileIdentity::validate("src/main.mw").expect("a valid source path");
-            let declared = Declared {
+            let declared = DeclarationSite {
                 name,
                 file: &identity,
                 at: FileRef::admitted(0),
@@ -8580,7 +8580,7 @@ mod refusal_join_tests {
             DeclarationBudget::default(),
         );
         let (identity, _) = FileIdentity::validate("src/main.mw").expect("a valid source path");
-        let declared = Declared {
+        let declared = DeclarationSite {
             name: "x",
             file: &identity,
             at: FileRef::admitted(0),

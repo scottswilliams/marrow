@@ -19,7 +19,7 @@ use marrow_syntax::{
 use crate::analysis::{AnalysisFactCollector, BoundedAnalysisFacts, FactSink, FileRef};
 use crate::decl::{
     Binding, DeclarationBudget, DeclarationLedgerFull, DeclarationNamespace, DeclarationOccurrence,
-    Declared, MAX_DECLARATION_LEDGER_BYTES, SourceStage, refuse, refuse_at_earlier_stage,
+    DeclarationSite, MAX_DECLARATION_LEDGER_BYTES, SourceStage, refuse, refuse_at_earlier_stage,
 };
 use crate::demand::DurableNaming;
 use crate::diag::{
@@ -704,7 +704,7 @@ const OWNED_HEAP_BYTES: usize = 640 * 1024 * 1024;
 
 /// The heap one parse of one admitted file may allocate.
 ///
-/// **Declared, not derived from a length.** It is two thirds of the owned-heap ceiling,
+/// **DeclarationSite, not derived from a length.** It is two thirds of the owned-heap ceiling,
 /// which keeps a third in reserve for everything a query holds beside the parse. Stating
 /// it independently of any length is what makes the admission below a real gate: were it
 /// defined as what some chosen length costs, comparing a file's charge against it would
@@ -1216,7 +1216,7 @@ fn run_semantic(
     let mut modules = ModuleLedger::new(DeclarationNamespace::Module, budget.clone());
     for module in unparsed {
         let refusal = refuse_at_earlier_stage(
-            Declared::whole_file(&module.name, &module.file, module.at),
+            DeclarationSite::whole_file(&module.name, &module.file, module.at),
             module.stage,
         );
         if modules
@@ -1236,7 +1236,7 @@ fn run_semantic(
         } else {
             DeclarationOccurrence::Refused(refuse(
                 &mut diagnostics,
-                Declared {
+                DeclarationSite {
                     name: &module.name,
                     file: &module.file,
                     at: module.at,

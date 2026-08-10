@@ -330,12 +330,7 @@ pub(crate) struct FnLowerer<'a> {
     /// Hover facts stage in this body's own buffer and are admitted by the caller only
     /// when the body lowers, exactly as they were before.
     facts: FactSink<'a>,
-    /// Store roots whose durable identity failed admission that have already had one
-    /// reference-site steer emitted this compile. A dropped root is referenced from
-    /// many sites; the primary `check.durable_identity` reports name the fix once per
-    /// missing row, so the reference steer fires once per root rather than at every
-    /// use, keeping one dropped root from flooding the transcript. Shared across every
-    /// body lowered in the compile.
+    /// The file identity every diagnostic reported against this body names.
     file: &'a FileIdentity,
     /// The dotted module the function being lowered belongs to; unqualified calls
     /// resolve within it.

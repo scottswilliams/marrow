@@ -4,7 +4,8 @@ use super::*;
 
 use crate::decl::{
     Binding, DeclarationBudget, DeclarationIndexDrift, DeclarationLedger, DeclarationNamespace,
-    DeclarationOccurrence, DeclarationRefusalSummary, Declared, refuse_covered, refuse_first,
+    DeclarationOccurrence, DeclarationRefusalSummary, DeclarationSite, refuse_covered,
+    refuse_first,
 };
 use crate::types::BuildError;
 
@@ -168,7 +169,7 @@ impl FunctionRegistry {
             if !function.type_params.is_empty() {
                 continue;
             }
-            let at = Declared {
+            let at = DeclarationSite {
                 name: &function.name,
                 file,
                 at: declared.at,
@@ -404,7 +405,7 @@ enum ModuleResolution<'a> {
 fn refuse_annotation(
     refusal: &mut Option<DeclarationRefusalSummary>,
     diagnostics: &mut DiagnosticCollector,
-    at: Declared<'_>,
+    at: DeclarationSite<'_>,
     refused: AnnotationRefusal,
 ) {
     match refused.row {

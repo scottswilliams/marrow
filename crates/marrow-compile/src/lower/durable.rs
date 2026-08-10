@@ -916,17 +916,7 @@ impl<'a> FnLowerer<'a> {
                 // entry-address forms because its base is a group address, not an entry.
                 if let Some((keys, root, group)) = self.resolve_place_group_address(base) {
                     let Some((slot, leaf)) = group.field_index(field_name) else {
-                        // The group's anchor `Resource.group` is the leaf ledger's
-                        // owner, so a refused leaf is steered to its own cause.
-                        let owner = format!("{}.{}", root.resource, group.name);
-                        if !self.steer_refused_member(&owner, field_name, *name_span) {
-                            self.fail(SourceDiagnostic::at(
-                                Code::CheckType.as_str(),
-                                self.file,
-                                *name_span,
-                                format!("group `{}` has no field `{field_name}`", group.name),
-                            ));
-                        }
+                        self.report_missing_group_leaf(root, group, field_name, *name_span);
                         return None;
                     };
                     return Some(DurablePlace {
@@ -970,24 +960,62 @@ impl<'a> FnLowerer<'a> {
                         span: *span,
                     });
                 }
-                // A member the compiler refused is declared: it left the record's
-                // accepted set but keeps its name, so the address is steered to the
-                // refusal rather than told the root has no such field.
-                if !node
-                    .member_owner()
-                    .is_some_and(|owner| self.steer_refused_member(owner, field_name, *name_span))
-                {
-                    self.fail(SourceDiagnostic::at(
-                        Code::CheckType.as_str(),
-                        self.file,
-                        *name_span,
-                        node.no_field_message(field_name),
-                    ));
-                }
+                self.report_missing_member(&node, field_name, *name_span);
                 None
             }
             _ => None,
         }
+    }
+
+    /// Report a selector that names no leaf of `group`, steering to the leaf's own
+    /// refusal when the group declared it and the compiler refused it.
+    ///
+    /// The group's anchor `Resource.group` is the leaf ledger's owner. Both the
+    /// inline `^root(k).group.leaf` address and its place-rooted twin land here, so
+    /// the two spellings cannot disagree about which leaves the group declares.
+    fn report_missing_group_leaf(
+        &mut self,
+        root: &crate::durable::DurableRoot,
+        group: &crate::durable::DurableGroup,
+        field_name: &str,
+        name_span: SourceSpan,
+    ) {
+        let owner = format!("{}.{}", root.resource, group.name);
+        if self.steer_refused_member(&owner, field_name, name_span) {
+            return;
+        }
+        self.fail(SourceDiagnostic::at(
+            Code::CheckType.as_str(),
+            self.file,
+            name_span,
+            format!("group `{}` has no field `{field_name}`", group.name),
+        ));
+    }
+
+    /// Report a selector that names no member of `node`.
+    ///
+    /// A member the compiler refused is declared: it left the record's accepted set
+    /// but keeps its name, so the address is steered to the refusal rather than told
+    /// the node has no such field. Both the inline entry address and its place-rooted
+    /// twin land here.
+    fn report_missing_member(
+        &mut self,
+        node: &DurNode<'a>,
+        field_name: &str,
+        name_span: SourceSpan,
+    ) {
+        if node
+            .member_owner()
+            .is_some_and(|owner| self.steer_refused_member(owner, field_name, name_span))
+        {
+            return;
+        }
+        self.fail(SourceDiagnostic::at(
+            Code::CheckType.as_str(),
+            self.file,
+            name_span,
+            node.no_field_message(field_name),
+        ));
     }
 
     /// Emit one key column of a durable operation: lower the inline key expression
@@ -1267,17 +1295,7 @@ impl<'a> FnLowerer<'a> {
                 // because its base is a group address, not an entry address.
                 if let Some((keys, group)) = self.resolve_group_address(root, base) {
                     let Some((slot, leaf)) = group.field_index(field_name) else {
-                        // The group's anchor `Resource.group` is the leaf ledger's
-                        // owner, so a refused leaf is steered to its own cause.
-                        let owner = format!("{}.{}", root.resource, group.name);
-                        if !self.steer_refused_member(&owner, field_name, *name_span) {
-                            self.fail(SourceDiagnostic::at(
-                                Code::CheckType.as_str(),
-                                self.file,
-                                *name_span,
-                                format!("group `{}` has no field `{field_name}`", group.name),
-                            ));
-                        }
+                        self.report_missing_group_leaf(root, group, field_name, *name_span);
                         return None;
                     };
                     return Some(DurablePlace {
@@ -1321,20 +1339,7 @@ impl<'a> FnLowerer<'a> {
                         span: *span,
                     });
                 }
-                // A member the compiler refused is declared: it left the record's
-                // accepted set but keeps its name, so the address is steered to the
-                // refusal rather than told the root has no such field.
-                if !node
-                    .member_owner()
-                    .is_some_and(|owner| self.steer_refused_member(owner, field_name, *name_span))
-                {
-                    self.fail(SourceDiagnostic::at(
-                        Code::CheckType.as_str(),
-                        self.file,
-                        *name_span,
-                        node.no_field_message(field_name),
-                    ));
-                }
+                self.report_missing_member(&node, field_name, *name_span);
                 None
             }
             _ => None,

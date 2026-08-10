@@ -15,8 +15,8 @@ use marrow_syntax::{
 use crate::analysis::FileRef;
 use crate::decl::{
     Binding, DeclarationBudget, DeclarationIndexDrift, DeclarationLedger, DeclarationLedgerFull,
-    DeclarationNamespace, DeclarationOccurrence, DeclarationRefusalSummary, Declared, refuse,
-    refuse_row,
+    DeclarationNamespace, DeclarationOccurrence, DeclarationRefusalSummary, DeclarationSite,
+    refuse, refuse_row,
 };
 use crate::diag::{DiagnosticCollector, SourceDiagnostic};
 use crate::lower::parse_int;
@@ -107,7 +107,7 @@ impl ConstRegistry {
             DeclarationLedger::new(DeclarationNamespace::Constant, budget);
         for (module, at, file, decl) in consts {
             let key = (module.clone(), decl.name.clone());
-            let declared = Declared {
+            let declared = DeclarationSite {
                 name: &decl.name,
                 file,
                 at: *at,
@@ -152,7 +152,7 @@ impl ConstRegistry {
 /// annotation when present. Every failure arm reports its cause and hands back the
 /// summary built from that same report.
 fn evaluate(
-    declared: Declared<'_>,
+    declared: DeclarationSite<'_>,
     decl: &ConstDecl,
     types: &TypeRegistry,
     diagnostics: &mut DiagnosticCollector,
@@ -203,7 +203,7 @@ fn evaluate(
 /// carries the span of the offending expression, which for a nested literal is
 /// narrower than the declaration's.
 fn literal_value(
-    declared: Declared<'_>,
+    declared: DeclarationSite<'_>,
     expression: &Expression,
     diagnostics: &mut DiagnosticCollector,
 ) -> Result<ConstScalar, DeclarationRefusalSummary> {
@@ -291,17 +291,22 @@ fn literal_value(
 /// declaration's own.
 fn refuse_at(
     diagnostics: &mut DiagnosticCollector,
-    declared: Declared<'_>,
+    declared: DeclarationSite<'_>,
     span: SourceSpan,
     code: &'static str,
     message: String,
 ) -> DeclarationRefusalSummary {
-    refuse(diagnostics, Declared { span, ..declared }, code, message)
+    refuse(
+        diagnostics,
+        DeclarationSite { span, ..declared },
+        code,
+        message,
+    )
 }
 
 fn unsupported(
     diagnostics: &mut DiagnosticCollector,
-    declared: Declared<'_>,
+    declared: DeclarationSite<'_>,
     span: SourceSpan,
     subject: &str,
 ) -> DeclarationRefusalSummary {
