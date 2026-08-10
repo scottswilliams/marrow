@@ -580,9 +580,9 @@ fn image_too_large_is_an_aggregate_resource_limit() {
 /// Every fixed bound projects two ways from one typed kind: `detail` is the frozen
 /// machine identifier a tool bisects on, `description` is the sentence fragment a
 /// person reads. Rendering the identifier into terminal prose is the defect this
-/// pins — no CLI surface may put a Rust variant name in front of a reader. The
-/// exhaustive match makes a new bound a compile error here rather than a silent
-/// `Functions`-shaped word on stderr.
+/// pins — no CLI surface may put a Rust variant name in front of a reader, such as
+/// a silent `Functions`-shaped word on stderr. The match below is exhaustive over
+/// the kind, so adding a bound is a compile error until its arm is written here.
 #[test]
 fn every_resource_limit_kind_describes_itself_without_its_variant_name() {
     use marrow_compile::ResourceLimitKind as Kind;
@@ -612,8 +612,10 @@ fn every_resource_limit_kind_describes_itself_without_its_variant_name() {
     ];
 
     for kind in EVERY_KIND {
-        // Exhaustiveness anchor: a new variant fails to compile until it is listed
-        // in `EVERY_KIND` above and given its own prose.
+        // Exhaustiveness anchor: adding a bound makes this match non-exhaustive, so
+        // a new kind cannot land without an arm here. The arm is where a maintainer
+        // meets this test, not a proof that the list is complete — Rust cannot
+        // enumerate variants, so `EVERY_KIND` is extended by the same hand.
         match kind {
             Kind::Strings
             | Kind::Consts
