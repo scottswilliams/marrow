@@ -39,7 +39,7 @@ pub use actor::{
 pub use authority::{DemandExceedsCeiling, ExceedingDemand};
 pub use codec::FormatError;
 pub use envelope::{EngineKind, MAX_ENVELOPE_FILE_BYTES, StoreEnvelope};
-pub use head::{ActiveBinding, LogicalHead, MAX_HEAD_FILE_BYTES, MAX_HEAD_V3_FILE_BYTES};
+pub use head::{ActiveBinding, LogicalHead, MAX_HEAD_FILE_BYTES};
 pub use headmap::{HeadMap, HeadMapEntry, MAX_HEAD_MAP_ENTRIES};
 pub use image::{accepted_ceiling, active_binding, head_map, head_map_node_order};
 pub use import::{

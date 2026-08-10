@@ -52,28 +52,15 @@ pub const MAX_HEAD_FILE_BYTES: u64 = HEAD_FIXED_PREFIX_BYTES
     + MAX_ACCEPTED_CEILING_BYTES as u64
     + 32;
 
-/// The ceiling reserved for the head layout that carries the dependency-declaration
-/// continuity snapshot. No such head is written or decoded by this build — a head naming
-/// that version is refused as an unknown version — so this bound is a scheduler-pinned
-/// reservation, not a derivation from any encoder here. It exists so the version a head
-/// records, rather than the largest layout this build happens to write, is what selects the
-/// bound an admission read applies before allocating.
-pub const MAX_HEAD_V3_FILE_BYTES: u64 = 7_491_686;
-
-/// The head container versions whose file ceilings are pinned. Only [`HEAD_VERSION`] is
-/// written or decoded; the others exist so a head from a later layout is bounded by its own
-/// ceiling and then refused by its own version, rather than being refused for a length its
-/// layout was never held to.
-const HEAD_V2_VERSION: u8 = 0x02;
-const HEAD_V3_VERSION: u8 = 0x03;
-
 /// The ceiling a head file of the version its own prefix records may occupy, chosen before
-/// the body is allocated for. A version with no pinned bound is refused here as the same
-/// typed version refusal its decoder would reach.
+/// the body is allocated for. This build reads one head version, so a head naming another is
+/// refused here — at the five-byte prefix, with no body read at all — as the same typed
+/// version refusal its decoder would reach. A ceiling reserved for a layout no encoder in
+/// this build produces could only widen what an undecodable head makes this build read, so a
+/// later layout earns its bound in the lane that writes it.
 pub(crate) fn file_ceiling(prefix: &[u8; ARTIFACT_PREFIX_BYTES]) -> Result<u64, FormatError> {
     match artifact_version(prefix, MAGIC)? {
-        HEAD_VERSION | HEAD_V2_VERSION => Ok(MAX_HEAD_FILE_BYTES),
-        HEAD_V3_VERSION => Ok(MAX_HEAD_V3_FILE_BYTES),
+        HEAD_VERSION => Ok(MAX_HEAD_FILE_BYTES),
         found => Err(FormatError::UnknownVersion { found }),
     }
 }

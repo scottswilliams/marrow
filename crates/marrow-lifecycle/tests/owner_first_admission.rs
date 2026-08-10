@@ -416,9 +416,9 @@ fn the_envelope_ceiling_admits_its_maximum_and_refuses_one_byte_more() {
     let maximal = envelope(id, &"t".repeat(64));
     let bytes = maximal.encode();
     assert_eq!(
-        bytes.len(),
-        126,
-        "the largest envelope the encoder produces is the ceiling",
+        bytes.len() as u64,
+        marrow_lifecycle::MAX_ENVELOPE_FILE_BYTES,
+        "the largest envelope the encoder produces is the ceiling admission applies",
     );
     provision(
         &store,
@@ -458,9 +458,9 @@ fn the_head_ceiling_admits_its_maximum_and_refuses_one_byte_more() {
     let maximal = head(65_536, vec![0x5A; 4 * 1024 * 1024]);
     let bytes = maximal.encode();
     assert_eq!(
-        bytes.len(),
-        5_505_218,
-        "the largest head the encoder produces is the ceiling",
+        bytes.len() as u64,
+        marrow_lifecycle::MAX_HEAD_FILE_BYTES,
+        "the largest head the encoder produces is the ceiling admission applies",
     );
     provision(
         &store,
