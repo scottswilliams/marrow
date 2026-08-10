@@ -541,12 +541,15 @@ fn admit_created_meta(
 /// time is inside it and two first publications cannot both append.
 fn install_lock_ignore(meta: &AdmittedDir) -> Result<(), IdsPublicationError> {
     let name = admitted_name(IGNORE_NAME);
-    let (mut entry, found) = match meta.create_file_excl(&name) {
-        Ok(created) => (created, Vec::new()),
+    let (created, found) = match meta.create_file_excl(&name) {
+        Ok(created) => (Some(created), Vec::new()),
         Err(CustodyError::AlreadyExists { .. }) => {
-            let opened = meta.open_file(&name)?;
-            let found = opened.read_prefix(IGNORE_READ_CEILING + 1)?;
-            (opened, found)
+            // Whether the entry is already complete is a read-only question, so
+            // it is asked read-only: a checkout may carry the entry unwritable,
+            // and an open that demanded write to decide it would refuse every
+            // publication and recovery of a project that needs no append.
+            let opened = meta.open_file_readonly(&name)?;
+            (None, opened.read_prefix(IGNORE_READ_CEILING + 1)?)
         }
         Err(error) => return Err(error.into()),
     };
@@ -566,6 +569,10 @@ fn install_lock_ignore(meta: &AdmittedDir) -> Result<(), IdsPublicationError> {
     block.push_str(IGNORE_COMMENT);
     block.push_str(LOCK_NAME);
     block.push('\n');
+    let mut entry = match created {
+        Some(created) => created,
+        None => meta.open_file(&name)?,
+    };
     entry.append(block.as_bytes())?;
     entry.sync()?;
     meta.sync()?;

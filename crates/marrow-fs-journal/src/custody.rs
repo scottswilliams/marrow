@@ -315,7 +315,14 @@ impl AdmittedDir {
     /// opened inode. Preclaim debris may carry any mode the crash left, and
     /// its only permitted mutation — the witnessed discard — needs the
     /// directory alone, so its custody must not demand write access.
-    pub(crate) fn open_file_readonly(&self, name: &EntryName) -> Result<OpenedFile, CustodyError> {
+    ///
+    /// The same open is what any consumer takes to decide a read-only question
+    /// about an entry it may not be able to write: an entry a checkout carries
+    /// read-only is still readable, and demanding write access to answer a
+    /// question that writes nothing would refuse custody over an entry that
+    /// needs none. Open [`open_file`](Self::open_file) instead only where an
+    /// append actually follows.
+    pub fn open_file_readonly(&self, name: &EntryName) -> Result<OpenedFile, CustodyError> {
         let handle = sys::open_file_readonly(&self.handle, name.as_str())
             .map_err(|refusal| refine_open_refusal(refusal, self.observe(name), REQUIRED_READ))?;
         witness_regular(handle)

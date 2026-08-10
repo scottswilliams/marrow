@@ -1087,6 +1087,51 @@ fn the_lock_ignore_is_completed_rather_than_rewritten() {
     );
 }
 
+/// Whether the ignore entry already carries every name is a read-only
+/// question, so the owner asks it read-only. A developer's checkout can carry
+/// that entry unwritable, and an owner that opened it for writing to decide a
+/// question needing no write would refuse every publication — and every
+/// recovery, which takes the same guard — of a project whose ignore entry is
+/// already complete.
+#[test]
+fn a_complete_unwritable_ignore_entry_leaves_the_owner_working() {
+    let _serial = serialized();
+    let project = Project::new("ignore-unwritable");
+    project.write_meta(".gitignore", LOCK_IGNORE);
+    let path = project.meta().join(".gitignore");
+    set_mode(&path, 0o444);
+    // A withheld write that binds nothing would leave this kat asserting an
+    // acquisition no unwritable entry was ever in the way of. Mode bits do not
+    // bind a process holding the mode-override capability (`root`, or
+    // `CAP_DAC_OVERRIDE` on Linux), and a filesystem that carries no mode bits
+    // does not enforce them at all.
+    let binds = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&path)
+        .is_err();
+    assert!(
+        binds,
+        "mode 0444 on {} did not refuse a read-write open, so this kat never ran. Run the \
+         suite as a process the mode bits bind, on a filesystem that carries them.",
+        path.display()
+    );
+
+    let guard = ProjectMetadataWriteGuard::acquire(project.path())
+        .expect("a complete ignore entry needs no write, so acquisition must not demand one");
+    guard
+        .recover_ids()
+        .expect("recovery takes the same guard and must reach the same conclusion");
+    drop(guard);
+
+    assert_eq!(
+        project.read_meta(".gitignore").as_deref(),
+        Some(LOCK_IGNORE),
+        "the read-only decision wrote to the entry it only had to read"
+    );
+    set_mode(&path, 0o600);
+}
+
 /// Acquisitions racing one fresh project write one ignore entry between them.
 /// The entry is installed under the write lock, so however the seats interleave
 /// exactly one of them appends and the rest find the lock already named.
