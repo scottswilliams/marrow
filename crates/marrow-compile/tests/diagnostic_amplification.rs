@@ -32,14 +32,15 @@ fn assert_limit(failure: CompileFailure, kind: ResourceLimitKind, limit: usize) 
     assert_eq!(resource.limit(), limit as u64);
 }
 
-/// 512 files, each with 16 syntax errors (8192 rows — twice the ceiling),
-/// resolve to exactly the typed DiagnosticCount ceiling on every public entry.
-/// The retained outcome is the ceiling itself: no per-file collection survives
-/// to amplify retention with the file count.
+/// The admission's maximum file count, each file with 16 syntax errors (16
+/// times the ceiling in rows), resolves to exactly the typed DiagnosticCount
+/// ceiling on every public entry. The retained outcome is the ceiling itself:
+/// no per-file collection survives to amplify retention with the file count,
+/// at the widest project the drive will admit.
 #[test]
 fn an_error_dense_many_file_project_is_bounded_by_the_count_ceiling() {
-    let files: Vec<(String, Vec<u8>)> = (0..512)
-        .map(|index| (format!("src/m{index:03}.mw"), "@\n".repeat(16).into_bytes()))
+    let files: Vec<(String, Vec<u8>)> = (0..CaptureLimits::DEFAULT.max_files())
+        .map(|index| (format!("src/m{index:04}.mw"), "@\n".repeat(16).into_bytes()))
         .collect();
     let input = project(files);
 
