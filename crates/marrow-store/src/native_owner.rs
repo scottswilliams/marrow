@@ -1372,6 +1372,25 @@ mod tests {
         }
     }
 
+    /// Run one call whose contained panic is the point of the case, with the
+    /// panic report suppressed.
+    ///
+    /// A hostile store mutation makes redb's own traversal panic; the adapter
+    /// contains it and returns the typed error the case asserts. The default
+    /// hook would still print that panic, and in the coordinated child it prints
+    /// to inherited stderr, so it lands in the workspace test log reading
+    /// exactly like a real store panic to anything scanning that log. The hook
+    /// is replaced only across `body` and restored immediately, so a panic
+    /// anywhere else still reports in full.
+    #[cfg(unix)]
+    fn without_panic_report<T>(body: impl FnOnce() -> T) -> T {
+        let previous = std::panic::take_hook();
+        std::panic::set_hook(Box::new(|_| {}));
+        let outcome = body();
+        std::panic::set_hook(previous);
+        outcome
+    }
+
     #[cfg(unix)]
     fn phase_path(directory: &Path, mode: &str, phase: &str, kind: &str) -> PathBuf {
         directory.join(format!(".quarantine-{mode}-{phase}-{kind}"))
@@ -1609,12 +1628,10 @@ mod tests {
                         .expect("fresh existing-only reopen before audit"),
                 );
                 child_barrier(directory, &mode, "reopened-before-audit");
-                let error = owner
-                    .engine_mut()
-                    .audit_integrity()
+                let error = without_panic_report(|| owner.engine_mut().audit_integrity())
                     .expect_err("hostile live mutation must fail the full audit");
                 assert_eq!(error.code(), Code::StoreCorruption.as_str());
-                drop(owner);
+                without_panic_report(|| drop(owner));
                 child_barrier(directory, &mode, "audit-refused");
             }
             other => panic!("unknown coordinated mode {other}"),
