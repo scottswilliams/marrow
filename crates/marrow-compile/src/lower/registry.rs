@@ -81,11 +81,19 @@ impl FunctionRegistry {
                 };
                 match param_type(records, draft, durable, &param.ty, TypeEnv::EMPTY, site) {
                     Ok(ty) => params.push(ty),
-                    Err(ResolveError::Refusal(ResolveRefusal::Unsupported)) => {
-                        diagnostics.push(unsupported(file, param.ty.span(), "this parameter type"));
+                    Err(ResolveError::Refusal(refusal)) => {
+                        if let Some(row) = annotation_refusal_row(
+                            records,
+                            durable,
+                            refusal,
+                            file,
+                            param.ty.span(),
+                            "this parameter type",
+                        )? {
+                            diagnostics.push(row);
+                        }
                         accepted = false;
                     }
-                    Err(ResolveError::Refusal(ResolveRefusal::Limit)) => accepted = false,
                     Err(ResolveError::Invariant(invariant)) => return Err(invariant),
                 }
             }
@@ -97,16 +105,17 @@ impl FunctionRegistry {
                         span: annotation.span(),
                     };
                     match resolve_type(records, draft, durable, annotation, TypeEnv::EMPTY, site) {
-                        Err(ResolveError::Refusal(ResolveRefusal::Unsupported)) => {
-                            diagnostics.push(unsupported(
+                        Err(ResolveError::Refusal(refusal)) => {
+                            if let Some(row) = annotation_refusal_row(
+                                records,
+                                durable,
+                                refusal,
                                 file,
                                 annotation.span(),
                                 "this return type",
-                            ));
-                            accepted = false;
-                            RetType::Unit
-                        }
-                        Err(ResolveError::Refusal(ResolveRefusal::Limit)) => {
+                            )? {
+                                diagnostics.push(row);
+                            }
                             accepted = false;
                             RetType::Unit
                         }

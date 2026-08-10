@@ -103,6 +103,25 @@ fn rows(diagnostics: &[SourceDiagnostic]) -> Vec<(&str, u32, u32)> {
         .collect()
 }
 
+/// No row describes a refused declaration of this project's own as a gap in the
+/// language. The subset-gap phrase is reserved for a form the beta line genuinely
+/// does not admit; using it for a declared-and-refused name is the fabrication the
+/// named-type reds exist to kill.
+fn assert_no_subset_gap(diagnostics: &[SourceDiagnostic]) {
+    for row in diagnostics {
+        assert!(
+            !row.message()
+                .contains("is not yet supported on the beta line"),
+            "this project declared the type; the report must name the declaration's \
+             own cause, not a language gap: {:#?}",
+            diagnostics
+                .iter()
+                .map(SourceDiagnostic::message)
+                .collect::<Vec<_>>(),
+        );
+    }
+}
+
 fn assert_never_out_of_scope(diagnostics: &[SourceDiagnostic], name: &str) {
     for row in diagnostics {
         assert!(
@@ -526,6 +545,158 @@ fn r19_a_refused_member_does_not_narrow_the_identity_gap_set() {
     assert!(
         refused.len() >= valid.len(),
         "a refused member narrowed the anchor set from {valid:#?} to {refused:#?}",
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Named types — I-2
+//
+// Every named-type lookup funnels into one untyped bucket, so a use of a type this
+// project declared and the compiler refused is reported as a *language* gap: "not
+// yet supported on the beta line". The declaration is dropped from its table (so
+// nothing resolves against a broken type) and the ledger keeps its name (so the use
+// is steered to the cause instead).
+// ---------------------------------------------------------------------------
+
+/// R6 — an alias over an unknown target. Today the annotation blames the language;
+/// the alias's own `check.type` report two lines above is never connected to it.
+#[test]
+fn r6_a_refused_alias_steers_its_annotation_to_the_alias_report() {
+    let diagnostics = diagnostics(
+        "module main\n\n\
+         alias Count = Nope\n\n\
+         pub fn make(c: Count): int {\n\
+         \x20   return 1\n\
+         }\n",
+    );
+
+    assert_no_subset_gap(&diagnostics);
+    assert_eq!(
+        rows(&diagnostics),
+        vec![("check.type", 3, 1), ("check.type", 5, 16)],
+        "the alias reports the cause and the annotation is steered to it",
+    );
+}
+
+/// R7 — a cyclic alias chain. The steer carries `check.recursion`, the code of the
+/// report the reader must act on, not a subset-gap phrase.
+#[test]
+fn r7_a_cyclic_alias_steers_its_annotation_to_the_recursion_report() {
+    let diagnostics = diagnostics(
+        "module main\n\n\
+         alias A = B\n\
+         alias B = A\n\n\
+         pub fn make(c: A): int {\n\
+         \x20   return 1\n\
+         }\n",
+    );
+
+    assert_no_subset_gap(&diagnostics);
+    assert_eq!(
+        rows(&diagnostics),
+        vec![
+            ("check.recursion", 3, 7),
+            ("check.recursion", 4, 7),
+            ("check.recursion", 6, 16),
+        ],
+    );
+}
+
+/// R11 — a nominal type whose interval admits no values. The declaration is refused
+/// for a `check.type` and the annotation reuses that code.
+#[test]
+fn r11_a_refused_nominal_steers_its_annotation_to_the_interval_report() {
+    let diagnostics = diagnostics(
+        "module main\n\n\
+         type Age: int in 10..=0\n\n\
+         pub fn make(a: Age): int {\n\
+         \x20   return 1\n\
+         }\n",
+    );
+
+    assert_no_subset_gap(&diagnostics);
+    assert_eq!(
+        rows(&diagnostics),
+        vec![("check.type", 3, 18), ("check.type", 5, 16)],
+    );
+}
+
+/// R26 — the cascade split. A refused declaration in one parameter must not absorb
+/// a genuinely missing name in the next: each parameter is rejected at its own span
+/// with its own cause. Base: two identical subset-gap rows, so the real absence and
+/// the project's own refusal read the same.
+#[test]
+fn r26_a_refused_type_does_not_absorb_a_genuine_absence_beside_it() {
+    let diagnostics = diagnostics(
+        "module main\n\n\
+         alias Count = Nope\n\n\
+         pub fn make(a: Count, b: AlsoMissing): int {\n\
+         \x20   return 1\n\
+         }\n",
+    );
+
+    assert_eq!(
+        rows(&diagnostics),
+        vec![
+            ("check.type", 3, 1),
+            ("check.type", 5, 16),
+            ("check.unsupported", 5, 26),
+        ],
+        "`a` is steered to the alias's cause; `b` names a type nothing declared and \
+         keeps the subset-gap report",
+    );
+}
+
+/// R27 — the merge never widens. A refused alias used inside a generic application
+/// must not be described as the cause of anything but itself: no row may claim the
+/// genuinely absent `AlsoMissing` was refused.
+#[test]
+fn r27_a_refused_type_is_never_named_as_another_names_cause() {
+    let diagnostics = diagnostics(
+        "module main\n\n\
+         struct Pair<A, B> {\n\
+         \x20   first: A\n\
+         \x20   second: B\n\
+         }\n\n\
+         alias Count = Nope\n\n\
+         pub fn make(p: Pair<Count, AlsoMissing>): int {\n\
+         \x20   return 1\n\
+         }\n",
+    );
+
+    for row in &diagnostics {
+        assert!(
+            !row.message().contains("`AlsoMissing` was declared"),
+            "`AlsoMissing` is not declared anywhere; no steer may claim it was: {:#?}",
+            messages(&diagnostics),
+        );
+    }
+    assert_eq!(
+        rows(&diagnostics),
+        vec![("check.type", 8, 1), ("check.type", 10, 16)],
+    );
+}
+
+/// R25 · named types — a refused nominal still occupies its name, so a redeclaration
+/// conflicts. The duplicate check reads the ledger, which retains the refused
+/// occurrence, rather than the accepted-only table it used to scan.
+#[test]
+fn r25_a_refused_nominal_occupies_its_name() {
+    let diagnostics = diagnostics(
+        "module main\n\n\
+         type Age: int in 10..=0\n\
+         type Age: int in 0..=150\n\n\
+         pub fn make(a: Age): int {\n\
+         \x20   return 1\n\
+         }\n",
+    );
+
+    assert!(
+        diagnostics
+            .iter()
+            .any(|row| row.code() == "check.name_conflict"),
+        "the refused first declaration still holds the name: {:#?}",
+        rows(&diagnostics),
     );
 }
 

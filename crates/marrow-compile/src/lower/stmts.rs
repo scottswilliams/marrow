@@ -2818,12 +2818,12 @@ impl<'a> FnLowerer<'a> {
                 self.failed = true;
                 return None;
             }
-            Err(ResolveError::Refusal(ResolveRefusal::Unsupported)) => {
-                self.fail(unsupported(
-                    self.file,
-                    annotation.span(),
-                    "this type annotation",
-                ));
+            Err(
+                error @ ResolveError::Refusal(
+                    ResolveRefusal::Unsupported | ResolveRefusal::RefusedDeclaration(_),
+                ),
+            ) => {
+                self.reject_resolution(error, annotation.span(), "this type annotation");
                 return Some(int);
             }
             Err(ResolveError::Invariant(invariant)) => {

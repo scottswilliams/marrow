@@ -51,8 +51,6 @@ pub(crate) enum DeclarationNamespace {
     Constant,
     DurableRoot,
     NamedType,
-    TypeTemplate,
-    ResourceMember,
 }
 
 /// A `Copy` handle to one refused declaration, valid only in the ledger that
@@ -151,6 +149,24 @@ pub(crate) fn refuse_row(
     summary
 }
 
+/// Push a refusal row, keeping the first one as the declaration's retained cause.
+///
+/// A declaration is refused whole for a defect in any member, and every offending
+/// member still gets its own report. The summary carries the first, so the use
+/// site is steered to the first thing the reader has to fix rather than to an
+/// arbitrary later one.
+pub(crate) fn refuse_first(
+    refusal: &mut Option<DeclarationRefusalSummary>,
+    diagnostics: &mut DiagnosticCollector,
+    at: Declared<'_>,
+    row: SourceDiagnostic,
+) {
+    match refusal {
+        Some(_) => diagnostics.push(row),
+        None => *refusal = Some(refuse_row(diagnostics, at, row)),
+    }
+}
+
 /// The same coupling for a refusal whose report is made by a *different* pass or a
 /// *different* occurrence, named by the caller.
 ///
@@ -170,6 +186,41 @@ pub(crate) fn refuse_covered(at: Declared<'_>, code: &'static str) -> Declaratio
         report: RefusalReport::ByCoveringPass,
         steered: Cell::new(false),
     }
+}
+
+/// The row that steers one use of a refused declaration to the cause its
+/// declaration reported.
+///
+/// The row carries the *declaring* code, so a use-site assertion names the
+/// declaration's typed identity and the reader follows one code to one fix.
+pub(crate) fn declaration_refused(
+    file: &FileIdentity,
+    span: SourceSpan,
+    refusal: &DeclarationRefusalSummary,
+) -> SourceDiagnostic {
+    let name = refusal.name();
+    let code = refusal.code();
+    // The steer sends the reader to the cause, so it may name a location only when
+    // the cause was reported at this declaration. A covered class — a value cycle
+    // the later cycle pass reports, or an anchor an earlier occurrence reported —
+    // has its row somewhere else entirely, and claiming it sits at this declaration
+    // would send the reader to a row that is not there.
+    let fix = match refusal.report() {
+        RefusalReport::AtDeclaration => {
+            format!("Correct the `{code}` report at the declaration of `{name}`.")
+        }
+        RefusalReport::ByCoveringPass => format!("Correct the reported `{code}`."),
+    };
+    SourceDiagnostic::at(
+        code,
+        file,
+        span,
+        format!(
+            "`{name}` was declared, but its declaration was refused. A refused \
+             declaration keeps its name and binds no value, so this use cannot \
+             resolve. {fix}"
+        ),
+    )
 }
 
 /// Where one declaration is written: its name, its file in both the owned spelling
@@ -263,6 +314,18 @@ impl DeclarationRefusalSummary {
 pub(crate) enum DeclarationOccurrence<T> {
     Accepted(T),
     Refused(DeclarationRefusalSummary),
+}
+
+impl<T> DeclarationOccurrence<T> {
+    /// Commit an accepted value into its owner's table and carry the ledger's own
+    /// payload out. Refusals pass through untouched, so the commit and the ledger
+    /// entry cannot disagree about which declarations were accepted.
+    pub(crate) fn map_accepted<U>(self, commit: impl FnOnce(T) -> U) -> DeclarationOccurrence<U> {
+        match self {
+            Self::Accepted(value) => DeclarationOccurrence::Accepted(commit(value)),
+            Self::Refused(summary) => DeclarationOccurrence::Refused(summary),
+        }
+    }
 }
 
 /// What a name resolves to in one namespace.
@@ -429,18 +492,6 @@ impl<K: Ord + Clone, T> DeclarationLedger<K, T> {
             Some((_, DeclarationOccurrence::Refused(summary))) => Ok(summary),
             _ => Err(DeclarationIndexDrift),
         }
-    }
-
-    /// Every accepted declaration in source order, which is the order the image
-    /// tables are built in. Refused occurrences are skipped: they hold their names
-    /// but bind no value, so nothing downstream of acceptance sees them.
-    pub(crate) fn accepted(&self) -> impl Iterator<Item = (&K, &T)> {
-        self.occurrences
-            .iter()
-            .filter_map(|(key, occurrence)| match occurrence {
-                DeclarationOccurrence::Accepted(value) => Some((key, value)),
-                DeclarationOccurrence::Refused(_) => None,
-            })
     }
 
     /// Every declared key, accepted or refused — the did-you-mean corpus, so a
@@ -683,29 +734,5 @@ mod tests {
         assert_ne!(from_constants, from_types);
         assert_eq!(types.refusal(from_constants), Err(DeclarationIndexDrift));
         assert_eq!(constants.refusal(from_types), Err(DeclarationIndexDrift));
-    }
-
-    /// `accepted()` is source-ordered and skips refusals, so an image table built
-    /// from it keeps declaration order without a refused key shifting a position.
-    #[test]
-    fn accepted_yields_source_order_without_refusals() {
-        let mut ledger = ledger();
-        ledger
-            .declare("a".to_string(), DeclarationOccurrence::Accepted(1))
-            .expect("within budget");
-        ledger
-            .declare(
-                "b".to_string(),
-                DeclarationOccurrence::Refused(refusal("b")),
-            )
-            .expect("within budget");
-        ledger
-            .declare("c".to_string(), DeclarationOccurrence::Accepted(3))
-            .expect("within budget");
-        let accepted: Vec<(&str, u32)> = ledger
-            .accepted()
-            .map(|(key, value)| (key.as_str(), *value))
-            .collect();
-        assert_eq!(accepted, vec![("a", 1), ("c", 3)]);
     }
 }

@@ -415,36 +415,6 @@ pub(super) fn identity_admission_failed(
 ///
 /// Emitted once per refused key, at the first use; later uses of the same key fail
 /// silently, so the row count is bounded by refused declarations, not by uses.
-pub(super) fn declaration_refused(
-    file: &FileIdentity,
-    span: SourceSpan,
-    refusal: &DeclarationRefusalSummary,
-) -> SourceDiagnostic {
-    let name = refusal.name();
-    let code = refusal.code();
-    // The steer sends the reader to the cause, so it may name a location only when
-    // the cause was reported at this declaration. A covered class — a value cycle
-    // the later cycle pass reports, or an anchor an earlier occurrence reported —
-    // has its row somewhere else entirely, and claiming it sits at this declaration
-    // would send the reader to a row that is not there.
-    let fix = match refusal.report() {
-        RefusalReport::AtDeclaration => {
-            format!("Correct the `{code}` report at the declaration of `{name}`.")
-        }
-        RefusalReport::ByCoveringPass => format!("Correct the reported `{code}`."),
-    };
-    SourceDiagnostic::at(
-        code,
-        file,
-        span,
-        format!(
-            "`{name}` was declared, but its declaration was refused. A refused \
-             declaration keeps its name and binds no value, so this use cannot \
-             resolve. {fix}"
-        ),
-    )
-}
-
 pub(super) fn checked_arm_error(
     file: &FileIdentity,
     span: SourceSpan,

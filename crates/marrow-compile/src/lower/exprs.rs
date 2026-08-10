@@ -1659,14 +1659,19 @@ impl<'a> FnLowerer<'a> {
                 self.failed = true;
                 return None;
             }
-            Err(ResolveError::Refusal(ResolveRefusal::Unsupported)) => {
+            Err(
+                error @ ResolveError::Refusal(
+                    ResolveRefusal::Unsupported | ResolveRefusal::RefusedDeclaration(_),
+                ),
+            ) => {
                 let span = template
                     .decl
                     .return_type
                     .as_ref()
                     .map(TypeExpr::span)
                     .unwrap_or(template.decl.span);
-                self.fail(unsupported(&template.file, span, "this return type"));
+                let file = template.file.clone();
+                self.reject_at(error, &file, span, "this return type");
                 return None;
             }
             Err(ResolveError::Invariant(invariant)) => {

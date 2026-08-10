@@ -304,10 +304,15 @@ fn built_registry_with_generic_struct() -> (TypeRegistry, ImageDraft, usize) {
             _ => None,
         })
         .expect("generic struct declaration exists");
-    let structs = [(crate::test_file_identity("src/main.mw"), declaration)];
+    let structs = [(
+        FileRef::admitted(0),
+        crate::test_file_identity("src/main.mw"),
+        declaration,
+    )];
     let mut draft = ImageDraft::new();
     let mut diagnostics = DiagnosticCollector::new();
-    let registry = TypeRegistry::build(&mut draft, &[], &[], &structs, &[], &[], &mut diagnostics);
+    let registry = TypeRegistry::build(&mut draft, &[], &[], &structs, &[], &[], &mut diagnostics)
+        .expect("the test registry stays within the ledger budget");
     assert!(diagnostics.is_empty());
     let template = registry
         .type_template_by_name("Box")
@@ -318,7 +323,8 @@ fn built_registry_with_generic_struct() -> (TypeRegistry, ImageDraft, usize) {
 fn built_reserved_registry() -> (TypeRegistry, ImageDraft) {
     let mut draft = ImageDraft::new();
     let mut diagnostics = DiagnosticCollector::new();
-    let registry = TypeRegistry::build(&mut draft, &[], &[], &[], &[], &[], &mut diagnostics);
+    let registry = TypeRegistry::build(&mut draft, &[], &[], &[], &[], &[], &mut diagnostics)
+        .expect("the test registry stays within the ledger budget");
     assert!(diagnostics.is_empty());
     (registry, draft)
 }

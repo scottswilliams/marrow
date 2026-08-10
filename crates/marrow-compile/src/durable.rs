@@ -41,14 +41,13 @@ use marrow_syntax::{
 
 use crate::analysis::FileRef;
 use crate::decl::{
-    Binding, DeclarationLedger, DeclarationLedgerFull, DeclarationNamespace, DeclarationOccurrence,
-    DeclarationRefusalId,
-    DeclarationRefusalSummary, Declared, refuse_covered, refuse_row,
+    Binding, DeclarationIndexDrift, DeclarationLedger, DeclarationNamespace, DeclarationOccurrence,
+    DeclarationRefusalId, DeclarationRefusalSummary, Declared, refuse_covered, refuse_row,
 };
 use crate::demand::{DurableNaming, PathSigil};
 use crate::diag::{DiagnosticCollector, IdentityGap, SourceDiagnostic};
 use crate::scalar::ScalarType;
-use crate::types::{GArg, GenericInvariant, TypeMetadataSession, TypeRegistry};
+use crate::types::{BuildError, GArg, GenericInvariant, TypeMetadataSession, TypeRegistry};
 
 /// The application's fixed ledger anchor path: one local application per
 /// project, so the anchor is the project itself.
@@ -354,6 +353,15 @@ impl DurableRegistry {
         }
     }
 
+    /// The refusal a durable-root handle addresses. A handle another namespace
+    /// minted is drift here, checked by the ledger's own tag.
+    pub(crate) fn refusal(
+        &self,
+        id: DeclarationRefusalId,
+    ) -> Result<&DeclarationRefusalSummary, DeclarationIndexDrift> {
+        self.declared.refusal(id)
+    }
+
     /// The executable flat keyed root declared with the placement name `name`, if any —
     /// the owner an entry address `^name[…]` resolves against. The probe-free form, for
     /// the classifiers that resolve a shape without reporting; a lookup that reports
@@ -440,11 +448,11 @@ impl DurableRegistry {
     pub(crate) fn build(
         draft: &mut ImageDraft,
         records: &TypeRegistry,
-        resources: &[(FileIdentity, &ResourceDecl)],
+        resources: &[(FileRef, FileIdentity, &ResourceDecl)],
         stores: &[(FileRef, FileIdentity, &StoreDecl)],
         ledger: Option<&IdentityLedger>,
         diagnostics: &mut DiagnosticCollector,
-    ) -> Result<Self, DurableBuildError> {
+    ) -> Result<Self, BuildError> {
         if stores.is_empty() {
             return Ok(Self::default());
         }
@@ -505,29 +513,6 @@ impl DurableRegistry {
             }
             Ok(registry)
         })
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-/// Why the durable registry could not be built at all — as distinct from a store
-/// whose own declaration was refused, which the registry retains and answers with.
-pub(crate) enum DurableBuildError {
-    /// A compiler-owned coherence failure, which aborts the pass at the invariant
-    /// boundary rather than reporting against the source.
-    Invariant(GenericInvariant),
-    /// The declaration ledgers' shared retention ceiling is spent.
-    LedgerFull(DeclarationLedgerFull),
-}
-
-impl From<GenericInvariant> for DurableBuildError {
-    fn from(invariant: GenericInvariant) -> Self {
-        DurableBuildError::Invariant(invariant)
-    }
-}
-
-impl From<DeclarationLedgerFull> for DurableBuildError {
-    fn from(full: DeclarationLedgerFull) -> Self {
-        DurableBuildError::LedgerFull(full)
     }
 }
 
@@ -667,7 +652,7 @@ struct IdentityBuildState<'ledger, 'gaps> {
 fn build_one(
     draft: &mut ImageDraft,
     type_metadata: &mut DurableTypeMetadata<'_, '_>,
-    resources: &[(FileIdentity, &ResourceDecl)],
+    resources: &[(FileRef, FileIdentity, &ResourceDecl)],
     declared: Declared<'_>,
     store: &StoreDecl,
     identity_build: &mut IdentityBuildState<'_, '_>,
@@ -719,9 +704,9 @@ fn build_one(
     // the same name, not a fact about the source: reporting it as a refusal would
     // charge the user for a compiler inconsistency, and staying silent would drop the
     // root with no cause at all.
-    let Some((_, resource)) = resources
+    let Some((_, _, resource)) = resources
         .iter()
-        .find(|(_, decl)| decl.name == store.resource)
+        .find(|(_, _, decl)| decl.name == store.resource)
     else {
         return Err(GenericInvariant::DurableResourceMissing(record.type_id));
     };
@@ -2117,7 +2102,8 @@ mod generic_enum_shape_tests {
         let mut draft = ImageDraft::new();
         let mut build_diagnostics = DiagnosticCollector::new();
         let records =
-            TypeRegistry::build(&mut draft, &[], &[], &[], &[], &[], &mut build_diagnostics);
+            TypeRegistry::build(&mut draft, &[], &[], &[], &[], &[], &mut build_diagnostics)
+                .expect("the test registry stays within the ledger budget");
         assert!(build_diagnostics.is_empty());
         let option = records
             .instantiate_reserved_option(
@@ -2186,7 +2172,8 @@ mod generic_enum_shape_tests {
         let mut draft = ImageDraft::new();
         let mut build_diagnostics = DiagnosticCollector::new();
         let records =
-            TypeRegistry::build(&mut draft, &[], &[], &[], &[], &[], &mut build_diagnostics);
+            TypeRegistry::build(&mut draft, &[], &[], &[], &[], &[], &mut build_diagnostics)
+                .expect("the test registry stays within the ledger budget");
         assert!(build_diagnostics.is_empty());
         let name = draft.intern_string("Unavailable");
         let unavailable = draft.add_enum_type(marrow_image::EnumTypeDef {
@@ -2230,7 +2217,8 @@ mod generic_enum_shape_tests {
         let mut draft = ImageDraft::new();
         let mut build_diagnostics = DiagnosticCollector::new();
         let records =
-            TypeRegistry::build(&mut draft, &[], &[], &[], &[], &[], &mut build_diagnostics);
+            TypeRegistry::build(&mut draft, &[], &[], &[], &[], &[], &mut build_diagnostics)
+                .expect("the test registry stays within the ledger budget");
         let option = records
             .instantiate_reserved_option(
                 &mut draft,
@@ -2286,11 +2274,16 @@ store ^holders[id: int]: Holder
                 _ => None,
             })
             .expect("resource parses");
-        let resources = vec![(crate::test_file_identity("src/main.mw"), resource)];
+        let resources = vec![(
+            FileRef::admitted(0),
+            crate::test_file_identity("src/main.mw"),
+            resource,
+        )];
         let mut draft = ImageDraft::new();
         let mut diagnostics = DiagnosticCollector::new();
         let records =
-            TypeRegistry::build(&mut draft, &[], &[], &[], &[], &resources, &mut diagnostics);
+            TypeRegistry::build(&mut draft, &[], &[], &[], &[], &resources, &mut diagnostics)
+                .expect("the test registry stays within the ledger budget");
         assert!(diagnostics.is_empty());
         let option = match records.by_name("Holder").expect("record exists").fields[0].ty {
             GArg::Enum(id) => id,

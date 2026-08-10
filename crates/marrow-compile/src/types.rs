@@ -33,6 +33,12 @@ use marrow_syntax::{
     ResourceMember, SourceSpan, StructDecl, TypeExpr, UnaryOp, range_expr,
 };
 
+use crate::analysis::FileRef;
+use crate::decl::{
+    Binding, DeclarationIndexDrift, DeclarationLedger, DeclarationLedgerFull, DeclarationNamespace,
+    DeclarationOccurrence, DeclarationRefusalId, DeclarationRefusalSummary, Declared,
+    declaration_refused, refuse, refuse_covered, refuse_first, refuse_row,
+};
 use crate::diag::{BoundedDiagnostics, DiagnosticCollector, SourceDiagnostic};
 use crate::scalar::ScalarType;
 
@@ -214,24 +220,72 @@ pub(crate) const MAX_INSTANTIATIONS: usize = 4096;
 /// before it can exhaust the native stack, reporting `check.instantiation_limit`.
 pub(crate) const MINT_DEPTH_LIMIT: usize = 256;
 
-/// Why resolution of a generic value type could not produce a usable type.
+/// Why resolution of a value type could not produce a usable type.
+///
 /// `Limit` is diagnosed once by the shared monomorphization owner; `Unsupported`
-/// is contextualized by each declaration or lowering consumer at its current site.
+/// is contextualized by each declaration or lowering consumer at its current site;
+/// `RefusedDeclaration` names a declaration this project wrote and the compiler
+/// refused, so the use is steered to that cause instead of being told the name was
+/// never declared. The handle keeps the variant `Copy`, so a rejected
+/// instantiation caches a cause without taking owned bytes into the cache.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ResolveRefusal {
     Limit,
+    /// Genuinely outside the admitted subset — the only refusal a "not yet
+    /// supported on the beta line" report may describe.
     Unsupported,
+    RefusedDeclaration(DeclarationRefusalId),
 }
 
 impl ResolveRefusal {
-    /// Combine refusals for one provisional row. A terminal shared limit dominates
-    /// a contextual unsupported use regardless of discovery or edge order.
+    /// Combine refusals for one provisional row, or for sub-parts of one
+    /// annotation.
+    ///
+    /// A terminal shared limit dominates everything regardless of discovery or edge
+    /// order. A genuine absence dominates a refused declaration: a real gap must
+    /// never be hidden behind a refused sibling's steer, which would report the
+    /// project's own refusal in place of the name that is actually missing. Two
+    /// refused declarations survive as one cause only when they are the same
+    /// declaration; otherwise the merge would have to pick a winner, and picking
+    /// either would steer the reader to a cause the other part does not have.
+    ///
+    /// The collapse loses a steer, never a cause — every refused declaration is
+    /// reported at its own declaration site — and it is bounded to sub-parts of a
+    /// single annotation, because argument and parameter lists reject per element
+    /// at each element's own span rather than folding across them.
     fn join(self, other: Self) -> Self {
-        if matches!(self, Self::Limit) || matches!(other, Self::Limit) {
-            Self::Limit
-        } else {
-            Self::Unsupported
+        match (self, other) {
+            (Self::Limit, _) | (_, Self::Limit) => Self::Limit,
+            (Self::RefusedDeclaration(one), Self::RefusedDeclaration(two)) if one == two => {
+                Self::RefusedDeclaration(one)
+            }
+            (Self::RefusedDeclaration(_), Self::RefusedDeclaration(_))
+            | (Self::Unsupported, _)
+            | (_, Self::Unsupported) => Self::Unsupported,
         }
+    }
+}
+
+/// Why a declaration pass could not complete at all — as distinct from a single
+/// declaration whose own refusal the pass records and carries on past.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BuildError {
+    /// A compiler-owned coherence failure, which aborts at the invariant boundary
+    /// rather than reporting against the source.
+    Invariant(GenericInvariant),
+    /// The declaration ledgers' shared retention ceiling is spent.
+    LedgerFull(DeclarationLedgerFull),
+}
+
+impl From<GenericInvariant> for BuildError {
+    fn from(invariant: GenericInvariant) -> Self {
+        Self::Invariant(invariant)
+    }
+}
+
+impl From<DeclarationLedgerFull> for BuildError {
+    fn from(full: DeclarationLedgerFull) -> Self {
+        Self::LedgerFull(full)
     }
 }
 
@@ -357,6 +411,18 @@ pub(crate) enum GenericInvariant {
     /// source, so it is neither reported against the declaration nor allowed to drop
     /// the root silently.
     DurableResourceMissing(marrow_image::TypeId),
+    /// A declaration ledger's lookup index and its occurrence list disagree: a
+    /// refusal handle addresses a position that holds no refusal, or one namespace's
+    /// handle was presented to another's ledger. The two layers name one declaration
+    /// and must agree about it; a wrong summary would steer a reader to a cause that
+    /// is not the one their code hit.
+    DeclarationIndexDrift,
+}
+
+impl From<DeclarationIndexDrift> for GenericInvariant {
+    fn from(_: DeclarationIndexDrift) -> Self {
+        Self::DeclarationIndexDrift
+    }
 }
 
 /// A row position already proven to be relative to the active fill batch.
@@ -1055,10 +1121,30 @@ fn field_index<'f>(fields: &'f [FieldInfo], name: &str) -> Option<(u16, &'f Fiel
         .map(|(index, field)| (index as u16, field))
 }
 
+/// What kind of named type a declared name binds. The ledger's accepted payload:
+/// enough to say what a name already is when a second declaration takes it, and
+/// nothing the kind-specific tables already own.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum NamedTypeKind {
+    Alias,
+    Nominal,
+    Struct,
+    Enum,
+    Resource,
+}
+
 /// The project named-type registry: the transparent aliases, the nominal int
 /// types, the dense struct value types, and the durable-capable record types.
-#[derive(Default)]
 pub(crate) struct TypeRegistry {
+    /// Every declared type name in one namespace, accepted or refused.
+    ///
+    /// The kind-specific tables below stay the authority for what an *accepted*
+    /// name resolves to and for image order; this ledger is the authority for
+    /// whether a name was declared at all. A refused declaration is dropped from
+    /// its table exactly as before — so no construction or match resolves against
+    /// a broken type — and is retained here, so the use that can no longer resolve
+    /// is steered to the cause instead of being told the name was never written.
+    named: DeclarationLedger<String, NamedTypeKind>,
     /// `alias name -> alias-free expanded target`. Cyclic aliases are reported
     /// at build and never enter this map.
     aliases: BTreeMap<String, TypeExpr>,
@@ -1094,6 +1180,24 @@ pub(crate) struct TypeRegistry {
     /// projection of the append-only owners, never a mint/dedup authority; a caller that
     /// mutates an already-classified row out of the append order must invalidate it.
     row_directory: RefCell<Option<RowDirectory>>,
+}
+
+impl Default for TypeRegistry {
+    fn default() -> Self {
+        Self {
+            named: DeclarationLedger::new(DeclarationNamespace::NamedType),
+            aliases: BTreeMap::new(),
+            nominals: Vec::new(),
+            structs: Vec::new(),
+            enums: Vec::new(),
+            records: Vec::new(),
+            type_templates: Vec::new(),
+            generics: RefCell::default(),
+            collections: RefCell::default(),
+            collection_index: RefCell::default(),
+            row_directory: RefCell::default(),
+        }
+    }
 }
 
 /// The image-identity directory of the monomorphization pass, plus the image-order
@@ -4782,6 +4886,75 @@ impl TypeRegistry {
         self.enums.iter().find(|info| info.enum_id == id)
     }
 
+    /// Why an annotation naming `name` could not resolve.
+    ///
+    /// The one conversion from a named-type ledger lookup to a resolution refusal,
+    /// so `Unsupported` keeps meaning *genuinely outside the admitted subset* and
+    /// is never the answer for a type this project declared. A name the ledger
+    /// never saw is a real absence; a name it refused carries the cause forward as
+    /// a `Copy` handle.
+    pub(crate) fn unresolved_named_type(&self, name: &str) -> ResolveRefusal {
+        match self.named.lookup(&name.to_string()) {
+            Binding::Refused(id, _) => ResolveRefusal::RefusedDeclaration(id),
+            Binding::Accepted(_) | Binding::Absent => ResolveRefusal::Unsupported,
+        }
+    }
+
+    /// The row a member position reports when its declared type does not resolve
+    /// to an admitted shape: the causal steer when the annotation names a
+    /// declaration this project refused, and the subset-gap phrase otherwise.
+    ///
+    /// The summary is read out of the same lookup that classified the name, so
+    /// there is no handle to mis-address and no drift arm to swallow.
+    pub(crate) fn unresolved_member_row(
+        &self,
+        ty: &TypeExpr,
+        file: &FileIdentity,
+        subject: &str,
+    ) -> SourceDiagnostic {
+        if let TypeExpr::Name { text, .. } = ty
+            && let Binding::Refused(_, summary) = self.named.lookup(&text.to_string())
+        {
+            return declaration_refused(file, ty.span(), summary);
+        }
+        unsupported(file, ty.span(), subject)
+    }
+
+    /// The row a member whose type could not resolve is reported with: the causal
+    /// steer when the type names a declaration this project refused, the
+    /// subset-gap phrase when the name is genuinely outside the admitted set, and
+    /// `None` for the shared instantiation limit, which the monomorphization owner
+    /// reports once on its own.
+    ///
+    /// The one place a member-position resolution failure becomes a report, so a
+    /// refused sibling declaration can never be described as an unsupported
+    /// language form.
+    pub(crate) fn member_refusal_row(
+        &self,
+        refusal: ResolveRefusal,
+        file: &FileIdentity,
+        span: SourceSpan,
+        subject: &str,
+    ) -> Result<Option<SourceDiagnostic>, GenericInvariant> {
+        match refusal {
+            ResolveRefusal::Limit => Ok(None),
+            ResolveRefusal::Unsupported => Ok(Some(unsupported(file, span, subject))),
+            ResolveRefusal::RefusedDeclaration(id) => {
+                let summary = self.refusal(id)?;
+                Ok(Some(declaration_refused(file, span, summary)))
+            }
+        }
+    }
+
+    /// The refusal a named-type or template handle addresses. Every other
+    /// namespace's handle is drift here, checked by the ledger's own tag.
+    pub(crate) fn refusal(
+        &self,
+        id: DeclarationRefusalId,
+    ) -> Result<&DeclarationRefusalSummary, DeclarationIndexDrift> {
+        self.named.refusal(id)
+    }
+
     pub(crate) fn nominal_by_name(&self, name: &str) -> Option<(NominalId, &NominalInfo)> {
         self.nominals
             .iter()
@@ -4841,15 +5014,19 @@ impl TypeRegistry {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn build(
         draft: &mut ImageDraft,
-        aliases: &[(FileIdentity, &AliasDecl)],
-        nominals: &[(FileIdentity, &NominalDecl)],
-        structs: &[(FileIdentity, &StructDecl)],
-        enums: &[(FileIdentity, &EnumDecl)],
-        resources: &[(FileIdentity, &ResourceDecl)],
+        aliases: &[(FileRef, FileIdentity, &AliasDecl)],
+        nominals: &[(FileRef, FileIdentity, &NominalDecl)],
+        structs: &[(FileRef, FileIdentity, &StructDecl)],
+        enums: &[(FileRef, FileIdentity, &EnumDecl)],
+        resources: &[(FileRef, FileIdentity, &ResourceDecl)],
         diagnostics: &mut DiagnosticCollector,
-    ) -> Self {
+    ) -> Result<Self, DeclarationLedgerFull> {
+        let mut named = DeclarationLedger::new(DeclarationNamespace::NamedType);
+        let aliases_table =
+            build_alias_table(&mut named, aliases, resources, structs, enums, diagnostics)?;
         let mut registry = Self {
-            aliases: build_alias_table(aliases, resources, structs, enums, diagnostics),
+            named,
+            aliases: aliases_table,
             nominals: Vec::new(),
             structs: Vec::new(),
             enums: Vec::new(),
@@ -4860,21 +5037,27 @@ impl TypeRegistry {
             collection_index: RefCell::default(),
             row_directory: RefCell::default(),
         };
-        registry.nominals =
-            build_nominals(&registry, nominals, resources, structs, enums, diagnostics);
+        registry.nominals = build_nominals(
+            &mut registry,
+            nominals,
+            resources,
+            structs,
+            enums,
+            diagnostics,
+        )?;
 
         // A generic `struct`/`enum` (one carrying type parameters) is a template
         // monomorphized on use, not a concrete image type; the concrete declarations
         // are declared-then-filled below, the templates registered aside.
-        let concrete_structs: Vec<(FileIdentity, &StructDecl)> = structs
+        let concrete_structs: Vec<(FileRef, FileIdentity, &StructDecl)> = structs
             .iter()
-            .filter(|(_, decl)| decl.type_params.is_empty())
-            .map(|(file, decl)| (file.clone(), *decl))
+            .filter(|(_, _, decl)| decl.type_params.is_empty())
+            .map(|(at, file, decl)| (*at, file.clone(), *decl))
             .collect();
-        let concrete_enums: Vec<(FileIdentity, &EnumDecl)> = enums
+        let concrete_enums: Vec<(FileRef, FileIdentity, &EnumDecl)> = enums
             .iter()
-            .filter(|(_, decl)| decl.type_params.is_empty())
-            .map(|(file, decl)| (file.clone(), *decl))
+            .filter(|(_, _, decl)| decl.type_params.is_empty())
+            .map(|(at, file, decl)| (*at, file.clone(), *decl))
             .collect();
         register_type_templates(&mut registry, structs, enums, resources, diagnostics);
 
@@ -4882,34 +5065,40 @@ impl TypeRegistry {
         // decide name conflicts. The records reserve first (image indices `0..n`),
         // so a project's durable root and sites keep the same record index whether
         // or not dense structs are also declared.
-        let record_decls = declare_records(draft, &mut registry, resources, diagnostics);
+        let record_decls = declare_records(draft, &mut registry, resources, diagnostics)?;
         let struct_decls = declare_structs(
             draft,
             &mut registry,
             &concrete_structs,
             resources,
             diagnostics,
-        );
+        )?;
         let enum_decls = declare_enums(
             draft,
             &mut registry,
             &concrete_enums,
             resources,
             diagnostics,
-        );
+        )?;
 
         // Pass two: resolve and fill each definition's members against the full
-        // registry, monomorphizing any generic field type on first use.
+        // registry, monomorphizing any generic field type on first use. Each pass
+        // records its verdict — accepted, or refused with the cause it reported —
+        // in the named-type ledger, so pass one's reservation never stands as the
+        // answer for a name pass two went on to refuse.
         let result = fill_records(draft, &mut registry, &record_decls, diagnostics)
             .and_then(|()| fill_structs(draft, &mut registry, &struct_decls, diagnostics));
         match result {
             Ok(()) => {
-                fill_enums(draft, &mut registry, &enum_decls, diagnostics);
-                validate_alias_targets(&registry, aliases, diagnostics);
+                fill_enums(draft, &mut registry, &enum_decls, diagnostics)?;
+                validate_alias_targets(&mut registry, aliases, diagnostics)?;
             }
-            Err(invariant) => registry.generics.get_mut().build_invariant = Some(invariant),
+            Err(BuildError::LedgerFull(full)) => return Err(full),
+            Err(BuildError::Invariant(invariant)) => {
+                registry.generics.get_mut().build_invariant = Some(invariant);
+            }
         }
-        registry
+        Ok(registry)
     }
 
     pub(crate) fn build_invariant(&self) -> Option<GenericInvariant> {
@@ -5106,9 +5295,9 @@ fn reserved_templates() -> Vec<TypeTemplate> {
 /// dropped so no `Name<Args>` use resolves against it.
 fn register_type_templates(
     registry: &mut TypeRegistry,
-    structs: &[(FileIdentity, &StructDecl)],
-    enums: &[(FileIdentity, &EnumDecl)],
-    resources: &[(FileIdentity, &ResourceDecl)],
+    structs: &[(FileRef, FileIdentity, &StructDecl)],
+    enums: &[(FileRef, FileIdentity, &EnumDecl)],
+    resources: &[(FileRef, FileIdentity, &ResourceDecl)],
     diagnostics: &mut DiagnosticCollector,
 ) {
     let type_param_names =
@@ -5127,21 +5316,21 @@ fn register_type_templates(
         ScalarType::from_spelling(name).is_some()
             || registry.aliases.contains_key(name)
             || registry.nominal_by_name(name).is_some()
-            || resources.iter().any(|(_, r)| r.name == name)
+            || resources.iter().any(|(_, _, r)| r.name == name)
             || structs
                 .iter()
-                .filter(|(_, d)| d.type_params.is_empty())
-                .any(|(_, d)| d.name == name)
+                .filter(|(_, _, d)| d.type_params.is_empty())
+                .any(|(_, _, d)| d.name == name)
             || enums
                 .iter()
-                .filter(|(_, d)| d.type_params.is_empty())
-                .any(|(_, d)| d.name == name)
+                .filter(|(_, _, d)| d.type_params.is_empty())
+                .any(|(_, _, d)| d.name == name)
             || registry
                 .type_templates
                 .iter()
                 .any(|template| template.name == name)
     };
-    for (file, decl) in structs {
+    for (_at, file, decl) in structs {
         if decl.type_params.is_empty() {
             continue;
         }
@@ -5170,7 +5359,7 @@ fn register_type_templates(
             body: TemplateBody::Struct(fields),
         });
     }
-    for (file, decl) in enums {
+    for (_at, file, decl) in enums {
         if decl.type_params.is_empty() {
             continue;
         }
@@ -5285,19 +5474,31 @@ fn template_enum_variants(
 /// `check.name_conflict`; an alias on a cyclic chain is a `check.recursion`
 /// and does not enter the map.
 fn build_alias_table(
-    aliases: &[(FileIdentity, &AliasDecl)],
-    resources: &[(FileIdentity, &ResourceDecl)],
-    structs: &[(FileIdentity, &StructDecl)],
-    enums: &[(FileIdentity, &EnumDecl)],
+    named: &mut DeclarationLedger<String, NamedTypeKind>,
+    aliases: &[(FileRef, FileIdentity, &AliasDecl)],
+    resources: &[(FileRef, FileIdentity, &ResourceDecl)],
+    structs: &[(FileRef, FileIdentity, &StructDecl)],
+    enums: &[(FileRef, FileIdentity, &EnumDecl)],
     diagnostics: &mut DiagnosticCollector,
-) -> BTreeMap<String, TypeExpr> {
+) -> Result<BTreeMap<String, TypeExpr>, DeclarationLedgerFull> {
     let mut raw: BTreeMap<String, TypeExpr> = BTreeMap::new();
-    for (file, decl) in aliases {
+    for (at, file, decl) in aliases {
+        let declared = Declared {
+            name: &decl.name,
+            file,
+            at: *at,
+            span: decl.name_span,
+        };
         // A parse error blocks compilation before this runs, so a missing target
         // only means the declaration itself was reported; skip it quietly.
         let Some(ty) = &decl.ty else { continue };
         if is_reserved_type_name(&decl.name) {
-            diagnostics.push(reserved_name(file, decl.name_span, &decl.name));
+            let refusal = refuse_row(
+                diagnostics,
+                declared,
+                reserved_name(file, decl.name_span, &decl.name),
+            );
+            named.declare(decl.name.clone(), DeclarationOccurrence::Refused(refusal))?;
             continue;
         }
         if raw.contains_key(&decl.name) {
@@ -5311,7 +5512,7 @@ fn build_alias_table(
         }
         if resources
             .iter()
-            .any(|(_, resource)| resource.name == decl.name)
+            .any(|(_, _, resource)| resource.name == decl.name)
         {
             diagnostics.push(SourceDiagnostic::at(
                 Code::CheckNameConflict.as_str(),
@@ -5321,7 +5522,7 @@ fn build_alias_table(
             ));
             continue;
         }
-        if structs.iter().any(|(_, item)| item.name == decl.name) {
+        if structs.iter().any(|(_, _, item)| item.name == decl.name) {
             diagnostics.push(SourceDiagnostic::at(
                 Code::CheckNameConflict.as_str(),
                 file,
@@ -5330,7 +5531,7 @@ fn build_alias_table(
             ));
             continue;
         }
-        if enums.iter().any(|(_, item)| item.name == decl.name) {
+        if enums.iter().any(|(_, _, item)| item.name == decl.name) {
             diagnostics.push(SourceDiagnostic::at(
                 Code::CheckNameConflict.as_str(),
                 file,
@@ -5357,25 +5558,33 @@ fn build_alias_table(
             clippy::expect_used,
             reason = "lowering bookkeeping: `name` was collected from the alias declaration map being searched, so the lookup finds its declaration"
         )]
-        let (file, decl) = aliases
+        let (at, file, decl) = aliases
             .iter()
-            .find(|(_, decl)| &decl.name == name)
+            .find(|(_, _, decl)| &decl.name == name)
             .expect("cyclic alias came from the declaration list");
-        diagnostics.push(SourceDiagnostic::at(
+        let refusal = refuse(
+            diagnostics,
+            Declared {
+                name,
+                file,
+                at: *at,
+                span: decl.name_span,
+            },
             Code::CheckRecursion.as_str(),
-            file,
-            decl.name_span,
             format!("alias `{name}` is part of a cyclic alias chain"),
-        ));
+        );
+        named.declare(name.clone(), DeclarationOccurrence::Refused(refusal))?;
         raw.remove(name);
     }
 
-    // The survivors are acyclic; expand each target to alias-free form.
+    // The survivors are acyclic; expand each target to alias-free form. Whether
+    // each one is accepted or refused is settled by `validate_alias_targets`, which
+    // is where an alias over an unknown target is reported.
     let expanded: BTreeMap<String, TypeExpr> = raw
         .keys()
         .map(|name| (name.clone(), expand_in(&raw, &raw[name])))
         .collect();
-    expanded
+    Ok(expanded)
 }
 
 /// Classify cyclic aliases with two iterative graph passes. Node indices follow
@@ -5531,19 +5740,26 @@ fn expand_in(table: &BTreeMap<String, TypeExpr>, ty: &TypeExpr) -> TypeExpr {
 /// `check.type` at the alias; a well-formed but unadmitted shape is a
 /// `check.unsupported`.
 fn validate_alias_targets(
-    registry: &TypeRegistry,
-    aliases: &[(FileIdentity, &AliasDecl)],
+    registry: &mut TypeRegistry,
+    aliases: &[(FileRef, FileIdentity, &AliasDecl)],
     diagnostics: &mut DiagnosticCollector,
-) {
-    for (file, decl) in aliases {
+) -> Result<(), DeclarationLedgerFull> {
+    let mut refused: Vec<String> = Vec::new();
+    for (at, file, decl) in aliases {
         let Some(expanded) = registry.aliases.get(&decl.name) else {
             continue; // duplicate or cyclic: already reported
+        };
+        let declared = Declared {
+            name: &decl.name,
+            file,
+            at: *at,
+            span: decl.span,
         };
         let head = match expanded {
             TypeExpr::Optional { inner, .. } => inner.as_ref(),
             other => other,
         };
-        match head {
+        let refusal = match head {
             TypeExpr::Name { text, .. } => {
                 if ScalarType::from_spelling(text).is_none()
                     && registry.by_name(text).is_none()
@@ -5551,21 +5767,43 @@ fn validate_alias_targets(
                     && registry.struct_by_name(text).is_none()
                     && registry.enum_by_name(text).is_none()
                 {
-                    diagnostics.push(SourceDiagnostic::at(
+                    Some(refuse(
+                        diagnostics,
+                        declared,
                         Code::CheckType.as_str(),
-                        file,
-                        decl.span,
                         format!("alias `{}` does not name a known type: `{text}`", decl.name),
-                    ));
+                    ))
+                } else {
+                    None
                 }
             }
-            _ => diagnostics.push(unsupported(
-                file,
-                decl.span,
-                &format!("the target type of alias `{}`", decl.name),
+            _ => Some(refuse_row(
+                diagnostics,
+                declared,
+                unsupported(
+                    file,
+                    decl.span,
+                    &format!("the target type of alias `{}`", decl.name),
+                ),
             )),
-        }
+        };
+        let occurrence = match refusal {
+            Some(refusal) => {
+                refused.push(decl.name.clone());
+                DeclarationOccurrence::Refused(refusal)
+            }
+            None => DeclarationOccurrence::Accepted(NamedTypeKind::Alias),
+        };
+        registry.named.declare(decl.name.clone(), occurrence)?;
     }
+    // A refused alias leaves the expansion table, so a use of its name stops
+    // expanding to the target that could not be resolved and reaches the ledger
+    // instead. Without this the use would resolve the unknown *target* spelling and
+    // be told that name is missing, blaming a name the source never wrote.
+    for name in refused {
+        registry.aliases.remove(&name);
+    }
+    Ok(())
 }
 
 /// Resolve the nominal type declarations against the aliases already installed
@@ -5577,34 +5815,49 @@ fn validate_alias_targets(
 /// half-checked.
 #[allow(clippy::too_many_arguments)]
 fn build_nominals(
-    registry: &TypeRegistry,
-    nominals: &[(FileIdentity, &NominalDecl)],
-    resources: &[(FileIdentity, &ResourceDecl)],
-    structs: &[(FileIdentity, &StructDecl)],
-    enums: &[(FileIdentity, &EnumDecl)],
+    registry: &mut TypeRegistry,
+    nominals: &[(FileRef, FileIdentity, &NominalDecl)],
+    resources: &[(FileRef, FileIdentity, &ResourceDecl)],
+    structs: &[(FileRef, FileIdentity, &StructDecl)],
+    enums: &[(FileRef, FileIdentity, &EnumDecl)],
     diagnostics: &mut DiagnosticCollector,
-) -> Vec<NominalInfo> {
+) -> Result<Vec<NominalInfo>, DeclarationLedgerFull> {
     let mut built: Vec<NominalInfo> = Vec::new();
-    for (file, decl) in nominals {
+    for (at, file, decl) in nominals {
+        let declared = Declared {
+            name: &decl.name,
+            file,
+            at: *at,
+            span: decl.name_span,
+        };
         // A parse error blocks compilation before this runs; a missing piece
         // only means the declaration itself was reported, so skip it quietly.
         let (Some(base), Some(interval)) = (&decl.base, &decl.interval) else {
             continue;
         };
         if is_reserved_type_name(&decl.name) {
-            diagnostics.push(reserved_name(file, decl.name_span, &decl.name));
+            let refusal = refuse_row(
+                diagnostics,
+                declared,
+                reserved_name(file, decl.name_span, &decl.name),
+            );
+            registry
+                .named
+                .declare(decl.name.clone(), DeclarationOccurrence::Refused(refusal))?;
             continue;
         }
         // Scalar spellings are keywords the parser already rejects as names;
-        // owning them here keeps the conflict predicate self-contained.
+        // owning them here keeps the conflict predicate self-contained. A nominal
+        // this pass already refused holds its name too, so the repeat conflicts
+        // whichever of the two the compiler could admit.
         if ScalarType::from_spelling(&decl.name).is_some()
             || registry.aliases.contains_key(&decl.name)
             || resources
                 .iter()
-                .any(|(_, resource)| resource.name == decl.name)
-            || structs.iter().any(|(_, item)| item.name == decl.name)
-            || enums.iter().any(|(_, item)| item.name == decl.name)
-            || built.iter().any(|info| info.name == decl.name)
+                .any(|(_, _, resource)| resource.name == decl.name)
+            || structs.iter().any(|(_, _, item)| item.name == decl.name)
+            || enums.iter().any(|(_, _, item)| item.name == decl.name)
+            || registry.named.declared(&decl.name)
         {
             diagnostics.push(SourceDiagnostic::at(
                 Code::CheckNameConflict.as_str(),
@@ -5614,27 +5867,56 @@ fn build_nominals(
             ));
             continue;
         }
-        match scalar_of(&registry.expand(base)) {
-            Some(ScalarType::Int) => {}
-            Some(other) => {
-                diagnostics.push(unsupported(
+        let refused = match scalar_of(&registry.expand(base)) {
+            Some(ScalarType::Int) => None,
+            Some(other) => Some(refuse_row(
+                diagnostics,
+                declared,
+                unsupported(
                     file,
                     base.span(),
                     &format!("a nominal type over `{}`", other.spelling()),
-                ));
-                continue;
-            }
-            None => {
-                diagnostics.push(unsupported(file, base.span(), "this nominal base type"));
-                continue;
-            }
+                ),
+            )),
+            None => Some(refuse_row(
+                diagnostics,
+                declared,
+                unsupported(file, base.span(), "this nominal base type"),
+            )),
+        };
+        if let Some(refusal) = refused {
+            registry
+                .named
+                .declare(decl.name.clone(), DeclarationOccurrence::Refused(refusal))?;
+            continue;
         }
-        let Some((lo, hi)) = nominal_interval(file, interval, diagnostics) else {
-            continue;
+        let interval = match nominal_interval(file, interval) {
+            Ok(bounds) => Ok(bounds),
+            Err(row) => Err(refuse_row(diagnostics, declared, *row)),
         };
-        let Some(supports) = support_set(file, decl, diagnostics) else {
-            continue;
+        let (lo, hi) = match interval {
+            Ok(bounds) => bounds,
+            Err(refusal) => {
+                registry
+                    .named
+                    .declare(decl.name.clone(), DeclarationOccurrence::Refused(refusal))?;
+                continue;
+            }
         };
+        let supports = match support_set(file, decl) {
+            Ok(supports) => supports,
+            Err(row) => {
+                let refusal = refuse_row(diagnostics, declared, *row);
+                registry
+                    .named
+                    .declare(decl.name.clone(), DeclarationOccurrence::Refused(refusal))?;
+                continue;
+            }
+        };
+        registry.named.declare(
+            decl.name.clone(),
+            DeclarationOccurrence::Accepted(NamedTypeKind::Nominal),
+        )?;
         built.push(NominalInfo {
             name: decl.name.clone(),
             lo,
@@ -5642,50 +5924,42 @@ fn build_nominals(
             supports,
         });
     }
-    built
+    Ok(built)
 }
 
 /// Evaluate a nominal `in` range to its inclusive `[lo, hi]` bounds. The range
 /// follows the language's range operators — `lo..hi` excludes the end, `lo..=hi`
 /// includes it — with int-literal bounds (a leading `-` allowed), no step, and
 /// at least one admitted value.
+/// The interval's inclusive bounds, or the row that refuses it. The row is
+/// returned rather than pushed so the caller can retain it as the declaration's
+/// cause in the same statement that reports it.
 fn nominal_interval(
     file: &FileIdentity,
     interval: &Expression,
-    diagnostics: &mut DiagnosticCollector,
-) -> Option<(i64, i64)> {
-    let error = |diagnostics: &mut DiagnosticCollector, span, message: &str| {
-        diagnostics.push(SourceDiagnostic::at(
+) -> Result<(i64, i64), Box<SourceDiagnostic>> {
+    let error = |span, message: &str| {
+        Err(Box::new(SourceDiagnostic::at(
             Code::CheckType.as_str(),
             file,
             span,
             message.to_string(),
-        ));
-        None
+        )))
     };
     let Some(range) = range_expr(interval) else {
         return error(
-            diagnostics,
             interval.span(),
             "a nominal interval is a range of int literals, such as `0..150`",
         );
     };
     if range.step.is_some() {
-        return error(diagnostics, range.span, "a nominal interval takes no step");
+        return error(range.span, "a nominal interval takes no step");
     }
     let (Some(start), Some(end)) = (range.start, range.end) else {
-        return error(
-            diagnostics,
-            range.span,
-            "a nominal interval needs both bounds",
-        );
+        return error(range.span, "a nominal interval needs both bounds");
     };
     let (Some(lo), Some(end_value)) = (literal_int(start), literal_int(end)) else {
-        return error(
-            diagnostics,
-            range.span,
-            "a nominal interval's bounds are int literals",
-        );
+        return error(range.span, "a nominal interval's bounds are int literals");
     };
     // Normalize the end-exclusive spelling to the inclusive upper bound. A
     // literal never spells `i64::MIN`, so the exclusive form always has a
@@ -5696,8 +5970,8 @@ fn nominal_interval(
         end_value.checked_sub(1)
     };
     match hi {
-        Some(hi) if lo <= hi => Some((lo, hi)),
-        _ => error(diagnostics, range.span, "this interval admits no values"),
+        Some(hi) if lo <= hi => Ok((lo, hi)),
+        _ => error(range.span, "this interval admits no values"),
     }
 }
 
@@ -5730,8 +6004,7 @@ fn literal_int(expr: &Expression) -> Option<i64> {
 fn support_set(
     file: &FileIdentity,
     decl: &NominalDecl,
-    diagnostics: &mut DiagnosticCollector,
-) -> Option<SupportSet> {
+) -> Result<SupportSet, Box<SourceDiagnostic>> {
     let mut supports = SupportSet::default();
     for spelling in &decl.supports {
         let flag = match spelling.name.as_str() {
@@ -5740,35 +6013,34 @@ fn support_set(
             "step" => &mut supports.step,
             "scale" => &mut supports.scale,
             other => {
-                diagnostics.push(SourceDiagnostic::at(
+                return Err(Box::new(SourceDiagnostic::at(
                     Code::CheckType.as_str(),
                     file,
                     spelling.span,
                     format!(
                         "unknown capability `{other}`; the capabilities are add, subtract, step, scale"
                     ),
-                ));
-                return None;
+                )));
             }
         };
         if *flag {
-            diagnostics.push(SourceDiagnostic::at(
+            return Err(Box::new(SourceDiagnostic::at(
                 Code::CheckType.as_str(),
                 file,
                 spelling.span,
                 format!("capability `{}` is repeated", spelling.name),
-            ));
-            return None;
+            )));
         }
         *flag = true;
     }
-    Some(supports)
+    Ok(supports)
 }
 
 /// One struct reserved in pass one: the file it was declared in, its declaration,
 /// and the image record index it will fill in pass two.
 struct ReservedStruct<'a> {
     file: FileIdentity,
+    at: FileRef,
     decl: &'a StructDecl,
     type_id: TypeId,
 }
@@ -5781,14 +6053,27 @@ struct ReservedStruct<'a> {
 fn declare_structs<'a>(
     draft: &mut ImageDraft,
     registry: &mut TypeRegistry,
-    structs: &'a [(FileIdentity, &StructDecl)],
-    resources: &[(FileIdentity, &ResourceDecl)],
+    structs: &'a [(FileRef, FileIdentity, &StructDecl)],
+    resources: &[(FileRef, FileIdentity, &ResourceDecl)],
     diagnostics: &mut DiagnosticCollector,
-) -> Vec<ReservedStruct<'a>> {
+) -> Result<Vec<ReservedStruct<'a>>, DeclarationLedgerFull> {
     let mut reserved: Vec<ReservedStruct<'a>> = Vec::new();
-    for (file, decl) in structs {
+    for (at, file, decl) in structs {
+        let declared = Declared {
+            name: &decl.name,
+            file,
+            at: *at,
+            span: decl.name_span,
+        };
         if is_reserved_type_name(&decl.name) {
-            diagnostics.push(reserved_name(file, decl.name_span, &decl.name));
+            let refusal = refuse_row(
+                diagnostics,
+                declared,
+                reserved_name(file, decl.name_span, &decl.name),
+            );
+            registry
+                .named
+                .declare(decl.name.clone(), DeclarationOccurrence::Refused(refusal))?;
             continue;
         }
         if ScalarType::from_spelling(&decl.name).is_some()
@@ -5796,7 +6081,7 @@ fn declare_structs<'a>(
             || registry.nominal_by_name(&decl.name).is_some()
             || resources
                 .iter()
-                .any(|(_, resource)| resource.name == decl.name)
+                .any(|(_, _, resource)| resource.name == decl.name)
             || registry.struct_by_name(&decl.name).is_some()
         {
             diagnostics.push(SourceDiagnostic::at(
@@ -5819,11 +6104,12 @@ fn declare_structs<'a>(
         });
         reserved.push(ReservedStruct {
             file: file.clone(),
+            at: *at,
             decl,
             type_id,
         });
     }
-    reserved
+    Ok(reserved)
 }
 
 /// Pass two for the dense struct types: resolve each reserved struct's fields
@@ -5839,11 +6125,17 @@ fn fill_structs(
     registry: &mut TypeRegistry,
     reserved: &[ReservedStruct<'_>],
     diagnostics: &mut DiagnosticCollector,
-) -> Result<(), GenericInvariant> {
+) -> Result<(), BuildError> {
     let mut dropped: Vec<TypeId> = Vec::new();
     for item in reserved {
-        match struct_fields(draft, registry, &item.file, item.decl, diagnostics)? {
-            Some((fields, field_defs)) => {
+        let declared = Declared {
+            name: &item.decl.name,
+            file: &item.file,
+            at: item.at,
+            span: item.decl.name_span,
+        };
+        let occurrence = struct_fields(draft, registry, declared, item.decl, diagnostics)?
+            .map_accepted(|(fields, field_defs)| {
                 draft.set_record_fields(item.type_id, field_defs);
                 if let Some(info) = registry
                     .structs
@@ -5852,10 +6144,16 @@ fn fill_structs(
                 {
                     info.fields = fields;
                 }
-            }
-            None => dropped.push(item.type_id),
+                NamedTypeKind::Struct
+            });
+        if matches!(occurrence, DeclarationOccurrence::Refused(_)) {
+            dropped.push(item.type_id);
         }
+        registry.named.declare(item.decl.name.clone(), occurrence)?;
     }
+    // The refused structs leave the accepted set, so no construction or match
+    // resolves against a broken one; the ledger keeps their names, so a use of one
+    // is steered to its cause rather than told the type was never declared.
     registry
         .structs
         .retain(|info| !dropped.contains(&info.type_id));
@@ -5870,40 +6168,54 @@ type ResolvedStructFields = (Vec<FieldInfo>, Vec<FieldDef>);
 fn struct_fields(
     draft: &mut ImageDraft,
     registry: &TypeRegistry,
-    file: &FileIdentity,
+    declared: Declared<'_>,
     decl: &StructDecl,
     diagnostics: &mut DiagnosticCollector,
-) -> Result<Option<ResolvedStructFields>, GenericInvariant> {
+) -> Result<DeclarationOccurrence<ResolvedStructFields>, GenericInvariant> {
+    let file = declared.file;
     let mut fields = Vec::new();
     let mut field_defs = Vec::new();
-    let mut ok = true;
+    let mut refusal = None;
+    let mut limited = false;
     for member in &decl.members {
         let ResourceMember::Field(field) = member else {
-            diagnostics.push(unsupported(file, member.span(), "a struct group"));
-            ok = false;
+            refuse_first(
+                &mut refusal,
+                diagnostics,
+                declared,
+                unsupported(file, member.span(), "a struct group"),
+            );
             continue;
         };
         if !field.keys.is_empty() {
-            diagnostics.push(unsupported(file, field.span, "a keyed struct field"));
-            ok = false;
+            refuse_first(
+                &mut refusal,
+                diagnostics,
+                declared,
+                unsupported(file, field.span, "a keyed struct field"),
+            );
             continue;
         }
         if field.required {
-            diagnostics.push(unsupported(
-                file,
-                field.span,
-                "the `required` keyword on a struct field (struct fields are always required)",
-            ));
-            ok = false;
+            refuse_first(
+                &mut refusal,
+                diagnostics,
+                declared,
+                unsupported(
+                    file,
+                    field.span,
+                    "the `required` keyword on a struct field (struct fields are always required)",
+                ),
+            );
             continue;
         }
         if matches!(registry.expand(&field.ty), TypeExpr::Optional { .. }) {
-            diagnostics.push(unsupported(
-                file,
-                field.ty.span(),
-                "an optional struct field type",
-            ));
-            ok = false;
+            refuse_first(
+                &mut refusal,
+                diagnostics,
+                declared,
+                unsupported(file, field.ty.span(), "an optional struct field type"),
+            );
             continue;
         }
         let field_ty = match registry.resolve_garg(
@@ -5915,13 +6227,16 @@ fn struct_fields(
             },
         ) {
             Ok(ty) => ty,
-            Err(ResolveError::Refusal(ResolveRefusal::Unsupported)) => {
-                diagnostics.push(unsupported(file, field.ty.span(), "this struct field type"));
-                ok = false;
-                continue;
-            }
-            Err(ResolveError::Refusal(ResolveRefusal::Limit)) => {
-                ok = false;
+            Err(ResolveError::Refusal(refused)) => {
+                match registry.member_refusal_row(
+                    refused,
+                    file,
+                    field.ty.span(),
+                    "this struct field type",
+                )? {
+                    Some(row) => refuse_first(&mut refusal, diagnostics, declared, row),
+                    None => limited = true,
+                }
                 continue;
             }
             Err(ResolveError::Invariant(invariant)) => return Err(invariant),
@@ -5938,13 +6253,23 @@ fn struct_fields(
             required: true,
         });
     }
-    Ok(ok.then_some((fields, field_defs)))
+    Ok(match (refusal, limited) {
+        (Some(refusal), _) => DeclarationOccurrence::Refused(refusal),
+        // The shared instantiation limit reports once, at the monomorphization
+        // owner; this declaration is refused for a cause that pass owns.
+        (None, true) => DeclarationOccurrence::Refused(refuse_covered(
+            declared,
+            Code::CheckInstantiationLimit.as_str(),
+        )),
+        (None, false) => DeclarationOccurrence::Accepted((fields, field_defs)),
+    })
 }
 
 /// One enum reserved in pass one: the file it was declared in, its declaration,
 /// and the image ENUMS index it will fill in pass two.
 struct ReservedEnum<'a> {
     file: FileIdentity,
+    at: FileRef,
     decl: &'a EnumDecl,
     enum_id: EnumId,
 }
@@ -5959,14 +6284,27 @@ struct ReservedEnum<'a> {
 fn declare_enums<'a>(
     draft: &mut ImageDraft,
     registry: &mut TypeRegistry,
-    enums: &'a [(FileIdentity, &EnumDecl)],
-    resources: &[(FileIdentity, &ResourceDecl)],
+    enums: &'a [(FileRef, FileIdentity, &EnumDecl)],
+    resources: &[(FileRef, FileIdentity, &ResourceDecl)],
     diagnostics: &mut DiagnosticCollector,
-) -> Vec<ReservedEnum<'a>> {
+) -> Result<Vec<ReservedEnum<'a>>, DeclarationLedgerFull> {
     let mut reserved: Vec<ReservedEnum<'a>> = Vec::new();
-    for (file, decl) in enums {
+    for (at, file, decl) in enums {
+        let declared = Declared {
+            name: &decl.name,
+            file,
+            at: *at,
+            span: decl.name_span,
+        };
         if is_reserved_type_name(&decl.name) {
-            diagnostics.push(reserved_name(file, decl.name_span, &decl.name));
+            let refusal = refuse_row(
+                diagnostics,
+                declared,
+                reserved_name(file, decl.name_span, &decl.name),
+            );
+            registry
+                .named
+                .declare(decl.name.clone(), DeclarationOccurrence::Refused(refusal))?;
             continue;
         }
         if ScalarType::from_spelling(&decl.name).is_some()
@@ -5975,7 +6313,7 @@ fn declare_enums<'a>(
             || registry.struct_by_name(&decl.name).is_some()
             || resources
                 .iter()
-                .any(|(_, resource)| resource.name == decl.name)
+                .any(|(_, _, resource)| resource.name == decl.name)
             || registry.enum_by_name(&decl.name).is_some()
         {
             diagnostics.push(SourceDiagnostic::at(
@@ -5987,16 +6325,19 @@ fn declare_enums<'a>(
             continue;
         }
         if decl.members.len() > marrow_image::bounds::MAX_VARIANTS {
-            diagnostics.push(SourceDiagnostic::at(
+            let refusal = refuse(
+                diagnostics,
+                declared,
                 Code::CheckResourceLimit.as_str(),
-                file,
-                decl.name_span,
                 format!(
                     "an enum declares {} members; the fixed limit is {}",
                     decl.members.len(),
                     marrow_image::bounds::MAX_VARIANTS
                 ),
-            ));
+            );
+            registry
+                .named
+                .declare(decl.name.clone(), DeclarationOccurrence::Refused(refusal))?;
             continue;
         }
         let name_id = draft.intern_string(&decl.name);
@@ -6011,11 +6352,12 @@ fn declare_enums<'a>(
         });
         reserved.push(ReservedEnum {
             file: file.clone(),
+            at: *at,
             decl,
             enum_id,
         });
     }
-    reserved
+    Ok(reserved)
 }
 
 /// Pass two for the closed flat enum types: resolve each reserved enum's variants
@@ -6031,11 +6373,17 @@ fn fill_enums(
     registry: &mut TypeRegistry,
     reserved: &[ReservedEnum<'_>],
     diagnostics: &mut DiagnosticCollector,
-) {
+) -> Result<(), DeclarationLedgerFull> {
     let mut dropped: Vec<EnumId> = Vec::new();
     for item in reserved {
-        match enum_variants(draft, registry, &item.file, item.decl, diagnostics) {
-            Some((variants, variant_defs)) => {
+        let declared = Declared {
+            name: &item.decl.name,
+            file: &item.file,
+            at: item.at,
+            span: item.decl.name_span,
+        };
+        let occurrence = enum_variants(draft, registry, declared, item.decl, diagnostics)
+            .map_accepted(|(variants, variant_defs)| {
                 draft.set_enum_variants(item.enum_id, variant_defs);
                 if let Some(info) = registry
                     .enums
@@ -6044,13 +6392,17 @@ fn fill_enums(
                 {
                     info.variants = variants;
                 }
-            }
-            None => dropped.push(item.enum_id),
+                NamedTypeKind::Enum
+            });
+        if matches!(occurrence, DeclarationOccurrence::Refused(_)) {
+            dropped.push(item.enum_id);
         }
+        registry.named.declare(item.decl.name.clone(), occurrence)?;
     }
     registry
         .enums
         .retain(|info| !dropped.contains(&info.enum_id));
+    Ok(())
 }
 
 /// Resolve an enum's members to its selectable variants and their image
@@ -6059,47 +6411,60 @@ fn fill_enums(
 fn enum_variants(
     draft: &mut ImageDraft,
     registry: &TypeRegistry,
-    file: &FileIdentity,
+    declared: Declared<'_>,
     decl: &EnumDecl,
     diagnostics: &mut DiagnosticCollector,
-) -> Option<(Vec<VariantInfo>, Vec<VariantDef>)> {
+) -> DeclarationOccurrence<(Vec<VariantInfo>, Vec<VariantDef>)> {
+    let file = declared.file;
     let mut variants = Vec::new();
     let mut variant_defs = Vec::new();
     let mut seen: Vec<String> = Vec::new();
-    let mut ok = true;
+    let mut refusal = None;
     for member in &decl.members {
         if member.category {
-            diagnostics.push(unsupported(
-                file,
-                member.span,
-                "a `category` enum member (hierarchical enums are deferred)",
-            ));
-            ok = false;
+            refuse_first(
+                &mut refusal,
+                diagnostics,
+                declared,
+                unsupported(
+                    file,
+                    member.span,
+                    "a `category` enum member (hierarchical enums are deferred)",
+                ),
+            );
             continue;
         }
         if !member.members.is_empty() {
-            diagnostics.push(unsupported(
-                file,
-                member.span,
-                "a nested enum member (hierarchical enums are deferred)",
-            ));
-            ok = false;
+            refuse_first(
+                &mut refusal,
+                diagnostics,
+                declared,
+                unsupported(
+                    file,
+                    member.span,
+                    "a nested enum member (hierarchical enums are deferred)",
+                ),
+            );
             continue;
         }
         if seen.contains(&member.name) {
-            diagnostics.push(SourceDiagnostic::at(
-                Code::CheckNameConflict.as_str(),
-                file,
-                member.name_span,
-                format!("enum member `{}` is already declared", member.name),
-            ));
-            ok = false;
+            refuse_first(
+                &mut refusal,
+                diagnostics,
+                declared,
+                SourceDiagnostic::at(
+                    Code::CheckNameConflict.as_str(),
+                    file,
+                    member.name_span,
+                    format!("enum member `{}` is already declared", member.name),
+                ),
+            );
             continue;
         }
         seen.push(member.name.clone());
-        let Some((payload, payload_scalars)) = enum_payload(registry, file, member, diagnostics)
+        let Some((payload, payload_scalars)) =
+            enum_payload(registry, declared, member, diagnostics, &mut refusal)
         else {
-            ok = false;
             continue;
         };
         let name_id = draft.intern_string(&member.name);
@@ -6116,28 +6481,40 @@ fn enum_variants(
             payload,
         });
     }
-    ok.then_some((variants, variant_defs))
+    match refusal {
+        Some(refusal) => DeclarationOccurrence::Refused(refusal),
+        None => DeclarationOccurrence::Accepted((variants, variant_defs)),
+    }
 }
 
 /// Resolve one member's payload fields to their scalars and info, or `None` when
-/// a field is not the bare `name: scalar` form.
+/// a field is not the bare `name: scalar` form. A defect refuses the whole
+/// declaration, so it is recorded in the enum's shared refusal rather than
+/// returned separately.
 fn enum_payload(
     registry: &TypeRegistry,
-    file: &FileIdentity,
+    declared: Declared<'_>,
     member: &EnumMember,
     diagnostics: &mut DiagnosticCollector,
+    refusal: &mut Option<DeclarationRefusalSummary>,
 ) -> Option<(Vec<EnumPayloadInfo>, Vec<ScalarType>)> {
+    let file = declared.file;
     if member.payload.len() > marrow_image::bounds::MAX_PAYLOAD_FIELDS {
-        diagnostics.push(SourceDiagnostic::at(
-            Code::CheckResourceLimit.as_str(),
-            file,
-            member.span,
-            format!(
-                "an enum member carries {} payload fields; the fixed limit is {}",
-                member.payload.len(),
-                marrow_image::bounds::MAX_PAYLOAD_FIELDS
+        refuse_first(
+            refusal,
+            diagnostics,
+            declared,
+            SourceDiagnostic::at(
+                Code::CheckResourceLimit.as_str(),
+                file,
+                member.span,
+                format!(
+                    "an enum member carries {} payload fields; the fixed limit is {}",
+                    member.payload.len(),
+                    marrow_image::bounds::MAX_PAYLOAD_FIELDS
+                ),
             ),
-        ));
+        );
         return None;
     }
     let mut payload = Vec::new();
@@ -6145,20 +6522,22 @@ fn enum_payload(
     let mut ok = true;
     for field in &member.payload {
         if matches!(registry.expand(&field.ty), TypeExpr::Optional { .. }) {
-            diagnostics.push(unsupported(
-                file,
-                field.ty.span(),
-                "an optional enum payload field type",
-            ));
+            refuse_first(
+                refusal,
+                diagnostics,
+                declared,
+                unsupported(file, field.ty.span(), "an optional enum payload field type"),
+            );
             ok = false;
             continue;
         }
         let Some(scalar) = scalar_of(&registry.expand(&field.ty)) else {
-            diagnostics.push(unsupported(
-                file,
-                field.ty.span(),
-                "this enum payload field type",
-            ));
+            // A payload naming a declaration this project refused is steered to
+            // that cause; only a genuinely unknown or unadmitted spelling is
+            // described as an unsupported payload type.
+            let row =
+                registry.unresolved_member_row(&field.ty, file, "this enum payload field type");
+            refuse_first(refusal, diagnostics, declared, row);
             ok = false;
             continue;
         };
@@ -6181,13 +6560,27 @@ fn enum_payload(
 fn declare_records<'a>(
     draft: &mut ImageDraft,
     registry: &mut TypeRegistry,
-    resources: &'a [(FileIdentity, &ResourceDecl)],
+    resources: &'a [(FileRef, FileIdentity, &ResourceDecl)],
     diagnostics: &mut DiagnosticCollector,
-) -> Vec<(FileIdentity, &'a ResourceDecl)> {
+) -> Result<Vec<(FileRef, FileIdentity, &'a ResourceDecl)>, DeclarationLedgerFull> {
     let mut survivors = Vec::new();
-    for (file, resource) in resources {
+    for (at, file, resource) in resources {
+        let declared = Declared {
+            name: &resource.name,
+            file,
+            at: *at,
+            span: resource.name_span,
+        };
         if is_reserved_type_name(&resource.name) {
-            diagnostics.push(reserved_name(file, resource.name_span, &resource.name));
+            let refusal = refuse_row(
+                diagnostics,
+                declared,
+                reserved_name(file, resource.name_span, &resource.name),
+            );
+            registry.named.declare(
+                resource.name.clone(),
+                DeclarationOccurrence::Refused(refusal),
+            )?;
             continue;
         }
         // Two resources of the same name have no unambiguous record identity, so a
@@ -6216,9 +6609,13 @@ fn declare_records<'a>(
             fields: Vec::new(),
             groups: Vec::new(),
         });
-        survivors.push((file.clone(), *resource));
+        registry.named.declare(
+            resource.name.clone(),
+            DeclarationOccurrence::Accepted(NamedTypeKind::Resource),
+        )?;
+        survivors.push((*at, file.clone(), *resource));
     }
-    survivors
+    Ok(survivors)
 }
 
 /// Pass two for the record types: fill each reserved record from its surviving
@@ -6226,13 +6623,19 @@ fn declare_records<'a>(
 fn fill_records(
     draft: &mut ImageDraft,
     registry: &mut TypeRegistry,
-    record_decls: &[(FileIdentity, &ResourceDecl)],
+    record_decls: &[(FileRef, FileIdentity, &ResourceDecl)],
     diagnostics: &mut DiagnosticCollector,
-) -> Result<(), GenericInvariant> {
+) -> Result<(), BuildError> {
     // The survivors are in the same order as the reserved records, so record `index`
     // is the one this declaration reserved.
-    for (index, (file, resource)) in record_decls.iter().enumerate() {
-        fill_record(draft, registry, index, file, resource, diagnostics)?;
+    for (index, (at, file, resource)) in record_decls.iter().enumerate() {
+        let declared = Declared {
+            name: &resource.name,
+            file,
+            at: *at,
+            span: resource.name_span,
+        };
+        fill_record(draft, registry, index, declared, resource, diagnostics)?;
     }
     Ok(())
 }
@@ -6248,10 +6651,11 @@ fn fill_record(
     draft: &mut ImageDraft,
     registry: &mut TypeRegistry,
     index: usize,
-    file: &FileIdentity,
+    declared: Declared<'_>,
     resource: &ResourceDecl,
     diagnostics: &mut DiagnosticCollector,
 ) -> Result<(), GenericInvariant> {
+    let file = declared.file;
     let type_id = registry.records[index].type_id;
     let mut fields = Vec::new();
     let mut field_defs = Vec::new();
@@ -6282,11 +6686,24 @@ fn fill_record(
                     Ok(
                         ty @ (GArg::Scalar(_) | GArg::Nominal(_) | GArg::Struct(_) | GArg::Enum(_)),
                     ) => ty,
-                    Ok(_) | Err(ResolveError::Refusal(ResolveRefusal::Unsupported)) => {
+                    // A field type that resolves but is outside the durable value
+                    // set is a genuine subset gap; one that names a refused
+                    // declaration is steered to that declaration's own cause.
+                    Ok(_) => {
                         diagnostics.push(unsupported(file, field.ty.span(), "this field type"));
                         continue;
                     }
-                    Err(ResolveError::Refusal(ResolveRefusal::Limit)) => continue,
+                    Err(ResolveError::Refusal(refused)) => {
+                        if let Some(row) = registry.member_refusal_row(
+                            refused,
+                            file,
+                            field.ty.span(),
+                            "this field type",
+                        )? {
+                            diagnostics.push(row);
+                        }
+                        continue;
+                    }
                     Err(ResolveError::Invariant(invariant)) => return Err(invariant),
                 };
                 let field_name_id = draft.intern_string(&field.name);
@@ -6307,7 +6724,7 @@ fn fill_record(
                 // required slot holding that record. Its durable identity is owned
                 // separately by `durable.rs`; this is the materialized-value side only.
                 let (leaf_fields, leaf_defs) =
-                    build_group_leaves(draft, registry, group, file, diagnostics)?;
+                    build_group_leaves(draft, registry, group, declared, diagnostics)?;
                 let anchor = format!("{}.{}", resource.name, group.name);
                 let group_name_id = draft.intern_string(&anchor);
                 let group_type_id = draft.add_record_type(RecordTypeDef {
@@ -6357,9 +6774,10 @@ fn build_group_leaves(
     draft: &mut ImageDraft,
     registry: &TypeRegistry,
     group: &GroupDecl,
-    file: &FileIdentity,
+    declared: Declared<'_>,
     diagnostics: &mut DiagnosticCollector,
 ) -> Result<(Vec<FieldInfo>, Vec<FieldDef>), GenericInvariant> {
+    let file = declared.file;
     let mut fields = Vec::new();
     let mut field_defs = Vec::new();
     for member in &group.members {
@@ -6388,11 +6806,21 @@ fn build_group_leaves(
             },
         ) {
             Ok(ty @ (GArg::Scalar(_) | GArg::Nominal(_) | GArg::Struct(_) | GArg::Enum(_))) => ty,
-            Ok(_) | Err(ResolveError::Refusal(ResolveRefusal::Unsupported)) => {
+            Ok(_) => {
                 diagnostics.push(unsupported(file, field.ty.span(), "this group field type"));
                 continue;
             }
-            Err(ResolveError::Refusal(ResolveRefusal::Limit)) => continue,
+            Err(ResolveError::Refusal(refused)) => {
+                if let Some(row) = registry.member_refusal_row(
+                    refused,
+                    file,
+                    field.ty.span(),
+                    "this group field type",
+                )? {
+                    diagnostics.push(row);
+                }
+                continue;
+            }
             Err(ResolveError::Invariant(invariant)) => return Err(invariant),
         };
         let field_name_id = draft.intern_string(&field.name);
@@ -6420,8 +6848,8 @@ fn build_group_leaves(
 /// the trust boundary.
 pub(crate) fn reject_value_cycles(
     registry: &TypeRegistry,
-    structs: &[(FileIdentity, &StructDecl)],
-    resources: &[(FileIdentity, &ResourceDecl)],
+    structs: &[(FileRef, FileIdentity, &StructDecl)],
+    resources: &[(FileRef, FileIdentity, &ResourceDecl)],
     diagnostics: &mut DiagnosticCollector,
 ) -> Result<(), GenericInvariant> {
     let view = registry.metadata_view();
@@ -6435,8 +6863,8 @@ pub(crate) fn reject_value_cycles(
             )]
             let (file, span) = structs
                 .iter()
-                .find(|(_, decl)| decl.name == info.name)
-                .map(|(file, decl)| (file.clone(), decl.name_span))
+                .find(|(_, _, decl)| decl.name == info.name)
+                .map(|(_, file, decl)| (file.clone(), decl.name_span))
                 .expect("a reserved struct has a surviving declaration");
             diagnostics.push(value_cycle_diagnostic(&file, span, &info.name, &path));
         }
@@ -6449,8 +6877,8 @@ pub(crate) fn reject_value_cycles(
             )]
             let (file, span) = resources
                 .iter()
-                .find(|(_, decl)| decl.name == record.name)
-                .map(|(file, decl)| (file.clone(), decl.name_span))
+                .find(|(_, _, decl)| decl.name == record.name)
+                .map(|(_, file, decl)| (file.clone(), decl.name_span))
                 .expect("a reserved record has a surviving declaration");
             diagnostics.push(value_cycle_diagnostic(&file, span, &record.name, &path));
         }
@@ -7597,6 +8025,123 @@ mod generic_scaling_counts_tests;
 #[path = "types/alias_cycle_scaling_tests.rs"]
 mod alias_cycle_scaling_tests;
 
+/// E5 — the refusal lattice, pinned in every argument combination.
+///
+/// `join` folds refusals for sub-parts of one annotation and for one provisional
+/// instantiation row. Getting an arm wrong is silent: it would report the wrong
+/// cause at a use site, or hide a genuine absence behind a refused sibling.
+#[cfg(test)]
+mod refusal_join_tests {
+    use super::*;
+    use crate::decl::{
+        DeclarationLedger, DeclarationNamespace, DeclarationOccurrence, refuse_covered,
+    };
+
+    /// Two distinct refusal handles, minted by a real ledger so their namespace
+    /// tags and indexes are the ones production would produce.
+    fn handles() -> (ResolveRefusal, ResolveRefusal) {
+        let mut ledger: DeclarationLedger<String, ()> =
+            DeclarationLedger::new(DeclarationNamespace::NamedType);
+        let mut refusal = |name: &str| {
+            let (identity, _) = FileIdentity::validate("src/main.mw").expect("a valid source path");
+            let declared = Declared {
+                name,
+                file: &identity,
+                at: FileRef::admitted(0),
+                span: SourceSpan {
+                    start_byte: 0,
+                    end_byte: 1,
+                    line: 1,
+                    column: 1,
+                },
+            };
+            ledger
+                .declare(
+                    name.to_string(),
+                    DeclarationOccurrence::Refused(refuse_covered(
+                        declared,
+                        Code::CheckType.as_str(),
+                    )),
+                )
+                .expect("within budget");
+            match ledger.lookup(&name.to_string()) {
+                Binding::Refused(id, _) => ResolveRefusal::RefusedDeclaration(id),
+                _ => panic!("expected a refusal"),
+            }
+        };
+        let first = refusal("A");
+        let second = refusal("B");
+        (first, second)
+    }
+
+    #[test]
+    fn the_lattice_holds_in_all_nine_argument_combinations() {
+        let (one, two) = handles();
+        let limit = ResolveRefusal::Limit;
+        let gap = ResolveRefusal::Unsupported;
+
+        // A terminal shared limit dominates, in either position.
+        assert_eq!(limit.join(limit), limit);
+        assert_eq!(limit.join(gap), limit);
+        assert_eq!(limit.join(one), limit);
+        assert_eq!(gap.join(limit), limit);
+        assert_eq!(one.join(limit), limit);
+
+        // A genuine absence dominates a refused declaration: a real gap must never
+        // be reported as some refused sibling's fault.
+        assert_eq!(gap.join(gap), gap);
+        assert_eq!(gap.join(one), gap);
+        assert_eq!(one.join(gap), gap);
+
+        // Two refusals survive as one cause only when they are the same
+        // declaration; two different ones have no single cause to steer to.
+        assert_eq!(one.join(one), one);
+        assert_eq!(one.join(two), gap);
+        assert_eq!(two.join(one), gap);
+    }
+
+    /// The same-handle rule is keyed on the namespace tag too, so equal indexes in
+    /// two ledgers do not collapse into one steer.
+    #[test]
+    fn handles_from_two_namespaces_never_merge() {
+        let mut types: DeclarationLedger<String, ()> =
+            DeclarationLedger::new(DeclarationNamespace::NamedType);
+        let mut roots: DeclarationLedger<String, ()> =
+            DeclarationLedger::new(DeclarationNamespace::DurableRoot);
+        let (identity, _) = FileIdentity::validate("src/main.mw").expect("a valid source path");
+        let declared = Declared {
+            name: "x",
+            file: &identity,
+            at: FileRef::admitted(0),
+            span: SourceSpan {
+                start_byte: 0,
+                end_byte: 1,
+                line: 1,
+                column: 1,
+            },
+        };
+        let first = |ledger: &mut DeclarationLedger<String, ()>| {
+            ledger
+                .declare(
+                    "x".to_string(),
+                    DeclarationOccurrence::Refused(refuse_covered(
+                        declared,
+                        Code::CheckType.as_str(),
+                    )),
+                )
+                .expect("within budget");
+            match ledger.lookup(&"x".to_string()) {
+                Binding::Refused(id, _) => ResolveRefusal::RefusedDeclaration(id),
+                _ => panic!("expected a refusal"),
+            }
+        };
+        let from_types = first(&mut types);
+        let from_roots = first(&mut roots);
+        assert_ne!(from_types, from_roots);
+        assert_eq!(from_types.join(from_roots), ResolveRefusal::Unsupported);
+    }
+}
+
 #[cfg(test)]
 mod instantiation_state_tests {
     use super::*;
@@ -7663,6 +8208,7 @@ mod instantiation_state_tests {
 
     fn registry(templates: Vec<TypeTemplate>) -> TypeRegistry {
         TypeRegistry {
+            named: DeclarationLedger::new(DeclarationNamespace::NamedType),
             aliases: BTreeMap::new(),
             nominals: Vec::new(),
             structs: Vec::new(),
@@ -7711,6 +8257,7 @@ mod instantiation_state_tests {
         Ready,
         RejectedLimit,
         RejectedUnsupported,
+        RejectedDeclaration,
     }
 
     #[derive(Debug, PartialEq, Eq)]
@@ -7782,6 +8329,9 @@ mod instantiation_state_tests {
                     }
                     TypeInstState::Rejected(ResolveRefusal::Unsupported) => {
                         (StableRowState::RejectedUnsupported, None)
+                    }
+                    TypeInstState::Rejected(ResolveRefusal::RefusedDeclaration(_)) => {
+                        (StableRowState::RejectedDeclaration, None)
                     }
                 };
                 StableRow {
@@ -11238,8 +11788,16 @@ store ^holders[id: int]: Holder
                     _ => None,
                 })
                 .expect("store parses");
-            let structs = vec![(crate::test_file_identity("src/main.mw"), generic_struct)];
-            let resources = vec![(crate::test_file_identity("src/main.mw"), resource)];
+            let structs = vec![(
+                FileRef::admitted(0),
+                crate::test_file_identity("src/main.mw"),
+                generic_struct,
+            )];
+            let resources = vec![(
+                FileRef::admitted(0),
+                crate::test_file_identity("src/main.mw"),
+                resource,
+            )];
             let stores = vec![(
                 crate::analysis::FileRef::admitted(0),
                 crate::test_file_identity("src/main.mw"),
@@ -11255,7 +11813,8 @@ store ^holders[id: int]: Holder
                 &[],
                 &resources,
                 &mut diagnostics,
-            );
+            )
+            .expect("the test registry stays within the ledger budget");
             assert!(diagnostics.is_empty());
             let (option_index, option_id) = {
                 let generics = registry.generics.borrow();
@@ -11289,7 +11848,7 @@ store ^holders[id: int]: Holder
                     None,
                     &mut diagnostics,
                 ),
-                Err(crate::durable::DurableBuildError::Invariant(found)) if found == expected
+                Err(crate::types::BuildError::Invariant(found)) if found == expected
             ));
             assert!(diagnostics.is_empty());
             let after = draft.encode().expect("rejected draft still encodes");

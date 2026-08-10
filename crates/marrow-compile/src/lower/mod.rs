@@ -56,7 +56,10 @@ use marrow_syntax::{
     duration_unit_seconds, range_expr,
 };
 
-use crate::decl::{Binding, DeclarationRefusalSummary, RefusalReport};
+use crate::decl::{
+    Binding, DeclarationIndexDrift, DeclarationNamespace, DeclarationRefusalId,
+    DeclarationRefusalSummary, declaration_refused,
+};
 use crate::diag::{BoundedDiagnostics, DiagnosticCollector, SourceDiagnostic};
 use crate::durable::{DurableRegistry, RootBinding};
 use crate::konst::{ConstRegistry, ConstScalar};
@@ -230,6 +233,53 @@ struct PlaceChain {
 struct LoopCtx {
     continue_target: usize,
     break_jumps: Vec<usize>,
+}
+
+/// The refusal a handle addresses, from the namespace ledger that minted it.
+///
+/// The one place a `Copy` refusal handle becomes a renderable cause, so no
+/// consumer picks a ledger by guesswork. The tag is checked by the ledger itself:
+/// a handle presented to the wrong owner is drift, not a neighbouring summary.
+pub(super) fn refusal_summary<'r>(
+    records: &'r TypeRegistry,
+    durable: &'r DurableRegistry,
+    id: DeclarationRefusalId,
+) -> Result<&'r DeclarationRefusalSummary, DeclarationIndexDrift> {
+    match id.namespace() {
+        DeclarationNamespace::NamedType => records.refusal(id),
+        DeclarationNamespace::DurableRoot => durable.refusal(id),
+        // A constant is looked up by its own name at its own use site and never
+        // travels through type resolution, so no handle of one reaches here.
+        DeclarationNamespace::Constant => Err(DeclarationIndexDrift),
+    }
+}
+
+/// The row a type-annotation position reports for a resolution refusal, once per
+/// refused key: the causal steer for a refused declaration, the subset-gap phrase
+/// for a genuine gap, and `None` for the shared instantiation limit and for a
+/// refused key some earlier use already steered.
+///
+/// The signature-building and return-type sites have no `FnLowerer`, so they take
+/// this directly; `reject_resolution` is the same decision inside one.
+pub(super) fn annotation_refusal_row(
+    records: &TypeRegistry,
+    durable: &DurableRegistry,
+    refusal: ResolveRefusal,
+    file: &FileIdentity,
+    span: SourceSpan,
+    subject: &str,
+) -> Result<Option<SourceDiagnostic>, LowerInvariant> {
+    match refusal {
+        ResolveRefusal::Limit => Ok(None),
+        ResolveRefusal::Unsupported => Ok(Some(unsupported(file, span, subject))),
+        ResolveRefusal::RefusedDeclaration(id) => {
+            let summary = refusal_summary(records, durable, id)?;
+            Ok(match summary.steer_once() {
+                true => Some(declaration_refused(file, span, summary)),
+                false => None,
+            })
+        }
+    }
 }
 
 pub(crate) struct FnLowerer<'a> {
@@ -621,15 +671,17 @@ impl<'a> FnLowerer<'a> {
                     };
                     match resolve_type(records, draft, durable, annotation, env, site) {
                         Ok(ty) => RetType::Value(ty),
-                        Err(ResolveError::Refusal(ResolveRefusal::Unsupported)) => {
-                            diagnostics.push(unsupported(
+                        Err(ResolveError::Refusal(refusal)) => {
+                            if let Some(row) = annotation_refusal_row(
+                                records,
+                                durable,
+                                refusal,
                                 file,
                                 annotation.span(),
                                 "this return type",
-                            ));
-                            return Ok(BodyOutcome::Refused);
-                        }
-                        Err(ResolveError::Refusal(ResolveRefusal::Limit)) => {
+                            )? {
+                                diagnostics.push(row);
+                            }
                             return Ok(BodyOutcome::Refused);
                         }
                         Err(ResolveError::Invariant(invariant)) => return Err(invariant),
@@ -920,18 +972,40 @@ impl<'a> FnLowerer<'a> {
     }
 
     fn reject_resolution(&mut self, error: ResolveError, span: SourceSpan, subject: &str) {
-        match error {
-            ResolveError::Refusal(ResolveRefusal::Limit) => self.failed = true,
-            ResolveError::Refusal(ResolveRefusal::Unsupported) => {
-                self.fail(unsupported(self.file, span, subject));
-            }
+        self.reject_at(error, self.file, span, subject);
+    }
+
+    /// Report a resolution failure against `file`, which is the body's own file
+    /// except when a generic instantiation is rejected against its template's.
+    fn reject_at(
+        &mut self,
+        error: ResolveError,
+        file: &FileIdentity,
+        span: SourceSpan,
+        subject: &str,
+    ) {
+        let refusal = match error {
+            ResolveError::Refusal(refusal) => refusal,
             ResolveError::Invariant(invariant) => {
-                if self.invariant.is_none() {
-                    self.invariant = Some(invariant);
-                }
-                self.failed = true;
+                self.record_invariant(invariant);
+                return;
             }
+        };
+        // A use of a declaration this project refused is steered to that
+        // declaration's own cause, once, rather than described as a form the
+        // language does not support.
+        match annotation_refusal_row(self.records, self.durable, refusal, file, span, subject) {
+            Ok(Some(row)) => self.fail(row),
+            Ok(None) => self.failed = true,
+            Err(invariant) => self.record_invariant(invariant),
         }
+    }
+
+    fn record_invariant(&mut self, invariant: LowerInvariant) {
+        if self.invariant.is_none() {
+            self.invariant = Some(invariant);
+        }
+        self.failed = true;
     }
 
     /// Whether lowering must stop before any later handler, interning, patching, or
@@ -1063,6 +1137,7 @@ mod generic_cache_boundary_tests {
     fn generic_enum_registry(draft: &mut ImageDraft) -> TypeRegistry {
         let mut diagnostics = DiagnosticCollector::new();
         TypeRegistry::build(draft, &[], &[], &[], &[], &[], &mut diagnostics)
+            .expect("the test registry stays within the ledger budget")
     }
 
     fn generic_struct_registry(draft: &mut ImageDraft) -> TypeRegistry {
@@ -1087,13 +1162,17 @@ mod generic_cache_boundary_tests {
             draft,
             &[],
             &[],
-            &[(crate::test_file_identity("src/main.mw"), declaration)],
+            &[(
+                crate::analysis::FileRef::admitted(0),
+                crate::test_file_identity("src/main.mw"),
+                declaration,
+            )],
             &[],
             &[],
             &mut diagnostics,
         );
         assert!(diagnostics.is_empty());
-        records
+        records.expect("the test registry stays within the ledger budget")
     }
 
     #[test]

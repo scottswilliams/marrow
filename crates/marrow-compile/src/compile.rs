@@ -22,13 +22,13 @@ use crate::demand::DurableNaming;
 use crate::diag::{
     BoundedDiagnostics, CompileDiagnosticLimit, DiagnosticCollector, SourceDiagnostic,
 };
-use crate::durable::DurableBuildError;
 use crate::durable::DurableRegistry;
 use crate::konst::ConstRegistry;
 use crate::lower::{
     BodyOutcome, DeclaredFn, FnLowerer, FunctionRegistry, FunctionRegistryOutcome, GenericRegistry,
     is_durable_place_op, is_mutation_instr, is_reserved_builtin_name, reserved_builtin_name,
 };
+use crate::types::BuildError;
 use crate::types::{GenericInvariant, TypeRegistry};
 
 /// One resolved public export: its dotted module, its item name, and the stable
@@ -1227,67 +1227,67 @@ fn run_semantic(
     // type — and the function signatures before body lowering, so annotations,
     // constructors, field reads, and forward calls resolve.
     let mut draft = ImageDraft::new();
-    let aliases: Vec<(FileIdentity, &AliasDecl)> = parsed
+    let aliases: Vec<(FileRef, FileIdentity, &AliasDecl)> = parsed
         .iter()
         .flat_map(|module| {
             module.ast.declarations.iter().filter_map(|decl| {
                 if let Declaration::Alias(alias) = decl {
-                    Some((module.file.clone(), alias))
+                    Some((module.at, module.file.clone(), alias))
                 } else {
                     None
                 }
             })
         })
         .collect();
-    let nominals: Vec<(FileIdentity, &NominalDecl)> = parsed
+    let nominals: Vec<(FileRef, FileIdentity, &NominalDecl)> = parsed
         .iter()
         .flat_map(|module| {
             module.ast.declarations.iter().filter_map(|decl| {
                 if let Declaration::Nominal(nominal) = decl {
-                    Some((module.file.clone(), nominal))
+                    Some((module.at, module.file.clone(), nominal))
                 } else {
                     None
                 }
             })
         })
         .collect();
-    let resources: Vec<(FileIdentity, &ResourceDecl)> = parsed
+    let resources: Vec<(FileRef, FileIdentity, &ResourceDecl)> = parsed
         .iter()
         .flat_map(|module| {
             module.ast.declarations.iter().filter_map(|decl| {
                 if let Declaration::Resource(resource) = decl {
-                    Some((module.file.clone(), resource))
+                    Some((module.at, module.file.clone(), resource))
                 } else {
                     None
                 }
             })
         })
         .collect();
-    let structs: Vec<(FileIdentity, &StructDecl)> = parsed
+    let structs: Vec<(FileRef, FileIdentity, &StructDecl)> = parsed
         .iter()
         .flat_map(|module| {
             module.ast.declarations.iter().filter_map(|decl| {
                 if let Declaration::Struct(item) = decl {
-                    Some((module.file.clone(), item))
+                    Some((module.at, module.file.clone(), item))
                 } else {
                     None
                 }
             })
         })
         .collect();
-    let enums: Vec<(FileIdentity, &EnumDecl)> = parsed
+    let enums: Vec<(FileRef, FileIdentity, &EnumDecl)> = parsed
         .iter()
         .flat_map(|module| {
             module.ast.declarations.iter().filter_map(|decl| {
                 if let Declaration::Enum(item) = decl {
-                    Some((module.file.clone(), item))
+                    Some((module.at, module.file.clone(), item))
                 } else {
                     None
                 }
             })
         })
         .collect();
-    let records = TypeRegistry::build(
+    let records = match TypeRegistry::build(
         &mut draft,
         &aliases,
         &nominals,
@@ -1295,7 +1295,10 @@ fn run_semantic(
         &enums,
         &resources,
         &mut diagnostics,
-    );
+    ) {
+        Ok(records) => records,
+        Err(DeclarationLedgerFull) => return SemanticOutcome::ResourceLimit(ledger_full()),
+    };
     if let Some(invariant) = records.build_invariant() {
         return SemanticOutcome::Invariant(InvariantCause::Generic(invariant));
     }
@@ -1328,10 +1331,10 @@ fn run_semantic(
         &mut diagnostics,
     ) {
         Ok(durable) => durable,
-        Err(DurableBuildError::Invariant(invariant)) => {
+        Err(BuildError::Invariant(invariant)) => {
             return SemanticOutcome::Invariant(InvariantCause::Generic(invariant));
         }
-        Err(DurableBuildError::LedgerFull(DeclarationLedgerFull)) => {
+        Err(BuildError::LedgerFull(DeclarationLedgerFull)) => {
             return SemanticOutcome::ResourceLimit(ledger_full());
         }
     };
@@ -2842,6 +2845,7 @@ mod tests {
                 CollectionKind::Map => "Map owner mismatch",
             },
             GenericInvariant::DurableResourceMissing(_) => "durable resource missing",
+            GenericInvariant::DeclarationIndexDrift => "declaration index drift",
         }
     }
 
@@ -3055,6 +3059,7 @@ mod tests {
                 &[],
                 &mut diagnostics,
             );
+            let records = records.expect("the test registry stays within the ledger budget");
             let durable = crate::durable::DurableRegistry::build(
                 &mut draft,
                 &records,

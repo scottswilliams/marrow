@@ -94,13 +94,11 @@ pub(super) fn param_type(
                 optional: false, ..
             }),
         ) => Ok(param),
-        Ok(_) | Err(ResolveError::Refusal(ResolveRefusal::Unsupported)) => {
-            Err(ResolveError::Refusal(ResolveRefusal::Unsupported))
-        }
-        Err(ResolveError::Refusal(ResolveRefusal::Limit)) => {
-            Err(ResolveError::Refusal(ResolveRefusal::Limit))
-        }
-        Err(ResolveError::Invariant(invariant)) => Err(ResolveError::Invariant(invariant)),
+        // A type that resolves but is outside the parameter subset is a genuine
+        // subset gap. Every refusal passes through unchanged, so a refused
+        // declaration keeps its cause the whole way to the report.
+        Ok(_) => Err(ResolveError::Refusal(ResolveRefusal::Unsupported)),
+        Err(error) => Err(error),
     }
 }
 
@@ -168,7 +166,10 @@ fn resolve_expanded(
                         ty,
                         optional: false,
                     }),
-                    None => Err(ResolveError::Refusal(ResolveRefusal::Unsupported)),
+                    // A name no table answers is either genuinely undeclared or a
+                    // declaration this project refused; the ledger tells them apart,
+                    // and only the first may be reported as an unsupported form.
+                    None => Err(ResolveError::Refusal(records.unresolved_named_type(text))),
                 }
             }
         }
@@ -188,9 +189,17 @@ fn resolve_expanded(
         // declared, or over a not-yet-executable root, is an unsupported type (`None`),
         // reported by the caller like any other unresolved annotation.
         TypeExpr::Identity(identity) => {
-            let root = durable
-                .root_by_name(&identity.root)
-                .ok_or(ResolveError::Refusal(ResolveRefusal::Unsupported))?;
+            let root = match durable.root(&identity.root) {
+                RootBinding::Executable(root) => root,
+                RootBinding::Refused(id, _) => {
+                    return Err(ResolveError::Refusal(ResolveRefusal::RefusedDeclaration(
+                        id,
+                    )));
+                }
+                RootBinding::NotYetExecutable | RootBinding::Absent => {
+                    return Err(ResolveError::Refusal(ResolveRefusal::Unsupported));
+                }
+            };
             Ok(LTy::Identity {
                 root: root.root_id,
                 optional: false,
