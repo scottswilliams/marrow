@@ -152,6 +152,40 @@ fn check_emits_the_same_kinded_stderr_line_as_its_siblings() {
     );
 }
 
+/// An export ceiling is a verdict of the production projection, and `check` runs the
+/// analysis floor before it projects. So the floor reports nothing — the program checks —
+/// and the only line a reader sees is the projection's fixed bound, in the words its
+/// stderr siblings use. A diagnostic printed here would mean the analysis floor had
+/// adopted an image bound as a source-level problem.
+#[test]
+fn check_reports_an_export_ceiling_with_no_diagnostic() {
+    let dir = TempDir::new("check-exports");
+    over_export_project(&dir.root);
+    let checked = run_in(&dir.root, &["check", "."]);
+    assert!(
+        !checked.status.success(),
+        "an exhausted bound fails the check"
+    );
+    assert!(
+        checked.stdout.is_empty(),
+        "no demand summary is described for a project with no image"
+    );
+    let checked_stderr = String::from_utf8(checked.stderr).expect("utf8 stderr");
+    assert_eq!(
+        checked_stderr,
+        "cli.compiler_resource_limit: the compiler reached a fixed resource limit: the \
+         export table is full\n",
+        "the bound is the only thing reported: no diagnostic, location, or count"
+    );
+
+    let generated = run_in(&dir.root, &["client", "typescript"]);
+    assert_eq!(
+        checked_stderr,
+        String::from_utf8(generated.stderr).expect("utf8 stderr"),
+        "one bound must read the same whichever command reports it on stderr"
+    );
+}
+
 /// A9: single-file `marrow fmt` admits at most the compiler's `ProjectFileBytes`
 /// module byte limit, refusing with that admission's exact typed code from the stat
 /// alone — before any open, read, or allocation. The oversized target is unreadable
