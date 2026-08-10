@@ -1269,7 +1269,7 @@ fn run_semantic(
                 .unwrap_or(target.as_str())
                 .to_string();
             let spelling = marrow_syntax::name_path_spelling(&use_decl.segments);
-            let binding = match modules.lookup(&target) {
+            let binding = match modules.lookup(target.as_str()) {
                 Ok(binding) => binding,
                 Err(drift) => {
                     return SemanticOutcome::Invariant(InvariantCause::Generic(drift.into()));

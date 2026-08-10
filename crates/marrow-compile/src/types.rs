@@ -5011,7 +5011,7 @@ impl TypeRegistry {
         &self,
         name: &str,
     ) -> Result<ResolveRefusal, DeclarationIndexDrift> {
-        Ok(match self.named.lookup(&name.to_string())? {
+        Ok(match self.named.lookup(name)? {
             Binding::Refused(id, _) => ResolveRefusal::RefusedDeclaration(id),
             Binding::Accepted(_) | Binding::Absent => ResolveRefusal::Unsupported,
         })
@@ -5023,7 +5023,7 @@ impl TypeRegistry {
         &self,
         name: &str,
     ) -> Result<Binding<'_, NamedTypeKind>, DeclarationIndexDrift> {
-        self.named.lookup(&name.to_string())
+        self.named.lookup(name)
     }
 
     /// The row a member position reports when its declared type does not resolve
@@ -5039,7 +5039,7 @@ impl TypeRegistry {
         subject: &str,
     ) -> Result<SourceDiagnostic, DeclarationIndexDrift> {
         if let TypeExpr::Name { text, .. } = ty
-            && let Binding::Refused(_, summary) = self.named.lookup(&text.to_string())?
+            && let Binding::Refused(_, summary) = self.named.lookup(text.as_str())?
         {
             return Ok(declaration_refused(file, ty.span(), summary));
         }

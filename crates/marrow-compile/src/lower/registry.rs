@@ -4,8 +4,8 @@ use super::*;
 
 use crate::decl::{
     Binding, DeclarationBudget, DeclarationIndexDrift, DeclarationLedger, DeclarationNamespace,
-    DeclarationOccurrence, DeclarationRefusalSummary, DeclarationSite, refuse_covered,
-    refuse_first,
+    DeclarationOccurrence, DeclarationRefusalSummary, DeclarationSite, ModuleScopedName,
+    refuse_covered, refuse_first,
 };
 use crate::types::BuildError;
 
@@ -35,7 +35,7 @@ pub(crate) struct ModuleBinding;
 pub(crate) type ModuleLedger = DeclarationLedger<String, ModuleBinding>;
 
 /// One function's key in the signature namespace: its dotted module and its name.
-pub(crate) type FnKey = (String, String);
+pub(crate) type FnKey = ModuleScopedName;
 
 /// The project's functions and the module scope a call resolves against: every
 /// function signature (resolved before body lowering so a forward call resolves),
@@ -252,7 +252,7 @@ impl FunctionRegistry {
                     DeclarationOccurrence::Accepted(signature)
                 }
             };
-            sigs.declare((module.clone(), function.name.clone()), occurrence)?;
+            sigs.declare(ModuleScopedName::new(module, &function.name), occurrence)?;
         }
         Ok(Self {
             sigs,
@@ -287,8 +287,8 @@ impl FunctionRegistry {
     ) -> impl Iterator<Item = &'s str> {
         self.sigs
             .keys()
-            .filter(move |(owner, _)| owner == module)
-            .map(|(_, name)| name.as_str())
+            .filter(move |key| key.owner() == module)
+            .map(ModuleScopedName::name)
     }
 
     /// Resolve an unqualified call from within `module`: a function of that name in
@@ -298,7 +298,7 @@ impl FunctionRegistry {
         module: &str,
         name: &str,
     ) -> Result<Binding<'_, FnSignature>, DeclarationIndexDrift> {
-        self.sigs.lookup(&(module.to_string(), name.to_string()))
+        self.sigs.lookup(&ModuleScopedName::new(module, name))
     }
 
     /// The monomorphic signature declarations, for the body-lowering walk that
@@ -330,7 +330,7 @@ impl FunctionRegistry {
             ModuleResolution::Absent => return Ok(CallResolution::NotFound),
         };
         Ok(
-            match self.sigs.lookup(&(module.clone(), item.to_string()))? {
+            match self.sigs.lookup(&ModuleScopedName::new(&module, item))? {
                 Binding::Accepted(sig) if sig.public || sig.module == current => {
                     CallResolution::Found(sig)
                 }
@@ -381,7 +381,7 @@ impl FunctionRegistry {
         } else {
             dotted_module_path(prefix)
         };
-        Ok(match self.modules.lookup(&dotted)? {
+        Ok(match self.modules.lookup(dotted.as_str())? {
             Binding::Accepted(ModuleBinding) => ModuleResolution::Accepted(dotted),
             Binding::Refused(_, summary) => ModuleResolution::Refused(summary),
             Binding::Absent => ModuleResolution::Absent,

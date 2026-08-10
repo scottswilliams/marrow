@@ -14,6 +14,7 @@
 //! nothing, which is what holds amplification to the number of refused declarations
 //! rather than the number of uses.
 
+use std::borrow::Borrow;
 use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::rc::Rc;
@@ -97,6 +98,37 @@ pub(crate) enum DeclarationNamespace {
     /// survives with a narrowed member set and every lookup of the refused member
     /// would otherwise read as never written.
     ResourceMember,
+}
+
+/// A declared name that is private to one module: the dotted module it is written
+/// in, and the name itself.
+///
+/// The two namespaces keyed this way — module constants and function signatures —
+/// are separate ledgers, so the pair is the key rather than an owner discriminator.
+/// A named tuple rather than a bare `(String, String)`: the two halves are not
+/// interchangeable, and a key built with them swapped would resolve silently.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) struct ModuleScopedName {
+    owner: String,
+    name: String,
+}
+
+impl ModuleScopedName {
+    pub(crate) fn new(owner: &str, name: &str) -> Self {
+        Self {
+            owner: owner.to_string(),
+            name: name.to_string(),
+        }
+    }
+
+    /// The dotted module this name is private to.
+    pub(crate) fn owner(&self) -> &str {
+        &self.owner
+    }
+
+    pub(crate) fn name(&self) -> &str {
+        &self.name
+    }
 }
 
 /// A `Copy` handle to one refused declaration, valid only in the ledger that
@@ -594,7 +626,11 @@ impl<K: Ord + Clone, T> DeclarationLedger<K, T> {
     /// that answered it for its own incoherence would put a fabricated absence back
     /// at the use site, which is the defect this module exists to remove. An
     /// invariant is not a binding, so it does not become a `Binding` variant.
-    pub(crate) fn lookup(&self, key: &K) -> Result<Binding<'_, T>, DeclarationIndexDrift> {
+    pub(crate) fn lookup<Q>(&self, key: &Q) -> Result<Binding<'_, T>, DeclarationIndexDrift>
+    where
+        K: Borrow<Q>,
+        Q: Ord + ?Sized,
+    {
         match self.index.get(key).map(|entry| entry.first) {
             Some(Selected::Accepted(at)) => match self.occurrences.get(at) {
                 Some((_, DeclarationOccurrence::Accepted(value))) => Ok(Binding::Accepted(value)),
@@ -608,7 +644,11 @@ impl<K: Ord + Clone, T> DeclarationLedger<K, T> {
     /// Whether `key` has any occurrence, accepted or refused — the duplicate check
     /// a namespace runs before declaring, so a refused declaration still occupies
     /// its name.
-    pub(crate) fn declared(&self, key: &K) -> bool {
+    pub(crate) fn declared<Q>(&self, key: &Q) -> bool
+    where
+        K: Borrow<Q>,
+        Q: Ord + ?Sized,
+    {
         self.index.contains_key(key)
     }
 

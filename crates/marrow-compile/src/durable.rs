@@ -351,7 +351,7 @@ impl DurableRegistry {
     /// declaration, the refusal that stands in its place, or a genuine absence. The
     /// one owner of that four-way answer; every other root lookup projects from it.
     pub(crate) fn root(&self, name: &str) -> Result<RootBinding<'_>, DeclarationIndexDrift> {
-        Ok(match self.declared.lookup(&name.to_string())? {
+        Ok(match self.declared.lookup(name)? {
             Binding::Accepted(declared) => match declared.executable {
                 Some(at) => match self.roots.get(at) {
                     Some(root) => RootBinding::Executable(root),
@@ -509,7 +509,7 @@ impl DurableRegistry {
                 // second DURABLE-table row; reject it and keep the first declaration. A
                 // refused declaration still occupies its name, so the repeat conflicts
                 // whichever of the two the compiler could admit.
-                if registry.declared.declared(&store.root.root) {
+                if registry.declared.declared(store.root.root.as_str()) {
                     diagnostics.push(SourceDiagnostic::at(
                         Code::CheckType.as_str(),
                         file,

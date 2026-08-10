@@ -16,7 +16,7 @@ use crate::analysis::FileRef;
 use crate::decl::{
     Binding, DeclarationBudget, DeclarationIndexDrift, DeclarationLedger, DeclarationLedgerFull,
     DeclarationNamespace, DeclarationOccurrence, DeclarationRefusalSummary, DeclarationSite,
-    refuse, refuse_row,
+    ModuleScopedName, refuse, refuse_row,
 };
 use crate::diag::{DiagnosticCollector, SourceDiagnostic};
 use crate::lower::parse_int;
@@ -44,7 +44,7 @@ impl ConstScalar {
 
 /// A constant's key: module-private, so the same name in two modules is two
 /// constants.
-type ConstKey = (String, String);
+type ConstKey = ModuleScopedName;
 
 /// The module-private constants of a project, accepted and refused alike.
 ///
@@ -78,7 +78,7 @@ impl ConstRegistry {
         module: &str,
         name: &str,
     ) -> Result<Binding<'_, ConstScalar>, DeclarationIndexDrift> {
-        self.entries.lookup(&(module.to_string(), name.to_string()))
+        self.entries.lookup(&ModuleScopedName::new(module, name))
     }
 
     /// Every constant name declared in `module`, refused ones included — the
@@ -86,8 +86,8 @@ impl ConstRegistry {
     pub(crate) fn names_in(&self, module: &str) -> impl Iterator<Item = &str> {
         self.entries
             .keys()
-            .filter(move |(declared, _)| declared == module)
-            .map(|(_, name)| name.as_str())
+            .filter(move |key| key.owner() == module)
+            .map(ModuleScopedName::name)
     }
 
     /// Evaluate every module constant to its folded scalar value, reporting a typed
@@ -106,7 +106,7 @@ impl ConstRegistry {
         let mut entries: DeclarationLedger<ConstKey, ConstScalar> =
             DeclarationLedger::new(DeclarationNamespace::Constant, budget);
         for (module, at, file, decl) in consts {
-            let key = (module.clone(), decl.name.clone());
+            let key = ModuleScopedName::new(module, &decl.name);
             let declared = DeclarationSite {
                 name: &decl.name,
                 file,
