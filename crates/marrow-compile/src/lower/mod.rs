@@ -56,7 +56,7 @@ use marrow_syntax::{
     duration_unit_seconds, range_expr,
 };
 
-use crate::decl::{Binding, DeclarationRefusalSummary};
+use crate::decl::{Binding, DeclarationRefusalSummary, RefusalReport};
 use crate::diag::{BoundedDiagnostics, DiagnosticCollector, SourceDiagnostic};
 use crate::durable::{DurableRegistry, RootBinding};
 use crate::konst::{ConstRegistry, ConstScalar};
@@ -991,7 +991,7 @@ impl<'a> FnLowerer<'a> {
                 self.fail(not_yet_executable(self.file, span, name));
                 None
             }
-            RootBinding::Refused(refusal) => {
+            RootBinding::Refused(_, refusal) => {
                 // A refused root is referenced from many sites; the declaration
                 // already reported the cause, so the first reference is steered to it
                 // and the rest fail silently. One refused store does not echo at every

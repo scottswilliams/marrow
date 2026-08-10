@@ -14,7 +14,7 @@ use marrow_syntax::{
 
 use crate::analysis::FileRef;
 use crate::decl::{
-    Binding, DeclarationLedger, DeclarationLedgerFull, DeclarationOccurrence,
+    Binding, DeclarationLedger, DeclarationLedgerFull, DeclarationNamespace, DeclarationOccurrence,
     DeclarationRefusalSummary, Declared, refuse, refuse_row,
 };
 use crate::diag::{DiagnosticCollector, SourceDiagnostic};
@@ -50,9 +50,16 @@ type ConstKey = (String, String);
 /// A refused constant stays in the ledger under its own name, so a later use is
 /// steered to the cause the declaration already reported instead of being told the
 /// name does not exist.
-#[derive(Default)]
 pub(crate) struct ConstRegistry {
     entries: DeclarationLedger<ConstKey, ConstScalar>,
+}
+
+impl Default for ConstRegistry {
+    fn default() -> Self {
+        Self {
+            entries: DeclarationLedger::new(DeclarationNamespace::Constant),
+        }
+    }
 }
 
 impl ConstRegistry {
@@ -83,7 +90,8 @@ impl ConstRegistry {
         types: &TypeRegistry,
         diagnostics: &mut DiagnosticCollector,
     ) -> Result<Self, DeclarationLedgerFull> {
-        let mut entries: DeclarationLedger<ConstKey, ConstScalar> = DeclarationLedger::default();
+        let mut entries: DeclarationLedger<ConstKey, ConstScalar> =
+            DeclarationLedger::new(DeclarationNamespace::Constant);
         for (module, at, file, decl) in consts {
             let key = (module.clone(), decl.name.clone());
             let declared = Declared {

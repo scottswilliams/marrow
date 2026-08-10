@@ -41,7 +41,8 @@ use marrow_syntax::{
 
 use crate::analysis::FileRef;
 use crate::decl::{
-    Binding, DeclarationLedger, DeclarationLedgerFull, DeclarationOccurrence,
+    Binding, DeclarationLedger, DeclarationLedgerFull, DeclarationNamespace, DeclarationOccurrence,
+    DeclarationRefusalId,
     DeclarationRefusalSummary, Declared, refuse_covered, refuse_row,
 };
 use crate::demand::{DurableNaming, PathSigil};
@@ -289,8 +290,9 @@ pub(crate) enum RootBinding<'a> {
     Executable(&'a DurableRoot),
     /// Admitted with a complete identity, but outside the executable subset.
     NotYetExecutable,
-    /// Declared and refused. The declaration reported the cause; a use reuses it.
-    Refused(&'a DeclarationRefusalSummary),
+    /// Declared and refused. The declaration reported the cause; a use reuses it,
+    /// carrying the handle that lets a type-resolution result name it.
+    Refused(DeclarationRefusalId, &'a DeclarationRefusalSummary),
     /// No store of this name is declared — the one case a not-in-scope report may
     /// describe.
     Absent,
@@ -304,7 +306,6 @@ pub(crate) enum RootBinding<'a> {
 /// is answered with that cause instead of reading as a name that was never written.
 /// A root's index in the draft's DURABLE table is its declaration order (RootId), so
 /// the executable list stays declaration-ordered.
-#[derive(Default)]
 pub(crate) struct DurableRegistry {
     roots: Vec<DurableRoot>,
     declared: DeclarationLedger<String, DeclaredRoot>,
@@ -312,6 +313,16 @@ pub(crate) struct DurableRegistry {
     /// simple name)`, accumulated across the project's admitted stores. The
     /// [`DurableNaming`] the demand sentence spells paths through is built from this.
     naming: Vec<(LedgerIdBytes, PathSigil, String)>,
+}
+
+impl Default for DurableRegistry {
+    fn default() -> Self {
+        Self {
+            roots: Vec::new(),
+            declared: DeclarationLedger::new(DeclarationNamespace::DurableRoot),
+            naming: Vec::new(),
+        }
+    }
 }
 
 impl DurableRegistry {
@@ -338,7 +349,7 @@ impl DurableRegistry {
                 },
                 None => RootBinding::NotYetExecutable,
             },
-            Binding::Refused(refusal) => RootBinding::Refused(refusal),
+            Binding::Refused(id, refusal) => RootBinding::Refused(id, refusal),
             Binding::Absent => RootBinding::Absent,
         }
     }
@@ -350,7 +361,7 @@ impl DurableRegistry {
     pub(crate) fn root_by_name(&self, name: &str) -> Option<&DurableRoot> {
         match self.root(name) {
             RootBinding::Executable(root) => Some(root),
-            RootBinding::NotYetExecutable | RootBinding::Refused(_) | RootBinding::Absent => None,
+            RootBinding::NotYetExecutable | RootBinding::Refused(..) | RootBinding::Absent => None,
         }
     }
 

@@ -38,11 +38,38 @@ pub(crate) const MAX_DECLARATION_LEDGER_BYTES: usize = MAX_DIAGNOSTIC_BYTES;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct DeclarationLedgerFull;
 
+/// Which namespace's ledger minted a [`DeclarationRefusalId`].
+///
+/// The tag is what makes an id comparable across ledgers. Several namespaces
+/// answer one resolution — a type name, a generic template name, and a store root
+/// name all reach `ResolveRefusal` — so a bare index would let two unrelated
+/// refusals with equal indexes compare equal and collapse into one steer. Every
+/// variant names a live producer; a namespace earns a variant when its ledger
+/// lands, never before.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum DeclarationNamespace {
+    Constant,
+    DurableRoot,
+    NamedType,
+    TypeTemplate,
+    ResourceMember,
+}
+
 /// A `Copy` handle to one refused declaration, valid only in the ledger that
 /// minted it. Refusal causes travel through `ResolveRefusal` as this id so that
 /// no owned bytes enter the monomorphization cache.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub(crate) struct DeclarationRefusalId(u32);
+pub(crate) struct DeclarationRefusalId {
+    namespace: DeclarationNamespace,
+    index: u32,
+}
+
+impl DeclarationRefusalId {
+    /// The ledger that answers this id.
+    pub(crate) fn namespace(self) -> DeclarationNamespace {
+        self.namespace
+    }
+}
 
 /// Why one declared key is refused: the first refusal's cause, plus a bounded
 /// count of the further occurrences merged into it.
@@ -59,11 +86,27 @@ pub(crate) struct DeclarationRefusalSummary {
     span: SourceSpan,
     further: u16,
     gap: Option<IdentityGap>,
+    report: RefusalReport,
     /// Whether a use site has already been steered to this cause. A `Cell` because
     /// the flag is the report-once record and every namespace ledger is read through
     /// a shared reference during lowering; the alternative is the parallel
     /// `&mut BTreeSet<String>` of steered names this ledger replaces.
     steered: Cell<bool>,
+}
+
+/// Where the report that carries a refusal's cause was made.
+///
+/// A steer sends the reader to the cause, so it must not claim a location the
+/// report does not occupy. Most refusals report at the declaration itself and can
+/// say so; the covered classes are reported by another pass or another occurrence,
+/// where only the code is known here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RefusalReport {
+    /// The refusing site pushed the row at this declaration's own span.
+    AtDeclaration,
+    /// A different pass or a different occurrence made the report. The steer names
+    /// the code and makes no claim about where the row sits.
+    ByCoveringPass,
 }
 
 /// Push the diagnostic that refuses `name` and summarize it from the same triple,
@@ -101,6 +144,7 @@ pub(crate) fn refuse_row(
         span: at.span,
         further: 0,
         gap: None,
+        report: RefusalReport::AtDeclaration,
         steered: Cell::new(false),
     };
     diagnostics.push(row);
@@ -123,6 +167,7 @@ pub(crate) fn refuse_covered(at: Declared<'_>, code: &'static str) -> Declaratio
         span: at.span,
         further: 0,
         gap: None,
+        report: RefusalReport::ByCoveringPass,
         steered: Cell::new(false),
     }
 }
@@ -165,6 +210,12 @@ impl DeclarationRefusalSummary {
         self.gap.as_ref()
     }
 
+    /// Where the report carrying this cause was made, which bounds what the steer
+    /// may claim about it.
+    pub(crate) fn report(&self) -> RefusalReport {
+        self.report
+    }
+
     /// Whether this use site is the one that reports the cause. `true` on the first
     /// call only, so many uses of one refused key report it once and fail silently
     /// thereafter — the property that holds amplification to the number of refused
@@ -191,6 +242,7 @@ impl DeclarationRefusalSummary {
             span: _,
             further,
             gap,
+            report: _,
             steered: _,
         } = other;
         // The first refusal is the reported cause; a later one only raises the
@@ -217,7 +269,9 @@ pub(crate) enum DeclarationOccurrence<T> {
 #[derive(Debug)]
 pub(crate) enum Binding<'a, T> {
     Accepted(&'a T),
-    Refused(&'a DeclarationRefusalSummary),
+    /// The key is declared and refused, with the handle that carries the cause
+    /// through a `Copy` resolution result and the summary that renders it.
+    Refused(DeclarationRefusalId, &'a DeclarationRefusalSummary),
     /// The key was never declared — a genuine absence, and the only case a
     /// not-in-scope report may describe.
     Absent,
@@ -237,6 +291,7 @@ enum Selected {
 /// cause or to emit bytes — the discipline `Monomorph` already holds. A divergence
 /// between the two is [`DeclarationIndexDrift`], not a silent wrong answer.
 pub(crate) struct DeclarationLedger<K, T> {
+    namespace: DeclarationNamespace,
     occurrences: Vec<(K, DeclarationOccurrence<T>)>,
     index: BTreeMap<K, Selected>,
     /// Positions in `occurrences` of the merged refusal for each refused key,
@@ -251,9 +306,12 @@ pub(crate) struct DeclarationLedger<K, T> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct DeclarationIndexDrift;
 
-impl<K, T> Default for DeclarationLedger<K, T> {
-    fn default() -> Self {
+impl<K, T> DeclarationLedger<K, T> {
+    /// An empty ledger for `namespace`. There is no `Default`: an untagged ledger
+    /// would mint ids that compare equal to another namespace's.
+    pub(crate) fn new(namespace: DeclarationNamespace) -> Self {
         Self {
+            namespace,
             occurrences: Vec::new(),
             index: BTreeMap::new(),
             refusals: Vec::new(),
@@ -295,7 +353,7 @@ impl<K: Ord + Clone, T> DeclarationLedger<K, T> {
                     // A second refusal of one key merges into the first: the count
                     // rises, no second name is retained, and no bytes are charged.
                     Some(Selected::Refused(id)) => {
-                        let at = self.refusals[id.0 as usize];
+                        let at = self.refusals[id.index as usize];
                         if let Some((_, DeclarationOccurrence::Refused(first))) =
                             self.occurrences.get_mut(at)
                         {
@@ -304,7 +362,10 @@ impl<K: Ord + Clone, T> DeclarationLedger<K, T> {
                     }
                     None => {
                         self.charge(summary.retained_owned_bytes())?;
-                        let id = DeclarationRefusalId(self.refusals.len() as u32);
+                        let id = DeclarationRefusalId {
+                            namespace: self.namespace,
+                            index: self.refusals.len() as u32,
+                        };
                         self.refusals.push(position);
                         self.index.insert(key.clone(), Selected::Refused(id));
                         self.occurrences
@@ -334,7 +395,7 @@ impl<K: Ord + Clone, T> DeclarationLedger<K, T> {
                 _ => Binding::Absent,
             },
             Some(Selected::Refused(id)) => match self.refusal(*id) {
-                Ok(summary) => Binding::Refused(summary),
+                Ok(summary) => Binding::Refused(*id, summary),
                 Err(DeclarationIndexDrift) => Binding::Absent,
             },
             None => Binding::Absent,
@@ -349,18 +410,37 @@ impl<K: Ord + Clone, T> DeclarationLedger<K, T> {
     }
 
     /// The merged refusal `id` addresses.
+    ///
+    /// An id minted by another namespace's ledger is drift, not a neighbouring
+    /// row: the tag is checked before the index is used, so the only way to read a
+    /// summary is through the ledger that wrote it.
     pub(crate) fn refusal(
         &self,
         id: DeclarationRefusalId,
     ) -> Result<&DeclarationRefusalSummary, DeclarationIndexDrift> {
+        if id.namespace != self.namespace {
+            return Err(DeclarationIndexDrift);
+        }
         let at = *self
             .refusals
-            .get(id.0 as usize)
+            .get(id.index as usize)
             .ok_or(DeclarationIndexDrift)?;
         match self.occurrences.get(at) {
             Some((_, DeclarationOccurrence::Refused(summary))) => Ok(summary),
             _ => Err(DeclarationIndexDrift),
         }
+    }
+
+    /// Every accepted declaration in source order, which is the order the image
+    /// tables are built in. Refused occurrences are skipped: they hold their names
+    /// but bind no value, so nothing downstream of acceptance sees them.
+    pub(crate) fn accepted(&self) -> impl Iterator<Item = (&K, &T)> {
+        self.occurrences
+            .iter()
+            .filter_map(|(key, occurrence)| match occurrence {
+                DeclarationOccurrence::Accepted(value) => Some((key, value)),
+                DeclarationOccurrence::Refused(_) => None,
+            })
     }
 
     /// Every declared key, accepted or refused — the did-you-mean corpus, so a
@@ -409,7 +489,7 @@ mod tests {
     }
 
     fn ledger() -> DeclarationLedger<String, u32> {
-        DeclarationLedger::default()
+        DeclarationLedger::new(DeclarationNamespace::Constant)
     }
 
     #[test]
@@ -428,7 +508,7 @@ mod tests {
             )
             .expect("within budget");
         match ledger.lookup(&"a".to_string()) {
-            Binding::Refused(summary) => {
+            Binding::Refused(_, summary) => {
                 assert_eq!(summary.name(), "a");
                 assert_eq!(summary.code(), "check.type");
             }
@@ -501,7 +581,7 @@ mod tests {
         match ledger.lookup(&"a".to_string()) {
             // The second refusal folds into the first: one retained summary, one
             // reportable cause, and a bounded count of the occurrences behind it.
-            Binding::Refused(summary) => assert_eq!(summary.further, 1),
+            Binding::Refused(_, summary) => assert_eq!(summary.further, 1),
             other => panic!("expected a refusal, got {other:?}"),
         }
         assert_eq!(ledger.occurrences.len(), 1);
@@ -518,7 +598,7 @@ mod tests {
             .expect("within budget");
         let key = "a".to_string();
         let steers = |ledger: &DeclarationLedger<String, u32>| match ledger.lookup(&key) {
-            Binding::Refused(summary) => summary.steer_once(),
+            Binding::Refused(_, summary) => summary.steer_once(),
             other => panic!("expected a refusal, got {other:?}"),
         };
         assert!(steers(&ledger));
@@ -544,7 +624,8 @@ mod tests {
 
     #[test]
     fn crossing_the_byte_ceiling_is_a_typed_limit_not_a_dropped_key() {
-        let mut ledger: DeclarationLedger<String, u32> = DeclarationLedger::default();
+        let mut ledger: DeclarationLedger<String, u32> =
+            DeclarationLedger::new(DeclarationNamespace::Constant);
         let wide = "n".repeat(4096);
         let mut diagnostics = DiagnosticCollector::new();
         let mut declared = 0usize;
@@ -564,8 +645,67 @@ mod tests {
     fn a_drifted_refusal_id_is_typed_drift_not_a_wrong_summary() {
         let ledger = ledger();
         assert_eq!(
-            ledger.refusal(DeclarationRefusalId(7)),
+            ledger.refusal(DeclarationRefusalId {
+                namespace: DeclarationNamespace::Constant,
+                index: 7,
+            }),
             Err(DeclarationIndexDrift)
         );
+    }
+
+    /// A1 — an id is valid only in the ledger that minted it. Two namespaces mint
+    /// index 0, and reading one's id out of the other is drift rather than the
+    /// neighbouring summary, which is what keeps `join`'s same-id rule sound.
+    #[test]
+    fn an_id_from_another_namespace_is_drift_not_a_neighbouring_summary() {
+        let mut constants = ledger();
+        constants
+            .declare(
+                "a".to_string(),
+                DeclarationOccurrence::Refused(refusal("a")),
+            )
+            .expect("within budget");
+        let mut types: DeclarationLedger<String, u32> =
+            DeclarationLedger::new(DeclarationNamespace::NamedType);
+        types
+            .declare(
+                "a".to_string(),
+                DeclarationOccurrence::Refused(refusal("a")),
+            )
+            .expect("within budget");
+
+        let Binding::Refused(from_constants, _) = constants.lookup(&"a".to_string()) else {
+            panic!("expected a refusal");
+        };
+        let Binding::Refused(from_types, _) = types.lookup(&"a".to_string()) else {
+            panic!("expected a refusal");
+        };
+        assert_ne!(from_constants, from_types);
+        assert_eq!(types.refusal(from_constants), Err(DeclarationIndexDrift));
+        assert_eq!(constants.refusal(from_types), Err(DeclarationIndexDrift));
+    }
+
+    /// `accepted()` is source-ordered and skips refusals, so an image table built
+    /// from it keeps declaration order without a refused key shifting a position.
+    #[test]
+    fn accepted_yields_source_order_without_refusals() {
+        let mut ledger = ledger();
+        ledger
+            .declare("a".to_string(), DeclarationOccurrence::Accepted(1))
+            .expect("within budget");
+        ledger
+            .declare(
+                "b".to_string(),
+                DeclarationOccurrence::Refused(refusal("b")),
+            )
+            .expect("within budget");
+        ledger
+            .declare("c".to_string(), DeclarationOccurrence::Accepted(3))
+            .expect("within budget");
+        let accepted: Vec<(&str, u32)> = ledger
+            .accepted()
+            .map(|(key, value)| (key.as_str(), *value))
+            .collect();
+        assert_eq!(accepted, vec![("a", 1), ("c", 3)]);
     }
 }

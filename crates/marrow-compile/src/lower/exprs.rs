@@ -159,7 +159,7 @@ impl<'a> FnLowerer<'a> {
                             let value = value.clone();
                             return Some(self.lower_const_value(&value, *span));
                         }
-                        Binding::Refused(refusal) => {
+                        Binding::Refused(_, refusal) => {
                             if refusal.steer_once() {
                                 let row = declaration_refused(self.file, *span, refusal);
                                 self.fail(row);

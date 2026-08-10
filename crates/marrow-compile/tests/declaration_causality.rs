@@ -483,6 +483,17 @@ fn r20_value_cycle_a_root_refused_for_a_value_cycle_names_the_recursion_cause() 
         "the covering pass reports the cycle: {:#?}",
         rows(&diagnostics),
     );
+    // The covering report sits on the cyclic value type, not on `^books`. The steer
+    // names the code it must be corrected against and claims no location, because
+    // there is no `check.recursion` row at this store's declaration to send anyone to.
+    for row in &diagnostics {
+        assert!(
+            !row.message().contains("at the declaration of `books`"),
+            "a covered cause is reported elsewhere; the steer may not place it at \
+             this declaration: {:#?}",
+            messages(&diagnostics),
+        );
+    }
 }
 
 /// R19 — a refused resource member must not narrow the identity-gap anchor set. A
