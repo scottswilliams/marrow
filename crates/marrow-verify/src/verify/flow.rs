@@ -170,836 +170,112 @@ fn apply(
     consts: &[SealedConst],
     frame: &mut Frame,
 ) -> Result<Control, VerifyRejection> {
-    let types = ctx.types;
-    let signatures = ctx.signatures;
     if is_durable(instr) {
         return apply_durable(ctx, instr, frame);
     }
-    // Record/optional/call opcodes need the whole frame or the signatures; the
-    // scalar opcodes work on the stack alone, borrowed here after these return.
-    if let SealedInstr::Call(target) = instr {
-        let sig = signatures.get(*target as usize).ok_or(reject(
-            VerifyPhase::Function,
-            "call target index out of range",
-        ))?;
-        // a0 is pushed first, so pop arguments in reverse parameter order.
-        for param in sig.params.iter().rev() {
-            let got = pop(&mut frame.stack)?;
-            let want = VType::from_image(*param).expect("a parameter type is never unit");
-            if got != want {
-                return Err(reject(VerifyPhase::Function, "call argument type mismatch"));
-            }
-        }
-        match sig.ret {
-            RetShape::Unit => {}
-            RetShape::Scalar { scalar, optional } => {
-                frame.stack.push(VType::Scalar { scalar, optional });
-            }
-            RetShape::Record { idx, optional } => {
-                frame.stack.push(VType::Record { idx, optional });
-            }
-            RetShape::Enum { idx, optional } => {
-                frame.stack.push(VType::Enum { idx, optional });
-            }
-            RetShape::Collection { idx, optional } => {
-                frame.stack.push(VType::Collection { idx, optional });
-            }
-            RetShape::Identity { root, optional } => {
-                frame.stack.push(VType::Identity { root, optional });
-            }
-        }
-        return Ok(Control::Fallthrough);
-    }
     match instr {
-        SealedInstr::RecordNew(ty) => {
-            let record = types.get(*ty as usize).ok_or(reject(
-                VerifyPhase::Function,
-                "record type index out of range",
-            ))?;
-            // f0 is pushed first, so pop fields in reverse declaration order.
-            for field in record.fields.iter().rev() {
-                let bare = VType::from_image(field.ty).expect("a record field type is never unit");
-                let want = if field.required {
-                    bare
-                } else {
-                    bare.to_optional()
-                };
-                let got = pop(&mut frame.stack)?;
-                if got != want {
-                    return Err(reject(
-                        VerifyPhase::Function,
-                        "record field operand type mismatch",
-                    ));
-                }
-            }
-            frame.stack.push(VType::bare_record(*ty));
-            return Ok(Control::Fallthrough);
-        }
-        SealedInstr::FieldGet(field) => {
-            let record = pop(&mut frame.stack)?;
-            let VType::Record {
-                idx,
-                optional: false,
-            } = record
-            else {
-                return Err(reject(
-                    VerifyPhase::Function,
-                    "field read requires a bare record",
-                ));
-            };
-            let record_type = types.get(idx as usize).ok_or(reject(
-                VerifyPhase::Function,
-                "record type index out of range",
-            ))?;
-            let field_def = record_type
-                .fields
-                .get(*field as usize)
-                .ok_or(reject(VerifyPhase::Function, "field index out of range"))?;
-            let bare = VType::from_image(field_def.ty).expect("a record field type is never unit");
-            let result = if field_def.required {
-                bare
-            } else {
-                bare.to_optional()
-            };
-            frame.stack.push(result);
-            return Ok(Control::Fallthrough);
-        }
-        SealedInstr::FieldSet(field) => {
-            // `[record, value] → [record]`: store a bare field value present.
-            let value = pop(&mut frame.stack)?;
-            let record = pop(&mut frame.stack)?;
-            let VType::Record {
-                idx,
-                optional: false,
-            } = record
-            else {
-                return Err(reject(
-                    VerifyPhase::Function,
-                    "field set requires a bare record",
-                ));
-            };
-            let record_type = types.get(idx as usize).ok_or(reject(
-                VerifyPhase::Function,
-                "record type index out of range",
-            ))?;
-            let field_def = record_type
-                .fields
-                .get(*field as usize)
-                .ok_or(reject(VerifyPhase::Function, "field index out of range"))?;
-            let want = VType::from_image(field_def.ty).expect("a record field type is never unit");
-            if value != want {
-                return Err(reject(
-                    VerifyPhase::Function,
-                    "field set operand type mismatch",
-                ));
-            }
-            frame.stack.push(VType::bare_record(idx));
-            return Ok(Control::Fallthrough);
-        }
-        SealedInstr::FieldUnset(field) => {
-            // `[record] → [record]`: clear a sparse field to vacant.
-            let record = pop(&mut frame.stack)?;
-            let VType::Record {
-                idx,
-                optional: false,
-            } = record
-            else {
-                return Err(reject(
-                    VerifyPhase::Function,
-                    "field unset requires a bare record",
-                ));
-            };
-            let record_type = types.get(idx as usize).ok_or(reject(
-                VerifyPhase::Function,
-                "record type index out of range",
-            ))?;
-            let field_def = record_type
-                .fields
-                .get(*field as usize)
-                .ok_or(reject(VerifyPhase::Function, "field index out of range"))?;
-            if field_def.required {
-                return Err(reject(
-                    VerifyPhase::Function,
-                    "a required field cannot be unset",
-                ));
-            }
-            frame.stack.push(VType::bare_record(idx));
-            return Ok(Control::Fallthrough);
-        }
-        SealedInstr::SomeWrap => {
-            let value = pop(&mut frame.stack)?;
-            if value.is_optional() {
-                return Err(reject(
-                    VerifyPhase::Function,
-                    "some-wrap operand is already optional",
-                ));
-            }
-            frame.stack.push(value.to_optional());
-            return Ok(Control::Fallthrough);
-        }
-        SealedInstr::VacantLoad(ty) => {
-            // A record/enum/collection operand names a value type; bounds-check it.
-            match ty {
-                ImageType::Record { idx, .. } if ctx.types.get(*idx as usize).is_none() => {
-                    return Err(reject(
-                        VerifyPhase::Function,
-                        "vacant-load record index out of range",
-                    ));
-                }
-                ImageType::Enum { idx, .. } if ctx.enums.get(*idx as usize).is_none() => {
-                    return Err(reject(
-                        VerifyPhase::Function,
-                        "vacant-load enum index out of range",
-                    ));
-                }
-                ImageType::Collection { idx, .. }
-                    if ctx.collections.get(*idx as usize).is_none() =>
-                {
-                    return Err(reject(
-                        VerifyPhase::Function,
-                        "vacant-load collection index out of range",
-                    ));
-                }
-                _ => {}
-            }
-            frame.stack.push(
-                VType::from_image(*ty).expect("vacant-load operand is a value type, not unit"),
-            );
-            return Ok(Control::Fallthrough);
-        }
-        SealedInstr::BranchPresent(target) => {
-            let value = pop(&mut frame.stack)?;
-            if !value.is_optional() {
-                return Err(reject(
-                    VerifyPhase::Function,
-                    "branch-present requires an optional",
-                ));
-            }
-            return Ok(Control::BranchPresent {
-                target: *target,
-                present: value.to_bare(),
-            });
-        }
-        SealedInstr::EnumConstruct { enum_idx, variant } => {
-            let enum_def = ctx.enums.get(*enum_idx as usize).ok_or(reject(
-                VerifyPhase::Function,
-                "enum type index out of range",
-            ))?;
-            let variant_def = enum_def.variants().get(*variant as usize).ok_or(reject(
-                VerifyPhase::Function,
-                "enum variant index out of range",
-            ))?;
-            // p0 is pushed first, so pop the payload in reverse declaration order.
-            for ty in variant_def.payload.iter().rev() {
-                let want = VType::from_image(*ty).expect("a payload leaf is never unit");
-                let got = pop(&mut frame.stack)?;
-                if got != want {
-                    return Err(reject(
-                        VerifyPhase::Function,
-                        "enum payload operand type mismatch",
-                    ));
-                }
-            }
-            frame.stack.push(VType::bare_enum(*enum_idx));
-            return Ok(Control::Fallthrough);
-        }
-        SealedInstr::EnumTag => {
-            let value = pop(&mut frame.stack)?;
-            if !matches!(
-                value,
-                VType::Enum {
-                    optional: false,
-                    ..
-                }
-            ) {
-                return Err(reject(
-                    VerifyPhase::Function,
-                    "enum-tag requires a bare enum",
-                ));
-            }
-            frame.stack.push(VType::bare_scalar(Scalar::Int));
-            return Ok(Control::Fallthrough);
-        }
-        SealedInstr::EnumPayloadGet { variant, field } => {
-            let value = pop(&mut frame.stack)?;
-            let VType::Enum {
-                idx,
-                optional: false,
-            } = value
-            else {
-                return Err(reject(
-                    VerifyPhase::Function,
-                    "enum-payload-get requires a bare enum",
-                ));
-            };
-            let enum_def = ctx.enums.get(idx as usize).ok_or(reject(
-                VerifyPhase::Function,
-                "enum type index out of range",
-            ))?;
-            let variant_def = enum_def.variants().get(*variant as usize).ok_or(reject(
-                VerifyPhase::Function,
-                "enum variant index out of range",
-            ))?;
-            // The variant operand types the payload leaf; the VM faults if the
-            // runtime value carries a different variant, so the pushed type is
-            // never observed on a mismatch.
-            let leaf = variant_def.payload.get(*field as usize).ok_or(reject(
-                VerifyPhase::Function,
-                "enum payload field index out of range",
-            ))?;
-            frame
-                .stack
-                .push(VType::from_image(*leaf).expect("a payload leaf is never unit"));
-            return Ok(Control::Fallthrough);
-        }
-        SealedInstr::EqEnum => {
-            let right = pop(&mut frame.stack)?;
-            let left = pop(&mut frame.stack)?;
-            let (
-                VType::Enum {
-                    idx: r,
-                    optional: false,
-                },
-                VType::Enum {
-                    idx: l,
-                    optional: false,
-                },
-            ) = (right, left)
-            else {
-                return Err(reject(
-                    VerifyPhase::Function,
-                    "enum equality requires two bare enums",
-                ));
-            };
-            if l != r {
-                return Err(reject(
-                    VerifyPhase::Function,
-                    "enum equality operands are different enums",
-                ));
-            }
-            frame.stack.push(VType::bare_scalar(Scalar::Bool));
-            return Ok(Control::Fallthrough);
-        }
-        SealedInstr::EqId => {
-            let right = pop(&mut frame.stack)?;
-            let left = pop(&mut frame.stack)?;
-            let (
-                VType::Identity {
-                    root: r,
-                    optional: false,
-                },
-                VType::Identity {
-                    root: l,
-                    optional: false,
-                },
-            ) = (right, left)
-            else {
-                return Err(reject(
-                    VerifyPhase::Function,
-                    "identity equality requires two bare entry identities",
-                ));
-            };
-            if l != r {
-                return Err(reject(
-                    VerifyPhase::Function,
-                    "identity equality operands name different store roots",
-                ));
-            }
-            frame.stack.push(VType::bare_scalar(Scalar::Bool));
-            return Ok(Control::Fallthrough);
-        }
-        SealedInstr::MakeIdentity { root, cols } => {
-            let sealed_root = ctx.roots.get(*root as usize).ok_or(reject(
-                VerifyPhase::Function,
-                "make-identity root index out of range",
-            ))?;
-            if sealed_root.keys.len() != *cols as usize {
-                return Err(reject(
-                    VerifyPhase::Function,
-                    "make-identity column count does not match the root's key columns",
-                ));
-            }
-            // k0 is pushed first, so pop the key columns in reverse declaration order,
-            // each matching the root's key-column scalar type.
-            for scalar in sealed_root.keys.iter().rev() {
-                let got = pop(&mut frame.stack)?;
-                if got != VType::bare_scalar(*scalar) {
-                    return Err(reject(
-                        VerifyPhase::Function,
-                        "make-identity key operand type does not match the root's key column",
-                    ));
-                }
-            }
-            frame.stack.push(VType::Identity {
-                root: *root,
-                optional: false,
-            });
-            return Ok(Control::Fallthrough);
-        }
-        SealedInstr::IdentityKeyPath(cols) => {
-            let VType::Identity {
-                root,
-                optional: false,
-            } = pop(&mut frame.stack)?
-            else {
-                return Err(reject(
-                    VerifyPhase::Function,
-                    "identity key-path requires a bare entry identity",
-                ));
-            };
-            let sealed_root = ctx.roots.get(root as usize).ok_or(reject(
-                VerifyPhase::Function,
-                "identity key-path root index out of range",
-            ))?;
-            if sealed_root.keys.len() != *cols as usize {
-                return Err(reject(
-                    VerifyPhase::Function,
-                    "identity key-path column count does not match the root's key columns",
-                ));
-            }
-            // Spread the key columns root-first (k0 pushed first) so the key-path sits
-            // exactly as an inline `^root[k…]` access would leave it for the entry read.
-            // Each column is tagged with the identity's root so a durable op can re-prove
-            // it addresses that same root — an identity of one root can never key an
-            // operation on another, even through a local slot.
-            for scalar in &sealed_root.keys {
-                frame.stack.push(VType::IdentityColumn {
-                    root,
-                    scalar: *scalar,
-                });
-            }
-            return Ok(Control::Fallthrough);
-        }
-        SealedInstr::ListNew(idx) => {
-            match ctx.collections.get(*idx as usize) {
-                Some(SealedCollectionType::List { .. }) => {}
-                _ => {
-                    return Err(reject(
-                        VerifyPhase::Function,
-                        "list-new operand does not name a list collection type",
-                    ));
-                }
-            }
-            frame.stack.push(VType::bare_collection(*idx));
-            return Ok(Control::Fallthrough);
-        }
-        SealedInstr::MapNew(idx) => {
-            match ctx.collections.get(*idx as usize) {
-                Some(SealedCollectionType::Map { .. }) => {}
-                _ => {
-                    return Err(reject(
-                        VerifyPhase::Function,
-                        "map-new operand does not name a map collection type",
-                    ));
-                }
-            }
-            frame.stack.push(VType::bare_collection(*idx));
-            return Ok(Control::Fallthrough);
-        }
-        SealedInstr::ListAppend => {
-            let value = pop(&mut frame.stack)?;
-            let (idx, elem) = list_elem(ctx, pop(&mut frame.stack)?)?;
-            if value != VType::from_image(elem).expect("a list element type is never unit") {
-                return Err(reject(
-                    VerifyPhase::Function,
-                    "list-append value type does not match the element type",
-                ));
-            }
-            frame.stack.push(VType::bare_collection(idx));
-            return Ok(Control::Fallthrough);
-        }
-        SealedInstr::ListLen => {
-            list_elem(ctx, pop(&mut frame.stack)?)?;
-            frame.stack.push(VType::bare_scalar(Scalar::Int));
-            return Ok(Control::Fallthrough);
-        }
-        SealedInstr::ListGet => {
-            expect_scalar(pop(&mut frame.stack)?, Scalar::Int)?;
-            let (_, elem) = list_elem(ctx, pop(&mut frame.stack)?)?;
-            frame
-                .stack
-                .push(VType::from_image(elem).expect("a list element type is never unit"));
-            return Ok(Control::Fallthrough);
-        }
-        SealedInstr::ListIndex => {
-            expect_scalar(pop(&mut frame.stack)?, Scalar::Int)?;
-            let (_, elem) = list_elem(ctx, pop(&mut frame.stack)?)?;
-            frame.stack.push(
-                VType::from_image(elem)
-                    .expect("a list element type is never unit")
-                    .to_optional(),
-            );
-            return Ok(Control::Fallthrough);
-        }
-        SealedInstr::MapInsert => {
-            let value = pop(&mut frame.stack)?;
-            let key = pop(&mut frame.stack)?;
-            let (idx, key_ty, value_ty) = map_kv(ctx, pop(&mut frame.stack)?)?;
-            if key != VType::from_image(key_ty).expect("a map key type is never unit") {
-                return Err(reject(
-                    VerifyPhase::Function,
-                    "map-insert key type does not match the map key type",
-                ));
-            }
-            if value != VType::from_image(value_ty).expect("a map value type is never unit") {
-                return Err(reject(
-                    VerifyPhase::Function,
-                    "map-insert value type does not match the map value type",
-                ));
-            }
-            frame.stack.push(VType::bare_collection(idx));
-            return Ok(Control::Fallthrough);
-        }
-        SealedInstr::MapRemove => {
-            let key = pop(&mut frame.stack)?;
-            let (idx, key_ty, _value_ty) = map_kv(ctx, pop(&mut frame.stack)?)?;
-            if key != VType::from_image(key_ty).expect("a map key type is never unit") {
-                return Err(reject(
-                    VerifyPhase::Function,
-                    "map-remove key type does not match the map key type",
-                ));
-            }
-            frame.stack.push(VType::bare_collection(idx));
-            return Ok(Control::Fallthrough);
-        }
-        SealedInstr::MapGet => {
-            let key = pop(&mut frame.stack)?;
-            let (_, key_ty, value_ty) = map_kv(ctx, pop(&mut frame.stack)?)?;
-            if key != VType::from_image(key_ty).expect("a map key type is never unit") {
-                return Err(reject(
-                    VerifyPhase::Function,
-                    "map-get key type does not match the map key type",
-                ));
-            }
-            frame.stack.push(
-                VType::from_image(value_ty)
-                    .expect("a map value type is never unit")
-                    .to_optional(),
-            );
-            return Ok(Control::Fallthrough);
-        }
-        SealedInstr::MapLen => {
-            map_kv(ctx, pop(&mut frame.stack)?)?;
-            frame.stack.push(VType::bare_scalar(Scalar::Int));
-            return Ok(Control::Fallthrough);
-        }
-        SealedInstr::MapKeyAt => {
-            expect_scalar(pop(&mut frame.stack)?, Scalar::Int)?;
-            let (_, key_ty, _) = map_kv(ctx, pop(&mut frame.stack)?)?;
-            frame
-                .stack
-                .push(VType::from_image(key_ty).expect("a map key type is never unit"));
-            return Ok(Control::Fallthrough);
-        }
-        SealedInstr::MapValueAt => {
-            expect_scalar(pop(&mut frame.stack)?, Scalar::Int)?;
-            let (_, _, value_ty) = map_kv(ctx, pop(&mut frame.stack)?)?;
-            frame
-                .stack
-                .push(VType::from_image(value_ty).expect("a map value type is never unit"));
-            return Ok(Control::Fallthrough);
-        }
-        SealedInstr::TextSplit(idx) => {
-            // `split(text, sep): List[string]`: separator then text on the stack.
-            expect_scalar(pop(&mut frame.stack)?, Scalar::Text)?;
-            expect_scalar(pop(&mut frame.stack)?, Scalar::Text)?;
-            list_of_string(ctx, *idx)?;
-            frame.stack.push(VType::bare_collection(*idx));
-            return Ok(Control::Fallthrough);
-        }
-        SealedInstr::TextLines(idx) => {
-            // `lines(text): List[string]`.
-            expect_scalar(pop(&mut frame.stack)?, Scalar::Text)?;
-            list_of_string(ctx, *idx)?;
-            frame.stack.push(VType::bare_collection(*idx));
-            return Ok(Control::Fallthrough);
-        }
-        SealedInstr::TextJoin => {
-            // `join(List[string], sep): string`: separator then list on the stack.
-            expect_scalar(pop(&mut frame.stack)?, Scalar::Text)?;
-            let (idx, _) = list_elem(ctx, pop(&mut frame.stack)?)?;
-            list_of_string(ctx, idx)?;
-            frame.stack.push(VType::bare_scalar(Scalar::Text));
-            return Ok(Control::Fallthrough);
-        }
-        _ => {}
-    }
-
-    let stack = &mut frame.stack;
-    match instr {
-        SealedInstr::ConstLoad(idx) => {
-            let value = consts
-                .get(*idx as usize)
-                .ok_or(reject(VerifyPhase::Function, "const index out of range"))?;
-            stack.push(VType::bare_scalar(const_scalar(value)));
-            Ok(Control::Fallthrough)
-        }
-        SealedInstr::LocalGet(slot) => {
-            let ty = frame
-                .locals
-                .get(*slot as usize)
-                .ok_or(reject(VerifyPhase::Function, "local index out of range"))?
-                .ok_or(reject(VerifyPhase::Function, "local read before init"))?;
-            stack.push(ty);
-            Ok(Control::Fallthrough)
-        }
-        SealedInstr::LocalSet(slot) => {
-            let value = pop(stack)?;
-            let cell = frame
-                .locals
-                .get_mut(*slot as usize)
-                .ok_or(reject(VerifyPhase::Function, "local index out of range"))?;
-            match cell {
-                Some(existing) if *existing != value => {
-                    return Err(reject(
-                        VerifyPhase::Function,
-                        "local slot reused at a different type",
-                    ));
-                }
-                _ => *cell = Some(value),
-            }
-            Ok(Control::Fallthrough)
-        }
-        SealedInstr::Pop => {
-            pop(stack)?;
-            Ok(Control::Fallthrough)
-        }
-        SealedInstr::Return => {
-            match (stack.pop(), function.ret) {
-                (Some(top), ret) if top.matches_ret(ret) => {}
-                (None, RetShape::Unit) => {}
-                _ => {
-                    return Err(reject(
-                        VerifyPhase::Function,
-                        "return stack shape does not match the return type",
-                    ));
-                }
-            }
-            if !stack.is_empty() {
-                return Err(reject(
-                    VerifyPhase::Function,
-                    "operand stack not empty at return",
-                ));
-            }
-            Ok(Control::Return)
-        }
-        SealedInstr::Unreachable(idx) => match consts.get(*idx as usize) {
-            // The operand is the static invariant text; it must be a text const. The
-            // instruction never falls through, so it ends the frame like `Return`
-            // without a return-value check — it always faults.
-            Some(SealedConst::Text(_)) => Ok(Control::Return),
-            Some(_) => Err(reject(
-                VerifyPhase::Function,
-                "unreachable operand must be a text const",
-            )),
-            None => Err(reject(VerifyPhase::Function, "const index out of range")),
-        },
-        SealedInstr::Todo(idx) => match consts.get(*idx as usize) {
-            // The operand is the static deferral text; like `Unreachable` it must be a
-            // text const and ends the frame without a return-value check.
-            Some(SealedConst::Text(_)) => Ok(Control::Return),
-            Some(_) => Err(reject(
-                VerifyPhase::Function,
-                "todo operand must be a text const",
-            )),
-            None => Err(reject(VerifyPhase::Function, "const index out of range")),
-        },
+        SealedInstr::ConstLoad(idx) => const_load(frame, consts, *idx),
+        SealedInstr::LocalGet(slot) => local_get(frame, *slot),
+        SealedInstr::LocalSet(slot) => local_set(frame, *slot),
+        SealedInstr::Pop => discard(frame),
+        SealedInstr::Return => check_return(function, frame),
+        SealedInstr::Unreachable(idx) => unreachable_op(consts, *idx),
+        SealedInstr::Todo(idx) => todo_op(consts, *idx),
         SealedInstr::Jump(target) => Ok(Control::Jump(*target)),
-        SealedInstr::JumpIfFalse(target) => {
-            expect_scalar(pop(stack)?, Scalar::Bool)?;
-            Ok(Control::Branch(*target))
-        }
-        SealedInstr::Assert => {
-            // Pops the bool condition and pushes nothing; the test-entry phase
-            // separately proves it appears only in a test-entry function.
-            expect_scalar(pop(stack)?, Scalar::Bool)?;
-            Ok(Control::Fallthrough)
-        }
+        SealedInstr::JumpIfFalse(target) => jump_if_false(frame, *target),
+        SealedInstr::Assert => assert_op(frame),
+        SealedInstr::Call(target) => call(ctx, frame, *target),
         SealedInstr::IntAdd
         | SealedInstr::IntSub
         | SealedInstr::IntMul
         | SealedInstr::IntRem
-        | SealedInstr::IntDiv => {
-            binary(stack, Scalar::Int, Scalar::Int)?;
-            Ok(Control::Fallthrough)
-        }
-        SealedInstr::IntNeg => {
-            expect_scalar(pop(stack)?, Scalar::Int)?;
-            stack.push(VType::bare_scalar(Scalar::Int));
-            Ok(Control::Fallthrough)
-        }
+        | SealedInstr::IntDiv => binary(&mut frame.stack, Scalar::Int, Scalar::Int),
+        SealedInstr::IntNeg => int_neg(frame),
         SealedInstr::IntAddChecked(target)
         | SealedInstr::IntSubChecked(target)
         | SealedInstr::IntMulChecked(target)
         | SealedInstr::IntDivChecked(target)
-        | SealedInstr::IntRemChecked(target) => {
-            expect_scalar(pop(stack)?, Scalar::Int)?;
-            expect_scalar(pop(stack)?, Scalar::Int)?;
-            Ok(Control::CheckedResult {
-                target: *target,
-                result: VType::bare_scalar(Scalar::Int),
-            })
-        }
-        SealedInstr::IntNegChecked(target) => {
-            expect_scalar(pop(stack)?, Scalar::Int)?;
-            Ok(Control::CheckedResult {
-                target: *target,
-                result: VType::bare_scalar(Scalar::Int),
-            })
-        }
-        SealedInstr::RangeGuard { .. } => {
-            // Peeks the guarded value: the top of the stack must be a bare int,
-            // which the guard leaves in place (fault or fall through).
-            let top = *stack.last().ok_or(reject(
-                VerifyPhase::Function,
-                "range guard on an empty stack",
-            ))?;
-            expect_scalar(top, Scalar::Int)?;
-            Ok(Control::Fallthrough)
-        }
-        SealedInstr::BoolNot => {
-            expect_scalar(pop(stack)?, Scalar::Bool)?;
-            stack.push(VType::bare_scalar(Scalar::Bool));
-            Ok(Control::Fallthrough)
-        }
+        | SealedInstr::IntRemChecked(target) => int_binary_checked(frame, *target),
+        SealedInstr::IntNegChecked(target) => int_neg_checked(frame, *target),
+        SealedInstr::RangeGuard { .. } => range_guard(frame),
+        SealedInstr::BoolNot => bool_not(frame),
         SealedInstr::IntLt | SealedInstr::IntLe | SealedInstr::IntGt | SealedInstr::IntGe => {
-            binary(stack, Scalar::Int, Scalar::Bool)?;
-            Ok(Control::Fallthrough)
+            binary(&mut frame.stack, Scalar::Int, Scalar::Bool)
         }
-        SealedInstr::EqInt => {
-            binary(stack, Scalar::Int, Scalar::Bool)?;
-            Ok(Control::Fallthrough)
-        }
-        SealedInstr::EqBool => {
-            binary(stack, Scalar::Bool, Scalar::Bool)?;
-            Ok(Control::Fallthrough)
-        }
-        SealedInstr::EqText => {
-            binary(stack, Scalar::Text, Scalar::Bool)?;
-            Ok(Control::Fallthrough)
-        }
-        SealedInstr::TextConcat => {
-            binary(stack, Scalar::Text, Scalar::Text)?;
-            Ok(Control::Fallthrough)
-        }
+        SealedInstr::EqInt => binary(&mut frame.stack, Scalar::Int, Scalar::Bool),
+        SealedInstr::EqBool => binary(&mut frame.stack, Scalar::Bool, Scalar::Bool),
+        SealedInstr::EqText => binary(&mut frame.stack, Scalar::Text, Scalar::Bool),
+        SealedInstr::TextConcat => binary(&mut frame.stack, Scalar::Text, Scalar::Text),
         SealedInstr::TextLt | SealedInstr::TextLe | SealedInstr::TextGt | SealedInstr::TextGe => {
-            binary(stack, Scalar::Text, Scalar::Bool)?;
-            Ok(Control::Fallthrough)
+            binary(&mut frame.stack, Scalar::Text, Scalar::Bool)
         }
         SealedInstr::EqBytes
         | SealedInstr::BytesLt
         | SealedInstr::BytesLe
         | SealedInstr::BytesGt
-        | SealedInstr::BytesGe => {
-            binary(stack, Scalar::Bytes, Scalar::Bool)?;
-            Ok(Control::Fallthrough)
-        }
+        | SealedInstr::BytesGe => binary(&mut frame.stack, Scalar::Bytes, Scalar::Bool),
         SealedInstr::EqDate
         | SealedInstr::DateLt
         | SealedInstr::DateLe
         | SealedInstr::DateGt
-        | SealedInstr::DateGe => {
-            binary(stack, Scalar::Date, Scalar::Bool)?;
-            Ok(Control::Fallthrough)
-        }
+        | SealedInstr::DateGe => binary(&mut frame.stack, Scalar::Date, Scalar::Bool),
         SealedInstr::EqInstant
         | SealedInstr::InstantLt
         | SealedInstr::InstantLe
         | SealedInstr::InstantGt
-        | SealedInstr::InstantGe => {
-            binary(stack, Scalar::Instant, Scalar::Bool)?;
-            Ok(Control::Fallthrough)
-        }
+        | SealedInstr::InstantGe => binary(&mut frame.stack, Scalar::Instant, Scalar::Bool),
         SealedInstr::EqDuration
         | SealedInstr::DurationLt
         | SealedInstr::DurationLe
         | SealedInstr::DurationGt
-        | SealedInstr::DurationGe => {
-            binary(stack, Scalar::Duration, Scalar::Bool)?;
-            Ok(Control::Fallthrough)
-        }
-        // `addDays(date, int) → date`: pop the int, then the date.
-        SealedInstr::DateAddDays => {
-            expect_scalar(pop(stack)?, Scalar::Int)?;
-            expect_scalar(pop(stack)?, Scalar::Date)?;
-            stack.push(VType::bare_scalar(Scalar::Date));
-            Ok(Control::Fallthrough)
-        }
-        SealedInstr::DateDaysBetween => {
-            binary(stack, Scalar::Date, Scalar::Int)?;
-            Ok(Control::Fallthrough)
-        }
+        | SealedInstr::DurationGe => binary(&mut frame.stack, Scalar::Duration, Scalar::Bool),
+        SealedInstr::DateAddDays => date_add_days(frame),
+        SealedInstr::DateDaysBetween => binary(&mut frame.stack, Scalar::Date, Scalar::Int),
         SealedInstr::DurationAdd | SealedInstr::DurationSub => {
-            binary(stack, Scalar::Duration, Scalar::Duration)?;
-            Ok(Control::Fallthrough)
+            binary(&mut frame.stack, Scalar::Duration, Scalar::Duration)
         }
-        // `instant +/- duration → instant`: pop the duration, then the instant.
         SealedInstr::InstantAddDuration | SealedInstr::InstantSubDuration => {
-            expect_scalar(pop(stack)?, Scalar::Duration)?;
-            expect_scalar(pop(stack)?, Scalar::Instant)?;
-            stack.push(VType::bare_scalar(Scalar::Instant));
-            Ok(Control::Fallthrough)
+            instant_shift_duration(frame)
         }
-        SealedInstr::ConvString => {
-            // Render any interpolable value to text: a bare scalar, enum, or identity.
-            // A record, collection, or optional is not renderable through this op.
-            let operand = pop(stack)?;
-            let renderable = matches!(
-                operand,
-                VType::Scalar {
-                    optional: false,
-                    ..
-                } | VType::Enum {
-                    optional: false,
-                    ..
-                } | VType::Identity {
-                    optional: false,
-                    ..
-                }
-            );
-            if !renderable {
-                return Err(reject(
-                    VerifyPhase::Function,
-                    "conv-string operand must be a bare scalar, enum, or identity",
-                ));
-            }
-            stack.push(VType::bare_scalar(Scalar::Text));
-            Ok(Control::Fallthrough)
+        SealedInstr::ConvString => conv_string(frame),
+        SealedInstr::ConvBytesText => conv_bytes_text(frame),
+        SealedInstr::TextIsEmpty => text_is_empty(frame),
+        SealedInstr::TextContains => text_contains(frame),
+        SealedInstr::TextTrim => text_trim(frame),
+        SealedInstr::TextSplit(idx) => text_split(ctx, frame, *idx),
+        SealedInstr::TextLines(idx) => text_lines(ctx, frame, *idx),
+        SealedInstr::TextJoin => text_join(ctx, frame),
+        SealedInstr::RecordNew(ty) => record_new(ctx, frame, *ty),
+        SealedInstr::FieldGet(field) => field_get(ctx, frame, *field),
+        SealedInstr::FieldSet(field) => field_set(ctx, frame, *field),
+        SealedInstr::FieldUnset(field) => field_unset(ctx, frame, *field),
+        SealedInstr::SomeWrap => some_wrap(frame),
+        SealedInstr::VacantLoad(ty) => vacant_load(ctx, frame, ty),
+        SealedInstr::BranchPresent(target) => branch_present(frame, *target),
+        SealedInstr::EnumConstruct { enum_idx, variant } => {
+            enum_construct(ctx, frame, *enum_idx, *variant)
         }
-        SealedInstr::ConvBytesText => {
-            expect_scalar(pop(stack)?, Scalar::Text)?;
-            stack.push(VType::bare_scalar(Scalar::Bytes));
-            Ok(Control::Fallthrough)
+        SealedInstr::EnumTag => enum_tag(frame),
+        SealedInstr::EnumPayloadGet { variant, field } => {
+            enum_payload_get(ctx, frame, *variant, *field)
         }
-        SealedInstr::TextIsEmpty => {
-            expect_scalar(pop(stack)?, Scalar::Text)?;
-            stack.push(VType::bare_scalar(Scalar::Bool));
-            Ok(Control::Fallthrough)
-        }
-        SealedInstr::TextContains => {
-            expect_scalar(pop(stack)?, Scalar::Text)?;
-            expect_scalar(pop(stack)?, Scalar::Text)?;
-            stack.push(VType::bare_scalar(Scalar::Bool));
-            Ok(Control::Fallthrough)
-        }
-        SealedInstr::TextTrim => {
-            expect_scalar(pop(stack)?, Scalar::Text)?;
-            stack.push(VType::bare_scalar(Scalar::Text));
-            Ok(Control::Fallthrough)
-        }
-        SealedInstr::RecordNew(_)
-        | SealedInstr::FieldGet(_)
-        | SealedInstr::FieldSet(_)
-        | SealedInstr::FieldUnset(_)
-        | SealedInstr::SomeWrap
-        | SealedInstr::VacantLoad(_)
-        | SealedInstr::BranchPresent(_)
-        | SealedInstr::EnumConstruct { .. }
-        | SealedInstr::EnumTag
-        | SealedInstr::EnumPayloadGet { .. }
-        | SealedInstr::EqEnum
-        | SealedInstr::Call(_)
-        | SealedInstr::DurExists(_)
+        SealedInstr::EqEnum => eq_enum(frame),
+        SealedInstr::EqId => eq_id(frame),
+        SealedInstr::MakeIdentity { root, cols } => make_identity(ctx, frame, *root, *cols),
+        SealedInstr::IdentityKeyPath(cols) => identity_key_path(ctx, frame, *cols),
+        SealedInstr::ListNew(idx) => list_new(ctx, frame, *idx),
+        SealedInstr::ListAppend => list_append(ctx, frame),
+        SealedInstr::ListLen => list_len(ctx, frame),
+        SealedInstr::ListGet => list_get(ctx, frame),
+        SealedInstr::ListIndex => list_index(ctx, frame),
+        SealedInstr::MapNew(idx) => map_new(ctx, frame, *idx),
+        SealedInstr::MapInsert => map_insert(ctx, frame),
+        SealedInstr::MapRemove => map_remove(ctx, frame),
+        SealedInstr::MapGet => map_get(ctx, frame),
+        SealedInstr::MapLen => map_len(ctx, frame),
+        SealedInstr::MapKeyAt => map_key_at(ctx, frame),
+        SealedInstr::MapValueAt => map_value_at(ctx, frame),
+        SealedInstr::DurExists(_)
         | SealedInstr::DurFamilyExists(_)
         | SealedInstr::DurReadField(_)
         | SealedInstr::DurReadEntry(_)
@@ -1018,30 +294,808 @@ fn apply(
         | SealedInstr::DurIndexLookup(_)
         | SealedInstr::DurIndexExists(_)
         | SealedInstr::TxnBegin
-        | SealedInstr::TxnCommit
-        | SealedInstr::ListNew(_)
-        | SealedInstr::ListAppend
-        | SealedInstr::ListLen
-        | SealedInstr::ListGet
-        | SealedInstr::ListIndex
-        | SealedInstr::MapNew(_)
-        | SealedInstr::MapInsert
-        | SealedInstr::MapRemove
-        | SealedInstr::MapGet
-        | SealedInstr::MapLen
-        | SealedInstr::MapKeyAt
-        | SealedInstr::MapValueAt
-        | SealedInstr::TextSplit(_)
-        | SealedInstr::TextLines(_)
-        | SealedInstr::TextJoin
-        | SealedInstr::EqId
-        | SealedInstr::MakeIdentity { .. }
-        | SealedInstr::IdentityKeyPath(_) => {
-            unreachable!(
-                "record, optional, call, durable, collection, text-collection, and identity opcodes return from the earlier matches"
-            )
+        | SealedInstr::TxnCommit => {
+            unreachable!("a durable opcode or transaction marker returns from apply_durable")
         }
     }
+}
+
+fn const_load(
+    frame: &mut Frame,
+    consts: &[SealedConst],
+    idx: u16,
+) -> Result<Control, VerifyRejection> {
+    let value = consts
+        .get(idx as usize)
+        .ok_or(reject(VerifyPhase::Function, "const index out of range"))?;
+    frame.stack.push(VType::bare_scalar(const_scalar(value)));
+    Ok(Control::Fallthrough)
+}
+
+fn local_get(frame: &mut Frame, slot: u16) -> Result<Control, VerifyRejection> {
+    let ty = frame
+        .locals
+        .get(slot as usize)
+        .ok_or(reject(VerifyPhase::Function, "local index out of range"))?
+        .ok_or(reject(VerifyPhase::Function, "local read before init"))?;
+    frame.stack.push(ty);
+    Ok(Control::Fallthrough)
+}
+
+fn local_set(frame: &mut Frame, slot: u16) -> Result<Control, VerifyRejection> {
+    let value = pop(&mut frame.stack)?;
+    let cell = frame
+        .locals
+        .get_mut(slot as usize)
+        .ok_or(reject(VerifyPhase::Function, "local index out of range"))?;
+    match cell {
+        Some(existing) if *existing != value => {
+            return Err(reject(
+                VerifyPhase::Function,
+                "local slot reused at a different type",
+            ));
+        }
+        _ => *cell = Some(value),
+    }
+    Ok(Control::Fallthrough)
+}
+
+fn discard(frame: &mut Frame) -> Result<Control, VerifyRejection> {
+    pop(&mut frame.stack)?;
+    Ok(Control::Fallthrough)
+}
+
+fn check_return(function: &DecodedFunction, frame: &mut Frame) -> Result<Control, VerifyRejection> {
+    match (frame.stack.pop(), function.ret) {
+        (Some(top), ret) if top.matches_ret(ret) => {}
+        (None, RetShape::Unit) => {}
+        _ => {
+            return Err(reject(
+                VerifyPhase::Function,
+                "return stack shape does not match the return type",
+            ));
+        }
+    }
+    if !frame.stack.is_empty() {
+        return Err(reject(
+            VerifyPhase::Function,
+            "operand stack not empty at return",
+        ));
+    }
+    Ok(Control::Return)
+}
+
+/// The operand is the static invariant text; it must be a text const. The instruction
+/// never falls through, so it ends the frame like `Return` without a return-value
+/// check — it always faults.
+fn unreachable_op(consts: &[SealedConst], idx: u16) -> Result<Control, VerifyRejection> {
+    match consts.get(idx as usize) {
+        Some(SealedConst::Text(_)) => Ok(Control::Return),
+        Some(_) => Err(reject(
+            VerifyPhase::Function,
+            "unreachable operand must be a text const",
+        )),
+        None => Err(reject(VerifyPhase::Function, "const index out of range")),
+    }
+}
+
+/// The operand is the static deferral text; like `Unreachable` it must be a text const
+/// and ends the frame without a return-value check.
+fn todo_op(consts: &[SealedConst], idx: u16) -> Result<Control, VerifyRejection> {
+    match consts.get(idx as usize) {
+        Some(SealedConst::Text(_)) => Ok(Control::Return),
+        Some(_) => Err(reject(
+            VerifyPhase::Function,
+            "todo operand must be a text const",
+        )),
+        None => Err(reject(VerifyPhase::Function, "const index out of range")),
+    }
+}
+
+fn jump_if_false(frame: &mut Frame, target: usize) -> Result<Control, VerifyRejection> {
+    expect_scalar(pop(&mut frame.stack)?, Scalar::Bool)?;
+    Ok(Control::Branch(target))
+}
+
+/// Pops the bool condition and pushes nothing; the test-entry phase separately proves
+/// it appears only in a test-entry function.
+fn assert_op(frame: &mut Frame) -> Result<Control, VerifyRejection> {
+    expect_scalar(pop(&mut frame.stack)?, Scalar::Bool)?;
+    Ok(Control::Fallthrough)
+}
+
+fn call(ctx: &Ctx, frame: &mut Frame, target: u16) -> Result<Control, VerifyRejection> {
+    let sig = ctx.signatures.get(target as usize).ok_or(reject(
+        VerifyPhase::Function,
+        "call target index out of range",
+    ))?;
+    // a0 is pushed first, so pop arguments in reverse parameter order.
+    for param in sig.params.iter().rev() {
+        let got = pop(&mut frame.stack)?;
+        let want = VType::from_image(*param).expect("a parameter type is never unit");
+        if got != want {
+            return Err(reject(VerifyPhase::Function, "call argument type mismatch"));
+        }
+    }
+    match sig.ret {
+        RetShape::Unit => {}
+        RetShape::Scalar { scalar, optional } => {
+            frame.stack.push(VType::Scalar { scalar, optional });
+        }
+        RetShape::Record { idx, optional } => {
+            frame.stack.push(VType::Record { idx, optional });
+        }
+        RetShape::Enum { idx, optional } => {
+            frame.stack.push(VType::Enum { idx, optional });
+        }
+        RetShape::Collection { idx, optional } => {
+            frame.stack.push(VType::Collection { idx, optional });
+        }
+        RetShape::Identity { root, optional } => {
+            frame.stack.push(VType::Identity { root, optional });
+        }
+    }
+    Ok(Control::Fallthrough)
+}
+
+fn int_neg(frame: &mut Frame) -> Result<Control, VerifyRejection> {
+    expect_scalar(pop(&mut frame.stack)?, Scalar::Int)?;
+    frame.stack.push(VType::bare_scalar(Scalar::Int));
+    Ok(Control::Fallthrough)
+}
+
+fn int_binary_checked(frame: &mut Frame, target: usize) -> Result<Control, VerifyRejection> {
+    expect_scalar(pop(&mut frame.stack)?, Scalar::Int)?;
+    expect_scalar(pop(&mut frame.stack)?, Scalar::Int)?;
+    Ok(Control::CheckedResult {
+        target,
+        result: VType::bare_scalar(Scalar::Int),
+    })
+}
+
+fn int_neg_checked(frame: &mut Frame, target: usize) -> Result<Control, VerifyRejection> {
+    expect_scalar(pop(&mut frame.stack)?, Scalar::Int)?;
+    Ok(Control::CheckedResult {
+        target,
+        result: VType::bare_scalar(Scalar::Int),
+    })
+}
+
+/// Peeks the guarded value: the top of the stack must be a bare int, which the guard
+/// leaves in place (fault or fall through).
+fn range_guard(frame: &mut Frame) -> Result<Control, VerifyRejection> {
+    let top = *frame.stack.last().ok_or(reject(
+        VerifyPhase::Function,
+        "range guard on an empty stack",
+    ))?;
+    expect_scalar(top, Scalar::Int)?;
+    Ok(Control::Fallthrough)
+}
+
+fn bool_not(frame: &mut Frame) -> Result<Control, VerifyRejection> {
+    expect_scalar(pop(&mut frame.stack)?, Scalar::Bool)?;
+    frame.stack.push(VType::bare_scalar(Scalar::Bool));
+    Ok(Control::Fallthrough)
+}
+
+/// `addDays(date, int) → date`: pop the int, then the date.
+fn date_add_days(frame: &mut Frame) -> Result<Control, VerifyRejection> {
+    expect_scalar(pop(&mut frame.stack)?, Scalar::Int)?;
+    expect_scalar(pop(&mut frame.stack)?, Scalar::Date)?;
+    frame.stack.push(VType::bare_scalar(Scalar::Date));
+    Ok(Control::Fallthrough)
+}
+
+/// `instant +/- duration → instant`: pop the duration, then the instant.
+fn instant_shift_duration(frame: &mut Frame) -> Result<Control, VerifyRejection> {
+    expect_scalar(pop(&mut frame.stack)?, Scalar::Duration)?;
+    expect_scalar(pop(&mut frame.stack)?, Scalar::Instant)?;
+    frame.stack.push(VType::bare_scalar(Scalar::Instant));
+    Ok(Control::Fallthrough)
+}
+
+/// Render any interpolable value to text: a bare scalar, enum, or identity. A record,
+/// collection, or optional is not renderable through this op.
+fn conv_string(frame: &mut Frame) -> Result<Control, VerifyRejection> {
+    let operand = pop(&mut frame.stack)?;
+    let renderable = matches!(
+        operand,
+        VType::Scalar {
+            optional: false,
+            ..
+        } | VType::Enum {
+            optional: false,
+            ..
+        } | VType::Identity {
+            optional: false,
+            ..
+        }
+    );
+    if !renderable {
+        return Err(reject(
+            VerifyPhase::Function,
+            "conv-string operand must be a bare scalar, enum, or identity",
+        ));
+    }
+    frame.stack.push(VType::bare_scalar(Scalar::Text));
+    Ok(Control::Fallthrough)
+}
+
+fn conv_bytes_text(frame: &mut Frame) -> Result<Control, VerifyRejection> {
+    expect_scalar(pop(&mut frame.stack)?, Scalar::Text)?;
+    frame.stack.push(VType::bare_scalar(Scalar::Bytes));
+    Ok(Control::Fallthrough)
+}
+
+fn text_is_empty(frame: &mut Frame) -> Result<Control, VerifyRejection> {
+    expect_scalar(pop(&mut frame.stack)?, Scalar::Text)?;
+    frame.stack.push(VType::bare_scalar(Scalar::Bool));
+    Ok(Control::Fallthrough)
+}
+
+fn text_contains(frame: &mut Frame) -> Result<Control, VerifyRejection> {
+    expect_scalar(pop(&mut frame.stack)?, Scalar::Text)?;
+    expect_scalar(pop(&mut frame.stack)?, Scalar::Text)?;
+    frame.stack.push(VType::bare_scalar(Scalar::Bool));
+    Ok(Control::Fallthrough)
+}
+
+fn text_trim(frame: &mut Frame) -> Result<Control, VerifyRejection> {
+    expect_scalar(pop(&mut frame.stack)?, Scalar::Text)?;
+    frame.stack.push(VType::bare_scalar(Scalar::Text));
+    Ok(Control::Fallthrough)
+}
+
+/// `split(text, sep): List[string]`: separator then text on the stack.
+fn text_split(ctx: &Ctx, frame: &mut Frame, idx: u16) -> Result<Control, VerifyRejection> {
+    expect_scalar(pop(&mut frame.stack)?, Scalar::Text)?;
+    expect_scalar(pop(&mut frame.stack)?, Scalar::Text)?;
+    list_of_string(ctx, idx)?;
+    frame.stack.push(VType::bare_collection(idx));
+    Ok(Control::Fallthrough)
+}
+
+/// `lines(text): List[string]`.
+fn text_lines(ctx: &Ctx, frame: &mut Frame, idx: u16) -> Result<Control, VerifyRejection> {
+    expect_scalar(pop(&mut frame.stack)?, Scalar::Text)?;
+    list_of_string(ctx, idx)?;
+    frame.stack.push(VType::bare_collection(idx));
+    Ok(Control::Fallthrough)
+}
+
+/// `join(List[string], sep): string`: separator then list on the stack.
+fn text_join(ctx: &Ctx, frame: &mut Frame) -> Result<Control, VerifyRejection> {
+    expect_scalar(pop(&mut frame.stack)?, Scalar::Text)?;
+    let (idx, _) = list_elem(ctx, pop(&mut frame.stack)?)?;
+    list_of_string(ctx, idx)?;
+    frame.stack.push(VType::bare_scalar(Scalar::Text));
+    Ok(Control::Fallthrough)
+}
+
+fn record_new(ctx: &Ctx, frame: &mut Frame, ty: u16) -> Result<Control, VerifyRejection> {
+    let record = ctx.types.get(ty as usize).ok_or(reject(
+        VerifyPhase::Function,
+        "record type index out of range",
+    ))?;
+    // f0 is pushed first, so pop fields in reverse declaration order.
+    for field in record.fields.iter().rev() {
+        let bare = VType::from_image(field.ty).expect("a record field type is never unit");
+        let want = if field.required {
+            bare
+        } else {
+            bare.to_optional()
+        };
+        let got = pop(&mut frame.stack)?;
+        if got != want {
+            return Err(reject(
+                VerifyPhase::Function,
+                "record field operand type mismatch",
+            ));
+        }
+    }
+    frame.stack.push(VType::bare_record(ty));
+    Ok(Control::Fallthrough)
+}
+
+fn field_get(ctx: &Ctx, frame: &mut Frame, field: u16) -> Result<Control, VerifyRejection> {
+    let record = pop(&mut frame.stack)?;
+    let VType::Record {
+        idx,
+        optional: false,
+    } = record
+    else {
+        return Err(reject(
+            VerifyPhase::Function,
+            "field read requires a bare record",
+        ));
+    };
+    let record_type = ctx.types.get(idx as usize).ok_or(reject(
+        VerifyPhase::Function,
+        "record type index out of range",
+    ))?;
+    let field_def = record_type
+        .fields
+        .get(field as usize)
+        .ok_or(reject(VerifyPhase::Function, "field index out of range"))?;
+    let bare = VType::from_image(field_def.ty).expect("a record field type is never unit");
+    let result = if field_def.required {
+        bare
+    } else {
+        bare.to_optional()
+    };
+    frame.stack.push(result);
+    Ok(Control::Fallthrough)
+}
+
+/// `[record, value] → [record]`: store a bare field value present.
+fn field_set(ctx: &Ctx, frame: &mut Frame, field: u16) -> Result<Control, VerifyRejection> {
+    let value = pop(&mut frame.stack)?;
+    let record = pop(&mut frame.stack)?;
+    let VType::Record {
+        idx,
+        optional: false,
+    } = record
+    else {
+        return Err(reject(
+            VerifyPhase::Function,
+            "field set requires a bare record",
+        ));
+    };
+    let record_type = ctx.types.get(idx as usize).ok_or(reject(
+        VerifyPhase::Function,
+        "record type index out of range",
+    ))?;
+    let field_def = record_type
+        .fields
+        .get(field as usize)
+        .ok_or(reject(VerifyPhase::Function, "field index out of range"))?;
+    let want = VType::from_image(field_def.ty).expect("a record field type is never unit");
+    if value != want {
+        return Err(reject(
+            VerifyPhase::Function,
+            "field set operand type mismatch",
+        ));
+    }
+    frame.stack.push(VType::bare_record(idx));
+    Ok(Control::Fallthrough)
+}
+
+/// `[record] → [record]`: clear a sparse field to vacant.
+fn field_unset(ctx: &Ctx, frame: &mut Frame, field: u16) -> Result<Control, VerifyRejection> {
+    let record = pop(&mut frame.stack)?;
+    let VType::Record {
+        idx,
+        optional: false,
+    } = record
+    else {
+        return Err(reject(
+            VerifyPhase::Function,
+            "field unset requires a bare record",
+        ));
+    };
+    let record_type = ctx.types.get(idx as usize).ok_or(reject(
+        VerifyPhase::Function,
+        "record type index out of range",
+    ))?;
+    let field_def = record_type
+        .fields
+        .get(field as usize)
+        .ok_or(reject(VerifyPhase::Function, "field index out of range"))?;
+    if field_def.required {
+        return Err(reject(
+            VerifyPhase::Function,
+            "a required field cannot be unset",
+        ));
+    }
+    frame.stack.push(VType::bare_record(idx));
+    Ok(Control::Fallthrough)
+}
+
+fn some_wrap(frame: &mut Frame) -> Result<Control, VerifyRejection> {
+    let value = pop(&mut frame.stack)?;
+    if value.is_optional() {
+        return Err(reject(
+            VerifyPhase::Function,
+            "some-wrap operand is already optional",
+        ));
+    }
+    frame.stack.push(value.to_optional());
+    Ok(Control::Fallthrough)
+}
+
+fn vacant_load(ctx: &Ctx, frame: &mut Frame, ty: &ImageType) -> Result<Control, VerifyRejection> {
+    // A record/enum/collection operand names a value type; bounds-check it.
+    match ty {
+        ImageType::Record { idx, .. } if ctx.types.get(*idx as usize).is_none() => {
+            return Err(reject(
+                VerifyPhase::Function,
+                "vacant-load record index out of range",
+            ));
+        }
+        ImageType::Enum { idx, .. } if ctx.enums.get(*idx as usize).is_none() => {
+            return Err(reject(
+                VerifyPhase::Function,
+                "vacant-load enum index out of range",
+            ));
+        }
+        ImageType::Collection { idx, .. } if ctx.collections.get(*idx as usize).is_none() => {
+            return Err(reject(
+                VerifyPhase::Function,
+                "vacant-load collection index out of range",
+            ));
+        }
+        _ => {}
+    }
+    frame
+        .stack
+        .push(VType::from_image(*ty).expect("vacant-load operand is a value type, not unit"));
+    Ok(Control::Fallthrough)
+}
+
+fn branch_present(frame: &mut Frame, target: usize) -> Result<Control, VerifyRejection> {
+    let value = pop(&mut frame.stack)?;
+    if !value.is_optional() {
+        return Err(reject(
+            VerifyPhase::Function,
+            "branch-present requires an optional",
+        ));
+    }
+    Ok(Control::BranchPresent {
+        target,
+        present: value.to_bare(),
+    })
+}
+
+fn enum_construct(
+    ctx: &Ctx,
+    frame: &mut Frame,
+    enum_idx: u16,
+    variant: u16,
+) -> Result<Control, VerifyRejection> {
+    let enum_def = ctx.enums.get(enum_idx as usize).ok_or(reject(
+        VerifyPhase::Function,
+        "enum type index out of range",
+    ))?;
+    let variant_def = enum_def.variants().get(variant as usize).ok_or(reject(
+        VerifyPhase::Function,
+        "enum variant index out of range",
+    ))?;
+    // p0 is pushed first, so pop the payload in reverse declaration order.
+    for ty in variant_def.payload.iter().rev() {
+        let want = VType::from_image(*ty).expect("a payload leaf is never unit");
+        let got = pop(&mut frame.stack)?;
+        if got != want {
+            return Err(reject(
+                VerifyPhase::Function,
+                "enum payload operand type mismatch",
+            ));
+        }
+    }
+    frame.stack.push(VType::bare_enum(enum_idx));
+    Ok(Control::Fallthrough)
+}
+
+fn enum_tag(frame: &mut Frame) -> Result<Control, VerifyRejection> {
+    let value = pop(&mut frame.stack)?;
+    if !matches!(
+        value,
+        VType::Enum {
+            optional: false,
+            ..
+        }
+    ) {
+        return Err(reject(
+            VerifyPhase::Function,
+            "enum-tag requires a bare enum",
+        ));
+    }
+    frame.stack.push(VType::bare_scalar(Scalar::Int));
+    Ok(Control::Fallthrough)
+}
+
+fn enum_payload_get(
+    ctx: &Ctx,
+    frame: &mut Frame,
+    variant: u16,
+    field: u16,
+) -> Result<Control, VerifyRejection> {
+    let value = pop(&mut frame.stack)?;
+    let VType::Enum {
+        idx,
+        optional: false,
+    } = value
+    else {
+        return Err(reject(
+            VerifyPhase::Function,
+            "enum-payload-get requires a bare enum",
+        ));
+    };
+    let enum_def = ctx.enums.get(idx as usize).ok_or(reject(
+        VerifyPhase::Function,
+        "enum type index out of range",
+    ))?;
+    let variant_def = enum_def.variants().get(variant as usize).ok_or(reject(
+        VerifyPhase::Function,
+        "enum variant index out of range",
+    ))?;
+    // The variant operand types the payload leaf; the VM faults if the runtime value
+    // carries a different variant, so the pushed type is never observed on a mismatch.
+    let leaf = variant_def.payload.get(field as usize).ok_or(reject(
+        VerifyPhase::Function,
+        "enum payload field index out of range",
+    ))?;
+    frame
+        .stack
+        .push(VType::from_image(*leaf).expect("a payload leaf is never unit"));
+    Ok(Control::Fallthrough)
+}
+
+fn eq_enum(frame: &mut Frame) -> Result<Control, VerifyRejection> {
+    let right = pop(&mut frame.stack)?;
+    let left = pop(&mut frame.stack)?;
+    let (
+        VType::Enum {
+            idx: r,
+            optional: false,
+        },
+        VType::Enum {
+            idx: l,
+            optional: false,
+        },
+    ) = (right, left)
+    else {
+        return Err(reject(
+            VerifyPhase::Function,
+            "enum equality requires two bare enums",
+        ));
+    };
+    if l != r {
+        return Err(reject(
+            VerifyPhase::Function,
+            "enum equality operands are different enums",
+        ));
+    }
+    frame.stack.push(VType::bare_scalar(Scalar::Bool));
+    Ok(Control::Fallthrough)
+}
+
+fn eq_id(frame: &mut Frame) -> Result<Control, VerifyRejection> {
+    let right = pop(&mut frame.stack)?;
+    let left = pop(&mut frame.stack)?;
+    let (
+        VType::Identity {
+            root: r,
+            optional: false,
+        },
+        VType::Identity {
+            root: l,
+            optional: false,
+        },
+    ) = (right, left)
+    else {
+        return Err(reject(
+            VerifyPhase::Function,
+            "identity equality requires two bare entry identities",
+        ));
+    };
+    if l != r {
+        return Err(reject(
+            VerifyPhase::Function,
+            "identity equality operands name different store roots",
+        ));
+    }
+    frame.stack.push(VType::bare_scalar(Scalar::Bool));
+    Ok(Control::Fallthrough)
+}
+
+fn make_identity(
+    ctx: &Ctx,
+    frame: &mut Frame,
+    root: u16,
+    cols: u16,
+) -> Result<Control, VerifyRejection> {
+    let sealed_root = ctx.roots.get(root as usize).ok_or(reject(
+        VerifyPhase::Function,
+        "make-identity root index out of range",
+    ))?;
+    if sealed_root.keys.len() != cols as usize {
+        return Err(reject(
+            VerifyPhase::Function,
+            "make-identity column count does not match the root's key columns",
+        ));
+    }
+    // k0 is pushed first, so pop the key columns in reverse declaration order, each
+    // matching the root's key-column scalar type.
+    for scalar in sealed_root.keys.iter().rev() {
+        let got = pop(&mut frame.stack)?;
+        if got != VType::bare_scalar(*scalar) {
+            return Err(reject(
+                VerifyPhase::Function,
+                "make-identity key operand type does not match the root's key column",
+            ));
+        }
+    }
+    frame.stack.push(VType::Identity {
+        root,
+        optional: false,
+    });
+    Ok(Control::Fallthrough)
+}
+
+fn identity_key_path(ctx: &Ctx, frame: &mut Frame, cols: u16) -> Result<Control, VerifyRejection> {
+    let VType::Identity {
+        root,
+        optional: false,
+    } = pop(&mut frame.stack)?
+    else {
+        return Err(reject(
+            VerifyPhase::Function,
+            "identity key-path requires a bare entry identity",
+        ));
+    };
+    let sealed_root = ctx.roots.get(root as usize).ok_or(reject(
+        VerifyPhase::Function,
+        "identity key-path root index out of range",
+    ))?;
+    if sealed_root.keys.len() != cols as usize {
+        return Err(reject(
+            VerifyPhase::Function,
+            "identity key-path column count does not match the root's key columns",
+        ));
+    }
+    // Spread the key columns root-first (k0 pushed first) so the key-path sits exactly
+    // as an inline `^root[k…]` access would leave it for the entry read. Each column is
+    // tagged with the identity's root so a durable op can re-prove it addresses that
+    // same root — an identity of one root can never key an operation on another, even
+    // through a local slot.
+    for scalar in &sealed_root.keys {
+        frame.stack.push(VType::IdentityColumn {
+            root,
+            scalar: *scalar,
+        });
+    }
+    Ok(Control::Fallthrough)
+}
+
+fn list_new(ctx: &Ctx, frame: &mut Frame, idx: u16) -> Result<Control, VerifyRejection> {
+    match ctx.collections.get(idx as usize) {
+        Some(SealedCollectionType::List { .. }) => {}
+        _ => {
+            return Err(reject(
+                VerifyPhase::Function,
+                "list-new operand does not name a list collection type",
+            ));
+        }
+    }
+    frame.stack.push(VType::bare_collection(idx));
+    Ok(Control::Fallthrough)
+}
+
+fn map_new(ctx: &Ctx, frame: &mut Frame, idx: u16) -> Result<Control, VerifyRejection> {
+    match ctx.collections.get(idx as usize) {
+        Some(SealedCollectionType::Map { .. }) => {}
+        _ => {
+            return Err(reject(
+                VerifyPhase::Function,
+                "map-new operand does not name a map collection type",
+            ));
+        }
+    }
+    frame.stack.push(VType::bare_collection(idx));
+    Ok(Control::Fallthrough)
+}
+
+fn list_append(ctx: &Ctx, frame: &mut Frame) -> Result<Control, VerifyRejection> {
+    let value = pop(&mut frame.stack)?;
+    let (idx, elem) = list_elem(ctx, pop(&mut frame.stack)?)?;
+    if value != VType::from_image(elem).expect("a list element type is never unit") {
+        return Err(reject(
+            VerifyPhase::Function,
+            "list-append value type does not match the element type",
+        ));
+    }
+    frame.stack.push(VType::bare_collection(idx));
+    Ok(Control::Fallthrough)
+}
+
+fn list_len(ctx: &Ctx, frame: &mut Frame) -> Result<Control, VerifyRejection> {
+    list_elem(ctx, pop(&mut frame.stack)?)?;
+    frame.stack.push(VType::bare_scalar(Scalar::Int));
+    Ok(Control::Fallthrough)
+}
+
+fn list_get(ctx: &Ctx, frame: &mut Frame) -> Result<Control, VerifyRejection> {
+    expect_scalar(pop(&mut frame.stack)?, Scalar::Int)?;
+    let (_, elem) = list_elem(ctx, pop(&mut frame.stack)?)?;
+    frame
+        .stack
+        .push(VType::from_image(elem).expect("a list element type is never unit"));
+    Ok(Control::Fallthrough)
+}
+
+fn list_index(ctx: &Ctx, frame: &mut Frame) -> Result<Control, VerifyRejection> {
+    expect_scalar(pop(&mut frame.stack)?, Scalar::Int)?;
+    let (_, elem) = list_elem(ctx, pop(&mut frame.stack)?)?;
+    frame.stack.push(
+        VType::from_image(elem)
+            .expect("a list element type is never unit")
+            .to_optional(),
+    );
+    Ok(Control::Fallthrough)
+}
+
+fn map_insert(ctx: &Ctx, frame: &mut Frame) -> Result<Control, VerifyRejection> {
+    let value = pop(&mut frame.stack)?;
+    let key = pop(&mut frame.stack)?;
+    let (idx, key_ty, value_ty) = map_kv(ctx, pop(&mut frame.stack)?)?;
+    if key != VType::from_image(key_ty).expect("a map key type is never unit") {
+        return Err(reject(
+            VerifyPhase::Function,
+            "map-insert key type does not match the map key type",
+        ));
+    }
+    if value != VType::from_image(value_ty).expect("a map value type is never unit") {
+        return Err(reject(
+            VerifyPhase::Function,
+            "map-insert value type does not match the map value type",
+        ));
+    }
+    frame.stack.push(VType::bare_collection(idx));
+    Ok(Control::Fallthrough)
+}
+
+fn map_remove(ctx: &Ctx, frame: &mut Frame) -> Result<Control, VerifyRejection> {
+    let key = pop(&mut frame.stack)?;
+    let (idx, key_ty, _value_ty) = map_kv(ctx, pop(&mut frame.stack)?)?;
+    if key != VType::from_image(key_ty).expect("a map key type is never unit") {
+        return Err(reject(
+            VerifyPhase::Function,
+            "map-remove key type does not match the map key type",
+        ));
+    }
+    frame.stack.push(VType::bare_collection(idx));
+    Ok(Control::Fallthrough)
+}
+
+fn map_get(ctx: &Ctx, frame: &mut Frame) -> Result<Control, VerifyRejection> {
+    let key = pop(&mut frame.stack)?;
+    let (_, key_ty, value_ty) = map_kv(ctx, pop(&mut frame.stack)?)?;
+    if key != VType::from_image(key_ty).expect("a map key type is never unit") {
+        return Err(reject(
+            VerifyPhase::Function,
+            "map-get key type does not match the map key type",
+        ));
+    }
+    frame.stack.push(
+        VType::from_image(value_ty)
+            .expect("a map value type is never unit")
+            .to_optional(),
+    );
+    Ok(Control::Fallthrough)
+}
+
+fn map_len(ctx: &Ctx, frame: &mut Frame) -> Result<Control, VerifyRejection> {
+    map_kv(ctx, pop(&mut frame.stack)?)?;
+    frame.stack.push(VType::bare_scalar(Scalar::Int));
+    Ok(Control::Fallthrough)
+}
+
+fn map_key_at(ctx: &Ctx, frame: &mut Frame) -> Result<Control, VerifyRejection> {
+    expect_scalar(pop(&mut frame.stack)?, Scalar::Int)?;
+    let (_, key_ty, _) = map_kv(ctx, pop(&mut frame.stack)?)?;
+    frame
+        .stack
+        .push(VType::from_image(key_ty).expect("a map key type is never unit"));
+    Ok(Control::Fallthrough)
+}
+
+fn map_value_at(ctx: &Ctx, frame: &mut Frame) -> Result<Control, VerifyRejection> {
+    expect_scalar(pop(&mut frame.stack)?, Scalar::Int)?;
+    let (_, _, value_ty) = map_kv(ctx, pop(&mut frame.stack)?)?;
+    frame
+        .stack
+        .push(VType::from_image(value_ty).expect("a map value type is never unit"));
+    Ok(Control::Fallthrough)
 }
 
 /// The COLLTYPES index and element type of a bare list `VType`, or a phase-3
@@ -2024,14 +2078,19 @@ fn expect_scalar(value: VType, scalar: Scalar) -> Result<(), VerifyRejection> {
     }
 }
 
-/// Pop two bare `operand`-typed scalars (right then left) and push a bare `result`.
-fn binary(stack: &mut Vec<VType>, operand: Scalar, result: Scalar) -> Result<(), VerifyRejection> {
+/// Pop two bare `operand`-typed scalars (right then left), push a bare `result`, and
+/// fall through.
+fn binary(
+    stack: &mut Vec<VType>,
+    operand: Scalar,
+    result: Scalar,
+) -> Result<Control, VerifyRejection> {
     let right = pop(stack)?;
     let left = pop(stack)?;
     expect_scalar(right, operand)?;
     expect_scalar(left, operand)?;
     stack.push(VType::bare_scalar(result));
-    Ok(())
+    Ok(Control::Fallthrough)
 }
 
 fn const_scalar(value: &SealedConst) -> Scalar {
