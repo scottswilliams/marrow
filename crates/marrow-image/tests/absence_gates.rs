@@ -469,8 +469,8 @@ fn the_site_plan_retains_no_semantic_path() {
 /// asked — who may construct — is answered by who may *mint*. A second minter would be a
 /// second admission owner, free to state a census no store declaration backs, and every
 /// entry point downstream would accept it. The compiler's store-declaration census is that
-/// one owner; the verifier's structural preflight joins it when its own graph
-/// reconstruction lands.
+/// one owner; the verifier's structural preflight is the other, and it mints from received
+/// bytes rather than from anything the compiler asserted.
 #[test]
 fn no_production_file_mints_a_graph_input_plan_outside_its_admission_owner() {
     let found: Vec<String> = plan_minting_sources()
@@ -499,11 +499,15 @@ fn plan_minting_sources() -> Vec<String> {
     workspace_sources("src")
         .into_iter()
         .filter(|(path, code)| {
+            // Production only: a decode fixture that states a census for a draft it builds
+            // itself is not an admission owner, and the gate's subject is who may mint
+            // where a real graph is constructed.
+            let production = without_cfg_test_items(code);
             !path.starts_with(&owner)
-                && contains_symbol(code, "AdmittedGraphInputPlan")
+                && contains_symbol(&production, "AdmittedGraphInputPlan")
                 && PLAN_MINTING_ENTRY_POINTS
                     .iter()
-                    .any(|needle| contains_symbol(code, needle))
+                    .any(|needle| contains_symbol(&production, needle))
         })
         .map(|(path, _)| path.display().to_string())
         .collect()
@@ -643,13 +647,14 @@ const PLAN_MINTING_ENTRY_POINTS: [&str; 1] = ["admit"];
 ///
 /// `marrow-compile/src/durable.rs` is the compiler's admission owner: the store-declaration
 /// census, taken over the whole declaration set before the first store is built.
-/// `marrow-verify/src/verify/decode_code.rs` mints only in its own decode fixtures today;
-/// its production minter is the allocation-free structural preflight, which lands with the
-/// verifier's graph reconstruction. Widening this set is the thing the minter gate exists to
+/// `marrow-verify/src/verify/durable.rs` is the verifier's: the allocation-free structural
+/// preflight over received bytes, which reads the one structural count the section states
+/// and refuses root N+1 before a plan exists or a row is allocated. Widening this set is the
+/// thing the minter gate exists to
 /// notice; a row that no longer mints is what the staleness gate exists to notice.
 const PERMITTED_PLAN_MINTERS: [&str; 2] = [
     "marrow-compile/src/durable.rs",
-    "marrow-verify/src/verify/decode_code.rs",
+    "marrow-verify/src/verify/durable.rs",
 ];
 
 /// No producer-side site-path length refusal survives.
@@ -1168,10 +1173,70 @@ fn the_verifier_holds_no_raw_durable_value_tree() {
         &fs::read_to_string(verify.join("model.rs")).expect("read the decoded model"),
     );
     assert!(
-        decoded.contains("value: ValueShapeNodeId"),
-        "a decoded field carries a value reference, so this gate has a live subject",
+        decoded.contains("members: DurableProductGraph"),
+        "a decoded root holds the shared declaration rows rather than an owned member \
+         tree, so this gate has a live subject",
     );
 }
+
+/// The recursive durable contract-shape family is gone from the whole workspace.
+///
+/// Six public types spelled one program's durable member graph as an owned recursive tree
+/// with public fields — `DurableRootShape` carrying `Vec<DurableMemberShape>`, groups and
+/// branches carrying their own — and `DurableContractDescriptor` was the public entry that
+/// took one by value. Any caller could build a chain of arbitrary depth from public struct
+/// literals alone, and the process aborted on it: while constructing, or in the recursive
+/// `Drop` of the argument the entry function had already refused. No entry function can fix
+/// that; only unconstructibility can, which is why these names are absent rather than
+/// guarded.
+///
+/// `DurableIndexShape` and `DurableIndexComponent` are deliberately **not** in this list:
+/// they are flat, non-recursive draft-input rows for a managed-index declaration, they
+/// carry no member vector, and nothing about them can be nested.
+#[test]
+fn no_recursive_durable_contract_shape_survives() {
+    let sources = [workspace_sources("src"), workspace_sources("tests")].concat();
+    for needle in DELETED_CONTRACT_SHAPE_FAMILY {
+        let found: Vec<String> = sources
+            .iter()
+            .filter(|(_, code)| contains_symbol(code, needle))
+            .map(|(path, _)| path.display().to_string())
+            .collect();
+        assert!(
+            found.is_empty(),
+            "`{needle}` is a deleted recursive durable contract-shape symbol: {found:?}",
+        );
+    }
+}
+
+/// The plant probe for the gate above: a source stating any of the deleted names is seen.
+#[test]
+fn the_recursive_contract_shape_gate_sees_a_planted_name() {
+    for needle in DELETED_CONTRACT_SHAPE_FAMILY {
+        let planted = without_literals(&format!(
+            "fn forged() -> Vec<{needle}> {{ let _: {needle}; Vec::new() }}"
+        ));
+        assert!(
+            contains_symbol(&planted, needle),
+            "the scan sees a planted `{needle}`",
+        );
+    }
+}
+
+/// The exact deleted family: the six recursive member/root/key shape types plus the public
+/// descriptor that owned one, and the two producer-side projections that allocated one per
+/// root occurrence.
+const DELETED_CONTRACT_SHAPE_FAMILY: [&str; 9] = [
+    "DurableFieldShape",
+    "DurableKeyShape",
+    "DurableGroupShape",
+    "DurableBranchShape",
+    "DurableMemberShape",
+    "DurableRootShape",
+    "DurableContractDescriptor",
+    "durable_descriptor",
+    "member_shapes",
+];
 
 /// The shared `#[cfg(test)]` stripper sees a whole test module and leaves production
 /// code alone. The projection has one owner in the workspace; this suite plants the probes
@@ -1292,8 +1357,8 @@ fn the_pinned_caller_gate_sees_both_spellings_and_an_exact_ceiling() {
 /// body writes 16 raw bytes. The producer now counts the body first and mints the identity
 /// only from `LegacyDurableBodyLowerBoundFence`, which exists only for a body that fits.
 ///
-/// That fence bounds the producer, and only the producer. A `DurableContractDescriptor` is
-/// a public view over a public arena, so any caller can state a value shape whose expansion
+/// That fence bounds the producer, and only the producer. A `DurableContractView` is
+/// a view over a public arena, so any caller can state a value shape whose expansion
 /// is exponential in its declared levels and ask for its identity; the ceiling that answers
 /// belongs to the identity owner. This gate therefore holds both halves: the call-site set
 /// is scanned across every crate's production sources rather than one file, and the mint
@@ -1342,15 +1407,18 @@ fn the_contract_identity_has_one_mint_per_side_and_a_bound_of_its_own() {
     };
     let fence = line_of("impl<'a> LegacyDurableBodyLowerBoundFence<'a> {");
     let minted = line_of("contract_id()");
-    let descriptor = line_of("self.draft.durable_descriptor()");
+    // The descriptor this used to name is deleted; the same law re-anchors to the view the
+    // identity is now taken over, so "one mint per side" keeps being checked rather than
+    // passing because its needle vanished.
+    let viewed = line_of(".contract_view()");
     let draft_impl = line_of("impl ImageDraft {");
     assert!(
         fence < minted && minted < draft_impl,
         "the producer's one contract-identity mint sits inside the body fence",
     );
     assert!(
-        fence < descriptor && descriptor < draft_impl,
-        "so does the one descriptor construction it hashes",
+        fence < viewed && viewed < draft_impl,
+        "so does the one contract view it hashes",
     );
 
     // The mint's own bound. The public constructor takes a bare arena and promises
@@ -1437,7 +1505,13 @@ fn no_value_shape_is_minted_inside_a_template_proof() {
 /// which resolves a durable field's value type into the draft's arena. It opens no
 /// template proof. A second owner appearing here is a second place a `ValueShapeNodeId`
 /// can come from, and the first thing to ask of it is whether it mints under a proof.
-const VALUE_SHAPE_MINT_OWNERS: [&str; 1] = ["marrow-compile/src/durable.rs"];
+/// The two production owners that mint value shapes: the compiler's durable lowering, into
+/// its draft's arena, and the verifier's durable decode, into the arena its own contract
+/// graph owns. Neither opens a template proof, which is the property this pins.
+const VALUE_SHAPE_MINT_OWNERS: [&str; 2] = [
+    "marrow-compile/src/durable.rs",
+    "marrow-verify/src/verify/durable.rs",
+];
 
 /// The production callers of the durable-contract identity: the producer's body fence and
 /// the verifier's independent recomputation. Those two are the whole point — one mint per

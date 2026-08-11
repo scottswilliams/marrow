@@ -33,15 +33,15 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::bounds;
 use crate::durable_id::{
-    DurableIndexShape, DurableProductIdentity, LedgerIdBytes, RootPlacementIdentity,
+    DurableContractView, DurableIndexShape, DurableProductIdentity, LedgerIdBytes,
+    RootPlacementIdentity,
 };
 use crate::export_id::ExportId;
 use crate::instr::Instr;
 use crate::product::{
-    CanonicalDeclarationPathSelector, DeclarationMember, DeclarationMemberDef, DurableProductClaim,
-    OccurrenceGraph, ProductClaimConflict, ProductDeclaration, ProductDeclarationGraph,
-    ProductDeclarationTable, ProductEntryRecordClaim, RootOccurrence, RootOccurrenceRow,
-    RootOccurrenceSelector, RootOccurrenceTable,
+    CanonicalDeclarationPathSelector, DeclarationMember, DeclarationMemberDef, OccurrenceGraph,
+    ProductClaimConflict, ProductDeclaration, ProductDeclarationTable, ProductEntryRecordClaim,
+    RootOccurrence, RootOccurrenceRow, RootOccurrenceSelector, RootOccurrenceTable,
 };
 use crate::semantic::{SemanticPath, SemanticTarget};
 use crate::site_plan::{
@@ -61,7 +61,7 @@ use crate::value_dag::CanonicalValueShapeDag;
 pub(crate) struct DraftIdentity(u64);
 
 impl DraftIdentity {
-    fn mint() -> Self {
+    pub(crate) fn mint() -> Self {
         static NEXT: AtomicU64 = AtomicU64::new(1);
         Self(NEXT.fetch_add(1, Ordering::Relaxed))
     }
@@ -82,7 +82,7 @@ impl DraftIdentity {
 /// what a ProgramImage can hold. A plan carrying unadmitted counts does not exist.
 ///
 /// It is a budget, not permission to reach it. Every table the entry points append to
-/// still rechecks its own bound, [`ProductDeclarationGraph::from_commands`] remains the
+/// still rechecks its own bound, the declaration graph's own command validation remains the
 /// one structural validator of a command vector, and the independent verifier rechecks
 /// every bound against received bytes. The plan bounds *intake*; it classifies nothing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -175,6 +175,13 @@ impl AdmittedGraphInputPlan {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct RowStamp(u64);
 
+impl RowStamp {
+    /// The stamp for one draw of a per-owner monotone counter.
+    pub(crate) fn from_counter(count: u64) -> Self {
+        Self(count)
+    }
+}
+
 /// A logical string-pool id, stable across the sort the encoder performs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StrId(u16);
@@ -196,6 +203,15 @@ impl ConstId {
 pub struct TypeId(pub(crate) u16);
 
 impl TypeId {
+    /// The record-type index at `index`.
+    ///
+    /// A record-type index is a container-table position, not a capability, for the same
+    /// reason [`StrId::from_index`] is: the independent verifier reads one from received
+    /// bytes and every owner that resolves one range-checks it.
+    pub fn from_index(index: u16) -> Self {
+        Self(index)
+    }
+
     /// The raw record-type index, as carried in a `RecordNew`/`FieldGet` operand and
     /// in an `ImageType::Record`.
     pub fn index(self) -> u16 {
@@ -894,7 +910,7 @@ impl ImageDraft {
     /// Entering construction requires `plan`, and the command vector is admitted under it:
     /// a vector wider than the plan's admitted command count, or a declaration past the
     /// plan's admitted Product count, is refused before any row is appended. The plan
-    /// bounds the intake; [`ProductDeclarationGraph::from_commands`] remains the one
+    /// bounds the intake; the declaration graph's own command validation remains the one
     /// validator of the vector's structure, and the encoder remains the one owner of the
     /// member bound — a vector the plan admits one command past that bound still reaches
     /// [`ImageBuildError::TooManyDurableMembers`] rather than being masked here.
@@ -905,25 +921,17 @@ impl ImageDraft {
         entry_record: TypeId,
         members: Vec<DeclarationMemberDef>,
     ) -> Result<Vec<DeclarationMember>, SitePlanStateError> {
-        if members.len() > plan.commands() {
-            return Err(SitePlanStateError::new(SitePlanState::InvalidDemand));
-        }
-        let identity = DurableProductIdentity::minted(product);
-        // A repeat of an already-bound identity resolves to that row and declares no new
-        // Product, so it spends no Product budget.
-        if self.products.row_of(identity).is_none()
-            && self.products.declarations().len() >= plan.products()
-        {
-            return Err(SitePlanStateError::new(SitePlanState::InvalidDemand));
-        }
-        let graph = ProductDeclarationGraph::from_commands(members)
-            .map_err(|_| SitePlanStateError::new(SitePlanState::InvalidDemand))?;
         let stamp = self.next_stamp();
-        let (row, conflict) = self.products.admit(
-            DurableProductClaim::new(identity, graph),
-            ProductEntryRecordClaim::new(entry_record),
-            stamp,
-        );
+        let (row, conflict) = self
+            .products
+            .admit_under(
+                plan,
+                DurableProductIdentity::minted(product),
+                ProductEntryRecordClaim::new(entry_record),
+                members,
+                stamp,
+            )
+            .map_err(|_| SitePlanStateError::new(SitePlanState::InvalidDemand))?;
         if let Some(conflict) = conflict {
             self.product_conflict.get_or_insert(conflict);
         }
@@ -1223,6 +1231,23 @@ impl ImageDraft {
         &self.value_shapes
     }
 
+    /// This draft's durable contract graph, borrowed in place.
+    ///
+    /// The graph is not a fifth owner: it is the view spine over the four this draft
+    /// already holds — the application identity, the canonical Product declaration
+    /// table, the flat root-occurrence table, and the one value-shape DAG. Nothing is
+    /// copied and nothing is allocated, so a Product's member graph is stored once
+    /// however many roots occur over it and the contract identity is computed over
+    /// exactly the rows the DURABLE section is written from.
+    pub fn contract_view(&self) -> DurableContractView<'_> {
+        DurableContractView::over(
+            self.application,
+            &self.products,
+            &self.occurrences,
+            &self.value_shapes,
+        )
+    }
+
     // --- accessors used by the encoder ---
     pub(crate) fn strings(&self) -> &[String] {
         &self.strings
@@ -1346,6 +1371,20 @@ fn const_eq(a: ConstValue, b: ConstValue) -> bool {
 }
 
 impl StrId {
+    /// The string-pool id at `index`.
+    ///
+    /// A logical string id is a pool position, not a capability: the independent verifier
+    /// reads one from received bytes and must be able to state it, and every owner that
+    /// resolves one checks it against the pool it indexes.
+    pub fn from_index(index: u16) -> Self {
+        Self(index)
+    }
+
+    /// The raw logical index.
+    pub fn index(self) -> u16 {
+        self.0
+    }
+
     pub(crate) fn raw(self) -> u16 {
         self.0
     }

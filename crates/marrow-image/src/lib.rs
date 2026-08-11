@@ -41,11 +41,11 @@ pub use draft::{
     VariantDef,
 };
 pub use durable_id::{
-    BranchPlacementIdentity, DURABLE_CONTRACT_KIND, DurableBranchShape, DurableContractDescriptor,
-    DurableContractId, DurableFieldIdentity, DurableFieldShape, DurableGraphTooLarge,
-    DurableGroupIdentity, DurableGroupShape, DurableIndexComponent, DurableIndexShape,
-    DurableKeyIdentity, DurableKeyShape, DurableMemberIdentity, DurableMemberShape,
-    DurableProductIdentity, DurableRootShape, DurableSumIdentity, LedgerIdBytes,
+    BranchPlacementIdentity, DURABLE_CONTRACT_KIND, DurableBranchView, DurableContractId,
+    DurableContractView, DurableFieldIdentity, DurableFieldView, DurableGraphTooLarge,
+    DurableGroupIdentity, DurableGroupView, DurableIndexComponent, DurableIndexShape,
+    DurableKeyIdentity, DurableMemberIdentity, DurableMemberView, DurableMemberViewKind,
+    DurableMemberViews, DurableProductIdentity, DurableRootView, DurableSumIdentity, LedgerIdBytes,
     ManagedIndexIdentity, RootPlacementIdentity,
 };
 pub use encode::EncodedImage;
@@ -80,7 +80,8 @@ pub use interface::{
 };
 pub use product::{
     CanonicalDeclarationPathSelector, DeclarationMember, DeclarationMemberDef,
-    DeclarationMemberShape, RootOccurrenceSelector,
+    DeclarationMemberShape, DurableContractGraph, DurableGraphInputRefusal, DurableProductGraph,
+    RootOccurrenceSelector,
 };
 pub use semantic::{
     EmptySemanticPath, SemanticNode, SemanticNodeKind, SemanticPath, SemanticStep,

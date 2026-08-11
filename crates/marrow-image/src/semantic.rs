@@ -11,7 +11,7 @@
 //! chains are equal.
 //!
 //! The path is the stable identity. It is derived from the same durable member
-//! tree that backs the [`crate::DurableContractDescriptor`] over ledger ids, so the
+//! graph that backs the [`crate::DurableContractView`] over ledger ids, so the
 //! compiler and the verifier reconstruct identical paths from the same graph. There
 //! is deliberately no separate hashed `PathId`: the ledger-id chain is itself the
 //! stable identity, and durable authority, evolution, tooling, and physical

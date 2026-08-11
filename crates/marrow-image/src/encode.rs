@@ -29,9 +29,7 @@ use crate::bounds;
 use crate::digest::{ImageId, image_id};
 use crate::draft::{CollectionTypeDef, ConstValue, ImageBuildError, ImageDraft, KeyColumn};
 use crate::durable_id::{
-    DurableBranchShape, DurableContractDescriptor, DurableContractId, DurableFieldShape,
-    DurableGraphTooLarge, DurableGroupShape, DurableIndexComponent, DurableIndexShape,
-    DurableKeyShape, DurableMemberShape, DurableRootShape,
+    DurableContractId, DurableGraphTooLarge, DurableIndexComponent, DurableIndexShape,
 };
 use crate::instr::Instr;
 use crate::product::{
@@ -150,8 +148,8 @@ impl<'a> LegacyFullDraftCoherencePreflight<'a> {
 ///
 /// The fence bounds *this producer's* peak allocation, which is what makes the phase
 /// maxima below statable. It does not bound what any other caller of
-/// [`DurableContractDescriptor::contract_id`] can ask for, and it never could: a
-/// descriptor is a view over an arena, and this type has no reach into one. That the
+/// [`DurableContractView::contract_id`] can ask for, and it never could: a
+/// view is a view over an arena, and this type has no reach into one. That the
 /// contract hash is never computed over bytes no image can carry is a property of the
 /// identity owner's own ceiling on its canonical payload, which holds for every caller
 /// including this one.
@@ -212,8 +210,9 @@ impl<'a> LegacyDurableBodyLowerBoundFence<'a> {
     fn encode_body(self, str_map: &[u16]) -> Result<Vec<u8>, ImageBuildError> {
         let mut body = Vec::with_capacity(self.body_len + DurableContractId::BYTES);
         self.draft.write_durable_body(&mut body, str_map)?;
-        let descriptor = self.draft.durable_descriptor()?;
-        let identity = descriptor
+        let identity = self
+            .draft
+            .contract_view()
             .contract_id()
             .map_err(|DurableGraphTooLarge| ImageBuildError::ImageTooLarge)?;
         body.extend_from_slice(identity.bytes());
@@ -526,46 +525,6 @@ impl ImageDraft {
                 SemanticTarget::GroupEntry => 0x04,
             });
         })
-    }
-
-    /// The canonical durable-graph descriptor for this draft, built from its
-    /// application id and each root's ledger identity block (placement, product,
-    /// key tuple, and the resource's durable member tree). The member tree is
-    /// self-describing, so the descriptor no longer derives field shapes from the
-    /// materialized record type.
-    ///
-    /// Its one caller is [`LegacyDurableBodyLowerBoundFence::encode_body`]. The preimage
-    /// spells each ledger reference as a 25-byte `IDREF` where the body writes 16 raw
-    /// bytes and is otherwise the same expansion, so a graph whose body no image could
-    /// carry has a preimage larger still — which is why a descriptor is built only from
-    /// a graph the fence has already admitted.
-    fn durable_descriptor(&self) -> Result<DurableContractDescriptor<'_>, ImageBuildError> {
-        if self.root_occurrences().is_empty() {
-            return Ok(DurableContractDescriptor::empty(self.value_shapes()));
-        }
-        let application = self
-            .application_identity()
-            .ok_or(ImageBuildError::InvalidReference("application identity"))?;
-        let roots = self
-            .root_occurrences()
-            .iter()
-            .map(|occurrence| {
-                let declaration = self.declaration_of(occurrence);
-                let graph = declaration.graph();
-                DurableRootShape {
-                    placement: occurrence.placement().ledger_id(),
-                    product: declaration.identity().ledger_id(),
-                    keys: key_shapes(occurrence.keys()),
-                    members: member_shapes(graph, graph.members()),
-                    indexes: occurrence.indexes().to_vec(),
-                }
-            })
-            .collect();
-        Ok(DurableContractDescriptor::new(
-            application,
-            roots,
-            self.value_shapes(),
-        ))
     }
 
     fn encode_functions(
@@ -1057,54 +1016,6 @@ fn validate_value_shapes(values: &CanonicalValueShapeDag) -> Result<(), ImageBui
         }
     }
     Ok(())
-}
-
-/// The descriptor key-tuple shapes for a placement's key columns.
-fn key_shapes(keys: &[KeyColumn]) -> Vec<DurableKeyShape> {
-    keys.iter()
-        .map(|key| DurableKeyShape {
-            scalar: key.scalar,
-            id: key.id,
-        })
-        .collect()
-}
-
-/// Convert one run of a declaration's member rows into the descriptor's member shapes,
-/// descending through groups and branches. The descriptor is the canonical identity owner;
-/// this is the producer-side projection into it, from the same rows the wire bytes are
-/// projected from.
-fn member_shapes(
-    graph: &ProductDeclarationGraph,
-    members: &[DeclarationNode],
-) -> Vec<DurableMemberShape> {
-    members
-        .iter()
-        .map(|member| match member.shape() {
-            DeclarationMemberShape::Field {
-                id,
-                required,
-                value,
-            } => DurableMemberShape::Field(DurableFieldShape {
-                id: *id,
-                required: *required,
-                value: *value,
-            }),
-            DeclarationMemberShape::Group { id } => DurableMemberShape::Group(DurableGroupShape {
-                id: *id,
-                members: member_shapes(graph, graph.members_of(member)),
-            }),
-            // The branch's name and record type are surface, not identity: the
-            // descriptor carries only its placement, key tuple, and member value
-            // shapes, so a rename or a record retype preserves the contract id.
-            DeclarationMemberShape::Branch {
-                placement, keys, ..
-            } => DurableMemberShape::Branch(DurableBranchShape {
-                placement: *placement,
-                keys: key_shapes(keys),
-                members: member_shapes(graph, graph.members_of(member)),
-            }),
-        })
-        .collect()
 }
 
 fn push_u32(out: &mut impl ImageByteSink, value: u32) {

@@ -36,13 +36,17 @@
 //! selectors only, so a number is a wire value here and never an address.
 
 use std::collections::BTreeMap;
+use std::rc::Rc;
 
 use crate::bounds::MAX_DURABLE_MEMBERS;
-use crate::draft::{DraftIdentity, KeyColumn, RowStamp, StrId, TypeId};
-use crate::durable_id::{
-    DurableIndexShape, DurableProductIdentity, LedgerIdBytes, RootPlacementIdentity,
+use crate::draft::{
+    AdmittedGraphInputPlan, DraftIdentity, KeyColumn, RootOccurrenceDef, RowStamp, StrId, TypeId,
 };
-use crate::value_dag::ValueShapeNodeId;
+use crate::durable_id::{
+    DurableContractView, DurableIndexShape, DurableMemberViews, DurableProductIdentity,
+    LedgerIdBytes, RootPlacementIdentity,
+};
+use crate::value_dag::{CanonicalValueShapeDag, ValueShapeNodeId};
 
 /// The ordinal of one row in a [`ProductDeclarationGraph`].
 ///
@@ -160,7 +164,7 @@ pub(crate) enum DeclarationCommandError {
 
 /// One Product declaration's canonical member/value graph, as flat rows.
 ///
-/// The rows are the declaration: the wire projection, the durable contract descriptor,
+/// The rows are the declaration: the wire projection, the durable contract payload,
 /// the bound recheck, and the comparison between two occurrences of one Product identity
 /// all read them, so there is no second member-graph representation for them to disagree
 /// with.
@@ -376,11 +380,11 @@ impl ProductDeclarationGraph {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct DurableProductClaim {
     identity: DurableProductIdentity,
-    graph: ProductDeclarationGraph,
+    graph: DurableProductGraph,
 }
 
 impl DurableProductClaim {
-    pub(crate) fn new(identity: DurableProductIdentity, graph: ProductDeclarationGraph) -> Self {
+    pub(crate) fn new(identity: DurableProductIdentity, graph: DurableProductGraph) -> Self {
         Self { identity, graph }
     }
 
@@ -388,9 +392,70 @@ impl DurableProductClaim {
         self.identity
     }
 
-    pub(crate) fn graph(&self) -> &ProductDeclarationGraph {
+    pub(crate) fn graph(&self) -> &DurableProductGraph {
         &self.graph
     }
+}
+
+/// One Product declaration's canonical member graph, held as a shared owner.
+///
+/// It is the published handle onto rows an admitted declaration already built: it has no
+/// public constructor, no public field, and no mutator, so a caller reads a graph a
+/// producer declared and can state none of its own. Its members are reached as borrowed
+/// views ([`DurableMemberViews`]), which carry no member vector, so this type cannot be
+/// turned back into a recursive tree.
+///
+/// The rows are shared rather than copied: every root occurrence over one Product refers
+/// to this one owner, so a Product's member graph is stored once however many occurrences
+/// project it, on both the compiler's and the verifier's side.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DurableProductGraph {
+    rows: Rc<ProductDeclarationGraph>,
+}
+
+impl DurableProductGraph {
+    /// The Product's direct members, in declaration order.
+    pub fn iter(&self) -> DurableMemberViews<'_> {
+        DurableMemberViews::over(&self.rows, self.rows.members())
+    }
+
+    pub(crate) fn rows(&self) -> &ProductDeclarationGraph {
+        &self.rows
+    }
+}
+
+impl<'a> IntoIterator for &'a DurableProductGraph {
+    type Item = crate::durable_id::DurableMemberView<'a>;
+    type IntoIter = DurableMemberViews<'a>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.iter()
+    }
+}
+
+/// Why a flat durable-graph command was refused before any row was appended.
+///
+/// Every cause is a fault in the input a caller built — a command vector that states no
+/// forest, a count the admitted plan does not cover, or an occurrence of a Product this
+/// graph does not hold. None of them is a source diagnostic or a user resource kind: the
+/// compiler's own entry points project them into their one opaque refusal, and the
+/// independent verifier projects them into its own typed hostile-image rejection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DurableGraphInputRefusal {
+    /// The command vector is wider, or the declaration/occurrence count higher, than the
+    /// admitted input plan covers.
+    OverPlan,
+    /// The command vector does not state a forest: a member names a parent that is not an
+    /// earlier command, or names one that declares no members.
+    MalformedCommands,
+    /// A later occurrence of an already-declared Product states a different member graph.
+    DivergentGraph,
+    /// A later occurrence of an already-declared Product states a different entry record.
+    DivergentEntryRecord,
+    /// The occurrence names a Product this graph holds no declaration for.
+    UndeclaredProduct,
+    /// The occurrence table cannot address another row.
+    UnaddressableOccurrence,
 }
 
 /// The runtime shape one Product declaration binds: the materialized entry record its
@@ -433,6 +498,11 @@ pub(crate) struct ProductDeclaration {
 impl ProductDeclaration {
     /// This declaration's canonical member/value graph, as flat rows.
     pub(crate) fn graph(&self) -> &ProductDeclarationGraph {
+        self.claim.graph().rows()
+    }
+
+    /// This declaration's canonical member graph as the shared owner a caller retains.
+    pub(crate) fn product_graph(&self) -> &DurableProductGraph {
         self.claim.graph()
     }
 
@@ -499,6 +569,39 @@ impl ProductDeclarationTable {
             return (row, Some(ProductClaimConflict::EntryRecord(identity)));
         }
         (row, None)
+    }
+
+    /// Admit one Product declaration under `plan`: check the admitted counts, validate the
+    /// command vector, and bind or reference the row.
+    ///
+    /// This is the one place the plan's Product and command budgets are spent, so the
+    /// draft and the independent verifier's own contract graph enter construction through
+    /// the same checks rather than each restating them. A repeat of an already-bound
+    /// identity resolves to that row and declares no new Product, so it spends no Product
+    /// budget.
+    pub(crate) fn admit_under(
+        &mut self,
+        plan: &AdmittedGraphInputPlan,
+        identity: DurableProductIdentity,
+        surface: ProductEntryRecordClaim,
+        members: Vec<DeclarationMemberDef>,
+        stamp: RowStamp,
+    ) -> Result<(usize, Option<ProductClaimConflict>), DurableGraphInputRefusal> {
+        if members.len() > plan.commands() {
+            return Err(DurableGraphInputRefusal::OverPlan);
+        }
+        if self.row_of(identity).is_none() && self.declarations().len() >= plan.products() {
+            return Err(DurableGraphInputRefusal::OverPlan);
+        }
+        let graph = ProductDeclarationGraph::from_commands(members)
+            .map_err(|_| DurableGraphInputRefusal::MalformedCommands)?;
+        let claim = DurableProductClaim::new(
+            identity,
+            DurableProductGraph {
+                rows: Rc::new(graph),
+            },
+        );
+        Ok(self.admit(claim, surface, stamp))
     }
 
     pub(crate) fn declaration(&self, row: usize) -> &ProductDeclaration {
@@ -1089,6 +1192,159 @@ pub(crate) struct OccurrenceSiteDemandKey {
 impl OccurrenceSiteDemandKey {
     pub(crate) fn target(&self) -> crate::semantic::SemanticTarget {
         self.target
+    }
+}
+
+/// One program's durable contract graph, owned.
+///
+/// It holds the four owners a contract is derived from — the application identity, the
+/// canonical Product declaration table, the flat root-occurrence table, and the one
+/// value-shape DAG their fields reference — and publishes them as one zero-allocation
+/// [`DurableContractView`]. It is the owner the **independent verifier** builds from
+/// received bytes; the compiler's draft holds the same four owners beside its own site
+/// plan and publishes the same view from them, so both sides compute one canonical
+/// contract encoding from rows of one shape rather than from two models that could drift.
+///
+/// Construction is flat, bottom-up, and admitted: every entry point requires an
+/// [`AdmittedGraphInputPlan`], a Product's members arrive as a command vector whose rows
+/// name their parent by an earlier command, and no entry accepts a built recursive owner
+/// by value. There is no public raw-row constructor and no way to reach the rows except
+/// through the borrowed views, so nothing a caller states can be deeper than the rows a
+/// bounded producer wrote.
+///
+/// It owns its arena. A [`crate::ValueShapeNodeId`] a caller reads from this graph's
+/// views addresses a node this graph holds, for as long as it holds it.
+#[derive(Debug)]
+pub struct DurableContractGraph {
+    /// The strong identity the occurrence table's published selectors carry.
+    identity: DraftIdentity,
+    next_stamp: u64,
+    application: Option<LedgerIdBytes>,
+    products: ProductDeclarationTable,
+    occurrences: RootOccurrenceTable,
+    values: CanonicalValueShapeDag,
+}
+
+impl Default for DurableContractGraph {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl DurableContractGraph {
+    /// The empty graph: no application identity, no declaration, no occurrence, and an
+    /// empty arena. Its contract identity is the well-defined identity of a program with
+    /// no durable data.
+    pub fn new() -> Self {
+        Self {
+            identity: DraftIdentity::mint(),
+            next_stamp: 0,
+            application: None,
+            products: ProductDeclarationTable::default(),
+            occurrences: RootOccurrenceTable::default(),
+            values: CanonicalValueShapeDag::new(),
+        }
+    }
+
+    fn next_stamp(&mut self) -> RowStamp {
+        self.next_stamp += 1;
+        RowStamp::from_counter(self.next_stamp)
+    }
+
+    /// Record the application's ledger id. A graph with a root always has one.
+    pub fn set_application_identity(&mut self, id: LedgerIdBytes) {
+        self.application = Some(id);
+    }
+
+    /// This graph's one value-shape arena, for interning the shapes its fields reference.
+    pub fn value_shapes_mut(&mut self) -> &mut CanonicalValueShapeDag {
+        &mut self.values
+    }
+
+    /// This graph's one value-shape arena.
+    pub fn value_shapes(&self) -> &CanonicalValueShapeDag {
+        &self.values
+    }
+
+    /// Admit one durable Product declaration under `plan`, returning the shared owner of
+    /// its canonical member graph.
+    ///
+    /// The first declaration of a Product identity binds the row; a later one is a
+    /// reference that must state the identical member graph and entry record, and states
+    /// a divergence rather than silently canonicalizing one of them away.
+    pub fn declare_product(
+        &mut self,
+        plan: &AdmittedGraphInputPlan,
+        product: LedgerIdBytes,
+        entry_record: TypeId,
+        members: Vec<DeclarationMemberDef>,
+    ) -> Result<DurableProductGraph, DurableGraphInputRefusal> {
+        let stamp = self.next_stamp();
+        let (row, conflict) = self.products.admit_under(
+            plan,
+            DurableProductIdentity::minted(product),
+            ProductEntryRecordClaim::new(entry_record),
+            members,
+            stamp,
+        )?;
+        match conflict {
+            Some(ProductClaimConflict::Graph(_)) => Err(DurableGraphInputRefusal::DivergentGraph),
+            Some(ProductClaimConflict::EntryRecord(_)) => {
+                Err(DurableGraphInputRefusal::DivergentEntryRecord)
+            }
+            None => Ok(self.products.declaration(row).product_graph().clone()),
+        }
+    }
+
+    /// Append one root occurrence over the Product declaration `product` names.
+    ///
+    /// The row retains only the root's own placement, spelling, key tuple, and managed
+    /// indexes and a reference to the one declaration, so nothing is retained per
+    /// (root x member).
+    pub fn add_root_occurrence(
+        &mut self,
+        plan: &AdmittedGraphInputPlan,
+        product: LedgerIdBytes,
+        def: RootOccurrenceDef,
+    ) -> Result<(), DurableGraphInputRefusal> {
+        if self.occurrences.len() >= plan.roots() {
+            return Err(DurableGraphInputRefusal::OverPlan);
+        }
+        let declaration = self
+            .products
+            .row_of(DurableProductIdentity::minted(product))
+            .ok_or(DurableGraphInputRefusal::UndeclaredProduct)?;
+        let RootOccurrenceDef {
+            name,
+            keys,
+            placement,
+            indexes,
+        } = def;
+        let stamp = self.next_stamp();
+        self.occurrences
+            .push(
+                self.identity,
+                RootOccurrenceRow {
+                    declaration,
+                    name,
+                    keys,
+                    placement: RootPlacementIdentity::minted(placement),
+                    indexes,
+                },
+                stamp,
+            )
+            .ok_or(DurableGraphInputRefusal::UnaddressableOccurrence)?;
+        Ok(())
+    }
+
+    /// This graph's durable contract, borrowed in place.
+    pub fn contract_view(&self) -> DurableContractView<'_> {
+        DurableContractView::over(
+            self.application,
+            &self.products,
+            &self.occurrences,
+            &self.values,
+        )
     }
 }
 

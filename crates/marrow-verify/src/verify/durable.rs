@@ -1,8 +1,6 @@
 //! Phase 2 durable graph: root/branch/group/index decoding, sealing, and shape descriptors.
 
-use super::model::{
-    DecodedEnum, DecodedField, DecodedIndex, DecodedMember, DecodedRecordType, DecodedRoot,
-};
+use super::model::{DecodedEnum, DecodedField, DecodedRecordType, DecodedRoot};
 use super::reject;
 use super::tables::decode_bare_scalar;
 use crate::reader::Reader;
@@ -12,11 +10,12 @@ use crate::sealed::{
     SealedSiteTarget,
 };
 use marrow_image::{
-    CanonicalValueShapeDag, DurableBranchShape, DurableContractDescriptor, DurableContractId,
-    DurableFieldShape, DurableGroupShape, DurableIndexComponent, DurableIndexShape,
-    DurableKeyShape, DurableMemberShape, DurableRootShape, ImageType, LedgerIdBytes, Scalar,
+    AdmittedGraphInputPlan, CanonicalValueShapeDag, DeclarationMemberDef, DeclarationMemberShape,
+    DurableContractGraph, DurableContractId, DurableGraphInputRefusal, DurableIndexComponent,
+    DurableIndexShape, DurableMemberView, DurableMemberViewKind, DurableMemberViews,
+    DurableProductGraph, ImageType, KeyColumn, LedgerIdBytes, RootOccurrenceDef, Scalar,
     SemanticNode, SemanticNodeKind, SemanticPath, SemanticStep, SemanticStepKind, SemanticTarget,
-    ValueShapeNodeId, ValueShapeView,
+    StrId, TypeId, ValueShapeNodeId, ValueShapeView,
 };
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::rc::Rc;
@@ -31,21 +30,73 @@ use std::rc::Rc;
 /// later fields of that enum reference rather than reclaim), and the
 /// contract id is independently recomputed from the decoded graph and checked
 /// against the carried bytes.
-/// The decoded durable graph: the roots, the sealed operation sites, each site's
-/// resolved graph-node path (parallel to the sites), the recomputed contract id, and the
-/// graph's node set.
+/// The decoded durable graph: the one contract graph the section decoded into, the roots,
+/// the sealed operation sites, each site's resolved graph-node path (parallel to the
+/// sites), the recomputed contract id, and the graph's node set.
 ///
-/// The value-shape arena is not among them. Every reader of a decoded value shape — the
-/// record tie, the index eligibility classifier, and the contract-id reconstruction — is
-/// inside this decode, so the arena is dropped with the descriptor that viewed it and a
-/// retained `ValueShapeNodeId` addresses nothing anyone can read.
+/// The contract graph owns the value-shape arena, and it is returned rather than dropped:
+/// a decoded member row references its field's shape by node id, so the owner of those
+/// nodes outlives every row that addresses one.
 type DecodedDurable = (
+    DurableContractGraph,
     Vec<DecodedRoot>,
     Vec<SealedSite>,
     Vec<SemanticPath>,
     DurableContractId,
     Vec<SemanticNode>,
 );
+
+/// Mint the construction plan this section is decoded under, from an allocation-free
+/// structural preflight over bytes the image container ceiling already bounds.
+///
+/// The preflight reads the one structural count the section states before any graph exists
+/// — how many roots it claims — and refuses root N+1 **there**, before a plan is minted or
+/// a row is allocated, so a hostile root count is answered by the bound rather than by the
+/// allocator. The admitted counts follow from it: each root declares at most one Product,
+/// and a declaration's command vector is admitted at the image's own one-past-the-bound
+/// declaration width, which the per-Product member budget then spends exactly.
+///
+/// It consumes nothing: the returned reader position is the caller's own, so the root
+/// count is read once by the decode that follows.
+fn admit_structural_plan(body: &[u8]) -> Result<AdmittedGraphInputPlan, VerifyRejection> {
+    let mut preflight = Reader::new(body);
+    let root_count = preflight
+        .u16()
+        .ok_or(reject(VerifyPhase::Table, "short root count"))? as usize;
+    if root_count > marrow_image::bounds::MAX_ROOTS {
+        return Err(reject(VerifyPhase::Table, "too many durable roots"));
+    }
+    AdmittedGraphInputPlan::admit(
+        root_count,
+        root_count,
+        marrow_image::bounds::MAX_ADMITTED_DECLARATION_COMMANDS,
+    )
+    .ok_or(reject(VerifyPhase::Table, "too many durable roots"))
+}
+
+/// Project one refused flat durable-graph command into this verifier's own typed
+/// hostile-image detail. A hostile image states the graph; the refusal names what it
+/// stated wrongly, in the same `&'static str` form every other rejection in this decode
+/// carries.
+fn reject_graph_input(refusal: DurableGraphInputRefusal) -> VerifyRejection {
+    reject(
+        VerifyPhase::Table,
+        match refusal {
+            DurableGraphInputRefusal::DivergentGraph => {
+                "a repeated durable Product declares a different member graph"
+            }
+            DurableGraphInputRefusal::DivergentEntryRecord => {
+                "a repeated durable Product declares a different entry record"
+            }
+            DurableGraphInputRefusal::OverPlan
+            | DurableGraphInputRefusal::UnaddressableOccurrence => "too many durable roots",
+            DurableGraphInputRefusal::MalformedCommands
+            | DurableGraphInputRefusal::UndeclaredProduct => {
+                "durable member graph is not a well-formed declaration"
+            }
+        },
+    )
+}
 
 pub(super) fn decode_durable(
     body: &[u8],
@@ -54,6 +105,9 @@ pub(super) fn decode_durable(
     enums: &[DecodedEnum],
 ) -> Result<DecodedDurable, VerifyRejection> {
     let string_count = strings.len();
+    // The construction plan is minted before the graph exists, from a structural preflight
+    // over the received bytes: no plan, no graph.
+    let plan = admit_structural_plan(body)?;
     let mut reader = Reader::new(body);
     let root_count = reader
         .u16()
@@ -62,19 +116,15 @@ pub(super) fn decode_durable(
         return Err(reject(VerifyPhase::Table, "too many durable roots"));
     }
     let mut scope = LedgerScope::default();
-    // This image's one value-shape arena. Every field's shape is decoded into it and
-    // referenced from there, so a repeated shape costs one interning lookup and the
-    // decoder never holds a second representation of the same value.
-    let mut values = CanonicalValueShapeDag::new();
-    let application = if root_count > 0 {
-        Some(take_distinct_id(
-            &mut reader,
-            &mut scope,
-            "short application identity",
-        )?)
-    } else {
-        None
-    };
+    // This image's one durable contract graph. Every declaration, occurrence, and field
+    // value shape is decoded into it and referenced from there, so a repeated Product
+    // costs one declaration row and the decoder never holds a second representation of a
+    // member graph or of a value.
+    let mut graph = DurableContractGraph::new();
+    if root_count > 0 {
+        let application = take_distinct_id(&mut reader, &mut scope, "short application identity")?;
+        graph.set_application_identity(application);
+    }
     let mut roots = Vec::with_capacity(root_count);
     for _ in 0..root_count {
         let name = reader
@@ -124,52 +174,27 @@ pub(super) fn decode_durable(
         // value is drawn from the closed acyclic durable value set (a bare scalar, a
         // dense struct, or a closed enum with sum/member ids).
         let mut member_budget = marrow_image::bounds::MAX_DURABLE_MEMBERS;
-        let members = match scope.products.get(&product) {
-            Some(declared) => {
-                let accepted = Rc::clone(&declared.members);
-                let declared_record = declared.root_record;
-                let repeated = decode_members(
-                    &mut reader,
-                    1,
-                    &mut member_budget,
-                    &mut scope,
-                    &mut values,
-                    MemberClaim::Reference,
-                )?;
-                if repeated != *accepted {
-                    return Err(reject(
-                        VerifyPhase::Table,
-                        "a repeated durable Product declares a different member graph",
-                    ));
-                }
-                if record != declared_record {
-                    return Err(reject(
-                        VerifyPhase::Table,
-                        "a repeated durable Product declares a different entry record",
-                    ));
-                }
-                accepted
-            }
-            None => {
-                claim_distinct(&mut scope, product)?;
-                let members = Rc::new(decode_members(
-                    &mut reader,
-                    1,
-                    &mut member_budget,
-                    &mut scope,
-                    &mut values,
-                    MemberClaim::Declaration,
-                )?);
-                scope.products.insert(
-                    product,
-                    ProductClaim {
-                        members: Rc::clone(&members),
-                        root_record: record,
-                    },
-                );
-                members
-            }
+        // A Product is a declaration and a root is an occurrence of it. The first
+        // occurrence claims the declaration's ledger ids; a later one is a reference that
+        // reclaims nothing and must state the identical graph and entry record, which the
+        // declaration table itself decides — there is no second comparison here to drift
+        // from the one the graph performs.
+        let claim = if scope.products.insert(product) {
+            claim_distinct(&mut scope, product)?;
+            MemberClaim::Declaration
+        } else {
+            MemberClaim::Reference
         };
+        let commands = decode_members(
+            &mut reader,
+            &mut member_budget,
+            &mut scope,
+            &mut graph,
+            claim,
+        )?;
+        let members = graph
+            .declare_product(&plan, product, TypeId::from_index(record), commands)
+            .map_err(reject_graph_input)?;
         // The member tree's top-level fields and groups are exactly the materialized
         // record's stored field slots followed by its trailing group slots, in order and
         // value shape: this ties the durable identity to the executable record so a
@@ -179,22 +204,40 @@ pub(super) fn decode_durable(
         // thoroughly as a plain scalar; each group slot is a group record whose own fields
         // tie to its `Group` member's direct fields one level down.
         let record_fields = &types[record as usize].fields;
-        tie_root_record(record_fields, &members, types, enums, &values)?;
+        let values = graph.value_shapes();
+        tie_root_record(record_fields, &members, types, enums, values)?;
         // Every keyed `branch` nested in the tree ties its own materialized record to
         // its direct field members the same way, one level down, so a hostile image
         // cannot claim a branch identity while executing over a different record shape.
-        validate_branch_records(&members, types, enums, string_count, &values)?;
+        validate_branch_records(members.iter(), types, enums, string_count, values)?;
         // The root's managed indexes follow its member tree. Each index's `Index`
         // ledger id is a distinct id across the whole table; each projected component
         // must reference a real top-level field or identity key of this same root, so a
         // hostile image cannot forge a projection over a leaf that does not exist.
-        let indexes = decode_indexes(&mut reader, &keys, &members, &mut scope, &values)?;
+        let indexes = decode_indexes(&mut reader, &keys, &members, &mut scope, values)?;
+        graph
+            .add_root_occurrence(
+                &plan,
+                product,
+                RootOccurrenceDef {
+                    name: StrId::from_index(name),
+                    keys: keys
+                        .iter()
+                        .map(|(scalar, id)| KeyColumn {
+                            scalar: *scalar,
+                            id: *id,
+                        })
+                        .collect(),
+                    placement,
+                    indexes: indexes.clone(),
+                },
+            )
+            .map_err(reject_graph_input)?;
         roots.push(DecodedRoot {
             name,
             keys,
             record,
             placement,
-            product,
             members,
             indexes,
         });
@@ -214,14 +257,13 @@ pub(super) fn decode_durable(
         }
     }
 
-    // Reconstruct the durable graph's node set now, from the same descriptor the
-    // contract id is computed over, so every operation site resolves against this
-    // verifier's own derivation of the graph rather than a compiler-side summary.
-    let descriptor = durable_descriptor(application, &roots, &values);
-    let nodes = descriptor.semantic_nodes();
+    // Reconstruct the durable graph's node set now, from the same view the contract id is
+    // computed over, so every operation site resolves against this verifier's own
+    // derivation of the graph rather than a compiler-side summary.
+    let nodes = graph.contract_view().semantic_nodes();
     // Project that node set once into its keyed form: each node's executable
     // coordinates, keyed by its path. A site then resolves in one lookup.
-    let graph = project_graph(&nodes, &roots);
+    let projection = project_graph(&nodes, &roots);
 
     let site_count = reader
         .u16()
@@ -243,7 +285,7 @@ pub(super) fn decode_durable(
     // wire ordinal the first duplicate is refused at — is exactly this one.
     let mut claimed: HashSet<SealedSite> = HashSet::with_capacity(site_count);
     for _ in 0..site_count {
-        let (site, path) = decode_site(&mut reader, &graph)?;
+        let (site, path) = decode_site(&mut reader, &projection)?;
         if !claimed.insert(site.clone()) {
             return Err(reject(VerifyPhase::Table, "duplicate durable site"));
         }
@@ -272,7 +314,8 @@ pub(super) fn decode_durable(
     // decode cannot reach. It is answered rather than assumed: an image whose graph
     // somehow priced its own identity out of reach carries an identity nothing can
     // recompute, which is exactly a contract that does not match its graph.
-    let recomputed = descriptor
+    let recomputed = graph
+        .contract_view()
         .contract_id()
         .map_err(|_| reject(VerifyPhase::Table, "durable graph is too large to identify"))?;
     if recomputed.bytes() != &carried {
@@ -281,10 +324,10 @@ pub(super) fn decode_durable(
             "durable contract id does not match the durable graph",
         ));
     }
-    // The descriptor is a view over the decoded roots and the arena; only its two
-    // derivations — the recomputed id and the node set — outlive this function, so no
-    // caller retains a second projection of the durable graph.
-    Ok((roots, sites, site_paths, recomputed, nodes))
+    // The graph is the one owner: the roots reference its declaration rows and its arena,
+    // and its two derivations — the recomputed id and the node set — are the only
+    // projections of it that leave this decode. No caller retains a second one.
+    Ok((graph, roots, sites, site_paths, recomputed, nodes))
 }
 
 /// Decode one operation site — its semantic path then its target-kind byte — and
@@ -636,20 +679,55 @@ pub(super) fn is_flat_executable_root(root: &DecodedRoot) -> bool {
     !root.keys.is_empty() && root.members.iter().all(member_flat_at_root)
 }
 
+/// Whether one member is a field-only keyed branch, at every level below it — the branch
+/// shape the kernel executes at any depth. Its key is one or more columns and every direct
+/// member itself keeps flat: a field (scalar or widened composite), or a nested branch that
+/// is itself a simple branch. A static `group` breaks it. The rule admits an arbitrarily
+/// deep chain of field-only branches with composite keys, which the recursive physical
+/// layout and profile serve.
+///
+/// The descent is an explicit stack of member runs, not recursion: nesting depth is a
+/// property of the rows the image stated, and this predicate's own stack use must not be.
+fn is_simple_branch(member: DurableMemberView<'_>) -> bool {
+    let DurableMemberViewKind::Branch(branch) = member.kind() else {
+        return false;
+    };
+    if branch.keys().is_empty() {
+        return false;
+    }
+    let mut stack = vec![member.members()];
+    while let Some(run) = stack.last_mut() {
+        let Some(inner) = run.next() else {
+            stack.pop();
+            continue;
+        };
+        match inner.kind() {
+            DurableMemberViewKind::Field(_) => {}
+            DurableMemberViewKind::Group(_) => return false,
+            DurableMemberViewKind::Branch(nested) => {
+                if nested.keys().is_empty() {
+                    return false;
+                }
+                stack.push(inner.members());
+            }
+        }
+    }
+    true
+}
+
 /// Whether a root's *direct* member keeps the root flat-executable. It admits one more
-/// shape than [`DecodedMember::keeps_root_flat`]: a root-level unkeyed `group` whose own
+/// shape than [`is_simple_branch`]'s inner rule: a root-level unkeyed `group` whose own
 /// members are all storable-value fields (a scalar or widened composite). A group is a
 /// value unit of the root entry, executable at the root level, but a group nested in a
-/// branch or in another group still parks — [`keeps_root_flat`] (used for branch
-/// members) keeps `Group => false`, so a group below the root's direct members never
-/// makes its enclosing branch flat.
-pub(super) fn member_flat_at_root(member: &DecodedMember) -> bool {
-    match member {
-        DecodedMember::Field { .. } => true,
-        DecodedMember::Group { members, .. } => members
-            .iter()
-            .all(|m| matches!(m, DecodedMember::Field { .. })),
-        DecodedMember::Branch { .. } => member.is_simple_branch(),
+/// branch or in another group still parks — the branch rule keeps `Group => false`, so a
+/// group below the root's direct members never makes its enclosing branch flat.
+pub(super) fn member_flat_at_root(member: DurableMemberView<'_>) -> bool {
+    match member.kind() {
+        DurableMemberViewKind::Field(_) => true,
+        DurableMemberViewKind::Group(_) => member
+            .members()
+            .all(|inner| matches!(inner.kind(), DurableMemberViewKind::Field(_))),
+        DurableMemberViewKind::Branch(_) => is_simple_branch(member),
     }
 }
 
@@ -658,21 +736,24 @@ pub(super) fn member_flat_at_root(member: &DecodedMember) -> bool {
 /// by level. Called only for a flat-executable root, so every branch is a scalar-field
 /// keyed branch (its `keys` are its ordered key columns) and its own members recurse
 /// through the same rule.
-pub(super) fn seal_branches(members: &[DecodedMember], strings: &[Rc<str>]) -> Vec<SealedBranch> {
+pub(super) fn seal_branches(
+    members: &DurableProductGraph,
+    strings: &[Rc<str>],
+) -> Vec<SealedBranch> {
+    seal_branch_run(members.iter(), strings)
+}
+
+/// Seal one run of member rows into its branch list, descending through each branch's own
+/// members. Nesting is bounded by the decoded member depth the table phase already
+/// enforced.
+fn seal_branch_run(members: DurableMemberViews<'_>, strings: &[Rc<str>]) -> Vec<SealedBranch> {
     members
-        .iter()
-        .filter_map(|member| match member {
-            DecodedMember::Branch {
-                name,
-                record,
-                keys,
-                members,
-                ..
-            } => Some(SealedBranch {
-                name: strings[*name as usize].clone(),
-                keys: keys.iter().map(|(scalar, _)| *scalar).collect(),
-                record: *record,
-                branches: seal_branches(members, strings),
+        .filter_map(|member| match member.kind() {
+            DurableMemberViewKind::Branch(branch) => Some(SealedBranch {
+                name: strings[usize::from(branch.name().index())].clone(),
+                keys: branch.keys().iter().map(|key| key.scalar).collect(),
+                record: branch.record().index(),
+                branches: seal_branch_run(member.members(), strings),
             }),
             _ => None,
         })
@@ -692,11 +773,11 @@ pub(super) fn seal_groups(root: &DecodedRoot, types: &[SealedRecordType]) -> Vec
     let field_count = root
         .members
         .iter()
-        .filter(|member| matches!(member, DecodedMember::Field { .. }))
+        .filter(|member| matches!(member.kind(), DurableMemberViewKind::Field(_)))
         .count();
     root.members
         .iter()
-        .filter(|member| matches!(member, DecodedMember::Group { .. }))
+        .filter(|member| matches!(member.kind(), DurableMemberViewKind::Group(_)))
         .enumerate()
         .map(|(ordinal, _group)| {
             let slot = &record.fields[field_count + ordinal];
@@ -737,16 +818,16 @@ pub(super) fn seal_root_indexes(
     // (their orders are tied during root decode), and a key column's position in this
     // occurrence's own key tuple.
     let mut fields: HashMap<LedgerIdBytes, u16> = HashMap::new();
-    for (position, member) in root
+    for (position, field) in root
         .members
         .iter()
-        .filter(|member| matches!(member, DecodedMember::Field { .. }))
+        .filter_map(|member| match member.kind() {
+            DurableMemberViewKind::Field(field) => Some(field),
+            _ => None,
+        })
         .enumerate()
     {
-        let DecodedMember::Field { id, .. } = member else {
-            unreachable!("filtered to field members");
-        };
-        fields.entry(*id).or_insert(position as u16);
+        fields.entry(field.id()).or_insert(position as u16);
     }
     let mut columns: HashMap<LedgerIdBytes, u16> = HashMap::with_capacity(root.keys.len());
     for (column, (_, id)) in root.keys.iter().enumerate() {
@@ -799,28 +880,18 @@ pub(super) fn seal_root_indexes(
 /// per-declaration identity, so it reclaims nothing and must carry the identical member
 /// ids in order.
 ///
-/// `products` records each durable Product declaration by its Product id: the member
-/// graph and entry record accepted at its **first** root occurrence. A later root
-/// carrying an already-recorded Product id is a *reference* to that one declaration, so
-/// it reclaims none of the declaration's ids and must carry the identical graph and
-/// entry record. `placements` records the root placement ids already occupied, so a
-/// repeated root occurrence is refused as itself rather than as a generic duplicate id.
+/// `products` records which durable Product identities a root has already declared. A
+/// later root carrying an already-recorded Product id is a *reference* to that one
+/// declaration, so it reclaims none of the declaration's ids; whether it states the same
+/// graph and entry record is decided by the declaration table, which holds them.
+/// `placements` records the root placement ids already occupied, so a repeated root
+/// occurrence is refused as itself rather than as a generic duplicate id.
 #[derive(Default)]
 struct LedgerScope {
     seen: BTreeSet<LedgerIdBytes>,
     enums: BTreeMap<LedgerIdBytes, Vec<LedgerIdBytes>>,
-    products: BTreeMap<LedgerIdBytes, ProductClaim>,
+    products: BTreeSet<LedgerIdBytes>,
     placements: BTreeSet<LedgerIdBytes>,
-}
-
-/// The declaration facts one Product identity bound at its first root occurrence: its
-/// canonical member/value graph, and the materialized entry record its roots execute
-/// over. The outer root's placement, name, key tuple, and managed indexes are occurrence
-/// facts and are deliberately not here — two roots may share a Product while differing in
-/// all of them.
-struct ProductClaim {
-    members: Rc<Vec<DecodedMember>>,
-    root_record: u16,
 }
 
 /// Whether a member tree is being decoded as a Product declaration's first occurrence,
@@ -929,18 +1000,17 @@ fn decode_key_tuple(
 /// from the compiler.
 fn tie_root_record(
     record_fields: &[DecodedField],
-    members: &[DecodedMember],
+    members: &DurableProductGraph,
     types: &[DecodedRecordType],
     enums: &[DecodedEnum],
     values: &CanonicalValueShapeDag,
 ) -> Result<(), VerifyRejection> {
     let mut slots = record_fields.iter();
     let mut seen_group = false;
-    for member in members {
-        match member {
-            DecodedMember::Field {
-                value, required, ..
-            } => {
+    for member in members.iter() {
+        match member.kind() {
+            DurableMemberViewKind::Field(field) => {
+                let (value, required) = (field.value(), field.required());
                 if seen_group {
                     return Err(reject(
                         VerifyPhase::Table,
@@ -953,8 +1023,8 @@ fn tie_root_record(
                         "root member tree has more top-level members than the record",
                     ));
                 };
-                if *required != slot.required
-                    || !value_shape_matches(values, *value, slot.ty, types, enums)
+                if required != slot.required
+                    || !value_shape_matches(values, value, slot.ty, types, enums)
                 {
                     return Err(reject(
                         VerifyPhase::Table,
@@ -962,10 +1032,7 @@ fn tie_root_record(
                     ));
                 }
             }
-            DecodedMember::Group {
-                members: group_members,
-                ..
-            } => {
+            DurableMemberViewKind::Group(_) => {
                 seen_group = true;
                 let Some(slot) = slots.next() else {
                     return Err(reject(
@@ -973,10 +1040,10 @@ fn tie_root_record(
                         "root member tree has more top-level members than the record",
                     ));
                 };
-                tie_group_slot(slot, group_members, types, enums, values)?;
+                tie_group_slot(slot, member.members(), types, enums, values)?;
             }
             // A keyed branch is a distinct durable node, not a materialized record slot.
-            DecodedMember::Branch { .. } => {}
+            DurableMemberViewKind::Branch(_) => {}
         }
     }
     if slots.next().is_some() {
@@ -996,7 +1063,7 @@ fn tie_root_record(
 /// refused.
 fn tie_group_slot(
     slot: &DecodedField,
-    group_members: &[DecodedMember],
+    group_members: DurableMemberViews<'_>,
     types: &[DecodedRecordType],
     enums: &[DecodedEnum],
     values: &CanonicalValueShapeDag,
@@ -1020,10 +1087,8 @@ fn tie_group_slot(
         ));
     }
     let group_fields = &types[idx as usize].fields;
-    let mut direct_fields = group_members.iter().filter_map(|member| match member {
-        DecodedMember::Field {
-            value, required, ..
-        } => Some((*value, *required)),
+    let mut direct_fields = group_members.filter_map(|member| match member.kind() {
+        DurableMemberViewKind::Field(field) => Some((field.value(), field.required())),
         _ => None,
     });
     for field in group_fields {
@@ -1056,38 +1121,37 @@ fn tie_group_slot(
 /// this is the only place they are checked; a hostile image that names a branch
 /// record disagreeing with the branch's field shapes is refused here.
 fn validate_branch_records(
-    members: &[DecodedMember],
+    members: DurableMemberViews<'_>,
     types: &[DecodedRecordType],
     enums: &[DecodedEnum],
     string_count: usize,
     values: &CanonicalValueShapeDag,
 ) -> Result<(), VerifyRejection> {
-    for member in members {
-        match member {
-            DecodedMember::Field { .. } => {}
-            DecodedMember::Group { members, .. } => {
-                validate_branch_records(members, types, enums, string_count, values)?;
-            }
-            DecodedMember::Branch {
-                name,
-                record,
-                members,
-                ..
-            } => {
-                if *name as usize >= string_count {
+    // One explicit stack of member runs, in the same pre-order the recursive walk had, so
+    // the first violation is refused at the same member as before while the walk's own
+    // stack use stays independent of how deep the image nested its rows.
+    let mut stack = vec![members];
+    while let Some(run) = stack.last_mut() {
+        let Some(member) = run.next() else {
+            stack.pop();
+            continue;
+        };
+        match member.kind() {
+            DurableMemberViewKind::Field(_) => {}
+            DurableMemberViewKind::Group(_) => stack.push(member.members()),
+            DurableMemberViewKind::Branch(branch) => {
+                if usize::from(branch.name().index()) >= string_count {
                     return Err(reject(VerifyPhase::Table, "branch name index out of range"));
                 }
-                if *record as usize >= types.len() {
+                if usize::from(branch.record().index()) >= types.len() {
                     return Err(reject(
                         VerifyPhase::Table,
                         "branch record type index out of range",
                     ));
                 }
-                let record_fields = &types[*record as usize].fields;
-                let mut direct_fields = members.iter().filter_map(|member| match member {
-                    DecodedMember::Field {
-                        value, required, ..
-                    } => Some((*value, *required)),
+                let record_fields = &types[usize::from(branch.record().index())].fields;
+                let mut direct_fields = member.members().filter_map(|inner| match inner.kind() {
+                    DurableMemberViewKind::Field(field) => Some((field.value(), field.required())),
                     _ => None,
                 });
                 for field in record_fields {
@@ -1109,7 +1173,7 @@ fn validate_branch_records(
                         "branch member tree has more direct fields than its record",
                     ));
                 }
-                validate_branch_records(members, types, enums, string_count, values)?;
+                stack.push(member.members());
             }
         }
     }
@@ -1125,28 +1189,37 @@ fn validate_branch_records(
 /// later field of that enum references rather than reclaims.
 fn decode_members(
     reader: &mut Reader<'_>,
-    depth: usize,
     budget: &mut usize,
     scope: &mut LedgerScope,
-    values: &mut CanonicalValueShapeDag,
+    graph: &mut DurableContractGraph,
     claim: MemberClaim,
-) -> Result<Vec<DecodedMember>, VerifyRejection> {
-    if depth > marrow_image::bounds::MAX_DURABLE_DEPTH {
-        return Err(reject(VerifyPhase::Table, "durable member tree too deep"));
-    }
-    let count = reader
+) -> Result<Vec<DeclarationMemberDef>, VerifyRejection> {
+    let top = reader
         .u16()
         .ok_or(reject(VerifyPhase::Table, "short durable member count"))? as usize;
-    let mut members = Vec::with_capacity(count.min(*budget));
-    for _ in 0..count {
+    let mut commands: Vec<DeclarationMemberDef> = Vec::with_capacity(top.min(*budget));
+    // One explicit stack of `(parent command, members still to read at that level)`. The
+    // wire order is unchanged — a nested run is read where the tree wrote it — but nothing
+    // recurses and nothing owns a child vector: each command names its parent by an
+    // earlier command's index, which is the only shape the graph's construction accepts.
+    let mut stack: Vec<(Option<u16>, usize)> = vec![(None, top)];
+    while let Some((parent, remaining)) = stack.last_mut() {
+        if *remaining == 0 {
+            stack.pop();
+            continue;
+        }
+        *remaining -= 1;
+        let parent = *parent;
         if *budget == 0 {
             return Err(reject(VerifyPhase::Table, "too many durable members"));
         }
         *budget -= 1;
+        let index = u16::try_from(commands.len())
+            .map_err(|_| reject(VerifyPhase::Table, "too many durable members"))?;
         let tag = reader
             .u8()
             .ok_or(reject(VerifyPhase::Table, "short durable member tag"))?;
-        let member = match tag {
+        let shape = match tag {
             0x00 => {
                 let id = claim.read(reader, scope, "short durable field identity")?;
                 let required = match reader.u8().ok_or(reject(
@@ -1162,8 +1235,8 @@ fn decode_members(
                         ));
                     }
                 };
-                let value = decode_value_shape(reader, 1, scope, values)?;
-                DecodedMember::Field {
+                let value = decode_value_shape(reader, 1, scope, graph.value_shapes_mut())?;
+                DeclarationMemberShape::Field {
                     id,
                     required,
                     value,
@@ -1171,8 +1244,8 @@ fn decode_members(
             }
             0x01 => {
                 let id = claim.read(reader, scope, "short durable group identity")?;
-                let inner = decode_members(reader, depth + 1, budget, scope, values, claim)?;
-                DecodedMember::Group { id, members: inner }
+                descend(&mut stack, reader, index)?;
+                DeclarationMemberShape::Group { id }
             }
             0x02 => {
                 let placement = claim.read(reader, scope, "short durable branch identity")?;
@@ -1194,20 +1267,42 @@ fn decode_members(
                     return Err(reject(VerifyPhase::Table, "too many branch key columns"));
                 }
                 let keys = decode_key_tuple(reader, key_count, scope, claim)?;
-                let inner = decode_members(reader, depth + 1, budget, scope, values, claim)?;
-                DecodedMember::Branch {
+                descend(&mut stack, reader, index)?;
+                DeclarationMemberShape::Branch {
                     placement,
-                    name,
-                    record,
-                    keys,
-                    members: inner,
+                    name: StrId::from_index(name),
+                    record: TypeId::from_index(record),
+                    keys: keys
+                        .into_iter()
+                        .map(|(scalar, id)| KeyColumn { scalar, id })
+                        .collect(),
                 }
             }
             _ => return Err(reject(VerifyPhase::Table, "unknown durable member tag")),
         };
-        members.push(member);
+        commands.push(DeclarationMemberDef { parent, shape });
     }
-    Ok(members)
+    Ok(commands)
+}
+
+/// Enter the nested member run a `group` or `branch` command opened: check the nesting
+/// bound the level below would occupy, then read that level's count.
+///
+/// The bound is checked before the count is read, exactly where the recursive decode
+/// checked it on entry, so an over-deep image is refused at the same byte.
+fn descend(
+    stack: &mut Vec<(Option<u16>, usize)>,
+    reader: &mut Reader<'_>,
+    parent: u16,
+) -> Result<(), VerifyRejection> {
+    if stack.len() + 1 > marrow_image::bounds::MAX_DURABLE_DEPTH {
+        return Err(reject(VerifyPhase::Table, "durable member tree too deep"));
+    }
+    let count = reader
+        .u16()
+        .ok_or(reject(VerifyPhase::Table, "short durable member count"))? as usize;
+    stack.push((Some(parent), count));
+    Ok(())
 }
 
 /// Decode a root's managed indexes: `u16(count) ‖ index*`. Each index is its distinct
@@ -1221,14 +1316,14 @@ fn decode_members(
 fn decode_indexes(
     reader: &mut Reader<'_>,
     keys: &[(Scalar, LedgerIdBytes)],
-    members: &[DecodedMember],
+    members: &DurableProductGraph,
     scope: &mut LedgerScope,
     values: &CanonicalValueShapeDag,
-) -> Result<Vec<DecodedIndex>, VerifyRejection> {
+) -> Result<Vec<DurableIndexShape>, VerifyRejection> {
     let field_ids: Vec<LedgerIdBytes> = members
         .iter()
-        .filter_map(|member| match member {
-            DecodedMember::Field { id, .. } => Some(*id),
+        .filter_map(|member| match member.kind() {
+            DurableMemberViewKind::Field(field) => Some(field.id()),
             _ => None,
         })
         .collect();
@@ -1237,8 +1332,8 @@ fn decode_indexes(
     // and widened values can be stored but are not index-eligible.
     let index_eligible_field_ids: Vec<LedgerIdBytes> = members
         .iter()
-        .filter_map(|member| match member {
-            DecodedMember::Field { id, value, .. } => match values.view(*value) {
+        .filter_map(|member| match member.kind() {
+            DurableMemberViewKind::Field(field) => match values.view(field.value()) {
                 ValueShapeView::Scalar(
                     Scalar::Int
                     | Scalar::Text
@@ -1246,12 +1341,12 @@ fn decode_indexes(
                     | Scalar::Bytes
                     | Scalar::Date
                     | Scalar::Instant,
-                ) => Some(*id),
+                ) => Some(field.id()),
                 ValueShapeView::Scalar(Scalar::Duration)
                 | ValueShapeView::Struct(_)
                 | ValueShapeView::Enum { .. } => None,
             },
-            DecodedMember::Group { .. } | DecodedMember::Branch { .. } => None,
+            DurableMemberViewKind::Group(_) | DurableMemberViewKind::Branch(_) => None,
         })
         .collect();
     let count = reader
@@ -1341,7 +1436,7 @@ fn decode_indexes(
         if let Err(detail) = validate_index_projection(unique, &components, keys) {
             return Err(reject(VerifyPhase::Table, detail));
         }
-        indexes.push(DecodedIndex {
+        indexes.push(DurableIndexShape {
             id,
             unique,
             components,
@@ -1587,87 +1682,4 @@ fn value_shape_matches(
         }
         _ => false,
     }
-}
-
-/// Rebuild the canonical durable-graph descriptor from the decoded tables. This is
-/// the verifier's independent reconstruction: it shares the canonical encoding owned
-/// by `marrow-image` but reads only the decoded application id, roots, key tuples,
-/// and member trees, so the recomputed id depends on nothing the compiler asserted
-/// directly.
-pub(super) fn durable_descriptor<'a>(
-    application: Option<LedgerIdBytes>,
-    roots: &[DecodedRoot],
-    values: &'a CanonicalValueShapeDag,
-) -> DurableContractDescriptor<'a> {
-    let Some(application) = application else {
-        return DurableContractDescriptor::empty(values);
-    };
-    let shapes = roots
-        .iter()
-        .map(|root| DurableRootShape {
-            placement: root.placement,
-            product: root.product,
-            keys: key_shapes(&root.keys),
-            members: member_shapes(&root.members),
-            indexes: index_shapes(&root.indexes),
-        })
-        .collect();
-    DurableContractDescriptor::new(application, shapes, values)
-}
-
-/// The descriptor index shapes for a decoded root's managed indexes.
-fn index_shapes(indexes: &[DecodedIndex]) -> Vec<DurableIndexShape> {
-    indexes
-        .iter()
-        .map(|index| DurableIndexShape {
-            id: index.id,
-            unique: index.unique,
-            components: index.components.clone(),
-        })
-        .collect()
-}
-
-/// The descriptor key-tuple shapes for a decoded placement's key columns.
-fn key_shapes(keys: &[(Scalar, LedgerIdBytes)]) -> Vec<DurableKeyShape> {
-    keys.iter()
-        .map(|(scalar, id)| DurableKeyShape {
-            scalar: *scalar,
-            id: *id,
-        })
-        .collect()
-}
-
-/// Convert a decoded member tree into the descriptor's member shapes, recursing
-/// through groups and branches.
-fn member_shapes(members: &[DecodedMember]) -> Vec<DurableMemberShape> {
-    members
-        .iter()
-        .map(|member| match member {
-            DecodedMember::Field {
-                id,
-                required,
-                value,
-            } => DurableMemberShape::Field(DurableFieldShape {
-                id: *id,
-                required: *required,
-                value: *value,
-            }),
-            DecodedMember::Group { id, members } => DurableMemberShape::Group(DurableGroupShape {
-                id: *id,
-                members: member_shapes(members),
-            }),
-            // Name and record are surface, not identity: the descriptor carries only
-            // the branch's placement, key tuple, and member value shapes.
-            DecodedMember::Branch {
-                placement,
-                keys,
-                members,
-                ..
-            } => DurableMemberShape::Branch(DurableBranchShape {
-                placement: *placement,
-                keys: key_shapes(keys),
-                members: member_shapes(members),
-            }),
-        })
-        .collect()
 }

@@ -982,7 +982,7 @@ enum ProductDeclarationSource {
 impl ProductDeclarationSource {
     /// The declared shape of each direct member, in declaration order, whichever form the
     /// declaration is currently in.
-    fn member_shapes(&self) -> Vec<&DeclarationMemberShape> {
+    fn declared_shapes(&self) -> Vec<&DeclarationMemberShape> {
         match self {
             Self::Held(members) => members.iter().map(DeclarationMember::shape).collect(),
             Self::Built(commands) => commands.iter().map(|command| &command.shape).collect(),
@@ -1265,11 +1265,11 @@ fn build_one(
     // just built, or the declaration the draft already holds. Both place the resource's
     // top-level fields first, in record order, so the leading run reads the same either
     // way.
-    let member_shapes: Vec<&DeclarationMemberShape> = source.member_shapes();
+    let declared_shapes: Vec<&DeclarationMemberShape> = source.declared_shapes();
     let field_entries: Vec<IndexFieldLeaf> = record
         .fields
         .iter()
-        .zip(&member_shapes)
+        .zip(&declared_shapes)
         .map(|(field, shape)| {
             let (id, value) = match shape {
                 DeclarationMemberShape::Field { id, value, .. } => (*id, value),
@@ -2516,7 +2516,7 @@ fn request_eager_site(
 /// site table scales with referenced fields, not declared width. A group is a namespace
 /// whose leaves are addressed through its whole-group site, so no per-leaf site is emitted.
 /// The eager sites are emitted pre-order, a placement or group node before its members,
-/// mirroring [`marrow_image::DurableContractDescriptor::semantic_nodes`] so every emitted
+/// mirroring [`marrow_image::DurableContractView::semantic_nodes`] so every emitted
 /// site resolves against the verifier's independently reconstructed node set.
 ///
 /// A [`ProductOccurrenceMultiplicity::Shared`] Product emits none of them: its member nodes

@@ -2,8 +2,8 @@
 
 use crate::sealed::{RetShape, SealedCollectionType, SealedConst, SealedSite};
 use marrow_image::{
-    DurableContractId, DurableIndexComponent, ExportId, ImageId, ImageType, LedgerIdBytes, Scalar,
-    SemanticNode, SemanticPath, ValueShapeNodeId,
+    DurableContractGraph, DurableContractId, DurableIndexShape, DurableProductGraph, ExportId,
+    ImageId, ImageType, LedgerIdBytes, Scalar, SemanticNode, SemanticPath,
 };
 use std::rc::Rc;
 
@@ -38,86 +38,23 @@ pub(super) struct DecodedVariant {
 
 /// A decoded durable root: name string index, its ordered key tuple (each column a
 /// scalar and its ledger id; empty for a singleton root), record type index, the
-/// rest of the root's placement/product ledger identity, and the resource's durable
-/// member tree.
+/// rest of the root's placement ledger identity, and the resource's durable member
+/// graph. The Product identity is not among them: it names the declaration row, which the
+/// one contract graph holds, so a root does not carry a second spelling of it.
 pub(super) struct DecodedRoot {
     pub(super) name: u16,
     pub(super) keys: Vec<(Scalar, LedgerIdBytes)>,
     pub(super) record: u16,
     pub(super) placement: LedgerIdBytes,
-    pub(super) product: LedgerIdBytes,
-    /// The Product declaration's member tree. A Product is a declaration and a root is
+    /// The Product declaration's canonical member graph, shared with the one durable
+    /// contract graph this image decoded into. A Product is a declaration and a root is
     /// an occurrence of it, so repeated occurrences of one Product share the one graph
     /// accepted at its first occurrence rather than each retaining a copy.
-    pub(super) members: Rc<Vec<DecodedMember>>,
-    pub(super) indexes: Vec<DecodedIndex>,
-}
-
-/// A decoded managed index of a root: its `Index` ledger id, its `unique` flag, and
-/// its ordered projection of leaf references. Each component is re-resolved against
-/// the root's own top-level fields and identity keys during decode, so a component
-/// referencing no real leaf is refused.
-pub(super) struct DecodedIndex {
-    pub(super) id: LedgerIdBytes,
-    pub(super) unique: bool,
-    pub(super) components: Vec<DurableIndexComponent>,
-}
-
-/// One decoded durable member, in the image's declaration order: a stored scalar
-/// field, a static `group` namespace, or a keyed `branch` placement. Groups and
-/// branches recurse.
-#[derive(PartialEq, Eq)]
-pub(super) enum DecodedMember {
-    Field {
-        id: LedgerIdBytes,
-        required: bool,
-        /// This field's stored value shape, as a reference into the decoded image's one
-        /// [`CanonicalValueShapeDag`]. Nothing here owns a shape, so a repeated or
-        /// deeply nested value is decoded once and referenced thereafter.
-        value: ValueShapeNodeId,
-    },
-    Group {
-        id: LedgerIdBytes,
-        members: Vec<DecodedMember>,
-    },
-    Branch {
-        placement: LedgerIdBytes,
-        /// The branch's simple name (string index), for the physical layer.
-        name: u16,
-        /// The branch entry's materialized record type index.
-        record: u16,
-        keys: Vec<(Scalar, LedgerIdBytes)>,
-        members: Vec<DecodedMember>,
-    },
-}
-
-impl DecodedMember {
-    /// Whether this member is a field-only keyed branch, recursively — the branch shape
-    /// the kernel executes at any depth. Its key is one or more columns and every direct
-    /// member itself keeps flat: a field (scalar or widened composite), or a nested branch
-    /// that is itself a simple branch. A static `group` breaks it. The recursion admits an
-    /// arbitrarily deep chain of field-only branches with composite keys, which the
-    /// recursive physical layout and profile serve.
-    pub(super) fn is_simple_branch(&self) -> bool {
-        matches!(
-            self,
-            DecodedMember::Branch { keys, members, .. }
-                if !keys.is_empty()
-                    && members.iter().all(DecodedMember::keeps_root_flat)
-        )
-    }
-
-    /// Whether this member keeps its containing root flat-executable: a field (scalar or
-    /// widened composite — the durable field codec frames a composite inline in the one
-    /// field-leaf cell) or a simple (recursively field-only, keyed) branch. A static
-    /// `group` and a composite/nested branch still park the root.
-    fn keeps_root_flat(&self) -> bool {
-        match self {
-            DecodedMember::Field { .. } => true,
-            DecodedMember::Group { .. } => false,
-            DecodedMember::Branch { .. } => self.is_simple_branch(),
-        }
-    }
+    ///
+    /// It is read as borrowed views, which carry no member vector, so nothing here can be
+    /// turned back into an owned recursive tree.
+    pub(super) members: DurableProductGraph,
+    pub(super) indexes: Vec<DurableIndexShape>,
 }
 
 pub(super) struct DecodedFunction {
@@ -137,6 +74,17 @@ pub(super) struct DecodedImage {
     pub(super) enums: Vec<DecodedEnum>,
     pub(super) collections: Vec<SealedCollectionType>,
     pub(super) roots: Vec<DecodedRoot>,
+    /// The one durable contract graph this image decoded into: the application identity,
+    /// the canonical Product declaration table, the flat root-occurrence rows, and the one
+    /// value-shape arena every field references.
+    ///
+    /// The verifier retains it because it owns that arena: a
+    /// [`marrow_image::ValueShapeNodeId`] carried by a decoded member row addresses a node
+    /// this graph holds, so the graph outlives every row that references it instead of the
+    /// arena dying under retained ids. Nothing reads it — holding it *is* what it is for,
+    /// which is why the ids it answers for are no longer dangling by design.
+    #[allow(dead_code)]
+    pub(super) durable_graph: DurableContractGraph,
     pub(super) sites: Vec<SealedSite>,
     /// Each site's resolved graph-node path, parallel to `sites` by index.
     pub(super) site_paths: Vec<SemanticPath>,
