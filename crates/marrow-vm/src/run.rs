@@ -1277,8 +1277,11 @@ fn execute_frame<'s>(
                     .map_err(|kf| kernel_fault(function, pc, &kf))?;
                 // The lookup yields the source key tuple of the matching entry, wrapped as
                 // the optional source identity `Id(^root)` — present with the found key
-                // tuple, or vacant.
-                let value = found.map(|keys| Box::new(Value::Id(0, Rc::from(keys.as_slice()))));
+                // tuple, or vacant. An entry identity is root-local and its root tag takes
+                // part in equality, so the root comes from the site the lookup ran over,
+                // never from a fixed position.
+                let root = site_root(image, *site);
+                let value = found.map(|keys| Box::new(Value::Id(root, Rc::from(keys.as_slice()))));
                 stack.push(Value::Optional(value));
                 pc += 1;
             }
@@ -1671,6 +1674,17 @@ fn site_group_records(image: &VerifiedImage, site: u16) -> Vec<u16> {
             .map(marrow_verify::SealedGroup::record)
             .collect(),
         _ => Vec::new(),
+    }
+}
+
+/// The root occurrence a site addresses. The verifier admits a durable opcode only over
+/// a flat executable site, so the referenced site is `Flat`.
+fn site_root(image: &VerifiedImage, site: u16) -> u16 {
+    match &image.sites()[site as usize] {
+        SealedSite::Flat { root, .. } => *root,
+        SealedSite::Parked { .. } => {
+            unreachable!("the verifier admits a durable opcode only over a flat site")
+        }
     }
 }
 

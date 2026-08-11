@@ -380,6 +380,91 @@ fn acyclic_over_deep_value_reports_only_resource_limit() {
     );
 }
 
+// ---- The leaf level counts: compiler, image, and verifier agree on value depth.
+
+/// A durable field whose value is `struct_count` nested structs terminating in
+/// `leaf`. The outermost struct sits at depth 1 and the terminating leaf at depth
+/// `struct_count + 1`, so `struct_count = 31` places the leaf exactly at
+/// `MAX_DURABLE_VALUE_DEPTH` (32) and `struct_count = 32` one level past it.
+fn struct_chain_to_leaf(struct_count: usize, leaf: &str) -> ProjectInput {
+    let mut source = String::from("module main\n\n");
+    source.push_str(&format!("struct S0 {{ x: {leaf} }}\n"));
+    for level in 1..struct_count {
+        source.push_str(&format!("struct S{level} {{ s: S{} }}\n", level - 1));
+    }
+    source.push_str(&format!(
+        "\nresource Deep {{\n    required d: S{}\n}}\n\n",
+        struct_count - 1
+    ));
+    source.push_str("store ^deep[id: int]: Deep\n\n");
+    source.push_str("pub fn noop(): int {\n    return 0\n}\n");
+    let ids = ledger(&[
+        "application .".into(),
+        "product Deep".into(),
+        "field Deep.d".into(),
+        "root deep".into(),
+        "key deep.id".into(),
+    ]);
+    project(&source, Some(&ids))
+}
+
+/// The terminating scalar occupies a level of its own, so a value whose enclosing
+/// structs all fit the bound can still be over-deep at its leaf. The compiler
+/// checked the depth only where it descended — at a struct or an enum — while the
+/// image encoder measures the whole shape including its leaf, so the two disagreed:
+/// a leaf one level past the bound left the source diagnostic unreported and the
+/// program failing at the image invariant instead. Both leaf kinds are checked.
+#[test]
+fn a_scalar_leaf_one_level_past_the_bound_reports_the_source_limit() {
+    assert_source_resource_limit(compile(&struct_chain_to_leaf(32, "int")));
+}
+
+/// An enum payload leaf is measured the same way: the enum itself sits one level
+/// above its payload values, so a payload one level past the bound is over-deep even
+/// though the enum that carries it fits.
+fn enum_payload_chain(struct_count: usize) -> ProjectInput {
+    let mut source = String::from("module main\n\n");
+    source.push_str("enum Leaf {\n    none\n    some(v: int)\n}\n\n");
+    source.push_str("struct S0 { x: Leaf }\n");
+    for level in 1..struct_count {
+        source.push_str(&format!("struct S{level} {{ s: S{} }}\n", level - 1));
+    }
+    source.push_str(&format!(
+        "\nresource Deep {{\n    required d: S{}\n}}\n\n",
+        struct_count - 1
+    ));
+    source.push_str("store ^deep[id: int]: Deep\n\n");
+    source.push_str("pub fn noop(): int {\n    return 0\n}\n");
+    let ids = ledger(&[
+        "application .".into(),
+        "product Deep".into(),
+        "field Deep.d".into(),
+        "root deep".into(),
+        "key deep.id".into(),
+        "sum Leaf".into(),
+        "member Leaf.none".into(),
+        "member Leaf.some".into(),
+    ]);
+    project(&source, Some(&ids))
+}
+
+#[test]
+fn an_enum_payload_leaf_one_level_past_the_bound_reports_the_source_limit() {
+    assert_source_resource_limit(compile(&enum_payload_chain(31)));
+}
+
+#[test]
+fn an_enum_payload_leaf_at_the_bound_still_compiles() {
+    compile(&enum_payload_chain(30)).expect("an enum payload leaf at the depth bound is admitted");
+}
+
+/// The bound itself still admits: a leaf at exactly `MAX_DURABLE_VALUE_DEPTH`
+/// compiles, so the leaf check refuses one level and not the level below it.
+#[test]
+fn a_scalar_leaf_at_the_bound_still_compiles() {
+    compile(&struct_chain_to_leaf(31, "int")).expect("a leaf at the depth bound is admitted");
+}
+
 // ---- Defect 2: a root key tuple over the bound must not be `check.unsupported`.
 
 /// A store root with more than `MAX_KEY_COLUMNS` (8) key columns is prechecked

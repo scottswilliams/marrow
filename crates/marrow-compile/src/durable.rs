@@ -1199,8 +1199,27 @@ impl<'a> IdentityResolver<'a> {
         depth: usize,
     ) -> DurableValueShape {
         match ty {
-            GArg::Scalar(scalar) => DurableValueShape::Scalar(scalar.image()),
-            GArg::Nominal(_) => DurableValueShape::Scalar(ScalarType::Int.image()),
+            // A leaf occupies a level of its own: the enclosing structs may all fit the
+            // depth bound while the value that terminates them sits one level past it.
+            // The image encoder measures the same shape and refuses it, so a leaf
+            // admitted here without the bound would leave the compiler and the image
+            // disagreeing about the same value — the source-level limit would be
+            // reported as an internal invariant failure instead. The bound is checked at
+            // the leaf for that reason, with the located diagnostic the enclosing
+            // struct and enum arms already report.
+            GArg::Scalar(scalar) => {
+                if depth > bounds::MAX_DURABLE_VALUE_DEPTH {
+                    self.reject_resource_limit(self.span, over_deep_value_message());
+                    return DurableValueShape::Scalar(ScalarType::Int.image());
+                }
+                DurableValueShape::Scalar(scalar.image())
+            }
+            GArg::Nominal(_) => {
+                if depth > bounds::MAX_DURABLE_VALUE_DEPTH {
+                    self.reject_resource_limit(self.span, over_deep_value_message());
+                }
+                DurableValueShape::Scalar(ScalarType::Int.image())
+            }
             GArg::Struct(type_id) => {
                 // A struct already on the path closes a value cycle: leave it to the
                 // later value-cycle pass (`check.recursion`) and drop the graph. The

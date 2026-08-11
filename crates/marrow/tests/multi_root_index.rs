@@ -116,6 +116,20 @@ pub fn talliesOnShelf(shelf: string): int {
 pub fn tallyLabel(id: int): string? {
     return ^tallies[id].label
 }
+
+pub fn eqAssets(sku: string, id: int): bool? {
+    if const found = ^assets.aBySku[sku] {
+        return found == Id(^assets, id)
+    }
+    return absent
+}
+
+pub fn eqTallies(sku: string, id: int): bool? {
+    if const found = ^tallies.tBySku[sku] {
+        return found == Id(^tallies, id)
+    }
+    return absent
+}
 "#;
 
 fn compile_verify() -> VerifiedImage {
@@ -361,5 +375,38 @@ fn a_shared_sku_across_roots_is_not_a_unique_collision() {
     assert_eq!(
         run(&image, &mut store, "tallyLabelBySku", vec![text("s1")]),
         some_text("tally-one"),
+    );
+}
+
+/// The identity a unique-index lookup yields addresses the root it was read from. The
+/// lookup on the second-declared root (`^tallies`, RootId 1) must compare equal to the
+/// identity constructed for that same entry, exactly as it does on the first root.
+/// `Value` equality compares the root tag, so a lookup that reported root 0 for every
+/// root would answer a visibly wrong boolean here.
+#[test]
+fn an_index_lookup_identity_carries_the_root_it_was_read_from() {
+    let image = compile_verify();
+    let mut store = attach(&image);
+    seed(&image, &mut store);
+
+    assert_eq!(
+        run(
+            &image,
+            &mut store,
+            "eqAssets",
+            vec![text("s1"), Value::Int(1)]
+        ),
+        Some(Value::Optional(Some(Box::new(Value::Bool(true))))),
+        "the ^assets lookup identity equals the identity constructed for the same entry",
+    );
+    assert_eq!(
+        run(
+            &image,
+            &mut store,
+            "eqTallies",
+            vec![text("s1"), Value::Int(1)]
+        ),
+        Some(Value::Optional(Some(Box::new(Value::Bool(true))))),
+        "the ^tallies lookup identity carries root 1, not root 0",
     );
 }
