@@ -492,7 +492,7 @@ pub const DURABLE_GRAPH_FIXED_BYTES: u64 =
 /// | element | live | fewest wire bytes | rate |
 /// |---|---|---|---|
 /// | member row | 56 | 17 — a tag byte and a ledger id | 4 |
-/// | root occurrence | 224 | 34 — a name, a placement id, and a Product id | 7 |
+/// | root occurrence | 216 | 34 — a name, a placement id, and a Product id | 7 |
 /// | managed index | 48 | 19 — a ledger id, a unique flag, and a component count | 3 |
 /// | index component | 17 | 17 — a kind byte and a ledger id | 1 |
 /// | value shape node | 92 | 2 — a shape tag and a scalar tag | 46 |
@@ -658,7 +658,7 @@ mod tests {
         assert_eq!(DURABLE_MEMBER_ROW_BYTES, 56, "one materialized member row");
         assert_eq!(DURABLE_PRODUCT_ROW_BYTES, 72, "one Product declaration row");
         assert_eq!(
-            DURABLE_OCCURRENCE_ROW_BYTES, 224,
+            DURABLE_OCCURRENCE_ROW_BYTES, 216,
             "one root occurrence at the widest key tuple"
         );
         assert_eq!(
