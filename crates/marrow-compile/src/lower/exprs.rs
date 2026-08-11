@@ -58,6 +58,16 @@ impl<'a> FnLowerer<'a> {
     }
 
     /// Lower `expr`, emitting code that pushes its value and returning its type.
+    ///
+    /// Unlike the statement walker, the arms here cover unread fields with `..` rather
+    /// than binding each to `_`. The statement rule exists for one defect: a new
+    /// block-bearing field on an existing variant would leave its statements never
+    /// lowered and never diagnosed, which a trailing arm cannot catch because the
+    /// variant is not new. No `Expression` variant carries a block or a statement — an
+    /// expression's operands are expressions, which every arm already walks — so the
+    /// defect has no shape here. That is a property of the syntax tree, not a promise:
+    /// `no_expression_variant_carries_a_block` fails the moment one does, and the arms
+    /// must then name their fields as the statement walker's do.
     pub(super) fn lower_expr(&mut self, expr: &Expression) -> Option<LTy> {
         // A read through a managed index `^root.index[keys]`: a unique index is an exact
         // complete-key lookup yielding the optional `Id(^root)`; a nonunique index is read

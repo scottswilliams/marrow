@@ -264,23 +264,32 @@ mod decl_parser_corpus {
             "type Foo = int\n",
             "wat\n",
             "    indented\n",
-            "module app\n;; a doc comment\nfn main()\n    return\n",
-            ";; leading docs\nresource Tag\n    name: string\n",
+            // `;;` is the pre-brace doc-comment spelling, which now lexes as an
+            // unexpected character. Kept as malformed input: determinism and the
+            // no-panic property are what this corpus asserts, and a retired spelling a
+            // reader may still type is worth holding both against.
+            "module app\n;; a retired doc-comment spelling\nfn main()\n    return\n",
+            ";; a retired doc-comment spelling\nresource Tag\n    name: string\n",
+            // the current comment spelling, in the same positions
+            "module app\n// a comment\nfn main() {\n    return\n}\n",
+            "// a leading comment\nresource Tag {\n    name: string\n}\n",
             // statement bodies that exercise StmtParser delegation
             "fn main()\n    foo +\n",
             "fn main()\n    const x: int\n",
             "fn touch(id: int)\n    ^events(id).status = now\n",
             "fn run()\n    log(level: 1, 2)\n",
             "fn classify(n: int)\n    if n < 0\n        return\n    else if n > 0\n        return\n    else\n        return\n",
-            // interleaved blank lines and doc comments inside a resource body
+            // interleaved blank lines and comments inside a resource body
             "resource Book\n    ;; a field\n    required title: string\n\n    required author: string\nstore ^books: Book\n",
+            "resource Book {\n    // a field\n    required title: string\n\n    required author: string\n}\nstore ^books: Book\n",
             // trailing blank lines inside a function body before the next decl
             "fn a()\n    return\n\nfn b()\n    return\n",
             "fn a()\n    return\n\n\npub fn b(x: int)\n    return x\n",
             // empty and whitespace-only inputs
             "",
             "\n\n",
-            ";; just docs\n",
+            ";; a retired doc-comment spelling alone\n",
+            "// a comment alone\n",
         ];
         for source in cases {
             assert_deterministic(source);

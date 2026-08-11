@@ -786,6 +786,72 @@ after_item
         );
     }
 
+    /// The over-skip direction needs a sentinel *after* a `#[cfg(test)]` item, which
+    /// [`every_top_level_item_survives_the_production_scan`] cannot supply on its own.
+    ///
+    /// In a file whose test module sits last — which is most of them — an extent read
+    /// as one line too long drops nothing, because nothing follows it. Every derived
+    /// sentinel in such a file sits *before* the skip and survives an extent of any
+    /// length, so the assertion passes while proving nothing about the direction it is
+    /// named for. Only a production item that follows a test item can witness it.
+    ///
+    /// The witnessing files are derived, and the crate must offer at least one: a scan
+    /// whose only over-skip evidence disappeared when a module was reordered should say
+    /// so, not narrow silently to the direction it can still see.
+    #[test]
+    fn a_production_item_after_a_test_item_survives_the_production_scan() {
+        let mut witnesses = 0usize;
+        for (path, source) in crate_sources() {
+            let code = code_only(source.as_str());
+            let structure: Vec<&str> = code.lines().collect();
+            let Some(first_test_item) = structure
+                .iter()
+                .position(|line| line.trim() == "#[cfg(test)]")
+            else {
+                continue;
+            };
+            let after: Vec<&str> = source
+                .lines()
+                .zip(&structure)
+                .enumerate()
+                .skip(first_test_item)
+                .filter(|(index, (_, line))| {
+                    let line = line.trim_end();
+                    line.starts_with(|first: char| first.is_ascii_alphabetic())
+                        && (line.ends_with('{') || line.ends_with(';'))
+                        // The annotated header is the skipped item itself, not an item
+                        // that survives it.
+                        && index
+                            .checked_sub(1)
+                            .and_then(|above| structure.get(above))
+                            .is_none_or(|above| above.trim() != "#[cfg(test)]")
+                })
+                .map(|(_, (line, _))| line)
+                .collect();
+            if after.is_empty() {
+                continue;
+            }
+            witnesses += 1;
+            let kept = production_lines(&source);
+            for item in after {
+                assert!(
+                    kept.contains(&item),
+                    "the production scan of {} dropped `{}`, a top-level item that \
+                     follows a `#[cfg(test)]` item: the skip ran past the item's end and \
+                     blanked production code",
+                    path.display(),
+                    item.trim(),
+                );
+            }
+        }
+        assert!(
+            witnesses > 0,
+            "no crate source declares a top-level item after a `#[cfg(test)]` item, so \
+             nothing in this crate witnesses the over-skip direction. Move a test module \
+             above an item, or delete this gate and say the direction is uncovered",
+        );
+    }
+
     #[test]
     fn no_ranking_snippet_commit_or_resolve_surface() {
         scan(FORBIDDEN_FIELD_SETTERS);

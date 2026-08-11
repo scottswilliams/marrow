@@ -654,16 +654,44 @@ fn no_phase_runs_on_an_empty_diagnostic_set() {
     );
 }
 
-/// The `debug_assert` sites this crate deliberately keeps, with the exact count each
-/// file carries. Every one was audited and each is annotated at its line with why the
-/// two profiles cannot disagree about it: the guarded condition is unreachable inside a
+/// The `debug_assert` sites this crate deliberately keeps, each as its exact statement
+/// text. Every one was audited and each is annotated at its line with why the two
+/// profiles cannot disagree about it: the guarded condition is unreachable inside a
 /// bound the crate already enforces, the write it precedes is idempotent, or nothing
 /// downstream reads the value it compares.
 ///
-/// The counts are exact in both directions. A new site fails this gate, and so does a
-/// removed one, so the list cannot drift into naming sites that no longer exist and
-/// silently licensing new ones in their place.
-const PROFILE_GUARD_ALLOWLIST: &[(&str, usize)] = &[("types.rs", 10), ("analysis.rs", 2)];
+/// The list is a multiset compared exactly in both directions, so a new site fails and
+/// so does a removed one. It pins the statement rather than a per-file count, because a
+/// count licenses a *quantity*: deleting one audited guard and adding an unaudited one
+/// in the same file substituted silently under a count and does not under this. The
+/// statement text is also stable under the line movement that pinning line numbers
+/// would churn on.
+const PROFILE_GUARD_ALLOWLIST: &[(&str, &str)] = &[
+    ("analysis.rs", "debug_assert!("),
+    ("analysis.rs", "debug_assert!("),
+    ("types.rs", "debug_assert!(scratch.seen_rows[index]);"),
+    ("types.rs", "debug_assert!(scratch.tasks.is_empty());"),
+    ("types.rs", "debug_assert_eq!(*active, 1);"),
+    ("types.rs", "debug_assert_eq!(*active, 1);"),
+    (
+        "types.rs",
+        "debug_assert_eq!(collections.len(), cache_index);",
+    ),
+    (
+        "types.rs",
+        "debug_assert_eq!(id.index() as usize, cache_index);",
+    ),
+    (
+        "types.rs",
+        "debug_assert_eq!(removed, Some(DisplayNode::Collection(index)));",
+    ),
+    (
+        "types.rs",
+        "debug_assert_eq!(removed, Some(DisplayNode::Row(row)));",
+    ),
+    ("types.rs", "debug_assert_eq!(removed, Some(node));"),
+    ("types.rs", "debug_assert_eq!(removed, Some(node));"),
+];
 
 /// A profile-dependent guard makes the release build disagree with the debug build about
 /// what the compiler proved. None may decide an outcome anywhere in this crate.
@@ -685,37 +713,36 @@ fn no_profile_dependent_guard_decides_a_compiler_outcome() {
         );
     }
 
-    let mut counted: Vec<(String, usize)> = Vec::new();
+    let mut found: Vec<(String, String)> = Vec::new();
     for path in src_files() {
         if is_test_only_file(&path) {
             continue;
         }
         let source = fs::read_to_string(&path).expect("read source file");
         let code = production_code(&source);
-        let hits = code
-            .lines()
-            .filter(|line| line.contains("debug_assert"))
-            .count();
-        if hits > 0 {
-            let name = path
-                .strip_prefix(Path::new(env!("CARGO_MANIFEST_DIR")).join("src"))
-                .expect("a source under this crate's src")
-                .to_string_lossy()
-                .into_owned();
-            counted.push((name, hits));
+        let name = path
+            .strip_prefix(Path::new(env!("CARGO_MANIFEST_DIR")).join("src"))
+            .expect("a source under this crate's src")
+            .to_string_lossy()
+            .into_owned();
+        for line in code.lines() {
+            if line.contains("debug_assert") {
+                found.push((name.clone(), line.trim().to_string()));
+            }
         }
     }
-    counted.sort();
-    let mut expected: Vec<(String, usize)> = PROFILE_GUARD_ALLOWLIST
+    found.sort();
+    let mut expected: Vec<(String, String)> = PROFILE_GUARD_ALLOWLIST
         .iter()
-        .map(|(file, count)| ((*file).to_string(), *count))
+        .map(|(file, statement)| ((*file).to_string(), (*statement).to_string()))
         .collect();
     expected.sort();
     assert_eq!(
-        counted, expected,
-        "the audited `debug_assert` sites moved. A new one needs the audit the allowlist \
-         records — that the two profiles cannot disagree about it — and a removed one \
-         needs its count dropped so this list keeps saying what is actually there",
+        found, expected,
+        "the audited `debug_assert` sites changed. A new one needs the audit the \
+         allowlist records — that the two profiles cannot disagree about it — and a \
+         removed one needs its entry dropped so this list keeps saying what is actually \
+         there",
     );
 }
 
@@ -1681,4 +1708,76 @@ fn every_value_type_name_lookup_excludes_a_refused_row() {
              filtering it would restore the dangling reference: {body}",
         );
     }
+}
+
+/// CQGATE01: no `Expression` variant carries a block or a statement.
+///
+/// The statement walker binds every field of every arm, so a new block-bearing field
+/// on an existing variant stops the build instead of leaving its statements never
+/// lowered and never diagnosed. The expression walker covers unread fields with `..`
+/// because the defect has no shape there: an expression's operands are expressions,
+/// which every arm already walks. That exemption is a property of the syntax tree,
+/// so it is checked rather than asserted in prose — the day an expression gains a
+/// block, this fails and the expression arms must name their fields too.
+#[test]
+fn no_expression_variant_carries_a_block() {
+    let ast = fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../marrow-syntax/src/ast.rs")
+            .canonicalize()
+            .expect("the syntax owner's ast module"),
+    )
+    .expect("read ast.rs");
+    assert_eq!(
+        block_bearing_expression_fields(&ast),
+        Vec::<&str>::new(),
+        "an `Expression` variant now carries a block. The expression lowering arms \
+         cover unread fields with `..`, which would leave that field's statements \
+         never lowered and never diagnosed: name the fields as `lower_statement`'s \
+         arms do, then narrow this gate",
+    );
+}
+
+/// The block-bearing shapes named inside `pub enum Expression`, read from production
+/// code so a shape spelled in a doc comment or a fixture literal is not one.
+fn block_bearing_expression_fields(ast: &str) -> Vec<&'static str> {
+    let code = production_code(ast);
+    let start = code
+        .find("pub enum Expression {")
+        .expect("the expression tree is declared");
+    let body = &code[start..];
+    let end = body
+        .find("\n}")
+        .expect("the expression tree's declaration closes at column zero");
+    let body = body[..end].to_string();
+    ["Block", "Statement", "Stmt"]
+        .into_iter()
+        .filter(|shape| body.contains(shape))
+        .collect()
+}
+
+/// The scan finds a planted block-bearing field and is not satisfied by the real
+/// tree's absence alone — the plant probe the crate's other scanners carry, so a gate
+/// that stopped looking cannot pass by looking at nothing.
+#[test]
+fn the_expression_block_scan_finds_a_planted_block() {
+    let planted = "\
+/// A doc comment naming Block, which is not a field.
+pub enum Expression {
+    Name { segments: Vec<Segment> },
+    Probe { body: Block },
+}
+";
+    assert_eq!(block_bearing_expression_fields(planted), vec!["Block"]);
+
+    let clean = "\
+pub enum Expression {
+    Name { segments: Vec<Segment> },
+}
+";
+    assert_eq!(
+        block_bearing_expression_fields(clean),
+        Vec::<&str>::new(),
+        "a tree with no block-bearing field is clean",
+    );
 }
