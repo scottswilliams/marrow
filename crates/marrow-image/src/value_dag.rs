@@ -49,10 +49,16 @@
 //! [`ImageByteSink`], which may stop accepting bytes at a ceiling. A shape whose
 //! expansion is larger than any image may be is therefore decided in the bytes the
 //! sink admits, not in the bytes the expansion would have produced.
+//!
+//! A shape can also be too *wide* to spell rather than too large to hold: both forms
+//! write an arity as a `u16`, so a node stating more positions than that has no byte
+//! image in either. [`expand`] refuses such a shape with [`DurableGraphTooLarge`] before
+//! the count reaches the wire, so an arity is never narrowed onto it — two shapes sharing
+//! one identity — and never decided by aborting the caller.
 
 use std::collections::HashMap;
 
-use crate::durable_id::{IDREF_MEMBER, IDREF_SUM, LedgerIdBytes};
+use crate::durable_id::{DurableGraphTooLarge, IDREF_MEMBER, IDREF_SUM, LedgerIdBytes};
 use crate::ty::Scalar;
 
 /// A reference to one node of a [`CanonicalValueShapeDag`].
@@ -329,21 +335,22 @@ enum ExpandTask<'a> {
     EnumMember(&'a ValueShapeEnumMember),
 }
 
-/// Write the expanded bytes of the value shape rooted at `root` into `sink`.
+/// Write the expanded bytes of the value shape rooted at `root` into `sink`, or refuse a
+/// shape stating an arity no v0 wire form can spell.
 ///
 /// The expansion is iterative and direct-to-sink: no expanded tree is built, and no
-/// intermediate buffer holds one. It returns as soon as the whole shape is written or
-/// the sink reports it is full, whichever comes first.
+/// intermediate buffer holds one. It returns as soon as the whole shape is written, the
+/// sink reports it is full, or an arity is refused, whichever comes first.
 pub fn expand(
     dag: &CanonicalValueShapeDag,
     root: ValueShapeNodeId,
     form: ValueShapeWireForm,
     sink: &mut impl ImageByteSink,
-) {
+) -> Result<(), DurableGraphTooLarge> {
     let mut tasks = vec![ExpandTask::Node(root)];
     while let Some(task) = tasks.pop() {
         if sink.is_full() {
-            return;
+            return Ok(());
         }
         match task {
             ExpandTask::Node(id) => match &dag.nodes[id.index()] {
@@ -353,19 +360,19 @@ pub fn expand(
                 }
                 ValueShapeNode::Struct(leaves) => {
                     sink.push(VSHAPE_STRUCT);
-                    push_u16(sink, wire_count(leaves.len()));
+                    push_u16(sink, wire_count(leaves.len())?);
                     tasks.extend(leaves.iter().rev().map(|leaf| ExpandTask::Node(*leaf)));
                 }
                 ValueShapeNode::Enum { sum, members } => {
                     sink.push(VSHAPE_ENUM);
                     push_identity(sink, form, IDREF_SUM, sum);
-                    push_u16(sink, wire_count(members.len()));
+                    push_u16(sink, wire_count(members.len())?);
                     tasks.extend(members.iter().rev().map(ExpandTask::EnumMember));
                 }
             },
             ExpandTask::EnumMember(member) => {
                 push_identity(sink, form, IDREF_MEMBER, &member.id);
-                push_u16(sink, wire_count(member.payload.len()));
+                push_u16(sink, wire_count(member.payload.len())?);
                 tasks.extend(
                     member
                         .payload
@@ -376,19 +383,25 @@ pub fn expand(
             }
         }
     }
+    Ok(())
 }
 
-/// The wire's `u16` count for a value shape's `count` positions.
+/// The wire's `u16` count for a value shape's `count` positions, or [`DurableGraphTooLarge`]
+/// for an arity no v0 wire form can spell.
 ///
-/// Both v0 forms spell an arity as a `u16`, and every arity a durable program states is
-/// bounded far below it — [`crate::bounds::MAX_STRUCT_LEAVES`],
-/// [`crate::bounds::MAX_VARIANTS`], and [`crate::bounds::MAX_PAYLOAD_FIELDS`] are all
-/// under 256, and the whole arena is rechecked against them before anything is encoded.
-/// A wrapping cast here would give a shape past the wire's width the arity of a narrower
-/// one, so two distinct shapes would share one durable-contract identity; the conversion
-/// is checked so that a shape the wire cannot count is a loud producer defect instead.
-fn wire_count(count: usize) -> u16 {
-    u16::try_from(count).expect("a value shape's arity is within the u16 the wire spells")
+/// Every arity a durable program states is bounded far below the wire's width —
+/// [`crate::bounds::MAX_STRUCT_LEAVES`], [`crate::bounds::MAX_VARIANTS`], and
+/// [`crate::bounds::MAX_PAYLOAD_FIELDS`] are all under 256, and the whole arena is
+/// rechecked against them before anything is encoded. An arena is public, though, so a
+/// caller can state a wider shape and ask the identity owner for its identity directly. A
+/// wrapping cast would then give that shape the arity of a narrower one, so two distinct
+/// shapes would share one durable-contract identity; refusing keeps the answer typed, and
+/// keeps it the identity owner's rather than a precondition on whoever holds the arena.
+///
+/// A refused shape is genuinely unencodable rather than merely inconvenient: both v0 forms
+/// spell an arity as a `u16`, so no image can carry it and no decoder could read it back.
+fn wire_count(count: usize) -> Result<u16, DurableGraphTooLarge> {
+    u16::try_from(count).map_err(|_| DurableGraphTooLarge)
 }
 
 /// Append one big-endian `u16`. The one owner of that spelling for every image sink;
@@ -539,11 +552,36 @@ mod tests {
             written: 0,
             ceiling: 4096,
         };
-        expand(&dag, level, ValueShapeWireForm::DurableSection, &mut sink);
+        expand(&dag, level, ValueShapeWireForm::DurableSection, &mut sink)
+            .expect("every arity in this shape is one the wire spells");
         assert!(
             sink.written <= 4096 + 8,
             "expansion overran the ceiling by more than one node's header: {}",
             sink.written,
+        );
+    }
+
+    /// An arity neither wire form can spell ends the expansion with the typed refusal,
+    /// rather than aborting the process inside the conversion.
+    ///
+    /// A `u16` count is the only width both v0 forms have for an arity, so a shape
+    /// stating more positions than that has no byte image in either — which is a refusal
+    /// its caller can answer for, not a producer defect.
+    #[test]
+    fn an_arity_the_wire_cannot_spell_refuses_the_expansion() {
+        let mut dag = CanonicalValueShapeDag::new();
+        let int = dag.scalar(Scalar::Int);
+        let wide = dag.struct_shape(vec![int; u16::MAX as usize + 1]);
+
+        let mut bytes = Vec::new();
+        assert_eq!(
+            expand(&dag, wide, ValueShapeWireForm::DurableSection, &mut bytes),
+            Err(DurableGraphTooLarge),
+        );
+        assert_eq!(
+            bytes,
+            vec![VSHAPE_STRUCT],
+            "the unspellable count is refused rather than narrowed onto the wire",
         );
     }
 
@@ -561,14 +599,16 @@ mod tests {
             shape,
             ValueShapeWireForm::ContractPayload,
             &mut payload,
-        );
+        )
+        .expect("a two-position shape is one the wire spells");
         let mut section = Vec::new();
         expand(
             &dag,
             shape,
             ValueShapeWireForm::DurableSection,
             &mut section,
-        );
+        )
+        .expect("a two-position shape is one the wire spells");
 
         assert_eq!(payload.len(), section.len() + 2 * 9);
         assert_eq!(payload[0], VSHAPE_ENUM);

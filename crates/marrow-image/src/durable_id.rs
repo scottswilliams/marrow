@@ -159,8 +159,9 @@ const MAX_CONTRACT_GRAPH_BYTES: usize = 2 * bounds::MAX_IMAGE_BYTES;
 /// without widening this one would make the refusal reachable from the production path.
 const _: () = assert!(MAX_CONTRACT_GRAPH_BYTES > bounds::MAX_IMAGE_BYTES * 25 / 16);
 
-/// A durable graph whose canonical payload is larger than any image could carry, refused
-/// before its identity is computed.
+/// A durable graph no image could carry, refused before its identity is computed: its
+/// canonical payload runs past [`MAX_CONTRACT_GRAPH_BYTES`], or one of its nodes states
+/// more positions than the `u16` both v0 wire forms count with can spell.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DurableGraphTooLarge;
 
@@ -462,13 +463,15 @@ impl<'a> DurableContractDescriptor<'a> {
     }
 
     /// The stable 32-byte identity of this durable graph in the local project root, or
-    /// [`DurableGraphTooLarge`] for a graph whose canonical payload is larger than any
-    /// image could carry.
+    /// [`DurableGraphTooLarge`] for a graph no image could carry: one whose canonical
+    /// payload is longer than [`MAX_CONTRACT_GRAPH_BYTES`], or one stating an arity wider
+    /// than the `u16` the payload spells a count with.
     ///
     /// The refusal is the whole reason asking for an identity is bounded work: a
     /// descriptor is a view over an arena, and an arena can state a value shape whose
     /// expansion — which is what the payload spells — is exponential in its declared
-    /// levels. No caller has to establish that before asking.
+    /// levels. No caller has to establish that before asking, and none has to establish
+    /// the graph's arities either.
     pub fn contract_id(&self) -> Result<DurableContractId, DurableGraphTooLarge> {
         Ok(DurableContractId::compute(
             LOCAL_ROOT_LINEAGE,
@@ -520,7 +523,7 @@ impl<'a> DurableContractDescriptor<'a> {
     /// costs the bytes the ceiling admits rather than the bytes it would have produced.
     fn encode_graph(&self) -> Result<Vec<u8>, DurableGraphTooLarge> {
         let mut out = BoundedGraphPayload::default();
-        push_u16(&mut out, payload_count(self.roots.len()));
+        push_u16(&mut out, payload_count(self.roots.len())?);
         if let Some(application) = &self.application {
             push_idref(&mut out, IDREF_APPLICATION, application);
         }
@@ -530,9 +533,9 @@ impl<'a> DurableContractDescriptor<'a> {
             }
             push_idref(&mut out, IDREF_ROOT, &root.placement);
             push_idref(&mut out, IDREF_PRODUCT, &root.product);
-            push_keys(&mut out, &root.keys);
-            push_members(&mut out, &root.members, self.values);
-            push_indexes(&mut out, &root.indexes);
+            push_keys(&mut out, &root.keys)?;
+            push_members(&mut out, &root.members, self.values)?;
+            push_indexes(&mut out, &root.indexes)?;
         }
         match out.is_full() {
             true => Err(DurableGraphTooLarge),
@@ -541,26 +544,37 @@ impl<'a> DurableContractDescriptor<'a> {
     }
 }
 
-/// The canonical payload's `u16` count for `count` graph positions.
+/// The canonical payload's `u16` count for `count` graph positions, or
+/// [`DurableGraphTooLarge`] for a count the payload cannot spell.
 ///
 /// Every count the payload spells — roots, key columns, members, index components — is
 /// bounded far below `u16::MAX` in [`crate::bounds`], and the encoder rechecks each of
-/// them before a descriptor is built. A wrapping cast would let a wider graph present a
-/// narrower one's count and so share its identity; the conversion is checked so that a
-/// graph the payload cannot count is a loud producer defect instead.
-fn payload_count(count: usize) -> u16 {
-    u16::try_from(count).expect("a durable graph's counts are within the u16 the payload spells")
+/// them before a descriptor is built. A descriptor's public constructor takes the graph
+/// a caller states, though, so a wider one can reach here directly. A wrapping cast would
+/// let it present a narrower graph's count and so share its identity; refusing instead
+/// keeps that answer typed and keeps it this owner's.
+///
+/// [`MAX_CONTRACT_GRAPH_BYTES`] cannot answer for these graphs: a count is spelled before
+/// the positions it counts are walked, so the ceiling has seen none of their bytes when
+/// the count is due. The refusal is the same one because the conclusion is the same — the
+/// image's DURABLE section spells the identical arity as a `u16`, so a graph refused here
+/// has no encodable image either.
+fn payload_count(count: usize) -> Result<u16, DurableGraphTooLarge> {
+    u16::try_from(count).map_err(|_| DurableGraphTooLarge)
 }
 
 /// Append a root's managed indexes: `u16_be(count) ‖ index*`, each an `Index` IDREF,
 /// its `unique` flag byte, and its ordered projection of leaf-reference IDREFs (a
 /// `field` (2) or `key` (4) IDREF per component). Projection order is load-bearing.
-fn push_indexes(out: &mut impl ImageByteSink, indexes: &[DurableIndexShape]) {
-    push_u16(out, payload_count(indexes.len()));
+fn push_indexes(
+    out: &mut impl ImageByteSink,
+    indexes: &[DurableIndexShape],
+) -> Result<(), DurableGraphTooLarge> {
+    push_u16(out, payload_count(indexes.len())?);
     for index in indexes {
         push_idref(out, IDREF_INDEX, &index.id);
         out.push(u8::from(index.unique));
-        push_u16(out, payload_count(index.components.len()));
+        push_u16(out, payload_count(index.components.len())?);
         for component in &index.components {
             match component {
                 DurableIndexComponent::Field(id) => push_idref(out, IDREF_FIELD, id),
@@ -568,6 +582,7 @@ fn push_indexes(out: &mut impl ImageByteSink, indexes: &[DurableIndexShape]) {
             }
         }
     }
+    Ok(())
 }
 
 /// Walk one member tree under `container`'s path, appending a [`SemanticNode`] for
@@ -613,12 +628,16 @@ fn collect_member_nodes(
 
 /// Append `u16_be(count) ‖ [u8(scalar_tag) ‖ IDREF(key)]*` — a placement's key
 /// tuple, shared by roots and branches. Column order is load-bearing.
-fn push_keys(out: &mut impl ImageByteSink, keys: &[DurableKeyShape]) {
-    push_u16(out, payload_count(keys.len()));
+fn push_keys(
+    out: &mut impl ImageByteSink,
+    keys: &[DurableKeyShape],
+) -> Result<(), DurableGraphTooLarge> {
+    push_u16(out, payload_count(keys.len())?);
     for key in keys {
         out.push(key.scalar.tag());
         push_idref(out, IDREF_KEY, &key.id);
     }
+    Ok(())
 }
 
 /// Append a member tree: `u16_be(count) ‖ member*`, each member a tag byte and its
@@ -632,11 +651,11 @@ fn push_members(
     out: &mut impl ImageByteSink,
     members: &[DurableMemberShape],
     values: &CanonicalValueShapeDag,
-) {
-    push_u16(out, payload_count(members.len()));
+) -> Result<(), DurableGraphTooLarge> {
+    push_u16(out, payload_count(members.len())?);
     for member in members {
         if out.is_full() {
-            return;
+            return Ok(());
         }
         match member {
             DurableMemberShape::Field(field) => {
@@ -648,21 +667,22 @@ fn push_members(
                     field.value,
                     ValueShapeWireForm::ContractPayload,
                     out,
-                );
+                )?;
             }
             DurableMemberShape::Group(group) => {
                 out.push(MEMBER_GROUP);
                 push_idref(out, IDREF_GROUP, &group.id);
-                push_members(out, &group.members, values);
+                push_members(out, &group.members, values)?;
             }
             DurableMemberShape::Branch(branch) => {
                 out.push(MEMBER_BRANCH);
                 push_idref(out, IDREF_ROOT, &branch.placement);
-                push_keys(out, &branch.keys);
-                push_members(out, &branch.members, values);
+                push_keys(out, &branch.keys)?;
+                push_members(out, &branch.members, values)?;
             }
         }
     }
+    Ok(())
 }
 
 /// The stable 32-byte identity of a program's durable graph.
@@ -1421,6 +1441,60 @@ mod tests {
                 product: id(0x0d),
                 keys: Vec::new(),
                 members: vec![value_field(0x0e, true, level)],
+                indexes: Vec::new(),
+            }],
+            &values,
+        );
+
+        assert_eq!(forged.contract_id(), Err(super::DurableGraphTooLarge));
+    }
+
+    /// A graph stating more members at one node than the payload's `u16` can count is
+    /// refused by the identity, not by the process.
+    ///
+    /// The member count is spelled before the members are walked, so the ceiling that
+    /// answers for an over-wide *expansion* has not seen a byte yet when the count is
+    /// due. The arity is decided where it is spelled, through the same typed refusal, so
+    /// the bound belongs to the identity for both shapes of over-wide graph.
+    #[test]
+    fn a_stated_graph_whose_member_count_the_payload_cannot_spell_is_refused() {
+        let values = &shapes().values;
+        let value = shapes().scalar(Scalar::Int);
+        let forged = DurableContractDescriptor::new(
+            id(0x0a),
+            vec![DurableRootShape {
+                placement: id(0x0b),
+                product: id(0x0d),
+                keys: Vec::new(),
+                members: (0..=u16::MAX as usize)
+                    .map(|_| value_field(0x0e, true, value))
+                    .collect(),
+                indexes: Vec::new(),
+            }],
+            values,
+        );
+
+        assert_eq!(forged.contract_id(), Err(super::DurableGraphTooLarge));
+    }
+
+    /// The same refusal for the other count the walk spells: a value shape's own arity.
+    ///
+    /// A struct node's leaf count is written by the value-shape expansion owner rather
+    /// than by this module, and its expansion is small enough that the payload ceiling
+    /// never answers for it. The refusal is the arity's own.
+    #[test]
+    fn a_stated_value_shape_whose_arity_the_payload_cannot_spell_is_refused() {
+        let mut values = CanonicalValueShapeDag::new();
+        let int = values.scalar(Scalar::Int);
+        let wide = values.struct_shape(vec![int; u16::MAX as usize + 1]);
+
+        let forged = DurableContractDescriptor::new(
+            id(0x0a),
+            vec![DurableRootShape {
+                placement: id(0x0b),
+                product: id(0x0d),
+                keys: Vec::new(),
+                members: vec![value_field(0x0e, true, wide)],
                 indexes: Vec::new(),
             }],
             &values,

@@ -511,7 +511,7 @@ impl ImageDraft {
             sink.extend_bytes(occurrence.placement().ledger_id().bytes());
             sink.extend_bytes(declaration.identity().ledger_id().bytes());
             let graph = declaration.graph();
-            encode_declaration_members(sink, graph, graph.members(), str_map, self.value_shapes());
+            encode_declaration_members(sink, graph, graph.members(), str_map, self.value_shapes())?;
             // A body already past the ceiling is decided; the remaining roots would only
             // add to a count that is already refused.
             if sink.is_full() {
@@ -875,7 +875,7 @@ fn encode_declaration_members(
     members: &[DeclarationNode],
     str_map: &[u16],
     values: &CanonicalValueShapeDag,
-) {
+) -> Result<(), ImageBuildError> {
     push_u16(body, members.len() as u16);
     for member in members {
         match member.shape() {
@@ -887,12 +887,18 @@ fn encode_declaration_members(
                 body.push(0x00);
                 body.extend_bytes(id.bytes());
                 body.push(u8::from(*required));
-                expand(values, *value, ValueShapeWireForm::DurableSection, body);
+                // An arity the section's own `u16` cannot spell has no encodable image,
+                // which is the whole-image ceiling's answer under a different name. The
+                // draft's arena fan-out recheck runs first and bounds every arity far
+                // below that width, so this propagates a refusal rather than opening a
+                // second way to reach one.
+                expand(values, *value, ValueShapeWireForm::DurableSection, body)
+                    .map_err(|DurableGraphTooLarge| ImageBuildError::ImageTooLarge)?;
             }
             DeclarationMemberShape::Group { id } => {
                 body.push(0x01);
                 body.extend_bytes(id.bytes());
-                encode_declaration_members(body, graph, graph.members_of(member), str_map, values);
+                encode_declaration_members(body, graph, graph.members_of(member), str_map, values)?;
             }
             DeclarationMemberShape::Branch {
                 placement,
@@ -905,10 +911,11 @@ fn encode_declaration_members(
                 push_u16(body, str_map[name.raw() as usize]);
                 push_u16(body, record.0);
                 encode_key_tuple(body, keys);
-                encode_declaration_members(body, graph, graph.members_of(member), str_map, values);
+                encode_declaration_members(body, graph, graph.members_of(member), str_map, values)?;
             }
         }
     }
+    Ok(())
 }
 
 /// Encode a root's managed indexes into the DURABLE section: `u16(count) ‖ index*`.
