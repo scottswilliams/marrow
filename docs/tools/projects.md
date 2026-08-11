@@ -113,7 +113,7 @@ regardless of the order the filesystem reports them — and physically bounded. 
 project root, `marrow.toml`, `src`, and `.marrow/ids` are each admitted through an
 opened handle whose observed kind and identity are checked before and after use;
 capture never trusts path metadata and then reopens the path. A symbolic link is
-refused rather than followed, wherever it appears: at `src`, `marrow.toml`, or
+refused rather than followed, wherever it appears within a project: at `src`, `marrow.toml`, or
 `.marrow/ids`, on a component leading to one, or anywhere below `src`
 (`project.source_path` for the source root, `project.ids_corrupt` for the ledger,
 `io.read` elsewhere). The refusal names the link itself, so a project keeps no
