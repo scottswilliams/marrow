@@ -1547,3 +1547,230 @@ fn a_binding_refused_for_its_annotation_is_not_out_of_scope_at_its_uses() {
         messages(&diagnostics),
     );
 }
+
+// ---------------------------------------------------------------------------
+// Type-registry fill ordering — NOMLEAF01
+//
+// Pass one reserves every value type's image index; pass two fills each body and
+// records the verdict. A name resolved by an *earlier* fill pass binds the
+// reservation, because the verdict the later pass reaches does not exist yet. When
+// that later pass refuses the declaration, the earlier reference must still address
+// a refused declaration — never a dropped one. A dropped target left the reference
+// dangling, and the dangling reference raised a `GenericInvariant`, which outranks
+// diagnostics: the correct `check.unsupported` row that *was* reported at the
+// declaration never reached the reader, who saw a spanless `cli.compiler_invariant`
+// instead.
+//
+// The reds below cover both fill-ordering directions that can bind a nominal leaf:
+// `fill_records` running before `fill_structs`/`fill_enums`, and `fill_structs`
+// filling one struct before a later sibling it names. Each asserts the declaration's
+// own row survives to the reader.
+// ---------------------------------------------------------------------------
+
+/// A resource field naming a struct the later struct fill refuses reports that
+/// struct's own cause, not a compiler invariant.
+#[test]
+fn a_resource_field_naming_a_refused_struct_reports_the_structs_own_cause() {
+    let diagnostics = diagnostics(
+        "module main\n\n\
+         struct Bad {\n\
+         \x20   p: int?\n\
+         }\n\n\
+         resource R {\n\
+         \x20   required b: Bad\n\
+         }\n\n\
+         pub fn make(): int {\n\
+         \x20   return 1\n\
+         }\n",
+    );
+
+    assert_eq!(
+        rows(&diagnostics),
+        vec![("src/main.mw", "check.unsupported", 4, 8)],
+        "the struct declaration reports its own cause: {:#?}",
+        messages(&diagnostics),
+    );
+}
+
+/// A resource field naming an enum the later enum fill refuses for a nominal
+/// payload leaf reports that enum's own payload cause, not a compiler invariant.
+#[test]
+fn a_resource_field_naming_a_refused_enum_reports_the_enums_own_cause() {
+    let diagnostics = diagnostics(
+        "module main\n\n\
+         type Age: int in 0..=150\n\n\
+         enum E {\n\
+         \x20   none\n\
+         \x20   some(a: Age)\n\
+         }\n\n\
+         resource R {\n\
+         \x20   required e: E\n\
+         }\n\n\
+         pub fn make(): int {\n\
+         \x20   return 1\n\
+         }\n",
+    );
+
+    assert_eq!(
+        rows(&diagnostics),
+        vec![("src/main.mw", "check.unsupported", 7, 13)],
+        "the enum payload reports its own cause: {:#?}",
+        messages(&diagnostics),
+    );
+}
+
+/// The same enum without the resource field already reported that payload row;
+/// adding the field must not replace it with an invariant.
+#[test]
+fn a_refused_enum_reports_the_same_row_with_and_without_a_resource_field() {
+    let without = diagnostics(
+        "module main\n\n\
+         type Age: int in 0..=150\n\n\
+         enum E {\n\
+         \x20   none\n\
+         \x20   some(a: Age)\n\
+         }\n\n\
+         pub fn make(): int {\n\
+         \x20   return 1\n\
+         }\n",
+    );
+
+    assert_eq!(
+        rows(&without),
+        vec![("src/main.mw", "check.unsupported", 7, 13)],
+        "{:#?}",
+        messages(&without),
+    );
+}
+
+/// A struct field naming a *later* struct the same pass refuses reports that
+/// struct's own cause — the intra-pass direction of the same fill ordering.
+#[test]
+fn a_struct_field_naming_a_later_refused_struct_reports_its_cause() {
+    let diagnostics = diagnostics(
+        "module main\n\n\
+         struct A {\n\
+         \x20   b: B\n\
+         }\n\n\
+         struct B {\n\
+         \x20   p: int?\n\
+         }\n\n\
+         pub fn make(): int {\n\
+         \x20   return 1\n\
+         }\n",
+    );
+
+    assert_eq!(
+        rows(&diagnostics),
+        vec![("src/main.mw", "check.unsupported", 8, 8)],
+        "the later struct reports its own cause: {:#?}",
+        messages(&diagnostics),
+    );
+}
+
+/// A struct field naming an enum the later enum fill refuses reports that enum's
+/// own cause — the cross-pass direction within pass two.
+#[test]
+fn a_struct_field_naming_a_refused_enum_reports_its_cause() {
+    let diagnostics = diagnostics(
+        "module main\n\n\
+         type Age: int in 0..=150\n\n\
+         struct A {\n\
+         \x20   e: E\n\
+         }\n\n\
+         enum E {\n\
+         \x20   none\n\
+         \x20   some(a: Age)\n\
+         }\n\n\
+         pub fn make(): int {\n\
+         \x20   return 1\n\
+         }\n",
+    );
+
+    assert_eq!(
+        rows(&diagnostics),
+        vec![("src/main.mw", "check.unsupported", 11, 13)],
+        "the enum reports its own cause: {:#?}",
+        messages(&diagnostics),
+    );
+}
+
+/// An alias over a refused struct, used as a resource field type, reaches the same
+/// reservation through alias expansion; the refusal must still be addressable.
+#[test]
+fn a_resource_field_aliasing_a_refused_struct_reports_the_structs_cause() {
+    let diagnostics = diagnostics(
+        "module main\n\n\
+         alias Al = B\n\n\
+         struct B {\n\
+         \x20   p: int?\n\
+         }\n\n\
+         resource R {\n\
+         \x20   required x: Al\n\
+         }\n\n\
+         pub fn make(): int {\n\
+         \x20   return 1\n\
+         }\n",
+    );
+
+    assert_eq!(
+        rows(&diagnostics),
+        vec![("src/main.mw", "check.unsupported", 6, 8)],
+        "the struct reports its own cause through the alias: {:#?}",
+        messages(&diagnostics),
+    );
+}
+
+/// A struct on a containment cycle whose partner is refused: the cycle partner's
+/// refusal drops it from the accepted set while the cycle member still names it.
+/// The reader gets the refusal, never an invariant.
+#[test]
+fn a_cycle_partner_refused_for_its_own_cause_does_not_dangle() {
+    let diagnostics = diagnostics(
+        "module main\n\n\
+         struct A {\n\
+         \x20   b: B\n\
+         }\n\n\
+         struct B {\n\
+         \x20   a: A\n\
+         \x20   p: int?\n\
+         }\n\n\
+         pub fn make(): int {\n\
+         \x20   return 1\n\
+         }\n",
+    );
+
+    assert_eq!(
+        rows(&diagnostics),
+        vec![("src/main.mw", "check.unsupported", 9, 8)],
+        "the refused cycle partner reports its own cause: {:#?}",
+        messages(&diagnostics),
+    );
+}
+
+/// A refused struct still occupies its name for ordinary name resolution: a use
+/// of it is steered to its cause, never resolved to the reserved-but-refused body.
+#[test]
+fn a_refused_struct_named_after_the_fill_is_still_steered() {
+    let diagnostics = diagnostics(
+        "module main\n\n\
+         struct B {\n\
+         \x20   p: int?\n\
+         }\n\n\
+         pub fn make(): int {\n\
+         \x20   const b = B(p: 1)\n\
+         \x20   return 1\n\
+         }\n",
+    );
+
+    assert_never_out_of_scope(&diagnostics, "B");
+    assert_eq!(
+        rows(&diagnostics),
+        vec![
+            ("src/main.mw", "check.unsupported", 4, 8),
+            ("src/main.mw", "check.unsupported", 8, 15)
+        ],
+        "the refused struct keeps its name and steers its construction: {:#?}",
+        messages(&diagnostics),
+    );
+}
