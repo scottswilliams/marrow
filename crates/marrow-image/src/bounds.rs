@@ -258,10 +258,6 @@ const _: () = {
         "record field width must admit the M-shaped declared width",
     );
     assert!(
-        MAX_RECORD_FIELDS <= u16::MAX as usize,
-        "the field count is u16-encoded in every table",
-    );
-    assert!(
         MAX_STRUCT_LEAVES < MAX_RECORD_FIELDS,
         "a dense composite leaf count must not scale with the record field width",
     );
@@ -289,6 +285,103 @@ const _: () = {
     assert!(
         MAX_EXPORTS <= MAX_FUNCTIONS,
         "each export targets a distinct function; the function table bounds the export count",
+    );
+};
+
+// Encoded-width derivations, enforced at compile time.
+//
+// Every count these bounds guard is spelled in the image bytes (and in the identity
+// preimages that mirror them) as a fixed-width big-endian integer, and the encoder
+// converts the `usize` row count to that width with `as` after `check_bounds` has
+// already refused a draft above the bound. Such a conversion is lossless exactly when
+// the bound itself fits the width it is spelled in, so the derivation is asserted once
+// here rather than re-argued at each conversion. Widening a bound past its encoded
+// width fails the build here instead of silently truncating a count in an emitted
+// image.
+//
+// The two platform assertions carry the rest of the crate's conversions: an index or
+// id widened with `as usize` is lossless because `usize` is at least 32 bits, and a
+// byte length narrowed with `as u64` into a length-delimited identity preimage is
+// lossless because `usize` is at most 64 bits.
+const _: () = {
+    assert!(
+        usize::BITS >= u32::BITS,
+        "a u16/u32 index or id widens to usize losslessly",
+    );
+    assert!(
+        usize::BITS <= u64::BITS,
+        "a byte length narrows to the u64 length delimiter of an identity preimage losslessly",
+    );
+
+    // Counts spelled `u16` in the image tables, the durable graph, or an identity
+    // preimage.
+    assert!(MAX_STRINGS <= u16::MAX as usize, "STRINGS count is u16");
+    assert!(
+        MAX_STRING_BYTES <= u16::MAX as usize,
+        "a pool entry's byte length is u16",
+    );
+    assert!(MAX_CONSTS <= u16::MAX as usize, "CONSTS count is u16");
+    assert!(MAX_TYPES <= u16::MAX as usize, "TYPES count is u16");
+    assert!(
+        MAX_RECORD_FIELDS <= u16::MAX as usize,
+        "the field count is u16-encoded in every table",
+    );
+    assert!(MAX_ENUMS <= u16::MAX as usize, "ENUMS count is u16");
+    assert!(
+        MAX_VARIANTS <= u16::MAX as usize,
+        "an enum's variant count is u16",
+    );
+    assert!(
+        MAX_COLLECTIONS <= u16::MAX as usize,
+        "COLLTYPES count is u16",
+    );
+    assert!(
+        MAX_ROOTS <= u16::MAX as usize,
+        "the durable root-occurrence count is u16",
+    );
+    assert!(
+        MAX_DURABLE_MEMBERS <= u16::MAX as usize,
+        "a member run's count is u16",
+    );
+    assert!(
+        MAX_KEY_COLUMNS <= u16::MAX as usize,
+        "a key tuple's column count is u16",
+    );
+    assert!(
+        MAX_INDEXES <= u16::MAX as usize,
+        "a root's managed-index count is u16",
+    );
+    assert!(
+        MAX_INDEX_COMPONENTS <= u16::MAX as usize,
+        "an index's projected-component count is u16",
+    );
+    assert!(MAX_SITES <= u16::MAX as usize, "the site-row count is u16");
+    assert!(
+        MAX_FUNCTIONS <= u16::MAX as usize,
+        "FUNCTIONS count is u16, and a function index is a u16 operand",
+    );
+    assert!(MAX_EXPORTS <= u16::MAX as usize, "EXPORTS count is u16");
+    assert!(
+        MAX_TEST_ENTRIES <= u16::MAX as usize,
+        "TEST-ENTRY count is u16",
+    );
+    assert!(
+        MAX_LOCALS <= u16::MAX as usize,
+        "a frame's local count is u16, and a local slot is a u16 operand",
+    );
+
+    // Counts spelled in a single byte.
+    assert!(
+        MAX_PARAMS <= u8::MAX as usize,
+        "a function's parameter count is one byte",
+    );
+    assert!(
+        MAX_PAYLOAD_FIELDS <= u8::MAX as usize,
+        "a variant's payload-leaf count is one byte in the ENUMS table",
+    );
+    assert!(
+        MAX_SITE_PATH_STEPS <= u8::MAX as usize,
+        "a site path's step count is one byte",
     );
 };
 
