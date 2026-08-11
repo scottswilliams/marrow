@@ -1689,3 +1689,58 @@ fn no_second_value_shape_arena_or_index_shadow_survives() {
          verifier reconstructs, and nowhere else: {mints:#?}"
     );
 }
+
+/// A semantic path's step count is never narrowed by a cast.
+///
+/// `SemanticPath` is bounded at `MAX_SITE_PATH_STEPS` on both public routes into it —
+/// construction and extension — and every owner that spells the count in a fixed-width
+/// field spells it with a checked conversion off that bound. A narrowing cast is what the
+/// closed defect was: `steps.len() as u16` framed a 65,536-step path as zero steps, and
+/// `steps().len() as u8` sat one sibling away from the same shape. The two spellings are
+/// gated together because they are one class: a cast here is total only by a property of
+/// the caller, and the whole point of bounding the type was to stop reasoning that way.
+///
+/// Scoped to the production projection, unlike this file's other scans. The gate's subject
+/// is the owners that *frame* bytes from a path a caller handed over; the independent
+/// decoder reconstructions in `demand.rs` and `ceiling.rs` exist precisely to spell the
+/// wire's field widths by hand, share no code with the owner by design, and consume a path
+/// the bounded type already produced, so a width there cannot narrow anything.
+#[test]
+fn no_semantic_path_step_count_is_narrowed_by_a_cast() {
+    let mut casts = Vec::new();
+    for path in src_files() {
+        let source = fs::read_to_string(&path).expect("read source file");
+        let code = without_literals(&without_cfg_test_items(&source));
+        for (index, line) in code.lines().enumerate() {
+            for needle in ["steps().len() as ", "steps.len() as "] {
+                if line.contains(needle) {
+                    casts.push(format!("{}:{}: {needle}", path.display(), index + 1));
+                }
+            }
+        }
+    }
+    assert!(
+        casts.is_empty(),
+        "a semantic path's step count is spelled by checked conversion off its bound, \
+         never by a narrowing cast: {casts:#?}"
+    );
+}
+
+/// The step-count scan sees a real cast and is not fooled by prose.
+#[test]
+fn the_step_count_cast_scan_separates_a_cast_from_a_mention() {
+    let planted = without_literals(
+        "fn f(p: &SemanticPath) -> u16 { p.steps().len() as u16 }\n\
+         // the deleted spelling wrote steps.len() as u16 here\n\
+         let text = \"steps.len() as u8\";\n",
+    );
+    let hits: Vec<&str> = planted
+        .lines()
+        .filter(|line| line.contains("steps().len() as ") || line.contains("steps.len() as "))
+        .collect();
+    assert_eq!(
+        hits.len(),
+        1,
+        "exactly the planted cast is seen, not the comment or the string: {hits:#?}"
+    );
+}
