@@ -551,6 +551,21 @@ mod absence_gate {
     /// unterminated one panics: a false positive fails loudly, where guessing its
     /// extent would blank the rest of the file silently.
     fn production_lines(source: &str) -> Vec<&str> {
+        let lines: Vec<&str> = source.lines().collect();
+        production_line_numbers(source)
+            .into_iter()
+            .map(|index| lines[index])
+            .collect()
+    }
+
+    /// The same region as [`production_lines`], as line numbers.
+    ///
+    /// The numbers are the owner and the text view is derived from them, because a
+    /// line's *text* does not identify it: a doc-comment line repeats verbatim all
+    /// over a file, so a membership test on text reports a dropped line as retained
+    /// whenever any identical line survives elsewhere. Every gate that asks whether a
+    /// specific line survived asks in numbers.
+    fn production_line_numbers(source: &str) -> Vec<usize> {
         let code = code_only(source);
         assert_eq!(
             code.lines().count(),
@@ -558,15 +573,15 @@ mod absence_gate {
             "the blanked view must keep every line boundary; a shorter view would end \
              the zip below early and blank the rest of the file silently"
         );
-        let mut lines = source.lines().zip(code.lines()).peekable();
+        let mut lines = code.lines().enumerate().peekable();
         let mut kept = Vec::new();
-        while let Some((line, structure)) = lines.next() {
+        while let Some((index, structure)) = lines.next() {
             let Some(indent) = structure
                 .trim_end()
                 .strip_suffix("#[cfg(test)]")
                 .map(str::len)
             else {
-                kept.push(line);
+                kept.push(index);
                 continue;
             };
             if !lines
@@ -723,132 +738,108 @@ after_item
         }
     }
 
-    /// Every top-level item a crate source declares outside a `#[cfg(test)]` item: its
-    /// own line, read from [`code_only`] so a header spelled inside a fixture literal is
-    /// not mistaken for one. A top-level item opens at column zero, which nothing inside
-    /// an item — test module included — does, and it ends its own line with `{` (a
-    /// block) or `;` (a `mod`/`use` declaration). A header carrying the `#[cfg(test)]`
-    /// attribute on the line above is the skipped item itself and is not one of these.
-    fn top_level_production_items(source: &str) -> Vec<&str> {
+    /// The scanned region is exactly the file minus its `#[cfg(test)]` items, line for
+    /// line — the over-skip direction stated as an equality rather than as a search for
+    /// survivors.
+    ///
+    /// Two earlier framings of this gate proved less than they read as. Asking whether a
+    /// *top-level item* after a test item survived tracks only item headers, and the line
+    /// an over-skip reaches first is almost never a header: it is the closing brace of
+    /// the enclosing item, or a doc comment. Asking by line *text* is worse — a doc
+    /// comment repeats verbatim across a file, so a membership test reports a dropped
+    /// line as retained whenever any identical line survives elsewhere. Both framings
+    /// passed under a skip mutated to run a full line long.
+    ///
+    /// The expected region is derived here by brace depth over [`code_only`], which is a
+    /// different algorithm from the scanner's indent-matched close, so the two agreeing
+    /// is evidence rather than a restatement. An extent read one line long or one line
+    /// short fails on the exact line, in the exact file, whatever sits there.
+    #[test]
+    fn the_scanned_region_is_the_file_minus_its_test_items() {
+        for (path, source) in crate_sources() {
+            let expected = expected_production_line_numbers(&source);
+            assert_eq!(
+                production_line_numbers(&source),
+                expected,
+                "the production scan of {} does not cover the file minus its \
+                 `#[cfg(test)]` items",
+                path.display(),
+            );
+        }
+    }
+
+    /// Every line outside a `#[cfg(test)]` item, derived by brace depth.
+    ///
+    /// A `#[cfg(test)]` attribute line is always outside the scanned region. When it
+    /// annotates a block, the block runs from its header to the line whose closing brace
+    /// returns the depth to where the header opened it.
+    fn expected_production_line_numbers(source: &str) -> Vec<usize> {
         let code = code_only(source);
         let structure: Vec<&str> = code.lines().collect();
-        source
-            .lines()
-            .zip(&structure)
-            .enumerate()
-            .filter(|(index, (_, line))| {
-                let line = line.trim_end();
-                line.starts_with(|first: char| first.is_ascii_alphabetic())
-                    && (line.ends_with('{') || line.ends_with(';'))
-                    && index
-                        .checked_sub(1)
-                        .and_then(|above| structure.get(above))
-                        .is_none_or(|above| above.trim() != "#[cfg(test)]")
-            })
-            .map(|(_, (line, _))| line)
-            .collect()
-    }
-
-    /// The over-skip direction, which the `#[test]` canary above cannot see: a
-    /// `#[cfg(test)]` extent read as *longer* than it is, or a runaway blank in
-    /// [`code_only`], drops production lines from the scanned region. Every gate below
-    /// then passes over a region that no longer holds the code it is asking about — the
-    /// vacuous pass, where the scanner proves nothing and says nothing.
-    ///
-    /// The sentinels are derived per file rather than listed, so this covers files no
-    /// list here names and needs no maintenance when a module gains an item. A file that
-    /// offers no sentinel is a file this gate does not cover, and it says so rather than
-    /// quietly narrowing to the files that still happen to qualify.
-    #[test]
-    fn every_top_level_item_survives_the_production_scan() {
-        let mut uncovered: Vec<PathBuf> = Vec::new();
-        for (path, source) in crate_sources() {
-            let expected = top_level_production_items(&source);
-            if expected.is_empty() {
-                uncovered.push(path);
+        let mut kept = Vec::new();
+        let mut index = 0;
+        while index < structure.len() {
+            if structure[index].trim() != "#[cfg(test)]" {
+                kept.push(index);
+                index += 1;
                 continue;
             }
-            let kept = production_lines(&source);
-            for item in expected {
-                assert!(
-                    kept.contains(&item),
-                    "the production scan of {} dropped the top-level item `{}`, so the \
-                     gates below are scanning less than the file's production code",
-                    path.display(),
-                    item.trim(),
-                );
+            // The attribute itself is never scanned.
+            index += 1;
+            if !structure
+                .get(index)
+                .is_some_and(|header| header.trim_end().ends_with('{'))
+            {
+                continue;
+            }
+            let mut depth = 0i32;
+            while index < structure.len() {
+                let line = structure[index];
+                depth += line.matches('{').count() as i32;
+                depth -= line.matches('}').count() as i32;
+                index += 1;
+                if depth <= 0 {
+                    break;
+                }
+            }
+        }
+        kept
+    }
+
+    /// The equality above is only evidence while the two sides can differ. This states
+    /// the two conditions that make it non-vacuous: some crate source has a
+    /// `#[cfg(test)]` item at all (so a region is dropped), and some crate source has
+    /// production code *after* one (so an extent read too long has something to eat).
+    /// The second is the over-skip direction, and it is the one that disappears silently
+    /// when a test module is moved to the end of its file.
+    #[test]
+    fn the_scanned_region_equality_has_something_to_prove() {
+        let mut with_test_item = 0usize;
+        let mut with_production_after = 0usize;
+        for (_, source) in crate_sources() {
+            let kept = expected_production_line_numbers(&source);
+            let total = source.lines().count();
+            if kept.len() == total {
+                continue;
+            }
+            with_test_item += 1;
+            let first_dropped = (0..total)
+                .find(|index| !kept.contains(index))
+                .expect("a dropped line");
+            if kept.iter().any(|index| *index > first_dropped) {
+                with_production_after += 1;
             }
         }
         assert!(
-            uncovered.is_empty(),
-            "every crate source must offer a top-level item this gate can follow; these \
-             no longer do: {uncovered:?}",
+            with_test_item > 0,
+            "no crate source has a `#[cfg(test)]` item, so the scanned region is the \
+             whole file and the equality proves nothing",
         );
-    }
-
-    /// The over-skip direction needs a sentinel *after* a `#[cfg(test)]` item, which
-    /// [`every_top_level_item_survives_the_production_scan`] cannot supply on its own.
-    ///
-    /// In a file whose test module sits last — which is most of them — an extent read
-    /// as one line too long drops nothing, because nothing follows it. Every derived
-    /// sentinel in such a file sits *before* the skip and survives an extent of any
-    /// length, so the assertion passes while proving nothing about the direction it is
-    /// named for. Only a production item that follows a test item can witness it.
-    ///
-    /// The witnessing files are derived, and the crate must offer at least one: a scan
-    /// whose only over-skip evidence disappeared when a module was reordered should say
-    /// so, not narrow silently to the direction it can still see.
-    #[test]
-    fn a_production_item_after_a_test_item_survives_the_production_scan() {
-        let mut witnesses = 0usize;
-        for (path, source) in crate_sources() {
-            let code = code_only(source.as_str());
-            let structure: Vec<&str> = code.lines().collect();
-            let Some(first_test_item) = structure
-                .iter()
-                .position(|line| line.trim() == "#[cfg(test)]")
-            else {
-                continue;
-            };
-            let after: Vec<&str> = source
-                .lines()
-                .zip(&structure)
-                .enumerate()
-                .skip(first_test_item)
-                .filter(|(index, (_, line))| {
-                    let line = line.trim_end();
-                    line.starts_with(|first: char| first.is_ascii_alphabetic())
-                        && (line.ends_with('{') || line.ends_with(';'))
-                        // The annotated header is the skipped item itself, not an item
-                        // that survives it.
-                        && index
-                            .checked_sub(1)
-                            .and_then(|above| structure.get(above))
-                            .is_none_or(|above| above.trim() != "#[cfg(test)]")
-                })
-                .map(|(_, (line, _))| line)
-                .collect();
-            if after.is_empty() {
-                continue;
-            }
-            witnesses += 1;
-            let kept = production_lines(&source);
-            for item in after {
-                assert!(
-                    kept.contains(&item),
-                    "the production scan of {} dropped `{}`, a top-level item that \
-                     follows a `#[cfg(test)]` item: the skip ran past the item's end and \
-                     blanked production code",
-                    path.display(),
-                    item.trim(),
-                );
-            }
-        }
         assert!(
-            witnesses > 0,
-            "no crate source declares a top-level item after a `#[cfg(test)]` item, so \
-             nothing in this crate witnesses the over-skip direction. Move a test module \
-             above an item, or delete this gate and say the direction is uncovered",
+            with_production_after > 0,
+            "no crate source has production code after a `#[cfg(test)]` item, so \
+             nothing here witnesses the over-skip direction. Move a test module above an \
+             item, or delete this gate and say the direction is uncovered",
         );
     }
 

@@ -17,7 +17,8 @@
 //! The one prose assertion left is negative — that a refused name is never called
 //! out of scope — which is the fabrication these fixtures exist to kill.
 
-use marrow_compile::ResourceLimitKind;
+use marrow_compile::{ResourceLimitKind, SourceStage};
+use std::collections::BTreeSet;
 use marrow_compile::{
     CompileFailure, DeclarationNamespace, InputRevision, RefusalReport, SourceDiagnostic, analyze,
     compile,
@@ -2190,5 +2191,377 @@ fn a_payload_construction_on_a_refused_enum_steers_to_its_cause() {
         "a payload construction and a bare member are two spellings of one refused \
          enum's use; neither may report differently: {:#?}",
         messages(&payload),
+    );
+}
+
+// ---------------------------------------------------------------------------
+// The steer facts, audited field by field
+//
+// Every steer is built by one of two renderers: `declaration_refused`, which reuses
+// the declaring row's own code, and `identity_admission_failed`, which reports under
+// `check.type` and names the `check.durable_identity` report *family*. Each carries
+// the same three typed fields, and each fixture below pins all three for one refusal
+// class — the namespace it was declared into, the code the reader must act on, and
+// where that report sits.
+//
+// The rendered sentence is not the contract and is not asserted here. What is
+// asserted is the relation between a row's own code and the code it steers to: they
+// agree for every class that reuses its declaring row, and differ for exactly the
+// identity class, whose cause is a family rather than a single row.
+// ---------------------------------------------------------------------------
+
+/// The steer facts of the last row, with the row's own code beside them.
+fn steer_facts(
+    diagnostics: &[SourceDiagnostic],
+) -> (
+    &'static str,
+    Option<DeclarationNamespace>,
+    &'static str,
+    RefusalReport,
+) {
+    let last = diagnostics
+        .last()
+        .expect("a steered use reports at least one row");
+    let steer = last.refused_declaration().unwrap_or_else(|| {
+        panic!(
+            "the last row is a steer to a refused declaration: {:#?}",
+            rows(diagnostics),
+        )
+    });
+    (
+        last.code(),
+        steer.namespace,
+        steer.declaring_code,
+        steer.report,
+    )
+}
+
+#[test]
+fn every_refusal_class_carries_its_own_typed_steer_facts() {
+    let mut audited: Vec<(DeclarationNamespace, &'static str, RefusalReport)> = Vec::new();
+    let mut audit = |label: &str,
+                     diagnostics: &[SourceDiagnostic],
+                     namespace: DeclarationNamespace,
+                     declaring_code: &'static str,
+                     report: RefusalReport| {
+        let (row_code, observed_namespace, observed_code, observed_report) =
+            steer_facts(diagnostics);
+        assert_eq!(
+            (observed_namespace, observed_code, observed_report),
+            (Some(namespace), declaring_code, report),
+            "{label}: the steer names the ledger holding the refusal, the code of the \
+             report the reader must act on, and where that report sits: {:#?}",
+            rows(diagnostics),
+        );
+        assert_eq!(
+            row_code, declaring_code,
+            "{label}: a steer that reuses its declaring row reports under that row's \
+             own code, so one code leads to one fix: {:#?}",
+            rows(diagnostics),
+        );
+        audited.push((namespace, declaring_code, report));
+    };
+
+    audit(
+        "a constant refused for a type mismatch",
+        &diagnostics(
+            "module main\n\n\
+             const limit: int = \"x\"\n\n\
+             pub fn read(): int {\n\
+             \x20   return limit\n\
+             }\n",
+        ),
+        DeclarationNamespace::Constant,
+        "check.type",
+        RefusalReport::AtDeclaration,
+    );
+    audit(
+        "a constant refused for a non-literal value",
+        &diagnostics(
+            "module main\n\n\
+             const limit = 1 + 2\n\n\
+             pub fn read(): int {\n\
+             \x20   return limit\n\
+             }\n",
+        ),
+        DeclarationNamespace::Constant,
+        "check.unsupported",
+        RefusalReport::AtDeclaration,
+    );
+    audit(
+        "a store root refused for its resource",
+        &diagnostics(
+            "module main\n\n\
+             store ^items[id: int]: Widget\n\n\
+             pub fn write() {\n\
+             \x20   transaction {\n\
+             \x20       ^items[1].name = \"a\"\n\
+             \x20   }\n\
+             }\n",
+        ),
+        DeclarationNamespace::DurableRoot,
+        "check.type",
+        RefusalReport::AtDeclaration,
+    );
+    audit(
+        "a function signature refused for a parameter type",
+        &diagnostics(
+            "module main\n\n\
+             fn helper(a: Nope, b: int): int {\n\
+             \x20   return b\n\
+             }\n\n\
+             pub fn other(): int {\n\
+             \x20   return helper(1, 2)\n\
+             }\n",
+        ),
+        DeclarationNamespace::Function,
+        "check.unsupported",
+        RefusalReport::AtDeclaration,
+    );
+    audit(
+        "a module refused for its header",
+        &diagnostics_of(&files(&[
+            (
+                "src/main.mw",
+                "module main\n\n\
+                 use helper\n\n\
+                 pub fn run(): int {\n\
+                 \x20   return helper::twice(2)\n\
+                 }\n"
+                .to_string(),
+            ),
+            (
+                "src/helper.mw",
+                "module wrong\n\n\
+                 pub fn twice(n: int): int {\n\
+                 \x20   return n\n\
+                 }\n"
+                .to_string(),
+            ),
+        ])),
+        DeclarationNamespace::Module,
+        "check.module_path",
+        RefusalReport::AtDeclaration,
+    );
+    audit(
+        "a module the parse stage refused",
+        &analyzed(&[
+            (
+                "src/main.mw",
+                "module main\n\n\
+                 use helper\n\n\
+                 pub fn run(): int {\n\
+                 \x20   return helper::twice(2)\n\
+                 }\n"
+                .to_string(),
+            ),
+            (
+                "src/helper.mw",
+                "module helper\n\n\
+                 pub fn twice(n: int): int {\n\
+                 \x20   return n +\n\
+                 }\n"
+                .to_string(),
+            ),
+        ]),
+        DeclarationNamespace::Module,
+        "parse.syntax",
+        RefusalReport::ByEarlierStage(SourceStage::Parse),
+    );
+    audit(
+        "a module the decode stage refused",
+        &{
+            let manifest = Manifest::parse("edition = \"2026\"\n").expect("valid manifest");
+            let main = "module main\n\n\
+                        use helper\n\n\
+                        pub fn run(): int {\n\
+                        \x20   return helper::twice(2)\n\
+                        }\n";
+            let captured = vec![
+                CapturedFile::new("src/helper.mw".to_string(), vec![0xff, 0xfe, 0x00]),
+                CapturedFile::new("src/main.mw".to_string(), main.as_bytes().to_vec()),
+            ];
+            snapshot_diagnostics(
+                marrow_project::capture(&manifest, captured, None, &CaptureLimits::DEFAULT)
+                    .expect("capture project"),
+            )
+        },
+        DeclarationNamespace::Module,
+        "check.unsupported",
+        RefusalReport::ByEarlierStage(SourceStage::Decode),
+    );
+    audit(
+        "an alias over an unknown target",
+        &diagnostics(
+            "module main\n\n\
+             alias Count = Nope\n\n\
+             pub fn make(c: Count): int {\n\
+             \x20   return 1\n\
+             }\n",
+        ),
+        DeclarationNamespace::NamedType,
+        "check.type",
+        RefusalReport::AtDeclaration,
+    );
+    audit(
+        "a cyclic alias chain",
+        &diagnostics(
+            "module main\n\n\
+             alias A = B\n\
+             alias B = A\n\n\
+             pub fn make(c: A): int {\n\
+             \x20   return 1\n\
+             }\n",
+        ),
+        DeclarationNamespace::NamedType,
+        "check.recursion",
+        RefusalReport::AtDeclaration,
+    );
+    audit(
+        "a struct refused for a field type",
+        &diagnostics(&format!(
+            "module main\n\n\
+             {REFUSED_STRUCT}\n\
+             fn take(q: Point): int {{\n\
+             \x20   return 1\n\
+             }}\n\n\
+             pub fn make(): int {{\n\
+             \x20   return 2\n\
+             }}\n"
+        )),
+        DeclarationNamespace::NamedType,
+        "check.unsupported",
+        RefusalReport::AtDeclaration,
+    );
+    audit(
+        "a resource member refused for its type",
+        &diagnostics(
+            "module main\n\n\
+             resource Widget {\n\
+             \x20   required name: string\n\
+             \x20   bad: Nope\n\
+             }\n\n\
+             pub fn make(): int {\n\
+             \x20   const w = Widget(name: \"a\", bad: 1)\n\
+             \x20   return 1\n\
+             }\n",
+        ),
+        DeclarationNamespace::ResourceMember,
+        "check.unsupported",
+        RefusalReport::AtDeclaration,
+    );
+
+    // The identity class, which the audit above cannot express: it is the one steer
+    // whose row code is *not* its declaring code, because its cause is a report
+    // family rather than a single row. Asserting it through the same helper would
+    // have required weakening the relation the other eleven classes hold.
+    let identity = diagnostics(
+        "module main\n\n\
+         resource Widget {\n\
+         \x20   required name: string\n\n\
+         \x20   notes[nid: int] {\n\
+         \x20       required body: string\n\
+         \x20   }\n\
+         }\n\n\
+         store ^items[id: int]: Widget\n\n\
+         pub fn make(): int {\n\
+         \x20   const n = Widget.notes(body: \"x\")\n\
+         \x20   return 1\n\
+         }\n",
+    );
+    assert_eq!(
+        steer_facts(&identity),
+        (
+            "check.type",
+            Some(DeclarationNamespace::DurableRoot),
+            "check.durable_identity",
+            RefusalReport::AtDeclaration,
+        ),
+        "the identity steer reports under its own code and names the report family \
+         the reader must act on: {:#?}",
+        rows(&identity),
+    );
+    audited.push((
+        DeclarationNamespace::DurableRoot,
+        "check.durable_identity",
+        RefusalReport::AtDeclaration,
+    ));
+
+    // The covering-pass report kind, whose steer claims no location: the cause sits
+    // on the cyclic value type, not at the declaration that names it.
+    let sources: Vec<(&str, String)> = CYCLE_SOURCES
+        .iter()
+        .map(|(path, source)| (*path, (*source).to_string()))
+        .collect();
+    let covered = match compile(&with_minted_ids(&sources)) {
+        Err(CompileFailure::Diagnostics(diagnostics)) => {
+            diagnostics.into_iter().collect::<Vec<_>>()
+        }
+        other => panic!("expected a refused declaration, got {other:?}"),
+    };
+    let covered_steer = covered[0]
+        .refused_declaration()
+        .expect("the reference to the cyclic root is a steer");
+    assert_eq!(
+        (
+            covered[0].code(),
+            covered_steer.namespace,
+            covered_steer.declaring_code,
+            covered_steer.report,
+        ),
+        (
+            "check.recursion",
+            Some(DeclarationNamespace::DurableRoot),
+            "check.recursion",
+            RefusalReport::ByCoveringPass,
+        ),
+        "{:#?}",
+        rows(&covered),
+    );
+    audited.push((
+        DeclarationNamespace::DurableRoot,
+        "check.recursion",
+        RefusalReport::ByCoveringPass,
+    ));
+
+    // Coverage, derived rather than asserted in prose: every namespace a declaration
+    // can be refused into, and every kind of report a steer can name, is exercised
+    // above. A seventh namespace or a fourth report kind fails here until a fixture
+    // pins its facts too.
+    let namespaces: BTreeSet<String> = audited
+        .iter()
+        .map(|(namespace, _, _)| format!("{namespace:?}"))
+        .collect();
+    assert_eq!(
+        namespaces,
+        [
+            "Constant",
+            "DurableRoot",
+            "Function",
+            "Module",
+            "NamedType",
+            "ResourceMember",
+        ]
+        .into_iter()
+        .map(str::to_string)
+        .collect::<BTreeSet<String>>(),
+        "every namespace a declaration is refused into is audited",
+    );
+    let reports: BTreeSet<String> = audited
+        .iter()
+        .map(|(_, _, report)| format!("{report:?}"))
+        .collect();
+    assert_eq!(
+        reports,
+        [
+            "AtDeclaration",
+            "ByCoveringPass",
+            "ByEarlierStage(Decode)",
+            "ByEarlierStage(Parse)",
+        ]
+        .into_iter()
+        .map(str::to_string)
+        .collect::<BTreeSet<String>>(),
+        "every kind of report a steer can name is audited",
     );
 }
