@@ -378,6 +378,9 @@ struct ProductStores {
     /// The placement name of the first store over this resource the compiler refused.
     /// Consulted only when nothing was admitted.
     first_refused: Option<String>,
+    /// Whether this Product's branch entry records have been recorded, which its first
+    /// executable root does once for every root that projects it.
+    declared_branches: bool,
 }
 
 /// The durable registry: every declared `store` root, in declaration order.
@@ -687,18 +690,6 @@ impl DurableRegistry {
                             registry.roots.push(root);
                             registry.roots.len() - 1
                         });
-                        // A Product declaration mints one materialized entry record per
-                        // declared branch however many roots project it, so its branch
-                        // record table is written once, at its first executable root.
-                        // Every later occurrence carries the identical declaration and
-                        // its own sites; only the sites differ, and none of them is here.
-                        if let Some(at) = executable
-                            && !registry.branch_paths.contains_key(&store.resource)
-                        {
-                            let branches = std::mem::take(&mut registry.roots[at].branches);
-                            registry.record_branch_declarations(&store.resource, &branches);
-                            registry.roots[at].branches = branches;
-                        }
                         DeclarationOccurrence::Accepted(DeclaredRoot { executable })
                     }
                     StoreBuild::Refused(refusal) => DeclarationOccurrence::Refused(refusal),
@@ -712,14 +703,31 @@ impl DurableRegistry {
                     .or_insert_with(|| ProductStores {
                         admitted: Vec::new(),
                         first_refused: None,
+                        declared_branches: false,
                     });
+                let mut declare_branches = None;
                 match &occurrence {
-                    DeclarationOccurrence::Accepted(_) => {
+                    DeclarationOccurrence::Accepted(DeclaredRoot { executable }) => {
                         stores.admitted.push(store.root.root.clone());
+                        // A Product declaration mints one materialized entry record per
+                        // declared branch however many roots project it, so its branch
+                        // record table is written at that Product's first executable root
+                        // and never again. Every later occurrence carries the identical
+                        // declaration and its own operation sites, and no site is here.
+                        if let Some(at) = executable
+                            && !std::mem::replace(&mut stores.declared_branches, true)
+                        {
+                            declare_branches = Some(*at);
+                        }
                     }
                     DeclarationOccurrence::Refused(_) => {
                         stores.first_refused.get_or_insert(store.root.root.clone());
                     }
+                }
+                if let Some(at) = declare_branches {
+                    let branches = std::mem::take(&mut registry.roots[at].branches);
+                    registry.record_branch_declarations(&store.resource, &branches);
+                    registry.roots[at].branches = branches;
                 }
                 registry
                     .declared
@@ -2642,6 +2650,7 @@ store ^holders[id: int]: Holder
             ProductStores {
                 admitted: vec!["holders".to_string()],
                 first_refused: None,
+                declared_branches: false,
             },
         );
         assert!(matches!(
@@ -2655,6 +2664,7 @@ store ^holders[id: int]: Holder
             ProductStores {
                 admitted: Vec::new(),
                 first_refused: None,
+                declared_branches: false,
             },
         );
         assert!(matches!(
