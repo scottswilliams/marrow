@@ -7,6 +7,7 @@
 //! its target, and the encoder resolves indices to byte offsets once the code
 //! layout is known — so the compiler never computes byte offsets by hand.
 
+use crate::site_plan::LegacyDraftSiteOperand;
 use crate::ty::ImageType;
 
 // Opcode bytes. These are the frozen wire discriminants; any byte not listed here
@@ -333,18 +334,18 @@ pub enum Instr {
     /// count; the VM faults `run.corruption` (defense in depth) if the identity's tuple
     /// length disagrees.
     IdentityKeyPath(u16),
-    DurExists(u16),
+    DurExists(LegacyDraftSiteOperand),
     /// `[ancestor-keys] → bool`: whether the family the whole-entry `site` names (the
     /// root's entry family, or a keyed branch family beneath the parent entry the
     /// ancestor key-path locates) has at least one payload-bearing immediate child. Pops
     /// the ancestor key-path (a root site pops none; a single-level branch site pops
     /// `[root_key]`) and pushes the family-populated bool. Unlike [`DurExists`] it names
     /// no immediate child key: it is the family-populated probe, not a keyed presence.
-    DurFamilyExists(u16),
-    DurReadField(u16),
-    DurReadEntry(u16),
-    DurSetRequired(u16),
-    DurSetSparse(u16),
+    DurFamilyExists(LegacyDraftSiteOperand),
+    DurReadField(LegacyDraftSiteOperand),
+    DurReadEntry(LegacyDraftSiteOperand),
+    DurSetRequired(LegacyDraftSiteOperand),
+    DurSetSparse(LegacyDraftSiteOperand),
     /// `T? →`: set (present) or clear (vacant) the sparse field `site`, reading the
     /// containing entry's key-path from local slots `key_slots` (root-first, one slot
     /// per key column of every node from the root down to the field's containing entry)
@@ -356,24 +357,24 @@ pub enum Instr {
     /// `run.corruption` if the marker is absent (defense in depth over the trust
     /// boundary).
     DurSetSparsePresent {
-        site: u16,
+        site: LegacyDraftSiteOperand,
         key_slots: Vec<u16>,
     },
-    DurCreateEntry(u16),
-    DurReplaceEntry(u16),
-    DurEraseField(u16),
-    DurEraseEntry(u16),
+    DurCreateEntry(LegacyDraftSiteOperand),
+    DurReplaceEntry(LegacyDraftSiteOperand),
+    DurEraseField(LegacyDraftSiteOperand),
+    DurEraseEntry(LegacyDraftSiteOperand),
     /// `K → Rec?`: read the whole materialized value of the unkeyed `group` the
     /// `GroupEntry` site `_0` names, as one record, or absent when the containing entry
     /// is absent.
-    DurReadGroup(u16),
+    DurReadGroup(LegacyDraftSiteOperand),
     /// `K, Rec →`: replace the whole materialized value of the group the `GroupEntry`
     /// site `_0` names, under the group-scoped payload-only law (the group's own field
     /// set only; sibling groups, top-level fields, and branches untouched).
-    DurReplaceGroup(u16),
+    DurReplaceGroup(LegacyDraftSiteOperand),
     /// `K →`: erase the group the `GroupEntry` site `_0` names — clears only that
     /// group's leaves (no-op on an absent entry).
-    DurEraseGroup(u16),
+    DurEraseGroup(LegacyDraftSiteOperand),
     /// The bounded nested traversal `for … at most N … on more`. Freeze the first
     /// `limit` immediate keys of the layer the whole-entry `site` belongs to — the
     /// root's entry family (a root site) or a keyed branch family under a fixed parent
@@ -390,7 +391,7 @@ pub enum Instr {
     /// body runs, so a body's writes cannot change the set; no cursor, page, or
     /// continuation is threaded — the frozen list is the whole result.
     DurIterateBounded {
-        site: u16,
+        site: LegacyDraftSiteOperand,
         limit: u32,
         from: bool,
         list_ty: u16,
@@ -410,7 +411,7 @@ pub enum Instr {
     /// `List[K]` COLLTYPES index. The frozen list holds the scanned component's raw key
     /// scalars; the compiler wraps each into the source `Id(^root)` at the loop binding.
     DurIndexScan {
-        site: u16,
+        site: LegacyDraftSiteOperand,
         limit: u32,
         from: bool,
         list_ty: u16,
@@ -419,12 +420,12 @@ pub enum Instr {
     /// projection (one key per component, in projection order) and push the matching source
     /// identity as an optional `Id(^root)` — present with the source key tuple, or vacant.
     /// `site` names the index lookup site. Stack effect `[projection-keys] → Id(^root)?`.
-    DurIndexLookup(u16),
+    DurIndexLookup(LegacyDraftSiteOperand),
     /// The presence half of [`DurIndexLookup`] — the unique-index arm of `exists`. Pop the
     /// index's whole projection (one key per component, projection order) and push whether a
     /// matching entry exists, without materializing its identity. `site` names the same
     /// unique-index lookup site the lookup uses. Stack effect `[projection-keys] → bool`.
-    DurIndexExists(u16),
+    DurIndexExists(LegacyDraftSiteOperand),
     /// Push an empty `List` of the COLLTYPES index `_0`.
     ListNew(u16),
     /// `[list, value] → [list']`: append the bare value after the last element,

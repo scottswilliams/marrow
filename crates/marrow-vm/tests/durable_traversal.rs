@@ -11,8 +11,9 @@
 
 use marrow_image::{
     CollectionTypeDef, DurableMemberDef, DurableValueShape, ExportId, FieldDef, FunctionDef,
-    ImageDraft, ImageType, Instr, KeyColumn, LedgerIdBytes, RecordTypeDef, RootDef, RootIdentity,
-    Scalar, SemanticPath, SemanticStep, SemanticStepKind, SiteDef, SpanEntry,
+    ImageDraft, ImageType, Instr, KeyColumn, LedgerIdBytes, LegacyDraftSiteOperand, RecordTypeDef,
+    RootDef, RootIdentity, Scalar, SemanticPath, SemanticStep, SemanticStepKind, SiteDef,
+    SpanEntry,
 };
 use marrow_kernel::codec::key::KeyScalar;
 use marrow_kernel::codec::value::RuntimeScalar;
@@ -126,14 +127,8 @@ fn traversal_image() -> VerifiedImage {
         },
     });
 
-    let root_entry = draft
-        .request_site(SiteDef::whole_payload(root_path()))
-        .expect("the fixture's site demand fits the plan")
-        .index();
-    let branch_entry = draft
-        .request_site(SiteDef::whole_payload(branch_path()))
-        .expect("the fixture's site demand fits the plan")
-        .index();
+    let root_entry = draft.request_site(SiteDef::whole_payload(root_path()));
+    let branch_entry = draft.request_site(SiteDef::whole_payload(branch_path()));
     let list_int = draft
         .add_collection_type(CollectionTypeDef::List {
             elem: ImageType::scalar(Scalar::Int),
@@ -153,7 +148,7 @@ fn traversal_image() -> VerifiedImage {
             code.push(Instr::ConstLoad(key.index())); // root key
             code.push(Instr::ConstLoad(title_const.index())); // title (a string const)
             code.push(Instr::RecordNew(book_record.index()));
-            code.push(Instr::DurCreateEntry(root_entry));
+            code.push(Instr::DurCreateEntry(root_entry.clone()));
         }
         let book_one = draft.intern_int(1);
         for pos in [10i64, 20] {
@@ -162,7 +157,7 @@ fn traversal_image() -> VerifiedImage {
             code.push(Instr::ConstLoad(branch_key.index())); // branch key
             code.push(Instr::ConstLoad(title_const.index())); // text
             code.push(Instr::RecordNew(note_record.index()));
-            code.push(Instr::DurCreateEntry(branch_entry));
+            code.push(Instr::DurCreateEntry(branch_entry.clone()));
         }
         code.push(Instr::TxnCommit);
         code.push(Instr::Return);
@@ -187,83 +182,90 @@ fn traversal_image() -> VerifiedImage {
     // with the given `limit`. `ancestor` names the local slot holding the parent key a
     // branch site pops (root site: none). `from` reads the from key from the first
     // param.
-    let add_keys_export =
-        |draft: &mut ImageDraft, name: &str, site: u16, limit: u32, from: bool, ancestor: bool| {
-            let name_id = draft.intern_string(name);
-            let mut code = Vec::new();
-            let params = if from || ancestor {
-                vec![ImageType::scalar(Scalar::Int)]
-            } else {
-                Vec::new()
-            };
-            if from || ancestor {
-                code.push(Instr::LocalGet(0));
-            }
-            code.push(Instr::DurIterateBounded {
-                site,
-                limit,
-                from,
-                list_ty: list_int,
-            });
-            code.push(Instr::Pop); // discard the on-more Bool; the list is returned
-            code.push(Instr::Return);
-            let local_count = params.len() as u16;
-            let func = draft.add_function(FunctionDef {
-                name: name_id,
-                source: src,
-                params,
-                ret: list_ret,
-                local_count,
-                spans: spans(&code),
-                code,
-            });
-            draft.add_export(export_id(name), func);
+    let add_keys_export = |draft: &mut ImageDraft,
+                           name: &str,
+                           site: &LegacyDraftSiteOperand,
+                           limit: u32,
+                           from: bool,
+                           ancestor: bool| {
+        let name_id = draft.intern_string(name);
+        let mut code = Vec::new();
+        let params = if from || ancestor {
+            vec![ImageType::scalar(Scalar::Int)]
+        } else {
+            Vec::new()
         };
+        if from || ancestor {
+            code.push(Instr::LocalGet(0));
+        }
+        code.push(Instr::DurIterateBounded {
+            site: site.clone(),
+            limit,
+            from,
+            list_ty: list_int,
+        });
+        code.push(Instr::Pop); // discard the on-more Bool; the list is returned
+        code.push(Instr::Return);
+        let local_count = params.len() as u16;
+        let func = draft.add_function(FunctionDef {
+            name: name_id,
+            source: src,
+            params,
+            ret: list_ret,
+            local_count,
+            spans: spans(&code),
+            code,
+        });
+        draft.add_export(export_id(name), func);
+    };
 
-    add_keys_export(&mut draft, "rootKeys2", root_entry, 2, false, false);
-    add_keys_export(&mut draft, "rootKeys5", root_entry, 5, false, false);
-    add_keys_export(&mut draft, "rootFrom", root_entry, 5, true, false);
-    add_keys_export(&mut draft, "branchKeys", branch_entry, 5, false, true);
+    add_keys_export(&mut draft, "rootKeys2", &root_entry, 2, false, false);
+    add_keys_export(&mut draft, "rootKeys5", &root_entry, 5, false, false);
+    add_keys_export(&mut draft, "rootFrom", &root_entry, 5, true, false);
+    add_keys_export(&mut draft, "branchKeys", &branch_entry, 5, false, true);
 
     // A read-only export returning the on-more `Bool` of the traversal over `site`.
-    let add_more_export =
-        |draft: &mut ImageDraft, name: &str, site: u16, limit: u32, ancestor: bool| {
-            let name_id = draft.intern_string(name);
-            let mut code = Vec::new();
-            let params = if ancestor {
-                vec![ImageType::scalar(Scalar::Int)]
-            } else {
-                Vec::new()
-            };
-            let bool_slot = params.len() as u16;
-            if ancestor {
-                code.push(Instr::LocalGet(0));
-            }
-            code.push(Instr::DurIterateBounded {
-                site,
-                limit,
-                from: false,
-                list_ty: list_int,
-            });
-            code.push(Instr::LocalSet(bool_slot)); // stash the on-more Bool
-            code.push(Instr::Pop); // discard the frozen list
-            code.push(Instr::LocalGet(bool_slot));
-            code.push(Instr::Return);
-            let func = draft.add_function(FunctionDef {
-                name: name_id,
-                source: src,
-                params,
-                ret: ImageType::scalar(Scalar::Bool),
-                local_count: bool_slot + 1,
-                spans: spans(&code),
-                code,
-            });
-            draft.add_export(export_id(name), func);
+    let add_more_export = |draft: &mut ImageDraft,
+                           name: &str,
+                           site: &LegacyDraftSiteOperand,
+                           limit: u32,
+                           ancestor: bool| {
+        let name_id = draft.intern_string(name);
+        let mut code = Vec::new();
+        let params = if ancestor {
+            vec![ImageType::scalar(Scalar::Int)]
+        } else {
+            Vec::new()
         };
+        let bool_slot = params.len() as u16;
+        if ancestor {
+            code.push(Instr::LocalGet(0));
+        }
+        code.push(Instr::DurIterateBounded {
+            site: site.clone(),
+            limit,
+            from: false,
+            list_ty: list_int,
+        });
+        code.push(Instr::LocalSet(bool_slot)); // stash the on-more Bool
+        code.push(Instr::Pop); // discard the frozen list
+        code.push(Instr::LocalGet(bool_slot));
+        code.push(Instr::Return);
+        let func = draft.add_function(FunctionDef {
+            name: name_id,
+            source: src,
+            params,
+            ret: ImageType::scalar(Scalar::Bool),
+            local_count: bool_slot + 1,
+            spans: spans(&code),
+            code,
+        });
+        draft.add_export(export_id(name), func);
+    };
 
-    add_more_export(&mut draft, "rootMore2", root_entry, 2, false);
-    add_more_export(&mut draft, "rootMore5", root_entry, 5, false);
-    add_more_export(&mut draft, "branchMore", branch_entry, 5, true);
+    add_more_export(&mut draft, "rootMore2", &root_entry, 2, false);
+    add_more_export(&mut draft, "rootMore5", &root_entry, 5, false);
+    add_more_export(&mut draft, "branchMore", &branch_entry, 5, true);
 
     verify(&draft.encode().expect("encode").bytes).expect("image verifies")
 }
@@ -469,10 +471,7 @@ fn wide_key_image() -> (VerifiedImage, u16) {
             }],
         },
     });
-    let root_entry = draft
-        .request_site(SiteDef::whole_payload(root_path()))
-        .expect("the fixture's site demand fits the plan")
-        .index();
+    let root_entry = draft.request_site(SiteDef::whole_payload(root_path()));
     let list_str = draft
         .add_collection_type(CollectionTypeDef::List {
             elem: ImageType::scalar(Scalar::Text),
@@ -491,7 +490,7 @@ fn wide_key_image() -> (VerifiedImage, u16) {
             Instr::ConstLoad(key.index()),
             Instr::ConstLoad(value.index()),
             Instr::RecordNew(record.index()),
-            Instr::DurCreateEntry(root_entry),
+            Instr::DurCreateEntry(root_entry.clone()),
             Instr::TxnCommit,
             Instr::Return,
         ];
@@ -512,7 +511,7 @@ fn wide_key_image() -> (VerifiedImage, u16) {
         let name = draft.intern_string("all");
         let code = vec![
             Instr::DurIterateBounded {
-                site: root_entry,
+                site: root_entry.clone(),
                 limit: marrow_image::bounds::MAX_TRAVERSAL_BOUND,
                 from: false,
                 list_ty: list_str,
@@ -536,7 +535,16 @@ fn wide_key_image() -> (VerifiedImage, u16) {
     }
 
     let image = verify(&draft.encode().expect("encode").bytes).expect("image verifies");
-    (image, root_entry)
+    // The kernel addresses a site by its sealed wire ordinal, which is a fact of the
+    // verified image rather than of the draft: the draft's operand is opaque and names no
+    // number the test may read. This image demands exactly one site — the root's whole
+    // payload — so that ordinal is the table's only one.
+    assert_eq!(
+        image.sites().len(),
+        1,
+        "the wide-key image demands one site"
+    );
+    (image, 0)
 }
 
 #[test]

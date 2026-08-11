@@ -1604,3 +1604,22 @@ fn leaves_without_declaring(body: &str, push: usize) -> bool {
     }
     false
 }
+
+/// No non-encodable stand-in stands for a refused operation site.
+///
+/// While the compiler's descriptors and instruction operands carried a bare `u16` site, a
+/// site the bounded plan refused had to travel through that same numeric channel, and
+/// `OVER_POLICY_SITE` was the reserved number that did it. A reserved number is only ever
+/// one careless comparison away from being read as a real site. The refusal is now a state
+/// of the opaque site operand itself, which carries no number at all, so no such constant
+/// can exist.
+#[test]
+fn no_reserved_number_stands_for_a_refused_site() {
+    for needle in ["OVER_POLICY_SITE", "u16::MAX, |site|"] {
+        let found = occurrences(needle);
+        assert!(
+            found.is_empty(),
+            "`{needle}` reintroduces a numeric stand-in for a refused site: {found:?}",
+        );
+    }
+}

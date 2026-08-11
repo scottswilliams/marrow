@@ -205,3 +205,119 @@ fn the_encoder_reads_declaration_rows_and_no_member_tree() {
         "the member-bound recheck is one forward pass over the rows; found {tree_walkers:?}",
     );
 }
+
+/// No draft instruction carries a bare `u16` operation site.
+///
+/// A site operand used to be a plain number, so any producer could write one by hand, a
+/// refused site had to travel through the same numeric channel as a real one, and two
+/// unrelated numbers could be compared as if they addressed the same place. Every `Dur*`
+/// site operand is now the opaque [`marrow_image::LegacyDraftSiteOperand`], whose sole
+/// mint is the bounded site demand plan. A `Dur*` variant reverting to `u16` is that
+/// forgeable channel returning.
+#[test]
+fn no_draft_instruction_carries_a_bare_u16_site() {
+    let instructions =
+        std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/instr.rs"))
+            .expect("read the instruction set");
+    let code = without_literals(&instructions);
+
+    assert!(
+        bare_u16_site_declarations(&code).is_empty(),
+        "a durable instruction names a bare `u16` site: {:?}",
+        bare_u16_site_declarations(&code),
+    );
+    assert!(
+        code.contains("DurReadField(LegacyDraftSiteOperand)"),
+        "the opaque site operand is present, so this gate has a live subject",
+    );
+}
+
+/// The name of every durable operation-site instruction variant in `code` whose
+/// declaration names a bare `u16` site, in either shape the variants use: a positional
+/// operand, or a named `site` field inside a braced variant.
+///
+/// A braced variant spans several lines, so the scan accumulates each variant's whole
+/// declaration — to the point where its parentheses and braces close — rather than testing
+/// lines independently. The temporal `Duration*` operations share the prefix and carry no
+/// site, so they are not durable-site variants and are excluded by name.
+fn bare_u16_site_declarations(code: &str) -> Vec<String> {
+    let mut found = Vec::new();
+    let mut current: Option<(String, String)> = None;
+    let mut depth = 0usize;
+    for line in code.lines().map(str::trim) {
+        if depth == 0
+            && current.is_none()
+            && line.starts_with("Dur")
+            && !line.starts_with("Duration")
+        {
+            let name = line
+                .split(['(', ' ', ',', '{'])
+                .next()
+                .expect("a variant line names its variant")
+                .to_string();
+            current = Some((name, String::new()));
+        }
+        let Some((_, span)) = current.as_mut() else {
+            continue;
+        };
+        span.push_str(line);
+        span.push('\n');
+        depth = depth + line.matches(['(', '{']).count() - line.matches([')', '}']).count();
+        if depth == 0 {
+            let (name, span) = current.take().expect("a variant is being accumulated");
+            if span.contains("(u16)") || span.contains("site: u16") {
+                found.push(name);
+            }
+        }
+    }
+    found
+}
+
+/// The bare-`u16` scan detects both declaration shapes, and is not satisfied merely by
+/// finding nothing.
+///
+/// A reverted variant would not compile against the rest of the crate, so the gate above
+/// can never observe the defect it forbids in a running test. This plants it instead: the
+/// same predicate the gate uses is run over source that does carry the defect.
+#[test]
+fn the_bare_u16_site_scan_detects_a_planted_declaration() {
+    let planted = concat!(
+        "    DurReadField(u16),\n",
+        "    DurIterateBounded {\n",
+        "        site: u16,\n",
+        "        limit: u32,\n",
+        "    },\n",
+        "    DurReadEntry(LegacyDraftSiteOperand),\n",
+    );
+
+    assert_eq!(
+        bare_u16_site_declarations(planted),
+        ["DurReadField", "DurIterateBounded"],
+        "the scan flags a positional and a braced named bare site, and passes the opaque one",
+    );
+}
+
+/// The site operand is never `Copy`.
+///
+/// A minted site is an answer the plan gave to one demand. Copying one implicitly is how
+/// a carrier acquires a site it never requested — the defect the whole operand exists to
+/// make unrepresentable — so the type is `Clone` and moved deliberately.
+#[test]
+fn the_site_operand_does_not_derive_copy() {
+    let plan =
+        std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/site_plan.rs"))
+            .expect("read the site plan");
+    let code = without_literals(&plan);
+    let declaration = code
+        .split("pub struct LegacyDraftSiteOperand")
+        .next()
+        .expect("the operand is declared")
+        .rsplit("#[derive(")
+        .next()
+        .expect("the operand carries a derive list");
+
+    assert!(
+        !declaration.contains("Copy"),
+        "the site operand must not derive Copy: `#[derive({declaration}`",
+    );
+}

@@ -254,22 +254,18 @@ fn a_durable_image() -> Vec<u8> {
         LedgerIdBytes::from_bytes([0x0a; 16]),
         LedgerIdBytes::from_bytes([0x0b; 16]),
     );
-    draft
-        .request_site(SiteDef::whole_payload(root_path.clone()))
-        .expect("the fixture's site demand fits the plan");
-    let value_site = draft
-        .request_site(SiteDef::field_leaf(root_path.child(SemanticStep::new(
-            SemanticStepKind::Field,
-            LedgerIdBytes::from_bytes([0x0e; 16]),
-        ))))
-        .expect("the fixture's site demand fits the plan");
+    draft.request_site(SiteDef::whole_payload(root_path.clone()));
+    let value_site = draft.request_site(SiteDef::field_leaf(root_path.child(SemanticStep::new(
+        SemanticStepKind::Field,
+        LedgerIdBytes::from_bytes([0x0e; 16]),
+    ))));
     let src = draft.intern_string("src/main.mw");
     let name = draft.intern_string("put");
     let code = vec![
         Instr::TxnBegin,
         Instr::LocalGet(0),
         Instr::LocalGet(1),
-        Instr::DurSetRequired(value_site.index()),
+        Instr::DurSetRequired(value_site),
         Instr::TxnCommit,
         Instr::Return,
     ];
@@ -385,18 +381,14 @@ fn an_indexed_durable_image() -> Vec<u8> {
         LedgerIdBytes::from_bytes([0x0a; 16]),
         LedgerIdBytes::from_bytes([0x0b; 16]),
     );
-    draft
-        .request_site(SiteDef::index_scan(root_path.child(SemanticStep::new(
-            SemanticStepKind::Index,
-            LedgerIdBytes::from_bytes([0x70; 16]),
-        ))))
-        .expect("the fixture's site demand fits the plan");
-    draft
-        .request_site(SiteDef::index_lookup(root_path.child(SemanticStep::new(
-            SemanticStepKind::Index,
-            LedgerIdBytes::from_bytes([0x71; 16]),
-        ))))
-        .expect("the fixture's site demand fits the plan");
+    draft.request_site(SiteDef::index_scan(root_path.child(SemanticStep::new(
+        SemanticStepKind::Index,
+        LedgerIdBytes::from_bytes([0x70; 16]),
+    ))));
+    draft.request_site(SiteDef::index_lookup(root_path.child(SemanticStep::new(
+        SemanticStepKind::Index,
+        LedgerIdBytes::from_bytes([0x71; 16]),
+    ))));
     draft.encode().expect("encode").bytes
 }
 
@@ -471,33 +463,27 @@ fn a_strict_durable_image() -> Vec<u8> {
         LedgerIdBytes::from_bytes([0x0a; 16]),
         LedgerIdBytes::from_bytes([0x0b; 16]),
     );
-    draft
-        .request_site(SiteDef::whole_payload(root_path.clone()))
-        .expect("the fixture's site demand fits the plan");
-    draft
-        .request_site(SiteDef::field_leaf(root_path.child(SemanticStep::new(
-            SemanticStepKind::Field,
-            LedgerIdBytes::from_bytes([0x0e; 16]),
-        ))))
-        .expect("the fixture's site demand fits the plan");
-    let label_site = draft
-        .request_site(SiteDef::field_leaf(root_path.child(SemanticStep::new(
-            SemanticStepKind::Field,
-            LedgerIdBytes::from_bytes([0x0f; 16]),
-        ))))
-        .expect("the fixture's site demand fits the plan");
+    let entry_site = draft.request_site(SiteDef::whole_payload(root_path.clone()));
+    draft.request_site(SiteDef::field_leaf(root_path.child(SemanticStep::new(
+        SemanticStepKind::Field,
+        LedgerIdBytes::from_bytes([0x0e; 16]),
+    ))));
+    let label_site = draft.request_site(SiteDef::field_leaf(root_path.child(SemanticStep::new(
+        SemanticStepKind::Field,
+        LedgerIdBytes::from_bytes([0x0f; 16]),
+    ))));
     let src = draft.intern_string("src/main.mw");
     let name = draft.intern_string("tag");
     let text = draft.intern_text("x");
     let code = vec![
         Instr::TxnBegin,
         Instr::LocalGet(0),
-        Instr::DurExists(0),
+        Instr::DurExists(entry_site),
         Instr::JumpIfFalse(7),
         Instr::ConstLoad(text.index()),
         Instr::SomeWrap,
         Instr::DurSetSparsePresent {
-            site: label_site.index(),
+            site: label_site,
             key_slots: vec![0],
         },
         Instr::TxnCommit,
@@ -658,25 +644,15 @@ fn a_group_branch_durable_image() -> Vec<u8> {
     );
     let field =
         |id: [u8; 16]| SemanticStep::new(SemanticStepKind::Field, LedgerIdBytes::from_bytes(id));
-    draft
-        .request_site(SiteDef::whole_payload(root_path.clone()))
-        .expect("the fixture's site demand fits the plan");
-    draft
-        .request_site(SiteDef::field_leaf(root_path.child(field([0x0e; 16]))))
-        .expect("the fixture's site demand fits the plan");
-    draft
-        .request_site(SiteDef::field_leaf(
-            root_path.child(group).child(field([0x21; 16])),
-        ))
-        .expect("the fixture's site demand fits the plan");
-    draft
-        .request_site(SiteDef::whole_payload(root_path.child(branch)))
-        .expect("the fixture's site demand fits the plan");
-    draft
-        .request_site(SiteDef::field_leaf(
-            root_path.child(branch).child(field([0x32; 16])),
-        ))
-        .expect("the fixture's site demand fits the plan");
+    draft.request_site(SiteDef::whole_payload(root_path.clone()));
+    draft.request_site(SiteDef::field_leaf(root_path.child(field([0x0e; 16]))));
+    draft.request_site(SiteDef::field_leaf(
+        root_path.child(group).child(field([0x21; 16])),
+    ));
+    draft.request_site(SiteDef::whole_payload(root_path.child(branch)));
+    draft.request_site(SiteDef::field_leaf(
+        root_path.child(branch).child(field([0x32; 16])),
+    ));
     let src = draft.intern_string("src/main.mw");
     let name = draft.intern_string("label");
     let zero = draft.intern_int(0);
@@ -936,15 +912,11 @@ fn a_multi_site_durable_image() -> Vec<u8> {
         },
     });
     let root_path = SemanticPath::root(application, placement);
-    draft
-        .request_site(SiteDef::whole_payload(root_path.clone()))
-        .expect("the fixture's site demand fits the plan");
+    draft.request_site(SiteDef::whole_payload(root_path.clone()));
     for id in field_ids {
-        draft
-            .request_site(SiteDef::field_leaf(
-                root_path.child(SemanticStep::new(SemanticStepKind::Field, id)),
-            ))
-            .expect("the fixture's site demand fits the plan");
+        draft.request_site(SiteDef::field_leaf(
+            root_path.child(SemanticStep::new(SemanticStepKind::Field, id)),
+        ));
     }
     let src = draft.intern_string("src/main.mw");
     let name = draft.intern_string("label");

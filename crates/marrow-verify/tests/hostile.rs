@@ -11,8 +11,9 @@
 use marrow_image::{
     CollectionTypeDef, DurableEnumMemberShape, DurableIndexComponent, DurableIndexShape,
     DurableMemberDef, DurableValueShape, EnumTypeDef, ExportId, FieldDef, FuncId, FunctionDef,
-    ImageDraft, ImageType, Instr, KeyColumn, LedgerIdBytes, RecordTypeDef, RootDef, RootIdentity,
-    Scalar, SemanticPath, SemanticStep, SemanticStepKind, SiteDef, SpanEntry, VariantDef, image_id,
+    ImageDraft, ImageType, Instr, KeyColumn, LedgerIdBytes, LegacyDraftSiteOperand, RecordTypeDef,
+    RootDef, RootIdentity, Scalar, SemanticPath, SemanticStep, SemanticStepKind, SiteDef,
+    SpanEntry, VariantDef, image_id,
 };
 use marrow_verify::{VerifyPhase, verify};
 
@@ -398,10 +399,22 @@ fn closure_phase_mutual_recursion() {
 
 // --- Phase-5 durable transaction-flow hostiles (design §E phase 5). ---
 
+/// The tracer schema's three durable operation sites. A site operand is minted only by
+/// [`ImageDraft::request_site`], so a test names one of these sites by threading the
+/// operand its own draft returned; there is no way to write a site number by hand.
+struct Sites {
+    /// The root entry's whole-payload site.
+    entry: LegacyDraftSiteOperand,
+    /// The required `value:int` field leaf.
+    value: LegacyDraftSiteOperand,
+    /// The sparse `label:string` field leaf.
+    label: LegacyDraftSiteOperand,
+}
+
 /// Build the tracer-like durable schema into `draft`: a `Counter { value:int
 /// required, label:string sparse }` at root `^counters(name:string)`, returning the
-/// entry, required-field, and sparse-field site indices.
-fn durable_schema(draft: &mut ImageDraft) -> (u16, u16, u16) {
+/// entry, required-field, and sparse-field site operands.
+fn durable_schema(draft: &mut ImageDraft) -> Sites {
     let counter = draft.intern_string("Counter");
     let value = draft.intern_string("value");
     let label = draft.intern_string("label");
@@ -436,22 +449,22 @@ fn durable_schema(draft: &mut ImageDraft) -> (u16, u16, u16) {
             members: counters_members(),
         },
     });
-    let entry = draft
-        .request_site(SiteDef::whole_payload(root_path()))
-        .expect("the fixture's site demand fits the plan");
-    let value_site = draft
-        .request_site(SiteDef::field_leaf(field_path(VALUE_FIELD_ID)))
-        .expect("the fixture's site demand fits the plan");
-    let label_site = draft
-        .request_site(SiteDef::field_leaf(field_path(LABEL_FIELD_ID)))
-        .expect("the fixture's site demand fits the plan");
-    (entry.index(), value_site.index(), label_site.index())
+    let entry = draft.request_site(SiteDef::whole_payload(root_path()));
+    let value = draft.request_site(SiteDef::field_leaf(field_path(VALUE_FIELD_ID)));
+    let label = draft.request_site(SiteDef::field_leaf(field_path(LABEL_FIELD_ID)));
+    Sites {
+        entry,
+        value,
+        label,
+    }
 }
 
-/// Encode a single mutating export `put(k:string, v:int)` whose body is `code`.
-fn put_export(code: Vec<Instr>) -> ImageDraft {
+/// Encode a single mutating export `put(k:string, v:int)` over the tracer schema whose
+/// body is what `code` builds from that schema's site operands.
+fn put_export(code: impl FnOnce(&Sites) -> Vec<Instr>) -> ImageDraft {
     let mut draft = ImageDraft::new();
-    let (_entry, _value, _label) = durable_schema(&mut draft);
+    let sites = durable_schema(&mut draft);
+    let code = code(&sites);
     let src = draft.intern_string("src/main.mw");
     let name = draft.intern_string("put");
     let func = draft.add_function(FunctionDef {
@@ -470,11 +483,14 @@ fn put_export(code: Vec<Instr>) -> ImageDraft {
     draft
 }
 
-/// Encode a read-only export `read(k:string): T?` that reads the field at site index
-/// `site` (one of the sites `durable_schema` registers) returning `ret`.
-fn read_field_export(site: u16, ret: ImageType) -> ImageDraft {
+/// Encode a read-only export `read(k:string): T?` that reads the field at the site
+/// `pick` selects from the sites `durable_schema` registers, returning `ret`.
+fn read_field_export(
+    pick: impl FnOnce(&Sites) -> LegacyDraftSiteOperand,
+    ret: ImageType,
+) -> ImageDraft {
     let mut draft = ImageDraft::new();
-    durable_schema(&mut draft);
+    let site = pick(&durable_schema(&mut draft));
     let src = draft.intern_string("src/main.mw");
     let name = draft.intern_string("read");
     let code = vec![Instr::LocalGet(0), Instr::DurReadField(site), Instr::Return];
@@ -497,16 +513,14 @@ fn the_durable_opcode_site_determines_the_reconstructed_demand() {
     // is reconstructed from the sealed site the bytecode names — there is no
     // serialized demand summary — so a change to which site an opcode reads changes
     // the reconstructed atom's path and the export's demand id.
-    let value_site = {
-        let mut probe = ImageDraft::new();
-        durable_schema(&mut probe).1
-    };
-    let label_site = {
-        let mut probe = ImageDraft::new();
-        durable_schema(&mut probe).2
-    };
-    let value = read_field_export(value_site, ImageType::opt_scalar(Scalar::Int));
-    let label = read_field_export(label_site, ImageType::opt_scalar(Scalar::Text));
+    let value = read_field_export(
+        |sites| sites.value.clone(),
+        ImageType::opt_scalar(Scalar::Int),
+    );
+    let label = read_field_export(
+        |sites| sites.label.clone(),
+        ImageType::opt_scalar(Scalar::Text),
+    );
 
     let value_image = verify(&value.encode().unwrap().bytes).expect("value read verifies");
     let label_image = verify(&label.encode().unwrap().bytes).expect("label read verifies");
@@ -535,7 +549,7 @@ fn the_durable_opcode_site_determines_the_reconstructed_demand() {
 /// the opcode.
 fn iterate_root_export(limit: u32, from: bool) -> ImageDraft {
     let mut draft = ImageDraft::new();
-    let (entry, _value, _label) = durable_schema(&mut draft);
+    let sites = durable_schema(&mut draft);
     let list_ty = draft
         .add_collection_type(CollectionTypeDef::List {
             elem: ImageType::scalar(Scalar::Text),
@@ -553,7 +567,7 @@ fn iterate_root_export(limit: u32, from: bool) -> ImageDraft {
     };
     let local_count = params.len() as u16;
     code.push(Instr::DurIterateBounded {
-        site: entry,
+        site: sites.entry,
         limit,
         from,
         list_ty,
@@ -596,9 +610,7 @@ fn a_bounded_traversal_over_a_branch_verifies_and_type_checks() {
     // root key (int) is popped, the frozen `List[string]` of branch keys and the on-more
     // `Bool` are pushed, and the image seals.
     let (mut draft, _branch_record) = flat_branch_draft();
-    let site = draft
-        .request_site(SiteDef::whole_payload(branch_entry_path()))
-        .expect("the fixture's site demand fits the plan");
+    let site = draft.request_site(SiteDef::whole_payload(branch_entry_path()));
     let list_ty = draft
         .add_collection_type(CollectionTypeDef::List {
             elem: ImageType::scalar(Scalar::Text),
@@ -609,7 +621,7 @@ fn a_bounded_traversal_over_a_branch_verifies_and_type_checks() {
     let code = vec![
         Instr::LocalGet(0), // the root key: the ancestor locating the branch parent
         Instr::DurIterateBounded {
-            site: site.index(),
+            site,
             limit: 3,
             from: false,
             list_ty,
@@ -653,7 +665,7 @@ fn a_bounded_traversal_with_a_mismatched_list_type_rejects() {
     // `K` (here the root key is `string`). An image naming a `List[int]` is a forged
     // frozen-list type the verifier refuses before the runtime materializes it.
     let mut draft = ImageDraft::new();
-    let (entry, _value, _label) = durable_schema(&mut draft);
+    let sites = durable_schema(&mut draft);
     let wrong_list = draft
         .add_collection_type(CollectionTypeDef::List {
             elem: ImageType::scalar(Scalar::Int),
@@ -663,7 +675,7 @@ fn a_bounded_traversal_with_a_mismatched_list_type_rejects() {
     let name = draft.intern_string("iter");
     let code = vec![
         Instr::DurIterateBounded {
-            site: entry,
+            site: sites.entry,
             limit: 2,
             from: false,
             list_ty: wrong_list,
@@ -697,9 +709,7 @@ fn a_bounded_branch_traversal_missing_its_ancestor_key_rejects() {
     // no ancestor key leaves that pop against an empty stack — a key-arity forgery the
     // verifier refuses.
     let (mut draft, _branch_record) = flat_branch_draft();
-    let site = draft
-        .request_site(SiteDef::whole_payload(branch_entry_path()))
-        .expect("the fixture's site demand fits the plan");
+    let site = draft.request_site(SiteDef::whole_payload(branch_entry_path()));
     let list_ty = draft
         .add_collection_type(CollectionTypeDef::List {
             elem: ImageType::scalar(Scalar::Text),
@@ -710,7 +720,7 @@ fn a_bounded_branch_traversal_missing_its_ancestor_key_rejects() {
     let code = vec![
         // No ancestor root key pushed before the opcode.
         Instr::DurIterateBounded {
-            site: site.index(),
+            site,
             limit: 2,
             from: false,
             list_ty,
@@ -741,7 +751,7 @@ fn a_bounded_traversal_over_a_field_leaf_site_rejects() {
     // site names a single scalar leaf, not a traversable entry family, so an image aiming
     // the opcode at a field site is refused before any frozen-key allocation.
     let mut draft = ImageDraft::new();
-    let (_entry, value_site, _label) = durable_schema(&mut draft);
+    let sites = durable_schema(&mut draft);
     let list_ty = draft
         .add_collection_type(CollectionTypeDef::List {
             elem: ImageType::scalar(Scalar::Text),
@@ -751,7 +761,7 @@ fn a_bounded_traversal_over_a_field_leaf_site_rejects() {
     let name = draft.intern_string("iter");
     let code = vec![
         Instr::DurIterateBounded {
-            site: value_site,
+            site: sites.value,
             limit: 2,
             from: false,
             list_ty,
@@ -782,11 +792,11 @@ fn a_family_populated_probe_over_a_field_leaf_site_rejects() {
     // scalar leaf, not a family, so an image aiming the probe at a field site is refused
     // as `DurExists`/`DurIterateBounded` over a field site are.
     let mut draft = ImageDraft::new();
-    let (_entry, value_site, _label) = durable_schema(&mut draft);
+    let sites = durable_schema(&mut draft);
     let src = draft.intern_string("src/main.mw");
     let name = draft.intern_string("probe");
     let code = vec![
-        Instr::DurFamilyExists(value_site),
+        Instr::DurFamilyExists(sites.value),
         Instr::Pop,
         Instr::Return,
     ];
@@ -813,12 +823,12 @@ fn a_managed_index_probe_over_a_field_leaf_site_rejects() {
     // trust-boundary reject, not a fall-through to the closed-complement `unreachable` — the
     // same family guard the scan and lookup opcodes share.
     let mut draft = ImageDraft::new();
-    let (_entry, value_site, _label) = durable_schema(&mut draft);
+    let sites = durable_schema(&mut draft);
     let src = draft.intern_string("src/main.mw");
     let name = draft.intern_string("probe");
     let code = vec![
         Instr::LocalGet(0),
-        Instr::DurIndexExists(value_site),
+        Instr::DurIndexExists(sites.value),
         Instr::Pop,
         Instr::Return,
     ];
@@ -848,10 +858,7 @@ fn a_non_index_opcode_over_a_managed_index_site_rejects() {
     // at a managed-index site is routed there even though it is not an index read. The trust
     // boundary refuses it rather than reaching the closed-complement of the three index reads.
     let mut draft = indexed_draft(by_label_projection());
-    let lookup_site = draft
-        .request_site(SiteDef::index_lookup(index_path(BY_VALUE_INDEX_ID)))
-        .expect("the fixture's site demand fits the plan")
-        .index();
+    let lookup_site = draft.request_site(SiteDef::index_lookup(index_path(BY_VALUE_INDEX_ID)));
     let src = draft.intern_string("src/main.mw");
     let name = draft.intern_string("probe");
     let code = vec![
@@ -885,7 +892,7 @@ fn a_bounded_traversal_after_commit_rejects() {
     // commit exactly as it refuses a post-commit field read, so the runtime never reaches
     // a consumed transaction.
     let mut draft = ImageDraft::new();
-    let (entry, value_site, _label) = durable_schema(&mut draft);
+    let sites = durable_schema(&mut draft);
     let list_ty = draft
         .add_collection_type(CollectionTypeDef::List {
             elem: ImageType::scalar(Scalar::Text),
@@ -897,10 +904,10 @@ fn a_bounded_traversal_after_commit_rejects() {
         Instr::TxnBegin,
         Instr::LocalGet(0),
         Instr::LocalGet(1),
-        Instr::DurSetRequired(value_site),
+        Instr::DurSetRequired(sites.value),
         Instr::TxnCommit,
         Instr::DurIterateBounded {
-            site: entry,
+            site: sites.entry,
             limit: 2,
             from: false,
             list_ty,
@@ -938,7 +945,7 @@ fn a_traversal_list_type_naming_a_map_or_a_dangling_index_rejects() {
     // forged frozen-list type the verifier refuses before the runtime materializes it.
     let build = |list_ty: u16| -> Vec<u8> {
         let mut draft = ImageDraft::new();
-        let (entry, _value, _label) = durable_schema(&mut draft);
+        let sites = durable_schema(&mut draft);
         // One well-formed `Map` row at index 0: a valid collection, but the wrong kind for
         // a frozen key list. Index 1 dangles one past the single-row table.
         draft.add_collection_type(CollectionTypeDef::Map {
@@ -949,7 +956,7 @@ fn a_traversal_list_type_naming_a_map_or_a_dangling_index_rejects() {
         let name = draft.intern_string("iter");
         let code = vec![
             Instr::DurIterateBounded {
-                site: entry,
+                site: sites.entry,
                 limit: 2,
                 from: false,
                 list_ty,
@@ -1025,32 +1032,32 @@ fn a_malformed_from_flag_byte_is_refused_at_decode() {
 #[test]
 fn durable_put_export_verifies() {
     // The well-formed baseline the flow hostiles derive from.
-    let (_entry, value_site, _label) = {
-        let mut probe = ImageDraft::new();
-        durable_schema(&mut probe)
-    };
-    let draft = put_export(vec![
-        Instr::TxnBegin,
-        Instr::LocalGet(0),
-        Instr::LocalGet(1),
-        Instr::DurSetRequired(value_site),
-        Instr::TxnCommit,
-        Instr::Return,
-    ]);
+    let draft = put_export(|sites| {
+        vec![
+            Instr::TxnBegin,
+            Instr::LocalGet(0),
+            Instr::LocalGet(1),
+            Instr::DurSetRequired(sites.value.clone()),
+            Instr::TxnCommit,
+            Instr::Return,
+        ]
+    });
     assert_eq!(code_of(&draft.encode().unwrap().bytes), "VERIFIED");
 }
 
 /// A well-formed durable image (the tracer schema plus one verifying `put` export),
 /// the baseline for the durable-contract-id hostiles.
 fn good_durable_image() -> Vec<u8> {
-    put_export(vec![
-        Instr::TxnBegin,
-        Instr::LocalGet(0),
-        Instr::LocalGet(1),
-        Instr::DurSetRequired(1),
-        Instr::TxnCommit,
-        Instr::Return,
-    ])
+    put_export(|sites| {
+        vec![
+            Instr::TxnBegin,
+            Instr::LocalGet(0),
+            Instr::LocalGet(1),
+            Instr::DurSetRequired(sites.value.clone()),
+            Instr::TxnCommit,
+            Instr::Return,
+        ]
+    })
     .encode()
     .unwrap()
     .bytes
@@ -1173,16 +1180,14 @@ fn a_composite_root_write_opcode_with_a_truncated_key_path_rejects() {
             }],
         },
     });
-    let value_site = draft
-        .request_site(SiteDef::field_leaf(field_path(VALUE_FIELD_ID)))
-        .expect("the fixture's site demand fits the plan");
+    let value_site = draft.request_site(SiteDef::field_leaf(field_path(VALUE_FIELD_ID)));
     let src = draft.intern_string("src/main.mw");
     let name = draft.intern_string("put");
     let code = vec![
         Instr::TxnBegin,
         Instr::LocalGet(0),
         Instr::LocalGet(1),
-        Instr::DurSetRequired(value_site.index()),
+        Instr::DurSetRequired(value_site),
         Instr::TxnCommit,
         Instr::Return,
     ];
@@ -1313,15 +1318,9 @@ fn group_branch_draft_with_branch_record(
     });
     let src = draft.intern_string("src/main.mw");
     if with_site {
-        let site = draft
-            .request_site(SiteDef::field_leaf(field_path(VALUE_FIELD_ID)))
-            .expect("the fixture's site demand fits the plan");
+        let site = draft.request_site(SiteDef::field_leaf(field_path(VALUE_FIELD_ID)));
         let name = draft.intern_string("read");
-        let code = vec![
-            Instr::LocalGet(0),
-            Instr::DurReadField(site.index()),
-            Instr::Return,
-        ];
+        let code = vec![Instr::LocalGet(0), Instr::DurReadField(site), Instr::Return];
         let func = draft.add_function(FunctionDef {
             name,
             source: src,
@@ -1724,9 +1723,7 @@ fn a_site_that_claims_to_traverse_a_unique_index_rejects() {
     // unique index and observe siblings — is refused when the site's read kind is
     // checked against the index's unique flag.
     let mut draft = indexed_draft(by_label_projection());
-    draft
-        .request_site(SiteDef::index_scan(index_path(BY_VALUE_INDEX_ID)))
-        .expect("the fixture's site demand fits the plan");
+    draft.request_site(SiteDef::index_scan(index_path(BY_VALUE_INDEX_ID)));
     assert_eq!(code_of(&draft.encode().unwrap().bytes), "image.table");
 }
 
@@ -1735,9 +1732,7 @@ fn a_site_that_exact_looks_up_a_nonunique_index_rejects() {
     // Symmetrically, the nonunique `byLabel` admits only a progressive-prefix scan; a
     // forged complete-key lookup site over it is refused.
     let mut draft = indexed_draft(by_label_projection());
-    draft
-        .request_site(SiteDef::index_lookup(index_path(BY_LABEL_INDEX_ID)))
-        .expect("the fixture's site demand fits the plan");
+    draft.request_site(SiteDef::index_lookup(index_path(BY_LABEL_INDEX_ID)));
     assert_eq!(code_of(&draft.encode().unwrap().bytes), "image.table");
 }
 
@@ -1968,15 +1963,13 @@ fn a_whole_group_site_over_a_root_group_seals_executable_and_its_opcode_verifies
     // through the root's key-path. The read record is popped so the export return type
     // stays decoupled from the group record index.
     let mut draft = group_branch_draft(false);
-    let site = draft
-        .request_site(SiteDef::group_entry(group_entry_path()))
-        .expect("the fixture's site demand fits the plan");
+    let site = draft.request_site(SiteDef::group_entry(group_entry_path()));
     let src = draft.intern_string("src/main.mw");
     let name = draft.intern_string("readGroup");
     let zero = draft.intern_int(0);
     let code = vec![
         Instr::LocalGet(0),
-        Instr::DurReadGroup(site.index()),
+        Instr::DurReadGroup(site),
         Instr::Pop,
         Instr::ConstLoad(zero.index()),
         Instr::Return,
@@ -2000,9 +1993,7 @@ fn a_whole_group_target_over_a_field_node_rejects() {
     // group *field* leaf (`details.pages`) but claims the GroupEntry target disagrees with
     // the resolved node kind and is refused at the table phase.
     let mut draft = group_branch_draft(false);
-    draft
-        .request_site(SiteDef::group_entry(group_field_path()))
-        .expect("the fixture's site demand fits the plan");
+    draft.request_site(SiteDef::group_entry(group_field_path()));
     assert_eq!(code_of(&draft.encode().unwrap().bytes), "image.table");
 }
 
@@ -2012,15 +2003,13 @@ fn a_group_opcode_over_a_non_group_site_rejects() {
     // field-leaf site (the root's own `title`) is refused during per-function typing
     // (`image.function`), independently of the compiler's boundary.
     let mut draft = group_branch_draft(false);
-    let site = draft
-        .request_site(SiteDef::field_leaf(field_path(VALUE_FIELD_ID)))
-        .expect("the fixture's site demand fits the plan");
+    let site = draft.request_site(SiteDef::field_leaf(field_path(VALUE_FIELD_ID)));
     let src = draft.intern_string("src/main.mw");
     let name = draft.intern_string("readGroup");
     let zero = draft.intern_int(0);
     let code = vec![
         Instr::LocalGet(0),
-        Instr::DurReadGroup(site.index()),
+        Instr::DurReadGroup(site),
         Instr::Pop,
         Instr::ConstLoad(zero.index()),
         Instr::Return,
@@ -2056,9 +2045,7 @@ fn a_group_scoped_field_site_seals_parked() {
     // site (group-leaf assignment lowers to a whole-group RMW). No opcode references it, so
     // the image verifies.
     let mut draft = group_branch_draft(false);
-    draft
-        .request_site(SiteDef::field_leaf(group_field_path()))
-        .expect("the fixture's site demand fits the plan");
+    draft.request_site(SiteDef::field_leaf(group_field_path()));
     assert!(
         verify(&draft.encode().unwrap().bytes).is_ok(),
         "a group-scoped field site seals parked",
@@ -2072,16 +2059,10 @@ fn an_opcode_over_a_parked_group_field_site_rejects() {
     // boundary — a group leaf is reached only through a whole-group `GroupEntry` site, never
     // a direct field-leaf opcode.
     let mut draft = group_branch_draft(false);
-    let site = draft
-        .request_site(SiteDef::field_leaf(group_field_path()))
-        .expect("the fixture's site demand fits the plan");
+    let site = draft.request_site(SiteDef::field_leaf(group_field_path()));
     let src = draft.intern_string("src/main.mw");
     let name = draft.intern_string("read");
-    let code = vec![
-        Instr::LocalGet(0),
-        Instr::DurReadField(site.index()),
-        Instr::Return,
-    ];
+    let code = vec![Instr::LocalGet(0), Instr::DurReadField(site), Instr::Return];
     let func = draft.add_function(FunctionDef {
         name,
         source: src,
@@ -2112,9 +2093,7 @@ fn a_deep_nested_branch_field_site_seals_executable() {
     // root's sibling scalar-field branches. No opcode references the site, so the image
     // verifies regardless.
     let mut draft = group_branch_draft(false);
-    draft
-        .request_site(SiteDef::field_leaf(branch_field_path()))
-        .expect("the fixture's site demand fits the plan");
+    draft.request_site(SiteDef::field_leaf(branch_field_path()));
     assert!(
         verify(&draft.encode().unwrap().bytes).is_ok(),
         "a nested branch-field site seals executable"
@@ -2228,15 +2207,13 @@ fn a_branch_whole_entry_read_over_a_flat_root_seals_and_type_checks() {
     // executable, and a read over it type-checks the two-element key-path
     // `[root_key, branch_key]` (int then string) and yields the branch's own record.
     let (mut draft, branch_record) = flat_branch_draft();
-    let site = draft
-        .request_site(SiteDef::whole_payload(branch_entry_path()))
-        .expect("the fixture's site demand fits the plan");
+    let site = draft.request_site(SiteDef::whole_payload(branch_entry_path()));
     let src = draft.intern_string("src/main.mw");
     let name = draft.intern_string("note");
     let code = vec![
         Instr::LocalGet(0), // id: the root key
         Instr::LocalGet(1), // noteId: the branch key, on top of the stack
-        Instr::DurReadEntry(site.index()),
+        Instr::DurReadEntry(site),
         Instr::Return,
     ];
     let func = draft.add_function(FunctionDef {
@@ -2264,14 +2241,12 @@ fn a_branch_entry_op_missing_its_root_key_rejects() {
     // leaves the second (root) key pop with an empty stack — a key-arity forgery the
     // verifier refuses during per-function typing.
     let (mut draft, branch_record) = flat_branch_draft();
-    let site = draft
-        .request_site(SiteDef::whole_payload(branch_entry_path()))
-        .expect("the fixture's site demand fits the plan");
+    let site = draft.request_site(SiteDef::whole_payload(branch_entry_path()));
     let src = draft.intern_string("src/main.mw");
     let name = draft.intern_string("note");
     let code = vec![
         Instr::LocalGet(1), // only the branch key; the root key is missing
-        Instr::DurReadEntry(site.index()),
+        Instr::DurReadEntry(site),
         Instr::Return,
     ];
     let func = draft.add_function(FunctionDef {
@@ -2298,15 +2273,13 @@ fn a_branch_entry_op_with_the_wrong_branch_key_type_rejects() {
     // The branch key column is `string`; pushing an `int` where the branch key belongs
     // is a type mismatch the two-element key-path check refuses.
     let (mut draft, branch_record) = flat_branch_draft();
-    let site = draft
-        .request_site(SiteDef::whole_payload(branch_entry_path()))
-        .expect("the fixture's site demand fits the plan");
+    let site = draft.request_site(SiteDef::whole_payload(branch_entry_path()));
     let src = draft.intern_string("src/main.mw");
     let name = draft.intern_string("note");
     let code = vec![
         Instr::LocalGet(0), // id: the root key (int)
         Instr::LocalGet(1), // an int where the branch key (string) belongs
-        Instr::DurReadEntry(site.index()),
+        Instr::DurReadEntry(site),
         Instr::Return,
     ];
     let func = draft.add_function(FunctionDef {
@@ -2359,11 +2332,9 @@ fn a_site_path_at_the_maximum_depth_is_admitted_by_the_bound() {
     // the bound as inclusive at the maximum concrete-address depth.
     let mut draft = ImageDraft::new();
     durable_schema(&mut draft);
-    draft
-        .request_site(SiteDef::field_leaf(n_step_field_path(
-            marrow_image::bounds::MAX_SITE_PATH_STEPS,
-        )))
-        .expect("the fixture's site demand fits the plan");
+    draft.request_site(SiteDef::field_leaf(n_step_field_path(
+        marrow_image::bounds::MAX_SITE_PATH_STEPS,
+    )));
     let bytes = finish_two_key(
         draft,
         vec![Instr::TxnBegin, Instr::TxnCommit, Instr::Return],
@@ -2383,11 +2354,9 @@ fn a_site_path_past_the_maximum_depth_is_refused_by_the_encoder() {
     // over-deep site path can never be produced through the production path.
     let mut draft = ImageDraft::new();
     durable_schema(&mut draft);
-    draft
-        .request_site(SiteDef::field_leaf(n_step_field_path(
-            marrow_image::bounds::MAX_SITE_PATH_STEPS + 1,
-        )))
-        .expect("the fixture's site demand fits the plan");
+    draft.request_site(SiteDef::field_leaf(n_step_field_path(
+        marrow_image::bounds::MAX_SITE_PATH_STEPS + 1,
+    )));
     let src = draft.intern_string("src/main.mw");
     let name = draft.intern_string("put");
     let code = vec![Instr::TxnBegin, Instr::TxnCommit, Instr::Return];
@@ -2455,11 +2424,9 @@ fn a_forged_over_deep_site_path_is_refused_by_the_verifier() {
     // unbounded path past the container.
     let mut draft = ImageDraft::new();
     durable_schema(&mut draft);
-    draft
-        .request_site(SiteDef::field_leaf(n_step_field_path(
-            marrow_image::bounds::MAX_SITE_PATH_STEPS,
-        )))
-        .expect("the fixture's site demand fits the plan");
+    draft.request_site(SiteDef::field_leaf(n_step_field_path(
+        marrow_image::bounds::MAX_SITE_PATH_STEPS,
+    )));
     let mut bytes = finish_two_key(
         draft,
         vec![Instr::TxnBegin, Instr::TxnCommit, Instr::Return],
@@ -2503,17 +2470,15 @@ fn a_forged_over_deep_site_path_is_refused_by_the_verifier() {
 /// the site table's own resolution, not a stale digest.
 fn durable_with_extra_site(extra: SiteDef) -> Vec<u8> {
     let mut draft = ImageDraft::new();
-    let (_entry, value_site, _label) = durable_schema(&mut draft);
-    draft
-        .request_site(extra)
-        .expect("the fixture's site demand fits the plan");
+    let sites = durable_schema(&mut draft);
+    draft.request_site(extra);
     let src = draft.intern_string("src/main.mw");
     let name = draft.intern_string("put");
     let code = vec![
         Instr::TxnBegin,
         Instr::LocalGet(0),
         Instr::LocalGet(1),
-        Instr::DurSetRequired(value_site),
+        Instr::DurSetRequired(sites.value),
         Instr::TxnCommit,
         Instr::Return,
     ];
@@ -2577,14 +2542,16 @@ fn rehashed_mutated_site_path_id_rejects_at_table() {
     // matches; but the site path now names an id absent from the graph and resolves
     // against no node. This is the site-path-mutation gate, distinct from the
     // contract-id gate a member-tree flip trips.
-    let mut bytes = put_export(vec![
-        Instr::TxnBegin,
-        Instr::LocalGet(0),
-        Instr::LocalGet(1),
-        Instr::DurSetRequired(1),
-        Instr::TxnCommit,
-        Instr::Return,
-    ])
+    let mut bytes = put_export(|sites| {
+        vec![
+            Instr::TxnBegin,
+            Instr::LocalGet(0),
+            Instr::LocalGet(1),
+            Instr::DurSetRequired(sites.value.clone()),
+            Instr::TxnCommit,
+            Instr::Return,
+        ]
+    })
     .encode()
     .unwrap()
     .bytes;
@@ -2595,26 +2562,28 @@ fn rehashed_mutated_site_path_id_rejects_at_table() {
 
 #[test]
 fn flow_mutation_outside_transaction_rejects() {
-    let value_site = 1;
-    let draft = put_export(vec![
-        Instr::LocalGet(0),
-        Instr::LocalGet(1),
-        Instr::DurSetRequired(value_site),
-        Instr::Return,
-    ]);
+    let draft = put_export(|sites| {
+        vec![
+            Instr::LocalGet(0),
+            Instr::LocalGet(1),
+            Instr::DurSetRequired(sites.value.clone()),
+            Instr::Return,
+        ]
+    });
     assert_eq!(code_of(&draft.encode().unwrap().bytes), "image.flow");
 }
 
 #[test]
 fn flow_return_without_commit_rejects() {
-    let value_site = 1;
-    let draft = put_export(vec![
-        Instr::TxnBegin,
-        Instr::LocalGet(0),
-        Instr::LocalGet(1),
-        Instr::DurSetRequired(value_site),
-        Instr::Return,
-    ]);
+    let draft = put_export(|sites| {
+        vec![
+            Instr::TxnBegin,
+            Instr::LocalGet(0),
+            Instr::LocalGet(1),
+            Instr::DurSetRequired(sites.value.clone()),
+            Instr::Return,
+        ]
+    });
     assert_eq!(code_of(&draft.encode().unwrap().bytes), "image.flow");
 }
 
@@ -2628,35 +2597,37 @@ fn flow_return_without_commit_rejects() {
 /// commit is refused.
 #[test]
 fn flow_in_region_return_commits_then_returns_verifies() {
-    let value_site = 1;
-    let draft = put_export(vec![
-        Instr::TxnBegin,
-        Instr::LocalGet(0),
-        Instr::DurExists(0),
-        Instr::JumpIfFalse(6),
-        Instr::TxnCommit,
-        Instr::Return,
-        Instr::LocalGet(0),
-        Instr::LocalGet(1),
-        Instr::DurSetRequired(value_site),
-        Instr::TxnCommit,
-        Instr::Return,
-    ]);
+    let draft = put_export(|sites| {
+        vec![
+            Instr::TxnBegin,
+            Instr::LocalGet(0),
+            Instr::DurExists(sites.entry.clone()),
+            Instr::JumpIfFalse(6),
+            Instr::TxnCommit,
+            Instr::Return,
+            Instr::LocalGet(0),
+            Instr::LocalGet(1),
+            Instr::DurSetRequired(sites.value.clone()),
+            Instr::TxnCommit,
+            Instr::Return,
+        ]
+    });
     assert_eq!(code_of(&draft.encode().unwrap().bytes), "VERIFIED");
 }
 
 #[test]
 fn flow_double_begin_rejects() {
-    let value_site = 1;
-    let draft = put_export(vec![
-        Instr::TxnBegin,
-        Instr::TxnBegin,
-        Instr::LocalGet(0),
-        Instr::LocalGet(1),
-        Instr::DurSetRequired(value_site),
-        Instr::TxnCommit,
-        Instr::Return,
-    ]);
+    let draft = put_export(|sites| {
+        vec![
+            Instr::TxnBegin,
+            Instr::TxnBegin,
+            Instr::LocalGet(0),
+            Instr::LocalGet(1),
+            Instr::DurSetRequired(sites.value.clone()),
+            Instr::TxnCommit,
+            Instr::Return,
+        ]
+    });
     assert_eq!(code_of(&draft.encode().unwrap().bytes), "image.flow");
 }
 
@@ -2666,18 +2637,19 @@ fn flow_double_begin_rejects() {
 /// field — the flow lattice rejects the post-commit read.
 #[test]
 fn flow_durable_read_after_commit_rejects() {
-    let value_site = 1;
-    let draft = put_export(vec![
-        Instr::TxnBegin,
-        Instr::LocalGet(0),
-        Instr::LocalGet(1),
-        Instr::DurSetRequired(value_site),
-        Instr::TxnCommit,
-        Instr::LocalGet(0),
-        Instr::DurReadField(value_site),
-        Instr::Pop,
-        Instr::Return,
-    ]);
+    let draft = put_export(|sites| {
+        vec![
+            Instr::TxnBegin,
+            Instr::LocalGet(0),
+            Instr::LocalGet(1),
+            Instr::DurSetRequired(sites.value.clone()),
+            Instr::TxnCommit,
+            Instr::LocalGet(0),
+            Instr::DurReadField(sites.value.clone()),
+            Instr::Pop,
+            Instr::Return,
+        ]
+    });
     assert_eq!(code_of(&draft.encode().unwrap().bytes), "image.flow");
 }
 
@@ -2687,18 +2659,19 @@ fn flow_durable_read_after_commit_rejects() {
 /// lattice rejects it.
 #[test]
 fn flow_mutation_after_commit_rejects() {
-    let value_site = 1;
-    let draft = put_export(vec![
-        Instr::TxnBegin,
-        Instr::LocalGet(0),
-        Instr::LocalGet(1),
-        Instr::DurSetRequired(value_site),
-        Instr::TxnCommit,
-        Instr::LocalGet(0),
-        Instr::LocalGet(1),
-        Instr::DurSetRequired(value_site),
-        Instr::Return,
-    ]);
+    let draft = put_export(|sites| {
+        vec![
+            Instr::TxnBegin,
+            Instr::LocalGet(0),
+            Instr::LocalGet(1),
+            Instr::DurSetRequired(sites.value.clone()),
+            Instr::TxnCommit,
+            Instr::LocalGet(0),
+            Instr::LocalGet(1),
+            Instr::DurSetRequired(sites.value.clone()),
+            Instr::Return,
+        ]
+    });
     assert_eq!(code_of(&draft.encode().unwrap().bytes), "image.flow");
 }
 
@@ -2709,9 +2682,11 @@ fn flow_mutation_after_commit_rejects() {
 /// ordinary mutating helper. The two-function shape is what proves the verifier
 /// reconstructs the mutation closure across the call graph rather than trusting a
 /// per-function summary.
-fn mutating_helper_and_caller(caller_body: impl FnOnce(u16, u16) -> Vec<Instr>) -> Vec<u8> {
+fn mutating_helper_and_caller(
+    caller_body: impl FnOnce(LegacyDraftSiteOperand, u16) -> Vec<Instr>,
+) -> Vec<u8> {
     let mut draft = ImageDraft::new();
-    let (_entry, value_site, _label) = durable_schema(&mut draft);
+    let sites = durable_schema(&mut draft);
     let src = draft.intern_string("src/main.mw");
     let two_keys = || {
         vec![
@@ -2723,7 +2698,7 @@ fn mutating_helper_and_caller(caller_body: impl FnOnce(u16, u16) -> Vec<Instr>) 
     let helper_code = vec![
         Instr::LocalGet(0),
         Instr::LocalGet(1),
-        Instr::DurSetRequired(value_site),
+        Instr::DurSetRequired(sites.value.clone()),
         Instr::Return,
     ];
     let helper = draft.add_function(FunctionDef {
@@ -2735,7 +2710,7 @@ fn mutating_helper_and_caller(caller_body: impl FnOnce(u16, u16) -> Vec<Instr>) 
         spans: spans(&helper_code),
         code: helper_code,
     });
-    let caller_code = caller_body(value_site, helper.index());
+    let caller_code = caller_body(sites.value, helper.index());
     let caller_name = draft.intern_string("put");
     let caller = draft.add_function(FunctionDef {
         name: caller_name,
@@ -2797,7 +2772,7 @@ fn flow_mutating_helper_inside_transaction_verifies() {
 #[test]
 fn flow_calling_a_valid_owner_export_rejects() {
     let mut draft = ImageDraft::new();
-    let (_entry, value_site, _label) = durable_schema(&mut draft);
+    let sites = durable_schema(&mut draft);
     let src = draft.intern_string("src/main.mw");
     let two_keys = || {
         vec![
@@ -2810,7 +2785,7 @@ fn flow_calling_a_valid_owner_export_rejects() {
         Instr::TxnBegin,
         Instr::LocalGet(0),
         Instr::LocalGet(1),
-        Instr::DurSetRequired(value_site),
+        Instr::DurSetRequired(sites.value),
         Instr::TxnCommit,
         Instr::Return,
     ];
@@ -2873,7 +2848,7 @@ fn finish_two_key(mut draft: ImageDraft, code: Vec<Instr>) -> Vec<u8> {
 #[test]
 fn a_guarded_strict_sparse_set_verifies() {
     let mut draft = ImageDraft::new();
-    durable_schema(&mut draft);
+    let sites = durable_schema(&mut draft);
     let text = draft.intern_text("x");
     // JumpIfFalse targets the TxnCommit at instruction index 7 (the guard's absent
     // edge); the encoder maps the index to a byte offset.
@@ -2882,12 +2857,12 @@ fn a_guarded_strict_sparse_set_verifies() {
         vec![
             Instr::TxnBegin,
             Instr::LocalGet(0),
-            Instr::DurExists(0),
+            Instr::DurExists(sites.entry),
             Instr::JumpIfFalse(7),
             Instr::ConstLoad(text.index()),
             Instr::SomeWrap,
             Instr::DurSetSparsePresent {
-                site: 2,
+                site: sites.label,
                 key_slots: vec![0],
             },
             Instr::TxnCommit,
@@ -2902,7 +2877,7 @@ fn a_guarded_strict_sparse_set_verifies() {
 #[test]
 fn a_strict_sparse_set_without_a_presence_fact_rejects() {
     let mut draft = ImageDraft::new();
-    durable_schema(&mut draft);
+    let sites = durable_schema(&mut draft);
     let text = draft.intern_text("x");
     let bytes = finish_two_key(
         draft,
@@ -2911,7 +2886,7 @@ fn a_strict_sparse_set_without_a_presence_fact_rejects() {
             Instr::ConstLoad(text.index()),
             Instr::SomeWrap,
             Instr::DurSetSparsePresent {
-                site: 2,
+                site: sites.label,
                 key_slots: vec![0],
             },
             Instr::TxnCommit,
@@ -2927,20 +2902,20 @@ fn a_strict_sparse_set_without_a_presence_fact_rejects() {
 #[test]
 fn a_strict_sparse_set_naming_an_unproven_slot_rejects() {
     let mut draft = ImageDraft::new();
-    durable_schema(&mut draft);
+    let sites = durable_schema(&mut draft);
     let text = draft.intern_text("x");
     let bytes = finish_two_key(
         draft,
         vec![
             Instr::TxnBegin,
             Instr::LocalGet(0),
-            Instr::DurExists(0),
+            Instr::DurExists(sites.entry),
             Instr::JumpIfFalse(7),
             Instr::ConstLoad(text.index()),
             Instr::SomeWrap,
             // Slot 0 is proven present by the guard; naming slot 1 is unproven.
             Instr::DurSetSparsePresent {
-                site: 2,
+                site: sites.label,
                 key_slots: vec![1],
             },
             Instr::TxnCommit,
@@ -2959,7 +2934,7 @@ fn a_strict_sparse_set_naming_an_unproven_slot_rejects() {
 #[test]
 fn a_strict_sparse_set_after_a_loop_that_erases_the_entry_rejects() {
     let mut draft = ImageDraft::new();
-    durable_schema(&mut draft);
+    let sites = durable_schema(&mut draft);
     let text = draft.intern_text("x");
     // Instruction-index layout (targets are draft-form indices):
     //   0 TxnBegin
@@ -2974,18 +2949,18 @@ fn a_strict_sparse_set_after_a_loop_that_erases_the_entry_rejects() {
         vec![
             Instr::TxnBegin,
             Instr::LocalGet(0),
-            Instr::DurExists(0),
+            Instr::DurExists(sites.entry.clone()),
             Instr::JumpIfFalse(15),
             Instr::LocalGet(1),
-            Instr::DurExists(0),
+            Instr::DurExists(sites.entry.clone()),
             Instr::JumpIfFalse(10),
             Instr::LocalGet(0),
-            Instr::DurEraseEntry(0),
+            Instr::DurEraseEntry(sites.entry),
             Instr::Jump(4),
             Instr::ConstLoad(text.index()),
             Instr::SomeWrap,
             Instr::DurSetSparsePresent {
-                site: 2,
+                site: sites.label,
                 key_slots: vec![0],
             },
             Instr::TxnCommit,
@@ -3006,7 +2981,7 @@ fn a_strict_sparse_set_after_a_loop_that_erases_the_entry_rejects() {
 #[test]
 fn a_strict_sparse_set_after_a_key_rebind_rejects() {
     let mut draft = ImageDraft::new();
-    durable_schema(&mut draft);
+    let sites = durable_schema(&mut draft);
     let text = draft.intern_text("x");
     // Instruction-index layout:
     //   0 TxnBegin
@@ -3019,14 +2994,14 @@ fn a_strict_sparse_set_after_a_key_rebind_rejects() {
         vec![
             Instr::TxnBegin,
             Instr::LocalGet(0),
-            Instr::DurExists(0),
+            Instr::DurExists(sites.entry),
             Instr::JumpIfFalse(9),
             Instr::LocalGet(1),
             Instr::LocalSet(0),
             Instr::ConstLoad(text.index()),
             Instr::SomeWrap,
             Instr::DurSetSparsePresent {
-                site: 2,
+                site: sites.label,
                 key_slots: vec![0],
             },
             Instr::TxnCommit,
@@ -3039,9 +3014,14 @@ fn a_strict_sparse_set_after_a_key_rebind_rejects() {
 /// The tracer schema plus a string-keyed `notes(noteId:string)` branch of one required
 /// `text` field. The branch key is `string` to match the root key type, so a strict
 /// root-field set naming the branch key slot type-checks — isolating the presence
-/// lattice as the sole gate. Returns (draft, label field-leaf site, branch entry site,
-/// branch record index).
-fn branch_presence_schema() -> (ImageDraft, u16, u16, u16) {
+/// lattice as the sole gate. Returns (draft, label field-leaf site operand, branch entry
+/// site operand, branch record index).
+fn branch_presence_schema() -> (
+    ImageDraft,
+    LegacyDraftSiteOperand,
+    LegacyDraftSiteOperand,
+    u16,
+) {
     let mut draft = ImageDraft::new();
     let counter = draft.intern_string("Counter");
     let value = draft.intern_string("value");
@@ -3103,29 +3083,16 @@ fn branch_presence_schema() -> (ImageDraft, u16, u16, u16) {
             members,
         },
     });
-    draft
-        .request_site(SiteDef::whole_payload(root_path()))
-        .expect("the fixture's site demand fits the plan");
-    draft
-        .request_site(SiteDef::field_leaf(field_path(VALUE_FIELD_ID)))
-        .expect("the fixture's site demand fits the plan");
-    let label_site = draft
-        .request_site(SiteDef::field_leaf(field_path(LABEL_FIELD_ID)))
-        .expect("the fixture's site demand fits the plan");
-    let branch_entry = draft
-        .request_site(SiteDef::whole_payload(root_path().child(
-            SemanticStep::new(
-                SemanticStepKind::Placement,
-                LedgerIdBytes::from_bytes([0x30; 16]),
-            ),
-        )))
-        .expect("the fixture's site demand fits the plan");
-    (
-        draft,
-        label_site.index(),
-        branch_entry.index(),
-        notes_record.index(),
-    )
+    draft.request_site(SiteDef::whole_payload(root_path()));
+    draft.request_site(SiteDef::field_leaf(field_path(VALUE_FIELD_ID)));
+    let label_site = draft.request_site(SiteDef::field_leaf(field_path(LABEL_FIELD_ID)));
+    let branch_entry = draft.request_site(SiteDef::whole_payload(root_path().child(
+        SemanticStep::new(
+            SemanticStepKind::Placement,
+            LedgerIdBytes::from_bytes([0x30; 16]),
+        ),
+    )));
+    (draft, label_site, branch_entry, notes_record.index())
 }
 
 /// A branch whole-entry create does not establish root-entry presence: it leaves the
@@ -3184,8 +3151,9 @@ fn a_branch_create_does_not_dominate_a_strict_root_field_set_rejects() {
 /// `body:text` field, and a site on that branch field. The branch key is `string` (the
 /// root key type) so a strict set naming the root key slot type-checks, and the field is
 /// sparse so it clears the required-field gate — isolating the site-target check as the
-/// sole remaining gate. Returns (draft, root whole-payload site, branch-field site).
-fn branch_field_schema() -> (ImageDraft, u16, u16) {
+/// sole remaining gate. Returns (draft, root whole-payload site operand, branch-field site
+/// operand).
+fn branch_field_schema() -> (ImageDraft, LegacyDraftSiteOperand, LegacyDraftSiteOperand) {
     let mut draft = ImageDraft::new();
     let counter = draft.intern_string("Counter");
     let value = draft.intern_string("value");
@@ -3247,23 +3215,19 @@ fn branch_field_schema() -> (ImageDraft, u16, u16) {
             members,
         },
     });
-    let root_entry = draft
-        .request_site(SiteDef::whole_payload(root_path()))
-        .expect("the fixture's site demand fits the plan");
-    let branch_field = draft
-        .request_site(SiteDef::field_leaf(
-            root_path()
-                .child(SemanticStep::new(
-                    SemanticStepKind::Placement,
-                    LedgerIdBytes::from_bytes([0x30; 16]),
-                ))
-                .child(SemanticStep::new(
-                    SemanticStepKind::Field,
-                    LedgerIdBytes::from_bytes([0x32; 16]),
-                )),
-        ))
-        .expect("the fixture's site demand fits the plan");
-    (draft, root_entry.index(), branch_field.index())
+    let root_entry = draft.request_site(SiteDef::whole_payload(root_path()));
+    let branch_field = draft.request_site(SiteDef::field_leaf(
+        root_path()
+            .child(SemanticStep::new(
+                SemanticStepKind::Placement,
+                LedgerIdBytes::from_bytes([0x30; 16]),
+            ))
+            .child(SemanticStep::new(
+                SemanticStepKind::Field,
+                LedgerIdBytes::from_bytes([0x32; 16]),
+            )),
+    ));
+    (draft, root_entry, branch_field)
 }
 
 /// A branch-field site's key-path is the two-element `[root_key, branch_key]`. The strict
@@ -3355,7 +3319,7 @@ fn flow_transaction_owner_may_not_be_called_rejects() {
     // A helper owns a transaction (contains TxnBegin); an export that calls it is a
     // flow violation — helpers cannot own the transaction.
     let mut draft = ImageDraft::new();
-    let (_entry, value_site, _label) = durable_schema(&mut draft);
+    let sites = durable_schema(&mut draft);
     let src = draft.intern_string("src/main.mw");
     let key = draft.intern_text("x");
     let val = draft.intern_int(1);
@@ -3364,7 +3328,7 @@ fn flow_transaction_owner_may_not_be_called_rejects() {
         Instr::TxnBegin,
         Instr::ConstLoad(key.index()),
         Instr::ConstLoad(val.index()),
-        Instr::DurSetRequired(value_site),
+        Instr::DurSetRequired(sites.value),
         Instr::TxnCommit,
         Instr::Return,
     ];
@@ -3396,15 +3360,16 @@ fn flow_transaction_owner_may_not_be_called_rejects() {
 fn set_sparse_on_a_required_field_rejects_at_function() {
     // Targeting the required `value` field with the sparse opcode is a phase-3
     // site/target error.
-    let value_site = 1;
-    let draft = put_export(vec![
-        Instr::TxnBegin,
-        Instr::LocalGet(0),
-        Instr::VacantLoad(ImageType::opt_scalar(Scalar::Int)),
-        Instr::DurSetSparse(value_site),
-        Instr::TxnCommit,
-        Instr::Return,
-    ]);
+    let draft = put_export(|sites| {
+        vec![
+            Instr::TxnBegin,
+            Instr::LocalGet(0),
+            Instr::VacantLoad(ImageType::opt_scalar(Scalar::Int)),
+            Instr::DurSetSparse(sites.value.clone()),
+            Instr::TxnCommit,
+            Instr::Return,
+        ]
+    });
     assert_eq!(code_of(&draft.encode().unwrap().bytes), "image.function");
 }
 
@@ -3413,28 +3378,31 @@ fn vacant_load_of_an_out_of_range_record_rejects_at_function() {
     // A record-typed optional is an admitted `VacantLoad` operand, but its index
     // is bounds-checked against the RECORD-TYPES table in phase 3. An index past
     // the table is a function-phase rejection, not an out-of-bounds panic.
-    let draft = put_export(vec![
-        Instr::VacantLoad(ImageType::Record {
-            idx: 9_999,
-            optional: true,
-        }),
-        Instr::Pop,
-        Instr::Return,
-    ]);
+    let draft = put_export(|_sites| {
+        vec![
+            Instr::VacantLoad(ImageType::Record {
+                idx: 9_999,
+                optional: true,
+            }),
+            Instr::Pop,
+            Instr::Return,
+        ]
+    });
     assert_eq!(code_of(&draft.encode().unwrap().bytes), "image.function");
 }
 
 #[test]
 fn create_on_a_field_site_rejects_at_function() {
     // `create` requires an entry site; a field-target site is a phase-3 error.
-    let value_site = 1;
-    let draft = put_export(vec![
-        Instr::TxnBegin,
-        Instr::LocalGet(0),
-        Instr::DurCreateEntry(value_site),
-        Instr::TxnCommit,
-        Instr::Return,
-    ]);
+    let draft = put_export(|sites| {
+        vec![
+            Instr::TxnBegin,
+            Instr::LocalGet(0),
+            Instr::DurCreateEntry(sites.value.clone()),
+            Instr::TxnCommit,
+            Instr::Return,
+        ]
+    });
     assert_eq!(code_of(&draft.encode().unwrap().bytes), "image.function");
 }
 
@@ -3575,13 +3543,13 @@ fn test_entry_may_carry_durable_demand() {
     // recorded in the parallel test-entry demand table so an ephemeral
     // attachment can bound its authority. It is still never an export.
     let mut draft = ImageDraft::new();
-    let (entry_site, _value, _label) = durable_schema(&mut draft);
+    let sites = durable_schema(&mut draft);
     let src = draft.intern_string("src/main.mw");
     let title = draft.intern_string("holds");
     let key = draft.intern_text("x");
     let code = vec![
         Instr::ConstLoad(key.index()),
-        Instr::DurExists(entry_site),
+        Instr::DurExists(sites.entry),
         Instr::Assert,
         Instr::Return,
     ];
@@ -4757,7 +4725,7 @@ fn nested_path(chain: &[SemanticStep]) -> SemanticPath {
 /// Add a read-only export that runs `DurExists` over the whole-payload `site` at the given
 /// key arity (root-first `int, string, int` for the tag entry), and encode. The opcode is
 /// the observation that separates an executable deep site from a parked one.
-fn exists_over_tag_entry(mut draft: ImageDraft, site: u16) -> Vec<u8> {
+fn exists_over_tag_entry(mut draft: ImageDraft, site: LegacyDraftSiteOperand) -> Vec<u8> {
     let src = draft.intern_string("src/main.mw");
     let name = draft.intern_string("has");
     let code = vec![
@@ -4790,13 +4758,10 @@ fn a_valid_deep_nested_branch_entry_site_seals_executable_and_its_opcode_verifie
     // resolves to the nested branch, seals executable, and an `exists` opcode over its
     // three-column key-path type-checks and verifies.
     let mut draft = nested_branch_draft();
-    let site = draft
-        .request_site(SiteDef::whole_payload(nested_path(&[
-            step(SemanticStepKind::Placement, 0x30),
-            step(SemanticStepKind::Placement, 0x40),
-        ])))
-        .expect("the fixture's site demand fits the plan")
-        .index();
+    let site = draft.request_site(SiteDef::whole_payload(nested_path(&[
+        step(SemanticStepKind::Placement, 0x30),
+        step(SemanticStepKind::Placement, 0x40),
+    ])));
     assert_eq!(code_of(&exists_over_tag_entry(draft, site)), "VERIFIED");
 }
 
@@ -4807,14 +4772,11 @@ fn a_branch_path_routed_through_a_field_rejects_at_the_table_phase() {
     // refused when the verifier resolves it against its own node set at the table phase —
     // before any function, and independently of whether an opcode references it.
     let mut draft = nested_branch_draft();
-    let site = draft
-        .request_site(SiteDef::whole_payload(nested_path(&[
-            step(SemanticStepKind::Placement, 0x30),
-            step(SemanticStepKind::Field, 0x32),
-            step(SemanticStepKind::Placement, 0x40),
-        ])))
-        .expect("the fixture's site demand fits the plan")
-        .index();
+    let site = draft.request_site(SiteDef::whole_payload(nested_path(&[
+        step(SemanticStepKind::Placement, 0x30),
+        step(SemanticStepKind::Field, 0x32),
+        step(SemanticStepKind::Placement, 0x40),
+    ])));
     assert_eq!(code_of(&exists_over_tag_entry(draft, site)), "image.table");
 }
 
@@ -4824,13 +4786,10 @@ fn a_branch_path_naming_a_nonexistent_hop_rejects_at_the_table_phase() {
     // no reconstructed durable node, so the site is refused at the table phase; an
     // out-of-range branch hop can never resolve to — and mis-address — a durable operation.
     let mut draft = nested_branch_draft();
-    let site = draft
-        .request_site(SiteDef::whole_payload(nested_path(&[
-            step(SemanticStepKind::Placement, 0x30),
-            step(SemanticStepKind::Placement, 0x99),
-        ])))
-        .expect("the fixture's site demand fits the plan")
-        .index();
+    let site = draft.request_site(SiteDef::whole_payload(nested_path(&[
+        step(SemanticStepKind::Placement, 0x30),
+        step(SemanticStepKind::Placement, 0x99),
+    ])));
     assert_eq!(code_of(&exists_over_tag_entry(draft, site)), "image.table");
 }
 
@@ -4846,8 +4805,8 @@ fn a_branch_path_naming_a_nonexistent_hop_rejects_at_the_table_phase() {
 
 /// A flat-executable root `^cells(row: int, col: text)` — a two-column composite key of
 /// distinct column types, so a transposed key-path is type-detectable — with one required
-/// int field `v`. Returns the draft and the whole-entry site index.
-fn composite_root_draft() -> (ImageDraft, u16) {
+/// int field `v`. Returns the draft and the whole-entry site operand.
+fn composite_root_draft() -> (ImageDraft, LegacyDraftSiteOperand) {
     let mut draft = ImageDraft::new();
     let cell = draft.intern_string("Cell");
     let v = draft.intern_string("v");
@@ -4885,17 +4844,18 @@ fn composite_root_draft() -> (ImageDraft, u16) {
             }],
         },
     });
-    let entry = draft
-        .request_site(SiteDef::whole_payload(root_path()))
-        .expect("the fixture's site demand fits the plan")
-        .index();
+    let entry = draft.request_site(SiteDef::whole_payload(root_path()));
     (draft, entry)
 }
 
 /// Encode a read-only `has` export over the composite `entry` site whose body pushes the
 /// given key locals (by type) then runs `DurExists`. `params` types the locals the body
 /// reads; a correct call pushes `[Int, Text]` (row then col, root-first).
-fn composite_exists_export(mut draft: ImageDraft, entry: u16, params: Vec<ImageType>) -> Vec<u8> {
+fn composite_exists_export(
+    mut draft: ImageDraft,
+    entry: LegacyDraftSiteOperand,
+    params: Vec<ImageType>,
+) -> Vec<u8> {
     let src = draft.intern_string("src/main.mw");
     let name = draft.intern_string("has");
     let mut code: Vec<Instr> = (0..params.len() as u16).map(Instr::LocalGet).collect();

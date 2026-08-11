@@ -491,7 +491,7 @@ fn encode_code(
             | Instr::DurEraseEntry(s)
             | Instr::DurReadGroup(s)
             | Instr::DurReplaceGroup(s)
-            | Instr::DurEraseGroup(s) => push_u16(&mut out, *s),
+            | Instr::DurEraseGroup(s) => push_u16(&mut out, s.encodable()?),
             Instr::Jump(target)
             | Instr::JumpIfFalse(target)
             | Instr::BranchPresent(target)
@@ -521,7 +521,7 @@ fn encode_code(
                 push_u16(&mut out, *field);
             }
             Instr::DurSetSparsePresent { site, key_slots } => {
-                push_u16(&mut out, *site);
+                push_u16(&mut out, site.encodable()?);
                 push_u16(&mut out, key_slots.len() as u16);
                 for slot in key_slots {
                     push_u16(&mut out, *slot);
@@ -533,7 +533,7 @@ fn encode_code(
                 from,
                 list_ty,
             } => {
-                push_u16(&mut out, *site);
+                push_u16(&mut out, site.encodable()?);
                 push_u32(&mut out, *limit);
                 out.push(u8::from(*from));
                 push_u16(&mut out, *list_ty);
@@ -549,12 +549,14 @@ fn encode_code(
                 from,
                 list_ty,
             } => {
-                push_u16(&mut out, *site);
+                push_u16(&mut out, site.encodable()?);
                 push_u32(&mut out, *limit);
                 out.push(u8::from(*from));
                 push_u16(&mut out, *list_ty);
             }
-            Instr::DurIndexLookup(site) | Instr::DurIndexExists(site) => push_u16(&mut out, *site),
+            Instr::DurIndexLookup(site) | Instr::DurIndexExists(site) => {
+                push_u16(&mut out, site.encodable()?)
+            }
             _ => {}
         }
     }

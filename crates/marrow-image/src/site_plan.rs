@@ -20,8 +20,75 @@
 use std::collections::HashMap;
 
 use crate::bounds::MAX_SITES;
-use crate::draft::{SiteDef, SiteId};
+use crate::draft::{ImageBuildError, SiteDef, SiteId};
 use crate::semantic::{SemanticPath, SemanticTarget};
+
+/// The operation-site operand a draft instruction carries.
+///
+/// It is opaque and has no public constructor, field, variant, raw-id accessor,
+/// `Default`, or `From`: the bounded [`SiteDemandPlan`] is its sole mint, so an
+/// instruction cannot name a site no plan answered. Before this type the `Dur*`
+/// instructions carried a bare `u16`, which any producer could write by hand and which
+/// forced a refused site to be smuggled through the same numeric channel as a real one.
+///
+/// It is `Clone` but deliberately not `Copy`: a site operand is a minted answer, and
+/// copying one implicitly is how a carrier ends up holding a site it never requested.
+///
+/// **Temporary.** It is the existing draft instruction IR's operand, not a parallel
+/// lowering IR, and it is replaced wholesale when the planned site reference lands under
+/// an admitted transaction.
+#[derive(Clone, PartialEq, Eq)]
+pub struct LegacyDraftSiteOperand(LegacyDraftSiteOperandKind);
+
+/// What a site operand stands for: the id the plan minted, or the plan's refusal.
+///
+/// Over-policy is a successful opaque operand state rather than an error. The crossing
+/// is nonblocking — lowering continues and the encoder refuses the image through the
+/// Sites bound — but there is no id that would not alias a fitting site, so none is
+/// carried. Keeping the refusal in the operand's own type is what makes it impossible to
+/// compare or encode as if it were a site.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LegacyDraftSiteOperandKind {
+    Fitting(SiteId),
+    OverPolicy,
+}
+
+impl LegacyDraftSiteOperand {
+    fn fitting(id: SiteId) -> Self {
+        Self(LegacyDraftSiteOperandKind::Fitting(id))
+    }
+
+    fn over_policy() -> Self {
+        Self(LegacyDraftSiteOperandKind::OverPolicy)
+    }
+
+    /// The wire ordinal this operand encodes to.
+    ///
+    /// An over-policy operand has none. The encoder's Sites bound reads the plan's
+    /// saturated logical demand and refuses such an image before any body byte is
+    /// written, so this arm is unreachable through [`crate::ImageDraft::encode`]; it is
+    /// spelled as a refusal rather than a stand-in number so that no non-site value can
+    /// ever be written into a site operand's two bytes.
+    pub(crate) fn encodable(&self) -> Result<u16, ImageBuildError> {
+        match self.0 {
+            LegacyDraftSiteOperandKind::Fitting(id) => Ok(id.index()),
+            LegacyDraftSiteOperandKind::OverPolicy => Err(ImageBuildError::TooManySites),
+        }
+    }
+}
+
+/// A fitting operand renders as the logical site number it carries, so an instruction's
+/// `Debug` reads exactly as it did when the operand was a bare `u16`. An over-policy
+/// operand renders one fixed marker: there is no number to show, and inventing one would
+/// be the very aliasing the type exists to prevent.
+impl std::fmt::Debug for LegacyDraftSiteOperand {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.0 {
+            LegacyDraftSiteOperandKind::Fitting(id) => write!(f, "{}", id.index()),
+            LegacyDraftSiteOperandKind::OverPolicy => f.write_str("over-policy"),
+        }
+    }
+}
 
 /// The one demand a site row answers: the addressed node's whole semantic path and the
 /// operation target over it.
@@ -58,15 +125,15 @@ pub(crate) struct SiteDemandPlan {
 }
 
 impl SiteDemandPlan {
-    /// Mint-or-return the site answering `def`.
+    /// Mint-or-return the operand answering `def`.
     ///
-    /// `None` is the over-policy answer: the plan has no vacant capacity and does not
-    /// already retain this demand, so there is no id it can give that would not alias a
-    /// fitting one.
-    pub(crate) fn request(&mut self, def: SiteDef) -> Option<SiteId> {
+    /// The over-policy operand is the answer when the plan has no vacant capacity and
+    /// does not already retain this demand, so there is no id it can give that would not
+    /// alias a fitting one.
+    pub(crate) fn request(&mut self, def: SiteDef) -> LegacyDraftSiteOperand {
         let key = (def.path.clone(), def.target);
         if let Some(existing) = self.retained.get(&key) {
-            return Some(*existing);
+            return LegacyDraftSiteOperand::fitting(*existing);
         }
         // Vacant capacity is checked before any numeric id is minted, so the fitting range
         // stays exactly `0..MAX_SITES` and the conversion below cannot narrow a length
@@ -79,15 +146,15 @@ impl SiteDemandPlan {
         };
         self.rows.push(def);
         self.retained.insert(key, ordinal);
-        Some(ordinal)
+        LegacyDraftSiteOperand::fitting(ordinal)
     }
 
     /// Record the crossing and refuse an id. The logical count saturates at
     /// `MAX_SITES + 1` — one past the cap is all the encoder's bound needs to read, and
     /// counting every excess demand would retain unbounded work for a refused image.
-    fn saturate(&mut self) -> Option<SiteId> {
+    fn saturate(&mut self) -> LegacyDraftSiteOperand {
         self.receipt.get_or_insert(SitePolicyReceipt);
-        None
+        LegacyDraftSiteOperand::over_policy()
     }
 
     /// The retained site rows, in emission order.
@@ -150,8 +217,8 @@ mod tests {
         let mut plan = SiteDemandPlan::default();
         let mut minted = Vec::new();
         for n in 0..(usize::from(u16::MAX) + 2) {
-            if let Some(id) = plan.request(leaf(n)) {
-                minted.push(id.index());
+            if let Ok(id) = plan.request(leaf(n)).encodable() {
+                minted.push(id);
             }
         }
 
@@ -181,6 +248,7 @@ mod tests {
         let mut plan = SiteDemandPlan::default();
         for n in 0..MAX_SITES {
             plan.request(leaf(n))
+                .encodable()
                 .expect("every demand below the cap fits");
         }
         assert_eq!(
@@ -189,9 +257,8 @@ mod tests {
             "no receipt is recorded at exactly MAX_SITES, so the demand still fits",
         );
 
-        assert_eq!(
-            plan.request(leaf(MAX_SITES)),
-            None,
+        assert!(
+            plan.request(leaf(MAX_SITES)).encodable().is_err(),
             "the first excess is refused"
         );
         assert_eq!(
@@ -201,7 +268,7 @@ mod tests {
         );
 
         for n in (MAX_SITES + 1)..(MAX_SITES + 64) {
-            assert_eq!(plan.request(leaf(n)), None);
+            assert!(plan.request(leaf(n)).encodable().is_err());
         }
         assert_eq!(
             plan.demanded(),
@@ -216,13 +283,13 @@ mod tests {
     #[test]
     fn a_retained_demand_resolves_after_the_crossing() {
         let mut plan = SiteDemandPlan::default();
-        let first = plan.request(leaf(0)).expect("the first demand fits");
+        let first = plan.request(leaf(0));
         for n in 1..=MAX_SITES {
             let _ = plan.request(leaf(n));
         }
         assert_eq!(
             plan.request(leaf(0)),
-            Some(first),
+            first,
             "a repeated reference returns the id already minted for it",
         );
     }
@@ -232,10 +299,10 @@ mod tests {
     #[test]
     fn discarding_a_suffix_keeps_every_surviving_demand_resolvable() {
         let mut plan = SiteDemandPlan::default();
-        let kept = plan.request(leaf(0)).expect("fits");
+        let kept = plan.request(leaf(0));
         let mark = plan.rows().len();
-        plan.request(leaf(1)).expect("fits");
-        plan.request(leaf(2)).expect("fits");
+        plan.request(leaf(1));
+        plan.request(leaf(2));
 
         plan.truncate(mark);
 
@@ -243,13 +310,74 @@ mod tests {
         assert_eq!(plan.demanded(), mark);
         assert_eq!(
             plan.request(leaf(0)),
-            Some(kept),
+            kept,
             "a surviving demand keeps the id it was given",
         );
         assert_ne!(
             plan.request(leaf(1)),
-            Some(kept),
+            kept,
             "a discarded demand is minted afresh, never aliased onto a survivor",
+        );
+    }
+
+    /// A fitting operand renders as its logical site number, so an instruction's `Debug`
+    /// reads as it did when the operand was a bare `u16` and every golden that shows an
+    /// instruction stays legible.
+    #[test]
+    fn a_fitting_operand_debugs_as_its_logical_site_number() {
+        let mut plan = SiteDemandPlan::default();
+
+        assert_eq!(format!("{:?}", plan.request(leaf(0))), "0");
+        assert_eq!(format!("{:?}", plan.request(leaf(1))), "1");
+        assert_eq!(
+            format!("{:?}", plan.request(leaf(0))),
+            "0",
+            "a repeated demand renders the id it was already given",
+        );
+    }
+
+    /// An over-policy operand renders one fixed marker and no number: there is no site to
+    /// name, and rendering a stand-in would read as a real site in every log and panic
+    /// message that shows an instruction.
+    #[test]
+    fn an_over_policy_operand_debugs_as_a_redacted_marker() {
+        let mut plan = SiteDemandPlan::default();
+        for n in 0..MAX_SITES {
+            let _ = plan.request(leaf(n));
+        }
+
+        let refused = plan.request(leaf(MAX_SITES));
+
+        assert_eq!(format!("{refused:?}"), "over-policy");
+        assert!(refused.encodable().is_err());
+        assert_eq!(
+            refused,
+            plan.request(leaf(MAX_SITES + 1)),
+            "every refusal is the one marker, so no two refusals are distinguishable",
+        );
+    }
+
+    /// Equality is over the logical site ordinal, not over which plan minted it. The
+    /// operand is the instruction IR's public operand, so its equality is the equality of
+    /// the number that reaches the wire; provenance is checked where a site is requested,
+    /// never smuggled into what two instructions mean.
+    #[test]
+    fn operands_with_one_ordinal_are_equal_across_independently_built_plans() {
+        let mut first = SiteDemandPlan::default();
+        let mut second = SiteDemandPlan::default();
+
+        let from_first = first.request(leaf(0));
+        let _ = second.request(leaf(7));
+        let from_second = second.request(leaf(9));
+
+        assert_eq!(
+            from_first,
+            second.request(leaf(7)),
+            "the same ordinal from another plan is the same operand",
+        );
+        assert_ne!(
+            from_first, from_second,
+            "a different ordinal is a different operand",
         );
     }
 }

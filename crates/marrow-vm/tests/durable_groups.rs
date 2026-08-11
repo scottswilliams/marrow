@@ -125,14 +125,8 @@ fn groups_image() -> VerifiedImage {
         },
     });
 
-    let root_entry = draft
-        .request_site(SiteDef::whole_payload(root_path()))
-        .expect("the fixture's site demand fits the plan")
-        .index();
-    let group_entry = draft
-        .request_site(SiteDef::group_entry(group_path()))
-        .expect("the fixture's site demand fits the plan")
-        .index();
+    let root_entry = draft.request_site(SiteDef::whole_payload(root_path()));
+    let group_entry = draft.request_site(SiteDef::group_entry(group_path()));
 
     let src = draft.intern_string("src/main.mw");
     let book_ty_idx = book_record.index();
@@ -152,7 +146,7 @@ fn groups_image() -> VerifiedImage {
             Instr::SomeWrap,                       // -> Some(384) for the sparse leaf
             Instr::RecordNew(details_record.index()),
             Instr::RecordNew(book_record.index()),
-            Instr::DurCreateEntry(root_entry),
+            Instr::DurCreateEntry(root_entry.clone()),
             Instr::TxnCommit,
             Instr::Return,
         ];
@@ -173,7 +167,7 @@ fn groups_image() -> VerifiedImage {
         &mut draft,
         src,
         "readEntry",
-        Instr::DurReadEntry(root_entry),
+        Instr::DurReadEntry(root_entry.clone()),
         book_ty_idx,
     );
     // readGroup(): read ^books[1].details as a unit.
@@ -181,7 +175,7 @@ fn groups_image() -> VerifiedImage {
         &mut draft,
         src,
         "readGroup",
-        Instr::DurReadGroup(group_entry),
+        Instr::DurReadGroup(group_entry.clone()),
         details_ty_idx,
     );
 
@@ -196,7 +190,7 @@ fn groups_image() -> VerifiedImage {
             Instr::ConstLoad(pages_const.index()),
             Instr::SomeWrap,
             Instr::RecordNew(details_record.index()),
-            Instr::DurReplaceGroup(group_entry),
+            Instr::DurReplaceGroup(group_entry.clone()),
             Instr::TxnCommit,
             Instr::Return,
         ];

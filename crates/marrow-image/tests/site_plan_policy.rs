@@ -1,7 +1,7 @@
 //! The site table's capacity policy (red R17).
 //!
 //! Every operation site is minted through one bounded plan. The plan checks vacant
-//! capacity *before* it mints a numeric id, so a fitting `SiteId` is always inside
+//! capacity *before* it mints a numeric id, so a fitting site id is always inside
 //! `0..=8191`; the first unique demand past the cap saturates the logical count at
 //! `MAX_SITES + 1` and records one earliest policy receipt, while an already-retained
 //! demand still reuses the id it was given.
@@ -13,7 +13,8 @@
 
 use marrow_image::bounds::MAX_SITES;
 use marrow_image::{
-    ImageDraft, LedgerIdBytes, SemanticPath, SemanticStep, SemanticStepKind, SiteDef,
+    ImageBuildError, ImageDraft, LedgerIdBytes, SemanticPath, SemanticStep, SemanticStepKind,
+    SiteDef,
 };
 
 const APPLICATION_ID: [u8; 16] = [0x0a; 16];
@@ -36,73 +37,52 @@ fn leaf(n: usize) -> SemanticPath {
     ))
 }
 
-/// Every fitting site id is inside `0..=8191`, and no id past the cap ever aliases a
-/// fitting one. At `MAX_SITES + 1` unique demands the plan must not have handed out a
-/// duplicate or wrapped ordinal.
+/// Red R17, at the boundary an image is refused: a draft whose site demand crosses the
+/// cap cannot be encoded, however many demands past it were refused.
+///
+/// The plan answers every excess demand with the over-policy operand, which carries no id
+/// at all, and saturates its logical demand one past the cap; the encoder reads that
+/// saturated demand rather than the retained row count, so the image is refused here
+/// instead of carrying an aliased operand.
 #[test]
-fn a_fitting_site_id_is_never_wrapped_or_aliased() {
+fn a_draft_whose_demand_crosses_the_cap_cannot_be_encoded() {
     let mut draft = ImageDraft::new();
-    let mut fitting = Vec::new();
-    for n in 0..=MAX_SITES {
-        if let Some(id) = draft.request_site(SiteDef::field_leaf(leaf(n))) {
-            fitting.push(id.index());
-        }
+    for n in 0..MAX_SITES {
+        let _ = draft.request_site(SiteDef::field_leaf(leaf(n)));
     }
-
-    assert_eq!(
-        fitting.len(),
-        MAX_SITES,
-        "exactly the fitting demands receive an id",
-    );
     assert!(
-        fitting.iter().all(|id| usize::from(*id) < MAX_SITES),
-        "a minted site id is inside the table's capacity",
+        !matches!(draft.encode(), Err(ImageBuildError::TooManySites)),
+        "a demand of exactly MAX_SITES fits",
     );
-    let mut sorted = fitting.clone();
-    sorted.sort_unstable();
-    sorted.dedup();
-    assert_eq!(
-        sorted.len(),
-        fitting.len(),
-        "no two distinct durable demands share one site id",
-    );
-}
 
-/// Far past the cap the plan keeps refusing rather than wrapping. `u16::MAX + 2` unique
-/// demands is the shape that produced `SiteId(0)` for the 65,536th site.
-#[test]
-fn requests_far_past_the_cap_never_wrap_into_a_fitting_id() {
-    let mut draft = ImageDraft::new();
-    let mut minted = 0usize;
-    for n in 0..(usize::from(u16::MAX) + 2) {
-        if draft.request_site(SiteDef::field_leaf(leaf(n))).is_some() {
-            minted += 1;
-        }
+    for n in MAX_SITES..(MAX_SITES + 64) {
+        let _ = draft.request_site(SiteDef::field_leaf(leaf(n)));
     }
-    assert_eq!(
-        minted, MAX_SITES,
-        "the plan mints exactly its capacity and refuses every later unique demand",
-    );
+
+    assert!(matches!(draft.encode(), Err(ImageBuildError::TooManySites)));
 }
 
-/// A demand the plan already retains keeps its id after the cap is crossed: the crossing
-/// is nonblocking, and repeating an earlier reference must not start failing.
+/// A demand the plan already retains keeps its operand after the cap is crossed: the
+/// crossing is nonblocking, and repeating an earlier reference must not start failing or
+/// answer with the refusal.
 #[test]
-fn a_retained_demand_still_reuses_its_id_after_the_cap_is_crossed() {
+fn a_retained_demand_still_reuses_its_operand_after_the_cap_is_crossed() {
     let mut draft = ImageDraft::new();
-    let first = draft
-        .request_site(SiteDef::field_leaf(leaf(0)))
-        .expect("the first demand fits");
+    let first = draft.request_site(SiteDef::field_leaf(leaf(0)));
     for n in 1..=MAX_SITES {
         let _ = draft.request_site(SiteDef::field_leaf(leaf(n)));
     }
-    let again = draft
-        .request_site(SiteDef::field_leaf(leaf(0)))
-        .expect("a retained demand still resolves after the cap is crossed");
+
+    let again = draft.request_site(SiteDef::field_leaf(leaf(0)));
+
     assert_eq!(
-        first.index(),
-        again.index(),
-        "a repeated reference to one demand returns the id it was already given",
+        first, again,
+        "a repeated reference to one demand returns the operand it was already given",
+    );
+    assert_ne!(
+        first,
+        draft.request_site(SiteDef::field_leaf(leaf(MAX_SITES + 1))),
+        "an excess demand is refused rather than aliased onto a retained one",
     );
 }
 
@@ -151,23 +131,17 @@ fn one_demand_minted_eagerly_then_lazily_is_one_row_with_one_id() {
         ),
     ] {
         let mut draft = ImageDraft::new();
-        let eager = draft.request_site(first).expect("the first demand fits");
-        let lazy = draft
-            .request_site(second)
-            .expect("the repeated demand fits");
+        let eager = draft.request_site(first);
+        let lazy = draft.request_site(second);
 
         assert_eq!(
-            eager.index(),
-            lazy.index(),
+            eager, lazy,
             "a repeated demand reuses the row already minted for it",
         );
-        let next = draft
-            .request_site(SiteDef::field_leaf(leaf(0xbeef)))
-            .expect("a fresh demand fits");
-        assert_eq!(
-            next.index(),
-            1,
-            "the repeated demand appended no second row, so the next id is the second",
+        assert_ne!(
+            draft.request_site(SiteDef::field_leaf(leaf(0xbeef))),
+            eager,
+            "the repeated demand appended no second row, so a fresh demand is a fresh row",
         );
     }
 }
@@ -179,16 +153,11 @@ fn one_demand_minted_eagerly_then_lazily_is_one_row_with_one_id() {
 fn one_node_under_two_targets_is_two_rows() {
     let mut draft = ImageDraft::new();
 
-    let whole = draft
-        .request_site(SiteDef::whole_payload(placement(0x31)))
-        .expect("the whole-payload demand fits");
-    let group = draft
-        .request_site(SiteDef::group_entry(placement(0x31)))
-        .expect("the group-entry demand fits");
+    let whole = draft.request_site(SiteDef::whole_payload(placement(0x31)));
+    let group = draft.request_site(SiteDef::group_entry(placement(0x31)));
 
     assert_ne!(
-        whole.index(),
-        group.index(),
+        whole, group,
         "two operation targets over one node are two site rows",
     );
 }

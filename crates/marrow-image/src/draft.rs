@@ -25,7 +25,7 @@ use crate::product::{
     ProductEntryRecordClaim, RootOccurrence,
 };
 use crate::semantic::{SemanticPath, SemanticTarget};
-use crate::site_plan::SiteDemandPlan;
+use crate::site_plan::{LegacyDraftSiteOperand, SiteDemandPlan};
 use crate::ty::{ImageType, Scalar};
 
 /// A logical string-pool id, stable across the sort the encoder performs.
@@ -93,8 +93,11 @@ impl FuncId {
 }
 
 /// A durable operation-site index (also the final container index).
+///
+/// It is crate-private: outside this crate a site is named by the opaque
+/// [`LegacyDraftSiteOperand`] the plan mints, never by a number a caller can write.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct SiteId(pub(crate) u16);
+pub(crate) struct SiteId(u16);
 
 impl SiteId {
     /// The id of the site row at `ordinal`. Minted only by the site demand plan, which
@@ -105,7 +108,7 @@ impl SiteId {
     }
 
     /// The raw site index, as carried in a `Dur*` operand.
-    pub fn index(self) -> u16 {
+    pub(crate) fn index(self) -> u16 {
         self.0
     }
 }
@@ -618,12 +621,13 @@ impl ImageDraft {
     /// so unifying them mints no different row for any production graph, while leaving no
     /// second path that can append a row the demand map cannot see.
     ///
-    /// `None` is the over-policy answer: the plan has no vacant capacity and does not
-    /// already retain this demand. It is not a failure — the crossing is nonblocking, and
-    /// the encoder refuses the image through the Sites bound — but there is no id that
-    /// would not alias a fitting site, so none is given.
+    /// The returned [`LegacyDraftSiteOperand`] is the only way an instruction can name a
+    /// site: it is opaque, has no constructor of its own, and carries either the id the
+    /// plan minted or the plan's refusal. A refusal is not a failure — the crossing is
+    /// nonblocking, and the encoder refuses the image through the Sites bound — but there
+    /// is no id that would not alias a fitting site, so none is carried.
     #[doc(hidden)]
-    pub fn request_site(&mut self, def: SiteDef) -> Option<SiteId> {
+    pub fn request_site(&mut self, def: SiteDef) -> LegacyDraftSiteOperand {
         self.sites.request(def)
     }
 

@@ -7,9 +7,9 @@
 
 use marrow_image::{
     DurableIndexComponent, DurableIndexShape, DurableMemberDef, DurableValueShape, ExportId,
-    FieldDef, FunctionDef, ImageDraft, ImageType, Instr, KeyColumn, LedgerIdBytes, RecordTypeDef,
-    RootDef, RootIdentity, Scalar, SemanticPath, SemanticStep, SemanticStepKind, SiteDef,
-    SpanEntry,
+    FieldDef, FunctionDef, ImageDraft, ImageType, Instr, KeyColumn, LedgerIdBytes,
+    LegacyDraftSiteOperand, RecordTypeDef, RootDef, RootIdentity, Scalar, SemanticPath,
+    SemanticStep, SemanticStepKind, SiteDef, SpanEntry,
 };
 use marrow_verify::verify;
 
@@ -50,8 +50,9 @@ fn spans(code: &[Instr]) -> Vec<SpanEntry> {
 /// Site indices captured while building the shared `^r[k:int]: Rec` graph with a
 /// nonunique `byShelf[shelf, k]` and a unique `byIsbn[isbn]`.
 struct Graph {
-    scan_site: u16,
-    lookup_site: u16,
+    entry_site: LegacyDraftSiteOperand,
+    scan_site: LegacyDraftSiteOperand,
+    lookup_site: LegacyDraftSiteOperand,
     list_int: u16,
 }
 
@@ -128,24 +129,17 @@ fn build_graph(draft: &mut ImageDraft) -> Graph {
             ],
         },
     });
-    // Site 0 is the root whole-payload entry; then the two index read sites.
-    draft
-        .request_site(SiteDef::whole_payload(root_path()))
-        .expect("the fixture's site demand fits the plan");
-    let scan_site = draft
-        .request_site(SiteDef::index_scan(index_path(BY_SHELF_ID)))
-        .expect("the fixture's site demand fits the plan")
-        .index();
-    let lookup_site = draft
-        .request_site(SiteDef::index_lookup(index_path(BY_ISBN_ID)))
-        .expect("the fixture's site demand fits the plan")
-        .index();
+    // The root whole-payload entry site first, then the two index read sites.
+    let entry_site = draft.request_site(SiteDef::whole_payload(root_path()));
+    let scan_site = draft.request_site(SiteDef::index_scan(index_path(BY_SHELF_ID)));
+    let lookup_site = draft.request_site(SiteDef::index_lookup(index_path(BY_ISBN_ID)));
     let list_int = draft
         .add_collection_type(marrow_image::CollectionTypeDef::List {
             elem: ImageType::scalar(Scalar::Int),
         })
         .index();
     Graph {
+        entry_site,
         scan_site,
         lookup_site,
         list_int,
@@ -154,9 +148,14 @@ fn build_graph(draft: &mut ImageDraft) -> Graph {
 
 /// Encode a single read-only export of `code` with `params` and `ret` over the shared
 /// graph, then verify. `Err(())` when the image is refused.
-fn verify_one(code: Vec<Instr>, params: Vec<ImageType>, ret: ImageType) -> Result<(), ()> {
+fn verify_one(
+    code: impl FnOnce(&Graph) -> Vec<Instr>,
+    params: Vec<ImageType>,
+    ret: ImageType,
+) -> Result<(), ()> {
     let mut draft = ImageDraft::new();
-    build_graph(&mut draft);
+    let graph = build_graph(&mut draft);
+    let code = code(&graph);
     build_export(&mut draft, code, params, ret);
     verify(&draft.encode().expect("encode").bytes)
         .map(|_| ())
@@ -208,7 +207,7 @@ fn a_valid_index_scan_and_lookup_verify() {
     let scan = vec![
         Instr::LocalGet(0),
         Instr::DurIndexScan {
-            site: g.scan_site,
+            site: g.scan_site.clone(),
             limit: 5,
             from: false,
             list_ty: g.list_int,
@@ -223,7 +222,7 @@ fn a_valid_index_scan_and_lookup_verify() {
     let g = build_graph(&mut draft);
     let lookup = vec![
         Instr::LocalGet(0),
-        Instr::DurIndexLookup(g.lookup_site),
+        Instr::DurIndexLookup(g.lookup_site.clone()),
         Instr::Return,
     ];
     build_export(&mut draft, lookup, vec![text()], opt_id());
@@ -240,7 +239,7 @@ fn a_scan_over_a_unique_index_is_refused() {
     let code = vec![
         Instr::LocalGet(0),
         Instr::DurIndexScan {
-            site: g.lookup_site,
+            site: g.lookup_site.clone(),
             limit: 5,
             from: false,
             list_ty: g.list_int,
@@ -258,7 +257,7 @@ fn a_lookup_over_a_nonunique_index_is_refused() {
     let g = build_graph(&mut draft);
     let code = vec![
         Instr::LocalGet(0),
-        Instr::DurIndexLookup(g.scan_site),
+        Instr::DurIndexLookup(g.scan_site.clone()),
         Instr::Return,
     ];
     build_export(&mut draft, code, vec![text()], opt_id());
@@ -276,7 +275,7 @@ fn a_scan_list_of_the_wrong_element_type_is_refused() {
     let code = vec![
         Instr::LocalGet(0),
         Instr::DurIndexScan {
-            site: g.scan_site,
+            site: g.scan_site.clone(),
             limit: 5,
             from: false,
             list_ty: list_text,
@@ -293,23 +292,28 @@ fn a_scan_list_of_the_wrong_element_type_is_refused() {
 #[test]
 fn a_make_identity_over_an_out_of_range_root_is_refused() {
     // `MakeIdentity` naming root index 9 — the image has one root.
-    let code = vec![
-        Instr::LocalGet(0),
-        Instr::MakeIdentity { root: 9, cols: 1 },
-        Instr::DurIndexLookup(0), // unreachable; the forged MakeIdentity rejects first
-        Instr::Return,
-    ];
+    let code = |g: &Graph| {
+        vec![
+            Instr::LocalGet(0),
+            Instr::MakeIdentity { root: 9, cols: 1 },
+            // Unreachable; the forged `MakeIdentity` rejects first.
+            Instr::DurIndexLookup(g.lookup_site.clone()),
+            Instr::Return,
+        ]
+    };
     assert!(verify_one(code, vec![int()], opt_id()).is_err());
 }
 
 #[test]
 fn a_make_identity_with_the_wrong_column_count_is_refused() {
     // The root has one key column; `cols: 2` disagrees.
-    let code = vec![
-        Instr::LocalGet(0),
-        Instr::MakeIdentity { root: 0, cols: 2 },
-        Instr::Return,
-    ];
+    let code = |_: &Graph| {
+        vec![
+            Instr::LocalGet(0),
+            Instr::MakeIdentity { root: 0, cols: 2 },
+            Instr::Return,
+        ]
+    };
     assert!(
         verify_one(
             code,
@@ -326,12 +330,14 @@ fn a_make_identity_with_the_wrong_column_count_is_refused() {
 #[test]
 fn an_identity_key_path_with_the_wrong_column_count_is_refused() {
     // Build a bare identity, then spread it claiming two columns for a one-key root.
-    let code = vec![
-        Instr::LocalGet(0),
-        Instr::MakeIdentity { root: 0, cols: 1 },
-        Instr::IdentityKeyPath(2),
-        Instr::Return,
-    ];
+    let code = |_: &Graph| {
+        vec![
+            Instr::LocalGet(0),
+            Instr::MakeIdentity { root: 0, cols: 1 },
+            Instr::IdentityKeyPath(2),
+            Instr::Return,
+        ]
+    };
     assert!(verify_one(code, vec![int()], ImageType::Unit).is_err());
 }
 
@@ -341,12 +347,14 @@ fn a_valid_identity_round_trip_verifies() {
     // back to its one key column, which keys a durable operation on that same root — the
     // spread column's only legitimate consumer. (A spread key column is a distinct typed
     // operand, not a plain int, so it flows to a durable key-path rather than a return.)
-    let code = vec![
-        Instr::LocalGet(0),
-        Instr::MakeIdentity { root: 0, cols: 1 },
-        Instr::IdentityKeyPath(1),
-        Instr::DurExists(0),
-        Instr::Return,
-    ];
+    let code = |g: &Graph| {
+        vec![
+            Instr::LocalGet(0),
+            Instr::MakeIdentity { root: 0, cols: 1 },
+            Instr::IdentityKeyPath(1),
+            Instr::DurExists(g.entry_site.clone()),
+            Instr::Return,
+        ]
+    };
     assert!(verify_one(code, vec![int()], ImageType::scalar(Scalar::Bool)).is_ok());
 }

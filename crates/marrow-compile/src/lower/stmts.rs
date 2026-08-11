@@ -1974,7 +1974,7 @@ impl<'a> FnLowerer<'a> {
         }
         self.push(
             Instr::DurIterateBounded {
-                site: target.node.entry_site(),
+                site: target.node.entry_site().clone(),
                 limit,
                 from: has_from,
                 list_ty,
@@ -2128,7 +2128,7 @@ impl<'a> FnLowerer<'a> {
             return Flow::Fallthrough;
         }
         let id_scalar = root.key[0];
-        let site = index.site;
+        let site = index.site.clone();
         // The held prefix is every projection component except the trailing identity key.
         let projection: Vec<ScalarType> = index.projection.clone();
         let Some((scanned, prefix_types)) = projection.split_last() else {

@@ -146,12 +146,10 @@ fn build(
             ],
         },
     });
-    draft
-        .request_site(SiteDef::whole_payload(SemanticPath::root(
-            id(APPLICATION_ID),
-            id(PLACEMENT),
-        )))
-        .expect("the fixture's site demand fits the plan");
+    draft.request_site(SiteDef::whole_payload(SemanticPath::root(
+        id(APPLICATION_ID),
+        id(PLACEMENT),
+    )));
     let src = draft.intern_string("src/main.mw");
     let fname = draft.intern_string("f");
     let code = vec![Instr::LocalGet(0), Instr::Return];
@@ -502,14 +500,10 @@ fn forge(spec: &GraphSpec) -> Vec<u8> {
             },
         });
         let root_path = SemanticPath::root(id(spec.application), id(root.placement));
-        draft
-            .request_site(SiteDef::whole_payload(root_path.clone()))
-            .expect("the fixture's site demand fits the plan");
-        draft
-            .request_site(SiteDef::index_lookup(
-                root_path.child(SemanticStep::new(SemanticStepKind::Index, id(root.index))),
-            ))
-            .expect("the fixture's site demand fits the plan");
+        draft.request_site(SiteDef::whole_payload(root_path.clone()));
+        draft.request_site(SiteDef::index_lookup(
+            root_path.child(SemanticStep::new(SemanticStepKind::Index, id(root.index))),
+        ));
     }
 
     let src = draft.intern_string("src/main.mw");

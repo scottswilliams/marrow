@@ -8,8 +8,9 @@
 
 use marrow_image::{
     CollectionTypeDef, DurableMemberDef, DurableValueShape, ExportId, FieldDef, FunctionDef,
-    ImageDraft, ImageType, Instr, KeyColumn, LedgerIdBytes, RecordTypeDef, RootDef, RootIdentity,
-    Scalar, SemanticPath, SemanticStep, SemanticStepKind, SiteDef, SpanEntry,
+    ImageDraft, ImageType, Instr, KeyColumn, LedgerIdBytes, LegacyDraftSiteOperand, RecordTypeDef,
+    RootDef, RootIdentity, Scalar, SemanticPath, SemanticStep, SemanticStepKind, SiteDef,
+    SpanEntry,
 };
 use marrow_verify::{VerifyPhase, verify};
 
@@ -45,7 +46,9 @@ fn spans(code: &[Instr]) -> Vec<SpanEntry> {
 /// plus the branch-entry site, the `List[text]` frozen-key collection a `notes` traversal
 /// freezes, and the sparse field's leaf site. Returns the branch site, the list type, and the
 /// sparse field-leaf site.
-fn two_root_branch_draft(draft: &mut ImageDraft) -> (u16, u16, u16) {
+fn two_root_branch_draft(
+    draft: &mut ImageDraft,
+) -> (LegacyDraftSiteOperand, u16, LegacyDraftSiteOperand) {
     draft.set_application_identity(LedgerIdBytes::from_bytes(APPLICATION_ID));
 
     let book = draft.intern_string("Book");
@@ -148,19 +151,13 @@ fn two_root_branch_draft(draft: &mut ImageDraft) -> (u16, u16, u16) {
         },
     });
 
-    let branch_site = draft
-        .request_site(SiteDef::whole_payload(branch_entry_path()))
-        .expect("the fixture's site demand fits the plan")
-        .index();
+    let branch_site = draft.request_site(SiteDef::whole_payload(branch_entry_path()));
     let list_ty = draft
         .add_collection_type(CollectionTypeDef::List {
             elem: ImageType::scalar(Scalar::Text),
         })
         .index();
-    let subtitle_site = draft
-        .request_site(SiteDef::field_leaf(field_path(A_SUBTITLE_FIELD)))
-        .expect("the fixture's site demand fits the plan")
-        .index();
+    let subtitle_site = draft.request_site(SiteDef::field_leaf(field_path(A_SUBTITLE_FIELD)));
     (branch_site, list_ty, subtitle_site)
 }
 

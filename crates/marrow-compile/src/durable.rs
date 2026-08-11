@@ -31,8 +31,8 @@ use marrow_codes::Code;
 use marrow_image::{
     DurableEnumMemberShape, DurableIndexComponent, DurableIndexShape, DurableMemberDef,
     DurableProductIdentity, DurableValueShape, FieldDef, ImageDraft, ImageType, KeyColumn,
-    LedgerIdBytes, RecordTypeDef, RootDef, RootIdentity, Scalar, SemanticPath, SemanticStep,
-    SemanticStepKind, SiteDef, bounds,
+    LedgerIdBytes, LegacyDraftSiteOperand, RecordTypeDef, RootDef, RootIdentity, Scalar,
+    SemanticPath, SemanticStep, SemanticStepKind, SiteDef, bounds,
 };
 use marrow_project::{FileIdentity, IdentityAnchor, IdentityKind, IdentityLedger};
 use marrow_syntax::{
@@ -99,7 +99,7 @@ struct BuiltIndex {
 pub(crate) struct DurableIndex {
     pub(crate) name: String,
     pub(crate) unique: bool,
-    pub(crate) site: u16,
+    pub(crate) site: LegacyDraftSiteOperand,
     pub(crate) projection: Vec<ScalarType>,
 }
 
@@ -168,7 +168,7 @@ pub(crate) struct DurableGroupLeaf {
 pub(crate) struct DurableGroup {
     pub(crate) name: String,
     pub(crate) record: marrow_image::TypeId,
-    pub(crate) entry_site: u16,
+    pub(crate) entry_site: LegacyDraftSiteOperand,
     pub(crate) fields: Vec<DurableGroupLeaf>,
 }
 
@@ -196,7 +196,7 @@ pub(crate) struct DurableBranch {
     /// The branch's ordered key columns (one or more), the whole composite branch key.
     pub(crate) key: Vec<ScalarType>,
     pub(crate) record: marrow_image::TypeId,
-    pub(crate) entry_site: u16,
+    pub(crate) entry_site: LegacyDraftSiteOperand,
     pub(crate) fields: Vec<DurableBranchField>,
     pub(crate) branches: Vec<DurableBranch>,
 }
@@ -230,7 +230,7 @@ pub(crate) struct DurableRoot {
     /// The root's ordered key columns (one or more), the whole composite root key.
     pub(crate) key: Vec<ScalarType>,
     pub(crate) record: marrow_image::TypeId,
-    pub(crate) entry_site: u16,
+    pub(crate) entry_site: LegacyDraftSiteOperand,
     pub(crate) fields: Vec<DurableField>,
     pub(crate) groups: Vec<DurableGroup>,
     pub(crate) branches: Vec<DurableBranch>,
@@ -1130,7 +1130,7 @@ fn build_one(
     // fields, not with declared width — an untouched field mints no site. The flat
     // executable root's whole-payload entry site is captured here for the lowerer.
     let root_path = SemanticPath::root(application, placement);
-    let entry_site = request_site(draft, SiteDef::whole_payload(root_path.clone()));
+    let entry_site = draft.request_site(SiteDef::whole_payload(root_path.clone()));
     let (top_field_paths, top_groups, top_branches) =
         emit_root_member_sites(draft, &root_path, &members);
     // One read site per managed index: a nonunique index is a progressive-prefix
@@ -1146,7 +1146,7 @@ fn build_one(
         } else {
             SiteDef::index_scan(path)
         };
-        let site_index = request_site(draft, site);
+        let site_index = draft.request_site(site);
         lowered_indexes.push(DurableIndex {
             name: built.name.clone(),
             unique: built.shape.unique,
@@ -2086,7 +2086,7 @@ impl<'a> IdentityResolver<'a> {
 /// whole-entry operations and its field-exact `^root(k).branch(bk).field` operations
 /// respectively; a non-flat root parks them and consumes neither.
 struct BranchSites {
-    entry: u16,
+    entry: LegacyDraftSiteOperand,
     /// The stable field-leaf paths of this branch's direct fields, in declaration order.
     /// The leaf sites are allocated lazily at lowering time, so the branch carries paths
     /// rather than pre-minted site indices.
@@ -2097,30 +2097,6 @@ struct BranchSites {
     branches: Vec<BranchSites>,
 }
 
-/// The site index the draft's bounded plan answers `def` with.
-///
-/// The plan refuses an id once its capacity is exhausted, and the crossing is
-/// deliberately nonblocking: the remaining diagnostics, invariants, functions, and code
-/// still complete. The refusal is carried as [`OVER_POLICY_SITE`], which is outside the
-/// plan's fitting range and cannot be encoded — the encoder reads the plan's saturated
-/// logical demand and refuses the image through the Sites bound before any operand is
-/// written.
-///
-/// **Temporary.** This exists because the compiler's durable descriptors and instruction
-/// operands still carry a bare `u16` site. It is deleted with the last of those, when the
-/// opaque draft-bound site operand replaces them; nothing else may read or compare
-/// `OVER_POLICY_SITE`.
-pub(crate) fn request_site(draft: &mut ImageDraft, def: SiteDef) -> u16 {
-    draft
-        .request_site(def)
-        .map_or(OVER_POLICY_SITE, |site| site.index())
-}
-
-/// The non-encodable stand-in for a site the plan refused. Distinct from every fitting
-/// site index (those are exactly `0..8192`), so an over-policy demand can never alias a
-/// site a fitting demand was given.
-pub(crate) const OVER_POLICY_SITE: u16 = u16::MAX;
-
 /// The stable field-leaf [`SemanticPath`] of one stored field under `parent`. The
 /// leaf site is not emitted here: the lowerer allocates it lazily on first reference, so
 /// an untouched field mints no site.
@@ -2128,9 +2104,9 @@ fn field_leaf_path(parent: &SemanticPath, id: LedgerIdBytes) -> SemanticPath {
     parent.child(SemanticStep::new(SemanticStepKind::Field, id))
 }
 
-/// Emit one keyed placement's whole-payload site at `path`, returning its index.
-fn emit_placement_site(draft: &mut ImageDraft, path: &SemanticPath) -> u16 {
-    request_site(draft, SiteDef::whole_payload(path.clone()))
+/// Emit one keyed placement's whole-payload site at `path`, returning its operand.
+fn emit_placement_site(draft: &mut ImageDraft, path: &SemanticPath) -> LegacyDraftSiteOperand {
+    draft.request_site(SiteDef::whole_payload(path.clone()))
 }
 
 /// Emit the eager (bounded, per-node) operation sites of the root's member tree under
@@ -2148,7 +2124,11 @@ fn emit_root_member_sites(
     draft: &mut ImageDraft,
     root_path: &SemanticPath,
     members: &[DurableMemberDef],
-) -> (Vec<SemanticPath>, Vec<u16>, Vec<BranchSites>) {
+) -> (
+    Vec<SemanticPath>,
+    Vec<LegacyDraftSiteOperand>,
+    Vec<BranchSites>,
+) {
     let mut top_field_paths = Vec::new();
     let mut top_group_sites = Vec::new();
     let mut top_branches = Vec::new();
@@ -2159,7 +2139,7 @@ fn emit_root_member_sites(
             }
             DurableMemberDef::Group { id, .. } => {
                 let path = root_path.child(SemanticStep::new(SemanticStepKind::Group, *id));
-                let entry = request_site(draft, SiteDef::group_entry(path));
+                let entry = draft.request_site(SiteDef::group_entry(path));
                 top_group_sites.push(entry);
             }
             DurableMemberDef::Branch {
@@ -2267,14 +2247,17 @@ fn member_flat_at_root(member: &DurableMemberDef) -> bool {
 /// in the same declaration order, so a group descriptor and its site align by position.
 /// Called only when the caller has proven the root flat-executable, so every group is a
 /// storable-value-field group.
-fn build_executable_groups(groups: &[crate::types::GroupInfo], sites: &[u16]) -> Vec<DurableGroup> {
+fn build_executable_groups(
+    groups: &[crate::types::GroupInfo],
+    sites: &[LegacyDraftSiteOperand],
+) -> Vec<DurableGroup> {
     groups
         .iter()
         .zip(sites)
-        .map(|(group, &entry_site)| DurableGroup {
+        .map(|(group, entry_site)| DurableGroup {
             name: group.name.clone(),
             record: group.type_id,
-            entry_site,
+            entry_site: entry_site.clone(),
             fields: group
                 .fields
                 .iter()
@@ -2361,7 +2344,7 @@ fn build_branches(
                 name: group.name.clone(),
                 key,
                 record: sites.record,
-                entry_site: sites.entry,
+                entry_site: sites.entry.clone(),
                 fields,
                 branches,
             }

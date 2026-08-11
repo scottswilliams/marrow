@@ -717,8 +717,9 @@ mod index_site_partition {
 
     use marrow_image::{
         CollectionTypeDef, DurableMemberDef, DurableValueShape, ExportId, FieldDef, FunctionDef,
-        ImageDraft, ImageType, Instr, KeyColumn, LedgerIdBytes, RecordTypeDef, RootDef,
-        RootIdentity, Scalar, SemanticPath, SemanticStep, SemanticStepKind, SiteDef, SpanEntry,
+        ImageDraft, ImageType, Instr, KeyColumn, LedgerIdBytes, LegacyDraftSiteOperand,
+        RecordTypeDef, RootDef, RootIdentity, Scalar, SemanticPath, SemanticStep, SemanticStepKind,
+        SiteDef, SpanEntry,
     };
 
     use super::opcode_bijection::samples;
@@ -748,19 +749,23 @@ mod index_site_partition {
         Unrelated,
     }
 
-    fn role(instr: &SealedInstr, site: u16, list_ty: u16) -> Role {
+    fn role(instr: &SealedInstr, site: &LegacyDraftSiteOperand, list_ty: u16) -> Role {
         match instr {
             SealedInstr::DurIndexScan { .. } => Role::ManagedIndexRead(Instr::DurIndexScan {
-                site,
+                site: site.clone(),
                 limit: 1,
                 from: false,
                 list_ty,
             }),
-            SealedInstr::DurIndexLookup(_) => Role::ManagedIndexRead(Instr::DurIndexLookup(site)),
-            SealedInstr::DurIndexExists(_) => Role::ManagedIndexRead(Instr::DurIndexExists(site)),
+            SealedInstr::DurIndexLookup(_) => {
+                Role::ManagedIndexRead(Instr::DurIndexLookup(site.clone()))
+            }
+            SealedInstr::DurIndexExists(_) => {
+                Role::ManagedIndexRead(Instr::DurIndexExists(site.clone()))
+            }
             SealedInstr::DurIterateBounded { .. } => {
                 Role::EntryFamilyTraversal(Instr::DurIterateBounded {
-                    site,
+                    site: site.clone(),
                     limit: 1,
                     from: false,
                     list_ty,
@@ -903,8 +908,8 @@ mod index_site_partition {
     /// (non-index) site, plus a `List[int]` collection type. Mirrors the tracer schema
     /// the integration hostile suite uses so a forged managed-index or bounded-traversal
     /// opcode over the field-leaf site reaches the same `apply_durable` guards. Returns
-    /// the draft, the field-leaf (non-index) site index, and the list-type index.
-    fn field_leaf_schema() -> (ImageDraft, u16, u16) {
+    /// the draft, the field-leaf (non-index) site operand, and the list-type index.
+    fn field_leaf_schema() -> (ImageDraft, LegacyDraftSiteOperand, u16) {
         let mut draft = ImageDraft::new();
         let counter = draft.intern_string("Counter");
         let value = draft.intern_string("value");
@@ -956,13 +961,8 @@ mod index_site_partition {
             SemanticStepKind::Field,
             LedgerIdBytes::from_bytes(VALUE_FIELD_ID),
         ));
-        draft
-            .request_site(SiteDef::whole_payload(path(root_step())))
-            .expect("the fixture's site demand fits the plan");
-        let value_site = draft
-            .request_site(SiteDef::field_leaf(path(field)))
-            .expect("the fixture's site demand fits the plan")
-            .index();
+        draft.request_site(SiteDef::whole_payload(path(root_step())));
+        let value_site = draft.request_site(SiteDef::field_leaf(path(field)));
         let list_ty = draft
             .add_collection_type(CollectionTypeDef::List {
                 elem: ImageType::scalar(Scalar::Int),
@@ -1000,7 +1000,7 @@ mod index_site_partition {
         let mut exercised = 0usize;
         for sample in samples() {
             let (mut draft, value_site, list_ty) = field_leaf_schema();
-            let (forged, expected_detail) = match role(&sample, value_site, list_ty) {
+            let (forged, expected_detail) = match role(&sample, &value_site, list_ty) {
                 Role::ManagedIndexRead(forged) => {
                     (forged, "a managed-index opcode over a non-index site")
                 }

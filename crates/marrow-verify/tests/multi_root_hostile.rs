@@ -5,8 +5,8 @@
 
 use marrow_image::{
     DurableMemberDef, DurableValueShape, ExportId, FieldDef, FunctionDef, ImageBuildError,
-    ImageDraft, ImageType, Instr, KeyColumn, LedgerIdBytes, RecordTypeDef, RootDef, RootIdentity,
-    Scalar, SemanticPath, SiteDef, SpanEntry, TypeId, image_id,
+    ImageDraft, ImageType, Instr, KeyColumn, LedgerIdBytes, LegacyDraftSiteOperand, RecordTypeDef,
+    RootDef, RootIdentity, Scalar, SemanticPath, SiteDef, SpanEntry, TypeId, image_id,
 };
 use marrow_verify::{VerifyPhase, verify};
 
@@ -42,7 +42,11 @@ fn spans(code: &[Instr]) -> Vec<SpanEntry> {
 /// Add root A ("assets", int key, one int field) and root B (`b_name`, `b_key_scalar`
 /// key, one int field). The two roots' whole-payload sites are added as site 0 (A) and
 /// site 1 (B). Returns the site indices.
-fn build_two_roots(draft: &mut ImageDraft, b_name: &str, b_key_scalar: Scalar) -> (u16, u16) {
+fn build_two_roots(
+    draft: &mut ImageDraft,
+    b_name: &str,
+    b_key_scalar: Scalar,
+) -> (LegacyDraftSiteOperand, LegacyDraftSiteOperand) {
     draft.set_application_identity(LedgerIdBytes::from_bytes(APPLICATION_ID));
 
     let a_field_name = draft.intern_string("name");
@@ -105,14 +109,8 @@ fn build_two_roots(draft: &mut ImageDraft, b_name: &str, b_key_scalar: Scalar) -
         },
     });
 
-    let a_site = draft
-        .request_site(SiteDef::whole_payload(placement_path(A_PLACEMENT)))
-        .expect("the fixture's site demand fits the plan")
-        .index();
-    let b_site = draft
-        .request_site(SiteDef::whole_payload(placement_path(B_PLACEMENT)))
-        .expect("the fixture's site demand fits the plan")
-        .index();
+    let a_site = draft.request_site(SiteDef::whole_payload(placement_path(A_PLACEMENT)));
+    let b_site = draft.request_site(SiteDef::whole_payload(placement_path(B_PLACEMENT)));
     (a_site, b_site)
 }
 
@@ -257,9 +255,7 @@ fn build_shared_product(draft: &mut ImageDraft) -> TypeId {
                 members: members(),
             },
         });
-        draft
-            .request_site(SiteDef::whole_payload(placement_path(placement)))
-            .expect("the fixture's site demand fits the plan");
+        draft.request_site(SiteDef::whole_payload(placement_path(placement)));
     }
     record
 }

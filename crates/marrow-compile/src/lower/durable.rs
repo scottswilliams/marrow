@@ -132,7 +132,7 @@ impl PlaceLocal<'_> {
 
 /// A resolved durable target: the whole entry, one field, a whole root-level group, or one
 /// group leaf.
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 enum DurTarget<'a> {
     /// A whole durable entry, addressed through the exact durable node the resolver
     /// walked to — a store root or a keyed branch. The node carries the occurrence's own
@@ -140,7 +140,7 @@ enum DurTarget<'a> {
     /// resolved back into a node later.
     Entry { node: DurNode<'a> },
     Field {
-        site: u16,
+        site: LegacyDraftSiteOperand,
         /// The field's value type (a scalar or a widened composite), from which the
         /// read result and written-value type are built.
         ty: GArg,
@@ -148,13 +148,16 @@ enum DurTarget<'a> {
     },
     /// A whole root-level `group` (`^root(k).group`): read, replaced, or erased as one
     /// materialized `record` value through the `GroupEntry` site `entry_site`.
-    Group { entry_site: u16, record: TypeId },
+    Group {
+        entry_site: LegacyDraftSiteOperand,
+        record: TypeId,
+    },
     /// One leaf of a root-level group (`^root(k).group.leaf`). A read materializes the
     /// whole group through `entry_site` and projects `slot`; a write or clear is a
     /// whole-group read-modify-write that rewrites `slot` on the read-back group record and
     /// replaces the group, so a leaf never has a durable site of its own.
     GroupLeaf {
-        entry_site: u16,
+        entry_site: LegacyDraftSiteOperand,
         slot: u16,
         ty: GArg,
         required: bool,
@@ -194,10 +197,10 @@ struct DurFieldRef {
 impl<'a> DurNode<'a> {
     /// This node's whole-payload operation site. It is an occurrence fact: two roots
     /// projecting one Product declaration each carry their own.
-    pub(super) fn entry_site(&self) -> u16 {
+    pub(super) fn entry_site(&self) -> &'a LegacyDraftSiteOperand {
         match self {
-            DurNode::Root(root) => root.entry_site,
-            DurNode::Branch(branch) => branch.entry_site,
+            DurNode::Root(root) => &root.entry_site,
+            DurNode::Branch(branch) => &branch.entry_site,
         }
     }
 
@@ -629,7 +632,7 @@ impl<'a> FnLowerer<'a> {
             ));
             return None;
         }
-        let site = index.site;
+        let site = index.site.clone();
         // The projection scalar types are copied out first so the operand lowering (a
         // mutable borrow of `self`) does not overlap the index borrow.
         let projection: Vec<ScalarType> = index.projection.clone();
@@ -666,7 +669,7 @@ impl<'a> FnLowerer<'a> {
             ));
             return None;
         }
-        let site = index.site;
+        let site = index.site.clone();
         // The projection scalar types are copied out first so the operand lowering (a
         // mutable borrow of `self`) does not overlap the index borrow.
         let projection: Vec<ScalarType> = index.projection.clone();
@@ -881,7 +884,7 @@ impl<'a> FnLowerer<'a> {
                     return Some(DurablePlace {
                         keys,
                         target: DurTarget::GroupLeaf {
-                            entry_site: group.entry_site,
+                            entry_site: group.entry_site.clone(),
                             slot,
                             ty: leaf.ty,
                             required: leaf.required,
@@ -891,8 +894,7 @@ impl<'a> FnLowerer<'a> {
                 }
                 let (keys, node) = self.resolve_place_entry_node(base)?;
                 if let Some(field) = node.field(field_name) {
-                    let site =
-                        crate::durable::request_site(self.draft, SiteDef::field_leaf(field.path));
+                    let site = self.draft.request_site(SiteDef::field_leaf(field.path));
                     return Some(DurablePlace {
                         keys,
                         target: DurTarget::Field {
@@ -911,7 +913,7 @@ impl<'a> FnLowerer<'a> {
                     return Some(DurablePlace {
                         keys,
                         target: DurTarget::Group {
-                            entry_site: group.entry_site,
+                            entry_site: group.entry_site.clone(),
                             record: group.record,
                         },
                         span: *span,
@@ -1250,7 +1252,7 @@ impl<'a> FnLowerer<'a> {
                     return Some(DurablePlace {
                         keys,
                         target: DurTarget::GroupLeaf {
-                            entry_site: group.entry_site,
+                            entry_site: group.entry_site.clone(),
                             slot,
                             ty: leaf.ty,
                             required: leaf.required,
@@ -1260,8 +1262,7 @@ impl<'a> FnLowerer<'a> {
                 }
                 let (keys, node) = self.resolve_entry_address(root, base)?;
                 if let Some(field) = node.field(field_name) {
-                    let site =
-                        crate::durable::request_site(self.draft, SiteDef::field_leaf(field.path));
+                    let site = self.draft.request_site(SiteDef::field_leaf(field.path));
                     return Some(DurablePlace {
                         keys,
                         target: DurTarget::Field {
@@ -1280,7 +1281,7 @@ impl<'a> FnLowerer<'a> {
                     return Some(DurablePlace {
                         keys,
                         target: DurTarget::Group {
-                            entry_site: group.entry_site,
+                            entry_site: group.entry_site.clone(),
                             record: group.record,
                         },
                         span: *span,
@@ -1470,7 +1471,7 @@ impl<'a> FnLowerer<'a> {
         self.emit_key_path(&place.keys, place.span)?;
         Some(match place.target {
             DurTarget::Entry { node } => {
-                self.push(Instr::DurReadEntry(node.entry_site()), place.span);
+                self.push(Instr::DurReadEntry(node.entry_site().clone()), place.span);
                 LTy::Record {
                     ty: node.record(),
                     optional: true,
@@ -1568,7 +1569,10 @@ impl<'a> FnLowerer<'a> {
         if is_family {
             let target = self.resolve_traversal_place(&arg.value)?;
             self.emit_key_path(&target.ancestor_keys, target.span)?;
-            self.push(Instr::DurFamilyExists(target.node.entry_site()), span);
+            self.push(
+                Instr::DurFamilyExists(target.node.entry_site().clone()),
+                span,
+            );
             return Some(LTy::bare_scalar(ScalarType::Bool));
         }
         // A specific addressed cell (an entry or a field) probes that one cell's presence.
@@ -1580,7 +1584,7 @@ impl<'a> FnLowerer<'a> {
             let place = self.resolve_durable(&arg.value)?;
             self.emit_key_path(&place.keys, place.span)?;
             let site = match place.target {
-                DurTarget::Entry { node } => node.entry_site(),
+                DurTarget::Entry { node } => node.entry_site().clone(),
                 DurTarget::Field { site, .. } => site,
                 // A group is markerless — its presence is the entry's presence — so a
                 // group-cell presence probe has no distinct meaning yet; a group leaf has no
@@ -2674,7 +2678,7 @@ impl<'a> FnLowerer<'a> {
     /// Lower a durable assignment: a whole-entry upsert (root or branch) or a root
     /// field set.
     pub(super) fn lower_durable_assign(&mut self, place: DurablePlace, value: &Expression) {
-        match place.target {
+        match &place.target {
             DurTarget::Entry { node } => {
                 let root_slot = place.root_bound_slot();
                 if self
@@ -2698,6 +2702,7 @@ impl<'a> FnLowerer<'a> {
                 }
             }
             DurTarget::Field { site, ty, required } => {
+                let (site, ty, required) = (site.clone(), *ty, *required);
                 // A sparse set through a `place` a presence fact dominates lowers to the
                 // strict present-entry form: it reads the containing entry's whole
                 // key-path from the place's pre-evaluated slots and asserts the entry is
@@ -2736,6 +2741,7 @@ impl<'a> FnLowerer<'a> {
             // reads. A replace over an absent entry is Missing and touches nothing — a group
             // is a value unit of an existing entry, never created on its own.
             DurTarget::Group { entry_site, record } => {
+                let (entry_site, record) = (entry_site.clone(), *record);
                 if self.emit_key_path(&place.keys, place.span).is_none() {
                     return;
                 }
@@ -2760,9 +2766,10 @@ impl<'a> FnLowerer<'a> {
                 ty,
                 ..
             } => {
+                let (entry_site, slot, ty) = (entry_site.clone(), *slot, *ty);
                 self.lower_group_leaf_rmw(
                     &place.keys,
-                    entry_site,
+                    &entry_site,
                     slot,
                     GroupLeafEdit::Set { value, ty },
                     place.span,
@@ -2781,7 +2788,7 @@ impl<'a> FnLowerer<'a> {
     fn lower_group_leaf_rmw(
         &mut self,
         keys: &[DurKey],
-        entry_site: u16,
+        entry_site: &LegacyDraftSiteOperand,
         slot: u16,
         edit: GroupLeafEdit,
         span: SourceSpan,
@@ -2805,7 +2812,7 @@ impl<'a> FnLowerer<'a> {
         // back runs; absent -> jump past the write back, a clean no-op (the group was never
         // there to modify).
         self.emit_slots(&key_slots, span);
-        self.push(Instr::DurReadGroup(entry_site), span);
+        self.push(Instr::DurReadGroup(entry_site.clone()), span);
         let to_end = self.push_branch_present(span);
         // Present: rewrite the leaf slot on the materialized record, then replace the group.
         match edit {
@@ -2828,7 +2835,7 @@ impl<'a> FnLowerer<'a> {
         self.push(Instr::LocalSet(rec_slot), span);
         self.emit_slots(&key_slots, span);
         self.push(Instr::LocalGet(rec_slot), span);
-        self.push(Instr::DurReplaceGroup(entry_site), span);
+        self.push(Instr::DurReplaceGroup(entry_site.clone()), span);
         let end = self.here();
         self.patch(to_end, end);
         Some(())
@@ -2842,7 +2849,7 @@ impl<'a> FnLowerer<'a> {
     fn lower_upsert(
         &mut self,
         keys: &[DurKey],
-        entry_site: u16,
+        entry_site: &LegacyDraftSiteOperand,
         record: TypeId,
         value: &Expression,
         span: SourceSpan,
@@ -2866,19 +2873,19 @@ impl<'a> FnLowerer<'a> {
         self.push(Instr::LocalSet(rec_slot), span);
 
         self.emit_slots(&key_slots, span);
-        self.push(Instr::DurExists(entry_site), span);
+        self.push(Instr::DurExists(entry_site.clone()), span);
         let to_create = self.push_jif(span);
         // Present: replace.
         self.emit_slots(&key_slots, span);
         self.push(Instr::LocalGet(rec_slot), span);
-        self.push(Instr::DurReplaceEntry(entry_site), span);
+        self.push(Instr::DurReplaceEntry(entry_site.clone()), span);
         let to_end = self.push_jump(span);
         // Absent: create.
         let create_at = self.here();
         self.patch(to_create, create_at);
         self.emit_slots(&key_slots, span);
         self.push(Instr::LocalGet(rec_slot), span);
-        self.push(Instr::DurCreateEntry(entry_site), span);
+        self.push(Instr::DurCreateEntry(entry_site.clone()), span);
         let end = self.here();
         self.patch(to_end, end);
         Some(())
@@ -2916,9 +2923,9 @@ impl<'a> FnLowerer<'a> {
             slot,
             required,
             ..
-        } = place.target
+        } = &place.target
         {
-            if required {
+            if *required {
                 self.fail(SourceDiagnostic::at(
                     Code::CheckType.as_str(),
                     self.file,
@@ -2927,13 +2934,8 @@ impl<'a> FnLowerer<'a> {
                 ));
                 return;
             }
-            self.lower_group_leaf_rmw(
-                &place.keys,
-                entry_site,
-                slot,
-                GroupLeafEdit::Unset,
-                place.span,
-            );
+            let (entry_site, slot, span) = (entry_site.clone(), *slot, place.span);
+            self.lower_group_leaf_rmw(&place.keys, &entry_site, slot, GroupLeafEdit::Unset, span);
             return;
         }
         let key_path = place.bound_key_path();
@@ -2942,7 +2944,7 @@ impl<'a> FnLowerer<'a> {
         }
         match place.target {
             DurTarget::Entry { node } => {
-                self.push(Instr::DurEraseEntry(node.entry_site()), place.span);
+                self.push(Instr::DurEraseEntry(node.entry_site().clone()), place.span);
                 // The entry's payload is gone; a later sparse set through the same place
                 // must not assume presence.
                 if let Some(path) = &key_path {
