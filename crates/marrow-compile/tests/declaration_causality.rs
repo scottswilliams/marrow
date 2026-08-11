@@ -1877,7 +1877,7 @@ fn a_refused_struct_as_a_parameter_type_steers_to_its_cause() {
         rows(&diagnostics),
         vec![
             ("src/main.mw", "check.unsupported", 5, 8),
-            ("src/main.mw", "check.unsupported", 7, 12),
+            ("src/main.mw", "check.unsupported", 8, 12),
         ],
         "the struct field reports the cause and the parameter is steered to it: {:#?}",
         messages(&diagnostics),
@@ -1908,7 +1908,7 @@ fn a_refused_struct_as_a_return_type_steers_to_its_cause() {
         rows(&diagnostics),
         vec![
             ("src/main.mw", "check.unsupported", 5, 8),
-            ("src/main.mw", "check.unsupported", 7, 16),
+            ("src/main.mw", "check.unsupported", 8, 16),
         ],
         "the return annotation is steered, never described as a type the body \
          failed to produce: {:#?}",
@@ -1939,7 +1939,7 @@ fn a_refused_struct_as_a_local_annotation_steers_to_its_cause() {
         rows(&diagnostics),
         vec![
             ("src/main.mw", "check.unsupported", 5, 8),
-            ("src/main.mw", "check.unsupported", 8, 14),
+            ("src/main.mw", "check.unsupported", 9, 14),
         ],
         "the annotation is steered to the struct's cause: {:#?}",
         messages(&diagnostics),
@@ -1974,7 +1974,7 @@ fn a_field_read_on_a_refused_struct_is_not_a_missing_field() {
         rows(&diagnostics),
         vec![
             ("src/main.mw", "check.unsupported", 5, 8),
-            ("src/main.mw", "check.unsupported", 7, 12),
+            ("src/main.mw", "check.unsupported", 8, 12),
         ],
         "the parameter is steered and its body reuses that cause: {:#?}",
         messages(&diagnostics),

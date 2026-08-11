@@ -2847,13 +2847,7 @@ impl TypeMetadataSession<'_> {
     ) -> Result<Option<StructInfo>, GenericInvariant> {
         self.ensure_healthy()?;
         let result = (|| {
-            let Some(info) = self
-                .view
-                .registry
-                .structs
-                .iter()
-                .find(|info| info.name == name)
-            else {
+            let Some(info) = self.view.registry.struct_by_name(name) else {
                 return Ok(None);
             };
             let args = info.fields.iter().map(|field| field.ty).collect::<Vec<_>>();
@@ -2869,13 +2863,7 @@ impl TypeMetadataSession<'_> {
         name: &str,
     ) -> Result<Option<EnumInfo>, GenericInvariant> {
         self.ensure_healthy()?;
-        let result = Ok(self
-            .view
-            .registry
-            .enums
-            .iter()
-            .find(|info| info.name == name)
-            .cloned());
+        let result = Ok(self.view.registry.enum_by_name(name).cloned());
         self.remember(result)
     }
 
@@ -2884,32 +2872,16 @@ impl TypeMetadataSession<'_> {
         name: &str,
     ) -> Result<Option<StaticNamedType>, GenericInvariant> {
         self.ensure_healthy()?;
-        let result = Ok(
-            if let Some(info) = self
-                .view
-                .registry
-                .structs
-                .iter()
-                .find(|info| info.name == name)
-            {
-                Some(StaticNamedType::Struct(info.type_id))
-            } else if let Some(info) = self
-                .view
-                .registry
-                .enums
-                .iter()
-                .find(|info| info.name == name)
-            {
-                Some(StaticNamedType::Enum(info.enum_id))
-            } else {
-                self.view
-                    .registry
-                    .records
-                    .iter()
-                    .find(|info| info.name == name)
-                    .map(|info| StaticNamedType::Record(info.type_id))
-            },
-        );
+        let registry = self.view.registry;
+        let result = Ok(if let Some(info) = registry.struct_by_name(name) {
+            Some(StaticNamedType::Struct(info.type_id))
+        } else if let Some(info) = registry.enum_by_name(name) {
+            Some(StaticNamedType::Enum(info.enum_id))
+        } else {
+            registry
+                .by_name(name)
+                .map(|info| StaticNamedType::Record(info.type_id))
+        });
         self.remember(result)
     }
 
@@ -5047,6 +5019,13 @@ impl TypeRegistry {
     /// so it never answers a name: an annotation naming it falls through to
     /// [`Self::unresolved_named_type`], which reads the cause out of the named-type
     /// ledger and steers the use to it.
+    ///
+    /// This is the only scan of `structs` keyed on a source spelling. The static
+    /// projections that annotation resolution, signature building, and body lowering
+    /// read delegate here rather than scanning again, because a second scan is a
+    /// second place to forget the verdict — and a name answered by a reserved,
+    /// unfilled row resolves to a *live empty struct*, against which every later
+    /// question fabricates an answer.
     pub(crate) fn struct_by_name(&self, name: &str) -> Option<&StructInfo> {
         self.structs
             .iter()
