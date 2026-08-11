@@ -193,32 +193,12 @@ impl CanonicalValueShapeDag {
         }
     }
 
-    /// The direct fan-out of `node`: its struct leaf count, or its enum variant count,
-    /// or zero for a scalar. The value bounds are rechecked per distinct node, so a
-    /// shape shared by a thousand fields is measured once.
-    pub fn fan_out(&self, node: ValueShapeNodeId) -> usize {
-        match &self.nodes[node.index()] {
-            ValueShapeNode::Scalar(_) => 0,
-            ValueShapeNode::Struct(leaves) => leaves.len(),
-            ValueShapeNode::Enum { members, .. } => members.len(),
-        }
-    }
-
-    /// The payload widths of `node`'s enum variants in declaration order, or an empty
-    /// slice iterator for a scalar or struct node.
-    pub fn payload_widths(&self, node: ValueShapeNodeId) -> impl Iterator<Item = usize> + '_ {
-        let members: &[ValueShapeEnumMember] = match &self.nodes[node.index()] {
-            ValueShapeNode::Enum { members, .. } => members,
-            _ => &[],
-        };
-        members.iter().map(|member| member.payload.len())
-    }
-
     /// Every node of this arena, in minting order — which is a topological order, so a
     /// node always follows the nodes it references. A whole-arena bound recheck walks
     /// this once and touches each distinct shape one time.
     pub fn nodes(&self) -> impl Iterator<Item = ValueShapeNodeId> {
-        (0..self.nodes.len() as u32).map(ValueShapeNodeId)
+        let count = u32::try_from(self.nodes.len()).expect("every minted node has a u32 ordinal");
+        (0..count).map(ValueShapeNodeId)
     }
 
     /// Drop every node minted at or after `len`, restoring the arena to the state a
@@ -247,7 +227,9 @@ impl CanonicalValueShapeDag {
             return *existing;
         }
         let depth = 1 + self.max_reference_depth(&node);
-        let id = ValueShapeNodeId(self.nodes.len() as u32);
+        let id = ValueShapeNodeId(
+            u32::try_from(self.nodes.len()).expect("an arena holds fewer nodes than u32 counts"),
+        );
         self.interned.insert(node.clone(), id);
         self.nodes.push(node);
         self.depth.push(depth);
@@ -331,15 +313,14 @@ const VSHAPE_ENUM: u8 = 2;
 ///
 /// An enum's variants are written one after another, each with its own header before
 /// its payload, so a variant is its own work item rather than a position inside its
-/// node's header. Nothing follows a node's references, so the stack never holds a
-/// "resume after children" continuation and its depth is bounded by the shape's own
-/// nesting depth.
-enum ExpandTask {
+/// node's header. A variant task carries the variant itself, borrowed from the arena the
+/// expansion walks, so there is no second lookup to get wrong and no arm for a node kind
+/// the task could never name. Nothing follows a node's references, so the stack never
+/// holds a "resume after children" continuation and its depth is bounded by the shape's
+/// own nesting depth.
+enum ExpandTask<'a> {
     Node(ValueShapeNodeId),
-    EnumMember {
-        node: ValueShapeNodeId,
-        member: usize,
-    },
+    EnumMember(&'a ValueShapeEnumMember),
 }
 
 /// Write the expanded bytes of the value shape rooted at `root` into `sink`.
@@ -366,29 +347,19 @@ pub fn expand(
                 }
                 ValueShapeNode::Struct(leaves) => {
                     sink.push(VSHAPE_STRUCT);
-                    push_u16(sink, leaves.len());
+                    push_u16(sink, wire_count(leaves.len()));
                     tasks.extend(leaves.iter().rev().map(|leaf| ExpandTask::Node(*leaf)));
                 }
                 ValueShapeNode::Enum { sum, members } => {
                     sink.push(VSHAPE_ENUM);
                     push_identity(sink, form, IDREF_SUM, sum);
-                    push_u16(sink, members.len());
-                    tasks.extend(
-                        (0..members.len())
-                            .rev()
-                            .map(|member| ExpandTask::EnumMember { node: id, member }),
-                    );
+                    push_u16(sink, wire_count(members.len()));
+                    tasks.extend(members.iter().rev().map(ExpandTask::EnumMember));
                 }
             },
-            ExpandTask::EnumMember { node, member } => {
-                let ValueShapeNode::Enum { members, .. } = &dag.nodes[node.index()] else {
-                    // An `EnumMember` task is pushed only while reading an `Enum` node,
-                    // and an arena is append-only, so this is unreachable.
-                    return;
-                };
-                let member = &members[member];
+            ExpandTask::EnumMember(member) => {
                 push_identity(sink, form, IDREF_MEMBER, &member.id);
-                push_u16(sink, member.payload.len());
+                push_u16(sink, wire_count(member.payload.len()));
                 tasks.extend(
                     member
                         .payload
@@ -401,8 +372,23 @@ pub fn expand(
     }
 }
 
-fn push_u16(sink: &mut impl ImageByteSink, value: usize) {
-    sink.extend_bytes(&(value as u16).to_be_bytes());
+/// The wire's `u16` count for a value shape's `count` positions.
+///
+/// Both v0 forms spell an arity as a `u16`, and every arity a durable program states is
+/// bounded far below it — [`crate::bounds::MAX_STRUCT_LEAVES`],
+/// [`crate::bounds::MAX_VARIANTS`], and [`crate::bounds::MAX_PAYLOAD_FIELDS`] are all
+/// under 256, and the whole arena is rechecked against them before anything is encoded.
+/// A wrapping cast here would give a shape past the wire's width the arity of a narrower
+/// one, so two distinct shapes would share one durable-contract identity; the conversion
+/// is checked so that a shape the wire cannot count is a loud producer defect instead.
+fn wire_count(count: usize) -> u16 {
+    u16::try_from(count).expect("a value shape's arity is within the u16 the wire spells")
+}
+
+/// Append one big-endian `u16`. The one owner of that spelling for every image sink;
+/// callers narrow their own counts, deliberately.
+pub(crate) fn push_u16(sink: &mut impl ImageByteSink, value: u16) {
+    sink.extend_bytes(&value.to_be_bytes());
 }
 
 /// Write one ledger identity in the wire form's spelling: a kind-tagged length-prefixed

@@ -32,15 +32,19 @@ use std::rc::Rc;
 /// contract id is independently recomputed from the decoded graph and checked
 /// against the carried bytes.
 /// The decoded durable graph: the roots, the sealed operation sites, each site's
-/// resolved graph-node path (parallel to the sites), the recomputed contract id, and
-/// the canonical descriptor the paths and id were derived from.
+/// resolved graph-node path (parallel to the sites), the recomputed contract id, and the
+/// graph's node set.
+///
+/// The value-shape arena is not among them. Every reader of a decoded value shape — the
+/// record tie, the index eligibility classifier, and the contract-id reconstruction — is
+/// inside this decode, so the arena is dropped with the descriptor that viewed it and a
+/// retained `ValueShapeNodeId` addresses nothing anyone can read.
 type DecodedDurable = (
     Vec<DecodedRoot>,
     Vec<SealedSite>,
     Vec<SemanticPath>,
     DurableContractId,
     Vec<SemanticNode>,
-    CanonicalValueShapeDag,
 );
 
 pub(super) fn decode_durable(
@@ -262,7 +266,15 @@ pub(super) fn decode_durable(
             "trailing bytes in durable table",
         ));
     }
-    let recomputed = descriptor.contract_id();
+    // A graph decoded from an image is inside the identity owner's payload ceiling by
+    // construction — the payload is the same walk as the section, spelling a ledger
+    // reference in 25 bytes where the section spelled 16 — so the refusal is a bound this
+    // decode cannot reach. It is answered rather than assumed: an image whose graph
+    // somehow priced its own identity out of reach carries an identity nothing can
+    // recompute, which is exactly a contract that does not match its graph.
+    let recomputed = descriptor
+        .contract_id()
+        .map_err(|_| reject(VerifyPhase::Table, "durable graph is too large to identify"))?;
     if recomputed.bytes() != &carried {
         return Err(reject(
             VerifyPhase::Table,
@@ -272,7 +284,7 @@ pub(super) fn decode_durable(
     // The descriptor is a view over the decoded roots and the arena; only its two
     // derivations — the recomputed id and the node set — outlive this function, so no
     // caller retains a second projection of the durable graph.
-    Ok((roots, sites, site_paths, recomputed, nodes, values))
+    Ok((roots, sites, site_paths, recomputed, nodes))
 }
 
 /// Decode one operation site — its semantic path then its target-kind byte — and

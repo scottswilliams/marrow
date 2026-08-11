@@ -1051,20 +1051,114 @@ fn the_verifier_holds_no_raw_durable_value_tree() {
     );
 }
 
-/// A durable-contract identity is minted at exactly one site, behind the body fence
-/// (red R33).
+/// `code` with every `#[cfg(test)]` item removed: from the attribute through the point
+/// where that item's own braces (or its terminating `;`) close.
 ///
-/// The old encoder built the DURABLE body first and hashed the graph at the end of it,
-/// so a body larger than any image could carry was still hashed — over a preimage larger
-/// than the body, since the contract spells a ledger identity as a 25-byte `IDREF` where
-/// the body writes 16 raw bytes. The replacement counts the body first and mints the
-/// identity only from `LegacyDurableBodyLowerBoundFence`, which exists only for a body
-/// that fits.
-///
-/// That is a type boundary, and this gate keeps it one: a second `contract_id()` call
-/// site would be a second path to the hash, reachable without the fence's witness.
+/// A gate about production call sites that cannot tell a test module from the code it
+/// guards answers about the test tier instead — and the test tier is exactly where a
+/// deliberately hostile call belongs. The input is already literal-stripped, so the brace
+/// counting is over code.
+fn without_cfg_test(code: &str) -> String {
+    let mut out = String::with_capacity(code.len());
+    let mut rest = code;
+    while let Some(at) = rest.find("#[cfg(test)]") {
+        out.push_str(&rest[..at]);
+        let tail = &rest[at..];
+        let mut depth = 0usize;
+        let mut opened = false;
+        let mut end = tail.len();
+        for (index, byte) in tail.bytes().enumerate() {
+            match byte {
+                b'{' => {
+                    depth += 1;
+                    opened = true;
+                }
+                b'}' if opened => {
+                    depth -= 1;
+                    if depth == 0 {
+                        end = index + 1;
+                        break;
+                    }
+                }
+                // A `#[cfg(test)]` `use` or item declaration ends at its semicolon.
+                b';' if !opened => {
+                    end = index + 1;
+                    break;
+                }
+                _ => {}
+            }
+        }
+        rest = &tail[end..];
+    }
+    out.push_str(rest);
+    out
+}
+
+/// The `#[cfg(test)]` stripper sees a whole test module and leaves production code alone.
 #[test]
-fn the_contract_identity_is_minted_only_behind_the_body_fence() {
+fn the_cfg_test_stripper_removes_exactly_the_test_items() {
+    let planted = without_literals(
+        r##"
+        fn live() { descriptor.contract_id(); }
+        #[cfg(test)]
+        use super::contract_id;
+        #[cfg(test)]
+        mod tests {
+            fn hostile() {
+                if forged.contract_id().is_err() { forged.contract_id(); }
+            }
+        }
+        fn also_live() { other.contract_id(); }
+        "##,
+    );
+    let stripped = without_cfg_test(&planted);
+    assert_eq!(
+        stripped.matches("contract_id()").count(),
+        2,
+        "exactly the two production calls survive: {stripped}",
+    );
+    assert!(!stripped.contains("mod tests"), "{stripped}");
+    assert!(stripped.contains("fn also_live"), "{stripped}");
+}
+
+/// The durable-contract identity has one production mint per side of the image boundary,
+/// and asking for one is bounded work wherever it is asked from.
+///
+/// The old encoder built the DURABLE body first and hashed the graph at the end of it, so
+/// a body larger than any image could carry was still hashed — over a preimage larger than
+/// the body, since the contract spells a ledger identity as a 25-byte `IDREF` where the
+/// body writes 16 raw bytes. The producer now counts the body first and mints the identity
+/// only from `LegacyDurableBodyLowerBoundFence`, which exists only for a body that fits.
+///
+/// That fence bounds the producer, and only the producer. A `DurableContractDescriptor` is
+/// a public view over a public arena, so any caller can state a value shape whose expansion
+/// is exponential in its declared levels and ask for its identity; the ceiling that answers
+/// belongs to the identity owner. This gate therefore holds both halves: the call-site set
+/// is scanned across every crate's production sources rather than one file, and the mint
+/// itself must still carry its own bound.
+#[test]
+fn the_contract_identity_has_one_mint_per_side_and_a_bound_of_its_own() {
+    let callers: Vec<String> = workspace_sources("src")
+        .into_iter()
+        .filter(|(_, code)| without_cfg_test(code).contains("contract_id()"))
+        .map(|(path, _)| path.display().to_string())
+        .collect();
+    assert_eq!(
+        callers.len(),
+        CONTRACT_IDENTITY_CALLERS.len(),
+        "the durable-contract identity is asked for at exactly the pinned production \
+         sites; found {callers:?}",
+    );
+    for permitted in CONTRACT_IDENTITY_CALLERS {
+        assert!(
+            callers.iter().any(|path| path.contains(permitted)),
+            "`{permitted}` no longer asks for a contract identity, so a pinned site is \
+             stale: {callers:?}",
+        );
+    }
+
+    // The producer's one call sits inside the body fence, between the fence's `impl` and
+    // the draft's, so it is reachable only from a body that already fits.
     let encode = without_literals(
         &fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/encode.rs"))
             .expect("read the encoder"),
@@ -1084,20 +1178,51 @@ fn the_contract_identity_is_minted_only_behind_the_body_fence() {
         );
         hits[0]
     };
-
     let fence = line_of("impl<'a> LegacyDurableBodyLowerBoundFence<'a> {");
     let minted = line_of("contract_id()");
     let descriptor = line_of("self.draft.durable_descriptor()");
     let draft_impl = line_of("impl ImageDraft {");
     assert!(
         fence < minted && minted < draft_impl,
-        "the one contract-identity mint sits inside the body fence",
+        "the producer's one contract-identity mint sits inside the body fence",
     );
     assert!(
         fence < descriptor && descriptor < draft_impl,
         "so does the one descriptor construction it hashes",
     );
+
+    // The mint's own bound. The public constructor takes a bare arena and promises
+    // nothing about it, so the refusal has to live on the identity.
+    let owner = without_cfg_test(&without_literals(
+        &fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/durable_id.rs"))
+            .expect("read the durable identity owner"),
+    ));
+    assert!(
+        owner.contains(
+            "pub fn contract_id(&self) -> Result<DurableContractId, DurableGraphTooLarge>"
+        ),
+        "the contract identity is fallible, so a graph past the payload ceiling is refused \
+         rather than allocated",
+    );
+    assert!(
+        owner.contains("const MAX_CONTRACT_GRAPH_BYTES"),
+        "the ceiling the refusal stands on is present, so this gate has a live subject",
+    );
+    assert!(
+        owner.contains("values: &'a CanonicalValueShapeDag,"),
+        "the public constructor still takes a bare arena, which is why the bound belongs \
+         to the identity rather than to a precondition on its callers",
+    );
 }
+
+/// The production callers of the durable-contract identity: the producer's body fence and
+/// the verifier's independent recomputation. Those two are the whole point — one mint per
+/// side of the image boundary, agreeing by recomputation rather than by transfer — so a
+/// third is a new trust path and a missing one is a side that stopped checking.
+const CONTRACT_IDENTITY_CALLERS: [&str; 2] = [
+    "marrow-image/src/encode.rs",
+    "marrow-verify/src/verify/durable.rs",
+];
 
 /// The producer keeps no second, recursive way to emit a durable body (red R34).
 ///

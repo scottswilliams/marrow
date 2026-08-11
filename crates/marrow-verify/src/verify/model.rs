@@ -2,8 +2,8 @@
 
 use crate::sealed::{RetShape, SealedCollectionType, SealedConst, SealedSite};
 use marrow_image::{
-    CanonicalValueShapeDag, DurableContractId, DurableIndexComponent, ExportId, ImageId, ImageType,
-    LedgerIdBytes, Scalar, SemanticNode, SemanticPath, ValueShapeNodeId,
+    DurableContractId, DurableIndexComponent, ExportId, ImageId, ImageType, LedgerIdBytes, Scalar,
+    SemanticNode, SemanticPath, ValueShapeNodeId,
 };
 use std::rc::Rc;
 
@@ -145,13 +145,6 @@ pub(super) struct DecodedImage {
     /// this verifier independently derived it from the decoded tables — the same
     /// derivation the recomputed contract id was taken over.
     pub(super) semantic_nodes: Vec<SemanticNode>,
-    /// The arena every decoded field's value reference belongs to. Nothing past the
-    /// durable decode reads a value shape — the record tie, the index eligibility, and
-    /// the contract-id reconstruction all happen there — but the arena is retained with
-    /// the roots that reference it, so a `ValueShapeNodeId` can never outlive the arena
-    /// that minted it.
-    #[allow(dead_code)]
-    pub(super) value_shapes: CanonicalValueShapeDag,
     pub(super) consts: Vec<SealedConst>,
     pub(super) functions: Vec<DecodedFunction>,
     pub(super) exports: Vec<(ExportId, u16)>,

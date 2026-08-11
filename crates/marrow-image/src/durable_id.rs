@@ -103,11 +103,14 @@
 
 use sha2::{Digest, Sha256};
 
+use crate::bounds;
 use crate::semantic::{
     SemanticNode, SemanticNodeKind, SemanticPath, SemanticStep, SemanticStepKind,
 };
 use crate::ty::Scalar;
-use crate::value_dag::{CanonicalValueShapeDag, ValueShapeNodeId, ValueShapeWireForm, expand};
+use crate::value_dag::{
+    CanonicalValueShapeDag, ImageByteSink, ValueShapeNodeId, ValueShapeWireForm, expand, push_u16,
+};
 
 /// The domain-separation tag for the durable-contract identity. Distinct from every
 /// other Marrow identity's `kind`, so a `DurableContractId` can never collide with
@@ -132,6 +135,64 @@ pub(crate) const IDREF_SUM: u8 = 5;
 pub(crate) const IDREF_MEMBER: u8 = 6;
 const IDREF_GROUP: u8 = 7;
 const IDREF_INDEX: u8 = 8;
+
+/// The largest canonical graph payload a durable-contract identity is ever computed
+/// over.
+///
+/// The payload and the image's DURABLE section are the same walk over the same graph,
+/// differing only in how a ledger reference is spelled: 25 payload bytes
+/// (`u8(kind) ‖ u64_be(16) ‖ id`) where the section writes that identity's 16 raw bytes.
+/// A graph whose section an image can carry therefore has a payload under
+/// `25/16 × MAX_IMAGE_BYTES`, so twice the image ceiling is above every graph a producer
+/// can encode and above every graph a decoder can read out of an image.
+///
+/// It is far below what a caller holding an arena can *state*. A value shape shared
+/// across nesting levels expands geometrically in its depth and the payload spells the
+/// expansion, so the length of a graph's payload is not bounded by the size of the graph
+/// that describes it. Past this length [`DurableContractDescriptor::contract_id`] refuses
+/// rather than allocating, which is what makes the cost of asking for an identity a
+/// property of this owner instead of a promise each of its callers must keep.
+const MAX_CONTRACT_GRAPH_BYTES: usize = 2 * bounds::MAX_IMAGE_BYTES;
+
+/// The ceiling is above the widest payload any image-carryable graph can have, so it can
+/// only ever refuse a graph no producer could have encoded. Widening the image ceiling
+/// without widening this one would make the refusal reachable from the production path.
+const _: () = assert!(MAX_CONTRACT_GRAPH_BYTES > bounds::MAX_IMAGE_BYTES * 25 / 16);
+
+/// A durable graph whose canonical payload is larger than any image could carry, refused
+/// before its identity is computed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DurableGraphTooLarge;
+
+/// The canonical payload under construction, bounded.
+///
+/// Once past [`MAX_CONTRACT_GRAPH_BYTES`] the buffer keeps what it has and discards the
+/// rest, and every walk writing into it stops at [`ImageByteSink::is_full`]. Peak memory
+/// is therefore the ceiling plus one identity whatever graph is offered, and no reader
+/// ever sees a truncated payload, because [`DurableContractDescriptor::encode_graph`]
+/// turns a full buffer into a refusal rather than a hash input.
+#[derive(Default)]
+struct BoundedGraphPayload(Vec<u8>);
+
+impl ImageByteSink for BoundedGraphPayload {
+    fn push(&mut self, byte: u8) {
+        if self.is_full() {
+            return;
+        }
+        self.0.push(byte);
+    }
+
+    fn extend_bytes(&mut self, bytes: &[u8]) {
+        if self.is_full() {
+            return;
+        }
+        self.0.extend_from_slice(bytes);
+    }
+
+    fn is_full(&self) -> bool {
+        self.0.len() > MAX_CONTRACT_GRAPH_BYTES
+    }
+}
 
 /// The frozen member-tag bytes distinguishing the three durable member kinds
 /// within the canonical payload. They are internal to this encoding and separate
@@ -400,9 +461,19 @@ impl<'a> DurableContractDescriptor<'a> {
         }
     }
 
-    /// The stable 32-byte identity of this durable graph in the local project root.
-    pub fn contract_id(&self) -> DurableContractId {
-        DurableContractId::compute(LOCAL_ROOT_LINEAGE, &self.encode_graph())
+    /// The stable 32-byte identity of this durable graph in the local project root, or
+    /// [`DurableGraphTooLarge`] for a graph whose canonical payload is larger than any
+    /// image could carry.
+    ///
+    /// The refusal is the whole reason asking for an identity is bounded work: a
+    /// descriptor is a view over an arena, and an arena can state a value shape whose
+    /// expansion — which is what the payload spells — is exponential in its declared
+    /// levels. No caller has to establish that before asking.
+    pub fn contract_id(&self) -> Result<DurableContractId, DurableGraphTooLarge> {
+        Ok(DurableContractId::compute(
+            LOCAL_ROOT_LINEAGE,
+            &self.encode_graph()?,
+        ))
     }
 
     /// Enumerate every durable graph node paired with its derived [`SemanticPath`]:
@@ -443,32 +514,53 @@ impl<'a> DurableContractDescriptor<'a> {
 
     /// The canonical graph bytes (the `graph` production above). Length-delimited so
     /// the whole is fed as one `LP(graph)` component of the payload.
-    fn encode_graph(&self) -> Vec<u8> {
-        let mut out = Vec::new();
-        out.extend_from_slice(&(self.roots.len() as u16).to_be_bytes());
+    ///
+    /// The walk writes into a bounded buffer and stops at the first byte past
+    /// [`MAX_CONTRACT_GRAPH_BYTES`], so a graph stating an expansion no image could carry
+    /// costs the bytes the ceiling admits rather than the bytes it would have produced.
+    fn encode_graph(&self) -> Result<Vec<u8>, DurableGraphTooLarge> {
+        let mut out = BoundedGraphPayload::default();
+        push_u16(&mut out, payload_count(self.roots.len()));
         if let Some(application) = &self.application {
             push_idref(&mut out, IDREF_APPLICATION, application);
         }
         for root in &self.roots {
+            if out.is_full() {
+                break;
+            }
             push_idref(&mut out, IDREF_ROOT, &root.placement);
             push_idref(&mut out, IDREF_PRODUCT, &root.product);
             push_keys(&mut out, &root.keys);
             push_members(&mut out, &root.members, self.values);
             push_indexes(&mut out, &root.indexes);
         }
-        out
+        match out.is_full() {
+            true => Err(DurableGraphTooLarge),
+            false => Ok(out.0),
+        }
     }
+}
+
+/// The canonical payload's `u16` count for `count` graph positions.
+///
+/// Every count the payload spells — roots, key columns, members, index components — is
+/// bounded far below `u16::MAX` in [`crate::bounds`], and the encoder rechecks each of
+/// them before a descriptor is built. A wrapping cast would let a wider graph present a
+/// narrower one's count and so share its identity; the conversion is checked so that a
+/// graph the payload cannot count is a loud producer defect instead.
+fn payload_count(count: usize) -> u16 {
+    u16::try_from(count).expect("a durable graph's counts are within the u16 the payload spells")
 }
 
 /// Append a root's managed indexes: `u16_be(count) ‖ index*`, each an `Index` IDREF,
 /// its `unique` flag byte, and its ordered projection of leaf-reference IDREFs (a
 /// `field` (2) or `key` (4) IDREF per component). Projection order is load-bearing.
-fn push_indexes(out: &mut Vec<u8>, indexes: &[DurableIndexShape]) {
-    out.extend_from_slice(&(indexes.len() as u16).to_be_bytes());
+fn push_indexes(out: &mut impl ImageByteSink, indexes: &[DurableIndexShape]) {
+    push_u16(out, payload_count(indexes.len()));
     for index in indexes {
         push_idref(out, IDREF_INDEX, &index.id);
         out.push(u8::from(index.unique));
-        out.extend_from_slice(&(index.components.len() as u16).to_be_bytes());
+        push_u16(out, payload_count(index.components.len()));
         for component in &index.components {
             match component {
                 DurableIndexComponent::Field(id) => push_idref(out, IDREF_FIELD, id),
@@ -521,8 +613,8 @@ fn collect_member_nodes(
 
 /// Append `u16_be(count) ‖ [u8(scalar_tag) ‖ IDREF(key)]*` — a placement's key
 /// tuple, shared by roots and branches. Column order is load-bearing.
-fn push_keys(out: &mut Vec<u8>, keys: &[DurableKeyShape]) {
-    out.extend_from_slice(&(keys.len() as u16).to_be_bytes());
+fn push_keys(out: &mut impl ImageByteSink, keys: &[DurableKeyShape]) {
+    push_u16(out, payload_count(keys.len()));
     for key in keys {
         out.push(key.scalar.tag());
         push_idref(out, IDREF_KEY, &key.id);
@@ -532,13 +624,20 @@ fn push_keys(out: &mut Vec<u8>, keys: &[DurableKeyShape]) {
 /// Append a member tree: `u16_be(count) ‖ member*`, each member a tag byte and its
 /// body. Recurses through groups and branches so a whole durable shape has one
 /// canonical byte image.
+///
+/// This is the walk that can amplify: a field's value is spelled as its expansion, so a
+/// full sink ends the run rather than expanding the members behind it into bytes nothing
+/// will read.
 fn push_members(
-    out: &mut Vec<u8>,
+    out: &mut impl ImageByteSink,
     members: &[DurableMemberShape],
     values: &CanonicalValueShapeDag,
 ) {
-    out.extend_from_slice(&(members.len() as u16).to_be_bytes());
+    push_u16(out, payload_count(members.len()));
     for member in members {
+        if out.is_full() {
+            return;
+        }
         match member {
             DurableMemberShape::Field(field) => {
                 out.push(MEMBER_FIELD);
@@ -614,23 +713,23 @@ impl DurableContractId {
 }
 
 /// Append `u8(kind) ‖ u64_be(16) ‖ id` — a kind-tagged, length-delimited ledger id.
-fn push_idref(out: &mut Vec<u8>, kind: u8, id: &LedgerIdBytes) {
+fn push_idref(out: &mut impl ImageByteSink, kind: u8, id: &LedgerIdBytes) {
     out.push(kind);
     push_lp(out, id.bytes());
 }
 
 /// Append `u64_be(len) ‖ bytes`.
-fn push_lp(out: &mut Vec<u8>, bytes: &[u8]) {
-    out.extend_from_slice(&(bytes.len() as u64).to_be_bytes());
-    out.extend_from_slice(bytes);
+fn push_lp(out: &mut impl ImageByteSink, bytes: &[u8]) {
+    out.extend_bytes(&(bytes.len() as u64).to_be_bytes());
+    out.extend_bytes(bytes);
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        DURABLE_CONTRACT_KIND, DurableBranchShape, DurableContractDescriptor, DurableFieldShape,
-        DurableGroupShape, DurableIndexComponent, DurableIndexShape, DurableKeyShape,
-        DurableMemberShape, DurableRootShape, LOCAL_ROOT_LINEAGE, LedgerIdBytes,
+        DURABLE_CONTRACT_KIND, DurableBranchShape, DurableContractDescriptor, DurableContractId,
+        DurableFieldShape, DurableGroupShape, DurableIndexComponent, DurableIndexShape,
+        DurableKeyShape, DurableMemberShape, DurableRootShape, LOCAL_ROOT_LINEAGE, LedgerIdBytes,
     };
     use crate::ty::Scalar;
     use crate::value_dag::{CanonicalValueShapeDag, ValueShapeNodeId, ValueShapeView};
@@ -639,6 +738,15 @@ mod tests {
 
     fn id(byte: u8) -> LedgerIdBytes {
         LedgerIdBytes::from_bytes([byte; 16])
+    }
+
+    /// The contract identity of a graph these tests state. Every one of them is a handful
+    /// of bytes, far inside the canonical payload ceiling, so the refusal that ceiling
+    /// exists for is not what any of them is about.
+    fn cid(descriptor: &DurableContractDescriptor<'_>) -> DurableContractId {
+        descriptor
+            .contract_id()
+            .expect("a stated test graph is far inside the payload ceiling")
     }
 
     /// The one arena these graphs' field values are minted in.
@@ -831,12 +939,12 @@ mod tests {
     #[test]
     fn durable_contract_id_known_answer() {
         assert_eq!(
-            counters_graph().contract_id().to_hex(),
+            cid(&counters_graph()).to_hex(),
             independent_id(&counters_graph())
         );
         // The frozen value itself.
         assert_eq!(
-            counters_graph().contract_id().to_hex(),
+            cid(&counters_graph()).to_hex(),
             "db84b11b9d27fce7931f308596a8fcb20eb7e2c6bfbd5709c12148a54e41ee1f",
         );
     }
@@ -847,17 +955,14 @@ mod tests {
     #[test]
     fn durable_contract_id_with_group_and_branch_known_answer() {
         assert_eq!(
-            library_graph().contract_id().to_hex(),
+            cid(&library_graph()).to_hex(),
             independent_id(&library_graph())
         );
         assert_eq!(
-            library_graph().contract_id().to_hex(),
+            cid(&library_graph()).to_hex(),
             "51aa42f995a8c81ece8146d417bc1f574680cb985a9024de72e81a1d47a3b714",
         );
-        assert_ne!(
-            library_graph().contract_id(),
-            counters_graph().contract_id()
-        );
+        assert_ne!(cid(&library_graph()), cid(&counters_graph()));
     }
 
     /// Independent-decoder reconstruction: a second, hand-written implementation of
@@ -987,27 +1092,27 @@ mod tests {
     /// flipped required flag changes it.
     #[test]
     fn identity_follows_ledger_ids_not_shape_spelling() {
-        let base = counters_graph().contract_id();
+        let base = cid(&counters_graph());
 
         // The same ids and shape: stable (this is what a rename looks like here —
         // names are simply not part of the payload).
-        assert_eq!(base, counters_graph().contract_id());
+        assert_eq!(base, cid(&counters_graph()));
 
         // A re-minted top-level field id changes the id (delete-then-re-add mints
         // fresh).
         let mut re_minted = counters_graph();
         re_minted.roots[0].members[0] = field(0x1e, Scalar::Int, true);
-        assert_ne!(base, re_minted.contract_id());
+        assert_ne!(base, cid(&re_minted));
 
         // A changed key type changes the id.
         let mut rekeyed = counters_graph();
         rekeyed.roots[0].keys[0].scalar = Scalar::Int;
-        assert_ne!(base, rekeyed.contract_id());
+        assert_ne!(base, cid(&rekeyed));
 
         // A re-minted key id changes the id.
         let mut rekey_id = counters_graph();
         rekey_id.roots[0].keys[0].id = id(0x2c);
-        assert_ne!(base, rekey_id.contract_id());
+        assert_ne!(base, cid(&rekey_id));
 
         // An added key column (single → composite) changes the id.
         let mut composite = counters_graph();
@@ -1015,30 +1120,30 @@ mod tests {
             scalar: Scalar::Int,
             id: id(0x3c),
         });
-        assert_ne!(base, composite.contract_id());
+        assert_ne!(base, cid(&composite));
 
         // A field made required changes the id.
         let mut required = counters_graph();
         required.roots[0].members[1] = field(0x0f, Scalar::Text, true);
-        assert_ne!(base, required.contract_id());
+        assert_ne!(base, cid(&required));
 
         // A removed field changes the id.
         let mut narrowed = counters_graph();
         narrowed.roots[0].members.pop();
-        assert_ne!(base, narrowed.contract_id());
+        assert_ne!(base, cid(&narrowed));
 
         // A different application changes the id.
         let mut other_app = counters_graph();
         other_app.application = Some(id(0x2a));
-        assert_ne!(base, other_app.contract_id());
+        assert_ne!(base, cid(&other_app));
     }
 
     /// Group and branch structure is part of the identity, distinct from a flat
     /// field of the same ledger id.
     #[test]
     fn group_and_branch_structure_is_part_of_the_identity() {
-        let base = library_graph().contract_id();
-        assert_eq!(base, library_graph().contract_id());
+        let base = cid(&library_graph());
+        assert_eq!(base, cid(&library_graph()));
 
         // Re-minting the group id changes the identity.
         let mut regrouped = library_graph();
@@ -1047,7 +1152,7 @@ mod tests {
         } else {
             panic!("member 1 is the group");
         }
-        assert_ne!(base, regrouped.contract_id());
+        assert_ne!(base, cid(&regrouped));
 
         // Re-minting the branch placement id changes the identity.
         let mut rebranched = library_graph();
@@ -1056,7 +1161,7 @@ mod tests {
         } else {
             panic!("member 2 is the branch");
         }
-        assert_ne!(base, rebranched.contract_id());
+        assert_ne!(base, cid(&rebranched));
 
         // Adding a key column to the branch changes the identity.
         let mut wider = library_graph();
@@ -1068,20 +1173,20 @@ mod tests {
         } else {
             panic!("member 2 is the branch");
         }
-        assert_ne!(base, wider.contract_id());
+        assert_ne!(base, cid(&wider));
 
         // Promoting the group's field to a top-level field of the same id is a
         // different graph (nesting is load-bearing), even though the field id,
         // scalar, and required flag are unchanged.
         let mut flattened = library_graph();
         flattened.roots[0].members[1] = field(0x21, Scalar::Int, false);
-        assert_ne!(base, flattened.contract_id());
+        assert_ne!(base, cid(&flattened));
 
         // Member order is load-bearing: swapping the group and the branch changes
         // the identity.
         let mut reordered = library_graph();
         reordered.roots[0].members.swap(1, 2);
-        assert_ne!(base, reordered.contract_id());
+        assert_ne!(base, cid(&reordered));
     }
 
     /// A graph whose resource stores widened value shapes: a dense `struct` leaf, an
@@ -1117,17 +1222,14 @@ mod tests {
     #[test]
     fn durable_contract_id_with_widened_values_known_answer() {
         assert_eq!(
-            widened_graph().contract_id().to_hex(),
+            cid(&widened_graph()).to_hex(),
             independent_id(&widened_graph())
         );
         assert_eq!(
-            widened_graph().contract_id().to_hex(),
+            cid(&widened_graph()).to_hex(),
             "9e2b73b8c9e5f26ca656ed4c05b0468683b36b2753a483da8f960fc94cbd045e",
         );
-        assert_ne!(
-            widened_graph().contract_id(),
-            counters_graph().contract_id()
-        );
+        assert_ne!(cid(&widened_graph()), cid(&counters_graph()));
     }
 
     /// Enum member identity is part of the durable identity: a rename preserves it
@@ -1135,34 +1237,34 @@ mod tests {
     /// positional), or re-typing a member payload changes it.
     #[test]
     fn enum_member_identity_follows_the_ledger_ids() {
-        let base = widened_graph().contract_id();
-        assert_eq!(base, widened_graph().contract_id());
+        let base = cid(&widened_graph());
+        assert_eq!(base, cid(&widened_graph()));
 
         // Re-minting the sum id (a delete-then-re-add of the enum) changes the id.
         let mut re_summed = widened_graph();
         re_summed.roots[0].members[2] = value_field(0x41, true, shapes().option_int_resummed);
-        assert_ne!(base, re_summed.contract_id());
+        assert_ne!(base, cid(&re_summed));
 
         // Re-minting one member id (delete-then-re-add of a variant) changes the id.
         let mut re_membered = widened_graph();
         re_membered.roots[0].members[3] = value_field(0x42, false, shapes().user_enum_re_membered);
-        assert_ne!(base, re_membered.contract_id());
+        assert_ne!(base, cid(&re_membered));
 
         // Appending a member is positional: swapping two members changes the id, so a
         // member can never silently take another's code.
         let mut reordered = widened_graph();
         reordered.roots[0].members[3] = value_field(0x42, false, shapes().user_enum_reordered);
-        assert_ne!(base, reordered.contract_id());
+        assert_ne!(base, cid(&reordered));
 
         // Re-typing a member payload leaf changes the id.
         let mut retyped = widened_graph();
         retyped.roots[0].members[3] = value_field(0x42, false, shapes().user_enum_retyped);
-        assert_ne!(base, retyped.contract_id());
+        assert_ne!(base, cid(&retyped));
 
         // Re-ordering a struct leaf changes the id (leaf order is load-bearing).
         let mut struct_swapped = widened_graph();
         struct_swapped.roots[0].members[1] = value_field(0x40, false, shapes().int_text);
-        assert_ne!(base, struct_swapped.contract_id());
+        assert_ne!(base, cid(&struct_swapped));
     }
 
     /// A singleton root (empty key tuple) and a composite root (two key columns)
@@ -1180,7 +1282,7 @@ mod tests {
                 indexes: Vec::new(),
             }],
         );
-        assert_eq!(singleton.contract_id().to_hex(), independent_id(&singleton));
+        assert_eq!(cid(&singleton).to_hex(), independent_id(&singleton));
 
         let composite = descriptor(
             id(0x0a),
@@ -1201,13 +1303,13 @@ mod tests {
                 indexes: Vec::new(),
             }],
         );
-        assert_eq!(composite.contract_id().to_hex(), independent_id(&composite));
-        assert_ne!(singleton.contract_id(), composite.contract_id());
+        assert_eq!(cid(&composite).to_hex(), independent_id(&composite));
+        assert_ne!(cid(&singleton), cid(&composite));
 
         // Key-column order matters: swapping the two columns is a different graph.
         let mut swapped = composite.clone();
         swapped.roots[0].keys.swap(0, 1);
-        assert_ne!(composite.contract_id(), swapped.contract_id());
+        assert_ne!(cid(&composite), cid(&swapped));
     }
 
     /// The `counters` graph plus two managed indexes: a nonunique `byLabel(label, name)`
@@ -1239,18 +1341,15 @@ mod tests {
     #[test]
     fn durable_contract_id_with_indexes_known_answer() {
         assert_eq!(
-            indexed_graph().contract_id().to_hex(),
+            cid(&indexed_graph()).to_hex(),
             independent_id(&indexed_graph())
         );
         assert_eq!(
-            indexed_graph().contract_id().to_hex(),
+            cid(&indexed_graph()).to_hex(),
             "8965d84ad46e7cf0f31de46f0c3d45f2fb8fa555ab1ed99e30a76e694763e773",
         );
         // Indexes are part of the identity: dropping them is the plain counters graph.
-        assert_ne!(
-            indexed_graph().contract_id(),
-            counters_graph().contract_id()
-        );
+        assert_ne!(cid(&indexed_graph()), cid(&counters_graph()));
     }
 
     /// Managed-index identity follows the ledger ids: a rename preserves it (ids
@@ -1258,46 +1357,107 @@ mod tests {
     /// components, adding a component, or reordering two indexes changes it.
     #[test]
     fn index_identity_follows_the_ledger_ids() {
-        let base = indexed_graph().contract_id();
-        assert_eq!(base, indexed_graph().contract_id());
+        let base = cid(&indexed_graph());
+        assert_eq!(base, cid(&indexed_graph()));
 
         // Re-minting an index id (delete-then-re-add of the index) changes the id.
         let mut re_minted = indexed_graph();
         re_minted.roots[0].indexes[0].id = id(0x7f);
-        assert_ne!(base, re_minted.contract_id());
+        assert_ne!(base, cid(&re_minted));
 
         // Flipping the unique flag changes the id.
         let mut uniqued = indexed_graph();
         uniqued.roots[0].indexes[0].unique = true;
-        assert_ne!(base, uniqued.contract_id());
+        assert_ne!(base, cid(&uniqued));
 
         // Reordering the projection components changes the id (projection order is
         // load-bearing).
         let mut reordered = indexed_graph();
         reordered.roots[0].indexes[0].components.swap(0, 1);
-        assert_ne!(base, reordered.contract_id());
+        assert_ne!(base, cid(&reordered));
 
         // Re-pointing a component at a different leaf changes the id.
         let mut re_pointed = indexed_graph();
         re_pointed.roots[0].indexes[1].components[0] = DurableIndexComponent::Field(id(0x0f));
-        assert_ne!(base, re_pointed.contract_id());
+        assert_ne!(base, cid(&re_pointed));
 
         // A field component and a key component of the same id are distinct.
         let mut field_vs_key = indexed_graph();
         field_vs_key.roots[0].indexes[1].components[0] = DurableIndexComponent::Key(id(0x0e));
-        assert_ne!(base, field_vs_key.contract_id());
+        assert_ne!(base, cid(&field_vs_key));
 
         // Index declaration order is load-bearing.
         let mut swapped = indexed_graph();
         swapped.roots[0].indexes.swap(0, 1);
-        assert_ne!(base, swapped.contract_id());
+        assert_ne!(base, cid(&swapped));
+    }
+
+    /// Asking a stated graph for its identity is bounded work, whoever states it.
+    ///
+    /// This is the whole forge path: an arena is public and interning is what makes it
+    /// compact, so seventeen minted nodes describe a value whose expansion — which is
+    /// what the canonical payload spells — has `4^16` scalar leaves. Nothing about the
+    /// descriptor's public constructor knows where the arena came from. The identity
+    /// owner's own ceiling answers, in the bytes it admits rather than the bytes the
+    /// expansion would have produced.
+    #[test]
+    fn a_stated_graph_whose_payload_is_unbounded_is_refused_rather_than_expanded() {
+        let mut values = CanonicalValueShapeDag::new();
+        let mut level = values.scalar(Scalar::Int);
+        for _ in 0..16 {
+            level = values.struct_shape(vec![level; 4]);
+        }
+        assert_eq!(values.len(), 17, "the stated graph is seventeen nodes");
+
+        let forged = DurableContractDescriptor::new(
+            id(0x0a),
+            vec![DurableRootShape {
+                placement: id(0x0b),
+                product: id(0x0d),
+                keys: Vec::new(),
+                members: vec![value_field(0x0e, true, level)],
+                indexes: Vec::new(),
+            }],
+            &values,
+        );
+
+        let started = std::time::Instant::now();
+        assert_eq!(forged.contract_id(), Err(super::DurableGraphTooLarge));
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed < std::time::Duration::from_secs(5),
+            "refusing the graph took {elapsed:?}: the expansion is being materialized",
+        );
+    }
+
+    /// The sibling of the refusal: the same arena, referenced at a level whose expansion
+    /// fits, still mints an identity. The ceiling refuses a payload, not an arena.
+    #[test]
+    fn a_shared_shape_whose_expansion_fits_still_mints_an_identity() {
+        let mut values = CanonicalValueShapeDag::new();
+        let mut level = values.scalar(Scalar::Int);
+        for _ in 0..7 {
+            level = values.struct_shape(vec![level; 4]);
+        }
+        let fitting = DurableContractDescriptor::new(
+            id(0x0a),
+            vec![DurableRootShape {
+                placement: id(0x0b),
+                product: id(0x0d),
+                keys: Vec::new(),
+                members: vec![value_field(0x0e, true, level)],
+                indexes: Vec::new(),
+            }],
+            &values,
+        );
+        assert_eq!(cid(&fitting).to_hex(), independent_id(&fitting));
     }
 
     #[test]
     fn the_empty_graph_has_a_stable_id() {
         let empty = DurableContractDescriptor::empty(&shapes().values);
-        assert_eq!(empty.contract_id(), empty.contract_id());
-        assert_ne!(empty.contract_id(), counters_graph().contract_id());
+        assert_eq!(cid(&empty), cid(&empty));
+        assert_ne!(cid(&empty), cid(&counters_graph()));
     }
 
     // --- Derived semantic paths (D02): every graph node's stable ledger-id chain. ---

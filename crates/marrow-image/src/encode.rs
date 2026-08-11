@@ -11,8 +11,8 @@ use crate::digest::{ImageId, image_id};
 use crate::draft::{CollectionTypeDef, ConstValue, ImageBuildError, ImageDraft, KeyColumn};
 use crate::durable_id::{
     DurableBranchShape, DurableContractDescriptor, DurableContractId, DurableFieldShape,
-    DurableGroupShape, DurableIndexComponent, DurableIndexShape, DurableKeyShape,
-    DurableMemberShape, DurableRootShape,
+    DurableGraphTooLarge, DurableGroupShape, DurableIndexComponent, DurableIndexShape,
+    DurableKeyShape, DurableMemberShape, DurableRootShape,
 };
 use crate::instr::Instr;
 use crate::product::{
@@ -21,7 +21,7 @@ use crate::product::{
 use crate::semantic::{SemanticPath, SemanticTarget};
 use crate::ty::ImageType;
 use crate::value_dag::{
-    CanonicalValueShapeDag, ImageByteSink, ValueShapeView, ValueShapeWireForm, expand,
+    CanonicalValueShapeDag, ImageByteSink, ValueShapeView, ValueShapeWireForm, expand, push_u16,
 };
 
 /// Container magic and version.
@@ -107,6 +107,10 @@ impl<'a> LegacyFullDraftCoherencePreflight<'a> {
         if !draft.root_occurrences().is_empty() && draft.application_identity().is_none() {
             return Err(ImageBuildError::InvalidReference("application identity"));
         }
+        // The projection is walked once per reader — here, by the body's lower bound, and
+        // by the body itself — rather than materialized once and held, because a retained
+        // table is `MAX_SITES` owned paths live for the whole encode while a walk costs
+        // only the rows it visits and retains none of them.
         draft.project_sites(|_| {})?;
         Ok(Self(draft))
     }
@@ -117,11 +121,17 @@ impl<'a> LegacyFullDraftCoherencePreflight<'a> {
 ///
 /// **Temporary bridge.** The body's length is counted through
 /// [`DurableBodyLowerBound`] before a single byte of it is built, so a body no image
-/// could carry is refused with the existing [`ImageBuildError::ImageTooLarge`] before
-/// any expansion buffer, contract preimage, hash input, or output is allocated. Only
-/// fitting input reaches the old encoder, and — because the contract identity is minted
-/// only from a value of this type — no contract hash is ever computed over bytes no
-/// image can carry.
+/// could carry is refused with the existing [`ImageBuildError::ImageTooLarge`] before any
+/// expansion buffer, contract preimage, hash input, or output is allocated, and only
+/// fitting input reaches the old encoder.
+///
+/// The fence bounds *this producer's* peak allocation, which is what makes the phase
+/// maxima below statable. It does not bound what any other caller of
+/// [`DurableContractDescriptor::contract_id`] can ask for, and it never could: a
+/// descriptor is a view over an arena, and this type has no reach into one. That the
+/// contract hash is never computed over bytes no image can carry is a property of the
+/// identity owner's own ceiling on its canonical payload, which holds for every caller
+/// including this one.
 ///
 /// # `B_LEGACY` — the exact allocation phase maxima this bridge stands on
 ///
@@ -141,14 +151,15 @@ impl<'a> LegacyFullDraftCoherencePreflight<'a> {
 /// `B_LEGACY_CONTRACT_BRIDGE_MAX[target]` is that baseline plus the **maximum, not the
 /// sum**, of the four phases the old producer passes through:
 ///
-/// - **(A) Contract hashing.** The DURABLE body `Vec` (≤ `MAX_IMAGE_BYTES` + 32 by this
-///   fence), the string permutation map and sorted pool, the constant permutation map
-///   and sorted pool, the encoded function section, the growing tail, plus
-///   `encode_graph`'s inner buffer and `compute`'s outer payload — both live at once,
-///   and both larger than the body they describe: the contract preimage spells a ledger
-///   identity as a 25-byte `IDREF` (`u8(kind) ‖ u64_be(16) ‖ id`) where the body writes
-///   the same identity as 16 raw bytes, so the preimage is bounded by
-///   `25/16 × MAX_IMAGE_BYTES` and is *not* bounded by the ceiling the body passed.
+/// - **(A) Contract hashing.** The DURABLE body `Vec` (≤ `MAX_IMAGE_BYTES` by this
+///   fence, which counts the closing 32-byte identity against the ceiling before the
+///   body is allocated at that exact length), the string permutation map and sorted
+///   pool, the constant permutation map and sorted pool, the encoded function section,
+///   the growing tail, plus `encode_graph`'s inner buffer and `compute`'s outer payload —
+///   both live at once, and both larger than the body they describe: the contract
+///   preimage spells a ledger identity as a 25-byte `IDREF` (`u8(kind) ‖ u64_be(16) ‖ id`)
+///   where the body writes the same identity as 16 raw bytes, so the preimage is bounded
+///   by `25/16 × MAX_IMAGE_BYTES` and is *not* bounded by the ceiling the body passed.
 ///   That 25:16 ratio is the whole reason this bound is not simply `MAX_IMAGE_BYTES`.
 /// - **(B) Each of the ten section body constructions and its `push_section`**, with
 ///   that section's own body, the growing tail, and the then-live permutation maps and
@@ -201,7 +212,11 @@ impl<'a> LegacyDurableBodyLowerBoundFence<'a> {
     fn encode_body(self, str_map: &[u16]) -> Result<Vec<u8>, ImageBuildError> {
         let mut body = Vec::with_capacity(self.body_len + DurableContractId::BYTES);
         self.draft.write_durable_body(&mut body, str_map)?;
-        body.extend_from_slice(self.draft.durable_descriptor()?.contract_id().bytes());
+        let descriptor = self.draft.durable_descriptor()?;
+        let identity = descriptor
+            .contract_id()
+            .map_err(|DurableGraphTooLarge| ImageBuildError::ImageTooLarge)?;
+        body.extend_from_slice(identity.bytes());
         Ok(body)
     }
 }
@@ -216,11 +231,9 @@ impl ImageDraft {
         let sorted_strings = self.sorted_strings(&str_map);
         let (const_map, sorted_consts) = self.const_sort(&str_map);
 
-        // CodeBytes and its sibling operand references keep their position: they are the
-        // last producer-side results the old encoder could reach before the whole-image
-        // ceiling, and they are still reached before it. Their section lands at 0x05
-        // below; only the moment of discovery moved, from after a body that could not
-        // fail to before a body that is now refused early.
+        // CodeBytes and its sibling operand references are discovered before the
+        // whole-image ceiling result, so they are computed before the body is measured.
+        // Their section lands at 0x05 below.
         let function_offsets = self.encode_functions(&str_map, &const_map)?;
 
         // The DURABLE body is the one section whose size is not bounded by the draft's
@@ -959,6 +972,17 @@ fn validate_declaration_graph(
 ///
 /// This is one pass over the arena: each distinct shape is measured once however many
 /// fields, structs, or enum payloads reference it, and no occurrence is expanded.
+///
+/// # Declared precondition
+///
+/// The draft's arena is validated **as a whole**, not through the fields that reference
+/// it. A node no declaration reaches is measured here like any other, and an over-bound
+/// one refuses the encode. That is deliberate: the arena is the draft's own retained
+/// state, so a node past a value bound is a producer defect wherever it came from, and
+/// deciding it by reachability would mean the same draft encodes or refuses depending on
+/// a traversal — while costing a reachability walk to learn something no correct producer
+/// can produce. Every downstream owner may therefore assume that an encoded arena is
+/// within the value bounds, whatever part of it a walk happens to visit.
 fn validate_value_shapes(values: &CanonicalValueShapeDag) -> Result<(), ImageBuildError> {
     for node in values.nodes() {
         match values.view(node) {
@@ -1029,10 +1053,6 @@ fn member_shapes(
             }),
         })
         .collect()
-}
-
-fn push_u16(out: &mut impl ImageByteSink, value: u16) {
-    out.extend_bytes(&value.to_be_bytes());
 }
 
 fn push_u32(out: &mut impl ImageByteSink, value: u32) {
