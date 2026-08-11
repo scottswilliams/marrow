@@ -1,9 +1,14 @@
 //! Public-path coverage for bounded verifier span projection.
 
 use marrow_image::{
-    ExportId, FunctionDef, ImageDraft, ImageType, Instr, Scalar, SpanEntry, image_id,
+    ExportId, FunctionDef, ImageDraft, ImageType, Instr, Scalar, SpanEntry,
 };
 use marrow_verify::{VerifyPhase, verify};
+
+#[path = "../../marrow-image/tests/common/image_forgery.rs"]
+#[allow(dead_code, reason = "this file forges by offset, not by pattern search")]
+mod image_forgery;
+use image_forgery::rehash;
 
 const INSTRUCTION_COUNT: usize = 4_096;
 const FUNCTION_SECTION_ID: u8 = 0x05;
@@ -87,11 +92,6 @@ fn read_u32(bytes: &[u8], offset: usize) -> u32 {
 
 fn write_u32(bytes: &mut [u8], offset: usize, value: u32) {
     bytes[offset..offset + 4].copy_from_slice(&value.to_be_bytes());
-}
-
-fn rehash(bytes: &mut [u8]) {
-    let id = image_id(&bytes[37..]);
-    bytes[5..37].copy_from_slice(&id.0);
 }
 
 fn assert_rejection(bytes: &[u8], phase: VerifyPhase, detail: &'static str) {

@@ -11,13 +11,17 @@ use marrow_image::{
     DeclarationMemberDef, DeclarationMemberShape, DurableValueShape, ExportId, FieldDef,
     FunctionDef, ImageBuildError, ImageDraft, ImageType, Instr, KeyColumn, LedgerIdBytes,
     LegacyDraftSiteOperand, RecordTypeDef, RootOccurrenceDef, Scalar, SemanticTarget, SpanEntry,
-    TypeId, image_id,
+    TypeId,
 };
 use marrow_verify::{VerifyPhase, verify};
 
 #[path = "../../marrow-image/tests/common/site_seam.rs"]
 mod site_seam;
 use site_seam::site;
+
+#[path = "../../marrow-image/tests/common/image_forgery.rs"]
+mod image_forgery;
+use image_forgery::{forge, rehash};
 
 const APPLICATION_ID: [u8; 16] = [0x0a; 16];
 // Root A ("assets"): placement/product/key/field ledger ids.
@@ -309,27 +313,6 @@ fn shared_product_image() -> Vec<u8> {
         ImageType::scalar(Scalar::Int),
     );
     draft.encode().expect("encode").bytes
-}
-
-/// Recompute and rewrite the image digest over the payload (every byte after the slot),
-/// so a forged artifact reaches the table phase rather than stopping at the envelope.
-fn rehash(bytes: &mut [u8]) {
-    let id = image_id(&bytes[37..]);
-    bytes[5..37].copy_from_slice(&id.0);
-}
-
-/// Overwrite the `nth` (0-based) occurrence of `needle` with `replacement` and rehash.
-fn forge(bytes: &mut [u8], needle: &[u8], nth: usize, replacement: &[u8]) {
-    assert_eq!(needle.len(), replacement.len());
-    let at = bytes
-        .windows(needle.len())
-        .enumerate()
-        .filter(|(_, window)| *window == needle)
-        .map(|(offset, _)| offset)
-        .nth(nth)
-        .expect("the pattern occurs often enough to forge");
-    bytes[at..at + needle.len()].copy_from_slice(replacement);
-    rehash(bytes);
 }
 
 /// One Product declaration may serve two root occurrences: the repeated Product identity

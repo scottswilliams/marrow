@@ -4,9 +4,14 @@ use super::{
 use crate::reject::VerifyPhase;
 use marrow_image::{
     EnumTypeDef, ExportId, FieldDef, FunctionDef, ImageDraft, ImageType, Instr, RecordTypeDef,
-    Scalar, SpanEntry, VariantDef, image_id,
+    Scalar, SpanEntry, VariantDef,
 };
 use std::ops::Range;
+
+#[path = "../../../../marrow-image/tests/common/image_forgery.rs"]
+#[allow(dead_code, reason = "this module forges by offset, not by pattern search")]
+mod image_forgery;
+use image_forgery::rehash;
 
 const RECORD_WIDTH: usize = 4_096;
 const ENUM_WIDTH: usize = 256;
@@ -125,11 +130,6 @@ fn section_range(bytes: &[u8], wanted: u8) -> Range<usize> {
 
 fn section_body(bytes: &[u8], id: u8) -> &[u8] {
     &bytes[section_range(bytes, id)]
-}
-
-fn rehash(bytes: &mut [u8]) {
-    let digest = image_id(&bytes[37..]);
-    bytes[5..37].copy_from_slice(&digest.0);
 }
 
 #[test]

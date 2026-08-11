@@ -17,13 +17,18 @@ use marrow_image::{
     DeclarationMemberShape, DurableEnumMemberShape, DurableIndexComponent, DurableIndexShape,
     DurableValueShape, EnumTypeDef, ExportId, FieldDef, FuncId, FunctionDef, ImageDraft, ImageType,
     Instr, KeyColumn, LedgerIdBytes, LegacyDraftSiteOperand, RecordTypeDef, RootOccurrenceDef,
-    Scalar, SemanticStepKind, SemanticTarget, SpanEntry, VariantDef, image_id,
+    Scalar, SemanticStepKind, SemanticTarget, SpanEntry, VariantDef,
 };
 use marrow_verify::{VerifyPhase, verify};
 
 #[path = "../../marrow-image/tests/common/site_seam.rs"]
 mod site_seam;
 use site_seam::site;
+
+#[path = "../../marrow-image/tests/common/image_forgery.rs"]
+#[allow(dead_code, reason = "this file forges by offset, not by pattern search")]
+mod image_forgery;
+use image_forgery::rehash;
 
 /// The tracer graph's fixed ledger ids, shared by the durable-schema builders and
 /// the byte-forgery helpers so a hostile mutation can target one precisely.
@@ -114,12 +119,6 @@ fn spans(code: &[Instr]) -> Vec<SpanEntry> {
             column: 1,
         })
         .collect()
-}
-
-/// Recompute and rewrite the digest over the payload (every byte after the slot).
-fn rehash(bytes: &mut [u8]) {
-    let id = image_id(&bytes[37..]);
-    bytes[5..37].copy_from_slice(&id.0);
 }
 
 fn code_of(bytes: &[u8]) -> String {

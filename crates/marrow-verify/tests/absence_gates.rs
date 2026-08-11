@@ -136,6 +136,30 @@ fn no_lookup_recovers_an_occurrence_from_a_declaration_fact() {
     }
 }
 
+/// The container digest slot has one owner across the workspace.
+///
+/// Recomputing a forged image's digest means naming the slot and the payload it covers by
+/// offset, which is the container header format. A hand copy that drifts from the real
+/// header fails silently rather than loudly: it yields artifacts that stop at the envelope
+/// gate, and every hostile test asserting a *rejection* still passes — at the wrong phase,
+/// for the wrong reason. So the header layout is written once and included.
+#[test]
+fn the_forged_image_digest_has_one_owner() {
+    let found = occurrences("fn rehash(");
+    assert_eq!(
+        found.len(),
+        1,
+        "the forged-image digest is recomputed in more than one place, so the container \
+         header layout is hand-copied: {found:?}",
+    );
+    assert!(
+        found[0]
+            .0
+            .ends_with("marrow-image/tests/common/image_forgery.rs"),
+        "the one owner is the shared include beside the seam protocol: {found:?}",
+    );
+}
+
 /// A gate that cannot see its own subject passes for the wrong reason.
 #[test]
 fn the_scan_sees_code_and_not_prose() {
