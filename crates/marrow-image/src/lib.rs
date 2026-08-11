@@ -23,6 +23,7 @@ mod semantic;
 mod site_plan;
 mod store_digest;
 mod ty;
+mod value_dag;
 
 pub use ceiling::{CEILING_KIND, CeilingDescriptor, CeilingId};
 pub use demand::{
@@ -92,4 +93,7 @@ pub use store_digest::{
 pub use ty::{
     ImageType, OPTIONAL_FLAG, Scalar, TAG_BOOL, TAG_BYTES, TAG_COLLECTION, TAG_DATE, TAG_DURATION,
     TAG_ENUM, TAG_IDENTITY, TAG_INSTANT, TAG_INT, TAG_RECORD, TAG_TEXT, TAG_UNIT,
+};
+pub use value_dag::{
+    CanonicalValueShapeDag, ValueShapeNodeId, ValueShapeSink, ValueShapeWireForm, expand,
 };

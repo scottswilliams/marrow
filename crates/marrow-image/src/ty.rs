@@ -11,7 +11,7 @@
 /// A bare image scalar. The runtime representation vocabulary (`RuntimeScalar`,
 /// `KeyScalar`) lives in the kernel and bridges to these tags; the temporal scalar
 /// domain (calendar, canonical text codec, arithmetic) lives in `marrow-temporal`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Scalar {
     Int,
     Bool,
