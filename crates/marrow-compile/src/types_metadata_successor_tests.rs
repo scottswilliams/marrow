@@ -925,6 +925,7 @@ fn wrong_family_record_targets_are_rejected_before_ready_publication() {
         type_id: struct_id,
         name: "Point".to_string(),
         fields: Vec::new(),
+        verdict: DeclarationVerdict::Accepted,
     });
 
     let generic_registry = test_registry(vec![
@@ -1495,6 +1496,7 @@ fn argument_targets_report_exact_private_causes_without_publication() {
         type_id: struct_id,
         name: "Point".to_string(),
         fields: Vec::new(),
+        verdict: DeclarationVerdict::Accepted,
     });
     assert_exact_target_invariant(struct_registry, struct_draft, GArg::Group(struct_id));
 

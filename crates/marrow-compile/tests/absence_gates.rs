@@ -1623,3 +1623,62 @@ fn no_reserved_number_stands_for_a_refused_site() {
         );
     }
 }
+
+/// NOMLEAF01: a reserved value-type row is never removed from the registry.
+///
+/// Pass one reserves every struct's and enum's image id before any body resolves, so
+/// an earlier fill pass binds that reservation for a verdict that does not exist
+/// yet. Removing a refused declaration's row leaves every such reference addressing
+/// nothing, and a dangling type argument is a `GenericInvariant` — which outranks
+/// diagnostics, so the cause reported at the declaration never reaches the reader.
+/// A refused declaration therefore keeps its row and records
+/// `DeclarationVerdict::Refused`; only the name lookups exclude it.
+#[test]
+fn no_reserved_value_type_row_is_removed_from_the_registry() {
+    for shape in [
+        "structs.retain",
+        "enums.retain",
+        "structs.remove",
+        "enums.remove",
+        "structs.swap_remove",
+        "enums.swap_remove",
+    ] {
+        let found = production_occurrences(shape);
+        assert!(
+            found.is_empty(),
+            "a reserved value-type row must stay addressable so a reference minted \
+             before its verdict existed cannot dangle: {shape} at {found:?}",
+        );
+    }
+}
+
+/// The two name lookups that answer a source spelling are the only readers that
+/// filter on the verdict, and both of them do. An id lookup must not filter: its
+/// whole purpose after NOMLEAF01 is to resolve a reference to a refused
+/// declaration instead of dangling.
+#[test]
+fn every_value_type_name_lookup_excludes_a_refused_row() {
+    let code = production_code_of("types.rs");
+    for lookup in ["fn struct_by_name", "fn enum_by_name"] {
+        let start = code
+            .find(lookup)
+            .unwrap_or_else(|| panic!("{lookup} is declared in the type registry"));
+        let body = &code[start..start + 260];
+        assert!(
+            body.contains("verdict.is_accepted()"),
+            "{lookup} must answer only for an accepted declaration, so a refused one \
+             reaches the ledger steer instead: {body}",
+        );
+    }
+    for lookup in ["fn struct_by_type", "fn enum_by_id"] {
+        let start = code
+            .find(lookup)
+            .unwrap_or_else(|| panic!("{lookup} is declared in the type registry"));
+        let body = &code[start..start + 200];
+        assert!(
+            !body.contains("verdict"),
+            "{lookup} resolves a reserved id, including one a later pass refused; \
+             filtering it would restore the dangling reference: {body}",
+        );
+    }
+}

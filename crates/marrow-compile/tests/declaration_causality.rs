@@ -1696,7 +1696,10 @@ fn a_struct_field_naming_a_refused_enum_reports_its_cause() {
 }
 
 /// An alias over a refused struct, used as a resource field type, reaches the same
-/// reservation through alias expansion; the refusal must still be addressable.
+/// reservation through alias expansion; the refusal must still be addressable, and
+/// the alias validator — which runs after the struct fill and so sees the refused
+/// name leave the accepted set — must steer to that cause rather than report the
+/// declared name as an unknown type.
 #[test]
 fn a_resource_field_aliasing_a_refused_struct_reports_the_structs_cause() {
     let diagnostics = diagnostics(
@@ -1715,8 +1718,12 @@ fn a_resource_field_aliasing_a_refused_struct_reports_the_structs_cause() {
 
     assert_eq!(
         rows(&diagnostics),
-        vec![("src/main.mw", "check.unsupported", 6, 8)],
-        "the struct reports its own cause through the alias: {:#?}",
+        vec![
+            ("src/main.mw", "check.unsupported", 6, 8),
+            ("src/main.mw", "check.unsupported", 3, 1)
+        ],
+        "the struct reports its own cause and the alias is steered to it, never \
+         told the target is unknown: {:#?}",
         messages(&diagnostics),
     );
 }

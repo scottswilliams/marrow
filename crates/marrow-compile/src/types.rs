@@ -1123,11 +1123,37 @@ pub(crate) struct StructInfo {
     pub(crate) type_id: TypeId,
     pub(crate) name: String,
     pub(crate) fields: Vec<FieldInfo>,
+    pub(crate) verdict: DeclarationVerdict,
 }
 
 impl StructInfo {
     pub(crate) fn field(&self, name: &str) -> Option<(u16, &FieldInfo)> {
         field_index(&self.fields, name)
+    }
+}
+
+/// What pass two decided about a value type whose image index pass one already
+/// reserved.
+///
+/// Pass one reserves an id before any body is resolved, so a reference minted by an
+/// earlier fill pass binds that reservation — the verdict the later pass will reach
+/// does not exist yet. Dropping a refused declaration's row would leave every such
+/// reference addressing nothing, and a dangling type argument is a
+/// [`GenericInvariant`], which outranks the diagnostics: the cause reported at the
+/// declaration never reaches the reader. So the refused row stays in place and
+/// records its verdict instead. `Refused` means exactly *not in the accepted set*:
+/// no name resolves to it, no construction or match binds it, and its body is
+/// empty — but its reserved id still addresses a declaration this project wrote and
+/// the compiler refused, whose cause the named-type ledger holds under its name.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum DeclarationVerdict {
+    Accepted,
+    Refused,
+}
+
+impl DeclarationVerdict {
+    pub(crate) fn is_accepted(self) -> bool {
+        matches!(self, Self::Accepted)
     }
 }
 
@@ -1155,6 +1181,7 @@ pub(crate) struct EnumInfo {
     pub(crate) enum_id: EnumId,
     pub(crate) name: String,
     pub(crate) variants: Vec<VariantInfo>,
+    pub(crate) verdict: DeclarationVerdict,
 }
 
 impl EnumInfo {
@@ -5014,16 +5041,28 @@ impl TypeRegistry {
         self.records.iter().find(|info| info.type_id == ty)
     }
 
+    /// The accepted struct declared as `name`.
+    ///
+    /// A refused row keeps its reserved id addressable but leaves the accepted set,
+    /// so it never answers a name: an annotation naming it falls through to
+    /// [`Self::unresolved_named_type`], which reads the cause out of the named-type
+    /// ledger and steers the use to it.
     pub(crate) fn struct_by_name(&self, name: &str) -> Option<&StructInfo> {
-        self.structs.iter().find(|info| info.name == name)
+        self.structs
+            .iter()
+            .find(|info| info.name == name && info.verdict.is_accepted())
     }
 
     pub(crate) fn struct_by_type(&self, ty: TypeId) -> Option<&StructInfo> {
         self.structs.iter().find(|info| info.type_id == ty)
     }
 
+    /// The accepted enum declared as `name`. A refused row answers no name, for the
+    /// reason given at [`Self::struct_by_name`].
     pub(crate) fn enum_by_name(&self, name: &str) -> Option<&EnumInfo> {
-        self.enums.iter().find(|info| info.name == name)
+        self.enums
+            .iter()
+            .find(|info| info.name == name && info.verdict.is_accepted())
     }
 
     pub(crate) fn enum_by_id(&self, id: EnumId) -> Option<&EnumInfo> {
@@ -6167,12 +6206,25 @@ fn validate_alias_targets(
                     && registry.struct_by_name(text).is_none()
                     && registry.enum_by_name(text).is_none()
                 {
-                    Some(refuse(
-                        diagnostics,
-                        declared,
-                        Code::CheckType.as_str(),
-                        format!("alias `{}` does not name a known type: `{text}`", decl.name),
-                    ))
+                    // The target names nothing this alias can expand to. Whether that
+                    // is a genuine absence or a declaration this project wrote and the
+                    // compiler refused is the ledger's answer, never this pass's: a
+                    // refused target is steered to its own cause, because telling the
+                    // reader the name is unknown when it is declared two lines above
+                    // is the fabricated absence the declaration ledger exists to kill.
+                    Some(match registry.named.lookup(text.as_str())? {
+                        Binding::Refused(_, summary) => refuse_row(
+                            diagnostics,
+                            declared,
+                            declaration_refused(file, decl.span, summary),
+                        ),
+                        Binding::Accepted(_) | Binding::Absent => refuse(
+                            diagnostics,
+                            declared,
+                            Code::CheckType.as_str(),
+                            format!("alias `{}` does not name a known type: `{text}`", decl.name),
+                        ),
+                    })
                 } else {
                     None
                 }
@@ -6501,6 +6553,7 @@ fn declare_structs<'a>(
             type_id,
             name: decl.name.clone(),
             fields: Vec::new(),
+            verdict: DeclarationVerdict::Accepted,
         });
         reserved.push(ReservedStruct {
             file: file.clone(),
@@ -6517,16 +6570,18 @@ fn declare_structs<'a>(
 /// A struct field is the bare `name: Type` form over any value type — a scalar,
 /// nominal, another struct, or a closed enum (`Option`/`Result`/a user `enum`);
 /// a group, keyed field, the `required` keyword, an optional type, or an unknown
-/// type is `check.unsupported`. A declaration with a member defect is dropped
-/// whole (its reserved image record stays empty and its name leaves the registry)
-/// so a later construction or match cannot resolve against a broken struct.
+/// type is `check.unsupported`. A declaration with a member defect is refused whole
+/// (its reserved image record stays empty and its name leaves the accepted set) so
+/// a later construction or match cannot resolve against a broken struct. Its
+/// reserved row stays in place carrying [`DeclarationVerdict::Refused`], so a
+/// reference an earlier fill pass minted against the reservation addresses a
+/// refused declaration rather than dangling.
 fn fill_structs(
     draft: &mut ImageDraft,
     registry: &mut TypeRegistry,
     reserved: &[ReservedStruct<'_>],
     diagnostics: &mut DiagnosticCollector,
 ) -> Result<(), BuildError> {
-    let mut dropped: Vec<TypeId> = Vec::new();
     for item in reserved {
         let declared = DeclarationSite {
             name: &item.decl.name,
@@ -6546,17 +6601,16 @@ fn fill_structs(
                 }
                 NamedTypeKind::Struct
             });
-        if matches!(occurrence, DeclarationOccurrence::Refused(_)) {
-            dropped.push(item.type_id);
+        if matches!(occurrence, DeclarationOccurrence::Refused(_))
+            && let Some(info) = registry
+                .structs
+                .iter_mut()
+                .find(|info| info.type_id == item.type_id)
+        {
+            info.verdict = DeclarationVerdict::Refused;
         }
         registry.named.declare(item.decl.name.clone(), occurrence)?;
     }
-    // The refused structs leave the accepted set, so no construction or match
-    // resolves against a broken one; the ledger keeps their names, so a use of one
-    // is steered to its cause rather than told the type was never declared.
-    registry
-        .structs
-        .retain(|info| !dropped.contains(&info.type_id));
     Ok(())
 }
 
@@ -6749,6 +6803,7 @@ fn declare_enums<'a>(
             enum_id,
             name: decl.name.clone(),
             variants: Vec::new(),
+            verdict: DeclarationVerdict::Accepted,
         });
         reserved.push(ReservedEnum {
             file: file.clone(),
@@ -6765,16 +6820,16 @@ fn declare_enums<'a>(
 /// deferred: a `category` member or a member with nested members is
 /// `check.unsupported`. A member's payload is the dense `name: Type` form over bare
 /// scalars; an optional or non-scalar payload type is `check.unsupported`. A
-/// declaration with a defect is dropped whole (its reserved image entry stays empty
-/// and its name leaves the registry) so a later match cannot resolve against a
-/// broken enum.
+/// declaration with a defect is refused whole (its reserved image entry stays empty
+/// and its name leaves the accepted set) so a later match cannot resolve against a
+/// broken enum. Its reserved row stays in place carrying
+/// [`DeclarationVerdict::Refused`], for the reason given at [`fill_structs`].
 fn fill_enums(
     draft: &mut ImageDraft,
     registry: &mut TypeRegistry,
     reserved: &[ReservedEnum<'_>],
     diagnostics: &mut DiagnosticCollector,
 ) -> Result<(), BuildError> {
-    let mut dropped: Vec<EnumId> = Vec::new();
     for item in reserved {
         let declared = DeclarationSite {
             name: &item.decl.name,
@@ -6794,14 +6849,16 @@ fn fill_enums(
                 }
                 NamedTypeKind::Enum
             });
-        if matches!(occurrence, DeclarationOccurrence::Refused(_)) {
-            dropped.push(item.enum_id);
+        if matches!(occurrence, DeclarationOccurrence::Refused(_))
+            && let Some(info) = registry
+                .enums
+                .iter_mut()
+                .find(|info| info.enum_id == item.enum_id)
+        {
+            info.verdict = DeclarationVerdict::Refused;
         }
         registry.named.declare(item.decl.name.clone(), occurrence)?;
     }
-    registry
-        .enums
-        .retain(|info| !dropped.contains(&info.enum_id));
     Ok(())
 }
 
@@ -7359,6 +7416,12 @@ pub(crate) fn reject_value_cycles(
     let mut metadata = MetadataScratch::try_new(&view)?;
     let graph = ValueGraph::build_validated(registry, &view, &mut metadata)?;
     for info in &registry.structs {
+        // A refused struct has an empty body and so lies on no cycle, but it is also
+        // not a declaration this pass speaks for: its own cause was already reported
+        // at its declaration.
+        if !info.verdict.is_accepted() {
+            continue;
+        }
         if let Some(path) = graph.cycle_through(ValueNode::Record(info.type_id)) {
             #[expect(
                 clippy::expect_used,
@@ -8949,6 +9012,7 @@ mod instantiation_state_tests {
             type_id,
             name: name.to_string(),
             fields: field_infos,
+            verdict: DeclarationVerdict::Accepted,
         });
         type_id
     }
@@ -9774,6 +9838,7 @@ mod instantiation_state_tests {
             enum_id: declared_enum,
             name: "PlainChoice".to_string(),
             variants: Vec::new(),
+            verdict: DeclarationVerdict::Accepted,
         });
         enum_registry
             .mint_type_instance(
