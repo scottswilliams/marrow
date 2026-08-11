@@ -953,8 +953,11 @@ fn red_a_symlinked_source_file_below_src_is_refused_as_a_link() {
     let temp = TempDir::new("symlink-source");
     valid_project(&temp);
     temp.write("src/main.mw", b"pub fn main()\n");
-    std::os::unix::fs::symlink(temp.path().join("src/main.mw"), temp.path().join("src/alias.mw"))
-        .expect("symlink a source file");
+    std::os::unix::fs::symlink(
+        temp.path().join("src/main.mw"),
+        temp.path().join("src/alias.mw"),
+    )
+    .expect("symlink a source file");
     expect_link_below_src(&temp, "src/alias.mw");
 }
 
