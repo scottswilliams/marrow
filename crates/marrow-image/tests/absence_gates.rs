@@ -550,7 +550,7 @@ fn no_producer_side_site_path_length_refusal_exists() {
             .collect();
         assert!(
             found.is_empty(),
-            "`{needle}` is a structurally unreachable refusal this row deleted: {found:?}",
+            "`{needle}` is a structurally unreachable refusal that no longer exists: {found:?}",
         );
     }
 }

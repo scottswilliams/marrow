@@ -9,7 +9,10 @@ use marrow_image::{
 use std::ops::Range;
 
 #[path = "../../../../marrow-image/tests/common/image_forgery.rs"]
-#[allow(dead_code, reason = "this module forges by offset, not by pattern search")]
+#[allow(
+    dead_code,
+    reason = "this module forges by offset, not by pattern search"
+)]
 mod image_forgery;
 use image_forgery::rehash;
 

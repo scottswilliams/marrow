@@ -515,9 +515,14 @@ impl ProductDeclarationTable {
     /// Drop every declaration appended after `len`, restoring the table to the exact
     /// rows it held at that mark. The table is append-only, so a row's index — the
     /// occurrence rows' reference into it — is stable across the truncation.
+    ///
+    /// The index is rebuilt by removing exactly the discarded rows' identities, so the
+    /// cost is the discarded suffix rather than the whole table: a template proof that
+    /// declares nothing must not pay for every declaration the real draft already holds.
     pub(crate) fn truncate(&mut self, len: usize) {
-        self.rows.truncate(len);
-        self.by_identity.retain(|_, row| *row < len);
+        for discarded in self.rows.drain(len..) {
+            self.by_identity.remove(&discarded.claim.identity());
+        }
     }
 }
 

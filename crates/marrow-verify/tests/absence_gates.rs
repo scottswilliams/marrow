@@ -1,5 +1,5 @@
-//! Exact-symbol absence gates over the workspace: the ledger-ID-only occurrence and
-//! effect lookups this row deletes must not reappear, in production code or in a test.
+//! Exact-symbol absence gates over the workspace: the deleted ledger-ID-only occurrence
+//! and effect lookups must not reappear, in production code or in a test.
 //!
 //! Each scan runs over the literal-stripped projection of the source, so a shape spelled
 //! inside a comment or a string is not mistaken for the real thing. That projection has

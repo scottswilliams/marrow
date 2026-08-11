@@ -182,8 +182,10 @@ fn two_roots_sharing_a_name_are_rejected() {
     );
     let rejection = verify(&draft.encode().expect("encode").bytes)
         .expect_err("two roots sharing a name must be rejected");
-    assert!(
-        rejection.detail().contains("share a name"),
+    assert_eq!(rejection.phase(), VerifyPhase::Table);
+    assert_eq!(
+        rejection.detail(),
+        "two durable roots share a name",
         "expected a root-name-collision rejection, got {rejection:?}"
     );
 }
@@ -235,8 +237,9 @@ fn a_cross_root_identity_reaching_a_foreign_site_is_rejected() {
         VerifyPhase::Function,
         "the cross-root identity confusion is a per-function stack-effect rejection",
     );
-    assert!(
-        rejection.detail().contains("different store root"),
+    assert_eq!(
+        rejection.detail(),
+        "an entry identity keys a durable operation on a different store root",
         "expected a cross-root identity rejection, got {rejection:?}",
     );
 }

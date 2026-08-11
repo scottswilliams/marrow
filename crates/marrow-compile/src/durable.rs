@@ -999,6 +999,13 @@ impl<'stores> ProductOccurrenceCensus<'stores> {
     /// Count the store declarations naming each resource, in declaration order, skipping
     /// exactly the repeated placement names [`DurableRegistry::build`] skips: a repeated
     /// root name is rejected before it is built, so it is not an occurrence of anything.
+    ///
+    /// Keying on the resource spelling is safe rather than a second identity classifier:
+    /// resources resolve project-globally, so one spelling is one resource, and the Product
+    /// ledger identity a store's declaration carries is minted from that same spelling. The
+    /// census therefore partitions declarations exactly as the Product identity does. If
+    /// resources ever resolve per-module or a Product identity is minted from anything else,
+    /// this must key on the resolved identity instead.
     fn take(stores: &'stores [(FileRef, FileIdentity, &StoreDecl)]) -> Self {
         let mut declared: BTreeSet<&str> = BTreeSet::new();
         let mut seen_once: BTreeSet<&str> = BTreeSet::new();

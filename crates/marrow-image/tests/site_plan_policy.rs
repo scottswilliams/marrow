@@ -1,4 +1,4 @@
-//! The site table's capacity policy (red R17) and the demand key's identity (red R18).
+//! The site table's capacity policy and the demand key's identity.
 //!
 //! Every operation site is minted through one bounded plan. The plan checks vacant
 //! capacity *before* it mints a numeric id, so a fitting site id is always inside
@@ -118,8 +118,8 @@ fn demand_every_leaf(draft: &mut ImageDraft, root: &AdmittedRoot, members: &[Dec
     }
 }
 
-/// Red R17, at the boundary an image is refused: a draft whose site demand crosses the
-/// cap cannot be encoded, however many demands past it were refused.
+/// At the boundary an image is refused: a draft whose site demand crosses the cap
+/// cannot be encoded, however many demands past it were refused.
 ///
 /// The plan answers every excess demand with the over-policy operand, which carries no id
 /// at all, and saturates its logical demand one past the cap; the encoder reads that
@@ -292,7 +292,7 @@ fn every_place(
 /// One place per admitted operation target, plus the branch's own whole-payload place.
 const PLACE_COUNT: usize = 6;
 
-/// Red R18: an eagerly minted row followed by a demand-lazy request on the same
+/// An eagerly minted row followed by a demand-lazy request on the same
 /// `(occurrence, node, target)` is **one** row, and the second request reuses the first
 /// row's id — for every operation target a place can admit.
 ///
@@ -659,7 +659,7 @@ fn a_discarded_proof_leaves_the_draft_byte_identical() {
     assert_eq!(before, after, "the proof appended nothing that survived it");
 }
 
-// --- The site-plan policy corpora (custody design 2.16, corpora 2-4) ---
+// --- The site-plan policy corpora ---
 
 /// Corpus 2: 1,024 keyed roots each touching 64 fields of one shared Product — 66,560
 /// logical site demands over an identity census of only 2,114 ledger rows.

@@ -211,8 +211,9 @@ fn a_repeated_field_id_still_rejects() {
     let rejection = verify(&build(FIELD_ONE, one, FIELD_ONE, two))
         .expect_err("a repeated field id must reject");
     assert_eq!(rejection.phase(), VerifyPhase::Table);
-    assert!(
-        rejection.detail().contains("duplicate durable ledger id"),
+    assert_eq!(
+        rejection.detail(),
+        "duplicate durable ledger id",
         "expected a duplicate-ledger-id rejection, got {rejection:?}"
     );
 }
@@ -225,8 +226,9 @@ fn a_field_id_colliding_with_the_enum_sum_still_rejects() {
     let rejection = verify(&build(FIELD_ONE, one, SUM, two))
         .expect_err("a field id colliding with an enum sum id must reject");
     assert_eq!(rejection.phase(), VerifyPhase::Table);
-    assert!(
-        rejection.detail().contains("duplicate durable ledger id"),
+    assert_eq!(
+        rejection.detail(),
+        "duplicate durable ledger id",
         "expected a duplicate-ledger-id rejection, got {rejection:?}"
     );
 }
@@ -240,8 +242,9 @@ fn an_inconsistent_enum_reference_rejects() {
     let rejection = verify(&build(FIELD_ONE, one, FIELD_TWO, two))
         .expect_err("an inconsistent enum reference must reject");
     assert_eq!(rejection.phase(), VerifyPhase::Table);
-    assert!(
-        rejection.detail().contains("different member set"),
+    assert_eq!(
+        rejection.detail(),
+        "durable enum identity reused with a different member set",
         "expected an inconsistent-enum-reuse rejection, got {rejection:?}"
     );
 }

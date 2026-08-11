@@ -1,12 +1,13 @@
 //! Public-path coverage for bounded verifier span projection.
 
-use marrow_image::{
-    ExportId, FunctionDef, ImageDraft, ImageType, Instr, Scalar, SpanEntry,
-};
+use marrow_image::{ExportId, FunctionDef, ImageDraft, ImageType, Instr, Scalar, SpanEntry};
 use marrow_verify::{VerifyPhase, verify};
 
 #[path = "../../marrow-image/tests/common/image_forgery.rs"]
-#[allow(dead_code, reason = "this file forges by offset, not by pattern search")]
+#[allow(
+    dead_code,
+    reason = "this file forges by offset, not by pattern search"
+)]
 mod image_forgery;
 use image_forgery::rehash;
 

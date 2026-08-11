@@ -1,8 +1,8 @@
 //! Which declared bound a durable image actually reaches first.
 //!
-//! Red R23: the Roots ceiling is reachable from a graph that is otherwise well inside
-//! every other bound, and the encoder selects it as the refusal candidate with a complete
-//! provisional graph and no image output allocated.
+//! The Roots ceiling is reachable from a graph that is otherwise well inside every other
+//! bound, and the encoder selects it as the refusal candidate with a complete provisional
+//! graph and no image output allocated.
 //!
 //! The corpus is the frozen clean-Roots corpus: Product `R` with the one field
 //! `required v: int`, no keys, indexes, or tombstones, and `N` distinct keyless roots
@@ -10,8 +10,8 @@
 //! census of one such image is `N` root occurrences, one record type, `N + 2` strings
 //! (`R`, `v`, and one name per root) and `N` sites.
 //!
-//! The corpus also carries this row's recomputation of the two gate-asserted byte totals
-//! for `MAX_ROOTS + 1` and `MAX_ROOTS + 2` roots. Neither total is ever emitted: the real
+//! The corpus also carries the two gate-asserted byte totals for `MAX_ROOTS + 1` and
+//! `MAX_ROOTS + 2` roots, recomputed here. Neither total is ever emitted: the real
 //! Roots candidate wins first, and the point of the pair is exactly that an image nobody
 //! can encode still has an exact size that a bound change would move.
 
@@ -111,7 +111,7 @@ fn framed(roots: usize) -> usize {
         .len()
 }
 
-/// Red R23. At `MAX_ROOTS + 1` roots the corpus is inside every other declared bound —
+/// At `MAX_ROOTS + 1` roots the corpus is inside every other declared bound —
 /// one record type, `MAX_ROOTS + 3` strings, `MAX_ROOTS + 1` sites, and a framed size well
 /// under `MAX_IMAGE_BYTES` — so Roots is the only bound it crosses, and the encoder
 /// answers with it.
@@ -171,7 +171,7 @@ fn the_corpus_census_is_exact() {
     );
 }
 
-/// SC-12: the two gate-asserted byte totals for the corpus one and two roots past the
+/// The two gate-asserted byte totals for the corpus one and two roots past the
 /// Roots ceiling, recomputed here rather than carried forward.
 ///
 /// Neither image can be encoded — Roots refuses both — so the totals are measured the only
