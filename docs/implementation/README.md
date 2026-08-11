@@ -341,8 +341,17 @@ The encoder's two temporary bridges stand in front of that walk: a full-draft
 coherence preflight replays every producer-side bound and coherence result in its
 legacy order, and a durable-body lower bound then counts the DURABLE section before
 building it, so a body no image could carry is refused before any buffer, contract
-preimage, or output is allocated. A durable-contract identity is minted only from the
-value that fence returns.
+preimage, or output is allocated. The producer mints a durable-contract identity only
+from the value that fence returns.
+
+The identity carries its own ceiling as well. A contract descriptor is a public view
+over a public value-shape arena, and the canonical identity payload spells a value as
+its expansion, so the length of that payload is not bounded by the size of the graph
+describing it. `contract_id` therefore refuses a payload past twice the whole-image
+ceiling instead of allocating it. That ceiling is above every graph an image can carry —
+the payload spells a ledger reference in 25 bytes where the DURABLE section writes the
+same identity in 16 — so the refusal is unreachable from the compiler and from the
+verifier, and it bounds the work of asking for an identity for every other caller.
 
 A declaration's branch entry records are materialized once for the Product, at its
 first executable occurrence. `marrow-verify` reconstructs the declaration and its

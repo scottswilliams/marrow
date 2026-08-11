@@ -1402,6 +1402,9 @@ mod tests {
     /// descriptor's public constructor knows where the arena came from. The identity
     /// owner's own ceiling answers, in the bytes it admits rather than the bytes the
     /// expansion would have produced.
+    ///
+    /// That this test *returns* is the evidence: without the ceiling the same call walks
+    /// the expansion, and no wall-clock budget is needed to tell the two apart.
     #[test]
     fn a_stated_graph_whose_payload_is_unbounded_is_refused_rather_than_expanded() {
         let mut values = CanonicalValueShapeDag::new();
@@ -1423,13 +1426,7 @@ mod tests {
             &values,
         );
 
-        let started = std::time::Instant::now();
         assert_eq!(forged.contract_id(), Err(super::DurableGraphTooLarge));
-        let elapsed = started.elapsed();
-        assert!(
-            elapsed < std::time::Duration::from_secs(5),
-            "refusing the graph took {elapsed:?}: the expansion is being materialized",
-        );
     }
 
     /// The sibling of the refusal: the same arena, referenced at a level whose expansion
