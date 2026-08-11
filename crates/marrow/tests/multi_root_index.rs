@@ -133,15 +133,19 @@ pub fn eqTallies(sku: string, id: int): bool? {
 "#;
 
 fn compile_verify() -> VerifiedImage {
+    verify_with(SOURCE, IDS)
+}
+
+fn verify_with(source: &str, ids: &str) -> VerifiedImage {
     let manifest = marrow_project::Manifest::parse("edition = \"2026\"\n").expect("manifest");
     let files = vec![marrow_project::CapturedFile::new(
         "src/main.mw".to_string(),
-        SOURCE.as_bytes().to_vec(),
+        source.as_bytes().to_vec(),
     )];
     let project = marrow_project::capture(
         &manifest,
         files,
-        Some(IDS.as_bytes()),
+        Some(ids.as_bytes()),
         &marrow_project::CaptureLimits::DEFAULT,
     )
     .expect("capture");
@@ -408,5 +412,153 @@ fn an_index_lookup_identity_carries_the_root_it_was_read_from() {
         ),
         Some(Value::Optional(Some(Box::new(Value::Bool(true))))),
         "the ^tallies lookup identity carries root 1, not root 0",
+    );
+}
+
+// --- One shared Product, two roots, different managed-index shapes ------------------
+
+/// One `Item` Product declaration with two occurrences carrying deliberately different
+/// index shapes: `^a` indexes `sku` uniquely, while `^b` indexes `sku` uniquely under its
+/// own index identity *and* adds a nonunique `shelf` index `^a` does not declare.
+const SHARED_INDEX_IDS: &str = "marrow ids v0\n\
+     machine-written by marrow; do not edit\n\
+     id application . 0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a\n\
+     id product Item 0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d\n\
+     id field Item.name 0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e\n\
+     id field Item.sku 0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f\n\
+     id field Item.shelf 2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e\n\
+     id root a 0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b\n\
+     id key a.id 0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c\n\
+     id index a.aBySku 3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b\n\
+     id root b 1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b\n\
+     id key b.id 1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c\n\
+     id index b.bBySku 5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b\n\
+     id index b.bByShelf 6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b\n\
+     high-water 0\n\
+     end\n";
+
+const SHARED_INDEX_SOURCE: &str = r#"resource Item {
+    required name: string
+    required sku: string
+    required shelf: string
+}
+
+store ^a[id: int]: Item {
+    index aBySku[sku] unique
+}
+
+store ^b[id: int]: Item {
+    index bBySku[sku] unique
+    index bByShelf[shelf, id]
+}
+
+pub fn putA(id: int, name: string, sku: string, shelf: string) {
+    transaction {
+        ^a[id] = Item(name: name, sku: sku, shelf: shelf)
+    }
+}
+
+pub fn putB(id: int, name: string, sku: string, shelf: string) {
+    transaction {
+        ^b[id] = Item(name: name, sku: sku, shelf: shelf)
+    }
+}
+
+pub fn nameA(id: int): string? {
+    return ^a[id].name
+}
+
+pub fn nameB(id: int): string? {
+    return ^b[id].name
+}
+"#;
+
+fn rep(byte: u8) -> marrow_image::LedgerIdBytes {
+    marrow_image::LedgerIdBytes::from_bytes([byte; 16])
+}
+
+/// A managed index belongs to a root **occurrence**, but a Product field declaration
+/// belongs to the Product: `Item.sku` is one declaration that both `^a` and `^b` project.
+/// Asking what a write to that field maintains therefore has no answer until an
+/// occurrence is named, and the answer must be that occurrence's indexes alone. Unioning
+/// them would tell the maintenance path that a write through `^b` must keep `^a`'s index
+/// coherent.
+#[test]
+fn index_maintenance_is_scoped_to_the_occurrence_that_was_written() {
+    let image = verify_with(SHARED_INDEX_SOURCE, SHARED_INDEX_IDS);
+    let a = image.root_occurrence(0).expect("^a");
+    let b = image.root_occurrence(1).expect("^b");
+    assert_eq!(a.root().name(), "a");
+    assert_eq!(b.root().name(), "b");
+
+    // `Item.sku` (0x0f) is one Product field declaration indexed by both occurrences.
+    assert_eq!(
+        a.field_maintenance(rep(0x0f)),
+        vec![rep(0x3b)],
+        "a write through ^a maintains ^a's index and no other"
+    );
+    assert_eq!(
+        b.field_maintenance(rep(0x0f)),
+        vec![rep(0x5b)],
+        "a write through ^b maintains ^b's index and no other"
+    );
+
+    // `Item.shelf` (0x2e) is indexed only by ^b, so a write through ^a maintains nothing.
+    assert!(a.field_maintenance(rep(0x2e)).is_empty());
+    assert_eq!(b.field_maintenance(rep(0x2e)), vec![rep(0x6b)]);
+
+    // The whole-entry and collision layouts are occurrence-scoped for the same reason.
+    assert_eq!(a.entry_maintenance(), vec![rep(0x3b)]);
+    assert_eq!(b.entry_maintenance(), vec![rep(0x5b), rep(0x6b)]);
+    assert_eq!(a.unique_collision_outcomes(), vec![rep(0x3b)]);
+    assert_eq!(b.unique_collision_outcomes(), vec![rep(0x5b)]);
+}
+
+/// The runtime consequence of the same law: the two occurrences' unique `sku` indexes do
+/// not alias, so the same `sku` may be held by an entry of each root, and a collision on
+/// one occurrence leaves the other's committed state intact.
+#[test]
+fn a_unique_index_collides_only_within_its_own_occurrence() {
+    let image = verify_with(SHARED_INDEX_SOURCE, SHARED_INDEX_IDS);
+    let mut store = attach(&image);
+    run(
+        &image,
+        &mut store,
+        "putA",
+        vec![Value::Int(1), text("in-a"), text("s1"), text("left")],
+    );
+    // The same `sku` through the other occurrence is not a collision: the index cell
+    // families are per-root.
+    run(
+        &image,
+        &mut store,
+        "putB",
+        vec![Value::Int(1), text("in-b"), text("s1"), text("left")],
+    );
+    assert_eq!(
+        run(&image, &mut store, "nameA", vec![Value::Int(1)]),
+        some_text("in-a")
+    );
+    assert_eq!(
+        run(&image, &mut store, "nameB", vec![Value::Int(1)]),
+        some_text("in-b")
+    );
+
+    // A second entry of ^b claiming ^b's own indexed `sku` does collide, and leaves ^a
+    // untouched.
+    let code = run_faulting(
+        &image,
+        &mut store,
+        "putB",
+        vec![Value::Int(2), text("clash"), text("s1"), text("right")],
+    );
+    assert_eq!(code, "run.unique_index");
+    assert_eq!(
+        run(&image, &mut store, "nameA", vec![Value::Int(1)]),
+        some_text("in-a")
+    );
+    assert_eq!(
+        run(&image, &mut store, "nameB", vec![Value::Int(1)]),
+        some_text("in-b")
     );
 }

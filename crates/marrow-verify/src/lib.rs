@@ -26,5 +26,6 @@ pub use sealed::{
     SealedConst, SealedEnumType, SealedExport, SealedField, SealedFunction, SealedGroup,
     SealedIndex, SealedIndexComponent, SealedInstr, SealedRecordType, SealedRoot, SealedSite,
     SealedSiteTarget, SealedTestEntry, SealedVariant, SpanRow, TestKind, VerifiedImage,
+    VerifiedRootOccurrence,
 };
 pub use verify::verify;
