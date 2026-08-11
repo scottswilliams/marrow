@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 
 #[path = "../../marrow-compile/tests/common/source_projection.rs"]
 mod source_projection;
-use source_projection::without_literals;
+use source_projection::{is_ident_byte, without_cfg_test_items, without_literals};
 
 fn src_files() -> Vec<PathBuf> {
     fn walk(dir: &Path, files: &mut Vec<PathBuf>) {
@@ -346,18 +346,22 @@ fn the_site_operand_does_not_derive_copy() {
 /// longer one. `add_root` must not match `add_root_occurrence`: a gate that cannot tell a
 /// deleted symbol from its replacement fires on the replacement and is then relaxed.
 fn contains_symbol(code: &str, needle: &str) -> bool {
-    fn is_ident(byte: u8) -> bool {
-        byte.is_ascii_alphanumeric() || byte == b'_'
-    }
+    symbol_positions(code, needle).next().is_some()
+}
+
+/// Every byte offset at which `needle` appears in `code` as a whole identifier. A gate that
+/// needs to look at what surrounds a symbol — the token before it, the file it sits in —
+/// takes the offsets from here rather than re-deciding what an identifier boundary is.
+fn symbol_positions<'a>(code: &'a str, needle: &'a str) -> impl Iterator<Item = usize> + 'a {
     let bytes = code.as_bytes();
-    code.match_indices(needle).any(|(at, _)| {
+    code.match_indices(needle).filter_map(move |(at, _)| {
         let before = at
             .checked_sub(1)
-            .is_none_or(|index| !is_ident(bytes[index]));
+            .is_none_or(|index| !is_ident_byte(bytes[index]));
         let after = bytes
             .get(at + needle.len())
-            .is_none_or(|byte| !is_ident(*byte));
-        before && after
+            .is_none_or(|byte| !is_ident_byte(*byte));
+        (before && after).then_some(at)
     })
 }
 
@@ -1051,50 +1055,9 @@ fn the_verifier_holds_no_raw_durable_value_tree() {
     );
 }
 
-/// `code` with every `#[cfg(test)]` item removed: from the attribute through the point
-/// where that item's own braces (or its terminating `;`) close.
-///
-/// A gate about production call sites that cannot tell a test module from the code it
-/// guards answers about the test tier instead — and the test tier is exactly where a
-/// deliberately hostile call belongs. The input is already literal-stripped, so the brace
-/// counting is over code.
-fn without_cfg_test(code: &str) -> String {
-    let mut out = String::with_capacity(code.len());
-    let mut rest = code;
-    while let Some(at) = rest.find("#[cfg(test)]") {
-        out.push_str(&rest[..at]);
-        let tail = &rest[at..];
-        let mut depth = 0usize;
-        let mut opened = false;
-        let mut end = tail.len();
-        for (index, byte) in tail.bytes().enumerate() {
-            match byte {
-                b'{' => {
-                    depth += 1;
-                    opened = true;
-                }
-                b'}' if opened => {
-                    depth -= 1;
-                    if depth == 0 {
-                        end = index + 1;
-                        break;
-                    }
-                }
-                // A `#[cfg(test)]` `use` or item declaration ends at its semicolon.
-                b';' if !opened => {
-                    end = index + 1;
-                    break;
-                }
-                _ => {}
-            }
-        }
-        rest = &tail[end..];
-    }
-    out.push_str(rest);
-    out
-}
-
-/// The `#[cfg(test)]` stripper sees a whole test module and leaves production code alone.
+/// The shared `#[cfg(test)]` stripper sees a whole test module and leaves production
+/// code alone. The projection has one owner in the workspace; this suite plants the probes
+/// that keep the owner honest for the shapes these gates depend on.
 #[test]
 fn the_cfg_test_stripper_removes_exactly_the_test_items() {
     let planted = without_literals(
@@ -1111,7 +1074,7 @@ fn the_cfg_test_stripper_removes_exactly_the_test_items() {
         fn also_live() { other.contract_id(); }
         "##,
     );
-    let stripped = without_cfg_test(&planted);
+    let stripped = without_cfg_test_items(&planted);
     assert_eq!(
         stripped.matches("contract_id()").count(),
         2,
@@ -1119,6 +1082,85 @@ fn the_cfg_test_stripper_removes_exactly_the_test_items() {
     );
     assert!(!stripped.contains("mod tests"), "{stripped}");
     assert!(stripped.contains("fn also_live"), "{stripped}");
+}
+
+/// Whether `code`'s production tier asks a durable-contract descriptor for its identity,
+/// in either spelling: the method call `descriptor.contract_id()` and the UFCS form
+/// `DurableContractDescriptor::contract_id(descriptor)`, which is the same call written
+/// without a receiver. Matching the parenthesised call form alone reports a clean caller
+/// set for a tree that grew a caller in the spelling that reads least like one.
+///
+/// The declaration is not an ask. It is excluded by the `fn` that introduces it rather
+/// than by naming the file that holds it, so moving the owner cannot silently retire the
+/// gate.
+fn asks_for_contract_identity(code: &str) -> bool {
+    let production = without_cfg_test_items(code);
+    symbol_positions(&production, "contract_id").any(|at| preceding_token(&production, at) != "fn")
+}
+
+/// The identifier immediately before byte offset `at`, or the empty string when the text
+/// there is not an identifier.
+fn preceding_token(code: &str, at: usize) -> &str {
+    let head = code[..at].trim_end();
+    let bytes = head.as_bytes();
+    let start = (0..bytes.len())
+        .rev()
+        .find(|index| !is_ident_byte(bytes[*index]))
+        .map_or(0, |index| index + 1);
+    head.get(start..).unwrap_or_default()
+}
+
+/// Whether `code` declares the ceiling the contract identity's refusal stands on.
+///
+/// The constant is matched as a whole identifier at its own `const`, not as a prefix: a
+/// gate satisfied by a prefix stays green through the rename that leaves its subject with
+/// no definition, and reports the ceiling present in a tree that no longer has one.
+fn declares_contract_graph_ceiling(code: &str) -> bool {
+    symbol_positions(code, "MAX_CONTRACT_GRAPH_BYTES")
+        .any(|at| preceding_token(code, at) == "const")
+}
+
+/// Both predicates the pinned-caller gate stands on are planted against the spellings that
+/// would slip past a substring match.
+///
+/// A gate is only as strong as the shape it can see. `descriptor.contract_id()` and
+/// `DurableContractDescriptor::contract_id(descriptor)` are one call in two spellings, and
+/// a new trust path is exactly as likely to wear the second; a scan matching only the
+/// parenthesised call form reports a clean caller set for a tree that grew a caller. The
+/// ceiling check has the same shape of blindness in the other direction: a substring match
+/// on a `const` declaration stays green through a rename that leaves the gate's subject
+/// with no live definition at all.
+#[test]
+fn the_pinned_caller_gate_sees_both_spellings_and_an_exact_ceiling() {
+    assert!(
+        asks_for_contract_identity("fn caller(d: &D) { let _ = d.contract_id(); }"),
+        "the method-call spelling is an ask",
+    );
+    assert!(
+        asks_for_contract_identity(
+            "fn caller(d: &D) { let _ = DurableContractDescriptor::contract_id(d); }",
+        ),
+        "so is the UFCS spelling of the same call",
+    );
+    assert!(
+        !asks_for_contract_identity(
+            "impl D { pub fn contract_id(&self) -> Result<Id, TooLarge> { todo!() } }",
+        ),
+        "the declaration is not an ask, or the owner would pin itself as a caller",
+    );
+    assert!(
+        !asks_for_contract_identity("#[cfg(test)]\nmod tests { fn t(d: &D) { d.contract_id(); } }"),
+        "a hostile call in the test tier is not a production caller",
+    );
+
+    assert!(
+        declares_contract_graph_ceiling("const MAX_CONTRACT_GRAPH_BYTES: usize = 1;"),
+        "the live declaration is seen",
+    );
+    assert!(
+        !declares_contract_graph_ceiling("const MAX_CONTRACT_GRAPH_BYTES_RENAMED: usize = 1;"),
+        "a renamed constant leaves the gate's subject undefined, so the gate must fire",
+    );
 }
 
 /// The durable-contract identity has one production mint per side of the image boundary,
@@ -1140,7 +1182,7 @@ fn the_cfg_test_stripper_removes_exactly_the_test_items() {
 fn the_contract_identity_has_one_mint_per_side_and_a_bound_of_its_own() {
     let callers: Vec<String> = workspace_sources("src")
         .into_iter()
-        .filter(|(_, code)| without_cfg_test(code).contains("contract_id()"))
+        .filter(|(_, code)| asks_for_contract_identity(code))
         .map(|(path, _)| path.display().to_string())
         .collect();
     assert_eq!(
@@ -1193,7 +1235,7 @@ fn the_contract_identity_has_one_mint_per_side_and_a_bound_of_its_own() {
 
     // The mint's own bound. The public constructor takes a bare arena and promises
     // nothing about it, so the refusal has to live on the identity.
-    let owner = without_cfg_test(&without_literals(
+    let owner = without_cfg_test_items(&without_literals(
         &fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/durable_id.rs"))
             .expect("read the durable identity owner"),
     ));
@@ -1205,7 +1247,7 @@ fn the_contract_identity_has_one_mint_per_side_and_a_bound_of_its_own() {
          rather than allocated",
     );
     assert!(
-        owner.contains("const MAX_CONTRACT_GRAPH_BYTES"),
+        declares_contract_graph_ceiling(&owner),
         "the ceiling the refusal stands on is present, so this gate has a live subject",
     );
     assert!(
@@ -1232,7 +1274,7 @@ fn no_value_shape_is_minted_inside_a_template_proof() {
     let sources = workspace_sources("src");
     let minting: Vec<String> = sources
         .iter()
-        .filter(|(_, code)| without_cfg_test(code).contains("value_shapes_mut()"))
+        .filter(|(_, code)| without_cfg_test_items(code).contains("value_shapes_mut()"))
         .map(|(path, _)| path.display().to_string())
         .collect();
     for permitted in VALUE_SHAPE_MINT_OWNERS {
@@ -1251,7 +1293,7 @@ fn no_value_shape_is_minted_inside_a_template_proof() {
     let proof_openers: Vec<String> = sources
         .iter()
         .filter(|(_, code)| {
-            let production = without_cfg_test(code);
+            let production = without_cfg_test_items(code);
             contains_symbol(&production, "template_proof") || production.contains("proof_draft()")
         })
         .map(|(path, _)| path.display().to_string())
