@@ -320,7 +320,11 @@ pub fn f(value: PlainAlias): PlainAlias {
             ("check.recursion", 25, 30, 3, 7),
             ("check.recursion", 44, 48, 5, 7),
             ("check.recursion", 6, 9, 1, 7),
-            ("check.type", 58, 76, 7, 1),
+            // `Tail` names `Alpha`, a declaration this project wrote and the compiler
+            // refused for the cycle above. The steer reuses that declaring code; calling
+            // the name unknown would fabricate an absence for a name declared four lines
+            // up.
+            ("check.recursion", 58, 76, 7, 1),
             ("check.unsupported", 123, 143, 13, 1),
             ("check.unsupported", 145, 170, 15, 1),
         ],
