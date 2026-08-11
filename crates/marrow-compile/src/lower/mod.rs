@@ -61,7 +61,7 @@ use crate::decl::{
     DeclarationRefusalSummary, declaration_refused,
 };
 use crate::diag::{BoundedDiagnostics, DiagnosticCollector, SourceDiagnostic};
-use crate::durable::{DurableRegistry, RootBinding};
+use crate::durable::{DurableRegistry, ProductBinding, RootBinding};
 use crate::konst::{ConstRegistry, ConstScalar};
 use crate::scalar::ScalarType;
 use crate::types::{

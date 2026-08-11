@@ -11,13 +11,24 @@ use marrow_project::{CaptureLimits, CapturedFile, Manifest, ProjectInput};
 /// Capture a multi-file project with no `.marrow/ids` ledger, so every durable identity is
 /// missing and any declared store fails admission.
 fn project(files: &[(&str, &str)]) -> ProjectInput {
+    project_with(files, None)
+}
+
+/// Capture a project against an explicit partial ledger, so some declared stores are
+/// admitted and others fail admission.
+fn project_with(files: &[(&str, &str)], ids: Option<&str>) -> ProjectInput {
     let manifest = Manifest::parse("edition = \"2026\"\n").expect("valid manifest");
     let captured = files
         .iter()
         .map(|(path, source)| CapturedFile::new(path.to_string(), source.as_bytes().to_vec()))
         .collect();
-    marrow_project::capture(&manifest, captured, None, &CaptureLimits::DEFAULT)
-        .expect("capture project")
+    marrow_project::capture(
+        &manifest,
+        captured,
+        ids.map(str::as_bytes),
+        &CaptureLimits::DEFAULT,
+    )
+    .expect("capture project")
 }
 
 fn diagnostics(project: &ProjectInput) -> Vec<marrow_compile::SourceDiagnostic> {
@@ -150,5 +161,89 @@ fn a_dropped_root_referenced_from_a_generic_and_an_ordinary_function_steers_once
             .count(),
         1,
         "one steer per dropped root, not one per reference site: {diagnostics:#?}",
+    );
+}
+
+/// A ledger that admits `^b` over `Book` but has no identity for `^a`, so one of the two
+/// stores projecting that Product is refused and the other stands.
+const PARTIAL_IDS: &str = "marrow ids v0\n\
+     machine-written by marrow; do not edit\n\
+     id application . 0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a\n\
+     id product Book 0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d\n\
+     id field Book.title 0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e\n\
+     id root Book.notes 2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a\n\
+     id key Book.notes.noteId 2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b\n\
+     id field Book.notes.text 2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c\n\
+     id root b 1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b\n\
+     id key b.id 1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c\n\
+     high-water 0\n\
+     end\n";
+
+const SHARED_PRODUCT_MODULE: &str = "module main\n\n\
+     resource Book {\n\
+     \x20   required title: string\n\
+     \x20   notes[noteId: int] {\n\
+     \x20       required text: string\n\
+     \x20   }\n\
+     }\n\n\
+     store ^a[id: int]: Book\n\
+     store ^b[id: int]: Book\n";
+
+/// A refused store does not carry its cause to a Product a sibling store admits.
+///
+/// `Book.notes(…)` is a Product declaration question: it builds the branch's materialized
+/// entry record and addresses no store root. Resolving it through the *first* store
+/// binding the resource sent every use of that constructor to `^a`'s identity failure,
+/// even where the write it supplies is a write to the perfectly admitted `^b`. The steer
+/// belongs to `^a`'s own references.
+#[test]
+fn a_refused_store_does_not_steer_a_product_its_sibling_admits() {
+    let source = format!(
+        "{SHARED_PRODUCT_MODULE}\n\
+         pub fn addB(id: int, n: int, t: string) {{\n\
+         \x20   transaction {{\n\
+         \x20       ^b[id].notes[n] = Book.notes(text: t)\n\
+         \x20   }}\n\
+         }}\n"
+    );
+    let diagnostics = diagnostics(&project_with(
+        &[("src/main.mw", &source)],
+        Some(PARTIAL_IDS),
+    ));
+    assert!(
+        diagnostics
+            .iter()
+            .all(|d| d.code() == "check.durable_identity"),
+        "only ^a's own identity gaps are reported; the constructor is not blamed for \
+         them: {diagnostics:#?}",
+    );
+    assert!(
+        diagnostics
+            .iter()
+            .all(|d| d.message().contains("`a") || d.message().contains(" a.")),
+        "every report names the refused store, not the Product: {diagnostics:#?}",
+    );
+}
+
+/// The steer still reaches a use of the refused store itself.
+#[test]
+fn a_refused_store_still_steers_its_own_references() {
+    let source = format!(
+        "{SHARED_PRODUCT_MODULE}\n\
+         pub fn addA(id: int, n: int, t: string) {{\n\
+         \x20   transaction {{\n\
+         \x20       ^a[id].notes[n] = Book.notes(text: t)\n\
+         \x20   }}\n\
+         }}\n"
+    );
+    let diagnostics = diagnostics(&project_with(
+        &[("src/main.mw", &source)],
+        Some(PARTIAL_IDS),
+    ));
+    assert!(
+        diagnostics
+            .iter()
+            .any(|d| d.code() == "check.type" && d.message().contains("failed identity admission")),
+        "a use of the refused store is steered to its cause: {diagnostics:#?}",
     );
 }

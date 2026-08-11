@@ -44,7 +44,7 @@ impl ConstId {
 }
 
 /// A record-type index (also the final container index; types keep insertion order).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct TypeId(pub(crate) u16);
 
 impl TypeId {

@@ -107,6 +107,35 @@ fn every_verifier_index_maintenance_answer_is_owned_by_the_occurrence_handle() {
     }
 }
 
+/// No lookup recovers the durable node an operation addresses from a record `TypeId`, a
+/// resource spelling, or a whole-payload entry site.
+///
+/// A branch's materialized entry record and a resource spelling are Product *declaration*
+/// facts, and one declaration may be projected by several store roots, so none of them
+/// names an occurrence. Each deleted lookup answered with whichever root happened to be
+/// declared first: `branch_by_record` searched every executable root's branch tree,
+/// `by_resource`/`root_by_resource` mapped a resource to one arbitrary placement, and
+/// `root_by_entry_site` scanned for a site the addressed node already carries. The
+/// occurrence comes from the address that was resolved; the declaration answers
+/// record-shape and constructor questions and names no root.
+#[test]
+fn no_lookup_recovers_an_occurrence_from_a_declaration_fact() {
+    for needle in [
+        "root_by_entry_site",
+        "branch_by_record",
+        "root_by_resource",
+        ".by_resource",
+        "by_resource:",
+    ] {
+        let found = occurrences(needle);
+        assert!(
+            found.is_empty(),
+            "`{needle}` recovers a root occurrence from a fact its Product declaration \
+             owns, so it answers with the first root declared: {found:?}",
+        );
+    }
+}
+
 /// A gate that cannot see its own subject passes for the wrong reason.
 #[test]
 fn the_scan_sees_code_and_not_prose() {

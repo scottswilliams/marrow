@@ -1146,11 +1146,7 @@ impl<'a> FnLowerer<'a> {
                 // its executable branch tree).
                 if let Some((resource, head_span, mut path)) = split_dotted_head(base) {
                     path.push(&**name);
-                    let executable = match self.executable_branch_path(resource, &path) {
-                        Ok(branch) => branch,
-                        Err(drift) => return self.ledger_drift(drift),
-                    };
-                    if let Some(branch) = executable {
+                    if let Some(branch) = self.declared_branch_record(resource, &path) {
                         let display = branch_ctor_display(resource, &path);
                         return self
                             .lower_branch_constructor(
@@ -1177,11 +1173,11 @@ impl<'a> FnLowerer<'a> {
                     // one of its branches is not knowable here, and calling the form
                     // unsupported would blame the language for the store's own
                     // reported defect.
-                    let backing = match self.durable.root_by_resource(resource) {
+                    let backing = match self.durable.product(resource) {
                         Ok(binding) => binding,
                         Err(drift) => return self.ledger_drift(drift),
                     };
-                    if let RootBinding::Refused(_, summary) = backing {
+                    if let ProductBinding::Refused(summary) = backing {
                         self.steer_refusal(summary, span);
                         return None;
                     }
@@ -2048,36 +2044,18 @@ impl<'a> FnLowerer<'a> {
         })
     }
 
-    /// The executable branch `resource.branch`, if `resource` is the store's executable
-    /// resource and `branch` is one of its single-level keyed branches. The returned
-    /// reference borrows the durable registry (lifetime `'a`), not `self`, so it stays
-    /// valid across later mutating calls.
-    /// The executable branch reached by the branch-name `path` from `resource`, if
-    /// `resource` is the store's executable resource and each name is a keyed branch at its
-    /// level. Walks the recursive branch tree so `Book.notes.tags` resolves the nested
-    /// `tags` branch of `notes`. The returned reference borrows the durable registry
-    /// (lifetime `'a`), not `self`, so it stays valid across later mutating calls.
-    fn executable_branch_path(
+    /// The materialized entry record of the branch reached by the branch-name `path`
+    /// from `resource`, if the Product declares one there — so `Book.notes.tags` resolves
+    /// the nested `tags` branch of `notes`. A constructor builds a record and addresses no
+    /// durable node, so this answers from the Product declaration and names no store root.
+    /// The returned reference borrows the durable registry (lifetime `'a`), not `self`, so
+    /// it stays valid across later mutating calls.
+    fn declared_branch_record(
         &self,
         resource: &str,
         path: &[&str],
-    ) -> Result<Option<&'a crate::durable::DurableBranch>, DeclarationIndexDrift> {
-        let RootBinding::Executable(root) = self.durable.root_by_resource(resource)? else {
-            return Ok(None);
-        };
-        let Some((first, rest)) = path.split_first() else {
-            return Ok(None);
-        };
-        let Some(mut branch) = root.branch(first) else {
-            return Ok(None);
-        };
-        for name in rest {
-            let Some(next) = branch.branch(name) else {
-                return Ok(None);
-            };
-            branch = next;
-        }
-        Ok(Some(branch))
+    ) -> Option<&'a crate::durable::BranchRecordShape> {
+        self.durable.branch_record_at(resource, path)
     }
 
     /// Lower a keyed branch entry constructor `Resource.branch(field: value, …)`. The
@@ -2090,7 +2068,7 @@ impl<'a> FnLowerer<'a> {
         &mut self,
         resource: &str,
         display: &str,
-        branch: &'a crate::durable::DurableBranch,
+        branch: &'a crate::durable::BranchRecordShape,
         head_span: SourceSpan,
         args: &[Argument],
         span: SourceSpan,
@@ -2107,7 +2085,7 @@ impl<'a> FnLowerer<'a> {
             ));
             return None;
         }
-        let record = branch.record;
+        let record = branch.record();
 
         // Validate argument names against the branch's fields before emitting, so
         // evaluation order is the field declaration order.
@@ -2135,7 +2113,7 @@ impl<'a> FnLowerer<'a> {
 
         // `branch` borrows the registry (lifetime independent of `self`), so it stays
         // valid across the mutating `lower_as`/`push` calls below.
-        for field in &branch.fields {
+        for field in branch.fields() {
             let arg = args
                 .iter()
                 .find(|a| a.name.as_ref().map(NameSegment::text) == Some(field.name.as_str()));
@@ -3207,18 +3185,16 @@ impl<'a> FnLowerer<'a> {
                             .record_by_type(ty)
                             .map(|info| info.name.clone())
                         {
-                            let backing = match self.durable.root_by_resource(&resource) {
+                            let backing = match self.durable.product(&resource) {
                                 Ok(binding) => binding,
                                 Err(drift) => return self.ledger_drift(drift),
                             };
                             match backing {
-                                RootBinding::Executable(root) if root.branch(name).is_some() => {
+                                ProductBinding::Declared(root)
+                                    if self.durable.declares_branch(&resource, name) =>
+                                {
                                     self.fail(branch_not_a_field(
-                                        self.file,
-                                        field_span,
-                                        name,
-                                        &root.resource,
-                                        &root.name,
+                                        self.file, field_span, name, &resource, &root.name,
                                     ));
                                     return None;
                                 }
@@ -3228,13 +3204,13 @@ impl<'a> FnLowerer<'a> {
                                 // knowable here. Reporting the record as having no
                                 // such field would state that as fact; the store's
                                 // own cause is what the reader has to fix first.
-                                RootBinding::Refused(_, summary) => {
+                                ProductBinding::Refused(summary) => {
                                     self.steer_refusal(summary, field_span);
                                     return None;
                                 }
-                                RootBinding::Executable(_)
-                                | RootBinding::NotYetExecutable
-                                | RootBinding::Absent => {}
+                                ProductBinding::Declared(_)
+                                | ProductBinding::NotYetExecutable
+                                | ProductBinding::Absent => {}
                             }
                         }
                         self.fail(SourceDiagnostic::at(
@@ -3266,12 +3242,12 @@ impl<'a> FnLowerer<'a> {
                 // A materialized keyed branch entry value (from `if const n =
                 // ^root(k).branch(bk)`) is an image record the resource registry does not
                 // own; resolve its scalar fields against the branch's field layout.
-                if let Some(branch) = self.durable.branch_by_record(ty) {
+                if let Some(branch) = self.durable.branch_record(ty) {
                     let Some((index, field)) = branch.field_index(name) else {
                         // A sub-branch of this materialized branch entry is a distinct durable
                         // node, not a field: steer to the durable-path form, the same as a
                         // top-level branch off a whole-entry record.
-                        if branch.branch(name).is_some() {
+                        if branch.declares_branch(name) {
                             self.fail(subbranch_not_a_field(self.file, field_span, name));
                             return None;
                         }
