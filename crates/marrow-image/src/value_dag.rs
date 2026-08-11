@@ -88,6 +88,15 @@ pub(crate) const VALUE_SHAPE_NODE_BYTES: u64 = size_of::<ValueShapeNode>() as u6
     + size_of::<u32>() as u64
     + size_of::<(ValueShapeNode, ValueShapeNodeId)>() as u64;
 
+/// The live bytes one reference inside a value shape occupies, at the widest of the three
+/// kinds: a dense composite's leaf id, an enum's member (its ledger identity and the
+/// pointer triple of its own payload vector), or one payload leaf id.
+pub(crate) const VALUE_SHAPE_REFERENCE_BYTES: u64 = {
+    let leaf = size_of::<ValueShapeNodeId>() as u64;
+    let member = size_of::<ValueShapeEnumMember>() as u64;
+    if member > leaf { member } else { leaf }
+};
+
 /// One distinct durable value shape. Nested positions are references, so this type
 /// cannot express a tree and cloning it copies one level.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]

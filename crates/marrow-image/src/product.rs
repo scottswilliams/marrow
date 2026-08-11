@@ -68,15 +68,24 @@ pub(crate) const PRODUCT_DECLARATION_ROW_BYTES: u64 = size_of::<ProductDeclarati
     + size_of::<(DurableProductIdentity, usize)>() as u64
     + size_of::<usize>() as u64;
 
-/// The live bytes one root-occurrence row occupies, charged at the widest occurrence the
-/// image admits: the row itself plus its full key tuple and its full managed-index
-/// projection, since both are heap vectors the row owns and `size_of` cannot see.
+/// The live bytes one root-occurrence row occupies: the row itself plus its full key
+/// tuple, which is a heap vector the row owns and `size_of` cannot see. The occurrence's
+/// managed indexes are charged per index by [`MANAGED_INDEX_BYTES`], so an occurrence
+/// declaring none is not charged for thirty-two.
 pub(crate) const ROOT_OCCURRENCE_ROW_BYTES: u64 = size_of::<RootOccurrence>() as u64
-    + crate::bounds::MAX_KEY_COLUMNS as u64 * size_of::<KeyColumn>() as u64
-    + crate::bounds::MAX_INDEXES as u64
-        * (size_of::<DurableIndexShape>() as u64
-            + crate::bounds::MAX_INDEX_COMPONENTS as u64
-                * size_of::<crate::durable_id::DurableIndexComponent>() as u64);
+    + crate::bounds::MAX_KEY_COLUMNS as u64 * size_of::<KeyColumn>() as u64;
+
+/// The live bytes one managed-index declaration occupies apart from its projection.
+pub(crate) const MANAGED_INDEX_SHAPE_BYTES: u64 = size_of::<DurableIndexShape>() as u64;
+
+/// The live bytes one projected index component occupies.
+pub(crate) const MANAGED_INDEX_COMPONENT_BYTES: u64 =
+    size_of::<crate::durable_id::DurableIndexComponent>() as u64;
+
+/// The live bytes one managed-index declaration occupies: the shape itself plus its full
+/// leaf projection.
+pub(crate) const MANAGED_INDEX_BYTES: u64 = MANAGED_INDEX_SHAPE_BYTES
+    + crate::bounds::MAX_INDEX_COMPONENTS as u64 * MANAGED_INDEX_COMPONENT_BYTES;
 
 /// The live bytes an empty durable contract graph occupies before it holds a row: the
 /// application identity, the two empty tables, the empty arena, and the draft identity and

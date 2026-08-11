@@ -1175,6 +1175,133 @@ fn one_ledger_row_past_the_cap_is_refused_before_compilation() {
     );
 }
 
+// ---- The compiler-side maximum-live equation for the durable contract graph.
+
+/// The identity-ledger anchors one project may declare beside its application and its
+/// Product. Every member row, root occurrence, key column, enum member, and managed-index
+/// declaration the compiler admits anchors one of them, so this is the census that bounds
+/// how much durable graph a compiler drive can be holding at once.
+const LEDGER_ADMITTED_ANCHORS: u64 = (marrow_project::MAX_IDS_ROWS - 2) as u64;
+
+/// The compiler-side maximum-live durable contract graph, in bytes.
+///
+/// The equation is `marrow-image`'s — it owns what its representation costs — and the
+/// extrema are the compiler's, because the identity ledger is what bounds a source-admitted
+/// graph. Each population is charged at the *whole* remaining anchor budget: no ledger can
+/// satisfy every term at once (they share one budget of
+/// `marrow_project::MAX_IDS_ROWS` rows), so this envelope sits deliberately above the true
+/// simultaneous maximum. It is stated that way because the alternative — solving for the
+/// costliest admissible split — would have to be re-solved whenever any per-element charge
+/// moved, and an envelope that is provably above every split is the stronger claim.
+///
+/// The value arena is charged separately by
+/// [`MAX_LIVE_DURABLE_VALUE_ARENA_BYTES`]: its populations are bounded by the *type*
+/// population, not by the identity ledger, and its ceiling belongs to the durable-value
+/// owner rather than to the durable-graph owner.
+const MAX_LIVE_DURABLE_GRAPH_BYTES: u64 =
+    marrow_image::bounds::max_live_durable_graph_bytes(marrow_image::bounds::DurableGraphCounts {
+        products: LEDGER_ADMITTED_ANCHORS,
+        occurrences: LEDGER_ADMITTED_ANCHORS,
+        indexes: LEDGER_ADMITTED_ANCHORS,
+        members: LEDGER_ADMITTED_ANCHORS,
+        value_nodes: 0,
+        value_references: 0,
+    });
+
+/// The declared ceiling for the durable contract graph a compiler drive holds live.
+///
+/// Declared, not derived from the sum: a ceiling defined as whatever the current
+/// representation costs proves nothing, because every widening would raise both sides
+/// equally. 64 MiB is a generous fraction of the compiler's owned heap for one of its
+/// several live structures, and it still fails a representation that charged per
+/// (root x member) — the shape this row deleted — as the negative control below shows.
+const H_DURABLE_GRAPH_BYTES: u64 = 64 * 1024 * 1024;
+
+/// Prove the compiler-side equation closes at compile time. A representation change that
+/// breached the ceiling would fail the build here rather than at some later measurement.
+const _: () = assert!(
+    MAX_LIVE_DURABLE_GRAPH_BYTES <= H_DURABLE_GRAPH_BYTES,
+    "the compiler-side maximum-live durable contract graph exceeds its declared ceiling",
+);
+
+/// The maximum-live value arena the same drive holds, in bytes — **an exported term, not a
+/// bound this row asserts.**
+///
+/// The arena's populations are bounded by the type population (`MAX_TYPES` distinct
+/// composite shapes, `MAX_ENUMS` distinct enum shapes, each at its own admitted width), not
+/// by the identity ledger, so this figure is dominated by enum payload leaves and is far
+/// looser than anything the durable graph contributes. Tightening it is the durable-value
+/// owner's work (the stored-value admission row), which this row's stop conditions place
+/// out of scope; it is derived and published here so that owner and the capacity join
+/// consume a stated number rather than rediscovering it.
+const MAX_LIVE_DURABLE_VALUE_ARENA_BYTES: u64 =
+    marrow_image::bounds::max_live_durable_graph_bytes(marrow_image::bounds::DurableGraphCounts {
+        products: 0,
+        occurrences: 0,
+        indexes: 0,
+        members: 0,
+        value_nodes: (marrow_image::bounds::MAX_TYPES + marrow_image::bounds::MAX_ENUMS) as u64,
+        value_references: (marrow_image::bounds::MAX_TYPES
+            * marrow_image::bounds::MAX_STRUCT_LEAVES
+            + marrow_image::bounds::MAX_ENUMS
+                * marrow_image::bounds::MAX_VARIANTS
+                * (1 + marrow_image::bounds::MAX_PAYLOAD_FIELDS)) as u64,
+    }) - marrow_image::bounds::DURABLE_GRAPH_FIXED_BYTES;
+
+/// The exact accounted figures, published in the implementation map.
+///
+/// They are asserted rather than only bounded because they are the terms a later capacity
+/// join consumes: a change to either is an observable-contract change, and the map and this
+/// pin move together.
+#[test]
+fn the_compiler_side_maximum_live_graph_holds_its_accounted_figures() {
+    assert_eq!(
+        MAX_LIVE_DURABLE_GRAPH_BYTES, 42_653_752,
+        "the accounted compiler-side durable contract graph moved; re-derive the exported \
+         term and update the implementation map with this pin"
+    );
+    assert_eq!(
+        MAX_LIVE_DURABLE_VALUE_ARENA_BYTES, 8_212_611_072,
+        "the accounted durable value arena moved; it is the durable-value owner's term and \
+         the implementation map publishes it"
+    );
+    assert!(
+        MAX_LIVE_DURABLE_GRAPH_BYTES <= H_DURABLE_GRAPH_BYTES,
+        "the compiler-side graph must close under its declared ceiling"
+    );
+}
+
+/// **The negative control.** The superseded representation — one fully expanded member tree
+/// per root occurrence, which is what `member_shapes` allocated inside the per-occurrence
+/// map — does not close under the same ceiling.
+///
+/// Without this, the equation above would be satisfied by any representation at all,
+/// including the one this row deleted, and closing it would not be evidence that the
+/// deletion was load-bearing.
+#[test]
+fn the_superseded_per_occurrence_member_tree_does_not_close() {
+    // Every occurrence carried its own copy of the Product's member rows, so the member
+    // term was multiplied by the occurrence count instead of shared across it. Charged at
+    // the widest split a ledger admits — half its anchors occurrences, half members — which
+    // is the *most favourable* reading of the superseded shape.
+    let half = LEDGER_ADMITTED_ANCHORS / 2;
+    let superseded = marrow_image::bounds::max_live_durable_graph_bytes(
+        marrow_image::bounds::DurableGraphCounts {
+            products: 1,
+            occurrences: half,
+            indexes: 0,
+            members: half * half,
+            value_nodes: 0,
+            value_references: 0,
+        },
+    );
+    assert!(
+        superseded > H_DURABLE_GRAPH_BYTES,
+        "the superseded per-occurrence member tree must not close, or sharing one member \
+         graph across occurrences is not load-bearing: {superseded}"
+    );
+}
+
 /// A one-member Product and the ledger rows it declares, so an identity-state variation
 /// is the only difference between the cases below.
 fn one_member_source() -> String {

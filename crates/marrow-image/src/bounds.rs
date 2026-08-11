@@ -449,17 +449,75 @@ pub const DURABLE_MEMBER_ROW_BYTES: u64 = crate::product::DECLARATION_ROW_BYTES;
 /// The live bytes one Product declaration row occupies beside its member rows.
 pub const DURABLE_PRODUCT_ROW_BYTES: u64 = crate::product::PRODUCT_DECLARATION_ROW_BYTES;
 
-/// The live bytes one root-occurrence row occupies, at the widest key tuple and
-/// managed-index projection the image admits.
+/// The live bytes one root-occurrence row occupies, at the widest key tuple the image
+/// admits. Its managed indexes are charged per index, not per occurrence: an occurrence
+/// declaring none pays for none.
 pub const DURABLE_OCCURRENCE_ROW_BYTES: u64 = crate::product::ROOT_OCCURRENCE_ROW_BYTES;
 
-/// The live bytes one interned value-shape node occupies in the graph's one arena.
+/// The live bytes one managed-index declaration occupies, at the widest leaf projection
+/// the image admits.
+pub const DURABLE_INDEX_BYTES: u64 = crate::product::MANAGED_INDEX_BYTES;
+
+/// The live bytes one interned value-shape node occupies in the graph's one arena, apart
+/// from the references it holds.
 pub const DURABLE_VALUE_NODE_BYTES: u64 = crate::value_dag::VALUE_SHAPE_NODE_BYTES;
+
+/// The live bytes one reference inside a value shape occupies: a dense composite's leaf, an
+/// enum's member, or one of that member's payload leaves. Charged at the widest of the
+/// three, since an owner states how many references it admits and not which kind.
+pub const DURABLE_VALUE_REFERENCE_BYTES: u64 = crate::value_dag::VALUE_SHAPE_REFERENCE_BYTES;
 
 /// The live bytes a durable contract graph and the plan admitting input into it occupy
 /// before either holds a row.
 pub const DURABLE_GRAPH_FIXED_BYTES: u64 =
     crate::product::CONTRACT_GRAPH_FIXED_BYTES + size_of::<crate::AdmittedGraphInputPlan>() as u64;
+
+/// The live bytes a durable graph reconstructed from received image bytes may occupy per
+/// received byte — the rate a decoder sizes its own maximum-live equation against.
+///
+/// A decoder cannot state its populations the way an admission owner can: it holds bytes,
+/// and what those bytes decode to is the attacker's choice. What it can state is the widest
+/// rate any one element pays, because every element the graph holds is spelled in the
+/// DURABLE section and so consumes wire bytes of its own. Each rate below is that element's
+/// published live charge over the fewest bytes the grammar can spell it in:
+///
+/// | element | live | fewest wire bytes | rate |
+/// |---|---|---|---|
+/// | member row | 56 | 17 — a tag byte and a ledger id | 4 |
+/// | root occurrence | 224 | 34 — a name, a placement id, and a Product id | 7 |
+/// | managed index | 48 | 19 — a ledger id, a unique flag, and a component count | 3 |
+/// | index component | 17 | 17 — a kind byte and a ledger id | 1 |
+/// | value shape node | 92 | 1 — a scalar tag | 92 |
+/// | value shape reference | 40 | 2 — a leaf's own spelling | 20 |
+///
+/// The value-shape node is the widest and therefore the rate: a decoder that met a section
+/// of nothing but distinct one-byte shapes would mint one interned node per byte. That it
+/// dominates is a fact about the arena's node representation, not about the graph's rows,
+/// and it is published rather than averaged away so the decoder's ceiling names the term
+/// that actually sizes it.
+///
+/// Rounded up at every element, so the rate is an over-estimate of any real mixture: a
+/// section is one sequence of elements, and no sequence pays more than its costliest member
+/// pays throughout.
+pub const DURABLE_LIVE_BYTES_PER_WIRE_BYTE: u64 = {
+    let rates = [
+        DURABLE_MEMBER_ROW_BYTES.div_ceil(17),
+        DURABLE_OCCURRENCE_ROW_BYTES.div_ceil(34),
+        crate::product::MANAGED_INDEX_SHAPE_BYTES.div_ceil(19),
+        crate::product::MANAGED_INDEX_COMPONENT_BYTES,
+        DURABLE_VALUE_NODE_BYTES,
+        DURABLE_VALUE_REFERENCE_BYTES.div_ceil(2),
+    ];
+    let mut widest = 0;
+    let mut index = 0;
+    while index < rates.len() {
+        if rates[index] > widest {
+            widest = rates[index];
+        }
+        index += 1;
+    }
+    widest
+};
 
 /// The maximum live bytes of building one durable contract graph of `products` Product
 /// declarations, `occurrences` root occurrences, `members` member rows across those
@@ -479,21 +537,52 @@ pub const DURABLE_GRAPH_FIXED_BYTES: u64 =
 ///
 /// Evaluated in a `const` context by its callers, so an overflow in any product or sum is a
 /// compile-time error rather than a wrap an assertion could then be "proven" on.
-pub const fn max_live_durable_graph_bytes(
-    products: u64,
-    occurrences: u64,
-    members: u64,
-    value_nodes: u64,
-) -> u64 {
+pub const fn max_live_durable_graph_bytes(counts: DurableGraphCounts) -> u64 {
+    let DurableGraphCounts {
+        products,
+        occurrences,
+        indexes,
+        members,
+        value_nodes,
+        value_references,
+    } = counts;
+
     let commands = GROWTH_AND_COPY * members * DURABLE_COMMAND_BYTES;
     let builder = GROWTH_AND_COPY * members * DURABLE_MEMBER_ROW_BYTES;
     let published = GROWTH_AND_COPY
         * (products * DURABLE_PRODUCT_ROW_BYTES
             + occurrences * DURABLE_OCCURRENCE_ROW_BYTES
+            + indexes * DURABLE_INDEX_BYTES
             + members * DURABLE_MEMBER_ROW_BYTES
-            + value_nodes * DURABLE_VALUE_NODE_BYTES);
+            + value_nodes * DURABLE_VALUE_NODE_BYTES
+            + value_references * DURABLE_VALUE_REFERENCE_BYTES);
 
     commands + builder + published + DURABLE_GRAPH_FIXED_BYTES
+}
+
+/// The counts one durable contract graph is built from — every population the
+/// representation charges per element, named rather than positional so an admission owner
+/// cannot transpose two of them.
+///
+/// An owner states the extrema its own admission permits; this crate states what each one
+/// costs. A count no owner can reach is still a count some caller may hand over, so the
+/// equation charges what it is given and the ceiling belongs to whoever states the counts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DurableGraphCounts {
+    /// Distinct Product declarations.
+    pub products: u64,
+    /// Root occurrences over those declarations.
+    pub occurrences: u64,
+    /// Managed index declarations across those occurrences.
+    pub indexes: u64,
+    /// Member rows across those declarations.
+    pub members: u64,
+    /// Distinct value shapes interned in the graph's one arena.
+    pub value_nodes: u64,
+    /// References those value shapes hold: a dense composite's leaves, an enum's members,
+    /// and each member's own payload leaves. Charged apart from the nodes because a node's
+    /// own width is not fixed, so an arena of `n` nodes has no single cost.
+    pub value_references: u64,
 }
 
 #[cfg(test)]
@@ -536,52 +625,122 @@ mod tests {
         assert_eq!(MAX_EXPORTS, 256, "exported functions per image");
     }
 
-    /// The published per-row charges of the durable contract graph's representation.
+    /// The published per-element charges of the durable contract graph's representation.
     ///
     /// These are the terms both admission owners' maximum-live equations are derived from,
-    /// so they are pinned exactly rather than only bounded: a row that grows is an
+    /// so they are pinned exactly rather than only bounded: an element that grows is an
     /// observable change to what building a graph costs, and it must be re-derived where it
-    /// is consumed rather than absorbed here. Each row's own field set is held complete by
-    /// the destructuring gates beside the rows themselves.
+    /// is consumed rather than absorbed here. Each element's own field set is held complete
+    /// by the destructuring gates beside the rows themselves.
     #[test]
-    fn the_durable_graph_row_charges_hold_their_measured_widths() {
+    fn the_durable_graph_charges_hold_their_measured_widths() {
         assert_eq!(DURABLE_COMMAND_BYTES, 56, "one flat member command");
         assert_eq!(DURABLE_MEMBER_ROW_BYTES, 56, "one materialized member row");
         assert_eq!(DURABLE_PRODUCT_ROW_BYTES, 72, "one Product declaration row");
         assert_eq!(
-            DURABLE_OCCURRENCE_ROW_BYTES, 40_928,
-            "one root occurrence at the widest key tuple and index projection"
+            DURABLE_OCCURRENCE_ROW_BYTES, 224,
+            "one root occurrence at the widest key tuple"
+        );
+        assert_eq!(
+            DURABLE_INDEX_BYTES, 1_272,
+            "one managed index at the widest leaf projection"
         );
         assert_eq!(DURABLE_VALUE_NODE_BYTES, 92, "one interned value shape");
+        assert_eq!(
+            DURABLE_VALUE_REFERENCE_BYTES, 40,
+            "one reference inside a value shape"
+        );
         assert_eq!(
             DURABLE_GRAPH_FIXED_BYTES, 232,
             "the empty graph and its plan"
         );
     }
 
-    /// The equation is linear in each of its four inputs and charges every one of them.
+    /// One count of each population, for the charge tests below.
+    const fn one_of_each() -> DurableGraphCounts {
+        DurableGraphCounts {
+            products: 1,
+            occurrences: 1,
+            indexes: 1,
+            members: 1,
+            value_nodes: 1,
+            value_references: 1,
+        }
+    }
+
+    /// The equation charges every population it names, and is linear in each.
     ///
     /// A term that stopped being charged — a table that started sharing, a vector whose
-    /// growth stopped being counted — would show here as an input the total no longer
+    /// growth stopped being counted — would show here as a population the total no longer
     /// moves with, which is exactly the silent under-accounting the equation exists to
     /// prevent.
     #[test]
-    fn every_input_of_the_maximum_live_equation_is_charged() {
-        let empty = max_live_durable_graph_bytes(0, 0, 0, 0);
+    fn every_population_of_the_maximum_live_equation_is_charged() {
+        const NONE: DurableGraphCounts = DurableGraphCounts {
+            products: 0,
+            occurrences: 0,
+            indexes: 0,
+            members: 0,
+            value_nodes: 0,
+            value_references: 0,
+        };
+        let empty = max_live_durable_graph_bytes(NONE);
         assert_eq!(empty, DURABLE_GRAPH_FIXED_BYTES);
 
-        for (name, one) in [
-            ("products", max_live_durable_graph_bytes(1, 0, 0, 0)),
-            ("occurrences", max_live_durable_graph_bytes(0, 1, 0, 0)),
-            ("members", max_live_durable_graph_bytes(0, 0, 1, 0)),
-            ("value nodes", max_live_durable_graph_bytes(0, 0, 0, 1)),
+        for (name, counts) in [
+            (
+                "products",
+                DurableGraphCounts {
+                    products: 1,
+                    ..NONE
+                },
+            ),
+            (
+                "occurrences",
+                DurableGraphCounts {
+                    occurrences: 1,
+                    ..NONE
+                },
+            ),
+            ("indexes", DurableGraphCounts { indexes: 1, ..NONE }),
+            ("members", DurableGraphCounts { members: 1, ..NONE }),
+            (
+                "value nodes",
+                DurableGraphCounts {
+                    value_nodes: 1,
+                    ..NONE
+                },
+            ),
+            (
+                "value references",
+                DurableGraphCounts {
+                    value_references: 1,
+                    ..NONE
+                },
+            ),
         ] {
-            assert!(one > empty, "the equation does not charge {name}");
+            assert!(
+                max_live_durable_graph_bytes(counts) > empty,
+                "the equation does not charge {name}"
+            );
         }
 
-        // Linear, not merely monotone: doubling every count doubles every charged term.
-        let single = max_live_durable_graph_bytes(1, 1, 1, 1) - DURABLE_GRAPH_FIXED_BYTES;
-        let double = max_live_durable_graph_bytes(2, 2, 2, 2) - DURABLE_GRAPH_FIXED_BYTES;
-        assert_eq!(double, 2 * single, "the equation is linear in its inputs");
+        // Linear, not merely monotone: doubling every population doubles every charged term.
+        let single = max_live_durable_graph_bytes(one_of_each()) - DURABLE_GRAPH_FIXED_BYTES;
+        let one = one_of_each();
+        let doubled = DurableGraphCounts {
+            products: 2 * one.products,
+            occurrences: 2 * one.occurrences,
+            indexes: 2 * one.indexes,
+            members: 2 * one.members,
+            value_nodes: 2 * one.value_nodes,
+            value_references: 2 * one.value_references,
+        };
+        let double = max_live_durable_graph_bytes(doubled) - DURABLE_GRAPH_FIXED_BYTES;
+        assert_eq!(
+            double,
+            2 * single,
+            "the equation is linear in its populations"
+        );
     }
 }
