@@ -136,62 +136,132 @@ pub(crate) const IDREF_MEMBER: u8 = 6;
 const IDREF_GROUP: u8 = 7;
 const IDREF_INDEX: u8 = 8;
 
-/// The largest canonical graph payload a durable-contract identity is ever computed
-/// over.
-///
-/// The payload and the image's DURABLE section are the same walk over the same graph,
-/// differing only in how a ledger reference is spelled: 25 payload bytes
-/// (`u8(kind) ‖ u64_be(16) ‖ id`) where the section writes that identity's 16 raw bytes.
-/// A graph whose section an image can carry therefore has a payload under
-/// `25/16 × MAX_IMAGE_BYTES`, so twice the image ceiling is above every graph a producer
-/// can encode and above every graph a decoder can read out of an image.
-///
-/// It is far below what a caller holding an arena can *state*. A value shape shared
-/// across nesting levels expands geometrically in its depth and the payload spells the
-/// expansion, so the length of a graph's payload is not bounded by the size of the graph
-/// that describes it. Past this length [`DurableContractDescriptor::contract_id`] refuses
-/// rather than allocating, which is what makes the cost of asking for an identity a
-/// property of this owner instead of a promise each of its callers must keep.
-const MAX_CONTRACT_GRAPH_BYTES: usize = 2 * bounds::MAX_IMAGE_BYTES;
+/// The width of one raw ledger id, as the image's DURABLE section spells a reference.
+const LEDGER_ID_BYTES: usize = 16;
 
-/// The ceiling is above the widest payload any image-carryable graph can have, so it can
-/// only ever refuse a graph no producer could have encoded. Widening the image ceiling
-/// without widening this one would make the refusal reachable from the production path.
-const _: () = assert!(MAX_CONTRACT_GRAPH_BYTES > bounds::MAX_IMAGE_BYTES * 25 / 16);
+/// The width of a length prefix: `u64_be(len)`.
+const LP_HEADER_BYTES: usize = size_of::<u64>();
+
+/// The width of one ledger reference in the canonical payload: `u8(kind) ‖ u64_be(16) ‖ id`.
+const PREIMAGE_IDREF_BYTES: usize = 1 + LP_HEADER_BYTES + LEDGER_ID_BYTES;
+
+/// The longest DURABLE body [`crate::encode`]'s lower-bound fence admits: the whole-image
+/// ceiling less the closing contract identity, which the fence charges against the ceiling
+/// before the body is allocated.
+const MAX_FITTING_DURABLE_BODY_BYTES: usize = bounds::MAX_IMAGE_BYTES - DurableContractId::BYTES;
+
+/// The longest canonical graph payload a DURABLE body an image can carry can produce, and
+/// so the length past which [`DurableContractDescriptor::contract_id`] refuses.
+///
+/// # The implication, term by term
+///
+/// The payload and the DURABLE body are the **same walk over the same rows**: the same
+/// root occurrences in the same order, each projecting the same retained declaration and
+/// the same value arena. They differ only in how a ledger reference is spelled, so each
+/// payload term has a distinct body counterpart, and every body term the payload has no
+/// term for only adds to the body:
+///
+/// | payload term | payload | body counterpart | body |
+/// |---|---|---|---|
+/// | root count, key count, member count, index count, component count | 2 | the same `u16` | 2 |
+/// | application, root placement, root product, key, field, group, branch placement, index, enum sum, enum member | 25 | the raw id | 16 |
+/// | index component (kind inside the `IDREF`) | 25 | `u8(kind)` and the raw id | 17 |
+/// | member tag, required flag, unique flag, key scalar tag, value tags and scalar tags | 1 | the same byte | 1 |
+/// | — | 0 | root name, root record, branch name, branch record, the site table | ≥ 0 |
+///
+/// Every row has `payload ≤ 25/16 × body`, and the ratio is reached only by a bare
+/// reference; summing the rows gives `payload ≤ 25/16 × body` for the whole walk. The
+/// fence admits a body only when `body + DurableContractId::BYTES ≤ MAX_IMAGE_BYTES`, so
+/// the amplifiable term is [`MAX_FITTING_DURABLE_BODY_BYTES`] — the 32 identity bytes are
+/// not body bytes and are not amplified, which is why the subtraction sits **inside** the
+/// ratio rather than outside it.
+///
+/// # What the bound is not
+///
+/// It is far below what a caller holding an arena can *state*. A value shape shared across
+/// nesting levels expands geometrically in its depth and the payload spells the expansion,
+/// so the length of a graph's payload is not bounded by the size of the graph that
+/// describes it. Past this length the identity is refused rather than computed, which is
+/// what makes the cost of asking for an identity a property of this owner instead of a
+/// promise each of its callers must keep.
+const MAX_FITTING_CONTRACT_PREIMAGE_BYTES: usize =
+    (MAX_FITTING_DURABLE_BODY_BYTES * PREIMAGE_IDREF_BYTES).div_ceil(LEDGER_ID_BYTES);
+
+/// The derivation is exact arithmetic, not a saturating estimate.
+const _: () = assert!(MAX_FITTING_DURABLE_BODY_BYTES <= usize::MAX / PREIMAGE_IDREF_BYTES);
+
+/// A fence-admitted body is inside the bound, so the refusal can only ever answer for a
+/// graph no image could carry. Widening the image ceiling widens this one with it.
+const _: () = assert!(MAX_FITTING_CONTRACT_PREIMAGE_BYTES >= MAX_FITTING_DURABLE_BODY_BYTES);
 
 /// A durable graph no image could carry, refused before its identity is computed: its
-/// canonical payload runs past [`MAX_CONTRACT_GRAPH_BYTES`], or one of its nodes states
-/// more positions than the `u16` both v0 wire forms count with can spell.
+/// canonical payload runs past [`MAX_FITTING_CONTRACT_PREIMAGE_BYTES`], or one of its nodes
+/// states more positions than the `u16` both v0 wire forms count with can spell.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DurableGraphTooLarge;
 
-/// The canonical payload under construction, bounded.
+/// The length of the canonical payload, counted without writing it.
 ///
-/// Once past [`MAX_CONTRACT_GRAPH_BYTES`] the buffer keeps what it has and discards the
-/// rest, and every walk writing into it stops at [`ImageByteSink::is_full`]. Peak memory
-/// is therefore the ceiling plus one identity whatever graph is offered, and no reader
-/// ever sees a truncated payload, because [`DurableContractDescriptor::encode_graph`]
-/// turns a full buffer into a refusal rather than a hash input.
+/// This sink writes nothing. It saturates one byte past
+/// [`MAX_FITTING_CONTRACT_PREIMAGE_BYTES`] rather than at it, so "full" and "fits" stay
+/// distinguishable, and every walk writing into it stops at [`ImageByteSink::is_full`] —
+/// the work a graph stating an expansion no image could carry costs is the bytes the bound
+/// admits, not the bytes the expansion would have produced, and no buffer is allocated to
+/// find that out.
 #[derive(Default)]
-struct BoundedGraphPayload(Vec<u8>);
+struct FittingPreimageLength(usize);
 
-impl ImageByteSink for BoundedGraphPayload {
-    fn push(&mut self, byte: u8) {
-        if self.is_full() {
-            return;
-        }
-        self.0.push(byte);
+impl ImageByteSink for FittingPreimageLength {
+    fn push(&mut self, _byte: u8) {
+        self.0 += 1;
     }
 
     fn extend_bytes(&mut self, bytes: &[u8]) {
-        if self.is_full() {
-            return;
-        }
-        self.0.extend_from_slice(bytes);
+        self.0 += bytes.len();
     }
 
     fn is_full(&self) -> bool {
-        self.0.len() > MAX_CONTRACT_GRAPH_BYTES
+        self.0 > MAX_FITTING_CONTRACT_PREIMAGE_BYTES
+    }
+}
+
+/// The canonical payload streamed straight into the identity hash.
+///
+/// The construction is `SHA-256(KIND ‖ u64_be(len(payload)) ‖ payload)` over
+/// `payload = LP(lineage) ‖ LP(graph)`, so both lengths are due before the first graph
+/// byte. [`FittingPreimageLength`] supplies the one that is not a constant, which is what
+/// lets the walk feed the hasher directly: no payload buffer is allocated at any size, for
+/// any graph.
+struct ContractPreimageHash(Sha256);
+
+impl ContractPreimageHash {
+    /// Open the hash over a payload whose graph is `graph_len` bytes long, writing the
+    /// domain-separation tag, the payload length, the lineage component, and the graph
+    /// component's own length prefix.
+    fn opened(lineage: &[u8], graph_len: usize) -> Self {
+        let payload_len = LP_HEADER_BYTES + lineage.len() + LP_HEADER_BYTES + graph_len;
+        let mut hasher = Sha256::new();
+        hasher.update(DURABLE_CONTRACT_KIND);
+        hasher.update((payload_len as u64).to_be_bytes());
+        let mut sink = Self(hasher);
+        push_lp(&mut sink, lineage);
+        sink.extend_bytes(&(graph_len as u64).to_be_bytes());
+        sink
+    }
+
+    /// The identity of the graph just streamed through.
+    fn finish(self) -> DurableContractId {
+        DurableContractId(self.0.finalize().into())
+    }
+}
+
+impl ImageByteSink for ContractPreimageHash {
+    fn push(&mut self, byte: u8) {
+        self.0.update([byte]);
+    }
+
+    fn extend_bytes(&mut self, bytes: &[u8]) {
+        self.0.update(bytes);
     }
 }
 
@@ -464,19 +534,27 @@ impl<'a> DurableContractDescriptor<'a> {
 
     /// The stable 32-byte identity of this durable graph in the local project root, or
     /// [`DurableGraphTooLarge`] for a graph no image could carry: one whose canonical
-    /// payload is longer than [`MAX_CONTRACT_GRAPH_BYTES`], or one stating an arity wider
-    /// than the `u16` the payload spells a count with.
+    /// payload is longer than [`MAX_FITTING_CONTRACT_PREIMAGE_BYTES`], or one stating an
+    /// arity wider than the `u16` the payload spells a count with.
     ///
     /// The refusal is the whole reason asking for an identity is bounded work: a
     /// descriptor is a view over an arena, and an arena can state a value shape whose
     /// expansion — which is what the payload spells — is exponential in its declared
     /// levels. No caller has to establish that before asking, and none has to establish
     /// the graph's arities either.
+    ///
+    /// The payload is never materialized. Its length is counted by one walk and its bytes
+    /// are streamed into the hash by a second walk over the same rows, so the cost of an
+    /// identity is the walk, whatever the graph.
     pub fn contract_id(&self) -> Result<DurableContractId, DurableGraphTooLarge> {
-        Ok(DurableContractId::compute(
-            LOCAL_ROOT_LINEAGE,
-            &self.encode_graph()?,
-        ))
+        let mut length = FittingPreimageLength::default();
+        self.write_graph(&mut length)?;
+        if length.is_full() {
+            return Err(DurableGraphTooLarge);
+        }
+        let mut hash = ContractPreimageHash::opened(LOCAL_ROOT_LINEAGE, length.0);
+        self.write_graph(&mut hash)?;
+        Ok(hash.finish())
     }
 
     /// Enumerate every durable graph node paired with its derived [`SemanticPath`]:
@@ -515,32 +593,31 @@ impl<'a> DurableContractDescriptor<'a> {
         nodes
     }
 
-    /// The canonical graph bytes (the `graph` production above). Length-delimited so
-    /// the whole is fed as one `LP(graph)` component of the payload.
+    /// Write the canonical graph bytes (the `graph` production above) into `out`.
     ///
-    /// The walk writes into a bounded buffer and stops at the first byte past
-    /// [`MAX_CONTRACT_GRAPH_BYTES`], so a graph stating an expansion no image could carry
-    /// costs the bytes the ceiling admits rather than the bytes it would have produced.
-    fn encode_graph(&self) -> Result<Vec<u8>, DurableGraphTooLarge> {
-        let mut out = BoundedGraphPayload::default();
-        push_u16(&mut out, payload_count(self.roots.len())?);
+    /// One owner writes the payload for both of its readers: the length that only counts
+    /// the bytes, and the hash that consumes them. The identity is therefore computed over
+    /// the payload whose length framed it, because it is the same walk over the same rows.
+    ///
+    /// The walk stops at the first byte past a sink's own bound, so a graph stating an
+    /// expansion no image could carry costs the bytes that bound admits rather than the
+    /// bytes it would have produced.
+    fn write_graph(&self, out: &mut impl ImageByteSink) -> Result<(), DurableGraphTooLarge> {
+        push_u16(out, payload_count(self.roots.len())?);
         if let Some(application) = &self.application {
-            push_idref(&mut out, IDREF_APPLICATION, application);
+            push_idref(out, IDREF_APPLICATION, application);
         }
         for root in &self.roots {
             if out.is_full() {
                 break;
             }
-            push_idref(&mut out, IDREF_ROOT, &root.placement);
-            push_idref(&mut out, IDREF_PRODUCT, &root.product);
-            push_keys(&mut out, &root.keys)?;
-            push_members(&mut out, &root.members, self.values)?;
-            push_indexes(&mut out, &root.indexes)?;
+            push_idref(out, IDREF_ROOT, &root.placement);
+            push_idref(out, IDREF_PRODUCT, &root.product);
+            push_keys(out, &root.keys)?;
+            push_members(out, &root.members, self.values)?;
+            push_indexes(out, &root.indexes)?;
         }
-        match out.is_full() {
-            true => Err(DurableGraphTooLarge),
-            false => Ok(out.0),
-        }
+        Ok(())
     }
 }
 
@@ -554,9 +631,9 @@ impl<'a> DurableContractDescriptor<'a> {
 /// let it present a narrower graph's count and so share its identity; refusing instead
 /// keeps that answer typed and keeps it this owner's.
 ///
-/// [`MAX_CONTRACT_GRAPH_BYTES`] cannot answer for these graphs: a count is spelled before
-/// the positions it counts are walked, so the ceiling has seen none of their bytes when
-/// the count is due. The refusal is the same one because the conclusion is the same — the
+/// [`MAX_FITTING_CONTRACT_PREIMAGE_BYTES`] cannot answer for these graphs: a count is
+/// spelled before the positions it counts are walked, so the bound has seen none of their
+/// bytes when the count is due. The refusal is the same one because the conclusion is the same — the
 /// image's DURABLE section spells the identical arity as a `u16`, so a graph refused here
 /// has no encodable image either.
 fn payload_count(count: usize) -> Result<u16, DurableGraphTooLarge> {
@@ -705,20 +782,6 @@ impl DurableContractId {
     /// The 32 identity bytes, as carried in the image DURABLE section.
     pub fn bytes(&self) -> &[u8; 32] {
         &self.0
-    }
-
-    /// The domain-separated, length-delimited hash construction. Kept private so the
-    /// one canonical payload has a single owner; a `DurableContractDescriptor` is the
-    /// only minting entry point.
-    fn compute(lineage: &[u8], graph: &[u8]) -> Self {
-        let mut payload: Vec<u8> = Vec::new();
-        push_lp(&mut payload, lineage);
-        push_lp(&mut payload, graph);
-        let mut hasher = Sha256::new();
-        hasher.update(DURABLE_CONTRACT_KIND);
-        hasher.update((payload.len() as u64).to_be_bytes());
-        hasher.update(&payload);
-        DurableContractId(hasher.finalize().into())
     }
 
     /// The lowercase hex spelling of the identity, for diagnostics and tests.
@@ -989,7 +1052,7 @@ mod tests {
 
     /// Independent-decoder reconstruction: a second, hand-written implementation of
     /// the construction reproduces the same 32 bytes. It shares no code with
-    /// `DurableContractDescriptor::encode_graph`/`DurableContractId::compute`, so a
+    /// `DurableContractDescriptor::write_graph` and its hashing sink, so a
     /// change to the owner that silently altered the layout would diverge here.
     fn independent_id(descriptor: &DurableContractDescriptor<'_>) -> String {
         // Rebuild the graph bytes by hand from the descriptor's parts. This test
@@ -1524,6 +1587,100 @@ mod tests {
             &values,
         );
         assert_eq!(cid(&fitting).to_hex(), independent_id(&fitting));
+    }
+
+    /// The fitting-preimage bound is the 25:16 ratio applied to a fence-admitted body, and
+    /// the subtraction of the closing identity sits **inside** the ratio.
+    ///
+    /// The two are separable: the identity's 32 bytes are ceiling headroom the fence
+    /// reserves before the body is allocated, not body bytes, so they are never amplified
+    /// by the reference-spelling ratio. Subtracting outside would state a bound 50 bytes
+    /// wider than any fence-admitted body can produce, and so would stop being the tight
+    /// bound the row derives.
+    #[test]
+    fn the_fitting_preimage_bound_is_the_ratio_of_a_fence_admitted_body() {
+        let inside = (crate::bounds::MAX_IMAGE_BYTES - DurableContractId::BYTES) * 25 / 16;
+        let outside = crate::bounds::MAX_IMAGE_BYTES * 25 / 16 - DurableContractId::BYTES;
+        assert_eq!(super::MAX_FITTING_CONTRACT_PREIMAGE_BYTES, inside);
+        assert_eq!(inside, 819_150, "the derived value at the current ceiling");
+        assert!(
+            inside < outside,
+            "subtracting outside the ratio is the looser reading and is not what the \
+             fence admits",
+        );
+        // The ratio's own terms, so a respelled reference fails here rather than silently
+        // widening the bound.
+        assert_eq!(super::PREIMAGE_IDREF_BYTES, 25);
+        assert_eq!(super::LEDGER_ID_BYTES, 16);
+    }
+
+    /// The length the hash is framed with is the length the walk writes.
+    ///
+    /// The payload is never materialized, so its `LP` header is written before its bytes
+    /// exist. A counted length that disagreed with the streamed one would frame every
+    /// identity over a payload length no walk produces, and the frozen hexes would move
+    /// together rather than diverge — the pinned values are the only witness that catches
+    /// it, and this is the direct statement of the property they stand on.
+    #[test]
+    fn the_counted_preimage_length_is_the_length_the_walk_writes() {
+        for graph in [
+            counters_graph(),
+            library_graph(),
+            widened_graph(),
+            indexed_graph(),
+            DurableContractDescriptor::empty(&shapes().values),
+        ] {
+            let mut counted = super::FittingPreimageLength::default();
+            graph
+                .write_graph(&mut counted)
+                .expect("a stated test graph");
+            let mut written: Vec<u8> = Vec::new();
+            graph
+                .write_graph(&mut written)
+                .expect("a stated test graph");
+            assert_eq!(counted.0, written.len());
+        }
+    }
+
+    /// The saturating sentinel fires at the first byte past the bound, and only there.
+    ///
+    /// Each top-level field costs 29 payload bytes (`tag ‖ IDREF(field) ‖ required ‖
+    /// scalar value`) over an 83-byte root frame, so the boundary is stated in members
+    /// rather than in bytes and moves with the bound rather than with a copied number.
+    #[test]
+    fn a_preimage_one_byte_past_the_fitting_bound_is_refused_and_the_one_below_mints() {
+        const ROOT_FRAME_BYTES: usize = 83;
+        const FIELD_BYTES: usize = 29;
+        let fitting = (super::MAX_FITTING_CONTRACT_PREIMAGE_BYTES - ROOT_FRAME_BYTES) / FIELD_BYTES;
+        let value = shapes().scalar(Scalar::Int);
+        let graph = |members: usize| {
+            descriptor(
+                id(0x0a),
+                vec![DurableRootShape {
+                    placement: id(0x0b),
+                    product: id(0x0d),
+                    keys: Vec::new(),
+                    members: (0..members)
+                        .map(|_| value_field(0x0e, true, value))
+                        .collect(),
+                    indexes: Vec::new(),
+                }],
+            )
+        };
+
+        let mut counted = super::FittingPreimageLength::default();
+        graph(fitting)
+            .write_graph(&mut counted)
+            .expect("the fitting graph");
+        assert_eq!(counted.0, ROOT_FRAME_BYTES + FIELD_BYTES * fitting);
+        assert!(counted.0 <= super::MAX_FITTING_CONTRACT_PREIMAGE_BYTES);
+        assert!(graph(fitting).contract_id().is_ok(), "N mints an identity");
+
+        assert_eq!(
+            graph(fitting + 1).contract_id(),
+            Err(super::DurableGraphTooLarge),
+            "N+1 saturates the sentinel",
+        );
     }
 
     #[test]

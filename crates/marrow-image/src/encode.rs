@@ -156,53 +156,27 @@ impl<'a> LegacyFullDraftCoherencePreflight<'a> {
 /// identity owner's own ceiling on its canonical payload, which holds for every caller
 /// including this one.
 ///
-/// # `B_LEGACY` — the exact allocation phase maxima this bridge stands on
+/// # `B_LEGACY_DRAFT` — the retained baseline this bridge stands on
 ///
-/// The bridge is what makes the producer's peak allocation statable, so the two exact
-/// maxima are derived here rather than measured.
-///
-/// `B_LEGACY_DRAFT[target]` is the retained [`ImageDraft`] baseline every phase carries:
+/// `B_LEGACY_DRAFT[target]` is the retained [`ImageDraft`] baseline every encode carries:
 /// the string pool and its bytes, the constant pool, the record/enum/collection tables,
 /// the canonical Product declaration table with its member rows and its one
 /// [`CanonicalValueShapeDag`], the root-occurrence table with its key tuples and managed
 /// indexes, the site-demand plan with its retained rows, the function table with its
 /// instruction tapes and span tables, the export table, and the test-entry table —
 /// each at its own `MAX_*` bound in [`crate::bounds`], plus the handles and backing
-/// allocations `Vec` and `HashMap` reserve for them. It is live in every phase below and
-/// so appears once, as a baseline, never as a per-phase term.
+/// allocations `Vec` and `HashMap` reserve for them. It is live throughout
+/// [`ImageDraft::encode`] and so is stated once, as a baseline, never as a per-phase term.
+/// It dies with the draft owner it describes, at a later row.
 ///
-/// `B_LEGACY_CONTRACT_BRIDGE_MAX[target]` is that baseline plus the **maximum, not the
-/// sum**, of the four phases the old producer passes through:
+/// The contract identity contributes no term of its own. It is computed by streaming the
+/// canonical payload into the hash, over a length the identity owner counts without
+/// writing it, so no preimage buffer coexists with the body at any size — which is why
+/// this bridge no longer states a peak-allocation maximum.
 ///
-/// - **(A) Contract hashing.** The DURABLE body `Vec` (≤ `MAX_IMAGE_BYTES` by this
-///   fence, which counts the closing 32-byte identity against the ceiling before the
-///   body is allocated at that exact length), the string permutation map and sorted
-///   pool, the constant permutation map and sorted pool, the encoded function section,
-///   the growing tail, plus `encode_graph`'s inner buffer and `compute`'s outer payload —
-///   both live at once, and both larger than the body they describe: the contract
-///   preimage spells a ledger identity as a 25-byte `IDREF` (`u8(kind) ‖ u64_be(16) ‖ id`)
-///   where the body writes the same identity as 16 raw bytes, so the preimage is bounded
-///   by `25/16 × MAX_IMAGE_BYTES` and is *not* bounded by the ceiling the body passed.
-///   That 25:16 ratio is the whole reason this bound is not simply `MAX_IMAGE_BYTES`.
-/// - **(B) Each of the ten section body constructions and its `push_section`**, with
-///   that section's own body, the growing tail, and the then-live permutation maps and
-///   sorted pools. The function-offset scratch is live only from section 0x05 onward.
-/// - **(C) The full tail plus every still-live scratch term**, immediately before the
-///   output allocation.
-/// - **(D) The full tail, one output allocation of `37 + tail.len()`, and every
-///   still-live scratch term.**
-///
-/// The maximum is (A) whenever a durable graph is present, because the two hash buffers
-/// coexist with a full-size body and the preimage is the larger of the two encodings of
-/// one graph; it is (D) for a storeless image, whose contract preimage is two bytes.
-/// Every phase includes ordinary success, error, unwind, and drop overlaps: no term is
-/// dropped early anywhere in [`ImageDraft::encode`].
-///
-/// **Deletion condition.** The two counting sinks and these derived maxima go together,
-/// when the contract path stops allocating: once the identity is computed by streaming the
-/// canonical payload into the hash rather than into a buffer, and the body's ceiling is
-/// derived rather than measured by a pre-pass, there is no peak to state and no phase (A)
-/// to be the maximum.
+/// **Deletion condition.** This owner exists only to refuse an over-ceiling body before
+/// the old encoder allocates one. It goes when IMGMEASURE installs policy-clean
+/// whole-image-ceiling-capped paired-codec measurement before any encoder allocation.
 struct LegacyDurableBodyLowerBoundFence<'a> {
     draft: &'a ImageDraft,
     /// The exact body length the count measured, so the body is allocated once at its

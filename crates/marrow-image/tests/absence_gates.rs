@@ -1115,8 +1115,8 @@ fn preceding_token(code: &str, at: usize) -> &str {
 /// The constant is matched as a whole identifier at its own `const`, not as a prefix: a
 /// gate satisfied by a prefix stays green through the rename that leaves its subject with
 /// no definition, and reports the ceiling present in a tree that no longer has one.
-fn declares_contract_graph_ceiling(code: &str) -> bool {
-    symbol_positions(code, "MAX_CONTRACT_GRAPH_BYTES")
+fn declares_fitting_preimage_ceiling(code: &str) -> bool {
+    symbol_positions(code, "MAX_FITTING_CONTRACT_PREIMAGE_BYTES")
         .any(|at| preceding_token(code, at) == "const")
 }
 
@@ -1154,11 +1154,13 @@ fn the_pinned_caller_gate_sees_both_spellings_and_an_exact_ceiling() {
     );
 
     assert!(
-        declares_contract_graph_ceiling("const MAX_CONTRACT_GRAPH_BYTES: usize = 1;"),
+        declares_fitting_preimage_ceiling("const MAX_FITTING_CONTRACT_PREIMAGE_BYTES: usize = 1;"),
         "the live declaration is seen",
     );
     assert!(
-        !declares_contract_graph_ceiling("const MAX_CONTRACT_GRAPH_BYTES_RENAMED: usize = 1;"),
+        !declares_fitting_preimage_ceiling(
+            "const MAX_FITTING_CONTRACT_PREIMAGE_BYTES_RENAMED: usize = 1;",
+        ),
         "a renamed constant leaves the gate's subject undefined, so the gate must fire",
     );
 }
@@ -1247,7 +1249,7 @@ fn the_contract_identity_has_one_mint_per_side_and_a_bound_of_its_own() {
          rather than allocated",
     );
     assert!(
-        declares_contract_graph_ceiling(&owner),
+        declares_fitting_preimage_ceiling(&owner),
         "the ceiling the refusal stands on is present, so this gate has a live subject",
     );
     assert!(
