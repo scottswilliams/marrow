@@ -603,10 +603,10 @@ fn a_member_tree_at_the_depth_bound_still_compiles() {
     );
 }
 
-/// One member past `MAX_DURABLE_DEPTH` (16). The encoder's own depth recheck is the
-/// only owner of this bound today, so the refusal arrives as a locationless
-/// `DurableDepth` aggregate — no file, no line, no column. It must be prechecked at
-/// the offending member, reporting `check.resource_limit` at that member's span.
+/// One member past `MAX_DURABLE_DEPTH` (16) is refused at the offending member: the
+/// source precheck reports one `check.resource_limit` located at that member's own span,
+/// naming its file and line. The bound is not left to the encoder's later recheck, whose
+/// verdict can name no source position at all.
 #[test]
 fn one_member_past_the_depth_bound_reports_a_located_resource_limit() {
     let past_bound = marrow_image::bounds::MAX_DURABLE_DEPTH;
@@ -1209,6 +1209,11 @@ const MAX_LIVE_DURABLE_GRAPH_BYTES: u64 =
     });
 
 /// The declared ceiling for the durable contract graph a compiler drive holds live.
+///
+/// The `H_` prefix is the maximum-live accounting's *ceiling* term — the `H` of `M <= H` —
+/// paired with the `MAX_LIVE_` accounted maximum above it, never an abbreviated
+/// measurement. (`bound_reachability.rs` spells `H_SITES`/`H_BYTES` with the unrelated
+/// sense *highest-fitting*; each site names which it means.)
 ///
 /// Declared, not derived from the sum: a ceiling defined as whatever the current
 /// representation costs proves nothing, because every widening would raise both sides
