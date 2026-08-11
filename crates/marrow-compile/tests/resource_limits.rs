@@ -1036,3 +1036,248 @@ fn one_demand_past_the_site_cap_selects_sites_before_the_image_byte_ceiling() {
         "the crossed site plan is reported as Sites, not as the later byte ceiling",
     );
 }
+
+// ---- The identity-ledger equation: a per-Product member overrun is unreachable.
+
+/// Every admitted Product member anchors one live identity-ledger row, and any admitted
+/// Product carries at least an application row, a Product row, and one outer root
+/// placement row beside its members. So a project whose ledger admits declares at most
+/// `MAX_IDS_ROWS - 3` members in one Product — below the member bound the image rechecks,
+/// which is why an over-count Product is a producer contradiction rather than a bound a
+/// program can meet. Every other ledger term (key columns, enum member rows, managed
+/// index rows, tombstones, unrelated live rows) only tightens it.
+///
+/// The two constants live in different crates and neither reads the other, so the
+/// relation is asserted here, where both are in scope. `marrow-image` may not depend on
+/// `marrow-project`.
+const _: () = assert!(
+    marrow_project::MAX_IDS_ROWS - 3 <= marrow_image::bounds::MAX_DURABLE_MEMBERS,
+    "a ledger-admitted Product must be narrower than the image's durable member bound",
+);
+
+/// A resource of `top` stored fields holding one keyed branch of `branch` stored fields,
+/// projected by `roots` store roots. The branch's fields reuse the top-level spellings:
+/// their anchors differ by path, so the shape is as wide as it reads while the string
+/// pool carries one copy of each name.
+fn wide_product_source(top: usize, branch: usize, roots: usize) -> String {
+    let mut source = String::from("module main\n\nresource R {\n");
+    for index in 0..top {
+        source.push_str(&format!("    f{index}: int\n"));
+    }
+    source.push_str("\n    b[k: int] {\n");
+    for index in 0..branch {
+        source.push_str(&format!("        f{index}: int\n"));
+    }
+    source.push_str("    }\n}\n\n");
+    for root in 0..roots {
+        source.push_str(&format!("store ^r{root}[id: int]: R\n"));
+    }
+    source.push_str("\npub fn noop(): int {\n    return 0\n}\n");
+    source
+}
+
+/// Exactly the anchors [`wide_product_source`] declares, in walk order.
+fn wide_product_anchors(top: usize, branch: usize, roots: usize) -> Vec<String> {
+    let mut anchors = vec!["application .".to_string(), "product R".to_string()];
+    for index in 0..top {
+        anchors.push(format!("field R.f{index}"));
+    }
+    anchors.push("root R.b".to_string());
+    anchors.push("key R.b.k".to_string());
+    for index in 0..branch {
+        anchors.push(format!("field R.b.f{index}"));
+    }
+    for root in 0..roots {
+        anchors.push(format!("root r{root}"));
+        anchors.push(format!("key r{root}.id"));
+    }
+    anchors
+}
+
+/// The widest one-Product shape the ledger admits: its rows land exactly on
+/// `MAX_IDS_ROWS`, and the member count that shape declares stays under the image's
+/// member bound with room to spare. It compiles, so the equation is not vacuous — the
+/// binder is the ledger, and it binds first.
+#[test]
+fn the_widest_ledger_admitted_product_compiles_below_the_member_bound() {
+    let (top, branch, roots) = (4089, 4095, 1);
+    let anchors = wide_product_anchors(top, branch, roots);
+    assert!(
+        anchors.len() <= marrow_project::MAX_IDS_ROWS,
+        "the shape is sized against the ledger's row cap, not a remembered number"
+    );
+    // Members: every stored field plus the branch placement itself. The application,
+    // Product, outer root, and key rows are the equation's fixed overhead and are not
+    // members.
+    let members = top + 1 + branch;
+    assert!(
+        members <= marrow_image::bounds::MAX_DURABLE_MEMBERS,
+        "the ledger admits {members} members; the image bound is {}",
+        marrow_image::bounds::MAX_DURABLE_MEMBERS
+    );
+    let source = wide_product_source(top, branch, roots);
+    let result = compile(&project(&source, Some(&ledger(&anchors))));
+    assert!(
+        result.is_ok(),
+        "the widest ledger-admitted Product compiles: {:?}",
+        result.err()
+    );
+}
+
+/// A second root over the same Product adds two ledger rows and no members: the Product
+/// graph is built once, at its first root, and the later root references it. Were the
+/// graph copied per root this shape would carry twice the member bound.
+#[test]
+fn a_shared_product_is_counted_once_however_many_roots_project_it() {
+    let (top, branch, roots) = (4089, 4095, 2);
+    let anchors = wide_product_anchors(top, branch, roots);
+    assert_eq!(
+        anchors.len(),
+        marrow_project::MAX_IDS_ROWS,
+        "the second root spends the last two rows the ledger has"
+    );
+    let members = top + 1 + branch;
+    assert!(
+        members * roots > marrow_image::bounds::MAX_DURABLE_MEMBERS,
+        "a per-root copy of this Product would cross the member bound"
+    );
+    let source = wide_product_source(top, branch, roots);
+    let result = compile(&project(&source, Some(&ledger(&anchors))));
+    assert!(
+        result.is_ok(),
+        "one Product graph serves every root that projects it: {:?}",
+        result.err()
+    );
+}
+
+/// One row past the ledger's cap. The project never reaches compilation: identity
+/// admission refuses the ledger itself, so the member bound is not what a wider shape
+/// meets.
+#[test]
+fn one_ledger_row_past_the_cap_is_refused_before_compilation() {
+    let (top, branch, roots) = (4090, 4095, 2);
+    let anchors = wide_product_anchors(top, branch, roots);
+    assert!(anchors.len() > marrow_project::MAX_IDS_ROWS);
+    let manifest = Manifest::parse("edition = \"2026\"\n").expect("valid manifest");
+    let files = vec![CapturedFile::new(
+        "src/main.mw".to_string(),
+        wide_product_source(top, branch, roots).into_bytes(),
+    )];
+    let captured = marrow_project::capture(
+        &manifest,
+        files,
+        Some(&ledger(&anchors)),
+        &CaptureLimits::DEFAULT,
+    );
+    assert!(
+        captured.is_err(),
+        "a ledger past its row cap is refused at admission"
+    );
+}
+
+/// A one-member Product and the ledger rows it declares, so an identity-state variation
+/// is the only difference between the cases below.
+fn one_member_source() -> String {
+    String::from(
+        "module main\n\nresource R {\n    required v: int\n}\n\nstore ^r[id: int]: R\n\n\
+         pub fn noop(): int {\n    return 0\n}\n",
+    )
+}
+
+fn one_member_anchors() -> Vec<String> {
+    vec![
+        "application .".into(),
+        "product R".into(),
+        "field R.v".into(),
+        "root r".into(),
+        "key r.id".into(),
+    ]
+}
+
+/// The complete ledger compiles: the identity-state cases below differ from this by one
+/// row each.
+#[test]
+fn a_complete_ledger_admits_its_product() {
+    let anchors = one_member_anchors();
+    let result = compile(&project(&one_member_source(), Some(&ledger(&anchors))));
+    assert!(result.is_ok(), "{:?}", result.err());
+}
+
+/// A member whose anchor is absent is a located `check.durable_identity` — an earlier
+/// typed declaration cause, not a member-count refusal.
+#[test]
+fn a_missing_member_anchor_is_a_located_identity_diagnostic() {
+    let anchors: Vec<String> = one_member_anchors()
+        .into_iter()
+        .filter(|anchor| anchor != "field R.v")
+        .collect();
+    match compile(&project(&one_member_source(), Some(&ledger(&anchors)))) {
+        Err(CompileFailure::Diagnostics(diagnostics)) => {
+            assert!(
+                diagnostics
+                    .iter()
+                    .any(|row| row.code() == "check.durable_identity"
+                        && !row.file().as_str().is_empty()),
+                "{:#?}",
+                diagnostics.as_slice()
+            );
+        }
+        other => panic!("expected a located identity diagnostic, got {other:?}"),
+    }
+}
+
+/// A retired anchor can never be reused, so its member is refused by the same located
+/// identity cause rather than by any bound.
+#[test]
+fn a_retired_member_anchor_is_a_located_identity_diagnostic() {
+    let mut text = String::from("marrow ids v0\nmachine-written by marrow; do not edit\n");
+    for (seed, anchor) in one_member_anchors()
+        .iter()
+        .filter(|anchor| *anchor != "field R.v")
+        .enumerate()
+    {
+        text.push_str(&format!("id {anchor} {:032x}\n", seed as u128 + 1));
+    }
+    text.push_str(&format!("retired field R.v {:032x} 1\n", 99u128));
+    text.push_str("high-water 4\nend\n");
+    match compile(&project(&one_member_source(), Some(text.as_bytes()))) {
+        Err(CompileFailure::Diagnostics(diagnostics)) => {
+            assert!(
+                diagnostics
+                    .iter()
+                    .any(|row| row.code() == "check.durable_identity"
+                        && !row.file().as_str().is_empty()),
+                "{:#?}",
+                diagnostics.as_slice()
+            );
+        }
+        other => panic!("expected a located identity diagnostic, got {other:?}"),
+    }
+}
+
+/// Two live rows for one anchor is a malformed ledger: identity admission refuses it
+/// before any compilation, so a duplicated member never reaches a count.
+#[test]
+fn a_duplicated_member_anchor_is_refused_before_compilation() {
+    let mut text = String::from("marrow ids v0\nmachine-written by marrow; do not edit\n");
+    for (seed, anchor) in one_member_anchors().iter().enumerate() {
+        text.push_str(&format!("id {anchor} {:032x}\n", seed as u128 + 1));
+    }
+    text.push_str(&format!("id field R.v {:032x}\n", 99u128));
+    text.push_str("high-water 6\nend\n");
+    let manifest = Manifest::parse("edition = \"2026\"\n").expect("valid manifest");
+    let files = vec![CapturedFile::new(
+        "src/main.mw".to_string(),
+        one_member_source().into_bytes(),
+    )];
+    assert!(
+        marrow_project::capture(
+            &manifest,
+            files,
+            Some(text.as_bytes()),
+            &CaptureLimits::DEFAULT
+        )
+        .is_err(),
+        "a ledger with two rows for one anchor is refused at admission"
+    );
+}
