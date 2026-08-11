@@ -509,6 +509,26 @@ struct SiblingOrdinals {
     branches: u16,
 }
 
+/// The fixed prefix every managed-index row consumes, in the order [`decode_indexes`]
+/// reads it: a 16-byte ledger id, a 1-byte `unique` flag, and a 2-byte component count.
+/// Its components follow and only add to the cost, so this is the row's lower bound.
+const MIN_DECODED_INDEX_ROW_BYTES: usize = 16 + 1 + 2;
+
+/// An image-wide managed-index position fits the `u16` [`project_graph`] spells it with.
+///
+/// The per-root structural bounds do **not** establish this: `MAX_ROOTS * MAX_INDEXES`
+/// is 4096 × 32 = 131,072, twice what a `u16` carries. The bound is the container
+/// ceiling instead. Every index row is decoded from a reader over bytes already limited
+/// to `MAX_IMAGE_BYTES` by `decode_container`, and each row consumes at least
+/// [`MIN_DECODED_INDEX_ROW_BYTES`], so an image carries at most
+/// `MAX_IMAGE_BYTES / MIN_DECODED_INDEX_ROW_BYTES` = 27,594 of them — comfortably
+/// inside `u16::MAX`. An image stating more rows than that runs out of bytes and is
+/// rejected before this projection is reached.
+const _: () = assert!(
+    marrow_image::bounds::MAX_IMAGE_BYTES / MIN_DECODED_INDEX_ROW_BYTES < u16::MAX as usize,
+    "an image-wide managed-index position must fit the u16 the graph projection spells it with",
+);
+
 /// Project a reconstructed node set into its keyed form.
 ///
 /// The node set is in pre-order — a node precedes its descendants — so each node's
@@ -522,7 +542,9 @@ fn project_graph<'a>(nodes: &'a [SemanticNode], roots: &[DecodedRoot]) -> GraphP
     // Each managed index by its ledger id: its position in the image-wide index table,
     // assembled by iterating the roots in order and each root's indexes in order — the
     // same order the sealed index list is built in, so the position indexes that list
-    // directly — and its `unique` flag.
+    // directly — and its `unique` flag. The narrowing to `u16` cannot truncate: the
+    // count is bounded by the container ceiling, not by the per-root structural bounds
+    // (see the const assert above).
     let mut index_positions: HashMap<LedgerIdBytes, (u16, bool)> = HashMap::new();
     let mut global: usize = 0;
     for root in roots {
