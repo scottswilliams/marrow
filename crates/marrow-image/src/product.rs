@@ -48,6 +48,41 @@ use crate::durable_id::{
 };
 use crate::value_dag::{CanonicalValueShapeDag, ValueShapeNodeId};
 
+/// The live bytes one flat member command occupies in the vector a caller hands
+/// [`crate::ImageDraft::declare_product`].
+///
+/// Published so the admission owners that size their maximum-live equations charge this
+/// representation rather than a sampled fixture: widening a command row moves every
+/// equation that consumes it, which is a build failure where the equation is asserted, not
+/// a silent cost.
+pub(crate) const DECLARATION_COMMAND_BYTES: u64 = size_of::<DeclarationMemberDef>() as u64;
+
+/// The live bytes one materialized member row occupies in a Product's flat member graph.
+pub(crate) const DECLARATION_ROW_BYTES: u64 = size_of::<DeclarationNode>() as u64;
+
+/// The live bytes one Product declaration row occupies beside its member rows: the row
+/// itself plus the identity index entry that finds it. The index entry is charged with a
+/// `BTreeMap` node's own key/value pair and its link word, which is the shape of the
+/// per-entry cost a balanced node amortizes.
+pub(crate) const PRODUCT_DECLARATION_ROW_BYTES: u64 = size_of::<ProductDeclaration>() as u64
+    + size_of::<(DurableProductIdentity, usize)>() as u64
+    + size_of::<usize>() as u64;
+
+/// The live bytes one root-occurrence row occupies, charged at the widest occurrence the
+/// image admits: the row itself plus its full key tuple and its full managed-index
+/// projection, since both are heap vectors the row owns and `size_of` cannot see.
+pub(crate) const ROOT_OCCURRENCE_ROW_BYTES: u64 = size_of::<RootOccurrence>() as u64
+    + crate::bounds::MAX_KEY_COLUMNS as u64 * size_of::<KeyColumn>() as u64
+    + crate::bounds::MAX_INDEXES as u64
+        * (size_of::<DurableIndexShape>() as u64
+            + crate::bounds::MAX_INDEX_COMPONENTS as u64
+                * size_of::<crate::durable_id::DurableIndexComponent>() as u64);
+
+/// The live bytes an empty durable contract graph occupies before it holds a row: the
+/// application identity, the two empty tables, the empty arena, and the draft identity and
+/// stamp counter that keep its published selectors distinguishable.
+pub(crate) const CONTRACT_GRAPH_FIXED_BYTES: u64 = size_of::<DurableContractGraph>() as u64;
+
 /// The ordinal of one row in a [`ProductDeclarationGraph`].
 ///
 /// It is an index into that one graph's rows and carries no meaning anywhere else: it is
@@ -1360,6 +1395,79 @@ mod tests {
 
     fn id(byte: u8) -> LedgerIdBytes {
         LedgerIdBytes::from_bytes([byte; 16])
+    }
+
+    /// **The enforcement artifact for the published row charges.** Every row the
+    /// maximum-live equations price names all of its fields here, so adding one fails to
+    /// build until the charge that prices it has been re-derived.
+    ///
+    /// `size_of` sees a heap-owning field as one pointer triple, so a new `Vec` field would
+    /// otherwise widen the real cost while leaving every published charge and every
+    /// equation over them unchanged and still green. The patterns are typechecked and never
+    /// run; a closure body is the smallest place to write one without constructing a value
+    /// of every row.
+    #[test]
+    fn every_priced_row_names_all_of_its_fields() {
+        let _ = |value: &super::DeclarationMemberDef| {
+            let DeclarationMemberDef { parent, shape } = value;
+            let _ = (parent, shape);
+        };
+        let _ = |value: &super::DeclarationNode| {
+            let super::DeclarationNode {
+                parent,
+                members,
+                shape,
+            } = value;
+            let _ = (parent, members, shape);
+        };
+        let _ = |value: &super::ProductDeclaration| {
+            let super::ProductDeclaration {
+                claim,
+                surface,
+                stamp,
+            } = value;
+            let _ = (claim, surface, stamp);
+        };
+        let _ = |value: &super::RootOccurrence| {
+            let super::RootOccurrence {
+                declaration,
+                name,
+                keys,
+                placement,
+                indexes,
+                stamp,
+            } = value;
+            let _ = (declaration, name, keys, placement, indexes, stamp);
+        };
+        let _ = |value: &super::DurableContractGraph| {
+            let super::DurableContractGraph {
+                identity,
+                next_stamp,
+                application,
+                products,
+                occurrences,
+                values,
+            } = value;
+            let _ = (
+                identity,
+                next_stamp,
+                application,
+                products,
+                occurrences,
+                values,
+            );
+        };
+        // The two tables and the arena the graph holds are charged per row by the equation
+        // above, so their own field sets are named too: a table that grew a second index
+        // would cost bytes no per-row charge covers.
+        let _ = |value: &super::ProductDeclarationTable| {
+            let super::ProductDeclarationTable { rows, by_identity } = value;
+            let _ = (rows, by_identity);
+        };
+        let _ = |value: &super::RootOccurrenceTable| {
+            let super::RootOccurrenceTable { rows } = value;
+            let _ = rows;
+        };
     }
 
     fn field(

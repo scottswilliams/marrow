@@ -418,6 +418,84 @@ const _: () = {
     );
 };
 
+// ---- What holding a durable contract graph costs while it is built.
+//
+// A bound above says what an image may *hold*; the charges below say what holding it
+// *costs* the owner that builds it. They are published because the two admission owners —
+// the compiler, bounded by its identity-ledger census, and the independent verifier,
+// bounded by the received bytes — each derive their own maximum-live equation from this
+// one representation instead of sampling a fixture. Three earlier campaign attempts to
+// publish a measured term were each beaten by a denser admissible input; an equation over
+// the representation cannot be, and widening a row moves every equation that consumes it
+// at the place the equation is asserted.
+//
+// No ceiling is asserted here. This crate takes intake from whoever holds a plan, so the
+// figure at [`crate::AdmittedGraphInputPlan::MAXIMUM`] is what an arbitrary caller may hand
+// over, not a peak any admission owner reaches. The peaks are the owners' own, and each
+// asserts its own.
+
+/// A growing `Vec` is live at three times its admitted length: the amortized capacity
+/// slack, plus the buffer it still holds while it copies into its successor. Charged on
+/// every collection that grows one element at a time as construction proceeds.
+pub const GROWTH_AND_COPY: u64 = 3;
+
+/// The live bytes one flat member command occupies in the vector handed to
+/// [`crate::ImageDraft::declare_product`].
+pub const DURABLE_COMMAND_BYTES: u64 = crate::product::DECLARATION_COMMAND_BYTES;
+
+/// The live bytes one materialized member row occupies in a Product's flat member graph.
+pub const DURABLE_MEMBER_ROW_BYTES: u64 = crate::product::DECLARATION_ROW_BYTES;
+
+/// The live bytes one Product declaration row occupies beside its member rows.
+pub const DURABLE_PRODUCT_ROW_BYTES: u64 = crate::product::PRODUCT_DECLARATION_ROW_BYTES;
+
+/// The live bytes one root-occurrence row occupies, at the widest key tuple and
+/// managed-index projection the image admits.
+pub const DURABLE_OCCURRENCE_ROW_BYTES: u64 = crate::product::ROOT_OCCURRENCE_ROW_BYTES;
+
+/// The live bytes one interned value-shape node occupies in the graph's one arena.
+pub const DURABLE_VALUE_NODE_BYTES: u64 = crate::value_dag::VALUE_SHAPE_NODE_BYTES;
+
+/// The live bytes a durable contract graph and the plan admitting input into it occupy
+/// before either holds a row.
+pub const DURABLE_GRAPH_FIXED_BYTES: u64 =
+    crate::product::CONTRACT_GRAPH_FIXED_BYTES + size_of::<crate::AdmittedGraphInputPlan>() as u64;
+
+/// The maximum live bytes of building one durable contract graph of `products` Product
+/// declarations, `occurrences` root occurrences, `members` member rows across those
+/// declarations, and `value_nodes` distinct value shapes.
+///
+/// The terms are the real simultaneous owners, each charged at its own overlap:
+///
+/// - the flat command vector the caller still holds while the rows are materialized;
+/// - the rows one unpublished builder materializes before publication moves them;
+/// - the published tables — declarations, their member rows, occurrences, and the value
+///   arena — each still growing, so each charged with its copy-into-successor overlap;
+/// - the fixed graph and the plan admitting input into it.
+///
+/// The builder's rows and the published member rows are charged separately although
+/// publication moves rather than copies them: an equation that assumed the allocator reused
+/// that buffer would be assuming the thing it is meant to bound.
+///
+/// Evaluated in a `const` context by its callers, so an overflow in any product or sum is a
+/// compile-time error rather than a wrap an assertion could then be "proven" on.
+pub const fn max_live_durable_graph_bytes(
+    products: u64,
+    occurrences: u64,
+    members: u64,
+    value_nodes: u64,
+) -> u64 {
+    let commands = GROWTH_AND_COPY * members * DURABLE_COMMAND_BYTES;
+    let builder = GROWTH_AND_COPY * members * DURABLE_MEMBER_ROW_BYTES;
+    let published = GROWTH_AND_COPY
+        * (products * DURABLE_PRODUCT_ROW_BYTES
+            + occurrences * DURABLE_OCCURRENCE_ROW_BYTES
+            + members * DURABLE_MEMBER_ROW_BYTES
+            + value_nodes * DURABLE_VALUE_NODE_BYTES);
+
+    commands + builder + published + DURABLE_GRAPH_FIXED_BYTES
+}
+
 #[cfg(test)]
 mod tests {
     //! Width-bound known-answer tests: the chosen value of each widened or
@@ -456,5 +534,54 @@ mod tests {
     #[test]
     fn export_bound_holds_its_widened_value() {
         assert_eq!(MAX_EXPORTS, 256, "exported functions per image");
+    }
+
+    /// The published per-row charges of the durable contract graph's representation.
+    ///
+    /// These are the terms both admission owners' maximum-live equations are derived from,
+    /// so they are pinned exactly rather than only bounded: a row that grows is an
+    /// observable change to what building a graph costs, and it must be re-derived where it
+    /// is consumed rather than absorbed here. Each row's own field set is held complete by
+    /// the destructuring gates beside the rows themselves.
+    #[test]
+    fn the_durable_graph_row_charges_hold_their_measured_widths() {
+        assert_eq!(DURABLE_COMMAND_BYTES, 56, "one flat member command");
+        assert_eq!(DURABLE_MEMBER_ROW_BYTES, 56, "one materialized member row");
+        assert_eq!(DURABLE_PRODUCT_ROW_BYTES, 72, "one Product declaration row");
+        assert_eq!(
+            DURABLE_OCCURRENCE_ROW_BYTES, 40_928,
+            "one root occurrence at the widest key tuple and index projection"
+        );
+        assert_eq!(DURABLE_VALUE_NODE_BYTES, 92, "one interned value shape");
+        assert_eq!(
+            DURABLE_GRAPH_FIXED_BYTES, 232,
+            "the empty graph and its plan"
+        );
+    }
+
+    /// The equation is linear in each of its four inputs and charges every one of them.
+    ///
+    /// A term that stopped being charged — a table that started sharing, a vector whose
+    /// growth stopped being counted — would show here as an input the total no longer
+    /// moves with, which is exactly the silent under-accounting the equation exists to
+    /// prevent.
+    #[test]
+    fn every_input_of_the_maximum_live_equation_is_charged() {
+        let empty = max_live_durable_graph_bytes(0, 0, 0, 0);
+        assert_eq!(empty, DURABLE_GRAPH_FIXED_BYTES);
+
+        for (name, one) in [
+            ("products", max_live_durable_graph_bytes(1, 0, 0, 0)),
+            ("occurrences", max_live_durable_graph_bytes(0, 1, 0, 0)),
+            ("members", max_live_durable_graph_bytes(0, 0, 1, 0)),
+            ("value nodes", max_live_durable_graph_bytes(0, 0, 0, 1)),
+        ] {
+            assert!(one > empty, "the equation does not charge {name}");
+        }
+
+        // Linear, not merely monotone: doubling every count doubles every charged term.
+        let single = max_live_durable_graph_bytes(1, 1, 1, 1) - DURABLE_GRAPH_FIXED_BYTES;
+        let double = max_live_durable_graph_bytes(2, 2, 2, 2) - DURABLE_GRAPH_FIXED_BYTES;
+        assert_eq!(double, 2 * single, "the equation is linear in its inputs");
     }
 }

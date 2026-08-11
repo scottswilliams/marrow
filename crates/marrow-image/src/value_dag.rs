@@ -76,6 +76,18 @@ use crate::ty::Scalar;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ValueShapeNodeId(u32);
 
+/// The live bytes one interned value-shape node occupies in the arena: the node itself,
+/// its `depth` word, and the interning entry that finds it again. A dense composite's
+/// reference vector is charged separately by the owner that states how many leaves it
+/// admits, because a node's own width is not fixed.
+///
+/// Published for the same reason as the declaration-row charges: an admission owner sizes
+/// its maximum-live equation against this representation, so widening a node moves the
+/// equation rather than costing silently.
+pub(crate) const VALUE_SHAPE_NODE_BYTES: u64 = size_of::<ValueShapeNode>() as u64
+    + size_of::<u32>() as u64
+    + size_of::<(ValueShapeNode, ValueShapeNodeId)>() as u64;
+
 /// One distinct durable value shape. Nested positions are references, so this type
 /// cannot express a tree and cloning it copies one level.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -431,6 +443,37 @@ mod tests {
 
     fn ledger_id(byte: u8) -> LedgerIdBytes {
         LedgerIdBytes::from_bytes([byte; 16])
+    }
+
+    /// **The enforcement artifact for [`VALUE_SHAPE_NODE_BYTES`].** The arena and its node
+    /// name all of their fields here, so a field added to either fails to build until the
+    /// published per-node charge — and the maximum-live equations derived from it — have
+    /// been re-derived. A new side table would otherwise cost bytes no charge covers.
+    #[test]
+    fn the_priced_arena_and_node_name_all_of_their_fields() {
+        let _ = |value: &CanonicalValueShapeDag| {
+            let CanonicalValueShapeDag {
+                nodes,
+                depth,
+                interned,
+            } = value;
+            let _ = (nodes, depth, interned);
+        };
+        let _ = |value: &ValueShapeNode| match value {
+            ValueShapeNode::Scalar(scalar) => {
+                let _ = scalar;
+            }
+            ValueShapeNode::Struct(leaves) => {
+                let _ = leaves;
+            }
+            ValueShapeNode::Enum { sum, members } => {
+                let _ = (sum, members);
+            }
+        };
+        let _ = |value: &ValueShapeEnumMember| {
+            let ValueShapeEnumMember { id, payload } = value;
+            let _ = (id, payload);
+        };
     }
 
     /// A shape minted twice is one node: the arena is the canonical form, so equality
