@@ -365,8 +365,21 @@ impl Traversal<'_, '_> {
                 )
             })?;
             let file_type = metadata.file_type();
+            // Capture admits exactly the objects it opens, and every other role
+            // refuses a link rather than following it. A link below `src` is the
+            // same alias: following one would admit bytes at a name capture never
+            // opened, and skipping one would delete whatever it names with no
+            // cause a consumer could see. Refusing keeps a traversal cycle and an
+            // escape from the project unrepresentable rather than merely unreached.
             if file_type.is_symlink() {
-                continue;
+                return Err(physical(
+                    PhysicalRole::SourceDirectory,
+                    PhysicalOperation::Inspect,
+                    OperationalPath::new(relative),
+                    PhysicalRefusal::Link {
+                        position: LinkPosition::Terminal,
+                    },
+                ));
             }
             if file_type.is_dir() {
                 let child_depth = depth + 1;
@@ -396,7 +409,11 @@ impl Traversal<'_, '_> {
                 )?;
                 let subframe = self.enumerate(relative, child_depth, admitted)?;
                 stack.push(subframe);
-            } else if file_type.is_file() && has_mw_extension(&relative) {
+            } else if has_mw_extension(&relative) {
+                // Every entry occupying a module identity reaches the one source
+                // owner, which classifies the terminal kind before opening it. A
+                // special file there refuses as a wrong kind instead of leaving
+                // the module it names missing without a cause.
                 self.admit_source(&relative)?;
             } else {
                 // An ignored entry (special file, or non-`.mw` regular file): counted
