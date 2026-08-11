@@ -17,6 +17,7 @@ mod durable_id;
 mod encode;
 mod export_id;
 mod instr;
+mod product;
 mod interface;
 mod semantic;
 mod store_digest;

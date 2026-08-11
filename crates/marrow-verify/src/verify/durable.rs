@@ -17,7 +17,7 @@ use marrow_image::{
     LedgerIdBytes, Scalar, SemanticNode, SemanticNodeKind, SemanticPath, SemanticStep,
     SemanticStepKind, SemanticTarget,
 };
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
 
 /// Decode the DURABLE table (design §C 0x03): up to `MAX_ROOTS` roots — preceded,
@@ -84,7 +84,7 @@ pub(super) fn decode_durable(
         if key_count > marrow_image::bounds::MAX_KEY_COLUMNS {
             return Err(reject(VerifyPhase::Table, "too many root key columns"));
         }
-        let keys = decode_key_tuple(&mut reader, key_count, &mut scope)?;
+        let keys = decode_key_tuple(&mut reader, key_count, &mut scope, MemberClaim::Declaration)?;
         let record = reader
             .u16()
             .ok_or(reject(VerifyPhase::Table, "short root record"))?;
@@ -94,14 +94,70 @@ pub(super) fn decode_durable(
                 "root record type index out of range",
             ));
         }
-        let placement = take_distinct_id(&mut reader, &mut scope, "short placement identity")?;
-        let product = take_distinct_id(&mut reader, &mut scope, "short product identity")?;
+        // The root placement is an occurrence identity: every root occupies its own, so
+        // a repeated placement is a duplicate root occurrence — two rows that would
+        // address one durable node — rather than a generic identity collision.
+        let placement = read_id(&mut reader, "short placement identity")?;
+        if !scope.placements.insert(placement) {
+            return Err(reject(
+                VerifyPhase::Table,
+                "duplicate durable root occurrence",
+            ));
+        }
+        claim_distinct(&mut scope, placement)?;
+        // The Product is a declaration identity. Its first occurrence claims it together
+        // with its whole member/value graph; a later root carrying it is a reference that
+        // claims nothing and must match the accepted declaration exactly.
+        let product = read_id(&mut reader, "short product identity")?;
         // The resource's durable member tree: top-level fields interleaved with
         // static `group` namespaces and keyed `branch` placements. A field's stored
         // value is drawn from the closed acyclic durable value set (a bare scalar, a
         // dense struct, or a closed enum with sum/member ids).
         let mut member_budget = marrow_image::bounds::MAX_DURABLE_MEMBERS;
-        let members = decode_members(&mut reader, 1, &mut member_budget, &mut scope)?;
+        let members = match scope.products.get(&product) {
+            Some(declared) => {
+                let accepted = Rc::clone(&declared.members);
+                let declared_record = declared.root_record;
+                let repeated = decode_members(
+                    &mut reader,
+                    1,
+                    &mut member_budget,
+                    &mut scope,
+                    MemberClaim::Reference,
+                )?;
+                if repeated != *accepted {
+                    return Err(reject(
+                        VerifyPhase::Table,
+                        "a repeated durable Product declares a different member graph",
+                    ));
+                }
+                if record != declared_record {
+                    return Err(reject(
+                        VerifyPhase::Table,
+                        "a repeated durable Product declares a different entry record",
+                    ));
+                }
+                accepted
+            }
+            None => {
+                claim_distinct(&mut scope, product)?;
+                let members = Rc::new(decode_members(
+                    &mut reader,
+                    1,
+                    &mut member_budget,
+                    &mut scope,
+                    MemberClaim::Declaration,
+                )?);
+                scope.products.insert(
+                    product,
+                    ProductClaim {
+                        members: Rc::clone(&members),
+                        root_record: record,
+                    },
+                );
+                members
+            }
+        };
         // The member tree's top-level fields and groups are exactly the materialized
         // record's stored field slots followed by its trailing group slots, in order and
         // value shape: this ties the durable identity to the executable record so a
@@ -654,10 +710,53 @@ fn branch_index(members: &[DecodedMember], placement_id: LedgerIdBytes) -> Optio
 /// shape a second durable field of that enum emits — is a *reference* to that one
 /// per-declaration identity, so it reclaims nothing and must carry the identical member
 /// ids in order.
+///
+/// `products` records each durable Product declaration by its Product id: the member
+/// graph and entry record accepted at its **first** root occurrence. A later root
+/// carrying an already-recorded Product id is a *reference* to that one declaration, so
+/// it reclaims none of the declaration's ids and must carry the identical graph and
+/// entry record. `placements` records the root placement ids already occupied, so a
+/// repeated root occurrence is refused as itself rather than as a generic duplicate id.
 #[derive(Default)]
 struct LedgerScope {
     seen: Vec<LedgerIdBytes>,
     enums: BTreeMap<LedgerIdBytes, Vec<LedgerIdBytes>>,
+    products: BTreeMap<LedgerIdBytes, ProductClaim>,
+    placements: BTreeSet<LedgerIdBytes>,
+}
+
+/// The declaration facts one Product identity bound at its first root occurrence: its
+/// canonical member/value graph, and the materialized entry record its roots execute
+/// over. The outer root's placement, name, key tuple, and managed indexes are occurrence
+/// facts and are deliberately not here — two roots may share a Product while differing in
+/// all of them.
+struct ProductClaim {
+    members: Rc<Vec<DecodedMember>>,
+    root_record: u16,
+}
+
+/// Whether a member tree is being decoded as a Product declaration's first occurrence,
+/// which claims each declaration id it reads, or as a later reference to an already
+/// accepted declaration, which claims nothing and is compared against it.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum MemberClaim {
+    Declaration,
+    Reference,
+}
+
+impl MemberClaim {
+    /// Read one declaration id, claiming it as fresh when this occurrence declares it.
+    fn read(
+        self,
+        reader: &mut Reader<'_>,
+        scope: &mut LedgerScope,
+        what: &'static str,
+    ) -> Result<LedgerIdBytes, VerifyRejection> {
+        match self {
+            Self::Declaration => take_distinct_id(reader, scope, what),
+            Self::Reference => read_id(reader, what),
+        }
+    }
 }
 
 /// Read one 16-byte ledger id from the reader without claiming it.
@@ -699,6 +798,7 @@ fn decode_key_tuple(
     reader: &mut Reader<'_>,
     count: usize,
     scope: &mut LedgerScope,
+    claim: MemberClaim,
 ) -> Result<Vec<(Scalar, LedgerIdBytes)>, VerifyRejection> {
     let mut keys = Vec::with_capacity(count);
     for _ in 0..count {
@@ -721,7 +821,7 @@ fn decode_key_tuple(
                 ));
             }
         };
-        let key_id = take_distinct_id(reader, scope, "short key identity")?;
+        let key_id = claim.read(reader, scope, "short key identity")?;
         keys.push((scalar, key_id));
     }
     Ok(keys)
@@ -937,6 +1037,7 @@ fn decode_members(
     depth: usize,
     budget: &mut usize,
     scope: &mut LedgerScope,
+    claim: MemberClaim,
 ) -> Result<Vec<DecodedMember>, VerifyRejection> {
     if depth > marrow_image::bounds::MAX_DURABLE_DEPTH {
         return Err(reject(VerifyPhase::Table, "durable member tree too deep"));
@@ -955,7 +1056,7 @@ fn decode_members(
             .ok_or(reject(VerifyPhase::Table, "short durable member tag"))?;
         let member = match tag {
             0x00 => {
-                let id = take_distinct_id(reader, scope, "short durable field identity")?;
+                let id = claim.read(reader, scope, "short durable field identity")?;
                 let required = match reader.u8().ok_or(reject(
                     VerifyPhase::Table,
                     "short durable field required flag",
@@ -977,12 +1078,12 @@ fn decode_members(
                 }
             }
             0x01 => {
-                let id = take_distinct_id(reader, scope, "short durable group identity")?;
-                let inner = decode_members(reader, depth + 1, budget, scope)?;
+                let id = claim.read(reader, scope, "short durable group identity")?;
+                let inner = decode_members(reader, depth + 1, budget, scope, claim)?;
                 DecodedMember::Group { id, members: inner }
             }
             0x02 => {
-                let placement = take_distinct_id(reader, scope, "short durable branch identity")?;
+                let placement = claim.read(reader, scope, "short durable branch identity")?;
                 // The branch's surface name and materialized record type index follow
                 // the placement. Their ranges (against the string and type tables) and
                 // the record/member-field alignment are checked in
@@ -1000,8 +1101,8 @@ fn decode_members(
                 if key_count > marrow_image::bounds::MAX_KEY_COLUMNS {
                     return Err(reject(VerifyPhase::Table, "too many branch key columns"));
                 }
-                let keys = decode_key_tuple(reader, key_count, scope)?;
-                let inner = decode_members(reader, depth + 1, budget, scope)?;
+                let keys = decode_key_tuple(reader, key_count, scope, claim)?;
+                let inner = decode_members(reader, depth + 1, budget, scope, claim)?;
                 DecodedMember::Branch {
                     placement,
                     name,

@@ -46,7 +46,10 @@ pub(super) struct DecodedRoot {
     pub(super) record: u16,
     pub(super) placement: LedgerIdBytes,
     pub(super) product: LedgerIdBytes,
-    pub(super) members: Vec<DecodedMember>,
+    /// The Product declaration's member tree. A Product is a declaration and a root is
+    /// an occurrence of it, so repeated occurrences of one Product share the one graph
+    /// accepted at its first occurrence rather than each retaining a copy.
+    pub(super) members: Rc<Vec<DecodedMember>>,
     pub(super) indexes: Vec<DecodedIndex>,
 }
 
@@ -63,6 +66,7 @@ pub(super) struct DecodedIndex {
 /// One decoded durable member, in the image's declaration order: a stored scalar
 /// field, a static `group` namespace, or a keyed `branch` placement. Groups and
 /// branches recurse.
+#[derive(PartialEq, Eq)]
 pub(super) enum DecodedMember {
     Field {
         id: LedgerIdBytes,

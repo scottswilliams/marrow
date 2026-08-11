@@ -30,8 +30,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use marrow_codes::Code;
 use marrow_image::{
     DurableEnumMemberShape, DurableIndexComponent, DurableIndexShape, DurableMemberDef,
-    DurableValueShape, FieldDef, ImageDraft, ImageType, KeyColumn, LedgerIdBytes, RecordTypeDef,
-    RootDef, RootIdentity, Scalar, SemanticPath, SemanticStep, SemanticStepKind, SiteDef, bounds,
+    DurableProductIdentity, DurableValueShape, FieldDef, ImageDraft, ImageType, KeyColumn,
+    LedgerIdBytes, RecordTypeDef, RootDef, RootIdentity, Scalar, SemanticPath, SemanticStep,
+    SemanticStepKind, SiteDef, bounds,
 };
 use marrow_project::{FileIdentity, IdentityAnchor, IdentityKind, IdentityLedger};
 use marrow_syntax::{
@@ -811,31 +812,45 @@ fn build_one(
     // ledger id while nested product leaves are shape bytes and each durable-
     // reachable enum contributes its own sum/member identities. `has_extras`
     // records whether the resource declares any group or branch.
-    let mut members: Vec<DurableMemberDef> = record
-        .fields
-        .iter()
-        .map(|field| DurableMemberDef::Field {
-            id: resolver.resolve(
-                IdentityKind::Field,
-                &format!("{}.{}", store.resource, field.name),
-            ),
-            required: field.required,
-            value: resolver.build_value_shape(records, metadata, field.ty, 1),
-        })
-        .collect();
-    // A member the type registry refused is still a member this resource declares,
-    // so its identity anchor belongs to the resource's anchor set. It is resolved
-    // here and contributes no node to the member tree, whose typed invariant stays
-    // "built members only" — a refused member has no value shape to encode. Without
-    // it the anchor set narrows exactly where a program is already wrong, and the
-    // mint action that consumes these reports would write a ledger that is missing
-    // the anchor the corrected program needs.
-    for member in records.refused_members(&store.resource) {
-        resolver.resolve(IdentityKind::Field, &format!("{}.{member}", store.resource));
-    }
-    let groups_and_branches =
-        resolver.build_extras(draft, records, &resource.members, &store.resource);
-
+    //
+    // A Product is a declaration and a root is an occurrence of it, so the graph is
+    // built **once**, at this Product's first root in canonical store-traversal order:
+    // a later root over the same Product references the declaration the draft already
+    // holds, resolving no anchor a second time and — decisively — minting no second
+    // entry record type for its nested branches.
+    let members: Vec<DurableMemberDef> = match draft
+        .product_members(DurableProductIdentity::minted(product))
+    {
+        Some(declared) => declared.to_vec(),
+        None => {
+            let mut members: Vec<DurableMemberDef> = record
+                .fields
+                .iter()
+                .map(|field| DurableMemberDef::Field {
+                    id: resolver.resolve(
+                        IdentityKind::Field,
+                        &format!("{}.{}", store.resource, field.name),
+                    ),
+                    required: field.required,
+                    value: resolver.build_value_shape(records, metadata, field.ty, 1),
+                })
+                .collect();
+            // A member the type registry refused is still a member this resource declares,
+            // so its identity anchor belongs to the resource's anchor set. It is resolved
+            // here and contributes no node to the member tree, whose typed invariant stays
+            // "built members only" — a refused member has no value shape to encode. Without
+            // it the anchor set narrows exactly where a program is already wrong, and the
+            // mint action that consumes these reports would write a ledger that is missing
+            // the anchor the corrected program needs.
+            for member in records.refused_members(&store.resource) {
+                resolver.resolve(IdentityKind::Field, &format!("{}.{member}", store.resource));
+            }
+            let groups_and_branches =
+                resolver.build_extras(draft, records, &resource.members, &store.resource);
+            members.extend(groups_and_branches);
+            members
+        }
+    };
     if let Some(invariant) = resolver.invariant {
         return Err(invariant);
     }
@@ -886,8 +901,6 @@ fn build_one(
         &field_entries,
         &store.indexes,
     );
-
-    members.extend(groups_and_branches);
 
     // Every identity must resolve before the graph enters the image; a single
     // gap already reported precisely leaves the durable graph absent, so an

@@ -14,7 +14,14 @@
 
 use std::collections::HashMap;
 
-use crate::durable_id::{DurableIndexShape, DurableValueShape, LedgerIdBytes};
+use crate::durable_id::{
+    DurableIndexShape, DurableProductIdentity, DurableValueShape, LedgerIdBytes,
+    RootPlacementIdentity,
+};
+use crate::product::{
+    DurableProductClaim, ProductClaimConflict, ProductDeclaration, ProductDeclarationTable,
+    ProductRuntimeSurfaceClaim, RootOccurrence,
+};
 use crate::export_id::ExportId;
 use crate::instr::Instr;
 use crate::semantic::{SemanticPath, SemanticTarget};
@@ -172,7 +179,7 @@ pub struct RootIdentity {
 /// namespace, or a keyed `branch` placement. Groups and branches recurse. This is
 /// the image-side owner of the durable member tree; the verifier decodes an
 /// independent copy and the contract id is computed over both.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DurableMemberDef {
     Field {
         id: LedgerIdBytes,
@@ -203,7 +210,7 @@ pub enum DurableMemberDef {
 /// One key column of a durable root or branch placement: its orderable durable-key
 /// scalar and the entropy-minted ledger id anchored at `<placement>.<column>`.
 /// Column order is the declared tuple order and is part of the durable identity.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KeyColumn {
     pub scalar: Scalar,
     pub id: LedgerIdBytes,
@@ -363,6 +370,12 @@ pub enum ImageBuildError {
     CodeTooLong,
     LocalCountBelowParams,
     ImageTooLarge,
+    /// Two occurrences of one durable Product identity claim different member/value
+    /// graphs: two declarations wearing one identity.
+    ProductGraphConflict,
+    /// Two occurrences of one durable Product identity claim the same member/value graph
+    /// with a different runtime surface.
+    ProductSurfaceConflict,
     InvalidReference(&'static str),
 }
 
@@ -387,17 +400,32 @@ pub struct ImageDraft {
     types: Vec<RecordTypeDef>,
     enums: Vec<EnumTypeDef>,
     colls: Vec<CollectionTypeDef>,
-    roots: Vec<RootDef>,
+    /// The durable Product declarations this draft has admitted, keyed by Product ledger
+    /// identity: one canonical member/value graph and one runtime surface each, however
+    /// many roots occur over them.
+    products: ProductDeclarationTable,
+    /// The flat root-occurrence rows, in declaration order. Each references the one
+    /// Product declaration it projects; the index of a row is the RootId an entry
+    /// identity `Id(^root)` carries.
+    occurrences: Vec<RootOccurrence>,
+    /// The first divergent repeat of an already-declared Product, if one was appended.
+    /// Two occurrences of one Product identity that claim different graphs are two
+    /// declarations wearing one identity: the draft cannot represent that, and
+    /// [`Self::check_bounds`] refuses to encode rather than silently canonicalizing one
+    /// of them away.
+    product_conflict: Option<ProductClaimConflict>,
     application: Option<LedgerIdBytes>,
     sites: Vec<SiteDef>,
     /// Deduplicating index for lazily-allocated operation sites, keyed by the addressed
-    /// node's entropy-minted ledger id and the operation target. The `sites` vector stays
+    /// node's whole [`SemanticPath`] and the operation target. The `sites` vector stays
     /// the sole site-table authority and emission order; this index only lets a repeated
     /// reference to one `(node, target)` return the site already minted, so the table
-    /// carries a site per *referenced* node rather than one per declared graph node. The
-    /// node id is globally unique (the verifier enforces pairwise-distinct ledger ids), so
-    /// the key identifies exactly one site.
-    site_index: HashMap<(LedgerIdBytes, SemanticTarget), SiteId>,
+    /// carries a site per *referenced* node rather than one per declared graph node.
+    ///
+    /// The key is the whole path, never the terminal step's ledger id: a Product member
+    /// declaration below two root occurrences has one declaration id and two distinct
+    /// paths, so a terminal-id key would hand one occurrence the other occurrence's site.
+    site_index: HashMap<(SemanticPath, SemanticTarget), SiteId>,
     functions: Vec<FunctionDef>,
     exports: Vec<ExportDef>,
     test_entries: Vec<TestEntryDef>,
@@ -417,7 +445,8 @@ pub struct DraftSavepoint {
     types: usize,
     enums: usize,
     colls: usize,
-    roots: usize,
+    products: usize,
+    occurrences: usize,
     sites: usize,
     functions: usize,
     exports: usize,
@@ -531,11 +560,42 @@ impl ImageDraft {
         self.enums[id.0 as usize].variants = variants;
     }
 
-    /// Append a durable root and return its DURABLE-table index (its declaration-ordered
-    /// RootId). The index is the discriminant an entry identity `Id(^root)` carries.
+    /// Append a durable root **occurrence** and return its DURABLE-table index (its
+    /// declaration-ordered RootId). The index is the discriminant an entry identity
+    /// `Id(^root)` carries.
+    ///
+    /// The root's Product declaration — its canonical member/value graph and its entry
+    /// record — is admitted into the declaration table here: the first occurrence of a
+    /// Product identity binds it, and a later occurrence references the one already
+    /// bound. The occurrence row retains only the root's own placement, spelling, key
+    /// tuple, and managed indexes, so nothing is retained per (root x member).
     pub fn add_root(&mut self, def: RootDef) -> u16 {
-        let index = self.roots.len() as u16;
-        self.roots.push(def);
+        let RootDef {
+            name,
+            keys,
+            record,
+            identity,
+        } = def;
+        let claim = DurableProductClaim::new(
+            DurableProductIdentity::minted(identity.product),
+            identity.members,
+        );
+        let index = self.occurrences.len() as u16;
+        match self
+            .products
+            .admit(claim, ProductRuntimeSurfaceClaim::new(record))
+        {
+            Ok(declaration) => self.occurrences.push(RootOccurrence::new(
+                declaration,
+                name,
+                keys,
+                RootPlacementIdentity::minted(identity.placement),
+                identity.indexes,
+            )),
+            Err(conflict) => {
+                self.product_conflict.get_or_insert(conflict);
+            }
+        }
         index
     }
 
@@ -560,7 +620,7 @@ impl ImageDraft {
     /// sites (whole-payload, group-entry, index) are emitted eagerly through
     /// [`Self::add_site`]; they are unique per graph node and never re-minted.
     pub fn alloc_site(&mut self, def: SiteDef) -> SiteId {
-        let key = (def.path.node_id(), def.target);
+        let key = (def.path.clone(), def.target);
         if let Some(existing) = self.site_index.get(&key) {
             return *existing;
         }
@@ -608,7 +668,8 @@ impl ImageDraft {
             types: self.types.len(),
             enums: self.enums.len(),
             colls: self.colls.len(),
-            roots: self.roots.len(),
+            products: self.products.declarations().len(),
+            occurrences: self.occurrences.len(),
             sites: self.sites.len(),
             functions: self.functions.len(),
             exports: self.exports.len(),
@@ -625,14 +686,15 @@ impl ImageDraft {
     /// freshly-appended indices — makes this a total inverse.
     pub fn rewind_to(&mut self, savepoint: DraftSavepoint) {
         for site in self.sites.drain(savepoint.sites..) {
-            self.site_index.remove(&(site.path.node_id(), site.target));
+            self.site_index.remove(&(site.path.clone(), site.target));
         }
         self.strings.truncate(savepoint.strings);
         self.consts.truncate(savepoint.consts);
         self.types.truncate(savepoint.types);
         self.enums.truncate(savepoint.enums);
         self.colls.truncate(savepoint.colls);
-        self.roots.truncate(savepoint.roots);
+        self.occurrences.truncate(savepoint.occurrences);
+        self.products.truncate(savepoint.products);
         self.functions.truncate(savepoint.functions);
         self.exports.truncate(savepoint.exports);
         self.test_entries.truncate(savepoint.test_entries);
@@ -655,8 +717,32 @@ impl ImageDraft {
     pub(crate) fn collections(&self) -> &[CollectionTypeDef] {
         &self.colls
     }
-    pub(crate) fn roots(&self) -> &[RootDef] {
-        &self.roots
+    /// The flat root-occurrence rows, in declaration order.
+    pub(crate) fn root_occurrences(&self) -> &[RootOccurrence] {
+        &self.occurrences
+    }
+
+    /// The Product declaration one occurrence row projects.
+    pub(crate) fn declaration_of(&self, occurrence: &RootOccurrence) -> &ProductDeclaration {
+        self.products.declaration(occurrence.declaration())
+    }
+
+    /// The admitted Product declarations, each retained once however many roots occur
+    /// over it.
+    pub(crate) fn product_declarations(&self) -> &[ProductDeclaration] {
+        self.products.declarations()
+    }
+
+    /// The Product declaration already bound to `identity`, if one is.
+    pub fn product_members(&self, identity: DurableProductIdentity) -> Option<&[DurableMemberDef]> {
+        self.products
+            .by_identity(identity)
+            .map(ProductDeclaration::members)
+    }
+
+    /// The first divergent repeat of an already-declared Product, if one was appended.
+    pub(crate) fn product_conflict(&self) -> Option<ProductClaimConflict> {
+        self.product_conflict
     }
     pub(crate) fn application_identity(&self) -> Option<LedgerIdBytes> {
         self.application

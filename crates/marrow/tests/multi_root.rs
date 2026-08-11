@@ -458,3 +458,167 @@ pub fn confuse(id: int): int? {
         "expected a check.type rejection, got {diagnostics:#?}"
     );
 }
+
+// --- Shared Product declarations: two roots over one resource ------------------
+
+/// The identity ledger for the shared-Product projects below. Its shape is the
+/// declaration/occurrence split the ledger already implements: **one** `product` row and
+/// **one** row per Product-scoped member (`Book.title`, the `Book.notes` branch placement,
+/// its key column, and `Book.notes.text`), against **two** occurrence-scoped `root`/`key`
+/// row pairs for `^a` and `^b`.
+const SHARED_IDS: &str = "marrow ids v0\n\
+     machine-written by marrow; do not edit\n\
+     id application . 0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a\n\
+     id product Book 0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d\n\
+     id field Book.title 0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e\n\
+     id root Book.notes 2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a\n\
+     id key Book.notes.noteId 2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b\n\
+     id field Book.notes.text 2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c\n\
+     id root a 0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b\n\
+     id key a.id 0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c\n\
+     id root b 1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b\n\
+     id key b.id 1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c\n\
+     high-water 0\n\
+     end\n";
+
+/// The ledger for the branchless shared-Product project: one `product R` row, one
+/// `field R.v` row, and one occurrence pair per root.
+const SHARED_FLAT_IDS: &str = "marrow ids v0\n\
+     machine-written by marrow; do not edit\n\
+     id application . 0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a\n\
+     id product R 0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d\n\
+     id field R.v 0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e\n\
+     id root a 0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b\n\
+     id key a.id 0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c\n\
+     id root b 1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b\n\
+     id key b.id 1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c\n\
+     high-water 0\n\
+     end\n";
+
+/// The ledger for two keyless, never-operated roots over one resource.
+const SHARED_KEYLESS_IDS: &str = "marrow ids v0\n\
+     machine-written by marrow; do not edit\n\
+     id application . 0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a\n\
+     id product R 0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d\n\
+     id field R.v 0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e\n\
+     id root r0 0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b\n\
+     id root r1 1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b\n\
+     high-water 0\n\
+     end\n";
+
+/// Two keyed roots over one branchless resource. A Product is a declaration and a root
+/// is an occurrence of it, so declaring the same resource at two placements is an
+/// ordinary program: it compiles and independently verifies.
+#[test]
+fn two_keyed_roots_may_share_one_product() {
+    let source = r#"resource R {
+    required v: int
+}
+
+store ^a[id: int]: R
+store ^b[id: int]: R
+
+pub fn setA(id: int, v: int) {
+    transaction {
+        ^a[id].v = v
+    }
+}
+
+pub fn setB(id: int, v: int) {
+    transaction {
+        ^b[id].v = v
+    }
+}
+"#;
+    let image = verify(source, SHARED_FLAT_IDS);
+    assert_eq!(image.roots().len(), 2, "each occurrence keeps its own row");
+    assert_eq!(image.roots()[0].name(), "a");
+    assert_eq!(image.roots()[1].name(), "b");
+    assert_eq!(
+        image.roots()[0].record(),
+        image.roots()[1].record(),
+        "one Product declaration has one entry record however many roots occur over it"
+    );
+}
+
+/// Two keyless, never-operated roots over one resource, in a project whose only export
+/// is storeless. The refusal this row removes was never about keys, sites, branches, or
+/// operations: it fired on the repeated Product declaration alone.
+#[test]
+fn two_keyless_never_operated_roots_may_share_one_product() {
+    let source = r#"resource R {
+    required v: int
+}
+
+store ^r0: R
+store ^r1: R
+
+pub fn plain(n: int): int {
+    return n + 1
+}
+"#;
+    let image = verify(source, SHARED_KEYLESS_IDS);
+    assert_eq!(image.roots().len(), 2);
+    assert_eq!(image.roots()[0].name(), "r0");
+    assert_eq!(image.roots()[1].name(), "r1");
+}
+
+/// A nested keyed branch is a Product declaration fact, so its materialized entry record
+/// is minted **once** for the Product — not once per root that occurs over it. Both
+/// occurrences bind the same branch entry record type.
+#[test]
+fn a_shared_product_mints_one_branch_entry_record() {
+    let source = r#"resource Book {
+    required title: string
+    notes[noteId: int] {
+        required text: string
+    }
+}
+
+store ^a[id: int]: Book
+store ^b[id: int]: Book
+
+pub fn addA(id: int, t: string) {
+    transaction {
+        ^a[id].notes[1].text = t
+    }
+}
+
+pub fn addB(id: int, t: string) {
+    transaction {
+        ^b[id].notes[1].text = t
+    }
+}
+"#;
+    let one_root = r#"resource Book {
+    required title: string
+    notes[noteId: int] {
+        required text: string
+    }
+}
+
+store ^a[id: int]: Book
+
+pub fn addA(id: int, t: string) {
+    transaction {
+        ^a[id].notes[1].text = t
+    }
+}
+"#;
+    let control = verify(one_root, SHARED_IDS);
+    let image = verify(source, SHARED_IDS);
+    assert_eq!(
+        image.record_types().len(),
+        control.record_types().len(),
+        "a second occurrence of one Product mints no second branch entry record type"
+    );
+    let a_branch = image.roots()[0].branches();
+    let b_branch = image.roots()[1].branches();
+    assert_eq!(a_branch.len(), 1);
+    assert_eq!(b_branch.len(), 1);
+    assert_eq!(
+        a_branch[0].record(),
+        b_branch[0].record(),
+        "both occurrences bind the declaration's one branch entry record"
+    );
+}

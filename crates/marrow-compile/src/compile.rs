@@ -520,6 +520,11 @@ fn image_build_outcome(error: ImageBuildError) -> ImagePolicyOutcome {
         | ImageBuildError::SitePathTooShort
         | ImageBuildError::SitePathTooDeep
         | ImageBuildError::LocalCountBelowParams
+        // Two occurrences of one Product identity claiming different graphs or surfaces
+        // is unreachable from source: a Product's graph is built once, at its first
+        // root, and every later root references it.
+        | ImageBuildError::ProductGraphConflict
+        | ImageBuildError::ProductSurfaceConflict
         | ImageBuildError::InvalidReference(_) => {
             ImagePolicyOutcome::Invariant(InvariantCause::ImageBuild(error))
         }

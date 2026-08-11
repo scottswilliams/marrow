@@ -8,6 +8,7 @@
 
 use crate::bounds;
 use crate::digest::{ImageId, image_id};
+use crate::product::ProductClaimConflict;
 use crate::draft::{
     CollectionTypeDef, ConstValue, DurableMemberDef, ImageBuildError, ImageDraft, KeyColumn,
 };
@@ -108,19 +109,33 @@ impl ImageDraft {
                 }
             }
         }
-        if self.roots().len() > bounds::MAX_ROOTS {
+        // A Product identity that two occurrences claim differently is two declarations
+        // wearing one identity. The draft records the first such conflict rather than
+        // canonicalizing one of them away; refuse to encode it.
+        if let Some(conflict) = self.product_conflict() {
+            return Err(match conflict {
+                ProductClaimConflict::Graph(_) => ImageBuildError::ProductGraphConflict,
+                ProductClaimConflict::Surface(_) => ImageBuildError::ProductSurfaceConflict,
+            });
+        }
+        if self.root_occurrences().len() > bounds::MAX_ROOTS {
             return Err(ImageBuildError::TooManyRoots);
         }
-        for root in self.roots() {
-            if root.keys.len() > bounds::MAX_KEY_COLUMNS {
+        // The member tree is a Product declaration fact, so it is validated once per
+        // declaration however many roots project it; the key tuple and managed indexes
+        // are occurrence facts and are validated per root.
+        for declaration in self.product_declarations() {
+            let mut member_count = 0usize;
+            validate_member_tree(declaration.members(), 1, &mut member_count)?;
+        }
+        for occurrence in self.root_occurrences() {
+            if occurrence.keys().len() > bounds::MAX_KEY_COLUMNS {
                 return Err(ImageBuildError::TooManyKeyColumns);
             }
-            let mut member_count = 0usize;
-            validate_member_tree(&root.identity.members, 1, &mut member_count)?;
-            if root.identity.indexes.len() > bounds::MAX_INDEXES {
+            if occurrence.indexes().len() > bounds::MAX_INDEXES {
                 return Err(ImageBuildError::TooManyIndexes);
             }
-            for index in &root.identity.indexes {
+            for index in occurrence.indexes() {
                 if index.components.len() > bounds::MAX_INDEX_COMPONENTS {
                     return Err(ImageBuildError::TooManyIndexComponents);
                 }
@@ -264,28 +279,31 @@ impl ImageDraft {
 
     fn encode_durable(&self, str_map: &[u16]) -> Result<Vec<u8>, ImageBuildError> {
         let mut body = Vec::new();
-        push_u16(&mut body, self.roots().len() as u16);
+        push_u16(&mut body, self.root_occurrences().len() as u16);
         // The application's ledger id anchors a non-empty durable graph; a
         // storeless image carries none.
-        if !self.roots().is_empty() {
+        if !self.root_occurrences().is_empty() {
             let application = self
                 .application_identity()
                 .ok_or(ImageBuildError::InvalidReference("application identity"))?;
             body.extend_from_slice(application.bytes());
         }
-        for root in self.roots() {
-            push_u16(&mut body, str_map[root.name.raw() as usize]);
+        // v0 carries the whole member graph per root, so each occurrence projects the
+        // one retained declaration it references rather than carrying its own copy.
+        for occurrence in self.root_occurrences() {
+            let declaration = self.declaration_of(occurrence);
+            push_u16(&mut body, str_map[occurrence.name().raw() as usize]);
             // The key tuple: a count, then each column's scalar type and ledger id.
             // Zero columns is a singleton root; more than one is a composite key.
-            encode_key_tuple(&mut body, &root.keys);
-            push_u16(&mut body, root.record.0);
+            encode_key_tuple(&mut body, occurrence.keys());
+            push_u16(&mut body, declaration.root_entry_record().0);
             // The root's remaining ledger identity block: placement and product,
             // then the resource's durable member tree (top-level fields interleaved
             // with static `group` namespaces and keyed `branch` placements).
-            body.extend_from_slice(root.identity.placement.bytes());
-            body.extend_from_slice(root.identity.product.bytes());
-            encode_durable_members(&mut body, &root.identity.members, str_map);
-            encode_durable_indexes(&mut body, &root.identity.indexes);
+            body.extend_from_slice(occurrence.placement().ledger_id().bytes());
+            body.extend_from_slice(declaration.identity().ledger_id().bytes());
+            encode_durable_members(&mut body, declaration.members(), str_map);
+            encode_durable_indexes(&mut body, occurrence.indexes());
         }
         push_u16(&mut body, self.sites().len() as u16);
         for site in self.sites() {
@@ -312,21 +330,24 @@ impl ImageDraft {
     /// self-describing, so the descriptor no longer derives field shapes from the
     /// materialized record type.
     fn durable_descriptor(&self) -> Result<DurableContractDescriptor, ImageBuildError> {
-        if self.roots().is_empty() {
+        if self.root_occurrences().is_empty() {
             return Ok(DurableContractDescriptor::empty());
         }
         let application = self
             .application_identity()
             .ok_or(ImageBuildError::InvalidReference("application identity"))?;
         let roots = self
-            .roots()
+            .root_occurrences()
             .iter()
-            .map(|root| DurableRootShape {
-                placement: root.identity.placement,
-                product: root.identity.product,
-                keys: key_shapes(&root.keys),
-                members: member_shapes(&root.identity.members),
-                indexes: root.identity.indexes.clone(),
+            .map(|occurrence| {
+                let declaration = self.declaration_of(occurrence);
+                DurableRootShape {
+                    placement: occurrence.placement().ledger_id(),
+                    product: declaration.identity().ledger_id(),
+                    keys: key_shapes(occurrence.keys()),
+                    members: member_shapes(declaration.members()),
+                    indexes: occurrence.indexes().to_vec(),
+                }
             })
             .collect();
         Ok(DurableContractDescriptor::new(application, roots))
