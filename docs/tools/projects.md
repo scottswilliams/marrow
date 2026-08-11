@@ -112,15 +112,17 @@ Discovery is deterministic — the captured source files are ordered by identity
 regardless of the order the filesystem reports them — and physically bounded. The
 project root, `marrow.toml`, `src`, and `.marrow/ids` are each admitted through an
 opened handle whose observed kind and identity are checked before and after use;
-capture never trusts path metadata and then reopens the path. A symbolic link at
-`src`, `marrow.toml`, or `.marrow/ids`, or on a component leading to one, is
-refused rather than followed (`project.source_path` for the source root,
-`project.ids_corrupt` for the ledger, `io.read` for the manifest); a symbolic
-link below `src` is skipped, so the walk cannot cycle or escape the tree. A
-required file — the manifest, the identity ledger, or a selected source — that is
-a special file (a FIFO, socket, or device) or a hard link with more than one link
-count is refused before its body is read; a special file below `src` is ignored
-like any other non-`.mw` entry.
+capture never trusts path metadata and then reopens the path. A symbolic link is
+refused rather than followed, wherever it appears: at `src`, `marrow.toml`, or
+`.marrow/ids`, on a component leading to one, or anywhere below `src`
+(`project.source_path` for the source root, `project.ids_corrupt` for the ledger,
+`io.read` elsewhere). The refusal names the link itself, so a project keeps no
+source the walk cannot open, and the walk can neither cycle nor escape the tree.
+A required file — the manifest, the identity ledger, or a selected source — that
+is a special file (a FIFO, socket, or device) or a hard link with more than one
+link count is refused before its body is read. A special file below `src` whose
+name is a `.mw` file is a selected source and is refused with it; one that names
+no module is ignored like any other non-`.mw` entry.
 
 The walk is bounded before retention: `marrow.toml` and `.marrow/ids` are each read
 to a fixed byte ceiling plus one; the total number of directory entries visited
