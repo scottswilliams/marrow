@@ -867,6 +867,12 @@ fn push_indexes(
 ///
 /// The descent is an explicit stack of member runs, not recursion: nesting depth is a
 /// property of the rows a producer built, and this walk's own stack use must not be.
+///
+/// Each node's path is materialized by cloning its container's step chain, so the walk
+/// costs `nodes x depth` steps rather than `nodes`. Both factors are enforced bounds —
+/// `MAX_DURABLE_MEMBERS` rows per declaration, each at most `MAX_DURABLE_DEPTH` deep,
+/// refused at construction — so the product is a fixed ceiling (8192 x 16 steps) and not a
+/// term an input can grow.
 fn collect_member_nodes(
     container: &SemanticPath,
     members: DurableMemberViews<'_>,

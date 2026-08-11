@@ -150,12 +150,15 @@ impl DemandAtom {
     /// The sole owner of an atom's byte spelling; both the identity payload and the
     /// canonical-order sort key project from it.
     ///
-    /// The step count is spelled off the bound [`SemanticPath`] itself carries: the
-    /// type admits at most [`bounds::MAX_SITE_PATH_STEPS`] steps on every public route
-    /// into it, and `bounds` const-asserts that width against one byte, so the `u16`
-    /// conversion is total for every path that exists. It is a checked conversion
-    /// rather than a narrowing cast because the totality is a property of the
-    /// argument's type, and a cast would silently outlive a widened bound.
+    /// The step count is spelled off the bound [`SemanticPath`] itself carries: the type
+    /// admits at most [`bounds::MAX_SITE_PATH_STEPS`] steps on every public route into it,
+    /// and its crate-internal infallible extension is reached only from walks over member
+    /// rows whose nesting the declaration graph's constructor already refused past
+    /// `MAX_DURABLE_DEPTH`. No route therefore yields a wider path, `bounds` const-asserts
+    /// that width against one byte, and the `u16` conversion is total for every path that
+    /// exists. It is a checked conversion rather than a narrowing cast because the
+    /// totality is a property of the argument's type, and a cast would silently outlive a
+    /// widened bound.
     fn encode_body(&self) -> Vec<u8> {
         let mut body = Vec::new();
         body.push(self.class.tag());

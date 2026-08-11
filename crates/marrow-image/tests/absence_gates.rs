@@ -663,8 +663,9 @@ const PERMITTED_PLAN_MINTERS: [&str; 2] = [
 /// one that was too short to name a node or nested past the depth bound. A site is now a
 /// binding of a live occurrence row to a live canonical declaration path, and its path is
 /// projected from those rows: it is always the two root steps plus that node's own nesting
-/// depth, which `validate_declaration_graph` has already bounded. Restoring either variant
-/// would mean a producer can again spell a path the graph does not contain.
+/// depth, which the declaration graph's one constructor bounded before the row existed.
+/// Restoring either variant would mean a producer can again spell a path the graph does
+/// not contain.
 #[test]
 fn no_producer_side_site_path_length_refusal_exists() {
     let sources = [workspace_sources("src"), workspace_sources("tests")].concat();

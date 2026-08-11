@@ -137,6 +137,11 @@ fn reject_graph_input(refusal: DurableGraphInputRefusal) -> VerifyRejection {
             | DurableGraphInputRefusal::UndeclaredProduct => {
                 "durable member graph is not a well-formed declaration"
             }
+            // The command reader refuses an over-deep run at the byte that opens it, so
+            // this arm restates that verdict rather than adding a second one. It stays
+            // reachable in principle: the depth bound belongs to the rows, and the graph
+            // owner enforces it whatever a caller assembled.
+            DurableGraphInputRefusal::OverDepth => "durable member tree too deep",
         },
     )
 }

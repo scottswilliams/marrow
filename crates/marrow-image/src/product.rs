@@ -192,18 +192,21 @@ impl DeclarationNode {
     }
 }
 
-/// A flat member command vector that does not state a forest.
+/// A flat member command vector this graph declines to materialize.
 ///
 /// Every command must name a parent that an earlier command declared, and that parent must
 /// be a node members may nest under — a static `group` or a keyed `branch`. A field
 /// declares no members, so naming one as a parent is not a deep graph but a malformed
-/// command vector.
+/// command vector. A command nesting past [`bounds::MAX_DURABLE_DEPTH`] is well-formed but
+/// unrepresentable, and is refused for its own reason.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum DeclarationCommandError {
     /// The parent index is not strictly less than the command's own index.
     ParentNotEarlier,
     /// The named parent declares no members.
     ParentDeclaresNoMembers,
+    /// The command's own nesting level is past [`bounds::MAX_DURABLE_DEPTH`].
+    TooDeep,
 }
 
 /// One Product declaration's canonical member/value graph, as flat rows.
@@ -236,20 +239,32 @@ impl ProductDeclarationGraph {
     /// and injective over ordered forests: two command vectors state the same declaration
     /// exactly when their rows are equal, whatever order the commands themselves arrived
     /// in.
+    ///
+    /// **Nesting depth is decided here, before a row exists.** A parent always precedes
+    /// its children in the command vector, so one forward pass fixes every command's level
+    /// and a command past [`bounds::MAX_DURABLE_DEPTH`] is refused with nothing
+    /// materialized. The bound is a property of the *level*, not of what the level holds:
+    /// an over-deep body declaring no member of its own is still an over-deep row, and is
+    /// refused as one. Every consumer of these rows — the member walks, the projected site
+    /// paths, the contract-identity payload — therefore meets a graph no deeper than a
+    /// [`crate::SemanticPath`] can name.
     pub(crate) fn from_commands(
         commands: Vec<DeclarationMemberDef>,
     ) -> Result<Self, DeclarationCommandError> {
         // Group the commands by the parent they name, checking as we go that each parent
-        // is an earlier command that may hold members at all. A command vector wider than
-        // the member bound is not malformed — it is a declaration the encoder refuses, so
-        // it is admitted here as a bounded prefix that records the overflow.
+        // is an earlier command that may hold members at all and that the command's own
+        // level is representable. A command vector wider than the member bound is not
+        // malformed — it is a declaration the encoder refuses, so it is admitted here as a
+        // bounded prefix that records the overflow.
         let mut children: Vec<Vec<u16>> = vec![Vec::new(); commands.len().min(MAX_DURABLE_MEMBERS)];
         let mut roots: Vec<u16> = Vec::new();
+        let mut levels: Vec<usize> = Vec::with_capacity(children.len());
         let over_member_bound = commands.len() > MAX_DURABLE_MEMBERS;
         for (index, command) in commands.iter().enumerate().take(MAX_DURABLE_MEMBERS) {
             let index = u16::try_from(index).expect("the member bound is below u16::MAX");
             let Some(parent) = command.parent else {
                 roots.push(index);
+                levels.push(1);
                 continue;
             };
             if parent >= index {
@@ -261,6 +276,11 @@ impl ProductDeclarationGraph {
             ) {
                 return Err(DeclarationCommandError::ParentDeclaresNoMembers);
             }
+            let level = levels[usize::from(parent)] + 1;
+            if level > crate::bounds::MAX_DURABLE_DEPTH {
+                return Err(DeclarationCommandError::TooDeep);
+            }
+            levels.push(level);
             children[usize::from(parent)].push(index);
         }
 
@@ -377,8 +397,9 @@ impl ProductDeclarationGraph {
     /// The chain of rows from a top-level member down to `ordinal`, outermost first.
     ///
     /// A parent always precedes its children, so walking the parent ordinals up and
-    /// reversing is bounded by the graph's own nesting depth — the bound
-    /// [`crate::encode`]'s recheck already enforces — and needs no descent.
+    /// reversing is bounded by the graph's own nesting depth — at most
+    /// [`crate::bounds::MAX_DURABLE_DEPTH`], enforced by [`Self::from_commands`] before a
+    /// row exists — and needs no descent.
     fn ancestry(&self, ordinal: DeclarationNodeOrdinal) -> Vec<&DeclarationNode> {
         let mut chain = Vec::new();
         let mut cursor = Some(ordinal);
@@ -396,8 +417,9 @@ impl ProductDeclarationGraph {
     /// Each row's nesting depth, 1 for a top-level member.
     ///
     /// A parent always precedes its children, so one forward pass over the parent
-    /// ordinals fixes every depth; no descent of the graph is needed to check the nesting
-    /// bound.
+    /// ordinals fixes every depth; no descent of the graph is needed to read them. Every
+    /// depth here is within [`crate::bounds::MAX_DURABLE_DEPTH`], because
+    /// [`Self::from_commands`] refused the command vector otherwise.
     pub(crate) fn depths(&self) -> Vec<usize> {
         let mut depths = Vec::with_capacity(self.rows.len());
         for node in &self.rows {
@@ -492,6 +514,10 @@ pub enum DurableGraphInputRefusal {
     /// The command vector does not state a forest: a member names a parent that is not an
     /// earlier command, or names one that declares no members.
     MalformedCommands,
+    /// The command vector nests past [`crate::bounds::MAX_DURABLE_DEPTH`]. A node deeper
+    /// than that has no [`crate::SemanticPath`] that can name it, so the declaration is
+    /// refused where the rows would be made rather than after they exist.
+    OverDepth,
     /// A later occurrence of an already-declared Product states a different member graph.
     DivergentGraph,
     /// A later occurrence of an already-declared Product states a different entry record.
@@ -637,8 +663,14 @@ impl ProductDeclarationTable {
         if self.row_of(identity).is_none() && self.declarations().len() >= plan.products() {
             return Err(DurableGraphInputRefusal::OverPlan);
         }
-        let graph = ProductDeclarationGraph::from_commands(members)
-            .map_err(|_| DurableGraphInputRefusal::MalformedCommands)?;
+        let graph =
+            ProductDeclarationGraph::from_commands(members).map_err(|refusal| match refusal {
+                DeclarationCommandError::TooDeep => DurableGraphInputRefusal::OverDepth,
+                DeclarationCommandError::ParentNotEarlier
+                | DeclarationCommandError::ParentDeclaresNoMembers => {
+                    DurableGraphInputRefusal::MalformedCommands
+                }
+            })?;
         let claim = DurableProductClaim::new(
             identity,
             DurableProductGraph {

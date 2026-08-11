@@ -8,12 +8,13 @@
 
 use marrow_image::bounds::{
     MAX_ADMITTED_DECLARATION_COMMANDS, MAX_ADMITTED_PRODUCT_DECLARATIONS,
-    MAX_ADMITTED_ROOT_OCCURRENCES, MAX_INDEX_COMPONENTS, MAX_STRUCT_LEAVES,
+    MAX_ADMITTED_ROOT_OCCURRENCES, MAX_DURABLE_DEPTH, MAX_INDEX_COMPONENTS, MAX_STRUCT_LEAVES,
 };
 use marrow_image::{
-    AdmittedGraphInputPlan, DeclarationMemberDef, DeclarationMemberShape, DurableIndexComponent,
-    DurableIndexShape, ExportId, FunctionDef, ImageBuildError, ImageDraft, ImageType, Instr,
-    KeyColumn, LedgerIdBytes, RecordTypeDef, RootOccurrenceDef, Scalar, SpanEntry,
+    AdmittedGraphInputPlan, DeclarationMemberDef, DeclarationMemberShape, DurableContractGraph,
+    DurableGraphInputRefusal, DurableIndexComponent, DurableIndexShape, ExportId, FunctionDef,
+    ImageBuildError, ImageDraft, ImageType, Instr, KeyColumn, LedgerIdBytes, RecordTypeDef,
+    RootOccurrenceDef, Scalar, SpanEntry, TypeId,
 };
 
 const APPLICATION_ID: [u8; 16] = [0x0a; 16];
@@ -322,4 +323,124 @@ fn a_command_vector_wider_than_its_budget_appends_no_row() {
             .is_none(),
         "the refused declaration appended no row",
     );
+}
+
+// ---- Nesting depth is bounded where the rows are made.
+
+/// A command vector nesting `depth` groups, each the parent of the next.
+///
+/// The innermost group declares no member of its own: nesting depth is a property of the
+/// body, not of anything the body happens to hold, so the deepest row here is an empty
+/// group and it is over-deep exactly when its own level is.
+fn nested_groups(depth: usize) -> Vec<DeclarationMemberDef> {
+    (0..depth)
+        .map(|level| DeclarationMemberDef {
+            parent: level
+                .checked_sub(1)
+                .map(|parent| u16::try_from(parent).expect("the fixture nests within u16")),
+            shape: DeclarationMemberShape::Group {
+                id: component_id(level),
+            },
+        })
+        .collect()
+}
+
+/// The depth an over-deep repro states: far past `MAX_DURABLE_DEPTH`, and past every
+/// per-walk stack a bounded owner could absorb, so a route that admits it admits an
+/// arbitrary one.
+const OVER_DEEP_STEPS: usize = 8_000;
+
+/// **The construction-bounded depth invariant, on the draft's route.** A command vector
+/// nesting past `MAX_DURABLE_DEPTH` is refused where the rows are made, so no route out of
+/// the draft — a member walk, a projected site path, a contract identity — ever meets a
+/// node deeper than a semantic path can name.
+#[test]
+fn a_draft_refuses_an_over_deep_command_vector() {
+    let mut draft = ImageDraft::new();
+    let name = draft.intern_string("R");
+    let record = draft.add_record_type(RecordTypeDef {
+        name,
+        fields: Vec::new(),
+    });
+
+    assert!(
+        draft
+            .declare_product(
+                &admitted_plan(),
+                LedgerIdBytes::from_bytes(PRODUCT_ID),
+                record,
+                nested_groups(OVER_DEEP_STEPS),
+            )
+            .is_err(),
+        "a command vector nesting {OVER_DEEP_STEPS} deep is refused at construction",
+    );
+    assert!(
+        draft
+            .product_members(&admitted_plan(), LedgerIdBytes::from_bytes(PRODUCT_ID))
+            .is_none(),
+        "the refused declaration appended no row",
+    );
+}
+
+/// **The same invariant on the durable graph's own route.** The independent verifier
+/// builds through this owner rather than through a draft, so the bound belongs to the rows
+/// and not to one of the two owners that make them.
+#[test]
+fn a_durable_graph_refuses_an_over_deep_command_vector() {
+    let mut graph = DurableContractGraph::new();
+
+    assert_eq!(
+        graph.declare_product(
+            &admitted_plan(),
+            LedgerIdBytes::from_bytes(PRODUCT_ID),
+            TypeId::from_index(0),
+            nested_groups(OVER_DEEP_STEPS),
+        ),
+        Err(DurableGraphInputRefusal::OverDepth),
+        "a command vector nesting {OVER_DEEP_STEPS} deep is refused at construction",
+    );
+    assert!(
+        graph.contract_view().semantic_nodes().is_empty(),
+        "the refused declaration appended no row",
+    );
+}
+
+/// The boundary itself: a body at `MAX_DURABLE_DEPTH` is admitted and one level past it is
+/// refused, on both routes and whether or not the deepest body declares a member.
+#[test]
+fn the_member_nesting_bound_admits_its_own_depth_and_refuses_one_more() {
+    for (depth, admitted) in [(MAX_DURABLE_DEPTH, true), (MAX_DURABLE_DEPTH + 1, false)] {
+        let mut draft = ImageDraft::new();
+        let name = draft.intern_string("R");
+        let record = draft.add_record_type(RecordTypeDef {
+            name,
+            fields: Vec::new(),
+        });
+        assert_eq!(
+            draft
+                .declare_product(
+                    &admitted_plan(),
+                    LedgerIdBytes::from_bytes(PRODUCT_ID),
+                    record,
+                    nested_groups(depth),
+                )
+                .is_ok(),
+            admitted,
+            "a draft admits a body at depth {depth}: {admitted}",
+        );
+
+        let mut graph = DurableContractGraph::new();
+        assert_eq!(
+            graph
+                .declare_product(
+                    &admitted_plan(),
+                    LedgerIdBytes::from_bytes(PRODUCT_ID),
+                    TypeId::from_index(0),
+                    nested_groups(depth),
+                )
+                .is_ok(),
+            admitted,
+            "the durable graph admits a body at depth {depth}: {admitted}",
+        );
+    }
 }

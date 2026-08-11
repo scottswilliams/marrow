@@ -221,12 +221,13 @@ impl SemanticPath {
 
     /// Extend a path whose width is already established by a validated graph row.
     ///
-    /// Crate-internal and infallible: its callers are the graph walks over member
-    /// rows both the draft builder (`validate_declaration_graph`) and the verifier
-    /// (`decode_members`) have already bounded at `MAX_DURABLE_DEPTH`, so a chain
-    /// past the bound here is a construction contradiction, not an input — there is
-    /// no refusal for such a caller to report and nothing for it to do with one.
-    /// Every route that carries a *caller's* width uses [`Self::child`].
+    /// Crate-internal and infallible: its callers are graph walks over member rows,
+    /// and a member row nests at most `MAX_DURABLE_DEPTH` deep because the row table's
+    /// one constructor (`ProductDeclarationGraph::from_commands`) refuses a deeper
+    /// command vector before any row exists. A chain past the bound here is therefore a
+    /// construction contradiction, not an input — there is no refusal for such a caller
+    /// to report and nothing for it to do with one. Every route that carries a
+    /// *caller's* width uses [`Self::child`].
     pub(crate) fn extend(&self, step: SemanticStep) -> Self {
         debug_assert!(
             self.steps.len() < bounds::MAX_SITE_PATH_STEPS,

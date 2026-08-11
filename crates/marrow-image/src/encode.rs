@@ -846,9 +846,11 @@ fn encode_key_tuple(body: &mut impl ImageByteSink, keys: &[KeyColumn]) {
 /// kinds exactly as it spells its own node paths. The step count fits one byte off the
 /// bound the path type itself carries: a [`SemanticPath`] admits at most
 /// `MAX_SITE_PATH_STEPS` steps on every public route into it, and `bounds` const-asserts
-/// that width against one byte. It is a checked conversion rather than a narrowing cast
-/// because the totality is a property of the argument's type, and a cast would silently
-/// outlive a widened bound.
+/// that width against one byte. The projection that mints these paths walks member rows
+/// whose depth the declaration graph's constructor already bounded, so the count is
+/// in range twice over. It is a checked conversion rather than a narrowing cast because
+/// the totality is a property of the argument's type, and a cast would silently outlive a
+/// widened bound.
 fn encode_site_path(body: &mut impl ImageByteSink, path: &SemanticPath) {
     let step_count = u8::try_from(path.steps().len())
         .expect("a bounded semantic path's step count fits the site-path width");
@@ -950,6 +952,11 @@ fn encode_durable_indexes(body: &mut impl ImageByteSink, indexes: &[DurableIndex
 /// this is one forward pass over the rows rather than a descent of the graph. A graph that
 /// exceeded the member bound holds only the prefix the flattening was willing to
 /// materialize; it reports the exceeded bound here and is never encoded.
+///
+/// The nesting check is **defense in depth**: no route builds an over-deep row, because
+/// [`ProductDeclarationGraph::from_commands`] refuses an over-deep command vector before
+/// materializing one. It is kept because this pass is the encoder's own recheck of what it
+/// is about to spell, and because the descent below relies on the bound.
 fn validate_declaration_graph(
     graph: &ProductDeclarationGraph,
     values: &CanonicalValueShapeDag,
