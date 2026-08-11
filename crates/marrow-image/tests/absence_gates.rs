@@ -175,3 +175,33 @@ fn the_site_scan_sees_code_and_not_prose() {
         "the visible occurrence is the code one: {hits:?}",
     );
 }
+
+/// The encoder projects a Product declaration from its flat rows, never from a member
+/// tree.
+///
+/// The wire bytes and the durable contract id must derive from one set of facts. While
+/// the declaration was a recursive `Vec<DurableMemberDef>`, the encoder walked that tree
+/// three times — to emit the DURABLE section, to build the contract descriptor, and to
+/// recheck the member bounds — and any later owner could hold a second tree beside the
+/// rows without either walk noticing. Reintroducing the tree in the encoder is exactly
+/// that divergence returning.
+#[test]
+fn the_encoder_reads_declaration_rows_and_no_member_tree() {
+    let encoder =
+        std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/encode.rs"))
+            .expect("read the encoder");
+    let code = without_literals(&encoder);
+    assert!(
+        !code.contains("DurableMemberDef"),
+        "the encoder projects from `DeclarationNode` rows, never from a member tree",
+    );
+    assert!(
+        code.contains("DeclarationNodeKind"),
+        "the encoder's row projection is present, so this gate has a live subject",
+    );
+    let tree_walkers = occurrences("fn validate_member_tree");
+    assert!(
+        tree_walkers.is_empty(),
+        "the member-bound recheck is one forward pass over the rows; found {tree_walkers:?}",
+    );
+}

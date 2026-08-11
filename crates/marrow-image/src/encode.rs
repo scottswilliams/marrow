@@ -8,16 +8,16 @@
 
 use crate::bounds;
 use crate::digest::{ImageId, image_id};
-use crate::draft::{
-    CollectionTypeDef, ConstValue, DurableMemberDef, ImageBuildError, ImageDraft, KeyColumn,
-};
+use crate::draft::{CollectionTypeDef, ConstValue, ImageBuildError, ImageDraft, KeyColumn};
 use crate::durable_id::{
     DurableBranchShape, DurableContractDescriptor, DurableFieldShape, DurableGroupShape,
     DurableIndexComponent, DurableIndexShape, DurableKeyShape, DurableMemberShape,
     DurableRootShape, DurableValueShape,
 };
 use crate::instr::Instr;
-use crate::product::ProductClaimConflict;
+use crate::product::{
+    DeclarationNode, DeclarationNodeKind, ProductClaimConflict, ProductDeclarationGraph,
+};
 use crate::semantic::{SemanticPath, SemanticTarget};
 use crate::ty::ImageType;
 
@@ -125,8 +125,7 @@ impl ImageDraft {
         // declaration however many roots project it; the key tuple and managed indexes
         // are occurrence facts and are validated per root.
         for declaration in self.product_declarations() {
-            let mut member_count = 0usize;
-            validate_member_tree(declaration.members(), 1, &mut member_count)?;
+            validate_declaration_graph(declaration.graph())?;
         }
         for occurrence in self.root_occurrences() {
             if occurrence.keys().len() > bounds::MAX_KEY_COLUMNS {
@@ -302,7 +301,8 @@ impl ImageDraft {
             // with static `group` namespaces and keyed `branch` placements).
             body.extend_from_slice(occurrence.placement().ledger_id().bytes());
             body.extend_from_slice(declaration.identity().ledger_id().bytes());
-            encode_durable_members(&mut body, declaration.members(), str_map);
+            let graph = declaration.graph();
+            encode_declaration_members(&mut body, graph, graph.members(), str_map);
             encode_durable_indexes(&mut body, occurrence.indexes());
         }
         push_u16(&mut body, self.sites().len() as u16);
@@ -341,11 +341,12 @@ impl ImageDraft {
             .iter()
             .map(|occurrence| {
                 let declaration = self.declaration_of(occurrence);
+                let graph = declaration.graph();
                 DurableRootShape {
                     placement: occurrence.placement().ledger_id(),
                     product: declaration.identity().ledger_id(),
                     keys: key_shapes(occurrence.keys()),
-                    members: member_shapes(declaration.members()),
+                    members: member_shapes(graph, graph.members()),
                     indexes: occurrence.indexes().to_vec(),
                 }
             })
@@ -635,18 +636,26 @@ fn encode_site_path(body: &mut Vec<u8>, path: &SemanticPath) {
     }
 }
 
-/// Encode a durable member tree into the DURABLE section: `u16(count) ‖ member*`.
-/// A field is tag `0x00`, its ledger id, a required flag, and its value shape; a
-/// group is tag `0x01`, its ledger id, and its own members; a branch is tag
-/// `0x02`, its placement id, its key tuple, and its own members. Recurses through
-/// groups and branches in source declaration order. A field's value shape is the
+/// Encode one run of a Product declaration's member rows into the DURABLE section:
+/// `u16(count) ‖ member*`. A field is tag `0x00`, its ledger id, a required flag, and its
+/// value shape; a group is tag `0x01`, its ledger id, and its own members; a branch is tag
+/// `0x02`, its placement id, its key tuple, and its own members. Descends into each
+/// group's and branch's own run in declaration order. A field's value shape is the
 /// canonical [`DurableValueShape`] encoding, so a durable field and its
 /// contract-identity contribution spell the value one way.
-fn encode_durable_members(body: &mut Vec<u8>, members: &[DurableMemberDef], str_map: &[u16]) {
+///
+/// The nesting bound is rechecked before any encoding, so the descent is bounded by
+/// [`bounds::MAX_DURABLE_DEPTH`].
+fn encode_declaration_members(
+    body: &mut Vec<u8>,
+    graph: &ProductDeclarationGraph,
+    members: &[DeclarationNode],
+    str_map: &[u16],
+) {
     push_u16(body, members.len() as u16);
     for member in members {
-        match member {
-            DurableMemberDef::Field {
+        match member.kind() {
+            DeclarationNodeKind::Field {
                 id,
                 required,
                 value,
@@ -656,24 +665,23 @@ fn encode_durable_members(body: &mut Vec<u8>, members: &[DurableMemberDef], str_
                 body.push(u8::from(*required));
                 encode_value_shape_section(body, value);
             }
-            DurableMemberDef::Group { id, members } => {
+            DeclarationNodeKind::Group { id } => {
                 body.push(0x01);
                 body.extend_from_slice(id.bytes());
-                encode_durable_members(body, members, str_map);
+                encode_declaration_members(body, graph, graph.members_of(member), str_map);
             }
-            DurableMemberDef::Branch {
+            DeclarationNodeKind::Branch {
                 placement,
                 name,
                 record,
                 keys,
-                members,
             } => {
                 body.push(0x02);
                 body.extend_from_slice(placement.bytes());
                 push_u16(body, str_map[name.raw() as usize]);
                 push_u16(body, record.0);
                 encode_key_tuple(body, keys);
-                encode_durable_members(body, members, str_map);
+                encode_declaration_members(body, graph, graph.members_of(member), str_map);
             }
         }
     }
@@ -701,35 +709,30 @@ fn encode_durable_indexes(body: &mut Vec<u8>, indexes: &[DurableIndexShape]) {
     }
 }
 
-/// Recheck the durable member-tree bounds a well-formed draft must satisfy: total
-/// member records within [`bounds::MAX_DURABLE_MEMBERS`] and nesting within
+/// Recheck the durable member-graph bounds a well-formed declaration must satisfy: total
+/// member rows within [`bounds::MAX_DURABLE_MEMBERS`] and nesting within
 /// [`bounds::MAX_DURABLE_DEPTH`]. A branch's key tuple is bounded by the same
-/// [`bounds::MAX_KEY_COLUMNS`] as a root's. `depth` is 1 for a top-level member.
-fn validate_member_tree(
-    members: &[DurableMemberDef],
-    depth: usize,
-    count: &mut usize,
-) -> Result<(), ImageBuildError> {
-    if depth > bounds::MAX_DURABLE_DEPTH {
-        return Err(ImageBuildError::DurableTreeTooDeep);
+/// [`bounds::MAX_KEY_COLUMNS`] as a root's.
+///
+/// Every row carries its parent's ordinal and a parent always precedes its children, so
+/// this is one forward pass over the rows rather than a descent of the graph. A graph that
+/// exceeded the member bound holds only the prefix the flattening was willing to
+/// materialize; it reports the exceeded bound here and is never encoded.
+fn validate_declaration_graph(graph: &ProductDeclarationGraph) -> Result<(), ImageBuildError> {
+    if graph.over_member_bound() {
+        return Err(ImageBuildError::TooManyDurableMembers);
     }
-    for member in members {
-        *count += 1;
-        if *count > bounds::MAX_DURABLE_MEMBERS {
-            return Err(ImageBuildError::TooManyDurableMembers);
+    for (node, depth) in graph.rows().iter().zip(graph.depths()) {
+        if depth > bounds::MAX_DURABLE_DEPTH {
+            return Err(ImageBuildError::DurableTreeTooDeep);
         }
-        match member {
-            DurableMemberDef::Field { value, .. } => {
-                validate_value_shape(value, 1)?;
-            }
-            DurableMemberDef::Group { members, .. } => {
-                validate_member_tree(members, depth + 1, count)?;
-            }
-            DurableMemberDef::Branch { keys, members, .. } => {
+        match node.kind() {
+            DeclarationNodeKind::Field { value, .. } => validate_value_shape(value, 1)?,
+            DeclarationNodeKind::Group { .. } => {}
+            DeclarationNodeKind::Branch { keys, .. } => {
                 if keys.len() > bounds::MAX_KEY_COLUMNS {
                     return Err(ImageBuildError::TooManyKeyColumns);
                 }
-                validate_member_tree(members, depth + 1, count)?;
             }
         }
     }
@@ -817,14 +820,18 @@ fn key_shapes(keys: &[KeyColumn]) -> Vec<DurableKeyShape> {
         .collect()
 }
 
-/// Convert a draft member tree into the descriptor's member shapes, recursing
-/// through groups and branches. The descriptor is the canonical identity owner;
-/// this is the compiler-side projection into it.
-fn member_shapes(members: &[DurableMemberDef]) -> Vec<DurableMemberShape> {
+/// Convert one run of a declaration's member rows into the descriptor's member shapes,
+/// descending through groups and branches. The descriptor is the canonical identity owner;
+/// this is the producer-side projection into it, from the same rows the wire bytes are
+/// projected from.
+fn member_shapes(
+    graph: &ProductDeclarationGraph,
+    members: &[DeclarationNode],
+) -> Vec<DurableMemberShape> {
     members
         .iter()
-        .map(|member| match member {
-            DurableMemberDef::Field {
+        .map(|member| match member.kind() {
+            DeclarationNodeKind::Field {
                 id,
                 required,
                 value,
@@ -833,24 +840,19 @@ fn member_shapes(members: &[DurableMemberDef]) -> Vec<DurableMemberShape> {
                 required: *required,
                 value: value.clone(),
             }),
-            DurableMemberDef::Group { id, members } => {
-                DurableMemberShape::Group(DurableGroupShape {
-                    id: *id,
-                    members: member_shapes(members),
-                })
-            }
+            DeclarationNodeKind::Group { id } => DurableMemberShape::Group(DurableGroupShape {
+                id: *id,
+                members: member_shapes(graph, graph.members_of(member)),
+            }),
             // The branch's name and record type are surface, not identity: the
             // descriptor carries only its placement, key tuple, and member value
             // shapes, so a rename or a record retype preserves the contract id.
-            DurableMemberDef::Branch {
-                placement,
-                keys,
-                members,
-                ..
+            DeclarationNodeKind::Branch {
+                placement, keys, ..
             } => DurableMemberShape::Branch(DurableBranchShape {
                 placement: *placement,
                 keys: key_shapes(keys),
-                members: member_shapes(members),
+                members: member_shapes(graph, graph.members_of(member)),
             }),
         })
         .collect()

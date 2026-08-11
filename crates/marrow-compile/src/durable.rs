@@ -1038,8 +1038,8 @@ fn build_one(
     // a later root over the same Product references the declaration the draft already
     // holds, resolving no anchor a second time and — decisively — minting no second
     // entry record type for its nested branches.
-    let members = match draft.product_members(DurableProductIdentity::minted(product)) {
-        Some(declared) => declared.to_vec(),
+    let members = match draft.product_member_tree(DurableProductIdentity::minted(product)) {
+        Some(declared) => declared,
         None => resolver.build_product_graph(draft, records, metadata, store, resource, record),
     };
     if let Some(invariant) = resolver.invariant {

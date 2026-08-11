@@ -728,11 +728,19 @@ impl ImageDraft {
         self.products.declarations()
     }
 
-    /// The Product declaration already bound to `identity`, if one is.
-    pub fn product_members(&self, identity: DurableProductIdentity) -> Option<&[DurableMemberDef]> {
+    /// The member tree of the Product declaration already bound to `identity`, if one is.
+    ///
+    /// The declaration owns flat rows; this projects them back into the tree the compiler
+    /// still builds its graph in, so a second root over one Product reads the declaration
+    /// the draft already holds instead of resolving its anchors again. It is deleted with
+    /// [`DurableMemberDef`].
+    pub fn product_member_tree(
+        &self,
+        identity: DurableProductIdentity,
+    ) -> Option<Vec<DurableMemberDef>> {
         self.products
             .by_identity(identity)
-            .map(ProductDeclaration::members)
+            .map(|declaration| declaration.graph().member_tree())
     }
 
     /// The first divergent repeat of an already-declared Product, if one was appended.
