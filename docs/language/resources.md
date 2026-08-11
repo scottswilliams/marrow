@@ -94,6 +94,13 @@ a **branch**: a keyed subtree, a distinct durable graph node with its own key
 tuple, nested under its containing resource. A group or branch may itself hold
 fields, groups, and branches.
 
+A resource may back more than one store root (see [Durable
+places](durable-places.md#store-declarations)). Its group and branch declarations
+belong to the resource, not to a root: the entry record of a declared branch is materialized
+once for the resource, and every root that projects the resource binds that one
+record. Two roots over one resource are admitted only when both claim the identical
+member and value graph and the identical branch entry records.
+
 When a resource backs a store, its group and branch declarations are part of the
 durable graph. Each group has its own durable identity (a `group` identity), and
 each branch has its own placement identity, one identity per key column, and one

@@ -314,6 +314,38 @@ publisher does not yet compare the expected half against a fresh filesystem
 state, so this boundary establishes neither stale-publication refusal nor
 replay prevention.
 
+## Product declarations and root occurrences
+
+A durable **Product** is a declaration — the resource a `store` root projects — and
+a root is an **occurrence** of it. `marrow-image` holds the two as flat tables: a
+declaration table keyed by the Product's ledger identity, each declaration carrying
+its member graph as parent-ordinal rows, and a root-occurrence row per root that
+references the one declaration it projects. Nothing is retained per (root x member).
+The v0 wire format is unchanged — it still carries the full member graph per root —
+so the encoder projects each occurrence from its one retained declaration, and the
+durable contract id is projected from the same rows.
+
+A declaration's branch entry records are materialized once for the Product, at its
+first executable occurrence. `marrow-verify` reconstructs the declaration and its
+occurrences independently and rejects an image whose two occurrences of one Product
+identity claim different member graphs or different entry records.
+
+An operation site is named by binding a live root-occurrence selector to a live
+canonical declaration-path selector and the one target that node admits. The binder
+is the sole mint path: a site is `(occurrence, declaration path, target)`, so one
+declaration path under two occurrences is two sites, and no ordinal a caller holds
+can name a place. `marrow-image`'s bounded site demand plan checks vacant capacity
+before it mints an id, deduplicates by that key, saturates its logical count one past
+the cap, and records one policy receipt at the earliest crossing.
+
+How much of a Product's graph each occurrence pre-seeds depends on how many
+occurrences it has, decided from a census over the whole store-declaration set before
+any site is emitted. A Product with one occurrence pre-seeds its whole member graph
+in declaration pre-order. A Product with more pre-seeds only each occurrence's root
+whole-payload and index sites; its member group and branch sites are minted on first
+reference, as a field leaf always was, so a declaration costs its referenced graph
+rather than its declared graph multiplied by the roots over it.
+
 ## Access demand
 
 An export's durable access demand is a compiler fact the verifier reconstructs,

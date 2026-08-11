@@ -45,6 +45,34 @@ bodies. Two store roots may not share a name. A single `transaction` region may 
 and write several roots; its writes commit, or on a fault roll back, as one atomic
 unit across every root it touched.
 
+Two store roots **may** name the same resource:
+
+```
+store ^current[id: int]: Ledger
+store ^archive[id: int]: Ledger
+```
+
+A resource is a declaration and a store root is an occurrence of it. The two roots
+above are independent durable places over one `Ledger` declaration: each has its own
+placement identity, its own key tuple, its own managed indexes, and its own keyed
+entry family, and a write through one is not observable through the other. What they
+share is the declaration — its members, their value shapes, their durable identities,
+and the entry record of each declared branch, which is materialized once for the
+resource however many roots project it.
+
+Both occurrences are admitted only when they claim the identical member and value
+graph and the identical branch entry records. A project whose two occurrences of one
+resource disagree is rejected; so is a repeated root placement identity. The
+independent verifier reconstructs the declaration and its occurrences separately from
+the compiler and reaches the same split.
+
+Durable execution over a resource named by more than one root is available today
+only through the ephemeral in-process path. Provisioning a persistent store from
+such an image is refused: the head identity map is a bijection over the durable
+identity of every node across every root, and one declaration under two roots
+presents each member identity twice. That refusal stands until the physical layout
+for a shared declaration is derived.
+
 ### Durable Field Values
 
 A stored field holds a value from the closed acyclic durable value set:

@@ -225,7 +225,15 @@ over all of them. A single `transaction` region may read and write several roots
 commits — or, on a fault, rolls back — as one atomic unit. An entry identity is
 root-local: `Id(^assets)` addresses `^assets` and only `^assets`, and using it against
 another root is rejected both at the checker and, for a forged image, at the verifier;
-two store roots may not share a name (which would share a physical cell family). The
+two store roots may not share a name (which would share a physical cell family), but
+they may name the same resource — a resource is a declaration and a root is an
+occurrence of it, so two roots over one resource are independent durable places that
+share the declaration's members, identities, and branch entry records, and are
+admitted only when both claim the identical graph. Such a project compiles, verifies,
+and executes ephemerally; provisioning a persistent store from it is refused, because
+the head identity map is a bijection over every root's node identities and one
+declaration under two roots presents each member identity twice. That refusal is the
+named hold on the physical layout for a shared declaration. The
 compiler fully lowers operations over a keyed root — single-column or a composite tuple
 — whose top-level fields are each a scalar or a widened value (a dense `struct`/record, a
 closed `enum`, or an `Option`/`Result`), together with its root-level `group` members (of
