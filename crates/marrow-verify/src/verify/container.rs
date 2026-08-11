@@ -1,7 +1,7 @@
 //! Phase 1: container framing — magic, version, digest slot, and section table.
 
 use super::code_tables::{decode_consts, decode_exports, decode_functions, decode_spans};
-use super::durable::decode_durable;
+use super::durable::{DecodedDurable, decode_durable};
 use super::model::DecodedImage;
 use super::reject;
 use super::tables::{
@@ -98,8 +98,13 @@ pub(super) fn decode_container(bytes: &[u8]) -> Result<DecodedImage, VerifyRejec
     let collections = decode_collections(sections[9].1, types.len(), enums.len())?;
     validate_record_field_refs(&types, enums.len(), collections.len())?;
     reject_value_type_cycles(&types, &enums)?;
-    let (roots, sites, site_paths, durable_contract, semantic_nodes) =
-        decode_durable(sections[2].1, &strings, &types, &enums)?;
+    let DecodedDurable {
+        roots,
+        sites,
+        site_paths,
+        contract: durable_contract,
+        nodes: semantic_nodes,
+    } = decode_durable(sections[2].1, &strings, &types, &enums)?;
     let consts = decode_consts(sections[3].1, &strings)?;
     let mut functions = decode_functions(
         sections[4].1,

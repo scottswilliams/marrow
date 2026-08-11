@@ -595,7 +595,7 @@ fn durable_schema(draft: &mut ImageDraft) -> Sites {
                     id: LedgerIdBytes::from_bytes(ROOT_KEY_ID),
                 }],
                 placement: LedgerIdBytes::from_bytes(PLACEMENT_ID),
-                indexes: Vec::new(),
+                indexes: Vec::new().into(),
             },
         )
         .expect("the Product is declared");
@@ -1384,7 +1384,7 @@ fn a_composite_root_write_opcode_with_a_truncated_key_path_rejects() {
                     },
                 ],
                 placement: LedgerIdBytes::from_bytes(PLACEMENT_ID),
-                indexes: Vec::new(),
+                indexes: Vec::new().into(),
             },
         )
         .expect("the Product is declared");
@@ -1532,7 +1532,7 @@ fn group_branch_draft_with_branch_record(
                     id: LedgerIdBytes::from_bytes(ROOT_KEY_ID),
                 }],
                 placement: LedgerIdBytes::from_bytes(PLACEMENT_ID),
-                indexes: Vec::new(),
+                indexes: Vec::new().into(),
             },
         )
         .expect("the Product is declared");
@@ -1672,7 +1672,8 @@ fn indexed_draft_full(
                         unique: true,
                         components: by_value_components,
                     },
-                ],
+                ]
+                .into(),
             },
         )
         .expect("the Product is declared");
@@ -1835,7 +1836,8 @@ fn scalar_field_indexed_draft(scalar: Scalar) -> ImageDraft {
                     components: vec![DurableIndexComponent::Field(LedgerIdBytes::from_bytes(
                         FIELD_ID,
                     ))],
-                }],
+                }]
+                .into(),
             },
         )
         .expect("the Product is declared");
@@ -1962,7 +1964,8 @@ fn widened_field_indexed_draft() -> ImageDraft {
                     components: vec![DurableIndexComponent::Field(LedgerIdBytes::from_bytes(
                         OWNER_FIELD_ID,
                     ))],
-                }],
+                }]
+                .into(),
             },
         )
         .expect("the Product is declared");
@@ -2151,7 +2154,7 @@ fn group_before_field_draft(record_group_first: bool) -> ImageDraft {
                     id: LedgerIdBytes::from_bytes(ROOT_KEY_ID),
                 }],
                 placement: LedgerIdBytes::from_bytes(PLACEMENT_ID),
-                indexes: Vec::new(),
+                indexes: Vec::new().into(),
             },
         )
         .expect("the Product is declared");
@@ -2216,7 +2219,7 @@ fn field_count_mismatch_draft(member_fields: usize, record_fields: usize) -> Ima
                     id: LedgerIdBytes::from_bytes(ROOT_KEY_ID),
                 }],
                 placement: LedgerIdBytes::from_bytes(PLACEMENT_ID),
-                indexes: Vec::new(),
+                indexes: Vec::new().into(),
             },
         )
         .expect("the Product is declared");
@@ -2532,7 +2535,7 @@ fn flat_branch_draft() -> (ImageDraft, AdmittedRoot, u16) {
                     id: LedgerIdBytes::from_bytes(ROOT_KEY_ID),
                 }],
                 placement: LedgerIdBytes::from_bytes(PLACEMENT_ID),
-                indexes: Vec::new(),
+                indexes: Vec::new().into(),
             },
         )
         .expect("the Product is declared");
@@ -3427,7 +3430,7 @@ fn declare_counters_with_notes_branch(
                     id: LedgerIdBytes::from_bytes(ROOT_KEY_ID),
                 }],
                 placement: LedgerIdBytes::from_bytes(PLACEMENT_ID),
-                indexes: Vec::new(),
+                indexes: Vec::new().into(),
             },
         )
         .expect("the Product is declared")
@@ -4865,7 +4868,7 @@ fn widened_draft(members: Vec<[u8; 16]>) -> ImageDraft {
                     id: LedgerIdBytes::from_bytes(ROOT_KEY_ID),
                 }],
                 placement: LedgerIdBytes::from_bytes(PLACEMENT_ID),
-                indexes: Vec::new(),
+                indexes: Vec::new().into(),
             },
         )
         .expect("the Product is declared");
@@ -5050,7 +5053,7 @@ fn nested_branch_draft() -> (ImageDraft, AdmittedRoot) {
                     id: LedgerIdBytes::from_bytes(ROOT_KEY_ID),
                 }],
                 placement: LedgerIdBytes::from_bytes(PLACEMENT_ID),
-                indexes: Vec::new(),
+                indexes: Vec::new().into(),
             },
         )
         .expect("the Product is declared");
@@ -5232,7 +5235,7 @@ fn composite_root_draft() -> (ImageDraft, LegacyDraftSiteOperand) {
                     },
                 ],
                 placement: LedgerIdBytes::from_bytes(PLACEMENT_ID),
-                indexes: Vec::new(),
+                indexes: Vec::new().into(),
             },
         )
         .expect("the Product is declared");

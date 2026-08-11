@@ -496,8 +496,8 @@ pub struct DurableMemberView<'a> {
 /// ```
 #[derive(Debug, Clone, Copy)]
 pub enum DurableMemberViewKind<'a> {
-    Field(DurableFieldView<'a>),
-    Group(DurableGroupView<'a>),
+    Field(DurableFieldView),
+    Group(DurableGroupView),
     Branch(DurableBranchView<'a>),
 }
 
@@ -505,9 +505,12 @@ pub enum DurableMemberViewKind<'a> {
 /// is required, and a reference to its stored value shape in the graph's one arena. The
 /// field's *name* is not part of the identity — a rename preserves it — but its value
 /// shape is.
+///
+/// Every fact it carries is a small copied value, so it borrows the graph for nothing and
+/// takes no lifetime: a caller may keep one past the walk that produced it.
 #[derive(Debug, Clone, Copy)]
-pub struct DurableFieldView<'a> {
-    id: &'a LedgerIdBytes,
+pub struct DurableFieldView {
+    id: LedgerIdBytes,
     required: bool,
     value: ValueShapeNodeId,
 }
@@ -515,8 +518,8 @@ pub struct DurableFieldView<'a> {
 /// One static field-path namespace (`group`): its `Group` ledger id. A group is an
 /// unkeyed pathing construct; it stores no data of its own beyond its members.
 #[derive(Debug, Clone, Copy)]
-pub struct DurableGroupView<'a> {
-    id: &'a LedgerIdBytes,
+pub struct DurableGroupView {
+    id: LedgerIdBytes,
 }
 
 /// One keyed subtree (`branch`): its own placement id and ordered key tuple, plus the
@@ -531,10 +534,10 @@ pub struct DurableBranchView<'a> {
     keys: &'a [KeyColumn],
 }
 
-impl<'a> DurableFieldView<'a> {
+impl DurableFieldView {
     /// The field's `Field` ledger id.
     pub fn id(&self) -> LedgerIdBytes {
-        *self.id
+        self.id
     }
 
     /// Whether the field is required.
@@ -548,10 +551,10 @@ impl<'a> DurableFieldView<'a> {
     }
 }
 
-impl<'a> DurableGroupView<'a> {
+impl DurableGroupView {
     /// The namespace's `Group` ledger id.
     pub fn id(&self) -> LedgerIdBytes {
-        *self.id
+        self.id
     }
 }
 
@@ -586,12 +589,12 @@ impl<'a> DurableMemberView<'a> {
                 required,
                 value,
             } => DurableMemberViewKind::Field(DurableFieldView {
-                id,
+                id: *id,
                 required: *required,
                 value: *value,
             }),
             DeclarationMemberShape::Group { id } => {
-                DurableMemberViewKind::Group(DurableGroupView { id })
+                DurableMemberViewKind::Group(DurableGroupView { id: *id })
             }
             DeclarationMemberShape::Branch {
                 placement,
@@ -1154,7 +1157,7 @@ mod tests {
                     name,
                     keys,
                     placement: id(0x0b),
-                    indexes,
+                    indexes: indexes.into(),
                 },
             )
             .expect("the Product is declared");
@@ -2088,7 +2091,7 @@ mod tests {
                         name,
                         keys: vec![key(Scalar::Int, 0x0c)],
                         placement: LedgerIdBytes::from_bytes(placement),
-                        indexes: Vec::new(),
+                        indexes: Vec::new().into(),
                     },
                 )
                 .expect("the Product is declared");

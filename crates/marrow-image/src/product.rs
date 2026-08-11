@@ -737,7 +737,7 @@ pub(crate) struct RootOccurrence {
     name: StrId,
     keys: Vec<KeyColumn>,
     placement: RootPlacementIdentity,
-    indexes: Vec<DurableIndexShape>,
+    indexes: Rc<[DurableIndexShape]>,
     stamp: RowStamp,
 }
 
@@ -769,7 +769,7 @@ pub(crate) struct RootOccurrenceRow {
     pub(crate) name: StrId,
     pub(crate) keys: Vec<KeyColumn>,
     pub(crate) placement: RootPlacementIdentity,
-    pub(crate) indexes: Vec<DurableIndexShape>,
+    pub(crate) indexes: Rc<[DurableIndexShape]>,
 }
 
 /// The flat root-occurrence table. Each row carries the stamp that keeps it

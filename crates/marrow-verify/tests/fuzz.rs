@@ -284,7 +284,7 @@ fn a_durable_image() -> Vec<u8> {
                     id: ledger([0x0c; 16]),
                 }],
                 placement: ledger([0x0b; 16]),
-                indexes: Vec::new(),
+                indexes: Vec::new().into(),
             },
         )
         .expect("the Product is declared");
@@ -433,7 +433,8 @@ fn an_indexed_durable_image() -> Vec<u8> {
                         unique: true,
                         components: vec![DurableIndexComponent::Field(ledger([0x0e; 16]))],
                     },
-                ],
+                ]
+                .into(),
             },
         )
         .expect("the Product is declared");
@@ -533,7 +534,7 @@ fn a_strict_durable_image() -> Vec<u8> {
                     id: ledger([0x0c; 16]),
                 }],
                 placement: ledger([0x0b; 16]),
-                indexes: Vec::new(),
+                indexes: Vec::new().into(),
             },
         )
         .expect("the Product is declared");
@@ -734,7 +735,7 @@ fn a_group_branch_durable_image() -> Vec<u8> {
                     id: ledger([0x0c; 16]),
                 }],
                 placement: ledger([0x0b; 16]),
-                indexes: Vec::new(),
+                indexes: Vec::new().into(),
             },
         )
         .expect("the Product is declared");
@@ -959,7 +960,7 @@ fn a_widened_durable_image() -> Vec<u8> {
                     id: ledger([0x0c; 16]),
                 }],
                 placement: ledger([0x0b; 16]),
-                indexes: Vec::new(),
+                indexes: Vec::new().into(),
             },
         )
         .expect("the Product is declared");
@@ -1069,7 +1070,7 @@ fn a_multi_site_durable_image() -> Vec<u8> {
                     id: ledger([0x0c; 16]),
                 }],
                 placement,
-                indexes: Vec::new(),
+                indexes: Vec::new().into(),
             },
         )
         .expect("the Product is declared");

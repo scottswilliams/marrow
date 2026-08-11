@@ -29,6 +29,7 @@
 //! bounds past the id width, at which point these mints need typed refusals rather than
 //! this derivation.
 
+use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::bounds;
@@ -346,7 +347,11 @@ pub struct RootOccurrenceDef {
     /// data of its own and contributes only its identity and projection to the durable
     /// contract. They are occurrence facts: two roots over one Product may carry
     /// different index shapes.
-    pub indexes: Vec<DurableIndexShape>,
+    ///
+    /// Held as a shared owner, the way a Product's member rows are: a caller that keeps
+    /// its own handle on the list it admitted — the independent verifier does — refers to
+    /// this one allocation rather than to a second copy of every projection.
+    pub indexes: Rc<[DurableIndexShape]>,
 }
 
 /// What an admitted root occurrence publishes: the selector naming the occurrence row,
@@ -1392,7 +1397,7 @@ mod site_binding_tests {
                     name,
                     keys: Vec::new(),
                     placement: placement(),
-                    indexes: Vec::new(),
+                    indexes: Vec::new().into(),
                 },
             )
             .expect("the Product is declared");
@@ -1496,7 +1501,7 @@ mod site_binding_tests {
                         name,
                         keys: Vec::new(),
                         placement: placement(),
-                        indexes: Vec::new(),
+                        indexes: Vec::new().into(),
                     },
                 )
                 .expect("the Product is declared");
@@ -1543,7 +1548,7 @@ mod site_binding_tests {
                     name,
                     keys: Vec::new(),
                     placement: placement(),
-                    indexes: Vec::new(),
+                    indexes: Vec::new().into(),
                 },
             )
             .expect("the Product is declared");

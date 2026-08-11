@@ -973,7 +973,7 @@ mod index_site_partition {
                         id: LedgerIdBytes::from_bytes(KEY_ID),
                     }],
                     placement: LedgerIdBytes::from_bytes(PLACEMENT_ID),
-                    indexes: Vec::new(),
+                    indexes: Vec::new().into(),
                 },
             )
             .expect("the Product is declared");

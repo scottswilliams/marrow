@@ -79,7 +79,7 @@ fn encode_root(
                     id: LedgerIdBytes::from_bytes(KEY_ID),
                 }],
                 placement: LedgerIdBytes::from_bytes(PLACEMENT_ID),
-                indexes,
+                indexes: indexes.into(),
             },
         )
         .expect("the Product is declared");

@@ -26,6 +26,7 @@
 //! exposes the resolved sites the function lowerer emits against.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::rc::Rc;
 
 use marrow_codes::Code;
 use marrow_image::{
@@ -938,16 +939,6 @@ struct IdentityBuildState<'ledger, 'gaps> {
     reported_gaps: &'gaps mut BTreeSet<IdentityAnchor>,
 }
 
-/// The draft under construction and the budget its construction is admitted under.
-///
-/// They travel as one because neither is usable alone: no durable-graph entry point takes
-/// the draft without the plan, so a signature that could carry one and not the other would
-/// state a shape the API does not have.
-struct AdmittedDraft<'draft, 'plan> {
-    draft: &'draft mut ImageDraft,
-    plan: &'plan AdmittedGraphInputPlan,
-}
-
 /// Where this occurrence's Product declaration comes from: the rows the draft already
 /// holds, or the command vector this root is the first to state.
 ///
@@ -1082,6 +1073,17 @@ impl<'stores> ProductOccurrenceCensus<'stores> {
 struct StoreOccurrence<'store> {
     decl: &'store StoreDecl,
     multiplicity: ProductOccurrenceMultiplicity,
+}
+
+/// The draft under construction and the budget its construction is admitted under.
+///
+/// They travel as one because neither is usable alone: no durable-graph entry point takes
+/// the draft without the plan, so a signature that could carry one and not the other would
+/// state a shape the API does not have. Passing them separately is also not available:
+/// [`build_one`] is at its argument bound, and unwrapping this pair puts it over.
+struct AdmittedDraft<'draft, 'plan> {
+    draft: &'draft mut ImageDraft,
+    plan: &'plan AdmittedGraphInputPlan,
 }
 
 /// Resolve, validate, and commit one `store` declaration into the draft, returning its
@@ -1317,7 +1319,7 @@ fn build_one(
     // encoder sorts the string pool, so admitting the occurrence — and interning its
     // spelling — before the eager sites below leaves the wire unchanged while giving the
     // sites the occurrence they are qualified by.
-    let indexes: Vec<DurableIndexShape> = built_indexes
+    let indexes: Rc<[DurableIndexShape]> = built_indexes
         .iter()
         .map(|built| built.shape.clone())
         .collect();
@@ -3244,7 +3246,7 @@ mod declaration_command_bound_tests {
                         id: LedgerIdBytes::from_bytes(KEY_ID),
                     }],
                     placement: LedgerIdBytes::from_bytes(PLACEMENT_ID),
-                    indexes: Vec::new(),
+                    indexes: Vec::new().into(),
                 },
             )
             .expect("the Product is declared");

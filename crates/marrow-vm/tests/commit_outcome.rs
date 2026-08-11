@@ -85,7 +85,7 @@ fn commit_image(post_commit_fault: PostCommitFault, mutating: bool) -> VerifiedI
                     id: LedgerIdBytes::from_bytes(ROOT_KEY_ID),
                 }],
                 placement: LedgerIdBytes::from_bytes(ROOT_PLACEMENT_ID),
-                indexes: Vec::new(),
+                indexes: Vec::new().into(),
             },
         )
         .expect("the Product is declared");

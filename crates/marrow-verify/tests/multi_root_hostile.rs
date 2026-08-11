@@ -101,7 +101,7 @@ fn build_two_roots(
                     id: LedgerIdBytes::from_bytes(A_KEY),
                 }],
                 placement: LedgerIdBytes::from_bytes(A_PLACEMENT),
-                indexes: vec![],
+                indexes: vec![].into(),
             },
         )
         .expect("the Product is declared");
@@ -137,7 +137,7 @@ fn build_two_roots(
                     id: LedgerIdBytes::from_bytes(B_KEY),
                 }],
                 placement: LedgerIdBytes::from_bytes(B_PLACEMENT),
-                indexes: vec![],
+                indexes: vec![].into(),
             },
         )
         .expect("the Product is declared");
@@ -303,7 +303,7 @@ fn build_shared_product(draft: &mut ImageDraft) -> TypeId {
                         id: LedgerIdBytes::from_bytes(key),
                     }],
                     placement: LedgerIdBytes::from_bytes(placement),
-                    indexes: vec![],
+                    indexes: vec![].into(),
                 },
             )
             .expect("the Product is declared");
@@ -426,7 +426,7 @@ fn a_draft_refuses_to_encode_two_graphs_under_one_product() {
                     id: LedgerIdBytes::from_bytes([0x66; 16]),
                 }],
                 placement: LedgerIdBytes::from_bytes([0x67; 16]),
-                indexes: vec![],
+                indexes: vec![].into(),
             },
         )
         .expect("the Product is declared");

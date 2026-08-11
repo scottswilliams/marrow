@@ -158,7 +158,7 @@ fn encode_corpus(fields: usize, levels: &dyn Fn(&mut ImageDraft) -> Vec<Level>) 
                     id: LedgerIdBytes::from_bytes(ROOT_KEY_ID),
                 }],
                 placement: LedgerIdBytes::from_bytes(PLACEMENT_ID),
-                indexes: Vec::new(),
+                indexes: Vec::new().into(),
             },
         )
         .expect("the Product is declared");

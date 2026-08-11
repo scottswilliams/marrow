@@ -135,7 +135,8 @@ fn build_graph(draft: &mut ImageDraft) -> Graph {
                             ISBN_ID,
                         ))],
                     },
-                ],
+                ]
+                .into(),
             },
         )
         .expect("the Product is declared");

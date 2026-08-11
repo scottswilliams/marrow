@@ -174,7 +174,7 @@ fn maximum_draft() -> ImageDraft {
                         id: key,
                     }],
                     placement,
-                    indexes: Vec::new(),
+                    indexes: Vec::new().into(),
                 },
             )
             .expect("the Product is declared");

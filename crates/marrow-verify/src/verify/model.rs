@@ -54,7 +54,10 @@ pub(super) struct DecodedRoot {
     /// It is read as borrowed views, which carry no member vector, so nothing here can be
     /// turned back into an owned recursive tree.
     pub(super) members: DurableProductGraph,
-    pub(super) indexes: Vec<DurableIndexShape>,
+    /// The occurrence's managed indexes, shared with the row the contract graph holds
+    /// rather than copied into it: the graph's derivations read the same projections the
+    /// sealing phase does, so one decoded root's index list exists once.
+    pub(super) indexes: Rc<[DurableIndexShape]>,
 }
 
 pub(super) struct DecodedFunction {

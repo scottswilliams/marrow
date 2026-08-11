@@ -139,7 +139,7 @@ fn traversal_image() -> VerifiedImage {
                     id: LedgerIdBytes::from_bytes(ROOT_KEY_ID),
                 }],
                 placement: LedgerIdBytes::from_bytes(ROOT_PLACEMENT_ID),
-                indexes: Vec::new(),
+                indexes: Vec::new().into(),
             },
         )
         .expect("the Product is declared");
@@ -515,7 +515,7 @@ fn wide_key_image() -> (VerifiedImage, u16) {
                     id: LedgerIdBytes::from_bytes(ROOT_KEY_ID),
                 }],
                 placement: LedgerIdBytes::from_bytes(ROOT_PLACEMENT_ID),
-                indexes: Vec::new(),
+                indexes: Vec::new().into(),
             },
         )
         .expect("the Product is declared");

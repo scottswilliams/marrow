@@ -93,7 +93,7 @@ fn roots_corpus(roots: usize) -> ImageDraft {
                     name,
                     keys: Vec::new(),
                     placement: placement(n),
-                    indexes: Vec::new(),
+                    indexes: Vec::new().into(),
                 },
             )
             .expect("the Product is declared");
@@ -268,7 +268,7 @@ fn wide_corpus(roots: usize) -> Result<Vec<u8>, ImageBuildError> {
                     name,
                     keys: Vec::new(),
                     placement: placement(n),
-                    indexes: Vec::new(),
+                    indexes: Vec::new().into(),
                 },
             )
             .expect("the Product is declared");
@@ -338,6 +338,10 @@ fn the_highest_fitting_site_count_is_bounded_by_image_bytes_not_by_the_table() {
 }
 
 /// The frozen highest-fitting site corpus: its site count and its exact framed size.
+///
+/// `H_` here abbreviates *highest-fitting* — a measured corpus figure, not the maximum-live
+/// accounting's declared-ceiling term of the same prefix (`H_DURABLE_GRAPH_BYTES`,
+/// `H_VERIFIED_DURABLE_GRAPH_BYTES`, `H_OWNED_BYTES`).
 ///
 /// 7,150 sites is 1,042 short of `MAX_SITES`, so this corpus family cannot reach the site
 /// table's last thousand rows at all. That is the same conclusion the 8,192/8,193 policy

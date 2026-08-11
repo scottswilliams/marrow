@@ -100,7 +100,7 @@ fn admit_root(draft: &mut ImageDraft, n: u8) -> AdmittedRoot {
                 name,
                 keys: Vec::new(),
                 placement: LedgerIdBytes::from_bytes([n; 16]),
-                indexes: Vec::new(),
+                indexes: Vec::new().into(),
             },
         )
         .expect("the Product is declared")
@@ -278,7 +278,8 @@ fn every_target_draft() -> (ImageDraft, AdmittedRoot, Vec<DeclarationMember>) {
                             COMPONENT_ID,
                         ))],
                     },
-                ],
+                ]
+                .into(),
             },
         )
         .expect("the Product is declared");
@@ -506,7 +507,7 @@ fn one_ordinal_from_two_independent_drafts_compares_equal() {
                 name: root_name,
                 keys: Vec::new(),
                 placement: LedgerIdBytes::from_bytes([0x1b; 16]),
-                indexes: Vec::new(),
+                indexes: Vec::new().into(),
             },
         )
         .expect("the Product is declared");
@@ -724,7 +725,7 @@ fn one_thousand_roots_touching_sixty_four_fields_saturate_exactly_once() {
                         id: field_id(0x10_0000 + n),
                     }],
                     placement: field_id(0x20_0000 + n),
-                    indexes: Vec::new(),
+                    indexes: Vec::new().into(),
                 },
             )
             .expect("the Product is declared");
@@ -840,7 +841,7 @@ fn four_thousand_roots_over_a_hundred_unoperated_groups_cost_one_site_each() {
                     name,
                     keys: Vec::new(),
                     placement: field_id(0x50_0000 + n),
-                    indexes: Vec::new(),
+                    indexes: Vec::new().into(),
                 },
             )
             .expect("the Product is declared");

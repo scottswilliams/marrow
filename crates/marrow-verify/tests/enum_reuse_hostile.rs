@@ -160,7 +160,7 @@ fn build(
                     id: id(KEY),
                 }],
                 placement: id(PLACEMENT),
-                indexes: vec![],
+                indexes: vec![].into(),
             },
         )
         .expect("the Product is declared");
@@ -557,7 +557,8 @@ fn forge(spec: &GraphSpec) -> Vec<u8> {
                             DurableIndexComponent::Field(id(root.field)),
                             DurableIndexComponent::Key(id(root.key)),
                         ],
-                    }],
+                    }]
+                    .into(),
                 },
             )
             .expect("the Product is declared");

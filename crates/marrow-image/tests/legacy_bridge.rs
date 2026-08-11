@@ -161,7 +161,7 @@ impl Fixture {
                         })
                         .collect(),
                     placement: LedgerIdBytes::from_bytes(PLACEMENT_ID),
-                    indexes: Vec::new(),
+                    indexes: Vec::new().into(),
                 },
             )
             .expect("the Product is declared");

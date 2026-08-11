@@ -150,7 +150,7 @@ fn two_root_branch_draft(
                     id: LedgerIdBytes::from_bytes(A_KEY),
                 }],
                 placement: LedgerIdBytes::from_bytes(A_PLACEMENT),
-                indexes: Vec::new(),
+                indexes: Vec::new().into(),
             },
         )
         .expect("the Product is declared");
@@ -193,7 +193,7 @@ fn two_root_branch_draft(
                     id: LedgerIdBytes::from_bytes(B_KEY),
                 }],
                 placement: LedgerIdBytes::from_bytes(B_PLACEMENT),
-                indexes: Vec::new(),
+                indexes: Vec::new().into(),
             },
         )
         .expect("the Product is declared");

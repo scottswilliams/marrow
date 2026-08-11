@@ -1,4 +1,16 @@
 //! Phase 2 durable graph: root/branch/group/index decoding, sealing, and shape descriptors.
+//!
+//! **Recursion.** Nothing here recurses over bytes a hostile image controls: the member
+//! decode ([`decode_members`]) walks its own explicit stack and checks
+//! [`marrow_image::bounds::MAX_DURABLE_DEPTH`] before entering a nested run, so an
+//! over-deep image is refused at the byte that opens the level rather than by the machine
+//! stack. The one recursive walk in this module is [`seal_branch_run`], and it runs after
+//! that: its input is a [`DurableProductGraph`], whose only constructor refuses a command
+//! vector nesting past the same bound before a row exists, so its depth is structurally
+//! at most `MAX_DURABLE_DEPTH` (16) frames. It is written recursively because its output
+//! is itself a recursive tree ([`SealedBranch`]) — an explicit stack would carry the same
+//! bounded depth in a hand-rolled parent chain and establish no invariant the graph's
+//! constructor does not already hold.
 
 use super::model::{DecodedEnum, DecodedField, DecodedRecordType, DecodedRoot};
 use super::reject;
@@ -41,6 +53,11 @@ const MAX_LIVE_VERIFIED_DURABLE_GRAPH_BYTES: u64 = marrow_image::bounds::GROWTH_
 
 /// The declared ceiling for what one hostile image may make the verifier hold live.
 ///
+/// The `H_` prefix is the maximum-live accounting's *ceiling* term — the `H` of `M <= H`,
+/// the same notation `marrow_lsp::capacities`' `H_owned` carries — and never an abbreviated
+/// measurement: the accounted maximum is the `MAX_LIVE_` constant above, and the const
+/// assertion below is the relation between them.
+///
 /// Declared, not derived from the sum. The verifier is the boundary an untrusted image
 /// meets, so its ceiling is stated against what the host must survive rather than against
 /// what the current representation happens to cost: a widening that raised both sides
@@ -63,16 +80,6 @@ const _: () = {
     );
 };
 
-/// Decode the DURABLE table (design §C 0x03): up to `MAX_ROOTS` roots — preceded,
-/// when any root is present, by the application's 16-byte ledger id — then the operation
-/// sites, then the 32-byte durable-contract id closing the section. Each root
-/// carries its ledger identity block (placement, product, and key ids plus one id
-/// per record field). Every site is revalidated against the roots and record
-/// types, every declaration ledger id in the section must be pairwise distinct
-/// (a durable enum's sum and member ids are one per-declaration identity that
-/// later fields of that enum reference rather than reclaim), and the
-/// contract id is independently recomputed from the decoded graph and checked
-/// against the carried bytes.
 /// The decoded durable graph: the roots, the sealed operation sites, each site's resolved
 /// graph-node path (parallel to the sites), the recomputed contract id, and the graph's
 /// node set.
@@ -82,13 +89,28 @@ const _: () = {
 /// value shape is resolved against the arena while the section is decoded — the record
 /// tie, the branch tie, the index projection, and the contract id all read it there — and
 /// no retained row resolves one after that.
-type DecodedDurable = (
-    Vec<DecodedRoot>,
-    Vec<SealedSite>,
-    Vec<SemanticPath>,
-    DurableContractId,
-    Vec<SemanticNode>,
-);
+pub(super) struct DecodedDurable {
+    pub(super) roots: Vec<DecodedRoot>,
+    pub(super) sites: Vec<SealedSite>,
+    /// Each site's resolved graph-node path, parallel to `sites` by index.
+    pub(super) site_paths: Vec<SemanticPath>,
+    pub(super) contract: DurableContractId,
+    pub(super) nodes: Vec<SemanticNode>,
+}
+
+/// The already-decoded tables a durable root resolves its surface references against: the
+/// interned string pool, the record types, and the enum types.
+///
+/// They travel together because a root's decode reads all three at once — a name index
+/// against the pool, an entry record index against the types, and a field's value shape
+/// against both types and enums — and because no durable decode step is meaningful with a
+/// subset of them.
+#[derive(Clone, Copy)]
+struct DecodedTables<'a> {
+    strings: &'a [Rc<str>],
+    types: &'a [DecodedRecordType],
+    enums: &'a [DecodedEnum],
+}
 
 /// The construction plan a section claiming `root_count` roots is decoded under.
 ///
@@ -139,13 +161,31 @@ fn reject_graph_input(refusal: DurableGraphInputRefusal) -> VerifyRejection {
     )
 }
 
+/// Decode the DURABLE table (design §C 0x03): up to `MAX_ROOTS` roots — preceded,
+/// when any root is present, by the application's 16-byte ledger id — then the operation
+/// sites, then the 32-byte durable-contract id closing the section. Each root
+/// carries its ledger identity block (placement, product, and key ids plus one id
+/// per record field). Every site is revalidated against the roots and record
+/// types, every declaration ledger id in the section must be pairwise distinct
+/// (a durable enum's sum and member ids are one per-declaration identity that
+/// later fields of that enum reference rather than reclaim), and the
+/// contract id is independently recomputed from the decoded graph and checked
+/// against the carried bytes.
+///
+/// The section's three runs each have their own decoder below. This owns only what they
+/// share: the one structural count, the plan minted from it, and the one contract graph
+/// every run reads or writes.
 pub(super) fn decode_durable(
     body: &[u8],
     strings: &[Rc<str>],
     types: &[DecodedRecordType],
     enums: &[DecodedEnum],
 ) -> Result<DecodedDurable, VerifyRejection> {
-    let string_count = strings.len();
+    let tables = DecodedTables {
+        strings,
+        types,
+        enums,
+    };
     let mut reader = Reader::new(body);
     let root_count = reader
         .u16()
@@ -156,132 +196,53 @@ pub(super) fn decode_durable(
     // The construction plan is minted before the graph exists, from the one structural
     // count just bounded: no plan, no graph.
     let plan = structural_plan(root_count);
-    let mut scope = LedgerScope::default();
     // This image's one durable contract graph. Every declaration, occurrence, and field
     // value shape is decoded into it and referenced from there, so a repeated Product
     // costs one declaration row and the decoder never holds a second representation of a
     // member graph or of a value.
     let mut graph = DurableContractGraph::new();
+    let roots = decode_roots(&mut reader, root_count, &plan, &mut graph, tables)?;
+
+    // Reconstruct the durable graph's node set now, from the same view the contract id is
+    // computed over, so every operation site resolves against this verifier's own
+    // derivation of the graph rather than a compiler-side summary.
+    let nodes = graph.contract_view().semantic_nodes();
+    let (sites, site_paths) = decode_sites(&mut reader, &nodes, &roots)?;
+    let contract = close_contract(&mut reader, &graph)?;
+    // The graph is the one owner while this decode runs: its two derivations — the
+    // recomputed id and the node set — and the shared member-row and index owners each
+    // root holds are the only projections of it that leave. It is dropped here; no caller
+    // retains a second one.
+    Ok(DecodedDurable {
+        roots,
+        sites,
+        site_paths,
+        contract,
+        nodes,
+    })
+}
+
+/// Decode the section's root run: the application ledger identity that precedes a
+/// non-empty run, then `root_count` roots, then the cross-root name check.
+///
+/// The ledger scope lives exactly as long as this run, because that is the run every
+/// declaration id in the section is read during: the sites carry references to ids already
+/// claimed here, and the contract-id tail carries none.
+fn decode_roots(
+    reader: &mut Reader<'_>,
+    root_count: usize,
+    plan: &AdmittedGraphInputPlan,
+    graph: &mut DurableContractGraph,
+    tables: DecodedTables<'_>,
+) -> Result<Vec<DecodedRoot>, VerifyRejection> {
+    let mut scope = LedgerScope::default();
     if root_count > 0 {
-        let application = take_distinct_id(&mut reader, &mut scope, "short application identity")?;
+        let application = take_distinct_id(reader, &mut scope, "short application identity")?;
         graph.set_application_identity(application);
     }
     let mut roots = Vec::with_capacity(root_count);
     for _ in 0..root_count {
-        let name = reader
-            .u16()
-            .ok_or(reject(VerifyPhase::Table, "short root name"))?;
-        if name as usize >= string_count {
-            return Err(reject(VerifyPhase::Table, "root name index out of range"));
-        }
-        // The key tuple: a count, then each column's scalar type and distinct
-        // ledger id. Zero columns is a singleton root; the closed orderable
-        // durable-key scalar set (frozen at C04) admits int, string, bool, bytes,
-        // date, and instant per column (`duration` is a span, not an identity).
-        let key_count = reader
-            .u16()
-            .ok_or(reject(VerifyPhase::Table, "short root key count"))?
-            as usize;
-        if key_count > marrow_image::bounds::MAX_KEY_COLUMNS {
-            return Err(reject(VerifyPhase::Table, "too many root key columns"));
-        }
-        let keys = decode_key_tuple(&mut reader, key_count, &mut scope, MemberClaim::Declaration)?;
-        let record = reader
-            .u16()
-            .ok_or(reject(VerifyPhase::Table, "short root record"))?;
-        if record as usize >= types.len() {
-            return Err(reject(
-                VerifyPhase::Table,
-                "root record type index out of range",
-            ));
-        }
-        // The root placement is an occurrence identity: every root occupies its own, so
-        // a repeated placement is a duplicate root occurrence — two rows that would
-        // address one durable node — rather than a generic identity collision.
-        let placement = read_id(&mut reader, "short placement identity")?;
-        if !scope.placements.insert(placement) {
-            return Err(reject(
-                VerifyPhase::Table,
-                "duplicate durable root occurrence",
-            ));
-        }
-        claim_distinct(&mut scope, placement)?;
-        // The Product is a declaration identity. Its first occurrence claims it together
-        // with its whole member/value graph; a later root carrying it is a reference that
-        // claims nothing and must match the accepted declaration exactly.
-        let product = read_id(&mut reader, "short product identity")?;
-        // The resource's durable member tree: top-level fields interleaved with
-        // static `group` namespaces and keyed `branch` placements. A field's stored
-        // value is drawn from the closed acyclic durable value set (a bare scalar, a
-        // dense struct, or a closed enum with sum/member ids).
-        let mut member_budget = marrow_image::bounds::MAX_DURABLE_MEMBERS;
-        // A Product is a declaration and a root is an occurrence of it. The first
-        // occurrence claims the declaration's ledger ids; a later one is a reference that
-        // reclaims nothing and must state the identical graph and entry record, which the
-        // declaration table itself decides — there is no second comparison here to drift
-        // from the one the graph performs.
-        let claim = if scope.products.insert(product) {
-            claim_distinct(&mut scope, product)?;
-            MemberClaim::Declaration
-        } else {
-            MemberClaim::Reference
-        };
-        let commands = decode_members(
-            &mut reader,
-            &mut member_budget,
-            &mut scope,
-            &mut graph,
-            claim,
-        )?;
-        let members = graph
-            .declare_product(&plan, product, TypeId::from_index(record), commands)
-            .map_err(reject_graph_input)?;
-        // The member tree's top-level fields and groups are exactly the materialized
-        // record's stored field slots followed by its trailing group slots, in order and
-        // value shape: this ties the durable identity to the executable record so a
-        // hostile image cannot claim one identity while executing over a different field
-        // or group shape. A field slot's value-shape match recurses through the record and
-        // enum tables, so a widened field (a nominal, struct, or enum) is checked as
-        // thoroughly as a plain scalar; each group slot is a group record whose own fields
-        // tie to its `Group` member's direct fields one level down.
-        let record_fields = &types[record as usize].fields;
-        let values = graph.value_shapes();
-        tie_root_record(record_fields, &members, types, enums, values)?;
-        // Every keyed `branch` nested in the tree ties its own materialized record to
-        // its direct field members the same way, one level down, so a hostile image
-        // cannot claim a branch identity while executing over a different record shape.
-        validate_branch_records(members.iter(), types, enums, string_count, values)?;
-        // The root's managed indexes follow its member tree. Each index's `Index`
-        // ledger id is a distinct id across the whole table; each projected component
-        // must reference a real top-level field or identity key of this same root, so a
-        // hostile image cannot forge a projection over a leaf that does not exist.
-        let indexes = decode_indexes(&mut reader, &keys, &members, &mut scope, values)?;
-        graph
-            .add_root_occurrence(
-                &plan,
-                product,
-                RootOccurrenceDef {
-                    name: StrId::from_index(name),
-                    keys: keys
-                        .iter()
-                        .map(|(scalar, id)| KeyColumn {
-                            scalar: *scalar,
-                            id: *id,
-                        })
-                        .collect(),
-                    placement,
-                    indexes: indexes.clone(),
-                },
-            )
-            .map_err(reject_graph_input)?;
-        roots.push(DecodedRoot {
-            name,
-            keys,
-            record,
-            placement,
-            members,
-            indexes,
-        });
+        roots.push(decode_root(reader, plan, graph, tables, &mut scope)?);
     }
 
     // A root's name keys its physical cell family, so two roots that resolve to the same
@@ -292,20 +253,159 @@ pub(super) fn decode_durable(
     // closes the one remaining cross-root physical-collision axis.
     for (i, root) in roots.iter().enumerate() {
         for other in &roots[..i] {
-            if strings[root.name as usize] == strings[other.name as usize] {
+            if tables.strings[root.name as usize] == tables.strings[other.name as usize] {
                 return Err(reject(VerifyPhase::Table, "two durable roots share a name"));
             }
         }
     }
+    Ok(roots)
+}
 
-    // Reconstruct the durable graph's node set now, from the same view the contract id is
-    // computed over, so every operation site resolves against this verifier's own
-    // derivation of the graph rather than a compiler-side summary.
-    let nodes = graph.contract_view().semantic_nodes();
-    // Project that node set once into its keyed form: each node's executable
-    // coordinates, keyed by its path. A site then resolves in one lookup.
-    let projection = project_graph(&nodes, &roots);
+/// Decode one durable root: its surface name, key tuple, entry record, placement and
+/// Product ledger identities, its Product's member tree, and its managed indexes — then
+/// tie the decoded declaration to the record tables and admit the occurrence.
+fn decode_root(
+    reader: &mut Reader<'_>,
+    plan: &AdmittedGraphInputPlan,
+    graph: &mut DurableContractGraph,
+    tables: DecodedTables<'_>,
+    scope: &mut LedgerScope,
+) -> Result<DecodedRoot, VerifyRejection> {
+    let name = reader
+        .u16()
+        .ok_or(reject(VerifyPhase::Table, "short root name"))?;
+    if name as usize >= tables.strings.len() {
+        return Err(reject(VerifyPhase::Table, "root name index out of range"));
+    }
+    // The key tuple: a count, then each column's scalar type and distinct
+    // ledger id. Zero columns is a singleton root; the closed orderable
+    // durable-key scalar set (frozen at C04) admits int, string, bool, bytes,
+    // date, and instant per column (`duration` is a span, not an identity).
+    let key_count = reader
+        .u16()
+        .ok_or(reject(VerifyPhase::Table, "short root key count"))? as usize;
+    if key_count > marrow_image::bounds::MAX_KEY_COLUMNS {
+        return Err(reject(VerifyPhase::Table, "too many root key columns"));
+    }
+    let keys = decode_key_tuple(reader, key_count, scope, MemberClaim::Declaration)?;
+    let record = reader
+        .u16()
+        .ok_or(reject(VerifyPhase::Table, "short root record"))?;
+    if record as usize >= tables.types.len() {
+        return Err(reject(
+            VerifyPhase::Table,
+            "root record type index out of range",
+        ));
+    }
+    // The root placement is an occurrence identity: every root occupies its own, so
+    // a repeated placement is a duplicate root occurrence — two rows that would
+    // address one durable node — rather than a generic identity collision.
+    let placement = read_id(reader, "short placement identity")?;
+    if !scope.placements.insert(placement) {
+        return Err(reject(
+            VerifyPhase::Table,
+            "duplicate durable root occurrence",
+        ));
+    }
+    claim_distinct(scope, placement)?;
+    // The Product is a declaration identity. Its first occurrence claims it together
+    // with its whole member/value graph; a later root carrying it is a reference that
+    // claims nothing and must match the accepted declaration exactly.
+    let product = read_id(reader, "short product identity")?;
+    // A Product is a declaration and a root is an occurrence of it. The first
+    // occurrence claims the declaration's ledger ids; a later one is a reference that
+    // reclaims nothing and must state the identical graph and entry record, which the
+    // declaration table itself decides — there is no second comparison here to drift
+    // from the one the graph performs.
+    let claim = if scope.products.insert(product) {
+        claim_distinct(scope, product)?;
+        MemberClaim::Declaration
+    } else {
+        MemberClaim::Reference
+    };
+    // The resource's durable member tree: top-level fields interleaved with
+    // static `group` namespaces and keyed `branch` placements. A field's stored
+    // value is drawn from the closed acyclic durable value set (a bare scalar, a
+    // dense struct, or a closed enum with sum/member ids).
+    let commands = decode_members(
+        reader,
+        MemberBudget::whole_declaration(),
+        scope,
+        graph,
+        claim,
+    )?;
+    let members = graph
+        .declare_product(plan, product, TypeId::from_index(record), commands)
+        .map_err(reject_graph_input)?;
+    // The member tree's top-level fields and groups are exactly the materialized
+    // record's stored field slots followed by its trailing group slots, in order and
+    // value shape: this ties the durable identity to the executable record so a
+    // hostile image cannot claim one identity while executing over a different field
+    // or group shape. A field slot's value-shape match recurses through the record and
+    // enum tables, so a widened field (a nominal, struct, or enum) is checked as
+    // thoroughly as a plain scalar; each group slot is a group record whose own fields
+    // tie to its `Group` member's direct fields one level down.
+    let record_fields = &tables.types[record as usize].fields;
+    let values = graph.value_shapes();
+    tie_root_record(record_fields, &members, tables.types, tables.enums, values)?;
+    // Every keyed `branch` nested in the tree ties its own materialized record to
+    // its direct field members the same way, one level down, so a hostile image
+    // cannot claim a branch identity while executing over a different record shape.
+    validate_branch_records(
+        members.iter(),
+        tables.types,
+        tables.enums,
+        tables.strings.len(),
+        values,
+    )?;
+    // The root's managed indexes follow its member tree. Each index's `Index`
+    // ledger id is a distinct id across the whole table; each projected component
+    // must reference a real top-level field or identity key of this same root, so a
+    // hostile image cannot forge a projection over a leaf that does not exist.
+    //
+    // The list becomes a shared owner here and is never copied again: the occurrence row
+    // the graph holds and the decoded root the sealing phase reads are two handles on this
+    // one allocation.
+    let indexes: Rc<[DurableIndexShape]> =
+        decode_indexes(reader, &keys, &members, scope, values)?.into();
+    graph
+        .add_root_occurrence(
+            plan,
+            product,
+            RootOccurrenceDef {
+                name: StrId::from_index(name),
+                keys: keys
+                    .iter()
+                    .map(|(scalar, id)| KeyColumn {
+                        scalar: *scalar,
+                        id: *id,
+                    })
+                    .collect(),
+                placement,
+                indexes: Rc::clone(&indexes),
+            },
+        )
+        .map_err(reject_graph_input)?;
+    Ok(DecodedRoot {
+        name,
+        keys,
+        record,
+        placement,
+        members,
+        indexes,
+    })
+}
 
+/// Decode the section's operation-site run, resolving each site against the graph's own
+/// node set and refusing a repeated resolved identity.
+fn decode_sites(
+    reader: &mut Reader<'_>,
+    nodes: &[SemanticNode],
+    roots: &[DecodedRoot],
+) -> Result<(Vec<SealedSite>, Vec<SemanticPath>), VerifyRejection> {
+    // Project the node set once into its keyed form: each node's executable coordinates,
+    // keyed by its path. A site then resolves in one lookup.
+    let projection = project_graph(nodes, roots);
     let site_count = reader
         .u16()
         .ok_or(reject(VerifyPhase::Table, "short site count"))? as usize;
@@ -326,18 +426,25 @@ pub(super) fn decode_durable(
     // wire ordinal the first duplicate is refused at — is exactly this one.
     let mut claimed: HashSet<SealedSite> = HashSet::with_capacity(site_count);
     for _ in 0..site_count {
-        let (site, path) = decode_site(&mut reader, &projection)?;
+        let (site, path) = decode_site(reader, &projection)?;
         if !claimed.insert(site.clone()) {
             return Err(reject(VerifyPhase::Table, "duplicate durable site"));
         }
         sites.push(site);
         site_paths.push(path);
     }
+    Ok((sites, site_paths))
+}
 
-    // The section closes with the 32-byte durable-contract id. Recompute it
-    // independently from the decoded graph — never trust the carried bytes — and
-    // reject a mismatch, so a hostile image that mutates a root or field shape
-    // without re-minting the contract is refused here.
+/// Close the section: read the carried 32-byte durable-contract id, refuse trailing bytes,
+/// and check the id against one independently recomputed from the decoded graph.
+///
+/// The carried bytes are never trusted, so a hostile image that mutates a root or field
+/// shape without re-minting the contract is refused here.
+fn close_contract(
+    reader: &mut Reader<'_>,
+    graph: &DurableContractGraph,
+) -> Result<DurableContractId, VerifyRejection> {
     let carried: [u8; 32] = reader
         .take(32)
         .ok_or(reject(VerifyPhase::Table, "short durable contract id"))?
@@ -365,11 +472,7 @@ pub(super) fn decode_durable(
             "durable contract id does not match the durable graph",
         ));
     }
-    // The graph is the one owner while this decode runs: its two derivations — the
-    // recomputed id and the node set — and the shared member-row owners each root holds
-    // are the only projections of it that leave. It is dropped here; no caller retains a
-    // second one.
-    Ok((roots, sites, site_paths, recomputed, nodes))
+    Ok(recomputed)
 }
 
 /// Decode one operation site — its semantic path then its target-kind byte — and
@@ -633,7 +736,7 @@ fn project_graph<'a>(nodes: &'a [SemanticNode], roots: &[DecodedRoot]) -> GraphP
     let mut index_positions: HashMap<LedgerIdBytes, (u16, bool)> = HashMap::new();
     let mut global: usize = 0;
     for root in roots {
-        for index in &root.indexes {
+        for index in root.indexes.iter() {
             index_positions.insert(index.id, (global as u16, index.unique));
             global += 1;
         }
@@ -1231,7 +1334,7 @@ fn validate_branch_records(
 /// later field of that enum references rather than reclaims.
 fn decode_members(
     reader: &mut Reader<'_>,
-    budget: &mut usize,
+    mut budget: MemberBudget,
     scope: &mut LedgerScope,
     graph: &mut DurableContractGraph,
     claim: MemberClaim,
@@ -1239,23 +1342,23 @@ fn decode_members(
     let top = reader
         .u16()
         .ok_or(reject(VerifyPhase::Table, "short durable member count"))? as usize;
-    let mut commands: Vec<DeclarationMemberDef> = Vec::with_capacity(top.min(*budget));
-    // One explicit stack of `(parent command, members still to read at that level)`. The
-    // wire order is unchanged — a nested run is read where the tree wrote it — but nothing
-    // recurses and nothing owns a child vector: each command names its parent by an
-    // earlier command's index, which is the only shape the graph's construction accepts.
-    let mut stack: Vec<(Option<u16>, usize)> = vec![(None, top)];
-    while let Some((parent, remaining)) = stack.last_mut() {
-        if *remaining == 0 {
+    let mut commands: Vec<DeclarationMemberDef> = Vec::with_capacity(top.min(budget.remaining()));
+    // One explicit stack of the runs still being read. The wire order is unchanged — a
+    // nested run is read where the tree wrote it — but nothing recurses and nothing owns a
+    // child vector: each command names its parent by an earlier command's index, which is
+    // the only shape the graph's construction accepts.
+    let mut stack: Vec<PendingRun> = vec![PendingRun {
+        parent: None,
+        remaining: top,
+    }];
+    while let Some(run) = stack.last_mut() {
+        if run.remaining == 0 {
             stack.pop();
             continue;
         }
-        *remaining -= 1;
-        let parent = *parent;
-        if *budget == 0 {
-            return Err(reject(VerifyPhase::Table, "too many durable members"));
-        }
-        *budget -= 1;
+        run.remaining -= 1;
+        let parent = run.parent;
+        budget.spend()?;
         let index = u16::try_from(commands.len())
             .map_err(|_| reject(VerifyPhase::Table, "too many durable members"))?;
         let tag = reader
@@ -1327,13 +1430,51 @@ fn decode_members(
     Ok(commands)
 }
 
+/// One member run still being read: the command that opened it, and how many of its
+/// members the wire has yet to state.
+struct PendingRun {
+    /// The command index of the `group` or `branch` whose members this run states, or
+    /// `None` for the declaration's own top-level run.
+    parent: Option<u16>,
+    remaining: usize,
+}
+
+/// The member rows one Product declaration may still admit.
+///
+/// A whole-declaration allowance that only descends, spelled as its own type so the count
+/// a decode spends cannot be confused with the several other counts in scope, and so
+/// spending it always answers with the same refusal.
+struct MemberBudget(usize);
+
+impl MemberBudget {
+    /// The allowance one Product's whole member tree is decoded under.
+    fn whole_declaration() -> Self {
+        Self(marrow_image::bounds::MAX_DURABLE_MEMBERS)
+    }
+
+    /// Spend one member row, refusing the declaration that would overrun the allowance.
+    fn spend(&mut self) -> Result<(), VerifyRejection> {
+        self.0 = self
+            .0
+            .checked_sub(1)
+            .ok_or(reject(VerifyPhase::Table, "too many durable members"))?;
+        Ok(())
+    }
+
+    /// The rows still admissible, for sizing the command vector a hostile count must not
+    /// be able to preallocate past.
+    fn remaining(&self) -> usize {
+        self.0
+    }
+}
+
 /// Enter the nested member run a `group` or `branch` command opened: check the nesting
 /// bound the level below would occupy, then read that level's count.
 ///
 /// The bound is checked before the count is read, exactly where the recursive decode
 /// checked it on entry, so an over-deep image is refused at the same byte.
 fn descend(
-    stack: &mut Vec<(Option<u16>, usize)>,
+    stack: &mut Vec<PendingRun>,
     reader: &mut Reader<'_>,
     parent: u16,
 ) -> Result<(), VerifyRejection> {
@@ -1343,7 +1484,10 @@ fn descend(
     let count = reader
         .u16()
         .ok_or(reject(VerifyPhase::Table, "short durable member count"))? as usize;
-    stack.push((Some(parent), count));
+    stack.push(PendingRun {
+        parent: Some(parent),
+        remaining: count,
+    });
     Ok(())
 }
 
