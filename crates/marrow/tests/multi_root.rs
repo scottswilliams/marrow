@@ -1151,24 +1151,29 @@ pub fn readA(id: int): int? {
 "#;
     for program in [source, reversed] {
         let image = verify(program, SHARED_FLAT_IDS);
-        let leaves: Vec<u16> = image
+        let leaves: Vec<(usize, u16)> = image
             .sites()
             .iter()
-            .filter_map(|site| match site {
+            .enumerate()
+            .filter_map(|(site_id, site)| match site {
                 SealedSite::Flat {
                     root,
                     target: SealedSiteTarget::FieldLeaf(0),
-                } => Some(*root),
+                } => Some((site_id, *root)),
                 _ => None,
             })
             .collect();
-        let mut roots = leaves.clone();
+        let mut roots: Vec<u16> = leaves.iter().map(|(_, root)| *root).collect();
         roots.sort_unstable();
         assert_eq!(
             roots,
             vec![0, 1],
             "one field-leaf site per occurrence, and exactly one however often it is \
              touched: {leaves:?}"
+        );
+        assert_ne!(
+            leaves[0].0, leaves[1].0,
+            "the two occurrences of one Product field hold distinct site ids: {leaves:?}",
         );
     }
 
@@ -1206,4 +1211,15 @@ pub fn readA(id: int): int? {
         })
         .count();
     assert_eq!(control_leaves, 1, "one occurrence, one field-leaf site");
+    // A single root over an unshared Product is outside the repeated-Product domain, so
+    // its whole image — site table included — is the exact bytes it was at the lane base
+    // `3bd8a909`, before a Product declaration had a table of its own and before every
+    // site was minted through one plan. The value below was recomputed from that base,
+    // not read off this tree. The two-root image above adds rows; it may not renumber
+    // this one.
+    assert_eq!(
+        control.image_id().to_hex(),
+        "731697f2fd78bfbf8f952a07f2458974a0fc493e166c31e163dde18a683e8f84",
+        "the fitting single-root image is byte-exact outside the repeated-Product domain",
+    );
 }

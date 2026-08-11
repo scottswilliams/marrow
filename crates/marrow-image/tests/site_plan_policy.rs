@@ -105,3 +105,90 @@ fn a_retained_demand_still_reuses_its_id_after_the_cap_is_crossed() {
         "a repeated reference to one demand returns the id it was already given",
     );
 }
+
+/// The keyed placement `n` names, for the eager/lazy same-key pair below.
+fn placement(n: u8) -> SemanticPath {
+    SemanticPath::root(
+        LedgerIdBytes::from_bytes(APPLICATION_ID),
+        LedgerIdBytes::from_bytes([n; 16]),
+    )
+}
+
+/// Red R18: an eagerly minted row followed by a demand-lazy request on the same
+/// `(node, target)` is **one** row, and the second request reuses the first row's id — in
+/// either order.
+///
+/// The eager per-node sites a durable graph emits when it is built and the field-leaf
+/// sites the lowerer allocates on first reference were two mint paths: the eager one
+/// appended a row the demand map never saw, so a later request on the same
+/// `(node, target)` appended a second row for one node, and the two rows were separate
+/// operands for one place. Both now enter the one plan, which answers a retained demand
+/// with the id it already minted.
+///
+/// The two paths are disjoint on every production graph — an eager demand's terminal step
+/// is a placement, group, or index node and its target is never `FieldLeaf` — so unifying
+/// them re-mints nothing and no image byte moves. This pins the behavior that makes that
+/// safe rather than the disjointness, which a future graph shape could narrow.
+#[test]
+fn one_demand_minted_eagerly_then_lazily_is_one_row_with_one_id() {
+    for (first, second) in [
+        (
+            SiteDef::whole_payload(placement(0x21)) as SiteDef,
+            SiteDef::whole_payload(placement(0x21)),
+        ),
+        (SiteDef::field_leaf(leaf(1)), SiteDef::field_leaf(leaf(1))),
+        (
+            SiteDef::group_entry(placement(0x22)),
+            SiteDef::group_entry(placement(0x22)),
+        ),
+        (
+            SiteDef::index_scan(placement(0x23)),
+            SiteDef::index_scan(placement(0x23)),
+        ),
+        (
+            SiteDef::index_lookup(placement(0x24)),
+            SiteDef::index_lookup(placement(0x24)),
+        ),
+    ] {
+        let mut draft = ImageDraft::new();
+        let eager = draft.request_site(first).expect("the first demand fits");
+        let lazy = draft
+            .request_site(second)
+            .expect("the repeated demand fits");
+
+        assert_eq!(
+            eager.index(),
+            lazy.index(),
+            "a repeated demand reuses the row already minted for it",
+        );
+        let next = draft
+            .request_site(SiteDef::field_leaf(leaf(0xbeef)))
+            .expect("a fresh demand fits");
+        assert_eq!(
+            next.index(),
+            1,
+            "the repeated demand appended no second row, so the next id is the second",
+        );
+    }
+}
+
+/// One node addressed by two different operation targets is two demands, not one: the
+/// target is part of the key, so a whole-payload site and a group-entry site over one
+/// node never collapse into a single row.
+#[test]
+fn one_node_under_two_targets_is_two_rows() {
+    let mut draft = ImageDraft::new();
+
+    let whole = draft
+        .request_site(SiteDef::whole_payload(placement(0x31)))
+        .expect("the whole-payload demand fits");
+    let group = draft
+        .request_site(SiteDef::group_entry(placement(0x31)))
+        .expect("the group-entry demand fits");
+
+    assert_ne!(
+        whole.index(),
+        group.index(),
+        "two operation targets over one node are two site rows",
+    );
+}
