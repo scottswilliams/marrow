@@ -2027,3 +2027,138 @@ fn a_match_on_a_refused_enum_is_not_a_set_of_unknown_members() {
         messages(&diagnostics),
     );
 }
+
+// ---------------------------------------------------------------------------
+// Member position — the residual subset-gap phrase
+//
+// `unresolved_member_row` is documented as the one place a member-position
+// resolution failure becomes a report, so a refused sibling can never be described
+// as an unsupported language form. A member whose declared type names a refused
+// sibling reached a subset-gap report beside it instead, and said the *form* was
+// not yet supported for a type the reader can see declared and already diagnosed.
+// ---------------------------------------------------------------------------
+
+/// a struct field whose type names a refused sibling. The phrase blamed the
+/// language for a struct this project declared and the compiler had refused four
+/// lines above.
+#[test]
+fn a_struct_field_naming_a_refused_sibling_steers_to_its_cause() {
+    let diagnostics = diagnostics(
+        "module main\n\n\
+         struct Bad {\n\
+         \x20   p: int?\n\
+         }\n\n\
+         struct Holder {\n\
+         \x20   b: Bad\n\
+         }\n\n\
+         pub fn make(): int {\n\
+         \x20   return 1\n\
+         }\n",
+    );
+
+    for row in &diagnostics {
+        assert!(
+            !row.message().contains("is not yet supported")
+                || row.message().contains("optional struct field"),
+            "`Bad` is declared and was refused at its own field; the member position \
+             must name that cause, not a language gap: {:#?}",
+            messages(&diagnostics),
+        );
+    }
+    assert_eq!(
+        rows(&diagnostics),
+        vec![
+            ("src/main.mw", "check.unsupported", 4, 8),
+            ("src/main.mw", "check.unsupported", 8, 8),
+        ],
+        "the sibling reports the cause and the field is steered to it: {:#?}",
+        messages(&diagnostics),
+    );
+}
+
+/// the collection-element shape of the same position. The element type is
+/// resolved inside a generic application, so it reaches the member row by a second
+/// route and must arrive at the same steer.
+#[test]
+fn a_collection_element_naming_a_refused_sibling_steers_to_its_cause() {
+    let diagnostics = diagnostics(
+        "module main\n\n\
+         struct Bad {\n\
+         \x20   p: int?\n\
+         }\n\n\
+         resource R {\n\
+         \x20   required xs: List<Bad>\n\
+         }\n\n\
+         pub fn make(): int {\n\
+         \x20   return 1\n\
+         }\n",
+    );
+
+    for row in &diagnostics {
+        assert!(
+            !row.message().contains("is not yet supported")
+                || row.message().contains("optional struct field"),
+            "the element type names a declared, refused struct; the member position \
+             must name that cause: {:#?}",
+            messages(&diagnostics),
+        );
+    }
+    assert_eq!(
+        rows(&diagnostics)
+            .iter()
+            .filter(|(_, _, line, _)| *line == 4)
+            .count(),
+        1,
+        "the refused struct still reports its own cause exactly once: {:#?}",
+        messages(&diagnostics),
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Payload enum construction — the last asymmetric member of the steer family
+//
+// `Enum::member` steers when the enum was refused; `Enum::member(payload…)` is
+// dispatched by a different arm, which consulted the accepted-only enum table,
+// found nothing, and fell through to the qualified-call report: `Color::blue` is
+// not in scope, of an enum declared six lines above.
+// ---------------------------------------------------------------------------
+
+/// a payload construction on a refused enum names the enum's cause, exactly as
+/// its bare-member sibling already did.
+#[test]
+fn a_payload_construction_on_a_refused_enum_steers_to_its_cause() {
+    let source = |construct: &str| {
+        format!(
+            "module main\n\n\
+             type Age: int in 0..=150\n\n\
+             enum Color {{\n\
+             \x20   red\n\
+             \x20   blue(a: Age)\n\
+             }}\n\n\
+             pub fn make(): int {{\n\
+             \x20   const c = {construct}\n\
+             \x20   return 2\n\
+             }}\n"
+        )
+    };
+
+    let payload = diagnostics(&source("Color::blue(a: 1)"));
+    assert_never_out_of_scope(&payload, "Color::blue");
+    assert_steers_to(
+        &payload,
+        DeclarationNamespace::NamedType,
+        "check.unsupported",
+        RefusalReport::AtDeclaration,
+    );
+
+    // The sibling this closes the asymmetry with: both spellings of a use of the
+    // same refused enum report the same rows.
+    let bare = diagnostics(&source("Color::red"));
+    assert_eq!(
+        rows(&payload),
+        rows(&bare),
+        "a payload construction and a bare member are two spellings of one refused \
+         enum's use; neither may report differently: {:#?}",
+        messages(&payload),
+    );
+}
