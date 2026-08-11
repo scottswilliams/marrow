@@ -571,6 +571,11 @@ fn push_members(
 pub struct DurableContractId(pub(crate) [u8; 32]);
 
 impl DurableContractId {
+    /// The width of the identity on the wire. The DURABLE section's lower bound counts
+    /// these bytes without computing them, so the width has one owner and the value has
+    /// another.
+    pub(crate) const BYTES: usize = 32;
+
     /// Reconstruct an id from its 32 raw bytes. The verifier decodes the id carried
     /// in an untrusted image with this, then compares it against the id it recomputes
     /// from the decoded graph; it never treats the carried bytes as authoritative.

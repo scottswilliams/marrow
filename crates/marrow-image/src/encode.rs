@@ -10,9 +10,9 @@ use crate::bounds;
 use crate::digest::{ImageId, image_id};
 use crate::draft::{CollectionTypeDef, ConstValue, ImageBuildError, ImageDraft, KeyColumn};
 use crate::durable_id::{
-    DurableBranchShape, DurableContractDescriptor, DurableFieldShape, DurableGroupShape,
-    DurableIndexComponent, DurableIndexShape, DurableKeyShape, DurableMemberShape,
-    DurableRootShape,
+    DurableBranchShape, DurableContractDescriptor, DurableContractId, DurableFieldShape,
+    DurableGroupShape, DurableIndexComponent, DurableIndexShape, DurableKeyShape,
+    DurableMemberShape, DurableRootShape,
 };
 use crate::instr::Instr;
 use crate::product::{
@@ -28,11 +28,6 @@ use crate::value_dag::{
 const MAGIC: &[u8; 4] = b"MWI\0";
 const VERSION: u8 = 0x00;
 const SECTION_COUNT: u8 = 10;
-
-/// The bytes a `DurableContractId` occupies at the end of the DURABLE section. The
-/// section's lower bound counts them without computing them: an identity's width is a
-/// format fact, its value is a hash over the whole graph.
-const CONTRACT_ID_BYTES: usize = 32;
 
 /// The length of a DURABLE section body, counted without building it.
 ///
@@ -53,7 +48,7 @@ impl DurableBodyLowerBound {
     /// Whether the body alone, contract identity included, is larger than any image may
     /// be.
     fn over_ceiling(&self) -> bool {
-        self.0.saturating_add(CONTRACT_ID_BYTES) > bounds::MAX_IMAGE_BYTES
+        self.0.saturating_add(DurableContractId::BYTES) > bounds::MAX_IMAGE_BYTES
     }
 }
 
