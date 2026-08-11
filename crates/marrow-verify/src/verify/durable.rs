@@ -18,7 +18,7 @@ use marrow_image::{
     LedgerIdBytes, Scalar, SemanticNode, SemanticNodeKind, SemanticPath, SemanticStep,
     SemanticStepKind, SemanticTarget,
 };
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::rc::Rc;
 
 /// Decode the DURABLE table (design §C 0x03): up to `MAX_ROOTS` roots — preceded,
@@ -208,6 +208,9 @@ pub(super) fn decode_durable(
     // verifier's own derivation of the graph rather than a compiler-side summary.
     let descriptor = durable_descriptor(application, &roots);
     let nodes = descriptor.semantic_nodes();
+    // Project that node set once into its keyed form: each node's executable
+    // coordinates, keyed by its path. A site then resolves in one lookup.
+    let graph = project_graph(&nodes, &roots);
 
     let site_count = reader
         .u16()
@@ -229,7 +232,7 @@ pub(super) fn decode_durable(
     // wire ordinal the first duplicate is refused at — is exactly this one.
     let mut claimed: HashSet<SealedSite> = HashSet::with_capacity(site_count);
     for _ in 0..site_count {
-        let (site, path) = decode_site(&mut reader, &nodes, &roots)?;
+        let (site, path) = decode_site(&mut reader, &graph)?;
         if !claimed.insert(site.clone()) {
             return Err(reject(VerifyPhase::Table, "duplicate durable site"));
         }
@@ -270,8 +273,7 @@ pub(super) fn decode_durable(
 /// forged path, a flipped target byte, or a mutated ledger id is refused.
 fn decode_site(
     reader: &mut Reader<'_>,
-    nodes: &[SemanticNode],
-    roots: &[DecodedRoot],
+    graph: &GraphProjection<'_>,
 ) -> Result<(SealedSite, SemanticPath), VerifyRejection> {
     let step_count = reader
         .u8()
@@ -312,7 +314,7 @@ fn decode_site(
         0x04 => SemanticTarget::GroupEntry,
         _ => return Err(reject(VerifyPhase::Table, "unknown site target tag")),
     };
-    let site = resolve_site(&path, target, nodes, roots)?;
+    let site = resolve_site(&path, target, graph)?;
     // The site's node path is the chain it resolved against — retained parallel to
     // the sealed site so demand reconstruction can name the node a flat site
     // addresses without re-deriving it from the executable form.
@@ -332,17 +334,12 @@ fn decode_site(
 fn resolve_site(
     path: &SemanticPath,
     target: SemanticTarget,
-    nodes: &[SemanticNode],
-    roots: &[DecodedRoot],
+    graph: &GraphProjection<'_>,
 ) -> Result<SealedSite, VerifyRejection> {
-    let steps = path.steps();
-    let node = nodes
-        .iter()
-        .find(|node| node.path.steps() == steps)
-        .ok_or(reject(
-            VerifyPhase::Table,
-            "durable site path does not resolve to a graph node",
-        ))?;
+    let node = graph.nodes.get(path.steps()).ok_or(reject(
+        VerifyPhase::Table,
+        "durable site path does not resolve to a graph node",
+    ))?;
     // The target kind must agree with the resolved node's kind: a whole-payload
     // target names a keyed placement, a field-leaf target names a stored field, and an
     // index scan/lookup target names a managed index node.
@@ -365,33 +362,11 @@ fn resolve_site(
     // complete-key `IndexLookup`. This is where a site that claims to *traverse* a
     // unique index — or to exact-lookup a nonunique one — is refused, so source can
     // never observe siblings through a unique index.
-    if matches!(
-        target,
-        SemanticTarget::IndexScan | SemanticTarget::IndexLookup
-    ) {
-        let placement = steps[1].id;
-        let root_pos = roots
-            .iter()
-            .position(|root| root.placement == placement)
-            .ok_or(reject(
-                VerifyPhase::Table,
-                "durable index site path is not rooted at a durable root",
-            ))?;
-        let root = &roots[root_pos];
-        let index_id = steps.last().expect("an index path has an index step").id;
-        let local = root
-            .indexes
-            .iter()
-            .position(|index| index.id == index_id)
-            .ok_or(reject(
-                VerifyPhase::Table,
-                "durable index site names no managed index of its root",
-            ))?;
-        let index = &root.indexes[local];
+    if let NodeCoordinates::Index { global, unique } = node.coordinates {
         let agrees = match target {
-            SemanticTarget::IndexScan => !index.unique,
-            SemanticTarget::IndexLookup => index.unique,
-            _ => unreachable!("guarded to index targets"),
+            SemanticTarget::IndexScan => !unique,
+            SemanticTarget::IndexLookup => unique,
+            _ => unreachable!("only an index node admits an index read target"),
         };
         if !agrees {
             return Err(reject(
@@ -399,124 +374,213 @@ fn resolve_site(
                 "durable index site read kind disagrees with the index's unique flag",
             ));
         }
-        // The index's position in the image-wide index table, assembled by iterating the
-        // roots in order and each root's indexes in order (the same order used when the
-        // sealed index list is built), so this position indexes that list directly.
-        let global: usize = roots[..root_pos]
-            .iter()
-            .map(|root| root.indexes.len())
-            .sum::<usize>()
-            + local;
-        let global = global as u16;
         let sealed_target = match target {
             SemanticTarget::IndexScan => SealedSiteTarget::IndexScan(global),
             SemanticTarget::IndexLookup => SealedSiteTarget::IndexLookup(global),
-            _ => unreachable!("guarded to index targets"),
+            _ => unreachable!("only an index node admits an index read target"),
         };
         return Ok(SealedSite::Flat {
-            root: root_pos as u16,
+            root: node.root,
             target: sealed_target,
         });
     }
-    // Every node carries its enclosing root's placement as its second step, so the
-    // root index is that placement's position. A flat-executable keyed root — keyed, with
-    // every member a field or a simple keyed branch (no group at any level) — is
-    // kernel-executable: a whole-payload or keyed-branch-entry site, or a field-leaf site
-    // (scalar or widened value), at any branch depth. A site on a non-flat root — a
-    // singleton, or a group at any level — seals as parked (identity complete, execution
-    // deferred).
-    let placement = steps[1].id;
-    let root_index = roots
-        .iter()
-        .position(|root| root.placement == placement)
-        .ok_or(reject(
-            VerifyPhase::Table,
-            "durable site path is not rooted at a durable root",
-        ))? as u16;
-    let root = &roots[root_index as usize];
+    // A flat-executable keyed root — keyed, with every member a field or a simple keyed
+    // branch (no group at any level) — is kernel-executable: a whole-payload or
+    // keyed-branch-entry site, or a field-leaf site (scalar or widened value), at any
+    // branch depth. A site on a non-flat root — a singleton, or a group at any level —
+    // seals as parked (identity complete, execution deferred), as does any node the flat
+    // kernel cannot address: a node reached through a `group` namespace, or a group
+    // nested below the root's own members.
     let parked = || SealedSite::Parked {
         path: path.clone(),
         target,
     };
-    if !is_flat_executable_root(root) {
+    if !graph.flat_roots[node.root as usize] {
         return Ok(parked());
     }
-    // The root is flat-executable, so every intermediate placement step below the root is
-    // a keyed-branch placement (no groups on the flat path). `steps[2..]` are the branch
-    // placements from the root down; a field target's last step is the field id.
-    let below_root = &steps[marrow_image::bounds::MIN_SITE_PATH_STEPS..];
-    let sealed = match target {
-        SemanticTarget::WholePayload => match node.kind {
-            // The root's own whole entry: exactly the two root steps.
-            SemanticNodeKind::Root => {
-                if !below_root.is_empty() {
-                    return Ok(parked());
-                }
-                SealedSite::Flat {
-                    root: root_index,
-                    target: SealedSiteTarget::WholePayload,
-                }
-            }
-            // A keyed branch entry at any depth: every step below the root is a branch
-            // placement. Walk the placement chain through the recursive member tree into a
-            // per-level branch path; a step that names no branch at its level parks.
-            SemanticNodeKind::Branch => match walk_branch_path(&root.members, below_root) {
-                Some((path, _)) => SealedSite::Flat {
-                    root: root_index,
-                    target: SealedSiteTarget::BranchEntry(path.into()),
-                },
-                None => parked(),
-            },
-            _ => unreachable!("a whole-payload target resolved to a root or branch node"),
+    let sealed = match &node.coordinates {
+        NodeCoordinates::Root => SealedSite::Flat {
+            root: node.root,
+            target: SealedSiteTarget::WholePayload,
         },
-        SemanticTarget::FieldLeaf => {
-            // The last step is the field id; the steps before it are the branch placements
-            // from the root down to the field's containing node (empty for a top-level
-            // field). Walk the branch chain, then resolve the field within the reached
-            // node's own members.
-            let Some((&field_step, branch_steps)) = below_root.split_last() else {
-                return Ok(parked());
-            };
-            match walk_branch_path(&root.members, branch_steps) {
-                Some((path, node_members)) => {
-                    match top_level_field_index(node_members, field_step.id) {
-                        Some(field) if path.is_empty() => SealedSite::Flat {
-                            root: root_index,
-                            target: SealedSiteTarget::FieldLeaf(field),
-                        },
-                        Some(field) => SealedSite::Flat {
-                            root: root_index,
-                            target: SealedSiteTarget::BranchField {
-                                branch: path.into(),
-                                field,
-                            },
-                        },
-                        None => parked(),
-                    }
-                }
-                None => parked(),
-            }
-        }
-        // A root-level unkeyed group is addressed by exactly one group step below the
-        // root; the flat kernel serves only root-level groups, so a group nested in a
-        // branch or another group (more or fewer steps, or a non-root-level group id)
-        // parks.
-        SemanticTarget::GroupEntry => match below_root {
-            [group_step] => match root_group_index(&root.members, group_step.id) {
-                Some(group) => SealedSite::Flat {
-                    root: root_index,
-                    target: SealedSiteTarget::GroupEntry(group),
-                },
-                None => parked(),
-            },
-            _ => parked(),
+        NodeCoordinates::Branch(branch) => SealedSite::Flat {
+            root: node.root,
+            target: SealedSiteTarget::BranchEntry(branch.clone()),
         },
-        // Index scan/lookup targets returned parked above, before the flat/field logic.
-        SemanticTarget::IndexScan | SemanticTarget::IndexLookup => {
-            unreachable!("index read targets are sealed and returned before this point")
+        NodeCoordinates::Field { branch, field } if branch.is_empty() => SealedSite::Flat {
+            root: node.root,
+            target: SealedSiteTarget::FieldLeaf(*field),
+        },
+        NodeCoordinates::Field { branch, field } => SealedSite::Flat {
+            root: node.root,
+            target: SealedSiteTarget::BranchField {
+                branch: branch.clone(),
+                field: *field,
+            },
+        },
+        NodeCoordinates::Group(group) => SealedSite::Flat {
+            root: node.root,
+            target: SealedSiteTarget::GroupEntry(*group),
+        },
+        NodeCoordinates::Unaddressable => parked(),
+        NodeCoordinates::Index { .. } => {
+            unreachable!("an index node sealed and returned before this point")
         }
     };
     Ok(sealed)
+}
+
+/// The keyed projection of one durable table's reconstructed graph: every node's kind,
+/// enclosing root occurrence, and executable coordinates, keyed by the node's path.
+///
+/// It is derived in one pass from the same [`SemanticNode`] set the contract id is
+/// computed over — this verifier's own reconstruction — so it introduces no second graph,
+/// path, or identity owner. Resolving a site is then one keyed lookup: previously each
+/// site scanned the whole node set for its path and then re-walked the root's member tree
+/// to recover its branch/field/group ordinals, so the cost of sealing a table grew with
+/// the product of its site count and its graph size.
+struct GraphProjection<'a> {
+    nodes: HashMap<&'a [SemanticStep], ProjectedNode>,
+    /// Whether the root occurrence at each DURABLE-table position is the flat keyed root
+    /// the kernel executes, by table position.
+    flat_roots: Vec<bool>,
+}
+
+/// One reconstructed graph node's resolved facts.
+struct ProjectedNode {
+    kind: SemanticNodeKind,
+    /// The DURABLE-table position of the root occurrence this node hangs under. Every
+    /// node's path carries that root's placement as its second step.
+    root: u16,
+    coordinates: NodeCoordinates,
+}
+
+/// A graph node's executable coordinates under its root occurrence — the positions the
+/// path kernel addresses it by, re-derived from the graph rather than trusted from the
+/// image.
+enum NodeCoordinates {
+    /// The root occurrence's own entry.
+    Root,
+    /// A keyed branch, by its per-level branch index from the root down.
+    Branch(Box<[u16]>),
+    /// A stored field, by its containing node's branch path and its index among that
+    /// node's direct fields.
+    Field { branch: Box<[u16]>, field: u16 },
+    /// A root-level unkeyed group, by its index among the root's direct groups.
+    Group(u16),
+    /// A managed index, by its position in the image-wide index table and its `unique`
+    /// flag.
+    Index { global: u16, unique: bool },
+    /// A node the flat kernel cannot address whatever its root: one reached through a
+    /// `group` namespace, or a group below the root's own members. It parks.
+    Unaddressable,
+}
+
+/// The per-parent ordinals a node takes among its same-kind siblings, in declaration
+/// order. A field's ordinal is its index into its container's materialized record (their
+/// orders are tied during decode), a branch's is its index into the sealed branch list at
+/// its level, and a group's is its index into its root's sealed group list.
+#[derive(Default)]
+struct SiblingOrdinals {
+    fields: u16,
+    groups: u16,
+    branches: u16,
+}
+
+/// Project a reconstructed node set into its keyed form.
+///
+/// The node set is in pre-order — a node precedes its descendants — so each node's
+/// coordinates are its parent's extended by its own ordinal among its same-kind siblings,
+/// and both are already known when it is reached. Nothing is re-derived per site.
+fn project_graph<'a>(nodes: &'a [SemanticNode], roots: &[DecodedRoot]) -> GraphProjection<'a> {
+    let mut root_positions: HashMap<LedgerIdBytes, u16> = HashMap::with_capacity(roots.len());
+    for (position, root) in roots.iter().enumerate() {
+        root_positions.insert(root.placement, position as u16);
+    }
+    // Each managed index by its ledger id: its position in the image-wide index table,
+    // assembled by iterating the roots in order and each root's indexes in order — the
+    // same order the sealed index list is built in, so the position indexes that list
+    // directly — and its `unique` flag.
+    let mut index_positions: HashMap<LedgerIdBytes, (u16, bool)> = HashMap::new();
+    let mut global: usize = 0;
+    for root in roots {
+        for index in &root.indexes {
+            index_positions.insert(index.id, (global as u16, index.unique));
+            global += 1;
+        }
+    }
+
+    let mut ordinals: HashMap<&'a [SemanticStep], SiblingOrdinals> = HashMap::new();
+    let mut projected: HashMap<&'a [SemanticStep], ProjectedNode> =
+        HashMap::with_capacity(nodes.len());
+    for node in nodes {
+        let steps = node.path.steps();
+        let (_, parent) = steps
+            .split_last()
+            .expect("a semantic path carries at least one step");
+        // Every node hangs under a root occurrence whose placement is its second step:
+        // a root's own path is `[application, placement]` and every descendant extends it.
+        let root = *root_positions
+            .get(&steps[marrow_image::bounds::MIN_SITE_PATH_STEPS - 1].id)
+            .expect("a reconstructed node hangs under a decoded root");
+        let sibling = ordinals.entry(parent).or_default();
+        let coordinates = match node.kind {
+            SemanticNodeKind::Root => NodeCoordinates::Root,
+            SemanticNodeKind::Field => {
+                let field = sibling.fields;
+                sibling.fields += 1;
+                match projected.get(parent).map(|node| &node.coordinates) {
+                    Some(NodeCoordinates::Root) => NodeCoordinates::Field {
+                        branch: Box::default(),
+                        field,
+                    },
+                    Some(NodeCoordinates::Branch(branch)) => NodeCoordinates::Field {
+                        branch: branch.clone(),
+                        field,
+                    },
+                    _ => NodeCoordinates::Unaddressable,
+                }
+            }
+            SemanticNodeKind::Group => {
+                let group = sibling.groups;
+                sibling.groups += 1;
+                match projected.get(parent).map(|node| &node.coordinates) {
+                    Some(NodeCoordinates::Root) => NodeCoordinates::Group(group),
+                    _ => NodeCoordinates::Unaddressable,
+                }
+            }
+            SemanticNodeKind::Branch => {
+                let branch = sibling.branches;
+                sibling.branches += 1;
+                match projected.get(parent).map(|node| &node.coordinates) {
+                    Some(NodeCoordinates::Root) => NodeCoordinates::Branch(Box::new([branch])),
+                    Some(NodeCoordinates::Branch(above)) => {
+                        let mut path = above.to_vec();
+                        path.push(branch);
+                        NodeCoordinates::Branch(path.into())
+                    }
+                    _ => NodeCoordinates::Unaddressable,
+                }
+            }
+            SemanticNodeKind::Index => match index_positions.get(&node.path.node_id()) {
+                Some(&(global, unique)) => NodeCoordinates::Index { global, unique },
+                None => NodeCoordinates::Unaddressable,
+            },
+        };
+        projected.insert(
+            steps,
+            ProjectedNode {
+                kind: node.kind,
+                root,
+                coordinates,
+            },
+        );
+    }
+
+    GraphProjection {
+        nodes: projected,
+        flat_roots: roots.iter().map(is_flat_executable_root).collect(),
+    }
 }
 
 /// Whether a decoded root is the flat keyed root the kernel executes: at least one key
@@ -543,17 +607,6 @@ pub(super) fn member_flat_at_root(member: &DecodedMember) -> bool {
             .all(|m| matches!(m, DecodedMember::Field { .. })),
         DecodedMember::Branch { .. } => member.is_simple_branch(),
     }
-}
-
-/// The index of the root-level unkeyed group with ledger id `id` among a member tree's
-/// direct `Group` members, in declaration order. `None` when no direct group carries the
-/// id — a nested or in-branch group is not a root-level group node.
-fn root_group_index(members: &[DecodedMember], id: LedgerIdBytes) -> Option<u16> {
-    members
-        .iter()
-        .filter(|member| matches!(member, DecodedMember::Group { .. }))
-        .position(|member| matches!(member, DecodedMember::Group { id: gid, .. } if *gid == id))
-        .map(|position| position as u16)
 }
 
 /// Seal a member tree's keyed branches into the recursive [`SealedBranch`] tree, in
@@ -615,22 +668,6 @@ pub(super) fn seal_groups(root: &DecodedRoot, types: &[SealedRecordType]) -> Vec
         .collect()
 }
 
-/// The index of the top-level field with ledger id `field_id` among a root's member
-/// tree, counting only its direct field members in declaration order. This is the
-/// field's index into the root's materialized record (their orders are tied during
-/// root decode), so a resolved field-leaf site addresses the same field the record
-/// types.
-fn top_level_field_index(members: &[DecodedMember], field_id: LedgerIdBytes) -> Option<u16> {
-    members
-        .iter()
-        .filter_map(|member| match member {
-            DecodedMember::Field { id, .. } => Some(*id),
-            _ => None,
-        })
-        .position(|id| id == field_id)
-        .map(|index| index as u16)
-}
-
 /// Seal every managed index of the root occurrence at DURABLE-table index
 /// `root_index`, resolving each ledger-id projection to the record/key positions the
 /// path kernel maintains.
@@ -651,6 +688,26 @@ pub(super) fn seal_root_indexes(
     root_index: u16,
     root: &DecodedRoot,
 ) -> Result<Vec<SealedIndex>, VerifyRejection> {
+    // The occurrence's two leaf position tables, built once for the whole set rather than
+    // rescanned per component: a top-level field's index into the materialized record
+    // (their orders are tied during root decode), and a key column's position in this
+    // occurrence's own key tuple.
+    let mut fields: HashMap<LedgerIdBytes, u16> = HashMap::new();
+    for (position, member) in root
+        .members
+        .iter()
+        .filter(|member| matches!(member, DecodedMember::Field { .. }))
+        .enumerate()
+    {
+        let DecodedMember::Field { id, .. } = member else {
+            unreachable!("filtered to field members");
+        };
+        fields.entry(*id).or_insert(position as u16);
+    }
+    let mut columns: HashMap<LedgerIdBytes, u16> = HashMap::with_capacity(root.keys.len());
+    for (column, (_, id)) in root.keys.iter().enumerate() {
+        columns.entry(*id).or_insert(column as u16);
+    }
     root.indexes
         .iter()
         .map(|index| {
@@ -658,17 +715,18 @@ pub(super) fn seal_root_indexes(
                 .components
                 .iter()
                 .map(|component| match component {
-                    DurableIndexComponent::Field(id) => top_level_field_index(&root.members, *id)
+                    DurableIndexComponent::Field(id) => fields
+                        .get(id)
+                        .copied()
                         .map(SealedIndexComponent::Field)
                         .ok_or(reject(
                             VerifyPhase::Table,
                             "durable index field component resolves to no record position",
                         )),
-                    DurableIndexComponent::Key(id) => root
-                        .keys
-                        .iter()
-                        .position(|(_, key_id)| key_id == id)
-                        .map(|column| SealedIndexComponent::Key(column as u16))
+                    DurableIndexComponent::Key(id) => columns
+                        .get(id)
+                        .copied()
+                        .map(SealedIndexComponent::Key)
                         .ok_or(reject(
                             VerifyPhase::Table,
                             "durable index key component resolves to no key column",
@@ -684,47 +742,6 @@ pub(super) fn seal_root_indexes(
             })
         })
         .collect()
-}
-
-/// Walk a chain of branch placement steps through a member tree, accumulating the
-/// per-level branch index at each hop and descending into that branch's own members. The
-/// returned path indexes the recursive sealed branch tree level by level, and the returned
-/// member slice is the deepest reached node's own members (the whole tree when the chain is
-/// empty), against which a field leaf resolves. `None` when a step names no branch at its
-/// level — a group-scoped or otherwise non-branch step parks rather than mis-resolving.
-/// Only branch steps appear here on the flat-executable path (no groups), so a resolved
-/// walk is a pure branch chain.
-fn walk_branch_path<'a>(
-    mut members: &'a [DecodedMember],
-    steps: &[SemanticStep],
-) -> Option<(Vec<u16>, &'a [DecodedMember])> {
-    let mut path = Vec::with_capacity(steps.len());
-    for step in steps {
-        let index = branch_index(members, step.id)?;
-        path.push(index);
-        members = members.iter().find_map(|member| match member {
-            DecodedMember::Branch {
-                placement, members, ..
-            } if *placement == step.id => Some(members.as_slice()),
-            _ => None,
-        })?;
-    }
-    Some((path, members))
-}
-
-/// The index of the keyed `branch` with placement id `placement` among a root's
-/// declaration-ordered branch members. This is the index into the root's sealed
-/// branch list (both count only the direct branch members, in order), so a resolved
-/// branch-entry site addresses the same branch the schema derives.
-fn branch_index(members: &[DecodedMember], placement_id: LedgerIdBytes) -> Option<u16> {
-    members
-        .iter()
-        .filter_map(|member| match member {
-            DecodedMember::Branch { placement, .. } => Some(*placement),
-            _ => None,
-        })
-        .position(|id| id == placement_id)
-        .map(|index| index as u16)
 }
 
 /// The ledger-id accounting for one durable table. `seen` holds every *declaration*
