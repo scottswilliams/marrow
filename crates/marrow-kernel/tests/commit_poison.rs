@@ -103,30 +103,26 @@ fn vm_commit_image(write: VmWrite) -> VerifiedImage {
             },
         )
         .expect("the Product is declared");
-    let members = draft
-        .product_members(&admitted_plan(), product)
-        .expect("declared");
+    let members = draft.product_members(product).expect("declared");
     let entry_handle = draft
         .bind_occurrence_site(
-            &admitted_plan(),
             counters.occurrence(),
             counters.placement_path(),
             SemanticTarget::WholePayload,
         )
         .expect("the root placement is a canonical path of this occurrence");
     let entry_site = draft
-        .request_site(&admitted_plan(), &entry_handle)
+        .request_site(&entry_handle)
         .expect("the binding is live");
     let field_handle = draft
         .bind_occurrence_site(
-            &admitted_plan(),
             counters.occurrence(),
             members[0].path(),
             SemanticTarget::FieldLeaf,
         )
         .expect("the value field is a canonical path of this occurrence");
     let field_site = draft
-        .request_site(&admitted_plan(), &field_handle)
+        .request_site(&field_handle)
         .expect("the binding is live");
     let key = draft.intern_text("vm");
     let value = draft.intern_int(7);

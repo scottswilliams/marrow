@@ -910,11 +910,9 @@ mod index_site_partition {
         target: SemanticTarget,
     ) -> LegacyDraftSiteOperand {
         let handle = draft
-            .bind_occurrence_site(&admitted_plan(), root, path, target)
+            .bind_occurrence_site(root, path, target)
             .expect("the path is a canonical path of this occurrence");
-        draft
-            .request_site(&admitted_plan(), &handle)
-            .expect("the binding is live")
+        draft.request_site(&handle).expect("the binding is live")
     }
 
     /// A minimal single-root durable schema with a whole-entry site and a field-leaf
@@ -987,7 +985,7 @@ mod index_site_partition {
             )
             .expect("the Product is declared");
         let members = draft
-            .product_members(&admitted_plan(), LedgerIdBytes::from_bytes(PRODUCT_ID))
+            .product_members(LedgerIdBytes::from_bytes(PRODUCT_ID))
             .expect("declared");
         site(
             &mut draft,

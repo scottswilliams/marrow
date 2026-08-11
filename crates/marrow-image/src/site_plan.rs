@@ -26,7 +26,8 @@
 use std::collections::HashMap;
 
 use crate::bounds::MAX_SITES;
-use crate::draft::{DraftIdentity, ImageBuildError, RowStamp, SiteId};
+use crate::draft::{DraftIdentity, ImageBuildError, SiteId};
+use crate::product::RowStamp;
 use crate::product::{BindRefusal, BoundDemand, OccurrenceSiteDemandKey};
 
 /// A validated site demand, ready to be requested from the plan that validated it.

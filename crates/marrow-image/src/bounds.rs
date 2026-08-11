@@ -430,9 +430,8 @@ const _: () = {
 // at the place the equation is asserted.
 //
 // No ceiling is asserted here. This crate takes intake from whoever holds a plan, so the
-// figure at [`crate::AdmittedGraphInputPlan::MAXIMUM`] is what an arbitrary caller may hand
-// over, not a peak any admission owner reaches. The peaks are the owners' own, and each
-// asserts its own.
+// admitted-intake ceilings above are what an arbitrary caller may hand over, not a peak any
+// admission owner reaches. The peaks are the owners' own, and each asserts its own.
 
 /// A growing `Vec` is live at three times its admitted length: the amortized capacity
 /// slack, plus the buffer it still holds while it copies into its successor. Charged on

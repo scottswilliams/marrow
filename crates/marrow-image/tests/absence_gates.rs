@@ -641,7 +641,7 @@ fn spells_a_plan_literal(code: &str) -> bool {
 /// The plan's minting entry points, as the minter gates scan for them. A file is a minter
 /// only if it names the plan type as well, so this needle is read in that company rather
 /// than alone.
-const PLAN_MINTING_ENTRY_POINTS: [&str; 1] = ["admit"];
+const PLAN_MINTING_ENTRY_POINTS: [&str; 2] = ["admit", "admit_saturating"];
 
 /// The production files that mint a durable-graph construction budget.
 ///
@@ -1081,8 +1081,9 @@ fn the_draft_is_not_clone() {
         "the draft's derive list names `Clone`: {derives}",
     );
     assert!(
-        declaration.contains("identity: DraftIdentity"),
-        "the identity a copy would duplicate is present, so this gate has a live subject",
+        declaration.contains("durable: DurableContractGraph"),
+        "the durable owner a copy would duplicate — the draft's identity and stamp cursor \
+         live in it — is present, so this gate has a live subject",
     );
 }
 
@@ -1446,6 +1447,53 @@ fn the_contract_identity_has_one_mint_per_side_and_a_bound_of_its_own() {
     );
 }
 
+/// Whether `code` takes a mutable value-shape arena from an owner it was handed.
+///
+/// The accessor that republishes the arena its own owner already holds mints nothing — it
+/// is the call every minter makes — so its body is removed before the scan. Otherwise the
+/// owner that publishes the arena would count as a minter of it, and the gate below would
+/// name the draft, which opens the template proof the gate is about.
+fn mints_value_shapes(code: &str) -> bool {
+    without_arena_accessor(code).contains("value_shapes_mut()")
+}
+
+/// `code` with the body of every `fn value_shapes_mut` blanked, line breaks preserved.
+fn without_arena_accessor(code: &str) -> String {
+    let mut code = code.to_string();
+    const MARKER: &str = "fn value_shapes_mut";
+    let mut from = 0usize;
+    while let Some(start) = code[from..].find(MARKER).map(|at| at + from) {
+        let bytes = code.as_bytes();
+        let mut cursor = start;
+        while cursor < bytes.len() && bytes[cursor] != b'{' {
+            cursor += 1;
+        }
+        let mut depth = 0usize;
+        let mut scan = cursor;
+        while scan < bytes.len() {
+            match bytes[scan] {
+                b'{' => depth += 1,
+                b'}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        scan += 1;
+                        break;
+                    }
+                }
+                _ => {}
+            }
+            scan += 1;
+        }
+        let blanked: String = code[start..scan]
+            .chars()
+            .map(|c| if c == '\n' { '\n' } else { ' ' })
+            .collect();
+        code.replace_range(start..scan, &blanked);
+        from = scan;
+    }
+    code
+}
+
 /// No value shape is minted inside a template proof.
 ///
 /// A `ValueShapeNodeId` is an ordinal into one arena and authenticates nothing: it carries
@@ -1463,7 +1511,7 @@ fn no_value_shape_is_minted_inside_a_template_proof() {
     let sources = workspace_sources("src");
     let minting: Vec<String> = sources
         .iter()
-        .filter(|(_, code)| without_cfg_test_items(code).contains("value_shapes_mut()"))
+        .filter(|(_, code)| mints_value_shapes(&without_cfg_test_items(code)))
         .map(|(path, _)| path.display().to_string())
         .collect();
     for permitted in VALUE_SHAPE_MINT_OWNERS {
@@ -1674,20 +1722,19 @@ fn no_second_value_shape_arena_or_index_shadow_survives() {
             }
         }
     }
-    // One mint per side, and no third. The compiler's draft owns the arena its declarations
-    // intern into; the graph the verifier reconstructs owns the arena its decoded rows
-    // reference. Those are the two independent reconstructions the contract identity is
-    // recomputed across — not two arenas in one program — and any further mint would be a
-    // shadow of one of them.
-    let sides: Vec<&String> = mints
+    // One mint, in the one durable-graph owner. The compiler's draft and the graph the
+    // verifier reconstructs are the same owner, so the arena a declaration interns into and
+    // the arena a decoded row references are minted by one line of code. Any further mint
+    // would be a shadow of it.
+    let owned: Vec<&String> = mints
         .iter()
-        .filter(|mint| mint.contains("/draft.rs:") || mint.contains("/product.rs:"))
+        .filter(|mint| mint.contains("/product.rs:"))
         .collect();
     assert_eq!(
-        (mints.len(), sides.len()),
-        (2, 2),
-        "the value-shape arena is minted once by the draft and once by the graph the \
-         verifier reconstructs, and nowhere else: {mints:#?}"
+        (mints.len(), owned.len()),
+        (1, 1),
+        "the value-shape arena is minted once, by the durable graph both sides build \
+         through, and nowhere else: {mints:#?}"
     );
 }
 

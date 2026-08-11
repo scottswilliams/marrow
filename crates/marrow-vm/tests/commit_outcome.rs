@@ -87,15 +87,12 @@ fn commit_image(post_commit_fault: PostCommitFault, mutating: bool) -> VerifiedI
         .expect("the Product is declared");
     let handle = draft
         .bind_occurrence_site(
-            &admitted_plan(),
             counters.occurrence(),
             counters.placement_path(),
             SemanticTarget::WholePayload,
         )
         .expect("the root placement is a canonical path of this occurrence");
-    let site = draft
-        .request_site(&admitted_plan(), &handle)
-        .expect("the binding is live");
+    let site = draft.request_site(&handle).expect("the binding is live");
     let key = draft.intern_int(1);
     let value = draft.intern_int(7);
     let one = draft.intern_int(1);

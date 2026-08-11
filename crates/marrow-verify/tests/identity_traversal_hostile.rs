@@ -197,11 +197,10 @@ fn two_root_branch_draft(
     // Root A's direct members in declaration order: the title field, the sparse subtitle
     // field, then the `notes` branch.
     let members = draft
-        .product_members(&admitted_plan(), LedgerIdBytes::from_bytes(A_PRODUCT))
+        .product_members(LedgerIdBytes::from_bytes(A_PRODUCT))
         .expect("root A's Product is declared");
     let branch_site = site(
         draft,
-        &admitted_plan(),
         a.occurrence(),
         members[2].path(),
         SemanticTarget::WholePayload,
@@ -213,7 +212,6 @@ fn two_root_branch_draft(
         .index();
     let subtitle_site = site(
         draft,
-        &admitted_plan(),
         a.occurrence(),
         members[1].path(),
         SemanticTarget::FieldLeaf,

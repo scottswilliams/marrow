@@ -140,14 +140,12 @@ fn build_two_roots(
 
     let a_site = site(
         draft,
-        &admitted_plan(),
         a.occurrence(),
         a.placement_path(),
         SemanticTarget::WholePayload,
     );
     let b_site = site(
         draft,
-        &admitted_plan(),
         b.occurrence(),
         b.placement_path(),
         SemanticTarget::WholePayload,
@@ -307,7 +305,6 @@ fn build_shared_product(draft: &mut ImageDraft) -> TypeId {
             .expect("the Product is declared");
         site(
             draft,
-            &admitted_plan(),
             root.occurrence(),
             root.placement_path(),
             SemanticTarget::WholePayload,

@@ -140,19 +140,15 @@ fn traversal_image() -> VerifiedImage {
         )
         .expect("the Product is declared");
 
-    let members = draft
-        .product_members(&admitted_plan(), product)
-        .expect("declared");
+    let members = draft.product_members(product).expect("declared");
     let root_entry = site(
         &mut draft,
-        &admitted_plan(),
         books.occurrence(),
         books.placement_path(),
         SemanticTarget::WholePayload,
     );
     let branch_entry = site(
         &mut draft,
-        &admitted_plan(),
         books.occurrence(),
         members[1].path(),
         SemanticTarget::WholePayload,
@@ -521,7 +517,6 @@ fn wide_key_image() -> (VerifiedImage, u16) {
         .expect("the Product is declared");
     let root_entry = site(
         &mut draft,
-        &admitted_plan(),
         big.occurrence(),
         big.placement_path(),
         SemanticTarget::WholePayload,

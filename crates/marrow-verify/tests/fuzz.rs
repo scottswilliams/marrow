@@ -284,19 +284,15 @@ fn a_durable_image() -> Vec<u8> {
             },
         )
         .expect("the Product is declared");
-    let members = draft
-        .product_members(&admitted_plan(), product)
-        .expect("declared");
+    let members = draft.product_members(product).expect("declared");
     site(
         &mut draft,
-        &admitted_plan(),
         occurrence.occurrence(),
         occurrence.placement_path(),
         SemanticTarget::WholePayload,
     );
     let value_site = site(
         &mut draft,
-        &admitted_plan(),
         occurrence.occurrence(),
         members[0].path(),
         SemanticTarget::FieldLeaf,
@@ -439,14 +435,12 @@ fn an_indexed_durable_image() -> Vec<u8> {
         .expect("the Product is declared");
     site(
         &mut draft,
-        &admitted_plan(),
         occurrence.occurrence(),
         &occurrence.index_paths()[0],
         SemanticTarget::IndexScan,
     );
     site(
         &mut draft,
-        &admitted_plan(),
         occurrence.occurrence(),
         &occurrence.index_paths()[1],
         SemanticTarget::IndexLookup,
@@ -539,26 +533,21 @@ fn a_strict_durable_image() -> Vec<u8> {
             },
         )
         .expect("the Product is declared");
-    let members = draft
-        .product_members(&admitted_plan(), product)
-        .expect("declared");
+    let members = draft.product_members(product).expect("declared");
     let entry_site = site(
         &mut draft,
-        &admitted_plan(),
         occurrence.occurrence(),
         occurrence.placement_path(),
         SemanticTarget::WholePayload,
     );
     site(
         &mut draft,
-        &admitted_plan(),
         occurrence.occurrence(),
         members[0].path(),
         SemanticTarget::FieldLeaf,
     );
     let label_site = site(
         &mut draft,
-        &admitted_plan(),
         occurrence.occurrence(),
         members[1].path(),
         SemanticTarget::FieldLeaf,
@@ -750,46 +739,39 @@ fn a_group_branch_durable_image() -> Vec<u8> {
     // field-leaf site per stored field (`title`, `details.pages`, `notes.text`).
     // Every site seals as parked; mutating the image reaches the nested-site path
     // decode and node resolution a flat root never exercises.
-    let members = draft
-        .product_members(&admitted_plan(), product)
-        .expect("declared");
+    let members = draft.product_members(product).expect("declared");
     let group_members = draft
-        .members_of(&admitted_plan(), members[1].path())
+        .members_of(members[1].path())
         .expect("the declaration row is live");
     let branch_members = draft
-        .members_of(&admitted_plan(), members[2].path())
+        .members_of(members[2].path())
         .expect("the declaration row is live");
     site(
         &mut draft,
-        &admitted_plan(),
         occurrence.occurrence(),
         occurrence.placement_path(),
         SemanticTarget::WholePayload,
     );
     site(
         &mut draft,
-        &admitted_plan(),
         occurrence.occurrence(),
         members[0].path(),
         SemanticTarget::FieldLeaf,
     );
     site(
         &mut draft,
-        &admitted_plan(),
         occurrence.occurrence(),
         group_members[0].path(),
         SemanticTarget::FieldLeaf,
     );
     site(
         &mut draft,
-        &admitted_plan(),
         occurrence.occurrence(),
         members[2].path(),
         SemanticTarget::WholePayload,
     );
     site(
         &mut draft,
-        &admitted_plan(),
         occurrence.occurrence(),
         branch_members[0].path(),
         SemanticTarget::FieldLeaf,
@@ -1087,12 +1069,9 @@ fn a_multi_site_durable_image() -> Vec<u8> {
             },
         )
         .expect("the Product is declared");
-    let members = draft
-        .product_members(&admitted_plan(), product)
-        .expect("declared");
+    let members = draft.product_members(product).expect("declared");
     site(
         &mut draft,
-        &admitted_plan(),
         occurrence.occurrence(),
         occurrence.placement_path(),
         SemanticTarget::WholePayload,
@@ -1100,7 +1079,6 @@ fn a_multi_site_durable_image() -> Vec<u8> {
     for member in &members {
         site(
             &mut draft,
-            &admitted_plan(),
             occurrence.occurrence(),
             member.path(),
             SemanticTarget::FieldLeaf,

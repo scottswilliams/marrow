@@ -46,7 +46,7 @@ const LABEL_FIELD_ID: [u8; 16] = [0x0f; 16];
 /// declaration order.
 fn product_members(draft: &ImageDraft) -> Vec<DeclarationMember> {
     draft
-        .product_members(&admitted_plan(), LedgerIdBytes::from_bytes(PRODUCT_ID))
+        .product_members(LedgerIdBytes::from_bytes(PRODUCT_ID))
         .expect("the fixture Product is declared")
 }
 
@@ -598,21 +598,18 @@ fn durable_schema(draft: &mut ImageDraft) -> Sites {
     let members = product_members(draft);
     let entry = site(
         draft,
-        &admitted_plan(),
         admitted.occurrence(),
         admitted.placement_path(),
         SemanticTarget::WholePayload,
     );
     let value = site(
         draft,
-        &admitted_plan(),
         admitted.occurrence(),
         members[0].path(),
         SemanticTarget::FieldLeaf,
     );
     let label = site(
         draft,
-        &admitted_plan(),
         admitted.occurrence(),
         members[1].path(),
         SemanticTarget::FieldLeaf,
@@ -1044,7 +1041,6 @@ fn a_non_index_opcode_over_a_managed_index_site_rejects() {
     // Index 1 is the unique `byValue`, so the exact-lookup target is the one it admits.
     let lookup_site = site(
         &mut draft,
-        &admitted_plan(),
         root.occurrence(),
         &root.index_paths()[1],
         SemanticTarget::IndexLookup,
@@ -1391,7 +1387,6 @@ fn a_composite_root_write_opcode_with_a_truncated_key_path_rejects() {
     let members = product_members(&draft);
     let value_site = site(
         &mut draft,
-        &admitted_plan(),
         admitted.occurrence(),
         members[0].path(),
         SemanticTarget::FieldLeaf,
@@ -1542,7 +1537,6 @@ fn group_branch_draft_with_branch_record(
         let members = product_members(&draft);
         let site = site(
             &mut draft,
-            &admitted_plan(),
             admitted.occurrence(),
             members[0].path(),
             SemanticTarget::FieldLeaf,
@@ -1997,7 +1991,6 @@ fn a_site_that_claims_to_traverse_a_unique_index_rejects() {
     let (mut draft, root) = indexed_draft(by_label_projection());
     site(
         &mut draft,
-        &admitted_plan(),
         root.occurrence(),
         &root.index_paths()[1],
         SemanticTarget::IndexLookup,
@@ -2019,7 +2012,6 @@ fn a_site_that_exact_looks_up_a_nonunique_index_rejects() {
     let (mut draft, root) = indexed_draft(by_label_projection());
     site(
         &mut draft,
-        &admitted_plan(),
         root.occurrence(),
         &root.index_paths()[0],
         SemanticTarget::IndexScan,
@@ -2261,7 +2253,6 @@ fn book_title_site(draft: &mut ImageDraft, root: &AdmittedRoot) -> LegacyDraftSi
     let members = product_members(draft);
     site(
         draft,
-        &admitted_plan(),
         root.occurrence(),
         members[0].path(),
         SemanticTarget::FieldLeaf,
@@ -2272,7 +2263,6 @@ fn book_group_site(draft: &mut ImageDraft, root: &AdmittedRoot) -> LegacyDraftSi
     let members = product_members(draft);
     site(
         draft,
-        &admitted_plan(),
         root.occurrence(),
         members[1].path(),
         SemanticTarget::GroupEntry,
@@ -2282,33 +2272,21 @@ fn book_group_site(draft: &mut ImageDraft, root: &AdmittedRoot) -> LegacyDraftSi
 fn book_group_field_site(draft: &mut ImageDraft, root: &AdmittedRoot) -> LegacyDraftSiteOperand {
     let group = product_members(draft)[1].path().clone();
     let pages = draft
-        .members_of(&admitted_plan(), &group)
+        .members_of(&group)
         .expect("the declaration row is live")[0]
         .path()
         .clone();
-    site(
-        draft,
-        &admitted_plan(),
-        root.occurrence(),
-        &pages,
-        SemanticTarget::FieldLeaf,
-    )
+    site(draft, root.occurrence(), &pages, SemanticTarget::FieldLeaf)
 }
 
 fn book_branch_field_site(draft: &mut ImageDraft, root: &AdmittedRoot) -> LegacyDraftSiteOperand {
     let branch = product_members(draft)[2].path().clone();
     let text = draft
-        .members_of(&admitted_plan(), &branch)
+        .members_of(&branch)
         .expect("the declaration row is live")[0]
         .path()
         .clone();
-    site(
-        draft,
-        &admitted_plan(),
-        root.occurrence(),
-        &text,
-        SemanticTarget::FieldLeaf,
-    )
+    site(draft, root.occurrence(), &text, SemanticTarget::FieldLeaf)
 }
 
 /// The `details.pages` group field leaf, as encoded site bytes: application -> root
@@ -2563,7 +2541,6 @@ fn flat_branch_entry_site(draft: &mut ImageDraft, root: &AdmittedRoot) -> Legacy
     let members = product_members(draft);
     site(
         draft,
-        &admitted_plan(),
         root.occurrence(),
         members[1].path(),
         SemanticTarget::WholePayload,
@@ -3370,28 +3347,24 @@ fn branch_presence_schema() -> (
     let branch_path = members[2].path().clone();
     site(
         &mut draft,
-        &admitted_plan(),
         admitted.occurrence(),
         admitted.placement_path(),
         SemanticTarget::WholePayload,
     );
     site(
         &mut draft,
-        &admitted_plan(),
         admitted.occurrence(),
         members[0].path(),
         SemanticTarget::FieldLeaf,
     );
     let label_site = site(
         &mut draft,
-        &admitted_plan(),
         admitted.occurrence(),
         members[1].path(),
         SemanticTarget::FieldLeaf,
     );
     let branch_entry = site(
         &mut draft,
-        &admitted_plan(),
         admitted.occurrence(),
         &branch_path,
         SemanticTarget::WholePayload,
@@ -3559,20 +3532,18 @@ fn branch_field_schema() -> (ImageDraft, LegacyDraftSiteOperand, LegacyDraftSite
     );
     let branch_path = product_members(&draft)[2].path().clone();
     let body_path = draft
-        .members_of(&admitted_plan(), &branch_path)
+        .members_of(&branch_path)
         .expect("the declaration row is live")[0]
         .path()
         .clone();
     let root_entry = site(
         &mut draft,
-        &admitted_plan(),
         admitted.occurrence(),
         admitted.placement_path(),
         SemanticTarget::WholePayload,
     );
     let branch_field = site(
         &mut draft,
-        &admitted_plan(),
         admitted.occurrence(),
         &body_path,
         SemanticTarget::FieldLeaf,
@@ -5087,13 +5058,12 @@ fn nested_branch_draft() -> (ImageDraft, AdmittedRoot) {
 fn nested_tag_entry_site(draft: &mut ImageDraft, root: &AdmittedRoot) -> LegacyDraftSiteOperand {
     let notes = product_members(draft)[1].path().clone();
     let tags = draft
-        .members_of(&admitted_plan(), &notes)
+        .members_of(&notes)
         .expect("the declaration row is live")[1]
         .path()
         .clone();
     site(
         draft,
-        &admitted_plan(),
         root.occurrence(),
         &tags,
         SemanticTarget::WholePayload,
@@ -5264,7 +5234,6 @@ fn composite_root_draft() -> (ImageDraft, LegacyDraftSiteOperand) {
         .expect("the Product is declared");
     let entry = site(
         &mut draft,
-        &admitted_plan(),
         admitted.occurrence(),
         admitted.placement_path(),
         SemanticTarget::WholePayload,

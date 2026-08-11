@@ -140,21 +140,13 @@ fn build_graph(draft: &mut ImageDraft) -> Graph {
     let lookup_path = r.index_paths()[1].clone();
     let entry_site = site(
         draft,
-        &admitted_plan(),
         r.occurrence(),
         r.placement_path(),
         SemanticTarget::WholePayload,
     );
-    let scan_site = site(
-        draft,
-        &admitted_plan(),
-        r.occurrence(),
-        &scan_path,
-        SemanticTarget::IndexScan,
-    );
+    let scan_site = site(draft, r.occurrence(), &scan_path, SemanticTarget::IndexScan);
     let lookup_site = site(
         draft,
-        &admitted_plan(),
         r.occurrence(),
         &lookup_path,
         SemanticTarget::IndexLookup,

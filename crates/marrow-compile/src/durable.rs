@@ -446,14 +446,6 @@ pub(crate) struct DurableRegistry {
     /// simple name)`, accumulated across the project's admitted stores. The
     /// [`DurableNaming`] the demand sentence spells paths through is built from this.
     naming: Vec<(LedgerIdBytes, PathSigil, String)>,
-    /// The construction budget this compile's durable graph was admitted for, minted from
-    /// the store-declaration census before the first store is built.
-    ///
-    /// It is retained because lowering enters the same graph later — a field leaf is
-    /// demanded on its first reference, long after the census — and the plan is the entry
-    /// capability for every one of those crossings. A storeless compile carries
-    /// [`AdmittedGraphInputPlan::EMPTY`].
-    plan: AdmittedGraphInputPlan,
 }
 
 impl DurableRegistry {
@@ -469,13 +461,7 @@ impl DurableRegistry {
             branch_paths: BTreeMap::new(),
             declared_branch_paths: BTreeSet::new(),
             naming: Vec::new(),
-            plan: AdmittedGraphInputPlan::EMPTY,
         }
-    }
-
-    /// The construction budget this compile's durable graph was admitted for.
-    pub(crate) fn plan(&self) -> &AdmittedGraphInputPlan {
-        &self.plan
     }
 }
 
@@ -724,7 +710,6 @@ impl DurableRegistry {
         let plan = census.plan();
         records.with_metadata_session(|metadata| {
             let mut registry = Self::empty(budget.clone());
-            registry.plan = plan;
             let mut type_metadata = DurableTypeMetadata { records, metadata };
             let mut reported_identity_gaps = BTreeSet::new();
             let mut identity_build = IdentityBuildState {
@@ -1069,18 +1054,17 @@ impl<'stores> ProductOccurrenceCensus<'stores> {
     /// admission, so the budget never binds a compile that produces an image; it bounds
     /// what the draft can be handed.
     ///
-    /// A census larger than any image could carry takes the maximum intake rather than a
-    /// refusal: this pass reports source problems as typed diagnostics and never aborts,
-    /// and the overrun already has an owner — the encoder's
+    /// A census larger than any image could carry saturates rather than refusing: this
+    /// pass reports source problems as typed diagnostics and never aborts, and the overrun
+    /// already has an owner — the encoder's
     /// [`marrow_image::ImageBuildError::TooManyRoots`], reported over a complete graph.
-    /// Minting the ceiling is what leaves that graph complete.
+    /// Saturating the counted terms is what leaves that graph complete.
     fn plan(&self) -> AdmittedGraphInputPlan {
-        AdmittedGraphInputPlan::admit(
+        AdmittedGraphInputPlan::admit_saturating(
             self.products,
             self.roots,
             bounds::MAX_ADMITTED_DECLARATION_COMMANDS,
         )
-        .unwrap_or(AdmittedGraphInputPlan::MAXIMUM)
     }
 
     fn multiplicity(&self, resource: &str) -> ProductOccurrenceMultiplicity {
@@ -1236,7 +1220,7 @@ fn build_one(
     // known complete (below). A graph with an unresolved anchor carries placeholder ids,
     // including a placeholder Product identity, so admitting it would let one refused
     // store's declaration answer for every other refused store's resource.
-    let source = match draft.product_members(plan, product) {
+    let source = match draft.product_members(product) {
         Some(members) => ProductDeclarationSource::Held(members),
         None => ProductDeclarationSource::Built(
             resolver.build_product_graph(draft, records, metadata, store, resource, record),
@@ -1368,13 +1352,11 @@ fn build_one(
     // graph rather than its declared graph multiplied by the roots over it.
     request_eager_site(
         draft,
-        plan,
         admitted.occurrence(),
         admitted.placement_path(),
         SemanticTarget::WholePayload,
     )?;
-    let captured =
-        emit_root_member_sites(draft, plan, admitted.occurrence(), &members, multiplicity)?;
+    let captured = emit_root_member_sites(draft, admitted.occurrence(), &members, multiplicity)?;
     // One read site per managed index: a nonunique index is a progressive-prefix
     // scan, a unique index a complete-key exact lookup. There is deliberately no
     // index-write site — maintenance is compiler-owned. Every index site seals as
@@ -1387,7 +1369,7 @@ fn build_one(
         } else {
             SemanticTarget::IndexScan
         };
-        request_eager_site(draft, plan, admitted.occurrence(), path, target)?;
+        request_eager_site(draft, admitted.occurrence(), path, target)?;
         lowered_indexes.push(DurableIndex {
             name: built.name.clone(),
             unique: built.shape.unique,
@@ -1425,7 +1407,7 @@ fn build_one(
     let keyed = !key_scalars.is_empty();
     let mut members_flat = true;
     for member in &members {
-        members_flat &= member_flat_at_root(draft, plan, member)?;
+        members_flat &= member_flat_at_root(draft, member)?;
     }
     let executable = keyed && all_fields_executable && members_flat;
     let (branches, groups) = if executable {
@@ -2498,13 +2480,12 @@ struct RootMemberSites {
 /// minted here.
 fn request_eager_site(
     draft: &mut ImageDraft,
-    plan: &AdmittedGraphInputPlan,
     occurrence: &RootOccurrenceSelector,
     path: &CanonicalDeclarationPathSelector,
     target: SemanticTarget,
 ) -> Result<(), GenericInvariant> {
-    let handle = draft.bind_occurrence_site(plan, occurrence, path, target)?;
-    draft.request_site(plan, &handle)?;
+    let handle = draft.bind_occurrence_site(occurrence, path, target)?;
+    draft.request_site(&handle)?;
     Ok(())
 }
 
@@ -2525,7 +2506,6 @@ fn request_eager_site(
 /// either way and the only difference is when its site is minted.
 fn emit_root_member_sites(
     draft: &mut ImageDraft,
-    plan: &AdmittedGraphInputPlan,
     occurrence: &RootOccurrenceSelector,
     members: &[DeclarationMember],
     multiplicity: ProductOccurrenceMultiplicity,
@@ -2543,7 +2523,6 @@ fn emit_root_member_sites(
                 if eager {
                     request_eager_site(
                         draft,
-                        plan,
                         occurrence,
                         member.path(),
                         SemanticTarget::GroupEntry,
@@ -2555,7 +2534,6 @@ fn emit_root_member_sites(
                 let record = *record;
                 captured.branches.push(emit_branch_sites(
                     draft,
-                    plan,
                     occurrence,
                     member.path(),
                     record,
@@ -2576,16 +2554,15 @@ fn emit_root_member_sites(
 /// the sealed branch tree, so the compiler's and verifier's independent resolutions agree.
 fn emit_branch_sites(
     draft: &mut ImageDraft,
-    plan: &AdmittedGraphInputPlan,
     occurrence: &RootOccurrenceSelector,
     path: &CanonicalDeclarationPathSelector,
     record: marrow_image::TypeId,
     multiplicity: ProductOccurrenceMultiplicity,
 ) -> Result<BranchSites, GenericInvariant> {
     if multiplicity == ProductOccurrenceMultiplicity::Unique {
-        request_eager_site(draft, plan, occurrence, path, SemanticTarget::WholePayload)?;
+        request_eager_site(draft, occurrence, path, SemanticTarget::WholePayload)?;
     }
-    let members = draft.members_of(plan, path)?;
+    let members = draft.members_of(path)?;
     let mut fields = Vec::new();
     let mut branches = Vec::new();
     for inner in &members {
@@ -2596,7 +2573,6 @@ fn emit_branch_sites(
                 let record = *record;
                 branches.push(emit_branch_sites(
                     draft,
-                    plan,
                     occurrence,
                     inner.path(),
                     record,
@@ -2621,7 +2597,6 @@ fn emit_branch_sites(
 /// collection field is rejected upstream — so any field keeps the root flat here.)
 fn member_keeps_root_flat(
     draft: &ImageDraft,
-    plan: &AdmittedGraphInputPlan,
     member: &DeclarationMember,
 ) -> Result<bool, GenericInvariant> {
     match member.shape() {
@@ -2631,8 +2606,8 @@ fn member_keeps_root_flat(
             if keys.is_empty() {
                 return Ok(false);
             }
-            for inner in &draft.members_of(plan, member.path())? {
-                if !member_keeps_root_flat(draft, plan, inner)? {
+            for inner in &draft.members_of(member.path())? {
+                if !member_keeps_root_flat(draft, inner)? {
                     return Ok(false);
                 }
             }
@@ -2651,15 +2626,14 @@ fn member_keeps_root_flat(
 /// its enclosing branch flat.
 fn member_flat_at_root(
     draft: &ImageDraft,
-    plan: &AdmittedGraphInputPlan,
     member: &DeclarationMember,
 ) -> Result<bool, GenericInvariant> {
     match member.shape() {
         DeclarationMemberShape::Field { .. } | DeclarationMemberShape::Branch { .. } => {
-            member_keeps_root_flat(draft, plan, member)
+            member_keeps_root_flat(draft, member)
         }
         DeclarationMemberShape::Group { .. } => Ok(draft
-            .members_of(plan, member.path())?
+            .members_of(member.path())?
             .iter()
             .all(|inner| matches!(inner.shape(), DeclarationMemberShape::Field { .. }))),
     }

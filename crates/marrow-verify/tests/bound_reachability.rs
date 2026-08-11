@@ -95,7 +95,6 @@ fn roots_corpus(roots: usize) -> ImageDraft {
             .expect("the Product is declared");
         site(
             &mut draft,
-            &admitted_plan(),
             admitted.occurrence(),
             admitted.placement_path(),
             SemanticTarget::WholePayload,
@@ -253,7 +252,7 @@ fn wide_corpus(roots: usize) -> Result<Vec<u8>, ImageBuildError> {
         )
         .expect("a well-formed declaration");
     let members = draft
-        .product_members(&admitted_plan(), LedgerIdBytes::from_bytes(PRODUCT_ID))
+        .product_members(LedgerIdBytes::from_bytes(PRODUCT_ID))
         .expect("declared");
     for n in 0..roots {
         let name = draft.intern_string(&format!("r{n}"));
@@ -271,7 +270,6 @@ fn wide_corpus(roots: usize) -> Result<Vec<u8>, ImageBuildError> {
             .expect("the Product is declared");
         site(
             &mut draft,
-            &admitted_plan(),
             admitted.occurrence(),
             admitted.placement_path(),
             SemanticTarget::WholePayload,
@@ -279,7 +277,6 @@ fn wide_corpus(roots: usize) -> Result<Vec<u8>, ImageBuildError> {
         for member in &members {
             site(
                 &mut draft,
-                &admitted_plan(),
                 admitted.occurrence(),
                 member.path(),
                 SemanticTarget::FieldLeaf,

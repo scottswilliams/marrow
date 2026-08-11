@@ -319,7 +319,7 @@ fn a_command_vector_wider_than_its_budget_appends_no_row() {
     );
     assert!(
         draft
-            .product_members(&plan, LedgerIdBytes::from_bytes(PRODUCT_ID))
+            .product_members(LedgerIdBytes::from_bytes(PRODUCT_ID))
             .is_none(),
         "the refused declaration appended no row",
     );
@@ -376,7 +376,7 @@ fn a_draft_refuses_an_over_deep_command_vector() {
     );
     assert!(
         draft
-            .product_members(&admitted_plan(), LedgerIdBytes::from_bytes(PRODUCT_ID))
+            .product_members(LedgerIdBytes::from_bytes(PRODUCT_ID))
             .is_none(),
         "the refused declaration appended no row",
     );

@@ -40,7 +40,7 @@ use std::rc::Rc;
 
 use crate::bounds::MAX_DURABLE_MEMBERS;
 use crate::draft::{
-    AdmittedGraphInputPlan, DraftIdentity, KeyColumn, RootOccurrenceDef, RowStamp, StrId, TypeId,
+    AdmittedGraphInputPlan, DraftIdentity, KeyColumn, RootOccurrenceDef, StrId, TypeId,
 };
 use crate::durable_id::{
     DurableContractView, DurableIndexShape, DurableMemberViews, DurableProductIdentity,
@@ -91,6 +91,29 @@ pub(crate) const MANAGED_INDEX_BYTES: u64 = MANAGED_INDEX_SHAPE_BYTES
 /// application identity, the two empty tables, the empty arena, and the draft identity and
 /// stamp counter that keep its published selectors distinguishable.
 pub(crate) const CONTRACT_GRAPH_FIXED_BYTES: u64 = size_of::<DurableContractGraph>() as u64;
+
+/// The stamp one appended row carries.
+///
+/// Row ordinals are reused deterministically — a proof pass appends rows and the rewind
+/// discards them, and the next append lands on the same ordinal — so an ordinal alone
+/// cannot say whether the row a selector, handle, or operand was minted against is still
+/// the row that is there. The stamp is drawn from the graph's one monotone counter, which
+/// a rewind deliberately does **not** restore, so a re-minted row is never mistaken for
+/// the row it replaced.
+///
+/// It lives beside that counter and its field is private, so
+/// [`DurableContractGraph::next_stamp`] is the only place in the crate a stamp comes into
+/// being: an owner appending a row against this graph draws one, and no owner can mint a
+/// stamp of its own that would collide with a row's.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct RowStamp(u64);
+
+impl RowStamp {
+    /// The stamp for one draw of the graph's monotone counter.
+    fn from_counter(count: u64) -> Self {
+        Self(count)
+    }
+}
 
 /// The ordinal of one row in a [`ProductDeclarationGraph`].
 ///
@@ -757,14 +780,28 @@ pub(crate) struct RootOccurrenceTable {
 }
 
 impl RootOccurrenceTable {
-    /// Append one occurrence row and publish its selector.
-    pub(crate) fn push(
+    /// Append one occurrence row under `plan` and publish its selector.
+    ///
+    /// This is the one place the plan's root-occurrence budget is spent, so the draft and
+    /// the independent verifier's own contract graph enter the table through the same
+    /// check rather than each restating it — the same way
+    /// [`ProductDeclarationTable::admit_under`] owns the Product and command terms. All
+    /// three of the plan's terms are therefore spent by the table that holds the rows they
+    /// bound, in one refusal vocabulary.
+    pub(crate) fn push_under(
         &mut self,
+        plan: &AdmittedGraphInputPlan,
         draft: DraftIdentity,
         row: RootOccurrenceRow,
         stamp: RowStamp,
-    ) -> Option<RootOccurrenceSelector> {
-        let ordinal = RootOccurrenceOrdinal(u16::try_from(self.rows.len()).ok()?);
+    ) -> Result<RootOccurrenceSelector, DurableGraphInputRefusal> {
+        if self.rows.len() >= plan.roots() {
+            return Err(DurableGraphInputRefusal::OverPlan);
+        }
+        let ordinal = RootOccurrenceOrdinal(
+            u16::try_from(self.rows.len())
+                .map_err(|_| DurableGraphInputRefusal::UnaddressableOccurrence)?,
+        );
         self.rows.push(RootOccurrence {
             declaration: row.declaration,
             name: row.name,
@@ -773,7 +810,7 @@ impl RootOccurrenceTable {
             indexes: row.indexes,
             stamp,
         });
-        Some(RootOccurrenceSelector {
+        Ok(RootOccurrenceSelector {
             draft,
             ordinal,
             stamp,
@@ -1271,6 +1308,20 @@ impl OccurrenceSiteDemandKey {
     }
 }
 
+/// The append-only lengths of every owner a [`DurableContractGraph`] holds at one instant,
+/// plus its application-identity slot.
+///
+/// It is the durable half of the mark a throwaway pass rewinds to. It is crate-private and
+/// carries no graph identity, so it is only ever handed back to the graph that published
+/// it — the owner that publishes it also owns the exclusive borrow through which a pass
+/// appends.
+pub(crate) struct DurableGraphCheckpoint {
+    application: Option<LedgerIdBytes>,
+    products: usize,
+    occurrences: usize,
+    values: usize,
+}
+
 /// One program's durable contract graph, owned.
 ///
 /// It holds the four owners a contract is derived from — the application identity, the
@@ -1322,14 +1373,144 @@ impl DurableContractGraph {
         }
     }
 
-    fn next_stamp(&mut self) -> RowStamp {
+    /// The stamp the next appended row carries.
+    ///
+    /// It is the graph's one stamp source, drawn by every owner that appends a row against
+    /// it — including the draft's site plan, whose rows name these rows. A rewind
+    /// deliberately does not restore it, so an ordinal reused after a discard carries a
+    /// fresh stamp.
+    pub(crate) fn next_stamp(&mut self) -> RowStamp {
         self.next_stamp += 1;
         RowStamp::from_counter(self.next_stamp)
+    }
+
+    /// The strong identity every selector, handle, and site operand minted against this
+    /// graph carries.
+    pub(crate) fn identity(&self) -> DraftIdentity {
+        self.identity
     }
 
     /// Record the application's ledger id. A graph with a root always has one.
     pub fn set_application_identity(&mut self, id: LedgerIdBytes) {
         self.application = Some(id);
+    }
+
+    /// This graph's application ledger id, if one was recorded.
+    pub(crate) fn application(&self) -> Option<LedgerIdBytes> {
+        self.application
+    }
+
+    /// The admitted Product declarations, each retained once however many roots occur over
+    /// it.
+    pub(crate) fn products(&self) -> &ProductDeclarationTable {
+        &self.products
+    }
+
+    /// The flat root-occurrence rows, in declaration order.
+    pub(crate) fn occurrences(&self) -> &RootOccurrenceTable {
+        &self.occurrences
+    }
+
+    /// The live tables a site binding is validated and projected against.
+    pub(crate) fn occurrence_graph(&self) -> OccurrenceGraph<'_> {
+        OccurrenceGraph {
+            draft: self.identity,
+            occurrences: &self.occurrences,
+            products: &self.products,
+        }
+    }
+
+    /// The append-only lengths of every owner this graph holds, for a caller that appends
+    /// a throwaway pass against it and discards what the pass wrote.
+    ///
+    /// The graph is destructured exhaustively rather than read field by field: a new owner
+    /// stops this compiling until it is either recorded here or bound to `_` beside the two
+    /// whose exclusion is stated below, so no field can be left out of a rewind by
+    /// omission. `identity` is fixed at mint and no pass can change it; `next_stamp`
+    /// advances monotonically on purpose, so a re-minted row is never mistaken for the row
+    /// it replaced.
+    pub(crate) fn checkpoint(&self) -> DurableGraphCheckpoint {
+        let Self {
+            identity: _,
+            next_stamp: _,
+            application,
+            products,
+            occurrences,
+            values,
+        } = self;
+        DurableGraphCheckpoint {
+            application: *application,
+            products: products.declarations().len(),
+            occurrences: occurrences.len(),
+            values: values.len(),
+        }
+    }
+
+    /// Discard every row appended after `at`, restoring the exact rows the graph held at
+    /// that mark. It allocates nothing and cannot panic, so it is safe to run during an
+    /// unwind.
+    pub(crate) fn rewind(&mut self, at: &DurableGraphCheckpoint) {
+        self.occurrences.truncate(at.occurrences);
+        self.products.truncate(at.products);
+        self.values.truncate(at.values);
+        self.application = at.application;
+    }
+
+    /// Admit one Product declaration under `plan`, returning the declaration row it
+    /// references and the first divergence a repeat of an already-bound identity states.
+    ///
+    /// The two published entry points differ only in what they do with a divergence: this
+    /// graph's own refuses it, while the draft latches it and lets the encoder report it in
+    /// wire order. They admit through one path, so neither can admit what the other would
+    /// not.
+    pub(crate) fn admit_product(
+        &mut self,
+        plan: &AdmittedGraphInputPlan,
+        product: LedgerIdBytes,
+        entry_record: TypeId,
+        members: Vec<DeclarationMemberDef>,
+    ) -> Result<(usize, Option<ProductClaimConflict>), DurableGraphInputRefusal> {
+        let stamp = self.next_stamp();
+        self.products.admit_under(
+            plan,
+            DurableProductIdentity::minted(product),
+            ProductEntryRecordClaim::new(entry_record),
+            members,
+            stamp,
+        )
+    }
+
+    /// Append one root occurrence under `plan` over the Product declaration `product`
+    /// names, returning the completed row's selector.
+    pub(crate) fn admit_root_occurrence(
+        &mut self,
+        plan: &AdmittedGraphInputPlan,
+        product: LedgerIdBytes,
+        def: RootOccurrenceDef,
+    ) -> Result<RootOccurrenceSelector, DurableGraphInputRefusal> {
+        let declaration = self
+            .products
+            .row_of(DurableProductIdentity::minted(product))
+            .ok_or(DurableGraphInputRefusal::UndeclaredProduct)?;
+        let RootOccurrenceDef {
+            name,
+            keys,
+            placement,
+            indexes,
+        } = def;
+        let stamp = self.next_stamp();
+        self.occurrences.push_under(
+            plan,
+            self.identity,
+            RootOccurrenceRow {
+                declaration,
+                name,
+                keys,
+                placement: RootPlacementIdentity::minted(placement),
+                indexes,
+            },
+            stamp,
+        )
     }
 
     /// This graph's one value-shape arena, for interning the shapes its fields reference.
@@ -1355,14 +1536,7 @@ impl DurableContractGraph {
         entry_record: TypeId,
         members: Vec<DeclarationMemberDef>,
     ) -> Result<DurableProductGraph, DurableGraphInputRefusal> {
-        let stamp = self.next_stamp();
-        let (row, conflict) = self.products.admit_under(
-            plan,
-            DurableProductIdentity::minted(product),
-            ProductEntryRecordClaim::new(entry_record),
-            members,
-            stamp,
-        )?;
+        let (row, conflict) = self.admit_product(plan, product, entry_record, members)?;
         match conflict {
             Some(ProductClaimConflict::Graph(_)) => Err(DurableGraphInputRefusal::DivergentGraph),
             Some(ProductClaimConflict::EntryRecord(_)) => {
@@ -1383,34 +1557,7 @@ impl DurableContractGraph {
         product: LedgerIdBytes,
         def: RootOccurrenceDef,
     ) -> Result<(), DurableGraphInputRefusal> {
-        if self.occurrences.len() >= plan.roots() {
-            return Err(DurableGraphInputRefusal::OverPlan);
-        }
-        let declaration = self
-            .products
-            .row_of(DurableProductIdentity::minted(product))
-            .ok_or(DurableGraphInputRefusal::UndeclaredProduct)?;
-        let RootOccurrenceDef {
-            name,
-            keys,
-            placement,
-            indexes,
-        } = def;
-        let stamp = self.next_stamp();
-        self.occurrences
-            .push(
-                self.identity,
-                RootOccurrenceRow {
-                    declaration,
-                    name,
-                    keys,
-                    placement: RootPlacementIdentity::minted(placement),
-                    indexes,
-                },
-                stamp,
-            )
-            .ok_or(DurableGraphInputRefusal::UnaddressableOccurrence)?;
-        Ok(())
+        self.admit_root_occurrence(plan, product, def).map(|_| ())
     }
 
     /// This graph's durable contract, borrowed in place.

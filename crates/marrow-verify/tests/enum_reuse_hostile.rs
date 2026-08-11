@@ -166,7 +166,6 @@ fn build(
         .expect("the Product is declared");
     site(
         &mut draft,
-        &admitted_plan(),
         occurrence.occurrence(),
         occurrence.placement_path(),
         SemanticTarget::WholePayload,
@@ -560,14 +559,12 @@ fn forge(spec: &GraphSpec) -> Vec<u8> {
             .expect("the Product is declared");
         site(
             &mut draft,
-            &admitted_plan(),
             occurrence.occurrence(),
             occurrence.placement_path(),
             SemanticTarget::WholePayload,
         );
         site(
             &mut draft,
-            &admitted_plan(),
             occurrence.occurrence(),
             &occurrence.index_paths()[0],
             SemanticTarget::IndexLookup,

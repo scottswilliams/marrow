@@ -34,14 +34,13 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use crate::bounds;
 use crate::durable_id::{
     DurableContractView, DurableIndexShape, DurableProductIdentity, LedgerIdBytes,
-    RootPlacementIdentity,
 };
 use crate::export_id::ExportId;
 use crate::instr::Instr;
 use crate::product::{
-    CanonicalDeclarationPathSelector, DeclarationMember, DeclarationMemberDef, OccurrenceGraph,
-    ProductClaimConflict, ProductDeclaration, ProductDeclarationTable, ProductEntryRecordClaim,
-    RootOccurrence, RootOccurrenceRow, RootOccurrenceSelector, RootOccurrenceTable,
+    CanonicalDeclarationPathSelector, DeclarationMember, DeclarationMemberDef,
+    DurableContractGraph, DurableGraphCheckpoint, OccurrenceGraph, ProductClaimConflict,
+    ProductDeclaration, RootOccurrence, RootOccurrenceSelector,
 };
 use crate::semantic::{SemanticPath, SemanticTarget};
 use crate::site_plan::{
@@ -105,35 +104,27 @@ impl AdmittedGraphInputPlan {
         commands: 0,
     };
 
-    /// The largest intake the durable graph accepts from anyone: every term at the ceiling
-    /// [`Self::admit`] checks.
-    ///
-    /// It grants nothing `admit` would not grant for the same numbers, and it is not a way
-    /// around a census. It exists so an admission owner whose census is *larger* than any
-    /// image could carry has a total answer — the graph takes what it can take, and the
-    /// owner that reports the overrun still reports it over a complete graph.
-    pub const MAXIMUM: Self = Self {
-        products: bounds::MAX_ADMITTED_PRODUCT_DECLARATIONS,
-        roots: bounds::MAX_ADMITTED_ROOT_OCCURRENCES,
-        commands: bounds::MAX_ADMITTED_DECLARATION_COMMANDS,
-    };
-
     /// Admit a construction budget of `products` Product declarations, `roots` root
     /// occurrences, and `commands` member commands in any one declaration.
     ///
-    /// Refused when a term is beyond what may be handed to the durable graph at all: an
-    /// intake no image could carry is not a budget, and admitting one would leave the
-    /// unbounded, uncounted command stream this type exists to close. Each ceiling follows
-    /// the admitted-intake rule stated on [`bounds::MAX_ADMITTED_ROOT_OCCURRENCES`] — one
-    /// past the bound whose refusal owner keeps its refusal — so an over-wide declaration
-    /// still reaches [`ImageBuildError::TooManyDurableMembers`] and an over-count graph
-    /// still reaches [`ImageBuildError::TooManyRoots`] over a complete graph.
+    /// **Exactly what this enforces.** Each term is checked against the public ceiling of
+    /// the same name, and nothing else: a term beyond what may be handed to the durable
+    /// graph at all is not a budget, and admitting one would leave the unbounded,
+    /// uncounted command stream this type exists to close. Each ceiling follows the
+    /// admitted-intake rule stated on [`bounds::MAX_ADMITTED_ROOT_OCCURRENCES`] — one past
+    /// the bound whose refusal owner keeps its refusal — so an over-wide declaration still
+    /// reaches [`ImageBuildError::TooManyDurableMembers`] and an over-count graph still
+    /// reaches [`ImageBuildError::TooManyRoots`] over a complete graph. It does **not**
+    /// check a caller's numbers against a census, an identity ledger, or any other owner's
+    /// state: no such input reaches here.
     ///
-    /// An admission owner mints its terms from its own census, never from a caller's wish:
-    /// the compiler's from the store-declaration census it takes before the first store is
-    /// built, and the identity ledger binds a Product narrower still — every admitted
-    /// member anchors one live ledger row, so `MAX_IDS_ROWS - 3` members is the real
-    /// per-Product ceiling, asserted where both constants are in scope.
+    /// What makes an admitted budget bind is the other half, spent where it is presented:
+    /// the construction entry points check each arrival *cumulatively* against the graph
+    /// already receiving it — declarations against the rows the table holds, occurrences
+    /// against the rows the occurrence table holds, one command vector against the admitted
+    /// width — and there is no third route into those tables. A plan is therefore a
+    /// count-frozen budget, publicly minted and publicly bounded, rather than a claim about
+    /// what its holder counted.
     pub fn admit(products: usize, roots: usize, commands: usize) -> Option<Self> {
         if products > bounds::MAX_ADMITTED_PRODUCT_DECLARATIONS
             || roots > bounds::MAX_ADMITTED_ROOT_OCCURRENCES
@@ -146,6 +137,26 @@ impl AdmittedGraphInputPlan {
             roots,
             commands,
         })
+    }
+
+    /// The budget for a census whose counts may exceed what any image could carry: each
+    /// term is admitted at its own ceiling instead of refusing the whole census.
+    ///
+    /// It states the same counts [`Self::admit`] would and grants nothing more for any
+    /// number either accepts. It exists because an admission owner that reports source
+    /// problems as typed diagnostics has no abort to take when its census overruns, and
+    /// the overrun already has an owner — the encoder, reporting it over a *complete*
+    /// graph. Saturating is what leaves that graph complete; refusing would truncate the
+    /// graph the overrun is reported over.
+    ///
+    /// Every budget still comes from stated counts. There is deliberately no ceiling
+    /// constant to name instead of counting.
+    pub fn admit_saturating(products: usize, roots: usize, commands: usize) -> Self {
+        Self {
+            products: products.min(bounds::MAX_ADMITTED_PRODUCT_DECLARATIONS),
+            roots: roots.min(bounds::MAX_ADMITTED_ROOT_OCCURRENCES),
+            commands: commands.min(bounds::MAX_ADMITTED_DECLARATION_COMMANDS),
+        }
     }
 
     /// Product declarations this plan admits.
@@ -161,24 +172,6 @@ impl AdmittedGraphInputPlan {
     /// Member commands this plan admits in any one declaration.
     pub(crate) fn commands(&self) -> usize {
         self.commands
-    }
-}
-
-/// The stamp one appended row carries.
-///
-/// Row ordinals are reused deterministically — a proof pass appends rows and the rewind
-/// discards them, and the next append lands on the same ordinal — so an ordinal alone
-/// cannot say whether the row a selector, handle, or operand was minted against is still
-/// the row that is there. The stamp is drawn from a per-draft counter that the rewind
-/// deliberately does **not** restore, so a re-minted row is never mistaken for the row it
-/// replaced.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct RowStamp(u64);
-
-impl RowStamp {
-    /// The stamp for one draw of a per-owner monotone counter.
-    pub(crate) fn from_counter(count: u64) -> Self {
-        Self(count)
     }
 }
 
@@ -543,8 +536,7 @@ impl std::error::Error for ImageBuildError {}
 /// // There is no raw ordinal or key binder: `bind_occurrence_site` takes published
 /// // selectors, and neither selector can be spelled as a number.
 /// let mut draft = marrow_image::ImageDraft::new();
-/// let plan = marrow_image::AdmittedGraphInputPlan::EMPTY;
-/// let _ = draft.bind_occurrence_site(&plan, &0usize, &0usize, marrow_image::SemanticTarget::WholePayload);
+/// let _ = draft.bind_occurrence_site(&0usize, &0usize, marrow_image::SemanticTarget::WholePayload);
 /// ```
 ///
 /// A handle already carries the one target it was bound for, so requesting a site takes no
@@ -553,9 +545,8 @@ impl std::error::Error for ImageBuildError {}
 /// ```compile_fail,E0061
 /// // A handle carries its target; there is no second target input to disagree with it.
 /// let mut draft = marrow_image::ImageDraft::new();
-/// let plan = marrow_image::AdmittedGraphInputPlan::EMPTY;
 /// let handle: marrow_image::OccurrenceSiteHandle = unimplemented!();
-/// let _ = draft.request_site(&plan, &handle, marrow_image::SemanticTarget::WholePayload);
+/// let _ = draft.request_site(&handle, marrow_image::SemanticTarget::WholePayload);
 /// ```
 ///
 /// Entering the durable graph requires an [`AdmittedGraphInputPlan`]: no plan, no
@@ -588,37 +579,26 @@ impl std::error::Error for ImageBuildError {}
 /// ```
 #[derive(Debug)]
 pub struct ImageDraft {
-    /// This draft's strong identity, and the identity of its one site demand plan. Every
-    /// selector, handle, and site operand it mints carries it.
-    identity: DraftIdentity,
-    /// The source of the stamps appended rows carry. It is deliberately not restored when a
-    /// template proof is discarded, so an ordinal reused after a discard carries a fresh
-    /// stamp.
-    next_stamp: u64,
+    /// The one durable-graph owner: this draft's strong identity and stamp source, its
+    /// application identity, its canonical Product declaration table, its flat
+    /// root-occurrence table, and the one value-shape arena their fields reference.
+    ///
+    /// The draft does not hold a second copy of any of them. It is the same owner the
+    /// independent verifier builds from received bytes, so a Product declared here and one
+    /// reconstructed there are admitted, stamped, and bounded by one implementation rather
+    /// than by two that could drift.
+    durable: DurableContractGraph,
     strings: Vec<String>,
     consts: Vec<ConstValue>,
     types: Vec<RecordTypeDef>,
     enums: Vec<EnumTypeDef>,
     colls: Vec<CollectionTypeDef>,
-    /// The durable Product declarations this draft has admitted, keyed by Product ledger
-    /// identity: one canonical member/value graph and one runtime surface each, however
-    /// many roots occur over them.
-    products: ProductDeclarationTable,
-    /// The flat root-occurrence rows, in declaration order. Each references the one
-    /// Product declaration it projects; the index of a row is the RootId an entry
-    /// identity `Id(^root)` carries.
-    occurrences: RootOccurrenceTable,
     /// The first divergent repeat of an already-declared Product, if one was appended.
     /// Two occurrences of one Product identity that claim different graphs are two
     /// declarations wearing one identity: the draft cannot represent that, and
     /// [`Self::check_bounds`] refuses to encode rather than silently canonicalizing one
     /// of them away.
     product_conflict: Option<ProductClaimConflict>,
-    application: Option<LedgerIdBytes>,
-    /// The one owner of every durable field value shape this draft holds. A
-    /// declaration row references a node; no row owns one, so a value shape shared by a
-    /// thousand fields — or nested exponentially — is stored once.
-    value_shapes: CanonicalValueShapeDag,
     /// The one owner of the operation-site table, its demand map, and its capacity
     /// policy. Every site an image carries is requested through it.
     sites: SiteDemandPlan,
@@ -638,24 +618,20 @@ pub struct ImageDraft {
 /// pre-existing index), so truncating each owner back to its recorded length restores the
 /// draft to the exact bytes it held before the pass.
 ///
-/// Two draft fields are deliberately excluded, and [`ImageDraft::checkpoint`] destructures
-/// the draft exhaustively so a new owner cannot join them by omission: `identity` is fixed
-/// at mint and no pass can change it, and `next_stamp` advances monotonically on purpose so
-/// an ordinal reused after a discard carries a fresh stamp.
+/// The durable owners are marked by the durable graph's own checkpoint rather than
+/// restated here: it is their owner, and it states which of its fields a rewind
+/// deliberately does not restore.
 struct DraftCheckpoint {
     strings: usize,
     consts: usize,
     types: usize,
     enums: usize,
     colls: usize,
-    products: usize,
-    occurrences: usize,
-    value_shapes: usize,
+    durable: DurableGraphCheckpoint,
     sites: usize,
     functions: usize,
     exports: usize,
     test_entries: usize,
-    application: Option<LedgerIdBytes>,
     /// The sticky Product-claim conflict at the checkpoint. It gates encoding while the
     /// declaration table that admits it is truncated with the pass, so a conflict first
     /// recorded *inside* the proof is cleared with the divergent row that caused it; one
@@ -709,9 +685,9 @@ impl TemplateProofDraftGuard<'_> {
 
 impl Drop for TemplateProofDraftGuard<'_> {
     /// Discard everything the proof appended, in reverse dependency order: the code that can
-    /// retain site operands first, then the occurrence rows and site rows those operands
-    /// name, then the declaration table with the claim conflict its rows can record, then the
-    /// remaining owners, and finally the application slot.
+    /// retain site operands first, then the site rows those operands name, then the durable
+    /// graph whose rows the sites name, with the claim conflict its declarations can record,
+    /// and finally the remaining owners.
     ///
     /// It allocates nothing, indexes nothing, and cannot panic, so it is safe to run during
     /// an unwind that a failed proof started.
@@ -720,17 +696,14 @@ impl Drop for TemplateProofDraftGuard<'_> {
         self.draft.test_entries.truncate(at.test_entries);
         self.draft.exports.truncate(at.exports);
         self.draft.functions.truncate(at.functions);
-        self.draft.occurrences.truncate(at.occurrences);
         self.draft.sites.rewind(at.sites, at.receipt);
-        self.draft.products.truncate(at.products);
-        self.draft.value_shapes.truncate(at.value_shapes);
+        self.draft.durable.rewind(&at.durable);
         self.draft.product_conflict = at.product_conflict;
         self.draft.colls.truncate(at.colls);
         self.draft.enums.truncate(at.enums);
         self.draft.types.truncate(at.types);
         self.draft.consts.truncate(at.consts);
         self.draft.strings.truncate(at.strings);
-        self.draft.application = at.application;
     }
 }
 
@@ -746,18 +719,13 @@ impl Default for ImageDraft {
 impl ImageDraft {
     pub fn new() -> Self {
         Self {
-            identity: DraftIdentity::mint(),
-            next_stamp: 0,
+            durable: DurableContractGraph::new(),
             strings: Vec::new(),
             consts: Vec::new(),
             types: Vec::new(),
             enums: Vec::new(),
             colls: Vec::new(),
-            products: ProductDeclarationTable::default(),
-            occurrences: RootOccurrenceTable::default(),
             product_conflict: None,
-            application: None,
-            value_shapes: CanonicalValueShapeDag::new(),
             sites: SiteDemandPlan::default(),
             functions: Vec::new(),
             exports: Vec::new(),
@@ -765,19 +733,9 @@ impl ImageDraft {
         }
     }
 
-    /// The stamp the next appended row carries.
-    fn next_stamp(&mut self) -> RowStamp {
-        self.next_stamp += 1;
-        RowStamp(self.next_stamp)
-    }
-
     /// The live tables a site binding is validated and projected against.
     fn graph(&self) -> OccurrenceGraph<'_> {
-        OccurrenceGraph {
-            draft: self.identity,
-            occurrences: &self.occurrences,
-            products: &self.products,
-        }
+        self.durable.occurrence_graph()
     }
 
     /// Intern a string, returning its logical id. Repeated interning of the same
@@ -921,16 +879,9 @@ impl ImageDraft {
         entry_record: TypeId,
         members: Vec<DeclarationMemberDef>,
     ) -> Result<Vec<DeclarationMember>, SitePlanStateError> {
-        let stamp = self.next_stamp();
         let (row, conflict) = self
-            .products
-            .admit_under(
-                plan,
-                DurableProductIdentity::minted(product),
-                ProductEntryRecordClaim::new(entry_record),
-                members,
-                stamp,
-            )
+            .durable
+            .admit_product(plan, product, entry_record, members)
             .map_err(|_| SitePlanStateError::new(SitePlanState::InvalidDemand))?;
         if let Some(conflict) = conflict {
             self.product_conflict.get_or_insert(conflict);
@@ -959,34 +910,10 @@ impl ImageDraft {
         product: LedgerIdBytes,
         def: RootOccurrenceDef,
     ) -> Result<AdmittedRoot, SitePlanStateError> {
-        if self.occurrences.len() >= plan.roots() {
-            return Err(SitePlanStateError::new(SitePlanState::InvalidDemand));
-        }
-        let RootOccurrenceDef {
-            name,
-            keys,
-            placement,
-            indexes,
-        } = def;
-        let declaration = self
-            .products
-            .row_of(DurableProductIdentity::minted(product))
-            .ok_or_else(|| SitePlanStateError::new(SitePlanState::InvalidDemand))?;
-        let stamp = self.next_stamp();
         let occurrence = self
-            .occurrences
-            .push(
-                self.identity,
-                RootOccurrenceRow {
-                    declaration,
-                    name,
-                    keys,
-                    placement: RootPlacementIdentity::minted(placement),
-                    indexes,
-                },
-                stamp,
-            )
-            .ok_or_else(|| SitePlanStateError::new(SitePlanState::InvalidDemand))?;
+            .durable
+            .admit_root_occurrence(plan, product, def)
+            .map_err(|_| SitePlanStateError::new(SitePlanState::InvalidDemand))?;
         let root_id = occurrence.wire_root_id();
         let (placement, indexes) = self
             .graph()
@@ -1011,14 +938,9 @@ impl ImageDraft {
     /// a second root over one Product reads the declaration the draft already holds
     /// instead of resolving that resource's anchors again.
     ///
-    /// `plan` is the entry capability, not a budget: reading a declaration appends nothing,
-    /// and a draft built under [`AdmittedGraphInputPlan::EMPTY`] holds no declaration to
-    /// read, so this answers `None` under it without a check of its own.
-    pub fn product_members(
-        &self,
-        _plan: &AdmittedGraphInputPlan,
-        product: LedgerIdBytes,
-    ) -> Option<Vec<DeclarationMember>> {
+    /// Reading takes no construction budget: it appends nothing, and a draft that was never
+    /// admitted any construction holds no declaration to read.
+    pub fn product_members(&self, product: LedgerIdBytes) -> Option<Vec<DeclarationMember>> {
         self.graph()
             .product_members(DurableProductIdentity::minted(product))
     }
@@ -1030,12 +952,8 @@ impl ImageDraft {
     /// is refused rather than answered with an empty member list: "this is not mine" and
     /// "this node declares nothing" are different facts, and a caller that classifies a
     /// declaration by its members would read the first as the second.
-    ///
-    /// `plan` is the entry capability, not a budget: reading appends nothing, and no
-    /// selector this draft published exists under [`AdmittedGraphInputPlan::EMPTY`].
     pub fn members_of(
         &self,
-        _plan: &AdmittedGraphInputPlan,
         path: &CanonicalDeclarationPathSelector,
     ) -> Result<Vec<DeclarationMember>, SitePlanStateError> {
         self.graph()
@@ -1053,26 +971,23 @@ impl ImageDraft {
     /// second target, and the returned handle borrows nothing: the immutable borrow ends
     /// here, before [`Self::request_site`] takes the draft mutably.
     ///
-    /// `plan` is the entry capability, not a budget: binding appends nothing, and both
-    /// selectors it proves live are ones only an admitted construction could have
-    /// published, so a draft built under [`AdmittedGraphInputPlan::EMPTY`] can present
-    /// none.
+    /// Binding takes no construction budget: it appends nothing, and the two selectors it
+    /// proves live could only have been published by a construction that was admitted one.
     pub fn bind_occurrence_site(
         &self,
-        _plan: &AdmittedGraphInputPlan,
         root: &RootOccurrenceSelector,
         path: &CanonicalDeclarationPathSelector,
         target: SemanticTarget,
     ) -> Result<OccurrenceSiteHandle, SitePlanStateError> {
         let demand = self.graph().validate(root, path, target)?;
-        Ok(OccurrenceSiteHandle::new(self.identity, demand))
+        Ok(OccurrenceSiteHandle::new(self.durable.identity(), demand))
     }
 
     /// Record the application's ledger id. Required exactly when the draft has a
     /// durable root — the durable graph's identity is anchored to it; a storeless
     /// image carries none.
     pub fn set_application_identity(&mut self, id: LedgerIdBytes) {
-        self.application = Some(id);
+        self.durable.set_application_identity(id);
     }
 
     /// Mint-or-return the operation site answering the bound demand `handle` names,
@@ -1096,23 +1011,23 @@ impl ImageDraft {
     /// nonblocking, and the encoder refuses the image through the Sites bound — but there
     /// is no id that would not alias a fitting site, so none is carried.
     ///
-    /// `plan` is the entry capability. The site table is its own bounded owner — the plan
-    /// admits graph input, not site capacity — and the handle a request spends could only
-    /// have been bound against rows an admitted construction published.
+    /// A request takes no construction budget: the site table is its own bounded owner —
+    /// a construction plan admits graph input, not site capacity — and the handle a
+    /// request spends could only have been bound against rows an admitted construction
+    /// published.
     pub fn request_site(
         &mut self,
-        _plan: &AdmittedGraphInputPlan,
         handle: &OccurrenceSiteHandle,
     ) -> Result<LegacyDraftSiteOperand, SitePlanStateError> {
-        if handle.draft() != self.identity {
+        if handle.draft() != self.durable.identity() {
             return Err(SitePlanStateError::new(SitePlanState::WrongPlan));
         }
         // The rows the handle was bound against may have been discarded since; rebinding
         // the same triple against the live tables is what proves they were not.
         let demand = handle.demand();
-        let stamp = self.next_stamp();
+        let stamp = self.durable.next_stamp();
         let live = self.graph().revalidate(&demand)?;
-        Ok(self.sites.request(self.identity, live, stamp))
+        Ok(self.sites.request(self.durable.identity(), live, stamp))
     }
 
     /// Append a function body, validating every operation site its code names first.
@@ -1127,7 +1042,7 @@ impl ImageDraft {
         for instr in &def.code {
             if let Some(site) = instr.site_operand() {
                 self.sites
-                    .validate(self.identity, site)
+                    .validate(self.durable.identity(), site)
                     .map_err(SitePlanStateError::new)?;
             }
         }
@@ -1182,18 +1097,13 @@ impl ImageDraft {
     /// rollback by omission.
     fn checkpoint(&self) -> DraftCheckpoint {
         let Self {
-            identity: _,
-            next_stamp: _,
+            durable,
             strings,
             consts,
             types,
             enums,
             colls,
-            products,
-            occurrences,
             product_conflict,
-            application,
-            value_shapes,
             sites,
             functions,
             exports,
@@ -1205,14 +1115,11 @@ impl ImageDraft {
             types: types.len(),
             enums: enums.len(),
             colls: colls.len(),
-            products: products.declarations().len(),
-            occurrences: occurrences.len(),
-            value_shapes: value_shapes.len(),
+            durable: durable.checkpoint(),
             sites: sites.rows().len(),
             functions: functions.len(),
             exports: exports.len(),
             test_entries: test_entries.len(),
-            application: *application,
             product_conflict: *product_conflict,
             receipt: sites.receipt(),
         }
@@ -1222,13 +1129,13 @@ impl ImageDraft {
     /// value shape into. A declaration row can only carry a reference minted here, so
     /// there is no second place a value shape can come from.
     pub fn value_shapes_mut(&mut self) -> &mut CanonicalValueShapeDag {
-        &mut self.value_shapes
+        self.durable.value_shapes_mut()
     }
 
     /// The draft's one durable value-shape arena, for reading a minted shape's depth,
     /// kind, and references.
     pub fn value_shapes(&self) -> &CanonicalValueShapeDag {
-        &self.value_shapes
+        self.durable.value_shapes()
     }
 
     /// This draft's durable contract graph, borrowed in place.
@@ -1240,12 +1147,7 @@ impl ImageDraft {
     /// however many roots occur over it and the contract identity is computed over
     /// exactly the rows the DURABLE section is written from.
     pub fn contract_view(&self) -> DurableContractView<'_> {
-        DurableContractView::over(
-            self.application,
-            &self.products,
-            &self.occurrences,
-            &self.value_shapes,
-        )
+        self.durable.contract_view()
     }
 
     // --- accessors used by the encoder ---
@@ -1266,18 +1168,20 @@ impl ImageDraft {
     }
     /// The flat root-occurrence rows, in declaration order.
     pub(crate) fn root_occurrences(&self) -> &[RootOccurrence] {
-        self.occurrences.rows()
+        self.durable.occurrences().rows()
     }
 
     /// The Product declaration one occurrence row projects.
     pub(crate) fn declaration_of(&self, occurrence: &RootOccurrence) -> &ProductDeclaration {
-        self.products.declaration(occurrence.declaration())
+        self.durable
+            .products()
+            .declaration(occurrence.declaration())
     }
 
     /// The admitted Product declarations, each retained once however many roots occur
     /// over it.
     pub(crate) fn product_declarations(&self) -> &[ProductDeclaration] {
-        self.products.declarations()
+        self.durable.products().declarations()
     }
 
     /// The first divergent repeat of an already-declared Product, if one was appended.
@@ -1285,7 +1189,7 @@ impl ImageDraft {
         self.product_conflict
     }
     pub(crate) fn application_identity(&self) -> Option<LedgerIdBytes> {
-        self.application
+        self.durable.application()
     }
     /// The site table the encoder writes: each retained demand projected into the
     /// semantic path of the node it addresses, handed to `emit` in emission order.
@@ -1505,20 +1409,17 @@ mod site_binding_tests {
         let (first, first_root) = one_root();
         let (second, _) = one_root();
 
-        let mine = first.product_members(&plan(), product()).expect("declared");
-        let theirs = second
-            .product_members(&plan(), product())
-            .expect("declared");
+        let mine = first.product_members(product()).expect("declared");
+        let theirs = second.product_members(product()).expect("declared");
 
         // A path selector published by another draft is a wrong-plan refusal, however
         // identical the two graphs look.
         assert_eq!(
             first
                 .bind_occurrence_site(
-                    &plan(),
                     first_root.occurrence(),
                     theirs[0].path(),
-                    SemanticTarget::FieldLeaf,
+                    SemanticTarget::FieldLeaf
                 )
                 .expect_err("a foreign selector cannot bind"),
             SitePlanStateError::new(SitePlanState::WrongPlan),
@@ -1529,10 +1430,9 @@ mod site_binding_tests {
         assert_eq!(
             first
                 .bind_occurrence_site(
-                    &plan(),
                     first_root.occurrence(),
                     mine[0].path(),
-                    SemanticTarget::WholePayload,
+                    SemanticTarget::WholePayload
                 )
                 .expect_err("a field admits no whole-payload site"),
             SitePlanStateError::new(SitePlanState::InvalidDemand),
@@ -1540,10 +1440,9 @@ mod site_binding_tests {
         assert_eq!(
             first
                 .bind_occurrence_site(
-                    &plan(),
                     first_root.occurrence(),
                     first_root.placement_path(),
-                    SemanticTarget::FieldLeaf,
+                    SemanticTarget::FieldLeaf
                 )
                 .expect_err("a placement admits no field-leaf site"),
             SitePlanStateError::new(SitePlanState::InvalidDemand),
@@ -1554,10 +1453,9 @@ mod site_binding_tests {
         assert!(
             first
                 .bind_occurrence_site(
-                    &plan(),
                     first_root.occurrence(),
                     mine[0].path(),
-                    SemanticTarget::FieldLeaf,
+                    SemanticTarget::FieldLeaf
                 )
                 .is_ok()
         );
@@ -1604,7 +1502,6 @@ mod site_binding_tests {
                 .expect("the Product is declared");
             proof
                 .bind_occurrence_site(
-                    &plan(),
                     admitted.occurrence(),
                     admitted.placement_path(),
                     SemanticTarget::WholePayload,
@@ -1614,7 +1511,7 @@ mod site_binding_tests {
 
         assert_eq!(
             draft
-                .request_site(&plan(), &handle)
+                .request_site(&handle)
                 .expect_err("the occurrence row was discarded"),
             SitePlanStateError::new(SitePlanState::StaleBinding),
         );
@@ -1653,7 +1550,7 @@ mod site_binding_tests {
 
         assert_eq!(
             draft
-                .request_site(&plan(), &handle)
+                .request_site(&handle)
                 .expect_err("a re-minted row is not the row the handle was bound against"),
             SitePlanStateError::new(SitePlanState::StaleBinding),
         );
@@ -1681,7 +1578,7 @@ mod site_binding_tests {
             refusal,
             SitePlanStateError::new(SitePlanState::InvalidDemand)
         );
-        assert!(draft.product_members(&plan(), product()).is_none());
+        assert!(draft.product_members(product()).is_none());
         assert!(draft.root_occurrences().is_empty());
     }
 }

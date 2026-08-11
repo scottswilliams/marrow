@@ -140,19 +140,15 @@ fn groups_image() -> VerifiedImage {
         )
         .expect("the Product is declared");
 
-    let members = draft
-        .product_members(&admitted_plan(), product)
-        .expect("declared");
+    let members = draft.product_members(product).expect("declared");
     let root_entry = site(
         &mut draft,
-        &admitted_plan(),
         books.occurrence(),
         books.placement_path(),
         SemanticTarget::WholePayload,
     );
     let group_entry = site(
         &mut draft,
-        &admitted_plan(),
         books.occurrence(),
         members[1].path(),
         SemanticTarget::GroupEntry,

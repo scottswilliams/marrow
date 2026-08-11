@@ -13,27 +13,23 @@
 //! places, each free to drift into a different protocol before the migration reached it.
 
 use marrow_image::{
-    AdmittedGraphInputPlan, CanonicalDeclarationPathSelector, ImageDraft, LegacyDraftSiteOperand,
-    RootOccurrenceSelector, SemanticTarget,
+    CanonicalDeclarationPathSelector, ImageDraft, LegacyDraftSiteOperand, RootOccurrenceSelector,
+    SemanticTarget,
 };
 
 /// Bind one canonical declaration path of `root` to the target that node admits and mint
-/// its operation site, under the construction budget `plan` admits.
+/// its operation site.
 ///
-/// The plan travels rather than being minted here: this helper is the shared protocol, not
-/// an admission owner, and a helper that conjured its own capability would be exactly the
-/// planless entry the plan exists to remove.
+/// Neither step takes a construction budget: both selectors were published by an admitted
+/// construction, and the site table is its own bounded owner.
 pub fn site(
     draft: &mut ImageDraft,
-    plan: &AdmittedGraphInputPlan,
     root: &RootOccurrenceSelector,
     path: &CanonicalDeclarationPathSelector,
     target: SemanticTarget,
 ) -> LegacyDraftSiteOperand {
     let handle = draft
-        .bind_occurrence_site(plan, root, path, target)
+        .bind_occurrence_site(root, path, target)
         .expect("the path is a canonical path of this occurrence");
-    draft
-        .request_site(plan, &handle)
-        .expect("the binding is live")
+    draft.request_site(&handle).expect("the binding is live")
 }
