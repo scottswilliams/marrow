@@ -8,7 +8,8 @@ use super::tables::decode_bare_scalar;
 use crate::reader::Reader;
 use crate::reject::{VerifyPhase, VerifyRejection};
 use crate::sealed::{
-    SealedBranch, SealedGroup, SealedIndexComponent, SealedRecordType, SealedSite, SealedSiteTarget,
+    SealedBranch, SealedGroup, SealedIndex, SealedIndexComponent, SealedRecordType, SealedSite,
+    SealedSiteTarget,
 };
 use marrow_image::{
     DurableBranchShape, DurableContractDescriptor, DurableContractId, DurableEnumMemberShape,
@@ -626,35 +627,57 @@ fn top_level_field_index(members: &[DecodedMember], field_id: LedgerIdBytes) -> 
         .map(|index| index as u16)
 }
 
-/// Resolve an index's ledger-id projection to record/key positions the path kernel
-/// maintains, against the same decoded root the components were re-resolved against in
-/// `decode_indexes`. A field component names its position in the root's materialized
-/// record (tied to the durable member order); a key component names its column in the
-/// root's key tuple. Every component already resolved to a real leaf during decode, so a
-/// miss here is an internal inconsistency the verifier refuses rather than mis-addressing
-/// a maintained index cell.
-pub(super) fn resolve_index_projection(
+/// Seal every managed index of the root occurrence at DURABLE-table index
+/// `root_index`, resolving each ledger-id projection to the record/key positions the
+/// path kernel maintains.
+///
+/// A managed index is declared by one root occurrence, and its projection is resolved
+/// against that occurrence and no other: a field component names its position in the
+/// Product declaration's member order (tied to the materialized record), and a key
+/// component names its column in *this occurrence's* key tuple, which two roots over one
+/// Product may spell differently. Sealing the whole set here rather than resolving one
+/// projection at a time is what makes that pairing structural — the sealed row's root and
+/// the graph its components resolved against come from the same occurrence by
+/// construction, so no caller can pair an index with a neighbouring root.
+///
+/// Every component already resolved to a real leaf during decode, so a miss here is an
+/// internal inconsistency the verifier refuses rather than mis-addressing a maintained
+/// index cell.
+pub(super) fn seal_root_indexes(
+    root_index: u16,
     root: &DecodedRoot,
-    components: &[DurableIndexComponent],
-) -> Result<Vec<SealedIndexComponent>, VerifyRejection> {
-    components
+) -> Result<Vec<SealedIndex>, VerifyRejection> {
+    root.indexes
         .iter()
-        .map(|component| match component {
-            DurableIndexComponent::Field(id) => top_level_field_index(&root.members, *id)
-                .map(SealedIndexComponent::Field)
-                .ok_or(reject(
-                    VerifyPhase::Table,
-                    "durable index field component resolves to no record position",
-                )),
-            DurableIndexComponent::Key(id) => root
-                .keys
+        .map(|index| {
+            let projection = index
+                .components
                 .iter()
-                .position(|(_, key_id)| key_id == id)
-                .map(|column| SealedIndexComponent::Key(column as u16))
-                .ok_or(reject(
-                    VerifyPhase::Table,
-                    "durable index key component resolves to no key column",
-                )),
+                .map(|component| match component {
+                    DurableIndexComponent::Field(id) => top_level_field_index(&root.members, *id)
+                        .map(SealedIndexComponent::Field)
+                        .ok_or(reject(
+                            VerifyPhase::Table,
+                            "durable index field component resolves to no record position",
+                        )),
+                    DurableIndexComponent::Key(id) => root
+                        .keys
+                        .iter()
+                        .position(|(_, key_id)| key_id == id)
+                        .map(|column| SealedIndexComponent::Key(column as u16))
+                        .ok_or(reject(
+                            VerifyPhase::Table,
+                            "durable index key component resolves to no key column",
+                        )),
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(SealedIndex {
+                id: index.id,
+                root: root_index,
+                unique: index.unique,
+                components: index.components.clone(),
+                projection,
+            })
         })
         .collect()
 }

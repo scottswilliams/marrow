@@ -2,8 +2,7 @@
 
 use super::context::{Ctx, Effects, FnSig};
 use super::durable::{
-    is_flat_executable_root, member_flat_at_root, resolve_index_projection, seal_branches,
-    seal_groups,
+    is_flat_executable_root, member_flat_at_root, seal_branches, seal_groups, seal_root_indexes,
 };
 use super::flow::durable_op_class;
 use super::model::DecodedImage;
@@ -92,16 +91,7 @@ pub(super) fn seal(decoded: DecodedImage) -> Result<VerifiedImage, VerifyRejecti
     // form the path kernel maintains — against the same decoded root.
     let mut indexes: Vec<SealedIndex> = Vec::new();
     for (root_index, root) in decoded.roots.iter().enumerate() {
-        for index in &root.indexes {
-            let projection = resolve_index_projection(root, &index.components)?;
-            indexes.push(SealedIndex {
-                id: index.id,
-                root: root_index as u16,
-                unique: index.unique,
-                components: index.components.clone(),
-                projection,
-            });
-        }
+        indexes.extend(seal_root_indexes(root_index as u16, root)?);
     }
     let sites: Vec<SealedSite> = decoded.sites.clone();
     // Function signatures feed the per-function `Call` type check (phase 3).

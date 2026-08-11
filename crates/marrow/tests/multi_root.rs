@@ -13,7 +13,7 @@
 //! addresses.
 
 use marrow_compile::SourceDiagnostic;
-use marrow_verify::{SealedExport, TestKind, VerifiedImage};
+use marrow_verify::{SealedExport, SealedSite, SealedSiteTarget, TestKind, VerifiedImage};
 use marrow_vm::{DurableRun, Ephemeral, Value, mint_ephemeral, run_driver_test, run_export};
 
 const IDS: &str = "marrow ids v0\n\
@@ -1074,4 +1074,136 @@ fn a_nested_branch_through_a_place_addresses_its_own_occurrence() {
         Some(Value::Optional(None)),
         "and not in the declaration's first occurrence"
     );
+}
+
+/// Cross-root site distinctness: one Product field declaration, touched through two
+/// occurrences, receives one operation site **per occurrence**, and repeated touches
+/// within an occurrence reuse that occurrence's site.
+///
+/// A site names the durable node an instruction addresses. Two roots over one Product
+/// share every member declaration identity, so a dedup key that saw only the addressed
+/// declaration would hand the second occurrence the first occurrence's site — and with
+/// it, the first occurrence's data. The key is the addressed node's whole semantic path,
+/// which is occurrence-qualified, so the two sites are distinct while a repeat inside one
+/// occurrence is not.
+#[test]
+fn one_product_field_touched_through_two_roots_gets_one_site_per_occurrence() {
+    // `setA`/`setB` each touch `R.v` twice, and `readA`/`readB` touch it once more, so a
+    // per-occurrence site that failed to dedup would show four rows, not two.
+    let source = r#"resource R {
+    required v: int
+}
+
+store ^a[id: int]: R
+store ^b[id: int]: R
+
+pub fn setA(id: int, v: int) {
+    transaction {
+        ^a[id].v = v
+        ^a[id].v = v
+    }
+}
+
+pub fn setB(id: int, v: int) {
+    transaction {
+        ^b[id].v = v
+        ^b[id].v = v
+    }
+}
+
+pub fn readA(id: int): int? {
+    return ^a[id].v
+}
+
+pub fn readB(id: int): int? {
+    return ^b[id].v
+}
+"#;
+    // The same program with the two occurrences' first touches in the opposite order.
+    let reversed = r#"resource R {
+    required v: int
+}
+
+store ^a[id: int]: R
+store ^b[id: int]: R
+
+pub fn setB(id: int, v: int) {
+    transaction {
+        ^b[id].v = v
+        ^b[id].v = v
+    }
+}
+
+pub fn setA(id: int, v: int) {
+    transaction {
+        ^a[id].v = v
+        ^a[id].v = v
+    }
+}
+
+pub fn readB(id: int): int? {
+    return ^b[id].v
+}
+
+pub fn readA(id: int): int? {
+    return ^a[id].v
+}
+"#;
+    for program in [source, reversed] {
+        let image = verify(program, SHARED_FLAT_IDS);
+        let leaves: Vec<u16> = image
+            .sites()
+            .iter()
+            .filter_map(|site| match site {
+                SealedSite::Flat {
+                    root,
+                    target: SealedSiteTarget::FieldLeaf(0),
+                } => Some(*root),
+                _ => None,
+            })
+            .collect();
+        let mut roots = leaves.clone();
+        roots.sort_unstable();
+        assert_eq!(
+            roots,
+            vec![0, 1],
+            "one field-leaf site per occurrence, and exactly one however often it is \
+             touched: {leaves:?}"
+        );
+    }
+
+    // A single-root control fixes the per-occurrence count the two-root image doubles:
+    // the second occurrence adds sites, it does not divide the first occurrence's.
+    let one_root = r#"resource R {
+    required v: int
+}
+
+store ^a[id: int]: R
+
+pub fn setA(id: int, v: int) {
+    transaction {
+        ^a[id].v = v
+        ^a[id].v = v
+    }
+}
+
+pub fn readA(id: int): int? {
+    return ^a[id].v
+}
+"#;
+    let control = verify(one_root, SHARED_FLAT_IDS);
+    let control_leaves = control
+        .sites()
+        .iter()
+        .filter(|site| {
+            matches!(
+                site,
+                SealedSite::Flat {
+                    target: SealedSiteTarget::FieldLeaf(_),
+                    ..
+                }
+            )
+        })
+        .count();
+    assert_eq!(control_leaves, 1, "one occurrence, one field-leaf site");
 }
