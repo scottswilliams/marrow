@@ -344,14 +344,71 @@ building it, so a body no image could carry is refused before any buffer, contra
 preimage, or output is allocated. The producer mints a durable-contract identity only
 from the value that fence returns.
 
-The identity carries its own ceiling as well. A contract descriptor is a public view
-over a public value-shape arena, and the canonical identity payload spells a value as
-its expansion, so the length of that payload is not bounded by the size of the graph
-describing it. `contract_id` therefore refuses a payload past twice the whole-image
-ceiling instead of allocating it. That ceiling is above every graph an image can carry —
-the payload spells a ledger reference in 25 bytes where the DURABLE section writes the
-same identity in 16 — so the refusal is unreachable from the compiler and from the
-verifier, and it bounds the work of asking for an identity for every other caller.
+The identity carries its own ceiling as well. The canonical identity payload spells a
+value as its expansion, so the length of that payload is not bounded by the size of the
+graph describing it. `contract_id` therefore streams the payload into the hash without
+materializing it and refuses a graph whose payload passes
+`MAX_FITTING_CONTRACT_PREIMAGE_BYTES` instead of allocating it. That bound is derived,
+not chosen: the preimage and the DURABLE body are the same walk over the same rows,
+differing only in that the preimage spells a ledger reference in 25 bytes where the body
+writes it in 16, so the widest payload a fence-admitted body can produce is that ratio of
+the whole-image ceiling. Every graph an image can carry is therefore inside it, and the
+refusal bounds the work of asking for an identity for every other caller.
+
+### The durable contract graph is opaque
+
+The graph is reached only through borrowed views. `DurableContractView<'_>` is a
+zero-allocation non-owning view over the flat tables and the value arena; a root, a member,
+and a member's kind are borrowed views whose payload structs have private fields and no
+constructor. A caller can match a member exhaustively and walk its children, and cannot
+state a graph of its own — there is no public recursive member type, no public raw field or
+variant, and no entry point that accepts an already-built recursive owner by value. The
+seven raw `Durable*Shape` tree types and the `DurableContractDescriptor` they were built
+into are deleted; what remains of that family is the two flat, non-recursive index rows a
+managed-index declaration is stated as.
+
+Both walks over the graph — the semantic-node enumeration and the payload writer — descend
+an explicit stack of member runs rather than the machine stack, so a maximum graph's
+traversal, equality, and teardown cost frames that do not grow with its nesting.
+
+### Construction requires an admitted plan
+
+Every entry point that adds to a durable graph — declaring a Product, occurring a root,
+binding or requesting a site, and reading a declaration's members — takes an
+`AdmittedGraphInputPlan`. The plan is count-frozen and is minted only by an admission
+owner from its own census, so it cannot be spelled by a caller: its counts are private, and
+`admit` refuses any term past what a program image could carry. A storeless compile carries
+the empty plan, under which the constructing entry points refuse naturally. The plan bounds
+*intake*; it classifies nothing, and the declaration graph's own command validation remains
+the one structural validator of a command vector.
+
+### An over-deep durable member is refused at its own span
+
+A member tree nested past `MAX_DURABLE_DEPTH` is refused as a `check.resource_limit`
+diagnostic at the offending member's span, from `marrow check` and `marrow run` alike and
+whether or not the project's durable identities have been minted. No durable structural
+bound is a public resource kind: the image's own depth, member-count, and index-component
+defenses remain, but they are producer-side construction contradictions from a coherent
+compiler rather than outcomes a program can reach, and the independent verifier answers a
+hostile image with its own typed bound rejection.
+
+**Accounted durable-graph terms.** What holding a durable contract graph costs is
+published per element by `marrow-image` — one member command, one member row, one Product
+row, one occurrence row, one managed index, one value node, one value reference — and each
+admission owner derives its own maximum from those charges rather than sampling a fixture.
+
+```text
+compiler-side, at the identity ledger's admitted anchors    =  42,653,752 B  (<= 64 MiB declared)
+verifier-side, at the whole-image ceiling                   = 145,228,008 B  (<= 256 MiB declared)
+durable value arena, at the type population                 = 8,212,611,072 B  (exported, unbounded here)
+```
+
+The first two are asserted in a `const` context, so a representation change that breached
+either ceiling fails the build. The third is an exported term, not a bound this layer
+asserts: the arena's populations are bounded by the type population rather than by the
+identity ledger, and tightening them belongs to the durable-value owner. A negative control
+holds the first figure honest — the superseded representation, which expanded a member tree
+per root occurrence, does not close under the same ceiling.
 
 A declaration's branch entry records are materialized once for the Product, at its
 first executable occurrence. `marrow-verify` reconstructs the declaration and its
