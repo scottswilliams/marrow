@@ -107,6 +107,7 @@ use crate::semantic::{
     SemanticNode, SemanticNodeKind, SemanticPath, SemanticStep, SemanticStepKind,
 };
 use crate::ty::Scalar;
+use crate::value_dag::{CanonicalValueShapeDag, ValueShapeNodeId, ValueShapeWireForm, expand};
 
 /// The domain-separation tag for the durable-contract identity. Distinct from every
 /// other Marrow identity's `kind`, so a `DurableContractId` can never collide with
@@ -124,17 +125,13 @@ const IDREF_PRODUCT: u8 = 1;
 const IDREF_FIELD: u8 = 2;
 const IDREF_ROOT: u8 = 3;
 const IDREF_KEY: u8 = 4;
-const IDREF_SUM: u8 = 5;
-const IDREF_MEMBER: u8 = 6;
+/// The two kinds a durable value shape carries. The expansion owner
+/// ([`crate::value_dag`]) writes them; they are declared here with the rest of the
+/// mirror so the frozen kind space has one home.
+pub(crate) const IDREF_SUM: u8 = 5;
+pub(crate) const IDREF_MEMBER: u8 = 6;
 const IDREF_GROUP: u8 = 7;
 const IDREF_INDEX: u8 = 8;
-
-/// The frozen value-shape tag bytes distinguishing a durable field's stored value
-/// kinds within the canonical payload. Internal to this encoding and separate from
-/// the ledger `IDREF` kind space.
-const VSHAPE_SCALAR: u8 = 0;
-const VSHAPE_STRUCT: u8 = 1;
-const VSHAPE_ENUM: u8 = 2;
 
 /// The frozen member-tag bytes distinguishing the three durable member kinds
 /// within the canonical payload. They are internal to this encoding and separate
@@ -265,73 +262,15 @@ durable_identity!(
 );
 
 /// One stored field of a durable resource, group, or branch, as it contributes to
-/// the contract identity: its ledger id, whether it is required, and its stored
-/// value shape. The field's *name* is not part of the identity — a rename preserves
-/// it — but its value shape is: retyping or restructuring the value changes the
-/// contract id.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// the contract identity: its ledger id, whether it is required, and a reference to
+/// its stored value shape in the descriptor's arena. The field's *name* is not part of
+/// the identity — a rename preserves it — but its value shape is: retyping or
+/// restructuring the value changes the contract id.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DurableFieldShape {
     pub id: LedgerIdBytes,
     pub required: bool,
-    pub value: DurableValueShape,
-}
-
-/// The stored value shape of a durable field, from the closed acyclic durable value
-/// set. A nominal scalar erases to its base [`Scalar`]; a dense `struct` records its
-/// leaves positionally (no per-leaf ledger id); a closed `enum` (including `Option`)
-/// carries its sum identity and one member identity per variant. The tree is
-/// recursive: a struct leaf or an enum member payload is itself a value shape.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum DurableValueShape {
-    Scalar(Scalar),
-    Struct(Vec<DurableValueShape>),
-    Enum {
-        sum: LedgerIdBytes,
-        members: Vec<DurableEnumMemberShape>,
-    },
-}
-
-/// One member (variant) of a durable-reachable enum, as it contributes to the
-/// contract identity: its ledger id (kind 6) and its dense payload leaves in
-/// declaration order. Member order is part of the identity, so append-only member
-/// evolution preserves every existing member's id and position.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DurableEnumMemberShape {
-    pub id: LedgerIdBytes,
-    pub payload: Vec<DurableValueShape>,
-}
-
-impl DurableValueShape {
-    /// Append this value shape's canonical bytes (the `value` production above).
-    /// Shared by the descriptor's identity payload and the image DURABLE section, so
-    /// both spell a durable field's value one way.
-    pub fn encode(&self, out: &mut Vec<u8>) {
-        match self {
-            DurableValueShape::Scalar(scalar) => {
-                out.push(VSHAPE_SCALAR);
-                out.push(scalar.tag());
-            }
-            DurableValueShape::Struct(leaves) => {
-                out.push(VSHAPE_STRUCT);
-                out.extend_from_slice(&(leaves.len() as u16).to_be_bytes());
-                for leaf in leaves {
-                    leaf.encode(out);
-                }
-            }
-            DurableValueShape::Enum { sum, members } => {
-                out.push(VSHAPE_ENUM);
-                push_idref(out, IDREF_SUM, sum);
-                out.extend_from_slice(&(members.len() as u16).to_be_bytes());
-                for member in members {
-                    push_idref(out, IDREF_MEMBER, &member.id);
-                    out.extend_from_slice(&(member.payload.len() as u16).to_be_bytes());
-                    for leaf in &member.payload {
-                        leaf.encode(out);
-                    }
-                }
-            }
-        }
-    }
+    pub value: ValueShapeNodeId,
 }
 
 /// One key column of a durable root or branch placement, as it contributes to the
@@ -423,27 +362,41 @@ pub struct DurableRootShape {
 /// encoding, and agreement between the two is a recomputation rather than a trusted
 /// transfer.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DurableContractDescriptor {
+pub struct DurableContractDescriptor<'a> {
     application: Option<LedgerIdBytes>,
     roots: Vec<DurableRootShape>,
+    /// The arena the roots' field values reference. It is borrowed, never owned: the
+    /// descriptor is a view over its builder's one value-shape owner, so there is no
+    /// second copy of a program's value shapes and no way to pair a root table with an
+    /// arena that did not mint its references.
+    values: &'a CanonicalValueShapeDag,
 }
 
-impl DurableContractDescriptor {
-    /// Build a descriptor for a durable graph: the application's ledger id and the
-    /// roots in image order. A graph with roots always has an application identity.
-    pub fn new(application: LedgerIdBytes, roots: Vec<DurableRootShape>) -> Self {
+impl<'a> DurableContractDescriptor<'a> {
+    /// Build a descriptor for a durable graph: the application's ledger id, the roots in
+    /// image order, and the arena their field values reference. A graph with roots
+    /// always has an application identity.
+    pub fn new(
+        application: LedgerIdBytes,
+        roots: Vec<DurableRootShape>,
+        values: &'a CanonicalValueShapeDag,
+    ) -> Self {
         Self {
             application: Some(application),
             roots,
+            values,
         }
     }
 
     /// The canonical descriptor of the empty durable graph: a storeless project has
-    /// no ledger, no application id, and a well-defined stable contract id.
-    pub fn empty() -> Self {
+    /// no ledger, no application id, and a well-defined stable contract id. It
+    /// references no value shape; the arena is threaded so the descriptor has one shape
+    /// whether or not the program declares durable data.
+    pub fn empty(values: &'a CanonicalValueShapeDag) -> Self {
         Self {
             application: None,
             roots: Vec::new(),
+            values,
         }
     }
 
@@ -500,7 +453,7 @@ impl DurableContractDescriptor {
             push_idref(&mut out, IDREF_ROOT, &root.placement);
             push_idref(&mut out, IDREF_PRODUCT, &root.product);
             push_keys(&mut out, &root.keys);
-            push_members(&mut out, &root.members);
+            push_members(&mut out, &root.members, self.values);
             push_indexes(&mut out, &root.indexes);
         }
         out
@@ -579,7 +532,11 @@ fn push_keys(out: &mut Vec<u8>, keys: &[DurableKeyShape]) {
 /// Append a member tree: `u16_be(count) ‖ member*`, each member a tag byte and its
 /// body. Recurses through groups and branches so a whole durable shape has one
 /// canonical byte image.
-fn push_members(out: &mut Vec<u8>, members: &[DurableMemberShape]) {
+fn push_members(
+    out: &mut Vec<u8>,
+    members: &[DurableMemberShape],
+    values: &CanonicalValueShapeDag,
+) {
     out.extend_from_slice(&(members.len() as u16).to_be_bytes());
     for member in members {
         match member {
@@ -587,18 +544,23 @@ fn push_members(out: &mut Vec<u8>, members: &[DurableMemberShape]) {
                 out.push(MEMBER_FIELD);
                 push_idref(out, IDREF_FIELD, &field.id);
                 out.push(u8::from(field.required));
-                field.value.encode(out);
+                expand(
+                    values,
+                    field.value,
+                    ValueShapeWireForm::ContractPayload,
+                    out,
+                );
             }
             DurableMemberShape::Group(group) => {
                 out.push(MEMBER_GROUP);
                 push_idref(out, IDREF_GROUP, &group.id);
-                push_members(out, &group.members);
+                push_members(out, &group.members, values);
             }
             DurableMemberShape::Branch(branch) => {
                 out.push(MEMBER_BRANCH);
                 push_idref(out, IDREF_ROOT, &branch.placement);
                 push_keys(out, &branch.keys);
-                push_members(out, &branch.members);
+                push_members(out, &branch.members, values);
             }
         }
     }
@@ -661,28 +623,109 @@ fn push_lp(out: &mut Vec<u8>, bytes: &[u8]) {
 #[cfg(test)]
 mod tests {
     use super::{
-        DURABLE_CONTRACT_KIND, DurableBranchShape, DurableContractDescriptor,
-        DurableEnumMemberShape, DurableFieldShape, DurableGroupShape, DurableIndexComponent,
-        DurableIndexShape, DurableKeyShape, DurableMemberShape, DurableRootShape,
-        DurableValueShape, LOCAL_ROOT_LINEAGE, LedgerIdBytes,
+        DURABLE_CONTRACT_KIND, DurableBranchShape, DurableContractDescriptor, DurableFieldShape,
+        DurableGroupShape, DurableIndexComponent, DurableIndexShape, DurableKeyShape,
+        DurableMemberShape, DurableRootShape, LOCAL_ROOT_LINEAGE, LedgerIdBytes,
     };
     use crate::ty::Scalar;
+    use crate::value_dag::{CanonicalValueShapeDag, ValueShapeNodeId, ValueShapeView};
     use sha2::{Digest, Sha256};
+    use std::sync::OnceLock;
 
     fn id(byte: u8) -> LedgerIdBytes {
         LedgerIdBytes::from_bytes([byte; 16])
     }
 
-    fn field(byte: u8, scalar: Scalar, required: bool) -> DurableMemberShape {
-        DurableMemberShape::Field(DurableFieldShape {
-            id: id(byte),
-            required,
-            value: DurableValueShape::Scalar(scalar),
+    /// The one arena these graphs' field values are minted in.
+    ///
+    /// A descriptor borrows the arena that minted its references, so the graphs share
+    /// one that outlives every descriptor built from them. Each shape a test needs is
+    /// minted here by name: a value shape is an interned node, so a test states the
+    /// shape it wants rather than editing one in place.
+    struct Shapes {
+        values: CanonicalValueShapeDag,
+        scalars: Vec<(Scalar, ValueShapeNodeId)>,
+        /// `struct { text, int }` and the same leaves in the other order.
+        text_int: ValueShapeNodeId,
+        int_text: ValueShapeNodeId,
+        /// An `Option[int]`-shaped enum: `none` (empty) then `some` (int).
+        option_int: ValueShapeNodeId,
+        /// The same enum with a re-minted sum id.
+        option_int_resummed: ValueShapeNodeId,
+        /// A user enum with three members, the last carrying a text payload.
+        user_enum: ValueShapeNodeId,
+        /// The same enum with its first member's id re-minted.
+        user_enum_re_membered: ValueShapeNodeId,
+        /// The same enum with its first two members swapped.
+        user_enum_reordered: ValueShapeNodeId,
+        /// The same enum with its payload leaf retyped to int.
+        user_enum_retyped: ValueShapeNodeId,
+    }
+
+    fn shapes() -> &'static Shapes {
+        static SHAPES: OnceLock<Shapes> = OnceLock::new();
+        SHAPES.get_or_init(|| {
+            let mut values = CanonicalValueShapeDag::new();
+            let scalars = [
+                Scalar::Int,
+                Scalar::Text,
+                Scalar::Bool,
+                Scalar::Bytes,
+                Scalar::Date,
+                Scalar::Instant,
+                Scalar::Duration,
+            ]
+            .into_iter()
+            .map(|scalar| (scalar, values.scalar(scalar)))
+            .collect::<Vec<_>>();
+            let int = values.scalar(Scalar::Int);
+            let text = values.scalar(Scalar::Text);
+            let text_int = values.struct_shape(vec![text, int]);
+            let int_text = values.struct_shape(vec![int, text]);
+            let option_members = || vec![(id(0x51), Vec::new()), (id(0x52), vec![int])];
+            let option_int = values.enum_shape(id(0x50), option_members());
+            let option_int_resummed = values.enum_shape(id(0x60), option_members());
+            let user = |first: LedgerIdBytes, second: LedgerIdBytes, payload: ValueShapeNodeId| {
+                vec![
+                    (first, Vec::new()),
+                    (second, Vec::new()),
+                    (id(0x56), vec![payload]),
+                ]
+            };
+            let user_enum = values.enum_shape(id(0x53), user(id(0x54), id(0x55), text));
+            let user_enum_re_membered = values.enum_shape(id(0x53), user(id(0x61), id(0x55), text));
+            let user_enum_reordered = values.enum_shape(id(0x53), user(id(0x55), id(0x54), text));
+            let user_enum_retyped = values.enum_shape(id(0x53), user(id(0x54), id(0x55), int));
+            Shapes {
+                values,
+                scalars,
+                text_int,
+                int_text,
+                option_int,
+                option_int_resummed,
+                user_enum,
+                user_enum_re_membered,
+                user_enum_reordered,
+                user_enum_retyped,
+            }
         })
     }
 
+    fn scalar_shape(scalar: Scalar) -> ValueShapeNodeId {
+        shapes()
+            .scalars
+            .iter()
+            .find(|(candidate, _)| *candidate == scalar)
+            .expect("every scalar is minted")
+            .1
+    }
+
+    fn field(byte: u8, scalar: Scalar, required: bool) -> DurableMemberShape {
+        value_field(byte, required, scalar_shape(scalar))
+    }
+
     /// A durable field carrying a widened value shape.
-    fn value_field(byte: u8, required: bool, value: DurableValueShape) -> DurableMemberShape {
+    fn value_field(byte: u8, required: bool, value: ValueShapeNodeId) -> DurableMemberShape {
         DurableMemberShape::Field(DurableFieldShape {
             id: id(byte),
             required,
@@ -690,11 +733,18 @@ mod tests {
         })
     }
 
+    fn descriptor(
+        application: LedgerIdBytes,
+        roots: Vec<DurableRootShape>,
+    ) -> DurableContractDescriptor<'static> {
+        DurableContractDescriptor::new(application, roots, &shapes().values)
+    }
+
     /// The tracer's `counters` graph with fixed test ids: application `0x0a`,
     /// placement `0x0b`, key `0x0c`, product `0x0d`, fields `0x0e`/`0x0f`. A flat
     /// single-column-keyed resource: its member tree is two top-level fields.
-    fn counters_graph() -> DurableContractDescriptor {
-        DurableContractDescriptor::new(
+    fn counters_graph() -> DurableContractDescriptor<'static> {
+        descriptor(
             id(0x0a),
             vec![DurableRootShape {
                 placement: id(0x0b),
@@ -716,8 +766,8 @@ mod tests {
     /// `group` namespace holding a field, and a keyed `branch` placement holding a
     /// field and its own nested group. This is the shape the branch/group slice
     /// makes identity-complete.
-    fn library_graph() -> DurableContractDescriptor {
-        DurableContractDescriptor::new(
+    fn library_graph() -> DurableContractDescriptor<'static> {
+        descriptor(
             id(0x0a),
             vec![DurableRootShape {
                 placement: id(0x0b),
@@ -809,7 +859,7 @@ mod tests {
     /// the construction reproduces the same 32 bytes. It shares no code with
     /// `DurableContractDescriptor::encode_graph`/`DurableContractId::compute`, so a
     /// change to the owner that silently altered the layout would diverge here.
-    fn independent_id(descriptor: &DurableContractDescriptor) -> String {
+    fn independent_id(descriptor: &DurableContractDescriptor<'_>) -> String {
         // Rebuild the graph bytes by hand from the descriptor's parts. This test
         // module is a child of the owner module, so it reads the private fields
         // directly while sharing none of the encoding code.
@@ -824,34 +874,38 @@ mod tests {
                 idref(out, 4, &key.id);
             }
         }
-        fn value(out: &mut Vec<u8>, shape: &DurableValueShape) {
-            match shape {
-                DurableValueShape::Scalar(scalar) => {
+        fn value(out: &mut Vec<u8>, values: &CanonicalValueShapeDag, shape: ValueShapeNodeId) {
+            match values.view(shape) {
+                ValueShapeView::Scalar(scalar) => {
                     out.push(0);
                     out.push(scalar.tag());
                 }
-                DurableValueShape::Struct(leaves) => {
+                ValueShapeView::Struct(leaves) => {
                     out.push(1);
                     out.extend_from_slice(&(leaves.len() as u16).to_be_bytes());
                     for leaf in leaves {
-                        value(out, leaf);
+                        value(out, values, *leaf);
                     }
                 }
-                DurableValueShape::Enum { sum, members } => {
+                ValueShapeView::Enum { sum, members } => {
                     out.push(2);
-                    idref(out, 5, sum);
+                    idref(out, 5, &sum);
                     out.extend_from_slice(&(members.len() as u16).to_be_bytes());
                     for member in members {
-                        idref(out, 6, &member.id);
-                        out.extend_from_slice(&(member.payload.len() as u16).to_be_bytes());
-                        for leaf in &member.payload {
-                            value(out, leaf);
+                        idref(out, 6, &member.id());
+                        out.extend_from_slice(&(member.payload().len() as u16).to_be_bytes());
+                        for leaf in member.payload() {
+                            value(out, values, *leaf);
                         }
                     }
                 }
             }
         }
-        fn member_tree(out: &mut Vec<u8>, members: &[DurableMemberShape]) {
+        fn member_tree(
+            out: &mut Vec<u8>,
+            members: &[DurableMemberShape],
+            values: &CanonicalValueShapeDag,
+        ) {
             out.extend_from_slice(&(members.len() as u16).to_be_bytes());
             for member in members {
                 match member {
@@ -859,18 +913,18 @@ mod tests {
                         out.push(0);
                         idref(out, 2, &f.id);
                         out.push(u8::from(f.required));
-                        value(out, &f.value);
+                        value(out, values, f.value);
                     }
                     DurableMemberShape::Group(g) => {
                         out.push(1);
                         idref(out, 7, &g.id);
-                        member_tree(out, &g.members);
+                        member_tree(out, &g.members, values);
                     }
                     DurableMemberShape::Branch(b) => {
                         out.push(2);
                         idref(out, 3, &b.placement);
                         keys(out, &b.keys);
-                        member_tree(out, &b.members);
+                        member_tree(out, &b.members, values);
                     }
                 }
             }
@@ -898,7 +952,7 @@ mod tests {
             idref(&mut graph, 3, &root.placement);
             idref(&mut graph, 1, &root.product);
             keys(&mut graph, &root.keys);
-            member_tree(&mut graph, &root.members);
+            member_tree(&mut graph, &root.members, descriptor.values);
             indexes(&mut graph, &root.indexes);
         }
         let mut payload: Vec<u8> = Vec::new();
@@ -1029,8 +1083,8 @@ mod tests {
     /// `Option`-shaped enum, and a user enum. Enum members carry sum (kind 5) and
     /// member (kind 6) ids; the struct records its leaves positionally with no
     /// per-leaf id.
-    fn widened_graph() -> DurableContractDescriptor {
-        DurableContractDescriptor::new(
+    fn widened_graph() -> DurableContractDescriptor<'static> {
+        descriptor(
             id(0x0a),
             vec![DurableRootShape {
                 placement: id(0x0b),
@@ -1041,54 +1095,11 @@ mod tests {
                 }],
                 members: vec![
                     field(0x0e, Scalar::Int, true),
-                    value_field(
-                        0x40,
-                        false,
-                        DurableValueShape::Struct(vec![
-                            DurableValueShape::Scalar(Scalar::Text),
-                            DurableValueShape::Scalar(Scalar::Int),
-                        ]),
-                    ),
+                    value_field(0x40, false, shapes().text_int),
                     // An Option[int]-shaped enum: none (empty) then some (int).
-                    value_field(
-                        0x41,
-                        true,
-                        DurableValueShape::Enum {
-                            sum: id(0x50),
-                            members: vec![
-                                DurableEnumMemberShape {
-                                    id: id(0x51),
-                                    payload: vec![],
-                                },
-                                DurableEnumMemberShape {
-                                    id: id(0x52),
-                                    payload: vec![DurableValueShape::Scalar(Scalar::Int)],
-                                },
-                            ],
-                        },
-                    ),
+                    value_field(0x41, true, shapes().option_int),
                     // A user enum with three members, one carrying a payload.
-                    value_field(
-                        0x42,
-                        false,
-                        DurableValueShape::Enum {
-                            sum: id(0x53),
-                            members: vec![
-                                DurableEnumMemberShape {
-                                    id: id(0x54),
-                                    payload: vec![],
-                                },
-                                DurableEnumMemberShape {
-                                    id: id(0x55),
-                                    payload: vec![],
-                                },
-                                DurableEnumMemberShape {
-                                    id: id(0x56),
-                                    payload: vec![DurableValueShape::Scalar(Scalar::Text)],
-                                },
-                            ],
-                        },
-                    ),
+                    value_field(0x42, false, shapes().user_enum),
                 ],
                 indexes: Vec::new(),
             }],
@@ -1124,58 +1135,28 @@ mod tests {
 
         // Re-minting the sum id (a delete-then-re-add of the enum) changes the id.
         let mut re_summed = widened_graph();
-        if let DurableMemberShape::Field(f) = &mut re_summed.roots[0].members[2]
-            && let DurableValueShape::Enum { sum, .. } = &mut f.value
-        {
-            *sum = id(0x60);
-        } else {
-            panic!("member 2 is the Option-shaped enum field");
-        }
+        re_summed.roots[0].members[2] = value_field(0x41, true, shapes().option_int_resummed);
         assert_ne!(base, re_summed.contract_id());
 
         // Re-minting one member id (delete-then-re-add of a variant) changes the id.
         let mut re_membered = widened_graph();
-        if let DurableMemberShape::Field(f) = &mut re_membered.roots[0].members[3]
-            && let DurableValueShape::Enum { members, .. } = &mut f.value
-        {
-            members[0].id = id(0x61);
-        } else {
-            panic!("member 3 is the user enum field");
-        }
+        re_membered.roots[0].members[3] = value_field(0x42, false, shapes().user_enum_re_membered);
         assert_ne!(base, re_membered.contract_id());
 
         // Appending a member is positional: swapping two members changes the id, so a
         // member can never silently take another's code.
         let mut reordered = widened_graph();
-        if let DurableMemberShape::Field(f) = &mut reordered.roots[0].members[3]
-            && let DurableValueShape::Enum { members, .. } = &mut f.value
-        {
-            members.swap(0, 1);
-        } else {
-            panic!("member 3 is the user enum field");
-        }
+        reordered.roots[0].members[3] = value_field(0x42, false, shapes().user_enum_reordered);
         assert_ne!(base, reordered.contract_id());
 
         // Re-typing a member payload leaf changes the id.
         let mut retyped = widened_graph();
-        if let DurableMemberShape::Field(f) = &mut retyped.roots[0].members[3]
-            && let DurableValueShape::Enum { members, .. } = &mut f.value
-        {
-            members[2].payload[0] = DurableValueShape::Scalar(Scalar::Int);
-        } else {
-            panic!("member 3 is the user enum field");
-        }
+        retyped.roots[0].members[3] = value_field(0x42, false, shapes().user_enum_retyped);
         assert_ne!(base, retyped.contract_id());
 
         // Re-ordering a struct leaf changes the id (leaf order is load-bearing).
         let mut struct_swapped = widened_graph();
-        if let DurableMemberShape::Field(f) = &mut struct_swapped.roots[0].members[1]
-            && let DurableValueShape::Struct(leaves) = &mut f.value
-        {
-            leaves.swap(0, 1);
-        } else {
-            panic!("member 1 is the struct field");
-        }
+        struct_swapped.roots[0].members[1] = value_field(0x40, false, shapes().int_text);
         assert_ne!(base, struct_swapped.contract_id());
     }
 
@@ -1184,7 +1165,7 @@ mod tests {
     /// the independent decoder and is distinct from the single-key graph.
     #[test]
     fn singleton_and_composite_roots_encode_and_reconstruct() {
-        let singleton = DurableContractDescriptor::new(
+        let singleton = descriptor(
             id(0x0a),
             vec![DurableRootShape {
                 placement: id(0x0b),
@@ -1196,7 +1177,7 @@ mod tests {
         );
         assert_eq!(singleton.contract_id().to_hex(), independent_id(&singleton));
 
-        let composite = DurableContractDescriptor::new(
+        let composite = descriptor(
             id(0x0a),
             vec![DurableRootShape {
                 placement: id(0x0b),
@@ -1227,7 +1208,7 @@ mod tests {
     /// The `counters` graph plus two managed indexes: a nonunique `byLabel(label, name)`
     /// projecting the `label` field then the `name` key, and a unique `byValue(value)`
     /// projecting the `value` field. Fixed index ids `0x70`/`0x71`.
-    fn indexed_graph() -> DurableContractDescriptor {
+    fn indexed_graph() -> DurableContractDescriptor<'static> {
         let mut graph = counters_graph();
         graph.roots[0].indexes = vec![
             DurableIndexShape {
@@ -1309,7 +1290,7 @@ mod tests {
 
     #[test]
     fn the_empty_graph_has_a_stable_id() {
-        let empty = DurableContractDescriptor::empty();
+        let empty = DurableContractDescriptor::empty(&shapes().values);
         assert_eq!(empty.contract_id(), empty.contract_id());
         assert_ne!(empty.contract_id(), counters_graph().contract_id());
     }
@@ -1321,7 +1302,7 @@ mod tests {
     /// The `(node kind, step kinds, step ids)` fingerprint of every semantic node in
     /// pre-order, for exact structural assertions.
     fn node_shapes(
-        descriptor: &DurableContractDescriptor,
+        descriptor: &DurableContractDescriptor<'_>,
     ) -> Vec<(SemanticNodeKind, Vec<SemanticStepKind>, Vec<[u8; 16]>)> {
         descriptor
             .semantic_nodes()
@@ -1470,7 +1451,7 @@ mod tests {
     #[test]
     fn the_empty_graph_has_no_semantic_nodes() {
         assert!(
-            DurableContractDescriptor::empty()
+            DurableContractDescriptor::empty(&shapes().values)
                 .semantic_nodes()
                 .is_empty()
         );

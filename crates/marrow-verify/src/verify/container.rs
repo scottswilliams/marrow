@@ -98,7 +98,7 @@ pub(super) fn decode_container(bytes: &[u8]) -> Result<DecodedImage, VerifyRejec
     let collections = decode_collections(sections[9].1, types.len(), enums.len())?;
     validate_record_field_refs(&types, enums.len(), collections.len())?;
     reject_value_type_cycles(&types, &enums)?;
-    let (roots, sites, site_paths, durable_contract, durable_descriptor) =
+    let (roots, sites, site_paths, durable_contract, semantic_nodes, value_shapes) =
         decode_durable(sections[2].1, &strings, &types, &enums)?;
     let consts = decode_consts(sections[3].1, &strings)?;
     let mut functions = decode_functions(
@@ -123,7 +123,8 @@ pub(super) fn decode_container(bytes: &[u8]) -> Result<DecodedImage, VerifyRejec
         sites,
         site_paths,
         durable_contract,
-        durable_descriptor,
+        semantic_nodes,
+        value_shapes,
         consts,
         functions,
         exports,

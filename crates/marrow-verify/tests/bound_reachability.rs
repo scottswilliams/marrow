@@ -17,8 +17,8 @@
 
 use marrow_image::bounds::{MAX_IMAGE_BYTES, MAX_ROOTS, MAX_SITES, MAX_STRINGS, MAX_TYPES};
 use marrow_image::{
-    DeclarationMemberDef, DeclarationMemberShape, DurableValueShape, FieldDef, ImageBuildError,
-    ImageDraft, ImageType, LedgerIdBytes, RecordTypeDef, RootOccurrenceDef, Scalar, SemanticTarget,
+    DeclarationMemberDef, DeclarationMemberShape, FieldDef, ImageBuildError, ImageDraft, ImageType,
+    LedgerIdBytes, RecordTypeDef, RootOccurrenceDef, Scalar, SemanticTarget,
 };
 
 #[path = "../../marrow-image/tests/common/site_seam.rs"]
@@ -63,6 +63,7 @@ fn roots_corpus(roots: usize) -> ImageDraft {
         }],
     });
     draft.set_application_identity(LedgerIdBytes::from_bytes(APPLICATION_ID));
+    let value = draft.value_shapes_mut().scalar(Scalar::Int);
     draft
         .declare_product(
             LedgerIdBytes::from_bytes(PRODUCT_ID),
@@ -72,7 +73,7 @@ fn roots_corpus(roots: usize) -> ImageDraft {
                 shape: DeclarationMemberShape::Field {
                     id: LedgerIdBytes::from_bytes(FIELD_ID),
                     required: true,
-                    value: DurableValueShape::Scalar(Scalar::Int),
+                    value,
                 },
             }],
         )
@@ -230,6 +231,7 @@ fn wide_corpus(roots: usize) -> Result<Vec<u8>, ImageBuildError> {
             .collect(),
     });
     draft.set_application_identity(LedgerIdBytes::from_bytes(APPLICATION_ID));
+    let value = draft.value_shapes_mut().scalar(Scalar::Int);
     draft
         .declare_product(
             LedgerIdBytes::from_bytes(PRODUCT_ID),
@@ -240,7 +242,7 @@ fn wide_corpus(roots: usize) -> Result<Vec<u8>, ImageBuildError> {
                     shape: DeclarationMemberShape::Field {
                         id: member_id(n),
                         required: true,
-                        value: DurableValueShape::Scalar(Scalar::Int),
+                        value,
                     },
                 })
                 .collect(),

@@ -193,7 +193,7 @@ pub(super) fn seal(decoded: DecodedImage) -> Result<VerifiedImage, VerifyRejecti
         indexes,
         sites,
         durable_contract: decoded.durable_contract,
-        durable_descriptor: decoded.durable_descriptor,
+        semantic_nodes: decoded.semantic_nodes,
         consts: decoded.consts,
         functions,
         exports,

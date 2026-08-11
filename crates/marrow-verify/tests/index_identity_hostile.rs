@@ -11,9 +11,9 @@
 
 use marrow_image::{
     DeclarationMemberDef, DeclarationMemberShape, DurableIndexComponent, DurableIndexShape,
-    DurableValueShape, ExportId, FieldDef, FunctionDef, ImageDraft, ImageType, Instr, KeyColumn,
-    LedgerIdBytes, LegacyDraftSiteOperand, RecordTypeDef, RootOccurrenceDef, Scalar,
-    SemanticTarget, SpanEntry,
+    ExportId, FieldDef, FunctionDef, ImageDraft, ImageType, Instr, KeyColumn, LedgerIdBytes,
+    LegacyDraftSiteOperand, RecordTypeDef, RootOccurrenceDef, Scalar, SemanticTarget, SpanEntry,
+    ValueShapeNodeId,
 };
 use marrow_verify::verify;
 
@@ -42,13 +42,13 @@ fn spans(code: &[Instr]) -> Vec<SpanEntry> {
 }
 
 /// One required text field of the shared `Rec` graph.
-fn text_field(id: [u8; 16]) -> DeclarationMemberDef {
+fn text_field(value: ValueShapeNodeId, id: [u8; 16]) -> DeclarationMemberDef {
     DeclarationMemberDef {
         parent: None,
         shape: DeclarationMemberShape::Field {
             id: LedgerIdBytes::from_bytes(id),
             required: true,
-            value: DurableValueShape::Scalar(Scalar::Text),
+            value,
         },
     }
 }
@@ -89,14 +89,15 @@ fn build_graph(draft: &mut ImageDraft) -> Graph {
     });
     let root = draft.intern_string("r");
     draft.set_application_identity(LedgerIdBytes::from_bytes(APPLICATION_ID));
+    let text = draft.value_shapes_mut().scalar(Scalar::Text);
     draft
         .declare_product(
             LedgerIdBytes::from_bytes(PRODUCT_ID),
             record,
             vec![
-                text_field(TITLE_ID),
-                text_field(SHELF_ID),
-                text_field(ISBN_ID),
+                text_field(text, TITLE_ID),
+                text_field(text, SHELF_ID),
+                text_field(text, ISBN_ID),
             ],
         )
         .expect("a well-formed declaration");

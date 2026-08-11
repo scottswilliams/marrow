@@ -14,9 +14,9 @@
 //! rather than copied.
 
 use marrow_image::{
-    CollectionTypeDef, DeclarationMemberDef, DeclarationMemberShape, DurableValueShape, ExportId,
-    FieldDef, FunctionDef, ImageDraft, ImageType, Instr, KeyColumn, LedgerIdBytes,
-    LegacyDraftSiteOperand, RecordTypeDef, RootOccurrenceDef, Scalar, SemanticTarget, SpanEntry,
+    CollectionTypeDef, DeclarationMemberDef, DeclarationMemberShape, ExportId, FieldDef,
+    FunctionDef, ImageDraft, ImageType, Instr, KeyColumn, LedgerIdBytes, LegacyDraftSiteOperand,
+    RecordTypeDef, RootOccurrenceDef, Scalar, SemanticTarget, SpanEntry,
 };
 use marrow_kernel::codec::key::KeyScalar;
 use marrow_kernel::codec::value::RuntimeScalar;
@@ -86,6 +86,7 @@ fn traversal_image() -> VerifiedImage {
     let notes = draft.intern_string("notes");
     draft.set_application_identity(LedgerIdBytes::from_bytes(APPLICATION_ID));
     let product = LedgerIdBytes::from_bytes(ROOT_PRODUCT_ID);
+    let text_value = draft.value_shapes_mut().scalar(Scalar::Text);
     draft
         .declare_product(
             product,
@@ -96,7 +97,7 @@ fn traversal_image() -> VerifiedImage {
                     shape: DeclarationMemberShape::Field {
                         id: LedgerIdBytes::from_bytes(TITLE_FIELD_ID),
                         required: true,
-                        value: DurableValueShape::Scalar(Scalar::Text),
+                        value: text_value,
                     },
                 },
                 DeclarationMemberDef {
@@ -116,7 +117,7 @@ fn traversal_image() -> VerifiedImage {
                     shape: DeclarationMemberShape::Field {
                         id: LedgerIdBytes::from_bytes(TEXT_FIELD_ID),
                         required: true,
-                        value: DurableValueShape::Scalar(Scalar::Text),
+                        value: text_value,
                     },
                 },
             ],
@@ -481,6 +482,7 @@ fn wide_key_image() -> (VerifiedImage, u16) {
     let root = draft.intern_string("big");
     draft.set_application_identity(LedgerIdBytes::from_bytes(APPLICATION_ID));
     let product = LedgerIdBytes::from_bytes(ROOT_PRODUCT_ID);
+    let value = draft.value_shapes_mut().scalar(Scalar::Int);
     draft
         .declare_product(
             product,
@@ -490,7 +492,7 @@ fn wide_key_image() -> (VerifiedImage, u16) {
                 shape: DeclarationMemberShape::Field {
                     id: LedgerIdBytes::from_bytes(TITLE_FIELD_ID),
                     required: true,
-                    value: DurableValueShape::Scalar(Scalar::Int),
+                    value,
                 },
             }],
         )

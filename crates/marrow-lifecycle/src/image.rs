@@ -85,7 +85,7 @@ pub fn head_map_node_order(image: &VerifiedImage) -> Vec<SemanticNodeKind> {
 /// excluded. Both [`head_map`] and [`head_map_node_order`] project this one walk, so they
 /// cannot disagree.
 fn split_order(image: &VerifiedImage) -> (Vec<SemanticNode>, Vec<usize>) {
-    let nodes = image.semantic_nodes();
+    let nodes = image.semantic_nodes().to_vec();
 
     // Children of each container, keyed by the container's full step chain, in the
     // declaration order `semantic_nodes` yields (a node before its descendants, members in

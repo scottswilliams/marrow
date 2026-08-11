@@ -17,9 +17,9 @@ use std::ops::Bound;
 use std::rc::Rc;
 
 use marrow_image::{
-    DeclarationMemberDef, DeclarationMemberShape, DurableValueShape, ExportId, FieldDef,
-    FunctionDef, ImageDraft, ImageType, Instr, KeyColumn, LedgerIdBytes, RecordTypeDef,
-    RootOccurrenceDef, Scalar, SemanticTarget, SpanEntry,
+    DeclarationMemberDef, DeclarationMemberShape, ExportId, FieldDef, FunctionDef, ImageDraft,
+    ImageType, Instr, KeyColumn, LedgerIdBytes, RecordTypeDef, RootOccurrenceDef, Scalar,
+    SemanticTarget, SpanEntry,
 };
 use marrow_store::{ByteEngine, Cell as StoreCell, CommitOutcome, ReadView, StoreError, WriteTxn};
 use marrow_verify::{VerifiedImage, verify};
@@ -72,6 +72,7 @@ fn vm_commit_image(write: VmWrite) -> VerifiedImage {
     draft.set_application_identity(LedgerIdBytes::from_bytes(APPLICATION_ID));
     let root_name = draft.intern_string("counters");
     let product = LedgerIdBytes::from_bytes(ROOT_PRODUCT_ID);
+    let value = draft.value_shapes_mut().scalar(Scalar::Int);
     draft
         .declare_product(
             product,
@@ -81,7 +82,7 @@ fn vm_commit_image(write: VmWrite) -> VerifiedImage {
                 shape: DeclarationMemberShape::Field {
                     id: LedgerIdBytes::from_bytes(VALUE_FIELD_ID),
                     required: true,
-                    value: DurableValueShape::Scalar(Scalar::Int),
+                    value,
                 },
             }],
         )

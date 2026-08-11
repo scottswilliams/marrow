@@ -25,14 +25,14 @@
 //! its member tree, and — for the executable subset — its operation sites to the draft, and
 //! exposes the resolved sites the function lowerer emits against.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use marrow_codes::Code;
 use marrow_image::{
-    CanonicalDeclarationPathSelector, DeclarationMember, DeclarationMemberDef,
-    DeclarationMemberShape, DurableEnumMemberShape, DurableIndexComponent, DurableIndexShape,
-    DurableValueShape, FieldDef, ImageDraft, ImageType, KeyColumn, LedgerIdBytes, RecordTypeDef,
-    RootOccurrenceDef, RootOccurrenceSelector, Scalar, SemanticTarget, bounds,
+    CanonicalDeclarationPathSelector, CanonicalValueShapeDag, DeclarationMember,
+    DeclarationMemberDef, DeclarationMemberShape, DurableIndexComponent, DurableIndexShape,
+    FieldDef, ImageDraft, ImageType, KeyColumn, LedgerIdBytes, RecordTypeDef, RootOccurrenceDef,
+    RootOccurrenceSelector, Scalar, SemanticTarget, ValueShapeNodeId, ValueShapeView, bounds,
 };
 use marrow_project::{FileIdentity, IdentityAnchor, IdentityKind, IdentityLedger};
 use marrow_syntax::{
@@ -111,17 +111,20 @@ pub(crate) struct DurableIndex {
 /// shape is the sole index-eligibility classifier: a nominal has already erased to
 /// `int`, while a dense struct, closed enum, duration, or other non-key value returns
 /// `None`.
-fn orderable_key_scalar(value: &DurableValueShape) -> Option<ScalarType> {
-    match value {
-        DurableValueShape::Scalar(Scalar::Int) => Some(ScalarType::Int),
-        DurableValueShape::Scalar(Scalar::Text) => Some(ScalarType::Text),
-        DurableValueShape::Scalar(Scalar::Bool) => Some(ScalarType::Bool),
-        DurableValueShape::Scalar(Scalar::Bytes) => Some(ScalarType::Bytes),
-        DurableValueShape::Scalar(Scalar::Date) => Some(ScalarType::Date),
-        DurableValueShape::Scalar(Scalar::Instant) => Some(ScalarType::Instant),
-        DurableValueShape::Scalar(Scalar::Duration)
-        | DurableValueShape::Struct(_)
-        | DurableValueShape::Enum { .. } => None,
+fn orderable_key_scalar(
+    values: &CanonicalValueShapeDag,
+    value: ValueShapeNodeId,
+) -> Option<ScalarType> {
+    match values.view(value) {
+        ValueShapeView::Scalar(Scalar::Int) => Some(ScalarType::Int),
+        ValueShapeView::Scalar(Scalar::Text) => Some(ScalarType::Text),
+        ValueShapeView::Scalar(Scalar::Bool) => Some(ScalarType::Bool),
+        ValueShapeView::Scalar(Scalar::Bytes) => Some(ScalarType::Bytes),
+        ValueShapeView::Scalar(Scalar::Date) => Some(ScalarType::Date),
+        ValueShapeView::Scalar(Scalar::Instant) => Some(ScalarType::Instant),
+        ValueShapeView::Scalar(Scalar::Duration)
+        | ValueShapeView::Struct(_)
+        | ValueShapeView::Enum { .. } => None,
     }
 }
 
@@ -1219,7 +1222,7 @@ fn build_one(
             IndexFieldLeaf {
                 name: field.name.clone(),
                 id,
-                scalar: orderable_key_scalar(value),
+                scalar: orderable_key_scalar(draft.value_shapes(), *value),
             }
         })
         .collect();
@@ -1474,10 +1477,11 @@ struct IdentityResolver<'a> {
     span: SourceSpan,
     ledger: Option<&'a IdentityLedger>,
     refusal: Option<DeclarationRefusalSummary>,
-    /// The durable anchor spellings of enums whose sum/member anchors have already
-    /// been resolved, so an enum reachable from several durable fields resolves —
-    /// and reports any identity gap — exactly once.
-    seen_enums: BTreeSet<String>,
+    /// The value shape already built for each concrete durable value type reached by
+    /// this resolver. It is what keeps the walk linear in the program's declared types
+    /// rather than exponential in its nesting: a shared subshape is visited once, and
+    /// its ledger anchors resolve once.
+    value_memo: HashMap<GArg, ValueShapeNodeId>,
     /// The first compiler-owned enum-shape coherence failure. It bypasses source
     /// diagnostics and aborts the durable build at the compile invariant boundary.
     invariant: Option<GenericInvariant>,
@@ -1521,7 +1525,7 @@ impl<'a> IdentityResolver<'a> {
             span,
             ledger,
             refusal: None,
-            seen_enums: BTreeSet::new(),
+            value_memo: HashMap::new(),
             invariant: None,
             value_path: Vec::new(),
             naming: Vec::new(),
@@ -1559,49 +1563,25 @@ impl<'a> IdentityResolver<'a> {
     /// is discarded with the graph.
     fn build_value_shape(
         &mut self,
+        values: &mut CanonicalValueShapeDag,
         records: &TypeRegistry,
         metadata: &mut TypeMetadataSession<'_>,
         ty: GArg,
-        depth: usize,
-    ) -> DurableValueShape {
+    ) -> ValueShapeNodeId {
         match ty {
-            // A leaf occupies a level of its own: the enclosing structs may all fit the
-            // depth bound while the value that terminates them sits one level past it.
-            // The image encoder measures the same shape and refuses it, so a leaf
-            // admitted here without the bound would leave the compiler and the image
-            // disagreeing about the same value — the source-level limit would be
-            // reported as an internal invariant failure instead. The bound is checked at
-            // the leaf for that reason, with the located diagnostic the enclosing
-            // struct and enum arms already report.
-            GArg::Scalar(scalar) => {
-                if depth > bounds::MAX_DURABLE_VALUE_DEPTH {
-                    self.reject_resource_limit(self.span, over_deep_value_message());
-                    return DurableValueShape::Scalar(ScalarType::Int.image());
-                }
-                DurableValueShape::Scalar(scalar.image())
-            }
-            GArg::Nominal(_) => {
-                if depth > bounds::MAX_DURABLE_VALUE_DEPTH {
-                    self.reject_resource_limit(self.span, over_deep_value_message());
-                }
-                DurableValueShape::Scalar(ScalarType::Int.image())
-            }
+            GArg::Scalar(scalar) => values.scalar(scalar.image()),
+            GArg::Nominal(_) => values.scalar(ScalarType::Int.image()),
             GArg::Struct(type_id) => {
                 // A struct already on the path closes a value cycle: leave it to the
                 // later value-cycle pass (`check.recursion`) and drop the graph. The
-                // cycle check precedes the depth check, so a cycle whose repeat falls
-                // within the depth bound is pre-empted here and reported only by the
-                // cycle pass. A finite acyclic value that reaches the depth bound is
-                // genuinely over-deep and reports its own `check.resource_limit`; a
-                // cycle whose distinct prefix crosses the depth bound first hits this
-                // limit and additionally draws `check.recursion` — both truthful.
+                // cycle check precedes everything, including the memo, because a
+                // back-edge's answer is a property of the path, not of the type.
                 if self.value_path.contains(&ValueNode::Struct(type_id)) {
                     self.refuse(DurableRefusal::ValueCycle);
-                    return DurableValueShape::Scalar(ScalarType::Int.image());
+                    return values.scalar(ScalarType::Int.image());
                 }
-                if depth > bounds::MAX_DURABLE_VALUE_DEPTH {
-                    self.reject_resource_limit(self.span, over_deep_value_message());
-                    return DurableValueShape::Scalar(ScalarType::Int.image());
+                if let Some(built) = self.value_memo.get(&ty) {
+                    return *built;
                 }
                 match records.struct_by_type(type_id) {
                     Some(info) => {
@@ -1614,100 +1594,128 @@ impl<'a> IdentityResolver<'a> {
                                     bounds::MAX_STRUCT_LEAVES
                                 ),
                             );
-                            return DurableValueShape::Scalar(ScalarType::Int.image());
+                            return values.scalar(ScalarType::Int.image());
                         }
                         self.value_path.push(ValueNode::Struct(type_id));
                         let leaves = info
                             .fields
                             .iter()
                             .map(|field| {
-                                self.build_value_shape(records, metadata, field.ty, depth + 1)
+                                self.build_value_shape(values, records, metadata, field.ty)
                             })
                             .collect();
                         self.value_path.pop();
-                        DurableValueShape::Struct(leaves)
+                        self.remember(values.struct_shape(leaves), ty)
                     }
                     None => {
                         self.reject_value("this struct value");
-                        DurableValueShape::Struct(Vec::new())
+                        values.struct_shape(Vec::new())
                     }
                 }
             }
             GArg::Enum(enum_id) => {
                 if self.value_path.contains(&ValueNode::Enum(enum_id)) {
                     self.refuse(DurableRefusal::ValueCycle);
-                    return DurableValueShape::Scalar(ScalarType::Int.image());
+                    return values.scalar(ScalarType::Int.image());
                 }
-                if depth > bounds::MAX_DURABLE_VALUE_DEPTH {
-                    self.reject_resource_limit(self.span, over_deep_value_message());
-                    return DurableValueShape::Scalar(ScalarType::Int.image());
+                if let Some(built) = self.value_memo.get(&ty) {
+                    return *built;
                 }
                 self.value_path.push(ValueNode::Enum(enum_id));
-                let shape = self.build_enum_value_shape(records, metadata, enum_id, depth);
+                let shape = self.build_enum_value_shape(values, records, metadata, enum_id);
                 self.value_path.pop();
-                shape
+                self.remember(shape, ty)
             }
             GArg::Collection(_) => {
                 self.reject_value(
                     "a collection stored directly in a durable field (a large collection \
                      belongs under a keyed branch)",
                 );
-                DurableValueShape::Scalar(ScalarType::Int.image())
+                values.scalar(ScalarType::Int.image())
             }
             GArg::Group(_) => {
                 // A group is a materialized-value namespace, never a durable top-level
                 // field value (a durable group is its own member-tree node, resolved by
                 // `build_extras`). It cannot reach here through `record.fields`.
                 self.reject_value("a group stored directly as a durable field value");
-                DurableValueShape::Scalar(ScalarType::Int.image())
+                values.scalar(ScalarType::Int.image())
             }
             GArg::Param(_) => {
                 self.reject_value("this value type");
-                DurableValueShape::Scalar(ScalarType::Int.image())
+                values.scalar(ScalarType::Int.image())
             }
         }
+    }
+
+    /// One durable field's value shape, with the whole value's depth decided here at its
+    /// root.
+    ///
+    /// Depth is a property of the field's value, not of any type inside it: the value
+    /// occupies levels `1..=depth(node)`, whatever depth a shape it shares reaches under
+    /// some other field. Deciding it once, at the root, is what lets the walk below visit
+    /// each distinct type once — and it is why one over-deep field draws one located
+    /// refusal rather than one per leaf of the expansion it never builds.
+    fn build_field_value(
+        &mut self,
+        draft: &mut ImageDraft,
+        records: &TypeRegistry,
+        metadata: &mut TypeMetadataSession<'_>,
+        ty: GArg,
+    ) -> ValueShapeNodeId {
+        let node = self.build_value_shape(draft.value_shapes_mut(), records, metadata, ty);
+        if draft.value_shapes().depth(node) > bounds::MAX_DURABLE_VALUE_DEPTH {
+            self.reject_resource_limit(self.span, over_deep_value_message());
+        }
+        node
+    }
+
+    /// Record `node` as the shape of `ty`, so a type reached again from another field —
+    /// or from another level of the same value — is a lookup rather than a second walk.
+    ///
+    /// This is what makes the value graph a graph: a struct whose four fields are all the
+    /// enclosing level's type is walked once, not four times, so a shape whose expansion
+    /// is exponential in its declared levels costs one visit per declared level. Only a
+    /// completed walk is remembered — a cycle's back-edge answer belongs to the path that
+    /// found it, never to the type.
+    fn remember(&mut self, node: ValueShapeNodeId, ty: GArg) -> ValueShapeNodeId {
+        self.value_memo.insert(ty, node);
+        node
     }
 
     /// Build the value shape of a durable-reachable closed enum, resolving its sum
     /// and per-member ledger identities once (anchored at the enum's canonical
     /// spelling and `<spelling>.<member>`). Member order is declaration order, so
     /// append-only member evolution preserves every existing member's id and code.
+    ///
+    /// An enum is walked at most once per resolver — the memo answers every later
+    /// occurrence — so its anchors resolve exactly once and report any identity gap at
+    /// the declaration.
     fn build_enum_value_shape(
         &mut self,
+        values: &mut CanonicalValueShapeDag,
         records: &TypeRegistry,
         metadata: &mut TypeMetadataSession<'_>,
         enum_id: marrow_image::EnumId,
-        depth: usize,
-    ) -> DurableValueShape {
+    ) -> ValueShapeNodeId {
         let Some((variants, spelling)) = self.accept_ready_shape(
             metadata.durable_enum_shape_and_anchor(enum_id),
             "this enum value",
         ) else {
-            return DurableValueShape::Scalar(ScalarType::Int.image());
+            return values.scalar(ScalarType::Int.image());
         };
-        // Resolve (and gap-report) an enum's anchors only the first time it is
-        // reached; a later occurrence looks its ids up quietly.
-        let first_time = match self.seen_enums.insert(spelling.clone()) {
-            true => RefusalReport::AtDeclaration,
-            false => RefusalReport::ByCoveringPass,
-        };
-        let sum = self.resolve_enum_anchor(IdentityKind::Sum, &spelling, first_time);
+        let sum = self.resolve(IdentityKind::Sum, &spelling);
         let members = variants
             .iter()
             .map(|(name, payload)| {
-                let id = self.resolve_enum_anchor(
-                    IdentityKind::Member,
-                    &format!("{spelling}.{name}"),
-                    first_time,
-                );
+                let id = self.resolve(IdentityKind::Member, &format!("{spelling}.{name}"));
                 let payload = payload
                     .iter()
-                    .map(|arg| self.build_value_shape(records, metadata, *arg, depth + 1))
+                    .map(|arg| self.build_value_shape(values, records, metadata, *arg))
                     .collect();
-                DurableEnumMemberShape { id, payload }
+                (id, payload)
             })
             .collect();
-        DurableValueShape::Enum { sum, members }
+        values.enum_shape(sum, members)
     }
 
     fn accept_ready_shape<T>(
@@ -1734,25 +1742,6 @@ impl<'a> IdentityResolver<'a> {
     fn remember_invariant(&mut self, invariant: GenericInvariant) {
         if self.invariant.is_none() {
             self.invariant = Some(invariant);
-        }
-    }
-
-    /// Resolve one enum sum/member anchor. On the enum's first occurrence this is the
-    /// ordinary gap-reporting `resolve`; on a later occurrence it looks the id up
-    /// quietly, since the first occurrence already reported any gap and discarded the
-    /// graph.
-    fn resolve_enum_anchor(
-        &mut self,
-        kind: IdentityKind,
-        path: &str,
-        report: RefusalReport,
-    ) -> LedgerIdBytes {
-        if matches!(report, RefusalReport::AtDeclaration) {
-            return self.resolve(kind, path);
-        }
-        match self.ledger.and_then(|ledger| ledger.lookup(kind, path)) {
-            Some(id) => LedgerIdBytes::from_bytes(*id.bytes()),
-            None => LedgerIdBytes::from_bytes([0u8; 16]),
         }
     }
 
@@ -1830,7 +1819,7 @@ impl<'a> IdentityResolver<'a> {
                     &format!("{}.{}", store.resource, field.name),
                 ),
                 required: field.required,
-                value: self.build_value_shape(records, metadata, field.ty, 1),
+                value: self.build_field_value(draft, records, metadata, field.ty),
             };
             nodes.push(DeclarationDraftNode::declared(
                 None,
@@ -2034,7 +2023,7 @@ impl<'a> IdentityResolver<'a> {
         let member = DeclarationMemberShape::Field {
             id,
             required: field.required,
-            value: DurableValueShape::Scalar(scalar.image()),
+            value: draft.value_shapes_mut().scalar(scalar.image()),
         };
         // The record field mirrors the durable member: same order, same scalar, same
         // required flag. The branch entry's whole-payload read/create/replace flows
@@ -2533,12 +2522,7 @@ fn member_keeps_root_flat(
     member: &DeclarationMember,
 ) -> Result<bool, GenericInvariant> {
     match member.shape() {
-        DeclarationMemberShape::Field { value, .. } => Ok(matches!(
-            value,
-            DurableValueShape::Scalar(_)
-                | DurableValueShape::Struct(_)
-                | DurableValueShape::Enum { .. }
-        )),
+        DeclarationMemberShape::Field { .. } => Ok(true),
         DeclarationMemberShape::Group { .. } => Ok(false),
         DeclarationMemberShape::Branch { keys, .. } => {
             if keys.is_empty() {
@@ -2817,24 +2801,27 @@ mod generic_enum_shape_tests {
             &mut reported_identity_gaps,
             &mut diagnostics,
         );
+        let mut values = CanonicalValueShapeDag::new();
         let shape = records
             .with_metadata_session(|metadata| {
-                Ok::<_, GenericInvariant>(
-                    resolver.build_enum_value_shape(&records, metadata, option, 0),
-                )
+                Ok::<_, GenericInvariant>(resolver.build_enum_value_shape(
+                    &mut values,
+                    &records,
+                    metadata,
+                    option,
+                ))
             })
             .expect("the Ready Option metadata session opens");
-        let DurableValueShape::Enum { members, .. } = shape else {
+        let ValueShapeView::Enum { members, .. } = values.view(shape) else {
             panic!("a Ready Option remains enum-shaped")
         };
         assert_eq!(members.len(), 2);
-        assert!(members[0].payload.is_empty());
-        assert_eq!(members[1].payload.len(), 1);
+        assert!(members[0].payload().is_empty());
+        assert_eq!(members[1].payload().len(), 1);
         assert_eq!(
-            members[1].payload[0],
-            DurableValueShape::Scalar(ScalarType::Int.image())
+            values.view(members[1].payload()[0]),
+            ValueShapeView::Scalar(ScalarType::Int.image())
         );
-        assert!(resolver.seen_enums.contains("Option[int]"));
         assert!(
             resolver.refusal.is_some(),
             "the test intentionally supplies no ledger"
@@ -2886,19 +2873,22 @@ mod generic_enum_shape_tests {
             &mut diagnostics,
         );
 
+        let mut values = CanonicalValueShapeDag::new();
         let shape = records
             .with_metadata_session(|metadata| {
                 Ok::<_, GenericInvariant>(resolver.build_enum_value_shape(
+                    &mut values,
                     &records,
                     metadata,
                     unavailable,
-                    0,
                 ))
             })
             .expect("the unavailable enum metadata session opens");
-        assert_eq!(shape, DurableValueShape::Scalar(ScalarType::Int.image()));
+        assert_eq!(
+            values.view(shape),
+            ValueShapeView::Scalar(ScalarType::Int.image())
+        );
         assert!(resolver.refusal.is_some());
-        assert!(resolver.seen_enums.is_empty());
         drop(resolver);
         assert_eq!(diagnostics.probe_rows().len(), 1);
         assert_eq!(
@@ -2953,7 +2943,7 @@ mod generic_enum_shape_tests {
                 .is_none()
         );
         assert_eq!(resolver.invariant, Some(expected));
-        assert!(resolver.seen_enums.is_empty());
+        assert!(resolver.value_memo.is_empty());
         drop(resolver);
         assert!(diagnostics.is_empty());
     }
@@ -3020,7 +3010,7 @@ store ^holders[id: int]: Holder
                 .is_none()
         );
         assert_eq!(resolver.invariant, Some(expected));
-        assert!(resolver.seen_enums.is_empty());
+        assert!(resolver.value_memo.is_empty());
         drop(resolver);
         assert!(diagnostics.is_empty());
         let after = draft.encode().expect("rejected draft still encodes");
@@ -3092,8 +3082,11 @@ mod declaration_command_bound_tests {
 
     /// Encode a minimal image whose one keyed root projects a Product declaring exactly
     /// `commands`, so the declaration width is the only reason an encode can fail.
-    fn encode_product(commands: Vec<DeclarationMemberDef>) -> Result<(), ImageBuildError> {
+    fn encode_product(
+        commands: impl FnOnce(&mut ImageDraft) -> Vec<DeclarationMemberDef>,
+    ) -> Result<(), ImageBuildError> {
         let mut draft = ImageDraft::new();
+        let commands = commands(&mut draft);
         let type_name = draft.intern_string("R");
         let record = draft.add_record_type(RecordTypeDef {
             name: type_name,
@@ -3167,52 +3160,48 @@ mod declaration_command_bound_tests {
             "the emission cap must sit exactly one command past the image owner's bound"
         );
 
-        let nodes: Vec<DeclarationDraftNode> = (0..bounds::MAX_DURABLE_MEMBERS + 64)
-            .map(|n| {
-                DeclarationDraftNode::declared(
-                    None,
-                    DeclarationWireClass::Field,
-                    DeclarationMemberShape::Field {
-                        id: member_id(n),
-                        required: false,
-                        value: DurableValueShape::Scalar(Scalar::Int),
-                    },
-                )
-            })
-            .collect();
-        let commands = declaration_commands(nodes);
-        assert_eq!(
-            commands.len(),
-            bounds::MAX_DURABLE_MEMBERS + 1,
-            "an over-wide resource emits exactly one command past the member bound"
-        );
+        let flat_fields = |draft: &mut ImageDraft, count: usize| {
+            let value = draft.value_shapes_mut().scalar(Scalar::Int);
+            declaration_commands(
+                (0..count)
+                    .map(|n| {
+                        DeclarationDraftNode::declared(
+                            None,
+                            DeclarationWireClass::Field,
+                            DeclarationMemberShape::Field {
+                                id: member_id(n),
+                                required: false,
+                                value,
+                            },
+                        )
+                    })
+                    .collect(),
+            )
+        };
 
         assert!(
             matches!(
-                encode_product(commands),
+                encode_product(|draft| {
+                    let commands = flat_fields(draft, bounds::MAX_DURABLE_MEMBERS + 64);
+                    assert_eq!(
+                        commands.len(),
+                        bounds::MAX_DURABLE_MEMBERS + 1,
+                        "an over-wide resource emits exactly one command past the member bound"
+                    );
+                    commands
+                }),
                 Err(ImageBuildError::TooManyDurableMembers)
             ),
             "one command past the bound must reach the encoder as the durable-member limit"
         );
 
-        let at_bound = declaration_commands(
-            (0..bounds::MAX_DURABLE_MEMBERS)
-                .map(|n| {
-                    DeclarationDraftNode::declared(
-                        None,
-                        DeclarationWireClass::Field,
-                        DeclarationMemberShape::Field {
-                            id: member_id(n),
-                            required: false,
-                            value: DurableValueShape::Scalar(Scalar::Int),
-                        },
-                    )
-                })
-                .collect(),
-        );
-        assert_eq!(at_bound.len(), bounds::MAX_DURABLE_MEMBERS);
         assert!(
-            encode_product(at_bound).is_ok(),
+            encode_product(|draft| {
+                let at_bound = flat_fields(draft, bounds::MAX_DURABLE_MEMBERS);
+                assert_eq!(at_bound.len(), bounds::MAX_DURABLE_MEMBERS);
+                at_bound
+            })
+            .is_ok(),
             "a declaration exactly at the member bound still encodes"
         );
     }

@@ -219,7 +219,7 @@ impl Naming {
                     (Sigil::Root, sealed.name().to_string()),
                 );
                 walk_members(
-                    &nodes,
+                    nodes,
                     &children,
                     node_index,
                     Members::root(image, sealed),

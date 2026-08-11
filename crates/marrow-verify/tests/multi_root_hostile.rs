@@ -8,10 +8,9 @@
 //! rather than copied.
 
 use marrow_image::{
-    DeclarationMemberDef, DeclarationMemberShape, DurableValueShape, ExportId, FieldDef,
-    FunctionDef, ImageBuildError, ImageDraft, ImageType, Instr, KeyColumn, LedgerIdBytes,
-    LegacyDraftSiteOperand, RecordTypeDef, RootOccurrenceDef, Scalar, SemanticTarget, SpanEntry,
-    TypeId,
+    DeclarationMemberDef, DeclarationMemberShape, ExportId, FieldDef, FunctionDef, ImageBuildError,
+    ImageDraft, ImageType, Instr, KeyColumn, LedgerIdBytes, LegacyDraftSiteOperand, RecordTypeDef,
+    RootOccurrenceDef, Scalar, SemanticTarget, SpanEntry, TypeId, ValueShapeNodeId,
 };
 use marrow_verify::{VerifyPhase, verify};
 
@@ -46,13 +45,13 @@ fn spans(code: &[Instr]) -> Vec<SpanEntry> {
 }
 
 /// One required int field, the whole member graph of both single-field Products here.
-fn one_int_field(id: [u8; 16]) -> Vec<DeclarationMemberDef> {
+fn one_int_field(value: ValueShapeNodeId, id: [u8; 16]) -> Vec<DeclarationMemberDef> {
     vec![DeclarationMemberDef {
         parent: None,
         shape: DeclarationMemberShape::Field {
             id: LedgerIdBytes::from_bytes(id),
             required: true,
-            value: DurableValueShape::Scalar(Scalar::Int),
+            value,
         },
     }]
 }
@@ -78,11 +77,12 @@ fn build_two_roots(
         }],
     });
     let a_root = draft.intern_string("assets");
+    let int_value = draft.value_shapes_mut().scalar(Scalar::Int);
     draft
         .declare_product(
             LedgerIdBytes::from_bytes(A_PRODUCT),
             a_rec,
-            one_int_field(A_FIELD),
+            one_int_field(int_value, A_FIELD),
         )
         .expect("a well-formed declaration");
     let a = draft
@@ -111,11 +111,12 @@ fn build_two_roots(
         }],
     });
     let b_root = draft.intern_string(b_name);
+    let int_value = draft.value_shapes_mut().scalar(Scalar::Int);
     draft
         .declare_product(
             LedgerIdBytes::from_bytes(B_PRODUCT),
             b_rec,
-            one_int_field(B_FIELD),
+            one_int_field(int_value, B_FIELD),
         )
         .expect("a well-formed declaration");
     let b = draft
@@ -269,11 +270,12 @@ fn build_shared_product(draft: &mut ImageDraft) -> TypeId {
         name: other_name,
         fields: vec![],
     });
+    let int_value = draft.value_shapes_mut().scalar(Scalar::Int);
     draft
         .declare_product(
             LedgerIdBytes::from_bytes(A_PRODUCT),
             record,
-            one_int_field(A_FIELD),
+            one_int_field(int_value, A_FIELD),
         )
         .expect("a well-formed declaration");
     for (name, placement, key) in [
@@ -393,12 +395,13 @@ fn a_draft_refuses_to_encode_two_graphs_under_one_product() {
     let mut draft = ImageDraft::new();
     let record = build_shared_product(&mut draft);
     let root_name = draft.intern_string("extra");
+    let int_value = draft.value_shapes_mut().scalar(Scalar::Int);
     // A second declaration of the same Product identity carrying a different member id.
     draft
         .declare_product(
             LedgerIdBytes::from_bytes(A_PRODUCT),
             record,
-            one_int_field(B_FIELD),
+            one_int_field(int_value, B_FIELD),
         )
         .expect("the command vector itself is well formed");
     draft

@@ -11,10 +11,10 @@
 //! rather than copied.
 
 use marrow_image::{
-    DeclarationMemberDef, DeclarationMemberShape, DurableEnumMemberShape, DurableIndexComponent,
-    DurableIndexShape, DurableValueShape, EnumTypeDef, ExportId, FieldDef, FunctionDef, ImageDraft,
-    ImageType, Instr, KeyColumn, LedgerIdBytes, RecordTypeDef, RootOccurrenceDef, Scalar,
-    SemanticTarget, SpanEntry, VariantDef, image_id,
+    DeclarationMemberDef, DeclarationMemberShape, DurableIndexComponent, DurableIndexShape,
+    EnumTypeDef, ExportId, FieldDef, FunctionDef, ImageDraft, ImageType, Instr, KeyColumn,
+    LedgerIdBytes, RecordTypeDef, RootOccurrenceDef, Scalar, SemanticTarget, SpanEntry, VariantDef,
+    image_id,
 };
 use marrow_verify::verify;
 
@@ -242,6 +242,8 @@ fn a_durable_image() -> Vec<u8> {
     let root = draft.intern_string("counters");
     draft.set_application_identity(ledger([0x0a; 16]));
     let product = ledger([0x0d; 16]);
+    let int_value = draft.value_shapes_mut().scalar(Scalar::Int);
+    let text_value = draft.value_shapes_mut().scalar(Scalar::Text);
     draft
         .declare_product(
             product,
@@ -252,7 +254,7 @@ fn a_durable_image() -> Vec<u8> {
                     shape: DeclarationMemberShape::Field {
                         id: ledger([0x0e; 16]),
                         required: true,
-                        value: DurableValueShape::Scalar(Scalar::Int),
+                        value: int_value,
                     },
                 },
                 DeclarationMemberDef {
@@ -260,7 +262,7 @@ fn a_durable_image() -> Vec<u8> {
                     shape: DeclarationMemberShape::Field {
                         id: ledger([0x0f; 16]),
                         required: false,
-                        value: DurableValueShape::Scalar(Scalar::Text),
+                        value: text_value,
                     },
                 },
             ],
@@ -373,6 +375,8 @@ fn an_indexed_durable_image() -> Vec<u8> {
     let root = draft.intern_string("counters");
     draft.set_application_identity(ledger([0x0a; 16]));
     let product = ledger([0x0d; 16]);
+    let int_value = draft.value_shapes_mut().scalar(Scalar::Int);
+    let text_value = draft.value_shapes_mut().scalar(Scalar::Text);
     draft
         .declare_product(
             product,
@@ -383,7 +387,7 @@ fn an_indexed_durable_image() -> Vec<u8> {
                     shape: DeclarationMemberShape::Field {
                         id: ledger([0x0e; 16]),
                         required: true,
-                        value: DurableValueShape::Scalar(Scalar::Int),
+                        value: int_value,
                     },
                 },
                 DeclarationMemberDef {
@@ -391,7 +395,7 @@ fn an_indexed_durable_image() -> Vec<u8> {
                     shape: DeclarationMemberShape::Field {
                         id: ledger([0x0f; 16]),
                         required: false,
-                        value: DurableValueShape::Scalar(Scalar::Text),
+                        value: text_value,
                     },
                 },
             ],
@@ -483,6 +487,8 @@ fn a_strict_durable_image() -> Vec<u8> {
     let root = draft.intern_string("counters");
     draft.set_application_identity(ledger([0x0a; 16]));
     let product = ledger([0x0d; 16]);
+    let int_value = draft.value_shapes_mut().scalar(Scalar::Int);
+    let text_value = draft.value_shapes_mut().scalar(Scalar::Text);
     draft
         .declare_product(
             product,
@@ -493,7 +499,7 @@ fn a_strict_durable_image() -> Vec<u8> {
                     shape: DeclarationMemberShape::Field {
                         id: ledger([0x0e; 16]),
                         required: true,
-                        value: DurableValueShape::Scalar(Scalar::Int),
+                        value: int_value,
                     },
                 },
                 DeclarationMemberDef {
@@ -501,7 +507,7 @@ fn a_strict_durable_image() -> Vec<u8> {
                     shape: DeclarationMemberShape::Field {
                         id: ledger([0x0f; 16]),
                         required: false,
-                        value: DurableValueShape::Scalar(Scalar::Text),
+                        value: text_value,
                     },
                 },
             ],
@@ -654,6 +660,8 @@ fn a_group_branch_durable_image() -> Vec<u8> {
     });
     draft.set_application_identity(ledger([0x0a; 16]));
     let product = ledger([0x0d; 16]);
+    let int_value = draft.value_shapes_mut().scalar(Scalar::Int);
+    let text_value = draft.value_shapes_mut().scalar(Scalar::Text);
     draft
         .declare_product(
             product,
@@ -664,7 +672,7 @@ fn a_group_branch_durable_image() -> Vec<u8> {
                     shape: DeclarationMemberShape::Field {
                         id: ledger([0x0e; 16]),
                         required: true,
-                        value: DurableValueShape::Scalar(Scalar::Text),
+                        value: text_value,
                     },
                 },
                 DeclarationMemberDef {
@@ -678,7 +686,7 @@ fn a_group_branch_durable_image() -> Vec<u8> {
                     shape: DeclarationMemberShape::Field {
                         id: ledger([0x21; 16]),
                         required: false,
-                        value: DurableValueShape::Scalar(Scalar::Int),
+                        value: int_value,
                     },
                 },
                 DeclarationMemberDef {
@@ -698,7 +706,7 @@ fn a_group_branch_durable_image() -> Vec<u8> {
                     shape: DeclarationMemberShape::Field {
                         id: ledger([0x32; 16]),
                         required: true,
-                        value: DurableValueShape::Scalar(Scalar::Text),
+                        value: text_value,
                     },
                 },
             ],
@@ -882,6 +890,19 @@ fn a_widened_durable_image() -> Vec<u8> {
     let root = draft.intern_string("ws");
     draft.set_application_identity(ledger([0x0a; 16]));
     let product = ledger([0x0d; 16]);
+    let int_value = draft.value_shapes_mut().scalar(Scalar::Int);
+    let text_value = draft.value_shapes_mut().scalar(Scalar::Text);
+    // An `Option[int]`-shaped enum and a dense `struct { int, text }`.
+    let enum_value = draft.value_shapes_mut().enum_shape(
+        ledger([0x50; 16]),
+        vec![
+            (ledger([0x51; 16]), Vec::new()),
+            (ledger([0x52; 16]), vec![int_value]),
+        ],
+    );
+    let struct_value = draft
+        .value_shapes_mut()
+        .struct_shape(vec![int_value, text_value]);
     draft
         .declare_product(
             product,
@@ -892,7 +913,7 @@ fn a_widened_durable_image() -> Vec<u8> {
                     shape: DeclarationMemberShape::Field {
                         id: ledger([0x0e; 16]),
                         required: true,
-                        value: DurableValueShape::Scalar(Scalar::Int),
+                        value: int_value,
                     },
                 },
                 DeclarationMemberDef {
@@ -900,19 +921,7 @@ fn a_widened_durable_image() -> Vec<u8> {
                     shape: DeclarationMemberShape::Field {
                         id: ledger([0x0f; 16]),
                         required: true,
-                        value: DurableValueShape::Enum {
-                            sum: ledger([0x50; 16]),
-                            members: vec![
-                                DurableEnumMemberShape {
-                                    id: ledger([0x51; 16]),
-                                    payload: Vec::new(),
-                                },
-                                DurableEnumMemberShape {
-                                    id: ledger([0x52; 16]),
-                                    payload: vec![DurableValueShape::Scalar(Scalar::Int)],
-                                },
-                            ],
-                        },
+                        value: enum_value,
                     },
                 },
                 DeclarationMemberDef {
@@ -920,10 +929,7 @@ fn a_widened_durable_image() -> Vec<u8> {
                     shape: DeclarationMemberShape::Field {
                         id: ledger([0x10; 16]),
                         required: false,
-                        value: DurableValueShape::Struct(vec![
-                            DurableValueShape::Scalar(Scalar::Int),
-                            DurableValueShape::Scalar(Scalar::Text),
-                        ]),
+                        value: struct_value,
                     },
                 },
             ],
@@ -1019,6 +1025,7 @@ fn a_multi_site_durable_image() -> Vec<u8> {
         ledger([0x1f; 16]),
     ];
     let product = ledger([0x0d; 16]);
+    let int_value = draft.value_shapes_mut().scalar(Scalar::Int);
     draft
         .declare_product(
             product,
@@ -1030,7 +1037,7 @@ fn a_multi_site_durable_image() -> Vec<u8> {
                     shape: DeclarationMemberShape::Field {
                         id: *id,
                         required: true,
-                        value: DurableValueShape::Scalar(Scalar::Int),
+                        value: int_value,
                     },
                 })
                 .collect(),

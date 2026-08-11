@@ -40,9 +40,9 @@ use std::collections::BTreeMap;
 use crate::bounds::MAX_DURABLE_MEMBERS;
 use crate::draft::{DraftIdentity, KeyColumn, RowStamp, StrId, TypeId};
 use crate::durable_id::{
-    DurableIndexShape, DurableProductIdentity, DurableValueShape, LedgerIdBytes,
-    RootPlacementIdentity,
+    DurableIndexShape, DurableProductIdentity, LedgerIdBytes, RootPlacementIdentity,
 };
+use crate::value_dag::ValueShapeNodeId;
 
 /// The ordinal of one row in a [`ProductDeclarationGraph`].
 ///
@@ -97,7 +97,10 @@ pub enum DeclarationMemberShape {
     Field {
         id: LedgerIdBytes,
         required: bool,
-        value: DurableValueShape,
+        /// This field's stored value shape, as a reference into the draft's one
+        /// [`crate::CanonicalValueShapeDag`]. The row carries a reference, never a
+        /// shape, so a repeated or deeply shared value costs one `u32` per field.
+        value: ValueShapeNodeId,
     },
     Group {
         id: LedgerIdBytes,
@@ -1101,35 +1104,39 @@ mod tests {
         LedgerIdBytes, MAX_DURABLE_MEMBERS, ProductDeclarationGraph,
     };
     use crate::draft::{ImageDraft, TypeId};
-    use crate::durable_id::DurableValueShape;
     use crate::ty::Scalar;
+    use crate::value_dag::CanonicalValueShapeDag;
 
     fn id(byte: u8) -> LedgerIdBytes {
         LedgerIdBytes::from_bytes([byte; 16])
     }
 
-    fn field(parent: Option<u16>, byte: u8) -> DeclarationMemberDef {
+    fn field(
+        values: &mut CanonicalValueShapeDag,
+        parent: Option<u16>,
+        byte: u8,
+    ) -> DeclarationMemberDef {
         DeclarationMemberDef {
             parent,
             shape: DeclarationMemberShape::Field {
                 id: id(byte),
                 required: true,
-                value: DurableValueShape::Scalar(Scalar::Int),
+                value: values.scalar(Scalar::Int),
             },
         }
     }
 
     /// A resource whose members nest through a group and a branch, stated in pre-order so
     /// the level-order placement has real reordering to do.
-    fn nested() -> Vec<DeclarationMemberDef> {
+    fn nested(values: &mut CanonicalValueShapeDag) -> Vec<DeclarationMemberDef> {
         vec![
-            field(None, 0x10),
+            field(values, None, 0x10),
             DeclarationMemberDef {
                 parent: None,
                 shape: DeclarationMemberShape::Group { id: id(0x20) },
             },
-            field(Some(1), 0x21),
-            field(Some(1), 0x22),
+            field(values, Some(1), 0x21),
+            field(values, Some(1), 0x22),
             DeclarationMemberDef {
                 parent: None,
                 shape: DeclarationMemberShape::Branch {
@@ -1142,12 +1149,12 @@ mod tests {
                     }],
                 },
             },
-            field(Some(4), 0x32),
+            field(values, Some(4), 0x32),
             DeclarationMemberDef {
                 parent: Some(4),
                 shape: DeclarationMemberShape::Group { id: id(0x33) },
             },
-            field(Some(6), 0x34),
+            field(values, Some(6), 0x34),
         ]
     }
 
@@ -1155,7 +1162,9 @@ mod tests {
     /// nesting bound is decided by one forward pass rather than a descent.
     #[test]
     fn every_row_is_placed_after_its_parent_and_carries_its_depth() {
-        let graph = ProductDeclarationGraph::from_commands(nested()).expect("a well-formed forest");
+        let mut values = CanonicalValueShapeDag::new();
+        let graph = ProductDeclarationGraph::from_commands(nested(&mut values))
+            .expect("a well-formed forest");
 
         for (ordinal, node) in graph.rows().iter().enumerate() {
             if let Some(parent) = node.parent {
@@ -1177,7 +1186,9 @@ mod tests {
     /// a slice rather than an owned child vector per node.
     #[test]
     fn a_nodes_members_are_one_contiguous_run() {
-        let graph = ProductDeclarationGraph::from_commands(nested()).expect("a well-formed forest");
+        let mut values = CanonicalValueShapeDag::new();
+        let graph = ProductDeclarationGraph::from_commands(nested(&mut values))
+            .expect("a well-formed forest");
 
         let members = graph.members();
         assert_eq!(members.len(), 3);
@@ -1197,22 +1208,24 @@ mod tests {
     /// rows are equal declarations and a reordering is a divergence.
     #[test]
     fn equal_rows_are_exactly_equal_declarations() {
-        let graph = ProductDeclarationGraph::from_commands(nested()).expect("well-formed");
+        let mut values = CanonicalValueShapeDag::new();
+        let graph =
+            ProductDeclarationGraph::from_commands(nested(&mut values)).expect("well-formed");
 
         assert_eq!(
             graph,
-            ProductDeclarationGraph::from_commands(nested()).expect("well-formed")
+            ProductDeclarationGraph::from_commands(nested(&mut values)).expect("well-formed")
         );
 
-        let mut reordered = nested();
+        let mut reordered = nested(&mut values);
         reordered.swap(2, 3);
         assert_ne!(
             graph,
             ProductDeclarationGraph::from_commands(reordered).expect("well-formed")
         );
 
-        let mut widened = nested();
-        widened.push(field(None, 0x40));
+        let mut widened = nested(&mut values);
+        widened.push(field(&mut values, None, 0x40));
         assert_ne!(
             graph,
             ProductDeclarationGraph::from_commands(widened).expect("well-formed")
@@ -1223,7 +1236,9 @@ mod tests {
     /// path projection walks parents rather than descending the graph.
     #[test]
     fn ancestry_is_the_chain_from_the_top_level_member_down() {
-        let graph = ProductDeclarationGraph::from_commands(nested()).expect("well-formed");
+        let mut values = CanonicalValueShapeDag::new();
+        let graph =
+            ProductDeclarationGraph::from_commands(nested(&mut values)).expect("well-formed");
 
         let deepest = graph.rows().len() - 1;
         let chain = graph.ancestry(super::DeclarationNodeOrdinal(
@@ -1249,12 +1264,16 @@ mod tests {
     /// a parent must be an earlier command, and it must be a node members may nest under.
     #[test]
     fn a_command_vector_that_is_not_a_forest_is_refused() {
+        let mut values = CanonicalValueShapeDag::new();
         assert_eq!(
-            ProductDeclarationGraph::from_commands(vec![field(Some(0), 0x10)]),
+            ProductDeclarationGraph::from_commands(vec![field(&mut values, Some(0), 0x10)]),
             Err(DeclarationCommandError::ParentNotEarlier),
         );
         assert_eq!(
-            ProductDeclarationGraph::from_commands(vec![field(None, 0x10), field(Some(0), 0x11)]),
+            ProductDeclarationGraph::from_commands(vec![
+                field(&mut values, None, 0x10),
+                field(&mut values, Some(0), 0x11),
+            ]),
             Err(DeclarationCommandError::ParentDeclaresNoMembers),
         );
     }
@@ -1264,8 +1283,9 @@ mod tests {
     /// and the encoder still refuses the declaration through that bound.
     #[test]
     fn a_declaration_past_the_member_bound_materializes_only_the_bounded_prefix() {
+        let mut values = CanonicalValueShapeDag::new();
         let wide: Vec<DeclarationMemberDef> = (0..MAX_DURABLE_MEMBERS + 64)
-            .map(|n| field(None, u8::try_from(n % 251).expect("in range")))
+            .map(|n| field(&mut values, None, u8::try_from(n % 251).expect("in range")))
             .collect();
 
         let graph = ProductDeclarationGraph::from_commands(wide).expect("a well-formed forest");
@@ -1278,7 +1298,9 @@ mod tests {
     /// image the producer built inside its capacity.
     #[test]
     fn a_fitting_declaration_records_no_overflow() {
-        let graph = ProductDeclarationGraph::from_commands(nested()).expect("well-formed");
+        let mut values = CanonicalValueShapeDag::new();
+        let graph =
+            ProductDeclarationGraph::from_commands(nested(&mut values)).expect("well-formed");
 
         assert!(!graph.over_member_bound());
         assert_eq!(graph.rows().len(), 8);

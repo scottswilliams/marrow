@@ -41,11 +41,11 @@ pub use draft::{
 };
 pub use durable_id::{
     BranchPlacementIdentity, DURABLE_CONTRACT_KIND, DurableBranchShape, DurableContractDescriptor,
-    DurableContractId, DurableEnumMemberShape, DurableFieldIdentity, DurableFieldShape,
-    DurableGroupIdentity, DurableGroupShape, DurableIndexComponent, DurableIndexShape,
-    DurableKeyIdentity, DurableKeyShape, DurableMemberIdentity, DurableMemberShape,
-    DurableProductIdentity, DurableRootShape, DurableSumIdentity, DurableValueShape, LedgerIdBytes,
-    ManagedIndexIdentity, RootPlacementIdentity,
+    DurableContractId, DurableFieldIdentity, DurableFieldShape, DurableGroupIdentity,
+    DurableGroupShape, DurableIndexComponent, DurableIndexShape, DurableKeyIdentity,
+    DurableKeyShape, DurableMemberIdentity, DurableMemberShape, DurableProductIdentity,
+    DurableRootShape, DurableSumIdentity, LedgerIdBytes, ManagedIndexIdentity,
+    RootPlacementIdentity,
 };
 pub use encode::EncodedImage;
 pub use export_id::{EXPORT_ID_KIND, ExportId};
@@ -95,5 +95,6 @@ pub use ty::{
     TAG_ENUM, TAG_IDENTITY, TAG_INSTANT, TAG_INT, TAG_RECORD, TAG_TEXT, TAG_UNIT,
 };
 pub use value_dag::{
-    CanonicalValueShapeDag, ValueShapeNodeId, ValueShapeSink, ValueShapeWireForm, expand,
+    CanonicalValueShapeDag, ValueShapeEnumMember, ValueShapeNodeId, ValueShapeSink, ValueShapeView,
+    ValueShapeWireForm, expand,
 };

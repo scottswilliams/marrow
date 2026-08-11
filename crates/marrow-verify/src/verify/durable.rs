@@ -12,11 +12,11 @@ use crate::sealed::{
     SealedSiteTarget,
 };
 use marrow_image::{
-    DurableBranchShape, DurableContractDescriptor, DurableContractId, DurableEnumMemberShape,
+    CanonicalValueShapeDag, DurableBranchShape, DurableContractDescriptor, DurableContractId,
     DurableFieldShape, DurableGroupShape, DurableIndexComponent, DurableIndexShape,
-    DurableKeyShape, DurableMemberShape, DurableRootShape, DurableValueShape, ImageType,
-    LedgerIdBytes, Scalar, SemanticNode, SemanticNodeKind, SemanticPath, SemanticStep,
-    SemanticStepKind, SemanticTarget,
+    DurableKeyShape, DurableMemberShape, DurableRootShape, ImageType, LedgerIdBytes, Scalar,
+    SemanticNode, SemanticNodeKind, SemanticPath, SemanticStep, SemanticStepKind, SemanticTarget,
+    ValueShapeNodeId, ValueShapeView,
 };
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::rc::Rc;
@@ -39,7 +39,8 @@ type DecodedDurable = (
     Vec<SealedSite>,
     Vec<SemanticPath>,
     DurableContractId,
-    DurableContractDescriptor,
+    Vec<SemanticNode>,
+    CanonicalValueShapeDag,
 );
 
 pub(super) fn decode_durable(
@@ -57,6 +58,10 @@ pub(super) fn decode_durable(
         return Err(reject(VerifyPhase::Table, "too many durable roots"));
     }
     let mut scope = LedgerScope::default();
+    // This image's one value-shape arena. Every field's shape is decoded into it and
+    // referenced from there, so a repeated shape costs one interning lookup and the
+    // decoder never holds a second representation of the same value.
+    let mut values = CanonicalValueShapeDag::new();
     let application = if root_count > 0 {
         Some(take_distinct_id(
             &mut reader,
@@ -124,6 +129,7 @@ pub(super) fn decode_durable(
                     1,
                     &mut member_budget,
                     &mut scope,
+                    &mut values,
                     MemberClaim::Reference,
                 )?;
                 if repeated != *accepted {
@@ -147,6 +153,7 @@ pub(super) fn decode_durable(
                     1,
                     &mut member_budget,
                     &mut scope,
+                    &mut values,
                     MemberClaim::Declaration,
                 )?);
                 scope.products.insert(
@@ -168,16 +175,16 @@ pub(super) fn decode_durable(
         // thoroughly as a plain scalar; each group slot is a group record whose own fields
         // tie to its `Group` member's direct fields one level down.
         let record_fields = &types[record as usize].fields;
-        tie_root_record(record_fields, &members, types, enums)?;
+        tie_root_record(record_fields, &members, types, enums, &values)?;
         // Every keyed `branch` nested in the tree ties its own materialized record to
         // its direct field members the same way, one level down, so a hostile image
         // cannot claim a branch identity while executing over a different record shape.
-        validate_branch_records(&members, types, enums, string_count)?;
+        validate_branch_records(&members, types, enums, string_count, &values)?;
         // The root's managed indexes follow its member tree. Each index's `Index`
         // ledger id is a distinct id across the whole table; each projected component
         // must reference a real top-level field or identity key of this same root, so a
         // hostile image cannot forge a projection over a leaf that does not exist.
-        let indexes = decode_indexes(&mut reader, &keys, &members, &mut scope)?;
+        let indexes = decode_indexes(&mut reader, &keys, &members, &mut scope, &values)?;
         roots.push(DecodedRoot {
             name,
             keys,
@@ -206,7 +213,7 @@ pub(super) fn decode_durable(
     // Reconstruct the durable graph's node set now, from the same descriptor the
     // contract id is computed over, so every operation site resolves against this
     // verifier's own derivation of the graph rather than a compiler-side summary.
-    let descriptor = durable_descriptor(application, &roots);
+    let descriptor = durable_descriptor(application, &roots, &values);
     let nodes = descriptor.semantic_nodes();
     // Project that node set once into its keyed form: each node's executable
     // coordinates, keyed by its path. A site then resolves in one lookup.
@@ -262,7 +269,10 @@ pub(super) fn decode_durable(
             "durable contract id does not match the durable graph",
         ));
     }
-    Ok((roots, sites, site_paths, recomputed, descriptor))
+    // The descriptor is a view over the decoded roots and the arena; only its two
+    // derivations — the recomputed id and the node set — outlive this function, so no
+    // caller retains a second projection of the durable graph.
+    Ok((roots, sites, site_paths, recomputed, nodes, values))
 }
 
 /// Decode one operation site — its semantic path then its target-kind byte — and
@@ -888,6 +898,7 @@ fn tie_root_record(
     members: &[DecodedMember],
     types: &[DecodedRecordType],
     enums: &[DecodedEnum],
+    values: &CanonicalValueShapeDag,
 ) -> Result<(), VerifyRejection> {
     let mut slots = record_fields.iter();
     let mut seen_group = false;
@@ -908,7 +919,8 @@ fn tie_root_record(
                         "root member tree has more top-level members than the record",
                     ));
                 };
-                if *required != slot.required || !value_shape_matches(value, slot.ty, types, enums)
+                if *required != slot.required
+                    || !value_shape_matches(values, *value, slot.ty, types, enums)
                 {
                     return Err(reject(
                         VerifyPhase::Table,
@@ -927,7 +939,7 @@ fn tie_root_record(
                         "root member tree has more top-level members than the record",
                     ));
                 };
-                tie_group_slot(slot, group_members, types, enums)?;
+                tie_group_slot(slot, group_members, types, enums, values)?;
             }
             // A keyed branch is a distinct durable node, not a materialized record slot.
             DecodedMember::Branch { .. } => {}
@@ -953,6 +965,7 @@ fn tie_group_slot(
     group_members: &[DecodedMember],
     types: &[DecodedRecordType],
     enums: &[DecodedEnum],
+    values: &CanonicalValueShapeDag,
 ) -> Result<(), VerifyRejection> {
     let ImageType::Record { idx, optional } = slot.ty else {
         return Err(reject(
@@ -976,14 +989,14 @@ fn tie_group_slot(
     let mut direct_fields = group_members.iter().filter_map(|member| match member {
         DecodedMember::Field {
             value, required, ..
-        } => Some((value, *required)),
+        } => Some((*value, *required)),
         _ => None,
     });
     for field in group_fields {
         match direct_fields.next() {
             Some((value, member_required))
                 if member_required == field.required
-                    && value_shape_matches(value, field.ty, types, enums) => {}
+                    && value_shape_matches(values, value, field.ty, types, enums) => {}
             _ => {
                 return Err(reject(
                     VerifyPhase::Table,
@@ -1013,12 +1026,13 @@ fn validate_branch_records(
     types: &[DecodedRecordType],
     enums: &[DecodedEnum],
     string_count: usize,
+    values: &CanonicalValueShapeDag,
 ) -> Result<(), VerifyRejection> {
     for member in members {
         match member {
             DecodedMember::Field { .. } => {}
             DecodedMember::Group { members, .. } => {
-                validate_branch_records(members, types, enums, string_count)?;
+                validate_branch_records(members, types, enums, string_count, values)?;
             }
             DecodedMember::Branch {
                 name,
@@ -1039,14 +1053,14 @@ fn validate_branch_records(
                 let mut direct_fields = members.iter().filter_map(|member| match member {
                     DecodedMember::Field {
                         value, required, ..
-                    } => Some((value, *required)),
+                    } => Some((*value, *required)),
                     _ => None,
                 });
                 for field in record_fields {
                     match direct_fields.next() {
                         Some((value, member_required))
                             if member_required == field.required
-                                && value_shape_matches(value, field.ty, types, enums) => {}
+                                && value_shape_matches(values, value, field.ty, types, enums) => {}
                         _ => {
                             return Err(reject(
                                 VerifyPhase::Table,
@@ -1061,7 +1075,7 @@ fn validate_branch_records(
                         "branch member tree has more direct fields than its record",
                     ));
                 }
-                validate_branch_records(members, types, enums, string_count)?;
+                validate_branch_records(members, types, enums, string_count, values)?;
             }
         }
     }
@@ -1080,6 +1094,7 @@ fn decode_members(
     depth: usize,
     budget: &mut usize,
     scope: &mut LedgerScope,
+    values: &mut CanonicalValueShapeDag,
     claim: MemberClaim,
 ) -> Result<Vec<DecodedMember>, VerifyRejection> {
     if depth > marrow_image::bounds::MAX_DURABLE_DEPTH {
@@ -1113,7 +1128,7 @@ fn decode_members(
                         ));
                     }
                 };
-                let value = decode_value_shape(reader, 1, scope)?;
+                let value = decode_value_shape(reader, 1, scope, values)?;
                 DecodedMember::Field {
                     id,
                     required,
@@ -1122,7 +1137,7 @@ fn decode_members(
             }
             0x01 => {
                 let id = claim.read(reader, scope, "short durable group identity")?;
-                let inner = decode_members(reader, depth + 1, budget, scope, claim)?;
+                let inner = decode_members(reader, depth + 1, budget, scope, values, claim)?;
                 DecodedMember::Group { id, members: inner }
             }
             0x02 => {
@@ -1145,7 +1160,7 @@ fn decode_members(
                     return Err(reject(VerifyPhase::Table, "too many branch key columns"));
                 }
                 let keys = decode_key_tuple(reader, key_count, scope, claim)?;
-                let inner = decode_members(reader, depth + 1, budget, scope, claim)?;
+                let inner = decode_members(reader, depth + 1, budget, scope, values, claim)?;
                 DecodedMember::Branch {
                     placement,
                     name,
@@ -1174,6 +1189,7 @@ fn decode_indexes(
     keys: &[(Scalar, LedgerIdBytes)],
     members: &[DecodedMember],
     scope: &mut LedgerScope,
+    values: &CanonicalValueShapeDag,
 ) -> Result<Vec<DecodedIndex>, VerifyRejection> {
     let field_ids: Vec<LedgerIdBytes> = members
         .iter()
@@ -1188,8 +1204,8 @@ fn decode_indexes(
     let index_eligible_field_ids: Vec<LedgerIdBytes> = members
         .iter()
         .filter_map(|member| match member {
-            DecodedMember::Field { id, value, .. } => match value {
-                DurableValueShape::Scalar(
+            DecodedMember::Field { id, value, .. } => match values.view(*value) {
+                ValueShapeView::Scalar(
                     Scalar::Int
                     | Scalar::Text
                     | Scalar::Bool
@@ -1197,9 +1213,9 @@ fn decode_indexes(
                     | Scalar::Date
                     | Scalar::Instant,
                 ) => Some(*id),
-                DurableValueShape::Scalar(Scalar::Duration)
-                | DurableValueShape::Struct(_)
-                | DurableValueShape::Enum { .. } => None,
+                ValueShapeView::Scalar(Scalar::Duration)
+                | ValueShapeView::Struct(_)
+                | ValueShapeView::Enum { .. } => None,
             },
             DecodedMember::Group { .. } | DecodedMember::Branch { .. } => None,
         })
@@ -1351,21 +1367,25 @@ fn validate_index_projection(
     Ok(())
 }
 
-/// Decode a durable field's stored value shape: `u8(value_tag) ‖ body`. A scalar is
-/// tag `0x00` (a bare scalar); a dense struct is tag `0x01` (`u16(count) ‖ value*`);
-/// a closed enum is tag `0x02` (`sum id ‖ u16(count) ‖ [member id ‖ u16(payload) ‖
-/// value*]*`). An enum's sum and member ids are the identity of the enum *declaration*.
-/// The first occurrence of a given sum id claims it and its member ids as fresh
-/// pairwise-distinct ids; a later occurrence carrying an already-claimed sum id — the
-/// shape a second durable field of that enum emits — is a reference that reclaims
-/// nothing and must carry the identical member ids in order. `depth` bounds nesting so a
-/// hostile image cannot drive unbounded recursion before the value shape is rechecked
-/// (§ law 9).
+/// Decode a durable field's stored value shape into `values`, returning a reference to
+/// the node it minted: `u8(value_tag) ‖ body`. A scalar is tag `0x00` (a bare scalar); a
+/// dense struct is tag `0x01` (`u16(count) ‖ value*`); a closed enum is tag `0x02`
+/// (`sum id ‖ u16(count) ‖ [member id ‖ u16(payload) ‖ value*]*`). Leaves are minted
+/// before the shape that references them, so the wire tree is consumed without ever
+/// being materialized as one — a shape the image spells twice is decoded into the one
+/// node the arena already holds. An enum's sum and member ids are the identity of the
+/// enum *declaration*. The first occurrence of a given sum id claims it and its member
+/// ids as fresh pairwise-distinct ids; a later occurrence carrying an already-claimed sum
+/// id — the shape a second durable field of that enum emits — is a reference that
+/// reclaims nothing and must carry the identical member ids in order. `depth` bounds
+/// nesting so a hostile image cannot drive unbounded recursion before the value shape is
+/// rechecked (§ law 9).
 fn decode_value_shape(
     reader: &mut Reader<'_>,
     depth: usize,
     scope: &mut LedgerScope,
-) -> Result<DurableValueShape, VerifyRejection> {
+    values: &mut CanonicalValueShapeDag,
+) -> Result<ValueShapeNodeId, VerifyRejection> {
     if depth > marrow_image::bounds::MAX_DURABLE_VALUE_DEPTH {
         return Err(reject(
             VerifyPhase::Table,
@@ -1384,7 +1404,7 @@ fn decode_value_shape(
                 VerifyPhase::Table,
                 "durable value scalar must be a bare scalar",
             ))?;
-            Ok(DurableValueShape::Scalar(scalar))
+            Ok(values.scalar(scalar))
         }
         0x01 => {
             let count = reader.u16().ok_or(reject(
@@ -1396,9 +1416,9 @@ fn decode_value_shape(
             }
             let mut leaves = Vec::with_capacity(count);
             for _ in 0..count {
-                leaves.push(decode_value_shape(reader, depth + 1, scope)?);
+                leaves.push(decode_value_shape(reader, depth + 1, scope, values)?);
             }
-            Ok(DurableValueShape::Struct(leaves))
+            Ok(values.struct_shape(leaves))
         }
         0x02 => {
             let sum = read_id(reader, "short durable enum sum identity")?;
@@ -1413,9 +1433,9 @@ fn decode_value_shape(
             // per-declaration identity: it reclaims neither the sum nor any member id,
             // and must present the identical member ids in the identical order. The
             // recorded identity is the ordered member ids only; each occurrence's payload
-            // shapes are tied to the field's own enum-table entry by `value_shape_matches`,
-            // so a payload divergence is caught there rather than against the first
-            // occurrence.
+            // shapes are tied to the field's own enum-table entry by
+            // `value_shape_matches`, so a payload divergence is caught there rather than
+            // against the first occurrence.
             let recorded = scope.enums.get(&sum).cloned();
             match &recorded {
                 Some(recorded_ids) if recorded_ids.len() != member_count => {
@@ -1452,16 +1472,16 @@ fn decode_value_shape(
                 }
                 let mut payload = Vec::with_capacity(payload_count);
                 for _ in 0..payload_count {
-                    payload.push(decode_value_shape(reader, depth + 1, scope)?);
+                    payload.push(decode_value_shape(reader, depth + 1, scope, values)?);
                 }
-                members.push(DurableEnumMemberShape { id, payload });
+                members.push((id, payload));
             }
             if recorded.is_none() {
                 scope
                     .enums
-                    .insert(sum, members.iter().map(|member| member.id).collect());
+                    .insert(sum, members.iter().map(|(id, _)| *id).collect());
             }
-            Ok(DurableValueShape::Enum { sum, members })
+            Ok(values.enum_shape(sum, members))
         }
         _ => Err(reject(VerifyPhase::Table, "unknown durable value tag")),
     }
@@ -1476,21 +1496,22 @@ fn decode_value_shape(
 /// carries a different value shape. A nominal field erases to its base scalar, so it
 /// matches a bare scalar exactly like a plain scalar field.
 fn value_shape_matches(
-    shape: &DurableValueShape,
+    values: &CanonicalValueShapeDag,
+    shape: ValueShapeNodeId,
     ty: ImageType,
     types: &[DecodedRecordType],
     enums: &[DecodedEnum],
 ) -> bool {
-    match (shape, ty) {
+    match (values.view(shape), ty) {
         (
-            DurableValueShape::Scalar(shape_scalar),
+            ValueShapeView::Scalar(shape_scalar),
             ImageType::Scalar {
                 scalar,
                 optional: false,
             },
-        ) => *shape_scalar == scalar,
+        ) => shape_scalar == scalar,
         (
-            DurableValueShape::Struct(leaves),
+            ValueShapeView::Struct(leaves),
             ImageType::Record {
                 idx,
                 optional: false,
@@ -1503,11 +1524,11 @@ fn value_shape_matches(
             // matched positionally.
             record.fields.len() == leaves.len()
                 && record.fields.iter().zip(leaves).all(|(field, leaf)| {
-                    field.required && value_shape_matches(leaf, field.ty, types, enums)
+                    field.required && value_shape_matches(values, *leaf, field.ty, types, enums)
                 })
         }
         (
-            DurableValueShape::Enum { members, .. },
+            ValueShapeView::Enum { members, .. },
             ImageType::Enum {
                 idx,
                 optional: false,
@@ -1522,14 +1543,12 @@ fn value_shape_matches(
                     .iter()
                     .zip(members)
                     .all(|(variant, member)| {
-                        variant.payload.len() == member.payload.len()
-                            && variant
-                                .payload
-                                .iter()
-                                .zip(&member.payload)
-                                .all(|(leaf_ty, leaf)| {
-                                    value_shape_matches(leaf, *leaf_ty, types, enums)
-                                })
+                        variant.payload.len() == member.payload().len()
+                            && variant.payload.iter().zip(member.payload()).all(
+                                |(leaf_ty, leaf)| {
+                                    value_shape_matches(values, *leaf, *leaf_ty, types, enums)
+                                },
+                            )
                     })
         }
         _ => false,
@@ -1541,12 +1560,13 @@ fn value_shape_matches(
 /// by `marrow-image` but reads only the decoded application id, roots, key tuples,
 /// and member trees, so the recomputed id depends on nothing the compiler asserted
 /// directly.
-pub(super) fn durable_descriptor(
+pub(super) fn durable_descriptor<'a>(
     application: Option<LedgerIdBytes>,
     roots: &[DecodedRoot],
-) -> DurableContractDescriptor {
+    values: &'a CanonicalValueShapeDag,
+) -> DurableContractDescriptor<'a> {
     let Some(application) = application else {
-        return DurableContractDescriptor::empty();
+        return DurableContractDescriptor::empty(values);
     };
     let shapes = roots
         .iter()
@@ -1558,7 +1578,7 @@ pub(super) fn durable_descriptor(
             indexes: index_shapes(&root.indexes),
         })
         .collect();
-    DurableContractDescriptor::new(application, shapes)
+    DurableContractDescriptor::new(application, shapes, values)
 }
 
 /// The descriptor index shapes for a decoded root's managed indexes.
@@ -1596,7 +1616,7 @@ fn member_shapes(members: &[DecodedMember]) -> Vec<DurableMemberShape> {
             } => DurableMemberShape::Field(DurableFieldShape {
                 id: *id,
                 required: *required,
-                value: value.clone(),
+                value: *value,
             }),
             DecodedMember::Group { id, members } => DurableMemberShape::Group(DurableGroupShape {
                 id: *id,

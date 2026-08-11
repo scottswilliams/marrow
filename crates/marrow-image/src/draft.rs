@@ -37,6 +37,7 @@ use crate::site_plan::{
     SitePlanStateError, SitePolicyReceipt,
 };
 use crate::ty::{ImageType, Scalar};
+use crate::value_dag::CanonicalValueShapeDag;
 
 /// The strong identity of one draft and its site demand plan.
 ///
@@ -472,6 +473,10 @@ pub struct ImageDraft {
     /// of them away.
     product_conflict: Option<ProductClaimConflict>,
     application: Option<LedgerIdBytes>,
+    /// The one owner of every durable field value shape this draft holds. A
+    /// declaration row references a node; no row owns one, so a value shape shared by a
+    /// thousand fields — or nested exponentially — is stored once.
+    value_shapes: CanonicalValueShapeDag,
     /// The one owner of the operation-site table, its demand map, and its capacity
     /// policy. Every site an image carries is requested through it.
     sites: SiteDemandPlan,
@@ -503,6 +508,7 @@ struct DraftCheckpoint {
     colls: usize,
     products: usize,
     occurrences: usize,
+    value_shapes: usize,
     sites: usize,
     functions: usize,
     exports: usize,
@@ -575,6 +581,7 @@ impl Drop for TemplateProofDraftGuard<'_> {
         self.draft.occurrences.truncate(at.occurrences);
         self.draft.sites.rewind(at.sites, at.receipt);
         self.draft.products.truncate(at.products);
+        self.draft.value_shapes.truncate(at.value_shapes);
         self.draft.product_conflict = at.product_conflict;
         self.draft.colls.truncate(at.colls);
         self.draft.enums.truncate(at.enums);
@@ -608,6 +615,7 @@ impl ImageDraft {
             occurrences: RootOccurrenceTable::default(),
             product_conflict: None,
             application: None,
+            value_shapes: CanonicalValueShapeDag::new(),
             sites: SiteDemandPlan::default(),
             functions: Vec::new(),
             exports: Vec::new(),
@@ -1014,6 +1022,7 @@ impl ImageDraft {
             occurrences,
             product_conflict,
             application,
+            value_shapes,
             sites,
             functions,
             exports,
@@ -1027,6 +1036,7 @@ impl ImageDraft {
             colls: colls.len(),
             products: products.declarations().len(),
             occurrences: occurrences.len(),
+            value_shapes: value_shapes.len(),
             sites: sites.rows().len(),
             functions: functions.len(),
             exports: exports.len(),
@@ -1035,6 +1045,19 @@ impl ImageDraft {
             product_conflict: *product_conflict,
             receipt: sites.receipt(),
         }
+    }
+
+    /// The draft's one durable value-shape arena, for the compiler to mint a field's
+    /// value shape into. A declaration row can only carry a reference minted here, so
+    /// there is no second place a value shape can come from.
+    pub fn value_shapes_mut(&mut self) -> &mut CanonicalValueShapeDag {
+        &mut self.value_shapes
+    }
+
+    /// The draft's one durable value-shape arena, for reading a minted shape's depth,
+    /// kind, and references.
+    pub fn value_shapes(&self) -> &CanonicalValueShapeDag {
+        &self.value_shapes
     }
 
     // --- accessors used by the encoder ---
@@ -1196,7 +1219,7 @@ mod collection_count_tests {
 #[cfg(test)]
 mod site_binding_tests {
     use super::{ImageDraft, RootOccurrenceDef, TypeId};
-    use crate::durable_id::{DurableValueShape, LedgerIdBytes};
+    use crate::durable_id::LedgerIdBytes;
     use crate::product::{DeclarationMemberDef, DeclarationMemberShape};
     use crate::semantic::SemanticTarget;
     use crate::site_plan::{SitePlanState, SitePlanStateError};
@@ -1219,6 +1242,7 @@ mod site_binding_tests {
         let mut draft = ImageDraft::new();
         draft.set_application_identity(LedgerIdBytes::from_bytes([0x01; 16]));
         let name = draft.intern_string("r");
+        let value = draft.value_shapes_mut().scalar(Scalar::Int);
         draft
             .declare_product(
                 product(),
@@ -1228,7 +1252,7 @@ mod site_binding_tests {
                     shape: DeclarationMemberShape::Field {
                         id: field(),
                         required: true,
-                        value: DurableValueShape::Scalar(Scalar::Int),
+                        value,
                     },
                 }],
             )
@@ -1320,6 +1344,7 @@ mod site_binding_tests {
             let mut guard = draft.template_proof();
             let proof = guard.proof_draft();
             let name = proof.intern_string("r");
+            let value = proof.value_shapes_mut().scalar(Scalar::Int);
             proof
                 .declare_product(
                     product(),
@@ -1329,7 +1354,7 @@ mod site_binding_tests {
                         shape: DeclarationMemberShape::Field {
                             id: field(),
                             required: true,
-                            value: DurableValueShape::Scalar(Scalar::Int),
+                            value,
                         },
                     }],
                 )
@@ -1364,6 +1389,7 @@ mod site_binding_tests {
         // The same ordinals are re-minted deterministically; the handle must still not
         // authenticate the replacement.
         let name = draft.intern_string("r");
+        let value = draft.value_shapes_mut().scalar(Scalar::Int);
         draft
             .declare_product(
                 product(),
@@ -1373,7 +1399,7 @@ mod site_binding_tests {
                     shape: DeclarationMemberShape::Field {
                         id: field(),
                         required: true,
-                        value: DurableValueShape::Scalar(Scalar::Int),
+                        value,
                     },
                 }],
             )

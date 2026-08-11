@@ -22,9 +22,9 @@
 use marrow_image::bounds::MAX_SITES;
 use marrow_image::{
     AdmittedRoot, CanonicalDeclarationPathSelector, DeclarationMember, DeclarationMemberDef,
-    DeclarationMemberShape, DurableIndexComponent, DurableIndexShape, DurableValueShape,
-    ImageBuildError, ImageDraft, KeyColumn, LedgerIdBytes, LegacyDraftSiteOperand, RecordTypeDef,
-    RootOccurrenceDef, Scalar, SemanticTarget,
+    DeclarationMemberShape, DurableIndexComponent, DurableIndexShape, ImageBuildError, ImageDraft,
+    KeyColumn, LedgerIdBytes, LegacyDraftSiteOperand, RecordTypeDef, RootOccurrenceDef, Scalar,
+    SemanticTarget,
 };
 
 #[path = "common/site_seam.rs"]
@@ -61,6 +61,7 @@ fn declare_wide_product(draft: &mut ImageDraft, fields: usize) {
         fields: Vec::new(),
     });
     draft.set_application_identity(LedgerIdBytes::from_bytes(APPLICATION_ID));
+    let value = draft.value_shapes_mut().scalar(Scalar::Int);
     draft
         .declare_product(
             product(),
@@ -71,7 +72,7 @@ fn declare_wide_product(draft: &mut ImageDraft, fields: usize) {
                     shape: DeclarationMemberShape::Field {
                         id: field_id(n),
                         required: true,
-                        value: DurableValueShape::Scalar(Scalar::Int),
+                        value,
                     },
                 })
                 .collect(),
@@ -208,6 +209,7 @@ fn every_target_draft() -> (ImageDraft, AdmittedRoot, Vec<DeclarationMember>) {
     });
     draft.set_application_identity(LedgerIdBytes::from_bytes(APPLICATION_ID));
     let branch_name = draft.intern_string("b");
+    let value = draft.value_shapes_mut().scalar(Scalar::Int);
     draft
         .declare_product(
             product(),
@@ -218,7 +220,7 @@ fn every_target_draft() -> (ImageDraft, AdmittedRoot, Vec<DeclarationMember>) {
                     shape: DeclarationMemberShape::Field {
                         id: LedgerIdBytes::from_bytes(FIELD_ID),
                         required: true,
-                        value: DurableValueShape::Scalar(Scalar::Int),
+                        value,
                     },
                 },
                 DeclarationMemberDef {
@@ -468,6 +470,7 @@ fn one_ordinal_from_two_independent_drafts_compares_equal() {
         fields: Vec::new(),
     });
     right.set_application_identity(LedgerIdBytes::from_bytes([0x0f; 16]));
+    let value = right.value_shapes_mut().scalar(Scalar::Text);
     right
         .declare_product(
             LedgerIdBytes::from_bytes([0x1d; 16]),
@@ -477,7 +480,7 @@ fn one_ordinal_from_two_independent_drafts_compares_equal() {
                 shape: DeclarationMemberShape::Field {
                     id: LedgerIdBytes::from_bytes([0x1e; 16]),
                     required: false,
-                    value: DurableValueShape::Scalar(Scalar::Text),
+                    value,
                 },
             }],
         )
@@ -576,6 +579,7 @@ fn redeclare_divergent(draft: &mut ImageDraft) {
         name: type_name,
         fields: Vec::new(),
     });
+    let value = draft.value_shapes_mut().scalar(Scalar::Int);
     draft
         .declare_product(
             product(),
@@ -585,7 +589,7 @@ fn redeclare_divergent(draft: &mut ImageDraft) {
                 shape: DeclarationMemberShape::Field {
                     id: field_id(DIVERGENT_FIELD),
                     required: true,
-                    value: DurableValueShape::Scalar(Scalar::Int),
+                    value,
                 },
             }],
         )
@@ -788,6 +792,7 @@ fn four_thousand_roots_over_a_hundred_unoperated_groups_cost_one_site_each() {
         fields: Vec::new(),
     });
     draft.set_application_identity(LedgerIdBytes::from_bytes(APPLICATION_ID));
+    let value = draft.value_shapes_mut().scalar(Scalar::Int);
     let mut commands = Vec::with_capacity(2 * GROUPS);
     for group in 0..GROUPS {
         let parent = u16::try_from(commands.len()).expect("inside the member bound");
@@ -802,7 +807,7 @@ fn four_thousand_roots_over_a_hundred_unoperated_groups_cost_one_site_each() {
             shape: DeclarationMemberShape::Field {
                 id: field_id(0x40_0000 + group),
                 required: true,
-                value: DurableValueShape::Scalar(Scalar::Int),
+                value,
             },
         });
     }

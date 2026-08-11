@@ -15,9 +15,9 @@
 //! rather than copied.
 
 use marrow_image::{
-    DeclarationMemberDef, DeclarationMemberShape, DurableValueShape, ExportId, FieldDef,
-    FunctionDef, ImageDraft, ImageType, Instr, KeyColumn, LedgerIdBytes, RecordTypeDef,
-    RootOccurrenceDef, Scalar, SemanticTarget, SpanEntry,
+    DeclarationMemberDef, DeclarationMemberShape, ExportId, FieldDef, FunctionDef, ImageDraft,
+    ImageType, Instr, KeyColumn, LedgerIdBytes, RecordTypeDef, RootOccurrenceDef, Scalar,
+    SemanticTarget, SpanEntry,
 };
 use marrow_verify::{VerifiedImage, verify};
 use marrow_vm::{DurableRun, Ephemeral, Value, mint_ephemeral, run_export};
@@ -91,6 +91,8 @@ fn groups_image() -> VerifiedImage {
     let root = draft.intern_string("books");
     draft.set_application_identity(LedgerIdBytes::from_bytes(APPLICATION_ID));
     let product = LedgerIdBytes::from_bytes(ROOT_PRODUCT_ID);
+    let text_value = draft.value_shapes_mut().scalar(Scalar::Text);
+    let int_value = draft.value_shapes_mut().scalar(Scalar::Int);
     draft
         .declare_product(
             product,
@@ -101,7 +103,7 @@ fn groups_image() -> VerifiedImage {
                     shape: DeclarationMemberShape::Field {
                         id: LedgerIdBytes::from_bytes(TITLE_FIELD_ID),
                         required: true,
-                        value: DurableValueShape::Scalar(Scalar::Text),
+                        value: text_value,
                     },
                 },
                 DeclarationMemberDef {
@@ -115,7 +117,7 @@ fn groups_image() -> VerifiedImage {
                     shape: DeclarationMemberShape::Field {
                         id: LedgerIdBytes::from_bytes(PAGES_FIELD_ID),
                         required: false,
-                        value: DurableValueShape::Scalar(Scalar::Int),
+                        value: int_value,
                     },
                 },
             ],

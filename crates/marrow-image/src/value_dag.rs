@@ -52,7 +52,7 @@
 
 use std::collections::HashMap;
 
-use crate::durable_id::LedgerIdBytes;
+use crate::durable_id::{IDREF_MEMBER, IDREF_SUM, LedgerIdBytes};
 use crate::ty::Scalar;
 
 /// A reference to one node of a [`CanonicalValueShapeDag`].
@@ -73,16 +73,41 @@ enum ValueShapeNode {
     Struct(Vec<ValueShapeNodeId>),
     Enum {
         sum: LedgerIdBytes,
-        members: Vec<EnumMemberNode>,
+        members: Vec<ValueShapeEnumMember>,
     },
 }
 
 /// One variant of a closed enum value: its `Member` ledger identity and its dense
 /// payload leaves in declaration order.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-struct EnumMemberNode {
+pub struct ValueShapeEnumMember {
     id: LedgerIdBytes,
     payload: Vec<ValueShapeNodeId>,
+}
+
+impl ValueShapeEnumMember {
+    /// This variant's `Member` ledger identity.
+    pub fn id(&self) -> LedgerIdBytes {
+        self.id
+    }
+
+    /// This variant's dense payload leaves, in declaration order.
+    pub fn payload(&self) -> &[ValueShapeNodeId] {
+        &self.payload
+    }
+}
+
+/// One node of a [`CanonicalValueShapeDag`], as a reader sees it: the shape's kind and
+/// its direct references, never an owned subshape. A caller that needs a nested shape
+/// asks the arena for it, so reading a node cannot walk into an expansion by accident.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ValueShapeView<'a> {
+    Scalar(Scalar),
+    Struct(&'a [ValueShapeNodeId]),
+    Enum {
+        sum: LedgerIdBytes,
+        members: &'a [ValueShapeEnumMember],
+    },
 }
 
 /// The program's distinct durable value shapes, each held once.
@@ -145,7 +170,7 @@ impl CanonicalValueShapeDag {
     ) -> ValueShapeNodeId {
         let members = members
             .into_iter()
-            .map(|(id, payload)| EnumMemberNode { id, payload })
+            .map(|(id, payload)| ValueShapeEnumMember { id, payload })
             .collect();
         self.intern(ValueShapeNode::Enum { sum, members })
     }
@@ -155,6 +180,17 @@ impl CanonicalValueShapeDag {
     /// levels.
     pub fn depth(&self, node: ValueShapeNodeId) -> usize {
         self.depth[node.index()] as usize
+    }
+
+    /// Read one node: its kind and its direct references. This is the only way to look
+    /// inside a shape, and it hands back references rather than subshapes, so no reader
+    /// can obtain an owned nested tree.
+    pub fn view(&self, node: ValueShapeNodeId) -> ValueShapeView<'_> {
+        match &self.nodes[node.index()] {
+            ValueShapeNode::Scalar(scalar) => ValueShapeView::Scalar(*scalar),
+            ValueShapeNode::Struct(leaves) => ValueShapeView::Struct(leaves),
+            ValueShapeNode::Enum { sum, members } => ValueShapeView::Enum { sum: *sum, members },
+        }
     }
 
     /// The direct fan-out of `node`: its struct leaf count, or its enum variant count,
@@ -171,7 +207,7 @@ impl CanonicalValueShapeDag {
     /// The payload widths of `node`'s enum variants in declaration order, or an empty
     /// slice iterator for a scalar or struct node.
     pub fn payload_widths(&self, node: ValueShapeNodeId) -> impl Iterator<Item = usize> + '_ {
-        let members: &[EnumMemberNode] = match &self.nodes[node.index()] {
+        let members: &[ValueShapeEnumMember] = match &self.nodes[node.index()] {
             ValueShapeNode::Enum { members, .. } => members,
             _ => &[],
         };
@@ -183,6 +219,22 @@ impl CanonicalValueShapeDag {
     /// this once and touches each distinct shape one time.
     pub fn nodes(&self) -> impl Iterator<Item = ValueShapeNodeId> {
         (0..self.nodes.len() as u32).map(ValueShapeNodeId)
+    }
+
+    /// Drop every node minted at or after `len`, restoring the arena to the state a
+    /// caller recorded when it held exactly `len` nodes.
+    ///
+    /// Minting is append-only and every reference points strictly backwards, so the
+    /// retained prefix cannot reference a dropped node. The interning entries for the
+    /// dropped nodes go with them: leaving one behind would hand a later caller an id
+    /// past the end of the arena.
+    pub fn truncate(&mut self, len: usize) {
+        if len >= self.nodes.len() {
+            return;
+        }
+        self.interned.retain(|_, id| id.index() < len);
+        self.nodes.truncate(len);
+        self.depth.truncate(len);
     }
 
     /// Mint `node`, or return the id of the structurally identical node already held.
@@ -273,10 +325,6 @@ pub enum ValueShapeWireForm {
 const VSHAPE_SCALAR: u8 = 0;
 const VSHAPE_STRUCT: u8 = 1;
 const VSHAPE_ENUM: u8 = 2;
-
-/// The `IDREF` kind tags for the two identities a value shape carries.
-const IDREF_SUM: u8 = 5;
-const IDREF_MEMBER: u8 = 6;
 
 /// One unit of pending expansion work.
 ///

@@ -11,9 +11,9 @@
 //! rather than copied.
 
 use marrow_image::{
-    CollectionTypeDef, DeclarationMemberDef, DeclarationMemberShape, DurableValueShape, ExportId,
-    FieldDef, FunctionDef, ImageDraft, ImageType, Instr, KeyColumn, LedgerIdBytes,
-    LegacyDraftSiteOperand, RecordTypeDef, RootOccurrenceDef, Scalar, SemanticTarget, SpanEntry,
+    CollectionTypeDef, DeclarationMemberDef, DeclarationMemberShape, ExportId, FieldDef,
+    FunctionDef, ImageDraft, ImageType, Instr, KeyColumn, LedgerIdBytes, LegacyDraftSiteOperand,
+    RecordTypeDef, RootOccurrenceDef, Scalar, SemanticTarget, SpanEntry,
 };
 use marrow_verify::{VerifyPhase, verify};
 
@@ -88,6 +88,7 @@ fn two_root_branch_draft(
         }],
     });
     let a_root = draft.intern_string("books");
+    let text_value = draft.value_shapes_mut().scalar(Scalar::Text);
     // Commands 0/1/2 are the Product's direct members; command 3 nests under the branch.
     draft
         .declare_product(
@@ -99,7 +100,7 @@ fn two_root_branch_draft(
                     shape: DeclarationMemberShape::Field {
                         id: LedgerIdBytes::from_bytes(A_FIELD),
                         required: true,
-                        value: DurableValueShape::Scalar(Scalar::Text),
+                        value: text_value,
                     },
                 },
                 DeclarationMemberDef {
@@ -107,7 +108,7 @@ fn two_root_branch_draft(
                     shape: DeclarationMemberShape::Field {
                         id: LedgerIdBytes::from_bytes(A_SUBTITLE_FIELD),
                         required: false,
-                        value: DurableValueShape::Scalar(Scalar::Text),
+                        value: text_value,
                     },
                 },
                 DeclarationMemberDef {
@@ -127,7 +128,7 @@ fn two_root_branch_draft(
                     shape: DeclarationMemberShape::Field {
                         id: LedgerIdBytes::from_bytes(A_BRANCH_FIELD),
                         required: true,
-                        value: DurableValueShape::Scalar(Scalar::Text),
+                        value: text_value,
                     },
                 },
             ],
@@ -159,6 +160,7 @@ fn two_root_branch_draft(
         }],
     });
     let b_root = draft.intern_string("tallies");
+    let int_value = draft.value_shapes_mut().scalar(Scalar::Int);
     draft
         .declare_product(
             LedgerIdBytes::from_bytes(B_PRODUCT),
@@ -168,7 +170,7 @@ fn two_root_branch_draft(
                 shape: DeclarationMemberShape::Field {
                     id: LedgerIdBytes::from_bytes(B_FIELD),
                     required: true,
-                    value: DurableValueShape::Scalar(Scalar::Int),
+                    value: int_value,
                 },
             }],
         )

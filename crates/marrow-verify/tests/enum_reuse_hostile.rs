@@ -12,9 +12,9 @@
 //! rather than copied.
 
 use marrow_image::{
-    DeclarationMemberDef, DeclarationMemberShape, DurableValueShape, EnumTypeDef, ExportId,
-    FieldDef, FunctionDef, ImageDraft, ImageType, Instr, KeyColumn, LedgerIdBytes, RecordTypeDef,
-    RootOccurrenceDef, Scalar, SemanticTarget, SpanEntry, VariantDef,
+    DeclarationMemberDef, DeclarationMemberShape, EnumTypeDef, ExportId, FieldDef, FunctionDef,
+    ImageDraft, ImageType, Instr, KeyColumn, LedgerIdBytes, RecordTypeDef, RootOccurrenceDef,
+    Scalar, SemanticTarget, SpanEntry, ValueShapeNodeId, VariantDef,
 };
 use marrow_verify::{VerifyPhase, verify};
 
@@ -75,19 +75,16 @@ fn access_enum(draft: &mut ImageDraft) -> u16 {
         .index()
 }
 
-/// The durable value shape of an `Access` field, parameterized on its member ids so a
-/// hostile can present the same `sum` with an altered member set.
-fn access_shape(sum: [u8; 16], members: [[u8; 16]; 3]) -> DurableValueShape {
-    DurableValueShape::Enum {
-        sum: id(sum),
-        members: members
-            .iter()
-            .map(|m| marrow_image::DurableEnumMemberShape {
-                id: id(*m),
-                payload: vec![],
-            })
-            .collect(),
-    }
+/// The identity of one `Access` enum shape: its sum id and its three member ids. A
+/// hostile presents the same `sum` with an altered member set by varying this alone.
+type AccessShape = ([u8; 16], [[u8; 16]; 3]);
+
+/// Mint the durable value shape of an `Access` field into `draft`'s value arena.
+fn access_shape(draft: &mut ImageDraft, (sum, members): AccessShape) -> ValueShapeNodeId {
+    draft.value_shapes_mut().enum_shape(
+        id(sum),
+        members.iter().map(|m| (id(*m), Vec::new())).collect(),
+    )
 }
 
 /// A one-root image ("grants", int key) whose `Access` record carries two enum fields.
@@ -95,12 +92,14 @@ fn access_shape(sum: [u8; 16], members: [[u8; 16]; 3]) -> DurableValueShape {
 /// forge a duplicate field id or an inconsistent enum reference.
 fn build(
     field_one: [u8; 16],
-    shape_one: DurableValueShape,
+    shape_one: AccessShape,
     field_two: [u8; 16],
-    shape_two: DurableValueShape,
+    shape_two: AccessShape,
 ) -> Vec<u8> {
     let mut draft = ImageDraft::new();
     draft.set_application_identity(id(APPLICATION_ID));
+    let shape_one = access_shape(&mut draft, shape_one);
+    let shape_two = access_shape(&mut draft, shape_two);
     let enum_idx = access_enum(&mut draft);
     let ty = ImageType::Enum {
         idx: enum_idx,
@@ -189,9 +188,9 @@ fn build(
 
 /// The reference shape: one enum declaration reused by two fields. Both fields present
 /// the identical sum and member ids — the honest reuse the verifier must accept.
-fn shared() -> (DurableValueShape, DurableValueShape) {
+fn shared() -> (AccessShape, AccessShape) {
     let members = [MEMBER_READER, MEMBER_WRITER, MEMBER_ADMIN];
-    (access_shape(SUM, members), access_shape(SUM, members))
+    ((SUM, members), (SUM, members))
 }
 
 #[test]
@@ -237,8 +236,8 @@ fn a_field_id_colliding_with_the_enum_sum_still_rejects() {
 fn an_inconsistent_enum_reference_rejects() {
     // The second field reuses the sum id but presents a different member id: a forged
     // identity that claims to be the same enum while carrying a different member set.
-    let one = access_shape(SUM, [MEMBER_READER, MEMBER_WRITER, MEMBER_ADMIN]);
-    let two = access_shape(SUM, [MEMBER_READER, MEMBER_WRITER, [0x99; 16]]);
+    let one = (SUM, [MEMBER_READER, MEMBER_WRITER, MEMBER_ADMIN]);
+    let two = (SUM, [MEMBER_READER, MEMBER_WRITER, [0x99; 16]]);
     let rejection = verify(&build(FIELD_ONE, one, FIELD_TWO, two))
         .expect_err("an inconsistent enum reference must reject");
     assert_eq!(rejection.phase(), VerifyPhase::Table);
@@ -403,9 +402,9 @@ impl GraphSpec {
     }
 }
 
-/// The durable value shape of a `Access` field for one root's enum declaration.
-fn spec_enum_shape(spec: &RootSpec) -> DurableValueShape {
-    access_shape(spec.sum, spec.members)
+/// The durable value shape of an `Access` field for one root's enum declaration.
+fn spec_enum_shape(draft: &mut ImageDraft, spec: &RootSpec) -> ValueShapeNodeId {
+    access_shape(draft, (spec.sum, spec.members))
 }
 
 /// Encode the two-root artifact `spec` describes. Every root carries the same
@@ -473,6 +472,8 @@ fn forge(spec: &GraphSpec) -> Vec<u8> {
 
     for (position, root) in spec.roots.iter().enumerate() {
         let name = draft.intern_string(if position == 0 { "a" } else { "b" });
+        let int_value = draft.value_shapes_mut().scalar(Scalar::Int);
+        let enum_value = spec_enum_shape(&mut draft, root);
         // Flat commands, in pre-order: the two direct fields, the group and its one
         // member, then the branch and its one member.
         draft
@@ -485,7 +486,7 @@ fn forge(spec: &GraphSpec) -> Vec<u8> {
                         shape: DeclarationMemberShape::Field {
                             id: id(root.field),
                             required: true,
-                            value: DurableValueShape::Scalar(Scalar::Int),
+                            value: int_value,
                         },
                     },
                     DeclarationMemberDef {
@@ -493,7 +494,7 @@ fn forge(spec: &GraphSpec) -> Vec<u8> {
                         shape: DeclarationMemberShape::Field {
                             id: id(root.enum_field),
                             required: true,
-                            value: spec_enum_shape(root),
+                            value: enum_value,
                         },
                     },
                     DeclarationMemberDef {
@@ -505,7 +506,7 @@ fn forge(spec: &GraphSpec) -> Vec<u8> {
                         shape: DeclarationMemberShape::Field {
                             id: id(root.group_field),
                             required: true,
-                            value: DurableValueShape::Scalar(Scalar::Int),
+                            value: int_value,
                         },
                     },
                     DeclarationMemberDef {
@@ -525,7 +526,7 @@ fn forge(spec: &GraphSpec) -> Vec<u8> {
                         shape: DeclarationMemberShape::Field {
                             id: id(root.branch_field),
                             required: true,
-                            value: DurableValueShape::Scalar(Scalar::Int),
+                            value: int_value,
                         },
                     },
                 ],

@@ -267,7 +267,7 @@ fn each_managed_index_is_a_graph_node_with_a_three_step_semantic_path() {
     let image = verify_source(INDEXED_SOURCE, INDEXED_IDS).expect("verify");
     let index_nodes: Vec<_> = image
         .semantic_nodes()
-        .into_iter()
+        .iter()
         .filter(|node| node.kind == SemanticNodeKind::Index)
         .collect();
     assert_eq!(index_nodes.len(), 2, "one graph node per managed index");

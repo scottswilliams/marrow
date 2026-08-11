@@ -14,10 +14,10 @@
 
 use marrow_image::{
     AdmittedRoot, CollectionTypeDef, DeclarationMember, DeclarationMemberDef,
-    DeclarationMemberShape, DurableEnumMemberShape, DurableIndexComponent, DurableIndexShape,
-    DurableValueShape, EnumTypeDef, ExportId, FieldDef, FuncId, FunctionDef, ImageDraft, ImageType,
-    Instr, KeyColumn, LedgerIdBytes, LegacyDraftSiteOperand, RecordTypeDef, RootOccurrenceDef,
-    Scalar, SemanticStepKind, SemanticTarget, SpanEntry, VariantDef,
+    DeclarationMemberShape, DurableIndexComponent, DurableIndexShape, EnumTypeDef, ExportId,
+    FieldDef, FuncId, FunctionDef, ImageDraft, ImageType, Instr, KeyColumn, LedgerIdBytes,
+    LegacyDraftSiteOperand, RecordTypeDef, RootOccurrenceDef, Scalar, SemanticStepKind,
+    SemanticTarget, SpanEntry, ValueShapeNodeId, VariantDef,
 };
 use marrow_verify::{VerifyPhase, verify};
 
@@ -53,6 +53,7 @@ fn product_members(draft: &ImageDraft) -> Vec<DeclarationMember> {
 /// One flat declaration command for a stored scalar field of `parent` (`None` is a
 /// direct member of the Product).
 fn field_member(
+    shapes: ScalarShapes,
     parent: Option<u16>,
     id: [u8; 16],
     required: bool,
@@ -63,18 +64,61 @@ fn field_member(
         shape: DeclarationMemberShape::Field {
             id: LedgerIdBytes::from_bytes(id),
             required,
-            value: DurableValueShape::Scalar(scalar),
+            value: shapes.of(scalar),
         },
+    }
+}
+
+/// The bare scalar value shapes of one draft's arena.
+///
+/// A member row references a value shape rather than owning one, so a fixture mints the
+/// closed scalar set into its draft first and then states its members. Minting is
+/// interning, so this is idempotent and every fixture of one draft shares the same ids.
+#[derive(Clone, Copy)]
+struct ScalarShapes {
+    int: ValueShapeNodeId,
+    text: ValueShapeNodeId,
+    bool_: ValueShapeNodeId,
+    bytes: ValueShapeNodeId,
+    date: ValueShapeNodeId,
+    instant: ValueShapeNodeId,
+    duration: ValueShapeNodeId,
+}
+
+impl ScalarShapes {
+    fn of(self, scalar: Scalar) -> ValueShapeNodeId {
+        match scalar {
+            Scalar::Int => self.int,
+            Scalar::Text => self.text,
+            Scalar::Bool => self.bool_,
+            Scalar::Bytes => self.bytes,
+            Scalar::Date => self.date,
+            Scalar::Instant => self.instant,
+            Scalar::Duration => self.duration,
+        }
+    }
+}
+
+fn scalar_shapes(draft: &mut ImageDraft) -> ScalarShapes {
+    let values = draft.value_shapes_mut();
+    ScalarShapes {
+        int: values.scalar(Scalar::Int),
+        text: values.scalar(Scalar::Text),
+        bool_: values.scalar(Scalar::Bool),
+        bytes: values.scalar(Scalar::Bytes),
+        date: values.scalar(Scalar::Date),
+        instant: values.scalar(Scalar::Instant),
+        duration: values.scalar(Scalar::Duration),
     }
 }
 
 /// The tracer `Counter` record's declaration commands: `value:int` required then
 /// `label:string` sparse, matching the `durable_schema` record fields so the
 /// verifier's member-tree/record cross-check passes.
-fn counters_members() -> Vec<DeclarationMemberDef> {
+fn counters_members(shapes: ScalarShapes) -> Vec<DeclarationMemberDef> {
     vec![
-        field_member(None, VALUE_FIELD_ID, true, Scalar::Int),
-        field_member(None, LABEL_FIELD_ID, false, Scalar::Text),
+        field_member(shapes, None, VALUE_FIELD_ID, true, Scalar::Int),
+        field_member(shapes, None, LABEL_FIELD_ID, false, Scalar::Text),
     ]
 }
 
@@ -527,11 +571,12 @@ fn durable_schema(draft: &mut ImageDraft) -> Sites {
     });
     let root = draft.intern_string("counters");
     draft.set_application_identity(LedgerIdBytes::from_bytes(APPLICATION_ID));
+    let shapes = scalar_shapes(draft);
     draft
         .declare_product(
             LedgerIdBytes::from_bytes(PRODUCT_ID),
             record,
-            counters_members(),
+            counters_members(shapes),
         )
         .expect("a well-formed declaration");
     let admitted = draft
@@ -1289,6 +1334,7 @@ fn a_composite_root_write_opcode_with_a_truncated_key_path_rejects() {
     // operand stack, so it is refused during per-function typing (the write-path
     // counterpart of the read-path truncation hostile).
     let mut draft = ImageDraft::new();
+    let shapes = scalar_shapes(&mut draft);
     let counter = draft.intern_string("Counter");
     let value = draft.intern_string("value");
     let record = draft.add_record_type(RecordTypeDef {
@@ -1305,7 +1351,13 @@ fn a_composite_root_write_opcode_with_a_truncated_key_path_rejects() {
         .declare_product(
             LedgerIdBytes::from_bytes(PRODUCT_ID),
             record,
-            vec![field_member(None, VALUE_FIELD_ID, true, Scalar::Int)],
+            vec![field_member(
+                shapes,
+                None,
+                VALUE_FIELD_ID,
+                true,
+                Scalar::Int,
+            )],
         )
         .expect("a well-formed declaration");
     let admitted = draft
@@ -1384,6 +1436,7 @@ fn group_branch_draft_with_branch_record(
     branch_record_required: bool,
 ) -> (ImageDraft, AdmittedRoot) {
     let mut draft = ImageDraft::new();
+    let shapes = scalar_shapes(&mut draft);
     let book = draft.intern_string("Book");
     let title = draft.intern_string("title");
     // The `details` group's own leaf record, referenced by the root record's trailing
@@ -1435,7 +1488,7 @@ fn group_branch_draft_with_branch_record(
             LedgerIdBytes::from_bytes(PRODUCT_ID),
             record,
             vec![
-                field_member(None, VALUE_FIELD_ID, true, Scalar::Text),
+                field_member(shapes, None, VALUE_FIELD_ID, true, Scalar::Text),
                 DeclarationMemberDef {
                     parent: None,
                     shape: DeclarationMemberShape::Group {
@@ -1454,8 +1507,8 @@ fn group_branch_draft_with_branch_record(
                         }],
                     },
                 },
-                field_member(Some(1), [0x21; 16], false, Scalar::Int),
-                field_member(Some(2), [0x32; 16], true, Scalar::Text),
+                field_member(shapes, Some(1), [0x21; 16], false, Scalar::Int),
+                field_member(shapes, Some(2), [0x32; 16], true, Scalar::Text),
             ],
         )
         .expect("a well-formed declaration");
@@ -1578,11 +1631,12 @@ fn indexed_draft_full(
     });
     let root = draft.intern_string("counters");
     draft.set_application_identity(LedgerIdBytes::from_bytes(APPLICATION_ID));
+    let shapes = scalar_shapes(&mut draft);
     draft
         .declare_product(
             LedgerIdBytes::from_bytes(PRODUCT_ID),
             record,
-            counters_members(),
+            counters_members(shapes),
         )
         .expect("a well-formed declaration");
     let admitted = draft
@@ -1731,6 +1785,7 @@ fn a_unique_index_with_an_empty_projection_rejects() {
 fn scalar_field_indexed_draft(scalar: Scalar) -> ImageDraft {
     const FIELD_ID: [u8; 16] = [0x1d; 16];
     let mut draft = ImageDraft::new();
+    let shapes = scalar_shapes(&mut draft);
     let record_name = draft.intern_string("IndexedScalar");
     let field_name = draft.intern_string("value");
     let record = draft.add_record_type(RecordTypeDef {
@@ -1747,7 +1802,7 @@ fn scalar_field_indexed_draft(scalar: Scalar) -> ImageDraft {
         .declare_product(
             LedgerIdBytes::from_bytes(PRODUCT_ID),
             record,
-            vec![field_member(None, FIELD_ID, true, scalar)],
+            vec![field_member(shapes, None, FIELD_ID, true, scalar)],
         )
         .expect("a well-formed declaration");
     draft
@@ -1814,6 +1869,7 @@ fn a_duration_field_is_not_a_managed_index_component() {
 fn widened_field_indexed_draft() -> ImageDraft {
     const OWNER_FIELD_ID: [u8; 16] = [0x1e; 16];
     let mut draft = ImageDraft::new();
+    let shapes = scalar_shapes(&mut draft);
     let name_ty = draft.intern_string("Name");
     let first = draft.intern_string("first");
     let last = draft.intern_string("last");
@@ -1855,21 +1911,20 @@ fn widened_field_indexed_draft() -> ImageDraft {
     });
     let root = draft.intern_string("counters");
     draft.set_application_identity(LedgerIdBytes::from_bytes(APPLICATION_ID));
+    // A dense struct value of two text leaves, minted into this draft's own arena.
+    let owner_value = draft.value_shapes_mut().struct_shape(vec![shapes.text; 2]);
     draft
         .declare_product(
             LedgerIdBytes::from_bytes(PRODUCT_ID),
             record,
             vec![
-                field_member(None, VALUE_FIELD_ID, true, Scalar::Int),
+                field_member(shapes, None, VALUE_FIELD_ID, true, Scalar::Int),
                 DeclarationMemberDef {
                     parent: None,
                     shape: DeclarationMemberShape::Field {
                         id: LedgerIdBytes::from_bytes(OWNER_FIELD_ID),
                         required: true,
-                        value: DurableValueShape::Struct(vec![
-                            DurableValueShape::Scalar(Scalar::Text),
-                            DurableValueShape::Scalar(Scalar::Text),
-                        ]),
+                        value: owner_value,
                     },
                 },
             ],
@@ -2012,6 +2067,7 @@ fn a_field_site_over_a_root_level_group_bearing_root_verifies() {
 /// group holds one sparse `pages:int` leaf; the top-level field is a required `title:text`.
 fn group_before_field_draft(record_group_first: bool) -> ImageDraft {
     let mut draft = ImageDraft::new();
+    let shapes = scalar_shapes(&mut draft);
     let book = draft.intern_string("Book");
     let title = draft.intern_string("title");
     let details_qualified = draft.intern_string("Book.details");
@@ -2062,8 +2118,8 @@ fn group_before_field_draft(record_group_first: bool) -> ImageDraft {
                         id: LedgerIdBytes::from_bytes([0x20; 16]),
                     },
                 },
-                field_member(Some(0), [0x21; 16], false, Scalar::Int),
-                field_member(None, VALUE_FIELD_ID, true, Scalar::Text),
+                field_member(shapes, Some(0), [0x21; 16], false, Scalar::Int),
+                field_member(shapes, None, VALUE_FIELD_ID, true, Scalar::Text),
             ],
         )
         .expect("a well-formed declaration");
@@ -2108,6 +2164,7 @@ fn a_root_member_tree_with_a_field_after_a_group_rejects() {
 /// refuses independent of the fields-first order check.
 fn field_count_mismatch_draft(member_fields: usize, record_fields: usize) -> ImageDraft {
     let mut draft = ImageDraft::new();
+    let shapes = scalar_shapes(&mut draft);
     let rec = draft.intern_string("Rec");
     let fields = (0..record_fields)
         .map(|i| FieldDef {
@@ -2120,7 +2177,7 @@ fn field_count_mismatch_draft(member_fields: usize, record_fields: usize) -> Ima
     let root = draft.intern_string("recs");
     draft.set_application_identity(LedgerIdBytes::from_bytes(APPLICATION_ID));
     let members = (0..member_fields)
-        .map(|i| field_member(None, [0x40 + i as u8; 16], true, Scalar::Text))
+        .map(|i| field_member(shapes, None, [0x40 + i as u8; 16], true, Scalar::Text))
         .collect();
     draft
         .declare_product(LedgerIdBytes::from_bytes(PRODUCT_ID), record, members)
@@ -2393,6 +2450,7 @@ fn a_branch_record_disagreeing_with_its_member_fields_rejects() {
 /// branch's materialized record type index (the whole branch-entry read's result type).
 fn flat_branch_draft() -> (ImageDraft, AdmittedRoot, u16) {
     let mut draft = ImageDraft::new();
+    let shapes = scalar_shapes(&mut draft);
     let book = draft.intern_string("Book");
     let title = draft.intern_string("title");
     let record = draft.add_record_type(RecordTypeDef {
@@ -2421,7 +2479,7 @@ fn flat_branch_draft() -> (ImageDraft, AdmittedRoot, u16) {
             LedgerIdBytes::from_bytes(PRODUCT_ID),
             record,
             vec![
-                field_member(None, [0x0e; 16], true, Scalar::Text),
+                field_member(shapes, None, [0x0e; 16], true, Scalar::Text),
                 DeclarationMemberDef {
                     parent: None,
                     shape: DeclarationMemberShape::Branch {
@@ -2434,7 +2492,7 @@ fn flat_branch_draft() -> (ImageDraft, AdmittedRoot, u16) {
                         }],
                     },
                 },
-                field_member(Some(1), [0x32; 16], true, Scalar::Text),
+                field_member(shapes, Some(1), [0x32; 16], true, Scalar::Text),
             ],
         )
         .expect("a well-formed declaration");
@@ -3303,7 +3361,8 @@ fn declare_counters_with_notes_branch(
     notes_record: marrow_image::TypeId,
     branch_field_required: bool,
 ) -> AdmittedRoot {
-    let mut members = counters_members();
+    let shapes = scalar_shapes(draft);
+    let mut members = counters_members(shapes);
     members.push(DeclarationMemberDef {
         parent: None,
         shape: DeclarationMemberShape::Branch {
@@ -3317,6 +3376,7 @@ fn declare_counters_with_notes_branch(
         },
     });
     members.push(field_member(
+        shapes,
         Some(2),
         [0x32; 16],
         branch_field_required,
@@ -4678,27 +4738,9 @@ fn deep_acyclic_record_chain_verifies() {
     assert_eq!(value_graph_code(&mut draft), "VERIFIED");
 }
 
-/// A two-variant payloadless enum's durable value shape, with a sum id and one
-/// member id per variant.
-fn access_enum_value(members: Vec<DurableEnumMemberShape>) -> DurableValueShape {
-    DurableValueShape::Enum {
-        sum: LedgerIdBytes::from_bytes([0x50; 16]),
-        members,
-    }
-}
-
 /// Two payloadless members with distinct ids, matching a `reader`/`writer` enum.
-fn access_members() -> Vec<DurableEnumMemberShape> {
-    vec![
-        DurableEnumMemberShape {
-            id: LedgerIdBytes::from_bytes([0x51; 16]),
-            payload: Vec::new(),
-        },
-        DurableEnumMemberShape {
-            id: LedgerIdBytes::from_bytes([0x52; 16]),
-            payload: Vec::new(),
-        },
-    ]
+fn access_members() -> Vec<[u8; 16]> {
+    vec![[0x51; 16], [0x52; 16]]
 }
 
 /// A valid widened durable image: `Widget { id:int required, kind:Access required }`
@@ -4708,8 +4750,18 @@ fn access_members() -> Vec<DurableEnumMemberShape> {
 /// widened value shape. These fixtures exercise the widened durable member shape at
 /// seal, so the root carries no operation sites and a pure function completes the
 /// storeless image; the widened field's executability is covered elsewhere.
-fn widened_draft(kind_value: DurableValueShape) -> ImageDraft {
+fn widened_draft(members: Vec<[u8; 16]>) -> ImageDraft {
     let mut draft = ImageDraft::new();
+    let shapes = scalar_shapes(&mut draft);
+    // The `kind` field's value shape: a two-variant payloadless enum with a sum id and
+    // one member id per variant, minted into this draft's own arena.
+    let kind_value = draft.value_shapes_mut().enum_shape(
+        LedgerIdBytes::from_bytes([0x50; 16]),
+        members
+            .iter()
+            .map(|member| (LedgerIdBytes::from_bytes(*member), Vec::new()))
+            .collect(),
+    );
     let src = draft.intern_string("src/main.mw");
     let access = draft.intern_string("Access");
     let reader = draft.intern_string("reader");
@@ -4757,7 +4809,7 @@ fn widened_draft(kind_value: DurableValueShape) -> ImageDraft {
             LedgerIdBytes::from_bytes(PRODUCT_ID),
             rec,
             vec![
-                field_member(None, VALUE_FIELD_ID, true, Scalar::Int),
+                field_member(shapes, None, VALUE_FIELD_ID, true, Scalar::Int),
                 DeclarationMemberDef {
                     parent: None,
                     shape: DeclarationMemberShape::Field {
@@ -4806,12 +4858,7 @@ fn a_widened_enum_field_image_verifies() {
     // A durable resource with a closed-enum field is now identity-complete and
     // verifies when its member tree's value shape matches the record's enum field.
     assert_eq!(
-        code_of(
-            &widened_draft(access_enum_value(access_members()))
-                .encode()
-                .unwrap()
-                .bytes
-        ),
+        code_of(&widened_draft(access_members()).encode().unwrap().bytes),
         "VERIFIED"
     );
 }
@@ -4822,10 +4869,7 @@ fn rehashed_mutated_enum_member_id_breaks_the_contract_id() {
     // recomputes the contract over. Flipping it and rehashing the outer digest leaves
     // the carried contract id stale, so the recomputation rejects — the contract
     // binds each member's identity, so append-only evolution has stable codes.
-    let mut bytes = widened_draft(access_enum_value(access_members()))
-        .encode()
-        .unwrap()
-        .bytes;
+    let mut bytes = widened_draft(access_members()).encode().unwrap().bytes;
     flip_ledger_id(&mut bytes, [0x51; 16]);
     rehash(&mut bytes);
     assert_eq!(code_of(&bytes), "image.table");
@@ -4836,23 +4880,9 @@ fn forged_duplicate_enum_member_id_rejects() {
     // Entropy-minted ids are pairwise distinct; two members claiming one id forge a
     // duplicate identity in the durable table and reject before the contract
     // recomputation, so a hostile image cannot alias two members to one code.
-    let dup = vec![
-        DurableEnumMemberShape {
-            id: LedgerIdBytes::from_bytes([0x51; 16]),
-            payload: Vec::new(),
-        },
-        DurableEnumMemberShape {
-            id: LedgerIdBytes::from_bytes([0x51; 16]),
-            payload: Vec::new(),
-        },
-    ];
+    let dup = vec![[0x51; 16], [0x51; 16]];
     assert_eq!(
-        code_of(
-            &widened_draft(access_enum_value(dup))
-                .encode()
-                .unwrap()
-                .bytes
-        ),
+        code_of(&widened_draft(dup).encode().unwrap().bytes),
         "image.table"
     );
 }
@@ -4864,17 +4894,9 @@ fn enum_value_shape_that_mismatches_the_record_rejects() {
     // reconciled, so the cross-check rejects — a hostile image cannot claim one
     // durable identity while its executable record carries a different value shape.
     let mut extra = access_members();
-    extra.push(DurableEnumMemberShape {
-        id: LedgerIdBytes::from_bytes([0x53; 16]),
-        payload: Vec::new(),
-    });
+    extra.push([0x53; 16]);
     assert_eq!(
-        code_of(
-            &widened_draft(access_enum_value(extra))
-                .encode()
-                .unwrap()
-                .bytes
-        ),
+        code_of(&widened_draft(extra).encode().unwrap().bytes),
         "image.table"
     );
 }
@@ -4884,10 +4906,7 @@ fn out_of_domain_durable_value_tag_rejects() {
     // The durable value shape is self-describing (scalar 0, struct 1, enum 2).
     // Mutating the `kind` field's value tag to an unknown value (and rehashing the
     // digest) is an out-of-domain value shape the decoder refuses.
-    let mut bytes = widened_draft(access_enum_value(access_members()))
-        .encode()
-        .unwrap()
-        .bytes;
+    let mut bytes = widened_draft(access_members()).encode().unwrap().bytes;
     // Find the `kind` field (member id 0x0f) followed by its required flag (0x01) and
     // its value tag (0x02, enum), and corrupt the tag.
     let mut needle = vec![0x0f_u8; 16];
@@ -4915,6 +4934,7 @@ fn out_of_domain_durable_value_tag_rejects() {
 /// seals the whole recursive branch tree, so a valid deep site seals executable.
 fn nested_branch_draft() -> (ImageDraft, AdmittedRoot) {
     let mut draft = ImageDraft::new();
+    let shapes = scalar_shapes(&mut draft);
     let book = draft.intern_string("Book");
     let title = draft.intern_string("title");
     let record = draft.add_record_type(RecordTypeDef {
@@ -4954,7 +4974,7 @@ fn nested_branch_draft() -> (ImageDraft, AdmittedRoot) {
             LedgerIdBytes::from_bytes(PRODUCT_ID),
             record,
             vec![
-                field_member(None, VALUE_FIELD_ID, true, Scalar::Text),
+                field_member(shapes, None, VALUE_FIELD_ID, true, Scalar::Text),
                 DeclarationMemberDef {
                     parent: None,
                     shape: DeclarationMemberShape::Branch {
@@ -4967,7 +4987,7 @@ fn nested_branch_draft() -> (ImageDraft, AdmittedRoot) {
                         }],
                     },
                 },
-                field_member(Some(1), [0x32; 16], true, Scalar::Text),
+                field_member(shapes, Some(1), [0x32; 16], true, Scalar::Text),
                 DeclarationMemberDef {
                     parent: Some(1),
                     shape: DeclarationMemberShape::Branch {
@@ -4980,7 +5000,7 @@ fn nested_branch_draft() -> (ImageDraft, AdmittedRoot) {
                         }],
                     },
                 },
-                field_member(Some(3), [0x42; 16], true, Scalar::Int),
+                field_member(shapes, Some(3), [0x42; 16], true, Scalar::Int),
             ],
         )
         .expect("a well-formed declaration");
@@ -5132,6 +5152,7 @@ fn a_branch_path_naming_a_nonexistent_hop_rejects_at_the_table_phase() {
 /// int field `v`. Returns the draft and the whole-entry site operand.
 fn composite_root_draft() -> (ImageDraft, LegacyDraftSiteOperand) {
     let mut draft = ImageDraft::new();
+    let shapes = scalar_shapes(&mut draft);
     let cell = draft.intern_string("Cell");
     let v = draft.intern_string("v");
     let record = draft.add_record_type(RecordTypeDef {
@@ -5148,7 +5169,13 @@ fn composite_root_draft() -> (ImageDraft, LegacyDraftSiteOperand) {
         .declare_product(
             LedgerIdBytes::from_bytes(PRODUCT_ID),
             record,
-            vec![field_member(None, VALUE_FIELD_ID, true, Scalar::Int)],
+            vec![field_member(
+                shapes,
+                None,
+                VALUE_FIELD_ID,
+                true,
+                Scalar::Int,
+            )],
         )
         .expect("a well-formed declaration");
     let admitted = draft

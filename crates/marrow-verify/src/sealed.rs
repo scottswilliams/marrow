@@ -9,9 +9,8 @@
 use std::rc::Rc;
 
 use marrow_image::{
-    DemandSetId, DurableContractDescriptor, DurableContractId, DurableIndexComponent, ExportDemand,
-    ExportId, ImageId, ImageType, LedgerIdBytes, OperationClass, Scalar, SemanticNode,
-    SemanticPath, SemanticTarget,
+    DemandSetId, DurableContractId, DurableIndexComponent, ExportDemand, ExportId, ImageId,
+    ImageType, LedgerIdBytes, OperationClass, Scalar, SemanticNode, SemanticPath, SemanticTarget,
 };
 
 /// A function's position in a [`VerifiedImage`]'s function table. A typed handle so a
@@ -840,7 +839,11 @@ pub struct VerifiedImage {
     pub(crate) indexes: Vec<SealedIndex>,
     pub(crate) sites: Vec<SealedSite>,
     pub(crate) durable_contract: DurableContractId,
-    pub(crate) durable_descriptor: DurableContractDescriptor,
+    /// The durable graph's node set with each node's derived [`SemanticPath`], as the
+    /// verifier independently derived it from the decoded tables — the same derivation
+    /// the recomputed contract id was taken over, retained rather than a descriptor
+    /// because deriving it is the only thing the descriptor was kept for.
+    pub(crate) semantic_nodes: Vec<SemanticNode>,
     pub(crate) consts: Vec<SealedConst>,
     pub(crate) functions: Vec<SealedFunction>,
     pub(crate) exports: Vec<SealedExport>,
@@ -904,8 +907,8 @@ impl VerifiedImage {
     /// these paths are the verifier's independent derivation — identical to the
     /// compiler's for a graph that verifies — not a trusted transfer of compiler
     /// output. A rename that only moves ledger anchors leaves every path unchanged.
-    pub fn semantic_nodes(&self) -> Vec<SemanticNode> {
-        self.durable_descriptor.semantic_nodes()
+    pub fn semantic_nodes(&self) -> &[SemanticNode] {
+        &self.semantic_nodes
     }
 
     /// The durable operation sites, indexed by image site index.

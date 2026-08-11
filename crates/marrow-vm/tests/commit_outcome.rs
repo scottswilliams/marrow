@@ -1,7 +1,7 @@
 use marrow_image::{
-    DeclarationMemberDef, DeclarationMemberShape, DurableValueShape, ExportId, FieldDef,
-    FunctionDef, ImageDraft, ImageType, Instr, KeyColumn, LedgerIdBytes, RecordTypeDef,
-    RootOccurrenceDef, Scalar, SemanticTarget, SpanEntry,
+    DeclarationMemberDef, DeclarationMemberShape, ExportId, FieldDef, FunctionDef, ImageDraft,
+    ImageType, Instr, KeyColumn, LedgerIdBytes, RecordTypeDef, RootOccurrenceDef, Scalar,
+    SemanticTarget, SpanEntry,
 };
 use marrow_kernel::codec::key::KeyScalar;
 use marrow_kernel::durable::{
@@ -54,6 +54,7 @@ fn commit_image(post_commit_fault: PostCommitFault, mutating: bool) -> VerifiedI
     let root_name = draft.intern_string("counters");
     draft.set_application_identity(LedgerIdBytes::from_bytes(APPLICATION_ID));
     let product = LedgerIdBytes::from_bytes(ROOT_PRODUCT_ID);
+    let value = draft.value_shapes_mut().scalar(Scalar::Int);
     draft
         .declare_product(
             product,
@@ -63,7 +64,7 @@ fn commit_image(post_commit_fault: PostCommitFault, mutating: bool) -> VerifiedI
                 shape: DeclarationMemberShape::Field {
                     id: LedgerIdBytes::from_bytes(VALUE_FIELD_ID),
                     required: true,
-                    value: DurableValueShape::Scalar(Scalar::Int),
+                    value,
                 },
             }],
         )

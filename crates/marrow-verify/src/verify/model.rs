@@ -2,8 +2,8 @@
 
 use crate::sealed::{RetShape, SealedCollectionType, SealedConst, SealedSite};
 use marrow_image::{
-    DurableContractDescriptor, DurableContractId, DurableIndexComponent, DurableValueShape,
-    ExportId, ImageId, ImageType, LedgerIdBytes, Scalar, SemanticPath,
+    CanonicalValueShapeDag, DurableContractId, DurableIndexComponent, ExportId, ImageId, ImageType,
+    LedgerIdBytes, Scalar, SemanticNode, SemanticPath, ValueShapeNodeId,
 };
 use std::rc::Rc;
 
@@ -71,7 +71,10 @@ pub(super) enum DecodedMember {
     Field {
         id: LedgerIdBytes,
         required: bool,
-        value: DurableValueShape,
+        /// This field's stored value shape, as a reference into the decoded image's one
+        /// [`CanonicalValueShapeDag`]. Nothing here owns a shape, so a repeated or
+        /// deeply nested value is decoded once and referenced thereafter.
+        value: ValueShapeNodeId,
     },
     Group {
         id: LedgerIdBytes,
@@ -138,7 +141,17 @@ pub(super) struct DecodedImage {
     /// Each site's resolved graph-node path, parallel to `sites` by index.
     pub(super) site_paths: Vec<SemanticPath>,
     pub(super) durable_contract: DurableContractId,
-    pub(super) durable_descriptor: DurableContractDescriptor,
+    /// The durable graph's node set, each paired with its derived [`SemanticPath`], as
+    /// this verifier independently derived it from the decoded tables — the same
+    /// derivation the recomputed contract id was taken over.
+    pub(super) semantic_nodes: Vec<SemanticNode>,
+    /// The arena every decoded field's value reference belongs to. Nothing past the
+    /// durable decode reads a value shape — the record tie, the index eligibility, and
+    /// the contract-id reconstruction all happen there — but the arena is retained with
+    /// the roots that reference it, so a `ValueShapeNodeId` can never outlive the arena
+    /// that minted it.
+    #[allow(dead_code)]
+    pub(super) value_shapes: CanonicalValueShapeDag,
     pub(super) consts: Vec<SealedConst>,
     pub(super) functions: Vec<DecodedFunction>,
     pub(super) exports: Vec<(ExportId, u16)>,

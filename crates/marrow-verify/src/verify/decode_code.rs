@@ -717,9 +717,9 @@ mod index_site_partition {
 
     use marrow_image::{
         CanonicalDeclarationPathSelector, CollectionTypeDef, DeclarationMemberDef,
-        DeclarationMemberShape, DurableValueShape, ExportId, FieldDef, FunctionDef, ImageDraft,
-        ImageType, Instr, KeyColumn, LedgerIdBytes, LegacyDraftSiteOperand, RecordTypeDef,
-        RootOccurrenceDef, RootOccurrenceSelector, Scalar, SemanticTarget, SpanEntry,
+        DeclarationMemberShape, ExportId, FieldDef, FunctionDef, ImageDraft, ImageType, Instr,
+        KeyColumn, LedgerIdBytes, LegacyDraftSiteOperand, RecordTypeDef, RootOccurrenceDef,
+        RootOccurrenceSelector, Scalar, SemanticTarget, SpanEntry,
     };
 
     use super::opcode_bijection::samples;
@@ -928,6 +928,8 @@ mod index_site_partition {
         });
         let root_name = draft.intern_string("counters");
         draft.set_application_identity(LedgerIdBytes::from_bytes(APPLICATION_ID));
+        let int_value = draft.value_shapes_mut().scalar(Scalar::Int);
+        let text_value = draft.value_shapes_mut().scalar(Scalar::Text);
         draft
             .declare_product(
                 LedgerIdBytes::from_bytes(PRODUCT_ID),
@@ -938,7 +940,7 @@ mod index_site_partition {
                         shape: DeclarationMemberShape::Field {
                             id: LedgerIdBytes::from_bytes(VALUE_FIELD_ID),
                             required: true,
-                            value: DurableValueShape::Scalar(Scalar::Int),
+                            value: int_value,
                         },
                     },
                     DeclarationMemberDef {
@@ -946,7 +948,7 @@ mod index_site_partition {
                         shape: DeclarationMemberShape::Field {
                             id: LedgerIdBytes::from_bytes(LABEL_FIELD_ID),
                             required: false,
-                            value: DurableValueShape::Scalar(Scalar::Text),
+                            value: text_value,
                         },
                     },
                 ],

@@ -9,8 +9,8 @@
 use marrow_image::bounds::{MAX_INDEX_COMPONENTS, MAX_STRUCT_LEAVES};
 use marrow_image::{
     DeclarationMemberDef, DeclarationMemberShape, DurableIndexComponent, DurableIndexShape,
-    DurableValueShape, ExportId, FunctionDef, ImageBuildError, ImageDraft, ImageType, Instr,
-    KeyColumn, LedgerIdBytes, RecordTypeDef, RootOccurrenceDef, Scalar, SpanEntry,
+    ExportId, FunctionDef, ImageBuildError, ImageDraft, ImageType, Instr, KeyColumn, LedgerIdBytes,
+    RecordTypeDef, RootOccurrenceDef, Scalar, SpanEntry,
 };
 
 const APPLICATION_ID: [u8; 16] = [0x0a; 16];
@@ -34,10 +34,11 @@ fn component_id(n: usize) -> LedgerIdBytes {
 /// The declared member graph and the index shapes are the only things the callers vary,
 /// so the bound under test is the sole reason an encode fails.
 fn encode_root(
-    members: Vec<DeclarationMemberDef>,
+    members: impl FnOnce(&mut ImageDraft) -> Vec<DeclarationMemberDef>,
     indexes: Vec<DurableIndexShape>,
 ) -> Result<(), ImageBuildError> {
     let mut draft = ImageDraft::new();
+    let members = members(&mut draft);
     let type_name = draft.intern_string("R");
     let record = draft.add_record_type(RecordTypeDef {
         name: type_name,
@@ -90,17 +91,16 @@ fn encode_root(
 
 /// A Product whose single field member carries a dense struct value of `leaves` scalar
 /// leaves.
-fn members_with_struct_field(leaves: usize) -> Vec<DeclarationMemberDef> {
+fn members_with_struct_field(draft: &mut ImageDraft, leaves: usize) -> Vec<DeclarationMemberDef> {
+    let values = draft.value_shapes_mut();
+    let int = values.scalar(Scalar::Int);
+    let value = values.struct_shape(vec![int; leaves]);
     vec![DeclarationMemberDef {
         parent: None,
         shape: DeclarationMemberShape::Field {
             id: LedgerIdBytes::from_bytes(FIELD_ID),
             required: false,
-            value: DurableValueShape::Struct(
-                (0..leaves)
-                    .map(|_| DurableValueShape::Scalar(Scalar::Int))
-                    .collect(),
-            ),
+            value,
         },
     }]
 }
@@ -119,7 +119,10 @@ fn indexes_with_components(components: usize) -> Vec<DurableIndexShape> {
 #[test]
 fn a_dense_struct_at_the_leaf_limit_encodes() {
     assert_eq!(
-        encode_root(members_with_struct_field(MAX_STRUCT_LEAVES), Vec::new()),
+        encode_root(
+            |draft| members_with_struct_field(draft, MAX_STRUCT_LEAVES),
+            Vec::new(),
+        ),
         Ok(()),
         "a struct value of exactly MAX_STRUCT_LEAVES leaves is admitted",
     );
@@ -128,7 +131,10 @@ fn a_dense_struct_at_the_leaf_limit_encodes() {
 #[test]
 fn a_dense_struct_one_leaf_over_the_limit_is_refused() {
     assert_eq!(
-        encode_root(members_with_struct_field(MAX_STRUCT_LEAVES + 1), Vec::new()),
+        encode_root(
+            |draft| members_with_struct_field(draft, MAX_STRUCT_LEAVES + 1),
+            Vec::new(),
+        ),
         Err(ImageBuildError::TooManyStructLeaves),
         "one leaf past the dense-composite limit is refused as TooManyStructLeaves",
     );
@@ -137,7 +143,10 @@ fn a_dense_struct_one_leaf_over_the_limit_is_refused() {
 #[test]
 fn an_index_at_the_component_limit_encodes() {
     assert_eq!(
-        encode_root(Vec::new(), indexes_with_components(MAX_INDEX_COMPONENTS)),
+        encode_root(
+            |_| Vec::new(),
+            indexes_with_components(MAX_INDEX_COMPONENTS)
+        ),
         Ok(()),
         "an index projecting exactly MAX_INDEX_COMPONENTS components is admitted",
     );
@@ -147,7 +156,7 @@ fn an_index_at_the_component_limit_encodes() {
 fn an_index_one_component_over_the_limit_is_refused() {
     assert_eq!(
         encode_root(
-            Vec::new(),
+            |_| Vec::new(),
             indexes_with_components(MAX_INDEX_COMPONENTS + 1)
         ),
         Err(ImageBuildError::TooManyIndexComponents),

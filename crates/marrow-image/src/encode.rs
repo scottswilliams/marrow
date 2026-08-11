@@ -12,7 +12,7 @@ use crate::draft::{CollectionTypeDef, ConstValue, ImageBuildError, ImageDraft, K
 use crate::durable_id::{
     DurableBranchShape, DurableContractDescriptor, DurableFieldShape, DurableGroupShape,
     DurableIndexComponent, DurableIndexShape, DurableKeyShape, DurableMemberShape,
-    DurableRootShape, DurableValueShape,
+    DurableRootShape,
 };
 use crate::instr::Instr;
 use crate::product::{
@@ -20,11 +20,91 @@ use crate::product::{
 };
 use crate::semantic::{SemanticPath, SemanticTarget};
 use crate::ty::ImageType;
+use crate::value_dag::{
+    CanonicalValueShapeDag, ValueShapeSink, ValueShapeView, ValueShapeWireForm, expand,
+};
 
 /// Container magic and version.
 const MAGIC: &[u8; 4] = b"MWI\0";
 const VERSION: u8 = 0x00;
 const SECTION_COUNT: u8 = 10;
+
+/// The DURABLE section body, or the fact that it alone crosses the whole-image ceiling.
+///
+/// Every other section's size follows from row counts the draft already bounds. A durable
+/// field value is different: the wire spells a value shape as its full expansion, and a
+/// shape shared across nesting levels expands geometrically in its depth, so a draft well
+/// inside every declared bound can still describe a body larger than any image may be.
+/// Such a body is never finished — no contract identity is computed over bytes no image
+/// can carry — and the fact travels as a state rather than as a truncated buffer.
+enum DurableSection {
+    Fitting(Vec<u8>),
+    OverCeiling,
+}
+
+impl DurableSection {
+    /// The section bytes to emit. A body over the ceiling emits none: the encode is
+    /// already decided, and the journey continues only so an earlier producer-side result
+    /// still reports at its own position.
+    fn body(self) -> Vec<u8> {
+        match self {
+            DurableSection::Fitting(body) => body,
+            DurableSection::OverCeiling => Vec::new(),
+        }
+    }
+
+    fn over_ceiling(&self) -> bool {
+        matches!(self, DurableSection::OverCeiling)
+    }
+}
+
+/// The DURABLE section body under construction: a byte buffer that stops accepting value
+/// expansion once it has passed the whole-image ceiling.
+///
+/// It saturates one byte past the ceiling rather than at it, so "full" and "fits" stay
+/// distinguishable, and [`crate::expand`] returns the moment it saturates — the work an
+/// over-deep shape costs is the bytes the ceiling admits, not the bytes its expansion
+/// would have produced.
+#[derive(Default)]
+struct DurableBody(Vec<u8>);
+
+impl DurableBody {
+    fn over_ceiling(&self) -> bool {
+        self.0.len() > bounds::MAX_IMAGE_BYTES
+    }
+
+    fn into_bytes(self) -> Vec<u8> {
+        self.0
+    }
+}
+
+impl std::ops::Deref for DurableBody {
+    type Target = Vec<u8>;
+
+    fn deref(&self) -> &Vec<u8> {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for DurableBody {
+    fn deref_mut(&mut self) -> &mut Vec<u8> {
+        &mut self.0
+    }
+}
+
+impl ValueShapeSink for DurableBody {
+    fn push(&mut self, byte: u8) {
+        self.0.push(byte);
+    }
+
+    fn extend(&mut self, bytes: &[u8]) {
+        self.0.extend_from_slice(bytes);
+    }
+
+    fn is_full(&self) -> bool {
+        self.over_ceiling()
+    }
+}
 
 /// The encoded image plus its digest.
 #[derive(Debug, Clone)]
@@ -43,11 +123,18 @@ impl ImageDraft {
         let sorted_strings = self.sorted_strings(&str_map);
         let (const_map, sorted_consts) = self.const_sort(&str_map);
 
+        // The DURABLE body is the one section whose size is not bounded by the draft's
+        // own row counts: a value shape's wire form is its expansion, and a shape shared
+        // across levels expands geometrically in its depth. It is therefore written
+        // through a sink that stops at the first byte past the whole-image ceiling.
+        let durable = self.encode_durable(&str_map)?;
+        let durable_over_ceiling = durable.over_ceiling();
+
         let mut tail = Vec::new();
         tail.push(SECTION_COUNT);
         push_section(&mut tail, 0x01, encode_strings(&sorted_strings))?;
         push_section(&mut tail, 0x02, self.encode_types(&str_map))?;
-        push_section(&mut tail, 0x03, self.encode_durable(&str_map)?)?;
+        push_section(&mut tail, 0x03, durable.body())?;
         push_section(&mut tail, 0x04, encode_consts(&sorted_consts, &str_map))?;
         let function_offsets = self.encode_functions(&str_map, &const_map)?;
         push_section(&mut tail, 0x05, function_offsets.body)?;
@@ -64,7 +151,12 @@ impl ImageDraft {
         bytes.extend_from_slice(&id.0);
         bytes.extend_from_slice(&tail);
 
-        if bytes.len() > bounds::MAX_IMAGE_BYTES {
+        // A DURABLE body that crossed the ceiling on its own is refused by that same
+        // ceiling, here, at the point the whole-image size has always been decided — so
+        // every producer-side result that reports earlier in the encode journey still
+        // reports first, and only a body no image could carry is decided without being
+        // finished.
+        if bytes.len() > bounds::MAX_IMAGE_BYTES || durable_over_ceiling {
             return Err(ImageBuildError::ImageTooLarge);
         }
         Ok(EncodedImage {
@@ -125,8 +217,11 @@ impl ImageDraft {
         // declaration however many roots project it; the key tuple and managed indexes
         // are occurrence facts and are validated per root.
         for declaration in self.product_declarations() {
-            validate_declaration_graph(declaration.graph())?;
+            validate_declaration_graph(declaration.graph(), self.value_shapes())?;
         }
+        // Every distinct value shape is measured once, whatever the number of fields
+        // that reference it: a shape shared by a thousand fields is one node here.
+        validate_value_shapes(self.value_shapes())?;
         for occurrence in self.root_occurrences() {
             if occurrence.keys().len() > bounds::MAX_KEY_COLUMNS {
                 return Err(ImageBuildError::TooManyKeyColumns);
@@ -267,8 +362,8 @@ impl ImageDraft {
         body
     }
 
-    fn encode_durable(&self, str_map: &[u16]) -> Result<Vec<u8>, ImageBuildError> {
-        let mut body = Vec::new();
+    fn encode_durable(&self, str_map: &[u16]) -> Result<DurableSection, ImageBuildError> {
+        let mut body = DurableBody::default();
         push_u16(&mut body, self.root_occurrences().len() as u16);
         // The application's ledger id anchors a non-empty durable graph; a
         // storeless image carries none.
@@ -293,7 +388,16 @@ impl ImageDraft {
             body.extend_from_slice(occurrence.placement().ledger_id().bytes());
             body.extend_from_slice(declaration.identity().ledger_id().bytes());
             let graph = declaration.graph();
-            encode_declaration_members(&mut body, graph, graph.members(), str_map);
+            encode_declaration_members(
+                &mut body,
+                graph,
+                graph.members(),
+                str_map,
+                self.value_shapes(),
+            );
+            if body.over_ceiling() {
+                return Ok(DurableSection::OverCeiling);
+            }
             encode_durable_indexes(&mut body, occurrence.indexes());
         }
         let sites = self.projected_sites()?;
@@ -311,9 +415,12 @@ impl ImageDraft {
         // The durable-contract identity closes the section: a 32-byte
         // `DurableContractId` over the canonical graph descriptor. The verifier
         // recomputes it from the decoded roots/records and rejects a mismatch, so
-        // these bytes are a producer-side commitment, not a trusted input.
+        // these bytes are a producer-side commitment, not a trusted input. Its preimage
+        // spells each ledger reference as a 25-byte `IDREF` where the body writes 16 raw
+        // bytes and is otherwise the same expansion, so a body inside the ceiling bounds
+        // the preimage too — which is why hashing is reached only from here.
         body.extend_from_slice(self.durable_descriptor()?.contract_id().bytes());
-        Ok(body)
+        Ok(DurableSection::Fitting(body.into_bytes()))
     }
 
     /// The canonical durable-graph descriptor for this draft, built from its
@@ -321,9 +428,9 @@ impl ImageDraft {
     /// key tuple, and the resource's durable member tree). The member tree is
     /// self-describing, so the descriptor no longer derives field shapes from the
     /// materialized record type.
-    fn durable_descriptor(&self) -> Result<DurableContractDescriptor, ImageBuildError> {
+    fn durable_descriptor(&self) -> Result<DurableContractDescriptor<'_>, ImageBuildError> {
         if self.root_occurrences().is_empty() {
-            return Ok(DurableContractDescriptor::empty());
+            return Ok(DurableContractDescriptor::empty(self.value_shapes()));
         }
         let application = self
             .application_identity()
@@ -343,7 +450,11 @@ impl ImageDraft {
                 }
             })
             .collect();
-        Ok(DurableContractDescriptor::new(application, roots))
+        Ok(DurableContractDescriptor::new(
+            application,
+            roots,
+            self.value_shapes(),
+        ))
     }
 
     fn encode_functions(
@@ -636,17 +747,19 @@ fn encode_site_path(body: &mut Vec<u8>, path: &SemanticPath) {
 /// `u16(count) ‖ member*`. A field is tag `0x00`, its ledger id, a required flag, and its
 /// value shape; a group is tag `0x01`, its ledger id, and its own members; a branch is tag
 /// `0x02`, its placement id, its key tuple, and its own members. Descends into each
-/// group's and branch's own run in declaration order. A field's value shape is the
-/// canonical [`DurableValueShape`] encoding, so a durable field and its
-/// contract-identity contribution spell the value one way.
+/// group's and branch's own run in declaration order. A field's value shape is expanded
+/// straight into `body` from the draft's one arena, by the same
+/// [`expand`] owner the contract-identity preimage uses, so a durable field and its
+/// identity contribution can never spell the value two ways.
 ///
 /// The nesting bound is rechecked before any encoding, so the descent is bounded by
 /// [`bounds::MAX_DURABLE_DEPTH`].
 fn encode_declaration_members(
-    body: &mut Vec<u8>,
+    body: &mut DurableBody,
     graph: &ProductDeclarationGraph,
     members: &[DeclarationNode],
     str_map: &[u16],
+    values: &CanonicalValueShapeDag,
 ) {
     push_u16(body, members.len() as u16);
     for member in members {
@@ -659,12 +772,12 @@ fn encode_declaration_members(
                 body.push(0x00);
                 body.extend_from_slice(id.bytes());
                 body.push(u8::from(*required));
-                encode_value_shape_section(body, value);
+                expand(values, *value, ValueShapeWireForm::DurableSection, body);
             }
             DeclarationMemberShape::Group { id } => {
                 body.push(0x01);
                 body.extend_from_slice(id.bytes());
-                encode_declaration_members(body, graph, graph.members_of(member), str_map);
+                encode_declaration_members(body, graph, graph.members_of(member), str_map, values);
             }
             DeclarationMemberShape::Branch {
                 placement,
@@ -677,7 +790,7 @@ fn encode_declaration_members(
                 push_u16(body, str_map[name.raw() as usize]);
                 push_u16(body, record.0);
                 encode_key_tuple(body, keys);
-                encode_declaration_members(body, graph, graph.members_of(member), str_map);
+                encode_declaration_members(body, graph, graph.members_of(member), str_map, values);
             }
         }
     }
@@ -714,7 +827,10 @@ fn encode_durable_indexes(body: &mut Vec<u8>, indexes: &[DurableIndexShape]) {
 /// this is one forward pass over the rows rather than a descent of the graph. A graph that
 /// exceeded the member bound holds only the prefix the flattening was willing to
 /// materialize; it reports the exceeded bound here and is never encoded.
-fn validate_declaration_graph(graph: &ProductDeclarationGraph) -> Result<(), ImageBuildError> {
+fn validate_declaration_graph(
+    graph: &ProductDeclarationGraph,
+    values: &CanonicalValueShapeDag,
+) -> Result<(), ImageBuildError> {
     if graph.over_member_bound() {
         return Err(ImageBuildError::TooManyDurableMembers);
     }
@@ -723,7 +839,13 @@ fn validate_declaration_graph(graph: &ProductDeclarationGraph) -> Result<(), Ima
             return Err(ImageBuildError::DurableTreeTooDeep);
         }
         match node.shape() {
-            DeclarationMemberShape::Field { value, .. } => validate_value_shape(value, 1)?,
+            // A field value rooted at this node occupies `depth(node)` levels, whatever
+            // depth the same node reaches under some other field.
+            DeclarationMemberShape::Field { value, .. } => {
+                if values.depth(*value) > bounds::MAX_DURABLE_VALUE_DEPTH {
+                    return Err(ImageBuildError::DurableValueTooDeep);
+                }
+            }
             DeclarationMemberShape::Group { .. } => {}
             DeclarationMemberShape::Branch { keys, .. } => {
                 if keys.len() > bounds::MAX_KEY_COLUMNS {
@@ -735,70 +857,30 @@ fn validate_declaration_graph(graph: &ProductDeclarationGraph) -> Result<(), Ima
     Ok(())
 }
 
-/// Encode a durable field value shape into the DURABLE section: `u8(value_tag) ‖
-/// body`. A scalar is tag `0x00` and a bare scalar tag; a struct is tag `0x01`,
-/// `u16(leaf_count)`, and its leaves; an enum is tag `0x02`, its raw 16-byte sum id,
-/// `u16(member_count)`, and per member a raw 16-byte id, `u16(payload_count)`, and
-/// its payload leaves. Ledger ids are raw 16 bytes here (as everywhere in this
-/// section); the canonical contract-identity payload re-encodes them as kind-tagged
-/// IDREFs through [`DurableValueShape::encode`], which the verifier recomputes.
-fn encode_value_shape_section(body: &mut Vec<u8>, value: &DurableValueShape) {
-    match value {
-        DurableValueShape::Scalar(scalar) => {
-            body.push(0x00);
-            body.push(scalar.tag());
-        }
-        DurableValueShape::Struct(leaves) => {
-            body.push(0x01);
-            push_u16(body, leaves.len() as u16);
-            for leaf in leaves {
-                encode_value_shape_section(body, leaf);
-            }
-        }
-        DurableValueShape::Enum { sum, members } => {
-            body.push(0x02);
-            body.extend_from_slice(sum.bytes());
-            push_u16(body, members.len() as u16);
-            for member in members {
-                body.extend_from_slice(member.id.bytes());
-                push_u16(body, member.payload.len() as u16);
-                for leaf in &member.payload {
-                    encode_value_shape_section(body, leaf);
+/// Recheck every distinct durable value shape's fan-out against the value-type bounds,
+/// so a well-formed draft always encodes within the limits the verifier rechecks
+/// (§ law 9). Nesting depth is decided per durable field, at its value's root node, by
+/// [`validate_declaration_graph`].
+///
+/// This is one pass over the arena: each distinct shape is measured once however many
+/// fields, structs, or enum payloads reference it, and no occurrence is expanded.
+fn validate_value_shapes(values: &CanonicalValueShapeDag) -> Result<(), ImageBuildError> {
+    for node in values.nodes() {
+        match values.view(node) {
+            ValueShapeView::Scalar(_) => {}
+            ValueShapeView::Struct(leaves) => {
+                if leaves.len() > bounds::MAX_STRUCT_LEAVES {
+                    return Err(ImageBuildError::TooManyStructLeaves);
                 }
             }
-        }
-    }
-}
-
-/// Recheck a durable field value shape's nesting depth against
-/// [`bounds::MAX_DURABLE_VALUE_DEPTH`], and every struct-leaf / enum-variant /
-/// payload fan-out against the existing value-type bounds, so a well-formed draft
-/// always encodes within the limits the verifier rechecks (§ law 9). `depth` is 1
-/// for a top-level field value.
-fn validate_value_shape(value: &DurableValueShape, depth: usize) -> Result<(), ImageBuildError> {
-    if depth > bounds::MAX_DURABLE_VALUE_DEPTH {
-        return Err(ImageBuildError::DurableValueTooDeep);
-    }
-    match value {
-        DurableValueShape::Scalar(_) => {}
-        DurableValueShape::Struct(leaves) => {
-            if leaves.len() > bounds::MAX_STRUCT_LEAVES {
-                return Err(ImageBuildError::TooManyStructLeaves);
-            }
-            for leaf in leaves {
-                validate_value_shape(leaf, depth + 1)?;
-            }
-        }
-        DurableValueShape::Enum { members, .. } => {
-            if members.len() > bounds::MAX_VARIANTS {
-                return Err(ImageBuildError::TooManyVariants);
-            }
-            for member in members {
-                if member.payload.len() > bounds::MAX_PAYLOAD_FIELDS {
-                    return Err(ImageBuildError::TooManyPayloadFields);
+            ValueShapeView::Enum { members, .. } => {
+                if members.len() > bounds::MAX_VARIANTS {
+                    return Err(ImageBuildError::TooManyVariants);
                 }
-                for leaf in &member.payload {
-                    validate_value_shape(leaf, depth + 1)?;
+                for member in members {
+                    if member.payload().len() > bounds::MAX_PAYLOAD_FIELDS {
+                        return Err(ImageBuildError::TooManyPayloadFields);
+                    }
                 }
             }
         }
@@ -834,7 +916,7 @@ fn member_shapes(
             } => DurableMemberShape::Field(DurableFieldShape {
                 id: *id,
                 required: *required,
-                value: value.clone(),
+                value: *value,
             }),
             DeclarationMemberShape::Group { id } => DurableMemberShape::Group(DurableGroupShape {
                 id: *id,
