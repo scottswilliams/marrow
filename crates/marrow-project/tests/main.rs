@@ -5,5 +5,7 @@
 mod capture;
 #[path = "cases/identity.rs"]
 mod identity;
+#[path = "cases/identity_kind_tags.rs"]
+mod identity_kind_tags;
 #[path = "cases/manifest.rs"]
 mod manifest;

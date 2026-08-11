@@ -161,6 +161,109 @@ impl LedgerIdBytes {
     }
 }
 
+/// Declares one durable ledger identity kind as its own type over [`LedgerIdBytes`].
+///
+/// The ledger mints every durable identity into the same opaque 16-byte space, so a
+/// Product identity, a placement, a key, a field, a group, a branch placement, an
+/// index, an enum sum, and an enum member are structurally indistinguishable once
+/// they are bytes. A declaration identity and an occurrence identity mean different
+/// things at every boundary they cross, and mistaking one for the other is a
+/// soundness fault, not a typo. Each kind is therefore its own type with a private
+/// field. There is deliberately no `From`, `Into`, or shared trait between any two
+/// of them: the only way to obtain one is to mint it where the ledger kind is
+/// already known, and the only way to leave the type is to read its bytes for
+/// encoding or hashing.
+macro_rules! durable_identity {
+    ($(#[$meta:meta])* $name:ident, $mint:expr) => {
+        $(#[$meta])*
+        ///
+        #[doc = $mint]
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+        pub struct $name(LedgerIdBytes);
+
+        impl $name {
+            /// Mint this identity from the ledger id resolved for its own kind.
+            pub fn minted(id: LedgerIdBytes) -> Self {
+                Self(id)
+            }
+
+            /// The ledger id bytes, for encoding and hashing only.
+            pub fn ledger_id(&self) -> LedgerIdBytes {
+                self.0
+            }
+        }
+    };
+}
+
+durable_identity!(
+    /// The ledger identity of one durable Product DECLARATION: the resource type a
+    /// `store` root or a nested keyed branch projects. One Product declaration has
+    /// one canonical member/value graph and one runtime surface however many roots
+    /// occur over it.
+    ///
+    /// It is never a placement, key, field, group, branch, index, sum, or member
+    /// identity, and it is never a package declaration identity: a dependency
+    /// package cannot declare or mint a durable Product, and no part of a package
+    /// identity is reserved by or convertible to this type.
+    DurableProductIdentity,
+    "Minted where the ledger resolves the `Product` kind (tag 1), anchored at the resource-type spelling."
+);
+
+durable_identity!(
+    /// The ledger identity of one outer `store` root placement — an OCCURRENCE of
+    /// the Product it names, carrying its own spelling, key tuple, and managed
+    /// indexes.
+    RootPlacementIdentity,
+    "Minted where the ledger resolves the `Root` kind (tag 3) for a `store` root."
+);
+
+durable_identity!(
+    /// The ledger identity of one nested keyed branch placement. A branch placement
+    /// is a Product declaration fact — it belongs to the resource's member graph —
+    /// even though it shares the ledger's `Root` kind with an outer store root.
+    BranchPlacementIdentity,
+    "Minted where the ledger resolves the `Root` kind (tag 3) for a nested keyed branch."
+);
+
+durable_identity!(
+    /// The ledger identity of one key column of a placement.
+    DurableKeyIdentity,
+    "Minted where the ledger resolves the `Key` kind (tag 4)."
+);
+
+durable_identity!(
+    /// The ledger identity of one stored field declaration of a resource, group, or
+    /// branch.
+    DurableFieldIdentity,
+    "Minted where the ledger resolves the `Field` kind (tag 2)."
+);
+
+durable_identity!(
+    /// The ledger identity of one unkeyed static field-path namespace (`group`).
+    DurableGroupIdentity,
+    "Minted where the ledger resolves the `Group` kind (tag 7)."
+);
+
+durable_identity!(
+    /// The ledger identity of one compiler-maintained managed index of a keyed store
+    /// root. An index belongs to the root occurrence that declares it, not to the
+    /// Product.
+    ManagedIndexIdentity,
+    "Minted where the ledger resolves the `Index` kind (tag 8)."
+);
+
+durable_identity!(
+    /// The ledger identity of one durable-reachable closed enum (sum) type.
+    DurableSumIdentity,
+    "Minted where the ledger resolves the `Sum` kind (tag 5)."
+);
+
+durable_identity!(
+    /// The ledger identity of one variant of a durable-reachable closed enum.
+    DurableMemberIdentity,
+    "Minted where the ledger resolves the `Member` kind (tag 6)."
+);
+
 /// One stored field of a durable resource, group, or branch, as it contributes to
 /// the contract identity: its ledger id, whether it is required, and its stored
 /// value shape. The field's *name* is not part of the identity — a rename preserves
