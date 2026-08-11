@@ -90,12 +90,26 @@ pub const MAX_COLLECTIONS: usize = 4096;
 /// Durable roots per project and operation sites. A project declares a store root per
 /// durable resource it serves — a multi-global application (its ledger root beside its
 /// counter root beside its catalog root) is the ordinary shape — so the count admits a
-/// family of roots rather than one. The value tracks the type family
-/// ([`MAX_TYPES`]/[`MAX_ENUMS`]/[`MAX_FUNCTIONS`]): each root's resource is a record
-/// type, so [`MAX_TYPES`] already bounds the root count from above (the `MAX_ROOTS <=
-/// MAX_TYPES` invariant below), and matching it keeps one obvious ceiling rather than a
-/// second arbitrary one — so raising the type family raises this in lockstep.
-/// [`MAX_IMAGE_BYTES`] remains the true byte bound on the emitted graph.
+/// family of roots rather than one.
+///
+/// `MAX_ROOTS` is an **occurrence** ceiling: root placement occurrences in one project.
+/// It is justified on its own terms, not by the type population. It is the decode-time
+/// allocation guard the verifier applies to the received `u16` root count before it
+/// allocates the root vector, and the durable-identity ledger caps root occurrences
+/// independently — `marrow_project::ids::MAX_IDS_ROWS` is 8192 anchor rows, of which a
+/// project with any root already spends one on its application and one on the Product,
+/// so even the most favourable census (every other term zero) admits at most 8,190 root
+/// rows. 4096 is therefore the binding occurrence ceiling, and [`MAX_IMAGE_BYTES`]
+/// remains the true byte bound on the emitted graph.
+///
+/// It is deliberately **not** derived from [`MAX_TYPES`], which is a type-population
+/// ceiling — declared records, monomorphized instantiations, and one entry record per
+/// durable Branch declaration. Neither bound proves the other in either direction: many
+/// roots may occur over a single Product, contributing one record type between them,
+/// while monomorphization and ordinary struct declarations grow the type population with
+/// no durable root at all. A later widening of either must carry its own accepted-set,
+/// identity, site, string, byte, and capacity evidence rather than inheriting the
+/// other's.
 ///
 /// Widening this from the T01 value of 1 is monotone: a bound is a decode-time
 /// allocation guard, never a stored-format byte (the durable graph encodes its actual
@@ -273,10 +287,6 @@ const _: () = {
         "each field interns a name; the string pool must admit a wide field set",
     );
     assert!(
-        MAX_ROOTS <= MAX_TYPES,
-        "each root's resource is a record type; the type table bounds the root count",
-    );
-    assert!(
         MAX_EXPORTS <= MAX_FUNCTIONS,
         "each export targets a distinct function; the function table bounds the export count",
     );
@@ -309,10 +319,6 @@ mod tests {
         assert_eq!(MAX_ENUMS, 4096, "enum types per image");
         assert_eq!(MAX_FUNCTIONS, 4096, "functions per image");
         assert_eq!(MAX_COLLECTIONS, 4096, "collection value types per image");
-        assert_eq!(
-            MAX_ROOTS, MAX_TYPES,
-            "root count tracks the record-type count"
-        );
         assert_eq!(MAX_IMAGE_BYTES, 512 * 1024, "whole-image byte ceiling");
     }
 
