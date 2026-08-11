@@ -7,12 +7,21 @@
 //! cause is reported once at the declaration, the first use is steered to it, and
 //! later uses fail silently.
 //!
-//! Diagnostics are asserted by code, span, and count. The one prose assertion is
-//! negative — that a refused name is never called out of scope — which is the
-//! fabrication these fixtures exist to kill.
+//! Diagnostics are asserted by code, span, and count, and a steer additionally by
+//! the typed `refused_declaration()` facts it carries — the ledger holding the
+//! refusal, the declaring code, and where that report sits. The typed facts are the
+//! only discriminator available: a steer and a row about a name that was never
+//! declared sit at the same span under the same code, because the steer reuses the
+//! *declaring* code rather than minting one of its own.
+//!
+//! The one prose assertion left is negative — that a refused name is never called
+//! out of scope — which is the fabrication these fixtures exist to kill.
 
 use marrow_compile::ResourceLimitKind;
-use marrow_compile::{CompileFailure, InputRevision, SourceDiagnostic, analyze, compile};
+use marrow_compile::{
+    CompileFailure, DeclarationNamespace, InputRevision, RefusalReport, SourceDiagnostic, analyze,
+    compile,
+};
 use marrow_project::{CaptureLimits, CapturedFile, Manifest, ProjectInput};
 
 #[path = "common/ids.rs"]
@@ -89,23 +98,38 @@ fn rows(diagnostics: &[SourceDiagnostic]) -> Vec<(&str, &str, u32, u32)> {
         .collect()
 }
 
-/// No row describes a refused declaration of this project's own as a gap in the
-/// language. The subset-gap phrase is reserved for a form the beta line genuinely
-/// does not admit; using it for a declared-and-refused name is the fabrication the
-/// named-type reds exist to kill.
-fn assert_no_subset_gap(diagnostics: &[SourceDiagnostic]) {
-    for row in diagnostics {
-        assert!(
-            !row.message()
-                .contains("is not yet supported on the beta line"),
-            "this project declared the type; the report must name the declaration's \
-             own cause, not a language gap: {:#?}",
-            diagnostics
-                .iter()
-                .map(SourceDiagnostic::message)
-                .collect::<Vec<_>>(),
-        );
-    }
+/// The last row is a typed steer to a refused declaration, carrying exactly these
+/// facts.
+///
+/// A steer and a row about a name that was never declared are
+/// `(code, line, column)`-identical — the steer reuses the *declaring* code rather
+/// than minting one of its own — so the discriminator has to be the typed payload.
+/// Asserting on prose instead ("no row says `is not yet supported`") tested the
+/// sentence, not the contract: it passed for any wording change and failed for none
+/// of the fabrications that keep the wording.
+fn assert_steers_to(
+    diagnostics: &[SourceDiagnostic],
+    namespace: DeclarationNamespace,
+    declaring_code: &str,
+    report: RefusalReport,
+) {
+    let last = diagnostics
+        .last()
+        .expect("a steered use reports at least one row");
+    let steer = last.refused_declaration().unwrap_or_else(|| {
+        panic!(
+            "the use is steered to a declaration this project refused, so its row \
+             carries the typed facts: {:#?}",
+            rows(diagnostics),
+        )
+    });
+    assert_eq!(
+        (steer.namespace, steer.declaring_code, steer.report),
+        (Some(namespace), declaring_code, report),
+        "the steer names the ledger holding the refusal, the code of the report the \
+         reader must act on, and where that report sits: {:#?}",
+        rows(diagnostics),
+    );
 }
 
 fn assert_never_out_of_scope(diagnostics: &[SourceDiagnostic], name: &str) {
@@ -457,7 +481,12 @@ fn a_branch_constructor_of_a_refused_store_names_the_stores_cause() {
          }\n",
     );
 
-    assert_no_subset_gap(&diagnostics);
+    assert_steers_to(
+        &diagnostics,
+        DeclarationNamespace::DurableRoot,
+        "check.durable_identity",
+        RefusalReport::AtDeclaration,
+    );
     // The identity class is the one refusal whose cause is a report *family*
     // rather than a single row, so its steer names that family — the same row
     // every other reference to a store refused for a missing identity receives.
@@ -803,7 +832,12 @@ fn a_refused_alias_steers_its_annotation_to_the_alias_report() {
          }\n",
     );
 
-    assert_no_subset_gap(&diagnostics);
+    assert_steers_to(
+        &diagnostics,
+        DeclarationNamespace::NamedType,
+        "check.type",
+        RefusalReport::AtDeclaration,
+    );
     assert_eq!(
         rows(&diagnostics),
         vec![
@@ -827,7 +861,12 @@ fn a_cyclic_alias_steers_its_annotation_to_the_recursion_report() {
          }\n",
     );
 
-    assert_no_subset_gap(&diagnostics);
+    assert_steers_to(
+        &diagnostics,
+        DeclarationNamespace::NamedType,
+        "check.recursion",
+        RefusalReport::AtDeclaration,
+    );
     assert_eq!(
         rows(&diagnostics),
         vec![
@@ -850,7 +889,12 @@ fn a_refused_nominal_steers_its_annotation_to_the_interval_report() {
          }\n",
     );
 
-    assert_no_subset_gap(&diagnostics);
+    assert_steers_to(
+        &diagnostics,
+        DeclarationNamespace::NamedType,
+        "check.type",
+        RefusalReport::AtDeclaration,
+    );
     assert_eq!(
         rows(&diagnostics),
         vec![
@@ -986,7 +1030,12 @@ fn a_refused_template_steers_its_annotation_to_the_member_report() {
          }\n",
     );
 
-    assert_no_subset_gap(&diagnostics);
+    assert_steers_to(
+        &diagnostics,
+        DeclarationNamespace::NamedType,
+        "check.type",
+        RefusalReport::AtDeclaration,
+    );
     assert_eq!(
         rows(&diagnostics),
         vec![

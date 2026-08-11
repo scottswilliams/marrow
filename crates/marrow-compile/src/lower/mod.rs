@@ -1069,7 +1069,7 @@ impl<'a> FnLowerer<'a> {
             return;
         }
         let row = match summary.gap() {
-            Some(_) => identity_admission_failed(self.file, span, summary.name()),
+            Some(_) => identity_admission_failed(self.file, span, summary),
             None => declaration_refused(self.file, span, summary),
         };
         self.fail(row);

@@ -52,8 +52,9 @@ pub use compile::{
     MAX_PARSED_FILE_BYTES, MAX_QUERY_PARSE_TRANSIENT_BYTES, NonEmptySourceDiagnostics,
     ResourceLimitKind, TestEntry, compile, compile_with_tests,
 };
+pub use decl::{DeclarationNamespace, RefusalReport, SourceStage};
 pub use demand::{DemandSummary, DurableNaming, RootDemand};
-pub use diag::{IdentityGap, SourceDiagnostic};
+pub use diag::{IdentityGap, RefusedDeclaration, SourceDiagnostic};
 pub use marrow_image::ExportId;
 pub use marrow_syntax::FormatRefusal;
 pub use scalar::ScalarType;

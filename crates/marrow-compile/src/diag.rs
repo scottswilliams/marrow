@@ -15,6 +15,7 @@
 //! totals keep accumulating, an OwnedBytes limit may strengthen to Count, and
 //! a discarded payload never re-materializes.
 
+use crate::decl::{DeclarationNamespace, RefusalReport};
 use marrow_codes::Code;
 use marrow_project::{FileIdentity, IdentityAnchor, IdentityKind};
 use marrow_syntax::{
@@ -83,6 +84,15 @@ enum CompilerDiagnostic {
         message: String,
         gap: IdentityGap,
     },
+    /// A steer from a use site to the declaration this project wrote and the
+    /// compiler refused, carrying the typed facts that tell it apart from a row
+    /// about a name that was never declared.
+    RefusedDeclaration {
+        code: &'static str,
+        span: SourceSpan,
+        message: String,
+        refused: RefusedDeclaration,
+    },
     /// A file the drive could not decode: the typed `Utf8Error` facts. The
     /// message is the central static and the span is the fixed file-start
     /// point, so this variant owns only the numeric facts.
@@ -106,6 +116,27 @@ impl IdentityGap {
     pub fn anchor(&self) -> IdentityAnchor {
         IdentityAnchor::new(self.kind, self.path.clone())
     }
+}
+
+/// The typed facts of a steer to a refused declaration.
+///
+/// A steer and a row about a name that was never declared are both `check.*` rows at
+/// the use span, and a steer reuses the *declaring* code rather than minting one of
+/// its own — so `(code, line, column)` cannot tell them apart, and an assertion that
+/// tried was left discriminating on prose. These facts are what a consumer reads
+/// instead: which ledger holds the refusal, the declaring diagnostic's code, and
+/// where the report carrying the cause actually sits.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RefusedDeclaration {
+    /// The ledger holding the refusal. `None` only for a summary that has not been
+    /// declared into one, a state no steer can reach.
+    pub namespace: Option<DeclarationNamespace>,
+    /// The stable code of the row reported at the declaration, which this steer
+    /// reuses so the reader follows one code to one fix.
+    pub declaring_code: &'static str,
+    /// Where that report was made: at the declaration, by a covering pass, or by an
+    /// earlier stage that refused the whole source.
+    pub report: RefusalReport,
 }
 
 impl SourceDiagnostic {
@@ -143,6 +174,31 @@ impl SourceDiagnostic {
         }
     }
 
+    /// A steer to a refused declaration, carrying the typed facts beside its
+    /// rendered form.
+    ///
+    /// `code` is the row's own code and `refused.declaring_code` the code of the
+    /// report the reader is sent to. They are the same for every steer that reuses
+    /// the declaring row, and differ for the identity class, whose cause is a report
+    /// *family* the steer names under its own `check.type`.
+    pub(crate) fn with_refused_declaration(
+        code: &'static str,
+        file: &FileIdentity,
+        span: SourceSpan,
+        message: String,
+        refused: RefusedDeclaration,
+    ) -> Self {
+        Self {
+            file: file.clone(),
+            payload: SourceDiagnosticPayload::Compiler(CompilerDiagnostic::RefusedDeclaration {
+                code,
+                span,
+                message,
+                refused,
+            }),
+        }
+    }
+
     pub(crate) fn invalid_utf8(
         file: &FileIdentity,
         valid_up_to: usize,
@@ -172,7 +228,8 @@ impl SourceDiagnostic {
             SourceDiagnosticPayload::Syntax(diagnostic) => diagnostic.code,
             SourceDiagnosticPayload::Compiler(
                 CompilerDiagnostic::Rendered { code, .. }
-                | CompilerDiagnostic::IdentityGap { code, .. },
+                | CompilerDiagnostic::IdentityGap { code, .. }
+                | CompilerDiagnostic::RefusedDeclaration { code, .. },
             ) => code,
             SourceDiagnosticPayload::Compiler(CompilerDiagnostic::InvalidUtf8 { .. }) => {
                 Code::CheckUnsupported.as_str()
@@ -186,7 +243,8 @@ impl SourceDiagnostic {
             SourceDiagnosticPayload::Syntax(diagnostic) => &diagnostic.message,
             SourceDiagnosticPayload::Compiler(
                 CompilerDiagnostic::Rendered { message, .. }
-                | CompilerDiagnostic::IdentityGap { message, .. },
+                | CompilerDiagnostic::IdentityGap { message, .. }
+                | CompilerDiagnostic::RefusedDeclaration { message, .. },
             ) => message,
             SourceDiagnosticPayload::Compiler(CompilerDiagnostic::InvalidUtf8 { .. }) => {
                 INVALID_UTF8_MESSAGE
@@ -232,6 +290,24 @@ impl SourceDiagnostic {
         }
     }
 
+    /// The typed facts behind a steer to a refused declaration, `None` for every
+    /// other payload.
+    ///
+    /// A causality assertion reads these instead of the rendered prose: a steer and a
+    /// row about a genuinely absent name are `(code, line, column)`-identical, because
+    /// the steer deliberately reuses the declaring code rather than minting one of its
+    /// own. Without a typed fact the only discriminator left is the sentence, which is
+    /// not a contract.
+    pub fn refused_declaration(&self) -> Option<&RefusedDeclaration> {
+        match &self.payload {
+            SourceDiagnosticPayload::Compiler(CompilerDiagnostic::RefusedDeclaration {
+                refused,
+                ..
+            }) => Some(refused),
+            _ => None,
+        }
+    }
+
     /// The captured source file this diagnostic points into. Always a canonical
     /// FIDB01-bounded identity — never empty, a sentinel, or a consumer-chosen
     /// placeholder.
@@ -245,7 +321,8 @@ impl SourceDiagnostic {
             SourceDiagnosticPayload::Syntax(diagnostic) => diagnostic.span,
             SourceDiagnosticPayload::Compiler(
                 CompilerDiagnostic::Rendered { span, .. }
-                | CompilerDiagnostic::IdentityGap { span, .. },
+                | CompilerDiagnostic::IdentityGap { span, .. }
+                | CompilerDiagnostic::RefusedDeclaration { span, .. },
             ) => *span,
             SourceDiagnosticPayload::Compiler(CompilerDiagnostic::InvalidUtf8 { .. }) => {
                 INVALID_UTF8_SPAN
@@ -300,6 +377,10 @@ impl SourceDiagnostic {
                 gap,
                 ..
             }) => file + message.len() + gap.path.len(),
+            SourceDiagnosticPayload::Compiler(CompilerDiagnostic::RefusedDeclaration {
+                message,
+                ..
+            }) => file + message.len(),
             SourceDiagnosticPayload::Compiler(CompilerDiagnostic::InvalidUtf8 { .. }) => file,
         }
     }

@@ -1,6 +1,7 @@
 //! Typed diagnostic builders and the small literal-shape helpers lowering reports through.
 
 use super::*;
+use crate::diag::RefusedDeclaration;
 
 /// Whether `ty` is a value that renders to canonical text — a bare scalar, enum, or
 /// entry identity. A record, collection, or optional is not renderable; those are not
@@ -397,9 +398,10 @@ fn edit_distance(a: &str, b: &str) -> usize {
 pub(super) fn identity_admission_failed(
     file: &FileIdentity,
     span: SourceSpan,
-    name: &str,
+    refusal: &DeclarationRefusalSummary,
 ) -> SourceDiagnostic {
-    SourceDiagnostic::at(
+    let name = refusal.name();
+    SourceDiagnostic::with_refused_declaration(
         Code::CheckType.as_str(),
         file,
         span,
@@ -407,6 +409,11 @@ pub(super) fn identity_admission_failed(
             "`{name}` was declared but failed identity admission; see the \
              `check.durable_identity` reports"
         ),
+        RefusedDeclaration {
+            namespace: refusal.namespace(),
+            declaring_code: refusal.code(),
+            report: refusal.report(),
+        },
     )
 }
 

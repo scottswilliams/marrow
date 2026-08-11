@@ -26,7 +26,9 @@ use marrow_project::FileIdentity;
 use marrow_syntax::SourceSpan;
 
 use crate::analysis::FileRef;
-use crate::diag::{DiagnosticCollector, IdentityGap, MAX_DIAGNOSTIC_BYTES, SourceDiagnostic};
+use crate::diag::{
+    DiagnosticCollector, IdentityGap, MAX_DIAGNOSTIC_BYTES, RefusedDeclaration, SourceDiagnostic,
+};
 
 /// The most owned bytes every declaration ledger in one pass may retain together.
 ///
@@ -107,7 +109,7 @@ impl DeclarationBudget {
 /// variant names a live producer; a namespace earns a variant when its ledger
 /// lands, never before.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub(crate) enum DeclarationNamespace {
+pub enum DeclarationNamespace {
     Constant,
     DurableRoot,
     /// One function signature per `(module, name)`. A signature refused for a
@@ -185,6 +187,13 @@ impl DeclarationRefusalId {
 pub(crate) struct DeclarationRefusalSummary {
     name: String,
     code: &'static str,
+    /// The ledger that holds this refusal, stamped by [`Ledger::declare`].
+    ///
+    /// A summary is built by the refusing pass and only then handed to a ledger, so
+    /// the namespace is not knowable at construction; every summary a *steer* reads
+    /// is read back out of a ledger, so by then it is. `None` therefore means
+    /// exactly "built, not yet declared", which is a state no steer can observe.
+    namespace: Option<DeclarationNamespace>,
     further: u16,
     gap: Option<IdentityGap>,
     report: RefusalReport,
@@ -202,7 +211,7 @@ pub(crate) struct DeclarationRefusalSummary {
 /// say so; the covered classes are reported by another pass or another occurrence,
 /// where only the code is known here.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum RefusalReport {
+pub enum RefusalReport {
     /// The refusing site pushed the row at this declaration's own span.
     AtDeclaration,
     /// A different pass or a different occurrence made the report. The steer names
@@ -221,7 +230,7 @@ pub(crate) enum RefusalReport {
 /// One owner for both facts: a caller names the stage, never the code, so a retained
 /// cause cannot cite a report that stage does not make.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum SourceStage {
+pub enum SourceStage {
     /// The file's bytes are not UTF-8, so it never entered parsing.
     Decode,
     /// The file is not well-formed Marrow.
@@ -334,6 +343,7 @@ fn covered(
     DeclarationRefusalSummary {
         name: at.name.to_string(),
         code,
+        namespace: None,
         further: 0,
         gap: None,
         report,
@@ -352,7 +362,7 @@ pub(crate) fn declaration_refused(
     refusal: &DeclarationRefusalSummary,
 ) -> SourceDiagnostic {
     let name = refusal.name();
-    SourceDiagnostic::at(
+    SourceDiagnostic::with_refused_declaration(
         refusal.code(),
         file,
         span,
@@ -362,6 +372,11 @@ pub(crate) fn declaration_refused(
              resolve. {}",
             refusal.correction()
         ),
+        RefusedDeclaration {
+            namespace: refusal.namespace(),
+            declaring_code: refusal.code(),
+            report: refusal.report(),
+        },
     )
 }
 
@@ -415,6 +430,16 @@ impl DeclarationRefusalSummary {
     pub(crate) fn with_gap(mut self, gap: IdentityGap) -> Self {
         self.gap = Some(gap);
         self
+    }
+
+    /// The ledger this refusal is held in, or `None` before it is declared into one.
+    pub(crate) fn namespace(&self) -> Option<DeclarationNamespace> {
+        self.namespace
+    }
+
+    /// Where the report carrying this refusal's cause was made.
+    pub(crate) fn report(&self) -> RefusalReport {
+        self.report
     }
 
     /// The identity gap this refusal carries, if it is the identity class.
@@ -481,6 +506,7 @@ impl DeclarationRefusalSummary {
         let Self {
             name: _,
             code: _,
+            namespace: _,
             further,
             gap,
             report: _,
@@ -627,6 +653,8 @@ impl<K: Ord + Clone, T> DeclarationLedger<K, T> {
                     Some(id) => return self.merge_refusal(id, summary),
                     None => {
                         self.budget.charge(summary.retained_owned_bytes())?;
+                        let mut summary = summary;
+                        summary.namespace = Some(self.namespace);
                         let id = DeclarationRefusalId {
                             namespace: self.namespace,
                             index: self.refusals.len() as u32,
