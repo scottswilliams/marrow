@@ -148,6 +148,17 @@ impl DemandAtom {
     /// The canonical `atom_body` bytes: `u8(class_tag) ‖ u16_be(step_count) ‖ step*`.
     /// The sole owner of an atom's byte spelling; both the identity payload and the
     /// canonical-order sort key project from it.
+    ///
+    /// The step count is narrowed to `u16` unguarded. Every atom in production is built
+    /// from a path the verifier resolved against a decoded site table, which the
+    /// container bounds at `MAX_SITE_PATH_STEPS` — small enough that the image itself
+    /// spells the same count in one byte — and a *decoded* ceiling is refused above
+    /// [`MAX_ATOM_STEPS`] before an atom is minted, so no atom reaching this owner from
+    /// either direction approaches the width. The bound is a property of those two
+    /// producers, though, not of [`SemanticPath`], which admits any non-empty step
+    /// chain: an in-process caller passing a 65_536-step path to [`DemandAtom::new`]
+    /// would frame a truncated body here. Closing that needs a bounded path type or a
+    /// fallible spelling, both of which cross this crate's public surface.
     fn encode_body(&self) -> Vec<u8> {
         let mut body = Vec::new();
         body.push(self.class.tag());
@@ -229,6 +240,11 @@ impl ExportDemand {
     /// `kind`, so the two identities can never collide over the same atom set. It is
     /// also the persisted form of a store's accepted deployment ceiling (the
     /// "separately owned maximum ceiling"), decoded back by [`Self::decode_atom_set`].
+    ///
+    /// The atom count fits its `u32`: an atom is a deduplicated (path, class) pair, and
+    /// every production atom names a node of the program's verified site table, so the
+    /// set is bounded by `MAX_SITES` times the closed [`OperationClass`] set — five
+    /// figures against ten.
     pub fn atom_set_payload(&self) -> Vec<u8> {
         let mut payload: Vec<u8> = Vec::new();
         push_lp(&mut payload, LOCAL_ROOT_LINEAGE);

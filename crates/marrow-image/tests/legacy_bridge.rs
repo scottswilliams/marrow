@@ -193,6 +193,8 @@ impl Fixture {
 }
 
 fn key_id(column: usize) -> LedgerIdBytes {
+    // One seed byte carries the distinctness this helper promises.
+    assert!(column <= u8::MAX as usize, "key seed exceeds its one byte");
     let mut bytes = [0x30u8; 16];
     bytes[0] = column as u8;
     match column {

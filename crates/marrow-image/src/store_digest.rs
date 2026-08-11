@@ -41,7 +41,8 @@ pub const STORE_INTERFACE_KIND: &[u8] = b"marrow.store.iface.v0";
 /// identity preserves it, while adding, removing, or resignaturing an export changes it —
 /// exactly the interface-changed signal a binding-only rebind must catch. It is computed
 /// purely from a `VerifiedImage`'s exports, so the store owner needs no dependency on the
-/// runner's interface projection.
+/// runner's interface projection. The count fits its `u32`: it is one entry per verified
+/// export, bounded by `MAX_EXPORTS`.
 pub fn interface_fingerprint(export_ids: &[[u8; 32]]) -> [u8; 32] {
     let mut sorted: Vec<[u8; 32]> = export_ids.to_vec();
     sorted.sort_unstable();

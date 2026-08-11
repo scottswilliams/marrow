@@ -5,6 +5,13 @@
 //! `payload` every image byte after the digest slot. This is an integrity
 //! identity, not compiler authentication: anyone can mint a valid digest, so trust
 //! comes from verification, never from the hash.
+//!
+//! Every domain-separated identity in this crate frames its preimage the same way, and
+//! each spells the delimiter by narrowing a `usize` byte length to `u64`. That
+//! conversion is lossless on every target the crate builds for; the `const _`
+//! encoded-width block in [`crate::bounds`] asserts `usize` is no wider than `u64` so a
+//! hypothetical wider target fails the build rather than silently framing a preimage
+//! under a truncated length.
 
 use sha2::{Digest, Sha256};
 

@@ -123,6 +123,14 @@ pub struct TransferVariant {
 
 impl TransferType {
     /// Append this transfer type's canonical bytes (the `ttype` grammar above).
+    ///
+    /// The `u16` member counts below cannot truncate: a transfer type is resolved from a
+    /// verified image's own tables, so a product's fields, a sum's variants, a variant's
+    /// payload leaves, and an identity's key columns each carry a count the image
+    /// container already bounded (`MAX_RECORD_FIELDS`, `MAX_VARIANTS`,
+    /// `MAX_PAYLOAD_FIELDS`, `MAX_KEY_COLUMNS`), and the encoded-width block in
+    /// [`crate::bounds`] asserts every one of those bounds fits a `u16`. Resolution
+    /// widens the shape structurally, never a single node's arity.
     fn encode(&self, out: &mut Vec<u8>) {
         match self {
             TransferType::Unit => out.push(0x00),
@@ -267,7 +275,9 @@ impl FunctionDescriptor {
         self.demand_id
     }
 
-    /// Append this descriptor's canonical `export_body` bytes.
+    /// Append this descriptor's canonical `export_body` bytes. The parameter count is
+    /// the verified function's own, bounded by `MAX_PARAMS`, so its `u16` spelling
+    /// cannot truncate.
     fn encode_body(&self) -> Vec<u8> {
         let mut body = Vec::new();
         body.extend_from_slice(self.id.bytes());
@@ -363,7 +373,9 @@ impl Interface {
     }
 
     /// The stable identity of this interface: a domain-separated SHA-256 over the
-    /// length-delimited canonical payload of the sorted descriptor set.
+    /// length-delimited canonical payload of the sorted descriptor set. The descriptor
+    /// count is one per verified export, bounded by `MAX_EXPORTS`, so its `u32`
+    /// spelling cannot truncate.
     pub fn interface_id(&self) -> InterfaceId {
         let mut payload: Vec<u8> = Vec::new();
         push_lp(&mut payload, LOCAL_ROOT_LINEAGE);

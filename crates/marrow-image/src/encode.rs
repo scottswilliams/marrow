@@ -5,6 +5,25 @@
 //! constant pools into canonical order, rewrites every reference through the sort
 //! maps, and lays out each function's bytecode so jump targets — held as
 //! instruction indices while drafting — become container byte offsets.
+//!
+//! # Why the row-count conversions cannot truncate
+//!
+//! Each table is length-prefixed, so the encoder narrows a `usize` row count to the
+//! `u16` or `u8` the wire spells it in. Every such conversion below rests on the same
+//! two-part derivation, stated once here rather than at each site:
+//!
+//! 1. [`ImageDraft::check_bounds`] runs before any section is built (through
+//!    [`LegacyFullDraftCoherencePreflight`]) and refuses a draft whose row count
+//!    exceeds the §E bound for that table, so the value converted is at most that
+//!    bound.
+//! 2. The `const _` encoded-width block in [`bounds`] asserts at compile time that
+//!    every one of those bounds fits the width its count is spelled in, so widening a
+//!    bound past its encoded width breaks the build rather than truncating a count in
+//!    an emitted image.
+//!
+//! The counts that are *not* covered by a §E bound — a function's span table, a
+//! sparse-write key path, and a section body's own byte length — carry their own
+//! derivation at their site.
 
 use crate::bounds;
 use crate::digest::{ImageId, image_id};
@@ -519,6 +538,9 @@ impl ImageDraft {
             }
             encode_durable_indexes(sink, occurrence.indexes());
         }
+        // The retained row count, not the demand: the plan refuses to mint past its
+        // capacity, so rows never exceed the demand `check_bounds` measured against
+        // `MAX_SITES`, and the count fits the `u16` the table is prefixed with.
         push_u16(sink, self.site_row_count() as u16);
         self.project_sites(|site| {
             encode_site_path(sink, &site.path);
@@ -637,7 +659,26 @@ impl ImageDraft {
         body
     }
 
+    /// Encode the SPANS section: per function in table order, a `u16` span count then
+    /// that many `u32(offset) ‖ u32(line) ‖ u32(column)` rows.
+    ///
+    /// A span table is the one encoder row set no §E bound guards — spans are debug
+    /// positions the producer supplies, not a declared program shape, and nothing ties
+    /// their number to the instruction count. The whole-image ceiling is the binder
+    /// instead: a count the `u16` prefix cannot spell needs at least
+    /// `65_536 * SPAN_ROW_BYTES` bytes of rows behind it, which exceeds
+    /// [`bounds::MAX_IMAGE_BYTES`] on its own, so [`ImageDraft::encode`] refuses such a
+    /// draft with [`ImageBuildError::ImageTooLarge`] and no image carrying a truncated
+    /// span count can be accepted. The assertion below fails the build if a later
+    /// ceiling widening breaks that derivation, at which point this count needs a
+    /// bound and a typed refusal of its own rather than a comment.
     fn encode_spans(&self, per_fn: &[CodeLayout]) -> Vec<u8> {
+        const SPAN_ROW_BYTES: usize = 12;
+        const _: () = assert!(
+            bounds::MAX_IMAGE_BYTES / SPAN_ROW_BYTES < u16::MAX as usize,
+            "the image ceiling must refuse a span table before its count outgrows the u16 prefix",
+        );
+
         let mut body = Vec::new();
         for (function, layout) in self.functions().iter().zip(per_fn) {
             push_u16(&mut body, function.spans.len() as u16);
@@ -663,6 +704,14 @@ struct CodeLayout {
     total_len: u32,
 }
 
+/// Lay out one function's code: each instruction's byte offset, and the total width.
+///
+/// Offsets are `u32` because the container spells them so. The running total cannot
+/// reach that width from a draft an encode can hold: an instruction is at least one
+/// encoded byte, so reaching `u32::MAX` would need a code vector of four billion
+/// instructions — orders of magnitude past the memory the draft itself occupies, and
+/// past [`bounds::MAX_CODE_BYTES`], which `encode_functions` rechecks against
+/// `total_len` before the layout is used for anything.
 fn code_layout(code: &[Instr]) -> CodeLayout {
     let mut offsets = Vec::with_capacity(code.len());
     let mut offset = 0u32;
@@ -740,6 +789,11 @@ fn encode_code(
             }
             Instr::DurSetSparsePresent { site, key_slots } => {
                 push_u16(&mut out, site.encodable()?);
+                // The slot count fits its `u16` prefix: each slot is two more bytes of
+                // this instruction's operand, and `encode_functions` has already
+                // refused a function whose laid-out code exceeds
+                // `bounds::MAX_CODE_BYTES` — half that ceiling in slots is well inside
+                // the prefix.
                 push_u16(&mut out, key_slots.len() as u16);
                 for slot in key_slots {
                     push_u16(&mut out, *slot);
@@ -825,6 +879,15 @@ fn encode_consts(sorted: &[ConstValue], str_map: &[u16]) -> Vec<u8> {
     body
 }
 
+/// Append one section: `u8(id) ‖ u32(body_len) ‖ body`.
+///
+/// The body length fits its `u32` prefix. Every section is built from rows the §E
+/// bounds already cap, and the widest of them by far is SPANS — `MAX_FUNCTIONS`
+/// functions each carrying at most a `MAX_CODE_BYTES`-instruction span table of
+/// twelve-byte rows, about 3 GiB — so no section body approaches four. The
+/// geometrically-expanding DURABLE body is the one section whose size does not follow
+/// from a row count, and it is fenced against the whole-image ceiling by
+/// [`DurableBodyLowerBound`] before it is ever built.
 fn push_section(out: &mut Vec<u8>, id: u8, body: Vec<u8>) -> Result<(), ImageBuildError> {
     out.push(id);
     push_u32(out, body.len() as u32);

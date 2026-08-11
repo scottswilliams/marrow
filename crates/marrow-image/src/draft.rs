@@ -17,6 +17,17 @@
 //! only by the encoder's recheck. The independent verifier rechecks every bound against
 //! the received bytes; the draft's checks are a producer-side guard, not the trust
 //! boundary.
+//!
+//! Those unconditional owners mint a logical id by narrowing the table's current length
+//! to the `u16` the id newtype carries, so a table pushed past `u16::MAX` rows would
+//! wrap an id onto an earlier one. No such draft has an image: every one of those tables
+//! has a §E bound (`MAX_STRINGS`, `MAX_CONSTS`, `MAX_TYPES`, `MAX_ENUMS`,
+//! `MAX_COLLECTIONS`, `MAX_FUNCTIONS`) an order of magnitude below `u16::MAX`, and
+//! [`ImageDraft::encode`] refuses the draft against that bound with the table's typed
+//! `TooMany*` error before any id is spelled into bytes. The `const _` encoded-width
+//! block in [`crate::bounds`] fails the build if a later widening lifts one of those
+//! bounds past the id width, at which point these mints need typed refusals rather than
+//! this derivation.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 

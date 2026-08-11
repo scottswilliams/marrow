@@ -44,6 +44,9 @@ fn product() -> LedgerIdBytes {
 /// A distinct 16-byte ledger id seeded by `n`, so every field member below is a distinct
 /// declaration node and every demand over it a distinct `(occurrence, node, target)`.
 fn field_id(n: usize) -> LedgerIdBytes {
+    // Three seed bytes carry the distinctness this helper promises. Past them the ids
+    // silently repeat and a demand-width test would measure a smaller set than it named.
+    assert!(n <= 0x00ff_ffff, "field seed exceeds its three bytes");
     let mut bytes = [0x50u8; 16];
     bytes[0] = (n & 0xff) as u8;
     bytes[1] = ((n >> 8) & 0xff) as u8;

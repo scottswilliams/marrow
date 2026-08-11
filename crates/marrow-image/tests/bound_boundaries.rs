@@ -23,6 +23,9 @@ const INDEX_ID: [u8; 16] = [0x3b; 16];
 /// A distinct 16-byte ledger id seeded by `n` (its low byte), for the many-component
 /// index projections below. Kept below the reserved fixed ids above.
 fn component_id(n: usize) -> LedgerIdBytes {
+    // Two seed bytes carry the distinctness this helper promises. Past them the ids
+    // silently repeat and a bound test would pass over a smaller set than it named.
+    assert!(n <= u16::MAX as usize, "component seed exceeds its two bytes");
     let mut bytes = [0x40u8; 16];
     bytes[0] = n as u8;
     bytes[1] = (n >> 8) as u8;
