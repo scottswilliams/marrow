@@ -527,7 +527,12 @@ fn over_wide_branch_key_reports_resource_limit() {
 /// `check.unsupported` on this line, so a depth corpus built from groups would pass
 /// for the wrong reason. The innermost field sits one level below the innermost
 /// branch, so `branches` nested branches place a member at depth `branches + 1`.
-fn nested_branch_project(branches: usize) -> ProjectInput {
+///
+/// Returns the project alongside the innermost field's one-based line: the refusal must
+/// land on that member, not on the resource, the store, or nowhere. A member's span runs
+/// from the start of its line, as every other member diagnostic's does, so the line is
+/// the whole of what identifies it.
+fn nested_branch_project(branches: usize, ids: bool) -> (ProjectInput, u32) {
     let mut source = String::from("module main\n\nresource R {\n    required t: string\n\n");
     let mut anchors = vec![
         "application .".into(),
@@ -542,10 +547,9 @@ fn nested_branch_project(branches: usize) -> ProjectInput {
         anchors.push(format!("root {path}"));
         anchors.push(format!("key {path}.k{level}"));
     }
-    source.push_str(&format!(
-        "{}required v: int\n",
-        "    ".repeat(branches + 1)
-    ));
+    let indent = "    ".repeat(branches + 1);
+    let line = source.lines().count() as u32 + 1;
+    source.push_str(&format!("{indent}required v: int\n"));
     anchors.push(format!("field {path}.v"));
     for level in (1..=branches).rev() {
         source.push_str(&format!("{}}}\n", "    ".repeat(level)));
@@ -553,7 +557,36 @@ fn nested_branch_project(branches: usize) -> ProjectInput {
     source.push_str("}\n\nstore ^r[id: int]: R\n\npub fn noop(): int {\n    return 0\n}\n");
     anchors.push("root r".into());
     anchors.push("key r.id".into());
-    project(&source, Some(&ledger(&anchors)))
+    let ledger = ids.then(|| ledger(&anchors));
+    (project(&source, ledger.as_deref()), line)
+}
+
+/// The one `check.resource_limit` in a diagnostic set, with its span.
+fn only_resource_limit(result: Result<impl std::fmt::Debug, CompileFailure>) -> SourceDiagnostic {
+    match result {
+        Ok(compiled) => panic!("expected a resource-limit diagnostic, compiled: {compiled:?}"),
+        Err(CompileFailure::Diagnostics(diagnostics)) => {
+            let mut limits = diagnostics
+                .iter()
+                .filter(|diagnostic| diagnostic.code() == "check.resource_limit");
+            let limit = limits
+                .next()
+                .unwrap_or_else(|| {
+                    panic!(
+                        "expected a check.resource_limit, got {:#?}",
+                        diagnostics.as_slice()
+                    )
+                })
+                .clone();
+            assert!(
+                limits.next().is_none(),
+                "one over-deep body is one fact: {:#?}",
+                diagnostics.as_slice()
+            );
+            limit
+        }
+        Err(other) => panic!("expected a source diagnostic, got {other:?}"),
+    }
 }
 
 /// The deepest member tree the bound admits: `MAX_DURABLE_DEPTH - 1` nested branches
@@ -561,7 +594,8 @@ fn nested_branch_project(branches: usize) -> ProjectInput {
 #[test]
 fn a_member_tree_at_the_depth_bound_still_compiles() {
     let at_bound = marrow_image::bounds::MAX_DURABLE_DEPTH - 1;
-    let result = compile(&nested_branch_project(at_bound));
+    let (input, _) = nested_branch_project(at_bound, true);
+    let result = compile(&input);
     assert!(
         result.is_ok(),
         "a member at exactly the depth bound compiles, got {:?}",
@@ -571,13 +605,33 @@ fn a_member_tree_at_the_depth_bound_still_compiles() {
 
 /// One member past `MAX_DURABLE_DEPTH` (16). The encoder's own depth recheck is the
 /// only owner of this bound today, so the refusal arrives as a locationless
-/// `DurableDepth` aggregate — no file, no line, no column — on both a fresh project
-/// and the normal committed state. It must be prechecked at the offending member,
-/// reporting `check.resource_limit` at a real span.
+/// `DurableDepth` aggregate — no file, no line, no column. It must be prechecked at
+/// the offending member, reporting `check.resource_limit` at that member's span.
 #[test]
 fn one_member_past_the_depth_bound_reports_a_located_resource_limit() {
     let past_bound = marrow_image::bounds::MAX_DURABLE_DEPTH;
-    assert_source_resource_limit(compile(&nested_branch_project(past_bound)));
+    let (input, line) = nested_branch_project(past_bound, true);
+    let limit = only_resource_limit(compile(&input));
+    assert_eq!(limit.file().as_str(), "src/main.mw");
+    assert_eq!(
+        limit.line(),
+        line,
+        "the refusal names the offending member, got {limit:#?}"
+    );
+}
+
+/// The same corpus before its identity ledger is minted. A fresh project's located
+/// `check.durable_identity` rows once masked this bound entirely — the depth refusal
+/// arrived only through the encoder, which a project without ids never reaches — so a
+/// corpus checked on a fresh project alone proves nothing about it. The precheck runs
+/// in the same walk that resolves anchors, so both facts are reported together.
+#[test]
+fn the_depth_refusal_is_located_before_the_ledger_is_minted() {
+    let past_bound = marrow_image::bounds::MAX_DURABLE_DEPTH;
+    let (input, line) = nested_branch_project(past_bound, false);
+    let limit = only_resource_limit(compile(&input));
+    assert_eq!(limit.file().as_str(), "src/main.mw");
+    assert_eq!(limit.line(), line);
 }
 
 // ---- Named source-precheck: an index projection past its component bound.

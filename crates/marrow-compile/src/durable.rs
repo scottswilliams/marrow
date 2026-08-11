@@ -1857,6 +1857,7 @@ impl<'a> IdentityResolver<'a> {
         self.build_extras(
             &mut nodes,
             None,
+            1,
             draft,
             records,
             &resource.members,
@@ -1867,7 +1868,8 @@ impl<'a> IdentityResolver<'a> {
 
     /// Walk a resource's declared members in source order, appending one
     /// [`DeclarationDraftNode`] per static `group` namespace and keyed `branch` placement
-    /// below `parent` — its stored fields are appended by the caller. `container` is the
+    /// below `parent` — its stored fields are appended by the caller. `depth` is the
+    /// nesting level of the nodes appended here, 1 at the top level. `container` is the
     /// anchor path prefix — the resource name at the top level, extended by each group or
     /// branch name as the walk descends. A keyed scalar leaf or a non-scalar field inside
     /// a group or branch is a precise `check.unsupported` rejection.
@@ -1881,6 +1883,7 @@ impl<'a> IdentityResolver<'a> {
         &mut self,
         nodes: &mut Vec<DeclarationDraftNode>,
         parent: Option<usize>,
+        depth: usize,
         draft: &mut ImageDraft,
         records: &TypeRegistry,
         members: &[ResourceMember],
@@ -1903,7 +1906,7 @@ impl<'a> IdentityResolver<'a> {
                     DeclarationWireClass::Group,
                     DeclarationMemberShape::Group { id },
                 ));
-                self.build_member_tree(nodes, at, draft, records, group, &path);
+                self.build_member_tree(nodes, at, depth, draft, records, group, &path);
             } else {
                 // A keyed `branch`: a distinct keyed placement, like a root. Its entry
                 // is a record of its own direct scalar fields; materialize that record
@@ -1923,7 +1926,8 @@ impl<'a> IdentityResolver<'a> {
                     parent,
                     DeclarationWireClass::Branch,
                 ));
-                let record_fields = self.build_member_tree(nodes, at, draft, records, group, &path);
+                let record_fields =
+                    self.build_member_tree(nodes, at, depth, draft, records, group, &path);
                 let record_name = draft.intern_string(&path);
                 let record = draft.add_record_type(RecordTypeDef {
                     name: record_name,
@@ -1978,19 +1982,35 @@ impl<'a> IdentityResolver<'a> {
             .collect()
     }
 
-    /// Append the members of one group or branch body below the node at `at`: its stored
-    /// scalar fields, then its nested groups and branches. Field anchors are
-    /// `<path>.<field>`. Returns the branch entry record's field layout, in the same order
-    /// as the appended field nodes.
+    /// Append the members of one group or branch body below the node at `at`, which sits
+    /// at nesting level `depth`: its stored scalar fields, then its nested groups and
+    /// branches, all one level deeper. Field anchors are `<path>.<field>`. Returns the
+    /// branch entry record's field layout, in the same order as the appended field nodes.
+    ///
+    /// A body one level past [`bounds::MAX_DURABLE_DEPTH`] is refused here, at its first
+    /// member, and none of it is built. The bound is a property of the container, not of
+    /// any one member it holds — every member of an over-deep body is over-deep, and
+    /// every member below them — so one row at the first member states the whole fact,
+    /// where a row per member would restate it once per leaf of the subtree the walk
+    /// then declines to build. This is the source precheck for a bound the encoder
+    /// otherwise reaches with no span to report it at.
     fn build_member_tree(
         &mut self,
         nodes: &mut Vec<DeclarationDraftNode>,
         at: usize,
+        depth: usize,
         draft: &mut ImageDraft,
         records: &TypeRegistry,
         group: &GroupDecl,
         path: &str,
     ) -> Vec<FieldDef> {
+        let depth = depth + 1;
+        if depth > bounds::MAX_DURABLE_DEPTH {
+            if let Some(member) = group.members.first() {
+                self.reject_resource_limit(member.span(), over_deep_member_message());
+            }
+            return Vec::new();
+        }
         let mut record_fields = Vec::new();
         for member in &group.members {
             let ResourceMember::Field(field) = member else {
@@ -2005,7 +2025,7 @@ impl<'a> IdentityResolver<'a> {
                 record_fields.push(record_field);
             }
         }
-        self.build_extras(nodes, Some(at), draft, records, &group.members, path);
+        self.build_extras(nodes, Some(at), depth, draft, records, &group.members, path);
         record_fields
     }
 
@@ -2747,6 +2767,16 @@ fn unsupported(file: &FileIdentity, span: SourceSpan, subject: &str) -> SourceDi
 /// the source, not a fabricated location, carries the diagnostic.
 fn resource_limit(file: &FileIdentity, span: SourceSpan, message: String) -> SourceDiagnostic {
     SourceDiagnostic::at(Code::CheckResourceLimit.as_str(), file, span, message)
+}
+
+/// The member-depth refusal's sentence. It names the container's nesting, not the
+/// member's own kind: a field, a `group`, and a `branch` are all refused for the same
+/// reason at the same place.
+fn over_deep_member_message() -> String {
+    format!(
+        "a durable member nests groups or branches deeper than the fixed limit of {} levels",
+        bounds::MAX_DURABLE_DEPTH
+    )
 }
 
 fn over_deep_value_message() -> String {
