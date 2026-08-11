@@ -10,7 +10,7 @@
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
-use marrow_compile::{CompileFailure, SourceDiagnostic, compile};
+use marrow_compile::{CompileFailure, ResourceLimitKind, SourceDiagnostic, compile};
 use marrow_project::{CaptureLimits, CapturedFile, Manifest, ProjectInput};
 use marrow_syntax::SourceSpan;
 
@@ -769,4 +769,159 @@ fn every_resource_limit_kind_describes_itself_without_its_variant_name() {
             "each bound must be distinguishable on both surfaces"
         );
     }
+}
+
+// ---- Red R24: the operation-site policy pair, at the cap and one demand past it.
+
+/// The declared width of the site-policy corpus's one shared Product. The last field is
+/// deliberately left untouched by the corpus below, so it is the single unused demand the
+/// paired program adds.
+const POLICY_FIELDS: usize = 64;
+
+/// The recomputed per-site byte floors of the pinned v0 layout, and the conclusion they
+/// force. A root whole-payload site encodes a 2-step path (`1 + 2 * 17 + 1 = 36` bytes)
+/// beside a root occurrence row costing at least its name, key count, entry record,
+/// placement, product, member count and index count (>= 42 bytes). Every other site
+/// encodes at least a 3-step path (`1 + 3 * 17 + 1 = 53` bytes) beside the distinct
+/// member row it must address (a kind byte, a 16-byte ledger id, and its shape, so
+/// 19 bytes or more). A full site table therefore implies at least
+/// `8_192 * 72 = 589_824` bytes, above the 524,288-byte ceiling: **no image with a full
+/// site table fits**.
+///
+/// These are compile-time assertions rather than a test body: they are arithmetic over
+/// published constants, so a drift in either constant must fail the build, not a run.
+/// The conclusion survives a floor a third of this one, so it does not rest on the exact
+/// per-row terms.
+const ROOT_SITE_FLOOR: usize = 36 + 42;
+const OTHER_SITE_FLOOR: usize = 53 + 19;
+const _: () = assert!(ROOT_SITE_FLOOR == 78);
+const _: () = assert!(OTHER_SITE_FLOOR == 72);
+const _: () = assert!(
+    marrow_image::bounds::MAX_SITES * OTHER_SITE_FLOOR > marrow_image::bounds::MAX_IMAGE_BYTES
+);
+
+/// The corpus: `roots` keyed roots projecting **one shared Product** of
+/// [`POLICY_FIELDS`] required `int` fields, each root writing the leading `touched` of
+/// them. `extra_demand` adds one write of the last field, through the first root only.
+///
+/// The site plan holds one eager whole-payload site per root plus one lazily demanded
+/// field leaf per distinct `(root, written field)` pair, so the corpus demands
+/// `roots * (1 + touched)` sites, plus one more when `extra_demand` is set. A declared
+/// but unwritten field mints nothing.
+fn site_policy_source(roots: usize, touched: usize, extra_demand: bool) -> String {
+    let mut source = String::from("module main\n\nresource R {\n");
+    for field in 0..POLICY_FIELDS {
+        source.push_str(&format!("    required f{field}: int\n"));
+    }
+    source.push_str("}\n\n");
+    for root in 0..roots {
+        source.push_str(&format!("store ^r{root}[id: int]: R\n"));
+    }
+    source.push('\n');
+    for root in 0..roots {
+        source.push_str(&format!(
+            "pub fn w{root}(id: int, v: int) {{\n    transaction {{\n"
+        ));
+        for field in 0..touched {
+            source.push_str(&format!("        ^r{root}[id].f{field} = v\n"));
+        }
+        if extra_demand && root == 0 {
+            source.push_str(&format!("        ^r0[id].f{} = v\n", POLICY_FIELDS - 1));
+        }
+        source.push_str("    }\n}\n\n");
+    }
+    source
+}
+
+/// The corpus ledger: the application, the one shared Product with its Product-scoped
+/// field anchors, then each root occurrence with its own key column. Member anchoring is
+/// Product-scoped, so many occurrences of one Product add no member row.
+fn site_policy_ids(roots: usize) -> Vec<u8> {
+    let mut anchors = vec!["application .".to_string(), "product R".to_string()];
+    anchors.extend((0..POLICY_FIELDS).map(|field| format!("field R.f{field}")));
+    for root in 0..roots {
+        anchors.push(format!("root r{root}"));
+        anchors.push(format!("key r{root}.id"));
+    }
+    ledger(&anchors)
+}
+
+fn site_policy_compile(
+    roots: usize,
+    touched: usize,
+    extra_demand: bool,
+) -> Result<marrow_compile::Compiled, CompileFailure> {
+    let source = site_policy_source(roots, touched, extra_demand);
+    assert!(
+        source.len() <= marrow_compile::MAX_PARSED_FILE_BYTES,
+        "the corpus has to be a file the drive admits: {} bytes against an admitted {}",
+        source.len(),
+        marrow_compile::MAX_PARSED_FILE_BYTES,
+    );
+    compile(&project(&source, Some(&site_policy_ids(roots))))
+}
+
+/// Compile one full-scale corpus and return the aggregate bound it exhausted. A corpus
+/// that compiles, or that reports a source diagnostic, fails the test: both endpoints of
+/// the pair must be refused by the image projection alone.
+fn site_policy_limit(extra_demand: bool) -> ResourceLimitKind {
+    // 128 roots x (1 root site + 63 written fields) = 8,192 demands; `extra_demand` is
+    // the 8,193rd.
+    match site_policy_compile(128, 63, extra_demand) {
+        Ok(compiled) => panic!(
+            "the site-policy corpus must not produce an image ({} bytes)",
+            compiled.image.bytes.len(),
+        ),
+        Err(CompileFailure::ResourceLimit(limit)) => limit.kind(),
+        Err(other) => panic!("expected an aggregate resource limit, got {other:?}"),
+    }
+}
+
+/// The corpus shape is a real compiling program that mints sites through the production
+/// pipeline: at four roots it is far inside every bound and produces an image. Without
+/// this control the pair below could agree for a reason that has nothing to do with the
+/// site plan.
+#[test]
+fn the_site_policy_corpus_shape_compiles_far_inside_the_cap() {
+    let compiled = site_policy_compile(4, 63, false)
+        .unwrap_or_else(|failure| panic!("the corpus shape must compile: {failure:?}"));
+    assert!(
+        !compiled.image.bytes.is_empty(),
+        "the corpus shape lowers to a non-empty image",
+    );
+}
+
+/// At exactly `MAX_SITES` the site plan is full but not crossed, so the Sites bound does
+/// not fire and the program is carried to the late whole-image byte ceiling — which it
+/// cannot clear.
+///
+/// **It must not claim the 8,192-site image fits**, and it cannot: [`OTHER_SITE_FLOOR`]
+/// carries that as a compile-time assertion over the published bounds.
+#[test]
+fn the_site_plan_at_capacity_selects_the_late_image_byte_ceiling() {
+    assert_eq!(
+        site_policy_limit(false),
+        ResourceLimitKind::ImageBytes,
+        "a full-but-uncrossed site plan is refused by the byte ceiling, not by Sites",
+    );
+}
+
+/// One demand past the cap the plan crosses, and the Sites bound fires in the encoder's
+/// precheck — **before** the image is assembled and before the byte ceiling is reached.
+/// The pair freezes the candidate precedence: crossing the site cap is reported as the
+/// site cap, and only an uncrossed plan can reach the later byte verdict.
+///
+/// The pair also pins the corpus arithmetic without decoding an image that is never
+/// produced. The two programs differ by exactly one distinct `(root, field)` demand — a
+/// field no other statement writes — so their demand counts are `d` and `d + 1`. The
+/// first is uncrossed (`d <= MAX_SITES`) and the second is crossed (`d + 1 > MAX_SITES`),
+/// which forces `d = MAX_SITES` exactly. The corpus is therefore the 8,192/8,193 pair it
+/// claims to be, by the outcomes themselves rather than by counting site emissions.
+#[test]
+fn one_demand_past_the_site_cap_selects_sites_before_the_image_byte_ceiling() {
+    assert_eq!(
+        site_policy_limit(true),
+        ResourceLimitKind::Sites,
+        "the crossed site plan is reported as Sites, not as the later byte ceiling",
+    );
 }
