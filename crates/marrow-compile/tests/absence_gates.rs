@@ -1679,24 +1679,108 @@ fn no_reserved_value_type_row_is_removed_from_the_registry() {
     }
 }
 
-/// The two name lookups that answer a source spelling are the only readers that
-/// filter on the verdict, and both of them do. An id lookup must not filter: its
-/// whole purpose after NOMLEAF01 is to resolve a reference to a refused
-/// declaration instead of dangling.
+/// A traversal of the struct or enum table, flattened to one line: the text from
+/// the table's field access through the end of the chain that reads it.
+///
+/// Whitespace is collapsed so a rustfmt-wrapped chain reads as one expression, which
+/// is what lets the classifier below see a predicate and its scan together.
+fn value_type_table_traversals(code: &str) -> Vec<String> {
+    let flat = code
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .replace(" .", ".")
+        .replace(". ", ".");
+    let mut found = Vec::new();
+    for table in [".structs", ".enums"] {
+        let mut from = 0;
+        while let Some(offset) = flat[from..].find(table) {
+            let start = from + offset;
+            found.push(flat[start..start + traversal_extent(&flat[start..])].to_string());
+            from = start + table.len();
+        }
+    }
+    found
+}
+
+/// How far a traversal beginning at `text` reaches: to the delimiter that closes the
+/// construct enclosing it — the end of the chain, of the `for` body, or of the
+/// function. Bounding by nesting rather than by a character budget is what keeps a
+/// predicate written several lines below its scan inside the scan's own region.
+fn traversal_extent(text: &str) -> usize {
+    let mut depth = 0usize;
+    for (index, byte) in text.bytes().enumerate() {
+        match byte {
+            b'(' | b'[' | b'{' => depth += 1,
+            b')' | b']' | b'}' if depth == 0 => return index,
+            b')' | b']' | b'}' => depth -= 1,
+            _ => {}
+        }
+    }
+    text.len()
+}
+
+/// Every traversal that answers a *source spelling* — the shape that must exclude a
+/// refused row — paired with whether it does.
+///
+/// A name-keyed traversal compares a row's `name` field against a searched-for
+/// value. A traversal that reaches its row by index (`[row]`, `.get(row)`) is an
+/// id lookup that happens to read the row's name for display; it resolves a
+/// reserved id on purpose and must not filter.
+fn unfiltered_value_type_name_lookups(code: &str) -> Vec<String> {
+    value_type_table_traversals(code)
+        .into_iter()
+        .filter(|traversal| {
+            let name_keyed =
+                traversal.contains("name ==") || traversal.contains("name.as_str() ==");
+            let mut head = traversal.len().min(60);
+            while !traversal.is_char_boundary(head) {
+                head -= 1;
+            }
+            let head = &traversal[..head];
+            let row_indexed = head.contains("[row]") || head.contains(".get(row)");
+            name_keyed && !row_indexed && !traversal.contains("verdict.is_accepted()")
+        })
+        .collect()
+}
+
+/// Every lookup over the value-type tables that answers a source spelling excludes a
+/// refused row, and every lookup that resolves a reserved id does not.
+///
+/// The candidate set is *derived*, not pinned: the tables are module-private fields
+/// of the registry, so `types.rs` is the only code that can traverse them, and every
+/// traversal there that compares a row's name is required to test the verdict. A
+/// sixth name lookup therefore cannot join the family unfiltered — it is classified
+/// by its own shape, not by having been listed here.
+///
+/// The defect this bounds is not a missing report but a wrong resolution: a refused
+/// row is retained with its image index reserved and its body never filled, so a
+/// lookup that answers its name hands back a *live empty type*. Every later question
+/// asked of that type — a field read, a match arm, a return check — then fabricates
+/// an answer about source the compiler had already diagnosed.
 #[test]
 fn every_value_type_name_lookup_excludes_a_refused_row() {
     let code = production_code_of("types.rs");
-    for lookup in ["fn struct_by_name", "fn enum_by_name"] {
-        let start = code
-            .find(lookup)
-            .unwrap_or_else(|| panic!("{lookup} is declared in the type registry"));
-        let body = &code[start..start + 260];
-        assert!(
-            body.contains("verdict.is_accepted()"),
-            "{lookup} must answer only for an accepted declaration, so a refused one \
-             reaches the ledger steer instead: {body}",
-        );
-    }
+    assert!(
+        unfiltered_value_type_name_lookups(&code).is_empty(),
+        "a lookup keyed on a source spelling must answer only for an accepted \
+         declaration, so a refused one reaches the ledger steer instead: {:#?}",
+        unfiltered_value_type_name_lookups(&code),
+    );
+
+    // The classifier is proved live on this exact file rather than assumed: with the
+    // filter removed from the source it scans, it must report the two owners it is
+    // there to hold. A derivation that silently matched nothing would pass the
+    // assertion above and fail here.
+    let unfiltered = code.replace(" && info.verdict.is_accepted()", "");
+    assert_eq!(
+        unfiltered_value_type_name_lookups(&unfiltered).len(),
+        2,
+        "the registry answers a value-type spelling once per table, and the \
+         classifier sees both: {:#?}",
+        unfiltered_value_type_name_lookups(&unfiltered),
+    );
+
     for lookup in ["fn struct_by_type", "fn enum_by_id"] {
         let start = code
             .find(lookup)
@@ -1706,6 +1790,66 @@ fn every_value_type_name_lookup_excludes_a_refused_row() {
             !body.contains("verdict"),
             "{lookup} resolves a reserved id, including one a later pass refused; \
              filtering it would restore the dangling reference: {body}",
+        );
+    }
+}
+
+/// The classifier's plant probes. A derived gate that matches nothing passes for the
+/// wrong reason, so each shape it must catch — and each it must leave alone — is
+/// planted here rather than trusted.
+#[test]
+fn the_value_type_lookup_classifier_catches_a_new_unfiltered_scan() {
+    let planted = "fn static_struct_by_name(&self, name: &str) -> Option<&StructInfo> {\n\
+                   \x20   self.structs\n\
+                   \x20       .iter()\n\
+                   \x20       .find(|info| info.name == name)\n\
+                   }\n";
+    assert_eq!(
+        unfiltered_value_type_name_lookups(planted).len(),
+        1,
+        "a sixth name lookup added without the verdict filter is caught by its shape",
+    );
+
+    let filtered = "fn static_struct_by_name(&self, name: &str) -> Option<&StructInfo> {\n\
+                    \x20   self.structs\n\
+                    \x20       .iter()\n\
+                    \x20       .find(|info| info.name == name && info.verdict.is_accepted())\n\
+                    }\n";
+    assert!(unfiltered_value_type_name_lookups(filtered).is_empty());
+
+    let delegating = "fn static_struct_by_name(&self, name: &str) -> Option<StructInfo> {\n\
+                      \x20   self.view.registry.struct_by_name(name).cloned()\n\
+                      }\n";
+    assert!(
+        unfiltered_value_type_name_lookups(delegating).is_empty(),
+        "a reader that delegates to the filtered owner traverses no table at all",
+    );
+
+    let by_row = "fn display_name(&self, row: usize) -> &str {\n\
+                  \x20   self.structs[row].name.as_str() == text.as_str()\n\
+                  }\n";
+    assert!(
+        unfiltered_value_type_name_lookups(by_row).is_empty(),
+        "a row-indexed read resolves a reserved id on purpose and must not filter",
+    );
+}
+
+/// The tables the gate above derives over are module-private, which is what makes
+/// `types.rs` the whole search space. A `pub(crate)` on either field would put a
+/// name lookup outside the derivation with nothing to catch it.
+#[test]
+fn the_value_type_tables_are_private_to_their_registry() {
+    let code = production_code_of("types.rs");
+    for field in ["structs: Vec<StructInfo>", "enums: Vec<EnumInfo>"] {
+        let start = code
+            .find(field)
+            .unwrap_or_else(|| panic!("{field} is declared in the type registry"));
+        let line_start = code[..start].rfind('\n').map_or(0, |index| index + 1);
+        assert_eq!(
+            code[line_start..start].trim(),
+            "",
+            "`{field}` must carry no visibility, so no code outside this module can \
+             scan it for a name",
         );
     }
 }
