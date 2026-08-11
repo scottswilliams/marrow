@@ -881,13 +881,14 @@ fn encode_consts(sorted: &[ConstValue], str_map: &[u16]) -> Vec<u8> {
 
 /// Append one section: `u8(id) ‖ u32(body_len) ‖ body`.
 ///
-/// The body length fits its `u32` prefix. Every section is built from rows the §E
-/// bounds already cap, and the widest of them by far is SPANS — `MAX_FUNCTIONS`
-/// functions each carrying at most a `MAX_CODE_BYTES`-instruction span table of
-/// twelve-byte rows, about 3 GiB — so no section body approaches four. The
-/// geometrically-expanding DURABLE body is the one section whose size does not follow
-/// from a row count, and it is fenced against the whole-image ceiling by
-/// [`DurableBodyLowerBound`] before it is ever built.
+/// The body length fits its `u32` prefix. Every section but two is built from rows the
+/// §E bounds cap, and the widest such body — `MAX_FUNCTIONS` × `MAX_CODE_BYTES` of code
+/// — is a few hundred mebibytes. The DURABLE body's size does not follow from a row
+/// count, because a value shape expands geometrically in its depth; it is fenced against
+/// the whole-image ceiling by [`DurableBodyLowerBound`] before it is ever built. SPANS
+/// is the remaining one: its rows are producer-supplied and no bound caps their number
+/// (see `encode_spans`), so this length rests on the producer, which would have to hold
+/// four gibibytes of spans in memory to reach the prefix width.
 fn push_section(out: &mut Vec<u8>, id: u8, body: Vec<u8>) -> Result<(), ImageBuildError> {
     out.push(id);
     push_u32(out, body.len() as u32);
