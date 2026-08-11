@@ -166,7 +166,13 @@ impl<'a> LegacyFullDraftCoherencePreflight<'a> {
 ///
 /// IMGBOUND deletes both allocating sinks and this bound when it installs its derived
 /// fitting-preimage ceiling and allocation-free contract path.
-struct LegacyDurableBodyLowerBoundFence<'a>(&'a ImageDraft);
+struct LegacyDurableBodyLowerBoundFence<'a> {
+    draft: &'a ImageDraft,
+    /// The exact body length the count measured, so the body is allocated once at its
+    /// final size. A `Vec` grown by doubling would transiently hold two buffers and up
+    /// to twice the bytes, which is exactly the term phase (A) above states.
+    body_len: usize,
+}
 
 impl<'a> LegacyDurableBodyLowerBoundFence<'a> {
     /// Count the DURABLE body a coherent draft would write, and admit only a body an
@@ -181,7 +187,10 @@ impl<'a> LegacyDurableBodyLowerBoundFence<'a> {
         if lower_bound.over_ceiling() {
             return Err(ImageBuildError::ImageTooLarge);
         }
-        Ok(Self(draft))
+        Ok(Self {
+            draft,
+            body_len: lower_bound.0,
+        })
     }
 
     /// The DURABLE section body: the graph the lower bound just measured, written this
@@ -190,9 +199,9 @@ impl<'a> LegacyDurableBodyLowerBoundFence<'a> {
     /// This is the only site in the crate that mints a contract identity, so the identity
     /// exists only for a graph that already fits.
     fn encode_body(self, str_map: &[u16]) -> Result<Vec<u8>, ImageBuildError> {
-        let mut body = Vec::new();
-        self.0.write_durable_body(&mut body, str_map)?;
-        body.extend_from_slice(self.0.durable_descriptor()?.contract_id().bytes());
+        let mut body = Vec::with_capacity(self.body_len + DurableContractId::BYTES);
+        self.draft.write_durable_body(&mut body, str_map)?;
+        body.extend_from_slice(self.draft.durable_descriptor()?.contract_id().bytes());
         Ok(body)
     }
 }

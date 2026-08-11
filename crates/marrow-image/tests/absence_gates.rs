@@ -1087,7 +1087,7 @@ fn the_contract_identity_is_minted_only_behind_the_body_fence() {
 
     let fence = line_of("impl<'a> LegacyDurableBodyLowerBoundFence<'a> {");
     let minted = line_of("contract_id()");
-    let descriptor = line_of("self.0.durable_descriptor()");
+    let descriptor = line_of("self.draft.durable_descriptor()");
     let draft_impl = line_of("impl ImageDraft {");
     assert!(
         fence < minted && minted < draft_impl,
