@@ -524,9 +524,15 @@ struct DraftCheckpoint {
 /// identity, so a mark taken on one draft could be applied to another, where it silently
 /// truncated unrelated tables.
 ///
-/// **Temporary.** It exposes the template proof's rollback and nothing else — it is not a
-/// general draft transaction, and canonical Product, root, or path publication is not a
-/// template-proof operation. It is deleted when the production draft transaction lands.
+/// What the guard bounds is *when* the draft is reachable and *what survives*, not which
+/// operations the pass performs: [`Self::proof_draft`] reborrows the whole draft, because
+/// the pass is the ordinary function lowerer and its append surface is the draft's. The
+/// reborrow is bounded by the guard, so nothing it appends escapes the rollback, but a
+/// narrower operation set would mean a second lowering path, which this row does not build.
+///
+/// **Temporary.** It is not a general draft transaction — canonical Product, root, or path
+/// publication is not a template-proof operation, and there is no commit. It is deleted when
+/// the production draft transaction lands.
 #[doc(hidden)]
 pub struct TemplateProofDraftGuard<'draft> {
     draft: &'draft mut ImageDraft,
