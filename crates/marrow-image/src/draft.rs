@@ -18,12 +18,12 @@ use crate::durable_id::{
     DurableIndexShape, DurableProductIdentity, DurableValueShape, LedgerIdBytes,
     RootPlacementIdentity,
 };
-use crate::product::{
-    DurableProductClaim, ProductClaimConflict, ProductDeclaration, ProductDeclarationTable,
-    ProductRuntimeSurfaceClaim, RootOccurrence,
-};
 use crate::export_id::ExportId;
 use crate::instr::Instr;
+use crate::product::{
+    DurableProductClaim, ProductClaimConflict, ProductDeclaration, ProductDeclarationTable,
+    ProductEntryRecordClaim, RootOccurrence,
+};
 use crate::semantic::{SemanticPath, SemanticTarget};
 use crate::ty::{ImageType, Scalar};
 
@@ -374,8 +374,8 @@ pub enum ImageBuildError {
     /// graphs: two declarations wearing one identity.
     ProductGraphConflict,
     /// Two occurrences of one durable Product identity claim the same member/value graph
-    /// with a different runtime surface.
-    ProductSurfaceConflict,
+    /// with a different entry record.
+    ProductEntryRecordConflict,
     InvalidReference(&'static str),
 }
 
@@ -583,7 +583,7 @@ impl ImageDraft {
         let index = self.occurrences.len() as u16;
         match self
             .products
-            .admit(claim, ProductRuntimeSurfaceClaim::new(record))
+            .admit(claim, ProductEntryRecordClaim::new(record))
         {
             Ok(declaration) => self.occurrences.push(RootOccurrence::new(
                 declaration,

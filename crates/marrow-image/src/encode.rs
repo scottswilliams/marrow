@@ -8,7 +8,6 @@
 
 use crate::bounds;
 use crate::digest::{ImageId, image_id};
-use crate::product::ProductClaimConflict;
 use crate::draft::{
     CollectionTypeDef, ConstValue, DurableMemberDef, ImageBuildError, ImageDraft, KeyColumn,
 };
@@ -18,6 +17,7 @@ use crate::durable_id::{
     DurableRootShape, DurableValueShape,
 };
 use crate::instr::Instr;
+use crate::product::ProductClaimConflict;
 use crate::semantic::{SemanticPath, SemanticTarget};
 use crate::ty::ImageType;
 
@@ -115,7 +115,7 @@ impl ImageDraft {
         if let Some(conflict) = self.product_conflict() {
             return Err(match conflict {
                 ProductClaimConflict::Graph(_) => ImageBuildError::ProductGraphConflict,
-                ProductClaimConflict::Surface(_) => ImageBuildError::ProductSurfaceConflict,
+                ProductClaimConflict::EntryRecord(_) => ImageBuildError::ProductEntryRecordConflict,
             });
         }
         if self.root_occurrences().len() > bounds::MAX_ROOTS {

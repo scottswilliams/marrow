@@ -49,23 +49,23 @@ impl DurableProductClaim {
     }
 }
 
-/// The runtime surface one Product declaration binds: the materialized entry record its
+/// The runtime shape one Product declaration binds: the materialized entry record its
 /// roots read and write.
 ///
-/// A nested branch's surface — its placement, interned name, and entry record type — is
-/// carried by the declaration's own member graph ([`DurableMemberDef::Branch`]), which is
-/// already part of [`DurableProductClaim`] and compared with it. Those facts are not
-/// copied here: the root entry record is the one surface fact the member graph does not
+/// A nested branch's runtime facts — its placement, interned name, and entry record type
+/// — are carried by the declaration's own member graph ([`DurableMemberDef::Branch`]),
+/// which is already part of [`DurableProductClaim`] and compared with it. They are not
+/// copied here: the root entry record is the one such fact the member graph does not
 /// carry, because it belongs to the resource rather than to any one member.
 ///
 /// These facts are on the wire in the DURABLE section but are excluded from the durable
 /// contract-id preimage, so binding them adds no contract bytes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct ProductRuntimeSurfaceClaim {
+pub(crate) struct ProductEntryRecordClaim {
     root_entry_record: TypeId,
 }
 
-impl ProductRuntimeSurfaceClaim {
+impl ProductEntryRecordClaim {
     pub(crate) fn new(root_entry_record: TypeId) -> Self {
         Self { root_entry_record }
     }
@@ -73,14 +73,13 @@ impl ProductRuntimeSurfaceClaim {
     pub(crate) fn root_entry_record(&self) -> TypeId {
         self.root_entry_record
     }
-
 }
 
 /// One admitted Product declaration: its claim and the runtime surface bound with it.
 #[derive(Debug, Clone)]
 pub(crate) struct ProductDeclaration {
     claim: DurableProductClaim,
-    surface: ProductRuntimeSurfaceClaim,
+    surface: ProductEntryRecordClaim,
 }
 
 impl ProductDeclaration {
@@ -107,8 +106,8 @@ impl ProductDeclaration {
 pub(crate) enum ProductClaimConflict {
     /// The occurrence declares a different member/value graph.
     Graph(DurableProductIdentity),
-    /// The occurrence declares the same graph with a different runtime surface.
-    Surface(DurableProductIdentity),
+    /// The occurrence declares the same graph with a different entry record.
+    EntryRecord(DurableProductIdentity),
 }
 
 /// The flat table of durable Product declarations, keyed by Product ledger identity.
@@ -127,7 +126,7 @@ impl ProductDeclarationTable {
     pub(crate) fn admit(
         &mut self,
         claim: DurableProductClaim,
-        surface: ProductRuntimeSurfaceClaim,
+        surface: ProductEntryRecordClaim,
     ) -> Result<usize, ProductClaimConflict> {
         let identity = claim.identity();
         let Some(&row) = self.by_identity.get(&identity) else {
@@ -141,7 +140,7 @@ impl ProductDeclarationTable {
             return Err(ProductClaimConflict::Graph(identity));
         }
         if declared.surface != surface {
-            return Err(ProductClaimConflict::Surface(identity));
+            return Err(ProductClaimConflict::EntryRecord(identity));
         }
         Ok(row)
     }
@@ -150,10 +149,11 @@ impl ProductDeclarationTable {
         &self.rows[row]
     }
 
-    pub(crate) fn by_identity(&self, identity: DurableProductIdentity) -> Option<&ProductDeclaration> {
-        self.by_identity
-            .get(&identity)
-            .map(|row| &self.rows[*row])
+    pub(crate) fn by_identity(
+        &self,
+        identity: DurableProductIdentity,
+    ) -> Option<&ProductDeclaration> {
+        self.by_identity.get(&identity).map(|row| &self.rows[*row])
     }
 
     pub(crate) fn declarations(&self) -> &[ProductDeclaration] {

@@ -622,3 +622,284 @@ pub fn addA(id: int, t: string) {
         "both occurrences bind the declaration's one branch entry record"
     );
 }
+
+/// The identity ledger for the fitting byte-order corpus below.
+const BYTE_ORDER_IDS: &str = "marrow ids v0\n\
+     machine-written by marrow; do not edit\n\
+     id application . 0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a\n\
+     id product Alpha 0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d\n\
+     id field Alpha.a 0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e\n\
+     id root Alpha.notes 2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a\n\
+     id key Alpha.notes.noteId 2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b\n\
+     id field Alpha.notes.text 2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c\n\
+     id product Beta 3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d\n\
+     id field Beta.b 3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e\n\
+     id root Beta.marks 4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a\n\
+     id key Beta.marks.markId 4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b\n\
+     id field Beta.marks.tag 4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c\n\
+     id root x 0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b\n\
+     id key x.id 0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c\n\
+     id root y 1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b\n\
+     id key y.id 1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c\n\
+     high-water 0\n\
+     end\n";
+
+/// Two distinct Products with nested branches whose **resource declaration order** is the
+/// opposite of their **store occurrence order**: `Alpha` is declared first but `^y: Beta`
+/// is the first store.
+///
+/// A Product's branch entry record is materialized once, at that Product's first root in
+/// canonical store-traversal order. Keying it on resource declaration order instead would
+/// move the mint whenever the two orders differ, and every TypeId ordinal after it with
+/// it. This corpus fixes the whole image byte-exactly against the bytes the encoder
+/// produced before a Product declaration had a table of its own, so a later owner that
+/// moves the mint point fails here rather than silently re-numbering an accepted image.
+#[test]
+fn the_fitting_byte_order_corpus_is_byte_exact() {
+    let source = r#"resource Alpha {
+    required a: int
+    notes[noteId: int] {
+        required text: string
+    }
+}
+
+resource Beta {
+    required b: string
+    marks[markId: int] {
+        required tag: string
+    }
+}
+
+store ^y[id: int]: Beta
+store ^x[id: int]: Alpha
+
+pub fn putY(id: int, t: string) {
+    transaction {
+        ^y[id].marks[1].tag = t
+    }
+}
+
+pub fn putX(id: int, t: string) {
+    transaction {
+        ^x[id].notes[1].text = t
+    }
+}
+"#;
+    let image = verify(source, BYTE_ORDER_IDS);
+    assert_eq!(
+        image.image_id().to_hex(),
+        "779f79eeef2f855c74537a80f0aa2db9655945f7a85df604ad07fe79e36f2521",
+        "the whole image, and so every table in it, is byte-exact"
+    );
+    // `^y` is the first store, so `Beta.marks` mints its entry record before
+    // `Alpha.notes` even though `Alpha` is the first resource declared.
+    let beta_branch = image.roots()[0].branches()[0].record();
+    let alpha_branch = image.roots()[1].branches()[0].record();
+    assert!(
+        beta_branch < alpha_branch,
+        "the first store's Product mints its branch entry record first \
+         ({beta_branch} then {alpha_branch})"
+    );
+}
+
+/// Two occurrences of one Product execute independently: a write through `^a` is not
+/// observable through `^b`. One declaration is one shape, not one place.
+#[test]
+fn two_roots_over_one_product_execute_independently() {
+    let source = r#"resource R {
+    required v: int
+}
+
+store ^a[id: int]: R
+store ^b[id: int]: R
+
+pub fn setA(id: int, v: int) {
+    transaction {
+        ^a[id].v = v
+    }
+}
+
+pub fn setB(id: int, v: int) {
+    transaction {
+        ^b[id].v = v
+    }
+}
+
+pub fn readA(id: int): int? {
+    return ^a[id].v
+}
+
+pub fn readB(id: int): int? {
+    return ^b[id].v
+}
+"#;
+    let image = verify(source, SHARED_FLAT_IDS);
+    let mut attachment = attach(&image);
+    run(
+        &image,
+        &mut attachment,
+        "setA",
+        vec![Value::Int(1), Value::Int(7)],
+    );
+    assert_eq!(
+        run(&image, &mut attachment, "readA", vec![Value::Int(1)]),
+        some_int(7)
+    );
+    assert_eq!(
+        run(&image, &mut attachment, "readB", vec![Value::Int(1)]),
+        Some(Value::Optional(None)),
+        "a write through one occurrence is not observable through the other"
+    );
+    run(
+        &image,
+        &mut attachment,
+        "setB",
+        vec![Value::Int(1), Value::Int(9)],
+    );
+    assert_eq!(
+        run(&image, &mut attachment, "readB", vec![Value::Int(1)]),
+        some_int(9)
+    );
+    assert_eq!(
+        run(&image, &mut attachment, "readA", vec![Value::Int(1)]),
+        some_int(7),
+        "the other occurrence keeps its own value"
+    );
+}
+
+/// The nested-branch half of the same law: a branch entry written through one occurrence
+/// is read back through that occurrence and is absent through the other.
+#[test]
+fn two_roots_over_one_product_execute_their_own_branches() {
+    let source = r#"resource Book {
+    required title: string
+    notes[noteId: int] {
+        required text: string
+    }
+}
+
+store ^a[id: int]: Book
+store ^b[id: int]: Book
+
+pub fn addA(id: int, t: string) {
+    transaction {
+        ^a[id].notes[1].text = t
+    }
+}
+
+pub fn addB(id: int, t: string) {
+    transaction {
+        ^b[id].notes[1].text = t
+    }
+}
+
+pub fn readA(id: int): string? {
+    return ^a[id].notes[1].text
+}
+
+pub fn readB(id: int): string? {
+    return ^b[id].notes[1].text
+}
+"#;
+    let image = verify(source, SHARED_IDS);
+    let mut attachment = attach(&image);
+    run(
+        &image,
+        &mut attachment,
+        "addA",
+        vec![Value::Int(1), Value::Text("a".into())],
+    );
+    assert_eq!(
+        run(&image, &mut attachment, "readA", vec![Value::Int(1)]),
+        some_text("a")
+    );
+    assert_eq!(
+        run(&image, &mut attachment, "readB", vec![Value::Int(1)]),
+        Some(Value::Optional(None)),
+        "a branch entry written through one occurrence is not observable through the other"
+    );
+    run(
+        &image,
+        &mut attachment,
+        "addB",
+        vec![Value::Int(1), Value::Text("b".into())],
+    );
+    assert_eq!(
+        run(&image, &mut attachment, "readB", vec![Value::Int(1)]),
+        some_text("b")
+    );
+    assert_eq!(
+        run(&image, &mut attachment, "readA", vec![Value::Int(1)]),
+        some_text("a")
+    );
+}
+
+/// A whole branch-entry write through the second occurrence of a shared Product lands in
+/// that occurrence's own branch, not in the first occurrence's.
+#[test]
+fn a_whole_branch_entry_write_selects_its_own_occurrence() {
+    let source = r#"resource Book {
+    required title: string
+    notes[noteId: int] {
+        required text: string
+    }
+}
+
+store ^a[id: int]: Book
+store ^b[id: int]: Book
+
+pub fn putA(id: int, t: string) {
+    transaction {
+        ^a[id].notes[1] = Book.notes(text: t)
+    }
+}
+
+pub fn putB(id: int, t: string) {
+    transaction {
+        ^b[id].notes[1] = Book.notes(text: t)
+    }
+}
+
+pub fn readA(id: int): string? {
+    return ^a[id].notes[1].text
+}
+
+pub fn readB(id: int): string? {
+    return ^b[id].notes[1].text
+}
+"#;
+    let image = verify(source, SHARED_IDS);
+    let mut attachment = attach(&image);
+    // The branch entry record is a declaration fact shared by both occurrences, so a
+    // whole-entry write must be routed by the occurrence its place names, never by the
+    // record type it constructs.
+    run(
+        &image,
+        &mut attachment,
+        "putB",
+        vec![Value::Int(1), Value::Text("b".into())],
+    );
+    assert_eq!(
+        run(&image, &mut attachment, "readB", vec![Value::Int(1)]),
+        some_text("b")
+    );
+    assert_eq!(
+        run(&image, &mut attachment, "readA", vec![Value::Int(1)]),
+        Some(Value::Optional(None)),
+        "the write landed in the occurrence its place named, not the declaration's first"
+    );
+    run(
+        &image,
+        &mut attachment,
+        "putA",
+        vec![Value::Int(1), Value::Text("a".into())],
+    );
+    assert_eq!(
+        run(&image, &mut attachment, "readA", vec![Value::Int(1)]),
+        some_text("a")
+    );
+    assert_eq!(
+        run(&image, &mut attachment, "readB", vec![Value::Int(1)]),
+        some_text("b")
+    );
+}

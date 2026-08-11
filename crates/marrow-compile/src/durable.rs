@@ -49,7 +49,9 @@ use crate::decl::{
 use crate::demand::{DurableNaming, PathSigil};
 use crate::diag::{DiagnosticCollector, IdentityGap, SourceDiagnostic};
 use crate::scalar::ScalarType;
-use crate::types::{BuildError, GArg, GenericInvariant, TypeMetadataSession, TypeRegistry};
+use crate::types::{
+    BuildError, GArg, GenericInvariant, RecordInfo, TypeMetadataSession, TypeRegistry,
+};
 
 /// The application's fixed ledger anchor path: one local application per
 /// project, so the anchor is the project itself.
@@ -818,38 +820,9 @@ fn build_one(
     // a later root over the same Product references the declaration the draft already
     // holds, resolving no anchor a second time and — decisively — minting no second
     // entry record type for its nested branches.
-    let members: Vec<DurableMemberDef> = match draft
-        .product_members(DurableProductIdentity::minted(product))
-    {
+    let members = match draft.product_members(DurableProductIdentity::minted(product)) {
         Some(declared) => declared.to_vec(),
-        None => {
-            let mut members: Vec<DurableMemberDef> = record
-                .fields
-                .iter()
-                .map(|field| DurableMemberDef::Field {
-                    id: resolver.resolve(
-                        IdentityKind::Field,
-                        &format!("{}.{}", store.resource, field.name),
-                    ),
-                    required: field.required,
-                    value: resolver.build_value_shape(records, metadata, field.ty, 1),
-                })
-                .collect();
-            // A member the type registry refused is still a member this resource declares,
-            // so its identity anchor belongs to the resource's anchor set. It is resolved
-            // here and contributes no node to the member tree, whose typed invariant stays
-            // "built members only" — a refused member has no value shape to encode. Without
-            // it the anchor set narrows exactly where a program is already wrong, and the
-            // mint action that consumes these reports would write a ledger that is missing
-            // the anchor the corrected program needs.
-            for member in records.refused_members(&store.resource) {
-                resolver.resolve(IdentityKind::Field, &format!("{}.{member}", store.resource));
-            }
-            let groups_and_branches =
-                resolver.build_extras(draft, records, &resource.members, &store.resource);
-            members.extend(groups_and_branches);
-            members
-        }
+        None => resolver.build_product_graph(draft, records, metadata, store, resource, record),
     };
     if let Some(invariant) = resolver.invariant {
         return Err(invariant);
@@ -1446,6 +1419,55 @@ impl<'a> IdentityResolver<'a> {
                 LedgerIdBytes::from_bytes([0u8; 16])
             }
         }
+    }
+
+    /// The Product declaration's canonical member graph: the resource's top-level
+    /// fields (aligned with the materialized record) followed by its static `group`
+    /// namespaces and its keyed `branch` placements, each recursively holding its own
+    /// members. A top-level field's value shape is drawn from the closed acyclic durable
+    /// value set (a nominal scalar, a dense struct, a closed enum, or an `Option` of
+    /// one), the field anchoring the ledger id while nested product leaves are shape
+    /// bytes and each durable-reachable enum contributes its own sum/member identities.
+    ///
+    /// It is built once per Product, at that Product's first root in canonical
+    /// store-traversal order: a later root over the same Product reads the declaration
+    /// the draft already holds, resolving no anchor a second time and minting no second
+    /// entry record type for the Product's nested branches.
+    fn build_product_graph(
+        &mut self,
+        draft: &mut ImageDraft,
+        records: &TypeRegistry,
+        metadata: &mut TypeMetadataSession<'_>,
+        store: &StoreDecl,
+        resource: &ResourceDecl,
+        record: &RecordInfo,
+    ) -> Vec<DurableMemberDef> {
+        let mut members: Vec<DurableMemberDef> = record
+            .fields
+            .iter()
+            .map(|field| DurableMemberDef::Field {
+                id: self.resolve(
+                    IdentityKind::Field,
+                    &format!("{}.{}", store.resource, field.name),
+                ),
+                required: field.required,
+                value: self.build_value_shape(records, metadata, field.ty, 1),
+            })
+            .collect();
+        // A member the type registry refused is still a member this resource declares,
+        // so its identity anchor belongs to the resource's anchor set. It is resolved
+        // here and contributes no node to the member tree, whose typed invariant stays
+        // "built members only" — a refused member has no value shape to encode. Without
+        // it the anchor set narrows exactly where a program is already wrong, and the
+        // mint action that consumes these reports would write a ledger that is missing
+        // the anchor the corrected program needs.
+        for member in records.refused_members(&store.resource) {
+            self.resolve(IdentityKind::Field, &format!("{}.{member}", store.resource));
+        }
+        let groups_and_branches =
+            self.build_extras(draft, records, &resource.members, &store.resource);
+        members.extend(groups_and_branches);
+        members
     }
 
     /// Walk a resource's declared members, returning the durable member records for
