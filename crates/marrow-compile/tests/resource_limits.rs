@@ -1219,10 +1219,18 @@ const H_DURABLE_GRAPH_BYTES: u64 = 64 * 1024 * 1024;
 
 /// Prove the compiler-side equation closes at compile time. A representation change that
 /// breached the ceiling would fail the build here rather than at some later measurement.
-const _: () = assert!(
-    MAX_LIVE_DURABLE_GRAPH_BYTES <= H_DURABLE_GRAPH_BYTES,
-    "the compiler-side maximum-live durable contract graph exceeds its declared ceiling",
-);
+const _: () = {
+    assert!(
+        MAX_LIVE_DURABLE_GRAPH_BYTES <= H_DURABLE_GRAPH_BYTES,
+        "the compiler-side maximum-live durable contract graph exceeds its declared ceiling",
+    );
+    // And not trivially under: an accounting that had stopped charging its populations
+    // would satisfy the ceiling for the wrong reason.
+    assert!(
+        MAX_LIVE_DURABLE_GRAPH_BYTES > H_DURABLE_GRAPH_BYTES / 4,
+        "the compiler-side accounting no longer charges a meaningful fraction of its ceiling",
+    );
+};
 
 /// The maximum-live value arena the same drive holds, in bytes — **an exported term, not a
 /// bound this row asserts.**
@@ -1264,10 +1272,6 @@ fn the_compiler_side_maximum_live_graph_holds_its_accounted_figures() {
         MAX_LIVE_DURABLE_VALUE_ARENA_BYTES, 8_212_611_072,
         "the accounted durable value arena moved; it is the durable-value owner's term and \
          the implementation map publishes it"
-    );
-    assert!(
-        MAX_LIVE_DURABLE_GRAPH_BYTES <= H_DURABLE_GRAPH_BYTES,
-        "the compiler-side graph must close under its declared ceiling"
     );
 }
 

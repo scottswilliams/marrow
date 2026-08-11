@@ -29,7 +29,7 @@
 use marrow_image::{
     AdmittedGraphInputPlan, DeclarationMemberDef, DeclarationMemberShape, ExportId, FieldDef,
     FunctionDef, ImageDraft, ImageType, Instr, KeyColumn, LedgerIdBytes, RecordTypeDef,
-    RootOccurrenceDef, Scalar, SpanEntry, TypeId,
+    RootOccurrenceDef, Scalar, SpanEntry,
 };
 use marrow_verify::verify;
 

@@ -50,10 +50,18 @@ const H_VERIFIED_DURABLE_GRAPH_BYTES: u64 = 256 * 1024 * 1024;
 /// Prove the verifier-side equation closes at compile time. A representation or ceiling
 /// change that let a container-admitted image drive more live bytes than the host accepts
 /// fails the build here rather than at some later measurement.
-const _: () = assert!(
-    MAX_LIVE_VERIFIED_DURABLE_GRAPH_BYTES <= H_VERIFIED_DURABLE_GRAPH_BYTES,
-    "a container-admitted image can drive the verifier past its declared live ceiling",
-);
+const _: () = {
+    assert!(
+        MAX_LIVE_VERIFIED_DURABLE_GRAPH_BYTES <= H_VERIFIED_DURABLE_GRAPH_BYTES,
+        "a container-admitted image can drive the verifier past its declared live ceiling",
+    );
+    // And not trivially under by charging almost nothing: an accounting that had stopped
+    // charging its dominant term would satisfy the ceiling for the wrong reason.
+    assert!(
+        MAX_LIVE_VERIFIED_DURABLE_GRAPH_BYTES > H_VERIFIED_DURABLE_GRAPH_BYTES / 4,
+        "the verifier accounting no longer charges a meaningful fraction of its ceiling",
+    );
+};
 
 /// Decode the DURABLE table (design §C 0x03): up to `MAX_ROOTS` roots — preceded,
 /// when any root is present, by the application's 16-byte ledger id — then the operation
@@ -1721,7 +1729,7 @@ fn value_shape_matches(
 
 #[cfg(test)]
 mod capacity_tests {
-    use super::{H_VERIFIED_DURABLE_GRAPH_BYTES, MAX_LIVE_VERIFIED_DURABLE_GRAPH_BYTES};
+    use super::MAX_LIVE_VERIFIED_DURABLE_GRAPH_BYTES;
 
     /// The exact accounted figure, published in the implementation map beside the
     /// compiler-side one.
@@ -1736,13 +1744,5 @@ mod capacity_tests {
             "the accounted verifier-side live graph moved; re-derive the exported term and \
              update the implementation map with this pin"
         );
-    }
-
-    /// The ceiling is not trivially satisfied: a bound met by an empty accounting would
-    /// pass whatever the representation did.
-    #[test]
-    fn the_verifier_ceiling_is_a_meaningful_fraction() {
-        assert!(MAX_LIVE_VERIFIED_DURABLE_GRAPH_BYTES <= H_VERIFIED_DURABLE_GRAPH_BYTES);
-        assert!(MAX_LIVE_VERIFIED_DURABLE_GRAPH_BYTES > H_VERIFIED_DURABLE_GRAPH_BYTES / 4);
     }
 }
