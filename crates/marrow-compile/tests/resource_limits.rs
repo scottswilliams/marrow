@@ -517,6 +517,69 @@ fn over_wide_branch_key_reports_resource_limit() {
     assert_source_resource_limit(compile(&project(&source, Some(&ledger(&anchors)))));
 }
 
+// ---- Named source-precheck: a member tree nested past its depth bound.
+
+/// A resource whose durable member tree nests `branch` placements `branches` deep,
+/// with one stored field in the innermost body, and the identity ledger that shape
+/// declares.
+///
+/// Branches are the only source path to member depth: a nested `group` is refused as
+/// `check.unsupported` on this line, so a depth corpus built from groups would pass
+/// for the wrong reason. The innermost field sits one level below the innermost
+/// branch, so `branches` nested branches place a member at depth `branches + 1`.
+fn nested_branch_project(branches: usize) -> ProjectInput {
+    let mut source = String::from("module main\n\nresource R {\n    required t: string\n\n");
+    let mut anchors = vec![
+        "application .".into(),
+        "product R".into(),
+        "field R.t".into(),
+    ];
+    let mut path = String::from("R");
+    for level in 1..=branches {
+        let indent = "    ".repeat(level);
+        source.push_str(&format!("{indent}b{level}[k{level}: int] {{\n"));
+        path.push_str(&format!(".b{level}"));
+        anchors.push(format!("root {path}"));
+        anchors.push(format!("key {path}.k{level}"));
+    }
+    source.push_str(&format!(
+        "{}required v: int\n",
+        "    ".repeat(branches + 1)
+    ));
+    anchors.push(format!("field {path}.v"));
+    for level in (1..=branches).rev() {
+        source.push_str(&format!("{}}}\n", "    ".repeat(level)));
+    }
+    source.push_str("}\n\nstore ^r[id: int]: R\n\npub fn noop(): int {\n    return 0\n}\n");
+    anchors.push("root r".into());
+    anchors.push("key r.id".into());
+    project(&source, Some(&ledger(&anchors)))
+}
+
+/// The deepest member tree the bound admits: `MAX_DURABLE_DEPTH - 1` nested branches
+/// place their innermost field at exactly `MAX_DURABLE_DEPTH`.
+#[test]
+fn a_member_tree_at_the_depth_bound_still_compiles() {
+    let at_bound = marrow_image::bounds::MAX_DURABLE_DEPTH - 1;
+    let result = compile(&nested_branch_project(at_bound));
+    assert!(
+        result.is_ok(),
+        "a member at exactly the depth bound compiles, got {:?}",
+        result.err()
+    );
+}
+
+/// One member past `MAX_DURABLE_DEPTH` (16). The encoder's own depth recheck is the
+/// only owner of this bound today, so the refusal arrives as a locationless
+/// `DurableDepth` aggregate — no file, no line, no column — on both a fresh project
+/// and the normal committed state. It must be prechecked at the offending member,
+/// reporting `check.resource_limit` at a real span.
+#[test]
+fn one_member_past_the_depth_bound_reports_a_located_resource_limit() {
+    let past_bound = marrow_image::bounds::MAX_DURABLE_DEPTH;
+    assert_source_resource_limit(compile(&nested_branch_project(past_bound)));
+}
+
 // ---- Named source-precheck: an index projection past its component bound.
 
 /// A `unique` managed index projecting more than `MAX_INDEX_COMPONENTS` (72) leaves
