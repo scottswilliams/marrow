@@ -1830,3 +1830,200 @@ fn a_refused_struct_named_after_the_fill_is_still_steered() {
         messages(&diagnostics),
     );
 }
+
+// ---------------------------------------------------------------------------
+// Static named-type projections — the use positions
+//
+// The verdict filter reached the two registry name lookups but not the three
+// static projections beside them, which are what annotation resolution, signature
+// building, and body lowering actually read. An unfiltered projection answers a
+// refused struct or enum with its reserved-but-unfilled row: a *live empty type*.
+// Every use position below then reasons against that empty shape and fabricates a
+// statement about the source — or, worse, accepts it silently.
+// ---------------------------------------------------------------------------
+
+/// The refused value types these reds are written against: `Point` is refused for
+/// an optional struct field, `Color` for a nominal enum payload. Both keep a
+/// reserved row, and neither may answer a name.
+const REFUSED_STRUCT: &str = "struct Point {\n\
+                              \x20   x: int\n\
+                              \x20   p: int?\n\
+                              }\n";
+
+/// a refused struct named as a parameter type. The projection answered the
+/// reserved row, so the signature was built over a live empty struct and the whole
+/// program compiled with no diagnostic at all — the declaration's own cause never
+/// reached the reader.
+#[test]
+fn a_refused_struct_as_a_parameter_type_steers_to_its_cause() {
+    let diagnostics = diagnostics(&format!(
+        "module main\n\n\
+         {REFUSED_STRUCT}\n\
+         fn take(q: Point): int {{\n\
+         \x20   return 1\n\
+         }}\n\n\
+         pub fn make(): int {{\n\
+         \x20   return 2\n\
+         }}\n"
+    ));
+
+    assert_steers_to(
+        &diagnostics,
+        DeclarationNamespace::NamedType,
+        "check.unsupported",
+        RefusalReport::AtDeclaration,
+    );
+    assert_eq!(
+        rows(&diagnostics),
+        vec![
+            ("src/main.mw", "check.unsupported", 5, 8),
+            ("src/main.mw", "check.unsupported", 7, 12),
+        ],
+        "the struct field reports the cause and the parameter is steered to it: {:#?}",
+        messages(&diagnostics),
+    );
+}
+
+/// the same name as a return type. The empty struct is a real type to the
+/// checker, so the returned `int` was reported as the wrong type for `Point` —
+/// a statement about the return expression derived from the compiler's own
+/// unfilled row.
+#[test]
+fn a_refused_struct_as_a_return_type_steers_to_its_cause() {
+    let diagnostics = diagnostics(&format!(
+        "module main\n\n\
+         {REFUSED_STRUCT}\n\
+         pub fn make(): Point {{\n\
+         \x20   return 1\n\
+         }}\n"
+    ));
+
+    assert_steers_to(
+        &diagnostics,
+        DeclarationNamespace::NamedType,
+        "check.unsupported",
+        RefusalReport::AtDeclaration,
+    );
+    assert_eq!(
+        rows(&diagnostics),
+        vec![
+            ("src/main.mw", "check.unsupported", 5, 8),
+            ("src/main.mw", "check.unsupported", 7, 16),
+        ],
+        "the return annotation is steered, never described as a type the body \
+         failed to produce: {:#?}",
+        messages(&diagnostics),
+    );
+}
+
+/// the same name as a local binding's annotation — the third resolution entry
+/// into the same projection.
+#[test]
+fn a_refused_struct_as_a_local_annotation_steers_to_its_cause() {
+    let diagnostics = diagnostics(&format!(
+        "module main\n\n\
+         {REFUSED_STRUCT}\n\
+         pub fn make(): int {{\n\
+         \x20   const q: Point = 1\n\
+         \x20   return 2\n\
+         }}\n"
+    ));
+
+    assert_steers_to(
+        &diagnostics,
+        DeclarationNamespace::NamedType,
+        "check.unsupported",
+        RefusalReport::AtDeclaration,
+    );
+    assert_eq!(
+        rows(&diagnostics),
+        vec![
+            ("src/main.mw", "check.unsupported", 5, 8),
+            ("src/main.mw", "check.unsupported", 8, 14),
+        ],
+        "the annotation is steered to the struct's cause: {:#?}",
+        messages(&diagnostics),
+    );
+}
+
+/// a field read through a parameter of the refused struct. The reserved row
+/// carries no fields, so the read reported that `Point` has no field `x` — of a
+/// field declared four lines above and never diagnosed.
+#[test]
+fn a_field_read_on_a_refused_struct_is_not_a_missing_field() {
+    let diagnostics = diagnostics(&format!(
+        "module main\n\n\
+         {REFUSED_STRUCT}\n\
+         fn take(q: Point): int {{\n\
+         \x20   return q.x\n\
+         }}\n\n\
+         pub fn make(): int {{\n\
+         \x20   return 2\n\
+         }}\n"
+    ));
+
+    for row in &diagnostics {
+        assert!(
+            !row.message().contains("field `x`"),
+            "`x` is declared on `Point`; no row may say the struct has no such \
+             field: {:#?}",
+            messages(&diagnostics),
+        );
+    }
+    assert_eq!(
+        rows(&diagnostics),
+        vec![
+            ("src/main.mw", "check.unsupported", 5, 8),
+            ("src/main.mw", "check.unsupported", 7, 12),
+        ],
+        "the parameter is steered and its body reuses that cause: {:#?}",
+        messages(&diagnostics),
+    );
+}
+
+/// the enum sibling: a `match` over a parameter of a refused enum. The reserved
+/// row carries no members, so every arm was reported as naming a member the enum
+/// does not have, and the function was additionally reported as not returning on
+/// all paths — two fabrications from one unfilled row.
+#[test]
+fn a_match_on_a_refused_enum_is_not_a_set_of_unknown_members() {
+    let diagnostics = diagnostics(
+        "module main\n\n\
+         type Age: int in 0..=150\n\n\
+         enum Color {\n\
+         \x20   red\n\
+         \x20   blue(a: Age)\n\
+         }\n\n\
+         fn pick(c: Color): int {\n\
+         \x20   match c {\n\
+         \x20       red => {\n\
+         \x20           return 1\n\
+         \x20       }\n\
+         \x20       blue => {\n\
+         \x20           return 2\n\
+         \x20       }\n\
+         \x20   }\n\
+         }\n\n\
+         pub fn make(): int {\n\
+         \x20   return 2\n\
+         }\n",
+    );
+
+    for row in &diagnostics {
+        assert!(
+            !row.message().contains("`red`") && !row.message().contains("`blue`"),
+            "`red` and `blue` are declared members of `Color`; no arm may be \
+             reported as naming an unknown one: {:#?}",
+            messages(&diagnostics),
+        );
+    }
+    assert_eq!(
+        rows(&diagnostics),
+        vec![
+            ("src/main.mw", "check.unsupported", 7, 13),
+            ("src/main.mw", "check.unsupported", 10, 12),
+        ],
+        "the payload reports the cause and the parameter is steered to it: {:#?}",
+        messages(&diagnostics),
+    );
+}
