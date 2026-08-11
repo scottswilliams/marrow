@@ -45,13 +45,13 @@ pub(super) struct DurKey<'e> {
 /// A resolved durable place: the key-path that addresses its node and its target. The
 /// path columns are inline operand expressions or a source-local `place`'s
 /// pre-evaluated slots; the target is the whole entry or one field.
-pub(super) struct DurablePlace<'e> {
+pub(super) struct DurablePlace<'a, 'e> {
     keys: Vec<DurKey<'e>>,
-    target: DurTarget,
+    target: DurTarget<'a>,
     span: SourceSpan,
 }
 
-impl DurablePlace<'_> {
+impl DurablePlace<'_, '_> {
     /// The single root key slot when this place's whole key-path is one pre-evaluated
     /// `Bound` column. `None` for an inline key or any multi-column key path — a branch
     /// or a composite-key root. Used only by the whole-entry root upsert, which
@@ -83,29 +83,20 @@ impl DurablePlace<'_> {
     }
 }
 
-/// Whether a resolved durable entry addresses a store root or a keyed `branch` — its
-/// durable node kind. A named `place` records this at its binding from the canonical
-/// resolved durable node and resolves its fields by it: a root against its entry site, a
-/// branch against its materialized record. The kind is independent of the key-operand
-/// count — a composite-key root carries several key operands yet is still a root.
-#[derive(Clone, Copy)]
-pub(super) enum PlaceNodeKind {
-    Root,
-    Branch,
-}
-
 /// A source-local named `place`: a durable entry designation whose key columns were
 /// evaluated exactly once into `key_slots` at the binding. Whole-entry and field
 /// operations through the place read those slots rather than re-evaluating the key
-/// operands. `node_kind` records whether the place addresses a store root or a keyed
-/// branch — taken from the canonical resolved durable node — and drives field resolution
-/// independently of how many key slots the place carries.
-pub(super) struct PlaceLocal {
+/// operands.
+///
+/// The place retains the exact durable node it was bound against, so every later
+/// operation through it addresses that occurrence directly. A branch entry record and a
+/// resource spelling are Product *declaration* facts — one Product declaration may be
+/// projected by several roots — so neither can name the occurrence a place addresses;
+/// recovering the node from one of them answers with whichever root was declared first.
+pub(super) struct PlaceLocal<'a> {
     pub(super) name: String,
     pub(super) key_slots: Vec<(u16, ScalarType)>,
-    pub(super) entry_site: u16,
-    pub(super) record: TypeId,
-    pub(super) node_kind: PlaceNodeKind,
+    pub(super) node: DurNode<'a>,
 }
 
 /// A resolved source managed-index read `^root.index[keys]`: the index, the executable
@@ -118,7 +109,7 @@ pub(super) struct IndexRead<'a, 'e> {
     pub(super) keys: &'e [Expression],
 }
 
-impl PlaceLocal {
+impl PlaceLocal<'_> {
     /// This place's whole key-path as pre-evaluated slots (root-first) — the key-path a
     /// strict present-entry field set reads and a presence guard proves, for a root or a
     /// branch place uniformly.
@@ -142,15 +133,12 @@ impl PlaceLocal {
 /// A resolved durable target: the whole entry, one field, a whole root-level group, or one
 /// group leaf.
 #[derive(Clone, Copy)]
-enum DurTarget {
-    Entry {
-        entry_site: u16,
-        record: TypeId,
-        /// The node kind of the addressed entry — a store root or a keyed branch. A `place`
-        /// binding records it so its later field access resolves against the right owner
-        /// independently of the key-operand count; a whole-entry read/write/erase ignores it.
-        node_kind: PlaceNodeKind,
-    },
+enum DurTarget<'a> {
+    /// A whole durable entry, addressed through the exact durable node the resolver
+    /// walked to — a store root or a keyed branch. The node carries the occurrence's own
+    /// whole-payload site and its materialized record together, so neither has to be
+    /// resolved back into a node later.
+    Entry { node: DurNode<'a> },
     Field {
         site: u16,
         /// The field's value type (a scalar or a widened composite), from which the
@@ -204,16 +192,9 @@ struct DurFieldRef {
 }
 
 impl<'a> DurNode<'a> {
-    /// This node's durable kind, recorded on a `place` that binds it so later field access
-    /// resolves against the right owner without re-inspecting the address.
-    fn place_node_kind(&self) -> PlaceNodeKind {
-        match self {
-            DurNode::Root(_) => PlaceNodeKind::Root,
-            DurNode::Branch(_) => PlaceNodeKind::Branch,
-        }
-    }
-
-    fn entry_site(&self) -> u16 {
+    /// This node's whole-payload operation site. It is an occurrence fact: two roots
+    /// projecting one Product declaration each carry their own.
+    pub(super) fn entry_site(&self) -> u16 {
         match self {
             DurNode::Root(root) => root.entry_site,
             DurNode::Branch(branch) => branch.entry_site,
@@ -286,16 +267,14 @@ impl<'a> DurNode<'a> {
 /// entry (empty for a root family, `[root_key]` for a single-level branch family). The
 /// bounded traversal opcode pushes the ancestor path root-first, then the optional
 /// inclusive `from` key, and freezes the traversed layer's immediate keys.
-pub(super) struct TraversalTarget<'e> {
-    pub(super) entry_site: u16,
+pub(super) struct TraversalTarget<'a, 'e> {
+    /// The exact durable node of the traversed layer — a store root or a keyed branch.
+    /// It carries the layer's whole-entry site and the materialized record a two-binding
+    /// traversal's per-iteration address pin (`for k, p in …`) binds `p` over, and it is
+    /// the node that pin retains, so an iteration over one occurrence of a shared Product
+    /// declaration never resolves into another occurrence.
+    pub(super) node: DurNode<'a>,
     pub(super) key_ty: ScalarType,
-    /// The materialized record of the traversed family's entry — the shape a two-binding
-    /// traversal's per-iteration address pin (`for k, p in …`) binds `p` over.
-    pub(super) record: TypeId,
-    /// The node kind of the traversed layer — a store root or a keyed branch — carried onto
-    /// the per-iteration address pin so its field access resolves by node kind, not by the
-    /// ancestor-plus-key slot count.
-    pub(super) node_kind: PlaceNodeKind,
     pub(super) ancestor_keys: Vec<DurKey<'e>>,
     pub(super) span: SourceSpan,
 }
@@ -523,24 +502,8 @@ impl<'a> FnLowerer<'a> {
     }
 
     /// The most recent in-scope `place` binding named `name`, if any.
-    pub(super) fn lookup_place(&self, name: &str) -> Option<&PlaceLocal> {
+    pub(super) fn lookup_place(&self, name: &str) -> Option<&PlaceLocal<'a>> {
         self.places.iter().rev().find(|place| place.name == name)
-    }
-
-    /// The durable node a `place` addresses — its owning root for a root place, its branch
-    /// record's branch for a branch place — resolved by the place's recorded node kind. The
-    /// one owner that projects a `place` to its [`DurNode`], so field and branch resolution
-    /// through a place share the same navigation (`field`/`branch`, `no_field_message`/
-    /// `no_branch_message`). `None` only on a registry-inconsistent place. The node borrows
-    /// the registry (`'a`), not `&self`, so a diagnostic may still borrow `self` mutably.
-    pub(super) fn place_node(&self, place: &PlaceLocal) -> Option<DurNode<'a>> {
-        let durable: &'a DurableRegistry = self.durable;
-        match place.node_kind {
-            PlaceNodeKind::Root => durable
-                .root_by_entry_site(place.entry_site)
-                .map(DurNode::Root),
-            PlaceNodeKind::Branch => durable.branch_by_record(place.record).map(DurNode::Branch),
-        }
     }
 
     /// Record that the entry of the `place` addressed by `key_path` (its whole key-path
@@ -777,7 +740,7 @@ impl<'a> FnLowerer<'a> {
                 let [name] = &segments[..] else {
                     return None;
                 };
-                self.place_node(self.lookup_place(name.text())?)
+                Some(self.lookup_place(name.text())?.node)
             }
             Expression::Keyed { base, .. } => {
                 let Expression::Field {
@@ -824,7 +787,7 @@ impl<'a> FnLowerer<'a> {
                 };
                 let place = self.lookup_place(name.text())?;
                 let keys = place.bound_keys();
-                let node = self.place_node(place)?;
+                let node = place.node;
                 Some((keys, node))
             }
             Expression::Keyed {
@@ -887,18 +850,14 @@ impl<'a> FnLowerer<'a> {
     /// the place's node exactly as the inline forms resolve against the store root, so a
     /// composed operation seals the identical operation site. A missing field or branch is a
     /// precise diagnostic.
-    fn resolve_place_composed<'e>(&mut self, expr: &'e Expression) -> Option<DurablePlace<'e>> {
+    fn resolve_place_composed<'e>(&mut self, expr: &'e Expression) -> Option<DurablePlace<'a, 'e>> {
         match expr {
             // A bare place name, or a place extended by branch hops: a whole entry.
             Expression::Name { span, .. } | Expression::Keyed { span, .. } => {
                 let (keys, node) = self.resolve_place_entry_node(expr)?;
                 Some(DurablePlace {
                     keys,
-                    target: DurTarget::Entry {
-                        entry_site: node.entry_site(),
-                        record: node.record(),
-                        node_kind: node.place_node_kind(),
-                    },
+                    target: DurTarget::Entry { node },
                     span: *span,
                 })
             }
@@ -1196,12 +1155,7 @@ impl<'a> FnLowerer<'a> {
         }
         let place = self.resolve_durable(place_expr)?;
         let span = place.span;
-        let DurTarget::Entry {
-            entry_site,
-            record,
-            node_kind,
-        } = place.target
-        else {
+        let DurTarget::Entry { node } = place.target else {
             self.fail(SourceDiagnostic::at(
                 Code::CheckType.as_str(),
                 self.file,
@@ -1246,9 +1200,7 @@ impl<'a> FnLowerer<'a> {
         self.places.push(PlaceLocal {
             name: name.to_string(),
             key_slots,
-            entry_site,
-            record,
-            node_kind,
+            node,
         });
         Some(())
     }
@@ -1256,7 +1208,10 @@ impl<'a> FnLowerer<'a> {
     /// Resolve a durable place against the store root, reporting a diagnostic on a
     /// bad root name, key arity, or field name. The returned place holds no borrow of
     /// the registry.
-    pub(super) fn resolve_durable<'e>(&mut self, expr: &'e Expression) -> Option<DurablePlace<'e>> {
+    pub(super) fn resolve_durable<'e>(
+        &mut self,
+        expr: &'e Expression,
+    ) -> Option<DurablePlace<'a, 'e>> {
         // A place-rooted composed address resolves through the place's pre-evaluated key
         // columns; an inline `^root…` address resolves against the store root below.
         if self.is_place_rooted(expr) {
@@ -1273,11 +1228,7 @@ impl<'a> FnLowerer<'a> {
                 let (keys, node) = self.resolve_entry_address(root, expr)?;
                 Some(DurablePlace {
                     keys,
-                    target: DurTarget::Entry {
-                        entry_site: node.entry_site(),
-                        record: node.record(),
-                        node_kind: node.place_node_kind(),
-                    },
+                    target: DurTarget::Entry { node },
                     span: *span,
                 })
             }
@@ -1522,12 +1473,10 @@ impl<'a> FnLowerer<'a> {
     pub(super) fn lower_durable_read(&mut self, place: DurablePlace) -> Option<LTy> {
         self.emit_key_path(&place.keys, place.span)?;
         Some(match place.target {
-            DurTarget::Entry {
-                entry_site, record, ..
-            } => {
-                self.push(Instr::DurReadEntry(entry_site), place.span);
+            DurTarget::Entry { node } => {
+                self.push(Instr::DurReadEntry(node.entry_site()), place.span);
                 LTy::Record {
-                    ty: record,
+                    ty: node.record(),
                     optional: true,
                 }
             }
@@ -1623,7 +1572,7 @@ impl<'a> FnLowerer<'a> {
         if is_family {
             let target = self.resolve_traversal_place(&arg.value)?;
             self.emit_key_path(&target.ancestor_keys, target.span)?;
-            self.push(Instr::DurFamilyExists(target.entry_site), span);
+            self.push(Instr::DurFamilyExists(target.node.entry_site()), span);
             return Some(LTy::bare_scalar(ScalarType::Bool));
         }
         // A specific addressed cell (an entry or a field) probes that one cell's presence.
@@ -1635,7 +1584,7 @@ impl<'a> FnLowerer<'a> {
             let place = self.resolve_durable(&arg.value)?;
             self.emit_key_path(&place.keys, place.span)?;
             let site = match place.target {
-                DurTarget::Entry { entry_site, .. } => entry_site,
+                DurTarget::Entry { node } => node.entry_site(),
                 DurTarget::Field { site, .. } => site,
                 // A group is markerless — its presence is the entry's presence — so a
                 // group-cell presence probe has no distinct meaning yet; a group leaf has no
@@ -2730,12 +2679,16 @@ impl<'a> FnLowerer<'a> {
     /// field set.
     pub(super) fn lower_durable_assign(&mut self, place: DurablePlace, value: &Expression) {
         match place.target {
-            DurTarget::Entry {
-                entry_site, record, ..
-            } => {
+            DurTarget::Entry { node } => {
                 let root_slot = place.root_bound_slot();
                 if self
-                    .lower_upsert(&place.keys, entry_site, record, value, place.span)
+                    .lower_upsert(
+                        &place.keys,
+                        node.entry_site(),
+                        node.record(),
+                        value,
+                        place.span,
+                    )
                     .is_some()
                     && let Some(slot) = root_slot
                 {
@@ -2992,8 +2945,8 @@ impl<'a> FnLowerer<'a> {
             return;
         }
         match place.target {
-            DurTarget::Entry { entry_site, .. } => {
-                self.push(Instr::DurEraseEntry(entry_site), place.span);
+            DurTarget::Entry { node } => {
+                self.push(Instr::DurEraseEntry(node.entry_site()), place.span);
                 // The entry's payload is gone; a later sparse set through the same place
                 // must not assume presence.
                 if let Some(path) = &key_path {

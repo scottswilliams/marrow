@@ -370,7 +370,7 @@ pub(crate) struct FnLowerer<'a> {
     /// bad initializer from spawning an `is not in scope` report at every later use.
     poisoned_bindings: BTreeSet<String>,
     /// In-scope source-local named `place` bindings, scoped like `locals`.
-    places: Vec<PlaceLocal>,
+    places: Vec<PlaceLocal<'a>>,
     /// The key-paths of `place` bindings a presence fact currently dominates: the
     /// containing entry is known present here, so a sparse-field set through the
     /// place lowers to the strict present-entry form. Each fact is the place's whole

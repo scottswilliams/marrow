@@ -903,3 +903,175 @@ pub fn readB(id: int): string? {
         some_text("b")
     );
 }
+
+/// The ledger for the nested-branch shared-Product project: one Product row set for
+/// `Book`, its `notes` branch and that branch's own `tags` branch, against two
+/// occurrence-scoped `root`/`key` pairs.
+const SHARED_NESTED_IDS: &str = "marrow ids v0\n\
+     machine-written by marrow; do not edit\n\
+     id application . 0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a\n\
+     id product Book 0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d\n\
+     id field Book.title 0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e\n\
+     id root Book.notes 2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a\n\
+     id key Book.notes.noteId 2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b\n\
+     id field Book.notes.text 2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c\n\
+     id root Book.notes.tags 3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a\n\
+     id key Book.notes.tags.tagId 3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b\n\
+     id field Book.notes.tags.weight 3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c\n\
+     id root a 0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b\n\
+     id key a.id 0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c\n\
+     id root b 1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b\n\
+     id key b.id 1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c\n\
+     high-water 0\n\
+     end\n";
+
+/// A `Book` with a `notes` branch that itself holds a `tags` branch, projected by two
+/// roots. Every export addresses `^b` through a `place` bound to `^b`'s branch entry, so
+/// the branch's own materialized record type — a Product declaration fact both
+/// occurrences share — is never enough to decide which root an operation lands on.
+const SHARED_NESTED_SOURCE: &str = r#"resource Book {
+    required title: string
+    notes[noteId: int] {
+        required text: string
+        tags[tagId: int] {
+            required weight: int
+        }
+    }
+}
+
+store ^a[id: int]: Book
+store ^b[id: int]: Book
+
+pub fn placeSetTextB(id: int, n: int, t: string) {
+    transaction {
+        place p = ^b[id].notes[n]
+        p.text = t
+    }
+}
+
+pub fn placeSetTextA(id: int, n: int, t: string) {
+    transaction {
+        place p = ^a[id].notes[n]
+        p.text = t
+    }
+}
+
+pub fn placeAddTagB(id: int, n: int, g: int, w: int) {
+    transaction {
+        place p = ^b[id].notes[n]
+        p.tags[g] = Book.notes.tags(weight: w)
+    }
+}
+
+pub fn textA(id: int, n: int): string? {
+    return ^a[id].notes[n].text
+}
+
+pub fn textB(id: int, n: int): string? {
+    return ^b[id].notes[n].text
+}
+
+pub fn tagWeightA(id: int, n: int, g: int): int? {
+    return ^a[id].notes[n].tags[g].weight
+}
+
+pub fn tagWeightB(id: int, n: int, g: int): int? {
+    return ^b[id].notes[n].tags[g].weight
+}
+"#;
+
+/// A `place` bound to a branch entry of the **second** occurrence of a shared Product
+/// addresses that occurrence. A branch's materialized entry record is a declaration fact
+/// — one record for the Product however many roots project it — so recovering the
+/// addressed branch from that record type answers with whichever occurrence was declared
+/// first. A field write through the place must land in the root the place named.
+#[test]
+fn a_place_bound_branch_addresses_its_own_occurrence() {
+    let image = verify(SHARED_NESTED_SOURCE, SHARED_NESTED_IDS);
+    let mut attachment = attach(&image);
+    run(
+        &image,
+        &mut attachment,
+        "placeSetTextB",
+        vec![Value::Int(1), Value::Int(2), Value::Text("b".into())],
+    );
+    assert_eq!(
+        run(
+            &image,
+            &mut attachment,
+            "textB",
+            vec![Value::Int(1), Value::Int(2)]
+        ),
+        some_text("b"),
+        "the write landed in the occurrence the place named"
+    );
+    assert_eq!(
+        run(
+            &image,
+            &mut attachment,
+            "textA",
+            vec![Value::Int(1), Value::Int(2)]
+        ),
+        Some(Value::Optional(None)),
+        "and not in the declaration's first occurrence"
+    );
+    run(
+        &image,
+        &mut attachment,
+        "placeSetTextA",
+        vec![Value::Int(1), Value::Int(2), Value::Text("a".into())],
+    );
+    assert_eq!(
+        run(
+            &image,
+            &mut attachment,
+            "textA",
+            vec![Value::Int(1), Value::Int(2)]
+        ),
+        some_text("a")
+    );
+    assert_eq!(
+        run(
+            &image,
+            &mut attachment,
+            "textB",
+            vec![Value::Int(1), Value::Int(2)]
+        ),
+        some_text("b"),
+        "neither occurrence's branch entry aliases the other's"
+    );
+}
+
+/// The same law one level deeper: a nested branch reached *through* a place bound to the
+/// second occurrence's branch entry addresses that occurrence's nested branch.
+#[test]
+fn a_nested_branch_through_a_place_addresses_its_own_occurrence() {
+    let image = verify(SHARED_NESTED_SOURCE, SHARED_NESTED_IDS);
+    let mut attachment = attach(&image);
+    run(
+        &image,
+        &mut attachment,
+        "placeAddTagB",
+        vec![Value::Int(1), Value::Int(2), Value::Int(3), Value::Int(11)],
+    );
+    assert_eq!(
+        run(
+            &image,
+            &mut attachment,
+            "tagWeightB",
+            vec![Value::Int(1), Value::Int(2), Value::Int(3)]
+        ),
+        some_int(11),
+        "the nested-branch write landed in the occurrence the place named"
+    );
+    assert_eq!(
+        run(
+            &image,
+            &mut attachment,
+            "tagWeightA",
+            vec![Value::Int(1), Value::Int(2), Value::Int(3)]
+        ),
+        Some(Value::Optional(None)),
+        "and not in the declaration's first occurrence"
+    );
+}

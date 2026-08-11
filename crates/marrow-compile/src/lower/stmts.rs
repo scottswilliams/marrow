@@ -1674,7 +1674,7 @@ impl<'a> FnLowerer<'a> {
         let [name] = &segments[..] else {
             return None;
         };
-        self.place_node(self.lookup_place(name.text())?)
+        Some(self.lookup_place(name.text())?.node)
     }
 
     /// The durable node an entry-address expression addresses, resolved against the named
@@ -1715,18 +1715,14 @@ impl<'a> FnLowerer<'a> {
     pub(super) fn resolve_traversal_place<'e>(
         &mut self,
         iterable: &'e Expression,
-    ) -> Option<TraversalTarget<'e>> {
+    ) -> Option<TraversalTarget<'a, 'e>> {
         match iterable {
             Expression::SavedRoot { name, span } => {
                 let root = self.resolve_root(name, *span)?;
-                let entry_site = root.entry_site;
-                let record = root.record;
                 let key_ty = self.single_traversal_column(&root.key, *span)?;
                 Some(TraversalTarget {
-                    entry_site,
+                    node: DurNode::Root(root),
                     key_ty,
-                    record,
-                    node_kind: PlaceNodeKind::Root,
                     ancestor_keys: Vec::new(),
                     span: *span,
                 })
@@ -1765,14 +1761,10 @@ impl<'a> FnLowerer<'a> {
                     ));
                     return None;
                 };
-                let entry_site = layer.entry_site;
-                let record = layer.record;
                 let key_ty = self.single_traversal_column(&layer.key, *span)?;
                 Some(TraversalTarget {
-                    entry_site,
+                    node: DurNode::Branch(layer),
                     key_ty,
-                    record,
-                    node_kind: PlaceNodeKind::Branch,
                     ancestor_keys,
                     span: *span,
                 })
@@ -1796,7 +1788,7 @@ impl<'a> FnLowerer<'a> {
         layer_name: &str,
         layer_span: SourceSpan,
         span: SourceSpan,
-    ) -> Option<TraversalTarget<'e>> {
+    ) -> Option<TraversalTarget<'a, 'e>> {
         let Expression::Name { segments, .. } = place_base else {
             return None;
         };
@@ -1812,7 +1804,7 @@ impl<'a> FnLowerer<'a> {
         // The traversed branch is declared beneath the place's node — the same projection a
         // place field access uses. The node borrows the registry (`'a`), not `&self`, so a
         // diagnostic may still borrow `self` mutably.
-        let node = self.place_node(place)?;
+        let node = place.node;
         let Some(branch) = node.branch(layer_name) else {
             self.fail(SourceDiagnostic::at(
                 Code::CheckType.as_str(),
@@ -1822,14 +1814,10 @@ impl<'a> FnLowerer<'a> {
             ));
             return None;
         };
-        let branch_entry_site = branch.entry_site;
-        let branch_record = branch.record;
         let key_ty = self.single_traversal_column(&branch.key, span)?;
         Some(TraversalTarget {
-            entry_site: branch_entry_site,
+            node: DurNode::Branch(branch),
             key_ty,
-            record: branch_record,
-            node_kind: PlaceNodeKind::Branch,
             ancestor_keys,
             span,
         })
@@ -1865,7 +1853,7 @@ impl<'a> FnLowerer<'a> {
     fn lower_bounded_traversal(
         &mut self,
         binding: &ForBinding,
-        target: TraversalTarget,
+        target: TraversalTarget<'a, '_>,
         bound: Option<&TraversalBound>,
         body: &Block,
         span: SourceSpan,
@@ -1986,7 +1974,7 @@ impl<'a> FnLowerer<'a> {
         }
         self.push(
             Instr::DurIterateBounded {
-                site: target.entry_site,
+                site: target.node.entry_site(),
                 limit,
                 from: has_from,
                 list_ty,
@@ -2006,9 +1994,7 @@ impl<'a> FnLowerer<'a> {
         // A positional walk over the frozen `List[K]` binds `k` per position.
         // `continue` advances to the loop top; a body `break`/`return` skips past
         // the `on more` block.
-        let entry_site = target.entry_site;
-        let record = target.record;
-        let node_kind = target.node_kind;
+        let node = target.node;
         let key_name = var.name.clone();
         let place_name = place_var.map(|name| name.name.clone());
         let break_jumps = match self.lower_positional_walk(
@@ -2046,9 +2032,7 @@ impl<'a> FnLowerer<'a> {
                     lower.places.push(PlaceLocal {
                         name: place_name,
                         key_slots,
-                        entry_site,
-                        record,
-                        node_kind,
+                        node,
                     });
                 }
                 Some(())

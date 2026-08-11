@@ -422,17 +422,6 @@ impl DurableRegistry {
         }
     }
 
-    /// The executable flat keyed root whose whole-payload entry site is `entry_site`, if
-    /// any — the owner a source-local root `place` resolves its fields against. Each root
-    /// has a distinct entry site, so at most one matches.
-    ///
-    /// Structurally unreachable for a refused store: an entry site is minted while a
-    /// store's graph is admitted, so no refused declaration has one and a `Refused`
-    /// arm here would have no producer.
-    pub(crate) fn root_by_entry_site(&self, entry_site: u16) -> Option<&DurableRoot> {
-        self.roots.iter().find(|root| root.entry_site == entry_site)
-    }
-
     /// The executable root whose declaration-ordered RootId is `root_id` — the root an
     /// entry identity `Id(^root)` carries, so a `place` bound to an identity operand can
     /// recover the root's ordered key scalars for the columns the identity spreads into.
