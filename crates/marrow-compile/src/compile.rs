@@ -189,7 +189,6 @@ pub enum ResourceLimitKind {
     Enums,
     Collections,
     Roots,
-    DurableMembers,
     Sites,
     Functions,
     Exports,
@@ -203,14 +202,6 @@ pub enum ResourceLimitKind {
     /// One function's encoded bytecode over the per-function byte bound. Known only
     /// after lowering.
     CodeBytes,
-    /// A managed index's fully expanded projection over the component bound through a
-    /// path the source precheck does not cover (a nonunique index whose appended
-    /// identity keys carry the total past the bound).
-    IndexComponents,
-    /// A durable member tree nested past the depth bound. The exact image-side depth
-    /// accounting is owned by the encoder, so the outcome is reported as a locationless
-    /// resource limit rather than a divergent source count.
-    DurableDepth,
     /// The ordered diagnostic set grew past the count bound, so the incomplete
     /// collection was discarded rather than surfaced as a truncated result.
     DiagnosticCount,
@@ -247,7 +238,6 @@ impl ResourceLimitKind {
             ResourceLimitKind::Enums => "Enums",
             ResourceLimitKind::Collections => "Collections",
             ResourceLimitKind::Roots => "Roots",
-            ResourceLimitKind::DurableMembers => "DurableMembers",
             ResourceLimitKind::Sites => "Sites",
             ResourceLimitKind::Functions => "Functions",
             ResourceLimitKind::Exports => "Exports",
@@ -255,8 +245,6 @@ impl ResourceLimitKind {
             ResourceLimitKind::ImageBytes => "ImageBytes",
             ResourceLimitKind::StringBytes => "StringBytes",
             ResourceLimitKind::CodeBytes => "CodeBytes",
-            ResourceLimitKind::IndexComponents => "IndexComponents",
-            ResourceLimitKind::DurableDepth => "DurableDepth",
             ResourceLimitKind::DiagnosticCount => "DiagnosticCount",
             ResourceLimitKind::DiagnosticBytes => "DiagnosticBytes",
             ResourceLimitKind::ProjectFiles => "ProjectFiles",
@@ -279,7 +267,6 @@ impl ResourceLimitKind {
             ResourceLimitKind::Enums => "the enum table is full",
             ResourceLimitKind::Collections => "the collection type table is full",
             ResourceLimitKind::Roots => "the durable root table is full",
-            ResourceLimitKind::DurableMembers => "the durable member table is full",
             ResourceLimitKind::Sites => "the effect site table is full",
             ResourceLimitKind::Functions => "the function table is full",
             ResourceLimitKind::Exports => "the export table is full",
@@ -287,8 +274,6 @@ impl ResourceLimitKind {
             ResourceLimitKind::ImageBytes => "the program image is too large",
             ResourceLimitKind::StringBytes => "one text value is too large",
             ResourceLimitKind::CodeBytes => "one function's compiled code is too large",
-            ResourceLimitKind::IndexComponents => "one index projects too many components",
-            ResourceLimitKind::DurableDepth => "the durable member tree is nested too deeply",
             ResourceLimitKind::DiagnosticCount => "too many diagnostics to retain",
             ResourceLimitKind::DiagnosticBytes => "the diagnostics hold too much text to retain",
             ResourceLimitKind::ProjectFiles => "the project has too many source files",
@@ -470,10 +455,6 @@ fn image_build_outcome(error: ImageBuildError) -> ImagePolicyOutcome {
             aggregate(ResourceLimitKind::Collections, bounds::MAX_COLLECTIONS)
         }
         ImageBuildError::TooManyRoots => aggregate(ResourceLimitKind::Roots, bounds::MAX_ROOTS),
-        ImageBuildError::TooManyDurableMembers => aggregate(
-            ResourceLimitKind::DurableMembers,
-            bounds::MAX_DURABLE_MEMBERS,
-        ),
         ImageBuildError::TooManySites => aggregate(ResourceLimitKind::Sites, bounds::MAX_SITES),
         ImageBuildError::TooManyFunctions => {
             aggregate(ResourceLimitKind::Functions, bounds::MAX_FUNCTIONS)
@@ -496,18 +477,21 @@ fn image_build_outcome(error: ImageBuildError) -> ImagePolicyOutcome {
         ImageBuildError::CodeTooLong => {
             aggregate(ResourceLimitKind::CodeBytes, bounds::MAX_CODE_BYTES)
         }
-        ImageBuildError::TooManyIndexComponents => aggregate(
-            ResourceLimitKind::IndexComponents,
-            bounds::MAX_INDEX_COMPONENTS,
-        ),
-        ImageBuildError::DurableTreeTooDeep => {
-            aggregate(ResourceLimitKind::DurableDepth, bounds::MAX_DURABLE_DEPTH)
-        }
         // Per-construct bounds a source precheck refuses before the draft is built, so
         // an encode-time occurrence is a defense-in-depth producer defect; and
         // producer-state contradictions unreachable from a coherent compiler. Both are
         // opaque invariants.
+        //
+        // The three durable-structural bounds are here for the same reason as the rest,
+        // by three different arguments. Member depth and index components are refused at
+        // their offending construct while the durable graph is walked. Per-Product member
+        // count is bounded by the identity ledger a level above: every admitted member
+        // holds a live ledger anchor, and the ledger's own row bound sits below the
+        // member bound, so a coherent compiler cannot present an over-count graph.
         ImageBuildError::TooManyFields
+        | ImageBuildError::TooManyDurableMembers
+        | ImageBuildError::DurableTreeTooDeep
+        | ImageBuildError::TooManyIndexComponents
         | ImageBuildError::TooManyStructLeaves
         | ImageBuildError::TooManyVariants
         | ImageBuildError::TooManyPayloadFields
@@ -1164,8 +1148,8 @@ fn drive(project: &ProjectInput, mode: TestMode) -> Result<Driven, CompileResour
     // image structure is built. These counts are exact source properties — a record's
     // top-level field width and a function's parameter arity — so the check runs on the
     // parse tree ahead of the first draft mutation. Durable member-tree nesting depth is
-    // not checked here: its exact accounting is the encoder's, and it surfaces as a
-    // locationless `DurableDepth` resource limit rather than a divergent source count.
+    // not checked here: it is a property of a resource's declared member tree, so the
+    // durable graph builder refuses it at the offending member while it walks that tree.
     let mut structural = DiagnosticCollector::new();
     check_structural_resource_bounds(&clean, &mut structural);
 
@@ -3402,7 +3386,6 @@ mod tests {
             (Enums, "Enums"),
             (Collections, "Collections"),
             (Roots, "Roots"),
-            (DurableMembers, "DurableMembers"),
             (Sites, "Sites"),
             (Functions, "Functions"),
             (Exports, "Exports"),
@@ -3410,8 +3393,6 @@ mod tests {
             (ImageBytes, "ImageBytes"),
             (StringBytes, "StringBytes"),
             (CodeBytes, "CodeBytes"),
-            (IndexComponents, "IndexComponents"),
-            (DurableDepth, "DurableDepth"),
             (DiagnosticCount, "DiagnosticCount"),
             (DiagnosticBytes, "DiagnosticBytes"),
             (ProjectFiles, "ProjectFiles"),

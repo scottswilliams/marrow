@@ -1856,23 +1856,19 @@ impl<'a> IdentityResolver<'a> {
         }
         self.build_extras(
             &mut nodes,
-            None,
-            1,
+            MemberCursor::top(&store.resource),
             draft,
             records,
             &resource.members,
-            &store.resource,
         );
         declaration_commands(nodes)
     }
 
     /// Walk a resource's declared members in source order, appending one
     /// [`DeclarationDraftNode`] per static `group` namespace and keyed `branch` placement
-    /// below `parent` — its stored fields are appended by the caller. `depth` is the
-    /// nesting level of the nodes appended here, 1 at the top level. `container` is the
-    /// anchor path prefix — the resource name at the top level, extended by each group or
-    /// branch name as the walk descends. A keyed scalar leaf or a non-scalar field inside
-    /// a group or branch is a precise `check.unsupported` rejection.
+    /// at `cursor` — their stored fields are appended by the caller. A keyed scalar leaf
+    /// or a non-scalar field inside a group or branch is a precise `check.unsupported`
+    /// rejection.
     ///
     /// The walk is deliberately one pass in source order: identity resolution, string
     /// interning, and entry-record minting are order-sensitive side effects (a branch's
@@ -1882,18 +1878,16 @@ impl<'a> IdentityResolver<'a> {
     fn build_extras(
         &mut self,
         nodes: &mut Vec<DeclarationDraftNode>,
-        parent: Option<usize>,
-        depth: usize,
+        cursor: MemberCursor<'_>,
         draft: &mut ImageDraft,
         records: &TypeRegistry,
         members: &[ResourceMember],
-        container: &str,
     ) {
         for member in members {
             let ResourceMember::Group(group) = member else {
                 continue;
             };
-            let path = format!("{container}.{}", group.name);
+            let path = format!("{}.{}", cursor.container, group.name);
             if group.keys.is_empty() {
                 // A `group`: an unkeyed static field-path namespace. Its direct fields
                 // flatten into the containing resource's namespace, so it mints no
@@ -1902,11 +1896,11 @@ impl<'a> IdentityResolver<'a> {
                 self.name_step(id, PathSigil::Child, &group.name);
                 let at = nodes.len();
                 nodes.push(DeclarationDraftNode::declared(
-                    parent,
+                    cursor.parent,
                     DeclarationWireClass::Group,
                     DeclarationMemberShape::Group { id },
                 ));
-                self.build_member_tree(nodes, at, depth, draft, records, group, &path);
+                self.build_member_tree(nodes, cursor.below(at, &path), draft, records, group);
             } else {
                 // A keyed `branch`: a distinct keyed placement, like a root. Its entry
                 // is a record of its own direct scalar fields; materialize that record
@@ -1923,11 +1917,11 @@ impl<'a> IdentityResolver<'a> {
                 // from them, so the shape is completed once the walk returns.
                 let at = nodes.len();
                 nodes.push(DeclarationDraftNode::reserved(
-                    parent,
+                    cursor.parent,
                     DeclarationWireClass::Branch,
                 ));
                 let record_fields =
-                    self.build_member_tree(nodes, at, depth, draft, records, group, &path);
+                    self.build_member_tree(nodes, cursor.below(at, &path), draft, records, group);
                 let record_name = draft.intern_string(&path);
                 let record = draft.add_record_type(RecordTypeDef {
                     name: record_name,
@@ -1982,10 +1976,11 @@ impl<'a> IdentityResolver<'a> {
             .collect()
     }
 
-    /// Append the members of one group or branch body below the node at `at`, which sits
-    /// at nesting level `depth`: its stored scalar fields, then its nested groups and
-    /// branches, all one level deeper. Field anchors are `<path>.<field>`. Returns the
-    /// branch entry record's field layout, in the same order as the appended field nodes.
+    /// Append the members of one group or branch body at `cursor`, which already names
+    /// that body's own node, nesting level, and anchor path: its stored scalar fields,
+    /// then its nested groups and branches. Field anchors are `<path>.<field>`. Returns
+    /// the branch entry record's field layout, in the same order as the appended field
+    /// nodes.
     ///
     /// A body one level past [`bounds::MAX_DURABLE_DEPTH`] is refused here, at its first
     /// member, and none of it is built. The bound is a property of the container, not of
@@ -1997,15 +1992,12 @@ impl<'a> IdentityResolver<'a> {
     fn build_member_tree(
         &mut self,
         nodes: &mut Vec<DeclarationDraftNode>,
-        at: usize,
-        depth: usize,
+        cursor: MemberCursor<'_>,
         draft: &mut ImageDraft,
         records: &TypeRegistry,
         group: &GroupDecl,
-        path: &str,
     ) -> Vec<FieldDef> {
-        let depth = depth + 1;
-        if depth > bounds::MAX_DURABLE_DEPTH {
+        if cursor.depth > bounds::MAX_DURABLE_DEPTH {
             if let Some(member) = group.members.first() {
                 self.reject_resource_limit(member.span(), over_deep_member_message());
             }
@@ -2016,16 +2008,18 @@ impl<'a> IdentityResolver<'a> {
             let ResourceMember::Field(field) = member else {
                 continue;
             };
-            if let Some((shape, record_field)) = self.build_field(draft, records, field, path) {
+            if let Some((shape, record_field)) =
+                self.build_field(draft, records, field, cursor.container)
+            {
                 nodes.push(DeclarationDraftNode::declared(
-                    Some(at),
+                    cursor.parent,
                     DeclarationWireClass::Field,
                     shape,
                 ));
                 record_fields.push(record_field);
             }
         }
-        self.build_extras(nodes, Some(at), depth, draft, records, &group.members, path);
+        self.build_extras(nodes, cursor, draft, records, &group.members);
         record_fields
     }
 
@@ -2769,6 +2763,42 @@ fn resource_limit(file: &FileIdentity, span: SourceSpan, message: String) -> Sou
     SourceDiagnostic::at(Code::CheckResourceLimit.as_str(), file, span, message)
 }
 
+/// Where the durable member walk is: the ordinal of the node whose members are being
+/// appended (`None` at the resource's own level), the nesting level those members
+/// occupy, and the anchor path prefix they extend.
+///
+/// The three move together by construction. A member's parent ordinal, its depth, and
+/// its anchor path are one fact about one position in the tree, and a walk that carried
+/// them as three arguments could descend one without the others.
+#[derive(Clone, Copy)]
+struct MemberCursor<'a> {
+    parent: Option<usize>,
+    depth: usize,
+    container: &'a str,
+}
+
+impl<'a> MemberCursor<'a> {
+    /// The resource's own members: no parent node, nesting level 1, anchored at the
+    /// resource name.
+    fn top(resource: &'a str) -> Self {
+        Self {
+            parent: None,
+            depth: 1,
+            container: resource,
+        }
+    }
+
+    /// The members of the group or branch just appended at ordinal `at`, anchored at
+    /// its qualified `path`, one level deeper.
+    fn below(self, at: usize, path: &'a str) -> Self {
+        Self {
+            parent: Some(at),
+            depth: self.depth + 1,
+            container: path,
+        }
+    }
+}
+
 /// The member-depth refusal's sentence. It names the container's nesting, not the
 /// member's own kind: a field, a `group`, and a `branch` are all refused for the same
 /// reason at the same place.
@@ -3188,8 +3218,8 @@ mod declaration_command_bound_tests {
     /// This module stops emitting at [`MAX_DECLARATION_COMMANDS`]; `marrow-image` records
     /// a declaration as over-bound only at *more* than `MAX_DURABLE_MEMBERS` rows and the
     /// encoder then refuses the image with
-    /// [`ImageBuildError::TooManyDurableMembers`] — which the compiler classifies as the
-    /// `DurableMembers` resource limit. Truncating one command lower would hand the image
+    /// [`ImageBuildError::TooManyDurableMembers`] — which the compiler classifies as a
+    /// producer contradiction. Truncating one command lower would hand the image
     /// owner a full-width declaration it accepts, and the over-wide resource would encode
     /// silently short instead of being refused. This drives the real emitter with an
     /// over-wide node buffer and carries its output to a real encode, so moving either

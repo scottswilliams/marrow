@@ -265,9 +265,6 @@ fn owner_of(kind: ResourceLimitKind) -> Owner {
         | ResourceLimitKind::Enums
         | ResourceLimitKind::Collections
         | ResourceLimitKind::Roots
-        | ResourceLimitKind::DurableMembers
-        | ResourceLimitKind::DurableDepth
-        | ResourceLimitKind::IndexComponents
         | ResourceLimitKind::Sites
         | ResourceLimitKind::Functions
         | ResourceLimitKind::CodeBytes
@@ -286,7 +283,6 @@ const ALL_KINDS: &[ResourceLimitKind] = &[
     ResourceLimitKind::Enums,
     ResourceLimitKind::Collections,
     ResourceLimitKind::Roots,
-    ResourceLimitKind::DurableMembers,
     ResourceLimitKind::Sites,
     ResourceLimitKind::Functions,
     ResourceLimitKind::Exports,
@@ -294,8 +290,6 @@ const ALL_KINDS: &[ResourceLimitKind] = &[
     ResourceLimitKind::ImageBytes,
     ResourceLimitKind::StringBytes,
     ResourceLimitKind::CodeBytes,
-    ResourceLimitKind::IndexComponents,
-    ResourceLimitKind::DurableDepth,
     ResourceLimitKind::DiagnosticCount,
     ResourceLimitKind::DiagnosticBytes,
     ResourceLimitKind::ProjectFiles,

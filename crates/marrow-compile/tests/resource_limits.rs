@@ -799,14 +799,13 @@ fn image_too_large_is_an_aggregate_resource_limit() {
 fn every_resource_limit_kind_describes_itself_without_its_variant_name() {
     use marrow_compile::ResourceLimitKind as Kind;
 
-    const EVERY_KIND: [Kind; 22] = [
+    const EVERY_KIND: [Kind; 19] = [
         Kind::Strings,
         Kind::Consts,
         Kind::Types,
         Kind::Enums,
         Kind::Collections,
         Kind::Roots,
-        Kind::DurableMembers,
         Kind::Sites,
         Kind::Functions,
         Kind::Exports,
@@ -814,8 +813,6 @@ fn every_resource_limit_kind_describes_itself_without_its_variant_name() {
         Kind::ImageBytes,
         Kind::StringBytes,
         Kind::CodeBytes,
-        Kind::IndexComponents,
-        Kind::DurableDepth,
         Kind::DiagnosticCount,
         Kind::DiagnosticBytes,
         Kind::ProjectFiles,
@@ -836,7 +833,6 @@ fn every_resource_limit_kind_describes_itself_without_its_variant_name() {
             | Kind::Enums
             | Kind::Collections
             | Kind::Roots
-            | Kind::DurableMembers
             | Kind::Sites
             | Kind::Functions
             | Kind::Exports
@@ -844,8 +840,6 @@ fn every_resource_limit_kind_describes_itself_without_its_variant_name() {
             | Kind::ImageBytes
             | Kind::StringBytes
             | Kind::CodeBytes
-            | Kind::IndexComponents
-            | Kind::DurableDepth
             | Kind::DiagnosticCount
             | Kind::DiagnosticBytes
             | Kind::DeclarationLedgerBytes
