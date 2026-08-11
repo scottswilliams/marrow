@@ -957,3 +957,96 @@ fn the_draft_is_not_clone() {
         "the identity a copy would duplicate is present, so this gate has a live subject",
     );
 }
+
+/// The image side declares no owned recursive durable value shape (red R34).
+///
+/// A durable field's value used to be a `DurableValueShape` tree: a node owned its
+/// nested nodes, so a shape reached from four fields of four enclosing levels was
+/// rebuilt at each of its 256 occurrences, and the expansion — not the declaration —
+/// set the cost of admitting or refusing it. The replacement is a reference into one
+/// `CanonicalValueShapeDag`, whose nodes hold `ValueShapeNodeId`s and can therefore
+/// state neither a tree nor a cycle.
+///
+/// Reintroducing the tree is a one-line edit at any of the sites that carry a value:
+/// a declaration row, a descriptor field, or a decoded member. This gate names the
+/// deleted family and the shape of its return: an owned `Vec` of value shapes, or a
+/// value-shape field that is anything but a node reference.
+#[test]
+fn no_owned_recursive_durable_value_shape_survives() {
+    let deleted = [
+        "DurableValueShape",
+        "DurableEnumMemberShape",
+        "Vec<ValueShapeNode>",
+        "Vec<ValueShapeView",
+    ];
+    for source in [
+        "src/durable_id.rs",
+        "src/encode.rs",
+        "src/product.rs",
+        "src/draft.rs",
+    ] {
+        let code = without_literals(
+            &fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join(source))
+                .expect("read a durable value-shape owner"),
+        );
+        let found: Vec<&str> = deleted
+            .into_iter()
+            .filter(|needle| code.contains(needle))
+            .collect();
+        assert!(
+            found.is_empty(),
+            "{source} names {found:?}: a durable field's value is a reference into the \
+             one value-shape arena, never an owned shape",
+        );
+    }
+
+    // The arena itself is the one place a nested value is spelled, and it spells one
+    // as a reference. A node that owned a `ValueShapeNode` would be a tree again.
+    let arena = without_literals(
+        &fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/value_dag.rs"))
+            .expect("read the value-shape arena"),
+    );
+    assert!(
+        arena.contains("Struct(Vec<ValueShapeNodeId>)"),
+        "the arena's struct node holds references, so this gate has a live subject",
+    );
+    assert!(
+        !arena.contains("Box<ValueShapeNode>") && !arena.contains("Vec<ValueShapeNode>>"),
+        "a node that owns a nested node is an occurrence tree",
+    );
+}
+
+/// The verifier keeps no second representation of a decoded value shape (red R34).
+///
+/// The verifier used to decode the durable table into an owned shape tree and then
+/// rebuild a second one to recompute the contract id, cloning each member on the way.
+/// It now decodes straight into its own arena and holds references, so there is no
+/// raw-tree-to-DAG conversion and no state retaining both.
+#[test]
+fn the_verifier_holds_no_raw_durable_value_tree() {
+    let verify = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("the crates directory")
+        .join("marrow-verify/src/verify");
+    for source in ["model.rs", "durable.rs"] {
+        let code = without_literals(
+            &fs::read_to_string(verify.join(source)).expect("read a verifier durable owner"),
+        );
+        let found: Vec<&str> = ["DurableValueShape", "DurableEnumMemberShape"]
+            .into_iter()
+            .filter(|needle| code.contains(needle))
+            .collect();
+        assert!(
+            found.is_empty(),
+            "marrow-verify/src/verify/{source} names {found:?}: the verifier decodes into \
+             its own value-shape arena",
+        );
+    }
+    let decoded = without_literals(
+        &fs::read_to_string(verify.join("model.rs")).expect("read the decoded model"),
+    );
+    assert!(
+        decoded.contains("value: ValueShapeNodeId"),
+        "a decoded field carries a value reference, so this gate has a live subject",
+    );
+}

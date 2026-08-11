@@ -305,3 +305,108 @@ fn an_enum_payload_leaf_reports_at_the_frozen_span() {
         vec![over_deep_row(store_line)],
     );
 }
+
+// ---- The one-row-per-over-deep-field law (B11) and its sibling.
+
+/// Every located row of a failed compile carrying `code`, in report order, rendered
+/// exactly as the CLI spells it.
+fn located_rows(result: Result<impl std::fmt::Debug, CompileFailure>, code: &str) -> Vec<String> {
+    diagnostics(result)
+        .iter()
+        .filter(|diagnostic| diagnostic.code() == code)
+        .map(|diagnostic| {
+            format!(
+                "{}:{}:{}: {}: {}",
+                diagnostic.file().as_str(),
+                diagnostic.line(),
+                diagnostic.column(),
+                diagnostic.code(),
+                diagnostic.message(),
+            )
+        })
+        .collect()
+}
+
+/// The recorded B11 probe: a 32-level chain `C0..=C31`, a struct `W` holding that
+/// chain twice, and a resource storing `W` in one field and the chain directly in
+/// another, projected by two stores.
+///
+/// Both durable fields are over-deep. The expanded occurrence tree has *three*
+/// over-deep leaves per store — `f.a`, `f.b`, and `g` — so an accounting that decides
+/// at the leaf reports three identical rows per store. Deciding at the field root,
+/// which is what makes the value graph a graph, reports one row per over-deep field.
+fn two_over_deep_fields_over_two_stores() -> (ProjectInput, u32) {
+    let mut source = String::from("module main\n\nstruct C0 {\n    v: int\n}\n");
+    for level in 1..=31 {
+        let _ = writeln!(source, "struct C{level} {{\n    inner: C{}\n}}", level - 1);
+    }
+    source.push_str(
+        "\nstruct W {\n    a: C31\n    b: C31\n}\n\n\
+         resource R {\n    required f: W\n    required g: C31\n}\n\n\
+         store ^a[id: int]: R\nstore ^b[id: int]: R\n\n\
+         pub fn plain(n: int): int {\n    return n + 1\n}\n",
+    );
+    let store_line = source_line(&source, "store ^a");
+    (
+        project(
+            &source,
+            Some(&store_ledger(&["field R.g", "root b", "key b.id"])),
+        ),
+        store_line,
+    )
+}
+
+/// One over-deep durable field draws one located refusal, whatever the multiplicity
+/// of over-deep leaves its expansion would have had. The message and span are
+/// unchanged, and the per-store ordering is unchanged: this is a strict subset of the
+/// rows the leaf-counting accounting emitted, and preserving the multiplicity would
+/// require building the expansion red R28 deletes.
+#[test]
+fn one_over_deep_field_draws_one_row_however_many_leaves_its_expansion_would_have() {
+    let (input, store_a) = two_over_deep_fields_over_two_stores();
+    let rows = located_resource_limits(compile(&input));
+    let store_b = store_a + 1;
+    assert_eq!(
+        rows,
+        vec![
+            over_deep_row(store_a),
+            over_deep_row(store_a),
+            over_deep_row(store_b),
+            over_deep_row(store_b),
+        ],
+        "two over-deep durable fields draw two rows per store, not one per over-deep \
+         leaf of the expansion",
+    );
+}
+
+/// The 1-based line of the first line of `source` starting with `prefix`.
+fn source_line(source: &str, prefix: &str) -> u32 {
+    source
+        .lines()
+        .position(|line| line.starts_with(prefix))
+        .expect("the corpus declares the line") as u32
+        + 1
+}
+
+/// The same law for the value types the durable set excludes: a struct holding a
+/// collection is refused once per store, not once per durable field that stores it.
+/// The report is the same located `check.unsupported` row either way, so this is the
+/// same strict subset the depth row takes.
+#[test]
+fn an_unsupported_value_type_draws_one_row_however_many_fields_store_it() {
+    let source = "module main\n\n\
+         struct Bad {\n    c: List<int>\n}\n\n\
+         resource R {\n    required f: Bad\n    required g: Bad\n}\n\n\
+         store ^a[id: int]: R\n\n\
+         pub fn plain(n: int): int {\n    return n + 1\n}\n";
+    let input = project(source, Some(&store_ledger(&["field R.g"])));
+    let store_line = source_line(source, "store ^a");
+    assert_eq!(
+        located_rows(compile(&input), "check.unsupported"),
+        vec![format!(
+            "src/main.mw:{store_line}:1: check.unsupported: a collection stored directly \
+             in a durable field (a large collection belongs under a keyed branch) is not \
+             yet supported on the beta line"
+        )],
+    );
+}
