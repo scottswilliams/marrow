@@ -1100,33 +1100,45 @@ impl ImageDraft {
         self.application
     }
     /// The site table the encoder writes: each retained demand projected into the
-    /// semantic path of the node it addresses, in emission order.
+    /// semantic path of the node it addresses, handed to `emit` in emission order.
     ///
     /// The projection is the site table's only path source. A row retains ordinals into
     /// the occurrence and declaration tables, so the path a site encodes to is derived
     /// from the same rows the DURABLE section's member graph is written from and cannot
     /// disagree with them.
-    pub(crate) fn projected_sites(&self) -> Result<Vec<SiteDef>, ImageBuildError> {
+    ///
+    /// The rows are streamed rather than returned as a table: the encoder writes each
+    /// site straight into the section it is building, and its coherence preflight walks
+    /// the same projection while retaining nothing, so neither holds a second copy of
+    /// the site table.
+    pub(crate) fn project_sites(
+        &self,
+        mut emit: impl FnMut(SiteDef),
+    ) -> Result<(), ImageBuildError> {
         if self.sites.rows().is_empty() {
-            return Ok(Vec::new());
+            return Ok(());
         }
         let application = self
             .application_identity()
             .ok_or(ImageBuildError::InvalidReference("application identity"))?;
         let graph = self.graph();
-        self.sites
-            .rows()
-            .iter()
-            .map(|row| {
-                let path = graph
-                    .project_path(application, row.key())
-                    .ok_or(ImageBuildError::InvalidReference("operation site"))?;
-                Ok(SiteDef {
-                    path,
-                    target: row.key().target(),
-                })
-            })
-            .collect()
+        for row in self.sites.rows() {
+            let path = graph
+                .project_path(application, row.key())
+                .ok_or(ImageBuildError::InvalidReference("operation site"))?;
+            emit(SiteDef {
+                path,
+                target: row.key().target(),
+            });
+        }
+        Ok(())
+    }
+
+    /// The number of site rows [`ImageDraft::project_sites`] will emit. The site table is
+    /// length-prefixed and streamed, so the encoder writes this count before the rows it
+    /// has not projected yet; every retained row projects exactly one site.
+    pub(crate) fn site_row_count(&self) -> usize {
+        self.sites.rows().len()
     }
 
     /// The plan's logical site demand, saturating at `MAX_SITES + 1`. The encoder's Sites

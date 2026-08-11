@@ -21,7 +21,7 @@ use crate::product::{
 use crate::semantic::{SemanticPath, SemanticTarget};
 use crate::ty::ImageType;
 use crate::value_dag::{
-    CanonicalValueShapeDag, ValueShapeSink, ValueShapeView, ValueShapeWireForm, expand,
+    CanonicalValueShapeDag, ImageByteSink, ValueShapeView, ValueShapeWireForm, expand,
 };
 
 /// Container magic and version.
@@ -29,80 +29,45 @@ const MAGIC: &[u8; 4] = b"MWI\0";
 const VERSION: u8 = 0x00;
 const SECTION_COUNT: u8 = 10;
 
-/// The DURABLE section body, or the fact that it alone crosses the whole-image ceiling.
+/// The bytes a `DurableContractId` occupies at the end of the DURABLE section. The
+/// section's lower bound counts them without computing them: an identity's width is a
+/// format fact, its value is a hash over the whole graph.
+const CONTRACT_ID_BYTES: usize = 32;
+
+/// The length of a DURABLE section body, counted without building it.
 ///
 /// Every other section's size follows from row counts the draft already bounds. A durable
 /// field value is different: the wire spells a value shape as its full expansion, and a
 /// shape shared across nesting levels expands geometrically in its depth, so a draft well
 /// inside every declared bound can still describe a body larger than any image may be.
-/// Such a body is never finished — no contract identity is computed over bytes no image
-/// can carry — and the fact travels as a state rather than as a truncated buffer.
-enum DurableSection {
-    Fitting(Vec<u8>),
-    OverCeiling,
-}
-
-impl DurableSection {
-    /// The section bytes to emit. A body over the ceiling emits none: the encode is
-    /// already decided, and the journey continues only so an earlier producer-side result
-    /// still reports at its own position.
-    fn body(self) -> Vec<u8> {
-        match self {
-            DurableSection::Fitting(body) => body,
-            DurableSection::OverCeiling => Vec::new(),
-        }
-    }
-
-    fn over_ceiling(&self) -> bool {
-        matches!(self, DurableSection::OverCeiling)
-    }
-}
-
-/// The DURABLE section body under construction: a byte buffer that stops accepting value
-/// expansion once it has passed the whole-image ceiling.
 ///
-/// It saturates one byte past the ceiling rather than at it, so "full" and "fits" stay
-/// distinguishable, and [`crate::expand`] returns the moment it saturates — the work an
-/// over-deep shape costs is the bytes the ceiling admits, not the bytes its expansion
-/// would have produced.
+/// This sink writes nothing. It saturates one byte past the whole-image ceiling rather
+/// than at it, so "full" and "fits" stay distinguishable, and [`expand`] returns the
+/// moment it saturates — the work an over-deep shape costs is the bytes the ceiling
+/// admits, not the bytes its expansion would have produced, and no buffer, hash input, or
+/// output is allocated to find that out.
 #[derive(Default)]
-struct DurableBody(Vec<u8>);
+struct DurableBodyLowerBound(usize);
 
-impl DurableBody {
+impl DurableBodyLowerBound {
+    /// Whether the body alone, contract identity included, is larger than any image may
+    /// be.
     fn over_ceiling(&self) -> bool {
-        self.0.len() > bounds::MAX_IMAGE_BYTES
-    }
-
-    fn into_bytes(self) -> Vec<u8> {
-        self.0
+        self.0.saturating_add(CONTRACT_ID_BYTES) > bounds::MAX_IMAGE_BYTES
     }
 }
 
-impl std::ops::Deref for DurableBody {
-    type Target = Vec<u8>;
-
-    fn deref(&self) -> &Vec<u8> {
-        &self.0
-    }
-}
-
-impl std::ops::DerefMut for DurableBody {
-    fn deref_mut(&mut self) -> &mut Vec<u8> {
-        &mut self.0
-    }
-}
-
-impl ValueShapeSink for DurableBody {
-    fn push(&mut self, byte: u8) {
-        self.0.push(byte);
+impl ImageByteSink for DurableBodyLowerBound {
+    fn push(&mut self, _byte: u8) {
+        self.0 += 1;
     }
 
-    fn extend(&mut self, bytes: &[u8]) {
-        self.0.extend_from_slice(bytes);
+    fn extend_bytes(&mut self, bytes: &[u8]) {
+        self.0 += bytes.len();
     }
 
     fn is_full(&self) -> bool {
-        self.over_ceiling()
+        self.0 > bounds::MAX_IMAGE_BYTES
     }
 }
 
@@ -113,30 +78,161 @@ pub struct EncodedImage {
     pub image_id: ImageId,
 }
 
+/// A draft that has passed the complete legacy producer-side policy and coherence
+/// journey — every result the old encoder could reach before the whole-image ceiling,
+/// in the order the old encoder reached it.
+///
+/// **Temporary bridge.** Its only caller is [`ImageDraft::encode`]; it exists so
+/// [`LegacyDurableBodyLowerBoundFence`] may refuse an over-ceiling DURABLE body
+/// *early*, without letting the refusal overtake a result the old encoder reported
+/// first. Nothing else may mint one, and the borrow binds it to the one draft it
+/// examined. IMGBOUND consumes and extends this owner; IMGMEASURE deletes it together
+/// with the fence when the contract path stops allocating.
+///
+/// # What it replays, in order
+///
+/// 1. [`ImageDraft::check_bounds`] — every fixed §E count and width, the Product claim
+///    conflict, the declaration graph's member/depth/value-depth walk, the value-shape
+///    arena's fan-out walk, and the per-occurrence key/index widths.
+/// 2. The application identity a non-empty durable graph requires.
+/// 3. The site table's path projection, streamed and retained nowhere.
+///
+/// The one remaining producer-side result — CodeBytes, and its sibling operand
+/// references — keeps its own position inside [`ImageDraft::encode`] rather than moving
+/// here: it is discovered before the body's ceiling result there, which is exactly where
+/// it was discovered when the body was built first and refused last.
+struct LegacyFullDraftCoherencePreflight<'a>(&'a ImageDraft);
+
+impl<'a> LegacyFullDraftCoherencePreflight<'a> {
+    fn run(draft: &'a ImageDraft) -> Result<Self, ImageBuildError> {
+        draft.check_bounds()?;
+        // A non-empty durable graph is anchored by the application's ledger id, and the
+        // old encoder demanded it at the head of the DURABLE section, before any member
+        // row. Demanding it here reports the same error at the same position.
+        if !draft.root_occurrences().is_empty() && draft.application_identity().is_none() {
+            return Err(ImageBuildError::InvalidReference("application identity"));
+        }
+        draft.project_sites(|_| {})?;
+        Ok(Self(draft))
+    }
+}
+
+/// A draft whose DURABLE section body, contract identity included, is small enough for
+/// an image to carry.
+///
+/// **Temporary bridge.** The body's length is counted through
+/// [`DurableBodyLowerBound`] before a single byte of it is built, so a body no image
+/// could carry is refused with the existing [`ImageBuildError::ImageTooLarge`] before
+/// any expansion buffer, contract preimage, hash input, or output is allocated. Only
+/// fitting input reaches the old encoder, and — because the contract identity is minted
+/// only from a value of this type — no contract hash is ever computed over bytes no
+/// image can carry.
+///
+/// # `B_LEGACY` — the exact allocation phase maxima this bridge stands on
+///
+/// The bridge is what makes the producer's peak allocation statable, so the two exact
+/// maxima are derived here rather than measured.
+///
+/// `B_LEGACY_DRAFT[target]` is the retained [`ImageDraft`] baseline every phase carries:
+/// the string pool and its bytes, the constant pool, the record/enum/collection tables,
+/// the canonical Product declaration table with its member rows and its one
+/// [`CanonicalValueShapeDag`], the root-occurrence table with its key tuples and managed
+/// indexes, the site-demand plan with its retained rows, the function table with its
+/// instruction tapes and span tables, the export table, and the test-entry table —
+/// each at its own `MAX_*` bound in [`crate::bounds`], plus the handles and backing
+/// allocations `Vec` and `HashMap` reserve for them. It is live in every phase below and
+/// so appears once, as a baseline, never as a per-phase term.
+///
+/// `B_LEGACY_CONTRACT_BRIDGE_MAX[target]` is that baseline plus the **maximum, not the
+/// sum**, of the four phases the old producer passes through:
+///
+/// - **(A) Contract hashing.** The DURABLE body `Vec` (≤ `MAX_IMAGE_BYTES` + 32 by this
+///   fence), the string permutation map and sorted pool, the constant permutation map
+///   and sorted pool, the encoded function section, the growing tail, plus
+///   `encode_graph`'s inner buffer and `compute`'s outer payload — both live at once,
+///   and both larger than the body they describe: the contract preimage spells a ledger
+///   identity as a 25-byte `IDREF` (`u8(kind) ‖ u64_be(16) ‖ id`) where the body writes
+///   the same identity as 16 raw bytes, so the preimage is bounded by
+///   `25/16 × MAX_IMAGE_BYTES` and is *not* bounded by the ceiling the body passed.
+///   That 25:16 ratio is the whole reason this bound is not simply `MAX_IMAGE_BYTES`.
+/// - **(B) Each of the ten section body constructions and its `push_section`**, with
+///   that section's own body, the growing tail, and the then-live permutation maps and
+///   sorted pools. The function-offset scratch is live only from section 0x05 onward.
+/// - **(C) The full tail plus every still-live scratch term**, immediately before the
+///   output allocation.
+/// - **(D) The full tail, one output allocation of `37 + tail.len()`, and every
+///   still-live scratch term.**
+///
+/// The maximum is (A) whenever a durable graph is present, because the two hash buffers
+/// coexist with a full-size body and the preimage is the larger of the two encodings of
+/// one graph; it is (D) for a storeless image, whose contract preimage is two bytes.
+/// Every phase includes ordinary success, error, unwind, and drop overlaps: no term is
+/// dropped early anywhere in [`ImageDraft::encode`].
+///
+/// IMGBOUND deletes both allocating sinks and this bound when it installs its derived
+/// fitting-preimage ceiling and allocation-free contract path.
+struct LegacyDurableBodyLowerBoundFence<'a>(&'a ImageDraft);
+
+impl<'a> LegacyDurableBodyLowerBoundFence<'a> {
+    /// Count the DURABLE body a coherent draft would write, and admit only a body an
+    /// image can carry.
+    fn admit(
+        preflight: LegacyFullDraftCoherencePreflight<'a>,
+        str_map: &[u16],
+    ) -> Result<Self, ImageBuildError> {
+        let draft = preflight.0;
+        let mut lower_bound = DurableBodyLowerBound::default();
+        draft.write_durable_body(&mut lower_bound, str_map)?;
+        if lower_bound.over_ceiling() {
+            return Err(ImageBuildError::ImageTooLarge);
+        }
+        Ok(Self(draft))
+    }
+
+    /// The DURABLE section body: the graph the lower bound just measured, written this
+    /// time, and closed by the 32-byte durable-contract identity.
+    ///
+    /// This is the only site in the crate that mints a contract identity, so the identity
+    /// exists only for a graph that already fits.
+    fn encode_body(self, str_map: &[u16]) -> Result<Vec<u8>, ImageBuildError> {
+        let mut body = Vec::new();
+        self.0.write_durable_body(&mut body, str_map)?;
+        body.extend_from_slice(self.0.durable_descriptor()?.contract_id().bytes());
+        Ok(body)
+    }
+}
+
 impl ImageDraft {
     /// Encode the draft into canonical container bytes, or fail with a producer-side
     /// [`ImageBuildError`] when a §E bound is exceeded or a reference is invalid.
     pub fn encode(&self) -> Result<EncodedImage, ImageBuildError> {
-        self.check_bounds()?;
+        let preflight = LegacyFullDraftCoherencePreflight::run(self)?;
 
         let str_map = self.string_sort_map();
         let sorted_strings = self.sorted_strings(&str_map);
         let (const_map, sorted_consts) = self.const_sort(&str_map);
 
+        // CodeBytes and its sibling operand references keep their position: they are the
+        // last producer-side results the old encoder could reach before the whole-image
+        // ceiling, and they are still reached before it. Their section lands at 0x05
+        // below; only the moment of discovery moved, from after a body that could not
+        // fail to before a body that is now refused early.
+        let function_offsets = self.encode_functions(&str_map, &const_map)?;
+
         // The DURABLE body is the one section whose size is not bounded by the draft's
         // own row counts: a value shape's wire form is its expansion, and a shape shared
-        // across levels expands geometrically in its depth. It is therefore written
-        // through a sink that stops at the first byte past the whole-image ceiling.
-        let durable = self.encode_durable(&str_map)?;
-        let durable_over_ceiling = durable.over_ceiling();
+        // across levels expands geometrically in its depth. Its length is therefore
+        // counted before it is built, and a body no image could carry is refused here,
+        // with the same ImageBytes result it has always drawn.
+        let durable =
+            LegacyDurableBodyLowerBoundFence::admit(preflight, &str_map)?.encode_body(&str_map)?;
 
         let mut tail = Vec::new();
         tail.push(SECTION_COUNT);
         push_section(&mut tail, 0x01, encode_strings(&sorted_strings))?;
         push_section(&mut tail, 0x02, self.encode_types(&str_map))?;
-        push_section(&mut tail, 0x03, durable.body())?;
+        push_section(&mut tail, 0x03, durable)?;
         push_section(&mut tail, 0x04, encode_consts(&sorted_consts, &str_map))?;
-        let function_offsets = self.encode_functions(&str_map, &const_map)?;
         push_section(&mut tail, 0x05, function_offsets.body)?;
         push_section(&mut tail, 0x06, self.encode_exports())?;
         push_section(&mut tail, 0x07, self.encode_spans(&function_offsets.per_fn))?;
@@ -151,12 +247,7 @@ impl ImageDraft {
         bytes.extend_from_slice(&id.0);
         bytes.extend_from_slice(&tail);
 
-        // A DURABLE body that crossed the ceiling on its own is refused by that same
-        // ceiling, here, at the point the whole-image size has always been decided — so
-        // every producer-side result that reports earlier in the encode journey still
-        // reports first, and only a body no image could carry is decided without being
-        // finished.
-        if bytes.len() > bounds::MAX_IMAGE_BYTES || durable_over_ceiling {
+        if bytes.len() > bounds::MAX_IMAGE_BYTES {
             return Err(ImageBuildError::ImageTooLarge);
         }
         Ok(EncodedImage {
@@ -362,65 +453,59 @@ impl ImageDraft {
         body
     }
 
-    fn encode_durable(&self, str_map: &[u16]) -> Result<DurableSection, ImageBuildError> {
-        let mut body = DurableBody::default();
-        push_u16(&mut body, self.root_occurrences().len() as u16);
+    /// Write the DURABLE section body, minus its closing contract identity, into `sink`.
+    ///
+    /// One owner writes the section for both of its readers: the lower bound that only
+    /// counts the bytes, and the buffer that keeps them. A body admitted by the count is
+    /// therefore the body that is built, because it is the same walk over the same rows.
+    fn write_durable_body(
+        &self,
+        sink: &mut impl ImageByteSink,
+        str_map: &[u16],
+    ) -> Result<(), ImageBuildError> {
+        push_u16(sink, self.root_occurrences().len() as u16);
         // The application's ledger id anchors a non-empty durable graph; a
         // storeless image carries none.
         if !self.root_occurrences().is_empty() {
             let application = self
                 .application_identity()
                 .ok_or(ImageBuildError::InvalidReference("application identity"))?;
-            body.extend_from_slice(application.bytes());
+            sink.extend_bytes(application.bytes());
         }
         // v0 carries the whole member graph per root, so each occurrence projects the
         // one retained declaration it references rather than carrying its own copy.
         for occurrence in self.root_occurrences() {
             let declaration = self.declaration_of(occurrence);
-            push_u16(&mut body, str_map[occurrence.name().raw() as usize]);
+            push_u16(sink, str_map[occurrence.name().raw() as usize]);
             // The key tuple: a count, then each column's scalar type and ledger id.
             // Zero columns is a singleton root; more than one is a composite key.
-            encode_key_tuple(&mut body, occurrence.keys());
-            push_u16(&mut body, declaration.root_entry_record().0);
+            encode_key_tuple(sink, occurrence.keys());
+            push_u16(sink, declaration.root_entry_record().0);
             // The root's remaining ledger identity block: placement and product,
             // then the resource's durable member tree (top-level fields interleaved
             // with static `group` namespaces and keyed `branch` placements).
-            body.extend_from_slice(occurrence.placement().ledger_id().bytes());
-            body.extend_from_slice(declaration.identity().ledger_id().bytes());
+            sink.extend_bytes(occurrence.placement().ledger_id().bytes());
+            sink.extend_bytes(declaration.identity().ledger_id().bytes());
             let graph = declaration.graph();
-            encode_declaration_members(
-                &mut body,
-                graph,
-                graph.members(),
-                str_map,
-                self.value_shapes(),
-            );
-            if body.over_ceiling() {
-                return Ok(DurableSection::OverCeiling);
+            encode_declaration_members(sink, graph, graph.members(), str_map, self.value_shapes());
+            // A body already past the ceiling is decided; the remaining roots would only
+            // add to a count that is already refused.
+            if sink.is_full() {
+                return Ok(());
             }
-            encode_durable_indexes(&mut body, occurrence.indexes());
+            encode_durable_indexes(sink, occurrence.indexes());
         }
-        let sites = self.projected_sites()?;
-        push_u16(&mut body, sites.len() as u16);
-        for site in &sites {
-            encode_site_path(&mut body, &site.path);
-            body.push(match site.target {
+        push_u16(sink, self.site_row_count() as u16);
+        self.project_sites(|site| {
+            encode_site_path(sink, &site.path);
+            sink.push(match site.target {
                 SemanticTarget::WholePayload => 0x00,
                 SemanticTarget::FieldLeaf => 0x01,
                 SemanticTarget::IndexScan => 0x02,
                 SemanticTarget::IndexLookup => 0x03,
                 SemanticTarget::GroupEntry => 0x04,
             });
-        }
-        // The durable-contract identity closes the section: a 32-byte
-        // `DurableContractId` over the canonical graph descriptor. The verifier
-        // recomputes it from the decoded roots/records and rejects a mismatch, so
-        // these bytes are a producer-side commitment, not a trusted input. Its preimage
-        // spells each ledger reference as a 25-byte `IDREF` where the body writes 16 raw
-        // bytes and is otherwise the same expansion, so a body inside the ceiling bounds
-        // the preimage too — which is why hashing is reached only from here.
-        body.extend_from_slice(self.durable_descriptor()?.contract_id().bytes());
-        Ok(DurableSection::Fitting(body.into_bytes()))
+        })
     }
 
     /// The canonical durable-graph descriptor for this draft, built from its
@@ -428,6 +513,12 @@ impl ImageDraft {
     /// key tuple, and the resource's durable member tree). The member tree is
     /// self-describing, so the descriptor no longer derives field shapes from the
     /// materialized record type.
+    ///
+    /// Its one caller is [`LegacyDurableBodyLowerBoundFence::encode_body`]. The preimage
+    /// spells each ledger reference as a 25-byte `IDREF` where the body writes 16 raw
+    /// bytes and is otherwise the same expansion, so a graph whose body no image could
+    /// carry has a preimage larger still — which is why a descriptor is built only from
+    /// a graph the fence has already admitted.
     fn durable_descriptor(&self) -> Result<DurableContractDescriptor<'_>, ImageBuildError> {
         if self.root_occurrences().is_empty() {
             return Ok(DurableContractDescriptor::empty(self.value_shapes()));
@@ -720,11 +811,11 @@ fn push_section(out: &mut Vec<u8>, id: u8, body: Vec<u8>) -> Result<(), ImageBui
 /// Encode a placement key tuple into the DURABLE section: `u16(count) ‖
 /// [scalar_tag ‖ id(16)]*`. Shared by roots and branches; column order is
 /// load-bearing.
-fn encode_key_tuple(body: &mut Vec<u8>, keys: &[KeyColumn]) {
+fn encode_key_tuple(body: &mut impl ImageByteSink, keys: &[KeyColumn]) {
     push_u16(body, keys.len() as u16);
     for key in keys {
         ImageType::scalar(key.scalar).encode(body);
-        body.extend_from_slice(key.id.bytes());
+        body.extend_bytes(key.id.bytes());
     }
 }
 
@@ -735,11 +826,11 @@ fn encode_key_tuple(body: &mut Vec<u8>, keys: &[KeyColumn]) {
 /// is projected from the declaration graph, so it is the two root steps plus that node's
 /// nesting depth, and `validate_declaration_graph` has already refused a graph nesting
 /// past `MAX_DURABLE_DEPTH` — well inside `MAX_SITE_PATH_STEPS`, itself far below 256.
-fn encode_site_path(body: &mut Vec<u8>, path: &SemanticPath) {
+fn encode_site_path(body: &mut impl ImageByteSink, path: &SemanticPath) {
     body.push(path.steps().len() as u8);
     for step in path.steps() {
         body.push(step.kind.ledger_kind());
-        body.extend_from_slice(step.id.bytes());
+        body.extend_bytes(step.id.bytes());
     }
 }
 
@@ -755,7 +846,7 @@ fn encode_site_path(body: &mut Vec<u8>, path: &SemanticPath) {
 /// The nesting bound is rechecked before any encoding, so the descent is bounded by
 /// [`bounds::MAX_DURABLE_DEPTH`].
 fn encode_declaration_members(
-    body: &mut DurableBody,
+    body: &mut impl ImageByteSink,
     graph: &ProductDeclarationGraph,
     members: &[DeclarationNode],
     str_map: &[u16],
@@ -770,13 +861,13 @@ fn encode_declaration_members(
                 value,
             } => {
                 body.push(0x00);
-                body.extend_from_slice(id.bytes());
+                body.extend_bytes(id.bytes());
                 body.push(u8::from(*required));
                 expand(values, *value, ValueShapeWireForm::DurableSection, body);
             }
             DeclarationMemberShape::Group { id } => {
                 body.push(0x01);
-                body.extend_from_slice(id.bytes());
+                body.extend_bytes(id.bytes());
                 encode_declaration_members(body, graph, graph.members_of(member), str_map, values);
             }
             DeclarationMemberShape::Branch {
@@ -786,7 +877,7 @@ fn encode_declaration_members(
                 keys,
             } => {
                 body.push(0x02);
-                body.extend_from_slice(placement.bytes());
+                body.extend_bytes(placement.bytes());
                 push_u16(body, str_map[name.raw() as usize]);
                 push_u16(body, record.0);
                 encode_key_tuple(body, keys);
@@ -801,10 +892,10 @@ fn encode_declaration_members(
 /// `u16(component_count)`, and per component a one-byte leaf kind (`0x02` field,
 /// `0x04` key — the frozen IDREF kind bytes) and the leaf's raw 16-byte ledger id.
 /// An index carries no value shape: it is derived from the leaves it projects.
-fn encode_durable_indexes(body: &mut Vec<u8>, indexes: &[DurableIndexShape]) {
+fn encode_durable_indexes(body: &mut impl ImageByteSink, indexes: &[DurableIndexShape]) {
     push_u16(body, indexes.len() as u16);
     for index in indexes {
-        body.extend_from_slice(index.id.bytes());
+        body.extend_bytes(index.id.bytes());
         body.push(u8::from(index.unique));
         push_u16(body, index.components.len() as u16);
         for component in &index.components {
@@ -813,7 +904,7 @@ fn encode_durable_indexes(body: &mut Vec<u8>, indexes: &[DurableIndexShape]) {
                 DurableIndexComponent::Key(id) => (0x04u8, id),
             };
             body.push(kind);
-            body.extend_from_slice(id.bytes());
+            body.extend_bytes(id.bytes());
         }
     }
 }
@@ -936,10 +1027,10 @@ fn member_shapes(
         .collect()
 }
 
-fn push_u16(out: &mut Vec<u8>, value: u16) {
-    out.extend_from_slice(&value.to_be_bytes());
+fn push_u16(out: &mut impl ImageByteSink, value: u16) {
+    out.extend_bytes(&value.to_be_bytes());
 }
 
-fn push_u32(out: &mut Vec<u8>, value: u32) {
-    out.extend_from_slice(&value.to_be_bytes());
+fn push_u32(out: &mut impl ImageByteSink, value: u32) {
+    out.extend_bytes(&value.to_be_bytes());
 }

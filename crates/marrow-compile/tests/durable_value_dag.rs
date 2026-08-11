@@ -16,6 +16,10 @@
 //! 3. **Location.** The over-deep report keeps the exact code, message, and span it
 //!    has today, for a struct leaf, an enum payload leaf, and a terminal scalar leaf,
 //!    at both the admitting and the refusing level. [red R32]
+//! 4. **Bytes.** A value graph that *fits* encodes to the exact bytes and the exact
+//!    durable-contract identity it encoded to before the graph replaced the occurrence
+//!    tree — a diamond, where the shared shape is the thing an interned graph
+//!    represents differently. [red R31]
 
 use std::fmt::Write as _;
 use std::time::{Duration, Instant};
@@ -410,3 +414,183 @@ fn an_unsupported_value_type_draws_one_row_however_many_fields_store_it() {
         )],
     );
 }
+
+// ---- Red R30: a hostile compact expansion costs the bytes the ceiling admits.
+
+/// The frozen hostile corpus: one scalar base under exactly 31 enclosing struct
+/// levels, each carrying `MAX_STRUCT_LEAVES` = 64 fields referencing the level below.
+///
+/// Nothing here is over any declared bound. The outer value is depth 32 — exactly
+/// `MAX_DURABLE_VALUE_DEPTH` — and every level is exactly at the leaf bound. What the
+/// v0 wire would have to spell is `64^31` leaves, some 55 orders of magnitude past
+/// `MAX_IMAGE_BYTES`, while the value graph that describes it is 32 nodes and 1,984
+/// declared edges. This is the corpus that separates the two costs: a representation
+/// that expands is not slow here, it does not terminate.
+fn hostile_compact_expansion() -> ProjectInput {
+    let mut source = String::from("module main\n\nstruct S0 {\n    v: int\n}\n");
+    for level in 1..=30 {
+        let _ = writeln!(source, "struct S{level} {{");
+        for field in 1..=64 {
+            let _ = writeln!(source, "    f{field}: S{}", level - 1);
+        }
+        source.push_str("}\n");
+    }
+    let _ = write!(
+        source,
+        "\nresource R {{\n    required f: S30\n}}\n\nstore ^a[id: int]: R\n\n\
+         pub fn plain(n: int): int {{\n    return n + 1\n}}\n"
+    );
+    project(&source, Some(&store_ledger(&[])))
+}
+
+/// The repeated enum-payload analogue, at the same total depth. An enum payload leaf
+/// is a scalar on the beta line, so the repetition is carried by the enclosing struct
+/// levels: `Opt` sits at depth 2 and 30 enclosing levels of 64 fields each reference
+/// it, so the outer value is depth 32 and the expansion writes the enum's sum and
+/// member identities `64^30` times over. The enum arm of the expansion is what this
+/// corpus drives — a header, two ledger identities, and a member count per occurrence
+/// — rather than the scalar arm the struct corpus repeats.
+fn hostile_enum_payload_expansion() -> ProjectInput {
+    let mut source = String::from("module main\n\nenum Opt {\n    none\n    some(v: int)\n}\n");
+    for level in 1..=30 {
+        let _ = writeln!(source, "struct S{level} {{");
+        for field in 1..=64 {
+            match level {
+                1 => {
+                    let _ = writeln!(source, "    f{field}: Opt");
+                }
+                _ => {
+                    let _ = writeln!(source, "    f{field}: S{}", level - 1);
+                }
+            }
+        }
+        source.push_str("}\n");
+    }
+    let _ = write!(
+        source,
+        "\nresource R {{\n    required f: S30\n}}\n\nstore ^a[id: int]: R\n\n\
+         pub fn plain(n: int): int {{\n    return n + 1\n}}\n"
+    );
+    project(
+        &source,
+        Some(&store_ledger(&[
+            "sum Opt",
+            "member Opt.none",
+            "member Opt.some",
+        ])),
+    )
+}
+
+/// The hostile corpus is decided, promptly, in the aggregate byte ceiling.
+///
+/// No stage may expand it: the compiler holds 32 value nodes, the producer's
+/// durable-body lower bound stops at the first byte past `MAX_IMAGE_BYTES`, and the
+/// contract identity is never computed over bytes no image can carry. The reported
+/// outcome is the aggregate `ImageBytes` limit, which is what a body larger than the
+/// whole-image ceiling has always meant.
+#[test]
+fn a_hostile_compact_expansion_is_decided_without_being_expanded() {
+    for (name, input) in [
+        ("31 struct levels x 64 fields", hostile_compact_expansion()),
+        (
+            "30 struct levels x 64 fields over a repeated enum",
+            hostile_enum_payload_expansion(),
+        ),
+    ] {
+        let started = Instant::now();
+        let result = compile(&input);
+        let elapsed = started.elapsed();
+        match result {
+            Err(CompileFailure::ResourceLimit(limit))
+                if limit.kind() == ResourceLimitKind::ImageBytes => {}
+            other => panic!("{name}: expected the ImageBytes aggregate limit, got {other:?}"),
+        }
+        assert!(
+            elapsed < EXPANSION_BUDGET,
+            "{name}: took {elapsed:?}, over the {EXPANSION_BUDGET:?} budget — an \
+             expansion is being materialized",
+        );
+    }
+}
+
+// ---- Red R31: a fitting diamond keeps its exact v0 bytes and contract identity.
+
+/// The fitting small-diamond corpus: struct `Leaf` is the value of one durable field
+/// *and* both leaves of `Mid`, which is the value of another. One shape, two depths,
+/// three occurrences — the case where an interned graph and an occurrence tree differ
+/// in representation and must not differ in a single byte.
+fn small_diamond() -> ProjectInput {
+    let source = "module main\n\n\
+         struct Leaf {\n    v: int\n    w: string\n}\n\
+         struct Mid {\n    a: Leaf\n    b: Leaf\n}\n\n\
+         resource R {\n    required f: Leaf\n    required g: Mid\n}\n\n\
+         store ^a[id: int]: R\n\n\
+         pub fn plain(n: int): int {\n    return n + 1\n}\n";
+    project(source, Some(&store_ledger(&["field R.g"])))
+}
+
+/// The DURABLE section (0x03) body of an encoded image. The container is magic (4),
+/// version (1), and image id (32), then a section count and one
+/// `u8(id) ‖ u32_be(len) ‖ body` frame per section in emission order.
+fn durable_section(image: &[u8]) -> &[u8] {
+    let mut cursor = 4 + 1 + 32;
+    let sections = image[cursor];
+    cursor += 1;
+    for _ in 0..sections {
+        let id = image[cursor];
+        let len = u32::from_be_bytes(
+            image[cursor + 1..cursor + 5]
+                .try_into()
+                .expect("a four-byte section length"),
+        ) as usize;
+        cursor += 5;
+        if id == 0x03 {
+            return &image[cursor..cursor + len];
+        }
+        cursor += len;
+    }
+    panic!("the image carries a DURABLE section");
+}
+
+fn hex(bytes: &[u8]) -> String {
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        let _ = write!(out, "{byte:02x}");
+    }
+    out
+}
+
+/// The diamond's DURABLE section and whole-image identity are byte-exact against the
+/// values recomputed at this lane's base `98b1665d`, before the value-shape graph
+/// replaced the recursively cloned occurrence tree. The section ends in the 32-byte
+/// durable-contract identity, so this pins the contract preimage too: the shared shape
+/// is spelled once per occurrence on the wire, as v0 has always spelled it, and only
+/// the retained representation changed.
+#[test]
+fn a_fitting_diamond_keeps_its_exact_bytes_and_contract_identity() {
+    let compiled = compile(&small_diamond()).expect("the small diamond fits every bound");
+    let section = durable_section(&compiled.image.bytes);
+    assert_eq!(hex(section), DIAMOND_DURABLE_SECTION);
+    assert_eq!(
+        hex(&section[section.len() - 32..]),
+        DIAMOND_CONTRACT_ID,
+        "the contract identity closes the DURABLE section",
+    );
+    assert_eq!(compiled.image.image_id.to_hex(), DIAMOND_IMAGE_ID);
+}
+
+/// The exact DURABLE section bytes of [`small_diamond`] at base `98b1665d`.
+const DIAMOND_DURABLE_SECTION: &str = concat!(
+    "0001000000000000000000000000000000010003000101000000000000000000000000000000050000000000",
+    "0000000000000000000000000400000000000000000000000000000002000200000000000000000000000000",
+    "0000000301010002000100030000000000000000000000000000000006010100020100020001000301000200",
+    "01000300000001020000000000000000000000000000000001030000000000000000000000000000000400ff",
+    "c27d314dbabc963ab14259d0a2da35e46c8e7537840a97a971cb2683a8094b",
+);
+
+/// The exact durable-contract identity of [`small_diamond`] at base `98b1665d`.
+const DIAMOND_CONTRACT_ID: &str =
+    "ffc27d314dbabc963ab14259d0a2da35e46c8e7537840a97a971cb2683a8094b";
+
+/// The exact whole-image identity of [`small_diamond`] at base `98b1665d`.
+const DIAMOND_IMAGE_ID: &str = "58eaf4f478da12063519113e058998453a1e5e414c2a2e48855826dd961b8b3d";

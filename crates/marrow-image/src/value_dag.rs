@@ -46,7 +46,7 @@
 //! DURABLE section — both spell a value shape as a fully expanded tree. Expanding a
 //! shared graph is exponential in its nesting depth, so [`expand`] never builds one:
 //! it walks an explicit work stack and writes each byte straight into a
-//! [`ValueShapeSink`], which may stop accepting bytes at a ceiling. A shape whose
+//! [`ImageByteSink`], which may stop accepting bytes at a ceiling. A shape whose
 //! expansion is larger than any image may be is therefore decided in the bytes the
 //! sink admits, not in the bytes the expansion would have produced.
 
@@ -282,17 +282,18 @@ impl ValueShapeNodeId {
     }
 }
 
-/// A destination for the bytes of one expanded value shape.
+/// A destination for image bytes: the DURABLE section under construction, or a counter
+/// standing in for one.
 ///
-/// The expansion of a shared shape can be exponentially larger than the shape itself,
-/// so a sink may refuse further bytes once it has seen enough to decide its caller's
-/// question. [`expand`] stops as soon as a sink reports [`ValueShapeSink::is_full`],
+/// The expansion of a shared value shape can be exponentially larger than the shape
+/// itself, so a sink may refuse further bytes once it has seen enough to decide its
+/// caller's question. [`expand`] stops as soon as a sink reports [`ImageByteSink::is_full`],
 /// so the work an expansion costs is the bytes its sink accepts, never the bytes the
 /// whole tree would occupy.
-pub trait ValueShapeSink {
+pub trait ImageByteSink {
     fn push(&mut self, byte: u8);
 
-    fn extend(&mut self, bytes: &[u8]);
+    fn extend_bytes(&mut self, bytes: &[u8]);
 
     /// Whether this sink has all the bytes it needs. Once true it stays true.
     fn is_full(&self) -> bool {
@@ -300,12 +301,12 @@ pub trait ValueShapeSink {
     }
 }
 
-impl ValueShapeSink for Vec<u8> {
+impl ImageByteSink for Vec<u8> {
     fn push(&mut self, byte: u8) {
         Vec::push(self, byte);
     }
 
-    fn extend(&mut self, bytes: &[u8]) {
+    fn extend_bytes(&mut self, bytes: &[u8]) {
         self.extend_from_slice(bytes);
     }
 }
@@ -350,7 +351,7 @@ pub fn expand(
     dag: &CanonicalValueShapeDag,
     root: ValueShapeNodeId,
     form: ValueShapeWireForm,
-    sink: &mut impl ValueShapeSink,
+    sink: &mut impl ImageByteSink,
 ) {
     let mut tasks = vec![ExpandTask::Node(root)];
     while let Some(task) = tasks.pop() {
@@ -400,23 +401,23 @@ pub fn expand(
     }
 }
 
-fn push_u16(sink: &mut impl ValueShapeSink, value: usize) {
-    sink.extend(&(value as u16).to_be_bytes());
+fn push_u16(sink: &mut impl ImageByteSink, value: usize) {
+    sink.extend_bytes(&(value as u16).to_be_bytes());
 }
 
 /// Write one ledger identity in the wire form's spelling: a kind-tagged length-prefixed
 /// `IDREF` in the contract payload, raw 16 bytes in the DURABLE section.
 fn push_identity(
-    sink: &mut impl ValueShapeSink,
+    sink: &mut impl ImageByteSink,
     form: ValueShapeWireForm,
     kind: u8,
     id: &LedgerIdBytes,
 ) {
     if form == ValueShapeWireForm::ContractPayload {
         sink.push(kind);
-        sink.extend(&(16u64).to_be_bytes());
+        sink.extend_bytes(&(16u64).to_be_bytes());
     }
-    sink.extend(id.bytes());
+    sink.extend_bytes(id.bytes());
 }
 
 #[cfg(test)]
@@ -519,12 +520,12 @@ mod tests {
         ceiling: usize,
     }
 
-    impl ValueShapeSink for Ceiling {
+    impl ImageByteSink for Ceiling {
         fn push(&mut self, _byte: u8) {
             self.written += 1;
         }
 
-        fn extend(&mut self, bytes: &[u8]) {
+        fn extend_bytes(&mut self, bytes: &[u8]) {
             self.written += bytes.len();
         }
 

@@ -131,7 +131,7 @@ impl ImageType {
 
     /// Append the canonical `ImageType` bytes: one tag byte, plus a big-endian `u16`
     /// record index when the base is a record.
-    pub(crate) fn encode(self, out: &mut Vec<u8>) {
+    pub(crate) fn encode(self, out: &mut impl crate::value_dag::ImageByteSink) {
         match self {
             ImageType::Unit => out.push(TAG_UNIT),
             ImageType::Scalar { scalar, optional } => {
@@ -139,19 +139,19 @@ impl ImageType {
             }
             ImageType::Record { idx, optional } => {
                 out.push(TAG_RECORD | if optional { OPTIONAL_FLAG } else { 0 });
-                out.extend_from_slice(&idx.to_be_bytes());
+                out.extend_bytes(&idx.to_be_bytes());
             }
             ImageType::Enum { idx, optional } => {
                 out.push(TAG_ENUM | if optional { OPTIONAL_FLAG } else { 0 });
-                out.extend_from_slice(&idx.to_be_bytes());
+                out.extend_bytes(&idx.to_be_bytes());
             }
             ImageType::Collection { idx, optional } => {
                 out.push(TAG_COLLECTION | if optional { OPTIONAL_FLAG } else { 0 });
-                out.extend_from_slice(&idx.to_be_bytes());
+                out.extend_bytes(&idx.to_be_bytes());
             }
             ImageType::Identity { root, optional } => {
                 out.push(TAG_IDENTITY | if optional { OPTIONAL_FLAG } else { 0 });
-                out.extend_from_slice(&root.to_be_bytes());
+                out.extend_bytes(&root.to_be_bytes());
             }
         }
     }

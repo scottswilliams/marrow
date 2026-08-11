@@ -103,6 +103,18 @@ directly or transitively). A collection is not stored directly in a field — a
 large collection belongs under a keyed `branch` — and a field does not store a
 nested sparse resource, a place, a function, or a handle.
 
+A stored value nests at most 32 levels. The level count of a field's value is the
+length of its longest path down to a scalar, counting the field's own value as
+level 1: a stored `int` is one level, a struct of scalars is two, and a struct
+whose deepest leaf is that struct is three. Because the measure is the *longest*
+path, one struct type used both as a shallow field value and deep inside another
+field's value is measured separately in each: the shallow field admits while the
+deep one may not. A field past the limit is reported once, as a
+`check.resource_limit` diagnostic at its `store` declaration, however many times
+its shape repeats inside the value. A value type outside the set above is
+likewise reported once per `store` declaration, as `check.unsupported`, however
+many fields store it.
+
 A `store` root is either a *singleton* or a *keyed tuple*. A singleton root
 omits the key list and holds a single entry:
 

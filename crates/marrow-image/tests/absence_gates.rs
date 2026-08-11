@@ -1050,3 +1050,78 @@ fn the_verifier_holds_no_raw_durable_value_tree() {
         "a decoded field carries a value reference, so this gate has a live subject",
     );
 }
+
+/// A durable-contract identity is minted at exactly one site, behind the body fence
+/// (red R33).
+///
+/// The old encoder built the DURABLE body first and hashed the graph at the end of it,
+/// so a body larger than any image could carry was still hashed — over a preimage larger
+/// than the body, since the contract spells a ledger identity as a 25-byte `IDREF` where
+/// the body writes 16 raw bytes. The replacement counts the body first and mints the
+/// identity only from `LegacyDurableBodyLowerBoundFence`, which exists only for a body
+/// that fits.
+///
+/// That is a type boundary, and this gate keeps it one: a second `contract_id()` call
+/// site would be a second path to the hash, reachable without the fence's witness.
+#[test]
+fn the_contract_identity_is_minted_only_behind_the_body_fence() {
+    let encode = without_literals(
+        &fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/encode.rs"))
+            .expect("read the encoder"),
+    );
+    let lines: Vec<&str> = encode.lines().collect();
+    let line_of = |needle: &str| {
+        let hits: Vec<usize> = lines
+            .iter()
+            .enumerate()
+            .filter(|(_, line)| line.contains(needle))
+            .map(|(index, _)| index)
+            .collect();
+        assert_eq!(
+            hits.len(),
+            1,
+            "the encoder names `{needle}` exactly once, at lines {hits:?}",
+        );
+        hits[0]
+    };
+
+    let fence = line_of("impl<'a> LegacyDurableBodyLowerBoundFence<'a> {");
+    let minted = line_of("contract_id()");
+    let descriptor = line_of("self.0.durable_descriptor()");
+    let draft_impl = line_of("impl ImageDraft {");
+    assert!(
+        fence < minted && minted < draft_impl,
+        "the one contract-identity mint sits inside the body fence",
+    );
+    assert!(
+        fence < descriptor && descriptor < draft_impl,
+        "so does the one descriptor construction it hashes",
+    );
+}
+
+/// The producer keeps no second, recursive way to emit a durable body (red R34).
+///
+/// One walk writes the DURABLE section for both of its readers — the lower bound that
+/// counts its bytes and the buffer that keeps them — so the body a count admits is the
+/// body that is built. A second emitter, especially one that recursed through an owned
+/// value shape, would be free to disagree with the count that admitted it.
+#[test]
+fn the_durable_body_has_one_writer() {
+    let encode = without_literals(
+        &fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/encode.rs"))
+            .expect("read the encoder"),
+    );
+    let writers = encode.matches("fn write_durable_body").count();
+    assert_eq!(
+        writers, 1,
+        "the DURABLE body has exactly one writer, generic over its sink",
+    );
+    assert!(
+        encode.contains("sink: &mut impl ImageByteSink"),
+        "that writer is sink-generic, so counting and building cannot diverge",
+    );
+    assert!(
+        !encode.contains("struct DurableSection") && !encode.contains("struct DurableBody("),
+        "the saturating body buffer the fence replaced is gone",
+    );
+}

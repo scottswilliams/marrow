@@ -28,6 +28,8 @@ A violation is an `image.table` or `image.function` rejection.
 | Whole image | 512 KiB |
 | Record / enum / collection types | 4096 each |
 | Durable roots | 4096 |
+| Durable field value nesting | 32 levels |
+| Leaves per stored `struct` value | 64 |
 | String-pool entries / bytes per entry | 8192 / 4 KiB |
 | Constant-pool entries | 1024 |
 | Functions / params per function | 4096 / 16 |

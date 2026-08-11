@@ -325,6 +325,25 @@ The v0 wire format is unchanged — it still carries the full member graph per r
 so the encoder projects each occurrence from its one retained declaration, and the
 durable contract id is projected from the same rows.
 
+A declaration member's stored value shape is a reference into one acyclic
+`CanonicalValueShapeDag` per program, the sole representation of a durable value in
+compiler, image, and verifier alike. Structurally identical shapes are interned to one
+node, a node holds references rather than nested shapes — so it can state neither a
+tree nor a cycle — and each node carries the longest path from itself down to a
+scalar, computed as it is minted. That per-node metric is what decides the 32-level
+nesting bound, so a shape reached at two depths is admitted or refused independently
+at each. The v0 wire spells a value as its full expansion, which for a shared shape is
+exponential in its nesting; both wire forms are therefore written by one iterative
+walk straight into a byte sink that stops at a ceiling, and no expanded tree is built
+in the compiler, in the contract preimage, or in the DURABLE section.
+
+The encoder's two temporary bridges stand in front of that walk: a full-draft
+coherence preflight replays every producer-side bound and coherence result in its
+legacy order, and a durable-body lower bound then counts the DURABLE section before
+building it, so a body no image could carry is refused before any buffer, contract
+preimage, or output is allocated. A durable-contract identity is minted only from the
+value that fence returns.
+
 A declaration's branch entry records are materialized once for the Product, at its
 first executable occurrence. `marrow-verify` reconstructs the declaration and its
 occurrences independently and rejects an image whose two occurrences of one Product
