@@ -18,7 +18,7 @@ use marrow_image::{
     LedgerIdBytes, Scalar, SemanticNode, SemanticNodeKind, SemanticPath, SemanticStep,
     SemanticStepKind, SemanticTarget,
 };
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::rc::Rc;
 
 /// Decode the DURABLE table (design §C 0x03): up to `MAX_ROOTS` roots — preceded,
@@ -221,12 +221,16 @@ pub(super) fn decode_durable(
     // node it addresses; a flat site drops the path from its executable form, so it
     // is retained here rather than re-derived.
     let mut site_paths: Vec<SemanticPath> = Vec::with_capacity(site_count);
+    // The resolved identities already claimed, keyed. Sites are unique by that identity:
+    // a flat site by (root, target), a parked site by (path, target), and a flat and a
+    // parked site can never collide. Comparing each fresh site against every retained one
+    // instead was a deep structural comparison of whole path chains and branch paths, so
+    // the claim cost grew with the square of the site count while the answer — and the
+    // wire ordinal the first duplicate is refused at — is exactly this one.
+    let mut claimed: HashSet<SealedSite> = HashSet::with_capacity(site_count);
     for _ in 0..site_count {
         let (site, path) = decode_site(&mut reader, &nodes, &roots)?;
-        // Sites are unique by their resolved identity: a flat site by (root, target),
-        // a parked site by (path, target). Full structural equality covers both, and a
-        // flat and a parked site can never collide.
-        if sites.contains(&site) {
+        if !claimed.insert(site.clone()) {
             return Err(reject(VerifyPhase::Table, "duplicate durable site"));
         }
         sites.push(site);
@@ -742,7 +746,7 @@ fn branch_index(members: &[DecodedMember], placement_id: LedgerIdBytes) -> Optio
 /// repeated root occurrence is refused as itself rather than as a generic duplicate id.
 #[derive(Default)]
 struct LedgerScope {
-    seen: Vec<LedgerIdBytes>,
+    seen: BTreeSet<LedgerIdBytes>,
     enums: BTreeMap<LedgerIdBytes, Vec<LedgerIdBytes>>,
     products: BTreeMap<LedgerIdBytes, ProductClaim>,
     placements: BTreeSet<LedgerIdBytes>,
@@ -796,10 +800,9 @@ fn read_id(reader: &mut Reader<'_>, what: &'static str) -> Result<LedgerIdBytes,
 /// seen in this durable table. Two equal declaration ids are a forged or corrupted
 /// identity block.
 fn claim_distinct(scope: &mut LedgerScope, id: LedgerIdBytes) -> Result<(), VerifyRejection> {
-    if scope.seen.contains(&id) {
+    if !scope.seen.insert(id) {
         return Err(reject(VerifyPhase::Table, "duplicate durable ledger id"));
     }
-    scope.seen.push(id);
     Ok(())
 }
 

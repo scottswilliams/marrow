@@ -344,7 +344,7 @@ pub enum SealedInstr {
 /// [`SealedBranch::branches`]). A single-element path names a direct branch of the root;
 /// a longer path names a branch nested one level deeper per element. A branch node's
 /// key-path is the root key followed by one key per path element.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum SealedSiteTarget {
     WholePayload,
     FieldLeaf(u16),
@@ -392,7 +392,7 @@ pub enum SealedSiteTarget {
 /// the reconstructed graph, but physical execution stays parked (index traversal lands
 /// at E05; groups at their lane). A durable opcode may reference only a `Flat` site; a
 /// reference to a `Parked` site is refused in phase 3.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum SealedSite {
     /// Executable on the flat keyed root: the root index it resolved to
     /// and the whole-payload or resolved-field-index target.
