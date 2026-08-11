@@ -20,6 +20,7 @@ mod instr;
 mod interface;
 mod product;
 mod semantic;
+mod site_plan;
 mod store_digest;
 mod ty;
 

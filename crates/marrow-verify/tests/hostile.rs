@@ -436,9 +436,15 @@ fn durable_schema(draft: &mut ImageDraft) -> (u16, u16, u16) {
             members: counters_members(),
         },
     });
-    let entry = draft.add_site(SiteDef::whole_payload(root_path()));
-    let value_site = draft.add_site(SiteDef::field_leaf(field_path(VALUE_FIELD_ID)));
-    let label_site = draft.add_site(SiteDef::field_leaf(field_path(LABEL_FIELD_ID)));
+    let entry = draft
+        .request_site(SiteDef::whole_payload(root_path()))
+        .expect("the fixture's site demand fits the plan");
+    let value_site = draft
+        .request_site(SiteDef::field_leaf(field_path(VALUE_FIELD_ID)))
+        .expect("the fixture's site demand fits the plan");
+    let label_site = draft
+        .request_site(SiteDef::field_leaf(field_path(LABEL_FIELD_ID)))
+        .expect("the fixture's site demand fits the plan");
     (entry.index(), value_site.index(), label_site.index())
 }
 
@@ -590,7 +596,9 @@ fn a_bounded_traversal_over_a_branch_verifies_and_type_checks() {
     // root key (int) is popped, the frozen `List[string]` of branch keys and the on-more
     // `Bool` are pushed, and the image seals.
     let (mut draft, _branch_record) = flat_branch_draft();
-    let site = draft.add_site(SiteDef::whole_payload(branch_entry_path()));
+    let site = draft
+        .request_site(SiteDef::whole_payload(branch_entry_path()))
+        .expect("the fixture's site demand fits the plan");
     let list_ty = draft
         .add_collection_type(CollectionTypeDef::List {
             elem: ImageType::scalar(Scalar::Text),
@@ -689,7 +697,9 @@ fn a_bounded_branch_traversal_missing_its_ancestor_key_rejects() {
     // no ancestor key leaves that pop against an empty stack — a key-arity forgery the
     // verifier refuses.
     let (mut draft, _branch_record) = flat_branch_draft();
-    let site = draft.add_site(SiteDef::whole_payload(branch_entry_path()));
+    let site = draft
+        .request_site(SiteDef::whole_payload(branch_entry_path()))
+        .expect("the fixture's site demand fits the plan");
     let list_ty = draft
         .add_collection_type(CollectionTypeDef::List {
             elem: ImageType::scalar(Scalar::Text),
@@ -839,7 +849,8 @@ fn a_non_index_opcode_over_a_managed_index_site_rejects() {
     // boundary refuses it rather than reaching the closed-complement of the three index reads.
     let mut draft = indexed_draft(by_label_projection());
     let lookup_site = draft
-        .add_site(SiteDef::index_lookup(index_path(BY_VALUE_INDEX_ID)))
+        .request_site(SiteDef::index_lookup(index_path(BY_VALUE_INDEX_ID)))
+        .expect("the fixture's site demand fits the plan")
         .index();
     let src = draft.intern_string("src/main.mw");
     let name = draft.intern_string("probe");
@@ -1162,7 +1173,9 @@ fn a_composite_root_write_opcode_with_a_truncated_key_path_rejects() {
             }],
         },
     });
-    let value_site = draft.add_site(SiteDef::field_leaf(field_path(VALUE_FIELD_ID)));
+    let value_site = draft
+        .request_site(SiteDef::field_leaf(field_path(VALUE_FIELD_ID)))
+        .expect("the fixture's site demand fits the plan");
     let src = draft.intern_string("src/main.mw");
     let name = draft.intern_string("put");
     let code = vec![
@@ -1300,7 +1313,9 @@ fn group_branch_draft_with_branch_record(
     });
     let src = draft.intern_string("src/main.mw");
     if with_site {
-        let site = draft.add_site(SiteDef::field_leaf(field_path(VALUE_FIELD_ID)));
+        let site = draft
+            .request_site(SiteDef::field_leaf(field_path(VALUE_FIELD_ID)))
+            .expect("the fixture's site demand fits the plan");
         let name = draft.intern_string("read");
         let code = vec![
             Instr::LocalGet(0),
@@ -1709,7 +1724,9 @@ fn a_site_that_claims_to_traverse_a_unique_index_rejects() {
     // unique index and observe siblings — is refused when the site's read kind is
     // checked against the index's unique flag.
     let mut draft = indexed_draft(by_label_projection());
-    draft.add_site(SiteDef::index_scan(index_path(BY_VALUE_INDEX_ID)));
+    draft
+        .request_site(SiteDef::index_scan(index_path(BY_VALUE_INDEX_ID)))
+        .expect("the fixture's site demand fits the plan");
     assert_eq!(code_of(&draft.encode().unwrap().bytes), "image.table");
 }
 
@@ -1718,7 +1735,9 @@ fn a_site_that_exact_looks_up_a_nonunique_index_rejects() {
     // Symmetrically, the nonunique `byLabel` admits only a progressive-prefix scan; a
     // forged complete-key lookup site over it is refused.
     let mut draft = indexed_draft(by_label_projection());
-    draft.add_site(SiteDef::index_lookup(index_path(BY_LABEL_INDEX_ID)));
+    draft
+        .request_site(SiteDef::index_lookup(index_path(BY_LABEL_INDEX_ID)))
+        .expect("the fixture's site demand fits the plan");
     assert_eq!(code_of(&draft.encode().unwrap().bytes), "image.table");
 }
 
@@ -1949,7 +1968,9 @@ fn a_whole_group_site_over_a_root_group_seals_executable_and_its_opcode_verifies
     // through the root's key-path. The read record is popped so the export return type
     // stays decoupled from the group record index.
     let mut draft = group_branch_draft(false);
-    let site = draft.add_site(SiteDef::group_entry(group_entry_path()));
+    let site = draft
+        .request_site(SiteDef::group_entry(group_entry_path()))
+        .expect("the fixture's site demand fits the plan");
     let src = draft.intern_string("src/main.mw");
     let name = draft.intern_string("readGroup");
     let zero = draft.intern_int(0);
@@ -1979,7 +2000,9 @@ fn a_whole_group_target_over_a_field_node_rejects() {
     // group *field* leaf (`details.pages`) but claims the GroupEntry target disagrees with
     // the resolved node kind and is refused at the table phase.
     let mut draft = group_branch_draft(false);
-    draft.add_site(SiteDef::group_entry(group_field_path()));
+    draft
+        .request_site(SiteDef::group_entry(group_field_path()))
+        .expect("the fixture's site demand fits the plan");
     assert_eq!(code_of(&draft.encode().unwrap().bytes), "image.table");
 }
 
@@ -1989,7 +2012,9 @@ fn a_group_opcode_over_a_non_group_site_rejects() {
     // field-leaf site (the root's own `title`) is refused during per-function typing
     // (`image.function`), independently of the compiler's boundary.
     let mut draft = group_branch_draft(false);
-    let site = draft.add_site(SiteDef::field_leaf(field_path(VALUE_FIELD_ID)));
+    let site = draft
+        .request_site(SiteDef::field_leaf(field_path(VALUE_FIELD_ID)))
+        .expect("the fixture's site demand fits the plan");
     let src = draft.intern_string("src/main.mw");
     let name = draft.intern_string("readGroup");
     let zero = draft.intern_int(0);
@@ -2031,7 +2056,9 @@ fn a_group_scoped_field_site_seals_parked() {
     // site (group-leaf assignment lowers to a whole-group RMW). No opcode references it, so
     // the image verifies.
     let mut draft = group_branch_draft(false);
-    draft.add_site(SiteDef::field_leaf(group_field_path()));
+    draft
+        .request_site(SiteDef::field_leaf(group_field_path()))
+        .expect("the fixture's site demand fits the plan");
     assert!(
         verify(&draft.encode().unwrap().bytes).is_ok(),
         "a group-scoped field site seals parked",
@@ -2045,7 +2072,9 @@ fn an_opcode_over_a_parked_group_field_site_rejects() {
     // boundary — a group leaf is reached only through a whole-group `GroupEntry` site, never
     // a direct field-leaf opcode.
     let mut draft = group_branch_draft(false);
-    let site = draft.add_site(SiteDef::field_leaf(group_field_path()));
+    let site = draft
+        .request_site(SiteDef::field_leaf(group_field_path()))
+        .expect("the fixture's site demand fits the plan");
     let src = draft.intern_string("src/main.mw");
     let name = draft.intern_string("read");
     let code = vec![
@@ -2083,7 +2112,9 @@ fn a_deep_nested_branch_field_site_seals_executable() {
     // root's sibling scalar-field branches. No opcode references the site, so the image
     // verifies regardless.
     let mut draft = group_branch_draft(false);
-    draft.add_site(SiteDef::field_leaf(branch_field_path()));
+    draft
+        .request_site(SiteDef::field_leaf(branch_field_path()))
+        .expect("the fixture's site demand fits the plan");
     assert!(
         verify(&draft.encode().unwrap().bytes).is_ok(),
         "a nested branch-field site seals executable"
@@ -2197,7 +2228,9 @@ fn a_branch_whole_entry_read_over_a_flat_root_seals_and_type_checks() {
     // executable, and a read over it type-checks the two-element key-path
     // `[root_key, branch_key]` (int then string) and yields the branch's own record.
     let (mut draft, branch_record) = flat_branch_draft();
-    let site = draft.add_site(SiteDef::whole_payload(branch_entry_path()));
+    let site = draft
+        .request_site(SiteDef::whole_payload(branch_entry_path()))
+        .expect("the fixture's site demand fits the plan");
     let src = draft.intern_string("src/main.mw");
     let name = draft.intern_string("note");
     let code = vec![
@@ -2231,7 +2264,9 @@ fn a_branch_entry_op_missing_its_root_key_rejects() {
     // leaves the second (root) key pop with an empty stack — a key-arity forgery the
     // verifier refuses during per-function typing.
     let (mut draft, branch_record) = flat_branch_draft();
-    let site = draft.add_site(SiteDef::whole_payload(branch_entry_path()));
+    let site = draft
+        .request_site(SiteDef::whole_payload(branch_entry_path()))
+        .expect("the fixture's site demand fits the plan");
     let src = draft.intern_string("src/main.mw");
     let name = draft.intern_string("note");
     let code = vec![
@@ -2263,7 +2298,9 @@ fn a_branch_entry_op_with_the_wrong_branch_key_type_rejects() {
     // The branch key column is `string`; pushing an `int` where the branch key belongs
     // is a type mismatch the two-element key-path check refuses.
     let (mut draft, branch_record) = flat_branch_draft();
-    let site = draft.add_site(SiteDef::whole_payload(branch_entry_path()));
+    let site = draft
+        .request_site(SiteDef::whole_payload(branch_entry_path()))
+        .expect("the fixture's site demand fits the plan");
     let src = draft.intern_string("src/main.mw");
     let name = draft.intern_string("note");
     let code = vec![
@@ -2322,9 +2359,11 @@ fn a_site_path_at_the_maximum_depth_is_admitted_by_the_bound() {
     // the bound as inclusive at the maximum concrete-address depth.
     let mut draft = ImageDraft::new();
     durable_schema(&mut draft);
-    draft.add_site(SiteDef::field_leaf(n_step_field_path(
-        marrow_image::bounds::MAX_SITE_PATH_STEPS,
-    )));
+    draft
+        .request_site(SiteDef::field_leaf(n_step_field_path(
+            marrow_image::bounds::MAX_SITE_PATH_STEPS,
+        )))
+        .expect("the fixture's site demand fits the plan");
     let bytes = finish_two_key(
         draft,
         vec![Instr::TxnBegin, Instr::TxnCommit, Instr::Return],
@@ -2344,9 +2383,11 @@ fn a_site_path_past_the_maximum_depth_is_refused_by_the_encoder() {
     // over-deep site path can never be produced through the production path.
     let mut draft = ImageDraft::new();
     durable_schema(&mut draft);
-    draft.add_site(SiteDef::field_leaf(n_step_field_path(
-        marrow_image::bounds::MAX_SITE_PATH_STEPS + 1,
-    )));
+    draft
+        .request_site(SiteDef::field_leaf(n_step_field_path(
+            marrow_image::bounds::MAX_SITE_PATH_STEPS + 1,
+        )))
+        .expect("the fixture's site demand fits the plan");
     let src = draft.intern_string("src/main.mw");
     let name = draft.intern_string("put");
     let code = vec![Instr::TxnBegin, Instr::TxnCommit, Instr::Return];
@@ -2414,9 +2455,11 @@ fn a_forged_over_deep_site_path_is_refused_by_the_verifier() {
     // unbounded path past the container.
     let mut draft = ImageDraft::new();
     durable_schema(&mut draft);
-    draft.add_site(SiteDef::field_leaf(n_step_field_path(
-        marrow_image::bounds::MAX_SITE_PATH_STEPS,
-    )));
+    draft
+        .request_site(SiteDef::field_leaf(n_step_field_path(
+            marrow_image::bounds::MAX_SITE_PATH_STEPS,
+        )))
+        .expect("the fixture's site demand fits the plan");
     let mut bytes = finish_two_key(
         draft,
         vec![Instr::TxnBegin, Instr::TxnCommit, Instr::Return],
@@ -2461,7 +2504,9 @@ fn a_forged_over_deep_site_path_is_refused_by_the_verifier() {
 fn durable_with_extra_site(extra: SiteDef) -> Vec<u8> {
     let mut draft = ImageDraft::new();
     let (_entry, value_site, _label) = durable_schema(&mut draft);
-    draft.add_site(extra);
+    draft
+        .request_site(extra)
+        .expect("the fixture's site demand fits the plan");
     let src = draft.intern_string("src/main.mw");
     let name = draft.intern_string("put");
     let code = vec![
@@ -3058,15 +3103,23 @@ fn branch_presence_schema() -> (ImageDraft, u16, u16, u16) {
             members,
         },
     });
-    draft.add_site(SiteDef::whole_payload(root_path()));
-    draft.add_site(SiteDef::field_leaf(field_path(VALUE_FIELD_ID)));
-    let label_site = draft.add_site(SiteDef::field_leaf(field_path(LABEL_FIELD_ID)));
-    let branch_entry = draft.add_site(SiteDef::whole_payload(root_path().child(
-        SemanticStep::new(
-            SemanticStepKind::Placement,
-            LedgerIdBytes::from_bytes([0x30; 16]),
-        ),
-    )));
+    draft
+        .request_site(SiteDef::whole_payload(root_path()))
+        .expect("the fixture's site demand fits the plan");
+    draft
+        .request_site(SiteDef::field_leaf(field_path(VALUE_FIELD_ID)))
+        .expect("the fixture's site demand fits the plan");
+    let label_site = draft
+        .request_site(SiteDef::field_leaf(field_path(LABEL_FIELD_ID)))
+        .expect("the fixture's site demand fits the plan");
+    let branch_entry = draft
+        .request_site(SiteDef::whole_payload(root_path().child(
+            SemanticStep::new(
+                SemanticStepKind::Placement,
+                LedgerIdBytes::from_bytes([0x30; 16]),
+            ),
+        )))
+        .expect("the fixture's site demand fits the plan");
     (
         draft,
         label_site.index(),
@@ -3194,18 +3247,22 @@ fn branch_field_schema() -> (ImageDraft, u16, u16) {
             members,
         },
     });
-    let root_entry = draft.add_site(SiteDef::whole_payload(root_path()));
-    let branch_field = draft.add_site(SiteDef::field_leaf(
-        root_path()
-            .child(SemanticStep::new(
-                SemanticStepKind::Placement,
-                LedgerIdBytes::from_bytes([0x30; 16]),
-            ))
-            .child(SemanticStep::new(
-                SemanticStepKind::Field,
-                LedgerIdBytes::from_bytes([0x32; 16]),
-            )),
-    ));
+    let root_entry = draft
+        .request_site(SiteDef::whole_payload(root_path()))
+        .expect("the fixture's site demand fits the plan");
+    let branch_field = draft
+        .request_site(SiteDef::field_leaf(
+            root_path()
+                .child(SemanticStep::new(
+                    SemanticStepKind::Placement,
+                    LedgerIdBytes::from_bytes([0x30; 16]),
+                ))
+                .child(SemanticStep::new(
+                    SemanticStepKind::Field,
+                    LedgerIdBytes::from_bytes([0x32; 16]),
+                )),
+        ))
+        .expect("the fixture's site demand fits the plan");
     (draft, root_entry.index(), branch_field.index())
 }
 
@@ -4734,10 +4791,11 @@ fn a_valid_deep_nested_branch_entry_site_seals_executable_and_its_opcode_verifie
     // three-column key-path type-checks and verifies.
     let mut draft = nested_branch_draft();
     let site = draft
-        .add_site(SiteDef::whole_payload(nested_path(&[
+        .request_site(SiteDef::whole_payload(nested_path(&[
             step(SemanticStepKind::Placement, 0x30),
             step(SemanticStepKind::Placement, 0x40),
         ])))
+        .expect("the fixture's site demand fits the plan")
         .index();
     assert_eq!(code_of(&exists_over_tag_entry(draft, site)), "VERIFIED");
 }
@@ -4750,11 +4808,12 @@ fn a_branch_path_routed_through_a_field_rejects_at_the_table_phase() {
     // before any function, and independently of whether an opcode references it.
     let mut draft = nested_branch_draft();
     let site = draft
-        .add_site(SiteDef::whole_payload(nested_path(&[
+        .request_site(SiteDef::whole_payload(nested_path(&[
             step(SemanticStepKind::Placement, 0x30),
             step(SemanticStepKind::Field, 0x32),
             step(SemanticStepKind::Placement, 0x40),
         ])))
+        .expect("the fixture's site demand fits the plan")
         .index();
     assert_eq!(code_of(&exists_over_tag_entry(draft, site)), "image.table");
 }
@@ -4766,10 +4825,11 @@ fn a_branch_path_naming_a_nonexistent_hop_rejects_at_the_table_phase() {
     // out-of-range branch hop can never resolve to — and mis-address — a durable operation.
     let mut draft = nested_branch_draft();
     let site = draft
-        .add_site(SiteDef::whole_payload(nested_path(&[
+        .request_site(SiteDef::whole_payload(nested_path(&[
             step(SemanticStepKind::Placement, 0x30),
             step(SemanticStepKind::Placement, 0x99),
         ])))
+        .expect("the fixture's site demand fits the plan")
         .index();
     assert_eq!(code_of(&exists_over_tag_entry(draft, site)), "image.table");
 }
@@ -4825,7 +4885,10 @@ fn composite_root_draft() -> (ImageDraft, u16) {
             }],
         },
     });
-    let entry = draft.add_site(SiteDef::whole_payload(root_path())).index();
+    let entry = draft
+        .request_site(SiteDef::whole_payload(root_path()))
+        .expect("the fixture's site demand fits the plan")
+        .index();
     (draft, entry)
 }
 

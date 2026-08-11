@@ -106,10 +106,12 @@ fn build_two_roots(draft: &mut ImageDraft, b_name: &str, b_key_scalar: Scalar) -
     });
 
     let a_site = draft
-        .add_site(SiteDef::whole_payload(placement_path(A_PLACEMENT)))
+        .request_site(SiteDef::whole_payload(placement_path(A_PLACEMENT)))
+        .expect("the fixture's site demand fits the plan")
         .index();
     let b_site = draft
-        .add_site(SiteDef::whole_payload(placement_path(B_PLACEMENT)))
+        .request_site(SiteDef::whole_payload(placement_path(B_PLACEMENT)))
+        .expect("the fixture's site demand fits the plan")
         .index();
     (a_site, b_site)
 }
@@ -255,7 +257,9 @@ fn build_shared_product(draft: &mut ImageDraft) -> TypeId {
                 members: members(),
             },
         });
-        draft.add_site(SiteDef::whole_payload(placement_path(placement)));
+        draft
+            .request_site(SiteDef::whole_payload(placement_path(placement)))
+            .expect("the fixture's site demand fits the plan");
     }
     record
 }

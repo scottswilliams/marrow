@@ -78,7 +78,10 @@ fn commit_image(post_commit_fault: PostCommitFault, mutating: bool) -> VerifiedI
             }],
         },
     });
-    let site = draft.add_site(SiteDef::whole_payload(root_path())).index();
+    let site = draft
+        .request_site(SiteDef::whole_payload(root_path()))
+        .expect("the fixture's site demand fits the plan")
+        .index();
     let key = draft.intern_int(1);
     let value = draft.intern_int(7);
     let one = draft.intern_int(1);

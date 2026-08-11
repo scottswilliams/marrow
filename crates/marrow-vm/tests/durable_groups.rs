@@ -125,8 +125,14 @@ fn groups_image() -> VerifiedImage {
         },
     });
 
-    let root_entry = draft.add_site(SiteDef::whole_payload(root_path())).index();
-    let group_entry = draft.add_site(SiteDef::group_entry(group_path())).index();
+    let root_entry = draft
+        .request_site(SiteDef::whole_payload(root_path()))
+        .expect("the fixture's site demand fits the plan")
+        .index();
+    let group_entry = draft
+        .request_site(SiteDef::group_entry(group_path()))
+        .expect("the fixture's site demand fits the plan")
+        .index();
 
     let src = draft.intern_string("src/main.mw");
     let book_ty_idx = book_record.index();

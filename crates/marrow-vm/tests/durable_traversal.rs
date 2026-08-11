@@ -126,9 +126,13 @@ fn traversal_image() -> VerifiedImage {
         },
     });
 
-    let root_entry = draft.add_site(SiteDef::whole_payload(root_path())).index();
+    let root_entry = draft
+        .request_site(SiteDef::whole_payload(root_path()))
+        .expect("the fixture's site demand fits the plan")
+        .index();
     let branch_entry = draft
-        .add_site(SiteDef::whole_payload(branch_path()))
+        .request_site(SiteDef::whole_payload(branch_path()))
+        .expect("the fixture's site demand fits the plan")
         .index();
     let list_int = draft
         .add_collection_type(CollectionTypeDef::List {
@@ -465,7 +469,10 @@ fn wide_key_image() -> (VerifiedImage, u16) {
             }],
         },
     });
-    let root_entry = draft.add_site(SiteDef::whole_payload(root_path())).index();
+    let root_entry = draft
+        .request_site(SiteDef::whole_payload(root_path()))
+        .expect("the fixture's site demand fits the plan")
+        .index();
     let list_str = draft
         .add_collection_type(CollectionTypeDef::List {
             elem: ImageType::scalar(Scalar::Text),

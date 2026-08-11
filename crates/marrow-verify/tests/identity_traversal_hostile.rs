@@ -149,7 +149,8 @@ fn two_root_branch_draft(draft: &mut ImageDraft) -> (u16, u16, u16) {
     });
 
     let branch_site = draft
-        .add_site(SiteDef::whole_payload(branch_entry_path()))
+        .request_site(SiteDef::whole_payload(branch_entry_path()))
+        .expect("the fixture's site demand fits the plan")
         .index();
     let list_ty = draft
         .add_collection_type(CollectionTypeDef::List {
@@ -157,7 +158,8 @@ fn two_root_branch_draft(draft: &mut ImageDraft) -> (u16, u16, u16) {
         })
         .index();
     let subtitle_site = draft
-        .add_site(SiteDef::field_leaf(field_path(A_SUBTITLE_FIELD)))
+        .request_site(SiteDef::field_leaf(field_path(A_SUBTITLE_FIELD)))
+        .expect("the fixture's site demand fits the plan")
         .index();
     (branch_site, list_ty, subtitle_site)
 }

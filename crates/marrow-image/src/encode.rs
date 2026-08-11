@@ -141,7 +141,7 @@ impl ImageDraft {
                 }
             }
         }
-        if self.sites().len() > bounds::MAX_SITES {
+        if self.site_demand() > bounds::MAX_SITES {
             return Err(ImageBuildError::TooManySites);
         }
         for site in self.sites() {

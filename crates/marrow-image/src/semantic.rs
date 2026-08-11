@@ -327,7 +327,9 @@ mod tests {
         )])
         .expect("one step is non-empty");
         let mut draft = ImageDraft::new();
-        draft.add_site(SiteDef::whole_payload(path));
+        draft
+            .request_site(SiteDef::whole_payload(path))
+            .expect("the fixture's site demand fits the plan");
 
         assert!(matches!(
             draft.encode(),

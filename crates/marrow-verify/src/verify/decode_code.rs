@@ -956,8 +956,13 @@ mod index_site_partition {
             SemanticStepKind::Field,
             LedgerIdBytes::from_bytes(VALUE_FIELD_ID),
         ));
-        draft.add_site(SiteDef::whole_payload(path(root_step())));
-        let value_site = draft.add_site(SiteDef::field_leaf(path(field))).index();
+        draft
+            .request_site(SiteDef::whole_payload(path(root_step())))
+            .expect("the fixture's site demand fits the plan");
+        let value_site = draft
+            .request_site(SiteDef::field_leaf(path(field)))
+            .expect("the fixture's site demand fits the plan")
+            .index();
         let list_ty = draft
             .add_collection_type(CollectionTypeDef::List {
                 elem: ImageType::scalar(Scalar::Int),

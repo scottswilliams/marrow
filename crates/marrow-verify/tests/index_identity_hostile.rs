@@ -129,12 +129,16 @@ fn build_graph(draft: &mut ImageDraft) -> Graph {
         },
     });
     // Site 0 is the root whole-payload entry; then the two index read sites.
-    draft.add_site(SiteDef::whole_payload(root_path()));
+    draft
+        .request_site(SiteDef::whole_payload(root_path()))
+        .expect("the fixture's site demand fits the plan");
     let scan_site = draft
-        .add_site(SiteDef::index_scan(index_path(BY_SHELF_ID)))
+        .request_site(SiteDef::index_scan(index_path(BY_SHELF_ID)))
+        .expect("the fixture's site demand fits the plan")
         .index();
     let lookup_site = draft
-        .add_site(SiteDef::index_lookup(index_path(BY_ISBN_ID)))
+        .request_site(SiteDef::index_lookup(index_path(BY_ISBN_ID)))
+        .expect("the fixture's site demand fits the plan")
         .index();
     let list_int = draft
         .add_collection_type(marrow_image::CollectionTypeDef::List {

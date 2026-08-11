@@ -104,3 +104,74 @@ fn the_scan_sees_code_and_not_prose() {
         "the visible occurrence is the code one: {hits:?}",
     );
 }
+
+/// No site id is ever a narrowed table length, and no second site mint path exists.
+///
+/// The site table was appended to directly, its id taken as `self.sites.len() as u16`,
+/// with the bound seen only at `encode()`. A producer could request past `u16::MAX`
+/// distinct durable nodes, receive a wrapped id, and hand two distinct nodes one site
+/// operand. The bounded plan mints only after checking vacant capacity, so restoring
+/// either the raw append or a length-narrowing cast would reopen the aliasing.
+#[test]
+fn no_length_narrowing_site_mint_path_exists() {
+    for needle in [
+        "sites.len() as u16",
+        "rows.len() as u16",
+        "fn add_site",
+        "fn alloc_site",
+        ".add_site(",
+        ".alloc_site(",
+    ] {
+        let hits = occurrences(needle);
+        assert!(
+            hits.is_empty(),
+            "`{needle}` is deleted from the site path; found at {hits:?}",
+        );
+    }
+}
+
+/// The whole `as u16` family on the site path, in every spelling a length could take.
+/// The plan's own conversions are `u16::try_from`, so any `as u16` reached from a length
+/// is the deleted shape returning.
+#[test]
+fn the_site_plan_narrows_no_length_with_an_as_cast() {
+    let plan =
+        std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/site_plan.rs"))
+            .expect("read the site plan");
+    let code = without_literals(&plan);
+    assert!(
+        !code.contains("as u16"),
+        "the site plan converts with `u16::try_from`, never an `as` cast",
+    );
+    assert!(
+        code.contains("u16::try_from"),
+        "the plan's checked conversion is present, so this gate has a live subject",
+    );
+}
+
+/// The planted-probe half of the two gates above: each needle must be visible to the
+/// scan in code and invisible in prose, or the gates pass for the wrong reason.
+#[test]
+fn the_site_scan_sees_code_and_not_prose() {
+    let planted = without_literals(
+        r##"
+        // let id = self.sites.len() as u16;
+        const DOC: &str = "sites.len() as u16";
+        const RAW: &str = r#"sites.len() as u16"#;
+        let live = self.sites.len() as u16;
+        "##,
+    );
+    let hits: Vec<&str> = planted
+        .lines()
+        .filter(|line| line.contains("sites.len() as u16"))
+        .collect();
+    assert_eq!(
+        hits.len(),
+        1,
+        "exactly the code occurrence is visible to the scan: {hits:?}",
+    );
+    assert!(
+        hits[0].contains("let live"),
+        "the visible occurrence is the code one: {hits:?}",
+    );
+}

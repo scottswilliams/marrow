@@ -891,10 +891,8 @@ impl<'a> FnLowerer<'a> {
                 }
                 let (keys, node) = self.resolve_place_entry_node(base)?;
                 if let Some(field) = node.field(field_name) {
-                    let site = self
-                        .draft
-                        .alloc_site(SiteDef::field_leaf(field.path))
-                        .index();
+                    let site =
+                        crate::durable::request_site(self.draft, SiteDef::field_leaf(field.path));
                     return Some(DurablePlace {
                         keys,
                         target: DurTarget::Field {
@@ -1262,10 +1260,8 @@ impl<'a> FnLowerer<'a> {
                 }
                 let (keys, node) = self.resolve_entry_address(root, base)?;
                 if let Some(field) = node.field(field_name) {
-                    let site = self
-                        .draft
-                        .alloc_site(SiteDef::field_leaf(field.path))
-                        .index();
+                    let site =
+                        crate::durable::request_site(self.draft, SiteDef::field_leaf(field.path));
                     return Some(DurablePlace {
                         keys,
                         target: DurTarget::Field {

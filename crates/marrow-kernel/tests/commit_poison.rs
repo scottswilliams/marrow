@@ -97,13 +97,17 @@ fn vm_commit_image(write: VmWrite) -> VerifiedImage {
         },
     });
     let entry_site = draft
-        .add_site(SiteDef::whole_payload(vm_root_path()))
+        .request_site(SiteDef::whole_payload(vm_root_path()))
+        .expect("the fixture's site demand fits the plan")
         .index();
     let field_path = vm_root_path().child(SemanticStep::new(
         SemanticStepKind::Field,
         LedgerIdBytes::from_bytes(VALUE_FIELD_ID),
     ));
-    let field_site = draft.add_site(SiteDef::field_leaf(field_path)).index();
+    let field_site = draft
+        .request_site(SiteDef::field_leaf(field_path))
+        .expect("the fixture's site demand fits the plan")
+        .index();
     let key = draft.intern_text("vm");
     let value = draft.intern_int(7);
     let mut code = vec![

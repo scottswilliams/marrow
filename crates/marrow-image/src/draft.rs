@@ -7,12 +7,12 @@
 //! sorts the string and constant pools into their canonical order and rewrites
 //! every reference, so the compiler never reasons about final pool positions.
 //!
-//! The draft enforces the §E representational bounds as it is built, so a
-//! well-formed draft always encodes to bytes within them. The independent verifier
-//! rechecks every bound against the received bytes; the draft's checks are a
+//! The draft enforces the §E operation-site bound as it is built: sites are minted
+//! through one bounded [`SiteDemandPlan`] that checks vacant capacity before it mints an
+//! id, so no site id is ever a narrowed table length. The remaining `add_*` owners still
+//! append unconditionally and are bounded only by the encoder's recheck. The independent
+//! verifier rechecks every bound against the received bytes; the draft's checks are a
 //! producer-side guard, not the trust boundary.
-
-use std::collections::HashMap;
 
 use crate::durable_id::{
     DurableIndexShape, DurableProductIdentity, DurableValueShape, LedgerIdBytes,
@@ -25,6 +25,7 @@ use crate::product::{
     ProductEntryRecordClaim, RootOccurrence,
 };
 use crate::semantic::{SemanticPath, SemanticTarget};
+use crate::site_plan::SiteDemandPlan;
 use crate::ty::{ImageType, Scalar};
 
 /// A logical string-pool id, stable across the sort the encoder performs.
@@ -96,6 +97,13 @@ impl FuncId {
 pub struct SiteId(pub(crate) u16);
 
 impl SiteId {
+    /// The id of the site row at `ordinal`. Minted only by the site demand plan, which
+    /// checks vacant capacity first, so every value that reaches here is inside the site
+    /// table's capacity.
+    pub(crate) fn from_ordinal(ordinal: u16) -> Self {
+        Self(ordinal)
+    }
+
     /// The raw site index, as carried in a `Dur*` operand.
     pub fn index(self) -> u16 {
         self.0
@@ -415,17 +423,9 @@ pub struct ImageDraft {
     /// of them away.
     product_conflict: Option<ProductClaimConflict>,
     application: Option<LedgerIdBytes>,
-    sites: Vec<SiteDef>,
-    /// Deduplicating index for lazily-allocated operation sites, keyed by the addressed
-    /// node's whole [`SemanticPath`] and the operation target. The `sites` vector stays
-    /// the sole site-table authority and emission order; this index only lets a repeated
-    /// reference to one `(node, target)` return the site already minted, so the table
-    /// carries a site per *referenced* node rather than one per declared graph node.
-    ///
-    /// The key is the whole path, never the terminal step's ledger id: a Product member
-    /// declaration below two root occurrences has one declaration id and two distinct
-    /// paths, so a terminal-id key would hand one occurrence the other occurrence's site.
-    site_index: HashMap<(SemanticPath, SemanticTarget), SiteId>,
+    /// The one owner of the operation-site table, its demand map, and its capacity
+    /// policy. Every site an image carries is requested through it.
+    sites: SiteDemandPlan,
     functions: Vec<FunctionDef>,
     exports: Vec<ExportDef>,
     test_entries: Vec<TestEntryDef>,
@@ -606,27 +606,25 @@ impl ImageDraft {
         self.application = Some(id);
     }
 
-    pub fn add_site(&mut self, def: SiteDef) -> SiteId {
-        let id = SiteId(self.sites.len() as u16);
-        self.sites.push(def);
-        id
-    }
-
-    /// Mint-or-return the operation site for `def`, deduplicated by the addressed node's
-    /// ledger id and target. The first reference to a `(node, target)` appends a site; a
-    /// later reference to the same one returns the existing index. Field-leaf sites are
-    /// allocated this way at lowering time, so the site table carries a leaf site per
-    /// *referenced* field rather than one per declared field. Non-deduplicated bounded
-    /// sites (whole-payload, group-entry, index) are emitted eagerly through
-    /// [`Self::add_site`]; they are unique per graph node and never re-minted.
-    pub fn alloc_site(&mut self, def: SiteDef) -> SiteId {
-        let key = (def.path.clone(), def.target);
-        if let Some(existing) = self.site_index.get(&key) {
-            return *existing;
-        }
-        let id = self.add_site(def);
-        self.site_index.insert(key, id);
-        id
+    /// Mint-or-return the operation site answering `def`, through the draft's one bounded
+    /// [`SiteDemandPlan`].
+    ///
+    /// The first request for a `(node, target)` demand appends a row; a later request for
+    /// the same one returns the id already minted, so the site table carries a site per
+    /// *demanded* node rather than one per declared graph node. Eagerly emitted bounded
+    /// sites (whole-payload, group-entry, index) and lazily demanded field leaves share
+    /// this one mint path: they are disjoint by construction — an eager demand's terminal
+    /// step is a placement, group, or index node and its target is never `FieldLeaf` —
+    /// so unifying them mints no different row for any production graph, while leaving no
+    /// second path that can append a row the demand map cannot see.
+    ///
+    /// `None` is the over-policy answer: the plan has no vacant capacity and does not
+    /// already retain this demand. It is not a failure — the crossing is nonblocking, and
+    /// the encoder refuses the image through the Sites bound — but there is no id that
+    /// would not alias a fitting site, so none is given.
+    #[doc(hidden)]
+    pub fn request_site(&mut self, def: SiteDef) -> Option<SiteId> {
+        self.sites.request(def)
     }
 
     pub fn add_function(&mut self, def: FunctionDef) -> FuncId {
@@ -670,7 +668,7 @@ impl ImageDraft {
             colls: self.colls.len(),
             products: self.products.declarations().len(),
             occurrences: self.occurrences.len(),
-            sites: self.sites.len(),
+            sites: self.sites.rows().len(),
             functions: self.functions.len(),
             exports: self.exports.len(),
             test_entries: self.test_entries.len(),
@@ -679,15 +677,12 @@ impl ImageDraft {
     }
 
     /// Discard every entry appended since `savepoint`, restoring the draft to its recorded
-    /// state. Each owner is truncated back to its recorded length; the `site_index`
-    /// secondary map drops exactly the keys of the truncated sites (reconstructed from the
-    /// removed rows, so the purge is proportional to the appended sites, never the whole
-    /// table). The append-only discipline of the proof pass — reserve-then-fill confined to
-    /// freshly-appended indices — makes this a total inverse.
+    /// state. Each owner is truncated back to its recorded length, and the site plan drops
+    /// exactly the demands of the rows it discards. The append-only discipline of the proof
+    /// pass — reserve-then-fill confined to freshly-appended indices — makes this a total
+    /// inverse.
     pub fn rewind_to(&mut self, savepoint: DraftSavepoint) {
-        for site in self.sites.drain(savepoint.sites..) {
-            self.site_index.remove(&(site.path.clone(), site.target));
-        }
+        self.sites.truncate(savepoint.sites);
         self.strings.truncate(savepoint.strings);
         self.consts.truncate(savepoint.consts);
         self.types.truncate(savepoint.types);
@@ -748,7 +743,15 @@ impl ImageDraft {
         self.application
     }
     pub(crate) fn sites(&self) -> &[SiteDef] {
-        &self.sites
+        self.sites.rows()
+    }
+
+    /// The plan's logical site demand, saturating at `MAX_SITES + 1`. The encoder's Sites
+    /// bound reads this rather than the retained row count: the plan refuses to mint past
+    /// its capacity, so the row count can never exceed the bound and reading it would
+    /// silently disable the check.
+    pub(crate) fn site_demand(&self) -> usize {
+        self.sites.demanded()
     }
     pub(crate) fn functions(&self) -> &[FunctionDef] {
         &self.functions
