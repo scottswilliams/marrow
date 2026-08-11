@@ -341,6 +341,8 @@ pub(super) fn branch_ctor_display(resource: &str, path: &[&str]) -> String {
 #[cfg(test)]
 mod tests {
     use super::{Builtin, builtin_const_int, builtin_value_names};
+    use crate::{CompileFailure, compile};
+    use marrow_project::{CaptureLimits, CapturedFile, Manifest, ProjectInput};
 
     /// The integer bounds classify as value built-ins carrying exactly the `i64`
     /// domain edges, and a built-in that is a call or constructor carries no bound
@@ -380,5 +382,101 @@ mod tests {
             offered, registry,
             "the completion namespace is exactly the classifier registry",
         );
+    }
+
+    fn project(source: &str) -> ProjectInput {
+        let manifest = Manifest::parse("edition = \"2026\"\n").expect("valid manifest");
+        let captured = vec![CapturedFile::new(
+            "src/main.mw".to_string(),
+            source.as_bytes().to_vec(),
+        )];
+        marrow_project::capture(&manifest, captured, None, &CaptureLimits::DEFAULT)
+            .expect("capture project")
+    }
+
+    /// The `(code, message)` rows a source is refused with, or the empty vector when
+    /// it compiles clean.
+    fn refusals(source: &str) -> Vec<(&'static str, String)> {
+        match compile(&project(source)) {
+            Ok(_) => Vec::new(),
+            Err(CompileFailure::Diagnostics(rows)) => rows
+                .into_iter()
+                .map(|row| (row.code(), row.message().to_string()))
+                .collect(),
+            Err(other) => panic!("expected source diagnostics, got {other:?}"),
+        }
+    }
+
+    /// The built-in spellings the lexer reserves as keywords, which the parser refuses
+    /// before the semantic conflict check is reached. The reservation is stronger and
+    /// earlier, not absent — but it is a *different* owner, so it is named here: a
+    /// change that stops treating one of these as a keyword must add the semantic
+    /// reservation in the same lane, and this list is what makes that visible.
+    const KEYWORD_RESERVED: &[&str] = &["Id"];
+
+    /// BLTNSHDW01: every reserved built-in is refused in every value-declaration
+    /// position, swept from the registry rather than from a hand-listed sample.
+    ///
+    /// A built-in absent from the conflict check is admitted as a declaration and then
+    /// silently shadowed at every use the compiler intercepts, so the reader's `fn` is
+    /// never called and the failure surfaces far from its cause. The sweep is driven by
+    /// [`Builtin::ALL`], so a built-in added to the registry without its reservation
+    /// fails here rather than shipping shadowable.
+    #[test]
+    fn every_builtin_is_refused_in_every_value_declaration_position() {
+        for builtin in Builtin::ALL {
+            let name = builtin.spelling();
+            let positions = [
+                (
+                    "a function",
+                    format!(
+                        "module main\n\nfn {name}(a: int): int {{\n    return a\n}}\n\n\
+                         pub fn go(): int {{\n    return 1\n}}\n"
+                    ),
+                ),
+                (
+                    "a constant",
+                    format!(
+                        "module main\n\nconst {name} = 5\n\n\
+                         pub fn go(): int {{\n    return 1\n}}\n"
+                    ),
+                ),
+                (
+                    "a parameter",
+                    format!("module main\n\npub fn go({name}: int): int {{\n    return 1\n}}\n"),
+                ),
+                (
+                    "a local binding",
+                    format!(
+                        "module main\n\npub fn go(): int {{\n    const {name} = 5\n    \
+                         return 1\n}}\n"
+                    ),
+                ),
+            ];
+            for (position, source) in positions {
+                let rows = refusals(&source);
+                assert!(
+                    !rows.is_empty(),
+                    "{position} named `{name}` compiled clean: the built-in is silently \
+                     shadowed at every use the compiler intercepts",
+                );
+                if KEYWORD_RESERVED.contains(&name) {
+                    assert!(
+                        rows.iter().any(|(code, _)| *code == "parse.syntax"),
+                        "`{name}` is reserved by the lexer, so the parser refuses \
+                         {position} before the semantic check: got {rows:?}",
+                    );
+                    continue;
+                }
+                let expected = format!("`{name}` is a built-in and cannot be redeclared");
+                assert!(
+                    rows.iter()
+                        .any(|(code, message)| *code == "check.name_conflict"
+                            && message == &expected),
+                    "{position} named `{name}` must be refused as a built-in \
+                     redeclaration: got {rows:?}",
+                );
+            }
+        }
     }
 }
