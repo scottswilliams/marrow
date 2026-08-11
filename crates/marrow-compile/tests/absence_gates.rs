@@ -8,7 +8,9 @@ use std::path::{Path, PathBuf};
 
 #[path = "common/source_projection.rs"]
 mod source_projection;
-use source_projection::{is_test_only_file, last_production_item, production_code};
+use source_projection::{
+    is_test_only_file, last_production_item, production_code, without_literals,
+};
 
 fn src_files() -> Vec<PathBuf> {
     fn walk(dir: &Path, files: &mut Vec<PathBuf>) {
@@ -31,17 +33,72 @@ fn src_files() -> Vec<PathBuf> {
     files
 }
 
+/// Every `(file, line)` at which `needle` appears in this crate's *code* — the shared
+/// projection, with every comment, string, and char literal blanked to spaces and byte
+/// offsets and line breaks preserved.
+///
+/// A scan of raw lines is not a scan for a shape: it reports a needle that appears in a doc
+/// comment or a message, and a gate that reports what it must ignore gets its needle
+/// narrowed until it stops seeing real code. Reading the projection is what makes each
+/// assertion below — an absence, an exact count, or a live subject — a statement about
+/// code.
+///
+/// `#[cfg(test)]` items are deliberately kept: these gates are about every type and call
+/// shape the crate's sources name, and a shape declared in a test module is still declared.
+/// The production-only scans below say so in their own name.
 fn occurrences(needle: &str) -> Vec<(PathBuf, usize)> {
     let mut found = Vec::new();
     for path in src_files() {
         let source = fs::read_to_string(&path).expect("read source file");
-        for (index, line) in source.lines().enumerate() {
-            if line.contains(needle) {
-                found.push((path.clone(), index + 1));
-            }
+        for line in scanned_lines(&source, needle) {
+            found.push((path.clone(), line));
         }
     }
     found
+}
+
+/// The 1-based lines of `source` whose *code* carries `needle`.
+fn scanned_lines(source: &str, needle: &str) -> Vec<usize> {
+    without_literals(source)
+        .lines()
+        .enumerate()
+        .filter(|(_, line)| line.contains(needle))
+        .map(|(index, _)| index + 1)
+        .collect()
+}
+
+/// The plant probe for the scan above: a needle planted in prose is invisible to it, and
+/// one planted in code is not.
+///
+/// Both halves matter, and they fail differently. A scan that sees prose reports what it
+/// must ignore, and the repair is always to narrow the needle until the scan stops seeing
+/// real code. A scan that sees nothing at all passes every absence it is asked about and
+/// satisfies every "this gate has a live subject" check with a comment — which is the
+/// blindness this probe exists to keep out.
+#[test]
+fn the_symbol_scan_reads_code_and_not_prose() {
+    let sample = r##"
+// forbidden_shape in a line comment
+/* forbidden_shape in a block /* nested */ comment */
+/// forbidden_shape in a doc comment
+fn keeper<'a>(text: &'a str) -> char {
+    let quoted = "forbidden_shape in a string";
+    let raw = r#"forbidden_shape in a raw string"#;
+    let message = format!("forbidden_shape: {text}");
+    forbidden_shape();
+    'x'
+}
+"##;
+
+    assert_eq!(
+        scanned_lines(sample, "forbidden_shape"),
+        vec![9],
+        "only the call is code; the comments, the literals, and the message are not",
+    );
+    assert!(
+        scanned_lines(sample, "fn keeper").len() == 1,
+        "the projection keeps the code around the blanked regions",
+    );
 }
 
 /// A5: no collection of un-absorbed `ParsedSource` values can exist because the
@@ -309,10 +366,11 @@ fn the_fact_ledger_is_one_concrete_owner() {
     let mut declared = false;
     for path in src_files() {
         let source = fs::read_to_string(&path).expect("read source file");
-        declared |= source.contains("struct AnalysisFactCollector");
+        let code = without_literals(&source);
+        declared |= code.contains("struct AnalysisFactCollector");
         for forbidden in ["AnalysisFactCollector<", "AnalysisDiagnosticCollector"] {
             assert!(
-                !source.contains(forbidden),
+                !code.contains(forbidden),
                 "{} declares a forbidden collector shape: `{forbidden}`",
                 path.display()
             );
