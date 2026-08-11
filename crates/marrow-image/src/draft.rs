@@ -490,6 +490,11 @@ pub struct ImageDraft {
 /// A proof pass only appends new entries and fills freshly-reserved records/enums (never a
 /// pre-existing index), so truncating each owner back to its recorded length restores the
 /// draft to the exact bytes it held before the pass.
+///
+/// Two draft fields are deliberately excluded, and [`ImageDraft::checkpoint`] destructures
+/// the draft exhaustively so a new owner cannot join them by omission: `identity` is fixed
+/// at mint and no pass can change it, and `next_stamp` advances monotonically on purpose so
+/// an ordinal reused after a discard carries a fresh stamp.
 struct DraftCheckpoint {
     strings: usize,
     consts: usize,
@@ -503,6 +508,11 @@ struct DraftCheckpoint {
     exports: usize,
     test_entries: usize,
     application: Option<LedgerIdBytes>,
+    /// The sticky Product-claim conflict at the checkpoint. It gates encoding while the
+    /// declaration table that admits it is truncated with the pass, so a conflict first
+    /// recorded *inside* the proof is cleared with the divergent row that caused it; one
+    /// recorded *before* the proof is kept, because both disagreeing declarations survive.
+    product_conflict: Option<ProductClaimConflict>,
     /// The site plan's policy state at the checkpoint. A crossing that happened *before* the
     /// proof keeps its exact receipt identity; one first recorded *inside* the proof is
     /// cleared with the rest of the pass, so a throwaway proof cannot leave the real draft
@@ -552,8 +562,8 @@ impl TemplateProofDraftGuard<'_> {
 impl Drop for TemplateProofDraftGuard<'_> {
     /// Discard everything the proof appended, in reverse dependency order: the code that can
     /// retain site operands first, then the occurrence rows and site rows those operands
-    /// name, then the remaining owners, and finally the application slot and the plan's
-    /// policy state.
+    /// name, then the declaration table with the claim conflict its rows can record, then the
+    /// remaining owners, and finally the application slot.
     ///
     /// It allocates nothing, indexes nothing, and cannot panic, so it is safe to run during
     /// an unwind that a failed proof started.
@@ -565,6 +575,7 @@ impl Drop for TemplateProofDraftGuard<'_> {
         self.draft.occurrences.truncate(at.occurrences);
         self.draft.sites.rewind(at.sites, at.receipt);
         self.draft.products.truncate(at.products);
+        self.draft.product_conflict = at.product_conflict;
         self.draft.colls.truncate(at.colls);
         self.draft.enums.truncate(at.enums);
         self.draft.types.truncate(at.types);
@@ -984,21 +995,45 @@ impl ImageDraft {
         }
     }
 
+    /// The mark a [`TemplateProofDraftGuard`] rolls back to.
+    ///
+    /// The draft is destructured exhaustively rather than read field by field: a new owner
+    /// stops this compiling until it is either recorded here or bound to `_` beside the two
+    /// owners whose exclusion [`DraftCheckpoint`] states, so no field can be left out of the
+    /// rollback by omission.
     fn checkpoint(&self) -> DraftCheckpoint {
+        let Self {
+            identity: _,
+            next_stamp: _,
+            strings,
+            consts,
+            types,
+            enums,
+            colls,
+            products,
+            occurrences,
+            product_conflict,
+            application,
+            sites,
+            functions,
+            exports,
+            test_entries,
+        } = self;
         DraftCheckpoint {
-            strings: self.strings.len(),
-            consts: self.consts.len(),
-            types: self.types.len(),
-            enums: self.enums.len(),
-            colls: self.colls.len(),
-            products: self.products.declarations().len(),
-            occurrences: self.occurrences.len(),
-            sites: self.sites.rows().len(),
-            functions: self.functions.len(),
-            exports: self.exports.len(),
-            test_entries: self.test_entries.len(),
-            application: self.application,
-            receipt: self.sites.receipt(),
+            strings: strings.len(),
+            consts: consts.len(),
+            types: types.len(),
+            enums: enums.len(),
+            colls: colls.len(),
+            products: products.declarations().len(),
+            occurrences: occurrences.len(),
+            sites: sites.rows().len(),
+            functions: functions.len(),
+            exports: exports.len(),
+            test_entries: test_entries.len(),
+            application: *application,
+            product_conflict: *product_conflict,
+            receipt: sites.receipt(),
         }
     }
 

@@ -33,6 +33,9 @@ use site_seam::site;
 
 const APPLICATION_ID: [u8; 16] = [0x0a; 16];
 const PRODUCT_ID: [u8; 16] = [0x0d; 16];
+/// A field-member seed past every seed a wide declaration uses, so a divergent
+/// redeclaration names a node the bound declaration does not hold.
+const DIVERGENT_FIELD: usize = MAX_SITES + 1;
 
 fn product() -> LedgerIdBytes {
     LedgerIdBytes::from_bytes(PRODUCT_ID)
@@ -561,6 +564,80 @@ fn a_crossing_before_a_proof_survives_the_proof() {
     assert!(
         matches!(draft.encode(), Err(ImageBuildError::TooManySites)),
         "the crossing predates the proof and is not rolled back with it",
+    );
+}
+
+/// Declare the already-declared Product identity a second time with a divergent member
+/// graph — one field where the draft holds several. Two declarations wearing one identity,
+/// which the draft records as a sticky conflict and the encoder refuses.
+fn redeclare_divergent(draft: &mut ImageDraft) {
+    let type_name = draft.intern_string("D");
+    let record = draft.add_record_type(RecordTypeDef {
+        name: type_name,
+        fields: Vec::new(),
+    });
+    draft
+        .declare_product(
+            product(),
+            record,
+            vec![DeclarationMemberDef {
+                parent: None,
+                shape: DeclarationMemberShape::Field {
+                    id: field_id(DIVERGENT_FIELD),
+                    required: true,
+                    value: DurableValueShape::Scalar(Scalar::Int),
+                },
+            }],
+        )
+        .expect("a well-formed declaration");
+}
+
+/// A divergent Product claim recorded inside a discarded proof does not survive it.
+///
+/// The conflict is sticky and gates encoding, while the declaration table that admits it is
+/// truncated with the rest of the pass. Keeping the conflict without keeping the row that
+/// caused it would leave the real draft refusing an image whose declarations never
+/// disagreed, and falsify the guard's byte-identity contract.
+#[test]
+fn a_product_conflict_inside_a_discarded_proof_does_not_survive_it() {
+    let (mut draft, root, members) = wide_draft(4);
+    demand_every_leaf(&mut draft, &root, &members);
+    let before = draft.encode().expect("a fitting draft").bytes;
+    {
+        let mut guard = draft.template_proof();
+        let proof = guard.proof_draft();
+        redeclare_divergent(proof);
+        assert!(matches!(
+            proof.encode(),
+            Err(ImageBuildError::ProductGraphConflict)
+        ));
+    }
+    let after = draft
+        .encode()
+        .expect("the discarded proof's conflict is not the finished draft's")
+        .bytes;
+    assert_eq!(before, after, "the proof appended nothing that survived it");
+}
+
+/// A divergent Product claim recorded **before** the proof is not undone by discarding the
+/// proof: the two disagreeing declarations are both still in the table, so the image stays
+/// refused.
+#[test]
+fn a_product_conflict_before_a_proof_survives_the_proof() {
+    let (mut draft, root, members) = wide_draft(4);
+    demand_every_leaf(&mut draft, &root, &members);
+    redeclare_divergent(&mut draft);
+    assert!(matches!(
+        draft.encode(),
+        Err(ImageBuildError::ProductGraphConflict)
+    ));
+    {
+        let mut guard = draft.template_proof();
+        let _ = guard.proof_draft().intern_string("throwaway");
+    }
+    assert!(
+        matches!(draft.encode(), Err(ImageBuildError::ProductGraphConflict)),
+        "the conflict predates the proof and is not rolled back with it",
     );
 }
 
