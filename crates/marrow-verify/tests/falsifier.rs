@@ -50,10 +50,14 @@ const PRODUCT_ID: [u8; 16] = [0x0d; 16];
 /// The widest member run this corpus declares.
 ///
 /// The member bound is 8,192, but a run that wide does not fit the whole-image byte ceiling
-/// once each member carries its ledger identity and value shape, and an image that cannot
-/// encode cannot be verified — which would cut the journey short of its last two legs. This
-/// is the widest run that completes the whole journey, and the encode below asserts that it
-/// does rather than assuming it.
+/// once each member carries its ledger identity and value shape — measured: at 8,192 the
+/// encode leg fails — and an image that cannot encode cannot be verified, which would cut
+/// the journey short of its last two legs. A quarter of the bound encodes with room, so the
+/// journey runs end to end; the encode leg asserts the fit rather than assuming it.
+///
+/// The depth this stack is really being asked about is not this width, though. A member run
+/// is walked by an explicit stack of runs whatever its length, so what a wider run buys is
+/// wire bytes, not frames.
 const MEMBERS: usize = 2048;
 
 /// Root occurrences over the one Product declaration. Several, so the publication leg
