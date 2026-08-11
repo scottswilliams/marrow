@@ -17,13 +17,13 @@
 //! The one prose assertion left is negative — that a refused name is never called
 //! out of scope — which is the fabrication these fixtures exist to kill.
 
-use marrow_compile::{ResourceLimitKind, SourceStage};
-use std::collections::BTreeSet;
 use marrow_compile::{
     CompileFailure, DeclarationNamespace, InputRevision, RefusalReport, SourceDiagnostic, analyze,
     compile,
 };
+use marrow_compile::{ResourceLimitKind, SourceStage};
 use marrow_project::{CaptureLimits, CapturedFile, Manifest, ProjectInput};
+use std::collections::BTreeSet;
 
 #[path = "common/ids.rs"]
 mod ids;
@@ -2254,7 +2254,8 @@ fn every_refusal_class_carries_its_own_typed_steer_facts() {
             rows(diagnostics),
         );
         assert_eq!(
-            row_code, declaring_code,
+            row_code,
+            declaring_code,
             "{label}: a steer that reuses its declaring row reports under that row's \
              own code, so one code leads to one fix: {:#?}",
             rows(diagnostics),
