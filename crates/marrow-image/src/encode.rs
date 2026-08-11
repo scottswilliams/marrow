@@ -843,12 +843,16 @@ fn encode_key_tuple(body: &mut impl ImageByteSink, keys: &[KeyColumn]) {
 /// Encode one operation site's semantic path: `u8(step_count) ‖ step*`, each step a
 /// `u8(ledger_kind) ‖ 16 id bytes`. The step kind byte is the same frozen ledger
 /// `IDREF` tag a durable node's identity uses, so the verifier decodes the path's
-/// kinds exactly as it spells its own node paths. The step count fits one byte: a path
-/// is projected from the declaration graph, so it is the two root steps plus that node's
-/// nesting depth, and `validate_declaration_graph` has already refused a graph nesting
-/// past `MAX_DURABLE_DEPTH` — well inside `MAX_SITE_PATH_STEPS`, itself far below 256.
+/// kinds exactly as it spells its own node paths. The step count fits one byte off the
+/// bound the path type itself carries: a [`SemanticPath`] admits at most
+/// `MAX_SITE_PATH_STEPS` steps on every public route into it, and `bounds` const-asserts
+/// that width against one byte. It is a checked conversion rather than a narrowing cast
+/// because the totality is a property of the argument's type, and a cast would silently
+/// outlive a widened bound.
 fn encode_site_path(body: &mut impl ImageByteSink, path: &SemanticPath) {
-    body.push(path.steps().len() as u8);
+    let step_count = u8::try_from(path.steps().len())
+        .expect("a bounded semantic path's step count fits the site-path width");
+    body.push(step_count);
     for step in path.steps() {
         body.push(step.kind.ledger_kind());
         body.extend_bytes(step.id.bytes());

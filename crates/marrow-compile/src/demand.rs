@@ -254,12 +254,16 @@ mod tests {
 
     /// A field-leaf path `[application, root, field]`.
     fn field_path(field: u8) -> SemanticPath {
-        root_path().child(SemanticStep::new(SemanticStepKind::Field, id(field)))
+        root_path()
+            .child(SemanticStep::new(SemanticStepKind::Field, id(field)))
+            .expect("a three-step chain is in bounds")
     }
 
     /// An index path `[application, root, index]`.
     fn index_path() -> SemanticPath {
-        root_path().child(SemanticStep::new(SemanticStepKind::Index, id(INDEX)))
+        root_path()
+            .child(SemanticStep::new(SemanticStepKind::Index, id(INDEX)))
+            .expect("a three-step chain is in bounds")
     }
 
     fn sentence(atoms: Vec<DemandAtom>) -> String {

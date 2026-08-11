@@ -84,7 +84,7 @@ pub use product::{
     RootOccurrenceSelector,
 };
 pub use semantic::{
-    EmptySemanticPath, SemanticNode, SemanticNodeKind, SemanticPath, SemanticStep,
+    SemanticNode, SemanticNodeKind, SemanticPath, SemanticPathRefusal, SemanticStep,
     SemanticStepKind, SemanticTarget,
 };
 pub use site_plan::{LegacyDraftSiteOperand, OccurrenceSiteHandle, SitePlanStateError};

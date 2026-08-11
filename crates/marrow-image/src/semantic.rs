@@ -22,23 +22,40 @@
 //! operation-target concern. Key columns are identity attributes of a placement,
 //! not separately addressable nodes, so they are not path steps.
 
+use crate::bounds;
 use crate::durable_id::LedgerIdBytes;
 
-/// A dynamic step sequence cannot construct a semantic path because it is empty.
+/// Why a step chain cannot be a [`SemanticPath`].
 ///
-/// Nonemptiness is the only invariant enforced at construction. Step kinds, graph
-/// membership, target agreement, and depth remain the responsibility of their
-/// existing producer and verifier boundaries.
+/// Nonemptiness and the step-count bound are the invariants enforced at construction
+/// and at every extension, so the type itself carries them. Step kinds, graph
+/// membership, and target agreement remain the responsibility of their existing
+/// producer and verifier boundaries.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct EmptySemanticPath;
+pub enum SemanticPathRefusal {
+    /// The chain is empty; every path names at least the application step.
+    Empty,
+    /// The chain is longer than [`bounds::MAX_SITE_PATH_STEPS`], the widest chain
+    /// that can name a durable graph node.
+    TooManySteps,
+}
 
-impl std::fmt::Display for EmptySemanticPath {
+impl std::fmt::Display for SemanticPathRefusal {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("a semantic path must contain at least one step")
+        match self {
+            SemanticPathRefusal::Empty => {
+                f.write_str("a semantic path must contain at least one step")
+            }
+            SemanticPathRefusal::TooManySteps => write!(
+                f,
+                "a semantic path carries at most {} steps",
+                bounds::MAX_SITE_PATH_STEPS,
+            ),
+        }
     }
 }
 
-impl std::error::Error for EmptySemanticPath {}
+impl std::error::Error for SemanticPathRefusal {}
 
 /// The kind of one step in a [`SemanticPath`], mirroring the ledger's frozen kind
 /// space: the application root, a keyed placement (a store root or a nested
@@ -138,6 +155,13 @@ impl SemanticStep {
 /// `[application, root placement]`; a field's path extends its container's path with
 /// the field step. The chain is the identity — it carries no source spelling and no
 /// container index — so equality and ordering are structural over the ledger ids.
+///
+/// The chain is **bounded** at [`bounds::MAX_SITE_PATH_STEPS`] on every public route
+/// into the type — construction and extension alike — so a path can never be wider
+/// than the graph node it names. Every owner that spells a path's step count in a
+/// fixed-width field ([`crate::DemandAtom`]'s `u16`, the image's site-path `u8`)
+/// therefore spells a count the bound already admits, rather than narrowing a count
+/// its caller chose.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct SemanticPath {
     steps: Vec<SemanticStep>,
@@ -148,10 +172,14 @@ impl SemanticPath {
     /// constructor a compiler uses to spell the path of an operation site it emits
     /// into the image; the verifier does not trust such a path but resolves it
     /// against its own independently derived [`crate::SemanticNode`] set. The chain
-    /// runs from the application step to the addressed node and must be non-empty.
-    pub fn try_from_steps(steps: Vec<SemanticStep>) -> Result<Self, EmptySemanticPath> {
+    /// runs from the application step to the addressed node, must be non-empty, and
+    /// must fit [`bounds::MAX_SITE_PATH_STEPS`].
+    pub fn try_from_steps(steps: Vec<SemanticStep>) -> Result<Self, SemanticPathRefusal> {
         if steps.is_empty() {
-            return Err(EmptySemanticPath);
+            return Err(SemanticPathRefusal::Empty);
+        }
+        if steps.len() > bounds::MAX_SITE_PATH_STEPS {
+            return Err(SemanticPathRefusal::TooManySteps);
         }
         Ok(Self { steps })
     }
@@ -178,10 +206,32 @@ impl SemanticPath {
         self.steps.last().expect("a path has at least one step").id
     }
 
-    /// A child path: this path extended by one more step. Used by the graph walker to
-    /// descend into a group's or a branch's members.
-    #[must_use]
-    pub fn child(&self, step: SemanticStep) -> Self {
+    /// A child path: this path extended by one more step, refused once the chain
+    /// would pass [`bounds::MAX_SITE_PATH_STEPS`].
+    ///
+    /// Extension is fallible for the same reason construction is: a public infallible
+    /// extension would let a caller iterate an in-bounds path up to any width, so a
+    /// type documented as bounded would not be.
+    pub fn child(&self, step: SemanticStep) -> Result<Self, SemanticPathRefusal> {
+        if self.steps.len() >= bounds::MAX_SITE_PATH_STEPS {
+            return Err(SemanticPathRefusal::TooManySteps);
+        }
+        Ok(self.extend(step))
+    }
+
+    /// Extend a path whose width is already established by a validated graph row.
+    ///
+    /// Crate-internal and infallible: its callers are the graph walks over member
+    /// rows both the draft builder (`validate_declaration_graph`) and the verifier
+    /// (`decode_members`) have already bounded at `MAX_DURABLE_DEPTH`, so a chain
+    /// past the bound here is a construction contradiction, not an input — there is
+    /// no refusal for such a caller to report and nothing for it to do with one.
+    /// Every route that carries a *caller's* width uses [`Self::child`].
+    pub(crate) fn extend(&self, step: SemanticStep) -> Self {
+        debug_assert!(
+            self.steps.len() < bounds::MAX_SITE_PATH_STEPS,
+            "a validated graph row cannot extend a path past the site-path bound",
+        );
         let mut steps = self.steps.clone();
         steps.push(step);
         Self { steps }
@@ -216,18 +266,46 @@ mod tests {
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
 
-    use super::{EmptySemanticPath, SemanticPath, SemanticStep, SemanticStepKind};
+    use super::{SemanticPath, SemanticPathRefusal, SemanticStep, SemanticStepKind};
+    use crate::bounds::MAX_SITE_PATH_STEPS;
     use crate::durable_id::LedgerIdBytes;
 
     fn id(byte: u8) -> LedgerIdBytes {
         LedgerIdBytes::from_bytes([byte; 16])
     }
 
+    /// A chain of `steps` steps: the application step followed by field steps.
+    fn chain(steps: usize) -> Vec<SemanticStep> {
+        let mut out = vec![SemanticStep::new(SemanticStepKind::Application, id(1))];
+        while out.len() < steps {
+            out.push(SemanticStep::new(SemanticStepKind::Field, id(2)));
+        }
+        out
+    }
+
     #[test]
     fn empty_step_vector_is_rejected_without_unwinding() {
         let outcome = std::panic::catch_unwind(|| SemanticPath::try_from_steps(Vec::new()));
 
-        assert!(matches!(outcome, Ok(Err(EmptySemanticPath))));
+        assert!(matches!(outcome, Ok(Err(SemanticPathRefusal::Empty))));
+    }
+
+    #[test]
+    fn the_step_chain_is_bounded_at_the_site_path_width_from_both_public_routes() {
+        assert!(SemanticPath::try_from_steps(chain(MAX_SITE_PATH_STEPS)).is_ok());
+        assert_eq!(
+            SemanticPath::try_from_steps(chain(MAX_SITE_PATH_STEPS + 1)),
+            Err(SemanticPathRefusal::TooManySteps),
+        );
+
+        // Iterated extension cannot walk an admitted path past the same bound.
+        let mut path =
+            SemanticPath::try_from_steps(chain(2)).expect("two steps are a well-formed chain");
+        let step = SemanticStep::new(SemanticStepKind::Field, id(3));
+        while path.steps().len() < MAX_SITE_PATH_STEPS {
+            path = path.child(step).expect("an in-bounds chain extends");
+        }
+        assert_eq!(path.child(step), Err(SemanticPathRefusal::TooManySteps));
     }
 
     #[test]
@@ -274,12 +352,15 @@ mod tests {
     }
 
     #[test]
-    fn dynamic_constructor_source_keeps_the_single_check_and_direct_move() {
+    fn dynamic_constructor_source_keeps_the_two_checks_and_direct_move() {
         let expected = concat!(
             "    pub fn try_from_steps(steps: Vec<SemanticStep>) -> ",
-            "Result<Self, EmptySemanticPath> {\n",
+            "Result<Self, SemanticPathRefusal> {\n",
             "        if steps.is_empty() {\n",
-            "            return Err(EmptySemanticPath);\n",
+            "            return Err(SemanticPathRefusal::Empty);\n",
+            "        }\n",
+            "        if steps.len() > bounds::MAX_SITE_PATH_STEPS {\n",
+            "            return Err(SemanticPathRefusal::TooManySteps);\n",
             "        }\n",
             "        Ok(Self { steps })\n",
             "    }\n",
@@ -289,7 +370,7 @@ mod tests {
         assert_eq!(
             source.matches(expected).count(),
             1,
-            "the constructor must remain one emptiness branch followed by a direct vector move"
+            "the constructor must remain the emptiness and bound branches followed by a direct vector move"
         );
     }
 
@@ -297,7 +378,9 @@ mod tests {
     fn root_and_child_preserve_the_canonical_chain_without_mutating_the_parent() {
         let root = SemanticPath::root(id(1), id(2));
         let child_step = SemanticStep::new(SemanticStepKind::Field, id(3));
-        let child = root.child(child_step);
+        let child = root
+            .child(child_step)
+            .expect("a three-step chain is in bounds");
 
         assert_eq!(
             root.steps(),

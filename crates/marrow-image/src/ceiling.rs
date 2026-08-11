@@ -154,7 +154,9 @@ mod tests {
 
     /// The path `[application 0x0a, placement 0x0b, field 0x0e]` — a field leaf.
     fn field_path(field: u8) -> SemanticPath {
-        root_path().child(SemanticStep::new(SemanticStepKind::Field, id(field)))
+        root_path()
+            .child(SemanticStep::new(SemanticStepKind::Field, id(field)))
+            .expect("a three-step chain is in bounds")
     }
 
     /// A two-atom demand union: read the whole entry, write a field. Fixed ids so the

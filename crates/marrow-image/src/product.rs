@@ -1157,13 +1157,13 @@ impl<'draft> OccurrenceGraph<'draft> {
             CanonicalDeclarationPathOrdinal::RootPlacement => Some(root),
             CanonicalDeclarationPathOrdinal::RootIndex(index) => {
                 let shape = row.indexes.get(usize::from(index))?;
-                Some(root.child(SemanticStep::new(SemanticStepKind::Index, shape.id)))
+                Some(root.extend(SemanticStep::new(SemanticStepKind::Index, shape.id)))
             }
             CanonicalDeclarationPathOrdinal::DeclarationNode(node) => {
                 let graph = self.products.declarations().get(row.declaration)?.graph();
                 let mut path = root;
                 for ancestor in graph.ancestry(node) {
-                    path = path.child(match &ancestor.shape {
+                    path = path.extend(match &ancestor.shape {
                         DeclarationMemberShape::Field { id, .. } => {
                             SemanticStep::new(SemanticStepKind::Field, *id)
                         }

@@ -46,7 +46,8 @@
 
 use sha2::{Digest, Sha256};
 
-use crate::semantic::{EmptySemanticPath, SemanticPath, SemanticStepKind};
+use crate::bounds;
+use crate::semantic::{SemanticPath, SemanticPathRefusal, SemanticStepKind};
 
 /// The domain-separation tag for the demand-set identity. Distinct from every other
 /// Marrow identity's `kind`, so a `DemandSetId` can never collide with an `ImageId`,
@@ -149,21 +150,19 @@ impl DemandAtom {
     /// The sole owner of an atom's byte spelling; both the identity payload and the
     /// canonical-order sort key project from it.
     ///
-    /// The step count is narrowed to `u16` unguarded. Every atom in production is built
-    /// from a path the verifier resolved against a decoded site table, which the
-    /// container bounds at `MAX_SITE_PATH_STEPS` — small enough that the image itself
-    /// spells the same count in one byte — and a *decoded* ceiling is refused above
-    /// [`MAX_ATOM_STEPS`] before an atom is minted, so no atom reaching this owner from
-    /// either direction approaches the width. The bound is a property of those two
-    /// producers, though, not of [`SemanticPath`], which admits any non-empty step
-    /// chain: an in-process caller passing a 65_536-step path to [`DemandAtom::new`]
-    /// would frame a truncated body here. Closing that needs a bounded path type or a
-    /// fallible spelling, both of which cross this crate's public surface.
+    /// The step count is spelled off the bound [`SemanticPath`] itself carries: the
+    /// type admits at most [`bounds::MAX_SITE_PATH_STEPS`] steps on every public route
+    /// into it, and `bounds` const-asserts that width against one byte, so the `u16`
+    /// conversion is total for every path that exists. It is a checked conversion
+    /// rather than a narrowing cast because the totality is a property of the
+    /// argument's type, and a cast would silently outlive a widened bound.
     fn encode_body(&self) -> Vec<u8> {
         let mut body = Vec::new();
         body.push(self.class.tag());
         let steps = self.path.steps();
-        body.extend_from_slice(&(steps.len() as u16).to_be_bytes());
+        let step_count = u16::try_from(steps.len())
+            .expect("a bounded semantic path's step count fits the atom body's width");
+        body.extend_from_slice(&step_count.to_be_bytes());
         for step in steps {
             body.push(step.kind.ledger_kind());
             body.extend_from_slice(step.id.bytes());
@@ -320,9 +319,10 @@ impl ExportDemand {
 /// program's whole-demand union and far below memory exhaustion.
 pub const MAX_CEILING_ATOMS: usize = 65_536;
 
-/// A fixed upper bound on the step count of one decoded atom's path — the durable
-/// graph depth bound — validated before allocation.
-const MAX_ATOM_STEPS: usize = 64;
+/// A fixed upper bound on the step count of one decoded atom's path, validated before
+/// allocation. Derived, not chosen: a decoded atom's path is a [`SemanticPath`], so the
+/// decoder cannot admit a chain the path type refuses.
+const MAX_ATOM_STEPS: usize = bounds::MAX_SITE_PATH_STEPS;
 
 /// Why a persisted atom-set payload (a store's accepted deployment ceiling) failed to
 /// decode. A decode rejection means the persisted bytes are not a well-formed ceiling
@@ -366,8 +366,10 @@ fn decode_atom_body(body: &[u8]) -> Result<DemandAtom, CeilingDecodeError> {
         let id = crate::durable_id::LedgerIdBytes::from_bytes(cur.array16()?);
         steps.push(crate::semantic::SemanticStep::new(kind, id));
     }
-    let path = SemanticPath::try_from_steps(steps)
-        .map_err(|EmptySemanticPath| CeilingDecodeError::EmptyPath)?;
+    let path = SemanticPath::try_from_steps(steps).map_err(|refusal| match refusal {
+        SemanticPathRefusal::Empty => CeilingDecodeError::EmptyPath,
+        SemanticPathRefusal::TooManySteps => CeilingDecodeError::StepCountOverflow,
+    })?;
     if !cur.at_end() {
         return Err(CeilingDecodeError::TrailingBytes);
     }
@@ -514,7 +516,54 @@ mod tests {
 
     /// The path `[application 0x0a, placement 0x0b, field 0x0e]` — a field leaf.
     fn field_path(field: u8) -> SemanticPath {
-        root_path().child(SemanticStep::new(SemanticStepKind::Field, id(field)))
+        root_path()
+            .child(SemanticStep::new(SemanticStepKind::Field, id(field)))
+            .expect("a three-step chain is in bounds")
+    }
+
+    /// The recorded repro of the closed defect: a 65,536-step path framed an atom body
+    /// of 1,114,115 bytes declaring **zero** steps, because `encode_body` narrowed the
+    /// count with an unguarded `as u16` — an identity preimage contradicting its own
+    /// payload, and a body no decoder recovers the atom from. Both public routes into
+    /// the path type reached it: an explicit 65,536-step chain, and iterating the then
+    /// infallible `child`.
+    ///
+    /// The repro is now unconstructible rather than merely unreached: the path type
+    /// refuses the width, so no atom of that shape exists to frame. The assertion is
+    /// written against the outcome, not the refusal variant, so that a route reopening
+    /// reports the framed count the way the original repro did.
+    #[test]
+    fn the_recorded_truncating_repro_cannot_reach_an_atom_body() {
+        const REPRO_STEPS: usize = 65_536;
+
+        let mut chain = vec![SemanticStep::new(SemanticStepKind::Application, id(0x0a))];
+        while chain.len() < REPRO_STEPS {
+            chain.push(SemanticStep::new(SemanticStepKind::Field, id(0x0e)));
+        }
+        if let Ok(path) = SemanticPath::try_from_steps(chain) {
+            let body = DemandAtom::new(path, OperationClass::Read).encode_body();
+            panic!(
+                "a {REPRO_STEPS}-step chain framed an atom body of {} bytes declaring {} steps",
+                body.len(),
+                u16::from_be_bytes([body[1], body[2]]),
+            );
+        }
+
+        let step = SemanticStep::new(SemanticStepKind::Field, id(0x0e));
+        let mut path = root_path();
+        while path.steps().len() < REPRO_STEPS {
+            let Ok(extended) = path.child(step) else {
+                return;
+            };
+            path = extended;
+        }
+        let body = DemandAtom::new(path, OperationClass::Read).encode_body();
+        panic!(
+            "iterated extension reached a {REPRO_STEPS}-step path framing an atom body of {} \
+             bytes declaring {} steps",
+            body.len(),
+            u16::from_be_bytes([body[1], body[2]]),
+        );
     }
 
     /// A two-atom demand: read the whole entry, write a field. Fixed ids so the KAT

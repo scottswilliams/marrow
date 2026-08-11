@@ -783,7 +783,7 @@ impl<'a> DurableContractView<'a> {
             for index in root.indexes() {
                 nodes.push(SemanticNode {
                     kind: SemanticNodeKind::Index,
-                    path: root_path.child(SemanticStep::new(SemanticStepKind::Index, index.id)),
+                    path: root_path.extend(SemanticStep::new(SemanticStepKind::Index, index.id)),
                 });
             }
         }
@@ -883,11 +883,11 @@ fn collect_member_nodes(
             DurableMemberViewKind::Field(field) => {
                 nodes.push(SemanticNode {
                     kind: SemanticNodeKind::Field,
-                    path: container.child(SemanticStep::new(SemanticStepKind::Field, field.id())),
+                    path: container.extend(SemanticStep::new(SemanticStepKind::Field, field.id())),
                 });
             }
             DurableMemberViewKind::Group(group) => {
-                let path = container.child(SemanticStep::new(SemanticStepKind::Group, group.id()));
+                let path = container.extend(SemanticStep::new(SemanticStepKind::Group, group.id()));
                 nodes.push(SemanticNode {
                     kind: SemanticNodeKind::Group,
                     path: path.clone(),
@@ -895,7 +895,7 @@ fn collect_member_nodes(
                 stack.push((path, member.members()));
             }
             DurableMemberViewKind::Branch(branch) => {
-                let path = container.child(SemanticStep::new(
+                let path = container.extend(SemanticStep::new(
                     SemanticStepKind::Placement,
                     branch.placement(),
                 ));
