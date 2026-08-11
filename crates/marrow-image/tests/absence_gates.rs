@@ -1548,3 +1548,144 @@ fn the_durable_body_has_one_writer() {
         "the saturating body buffer the fence replaced is gone",
     );
 }
+
+// ---- The bounded-representation discipline the falsifier's claim rests on.
+
+/// The crates that own the durable contract graph and the verified graph it decodes into.
+/// The discipline below is theirs; the rest of the workspace is out of this gate's subject.
+const BOUNDED_GRAPH_CRATES: [&str; 2] = ["marrow-image", "marrow-verify"];
+
+/// The spellings that would let a representation escape its own drop, alias, or bound.
+///
+/// Each is a way of making the falsifier's result meaningless rather than of fixing what it
+/// found: a custom `Drop` can hide a recursive teardown behind a manual one, `ManuallyDrop`
+/// and `forget`/`leak` retire the teardown entirely, and `unsafe` puts the representation
+/// outside the compiler's reach altogether. The row's stop condition names all of them, so
+/// they are held by a gate rather than by memory.
+const UNBOUNDED_REPRESENTATION_NEEDLES: [&str; 6] = [
+    "unsafe",
+    "ManuallyDrop",
+    "mem::forget",
+    "Box::leak",
+    "impl Drop for",
+    "MaybeUninit",
+];
+
+/// Neither graph owner reaches for a spelling that would put its representation outside the
+/// bound the falsifier measures.
+///
+/// The falsifier proves the whole journey fits a 64 KiB stack. That result is only about the
+/// representation if the representation is the ordinary one: a hand-written `Drop`, a leaked
+/// owner, or an `unsafe` block could make the same journey fit while leaving the recursive
+/// teardown the row exists to remove. So the discipline is asserted directly and the
+/// measurement is left to say what it can say.
+#[test]
+fn neither_graph_owner_escapes_its_own_representation() {
+    let sources = [workspace_sources("src"), workspace_sources("tests")].concat();
+    let mut found = Vec::new();
+    for (path, code) in &sources {
+        let owned = BOUNDED_GRAPH_CRATES
+            .iter()
+            .any(|krate| path.components().any(|part| part.as_os_str() == *krate));
+        if !owned {
+            continue;
+        }
+        // This file names every needle in order to scan for it; a gate that matched its own
+        // needle table would fire on itself and then be relaxed.
+        if path.ends_with("tests/absence_gates.rs") {
+            continue;
+        }
+        for needle in UNBOUNDED_REPRESENTATION_NEEDLES {
+            for (index, line) in code.lines().enumerate() {
+                if !line.contains(needle) {
+                    continue;
+                }
+                if needle == "impl Drop for" && line.contains(PRESERVED_PROOF_GUARD) {
+                    continue;
+                }
+                found.push(format!("{}:{}: {needle}", path.display(), index + 1));
+            }
+        }
+    }
+    assert!(
+        found.is_empty(),
+        "the durable graph owners must hold their representation in ordinary safe Rust, so \
+         the falsifier's 64 KiB result is about the representation and not about a manual \
+         teardown: {found:#?}"
+    );
+}
+
+/// **The plant probe for the gate above.** The scan must see each needle in real code, must
+/// not see it inside a comment or a string, and must be able to tell an `impl Drop` from a
+/// mention of dropping.
+#[test]
+fn the_representation_scan_detects_a_planted_escape() {
+    for needle in UNBOUNDED_REPRESENTATION_NEEDLES {
+        let planted = without_literals(&format!(
+            "fn f() {{ let _ = {needle}; }}\n// a comment naming {needle}\nconst S: &str = \"{needle}\";\n"
+        ));
+        let hits = planted.lines().filter(|line| line.contains(needle)).count();
+        assert_eq!(
+            hits, 1,
+            "the scan must see `{needle}` in code exactly once and neither in the comment \
+             nor in the string literal: {planted}"
+        );
+    }
+
+    // The `impl Drop for` needle is deliberately the whole clause: a file that merely
+    // mentions dropping, or that calls `drop`, is not implementing one.
+    let innocent = without_literals("fn f(v: Vec<u8>) { drop(v); } // the drop leg\n");
+    assert!(
+        !innocent.contains("impl Drop for"),
+        "an ordinary drop call must not read as a custom Drop implementation"
+    );
+}
+
+/// The one preserved `Drop` implementation in either crate: the template-proof guard's
+/// inherited rollback.
+///
+/// It is not a durable-graph owner — it discards what a proof body appended to a draft, in
+/// reverse dependency order, allocating and indexing nothing — and preserving it exactly is
+/// this row's own stop condition. It is exempted by name rather than by relaxing the needle,
+/// so a second `Drop` implementation still fires.
+const PRESERVED_PROOF_GUARD: &str = "TemplateProofDraftGuard";
+
+/// The graph's arena has one owner, and no second index shadows it.
+///
+/// The opaque graph is a view spine over the canonical Product/occurrence tables and the one
+/// value-shape arena. A second arena, or a side index keyed by the same identities, would
+/// reintroduce exactly the divergence the single owner exists to prevent — two answers to
+/// one question, kept in step by hand — and would do it without any public type changing.
+#[test]
+fn no_second_value_shape_arena_or_index_shadow_survives() {
+    let mut mints = Vec::new();
+    for path in src_files() {
+        let source = fs::read_to_string(&path).expect("read source file");
+        let code = without_literals(&without_cfg_test_items(&source));
+        for needle in [
+            "CanonicalValueShapeDag::new",
+            "CanonicalValueShapeDag::default",
+        ] {
+            for (index, line) in code.lines().enumerate() {
+                if line.contains(needle) {
+                    mints.push(format!("{}:{}: {needle}", path.display(), index + 1));
+                }
+            }
+        }
+    }
+    // One mint per side, and no third. The compiler's draft owns the arena its declarations
+    // intern into; the graph the verifier reconstructs owns the arena its decoded rows
+    // reference. Those are the two independent reconstructions the contract identity is
+    // recomputed across — not two arenas in one program — and any further mint would be a
+    // shadow of one of them.
+    let sides: Vec<&String> = mints
+        .iter()
+        .filter(|mint| mint.contains("/draft.rs:") || mint.contains("/product.rs:"))
+        .collect();
+    assert_eq!(
+        (mints.len(), sides.len()),
+        (2, 2),
+        "the value-shape arena is minted once by the draft and once by the graph the \
+         verifier reconstructs, and nowhere else: {mints:#?}"
+    );
+}
