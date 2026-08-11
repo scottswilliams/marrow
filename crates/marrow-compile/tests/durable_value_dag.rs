@@ -1,4 +1,4 @@
-//! Durable value-shape accounting (VALDAG01): the corpora that fix the depth
+//! Durable value-shape accounting: the corpora that fix the depth
 //! decision and the expansion cost of a durable field's stored value.
 //!
 //! A durable field's value is a reference into the program's acyclic value-shape
@@ -8,18 +8,18 @@
 //! 1. **Cost.** Nesting is a shared subgraph, so admitting or refusing a value costs
 //!    work in the unique value types and their declared edges. A project whose
 //!    *expanded* occurrence tree is exponential in its nesting depth must still be
-//!    decided promptly, with the same typed outcome. [red R28]
+//!    decided promptly, with the same typed outcome.
 //! 2. **Depth.** A value type reached at two different depths is one node with one
 //!    depth: the longest path from a top-level field value down to it. The decision
 //!    may not depend on which occurrence the walk visits first, so the refuse/admit
-//!    boundary is pinned in both field orders. [red R29]
+//!    boundary is pinned in both field orders.
 //! 3. **Location.** The over-deep report keeps the exact code, message, and span it
 //!    has today, for a struct leaf, an enum payload leaf, and a terminal scalar leaf,
-//!    at both the admitting and the refusing level. [red R32]
+//!    at both the admitting and the refusing level.
 //! 4. **Bytes.** A value graph that *fits* encodes to the exact bytes and the exact
 //!    durable-contract identity it encoded to before the graph replaced the occurrence
 //!    tree — a diamond, where the shared shape is the thing an interned graph
-//!    represents differently. [red R31]
+//!    represents differently.
 
 use std::fmt::Write as _;
 use std::time::{Duration, Instant};
@@ -67,8 +67,8 @@ fn diagnostics(result: Result<impl std::fmt::Debug, CompileFailure>) -> Vec<Sour
 }
 
 /// Every `check.resource_limit` row of a failed compile, rendered exactly as the CLI
-/// spells it: `<file>:<line>:<column>: <code>: <message>`. This is the frozen form
-/// red R32 compares, so a moved span or a reworded message fails the comparison.
+/// spells it: `<file>:<line>:<column>: <code>: <message>`. The whole row is compared, so a
+/// moved span or a reworded message fails the comparison.
 fn located_resource_limits(result: Result<impl std::fmt::Debug, CompileFailure>) -> Vec<String> {
     diagnostics(result)
         .iter()
@@ -86,8 +86,8 @@ fn located_resource_limits(result: Result<impl std::fmt::Debug, CompileFailure>)
         .collect()
 }
 
-/// The exact located row IMGPROJ01 froze for an over-deep durable field value: the
-/// store declaration's own line, at column 1.
+/// The located row an over-deep durable field value reports: the store declaration's
+/// own line, at column 1.
 fn over_deep_row(line: u32) -> String {
     format!(
         "src/main.mw:{line}:1: check.resource_limit: a durable field value nests structs \
@@ -95,7 +95,7 @@ fn over_deep_row(line: u32) -> String {
     )
 }
 
-// ---- Red R28: expansion cost is the unique value graph, not the occurrence tree.
+// ---- Expansion cost is the unique value graph, not the occurrence tree.
 
 /// A single-root project whose one durable field nests `levels` distinct structs,
 /// each with `fanout` fields referencing the level below, terminating in one scalar.
@@ -154,7 +154,7 @@ fn an_exponentially_expanded_value_is_decided_in_its_unique_nodes() {
     );
 }
 
-// ---- Red R29: one type reached at two depths has one longest-path depth.
+// ---- One type reached at two depths has one longest-path depth.
 
 /// A diamond: struct `D` is both a top-level durable field value (depth 1) and the
 /// base of a `chain`-long nesting chain under a second field. `D`'s scalar leaf
@@ -228,7 +228,7 @@ fn a_diamond_one_level_past_the_bound_refuses_in_both_field_orders() {
     }
 }
 
-// ---- Red R32: the located depth report is preserved exactly.
+// ---- The located depth report is exact.
 
 /// A durable field whose value nests `chain` structs over `leaf`, so the leaf sits at
 /// depth `chain + 1`. `store_line` is the 1-based line the `store ^a` declaration
@@ -310,7 +310,7 @@ fn an_enum_payload_leaf_reports_at_the_frozen_span() {
     );
 }
 
-// ---- The one-row-per-over-deep-field law (B11) and its sibling.
+// ---- One located row per over-deep field, and its sibling for the excluded types.
 
 /// Every located row of a failed compile carrying `code`, in report order, rendered
 /// exactly as the CLI spells it.
@@ -364,7 +364,7 @@ fn two_over_deep_fields_over_two_stores() -> (ProjectInput, u32) {
 /// of over-deep leaves its expansion would have had. The message and span are
 /// unchanged, and the per-store ordering is unchanged: this is a strict subset of the
 /// rows the leaf-counting accounting emitted, and preserving the multiplicity would
-/// require building the expansion red R28 deletes.
+/// require building the expansion the value graph exists to avoid.
 #[test]
 fn one_over_deep_field_draws_one_row_however_many_leaves_its_expansion_would_have() {
     let (input, store_a) = two_over_deep_fields_over_two_stores();
@@ -415,7 +415,7 @@ fn an_unsupported_value_type_draws_one_row_however_many_fields_store_it() {
     );
 }
 
-// ---- Red R30: a hostile compact expansion costs the bytes the ceiling admits.
+// ---- A hostile compact expansion costs the bytes the ceiling admits.
 
 /// The frozen hostile corpus: one scalar base under exactly 31 enclosing struct
 /// levels, each carrying `MAX_STRUCT_LEAVES` = 64 fields referencing the level below.
@@ -513,7 +513,7 @@ fn a_hostile_compact_expansion_is_decided_without_being_expanded() {
     }
 }
 
-// ---- Red R31: a fitting diamond keeps its exact v0 bytes and contract identity.
+// ---- A fitting diamond keeps its exact v0 bytes and contract identity.
 
 /// The fitting small-diamond corpus: struct `Leaf` is the value of one durable field
 /// *and* both leaves of `Mid`, which is the value of another. One shape, two depths,
@@ -561,8 +561,8 @@ fn hex(bytes: &[u8]) -> String {
 }
 
 /// The diamond's DURABLE section and whole-image identity are byte-exact against the
-/// values recomputed at this lane's base `98b1665d`, before the value-shape graph
-/// replaced the recursively cloned occurrence tree. The section ends in the 32-byte
+/// values the encoder produced when a durable field's value was a recursively cloned
+/// occurrence tree. The section ends in the 32-byte
 /// durable-contract identity, so this pins the contract preimage too: the shared shape
 /// is spelled once per occurrence on the wire, as v0 has always spelled it, and only
 /// the retained representation changed.
@@ -579,7 +579,8 @@ fn a_fitting_diamond_keeps_its_exact_bytes_and_contract_identity() {
     assert_eq!(compiled.image.image_id.to_hex(), DIAMOND_IMAGE_ID);
 }
 
-/// The exact DURABLE section bytes of [`small_diamond`] at base `98b1665d`.
+/// The exact DURABLE section bytes of [`small_diamond`], as the occurrence-tree
+/// encoder produced them.
 const DIAMOND_DURABLE_SECTION: &str = concat!(
     "0001000000000000000000000000000000010003000101000000000000000000000000000000050000000000",
     "0000000000000000000000000400000000000000000000000000000002000200000000000000000000000000",
@@ -588,9 +589,122 @@ const DIAMOND_DURABLE_SECTION: &str = concat!(
     "c27d314dbabc963ab14259d0a2da35e46c8e7537840a97a971cb2683a8094b",
 );
 
-/// The exact durable-contract identity of [`small_diamond`] at base `98b1665d`.
+/// The exact durable-contract identity of [`small_diamond`], as the occurrence-tree
+/// encoder produced it.
 const DIAMOND_CONTRACT_ID: &str =
     "ffc27d314dbabc963ab14259d0a2da35e46c8e7537840a97a971cb2683a8094b";
 
-/// The exact whole-image identity of [`small_diamond`] at base `98b1665d`.
+/// The exact whole-image identity of [`small_diamond`], as the occurrence-tree encoder
+/// produced it.
 const DIAMOND_IMAGE_ID: &str = "58eaf4f478da12063519113e058998453a1e5e414c2a2e48855826dd961b8b3d";
+
+// ---- The refusal rows compose rather than replace one another.
+
+/// The over-wide row the struct-leaf bound reports, at the store declaration's own line.
+fn over_wide_row(line: u32) -> String {
+    format!(
+        "src/main.mw:{line}:1: check.resource_limit: a durable struct value carries more \
+         than the fixed limit of 64 leaves"
+    )
+}
+
+/// A durable field whose value is an over-deep chain terminating in an over-wide struct:
+/// two independent bounds broken by one declaration.
+fn over_wide_under_over_deep() -> (ProjectInput, u32) {
+    let mut source = String::from("module main\n\nstruct W {\n");
+    for leaf in 0..=bounds_max_struct_leaves() {
+        let _ = writeln!(source, "    f{leaf}: int");
+    }
+    source.push_str("}\nstruct C0 {\n    v: W\n}\n");
+    for level in 1..=31 {
+        let _ = writeln!(source, "struct C{level} {{\n    inner: C{}\n}}", level - 1);
+    }
+    source.push_str(
+        "\nresource R {\n    required f: C31\n}\n\nstore ^a[id: int]: R\n\n\
+         pub fn plain(n: int): int {\n    return n + 1\n}\n",
+    );
+    let store_line = source_line(&source, "store ^a");
+    (project(&source, Some(&store_ledger(&[]))), store_line)
+}
+
+/// One past the dense-struct leaf bound, spelled from the bound itself so a widening
+/// moves the corpus with it.
+fn bounds_max_struct_leaves() -> usize {
+    marrow_image::bounds::MAX_STRUCT_LEAVES
+}
+
+/// A field that is over-deep *and* whose value contains an over-wide struct draws both
+/// rows.
+///
+/// The depth decision happens at the field root, after the walk that found the width; it
+/// adds a row rather than replacing one. Reporting only the depth would mean fixing the
+/// nesting to be told about the width, and reporting only the width would leave the
+/// depth undiscovered — both are true facts about the same declaration, so the rows
+/// compose. The order is the order they were found: the walk's row first, then the root's.
+#[test]
+fn a_field_that_is_both_over_deep_and_over_wide_draws_both_rows() {
+    let (input, store_line) = over_wide_under_over_deep();
+    assert_eq!(
+        located_resource_limits(compile(&input)),
+        vec![over_wide_row(store_line), over_deep_row(store_line)],
+    );
+}
+
+/// Two over-deep durable fields whose shared value contains a collection the durable set
+/// excludes.
+fn unsupported_under_two_over_deep_fields() -> (ProjectInput, u32) {
+    let mut source = String::from(
+        "module main\n\nstruct Bad {\n    c: List<int>\n}\nstruct C0 {\n    v: Bad\n}\n",
+    );
+    for level in 1..=31 {
+        let _ = writeln!(source, "struct C{level} {{\n    inner: C{}\n}}", level - 1);
+    }
+    source.push_str(
+        "\nresource R {\n    required f: C31\n    required g: C31\n}\n\n\
+         store ^a[id: int]: R\n\n\
+         pub fn plain(n: int): int {\n    return n + 1\n}\n",
+    );
+    let store_line = source_line(&source, "store ^a");
+    (
+        project(&source, Some(&store_ledger(&["field R.g"]))),
+        store_line,
+    )
+}
+
+/// The two laws compose without either becoming the other's multiplicity.
+///
+/// A value type outside the durable set is decided once per distinct shape, so the shared
+/// `Bad` draws one `check.unsupported` however many fields reach it. Depth is decided per
+/// field, so both over-deep fields draw their own row. Three rows, one of each kind and
+/// one per over-deep field — not one row per over-deep leaf of an expansion, and not one
+/// row standing in for the other two.
+#[test]
+fn an_unsupported_shape_shared_by_two_over_deep_fields_draws_three_rows() {
+    let (input, store_line) = unsupported_under_two_over_deep_fields();
+    let diagnostics = diagnostics(compile(&input));
+    let rows: Vec<String> = diagnostics
+        .iter()
+        .map(|diagnostic| {
+            format!(
+                "{}:{}:{}: {}: {}",
+                diagnostic.file().as_str(),
+                diagnostic.line(),
+                diagnostic.column(),
+                diagnostic.code(),
+                diagnostic.message(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        rows,
+        vec![
+            format!(
+                "src/main.mw:{store_line}:1: check.unsupported: a collection stored directly \
+                 in a durable field (a large collection belongs under a keyed branch) is not \
+                 yet supported on the beta line"
+            ),
+            over_deep_row(store_line),
+            over_deep_row(store_line),
+        ],
+    );
+}

@@ -824,17 +824,19 @@ mod tests {
         })
     }
 
-    fn scalar_shape(scalar: Scalar) -> ValueShapeNodeId {
-        shapes()
-            .scalars
-            .iter()
-            .find(|(candidate, _)| *candidate == scalar)
-            .expect("every scalar is minted")
-            .1
+    impl Shapes {
+        /// The minted node for one scalar value shape.
+        fn scalar(&self, scalar: Scalar) -> ValueShapeNodeId {
+            self.scalars
+                .iter()
+                .find(|(candidate, _)| *candidate == scalar)
+                .expect("every scalar is minted")
+                .1
+        }
     }
 
     fn field(byte: u8, scalar: Scalar, required: bool) -> DurableMemberShape {
-        value_field(byte, required, scalar_shape(scalar))
+        value_field(byte, required, shapes().scalar(scalar))
     }
 
     /// A durable field carrying a widened value shape.

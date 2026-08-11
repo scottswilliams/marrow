@@ -1,4 +1,4 @@
-//! The legacy encoder bridge (VALDAG01, red R33): which producer-side result a draft
+//! The legacy encoder bridge: which producer-side result a draft
 //! with several faults reports, and what the encoder allocates on the way to reporting
 //! it.
 //!
@@ -14,10 +14,11 @@
 //! `check_bounds` order; then the durable graph's own coherence; then CodeBytes; then
 //! the whole-image ceiling.
 //!
-//! The "zero contract hash" half of the same red is structural rather than measured: a
-//! `DurableContractId` is minted at exactly one site in the crate, from a value that
-//! exists only for a body the fence already admitted (see the absence gate
-//! `the_contract_identity_is_minted_only_behind_the_body_fence`).
+//! That no contract hash is ever computed over bytes no image can carry is structural
+//! rather than measured: the producer mints an identity at exactly one site, from a value
+//! that exists only for a body the fence already admitted, and the identity owner refuses
+//! a canonical payload past its own ceiling whoever asks (see the absence gate
+//! `the_contract_identity_has_one_mint_per_side_and_a_bound_of_its_own`).
 
 use marrow_image::bounds::{MAX_CODE_BYTES, MAX_KEY_COLUMNS, MAX_STRUCT_LEAVES};
 use marrow_image::{

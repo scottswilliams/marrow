@@ -61,6 +61,12 @@ use crate::ty::Scalar;
 /// it always refers to a node that exists, in the arena that minted it. There is
 /// deliberately no way to build one from a raw integer, and no way to build a value
 /// shape without an arena.
+///
+/// It authenticates nothing beyond that. An id carries no arena identity and no
+/// generation, so it names whatever node currently sits at its ordinal: held across a
+/// [`CanonicalValueShapeDag::truncate`] that drops that node, it would name the next
+/// shape minted in its place. Every arena in the tree is either append-only for its whole
+/// life or truncated only by an owner that discards the ids it took with it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ValueShapeNodeId(u32);
 

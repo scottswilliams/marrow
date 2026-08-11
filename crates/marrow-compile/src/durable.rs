@@ -1605,7 +1605,7 @@ impl<'a> IdentityResolver<'a> {
                             })
                             .collect();
                         self.value_path.pop();
-                        self.remember(values.struct_shape(leaves), ty)
+                        self.remember(ty, values.struct_shape(leaves))
                     }
                     None => {
                         self.reject_value("this struct value");
@@ -1624,7 +1624,7 @@ impl<'a> IdentityResolver<'a> {
                 self.value_path.push(ValueNode::Enum(enum_id));
                 let shape = self.build_enum_value_shape(values, records, metadata, enum_id);
                 self.value_path.pop();
-                self.remember(shape, ty)
+                self.remember(ty, shape)
             }
             GArg::Collection(_) => {
                 self.reject_value(
@@ -1655,6 +1655,16 @@ impl<'a> IdentityResolver<'a> {
     /// some other field. Deciding it once, at the root, is what lets the walk below visit
     /// each distinct type once — and it is why one over-deep field draws one located
     /// refusal rather than one per leaf of the expansion it never builds.
+    ///
+    /// The depth decision does not short-circuit the walk and does not replace what the
+    /// walk found. The walk runs first and records every refusal it meets — an over-wide
+    /// struct, a value type outside the durable set — and this adds the depth row on top
+    /// of them. A field that is both over-deep and over-wide therefore draws both rows,
+    /// and a value type the durable set excludes still draws its own `check.unsupported`
+    /// beneath an over-deep field. Each row is a distinct true fact about the same
+    /// declaration, and reporting the shallowest one alone would mean fixing the depth
+    /// only to be told about the width. The rows are a superset of what the per-leaf
+    /// accounting reported, never a substitute for one of them.
     fn build_field_value(
         &mut self,
         draft: &mut ImageDraft,
@@ -1674,10 +1684,17 @@ impl<'a> IdentityResolver<'a> {
     ///
     /// This is what makes the value graph a graph: a struct whose four fields are all the
     /// enclosing level's type is walked once, not four times, so a shape whose expansion
-    /// is exponential in its declared levels costs one visit per declared level. Only a
-    /// completed walk is remembered — a cycle's back-edge answer belongs to the path that
-    /// found it, never to the type.
-    fn remember(&mut self, node: ValueShapeNodeId, ty: GArg) -> ValueShapeNodeId {
+    /// is exponential in its declared levels costs one visit per declared level.
+    ///
+    /// A directly self-referential type never reaches here: its own walk refuses at the
+    /// back edge and returns before remembering anything. Mutual recursion does — walking
+    /// `A → B → A` refuses at the back edge, and `B`'s walk then completes over the
+    /// placeholder that refusal returned and is remembered under `B`. That memo is
+    /// truthful about nothing, and it does not have to be: the refusal is already
+    /// recorded, so the whole graph is discarded and no image is built from it. Declining
+    /// to remember after a refusal instead would return the walk to exponential cost on
+    /// exactly the corpora that refuse, which is the cost this memo exists to remove.
+    fn remember(&mut self, ty: GArg, node: ValueShapeNodeId) -> ValueShapeNodeId {
         self.value_memo.insert(ty, node);
         node
     }

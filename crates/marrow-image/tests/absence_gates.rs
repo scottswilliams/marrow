@@ -958,7 +958,7 @@ fn the_draft_is_not_clone() {
     );
 }
 
-/// The image side declares no owned recursive durable value shape (red R34).
+/// The image side declares no owned recursive durable value shape.
 ///
 /// A durable field's value used to be a `DurableValueShape` tree: a node owned its
 /// nested nodes, so a shape reached from four fields of four enclosing levels was
@@ -1016,7 +1016,7 @@ fn no_owned_recursive_durable_value_shape_survives() {
     );
 }
 
-/// The verifier keeps no second representation of a decoded value shape (red R34).
+/// The verifier keeps no second representation of a decoded value shape.
 ///
 /// The verifier used to decode the durable table into an owned shape tree and then
 /// rebuild a second one to recompute the contract id, cloning each member on the way.
@@ -1215,6 +1215,68 @@ fn the_contract_identity_has_one_mint_per_side_and_a_bound_of_its_own() {
     );
 }
 
+/// No value shape is minted inside a template proof.
+///
+/// A `ValueShapeNodeId` is an ordinal into one arena and authenticates nothing: it carries
+/// no draft identity and no generation, so it means whichever node currently sits at that
+/// ordinal. A template proof appends to the real draft and its guard truncates the arena
+/// back when the proof is discarded, so an id minted inside a proof and kept past it would
+/// name whatever shape a later mint puts in its place — a different value wearing the same
+/// reference.
+///
+/// Nothing in the tree can reach that today: the two production owners that mint value
+/// shapes open no proof, and the proof bodies mint none. That is a property of the caller
+/// set rather than of the id, which is why it is pinned rather than assumed.
+#[test]
+fn no_value_shape_is_minted_inside_a_template_proof() {
+    let sources = workspace_sources("src");
+    let minting: Vec<String> = sources
+        .iter()
+        .filter(|(_, code)| without_cfg_test(code).contains("value_shapes_mut()"))
+        .map(|(path, _)| path.display().to_string())
+        .collect();
+    for permitted in VALUE_SHAPE_MINT_OWNERS {
+        assert!(
+            minting.iter().any(|path| path.contains(permitted)),
+            "`{permitted}` no longer mints value shapes, so this gate's subject moved: \
+             {minting:?}",
+        );
+    }
+    assert_eq!(
+        minting.len(),
+        VALUE_SHAPE_MINT_OWNERS.len(),
+        "value shapes are minted at exactly the pinned owners; found {minting:?}",
+    );
+
+    let proof_openers: Vec<String> = sources
+        .iter()
+        .filter(|(_, code)| {
+            let production = without_cfg_test(code);
+            contains_symbol(&production, "template_proof") || production.contains("proof_draft()")
+        })
+        .map(|(path, _)| path.display().to_string())
+        .collect();
+    assert!(
+        !proof_openers.is_empty(),
+        "the template proof still exists, so this gate has a live subject",
+    );
+    let both: Vec<&String> = minting
+        .iter()
+        .filter(|path| proof_openers.contains(path))
+        .collect();
+    assert!(
+        both.is_empty(),
+        "these owners mint a value shape and open a template proof, so a minted id can \
+         outlive the arena entry it names: {both:?}",
+    );
+}
+
+/// The production owner that mints durable value shapes: the compiler's one durable owner,
+/// which resolves a durable field's value type into the draft's arena. It opens no
+/// template proof. A second owner appearing here is a second place a `ValueShapeNodeId`
+/// can come from, and the first thing to ask of it is whether it mints under a proof.
+const VALUE_SHAPE_MINT_OWNERS: [&str; 1] = ["marrow-compile/src/durable.rs"];
+
 /// The production callers of the durable-contract identity: the producer's body fence and
 /// the verifier's independent recomputation. Those two are the whole point — one mint per
 /// side of the image boundary, agreeing by recomputation rather than by transfer — so a
@@ -1224,7 +1286,7 @@ const CONTRACT_IDENTITY_CALLERS: [&str; 2] = [
     "marrow-verify/src/verify/durable.rs",
 ];
 
-/// The producer keeps no second, recursive way to emit a durable body (red R34).
+/// The producer keeps no second, recursive way to emit a durable body.
 ///
 /// One walk writes the DURABLE section for both of its readers — the lower bound that
 /// counts its bytes and the buffer that keeps them — so the body a count admits is the

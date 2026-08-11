@@ -140,6 +140,33 @@ fn a_dense_struct_one_leaf_over_the_limit_is_refused() {
     );
 }
 
+/// The value bounds are rechecked over the whole arena, not over the shapes a
+/// declaration happens to reference.
+///
+/// The arena is the draft's own retained state. A node past a value bound is a producer
+/// defect wherever it came from, and deciding it by reachability would make the same draft
+/// encode or refuse depending on a traversal — while paying for a reachability walk to
+/// learn something no correct producer can produce. This pins the declared precondition:
+/// a draft whose declarations are all within bounds still refuses when its arena holds an
+/// over-wide shape nothing references.
+#[test]
+fn an_over_wide_shape_no_declaration_references_still_refuses() {
+    assert_eq!(
+        encode_root(
+            |draft| {
+                let members = members_with_struct_field(draft, MAX_STRUCT_LEAVES);
+                let values = draft.value_shapes_mut();
+                let int = values.scalar(Scalar::Int);
+                let _unreferenced = values.struct_shape(vec![int; MAX_STRUCT_LEAVES + 1]);
+                members
+            },
+            Vec::new(),
+        ),
+        Err(ImageBuildError::TooManyStructLeaves),
+        "an unreferenced over-wide shape in the draft's arena refuses the encode",
+    );
+}
+
 #[test]
 fn an_index_at_the_component_limit_encodes() {
     assert_eq!(

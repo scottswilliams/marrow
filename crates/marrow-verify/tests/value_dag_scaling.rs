@@ -1,4 +1,5 @@
-//! Verifier value-shape scaling (VALDAG01, red R35).
+//! Verifier value-shape scaling: what a decoded image's value shapes cost the
+//! independent verifier as the corpus that references them grows.
 //!
 //! A durable field's value shape is a reference into the decoded image's one
 //! value-shape arena. Two corpora scale the thing the arena is meant to be linear in —

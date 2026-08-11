@@ -8,6 +8,8 @@
 //! (record field, param, return, `VacantLoad` operand); position restrictions are
 //! enforced by the encoder that writes each and rechecked by the verifier.
 
+use crate::value_dag::ImageByteSink;
+
 /// A bare image scalar. The runtime representation vocabulary (`RuntimeScalar`,
 /// `KeyScalar`) lives in the kernel and bridges to these tags; the temporal scalar
 /// domain (calendar, canonical text codec, arithmetic) lives in `marrow-temporal`.
@@ -131,7 +133,7 @@ impl ImageType {
 
     /// Append the canonical `ImageType` bytes: one tag byte, plus a big-endian `u16`
     /// record index when the base is a record.
-    pub(crate) fn encode(self, out: &mut impl crate::value_dag::ImageByteSink) {
+    pub(crate) fn encode(self, out: &mut impl ImageByteSink) {
         match self {
             ImageType::Unit => out.push(TAG_UNIT),
             ImageType::Scalar { scalar, optional } => {

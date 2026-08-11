@@ -81,8 +81,12 @@ pub struct EncodedImage {
 /// [`LegacyDurableBodyLowerBoundFence`] may refuse an over-ceiling DURABLE body
 /// *early*, without letting the refusal overtake a result the old encoder reported
 /// first. Nothing else may mint one, and the borrow binds it to the one draft it
-/// examined. IMGBOUND consumes and extends this owner; IMGMEASURE deletes it together
-/// with the fence when the contract path stops allocating.
+/// examined.
+///
+/// **Deletion condition.** This owner exists only to preserve the order in which the old
+/// encoder reported producer-side results. It goes when the encoder decides every
+/// producer-side result from the draft alone, before building any section, so that no
+/// outcome depends on replaying a build order.
 ///
 /// # What it replays, in order
 ///
@@ -175,8 +179,11 @@ impl<'a> LegacyFullDraftCoherencePreflight<'a> {
 /// Every phase includes ordinary success, error, unwind, and drop overlaps: no term is
 /// dropped early anywhere in [`ImageDraft::encode`].
 ///
-/// IMGBOUND deletes both allocating sinks and this bound when it installs its derived
-/// fitting-preimage ceiling and allocation-free contract path.
+/// **Deletion condition.** The two counting sinks and these derived maxima go together,
+/// when the contract path stops allocating: once the identity is computed by streaming the
+/// canonical payload into the hash rather than into a buffer, and the body's ceiling is
+/// derived rather than measured by a pre-pass, there is no peak to state and no phase (A)
+/// to be the maximum.
 struct LegacyDurableBodyLowerBoundFence<'a> {
     draft: &'a ImageDraft,
     /// The exact body length the count measured, so the body is allocated once at its
