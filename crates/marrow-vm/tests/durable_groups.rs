@@ -26,6 +26,10 @@ use marrow_vm::{DurableRun, Ephemeral, Value, mint_ephemeral, run_export};
 mod site_seam;
 use site_seam::site;
 
+#[path = "../../marrow-image/tests/common/admitted_plan.rs"]
+mod admitted_plan;
+use admitted_plan::admitted_plan;
+
 const APPLICATION_ID: [u8; 16] = [0x0a; 16];
 const ROOT_PLACEMENT_ID: [u8; 16] = [0x0b; 16];
 const ROOT_KEY_ID: [u8; 16] = [0x0c; 16];
@@ -423,20 +427,4 @@ fn a_whole_group_erase_clears_the_leaves_and_keeps_the_entry_and_top_level_field
     );
     let book = record_slots(present(run_read(&image, &mut attachment, "readEntry")));
     assert_eq!(text_of(book[0].clone().expect("title present")), "hi");
-}
-
-/// The construction budget this file's fixtures are admitted under.
-///
-/// The compiler-free tier states a census the way the compiler's admission owner does: a
-/// plan minted before construction, whose terms `admit` checks against what a ProgramImage
-/// can hold. These fixtures build small graphs, so the census is the image's own ceilings
-/// rather than a second, narrower policy stated here — what the plan closes is unadmitted
-/// intake, not fixture size.
-fn admitted_plan() -> marrow_image::AdmittedGraphInputPlan {
-    marrow_image::AdmittedGraphInputPlan::admit(
-        marrow_image::bounds::MAX_ADMITTED_PRODUCT_DECLARATIONS,
-        marrow_image::bounds::MAX_ADMITTED_ROOT_OCCURRENCES,
-        marrow_image::bounds::MAX_ADMITTED_DECLARATION_COMMANDS,
-    )
-    .expect("the image's own ceilings are admitted counts")
 }

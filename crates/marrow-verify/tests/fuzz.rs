@@ -22,6 +22,10 @@ use marrow_verify::verify;
 mod site_seam;
 use site_seam::site;
 
+#[path = "../../marrow-image/tests/common/admitted_plan.rs"]
+mod admitted_plan;
+use admitted_plan::admitted_plan;
+
 fn ledger(bytes: [u8; 16]) -> LedgerIdBytes {
     LedgerIdBytes::from_bytes(bytes)
 }
@@ -1122,20 +1126,4 @@ fn mutated_multi_site_durable_images_never_panic_the_verifier() {
         }
         oracle(&bytes);
     }
-}
-
-/// The construction budget this file's fixtures are admitted under.
-///
-/// The compiler-free tier states a census the way the compiler's admission owner does: a
-/// plan minted before construction, whose terms `admit` checks against what a ProgramImage
-/// can hold. These fixtures build small graphs, so the census is the image's own ceilings
-/// rather than a second, narrower policy stated here — what the plan closes is unadmitted
-/// intake, not fixture size.
-fn admitted_plan() -> marrow_image::AdmittedGraphInputPlan {
-    marrow_image::AdmittedGraphInputPlan::admit(
-        marrow_image::bounds::MAX_ADMITTED_PRODUCT_DECLARATIONS,
-        marrow_image::bounds::MAX_ADMITTED_ROOT_OCCURRENCES,
-        marrow_image::bounds::MAX_ADMITTED_DECLARATION_COMMANDS,
-    )
-    .expect("the image's own ceilings are admitted counts")
 }

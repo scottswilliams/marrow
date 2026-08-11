@@ -293,6 +293,10 @@ use DeclarationKind::*;
 mod site_seam;
 use site_seam::site;
 
+#[path = "../../marrow-image/tests/common/admitted_plan.rs"]
+mod admitted_plan;
+use admitted_plan::admitted_plan;
+
 const KINDS: [DeclarationKind; 11] = [
     Application,
     RootPlacement,
@@ -716,20 +720,4 @@ fn only_the_two_reference_exceptions_admit_a_reused_declaration_id() {
     assert_eq!(references, 2, "exactly two reuses are references");
     assert_eq!(singletons, 1, "only the application is declared once");
     assert_eq!(refusals, 118);
-}
-
-/// The construction budget this file's fixtures are admitted under.
-///
-/// The compiler-free tier states a census the way the compiler's admission owner does: a
-/// plan minted before construction, whose terms `admit` checks against what a ProgramImage
-/// can hold. These fixtures build small graphs, so the census is the image's own ceilings
-/// rather than a second, narrower policy stated here — what the plan closes is unadmitted
-/// intake, not fixture size.
-fn admitted_plan() -> marrow_image::AdmittedGraphInputPlan {
-    marrow_image::AdmittedGraphInputPlan::admit(
-        marrow_image::bounds::MAX_ADMITTED_PRODUCT_DECLARATIONS,
-        marrow_image::bounds::MAX_ADMITTED_ROOT_OCCURRENCES,
-        marrow_image::bounds::MAX_ADMITTED_DECLARATION_COMMANDS,
-    )
-    .expect("the image's own ceilings are admitted counts")
 }

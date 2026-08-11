@@ -33,6 +33,10 @@ use site_seam::site;
 mod image_forgery;
 use image_forgery::rehash;
 
+#[path = "../../marrow-image/tests/common/admitted_plan.rs"]
+mod admitted_plan;
+use admitted_plan::admitted_plan;
+
 /// The tracer graph's fixed ledger ids, shared by the durable-schema builders and
 /// the byte-forgery helpers so a hostile mutation can target one precisely.
 const APPLICATION_ID: [u8; 16] = [0x0a; 16];
@@ -5532,19 +5536,3 @@ fn a_forged_durable_index_past_the_component_bound_rejects_with_the_component_de
 const AT_BUDGET_DETAIL: &str = "root member tree fields do not match the record fields";
 const AT_DEPTH_DETAIL: &str = "a root group slot is not a group record";
 const AT_COMPONENTS_DETAIL: &str = "durable index repeats a projection component";
-
-/// The construction budget this file's fixtures are admitted under.
-///
-/// The compiler-free tier states a census the way the compiler's admission owner does: a
-/// plan minted before construction, whose terms `admit` checks against what a ProgramImage
-/// can hold. These fixtures build small graphs, so the census is the image's own ceilings
-/// rather than a second, narrower policy stated here — what the plan closes is unadmitted
-/// intake, not fixture size.
-fn admitted_plan() -> marrow_image::AdmittedGraphInputPlan {
-    marrow_image::AdmittedGraphInputPlan::admit(
-        marrow_image::bounds::MAX_ADMITTED_PRODUCT_DECLARATIONS,
-        marrow_image::bounds::MAX_ADMITTED_ROOT_OCCURRENCES,
-        marrow_image::bounds::MAX_ADMITTED_DECLARATION_COMMANDS,
-    )
-    .expect("the image's own ceilings are admitted counts")
-}

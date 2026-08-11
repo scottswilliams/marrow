@@ -33,6 +33,10 @@ use marrow_image::{
 };
 use marrow_verify::verify;
 
+#[path = "../../marrow-image/tests/common/admitted_plan.rs"]
+mod admitted_plan;
+use admitted_plan::admitted_plan;
+
 /// The worker stack the journey runs on. Small enough that one recursive descent over a
 /// maximum member run, a maximum value shape, or a maximum root set would overflow it, and
 /// large enough for the bounded frames the journey actually uses.
@@ -40,7 +44,7 @@ const WORKER_STACK_BYTES: usize = 64 * 1024;
 
 /// The completion sentinel. Printed by the child only after the whole journey has returned
 /// and every owner it built has been dropped; required by the parent beside a clean status.
-const SENTINEL: &str = "marrow.falsifier.imgbound-a.complete";
+const SENTINEL: &str = "marrow.falsifier.bounded-graph.complete";
 
 const APPLICATION_ID: [u8; 16] = [0x0a; 16];
 const PLACEMENT_ID: [u8; 16] = [0x0b; 16];
@@ -81,17 +85,6 @@ fn key_id(ordinal: usize) -> LedgerIdBytes {
     let mut bytes = [0x50u8; 16];
     bytes[0] = ordinal as u8;
     LedgerIdBytes::from_bytes(bytes)
-}
-
-/// The construction budget the journey is admitted under: the image's own ceilings, which
-/// is what an admission owner with no narrower census of its own states.
-fn admitted_plan() -> AdmittedGraphInputPlan {
-    AdmittedGraphInputPlan::admit(
-        marrow_image::bounds::MAX_ADMITTED_PRODUCT_DECLARATIONS,
-        marrow_image::bounds::MAX_ADMITTED_ROOT_OCCURRENCES,
-        marrow_image::bounds::MAX_ADMITTED_DECLARATION_COMMANDS,
-    )
-    .expect("the image's own ceilings are admitted counts")
 }
 
 fn add_main(draft: &mut ImageDraft) {

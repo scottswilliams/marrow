@@ -27,6 +27,10 @@ use marrow_image::{
     Scalar, SpanEntry, ValueShapeNodeId,
 };
 
+#[path = "common/admitted_plan.rs"]
+mod admitted_plan;
+use admitted_plan::admitted_plan;
+
 const APPLICATION_ID: [u8; 16] = [0x0a; 16];
 const PLACEMENT_ID: [u8; 16] = [0x0b; 16];
 const KEY_ID: [u8; 16] = [0x0c; 16];
@@ -289,20 +293,4 @@ fn the_graph_anchor_outranks_code_bytes_and_the_body_ceiling() {
         Err(ImageBuildError::TooManyKeyColumns),
         "a fixed bound still precedes the anchor",
     );
-}
-
-/// The construction budget this file's fixtures are admitted under.
-///
-/// The compiler-free tier states a census the way the compiler's admission owner does: a
-/// plan minted before construction, whose terms `admit` checks against what a ProgramImage
-/// can hold. These fixtures build small graphs, so the census is the image's own ceilings
-/// rather than a second, narrower policy stated here — what the plan closes is unadmitted
-/// intake, not fixture size.
-fn admitted_plan() -> marrow_image::AdmittedGraphInputPlan {
-    marrow_image::AdmittedGraphInputPlan::admit(
-        marrow_image::bounds::MAX_ADMITTED_PRODUCT_DECLARATIONS,
-        marrow_image::bounds::MAX_ADMITTED_ROOT_OCCURRENCES,
-        marrow_image::bounds::MAX_ADMITTED_DECLARATION_COMMANDS,
-    )
-    .expect("the image's own ceilings are admitted counts")
 }

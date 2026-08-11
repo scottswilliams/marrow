@@ -1639,11 +1639,6 @@ fn neither_graph_owner_escapes_its_own_representation() {
         if !owned {
             continue;
         }
-        // This file names every needle in order to scan for it; a gate that matched its own
-        // needle table would fire on itself and then be relaxed.
-        if path.ends_with("tests/absence_gates.rs") {
-            continue;
-        }
         for needle in UNBOUNDED_REPRESENTATION_NEEDLES {
             for (index, line) in code.lines().enumerate() {
                 if !line.contains(needle) {

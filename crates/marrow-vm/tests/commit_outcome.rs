@@ -15,6 +15,10 @@ use marrow_vm::{
     DurableExecutionFault, DurableRun, Ephemeral, Value, mint_ephemeral, run_durable, run_export,
 };
 
+#[path = "../../marrow-image/tests/common/admitted_plan.rs"]
+mod admitted_plan;
+use admitted_plan::admitted_plan;
+
 const APPLICATION_ID: [u8; 16] = [0x81; 16];
 const ROOT_PLACEMENT_ID: [u8; 16] = [0x82; 16];
 const ROOT_PRODUCT_ID: [u8; 16] = [0x83; 16];
@@ -441,20 +445,4 @@ fn read_only_region_followed_by_pure_fault_is_an_ordinary_runtime_fault() {
         panic!("a read-only region was misreported as a confirmed durable write")
     };
     assert_eq!(fault.code(), "run.divide_by_zero");
-}
-
-/// The construction budget this file's fixtures are admitted under.
-///
-/// The compiler-free tier states a census the way the compiler's admission owner does: a
-/// plan minted before construction, whose terms `admit` checks against what a ProgramImage
-/// can hold. These fixtures build small graphs, so the census is the image's own ceilings
-/// rather than a second, narrower policy stated here — what the plan closes is unadmitted
-/// intake, not fixture size.
-fn admitted_plan() -> marrow_image::AdmittedGraphInputPlan {
-    marrow_image::AdmittedGraphInputPlan::admit(
-        marrow_image::bounds::MAX_ADMITTED_PRODUCT_DECLARATIONS,
-        marrow_image::bounds::MAX_ADMITTED_ROOT_OCCURRENCES,
-        marrow_image::bounds::MAX_ADMITTED_DECLARATION_COMMANDS,
-    )
-    .expect("the image's own ceilings are admitted counts")
 }

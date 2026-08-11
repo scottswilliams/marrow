@@ -887,22 +887,15 @@ mod index_site_partition {
         }
     }
 
+    // The shared census, included by path rather than declared as a file module: a nested
+    // module's `#[path]` base is a directory this crate's source tree does not have.
+    mod admitted_plan {
+        include!("../../../marrow-image/tests/common/admitted_plan.rs");
+    }
+    use admitted_plan::admitted_plan;
+
     /// Bind one occurrence, one canonical declaration path, and one target, then request
     /// the site the binding names.
-    /// The construction budget this module's fixtures are admitted under.
-    ///
-    /// The verifier's own decode fixtures state a census the way an admission owner does:
-    /// a plan minted before construction, whose terms `admit` checks against what a
-    /// ProgramImage can hold.
-    fn admitted_plan() -> marrow_image::AdmittedGraphInputPlan {
-        marrow_image::AdmittedGraphInputPlan::admit(
-            marrow_image::bounds::MAX_ADMITTED_PRODUCT_DECLARATIONS,
-            marrow_image::bounds::MAX_ADMITTED_ROOT_OCCURRENCES,
-            marrow_image::bounds::MAX_ADMITTED_DECLARATION_COMMANDS,
-        )
-        .expect("the image's own ceilings are admitted counts")
-    }
-
     fn site(
         draft: &mut ImageDraft,
         root: &RootOccurrenceSelector,

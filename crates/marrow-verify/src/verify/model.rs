@@ -2,8 +2,8 @@
 
 use crate::sealed::{RetShape, SealedCollectionType, SealedConst, SealedSite};
 use marrow_image::{
-    DurableContractGraph, DurableContractId, DurableIndexShape, DurableProductGraph, ExportId,
-    ImageId, ImageType, LedgerIdBytes, Scalar, SemanticNode, SemanticPath,
+    DurableContractId, DurableIndexShape, DurableProductGraph, ExportId, ImageId, ImageType,
+    LedgerIdBytes, Scalar, SemanticNode, SemanticPath,
 };
 use std::rc::Rc;
 
@@ -74,17 +74,6 @@ pub(super) struct DecodedImage {
     pub(super) enums: Vec<DecodedEnum>,
     pub(super) collections: Vec<SealedCollectionType>,
     pub(super) roots: Vec<DecodedRoot>,
-    /// The one durable contract graph this image decoded into: the application identity,
-    /// the canonical Product declaration table, the flat root-occurrence rows, and the one
-    /// value-shape arena every field references.
-    ///
-    /// The verifier retains it because it owns that arena: a
-    /// [`marrow_image::ValueShapeNodeId`] carried by a decoded member row addresses a node
-    /// this graph holds, so the graph outlives every row that references it instead of the
-    /// arena dying under retained ids. Nothing reads it — holding it *is* what it is for,
-    /// which is why the ids it answers for are no longer dangling by design.
-    #[allow(dead_code)]
-    pub(super) durable_graph: DurableContractGraph,
     pub(super) sites: Vec<SealedSite>,
     /// Each site's resolved graph-node path, parallel to `sites` by index.
     pub(super) site_paths: Vec<SemanticPath>,

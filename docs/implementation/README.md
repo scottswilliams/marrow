@@ -363,7 +363,7 @@ and a member's kind are borrowed views whose payload structs have private fields
 constructor. A caller can match a member exhaustively and walk its children, and cannot
 state a graph of its own — there is no public recursive member type, no public raw field or
 variant, and no entry point that accepts an already-built recursive owner by value. The
-seven raw `Durable*Shape` tree types and the `DurableContractDescriptor` they were built
+six raw `Durable*Shape` tree types and the `DurableContractDescriptor` they were built
 into are deleted; what remains of that family is the two flat, non-recursive index rows a
 managed-index declaration is stated as.
 
@@ -399,7 +399,7 @@ admission owner derives its own maximum from those charges rather than sampling 
 
 ```text
 compiler-side, at the identity ledger's admitted anchors    =  42,653,752 B  (<= 64 MiB declared)
-verifier-side, at the whole-image ceiling                   = 145,228,008 B  (<= 256 MiB declared)
+verifier-side, at the whole-image ceiling                   =  72,876,264 B  (<= 256 MiB declared)
 durable value arena, at the type population                 = 8,212,611,072 B  (exported, unbounded here)
 ```
 

@@ -173,8 +173,10 @@ impl<'a> LegacyFullDraftCoherencePreflight<'a> {
 /// this bridge no longer states a peak-allocation maximum.
 ///
 /// **Deletion condition.** This owner exists only to refuse an over-ceiling body before
-/// the old encoder allocates one. It goes when IMGMEASURE installs policy-clean
-/// whole-image-ceiling-capped paired-codec measurement before any encoder allocation.
+/// the old encoder allocates one. It goes when the encoder measures every section against
+/// the whole-image ceiling through the same codec that writes it, and does so before it
+/// allocates — at which point there is no unmeasured allocation left for a separate fence
+/// to stand in front of.
 struct LegacyDurableBodyLowerBoundFence<'a> {
     draft: &'a ImageDraft,
     /// The exact body length the count measured, so the body is allocated once at its

@@ -453,8 +453,14 @@ pub const DURABLE_PRODUCT_ROW_BYTES: u64 = crate::product::PRODUCT_DECLARATION_R
 /// declaring none pays for none.
 pub const DURABLE_OCCURRENCE_ROW_BYTES: u64 = crate::product::ROOT_OCCURRENCE_ROW_BYTES;
 
+/// The live bytes one managed-index declaration occupies apart from its projection.
+pub const DURABLE_INDEX_SHAPE_BYTES: u64 = crate::product::MANAGED_INDEX_SHAPE_BYTES;
+
+/// The live bytes one projected index component occupies.
+pub const DURABLE_INDEX_COMPONENT_BYTES: u64 = crate::product::MANAGED_INDEX_COMPONENT_BYTES;
+
 /// The live bytes one managed-index declaration occupies, at the widest leaf projection
-/// the image admits.
+/// the image admits: its shape plus a full projection of components.
 pub const DURABLE_INDEX_BYTES: u64 = crate::product::MANAGED_INDEX_BYTES;
 
 /// The live bytes one interned value-shape node occupies in the graph's one arena, apart
@@ -486,14 +492,21 @@ pub const DURABLE_GRAPH_FIXED_BYTES: u64 =
 /// | root occurrence | 224 | 34 — a name, a placement id, and a Product id | 7 |
 /// | managed index | 48 | 19 — a ledger id, a unique flag, and a component count | 3 |
 /// | index component | 17 | 17 — a kind byte and a ledger id | 1 |
-/// | value shape node | 92 | 1 — a scalar tag | 92 |
+/// | value shape node | 92 | 2 — a shape tag and a scalar tag | 46 |
 /// | value shape reference | 40 | 2 — a leaf's own spelling | 20 |
 ///
 /// The value-shape node is the widest and therefore the rate: a decoder that met a section
-/// of nothing but distinct one-byte shapes would mint one interned node per byte. That it
-/// dominates is a fact about the arena's node representation, not about the graph's rows,
-/// and it is published rather than averaged away so the decoder's ceiling names the term
-/// that actually sizes it.
+/// of nothing but distinct two-byte scalar shapes would mint one interned node per two
+/// bytes. That it dominates is a fact about the arena's node representation, not about the
+/// graph's rows, and it is published rather than averaged away so the decoder's ceiling
+/// names the term that actually sizes it.
+///
+/// Each floor is the *fewest* bytes the grammar can spell that element in, read off the
+/// grammar rather than rounded down for safety. A floor stated below the real one inflates
+/// the rate, which looks conservative and is: it also hides how much of the decoder's
+/// ceiling is headroom, so a later tightening would inherit the padding instead of the
+/// fact. The smallest value shape is a scalar, and a scalar is two bytes — its shape tag
+/// and its scalar tag — never one.
 ///
 /// Rounded up at every element, so the rate is an over-estimate of any real mixture: a
 /// section is one sequence of elements, and no sequence pays more than its costliest member
@@ -502,9 +515,9 @@ pub const DURABLE_LIVE_BYTES_PER_WIRE_BYTE: u64 = {
     let rates = [
         DURABLE_MEMBER_ROW_BYTES.div_ceil(17),
         DURABLE_OCCURRENCE_ROW_BYTES.div_ceil(34),
-        crate::product::MANAGED_INDEX_SHAPE_BYTES.div_ceil(19),
-        crate::product::MANAGED_INDEX_COMPONENT_BYTES,
-        DURABLE_VALUE_NODE_BYTES,
+        DURABLE_INDEX_SHAPE_BYTES.div_ceil(19),
+        DURABLE_INDEX_COMPONENT_BYTES.div_ceil(17),
+        DURABLE_VALUE_NODE_BYTES.div_ceil(2),
         DURABLE_VALUE_REFERENCE_BYTES.div_ceil(2),
     ];
     let mut widest = 0;
@@ -536,6 +549,11 @@ pub const DURABLE_LIVE_BYTES_PER_WIRE_BYTE: u64 = {
 ///
 /// Evaluated in a `const` context by its callers, so an overflow in any product or sum is a
 /// compile-time error rather than a wrap an assertion could then be "proven" on.
+///
+/// It is published because it is *the* equation: every admission owner that states a
+/// maximum-live figure derives it here, from the charges this module publishes, rather than
+/// writing its own arithmetic over the same rows. A second equation over one representation
+/// is two answers to one question.
 pub const fn max_live_durable_graph_bytes(counts: DurableGraphCounts) -> u64 {
     let DurableGraphCounts {
         products,

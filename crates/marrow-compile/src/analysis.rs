@@ -2984,7 +2984,11 @@ mod fact_ledger_tests {
 
     /// Amortized growth plus the one buffer a `Vec` still holds while it copies into its
     /// successor: a growing collection is live at three times its admitted length.
-    const GROWTH_AND_COPY: u64 = 3;
+    ///
+    /// It is the charge the image crate publishes, not a second copy of the same number:
+    /// the factor is a property of how a `Vec` grows, so one owner states it and every
+    /// accounting that charges growth reads it there.
+    use marrow_image::bounds::GROWTH_AND_COPY;
 
     /// The **live fact payload** — everything the ledger holds while it is retaining — is
     /// an arithmetic property of its own ceilings, not a property of the workload that

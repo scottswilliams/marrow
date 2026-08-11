@@ -73,15 +73,16 @@ const _: () = {
 /// later fields of that enum reference rather than reclaim), and the
 /// contract id is independently recomputed from the decoded graph and checked
 /// against the carried bytes.
-/// The decoded durable graph: the one contract graph the section decoded into, the roots,
-/// the sealed operation sites, each site's resolved graph-node path (parallel to the
-/// sites), the recomputed contract id, and the graph's node set.
+/// The decoded durable graph: the roots, the sealed operation sites, each site's resolved
+/// graph-node path (parallel to the sites), the recomputed contract id, and the graph's
+/// node set.
 ///
-/// The contract graph owns the value-shape arena, and it is returned rather than dropped:
-/// a decoded member row references its field's shape by node id, so the owner of those
-/// nodes outlives every row that addresses one.
+/// The contract graph itself is not returned. Each decoded root holds the shared owner of
+/// its Product's member rows, which is what the sealed image reads afterwards; a field's
+/// value shape is resolved against the arena while the section is decoded — the record
+/// tie, the branch tie, the index projection, and the contract id all read it there — and
+/// no retained row resolves one after that.
 type DecodedDurable = (
-    DurableContractGraph,
     Vec<DecodedRoot>,
     Vec<SealedSite>,
     Vec<SemanticPath>,
@@ -89,32 +90,24 @@ type DecodedDurable = (
     Vec<SemanticNode>,
 );
 
-/// Mint the construction plan this section is decoded under, from an allocation-free
-/// structural preflight over bytes the image container ceiling already bounds.
+/// The construction plan a section claiming `root_count` roots is decoded under.
 ///
-/// The preflight reads the one structural count the section states before any graph exists
-/// — how many roots it claims — and refuses root N+1 **there**, before a plan is minted or
-/// a row is allocated, so a hostile root count is answered by the bound rather than by the
-/// allocator. The admitted counts follow from it: each root declares at most one Product,
-/// and a declaration's command vector is admitted at the image's own one-past-the-bound
-/// declaration width, which the per-Product member budget then spends exactly.
+/// The one structural count the section states is read and bounded by the caller, before
+/// any graph exists and before a row is allocated, so a hostile root count is answered by
+/// that bound rather than by the allocator — and by *one* bound with one message, rather
+/// than by a preflight and a decode that must be kept saying the same thing. The admitted
+/// counts follow from it: each root declares at most one Product, and a declaration's
+/// command vector is admitted at the image's own one-past-the-bound declaration width,
+/// which the per-Product member budget then spends exactly.
 ///
-/// It consumes nothing: the returned reader position is the caller's own, so the root
-/// count is read once by the decode that follows.
-fn admit_structural_plan(body: &[u8]) -> Result<AdmittedGraphInputPlan, VerifyRejection> {
-    let mut preflight = Reader::new(body);
-    let root_count = preflight
-        .u16()
-        .ok_or(reject(VerifyPhase::Table, "short root count"))? as usize;
-    if root_count > marrow_image::bounds::MAX_ROOTS {
-        return Err(reject(VerifyPhase::Table, "too many durable roots"));
-    }
-    AdmittedGraphInputPlan::admit(
+/// The mint is total, and nothing saturates in it: an admitted `root_count` is already
+/// within `MAX_ROOTS`, which sits below every admitted-intake ceiling.
+fn structural_plan(root_count: usize) -> AdmittedGraphInputPlan {
+    AdmittedGraphInputPlan::admit_saturating(
         root_count,
         root_count,
         marrow_image::bounds::MAX_ADMITTED_DECLARATION_COMMANDS,
     )
-    .ok_or(reject(VerifyPhase::Table, "too many durable roots"))
 }
 
 /// Project one refused flat durable-graph command into this verifier's own typed
@@ -153,9 +146,6 @@ pub(super) fn decode_durable(
     enums: &[DecodedEnum],
 ) -> Result<DecodedDurable, VerifyRejection> {
     let string_count = strings.len();
-    // The construction plan is minted before the graph exists, from a structural preflight
-    // over the received bytes: no plan, no graph.
-    let plan = admit_structural_plan(body)?;
     let mut reader = Reader::new(body);
     let root_count = reader
         .u16()
@@ -163,6 +153,9 @@ pub(super) fn decode_durable(
     if root_count > marrow_image::bounds::MAX_ROOTS {
         return Err(reject(VerifyPhase::Table, "too many durable roots"));
     }
+    // The construction plan is minted before the graph exists, from the one structural
+    // count just bounded: no plan, no graph.
+    let plan = structural_plan(root_count);
     let mut scope = LedgerScope::default();
     // This image's one durable contract graph. Every declaration, occurrence, and field
     // value shape is decoded into it and referenced from there, so a repeated Product
@@ -372,10 +365,11 @@ pub(super) fn decode_durable(
             "durable contract id does not match the durable graph",
         ));
     }
-    // The graph is the one owner: the roots reference its declaration rows and its arena,
-    // and its two derivations — the recomputed id and the node set — are the only
-    // projections of it that leave this decode. No caller retains a second one.
-    Ok((graph, roots, sites, site_paths, recomputed, nodes))
+    // The graph is the one owner while this decode runs: its two derivations — the
+    // recomputed id and the node set — and the shared member-row owners each root holds
+    // are the only projections of it that leave. It is dropped here; no caller retains a
+    // second one.
+    Ok((roots, sites, site_paths, recomputed, nodes))
 }
 
 /// Decode one operation site — its semantic path then its target-kind byte — and
@@ -1745,7 +1739,7 @@ mod capacity_tests {
     #[test]
     fn the_verifier_side_maximum_live_graph_holds_its_accounted_figure() {
         assert_eq!(
-            MAX_LIVE_VERIFIED_DURABLE_GRAPH_BYTES, 145_228_008,
+            MAX_LIVE_VERIFIED_DURABLE_GRAPH_BYTES, 72_876_264,
             "the accounted verifier-side live graph moved; re-derive the exported term and \
              update the implementation map with this pin"
         );
