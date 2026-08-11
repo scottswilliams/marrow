@@ -581,3 +581,181 @@ fn a_discarded_proof_leaves_the_draft_byte_identical() {
     let after = draft.encode().expect("a fitting draft").bytes;
     assert_eq!(before, after, "the proof appended nothing that survived it");
 }
+
+// --- The site-plan policy corpora (custody design 2.16, corpora 2-4) ---
+
+/// Corpus 2: 1,024 keyed roots each touching 64 fields of one shared Product — 66,560
+/// logical site demands over an identity census of only 2,114 ledger rows.
+///
+/// The demand set is eight times the site table's capacity while the *declaration* it
+/// addresses is tiny, which is the shape that made the old length-narrowing mint dangerous:
+/// the demand count, not the declared graph, is what crosses. The plan retains exactly
+/// `MAX_SITES` rows with ids exactly `0..MAX_SITES`, records exactly one receipt at the
+/// earliest crossing, and still answers a demand it already retains with the id it gave.
+#[test]
+fn one_thousand_roots_touching_sixty_four_fields_saturate_exactly_once() {
+    const ROOTS: usize = 1_024;
+    const FIELDS: usize = 64;
+    // The identity census this corpus needs: the application, the Product, one root
+    // placement and one key column per root, and one field per declared member.
+    assert_eq!(1 + 1 + ROOTS + ROOTS + FIELDS, 2_114);
+    assert_eq!(ROOTS * FIELDS + ROOTS, 66_560, "the logical demand count");
+
+    let mut draft = ImageDraft::new();
+    declare_wide_product(&mut draft, FIELDS);
+    let members = draft.product_members(product()).expect("declared");
+
+    let mut first_root: Option<AdmittedRoot> = None;
+    let mut first_operand: Option<LegacyDraftSiteOperand> = None;
+    let mut fitting = 0usize;
+    let mut over_policy = 0usize;
+    let mut answer = |operand: &LegacyDraftSiteOperand| {
+        if format!("{operand:?}") == "over-policy" {
+            over_policy += 1;
+        } else {
+            fitting += 1;
+        }
+    };
+    for n in 0..ROOTS {
+        let name = draft.intern_string(&format!("r{n}"));
+        let admitted = draft
+            .add_root_occurrence(
+                product(),
+                RootOccurrenceDef {
+                    name,
+                    keys: vec![KeyColumn {
+                        scalar: Scalar::Int,
+                        id: field_id(0x10_0000 + n),
+                    }],
+                    placement: field_id(0x20_0000 + n),
+                    indexes: Vec::new(),
+                },
+            )
+            .expect("the Product is declared");
+        let root_site = site(
+            &mut draft,
+            admitted.occurrence(),
+            admitted.placement_path(),
+            SemanticTarget::WholePayload,
+        );
+        answer(&root_site);
+        for member in &members {
+            let leaf = site(
+                &mut draft,
+                admitted.occurrence(),
+                member.path(),
+                SemanticTarget::FieldLeaf,
+            );
+            answer(&leaf);
+        }
+        if first_root.is_none() {
+            first_root = Some(admitted);
+            first_operand = Some(root_site);
+        }
+    }
+
+    assert_eq!(fitting, MAX_SITES, "the plan retains exactly its capacity");
+    assert_eq!(
+        fitting + over_policy,
+        ROOTS * FIELDS + ROOTS,
+        "every demand was answered, fitting or refused",
+    );
+
+    // Re-requesting the very first demand still answers with its own id, however far past
+    // the cap the plan is: the crossing is nonblocking, and a repeated reference must not
+    // begin to fail or be handed the refusal.
+    let first = first_root.expect("root 0");
+    let repeat = site(
+        &mut draft,
+        first.occurrence(),
+        first.placement_path(),
+        SemanticTarget::WholePayload,
+    );
+    assert_eq!(
+        repeat,
+        first_operand.expect("recorded at root 0"),
+        "a retained demand reuses its id after the crossing",
+    );
+    assert!(matches!(draft.encode(), Err(ImageBuildError::TooManySites)));
+}
+
+/// Corpus 3: 4,000 roots over one shared Product of 100 static groups, each carrying one
+/// scalar field, with no group ever operated on.
+///
+/// This is the corpus the eager-per-occurrence policy could not represent: pre-seeding each
+/// occurrence's whole member graph demands `4,000 x (1 root + 100 groups)` = 404,000 sites
+/// against a table that holds 8,192. A repeated Product now pre-seeds only each occurrence's
+/// root whole-payload site, so the same graph costs 4,000 rows and the image encodes — and
+/// its identity census stays at 4,202 ledger rows, well inside `MAX_IDS_ROWS`.
+#[test]
+fn four_thousand_roots_over_a_hundred_unoperated_groups_cost_one_site_each() {
+    const ROOTS: usize = 4_000;
+    const GROUPS: usize = 100;
+    const LEGACY_DEMAND: usize = ROOTS * (1 + GROUPS);
+    const _: () = assert!(
+        LEGACY_DEMAND > MAX_SITES && ROOTS <= MAX_SITES,
+        "the legacy demand is unrepresentable and the occurrence-only demand fits",
+    );
+    assert_eq!(
+        LEGACY_DEMAND, 404_000,
+        "what pre-seeding every occurrence's member graph would demand",
+    );
+    // The identity census: the application, the Product, one placement per keyless root,
+    // and one row per declared group namespace and group field.
+    assert_eq!(1 + 1 + ROOTS + 2 * GROUPS, 4_202);
+
+    let mut draft = ImageDraft::new();
+    let type_name = draft.intern_string("R");
+    let record = draft.add_record_type(RecordTypeDef {
+        name: type_name,
+        fields: Vec::new(),
+    });
+    draft.set_application_identity(LedgerIdBytes::from_bytes(APPLICATION_ID));
+    let mut commands = Vec::with_capacity(2 * GROUPS);
+    for group in 0..GROUPS {
+        let parent = u16::try_from(commands.len()).expect("inside the member bound");
+        commands.push(DeclarationMemberDef {
+            parent: None,
+            shape: DeclarationMemberShape::Group {
+                id: field_id(0x30_0000 + group),
+            },
+        });
+        commands.push(DeclarationMemberDef {
+            parent: Some(parent),
+            shape: DeclarationMemberShape::Field {
+                id: field_id(0x40_0000 + group),
+                required: true,
+                value: DurableValueShape::Scalar(Scalar::Int),
+            },
+        });
+    }
+    draft
+        .declare_product(product(), record, commands)
+        .expect("a well-formed declaration");
+
+    for n in 0..ROOTS {
+        let name = draft.intern_string(&format!("r{n}"));
+        let admitted = draft
+            .add_root_occurrence(
+                product(),
+                RootOccurrenceDef {
+                    name,
+                    keys: Vec::new(),
+                    placement: field_id(0x50_0000 + n),
+                    indexes: Vec::new(),
+                },
+            )
+            .expect("the Product is declared");
+        site(
+            &mut draft,
+            admitted.occurrence(),
+            admitted.placement_path(),
+            SemanticTarget::WholePayload,
+        );
+    }
+
+    assert!(
+        !matches!(draft.encode(), Err(ImageBuildError::TooManySites)),
+        "4,000 occurrence sites over a 200-row declaration is inside the site table",
+    );
+}
