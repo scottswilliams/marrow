@@ -47,9 +47,22 @@ unit across every root it touched.
 
 Two store roots **may** name the same resource:
 
-```
+```mw
+module docs::multiroot
+
+resource Ledger {
+    required balance: int
+}
+
 store ^current[id: int]: Ledger
 store ^archive[id: int]: Ledger
+
+pub fn record(id: int, balance: int) {
+    transaction {
+        ^current[id] = Ledger(balance: balance)
+        ^archive[id] = Ledger(balance: balance)
+    }
+}
 ```
 
 A resource is a declaration and a store root is an occurrence of it. The two roots
