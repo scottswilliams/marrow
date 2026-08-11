@@ -467,30 +467,14 @@ fn the_site_plan_retains_no_semantic_path() {
 /// caller must be migrated in that one transaction, so the caller set is pinned here.
 #[test]
 fn the_construction_seam_has_no_unlisted_production_caller() {
-    // The compiler's durable owner spans the store builder and the lowering boundary
-    // where a field-leaf site is first demanded; the verifier's code decoder is the one
-    // other production caller. Widening this set is the thing the gate exists to notice.
-    const PERMITTED: [&str; 5] = [
-        "marrow-compile/src/durable.rs",
-        "marrow-compile/src/lower/mod.rs",
-        "marrow-compile/src/lower/durable.rs",
-        "marrow-compile/src/lower/exprs.rs",
-        "marrow-verify/src/verify/decode_code.rs",
-    ];
     let sources = workspace_sources("src");
-    for needle in [
-        "declare_product",
-        "add_root_occurrence",
-        "bind_occurrence_site",
-        "request_site",
-        "product_members",
-    ] {
+    for needle in SEAM_ENTRY_POINTS {
         let found: Vec<String> = sources
             .iter()
             .filter(|(path, code)| {
                 contains_symbol(code, needle)
                     && !path.starts_with(Path::new(env!("CARGO_MANIFEST_DIR")).join("src"))
-                    && !PERMITTED
+                    && !PERMITTED_SEAM_CALLERS
                         .iter()
                         .any(|permitted| path.to_string_lossy().contains(permitted))
             })
@@ -503,6 +487,49 @@ fn the_construction_seam_has_no_unlisted_production_caller() {
         );
     }
 }
+
+/// The staleness half of the caller gate: every permitted path must still call the seam.
+///
+/// An allowlist entry that names no caller is a pre-opened door — it permits a future
+/// widening into that file silently, and it is exactly what the gate above cannot see,
+/// because a row that matches nothing never fails. A caller that migrates off the seam
+/// must take its row with it.
+#[test]
+fn every_permitted_seam_caller_still_calls_the_seam() {
+    let sources = workspace_sources("src");
+    for permitted in PERMITTED_SEAM_CALLERS {
+        let calls = sources.iter().any(|(path, code)| {
+            path.to_string_lossy().contains(permitted)
+                && SEAM_ENTRY_POINTS
+                    .iter()
+                    .any(|needle| contains_symbol(code, needle))
+        });
+        assert!(
+            calls,
+            "`{permitted}` is a permitted seam caller that calls nothing in the seam: \
+             a dead allowlist row pre-permits a widening the caller gate cannot see",
+        );
+    }
+}
+
+/// The construction seam's published entry points, as the caller gates scan for them.
+const SEAM_ENTRY_POINTS: [&str; 5] = [
+    "declare_product",
+    "add_root_occurrence",
+    "bind_occurrence_site",
+    "request_site",
+    "product_members",
+];
+
+/// The production callers of the construction seam: the compiler's one durable owner —
+/// the store builder and the lowering boundary that first demands a field-leaf site — and
+/// the verifier's code decoder. Widening this set is the thing the caller gate exists to
+/// notice; a row that no longer calls anything is what the staleness gate exists to notice.
+const PERMITTED_SEAM_CALLERS: [&str; 3] = [
+    "marrow-compile/src/durable.rs",
+    "marrow-compile/src/lower/mod.rs",
+    "marrow-verify/src/verify/decode_code.rs",
+];
 
 /// No producer-side site-path length refusal survives.
 ///
