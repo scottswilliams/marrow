@@ -869,6 +869,206 @@ fn red_a_hardlinked_source_file_is_refused_as_a_hardlink() {
     ));
 }
 
+// --- Row: symbolic links and special files below the source root ---------------
+
+/// Create a special file — a FIFO — at a project-relative path. Nothing in the
+/// crate opens it: capture classifies a terminal object's kind before it opens
+/// one, so a FIFO fixture cannot block a test on a missing writer.
+#[cfg(unix)]
+fn write_special_file(temp: &TempDir, relative: &str) {
+    let path = temp.path().join(relative);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).expect("create parent");
+    }
+    let status = std::process::Command::new("mkfifo")
+        .arg(&path)
+        .status()
+        .expect("run mkfifo");
+    assert!(status.success(), "mkfifo created the fixture special file");
+}
+
+/// Capture the project and require the exact typed terminal-link refusal naming
+/// `spelling`. Before the symlink policy was decided the walk skipped the link
+/// silently, so a `continue`-shaped baseline reports the identities it admitted
+/// instead — the causeless absence this row closes.
+#[cfg(unix)]
+fn expect_link_below_src(temp: &TempDir, spelling: &str) -> CaptureFailure {
+    let failure =
+        match capture_project_with_limits(temp.path(), OverlaySnapshot::empty(), &base_limits()) {
+            Err(failure) => failure,
+            Ok(input) => panic!(
+                "a symbolic link below `src` must refuse; capture admitted {:?} instead",
+                input
+                    .modules()
+                    .iter()
+                    .map(|module| module.identity().as_str())
+                    .collect::<Vec<_>>()
+            ),
+        };
+    let physical = as_physical(&failure);
+    assert_eq!(physical.role(), PhysicalRole::SourceDirectory);
+    assert_eq!(physical.operation(), PhysicalOperation::Inspect);
+    assert!(
+        matches!(
+            physical.refusal(),
+            PhysicalRefusal::Link {
+                position: LinkPosition::Terminal,
+            }
+        ),
+        "a link below `src` is a terminal link, never followed to classify its target"
+    );
+    assert_eq!(
+        physical
+            .path()
+            .expect("a link refusal carries the charged entry path")
+            .as_path(),
+        Path::new(spelling),
+        "the refusal names the link itself, not whatever it points at"
+    );
+    failure
+}
+
+/// The reproduction: a module reachable only through a symlinked directory. The
+/// skipping walk captured a project that silently lacked it, which surfaces
+/// downstream as an unexplained missing module; the link now carries the cause.
+#[cfg(unix)]
+#[test]
+fn red_a_module_behind_a_symlinked_directory_refuses_instead_of_vanishing() {
+    let temp = TempDir::new("symlink-module");
+    valid_project(&temp);
+    temp.write("src/main.mw", b"pub fn main()\n");
+    temp.write("outside/shelf.mw", b"module link::shelf\n");
+    std::os::unix::fs::symlink(temp.path().join("outside"), temp.path().join("src/link"))
+        .expect("symlink a directory into src");
+    let failure = expect_link_below_src(&temp, "src/link");
+    assert_eq!(present(&failure, Path::new(ROOT)).code(), Code::IoRead);
+    assert_eq!(both_messages(&failure), "/proj/src/link is a symbolic link");
+}
+
+/// A symlink to a regular `.mw` file: the alias would admit bytes capture never
+/// opened at that name, so it refuses like every other aliased role.
+#[cfg(unix)]
+#[test]
+fn red_a_symlinked_source_file_below_src_is_refused_as_a_link() {
+    let temp = TempDir::new("symlink-source");
+    valid_project(&temp);
+    temp.write("src/main.mw", b"pub fn main()\n");
+    std::os::unix::fs::symlink(temp.path().join("src/main.mw"), temp.path().join("src/alias.mw"))
+        .expect("symlink a source file");
+    expect_link_below_src(&temp, "src/alias.mw");
+}
+
+/// A broken link resolves to nothing, so following it is impossible and skipping
+/// it is the same causeless absence. It refuses on the link itself, never on its
+/// missing target.
+#[cfg(unix)]
+#[test]
+fn red_a_broken_symlink_below_src_is_refused_as_a_link() {
+    let temp = TempDir::new("symlink-broken");
+    valid_project(&temp);
+    temp.write("src/main.mw", b"pub fn main()\n");
+    std::os::unix::fs::symlink(
+        temp.path().join("no-such-target.mw"),
+        temp.path().join("src/dangling.mw"),
+    )
+    .expect("symlink a missing target");
+    expect_link_below_src(&temp, "src/dangling.mw");
+}
+
+/// A link escaping the project root: refusing makes the escape unrepresentable
+/// rather than merely unreached.
+#[cfg(unix)]
+#[test]
+fn red_a_symlink_escaping_the_project_root_is_refused_as_a_link() {
+    let temp = TempDir::new("symlink-escape");
+    let root = temp.path().join("project");
+    fs::create_dir_all(root.join("src")).expect("create the project");
+    fs::write(root.join("marrow.toml"), b"edition = \"2026\"\n").expect("write manifest");
+    fs::write(root.join("src/main.mw"), b"pub fn main()\n").expect("write source");
+    let outside = temp.path().join("elsewhere");
+    fs::create_dir_all(&outside).expect("create the outside tree");
+    fs::write(outside.join("stray.mw"), b"module away::stray\n").expect("write outside source");
+    std::os::unix::fs::symlink(&outside, root.join("src/away")).expect("symlink out of the root");
+    let failure = capture_project_with_limits(&root, OverlaySnapshot::empty(), &base_limits())
+        .expect_err("a link that escapes the project root refuses");
+    assert!(matches!(
+        as_physical(&failure).refusal(),
+        PhysicalRefusal::Link {
+            position: LinkPosition::Terminal,
+        }
+    ));
+}
+
+/// A link cycle: refusing makes an unbounded walk unrepresentable by construction,
+/// with no depth bound or visited set standing in for the policy.
+#[cfg(unix)]
+#[test]
+fn red_a_symlink_cycle_below_src_is_refused_as_a_link() {
+    let temp = TempDir::new("symlink-cycle");
+    valid_project(&temp);
+    temp.write("src/main.mw", b"pub fn main()\n");
+    std::os::unix::fs::symlink(temp.path().join("src"), temp.path().join("src/self"))
+        .expect("symlink src into itself");
+    expect_link_below_src(&temp, "src/self");
+}
+
+/// A special file occupying a module identity is the same causeless absence one
+/// node kind over: it is admitted through the one source owner, which refuses the
+/// kind before opening it, rather than being ignored like a non-source entry.
+#[cfg(unix)]
+#[test]
+fn red_a_special_file_named_mw_below_src_is_refused_as_a_wrong_kind() {
+    let temp = TempDir::new("special-source");
+    valid_project(&temp);
+    write_special_file(&temp, "src/main.mw");
+    let failure =
+        match capture_project_with_limits(temp.path(), OverlaySnapshot::empty(), &base_limits()) {
+            Err(failure) => failure,
+            Ok(input) => panic!(
+                "a special file at a module identity must refuse; capture admitted {:?} instead",
+                input
+                    .modules()
+                    .iter()
+                    .map(|module| module.identity().as_str())
+                    .collect::<Vec<_>>()
+            ),
+        };
+    let physical = as_physical(&failure);
+    assert_eq!(physical.role(), PhysicalRole::SourceFile);
+    assert!(matches!(
+        physical.refusal(),
+        PhysicalRefusal::UnexpectedKind {
+            expected: PhysicalKind::RegularFile,
+            actual: PhysicalKind::Other,
+        }
+    ));
+    assert_eq!(
+        both_messages(&failure),
+        "/proj/src/main.mw is not a regular file"
+    );
+}
+
+/// The boundary of that widening: a special file that names no module is still an
+/// ignored entry, exactly like a non-`.mw` regular file.
+#[cfg(unix)]
+#[test]
+fn a_special_file_below_src_naming_no_module_is_still_ignored() {
+    let temp = TempDir::new("special-ignored");
+    valid_project(&temp);
+    temp.write("src/main.mw", b"pub fn main()\n");
+    write_special_file(&temp, "src/notes.txt");
+    let input = capture_project_with_limits(temp.path(), OverlaySnapshot::empty(), &base_limits())
+        .expect("a special file that names no module is ignored");
+    assert_eq!(
+        input
+            .modules()
+            .iter()
+            .map(|module| module.identity().as_str())
+            .collect::<Vec<_>>(),
+        vec!["src/main.mw"]
+    );
+}
+
 // --- Row: source spelling, retained native paths, aggregate path work ----------
 
 #[test]
