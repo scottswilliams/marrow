@@ -695,6 +695,11 @@ impl DurableRegistry {
         if stores.is_empty() {
             return Ok(Self::empty(budget));
         }
+        // Decide every Product's occurrence multiplicity before the first store is built,
+        // so no root emits a site under a policy a later store would change. A Product's
+        // multiplicity is a property of the whole declaration set, not of the store being
+        // built, and a per-store decision would give the roots of one Product two policies.
+        let census = ProductOccurrenceCensus::take(stores);
         records.with_metadata_session(|metadata| {
             let mut registry = Self::empty(budget.clone());
             let mut type_metadata = DurableTypeMetadata { records, metadata };
@@ -732,7 +737,10 @@ impl DurableRegistry {
                     &mut type_metadata,
                     resources,
                     declared,
-                    store,
+                    StoreOccurrence {
+                        decl: store,
+                        multiplicity: census.multiplicity(&store.resource),
+                    },
                     &mut identity_build,
                     diagnostics,
                 )? {
@@ -949,6 +957,80 @@ impl ProductDeclarationSource {
     }
 }
 
+/// How many root occurrences one durable Product carries, and so which eager operation
+/// sites each of its occurrences pre-seeds.
+///
+/// A Product is a declaration; a root is an occurrence of it. The two cases differ only in
+/// what an occurrence pre-seeds before any instruction names it — never in what a program
+/// can address, and never in the canonical declaration graph itself.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProductOccurrenceMultiplicity {
+    /// Exactly one root occurs over this Product. Its occurrence pre-seeds the root
+    /// whole-payload site, then every group-entry and nested-branch whole-payload site of
+    /// the member graph in declaration pre-order, then its root-scoped index sites — the
+    /// exact order and set every previously accepted image was written with.
+    Unique,
+    /// More than one root occurs over this Product. Each occurrence pre-seeds only its own
+    /// root whole-payload and root-scoped index sites; the Product's group and nested-branch
+    /// sites are occurrence-qualified and minted on the first instruction that addresses
+    /// them, exactly as a field leaf already is.
+    ///
+    /// Pre-seeding them per occurrence would cost `occurrences x declared member nodes`
+    /// site rows for a graph no program need ever name — a Product with 100 groups at 4,000
+    /// roots would demand 404,000 sites against a table that holds 8,192.
+    Shared,
+}
+
+/// The per-Product occurrence census, taken over the complete store-declaration set before
+/// any store is built and so before any site is emitted.
+///
+/// The census is taken over the declarations that reach admission, which over-approximates
+/// the accepted set by exactly the stores that fail admission. That over-approximation
+/// cannot reach an encoded image: a store that fails admission pushes its diagnostic, and a
+/// non-empty diagnostic terminal is the compilation's outcome — the draft is never encoded.
+/// So for every image that is produced, this census is the accepted root/Product census,
+/// and a Product's multiplicity is decided once, before its first occurrence emits a site.
+struct ProductOccurrenceCensus<'stores> {
+    /// The resources named by more than one admissible store declaration.
+    repeated: BTreeSet<&'stores str>,
+}
+
+impl<'stores> ProductOccurrenceCensus<'stores> {
+    /// Count the store declarations naming each resource, in declaration order, skipping
+    /// exactly the repeated placement names [`DurableRegistry::build`] skips: a repeated
+    /// root name is rejected before it is built, so it is not an occurrence of anything.
+    fn take(stores: &'stores [(FileRef, FileIdentity, &StoreDecl)]) -> Self {
+        let mut declared: BTreeSet<&str> = BTreeSet::new();
+        let mut seen_once: BTreeSet<&str> = BTreeSet::new();
+        let mut repeated: BTreeSet<&str> = BTreeSet::new();
+        for (_, _, store) in stores {
+            if !declared.insert(store.root.root.as_str()) {
+                continue;
+            }
+            if !seen_once.insert(store.resource.as_str()) {
+                repeated.insert(store.resource.as_str());
+            }
+        }
+        Self { repeated }
+    }
+
+    fn multiplicity(&self, resource: &str) -> ProductOccurrenceMultiplicity {
+        if self.repeated.contains(resource) {
+            ProductOccurrenceMultiplicity::Shared
+        } else {
+            ProductOccurrenceMultiplicity::Unique
+        }
+    }
+}
+
+/// One `store` declaration together with the occurrence multiplicity of the Product it
+/// names. The two travel as one value because a store is *an occurrence of a Product*, and
+/// how many occurrences that Product has is decided before any of them is built.
+struct StoreOccurrence<'store> {
+    decl: &'store StoreDecl,
+    multiplicity: ProductOccurrenceMultiplicity,
+}
+
 /// Resolve, validate, and commit one `store` declaration into the draft, returning its
 /// build outcome. A failing store pushes its diagnostic and commits no root, site, or
 /// application identity, so it cannot corrupt an already-appended root (`build_extras` may
@@ -963,10 +1045,14 @@ fn build_one(
     type_metadata: &mut DurableTypeMetadata<'_, '_>,
     resources: &[(FileRef, FileIdentity, &ResourceDecl)],
     declared: DeclarationSite<'_>,
-    store: &StoreDecl,
+    store: StoreOccurrence<'_>,
     identity_build: &mut IdentityBuildState<'_, '_>,
     diagnostics: &mut DiagnosticCollector,
 ) -> Result<StoreBuild, GenericInvariant> {
+    let StoreOccurrence {
+        decl: store,
+        multiplicity,
+    } = store;
     let file = declared.file;
     let records = type_metadata.records;
     let metadata = &mut *type_metadata.metadata;
@@ -1205,13 +1291,17 @@ fn build_one(
     // addresses a field. The graph therefore captures each stored field's canonical
     // declaration path (below), and the site table scales with *referenced* fields, not
     // with declared width — an untouched field mints no site.
+    //
+    // A Product carrying more than one occurrence pre-seeds neither: its member nodes are
+    // minted on first reference too, so the site cost of a declaration is its *referenced*
+    // graph rather than its declared graph multiplied by the roots over it.
     request_eager_site(
         draft,
         admitted.occurrence(),
         admitted.placement_path(),
         SemanticTarget::WholePayload,
     )?;
-    let captured = emit_root_member_sites(draft, admitted.occurrence(), &members)?;
+    let captured = emit_root_member_sites(draft, admitted.occurrence(), &members, multiplicity)?;
     // One read site per managed index: a nonunique index is a progressive-prefix
     // scan, a unique index a complete-key exact lookup. There is deliberately no
     // index-write site — maintenance is compiler-owned. Every index site seals as
@@ -2335,21 +2425,35 @@ fn request_eager_site(
 /// The eager sites are emitted pre-order, a placement or group node before its members,
 /// mirroring [`marrow_image::DurableContractDescriptor::semantic_nodes`] so every emitted
 /// site resolves against the verifier's independently reconstructed node set.
+///
+/// A [`ProductOccurrenceMultiplicity::Shared`] Product emits none of them: its member nodes
+/// are minted on first reference, like a field leaf. The capture is unaffected — a
+/// descriptor holds selectors, never site ids — so the lowerer resolves the same place
+/// either way and the only difference is when its site is minted.
 fn emit_root_member_sites(
     draft: &mut ImageDraft,
     occurrence: &RootOccurrenceSelector,
     members: &[DeclarationMember],
+    multiplicity: ProductOccurrenceMultiplicity,
 ) -> Result<RootMemberSites, GenericInvariant> {
     let mut captured = RootMemberSites {
         fields: Vec::new(),
         groups: Vec::new(),
         branches: Vec::new(),
     };
+    let eager = multiplicity == ProductOccurrenceMultiplicity::Unique;
     for member in members {
         match member.shape() {
             DeclarationMemberShape::Field { .. } => captured.fields.push(member.path().clone()),
             DeclarationMemberShape::Group { .. } => {
-                request_eager_site(draft, occurrence, member.path(), SemanticTarget::GroupEntry)?;
+                if eager {
+                    request_eager_site(
+                        draft,
+                        occurrence,
+                        member.path(),
+                        SemanticTarget::GroupEntry,
+                    )?;
+                }
                 captured.groups.push(member.path().clone());
             }
             DeclarationMemberShape::Branch { record, .. } => {
@@ -2359,6 +2463,7 @@ fn emit_root_member_sites(
                     occurrence,
                     member.path(),
                     record,
+                    multiplicity,
                 )?);
             }
         }
@@ -2378,8 +2483,11 @@ fn emit_branch_sites(
     occurrence: &RootOccurrenceSelector,
     path: &CanonicalDeclarationPathSelector,
     record: marrow_image::TypeId,
+    multiplicity: ProductOccurrenceMultiplicity,
 ) -> Result<BranchSites, GenericInvariant> {
-    request_eager_site(draft, occurrence, path, SemanticTarget::WholePayload)?;
+    if multiplicity == ProductOccurrenceMultiplicity::Unique {
+        request_eager_site(draft, occurrence, path, SemanticTarget::WholePayload)?;
+    }
     let members = draft.members_of(path)?;
     let mut fields = Vec::new();
     let mut branches = Vec::new();
@@ -2389,7 +2497,13 @@ fn emit_branch_sites(
             DeclarationMemberShape::Group { .. } => {}
             DeclarationMemberShape::Branch { record, .. } => {
                 let record = *record;
-                branches.push(emit_branch_sites(draft, occurrence, inner.path(), record)?);
+                branches.push(emit_branch_sites(
+                    draft,
+                    occurrence,
+                    inner.path(),
+                    record,
+                    multiplicity,
+                )?);
             }
         }
     }

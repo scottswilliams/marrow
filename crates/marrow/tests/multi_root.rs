@@ -1223,3 +1223,162 @@ pub fn readA(id: int): int? {
         "the fitting single-root image is byte-exact outside the repeated-Product domain",
     );
 }
+
+/// The ledger for the multiplicity corpus: one Product `Book` carrying a static `group`
+/// and a keyed `notes` branch, occurring at `^a` and `^b`.
+const MULTIPLICITY_IDS: &str = "marrow ids v0\n\
+     machine-written by marrow; do not edit\n\
+     id application . 0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a\n\
+     id product Book 0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d\n\
+     id field Book.title 0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e\n\
+     id group Book.tally 3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a\n\
+     id field Book.tally.n 3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b\n\
+     id root Book.notes 2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a\n\
+     id key Book.notes.noteId 2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b\n\
+     id field Book.notes.text 2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c\n\
+     id root a 0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b\n\
+     id key a.id 0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c\n\
+     id root b 1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b\n\
+     id key b.id 1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c\n\
+     high-water 0\n\
+     end\n";
+
+/// The multiplicity corpus source: `Book` carries a never-operated `tally` group and a
+/// `notes` branch operated only through `^a`. `^b` is written at its top-level field only.
+const MULTIPLICITY_SOURCE: &str = r#"resource Book {
+    required title: string
+    tally {
+        required n: int
+    }
+    notes[noteId: int] {
+        required text: string
+    }
+}
+
+store ^a[id: int]: Book
+store ^b[id: int]: Book
+
+pub fn addA(id: int, t: string) {
+    transaction {
+        ^a[id].notes[1].text = t
+    }
+}
+
+pub fn setB(id: int, t: string) {
+    transaction {
+        ^b[id].title = t
+    }
+}
+"#;
+
+/// A Product with more than one occurrence pre-seeds only each occurrence's root
+/// whole-payload and root-scoped index sites; its member group and branch sites are minted
+/// on the first instruction that addresses them.
+///
+/// `^b` never addresses `Book.tally` or `Book.notes`, so it carries no site for either.
+/// Under the pre-row policy every occurrence pre-seeded every group and branch node of its
+/// Product, so a Product's site cost was `occurrences x declared nodes` whether or not a
+/// program ever named them.
+#[test]
+fn a_repeated_product_mints_its_member_sites_on_demand() {
+    let image = verify(MULTIPLICITY_SOURCE, MULTIPLICITY_IDS);
+    let for_root = |root: u16| -> Vec<String> {
+        image
+            .sites()
+            .iter()
+            .filter_map(|site| match site {
+                SealedSite::Flat { root: at, target } if *at == root => Some(format!("{target:?}")),
+                _ => None,
+            })
+            .collect()
+    };
+    assert_eq!(
+        for_root(1),
+        vec!["WholePayload".to_string(), "FieldLeaf(0)".to_string()],
+        "the second occurrence carries only its root site and the one field it writes"
+    );
+}
+
+/// The ledger for the single-occurrence control: the same `Book` declaration at one root.
+const MULTIPLICITY_UNIQUE_IDS: &str = "marrow ids v0\n\
+     machine-written by marrow; do not edit\n\
+     id application . 0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a\n\
+     id product Book 0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d\n\
+     id field Book.title 0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e\n\
+     id group Book.tally 3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a\n\
+     id field Book.tally.n 3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b\n\
+     id root Book.notes 2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a\n\
+     id key Book.notes.noteId 2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b\n\
+     id field Book.notes.text 2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c\n\
+     id root a 0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b\n\
+     id key a.id 0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c\n\
+     high-water 0\n\
+     end\n";
+
+/// A Product with exactly one occurrence pre-seeds its whole member graph, whether or not
+/// a program names it.
+///
+/// This is the domain every previously accepted image lives in, and its eager set and
+/// order are exactly what they were: the root whole-payload site, then each group entry and
+/// nested branch entry in declaration pre-order. `^a` never writes `tally`, and its group
+/// site is there regardless.
+#[test]
+fn a_single_occurrence_product_pre_seeds_its_whole_member_graph() {
+    let source = r#"resource Book {
+    required title: string
+    tally {
+        required n: int
+    }
+    notes[noteId: int] {
+        required text: string
+    }
+}
+
+store ^a[id: int]: Book
+
+pub fn setA(id: int, t: string) {
+    transaction {
+        ^a[id].title = t
+    }
+}
+"#;
+    let image = verify(source, MULTIPLICITY_UNIQUE_IDS);
+    let targets: Vec<String> = image
+        .sites()
+        .iter()
+        .map(|site| match site {
+            SealedSite::Flat { target, .. } => format!("{target:?}"),
+            SealedSite::Parked { .. } => "parked".to_string(),
+        })
+        .collect();
+    assert_eq!(
+        targets,
+        vec![
+            "WholePayload".to_string(),
+            "GroupEntry(0)".to_string(),
+            "BranchEntry([0])".to_string(),
+            "FieldLeaf(0)".to_string(),
+        ],
+        "the single-occurrence eager set and its pre-order are unchanged"
+    );
+}
+
+/// The occurrence census is taken over the store declarations that reach admission, which
+/// over-counts the accepted roots by exactly the stores that fail admission. That
+/// difference cannot reach an image: a store that fails admission reports, and a reported
+/// compilation produces no image at all.
+///
+/// Here `^b` has no ledger rows, so `Book` is censused as repeated while only `^a` is
+/// accepted — and the compilation is a diagnostic, not an image whose site ids could differ
+/// from the ones a single-occurrence `Book` would have been given.
+#[test]
+fn a_product_whose_second_store_is_refused_produces_no_image() {
+    let refused = compile(MULTIPLICITY_SOURCE, MULTIPLICITY_UNIQUE_IDS)
+        .expect_err("`^b` has no identity rows");
+    assert!(
+        refused
+            .iter()
+            .any(|row| row.code() == "check.durable_identity"),
+        "the second store reports its identity gap: {refused:?}"
+    );
+}
