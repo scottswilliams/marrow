@@ -247,3 +247,92 @@ fn a_refused_store_still_steers_its_own_references() {
         "a use of the refused store is steered to its cause: {diagnostics:#?}",
     );
 }
+
+/// A ledger admitting one keyless store `^solo` over `Book`. A keyless (singleton) root
+/// carries a complete durable identity and is admitted, but it is outside the executable
+/// subset, so its `RootBinding` is `NotYetExecutable`.
+const KEYLESS_IDS: &str = "marrow ids v0\n\
+     machine-written by marrow; do not edit\n\
+     id application . 0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a\n\
+     id product Book 0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d\n\
+     id field Book.title 0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e\n\
+     id root Book.notes 2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a\n\
+     id key Book.notes.noteId 2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b\n\
+     id field Book.notes.text 2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c\n\
+     id root solo 3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b\n\
+     high-water 0\n\
+     end\n";
+
+/// A ledger admitting one keyed store `^kept` over the identical `Book` declaration.
+const KEYED_IDS: &str = "marrow ids v0\n\
+     machine-written by marrow; do not edit\n\
+     id application . 0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a\n\
+     id product Book 0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d\n\
+     id field Book.title 0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e\n\
+     id root Book.notes 2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a\n\
+     id key Book.notes.noteId 2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b\n\
+     id field Book.notes.text 2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c\n\
+     id root kept 3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b\n\
+     id key kept.id 3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c\n\
+     high-water 0\n\
+     end\n";
+
+const BOOK_DECL: &str = "resource Book {\n\
+     \x20   required title: string\n\
+     \x20   notes[noteId: int] {\n\
+     \x20       required text: string\n\
+     \x20   }\n\
+     }\n";
+
+/// `Book.notes` is a keyed branch, not a projectable field of `Book`'s materialized
+/// whole-entry record. Naming it as a field must be steered to the durable-path form.
+///
+/// Whether `Book` declares a branch `notes` is a Product DECLARATION question. It is
+/// answered here from the branch-record table, which is written only at a Product's first
+/// *executable* root, and the steer additionally requires `ProductBinding::Declared` —
+/// an executable-occurrence scan. A Product whose only store is keyless is admitted with a
+/// complete identity and a complete declared branch tree, yet answers `NotYetExecutable`,
+/// so the same source question degrades to the bare missing-field report.
+#[test]
+fn a_branch_named_as_a_field_is_steered_whether_or_not_a_root_is_executable() {
+    let field_use = "\npub fn peek(): int {\n\
+         \x20   const b = Book(title: \"t\")\n\
+         \x20   const n = b.notes\n\
+         \x20   return 0\n\
+         }\n";
+
+    let keyed_source =
+        format!("module main\n\n{BOOK_DECL}\nstore ^kept[id: int]: Book\n{field_use}");
+    let keyed = diagnostics(&project_with(
+        &[("src/main.mw", &keyed_source)],
+        Some(KEYED_IDS),
+    ));
+    let keyed_message = keyed
+        .iter()
+        .find(|d| d.code() == "check.type")
+        .unwrap_or_else(|| panic!("expected a check.type report, got {keyed:#?}"))
+        .message()
+        .to_string();
+
+    let keyless_source = format!("module main\n\n{BOOK_DECL}\nstore ^solo: Book\n{field_use}");
+    let keyless = diagnostics(&project_with(
+        &[("src/main.mw", &keyless_source)],
+        Some(KEYLESS_IDS),
+    ));
+    let keyless_message = keyless
+        .iter()
+        .find(|d| d.code() == "check.type")
+        .unwrap_or_else(|| panic!("expected a check.type report, got {keyless:#?}"))
+        .message()
+        .to_string();
+
+    assert_eq!(
+        keyed_message, keyless_message,
+        "the branch-versus-field answer is a declaration fact: it must not depend on \
+         whether some root over the Product reached the executable subset",
+    );
+    assert!(
+        !keyless_message.contains("record has no field"),
+        "a declared branch is never reported as a missing field: {keyless_message}",
+    );
+}

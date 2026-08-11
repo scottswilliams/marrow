@@ -354,16 +354,21 @@ impl BranchRecordShape {
 
 /// What a resource spelling binds as a durable Product declaration.
 ///
-/// The four answers mirror [`RootBinding`]'s, but the question is about the Product, not
-/// about any one root: several `store` declarations may project one resource, and the
-/// declaration facts they share are the same whichever of them is admitted. A resource is
-/// `Refused` only when *no* store over it was admitted — one refused store beside an
-/// admitted sibling steers nothing, because the Product's shape is known.
+/// The question is about the Product, not about any one root: several `store` declarations
+/// may project one resource, and the declaration facts they share are the same whichever of
+/// them is admitted. A resource is `Refused` only when *no* store over it was admitted — one
+/// refused store beside an admitted sibling steers nothing, because the Product's shape is
+/// known.
+///
+/// Unlike [`RootBinding`] there is no `NotYetExecutable` answer and `Declared` carries no
+/// root. Whether the kernel can serve a root is a fact about that occurrence; a Product's
+/// declared members, branches, and entry records are the same either way, so splitting the
+/// admitted answer on executability made a declaration query report an occurrence scan's
+/// result — a Product whose stores are all keyless answered as though it declared nothing.
 pub(crate) enum ProductBinding<'a> {
-    /// Admitted and kernel-serviceable: its declared branch tree is available.
-    Declared(&'a DurableRoot),
-    /// Admitted with a complete identity, but no store over it is executable.
-    NotYetExecutable,
+    /// At least one store over this resource was admitted, so the Product's declaration
+    /// facts are available.
+    Declared,
     /// Every store over this resource was refused; the first refusal carries the cause
     /// the use is steered to.
     Refused(&'a DeclarationRefusalSummary),
@@ -409,6 +414,20 @@ pub(crate) struct DurableRegistry {
     /// each Product's first executable root, and holds no site, path, or root.
     branch_records: BTreeMap<marrow_image::TypeId, BranchRecordShape>,
     branch_paths: BTreeMap<String, marrow_image::TypeId>,
+    /// Every durable Product's declared keyed-branch paths in qualified source spelling
+    /// (`Book.notes`, `Book.notes.tags`), written once per Product at its first admitted
+    /// root, straight from the resource declaration.
+    ///
+    /// Whether a Product declares a branch named `n` is a *declaration* question, and it
+    /// has one answer however many roots occur over the Product and whichever of them the
+    /// kernel can serve. Reading it out of [`Self::branch_paths`] answered it from an
+    /// executable-occurrence scan instead: that table is written from a root's built branch
+    /// descriptors, which exist only for a root inside the executable subset, so a Product
+    /// whose stores are all keyless carries a complete declared branch tree and still
+    /// answered "no branch". Materialized-record shape stays keyed by record type — a
+    /// materialized branch entry value only arises from an executable branch — but the
+    /// declared-name question is answered here.
+    declared_branch_paths: BTreeSet<String>,
     /// The durable-path naming join for every admitted graph node, `(ledger id, sigil,
     /// simple name)`, accumulated across the project's admitted stores. The
     /// [`DurableNaming`] the demand sentence spells paths through is built from this.
@@ -426,6 +445,7 @@ impl DurableRegistry {
             products: BTreeMap::new(),
             branch_records: BTreeMap::new(),
             branch_paths: BTreeMap::new(),
+            declared_branch_paths: BTreeSet::new(),
             naming: Vec::new(),
         }
     }
@@ -483,9 +503,8 @@ impl DurableRegistry {
         })
     }
 
-    /// What the resource `resource` declares as a durable Product: the same four-way
-    /// answer [`DurableRegistry::root`] gives, reached through the store declarations
-    /// that bind it.
+    /// What the resource `resource` declares as a durable Product, reached through the
+    /// store declarations that bind it.
     ///
     /// The owner of a branch constructor `Resource.branch(…)` and of the branch steer on
     /// a materialized entry value. Both are questions about what the Product declares, so
@@ -493,6 +512,10 @@ impl DurableRegistry {
     /// the resource's own. A store this project declared and the compiler refused answers
     /// `Refused` only when no sibling store over the same resource was admitted — one
     /// store's cause must not be sent to a reader whose Product is fine.
+    ///
+    /// One admitted store is the whole `Declared` answer. Nothing here consults the
+    /// executable list: the loop over the admitted names is a drift guard on the projection
+    /// table, not the source of the verdict.
     ///
     /// `Absent` means *no store binds this resource*, which only the missing projection
     /// entry establishes. A projection entry naming a placement the ledger does not know
@@ -507,15 +530,14 @@ impl DurableRegistry {
         };
         for name in &stores.admitted {
             match self.root(name)? {
-                RootBinding::Executable(root) => return Ok(ProductBinding::Declared(root)),
-                RootBinding::NotYetExecutable => {}
+                RootBinding::Executable(_) | RootBinding::NotYetExecutable => {}
                 RootBinding::Refused(..) | RootBinding::Absent => {
                     return Err(DeclarationIndexDrift);
                 }
             }
         }
         if !stores.admitted.is_empty() {
-            return Ok(ProductBinding::NotYetExecutable);
+            return Ok(ProductBinding::Declared);
         }
         let Some(refused) = &stores.first_refused else {
             return Err(DeclarationIndexDrift);
@@ -547,10 +569,12 @@ impl DurableRegistry {
         self.branch_record(*self.branch_paths.get(&qualified)?)
     }
 
-    /// Whether `resource` declares a keyed branch named `name` directly below itself.
+    /// Whether `resource` declares a keyed branch named `name` directly below itself — a
+    /// Product declaration fact, answered from the declared branch paths rather than from
+    /// any one root's built descriptors.
     pub(crate) fn declares_branch(&self, resource: &str, name: &str) -> bool {
-        self.branch_paths
-            .contains_key(&format!("{resource}.{name}"))
+        self.declared_branch_paths
+            .contains(&format!("{resource}.{name}"))
     }
 
     /// The materialized branch entry record `ty` types, if it is one — the shape a field
@@ -613,6 +637,24 @@ impl DurableRegistry {
                 },
             );
             self.record_branch_declarations(&qualified, &branch.branches);
+        }
+    }
+
+    /// Record the qualified paths of every keyed branch `members` declares below
+    /// `container`, recursively. Source declaration facts only: no key column, field type,
+    /// record, site, or root is read, so the answer is available for every admitted Product
+    /// whether or not a root over it reached the executable subset.
+    fn record_declared_branch_paths(&mut self, container: &str, members: &[ResourceMember]) {
+        for member in members {
+            let ResourceMember::Group(group) = member else {
+                continue;
+            };
+            if group.keys.is_empty() {
+                continue;
+            }
+            let qualified = format!("{container}.{}", group.name);
+            self.record_declared_branch_paths(&qualified, &group.members);
+            self.declared_branch_paths.insert(qualified);
         }
     }
 
@@ -706,8 +748,10 @@ impl DurableRegistry {
                         declared_branches: false,
                     });
                 let mut declare_branches = None;
+                let mut declare_branch_paths = false;
                 match &occurrence {
                     DeclarationOccurrence::Accepted(DeclaredRoot { executable }) => {
+                        declare_branch_paths = stores.admitted.is_empty();
                         stores.admitted.push(store.root.root.clone());
                         // A Product declaration mints one materialized entry record per
                         // declared branch however many roots project it, so its branch
@@ -723,6 +767,12 @@ impl DurableRegistry {
                     DeclarationOccurrence::Refused(_) => {
                         stores.first_refused.get_or_insert(store.root.root.clone());
                     }
+                }
+                if declare_branch_paths
+                    && let Some((_, _, decl)) =
+                        resources.iter().find(|(_, _, d)| d.name == store.resource)
+                {
+                    registry.record_declared_branch_paths(&store.resource, &decl.members);
                 }
                 if let Some(at) = declare_branches {
                     let branches = std::mem::take(&mut registry.roots[at].branches);

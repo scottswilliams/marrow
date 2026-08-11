@@ -3190,11 +3190,16 @@ impl<'a> FnLowerer<'a> {
                                 Err(drift) => return self.ledger_drift(drift),
                             };
                             match backing {
-                                ProductBinding::Declared(root)
+                                // Whether the resource declares a keyed branch `name` is a
+                                // Product declaration fact, so it is asked of the Product
+                                // and not of any one root: an admitted Product answers it
+                                // identically whether or not a root over it reached the
+                                // executable subset.
+                                ProductBinding::Declared
                                     if self.durable.declares_branch(&resource, name) =>
                                 {
                                     self.fail(branch_not_a_field(
-                                        self.file, field_span, name, &resource, &root.name,
+                                        self.file, field_span, name, &resource,
                                     ));
                                     return None;
                                 }
@@ -3208,9 +3213,7 @@ impl<'a> FnLowerer<'a> {
                                     self.steer_refusal(summary, field_span);
                                     return None;
                                 }
-                                ProductBinding::Declared(_)
-                                | ProductBinding::NotYetExecutable
-                                | ProductBinding::Absent => {}
+                                ProductBinding::Declared | ProductBinding::Absent => {}
                             }
                         }
                         self.fail(SourceDiagnostic::at(

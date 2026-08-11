@@ -1133,10 +1133,21 @@ fn chaining_a_branch_off_a_materialized_record_steers_to_the_durable_path() {
         "{}",
         diagnostic.message()
     );
+    // The fix is spelled generically. Which resource declares `notes` is the Product
+    // declaration fact that reaches this report, and any number of roots may occur over one
+    // Product, so the message names the resource and not a store root — the same shape the
+    // sub-branch steer already uses.
     assert!(
         diagnostic.message().contains("distinct durable node")
-            && diagnostic.message().contains("`^books["),
+            && diagnostic
+                .message()
+                .contains("`^root[key].notes[branchKey]`"),
         "{}",
+        diagnostic.message()
+    );
+    assert!(
+        !diagnostic.message().contains("^books"),
+        "a declaration-level steer names no occurrence: {}",
         diagnostic.message()
     );
 }

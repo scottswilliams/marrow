@@ -217,14 +217,16 @@ pub(super) fn not_yet_executable(
 /// A keyed branch named where a field of a materialized entry record is expected — the
 /// `b.notes[…]` chain off `if const b = ^root(k)`. A branch is a distinct durable node, not
 /// a projection of the whole-entry value, so the message steers to the durable-path form.
-/// `root` is the store-root source name (`books` for `^books`); `resource` is the resource
-/// the record materializes; `branch` is the branch member in source spelling.
+/// `resource` is the resource the record materializes; `branch` is the branch member in
+/// source spelling. No store root is named: which resource declares the branch is the
+/// Product declaration fact that reaches this report, and several roots may occur over one
+/// Product, so naming one of them would present an occurrence as the answer to a
+/// declaration question — and a Product with no executable root has none to name.
 pub(super) fn branch_not_a_field(
     file: &FileIdentity,
     span: SourceSpan,
     branch: &str,
     resource: &str,
-    root: &str,
 ) -> SourceDiagnostic {
     SourceDiagnostic::at(
         Code::CheckType.as_str(),
@@ -234,7 +236,7 @@ pub(super) fn branch_not_a_field(
             "`{branch}` is a keyed branch of `{resource}`, not a field of the bound entry \
              value. A keyed branch is a distinct durable node reached through a store path, \
              not projected from a materialized record. Read it directly with \
-             `^{root}[key].{branch}[branchKey]`, or bind the branch with a nested `if const`."
+             `^root[key].{branch}[branchKey]`, or bind the branch with a nested `if const`."
         ),
     )
 }
