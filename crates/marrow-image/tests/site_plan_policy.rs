@@ -506,3 +506,78 @@ fn one_ordinal_from_two_independent_drafts_compares_equal() {
         "equality is over the logical site ordinal, not over which plan minted it",
     );
 }
+
+/// A template proof that crossed the site cap does not leave the real draft crossed.
+///
+/// The guard's checkpoint records the plan's policy state, so a receipt first recorded
+/// inside the discarded pass is cleared with the demands that caused it. Keeping it would
+/// let a throwaway proof refuse every later site of the real program and make an image that
+/// fits report `TooManySites` — a crossing the finished draft never had.
+#[test]
+fn a_crossing_inside_a_discarded_proof_does_not_survive_it() {
+    let (mut draft, root, members) = wide_draft(MAX_SITES);
+    {
+        let mut guard = draft.template_proof();
+        let proof = guard.proof_draft();
+        demand_every_leaf(proof, &root, &members);
+        let excess = admit_root(proof, 0x22);
+        let over = site(
+            proof,
+            excess.occurrence(),
+            members[0].path(),
+            SemanticTarget::FieldLeaf,
+        );
+        assert_eq!(
+            format!("{over:?}"),
+            "over-policy",
+            "the proof itself crossed the cap"
+        );
+        assert!(matches!(proof.encode(), Err(ImageBuildError::TooManySites)));
+    }
+    assert!(
+        !matches!(draft.encode(), Err(ImageBuildError::TooManySites)),
+        "the discarded proof's crossing is not the finished draft's",
+    );
+}
+
+/// A crossing recorded **before** the proof is not undone by discarding the proof: it
+/// happened, and the operand that stands on it stays the operand it was.
+#[test]
+fn a_crossing_before_a_proof_survives_the_proof() {
+    let (mut draft, root, members) = wide_draft(MAX_SITES);
+    demand_every_leaf(&mut draft, &root, &members);
+    let excess = admit_root(&mut draft, 0x22);
+    let _ = site(
+        &mut draft,
+        excess.occurrence(),
+        members[0].path(),
+        SemanticTarget::FieldLeaf,
+    );
+    assert!(matches!(draft.encode(), Err(ImageBuildError::TooManySites)));
+    {
+        let mut guard = draft.template_proof();
+        let _ = guard.proof_draft().intern_string("throwaway");
+    }
+    assert!(
+        matches!(draft.encode(), Err(ImageBuildError::TooManySites)),
+        "the crossing predates the proof and is not rolled back with it",
+    );
+}
+
+/// Dropping the guard restores every draft owner the proof appended to, so the finished
+/// draft encodes to the exact bytes it would have without the pass.
+#[test]
+fn a_discarded_proof_leaves_the_draft_byte_identical() {
+    let (mut draft, root, members) = wide_draft(4);
+    demand_every_leaf(&mut draft, &root, &members);
+    let before = draft.encode().expect("a fitting draft").bytes;
+    {
+        let mut guard = draft.template_proof();
+        let proof = guard.proof_draft();
+        let _ = proof.intern_string("throwaway");
+        let extra = admit_root(proof, 0x33);
+        demand_every_leaf(proof, &extra, &members);
+    }
+    let after = draft.encode().expect("a fitting draft").bytes;
+    assert_eq!(before, after, "the proof appended nothing that survived it");
+}

@@ -1042,9 +1042,11 @@ impl<'a> FnLowerer<'a> {
     /// Bind one stored field's leaf site and mint it here, where the field is resolved.
     ///
     /// Site ids are assigned in request order, and a key operand lowered between the
-    /// resolution and the instruction may itself address a field, so the mint stays at
-    /// resolution. The operand is deliberately not retained: the target holds the handle,
-    /// and the emission re-requests the very id minted here.
+    /// resolution and the instruction may itself address a field — `^r[^r2[1].x].f` lowers
+    /// `^r2[1].x` after `^r…f` is resolved and before it is emitted — so moving the mint to
+    /// the emission boundary would reorder the site table. It stays at resolution. The
+    /// operand is deliberately not retained: the target holds the handle, and the emission
+    /// re-requests the very id minted here.
     fn bind_field_site(
         &mut self,
         node: DurNode<'a>,

@@ -370,17 +370,26 @@ impl SiteDemandPlan {
         self.rows.len() + usize::from(self.receipt.is_some())
     }
 
-    /// Discard every row appended after `rows`, dropping exactly those rows' demand keys.
+    /// The earliest crossing this plan has recorded, if any.
+    pub(crate) fn receipt(&self) -> Option<SitePolicyReceipt> {
+        self.receipt
+    }
+
+    /// Discard every row appended after `rows` and restore `receipt` as the plan's policy
+    /// state, dropping exactly the removed rows' demand keys.
     ///
     /// The purge is reconstructed from the removed rows, so it is proportional to the
-    /// discarded suffix rather than to the whole table. A plan whose demand crossed the
-    /// cap retains no excess row or key, so its saturated count and receipt are not
-    /// restored by discarding a suffix: the crossing happened.
-    pub(crate) fn truncate(&mut self, rows: usize) {
+    /// discarded suffix rather than to the whole table.
+    ///
+    /// `receipt` is the exact receipt the plan held when the suffix began. A crossing that
+    /// happened before it keeps its identity, so an operand minted over-policy before the
+    /// suffix stays valid; a crossing first recorded inside the suffix is cleared with the
+    /// demands that caused it, so a discarded pass cannot leave the plan refusing sites it
+    /// has capacity for, and an over-policy operand minted inside it is stale.
+    pub(crate) fn rewind(&mut self, rows: usize, receipt: Option<SitePolicyReceipt>) {
         for row in self.rows.drain(rows..) {
             self.retained.remove(&row.key);
         }
-        // A saturated plan keeps its receipt: the crossing is not undone by discarding a
-        // suffix, and the demands it refused were never retained to restore.
+        self.receipt = receipt;
     }
 }

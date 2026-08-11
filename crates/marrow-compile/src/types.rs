@@ -24,8 +24,8 @@ use std::hash::{Hash, Hasher};
 
 use marrow_codes::Code;
 use marrow_image::{
-    CollectionTypeDef, DraftSavepoint, EnumId, EnumTypeDef, FieldDef, ImageDraft, ImageType,
-    RecordTypeDef, Scalar, TypeId, VariantDef,
+    CollectionTypeDef, EnumId, EnumTypeDef, FieldDef, ImageDraft, ImageType, RecordTypeDef, Scalar,
+    TemplateProofDraftGuard, TypeId, VariantDef,
 };
 use marrow_project::FileIdentity;
 use marrow_syntax::{
@@ -893,53 +893,44 @@ pub(crate) struct RegistryProofSavepoint {
 /// diagnostics the caller takes before the guard drops cross back.
 pub(crate) struct TemplateProofScope<'r, 'd> {
     registry: &'r TypeRegistry,
-    draft: &'d mut ImageDraft,
     savepoint: Option<RegistryProofSavepoint>,
-    draft_savepoint: Option<DraftSavepoint>,
+    /// The draft's own rollback. It is a field rather than a value the scope applies,
+    /// because the guard *is* the borrow: the draft is unreachable except through it, and
+    /// dropping this field is the whole draft restoration. The scope's own `Drop` body runs
+    /// before any field drops, so the registry inverse is always restored first.
+    draft: TemplateProofDraftGuard<'d>,
 }
 
 impl<'r, 'd> TemplateProofScope<'r, 'd> {
-    /// Admit a proof pass on a settled registry, capturing the registry and draft
-    /// savepoints. Fails with the same admission errors as [`TypeRegistry::enter_template_proof`]
-    /// (an unstable fill owner, a non-open limit owner, or owner contention), leaving both
-    /// owners untouched.
+    /// Admit a proof pass on a settled registry, taking the registry savepoint and the
+    /// draft's proof guard. Fails with the same admission errors as
+    /// [`TypeRegistry::enter_template_proof`] (an unstable fill owner, a non-open limit
+    /// owner, or owner contention), leaving both owners untouched.
     pub(crate) fn enter(
         registry: &'r TypeRegistry,
         draft: &'d mut ImageDraft,
     ) -> Result<Self, GenericInvariant> {
-        let draft_savepoint = draft.savepoint();
         let savepoint =
             registry.enter_template_proof(draft.record_type_count(), draft.enum_type_count())?;
         Ok(Self {
             registry,
-            draft,
             savepoint: Some(savepoint),
-            draft_savepoint: Some(draft_savepoint),
+            draft: draft.template_proof(),
         })
     }
 
     /// The real in-progress draft the proof body appends its throwaway image to.
     pub(crate) fn draft(&mut self) -> &mut ImageDraft {
-        self.draft
-    }
-
-    /// Discard everything the proof body appended to the draft.
-    ///
-    /// The scope holds the draft exclusively and took this mark from it, so the draft can
-    /// only refuse a mark it did not issue and this one always applies. A mark is spent
-    /// once: the scope closes explicitly or on unwind, never both.
-    fn rewind_draft(&mut self) {
-        if let Some(mark) = self.draft_savepoint.take() {
-            let _ = self.draft.rewind_to(mark);
-        }
+        self.draft.proof_draft()
     }
 }
 
 impl Drop for TemplateProofScope<'_, '_> {
+    /// Restore the compiler registry's inverse, then let the draft guard drop and discard
+    /// everything the proof appended.
     fn drop(&mut self) {
         if let Some(savepoint) = self.savepoint.take() {
             self.registry.exit_template_proof(savepoint);
-            self.rewind_draft();
         }
     }
 }
@@ -9548,58 +9539,60 @@ mod instantiation_state_tests {
         assert_eq!(before.fn_base, 37);
         assert_eq!(before.functions, vec![(7, vec![scalar], reserved)]);
         assert_eq!(before.queue, vec![(7, vec![scalar], reserved)]);
-        let draft_savepoint = draft.savepoint();
         let draft_before = draft_snapshot(&draft);
 
         let proof = registry
             .enter_template_proof(draft.record_type_count(), draft.enum_type_count())
             .expect("a settled open registry admits the proof pass");
 
-        // The proof pass mints and diagnoses directly on the real registry and draft.
-        let text = GArg::Scalar(ScalarType::Text);
-        let proof_row = registry
-            .mint_type_instance(&mut draft, 0, &[text], site(28))
-            .expect("the proof mints a new isolated row on the real registry");
-        assert!(matches!(proof_row, TypeInstId::Record(_)));
-        let marker = draft.intern_string("during-proof");
-        draft.add_record_type(RecordTypeDef {
-            name: marker,
-            fields: Vec::new(),
-        });
-        let proof_collection = registry
-            .instantiate_list(&mut draft, text)
-            .expect("the proof mints a distinct collection on the real registry");
-        assert_eq!(
-            registry.collections.borrow().len(),
-            2,
-            "the proof appended its own collection row",
-        );
-        registry.record_collection_payload_rejection(
-            site(29),
-            "Payload",
-            "value",
-            proof_collection,
-        );
-        registry.record_limit(site(30), "the proof reached its local bound");
+        let outcome = {
+            let mut guard = draft.template_proof();
+            let proof_draft = guard.proof_draft();
+            // The proof pass mints and diagnoses directly on the real registry and draft.
+            let text = GArg::Scalar(ScalarType::Text);
+            let proof_row = registry
+                .mint_type_instance(proof_draft, 0, &[text], site(28))
+                .expect("the proof mints a new isolated row on the real registry");
+            assert!(matches!(proof_row, TypeInstId::Record(_)));
+            let marker = proof_draft.intern_string("during-proof");
+            proof_draft.add_record_type(RecordTypeDef {
+                name: marker,
+                fields: Vec::new(),
+            });
+            let proof_collection = registry
+                .instantiate_list(proof_draft, text)
+                .expect("the proof mints a distinct collection on the real registry");
+            assert_eq!(
+                registry.collections.borrow().len(),
+                2,
+                "the proof appended its own collection row",
+            );
+            registry.record_collection_payload_rejection(
+                site(29),
+                "Payload",
+                "value",
+                proof_collection,
+            );
+            registry.record_limit(site(30), "the proof reached its local bound");
 
-        // Simulate a proof that failed mid-fill, leaving the transient batch state dirty: the
-        // savepoint must still restore the settled owner exactly. The dirty edges reference
-        // only the appended row, which truncation drops.
-        {
-            let mut generics = registry.generics.borrow_mut();
-            let dirty_row = generics.type_insts.len() - 1;
-            let key = TypeInstKey::from(generics.type_insts[dirty_row].id);
-            generics.fill_batch_start = Some(dirty_row);
-            generics.fill_rows.insert(key, dirty_row);
-            generics.fill_stack.push(dirty_row);
-            generics.type_insts[dirty_row].dependents.push(dirty_row);
-        }
+            // Simulate a proof that failed mid-fill, leaving the transient batch state dirty:
+            // the guard must still restore the settled owner exactly. The dirty edges
+            // reference only the appended row, which truncation drops.
+            {
+                let mut generics = registry.generics.borrow_mut();
+                let dirty_row = generics.type_insts.len() - 1;
+                let key = TypeInstKey::from(generics.type_insts[dirty_row].id);
+                generics.fill_batch_start = Some(dirty_row);
+                generics.fill_rows.insert(key, dirty_row);
+                generics.fill_stack.push(dirty_row);
+                generics.type_insts[dirty_row].dependents.push(dirty_row);
+            }
 
-        let outcome = registry.take_generic_diagnostics();
-        registry.exit_template_proof(proof);
-        draft
-            .rewind_to(draft_savepoint)
-            .expect("the mark was taken on this draft");
+            let outcome = registry.take_generic_diagnostics();
+            registry.exit_template_proof(proof);
+            outcome
+            // The guard drops here, discarding everything the proof appended to the draft.
+        };
 
         // The failed proof leaked nothing: the settled registry and the draft bytes are
         // exactly what they were before the pass.

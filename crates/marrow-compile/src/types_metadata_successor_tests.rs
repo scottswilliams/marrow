@@ -1070,11 +1070,10 @@ fn nested_non_ready_generic_targets_are_rejected_without_outer_publication() {
 }
 
 #[test]
-fn template_proof_parameter_stays_local_to_the_savepoint() {
+fn template_proof_parameter_stays_local_to_the_guard() {
     let registry = test_registry(vec![struct_template("Box", &["T"])]);
     let mut draft = ImageDraft::new();
     let registry_before = owner_snapshot(&registry);
-    let draft_savepoint = draft.savepoint();
     let draft_before = draft_fingerprint(&draft);
 
     // The abstract parameter argument is legal only inside the proof pass, minted directly on
@@ -1082,8 +1081,10 @@ fn template_proof_parameter_stays_local_to_the_savepoint() {
     let proof = registry
         .enter_template_proof(draft.record_type_count(), draft.enum_type_count())
         .expect("stable registry admits the proof pass");
+    let mut guard = draft.template_proof();
+    let proof_draft = guard.proof_draft();
     let id = registry
-        .mint_type_instance(&mut draft, 0, &[GArg::Param(0)], site())
+        .mint_type_instance(proof_draft, 0, &[GArg::Param(0)], site())
         .expect("proof-only parameter is legal");
     let (args, body) = {
         let generics = registry.generics.borrow();
@@ -1119,14 +1120,12 @@ fn template_proof_parameter_stays_local_to_the_savepoint() {
         BodySnapshot::Struct(vec![("t".to_string(), GArg::Param(0))])
     );
     assert_eq!(id, TypeInstId::Record(expected_box));
-    assert_eq!(draft_fingerprint(&draft), draft_fingerprint(&expected));
+    assert_eq!(draft_fingerprint(proof_draft), draft_fingerprint(&expected));
 
-    // The savepoint erases the parameter row and its throwaway image; the settled owner and
-    // the draft are exactly what they were before the pass.
+    // Dropping the guard erases the parameter row and its throwaway image; the settled owner
+    // and the draft are exactly what they were before the pass.
     registry.exit_template_proof(proof);
-    draft
-        .rewind_to(draft_savepoint)
-        .expect("the mark was taken on this draft");
+    drop(guard);
     assert_eq!(owner_snapshot(&registry), registry_before);
     assert_eq!(draft_fingerprint(&draft), draft_before);
 }

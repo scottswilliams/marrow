@@ -33,7 +33,8 @@ use crate::product::{
 };
 use crate::semantic::{SemanticPath, SemanticTarget};
 use crate::site_plan::{
-    LegacyDraftSiteOperand, OccurrenceSiteHandle, SiteDemandPlan, SitePlanState, SitePlanStateError,
+    LegacyDraftSiteOperand, OccurrenceSiteHandle, SiteDemandPlan, SitePlanState,
+    SitePlanStateError, SitePolicyReceipt,
 };
 use crate::ty::{ImageType, Scalar};
 
@@ -395,17 +396,61 @@ impl std::error::Error for ImageBuildError {}
 
 /// The mutable image builder.
 ///
-/// The once-checked generic template pass appends its throwaway image directly to the real
-/// draft inside a [`DraftSavepoint`], rewinding it on exit (see [`Self::savepoint`] /
-/// [`Self::rewind_to`]); the `Clone` derive is used only by tests that need an independent
-/// copy of a built draft.
+/// The once-checked generic template pass appends its throwaway image directly to this
+/// draft through a [`TemplateProofDraftGuard`], which discards everything the pass appended
+/// when it drops.
+///
+/// A draft is deliberately not `Clone`. Every selector, handle, and site operand it mints
+/// carries its identity, so a copied draft would carry a copied identity and a copied stamp
+/// cursor: every capability minted afterwards would authenticate against both copies, and
+/// the row-stamp check that makes a discarded row's reused ordinal detectable would answer
+/// for a row that a different draft appended.
+///
+/// ```compile_fail,E0599
+/// // A draft is not `Clone`: copying one would copy its identity and its stamp cursor.
+/// let draft = marrow_image::ImageDraft::new();
+/// let _copy = draft.clone();
+/// ```
+///
+/// A site is named by binding a live root occurrence to a live declaration path, never by
+/// a raw ordinal or key.
+///
+/// ```compile_fail,E0308
+/// // There is no raw ordinal or key binder: `bind_occurrence_site` takes published
+/// // selectors, and neither selector can be spelled as a number.
+/// let mut draft = marrow_image::ImageDraft::new();
+/// let _ = draft.bind_occurrence_site(&0usize, &0usize, marrow_image::SemanticTarget::WholePayload);
+/// ```
+///
+/// A handle already carries the one target it was bound for, so requesting a site takes no
+/// second target input.
+///
+/// ```compile_fail,E0061
+/// // A handle carries its target; there is no second target input to disagree with it.
+/// let mut draft = marrow_image::ImageDraft::new();
+/// let handle: marrow_image::OccurrenceSiteHandle = unimplemented!();
+/// let _ = draft.request_site(&handle, marrow_image::SemanticTarget::WholePayload);
+/// ```
+///
+/// A template proof's rollback is a guard over one draft, not a mark a caller holds, so
+/// there is no value to carry from one draft to another. The guard borrows its draft
+/// exclusively for its whole lifetime.
+///
+/// ```compile_fail,E0505
+/// // A guard cannot be separated from the draft it rolls back.
+/// let mut first = marrow_image::ImageDraft::new();
+/// let guard = first.template_proof();
+/// let moved = first;
+/// drop(guard);
+/// ```
 #[derive(Debug)]
 pub struct ImageDraft {
     /// This draft's strong identity, and the identity of its one site demand plan. Every
     /// selector, handle, and site operand it mints carries it.
     identity: DraftIdentity,
-    /// The source of the stamps appended rows carry. It is deliberately not restored by
-    /// [`Self::rewind_to`], so an ordinal reused after a discard carries a fresh stamp.
+    /// The source of the stamps appended rows carry. It is deliberately not restored when a
+    /// template proof is discarded, so an ordinal reused after a discard carries a fresh
+    /// stamp.
     next_stamp: u64,
     strings: Vec<String>,
     consts: Vec<ConstValue>,
@@ -436,18 +481,16 @@ pub struct ImageDraft {
 }
 
 /// The append-only lengths of every [`ImageDraft`] owner at one instant, plus the
-/// application-identity slot. Recorded before an isolated generic-template proof pass and
-/// consumed by [`ImageDraft::rewind_to`] to erase everything that pass appended. A proof
-/// pass only appends new entries and fills freshly-reserved records/enums (never a
+/// application-identity slot and the site plan's policy state.
+///
+/// It is the private interior of a [`TemplateProofDraftGuard`]: it is never returned,
+/// stored, or named outside this module, so there is no mark a caller could hold, copy, or
+/// apply to a draft other than the one the guard exclusively borrows.
+///
+/// A proof pass only appends new entries and fills freshly-reserved records/enums (never a
 /// pre-existing index), so truncating each owner back to its recorded length restores the
 /// draft to the exact bytes it held before the pass.
-#[must_use]
-pub struct DraftSavepoint {
-    /// The draft this mark was taken on. A savepoint restores owner lengths, so applying
-    /// one to another draft silently truncates unrelated tables — and would leave a site
-    /// row whose occurrence ordinal is now held by an unrelated row, which is the one
-    /// failure the demand key exists to make impossible.
-    draft: DraftIdentity,
+struct DraftCheckpoint {
     strings: usize,
     consts: usize,
     types: usize,
@@ -460,6 +503,69 @@ pub struct DraftSavepoint {
     exports: usize,
     test_entries: usize,
     application: Option<LedgerIdBytes>,
+    /// The site plan's policy state at the checkpoint. A crossing that happened *before* the
+    /// proof keeps its exact receipt identity; one first recorded *inside* the proof is
+    /// cleared with the rest of the pass, so a throwaway proof cannot leave the real draft
+    /// refusing sites it has capacity for.
+    receipt: Option<SitePolicyReceipt>,
+}
+
+/// The exclusive borrow through which the once-checked generic template pass appends its
+/// throwaway image to the real draft.
+///
+/// The pass is proved against the in-progress draft — so a concrete callee's signature stays
+/// consistent with every type already minted — and everything it appends is discarded when
+/// the guard drops, on a normal return, on an early invariant, or on an unwind.
+///
+/// The guard **is** the capability. Its checkpoint is private and unnameable, so there is no
+/// mark to clone, store, return, or hand to a second draft: the guard borrows one draft
+/// exclusively for its whole lifetime, and the draft is unusable through any other path
+/// until it drops. The type it replaces was a free-standing `Clone` value carrying no draft
+/// identity, so a mark taken on one draft could be applied to another, where it silently
+/// truncated unrelated tables.
+///
+/// **Temporary.** It exposes the template proof's rollback and nothing else — it is not a
+/// general draft transaction, and canonical Product, root, or path publication is not a
+/// template-proof operation. It is deleted when the production draft transaction lands.
+#[doc(hidden)]
+pub struct TemplateProofDraftGuard<'draft> {
+    draft: &'draft mut ImageDraft,
+    checkpoint: DraftCheckpoint,
+}
+
+impl TemplateProofDraftGuard<'_> {
+    /// The in-progress draft the proof body appends to.
+    ///
+    /// The borrow is reborrowed from the guard's own exclusive borrow, so it cannot outlive
+    /// the guard and no appended row can escape the rollback.
+    pub fn proof_draft(&mut self) -> &mut ImageDraft {
+        self.draft
+    }
+}
+
+impl Drop for TemplateProofDraftGuard<'_> {
+    /// Discard everything the proof appended, in reverse dependency order: the code that can
+    /// retain site operands first, then the occurrence rows and site rows those operands
+    /// name, then the remaining owners, and finally the application slot and the plan's
+    /// policy state.
+    ///
+    /// It allocates nothing, indexes nothing, and cannot panic, so it is safe to run during
+    /// an unwind that a failed proof started.
+    fn drop(&mut self) {
+        let at = &self.checkpoint;
+        self.draft.test_entries.truncate(at.test_entries);
+        self.draft.exports.truncate(at.exports);
+        self.draft.functions.truncate(at.functions);
+        self.draft.occurrences.truncate(at.occurrences);
+        self.draft.sites.rewind(at.sites, at.receipt);
+        self.draft.products.truncate(at.products);
+        self.draft.colls.truncate(at.colls);
+        self.draft.enums.truncate(at.enums);
+        self.draft.types.truncate(at.types);
+        self.draft.consts.truncate(at.consts);
+        self.draft.strings.truncate(at.strings);
+        self.draft.application = at.application;
+    }
 }
 
 impl Default for ImageDraft {
@@ -858,11 +964,22 @@ impl ImageDraft {
         self.enums.len()
     }
 
-    /// Capture the current append-only lengths so a later [`Self::rewind_to`] can discard
-    /// every entry appended after this point. See [`DraftSavepoint`].
-    pub fn savepoint(&self) -> DraftSavepoint {
-        DraftSavepoint {
-            draft: self.identity,
+    /// Borrow this draft for one isolated generic-template proof pass.
+    ///
+    /// The returned guard holds the draft exclusively and discards everything the pass
+    /// appends when it drops. The checkpoint it records is its own private interior: there is
+    /// no mark value, so a pass cannot roll one draft back onto another.
+    #[doc(hidden)]
+    pub fn template_proof(&mut self) -> TemplateProofDraftGuard<'_> {
+        let checkpoint = self.checkpoint();
+        TemplateProofDraftGuard {
+            draft: self,
+            checkpoint,
+        }
+    }
+
+    fn checkpoint(&self) -> DraftCheckpoint {
+        DraftCheckpoint {
             strings: self.strings.len(),
             consts: self.consts.len(),
             types: self.types.len(),
@@ -875,36 +992,8 @@ impl ImageDraft {
             exports: self.exports.len(),
             test_entries: self.test_entries.len(),
             application: self.application,
+            receipt: self.sites.receipt(),
         }
-    }
-
-    /// Discard every entry appended since `savepoint`, restoring the draft to its recorded
-    /// state. Each owner is truncated back to its recorded length, and the site plan drops
-    /// exactly the demands of the rows it discards. The append-only discipline of the proof
-    /// pass — reserve-then-fill confined to freshly-appended indices — makes this a total
-    /// inverse.
-    ///
-    /// A mark taken on another draft is refused rather than applied. Applying one would
-    /// truncate unrelated tables to a length that means nothing here, and could leave a
-    /// live site row whose occurrence ordinal is held by an unrelated occurrence — the one
-    /// failure the demand key exists to make impossible.
-    pub fn rewind_to(&mut self, savepoint: DraftSavepoint) -> Result<(), SitePlanStateError> {
-        if savepoint.draft != self.identity {
-            return Err(SitePlanStateError::new(SitePlanState::WrongPlan));
-        }
-        self.sites.truncate(savepoint.sites);
-        self.strings.truncate(savepoint.strings);
-        self.consts.truncate(savepoint.consts);
-        self.types.truncate(savepoint.types);
-        self.enums.truncate(savepoint.enums);
-        self.colls.truncate(savepoint.colls);
-        self.occurrences.truncate(savepoint.occurrences);
-        self.products.truncate(savepoint.products);
-        self.functions.truncate(savepoint.functions);
-        self.exports.truncate(savepoint.exports);
-        self.test_entries.truncate(savepoint.test_entries);
-        self.application = savepoint.application;
-        Ok(())
     }
 
     // --- accessors used by the encoder ---
@@ -1185,44 +1274,44 @@ mod site_binding_tests {
     fn a_handle_over_a_discarded_row_is_stale_even_when_its_ordinal_is_reused() {
         let mut draft = ImageDraft::new();
         draft.set_application_identity(LedgerIdBytes::from_bytes([0x01; 16]));
-        let mark = draft.savepoint();
-        let name = draft.intern_string("r");
-        draft
-            .declare_product(
-                product(),
-                TypeId(0),
-                vec![DeclarationMemberDef {
-                    parent: None,
-                    shape: DeclarationMemberShape::Field {
-                        id: field(),
-                        required: true,
-                        value: DurableValueShape::Scalar(Scalar::Int),
+        // Build the rows inside a proof guard, so dropping it discards exactly them.
+        let handle = {
+            let mut guard = draft.template_proof();
+            let proof = guard.proof_draft();
+            let name = proof.intern_string("r");
+            proof
+                .declare_product(
+                    product(),
+                    TypeId(0),
+                    vec![DeclarationMemberDef {
+                        parent: None,
+                        shape: DeclarationMemberShape::Field {
+                            id: field(),
+                            required: true,
+                            value: DurableValueShape::Scalar(Scalar::Int),
+                        },
+                    }],
+                )
+                .expect("a well-formed declaration");
+            let admitted = proof
+                .add_root_occurrence(
+                    product(),
+                    RootOccurrenceDef {
+                        name,
+                        keys: Vec::new(),
+                        placement: placement(),
+                        indexes: Vec::new(),
                     },
-                }],
-            )
-            .expect("a well-formed declaration");
-        let admitted = draft
-            .add_root_occurrence(
-                product(),
-                RootOccurrenceDef {
-                    name,
-                    keys: Vec::new(),
-                    placement: placement(),
-                    indexes: Vec::new(),
-                },
-            )
-            .expect("the Product is declared");
-        let handle = draft
-            .bind_occurrence_site(
-                admitted.occurrence(),
-                admitted.placement_path(),
-                SemanticTarget::WholePayload,
-            )
-            .expect("the root admits a whole-payload site");
-
-        draft
-            .rewind_to(mark)
-            .expect("the savepoint was taken from this draft");
+                )
+                .expect("the Product is declared");
+            proof
+                .bind_occurrence_site(
+                    admitted.occurrence(),
+                    admitted.placement_path(),
+                    SemanticTarget::WholePayload,
+                )
+                .expect("the root admits a whole-payload site")
+        };
 
         assert_eq!(
             draft

@@ -28,6 +28,12 @@
 //! row it was published by, so it names a place without exposing an ordinal a caller
 //! could write by hand. The pair of them is the only input to the site binder
 //! ([`crate::ImageDraft::bind_occurrence_site`]).
+//!
+//! The occurrence ordinal is not itself secret: [`crate::AdmittedRoot::root_id`] publishes
+//! it beside the selectors, because it is the wire RootId an entry identity `Id(^root)`
+//! carries and the compiler must emit it into identity instructions. What the selectors
+//! establish is that no ordinal a caller holds can *name a place*: the binder accepts
+//! selectors only, so a number is a wire value here and never an address.
 
 use std::collections::BTreeMap;
 
@@ -1057,6 +1063,19 @@ impl BoundDemand {
 /// node's ledger id: a Product member declaration below two root occurrences has one
 /// declaration id and two distinct places, so a terminal-id key would hand one occurrence
 /// the other occurrence's site.
+///
+/// This key is strictly finer than the `(semantic path, target)` pair the site table
+/// deduplicated on before it, so it can only fail to merge two demands that the coarser key
+/// merged — never merge two the coarser key kept apart. Where it could differ is where two
+/// distinct `(occurrence, node)` pairs project one identical path: two occurrences sharing a
+/// placement ledger id, or two declaration rows with equal ancestry and equal ledger ids.
+/// Both are one ledger id claimed by two durable declarations, which is refused twice over:
+/// the identity ledger refuses to parse two anchors carrying one id, and the independent
+/// verifier refuses such an image at its table phase. So the two keys agree on every graph
+/// that can be *accepted*, which is what byte preservation is a claim about. That double
+/// rejection is the load-bearing fact here, and its verifier half is pinned exhaustively by
+/// the pairwise identity matrix over all eleven declaration kinds
+/// (`marrow-verify/tests/enum_reuse_hostile.rs`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) struct OccurrenceSiteDemandKey {
     occurrence: RootOccurrenceOrdinal,
