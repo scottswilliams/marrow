@@ -574,10 +574,10 @@ fn a_symlinked_src_root_is_refused_and_external_files_stay_untouched() {
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 #[test]
-fn a_symlinked_source_file_is_not_followed() {
-    // A symlink inside src is skipped by the physical adapter, so an unformatted
-    // file reached only through a symlink does not fail a project that is
-    // otherwise fully formatted.
+fn a_symlinked_source_file_is_refused_and_never_followed() {
+    // A symlink inside src is refused by the physical adapter, naming the link
+    // itself: the alias is neither followed nor silently dropped, so a file
+    // reached only through one can never go missing without a cause.
     let temp = TempDir::new("symlink");
     let project = temp.join("app");
     write(&project.join("marrow.toml"), "edition = \"2026\"\n");
@@ -602,9 +602,18 @@ fn a_symlinked_source_file_is_not_followed() {
         .expect("create symlink");
 
     let output = run(&["fmt", "--check", project.to_str().unwrap()]);
-    assert!(
-        output.status.success(),
-        "the symlinked unformatted file must be skipped: {output:?}"
+    assert_io_read(&output);
+    assert_eq!(
+        String::from_utf8(output.stderr).expect("stderr is UTF-8"),
+        format!(
+            "io.read: {} is a symbolic link\n",
+            project.join("src/linked.mw").display()
+        )
+    );
+    assert_eq!(
+        fs::read_to_string(&outside).expect("read the link target"),
+        "pub fn stray() {\n    return\n}\n",
+        "the target outside the walked tree must remain byte-identical"
     );
 }
 
@@ -981,7 +990,7 @@ fn a_symlinked_identity_ledger_retains_its_existing_typed_refusal() {
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 #[test]
-fn a_symlinked_source_directory_remains_ignored() {
+fn a_symlinked_source_directory_is_refused() {
     use std::os::unix::fs::symlink;
 
     let temp = TempDir::new("source-dir-symlink");
@@ -991,9 +1000,14 @@ fn a_symlinked_source_directory_remains_ignored() {
     symlink(&outside, temp.join("src/linked")).expect("symlink nested source directory");
 
     let output = run(&["fmt", "--check", temp.to_str().unwrap()]);
-    assert!(
-        output.status.success(),
-        "a linked directory below src remains ignored: {output:?}"
+    assert_io_read(&output);
+    assert_eq!(
+        String::from_utf8(output.stderr).expect("stderr is UTF-8"),
+        format!(
+            "io.read: {} is a symbolic link\n",
+            temp.join("src/linked").display()
+        ),
+        "the refusal names the link, not a module it would have carried"
     );
 }
 
@@ -1017,10 +1031,31 @@ fn a_symlinked_project_root_alias_remains_accepted() {
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 #[test]
-fn a_fifo_below_src_remains_an_ignored_special_entry() {
-    let temp = TempDir::new("ignored-source-fifo");
+fn a_fifo_at_a_module_identity_is_refused_without_being_opened() {
+    let temp = TempDir::new("module-identity-fifo");
     project(&temp, FORMATTED_SOURCE);
     create_fifo(&temp.join("src/ignored.mw"));
+
+    // The deadline is the load-bearing assertion: capture classifies the kind
+    // before it opens the object, so a FIFO with no writer refuses rather than
+    // blocking forever.
+    let output = run_with_deadline(&["fmt", "--check", temp.to_str().unwrap()]);
+    assert_io_read(&output);
+    assert_eq!(
+        String::from_utf8(output.stderr).expect("stderr is UTF-8"),
+        format!(
+            "io.read: {} is not a regular file\n",
+            temp.join("src/ignored.mw").display()
+        )
+    );
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[test]
+fn a_fifo_naming_no_module_remains_an_ignored_special_entry() {
+    let temp = TempDir::new("ignored-source-fifo");
+    project(&temp, FORMATTED_SOURCE);
+    create_fifo(&temp.join("src/notes.txt"));
 
     let output = run_with_deadline(&["fmt", "--check", temp.to_str().unwrap()]);
     assert!(
