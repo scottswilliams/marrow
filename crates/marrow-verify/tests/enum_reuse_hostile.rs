@@ -6,11 +6,15 @@
 //! inconsistent enum reference (the same sum id presenting different member ids) must
 //! still reject at the table phase. Each artifact carries a valid encoder-computed
 //! digest, so it exercises the verifier's own decode rather than the digest gate.
+//!
+//! Every site named here is minted through the construction seam's bind-then-request
+//! protocol. That protocol has exactly one owner in the workspace and is included here
+//! rather than copied.
 
 use marrow_image::{
-    DurableMemberDef, DurableValueShape, EnumTypeDef, ExportId, FieldDef, FunctionDef, ImageDraft,
-    ImageType, Instr, KeyColumn, LedgerIdBytes, RecordTypeDef, RootDef, RootIdentity, Scalar,
-    SemanticPath, SiteDef, SpanEntry, VariantDef,
+    DeclarationMemberDef, DeclarationMemberShape, DurableValueShape, EnumTypeDef, ExportId,
+    FieldDef, FunctionDef, ImageDraft, ImageType, Instr, KeyColumn, LedgerIdBytes, RecordTypeDef,
+    RootOccurrenceDef, Scalar, SemanticTarget, SpanEntry, VariantDef,
 };
 use marrow_verify::{VerifyPhase, verify};
 
@@ -121,47 +125,64 @@ fn build(
         ],
     });
     let root_name = draft.intern_string("grants");
-    draft.add_root(RootDef {
-        name: root_name,
-        keys: vec![KeyColumn {
-            scalar: Scalar::Int,
-            id: id(KEY),
-        }],
-        record,
-        identity: RootIdentity {
-            placement: id(PLACEMENT),
-            product: id(PRODUCT),
-            indexes: vec![],
-            members: vec![
-                DurableMemberDef::Field {
-                    id: id(field_one),
-                    required: true,
-                    value: shape_one,
+    draft
+        .declare_product(
+            id(PRODUCT),
+            record,
+            vec![
+                DeclarationMemberDef {
+                    parent: None,
+                    shape: DeclarationMemberShape::Field {
+                        id: id(field_one),
+                        required: true,
+                        value: shape_one,
+                    },
                 },
-                DurableMemberDef::Field {
-                    id: id(field_two),
-                    required: true,
-                    value: shape_two,
+                DeclarationMemberDef {
+                    parent: None,
+                    shape: DeclarationMemberShape::Field {
+                        id: id(field_two),
+                        required: true,
+                        value: shape_two,
+                    },
                 },
             ],
-        },
-    });
-    draft.request_site(SiteDef::whole_payload(SemanticPath::root(
-        id(APPLICATION_ID),
-        id(PLACEMENT),
-    )));
+        )
+        .expect("a well-formed declaration");
+    let occurrence = draft
+        .add_root_occurrence(
+            id(PRODUCT),
+            RootOccurrenceDef {
+                name: root_name,
+                keys: vec![KeyColumn {
+                    scalar: Scalar::Int,
+                    id: id(KEY),
+                }],
+                placement: id(PLACEMENT),
+                indexes: vec![],
+            },
+        )
+        .expect("the Product is declared");
+    site(
+        &mut draft,
+        occurrence.occurrence(),
+        occurrence.placement_path(),
+        SemanticTarget::WholePayload,
+    );
     let src = draft.intern_string("src/main.mw");
     let fname = draft.intern_string("f");
     let code = vec![Instr::LocalGet(0), Instr::Return];
-    let func = draft.add_function(FunctionDef {
-        name: fname,
-        source: src,
-        params: vec![ImageType::scalar(Scalar::Int)],
-        ret: ImageType::scalar(Scalar::Int),
-        local_count: 1,
-        spans: spans(&code),
-        code,
-    });
+    let func = draft
+        .add_function(FunctionDef {
+            name: fname,
+            source: src,
+            params: vec![ImageType::scalar(Scalar::Int)],
+            ret: ImageType::scalar(Scalar::Int),
+            local_count: 1,
+            spans: spans(&code),
+            code,
+        })
+        .expect("every site operand is live");
     draft.add_export(ExportId::of_local("", "f"), func);
     draft.encode().expect("encode").bytes
 }
@@ -244,7 +265,7 @@ fn an_inconsistent_enum_reference_rejects() {
 // declaration — the exact form the law admits — and must verify.
 // ---------------------------------------------------------------------------
 
-use marrow_image::{DurableIndexComponent, DurableIndexShape, SemanticStep, SemanticStepKind};
+use marrow_image::{DurableIndexComponent, DurableIndexShape};
 
 /// The eleven durable declaration kinds a ledger id may be claimed as.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -263,6 +284,10 @@ enum DeclarationKind {
 }
 
 use DeclarationKind::*;
+
+#[path = "../../marrow-image/tests/common/site_seam.rs"]
+mod site_seam;
+use site_seam::site;
 
 const KINDS: [DeclarationKind; 11] = [
     Application,
@@ -445,79 +470,113 @@ fn forge(spec: &GraphSpec) -> Vec<u8> {
 
     for (position, root) in spec.roots.iter().enumerate() {
         let name = draft.intern_string(if position == 0 { "a" } else { "b" });
-        draft.add_root(RootDef {
-            name,
-            keys: vec![KeyColumn {
-                scalar: Scalar::Int,
-                id: id(root.key),
-            }],
-            record: root_record,
-            identity: RootIdentity {
-                placement: id(root.placement),
-                product: id(root.product),
-                members: vec![
-                    DurableMemberDef::Field {
-                        id: id(root.field),
-                        required: true,
-                        value: DurableValueShape::Scalar(Scalar::Int),
+        // Flat commands, in pre-order: the two direct fields, the group and its one
+        // member, then the branch and its one member.
+        draft
+            .declare_product(
+                id(root.product),
+                root_record,
+                vec![
+                    DeclarationMemberDef {
+                        parent: None,
+                        shape: DeclarationMemberShape::Field {
+                            id: id(root.field),
+                            required: true,
+                            value: DurableValueShape::Scalar(Scalar::Int),
+                        },
                     },
-                    DurableMemberDef::Field {
-                        id: id(root.enum_field),
-                        required: true,
-                        value: spec_enum_shape(root),
+                    DeclarationMemberDef {
+                        parent: None,
+                        shape: DeclarationMemberShape::Field {
+                            id: id(root.enum_field),
+                            required: true,
+                            value: spec_enum_shape(root),
+                        },
                     },
-                    DurableMemberDef::Group {
-                        id: id(root.group),
-                        members: vec![DurableMemberDef::Field {
+                    DeclarationMemberDef {
+                        parent: None,
+                        shape: DeclarationMemberShape::Group { id: id(root.group) },
+                    },
+                    DeclarationMemberDef {
+                        parent: Some(2),
+                        shape: DeclarationMemberShape::Field {
                             id: id(root.group_field),
                             required: true,
                             value: DurableValueShape::Scalar(Scalar::Int),
-                        }],
+                        },
                     },
-                    DurableMemberDef::Branch {
-                        placement: id(root.branch),
-                        name: notes,
-                        record: branch_record,
-                        keys: vec![KeyColumn {
-                            scalar: Scalar::Int,
-                            id: id(root.branch_key),
-                        }],
-                        members: vec![DurableMemberDef::Field {
+                    DeclarationMemberDef {
+                        parent: None,
+                        shape: DeclarationMemberShape::Branch {
+                            placement: id(root.branch),
+                            name: notes,
+                            record: branch_record,
+                            keys: vec![KeyColumn {
+                                scalar: Scalar::Int,
+                                id: id(root.branch_key),
+                            }],
+                        },
+                    },
+                    DeclarationMemberDef {
+                        parent: Some(4),
+                        shape: DeclarationMemberShape::Field {
                             id: id(root.branch_field),
                             required: true,
                             value: DurableValueShape::Scalar(Scalar::Int),
-                        }],
+                        },
                     },
                 ],
-                indexes: vec![DurableIndexShape {
-                    id: id(root.index),
-                    unique: true,
-                    components: vec![
-                        DurableIndexComponent::Field(id(root.field)),
-                        DurableIndexComponent::Key(id(root.key)),
-                    ],
-                }],
-            },
-        });
-        let root_path = SemanticPath::root(id(spec.application), id(root.placement));
-        draft.request_site(SiteDef::whole_payload(root_path.clone()));
-        draft.request_site(SiteDef::index_lookup(
-            root_path.child(SemanticStep::new(SemanticStepKind::Index, id(root.index))),
-        ));
+            )
+            .expect("a well-formed declaration");
+        let occurrence = draft
+            .add_root_occurrence(
+                id(root.product),
+                RootOccurrenceDef {
+                    name,
+                    keys: vec![KeyColumn {
+                        scalar: Scalar::Int,
+                        id: id(root.key),
+                    }],
+                    placement: id(root.placement),
+                    indexes: vec![DurableIndexShape {
+                        id: id(root.index),
+                        unique: true,
+                        components: vec![
+                            DurableIndexComponent::Field(id(root.field)),
+                            DurableIndexComponent::Key(id(root.key)),
+                        ],
+                    }],
+                },
+            )
+            .expect("the Product is declared");
+        site(
+            &mut draft,
+            occurrence.occurrence(),
+            occurrence.placement_path(),
+            SemanticTarget::WholePayload,
+        );
+        site(
+            &mut draft,
+            occurrence.occurrence(),
+            &occurrence.index_paths()[0],
+            SemanticTarget::IndexLookup,
+        );
     }
 
     let src = draft.intern_string("src/main.mw");
     let fname = draft.intern_string("f");
     let code = vec![Instr::LocalGet(0), Instr::Return];
-    let func = draft.add_function(FunctionDef {
-        name: fname,
-        source: src,
-        params: vec![ImageType::scalar(Scalar::Int)],
-        ret: ImageType::scalar(Scalar::Int),
-        local_count: 1,
-        spans: spans(&code),
-        code,
-    });
+    let func = draft
+        .add_function(FunctionDef {
+            name: fname,
+            source: src,
+            params: vec![ImageType::scalar(Scalar::Int)],
+            ret: ImageType::scalar(Scalar::Int),
+            local_count: 1,
+            spans: spans(&code),
+            code,
+        })
+        .expect("every site operand is live");
     draft.add_export(ExportId::of_local("", "f"), func);
     draft.encode().expect("encode").bytes
 }

@@ -9,14 +9,22 @@
 //! obeys the group-scoped payload-only law (it changes the group and leaves the sibling
 //! top-level field untouched); and a whole-group erase clears only the group's leaves,
 //! leaving the entry and its top-level field present.
+//!
+//! Every site named here is minted through the construction seam's bind-then-request
+//! protocol. That protocol has exactly one owner in the workspace and is included here
+//! rather than copied.
 
 use marrow_image::{
-    DurableMemberDef, DurableValueShape, ExportId, FieldDef, FunctionDef, ImageDraft, ImageType,
-    Instr, KeyColumn, LedgerIdBytes, RecordTypeDef, RootDef, RootIdentity, Scalar, SemanticPath,
-    SemanticStep, SemanticStepKind, SiteDef, SpanEntry,
+    DeclarationMemberDef, DeclarationMemberShape, DurableValueShape, ExportId, FieldDef,
+    FunctionDef, ImageDraft, ImageType, Instr, KeyColumn, LedgerIdBytes, RecordTypeDef,
+    RootOccurrenceDef, Scalar, SemanticTarget, SpanEntry,
 };
 use marrow_verify::{VerifiedImage, verify};
 use marrow_vm::{DurableRun, Ephemeral, Value, mint_ephemeral, run_export};
+
+#[path = "../../marrow-image/tests/common/site_seam.rs"]
+mod site_seam;
+use site_seam::site;
 
 const APPLICATION_ID: [u8; 16] = [0x0a; 16];
 const ROOT_PLACEMENT_ID: [u8; 16] = [0x0b; 16];
@@ -25,20 +33,6 @@ const ROOT_PRODUCT_ID: [u8; 16] = [0x0d; 16];
 const TITLE_FIELD_ID: [u8; 16] = [0x0e; 16];
 const GROUP_ID: [u8; 16] = [0x20; 16];
 const PAGES_FIELD_ID: [u8; 16] = [0x21; 16];
-
-fn root_path() -> SemanticPath {
-    SemanticPath::root(
-        LedgerIdBytes::from_bytes(APPLICATION_ID),
-        LedgerIdBytes::from_bytes(ROOT_PLACEMENT_ID),
-    )
-}
-
-fn group_path() -> SemanticPath {
-    root_path().child(SemanticStep::new(
-        SemanticStepKind::Group,
-        LedgerIdBytes::from_bytes(GROUP_ID),
-    ))
-}
 
 fn spans(code: &[Instr]) -> Vec<SpanEntry> {
     (0..code.len())
@@ -96,37 +90,65 @@ fn groups_image() -> VerifiedImage {
 
     let root = draft.intern_string("books");
     draft.set_application_identity(LedgerIdBytes::from_bytes(APPLICATION_ID));
-    draft.add_root(RootDef {
-        name: root,
-        keys: vec![KeyColumn {
-            scalar: Scalar::Int,
-            id: LedgerIdBytes::from_bytes(ROOT_KEY_ID),
-        }],
-        record: book_record,
-        identity: RootIdentity {
-            placement: LedgerIdBytes::from_bytes(ROOT_PLACEMENT_ID),
-            product: LedgerIdBytes::from_bytes(ROOT_PRODUCT_ID),
-            indexes: Vec::new(),
-            members: vec![
-                DurableMemberDef::Field {
-                    id: LedgerIdBytes::from_bytes(TITLE_FIELD_ID),
-                    required: true,
-                    value: DurableValueShape::Scalar(Scalar::Text),
+    let product = LedgerIdBytes::from_bytes(ROOT_PRODUCT_ID);
+    draft
+        .declare_product(
+            product,
+            book_record,
+            vec![
+                DeclarationMemberDef {
+                    parent: None,
+                    shape: DeclarationMemberShape::Field {
+                        id: LedgerIdBytes::from_bytes(TITLE_FIELD_ID),
+                        required: true,
+                        value: DurableValueShape::Scalar(Scalar::Text),
+                    },
                 },
-                DurableMemberDef::Group {
-                    id: LedgerIdBytes::from_bytes(GROUP_ID),
-                    members: vec![DurableMemberDef::Field {
+                DeclarationMemberDef {
+                    parent: None,
+                    shape: DeclarationMemberShape::Group {
+                        id: LedgerIdBytes::from_bytes(GROUP_ID),
+                    },
+                },
+                DeclarationMemberDef {
+                    parent: Some(1),
+                    shape: DeclarationMemberShape::Field {
                         id: LedgerIdBytes::from_bytes(PAGES_FIELD_ID),
                         required: false,
                         value: DurableValueShape::Scalar(Scalar::Int),
-                    }],
+                    },
                 },
             ],
-        },
-    });
+        )
+        .expect("a well-formed declaration");
+    let books = draft
+        .add_root_occurrence(
+            product,
+            RootOccurrenceDef {
+                name: root,
+                keys: vec![KeyColumn {
+                    scalar: Scalar::Int,
+                    id: LedgerIdBytes::from_bytes(ROOT_KEY_ID),
+                }],
+                placement: LedgerIdBytes::from_bytes(ROOT_PLACEMENT_ID),
+                indexes: Vec::new(),
+            },
+        )
+        .expect("the Product is declared");
 
-    let root_entry = draft.request_site(SiteDef::whole_payload(root_path()));
-    let group_entry = draft.request_site(SiteDef::group_entry(group_path()));
+    let members = draft.product_members(product).expect("declared");
+    let root_entry = site(
+        &mut draft,
+        books.occurrence(),
+        books.placement_path(),
+        SemanticTarget::WholePayload,
+    );
+    let group_entry = site(
+        &mut draft,
+        books.occurrence(),
+        members[1].path(),
+        SemanticTarget::GroupEntry,
+    );
 
     let src = draft.intern_string("src/main.mw");
     let book_ty_idx = book_record.index();
@@ -150,15 +172,17 @@ fn groups_image() -> VerifiedImage {
             Instr::TxnCommit,
             Instr::Return,
         ];
-        let func = draft.add_function(FunctionDef {
-            name,
-            source: src,
-            params: Vec::new(),
-            ret: ImageType::Unit,
-            local_count: 0,
-            spans: spans(&code),
-            code,
-        });
+        let func = draft
+            .add_function(FunctionDef {
+                name,
+                source: src,
+                params: Vec::new(),
+                ret: ImageType::Unit,
+                local_count: 0,
+                spans: spans(&code),
+                code,
+            })
+            .expect("every site operand is live");
         draft.add_export(export_id("seed"), func);
     }
 
@@ -194,15 +218,17 @@ fn groups_image() -> VerifiedImage {
             Instr::TxnCommit,
             Instr::Return,
         ];
-        let func = draft.add_function(FunctionDef {
-            name,
-            source: src,
-            params: Vec::new(),
-            ret: ImageType::Unit,
-            local_count: 0,
-            spans: spans(&code),
-            code,
-        });
+        let func = draft
+            .add_function(FunctionDef {
+                name,
+                source: src,
+                params: Vec::new(),
+                ret: ImageType::Unit,
+                local_count: 0,
+                spans: spans(&code),
+                code,
+            })
+            .expect("every site operand is live");
         draft.add_export(export_id("replaceGroup"), func);
     }
 
@@ -217,15 +243,17 @@ fn groups_image() -> VerifiedImage {
             Instr::TxnCommit,
             Instr::Return,
         ];
-        let func = draft.add_function(FunctionDef {
-            name,
-            source: src,
-            params: Vec::new(),
-            ret: ImageType::Unit,
-            local_count: 0,
-            spans: spans(&code),
-            code,
-        });
+        let func = draft
+            .add_function(FunctionDef {
+                name,
+                source: src,
+                params: Vec::new(),
+                ret: ImageType::Unit,
+                local_count: 0,
+                spans: spans(&code),
+                code,
+            })
+            .expect("every site operand is live");
         draft.add_export(export_id("eraseGroup"), func);
     }
 
@@ -242,15 +270,17 @@ fn add_read(draft: &mut ImageDraft, src: marrow_image::StrId, name: &str, op: In
         idx: record,
         optional: true,
     };
-    let func = draft.add_function(FunctionDef {
-        name: name_id,
-        source: src,
-        params: Vec::new(),
-        ret,
-        local_count: 0,
-        spans: spans(&code),
-        code,
-    });
+    let func = draft
+        .add_function(FunctionDef {
+            name: name_id,
+            source: src,
+            params: Vec::new(),
+            ret,
+            local_count: 0,
+            spans: spans(&code),
+            code,
+        })
+        .expect("every site operand is live");
     draft.add_export(export_id(name), func);
 }
 

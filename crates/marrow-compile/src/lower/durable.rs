@@ -132,32 +132,40 @@ impl PlaceLocal<'_> {
 
 /// A resolved durable target: the whole entry, one field, a whole root-level group, or one
 /// group leaf.
+///
+/// Each site-bearing variant carries the **handle** its site was bound to, not a minted
+/// operand: the binding happens once, where the member or place is resolved, and the
+/// operand is minted at the instruction that names it. A retained operand would be a
+/// second copy of an answer the draft already owns.
 #[derive(Clone)]
 enum DurTarget<'a> {
     /// A whole durable entry, addressed through the exact durable node the resolver
-    /// walked to — a store root or a keyed branch. The node carries the occurrence's own
-    /// whole-payload site and its materialized record together, so neither has to be
-    /// resolved back into a node later.
-    Entry { node: DurNode<'a> },
+    /// walked to — a store root or a keyed branch. The node carries the occurrence and the
+    /// materialized record, and `handle` the whole-payload site bound over it, so neither
+    /// has to be resolved back into a node later.
+    Entry {
+        node: DurNode<'a>,
+        handle: OccurrenceSiteHandle,
+    },
     Field {
-        site: LegacyDraftSiteOperand,
+        handle: OccurrenceSiteHandle,
         /// The field's value type (a scalar or a widened composite), from which the
         /// read result and written-value type are built.
         ty: GArg,
         required: bool,
     },
     /// A whole root-level `group` (`^root(k).group`): read, replaced, or erased as one
-    /// materialized `record` value through the `GroupEntry` site `entry_site`.
+    /// materialized `record` value through the `GroupEntry` site `handle` binds.
     Group {
-        entry_site: LegacyDraftSiteOperand,
+        handle: OccurrenceSiteHandle,
         record: TypeId,
     },
     /// One leaf of a root-level group (`^root(k).group.leaf`). A read materializes the
-    /// whole group through `entry_site` and projects `slot`; a write or clear is a
-    /// whole-group read-modify-write that rewrites `slot` on the read-back group record and
-    /// replaces the group, so a leaf never has a durable site of its own.
+    /// whole group through the group's `GroupEntry` site and projects `slot`; a write or
+    /// clear is a whole-group read-modify-write that rewrites `slot` on the read-back group
+    /// record and replaces the group, so a leaf never has a durable site of its own.
     GroupLeaf {
-        entry_site: LegacyDraftSiteOperand,
+        handle: OccurrenceSiteHandle,
         slot: u16,
         ty: GArg,
         required: bool,
@@ -173,21 +181,28 @@ enum GroupLeafEdit<'e> {
 
 /// A node reached along a resolved durable entry address: the root, or a keyed branch on
 /// the address's branch chain. Both expose the same navigation — a nested branch by name,
-/// a stored field, a whole-entry site, and a materialized record — so the recursive address
-/// resolver walks them uniformly at any depth.
+/// a stored field, a canonical declaration path, and a materialized record — so the
+/// recursive address resolver walks them uniformly at any depth.
+///
+/// A branch carries the root occurrence it was reached through as well as the branch
+/// itself: a site is occurrence-qualified, and a branch belongs to a Product declaration
+/// that several roots may project, so the branch alone cannot name one.
 #[derive(Clone, Copy)]
 pub(super) enum DurNode<'a> {
     Root(&'a crate::durable::DurableRoot),
-    Branch(&'a crate::durable::DurableBranch),
+    Branch {
+        root: &'a crate::durable::DurableRoot,
+        branch: &'a crate::durable::DurableBranch,
+    },
 }
 
 /// The pieces of one resolved durable field a [`DurTarget::Field`] needs, projected from a
 /// root field or a branch field uniformly.
 struct DurFieldRef {
-    /// The field's stable field-leaf path. The caller allocates (and deduplicates) its
-    /// operation site through the draft when it builds the field target, so an untouched
-    /// field mints no site.
-    path: SemanticPath,
+    /// The field's canonical declaration path. The caller binds it against the addressed
+    /// occurrence and allocates (and deduplicates) its operation site through the draft
+    /// when it builds the field target, so an untouched field mints no site.
+    path: CanonicalDeclarationPathSelector,
     /// The field's value type: a root field's widened value set, or a branch field's
     /// scalar (branch fields are currently scalar-only) lifted to `GArg::Scalar`.
     ty: GArg,
@@ -195,26 +210,50 @@ struct DurFieldRef {
 }
 
 impl<'a> DurNode<'a> {
-    /// This node's whole-payload operation site. It is an occurrence fact: two roots
-    /// projecting one Product declaration each carry their own.
-    pub(super) fn entry_site(&self) -> &'a LegacyDraftSiteOperand {
+    /// The root occurrence this node was reached through. Every site over the node is
+    /// bound against it: two roots projecting one Product declaration each get their own.
+    pub(super) fn occurrence(&self) -> &'a RootOccurrenceSelector {
         match self {
-            DurNode::Root(root) => &root.entry_site,
-            DurNode::Branch(branch) => &branch.entry_site,
+            DurNode::Root(root) | DurNode::Branch { root, .. } => &root.occurrence,
+        }
+    }
+
+    /// The canonical declaration path of this node's own keyed placement — the path its
+    /// whole-payload site is bound at.
+    pub(super) fn entry_path(&self) -> &'a CanonicalDeclarationPathSelector {
+        match self {
+            DurNode::Root(root) => &root.placement,
+            DurNode::Branch { branch, .. } => &branch.path,
         }
     }
 
     fn record(&self) -> TypeId {
         match self {
             DurNode::Root(root) => root.record,
-            DurNode::Branch(branch) => branch.record,
+            DurNode::Branch { branch, .. } => branch.record,
+        }
+    }
+
+    /// The root occurrence's own descriptor, so a branch hop below this node keeps naming
+    /// the occurrence the address was rooted at.
+    fn root(&self) -> &'a crate::durable::DurableRoot {
+        match self {
+            DurNode::Root(root) | DurNode::Branch { root, .. } => root,
         }
     }
 
     pub(super) fn branch(&self, name: &str) -> Option<&'a crate::durable::DurableBranch> {
         match self {
             DurNode::Root(root) => root.branch(name),
-            DurNode::Branch(branch) => branch.branch(name),
+            DurNode::Branch { branch, .. } => branch.branch(name),
+        }
+    }
+
+    /// This node extended by the keyed branch `branch`, keeping the root occurrence.
+    pub(super) fn child(&self, branch: &'a crate::durable::DurableBranch) -> DurNode<'a> {
+        DurNode::Branch {
+            root: self.root(),
+            branch,
         }
     }
 
@@ -225,7 +264,7 @@ impl<'a> DurNode<'a> {
                 ty: field.ty,
                 required: field.required,
             }),
-            DurNode::Branch(branch) => branch.field(name).map(|field| DurFieldRef {
+            DurNode::Branch { branch, .. } => branch.field(name).map(|field| DurFieldRef {
                 path: field.path.clone(),
                 ty: GArg::Scalar(field.scalar),
                 required: field.required,
@@ -236,7 +275,7 @@ impl<'a> DurNode<'a> {
     fn name(&self) -> &str {
         match self {
             DurNode::Root(root) => &root.name,
-            DurNode::Branch(branch) => &branch.name,
+            DurNode::Branch { branch, .. } => &branch.name,
         }
     }
 
@@ -247,14 +286,14 @@ impl<'a> DurNode<'a> {
     fn member_owner(&self) -> Option<&str> {
         match self {
             DurNode::Root(root) => Some(&root.resource),
-            DurNode::Branch(_) => None,
+            DurNode::Branch { .. } => None,
         }
     }
 
     fn no_field_message(&self, field: &str) -> String {
         match self {
             DurNode::Root(root) => format!("`{}` has no field `{field}`", root.name),
-            DurNode::Branch(branch) => {
+            DurNode::Branch { branch, .. } => {
                 format!("branch `{}` has no field `{field}`", branch.name)
             }
         }
@@ -614,8 +653,8 @@ impl<'a> FnLowerer<'a> {
     /// an `if const` head unwraps to a bare `Id(^root)`.
     pub(super) fn lower_index_lookup(
         &mut self,
-        index: &crate::durable::DurableIndex,
-        root_id: u16,
+        root: &'a crate::durable::DurableRoot,
+        index: &'a crate::durable::DurableIndex,
         keys: &[Expression],
         span: SourceSpan,
     ) -> Option<LTy> {
@@ -632,7 +671,7 @@ impl<'a> FnLowerer<'a> {
             ));
             return None;
         }
-        let site = index.site.clone();
+        let site = self.bind_index_site(root, index)?;
         // The projection scalar types are copied out first so the operand lowering (a
         // mutable borrow of `self`) does not overlap the index borrow.
         let projection: Vec<ScalarType> = index.projection.clone();
@@ -641,7 +680,7 @@ impl<'a> FnLowerer<'a> {
         }
         self.push(Instr::DurIndexLookup(site), span);
         Some(LTy::Identity {
-            root: root_id,
+            root: root.root_id,
             optional: true,
         })
     }
@@ -652,7 +691,8 @@ impl<'a> FnLowerer<'a> {
     /// materializing the found identity.
     pub(super) fn lower_index_exists(
         &mut self,
-        index: &crate::durable::DurableIndex,
+        root: &'a crate::durable::DurableRoot,
+        index: &'a crate::durable::DurableIndex,
         keys: &[Expression],
         span: SourceSpan,
     ) -> Option<LTy> {
@@ -669,7 +709,7 @@ impl<'a> FnLowerer<'a> {
             ));
             return None;
         }
-        let site = index.site.clone();
+        let site = self.bind_index_site(root, index)?;
         // The projection scalar types are copied out first so the operand lowering (a
         // mutable borrow of `self`) does not overlap the index borrow.
         let projection: Vec<ScalarType> = index.projection.clone();
@@ -752,9 +792,8 @@ impl<'a> FnLowerer<'a> {
                 else {
                     return None;
                 };
-                self.place_entry_target(parent)?
-                    .branch(name)
-                    .map(DurNode::Branch)
+                let node = self.place_entry_target(parent)?;
+                node.branch(name).map(|branch| node.child(branch))
             }
             _ => None,
         }
@@ -816,7 +855,7 @@ impl<'a> FnLowerer<'a> {
                     return None;
                 };
                 self.push_key_columns(&mut columns, keys, &branch.key, *span)?;
-                Some((columns, DurNode::Branch(branch)))
+                Some((columns, parent.child(branch)))
             }
             _ => None,
         }
@@ -858,9 +897,10 @@ impl<'a> FnLowerer<'a> {
             // A bare place name, or a place extended by branch hops: a whole entry.
             Expression::Name { span, .. } | Expression::Keyed { span, .. } => {
                 let (keys, node) = self.resolve_place_entry_node(expr)?;
+                let handle = self.bind_entry_site(node)?;
                 Some(DurablePlace {
                     keys,
-                    target: DurTarget::Entry { node },
+                    target: DurTarget::Entry { node, handle },
                     span: *span,
                 })
             }
@@ -881,10 +921,11 @@ impl<'a> FnLowerer<'a> {
                         self.report_missing_group_leaf(root, group, field_name, *name_span);
                         return None;
                     };
+                    let handle = self.bind_group_site(root, group)?;
                     return Some(DurablePlace {
                         keys,
                         target: DurTarget::GroupLeaf {
-                            entry_site: group.entry_site.clone(),
+                            handle,
                             slot,
                             ty: leaf.ty,
                             required: leaf.required,
@@ -894,11 +935,11 @@ impl<'a> FnLowerer<'a> {
                 }
                 let (keys, node) = self.resolve_place_entry_node(base)?;
                 if let Some(field) = node.field(field_name) {
-                    let site = self.draft.request_site(SiteDef::field_leaf(field.path));
+                    let handle = self.bind_field_site(node, &field.path)?;
                     return Some(DurablePlace {
                         keys,
                         target: DurTarget::Field {
-                            site,
+                            handle,
                             ty: field.ty,
                             required: field.required,
                         },
@@ -910,10 +951,11 @@ impl<'a> FnLowerer<'a> {
                 if let DurNode::Root(root) = node
                     && let Some(group) = root.group(field_name)
                 {
+                    let handle = self.bind_group_site(root, group)?;
                     return Some(DurablePlace {
                         keys,
                         target: DurTarget::Group {
-                            entry_site: group.entry_site.clone(),
+                            handle,
                             record: group.record,
                         },
                         span: *span,
@@ -975,6 +1017,68 @@ impl<'a> FnLowerer<'a> {
             name_span,
             node.no_field_message(field_name),
         ));
+    }
+
+    /// Bind the whole-payload site of the durable entry `node` addresses, against the root
+    /// occurrence the address was rooted at.
+    fn bind_entry_site(&mut self, node: DurNode<'a>) -> Option<OccurrenceSiteHandle> {
+        self.bind_site(
+            node.occurrence(),
+            node.entry_path(),
+            SemanticTarget::WholePayload,
+        )
+    }
+
+    /// The whole-payload operand of the entry `node` addresses. The durable build already
+    /// requested every keyed placement's site, so this returns the id minted there.
+    pub(super) fn entry_site_operand(
+        &mut self,
+        node: DurNode<'a>,
+    ) -> Option<LegacyDraftSiteOperand> {
+        let handle = self.bind_entry_site(node)?;
+        self.site_operand(&handle)
+    }
+
+    /// Bind one stored field's leaf site and mint it here, where the field is resolved.
+    ///
+    /// Site ids are assigned in request order, and a key operand lowered between the
+    /// resolution and the instruction may itself address a field, so the mint stays at
+    /// resolution. The operand is deliberately not retained: the target holds the handle,
+    /// and the emission re-requests the very id minted here.
+    fn bind_field_site(
+        &mut self,
+        node: DurNode<'a>,
+        path: &CanonicalDeclarationPathSelector,
+    ) -> Option<OccurrenceSiteHandle> {
+        let handle = self.bind_site(node.occurrence(), path, SemanticTarget::FieldLeaf)?;
+        self.site_operand(&handle)?;
+        Some(handle)
+    }
+
+    /// Bind the `GroupEntry` site of the root-level group `group` of the root occurrence
+    /// `root` — the site a whole-group read, replace, or erase and every group-leaf
+    /// read-modify-write address.
+    fn bind_group_site(
+        &mut self,
+        root: &'a crate::durable::DurableRoot,
+        group: &'a crate::durable::DurableGroup,
+    ) -> Option<OccurrenceSiteHandle> {
+        self.bind_site(&root.occurrence, &group.path, SemanticTarget::GroupEntry)
+    }
+
+    /// Bind the read site of the managed index `index` of the root occurrence `root`: a
+    /// complete-key lookup for a unique index, a progressive-prefix scan otherwise.
+    pub(super) fn bind_index_site(
+        &mut self,
+        root: &'a crate::durable::DurableRoot,
+        index: &'a crate::durable::DurableIndex,
+    ) -> Option<LegacyDraftSiteOperand> {
+        let target = if index.unique {
+            SemanticTarget::IndexLookup
+        } else {
+            SemanticTarget::IndexScan
+        };
+        self.resolve_site(&root.occurrence, &index.path, target)
     }
 
     /// Emit one key column of a durable operation: lower the inline key expression
@@ -1155,7 +1259,7 @@ impl<'a> FnLowerer<'a> {
         }
         let place = self.resolve_durable(place_expr)?;
         let span = place.span;
-        let DurTarget::Entry { node } = place.target else {
+        let DurTarget::Entry { node, .. } = place.target else {
             self.fail(SourceDiagnostic::at(
                 Code::CheckType.as_str(),
                 self.file,
@@ -1226,9 +1330,10 @@ impl<'a> FnLowerer<'a> {
             // A whole-entry address `^root[key].b1[k1]….bn[kn]` at any depth.
             Expression::Keyed { span, .. } => {
                 let (keys, node) = self.resolve_entry_address(root, expr)?;
+                let handle = self.bind_entry_site(node)?;
                 Some(DurablePlace {
                     keys,
-                    target: DurTarget::Entry { node },
+                    target: DurTarget::Entry { node, handle },
                     span: *span,
                 })
             }
@@ -1249,10 +1354,11 @@ impl<'a> FnLowerer<'a> {
                         self.report_missing_group_leaf(root, group, field_name, *name_span);
                         return None;
                     };
+                    let handle = self.bind_group_site(root, group)?;
                     return Some(DurablePlace {
                         keys,
                         target: DurTarget::GroupLeaf {
-                            entry_site: group.entry_site.clone(),
+                            handle,
                             slot,
                             ty: leaf.ty,
                             required: leaf.required,
@@ -1262,11 +1368,11 @@ impl<'a> FnLowerer<'a> {
                 }
                 let (keys, node) = self.resolve_entry_address(root, base)?;
                 if let Some(field) = node.field(field_name) {
-                    let site = self.draft.request_site(SiteDef::field_leaf(field.path));
+                    let handle = self.bind_field_site(node, &field.path)?;
                     return Some(DurablePlace {
                         keys,
                         target: DurTarget::Field {
-                            site,
+                            handle,
                             ty: field.ty,
                             required: field.required,
                         },
@@ -1278,10 +1384,11 @@ impl<'a> FnLowerer<'a> {
                 if let DurNode::Root(root) = node
                     && let Some(group) = root.group(field_name)
                 {
+                    let handle = self.bind_group_site(root, group)?;
                     return Some(DurablePlace {
                         keys,
                         target: DurTarget::Group {
-                            entry_site: group.entry_site.clone(),
+                            handle,
                             record: group.record,
                         },
                         span: *span,
@@ -1390,7 +1497,7 @@ impl<'a> FnLowerer<'a> {
                     return None;
                 };
                 self.push_key_columns(&mut columns, keys, &branch.key, *span)?;
-                Some((columns, DurNode::Branch(branch)))
+                Some((columns, parent.child(branch)))
             }
             _ => None,
         }
@@ -1470,21 +1577,24 @@ impl<'a> FnLowerer<'a> {
     pub(super) fn lower_durable_read(&mut self, place: DurablePlace) -> Option<LTy> {
         self.emit_key_path(&place.keys, place.span)?;
         Some(match place.target {
-            DurTarget::Entry { node } => {
-                self.push(Instr::DurReadEntry(node.entry_site().clone()), place.span);
+            DurTarget::Entry { node, handle } => {
+                let site = self.site_operand(&handle)?;
+                self.push(Instr::DurReadEntry(site), place.span);
                 LTy::Record {
                     ty: node.record(),
                     optional: true,
                 }
             }
-            DurTarget::Field { site, ty, .. } => {
+            DurTarget::Field { handle, ty, .. } => {
+                let site = self.site_operand(&handle)?;
                 self.push(Instr::DurReadField(site), place.span);
                 garg_to_lty(ty).to_optional()
             }
             // A whole root-level group materializes as one optional group record: the
             // group's own leaves, present exactly when the entry is present.
-            DurTarget::Group { entry_site, record } => {
-                self.push(Instr::DurReadGroup(entry_site), place.span);
+            DurTarget::Group { handle, record } => {
+                let site = self.site_operand(&handle)?;
+                self.push(Instr::DurReadGroup(site), place.span);
                 LTy::Record {
                     ty: record,
                     optional: true,
@@ -1495,13 +1605,14 @@ impl<'a> FnLowerer<'a> {
             // a vacant of the leaf's optional type; a present group yields the leaf wrapped
             // optional (a required leaf is `SomeWrap`ped, a sparse leaf already reads `T?`).
             DurTarget::GroupLeaf {
-                entry_site,
+                handle,
                 slot,
                 ty,
                 required,
                 ..
             } => {
-                self.push(Instr::DurReadGroup(entry_site), place.span);
+                let site = self.site_operand(&handle)?;
+                self.push(Instr::DurReadGroup(site), place.span);
                 let result = garg_to_lty(ty).to_optional();
                 let to_absent = self.push_branch_present(place.span);
                 self.push(Instr::FieldGet(slot), place.span);
@@ -1544,7 +1655,7 @@ impl<'a> FnLowerer<'a> {
         };
         if let Some(read) = index_read {
             if read.index.unique {
-                return self.lower_index_exists(read.index, read.keys, arg.value.span());
+                return self.lower_index_exists(read.root, read.index, read.keys, arg.value.span());
             }
             self.fail(SourceDiagnostic::at(
                 Code::CheckType.as_str(),
@@ -1568,11 +1679,9 @@ impl<'a> FnLowerer<'a> {
         };
         if is_family {
             let target = self.resolve_traversal_place(&arg.value)?;
+            let site = self.entry_site_operand(target.node)?;
             self.emit_key_path(&target.ancestor_keys, target.span)?;
-            self.push(
-                Instr::DurFamilyExists(target.node.entry_site().clone()),
-                span,
-            );
+            self.push(Instr::DurFamilyExists(site), span);
             return Some(LTy::bare_scalar(ScalarType::Bool));
         }
         // A specific addressed cell (an entry or a field) probes that one cell's presence.
@@ -1584,8 +1693,9 @@ impl<'a> FnLowerer<'a> {
             let place = self.resolve_durable(&arg.value)?;
             self.emit_key_path(&place.keys, place.span)?;
             let site = match place.target {
-                DurTarget::Entry { node } => node.entry_site().clone(),
-                DurTarget::Field { site, .. } => site,
+                DurTarget::Entry { handle, .. } | DurTarget::Field { handle, .. } => {
+                    self.site_operand(&handle)?
+                }
                 // A group is markerless — its presence is the entry's presence — so a
                 // group-cell presence probe has no distinct meaning yet; a group leaf has no
                 // site of its own. Probe the containing entry instead.
@@ -2679,16 +2789,11 @@ impl<'a> FnLowerer<'a> {
     /// field set.
     pub(super) fn lower_durable_assign(&mut self, place: DurablePlace, value: &Expression) {
         match &place.target {
-            DurTarget::Entry { node } => {
+            DurTarget::Entry { node, handle } => {
                 let root_slot = place.root_bound_slot();
+                let (handle, record) = (handle.clone(), node.record());
                 if self
-                    .lower_upsert(
-                        &place.keys,
-                        node.entry_site(),
-                        node.record(),
-                        value,
-                        place.span,
-                    )
+                    .lower_upsert(&place.keys, &handle, record, value, place.span)
                     .is_some()
                     && let Some(slot) = root_slot
                 {
@@ -2701,8 +2806,15 @@ impl<'a> FnLowerer<'a> {
                     self.mark_present(vec![slot]);
                 }
             }
-            DurTarget::Field { site, ty, required } => {
-                let (site, ty, required) = (site.clone(), *ty, *required);
+            DurTarget::Field {
+                handle,
+                ty,
+                required,
+            } => {
+                let (ty, required) = (*ty, *required);
+                let Some(site) = self.site_operand(handle) else {
+                    return;
+                };
                 // A sparse set through a `place` a presence fact dominates lowers to the
                 // strict present-entry form: it reads the containing entry's whole
                 // key-path from the place's pre-evaluated slots and asserts the entry is
@@ -2740,8 +2852,11 @@ impl<'a> FnLowerer<'a> {
             // key-path is pushed first, then the group record, the order `DurReplaceGroup`
             // reads. A replace over an absent entry is Missing and touches nothing — a group
             // is a value unit of an existing entry, never created on its own.
-            DurTarget::Group { entry_site, record } => {
-                let (entry_site, record) = (entry_site.clone(), *record);
+            DurTarget::Group { handle, record } => {
+                let record = *record;
+                let Some(site) = self.site_operand(handle) else {
+                    return;
+                };
                 if self.emit_key_path(&place.keys, place.span).is_none() {
                     return;
                 }
@@ -2757,19 +2872,16 @@ impl<'a> FnLowerer<'a> {
                 {
                     return;
                 }
-                self.push(Instr::DurReplaceGroup(entry_site), place.span);
+                self.push(Instr::DurReplaceGroup(site), place.span);
             }
             // `^root(k).group.leaf = value`: a whole-group read-modify-write.
             DurTarget::GroupLeaf {
-                entry_site,
-                slot,
-                ty,
-                ..
+                handle, slot, ty, ..
             } => {
-                let (entry_site, slot, ty) = (entry_site.clone(), *slot, *ty);
+                let (handle, slot, ty) = (handle.clone(), *slot, *ty);
                 self.lower_group_leaf_rmw(
                     &place.keys,
-                    &entry_site,
+                    &handle,
                     slot,
                     GroupLeafEdit::Set { value, ty },
                     place.span,
@@ -2788,11 +2900,12 @@ impl<'a> FnLowerer<'a> {
     fn lower_group_leaf_rmw(
         &mut self,
         keys: &[DurKey],
-        entry_site: &LegacyDraftSiteOperand,
+        handle: &OccurrenceSiteHandle,
         slot: u16,
         edit: GroupLeafEdit,
         span: SourceSpan,
     ) -> Option<()> {
+        let entry_site = self.site_operand(handle)?;
         // Evaluate each key column once into a fresh slot (root-first) so the read and the
         // replace key off the same evaluated columns. A group is a root-level value unit, so
         // its key-path is the root's — an identity operand spreads into the root's columns.
@@ -2835,7 +2948,7 @@ impl<'a> FnLowerer<'a> {
         self.push(Instr::LocalSet(rec_slot), span);
         self.emit_slots(&key_slots, span);
         self.push(Instr::LocalGet(rec_slot), span);
-        self.push(Instr::DurReplaceGroup(entry_site.clone()), span);
+        self.push(Instr::DurReplaceGroup(entry_site), span);
         let end = self.here();
         self.patch(to_end, end);
         Some(())
@@ -2849,11 +2962,12 @@ impl<'a> FnLowerer<'a> {
     fn lower_upsert(
         &mut self,
         keys: &[DurKey],
-        entry_site: &LegacyDraftSiteOperand,
+        handle: &OccurrenceSiteHandle,
         record: TypeId,
         value: &Expression,
         span: SourceSpan,
     ) -> Option<()> {
+        let entry_site = self.site_operand(handle)?;
         // A bound (place) column already holds its key in a pre-evaluated slot; reuse it
         // so the create/replace ops key off it (the verifier's presence lattice
         // recognizes a root create as establishing that slot's entry). An inline column
@@ -2885,7 +2999,7 @@ impl<'a> FnLowerer<'a> {
         self.patch(to_create, create_at);
         self.emit_slots(&key_slots, span);
         self.push(Instr::LocalGet(rec_slot), span);
-        self.push(Instr::DurCreateEntry(entry_site.clone()), span);
+        self.push(Instr::DurCreateEntry(entry_site), span);
         let end = self.here();
         self.patch(to_end, end);
         Some(())
@@ -2919,7 +3033,7 @@ impl<'a> FnLowerer<'a> {
         // A group-leaf clear is a whole-group read-modify-write (its key-path is evaluated
         // inside the helper), so it is handled before the shared single key-path emission.
         if let DurTarget::GroupLeaf {
-            entry_site,
+            handle,
             slot,
             required,
             ..
@@ -2934,8 +3048,8 @@ impl<'a> FnLowerer<'a> {
                 ));
                 return;
             }
-            let (entry_site, slot, span) = (entry_site.clone(), *slot, place.span);
-            self.lower_group_leaf_rmw(&place.keys, &entry_site, slot, GroupLeafEdit::Unset, span);
+            let (handle, slot, span) = (handle.clone(), *slot, place.span);
+            self.lower_group_leaf_rmw(&place.keys, &handle, slot, GroupLeafEdit::Unset, span);
             return;
         }
         let key_path = place.bound_key_path();
@@ -2943,15 +3057,20 @@ impl<'a> FnLowerer<'a> {
             return;
         }
         match place.target {
-            DurTarget::Entry { node } => {
-                self.push(Instr::DurEraseEntry(node.entry_site().clone()), place.span);
+            DurTarget::Entry { handle, .. } => {
+                let Some(site) = self.site_operand(&handle) else {
+                    return;
+                };
+                self.push(Instr::DurEraseEntry(site), place.span);
                 // The entry's payload is gone; a later sparse set through the same place
                 // must not assume presence.
                 if let Some(path) = &key_path {
                     self.clear_present_path(path);
                 }
             }
-            DurTarget::Field { site, required, .. } => {
+            DurTarget::Field {
+                handle, required, ..
+            } => {
                 if required {
                     self.fail(SourceDiagnostic::at(
                         Code::CheckType.as_str(),
@@ -2961,12 +3080,18 @@ impl<'a> FnLowerer<'a> {
                     ));
                     return;
                 }
+                let Some(site) = self.site_operand(&handle) else {
+                    return;
+                };
                 self.push(Instr::DurEraseField(site), place.span);
             }
             // `delete ^root(k).group`: erase only that group's leaves; the entry's other
             // groups, top-level fields, and branches are untouched.
-            DurTarget::Group { entry_site, .. } => {
-                self.push(Instr::DurEraseGroup(entry_site), place.span);
+            DurTarget::Group { handle, .. } => {
+                let Some(site) = self.site_operand(&handle) else {
+                    return;
+                };
+                self.push(Instr::DurEraseGroup(site), place.span);
             }
             #[allow(
                 clippy::unreachable,

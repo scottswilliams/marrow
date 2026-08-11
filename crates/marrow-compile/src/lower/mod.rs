@@ -43,8 +43,9 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use marrow_codes::Code;
 use marrow_image::{
-    EnumId, FuncId, FunctionDef, ImageDraft, ImageType, Instr, LegacyDraftSiteOperand, Scalar,
-    SemanticPath, SiteDef, SpanEntry, TypeId,
+    CanonicalDeclarationPathSelector, EnumId, FuncId, FunctionDef, ImageDraft, ImageType, Instr,
+    LegacyDraftSiteOperand, OccurrenceSiteHandle, RootOccurrenceSelector, Scalar, SemanticTarget,
+    SpanEntry, TypeId,
 };
 use marrow_project::FileIdentity;
 
@@ -902,7 +903,7 @@ impl<'a> FnLowerer<'a> {
             local_count: self.slot_count,
             code: code.clone(),
             spans,
-        });
+        })?;
         Ok(BodyOutcome::Lowered(Lowered {
             func: func_id,
             callees: std::mem::take(&mut self.calls),
@@ -1142,6 +1143,52 @@ impl<'a> FnLowerer<'a> {
             self.invariant = Some(invariant);
         }
         self.failed = true;
+    }
+
+    /// Bind one durable place — a root occurrence, the canonical declaration path of the
+    /// node it addresses, and the operation target over it — into a site handle.
+    ///
+    /// The draft published both selectors and admits exactly one target per node, so a
+    /// refusal here means the compiler and the image owner disagree about the graph the
+    /// compiler just built: it is an invariant, never a diagnostic.
+    fn bind_site(
+        &mut self,
+        occurrence: &RootOccurrenceSelector,
+        path: &CanonicalDeclarationPathSelector,
+        target: SemanticTarget,
+    ) -> Option<OccurrenceSiteHandle> {
+        match self.draft.bind_occurrence_site(occurrence, path, target) {
+            Ok(handle) => Some(handle),
+            Err(refused) => {
+                self.record_invariant(LowerInvariant::from(refused));
+                None
+            }
+        }
+    }
+
+    /// Mint-or-return the operand the instruction being emitted names. The eager pass
+    /// already requested every bounded per-node site, so a re-request of one of those
+    /// returns the id it minted; a field leaf is minted here on its first reference.
+    fn site_operand(&mut self, handle: &OccurrenceSiteHandle) -> Option<LegacyDraftSiteOperand> {
+        match self.draft.request_site(handle) {
+            Ok(operand) => Some(operand),
+            Err(refused) => {
+                self.record_invariant(LowerInvariant::from(refused));
+                None
+            }
+        }
+    }
+
+    /// Bind and immediately request one durable site — the shape every emission that does
+    /// not retain a handle takes.
+    fn resolve_site(
+        &mut self,
+        occurrence: &RootOccurrenceSelector,
+        path: &CanonicalDeclarationPathSelector,
+        target: SemanticTarget,
+    ) -> Option<LegacyDraftSiteOperand> {
+        let handle = self.bind_site(occurrence, path, target)?;
+        self.site_operand(&handle)
     }
 
     /// Whether lowering must stop before any later handler, interning, patching, or

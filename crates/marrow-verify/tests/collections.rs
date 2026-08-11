@@ -28,15 +28,17 @@ fn image_with(colls: &[CollectionTypeDef], code: Vec<Instr>, ret: ImageType) -> 
     let src = draft.intern_string("src/main.mw");
     let name = draft.intern_string("main");
     let spans = spans(&code);
-    let main = draft.add_function(FunctionDef {
-        name,
-        source: src,
-        params: Vec::new(),
-        ret,
-        local_count: 0,
-        code,
-        spans,
-    });
+    let main = draft
+        .add_function(FunctionDef {
+            name,
+            source: src,
+            params: Vec::new(),
+            ret,
+            local_count: 0,
+            code,
+            spans,
+        })
+        .expect("every site operand is live");
     draft.add_export(ExportId::of_local("", "main"), main);
     draft.encode().expect("encode").bytes
 }
@@ -74,15 +76,17 @@ fn a_well_formed_list_program_verifies_and_seals() {
         Instr::Return,
     ];
     let spans = spans(&code);
-    let main = draft.add_function(FunctionDef {
-        name,
-        source: src,
-        params: Vec::new(),
-        ret: ImageType::scalar(Scalar::Int),
-        local_count: 0,
-        code,
-        spans,
-    });
+    let main = draft
+        .add_function(FunctionDef {
+            name,
+            source: src,
+            params: Vec::new(),
+            ret: ImageType::scalar(Scalar::Int),
+            local_count: 0,
+            code,
+            spans,
+        })
+        .expect("every site operand is live");
     draft.add_export(ExportId::of_local("", "main"), main);
     let bytes = draft.encode().expect("encode").bytes;
     let verified = verify(&bytes).expect("a well-formed list image verifies");
@@ -97,15 +101,17 @@ fn a_well_formed_map_program_verifies() {
     let name = draft.intern_string("main");
     let code = vec![Instr::MapNew(0), Instr::MapLen, Instr::Return];
     let spans = spans(&code);
-    let main = draft.add_function(FunctionDef {
-        name,
-        source: src,
-        params: Vec::new(),
-        ret: ImageType::scalar(Scalar::Int),
-        local_count: 0,
-        code,
-        spans,
-    });
+    let main = draft
+        .add_function(FunctionDef {
+            name,
+            source: src,
+            params: Vec::new(),
+            ret: ImageType::scalar(Scalar::Int),
+            local_count: 0,
+            code,
+            spans,
+        })
+        .expect("every site operand is live");
     draft.add_export(ExportId::of_local("", "main"), main);
     let bytes = draft.encode().expect("encode").bytes;
     verify(&bytes).expect("a well-formed map image verifies");
@@ -151,15 +157,17 @@ fn a_list_append_element_type_mismatch_rejects() {
         Instr::Return,
     ];
     let spans = spans(&code);
-    let main = draft.add_function(FunctionDef {
-        name,
-        source: src,
-        params: Vec::new(),
-        ret: ImageType::scalar(Scalar::Int),
-        local_count: 0,
-        code,
-        spans,
-    });
+    let main = draft
+        .add_function(FunctionDef {
+            name,
+            source: src,
+            params: Vec::new(),
+            ret: ImageType::scalar(Scalar::Int),
+            local_count: 0,
+            code,
+            spans,
+        })
+        .expect("every site operand is live");
     draft.add_export(ExportId::of_local("", "main"), main);
     let bytes = draft.encode().expect("encode").bytes;
     let rejection = verify(&bytes).expect_err("a list-append type mismatch rejects");
@@ -208,15 +216,17 @@ fn a_well_formed_text_split_join_program_verifies() {
         Instr::Return,
     ];
     let spans = spans(&code);
-    let main = draft.add_function(FunctionDef {
-        name,
-        source: src,
-        params: Vec::new(),
-        ret: ImageType::scalar(Scalar::Text),
-        local_count: 0,
-        code,
-        spans,
-    });
+    let main = draft
+        .add_function(FunctionDef {
+            name,
+            source: src,
+            params: Vec::new(),
+            ret: ImageType::scalar(Scalar::Text),
+            local_count: 0,
+            code,
+            spans,
+        })
+        .expect("every site operand is live");
     draft.add_export(ExportId::of_local("", "main"), main);
     let bytes = draft.encode().expect("encode").bytes;
     verify(&bytes).expect("a well-formed split/join image verifies");
@@ -239,18 +249,20 @@ fn a_text_split_naming_a_non_string_list_rejects() {
         Instr::Return,
     ];
     let spans = spans(&code);
-    let main = draft.add_function(FunctionDef {
-        name,
-        source: src,
-        params: Vec::new(),
-        ret: ImageType::Collection {
-            idx: 0,
-            optional: false,
-        },
-        local_count: 0,
-        code,
-        spans,
-    });
+    let main = draft
+        .add_function(FunctionDef {
+            name,
+            source: src,
+            params: Vec::new(),
+            ret: ImageType::Collection {
+                idx: 0,
+                optional: false,
+            },
+            local_count: 0,
+            code,
+            spans,
+        })
+        .expect("every site operand is live");
     draft.add_export(ExportId::of_local("", "main"), main);
     let bytes = draft.encode().expect("encode").bytes;
     let rejection = verify(&bytes).expect_err("split naming a List[int] rejects");
@@ -272,15 +284,17 @@ fn a_text_join_on_a_non_string_list_rejects() {
         Instr::Return,
     ];
     let spans = spans(&code);
-    let main = draft.add_function(FunctionDef {
-        name,
-        source: src,
-        params: Vec::new(),
-        ret: ImageType::scalar(Scalar::Text),
-        local_count: 0,
-        code,
-        spans,
-    });
+    let main = draft
+        .add_function(FunctionDef {
+            name,
+            source: src,
+            params: Vec::new(),
+            ret: ImageType::scalar(Scalar::Text),
+            local_count: 0,
+            code,
+            spans,
+        })
+        .expect("every site operand is live");
     draft.add_export(ExportId::of_local("", "main"), main);
     let bytes = draft.encode().expect("encode").bytes;
     let rejection = verify(&bytes).expect_err("join on a List[int] rejects");

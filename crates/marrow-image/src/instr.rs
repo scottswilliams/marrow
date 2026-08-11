@@ -656,4 +656,33 @@ impl Instr {
     pub(crate) fn encoded_len(&self) -> usize {
         1 + self.operand_len()
     }
+
+    /// The operation site this instruction names, if it names one.
+    ///
+    /// This is the one place that answers "which instructions carry a site", so the
+    /// checked function append and the encoder read one closed set rather than each
+    /// keeping its own list of site-bearing opcodes.
+    pub(crate) fn site_operand(&self) -> Option<&LegacyDraftSiteOperand> {
+        match self {
+            Instr::DurExists(site)
+            | Instr::DurFamilyExists(site)
+            | Instr::DurReadField(site)
+            | Instr::DurReadEntry(site)
+            | Instr::DurSetRequired(site)
+            | Instr::DurSetSparse(site)
+            | Instr::DurSetSparsePresent { site, .. }
+            | Instr::DurCreateEntry(site)
+            | Instr::DurReplaceEntry(site)
+            | Instr::DurEraseField(site)
+            | Instr::DurEraseEntry(site)
+            | Instr::DurReadGroup(site)
+            | Instr::DurReplaceGroup(site)
+            | Instr::DurEraseGroup(site)
+            | Instr::DurIterateBounded { site, .. }
+            | Instr::DurIndexScan { site, .. }
+            | Instr::DurIndexLookup(site)
+            | Instr::DurIndexExists(site) => Some(site),
+            _ => None,
+        }
+    }
 }

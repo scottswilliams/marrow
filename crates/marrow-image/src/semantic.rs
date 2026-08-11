@@ -217,7 +217,6 @@ mod tests {
     use std::hash::{Hash, Hasher};
 
     use super::{EmptySemanticPath, SemanticPath, SemanticStep, SemanticStepKind};
-    use crate::draft::{ImageBuildError, ImageDraft, SiteDef};
     use crate::durable_id::LedgerIdBytes;
 
     fn id(byte: u8) -> LedgerIdBytes {
@@ -317,21 +316,5 @@ mod tests {
         );
         assert_eq!(root.node_id(), id(2));
         assert_eq!(child.node_id(), id(3));
-    }
-
-    #[test]
-    fn one_step_is_a_general_path_but_not_an_operation_site() {
-        let path = SemanticPath::try_from_steps(vec![SemanticStep::new(
-            SemanticStepKind::Application,
-            id(1),
-        )])
-        .expect("one step is non-empty");
-        let mut draft = ImageDraft::new();
-        draft.request_site(SiteDef::whole_payload(path));
-
-        assert!(matches!(
-            draft.encode(),
-            Err(ImageBuildError::SitePathTooShort)
-        ));
     }
 }

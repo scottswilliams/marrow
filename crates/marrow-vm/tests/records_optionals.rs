@@ -49,15 +49,17 @@ fn build_and_run(
             column: 1,
         })
         .collect();
-    let func = draft.add_function(FunctionDef {
-        name,
-        source,
-        params: Vec::new(),
-        ret,
-        local_count: 2,
-        code,
-        spans,
-    });
+    let func = draft
+        .add_function(FunctionDef {
+            name,
+            source,
+            params: Vec::new(),
+            ret,
+            local_count: 2,
+            code,
+            spans,
+        })
+        .expect("every site operand is live");
     draft.add_export(ExportId::of_local("", "f"), func);
     let bytes = draft.encode().expect("encode").bytes;
     let image = verify(&bytes).map_err(|rejection| rejection.code().to_string())?;

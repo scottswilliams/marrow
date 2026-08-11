@@ -716,10 +716,10 @@ mod index_site_partition {
     //! detail its guard owns.
 
     use marrow_image::{
-        CollectionTypeDef, DurableMemberDef, DurableValueShape, ExportId, FieldDef, FunctionDef,
-        ImageDraft, ImageType, Instr, KeyColumn, LedgerIdBytes, LegacyDraftSiteOperand,
-        RecordTypeDef, RootDef, RootIdentity, Scalar, SemanticPath, SemanticStep, SemanticStepKind,
-        SiteDef, SpanEntry,
+        CanonicalDeclarationPathSelector, CollectionTypeDef, DeclarationMemberDef,
+        DeclarationMemberShape, DurableValueShape, ExportId, FieldDef, FunctionDef, ImageDraft,
+        ImageType, Instr, KeyColumn, LedgerIdBytes, LegacyDraftSiteOperand, RecordTypeDef,
+        RootOccurrenceDef, RootOccurrenceSelector, Scalar, SemanticTarget, SpanEntry,
     };
 
     use super::opcode_bijection::samples;
@@ -887,21 +887,18 @@ mod index_site_partition {
         }
     }
 
-    fn path(steps: Vec<SemanticStep>) -> SemanticPath {
-        SemanticPath::try_from_steps(steps).expect("hostile fixture path is non-empty")
-    }
-
-    fn root_step() -> Vec<SemanticStep> {
-        vec![
-            SemanticStep::new(
-                SemanticStepKind::Application,
-                LedgerIdBytes::from_bytes(APPLICATION_ID),
-            ),
-            SemanticStep::new(
-                SemanticStepKind::Placement,
-                LedgerIdBytes::from_bytes(PLACEMENT_ID),
-            ),
-        ]
+    /// Bind one occurrence, one canonical declaration path, and one target, then request
+    /// the site the binding names.
+    fn site(
+        draft: &mut ImageDraft,
+        root: &RootOccurrenceSelector,
+        path: &CanonicalDeclarationPathSelector,
+        target: SemanticTarget,
+    ) -> LegacyDraftSiteOperand {
+        let handle = draft
+            .bind_occurrence_site(root, path, target)
+            .expect("the path is a canonical path of this occurrence");
+        draft.request_site(&handle).expect("the binding is live")
     }
 
     /// A minimal single-root durable schema with a whole-entry site and a field-leaf
@@ -929,40 +926,61 @@ mod index_site_partition {
                 },
             ],
         });
-        let root = draft.intern_string("counters");
+        let root_name = draft.intern_string("counters");
         draft.set_application_identity(LedgerIdBytes::from_bytes(APPLICATION_ID));
-        draft.add_root(RootDef {
-            name: root,
-            keys: vec![KeyColumn {
-                scalar: Scalar::Text,
-                id: LedgerIdBytes::from_bytes(KEY_ID),
-            }],
-            record,
-            identity: RootIdentity {
-                placement: LedgerIdBytes::from_bytes(PLACEMENT_ID),
-                product: LedgerIdBytes::from_bytes(PRODUCT_ID),
-                indexes: Vec::new(),
-                members: vec![
-                    DurableMemberDef::Field {
-                        id: LedgerIdBytes::from_bytes(VALUE_FIELD_ID),
-                        required: true,
-                        value: DurableValueShape::Scalar(Scalar::Int),
+        draft
+            .declare_product(
+                LedgerIdBytes::from_bytes(PRODUCT_ID),
+                record,
+                vec![
+                    DeclarationMemberDef {
+                        parent: None,
+                        shape: DeclarationMemberShape::Field {
+                            id: LedgerIdBytes::from_bytes(VALUE_FIELD_ID),
+                            required: true,
+                            value: DurableValueShape::Scalar(Scalar::Int),
+                        },
                     },
-                    DurableMemberDef::Field {
-                        id: LedgerIdBytes::from_bytes(LABEL_FIELD_ID),
-                        required: false,
-                        value: DurableValueShape::Scalar(Scalar::Text),
+                    DeclarationMemberDef {
+                        parent: None,
+                        shape: DeclarationMemberShape::Field {
+                            id: LedgerIdBytes::from_bytes(LABEL_FIELD_ID),
+                            required: false,
+                            value: DurableValueShape::Scalar(Scalar::Text),
+                        },
                     },
                 ],
-            },
-        });
-        let mut field = root_step();
-        field.push(SemanticStep::new(
-            SemanticStepKind::Field,
-            LedgerIdBytes::from_bytes(VALUE_FIELD_ID),
-        ));
-        draft.request_site(SiteDef::whole_payload(path(root_step())));
-        let value_site = draft.request_site(SiteDef::field_leaf(path(field)));
+            )
+            .expect("a well-formed declaration");
+        let root = draft
+            .add_root_occurrence(
+                LedgerIdBytes::from_bytes(PRODUCT_ID),
+                RootOccurrenceDef {
+                    name: root_name,
+                    keys: vec![KeyColumn {
+                        scalar: Scalar::Text,
+                        id: LedgerIdBytes::from_bytes(KEY_ID),
+                    }],
+                    placement: LedgerIdBytes::from_bytes(PLACEMENT_ID),
+                    indexes: Vec::new(),
+                },
+            )
+            .expect("the Product is declared");
+        let members = draft
+            .product_members(LedgerIdBytes::from_bytes(PRODUCT_ID))
+            .expect("declared");
+        site(
+            &mut draft,
+            root.occurrence(),
+            root.placement_path(),
+            SemanticTarget::WholePayload,
+        );
+        let value_site = site(
+            &mut draft,
+            root.occurrence(),
+            members[0].path(),
+            SemanticTarget::FieldLeaf,
+        );
         let list_ty = draft
             .add_collection_type(CollectionTypeDef::List {
                 elem: ImageType::scalar(Scalar::Int),
@@ -982,15 +1000,17 @@ mod index_site_partition {
                 column: 1,
             })
             .collect();
-        let func = draft.add_function(FunctionDef {
-            name,
-            source: src,
-            params: Vec::new(),
-            ret: ImageType::Unit,
-            local_count: 0,
-            spans,
-            code,
-        });
+        let func = draft
+            .add_function(FunctionDef {
+                name,
+                source: src,
+                params: Vec::new(),
+                ret: ImageType::Unit,
+                local_count: 0,
+                spans,
+                code,
+            })
+            .expect("every site operand is live");
         draft.add_export(ExportId::of_local("", "probe"), func);
         draft.encode().expect("encode a forged image").bytes
     }

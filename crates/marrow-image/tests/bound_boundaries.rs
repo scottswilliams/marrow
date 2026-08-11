@@ -8,9 +8,9 @@
 
 use marrow_image::bounds::{MAX_INDEX_COMPONENTS, MAX_STRUCT_LEAVES};
 use marrow_image::{
-    DurableIndexComponent, DurableIndexShape, DurableMemberDef, DurableValueShape, ExportId,
-    FunctionDef, ImageBuildError, ImageDraft, ImageType, Instr, KeyColumn, LedgerIdBytes,
-    RecordTypeDef, RootDef, RootIdentity, Scalar, SpanEntry,
+    DeclarationMemberDef, DeclarationMemberShape, DurableIndexComponent, DurableIndexShape,
+    DurableValueShape, ExportId, FunctionDef, ImageBuildError, ImageDraft, ImageType, Instr,
+    KeyColumn, LedgerIdBytes, RecordTypeDef, RootOccurrenceDef, Scalar, SpanEntry,
 };
 
 const APPLICATION_ID: [u8; 16] = [0x0a; 16];
@@ -29,10 +29,14 @@ fn component_id(n: usize) -> LedgerIdBytes {
     LedgerIdBytes::from_bytes(bytes)
 }
 
-/// A minimal encodable draft carrying a `main` returning `0`, one record type, and
-/// one keyed root whose identity is `identity`. The root's shape is the only thing
-/// the callers vary, so the bound under test is the sole reason an encode fails.
-fn encode_root(identity: RootIdentity) -> Result<(), ImageBuildError> {
+/// A minimal encodable draft carrying a `main` returning `0`, one record type, and one
+/// keyed root whose Product declares `members` and whose occurrence carries `indexes`.
+/// The declared member graph and the index shapes are the only things the callers vary,
+/// so the bound under test is the sole reason an encode fails.
+fn encode_root(
+    members: Vec<DeclarationMemberDef>,
+    indexes: Vec<DurableIndexShape>,
+) -> Result<(), ImageBuildError> {
     let mut draft = ImageDraft::new();
     let type_name = draft.intern_string("R");
     let record = draft.add_record_type(RecordTypeDef {
@@ -41,15 +45,23 @@ fn encode_root(identity: RootIdentity) -> Result<(), ImageBuildError> {
     });
     draft.set_application_identity(LedgerIdBytes::from_bytes(APPLICATION_ID));
     let root_name = draft.intern_string("r");
-    draft.add_root(RootDef {
-        name: root_name,
-        keys: vec![KeyColumn {
-            scalar: Scalar::Int,
-            id: LedgerIdBytes::from_bytes(KEY_ID),
-        }],
-        record,
-        identity,
-    });
+    draft
+        .declare_product(LedgerIdBytes::from_bytes(PRODUCT_ID), record, members)
+        .expect("a well-formed declaration");
+    draft
+        .add_root_occurrence(
+            LedgerIdBytes::from_bytes(PRODUCT_ID),
+            RootOccurrenceDef {
+                name: root_name,
+                keys: vec![KeyColumn {
+                    scalar: Scalar::Int,
+                    id: LedgerIdBytes::from_bytes(KEY_ID),
+                }],
+                placement: LedgerIdBytes::from_bytes(PLACEMENT_ID),
+                indexes,
+            },
+        )
+        .expect("the Product is declared");
     let src = draft.intern_string("src/main.mw");
     let main_name = draft.intern_string("main");
     let zero = draft.intern_int(0);
@@ -61,26 +73,27 @@ fn encode_root(identity: RootIdentity) -> Result<(), ImageBuildError> {
             column: 1,
         })
         .collect();
-    let main = draft.add_function(FunctionDef {
-        name: main_name,
-        source: src,
-        params: Vec::new(),
-        ret: ImageType::scalar(Scalar::Int),
-        local_count: 0,
-        code,
-        spans,
-    });
+    let main = draft
+        .add_function(FunctionDef {
+            name: main_name,
+            source: src,
+            params: Vec::new(),
+            ret: ImageType::scalar(Scalar::Int),
+            local_count: 0,
+            code,
+            spans,
+        })
+        .expect("every site operand is live");
     draft.add_export(ExportId::of_local("", "main"), main);
     draft.encode().map(|_| ())
 }
 
-/// A root whose single field member carries a dense struct value of `leaves` scalar
+/// A Product whose single field member carries a dense struct value of `leaves` scalar
 /// leaves.
-fn identity_with_struct_field(leaves: usize) -> RootIdentity {
-    RootIdentity {
-        placement: LedgerIdBytes::from_bytes(PLACEMENT_ID),
-        product: LedgerIdBytes::from_bytes(PRODUCT_ID),
-        members: vec![DurableMemberDef::Field {
+fn members_with_struct_field(leaves: usize) -> Vec<DeclarationMemberDef> {
+    vec![DeclarationMemberDef {
+        parent: None,
+        shape: DeclarationMemberShape::Field {
             id: LedgerIdBytes::from_bytes(FIELD_ID),
             required: false,
             value: DurableValueShape::Struct(
@@ -88,31 +101,25 @@ fn identity_with_struct_field(leaves: usize) -> RootIdentity {
                     .map(|_| DurableValueShape::Scalar(Scalar::Int))
                     .collect(),
             ),
-        }],
-        indexes: Vec::new(),
-    }
+        },
+    }]
 }
 
-/// A root with one nonunique index projecting `components` field components.
-fn identity_with_index(components: usize) -> RootIdentity {
-    RootIdentity {
-        placement: LedgerIdBytes::from_bytes(PLACEMENT_ID),
-        product: LedgerIdBytes::from_bytes(PRODUCT_ID),
-        members: Vec::new(),
-        indexes: vec![DurableIndexShape {
-            id: LedgerIdBytes::from_bytes(INDEX_ID),
-            unique: false,
-            components: (0..components)
-                .map(|n| DurableIndexComponent::Field(component_id(n)))
-                .collect(),
-        }],
-    }
+/// One nonunique index projecting `components` field components.
+fn indexes_with_components(components: usize) -> Vec<DurableIndexShape> {
+    vec![DurableIndexShape {
+        id: LedgerIdBytes::from_bytes(INDEX_ID),
+        unique: false,
+        components: (0..components)
+            .map(|n| DurableIndexComponent::Field(component_id(n)))
+            .collect(),
+    }]
 }
 
 #[test]
 fn a_dense_struct_at_the_leaf_limit_encodes() {
     assert_eq!(
-        encode_root(identity_with_struct_field(MAX_STRUCT_LEAVES)),
+        encode_root(members_with_struct_field(MAX_STRUCT_LEAVES), Vec::new()),
         Ok(()),
         "a struct value of exactly MAX_STRUCT_LEAVES leaves is admitted",
     );
@@ -121,7 +128,7 @@ fn a_dense_struct_at_the_leaf_limit_encodes() {
 #[test]
 fn a_dense_struct_one_leaf_over_the_limit_is_refused() {
     assert_eq!(
-        encode_root(identity_with_struct_field(MAX_STRUCT_LEAVES + 1)),
+        encode_root(members_with_struct_field(MAX_STRUCT_LEAVES + 1), Vec::new()),
         Err(ImageBuildError::TooManyStructLeaves),
         "one leaf past the dense-composite limit is refused as TooManyStructLeaves",
     );
@@ -130,7 +137,7 @@ fn a_dense_struct_one_leaf_over_the_limit_is_refused() {
 #[test]
 fn an_index_at_the_component_limit_encodes() {
     assert_eq!(
-        encode_root(identity_with_index(MAX_INDEX_COMPONENTS)),
+        encode_root(Vec::new(), indexes_with_components(MAX_INDEX_COMPONENTS)),
         Ok(()),
         "an index projecting exactly MAX_INDEX_COMPONENTS components is admitted",
     );
@@ -139,7 +146,10 @@ fn an_index_at_the_component_limit_encodes() {
 #[test]
 fn an_index_one_component_over_the_limit_is_refused() {
     assert_eq!(
-        encode_root(identity_with_index(MAX_INDEX_COMPONENTS + 1)),
+        encode_root(
+            Vec::new(),
+            indexes_with_components(MAX_INDEX_COMPONENTS + 1)
+        ),
         Err(ImageBuildError::TooManyIndexComponents),
         "one component past the projection limit is refused as TooManyIndexComponents",
     );

@@ -20,19 +20,21 @@ fn return_const_image(value: i64) -> Vec<u8> {
     let name = draft.intern_string("answer");
     let source = draft.intern_string("src/main.mw");
     let konst = draft.intern_int(value);
-    let func = draft.add_function(FunctionDef {
-        name,
-        source,
-        params: Vec::new(),
-        ret: ImageType::scalar(Scalar::Int),
-        local_count: 0,
-        code: vec![Instr::ConstLoad(konst.index()), Instr::Return],
-        spans: vec![SpanEntry {
-            instr_index: 0,
-            line: 2,
-            column: 12,
-        }],
-    });
+    let func = draft
+        .add_function(FunctionDef {
+            name,
+            source,
+            params: Vec::new(),
+            ret: ImageType::scalar(Scalar::Int),
+            local_count: 0,
+            code: vec![Instr::ConstLoad(konst.index()), Instr::Return],
+            spans: vec![SpanEntry {
+                instr_index: 0,
+                line: 2,
+                column: 12,
+            }],
+        })
+        .expect("every site operand is live");
     draft.add_export(answer_id(), func);
     draft.encode().expect("encode").bytes
 }
@@ -69,23 +71,25 @@ fn range_guard_image() -> Vec<u8> {
     let mut draft = ImageDraft::new();
     let name = draft.intern_string("guarded");
     let source = draft.intern_string("src/main.mw");
-    let func = draft.add_function(FunctionDef {
-        name,
-        source,
-        params: vec![ImageType::scalar(Scalar::Int)],
-        ret: ImageType::scalar(Scalar::Int),
-        local_count: 1,
-        code: vec![
-            Instr::LocalGet(0),
-            Instr::RangeGuard { lo: 0, hi: 150 },
-            Instr::Return,
-        ],
-        spans: vec![SpanEntry {
-            instr_index: 0,
-            line: 3,
-            column: 5,
-        }],
-    });
+    let func = draft
+        .add_function(FunctionDef {
+            name,
+            source,
+            params: vec![ImageType::scalar(Scalar::Int)],
+            ret: ImageType::scalar(Scalar::Int),
+            local_count: 1,
+            code: vec![
+                Instr::LocalGet(0),
+                Instr::RangeGuard { lo: 0, hi: 150 },
+                Instr::Return,
+            ],
+            spans: vec![SpanEntry {
+                instr_index: 0,
+                line: 3,
+                column: 5,
+            }],
+        })
+        .expect("every site operand is live");
     draft.add_export(answer_id(), func);
     draft.encode().expect("encode").bytes
 }
@@ -104,24 +108,26 @@ fn forged_list_positional_image() -> Vec<u8> {
         elem: ImageType::scalar(Scalar::Int),
     });
     let index = draft.intern_int(100);
-    let func = draft.add_function(FunctionDef {
-        name,
-        source,
-        params: Vec::new(),
-        ret: ImageType::scalar(Scalar::Int),
-        local_count: 0,
-        code: vec![
-            Instr::ListNew(coll.index()),
-            Instr::ConstLoad(index.index()),
-            Instr::ListGet,
-            Instr::Return,
-        ],
-        spans: vec![SpanEntry {
-            instr_index: 0,
-            line: 2,
-            column: 12,
-        }],
-    });
+    let func = draft
+        .add_function(FunctionDef {
+            name,
+            source,
+            params: Vec::new(),
+            ret: ImageType::scalar(Scalar::Int),
+            local_count: 0,
+            code: vec![
+                Instr::ListNew(coll.index()),
+                Instr::ConstLoad(index.index()),
+                Instr::ListGet,
+                Instr::Return,
+            ],
+            spans: vec![SpanEntry {
+                instr_index: 0,
+                line: 2,
+                column: 12,
+            }],
+        })
+        .expect("every site operand is live");
     draft.add_export(answer_id(), func);
     draft.encode().expect("encode").bytes
 }
@@ -138,24 +144,26 @@ fn forged_map_positional_image(read: Instr) -> Vec<u8> {
         value: ImageType::scalar(Scalar::Int),
     });
     let index = draft.intern_int(5);
-    let func = draft.add_function(FunctionDef {
-        name,
-        source,
-        params: Vec::new(),
-        ret: ImageType::scalar(Scalar::Int),
-        local_count: 0,
-        code: vec![
-            Instr::MapNew(coll.index()),
-            Instr::ConstLoad(index.index()),
-            read,
-            Instr::Return,
-        ],
-        spans: vec![SpanEntry {
-            instr_index: 0,
-            line: 2,
-            column: 12,
-        }],
-    });
+    let func = draft
+        .add_function(FunctionDef {
+            name,
+            source,
+            params: Vec::new(),
+            ret: ImageType::scalar(Scalar::Int),
+            local_count: 0,
+            code: vec![
+                Instr::MapNew(coll.index()),
+                Instr::ConstLoad(index.index()),
+                read,
+                Instr::Return,
+            ],
+            spans: vec![SpanEntry {
+                instr_index: 0,
+                line: 2,
+                column: 12,
+            }],
+        })
+        .expect("every site operand is live");
     draft.add_export(answer_id(), func);
     draft.encode().expect("encode").bytes
 }
@@ -194,25 +202,27 @@ fn forged_map_remove_absent_image() -> Vec<u8> {
         value: ImageType::scalar(Scalar::Int),
     });
     let key = draft.intern_int(7);
-    let func = draft.add_function(FunctionDef {
-        name,
-        source,
-        params: Vec::new(),
-        ret: ImageType::scalar(Scalar::Int),
-        local_count: 0,
-        code: vec![
-            Instr::MapNew(coll.index()),
-            Instr::ConstLoad(key.index()),
-            Instr::MapRemove,
-            Instr::MapLen,
-            Instr::Return,
-        ],
-        spans: vec![SpanEntry {
-            instr_index: 0,
-            line: 2,
-            column: 12,
-        }],
-    });
+    let func = draft
+        .add_function(FunctionDef {
+            name,
+            source,
+            params: Vec::new(),
+            ret: ImageType::scalar(Scalar::Int),
+            local_count: 0,
+            code: vec![
+                Instr::MapNew(coll.index()),
+                Instr::ConstLoad(key.index()),
+                Instr::MapRemove,
+                Instr::MapLen,
+                Instr::Return,
+            ],
+            spans: vec![SpanEntry {
+                instr_index: 0,
+                line: 2,
+                column: 12,
+            }],
+        })
+        .expect("every site operand is live");
     draft.add_export(answer_id(), func);
     draft.encode().expect("encode").bytes
 }
@@ -229,25 +239,27 @@ fn forged_map_remove_wrong_key_image() -> Vec<u8> {
         value: ImageType::scalar(Scalar::Int),
     });
     let key = draft.intern_text("x");
-    let func = draft.add_function(FunctionDef {
-        name,
-        source,
-        params: Vec::new(),
-        ret: ImageType::scalar(Scalar::Int),
-        local_count: 0,
-        code: vec![
-            Instr::MapNew(coll.index()),
-            Instr::ConstLoad(key.index()),
-            Instr::MapRemove,
-            Instr::MapLen,
-            Instr::Return,
-        ],
-        spans: vec![SpanEntry {
-            instr_index: 0,
-            line: 2,
-            column: 12,
-        }],
-    });
+    let func = draft
+        .add_function(FunctionDef {
+            name,
+            source,
+            params: Vec::new(),
+            ret: ImageType::scalar(Scalar::Int),
+            local_count: 0,
+            code: vec![
+                Instr::MapNew(coll.index()),
+                Instr::ConstLoad(key.index()),
+                Instr::MapRemove,
+                Instr::MapLen,
+                Instr::Return,
+            ],
+            spans: vec![SpanEntry {
+                instr_index: 0,
+                line: 2,
+                column: 12,
+            }],
+        })
+        .expect("every site operand is live");
     draft.add_export(answer_id(), func);
     draft.encode().expect("encode").bytes
 }
@@ -260,24 +272,26 @@ fn forged_map_remove_non_map_image() -> Vec<u8> {
     let source = draft.intern_string("src/main.mw");
     let base = draft.intern_int(1);
     let key = draft.intern_int(7);
-    let func = draft.add_function(FunctionDef {
-        name,
-        source,
-        params: Vec::new(),
-        ret: ImageType::scalar(Scalar::Int),
-        local_count: 0,
-        code: vec![
-            Instr::ConstLoad(base.index()),
-            Instr::ConstLoad(key.index()),
-            Instr::MapRemove,
-            Instr::Return,
-        ],
-        spans: vec![SpanEntry {
-            instr_index: 0,
-            line: 2,
-            column: 12,
-        }],
-    });
+    let func = draft
+        .add_function(FunctionDef {
+            name,
+            source,
+            params: Vec::new(),
+            ret: ImageType::scalar(Scalar::Int),
+            local_count: 0,
+            code: vec![
+                Instr::ConstLoad(base.index()),
+                Instr::ConstLoad(key.index()),
+                Instr::MapRemove,
+                Instr::Return,
+            ],
+            spans: vec![SpanEntry {
+                instr_index: 0,
+                line: 2,
+                column: 12,
+            }],
+        })
+        .expect("every site operand is live");
     draft.add_export(answer_id(), func);
     draft.encode().expect("encode").bytes
 }

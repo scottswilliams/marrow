@@ -8,12 +8,15 @@
 //! the VM's consumption of it: the frozen list is built in ascending order, the
 //! on-more bit is reported, an inclusive `from` seeks, a branch site scopes to its
 //! parent entry, and the frozen list obeys the single collection aggregate ceiling.
+//!
+//! Every site named here is minted through the construction seam's bind-then-request
+//! protocol. That protocol has exactly one owner in the workspace and is included here
+//! rather than copied.
 
 use marrow_image::{
-    CollectionTypeDef, DurableMemberDef, DurableValueShape, ExportId, FieldDef, FunctionDef,
-    ImageDraft, ImageType, Instr, KeyColumn, LedgerIdBytes, LegacyDraftSiteOperand, RecordTypeDef,
-    RootDef, RootIdentity, Scalar, SemanticPath, SemanticStep, SemanticStepKind, SiteDef,
-    SpanEntry,
+    CollectionTypeDef, DeclarationMemberDef, DeclarationMemberShape, DurableValueShape, ExportId,
+    FieldDef, FunctionDef, ImageDraft, ImageType, Instr, KeyColumn, LedgerIdBytes,
+    LegacyDraftSiteOperand, RecordTypeDef, RootOccurrenceDef, Scalar, SemanticTarget, SpanEntry,
 };
 use marrow_kernel::codec::key::KeyScalar;
 use marrow_kernel::codec::value::RuntimeScalar;
@@ -21,6 +24,10 @@ use marrow_kernel::durable::{CommitResult, DemandCoverage, Durable, EntryValue, 
 use marrow_kernel::equality::ValueDomain;
 use marrow_verify::{VerifiedImage, verify};
 use marrow_vm::{DurableRun, Ephemeral, Value, mint_ephemeral, run_export};
+
+#[path = "../../marrow-image/tests/common/site_seam.rs"]
+mod site_seam;
+use site_seam::site;
 
 // The tracer graph's fixed ledger ids.
 const APPLICATION_ID: [u8; 16] = [0x0a; 16];
@@ -31,20 +38,6 @@ const TITLE_FIELD_ID: [u8; 16] = [0x0e; 16];
 const BRANCH_PLACEMENT_ID: [u8; 16] = [0x30; 16];
 const BRANCH_KEY_ID: [u8; 16] = [0x31; 16];
 const TEXT_FIELD_ID: [u8; 16] = [0x32; 16];
-
-fn root_path() -> SemanticPath {
-    SemanticPath::root(
-        LedgerIdBytes::from_bytes(APPLICATION_ID),
-        LedgerIdBytes::from_bytes(ROOT_PLACEMENT_ID),
-    )
-}
-
-fn branch_path() -> SemanticPath {
-    root_path().child(SemanticStep::new(
-        SemanticStepKind::Placement,
-        LedgerIdBytes::from_bytes(BRANCH_PLACEMENT_ID),
-    ))
-}
 
 fn spans(code: &[Instr]) -> Vec<SpanEntry> {
     (0..code.len())
@@ -92,43 +85,71 @@ fn traversal_image() -> VerifiedImage {
     let root = draft.intern_string("books");
     let notes = draft.intern_string("notes");
     draft.set_application_identity(LedgerIdBytes::from_bytes(APPLICATION_ID));
-    draft.add_root(RootDef {
-        name: root,
-        keys: vec![KeyColumn {
-            scalar: Scalar::Int,
-            id: LedgerIdBytes::from_bytes(ROOT_KEY_ID),
-        }],
-        record: book_record,
-        identity: RootIdentity {
-            placement: LedgerIdBytes::from_bytes(ROOT_PLACEMENT_ID),
-            product: LedgerIdBytes::from_bytes(ROOT_PRODUCT_ID),
-            indexes: Vec::new(),
-            members: vec![
-                DurableMemberDef::Field {
-                    id: LedgerIdBytes::from_bytes(TITLE_FIELD_ID),
-                    required: true,
-                    value: DurableValueShape::Scalar(Scalar::Text),
+    let product = LedgerIdBytes::from_bytes(ROOT_PRODUCT_ID);
+    draft
+        .declare_product(
+            product,
+            book_record,
+            vec![
+                DeclarationMemberDef {
+                    parent: None,
+                    shape: DeclarationMemberShape::Field {
+                        id: LedgerIdBytes::from_bytes(TITLE_FIELD_ID),
+                        required: true,
+                        value: DurableValueShape::Scalar(Scalar::Text),
+                    },
                 },
-                DurableMemberDef::Branch {
-                    placement: LedgerIdBytes::from_bytes(BRANCH_PLACEMENT_ID),
-                    name: notes,
-                    record: note_record,
-                    keys: vec![KeyColumn {
-                        scalar: Scalar::Int,
-                        id: LedgerIdBytes::from_bytes(BRANCH_KEY_ID),
-                    }],
-                    members: vec![DurableMemberDef::Field {
+                DeclarationMemberDef {
+                    parent: None,
+                    shape: DeclarationMemberShape::Branch {
+                        placement: LedgerIdBytes::from_bytes(BRANCH_PLACEMENT_ID),
+                        name: notes,
+                        record: note_record,
+                        keys: vec![KeyColumn {
+                            scalar: Scalar::Int,
+                            id: LedgerIdBytes::from_bytes(BRANCH_KEY_ID),
+                        }],
+                    },
+                },
+                DeclarationMemberDef {
+                    parent: Some(1),
+                    shape: DeclarationMemberShape::Field {
                         id: LedgerIdBytes::from_bytes(TEXT_FIELD_ID),
                         required: true,
                         value: DurableValueShape::Scalar(Scalar::Text),
-                    }],
+                    },
                 },
             ],
-        },
-    });
+        )
+        .expect("a well-formed declaration");
+    let books = draft
+        .add_root_occurrence(
+            product,
+            RootOccurrenceDef {
+                name: root,
+                keys: vec![KeyColumn {
+                    scalar: Scalar::Int,
+                    id: LedgerIdBytes::from_bytes(ROOT_KEY_ID),
+                }],
+                placement: LedgerIdBytes::from_bytes(ROOT_PLACEMENT_ID),
+                indexes: Vec::new(),
+            },
+        )
+        .expect("the Product is declared");
 
-    let root_entry = draft.request_site(SiteDef::whole_payload(root_path()));
-    let branch_entry = draft.request_site(SiteDef::whole_payload(branch_path()));
+    let members = draft.product_members(product).expect("declared");
+    let root_entry = site(
+        &mut draft,
+        books.occurrence(),
+        books.placement_path(),
+        SemanticTarget::WholePayload,
+    );
+    let branch_entry = site(
+        &mut draft,
+        books.occurrence(),
+        members[1].path(),
+        SemanticTarget::WholePayload,
+    );
     let list_int = draft
         .add_collection_type(CollectionTypeDef::List {
             elem: ImageType::scalar(Scalar::Int),
@@ -161,15 +182,17 @@ fn traversal_image() -> VerifiedImage {
         }
         code.push(Instr::TxnCommit);
         code.push(Instr::Return);
-        let func = draft.add_function(FunctionDef {
-            name,
-            source: src,
-            params: Vec::new(),
-            ret: ImageType::Unit,
-            local_count: 0,
-            spans: spans(&code),
-            code,
-        });
+        let func = draft
+            .add_function(FunctionDef {
+                name,
+                source: src,
+                params: Vec::new(),
+                ret: ImageType::Unit,
+                local_count: 0,
+                spans: spans(&code),
+                code,
+            })
+            .expect("every site operand is live");
         draft.add_export(export_id("seed"), func);
     }
 
@@ -207,15 +230,17 @@ fn traversal_image() -> VerifiedImage {
         code.push(Instr::Pop); // discard the on-more Bool; the list is returned
         code.push(Instr::Return);
         let local_count = params.len() as u16;
-        let func = draft.add_function(FunctionDef {
-            name: name_id,
-            source: src,
-            params,
-            ret: list_ret,
-            local_count,
-            spans: spans(&code),
-            code,
-        });
+        let func = draft
+            .add_function(FunctionDef {
+                name: name_id,
+                source: src,
+                params,
+                ret: list_ret,
+                local_count,
+                spans: spans(&code),
+                code,
+            })
+            .expect("every site operand is live");
         draft.add_export(export_id(name), func);
     };
 
@@ -251,15 +276,17 @@ fn traversal_image() -> VerifiedImage {
         code.push(Instr::Pop); // discard the frozen list
         code.push(Instr::LocalGet(bool_slot));
         code.push(Instr::Return);
-        let func = draft.add_function(FunctionDef {
-            name: name_id,
-            source: src,
-            params,
-            ret: ImageType::scalar(Scalar::Bool),
-            local_count: bool_slot + 1,
-            spans: spans(&code),
-            code,
-        });
+        let func = draft
+            .add_function(FunctionDef {
+                name: name_id,
+                source: src,
+                params,
+                ret: ImageType::scalar(Scalar::Bool),
+                local_count: bool_slot + 1,
+                spans: spans(&code),
+                code,
+            })
+            .expect("every site operand is live");
         draft.add_export(export_id(name), func);
     };
 
@@ -453,25 +480,41 @@ fn wide_key_image() -> (VerifiedImage, u16) {
     });
     let root = draft.intern_string("big");
     draft.set_application_identity(LedgerIdBytes::from_bytes(APPLICATION_ID));
-    draft.add_root(RootDef {
-        name: root,
-        keys: vec![KeyColumn {
-            scalar: Scalar::Text,
-            id: LedgerIdBytes::from_bytes(ROOT_KEY_ID),
-        }],
-        record,
-        identity: RootIdentity {
-            placement: LedgerIdBytes::from_bytes(ROOT_PLACEMENT_ID),
-            product: LedgerIdBytes::from_bytes(ROOT_PRODUCT_ID),
-            indexes: Vec::new(),
-            members: vec![DurableMemberDef::Field {
-                id: LedgerIdBytes::from_bytes(TITLE_FIELD_ID),
-                required: true,
-                value: DurableValueShape::Scalar(Scalar::Int),
+    let product = LedgerIdBytes::from_bytes(ROOT_PRODUCT_ID);
+    draft
+        .declare_product(
+            product,
+            record,
+            vec![DeclarationMemberDef {
+                parent: None,
+                shape: DeclarationMemberShape::Field {
+                    id: LedgerIdBytes::from_bytes(TITLE_FIELD_ID),
+                    required: true,
+                    value: DurableValueShape::Scalar(Scalar::Int),
+                },
             }],
-        },
-    });
-    let root_entry = draft.request_site(SiteDef::whole_payload(root_path()));
+        )
+        .expect("a well-formed declaration");
+    let big = draft
+        .add_root_occurrence(
+            product,
+            RootOccurrenceDef {
+                name: root,
+                keys: vec![KeyColumn {
+                    scalar: Scalar::Text,
+                    id: LedgerIdBytes::from_bytes(ROOT_KEY_ID),
+                }],
+                placement: LedgerIdBytes::from_bytes(ROOT_PLACEMENT_ID),
+                indexes: Vec::new(),
+            },
+        )
+        .expect("the Product is declared");
+    let root_entry = site(
+        &mut draft,
+        big.occurrence(),
+        big.placement_path(),
+        SemanticTarget::WholePayload,
+    );
     let list_str = draft
         .add_collection_type(CollectionTypeDef::List {
             elem: ImageType::scalar(Scalar::Text),
@@ -494,15 +537,17 @@ fn wide_key_image() -> (VerifiedImage, u16) {
             Instr::TxnCommit,
             Instr::Return,
         ];
-        let func = draft.add_function(FunctionDef {
-            name,
-            source: src,
-            params: Vec::new(),
-            ret: ImageType::Unit,
-            local_count: 0,
-            spans: spans(&code),
-            code,
-        });
+        let func = draft
+            .add_function(FunctionDef {
+                name,
+                source: src,
+                params: Vec::new(),
+                ret: ImageType::Unit,
+                local_count: 0,
+                spans: spans(&code),
+                code,
+            })
+            .expect("every site operand is live");
         draft.add_export(export_id("seed"), func);
     }
 
@@ -519,18 +564,20 @@ fn wide_key_image() -> (VerifiedImage, u16) {
             Instr::Pop,
             Instr::Return,
         ];
-        let func = draft.add_function(FunctionDef {
-            name,
-            source: src,
-            params: Vec::new(),
-            ret: ImageType::Collection {
-                idx: list_str,
-                optional: false,
-            },
-            local_count: 0,
-            spans: spans(&code),
-            code,
-        });
+        let func = draft
+            .add_function(FunctionDef {
+                name,
+                source: src,
+                params: Vec::new(),
+                ret: ImageType::Collection {
+                    idx: list_str,
+                    optional: false,
+                },
+                local_count: 0,
+                spans: spans(&code),
+                code,
+            })
+            .expect("every site operand is live");
         draft.add_export(export_id("all"), func);
     }
 

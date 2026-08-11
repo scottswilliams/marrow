@@ -1,7 +1,7 @@
 use marrow_image::{
-    DurableMemberDef, DurableValueShape, ExportId, FieldDef, FunctionDef, ImageDraft, ImageType,
-    Instr, KeyColumn, LedgerIdBytes, RecordTypeDef, RootDef, RootIdentity, Scalar, SemanticPath,
-    SiteDef, SpanEntry,
+    DeclarationMemberDef, DeclarationMemberShape, DurableValueShape, ExportId, FieldDef,
+    FunctionDef, ImageDraft, ImageType, Instr, KeyColumn, LedgerIdBytes, RecordTypeDef,
+    RootOccurrenceDef, Scalar, SemanticTarget, SpanEntry,
 };
 use marrow_kernel::codec::key::KeyScalar;
 use marrow_kernel::durable::{
@@ -20,13 +20,6 @@ const ROOT_PLACEMENT_ID: [u8; 16] = [0x82; 16];
 const ROOT_PRODUCT_ID: [u8; 16] = [0x83; 16];
 const ROOT_KEY_ID: [u8; 16] = [0x84; 16];
 const VALUE_FIELD_ID: [u8; 16] = [0x85; 16];
-
-fn root_path() -> SemanticPath {
-    SemanticPath::root(
-        LedgerIdBytes::from_bytes(APPLICATION_ID),
-        LedgerIdBytes::from_bytes(ROOT_PLACEMENT_ID),
-    )
-}
 
 fn spans(code: &[Instr]) -> Vec<SpanEntry> {
     code.iter()
@@ -60,25 +53,43 @@ fn commit_image(post_commit_fault: PostCommitFault, mutating: bool) -> VerifiedI
     });
     let root_name = draft.intern_string("counters");
     draft.set_application_identity(LedgerIdBytes::from_bytes(APPLICATION_ID));
-    draft.add_root(RootDef {
-        name: root_name,
-        keys: vec![KeyColumn {
-            scalar: Scalar::Int,
-            id: LedgerIdBytes::from_bytes(ROOT_KEY_ID),
-        }],
-        record,
-        identity: RootIdentity {
-            placement: LedgerIdBytes::from_bytes(ROOT_PLACEMENT_ID),
-            product: LedgerIdBytes::from_bytes(ROOT_PRODUCT_ID),
-            indexes: Vec::new(),
-            members: vec![DurableMemberDef::Field {
-                id: LedgerIdBytes::from_bytes(VALUE_FIELD_ID),
-                required: true,
-                value: DurableValueShape::Scalar(Scalar::Int),
+    let product = LedgerIdBytes::from_bytes(ROOT_PRODUCT_ID);
+    draft
+        .declare_product(
+            product,
+            record,
+            vec![DeclarationMemberDef {
+                parent: None,
+                shape: DeclarationMemberShape::Field {
+                    id: LedgerIdBytes::from_bytes(VALUE_FIELD_ID),
+                    required: true,
+                    value: DurableValueShape::Scalar(Scalar::Int),
+                },
             }],
-        },
-    });
-    let site = draft.request_site(SiteDef::whole_payload(root_path()));
+        )
+        .expect("a well-formed declaration");
+    let counters = draft
+        .add_root_occurrence(
+            product,
+            RootOccurrenceDef {
+                name: root_name,
+                keys: vec![KeyColumn {
+                    scalar: Scalar::Int,
+                    id: LedgerIdBytes::from_bytes(ROOT_KEY_ID),
+                }],
+                placement: LedgerIdBytes::from_bytes(ROOT_PLACEMENT_ID),
+                indexes: Vec::new(),
+            },
+        )
+        .expect("the Product is declared");
+    let handle = draft
+        .bind_occurrence_site(
+            counters.occurrence(),
+            counters.placement_path(),
+            SemanticTarget::WholePayload,
+        )
+        .expect("the root placement is a canonical path of this occurrence");
+    let site = draft.request_site(&handle).expect("the binding is live");
     let key = draft.intern_int(1);
     let value = draft.intern_int(7);
     let one = draft.intern_int(1);
@@ -93,15 +104,19 @@ fn commit_image(post_commit_fault: PostCommitFault, mutating: bool) -> VerifiedI
             Instr::Pop,
             Instr::Return,
         ];
-        Some(draft.add_function(FunctionDef {
-            name: helper_name,
-            source,
-            params: Vec::new(),
-            ret: ImageType::Unit,
-            local_count: 0,
-            spans: spans(&helper_code),
-            code: helper_code,
-        }))
+        Some(
+            draft
+                .add_function(FunctionDef {
+                    name: helper_name,
+                    source,
+                    params: Vec::new(),
+                    ret: ImageType::Unit,
+                    local_count: 0,
+                    spans: spans(&helper_code),
+                    code: helper_code,
+                })
+                .expect("every site operand is live"),
+        )
     } else {
         None
     };
@@ -139,15 +154,17 @@ fn commit_image(post_commit_fault: PostCommitFault, mutating: bool) -> VerifiedI
     let export_name = if mutating { "write" } else { "read" };
     let name = draft.intern_string(export_name);
     let source = draft.intern_string("src/main.mw");
-    let function = draft.add_function(FunctionDef {
-        name,
-        source,
-        params: Vec::new(),
-        ret: ImageType::Unit,
-        local_count: 0,
-        spans: spans(&code),
-        code,
-    });
+    let function = draft
+        .add_function(FunctionDef {
+            name,
+            source,
+            params: Vec::new(),
+            ret: ImageType::Unit,
+            local_count: 0,
+            spans: spans(&code),
+            code,
+        })
+        .expect("every site operand is live");
     draft.add_export(ExportId::of_local("", export_name), function);
     verify(&draft.encode().expect("encode").bytes).expect("verify")
 }

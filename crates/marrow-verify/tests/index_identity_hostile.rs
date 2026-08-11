@@ -4,14 +4,22 @@
 //! that owns the invariant rather than at the digest gate. These make the verifier's
 //! identity/index rejections conspicuous enforcement artifacts, not merely reachable by
 //! inspection.
+//!
+//! Every site named here is minted through the construction seam's bind-then-request
+//! protocol. That protocol has exactly one owner in the workspace and is included here
+//! rather than copied.
 
 use marrow_image::{
-    DurableIndexComponent, DurableIndexShape, DurableMemberDef, DurableValueShape, ExportId,
-    FieldDef, FunctionDef, ImageDraft, ImageType, Instr, KeyColumn, LedgerIdBytes,
-    LegacyDraftSiteOperand, RecordTypeDef, RootDef, RootIdentity, Scalar, SemanticPath,
-    SemanticStep, SemanticStepKind, SiteDef, SpanEntry,
+    DeclarationMemberDef, DeclarationMemberShape, DurableIndexComponent, DurableIndexShape,
+    DurableValueShape, ExportId, FieldDef, FunctionDef, ImageDraft, ImageType, Instr, KeyColumn,
+    LedgerIdBytes, LegacyDraftSiteOperand, RecordTypeDef, RootOccurrenceDef, Scalar,
+    SemanticTarget, SpanEntry,
 };
 use marrow_verify::verify;
+
+#[path = "../../marrow-image/tests/common/site_seam.rs"]
+mod site_seam;
+use site_seam::site;
 
 const APPLICATION_ID: [u8; 16] = [0x0a; 16];
 const PLACEMENT_ID: [u8; 16] = [0x0b; 16];
@@ -23,20 +31,6 @@ const ISBN_ID: [u8; 16] = [0x2e; 16];
 const BY_SHELF_ID: [u8; 16] = [0x3b; 16];
 const BY_ISBN_ID: [u8; 16] = [0x4b; 16];
 
-fn root_path() -> SemanticPath {
-    SemanticPath::root(
-        LedgerIdBytes::from_bytes(APPLICATION_ID),
-        LedgerIdBytes::from_bytes(PLACEMENT_ID),
-    )
-}
-
-fn index_path(index_id: [u8; 16]) -> SemanticPath {
-    root_path().child(SemanticStep::new(
-        SemanticStepKind::Index,
-        LedgerIdBytes::from_bytes(index_id),
-    ))
-}
-
 fn spans(code: &[Instr]) -> Vec<SpanEntry> {
     (0..code.len())
         .map(|index| SpanEntry {
@@ -45,6 +39,18 @@ fn spans(code: &[Instr]) -> Vec<SpanEntry> {
             column: 1,
         })
         .collect()
+}
+
+/// One required text field of the shared `Rec` graph.
+fn text_field(id: [u8; 16]) -> DeclarationMemberDef {
+    DeclarationMemberDef {
+        parent: None,
+        shape: DeclarationMemberShape::Field {
+            id: LedgerIdBytes::from_bytes(id),
+            required: true,
+            value: DurableValueShape::Scalar(Scalar::Text),
+        },
+    }
 }
 
 /// Site indices captured while building the shared `^r[k:int]: Rec` graph with a
@@ -83,56 +89,65 @@ fn build_graph(draft: &mut ImageDraft) -> Graph {
     });
     let root = draft.intern_string("r");
     draft.set_application_identity(LedgerIdBytes::from_bytes(APPLICATION_ID));
-    draft.add_root(RootDef {
-        name: root,
-        keys: vec![KeyColumn {
-            scalar: Scalar::Int,
-            id: LedgerIdBytes::from_bytes(KEY_ID),
-        }],
-        record,
-        identity: RootIdentity {
-            placement: LedgerIdBytes::from_bytes(PLACEMENT_ID),
-            product: LedgerIdBytes::from_bytes(PRODUCT_ID),
-            indexes: vec![
-                DurableIndexShape {
-                    id: LedgerIdBytes::from_bytes(BY_SHELF_ID),
-                    unique: false,
-                    components: vec![
-                        DurableIndexComponent::Field(LedgerIdBytes::from_bytes(SHELF_ID)),
-                        DurableIndexComponent::Key(LedgerIdBytes::from_bytes(KEY_ID)),
-                    ],
-                },
-                DurableIndexShape {
-                    id: LedgerIdBytes::from_bytes(BY_ISBN_ID),
-                    unique: true,
-                    components: vec![DurableIndexComponent::Field(LedgerIdBytes::from_bytes(
-                        ISBN_ID,
-                    ))],
-                },
+    draft
+        .declare_product(
+            LedgerIdBytes::from_bytes(PRODUCT_ID),
+            record,
+            vec![
+                text_field(TITLE_ID),
+                text_field(SHELF_ID),
+                text_field(ISBN_ID),
             ],
-            members: vec![
-                DurableMemberDef::Field {
-                    id: LedgerIdBytes::from_bytes(TITLE_ID),
-                    required: true,
-                    value: DurableValueShape::Scalar(Scalar::Text),
-                },
-                DurableMemberDef::Field {
-                    id: LedgerIdBytes::from_bytes(SHELF_ID),
-                    required: true,
-                    value: DurableValueShape::Scalar(Scalar::Text),
-                },
-                DurableMemberDef::Field {
-                    id: LedgerIdBytes::from_bytes(ISBN_ID),
-                    required: true,
-                    value: DurableValueShape::Scalar(Scalar::Text),
-                },
-            ],
-        },
-    });
+        )
+        .expect("a well-formed declaration");
+    // The managed indexes are occurrence facts, in declaration order: the nonunique
+    // `byShelf` first, then the unique `byIsbn`.
+    let r = draft
+        .add_root_occurrence(
+            LedgerIdBytes::from_bytes(PRODUCT_ID),
+            RootOccurrenceDef {
+                name: root,
+                keys: vec![KeyColumn {
+                    scalar: Scalar::Int,
+                    id: LedgerIdBytes::from_bytes(KEY_ID),
+                }],
+                placement: LedgerIdBytes::from_bytes(PLACEMENT_ID),
+                indexes: vec![
+                    DurableIndexShape {
+                        id: LedgerIdBytes::from_bytes(BY_SHELF_ID),
+                        unique: false,
+                        components: vec![
+                            DurableIndexComponent::Field(LedgerIdBytes::from_bytes(SHELF_ID)),
+                            DurableIndexComponent::Key(LedgerIdBytes::from_bytes(KEY_ID)),
+                        ],
+                    },
+                    DurableIndexShape {
+                        id: LedgerIdBytes::from_bytes(BY_ISBN_ID),
+                        unique: true,
+                        components: vec![DurableIndexComponent::Field(LedgerIdBytes::from_bytes(
+                            ISBN_ID,
+                        ))],
+                    },
+                ],
+            },
+        )
+        .expect("the Product is declared");
     // The root whole-payload entry site first, then the two index read sites.
-    let entry_site = draft.request_site(SiteDef::whole_payload(root_path()));
-    let scan_site = draft.request_site(SiteDef::index_scan(index_path(BY_SHELF_ID)));
-    let lookup_site = draft.request_site(SiteDef::index_lookup(index_path(BY_ISBN_ID)));
+    let scan_path = r.index_paths()[0].clone();
+    let lookup_path = r.index_paths()[1].clone();
+    let entry_site = site(
+        draft,
+        r.occurrence(),
+        r.placement_path(),
+        SemanticTarget::WholePayload,
+    );
+    let scan_site = site(draft, r.occurrence(), &scan_path, SemanticTarget::IndexScan);
+    let lookup_site = site(
+        draft,
+        r.occurrence(),
+        &lookup_path,
+        SemanticTarget::IndexLookup,
+    );
     let list_int = draft
         .add_collection_type(marrow_image::CollectionTypeDef::List {
             elem: ImageType::scalar(Scalar::Int),
@@ -166,15 +181,17 @@ fn build_export(draft: &mut ImageDraft, code: Vec<Instr>, params: Vec<ImageType>
     let src = draft.intern_string("src/main.mw");
     let name = draft.intern_string("f");
     let local_count = params.len() as u16;
-    let func = draft.add_function(FunctionDef {
-        name,
-        source: src,
-        params,
-        ret,
-        local_count,
-        spans: spans(&code),
-        code,
-    });
+    let func = draft
+        .add_function(FunctionDef {
+            name,
+            source: src,
+            params,
+            ret,
+            local_count,
+            spans: spans(&code),
+            code,
+        })
+        .expect("every site operand is live");
     draft.add_export(ExportId::of_local("", "f"), func);
 }
 

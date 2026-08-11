@@ -9,24 +9,60 @@
 //!
 //! The draft enforces the §E operation-site bound as it is built: sites are minted
 //! through one bounded [`SiteDemandPlan`] that checks vacant capacity before it mints an
-//! id, so no site id is ever a narrowed table length. The remaining `add_*` owners still
-//! append unconditionally and are bounded only by the encoder's recheck. The independent
-//! verifier rechecks every bound against the received bytes; the draft's checks are a
-//! producer-side guard, not the trust boundary.
+//! id, so no site id is ever a narrowed table length. A site is named by binding a live
+//! root occurrence to a live canonical declaration path, so a producer cannot address a
+//! node the graph does not contain, and appending a function validates every site operand
+//! its code carries. The remaining `add_*` owners still append unconditionally on the
+//! string, constant, type, enum, collection, export, and test-entry paths and are bounded
+//! only by the encoder's recheck. The independent verifier rechecks every bound against
+//! the received bytes; the draft's checks are a producer-side guard, not the trust
+//! boundary.
+
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::durable_id::{
-    DurableIndexShape, DurableProductIdentity, DurableValueShape, LedgerIdBytes,
-    RootPlacementIdentity,
+    DurableIndexShape, DurableProductIdentity, LedgerIdBytes, RootPlacementIdentity,
 };
 use crate::export_id::ExportId;
 use crate::instr::Instr;
 use crate::product::{
-    DurableProductClaim, ProductClaimConflict, ProductDeclaration, ProductDeclarationTable,
-    ProductEntryRecordClaim, RootOccurrence,
+    CanonicalDeclarationPathSelector, DeclarationMember, DeclarationMemberDef, DurableProductClaim,
+    OccurrenceGraph, ProductClaimConflict, ProductDeclaration, ProductDeclarationGraph,
+    ProductDeclarationTable, ProductEntryRecordClaim, RootOccurrence, RootOccurrenceRow,
+    RootOccurrenceSelector, RootOccurrenceTable,
 };
 use crate::semantic::{SemanticPath, SemanticTarget};
-use crate::site_plan::{LegacyDraftSiteOperand, SiteDemandPlan};
+use crate::site_plan::{
+    LegacyDraftSiteOperand, OccurrenceSiteHandle, SiteDemandPlan, SitePlanState, SitePlanStateError,
+};
 use crate::ty::{ImageType, Scalar};
+
+/// The strong identity of one draft and its site demand plan.
+///
+/// Every selector, handle, and site operand carries the identity of the draft that
+/// answered for it, so a value minted by one draft cannot authenticate a place in
+/// another. It is minted once per draft from a process-wide counter and is never derived
+/// from an address, a length, or anything a caller supplies.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct DraftIdentity(u64);
+
+impl DraftIdentity {
+    fn mint() -> Self {
+        static NEXT: AtomicU64 = AtomicU64::new(1);
+        Self(NEXT.fetch_add(1, Ordering::Relaxed))
+    }
+}
+
+/// The stamp one appended row carries.
+///
+/// Row ordinals are reused deterministically — a proof pass appends rows and the rewind
+/// discards them, and the next append lands on the same ordinal — so an ordinal alone
+/// cannot say whether the row a selector, handle, or operand was minted against is still
+/// the row that is there. The stamp is drawn from a per-draft counter that the rewind
+/// deliberately does **not** restore, so a re-minted row is never mistaken for the row it
+/// replaced.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct RowStamp(u64);
 
 /// A logical string-pool id, stable across the sort the encoder performs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -165,59 +201,6 @@ pub enum CollectionTypeDef {
     Map { key: ImageType, value: ImageType },
 }
 
-/// The ledger identity block of a durable root: the entropy-minted ids of the
-/// placement and the stored product, plus the resource's durable **member tree**
-/// (its top-level fields interleaved with any static `group` namespaces and keyed
-/// `branch` placements, each recursively holding its own members). Each key
-/// column's id travels with its scalar in [`KeyColumn`]. The contract id is
-/// computed over these, so a rename — which moves a ledger anchor while its id
-/// stays — preserves the durable identity.
-#[derive(Debug, Clone)]
-pub struct RootIdentity {
-    pub placement: LedgerIdBytes,
-    pub product: LedgerIdBytes,
-    pub members: Vec<DurableMemberDef>,
-    /// The root's narrow compiler-maintained managed indexes, in source declaration
-    /// order. Each projects an ordered leaf reference set from this root; it stores
-    /// no data of its own and contributes only its identity and projection to the
-    /// durable contract.
-    pub indexes: Vec<DurableIndexShape>,
-}
-
-/// One member of a durable resource's shape as the draft carries it, in source
-/// declaration order: a stored field (its ledger id, required flag, and value shape
-/// from the closed acyclic durable value set), a static `group` field-path
-/// namespace, or a keyed `branch` placement. Groups and branches recurse. This is
-/// the image-side owner of the durable member tree; the verifier decodes an
-/// independent copy and the contract id is computed over both.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum DurableMemberDef {
-    Field {
-        id: LedgerIdBytes,
-        required: bool,
-        value: DurableValueShape,
-    },
-    Group {
-        id: LedgerIdBytes,
-        members: Vec<DurableMemberDef>,
-    },
-    Branch {
-        placement: LedgerIdBytes,
-        /// The branch's source name, interned for the physical layer (which keys a
-        /// branch family by name at this stage) and for its qualified constructor
-        /// spelling. Like a root's name, it is carried for the surface and is not part
-        /// of the durable identity — a rename preserves the contract id.
-        name: StrId,
-        /// The branch entry's materialized record type: its own direct scalar fields,
-        /// named and ordered like the root's record. A whole branch-entry read yields
-        /// this record and a create/replace supplies it. Carried for the surface, not
-        /// the identity (the member tree's field value shapes carry the identity).
-        record: TypeId,
-        keys: Vec<KeyColumn>,
-        members: Vec<DurableMemberDef>,
-    },
-}
-
 /// One key column of a durable root or branch placement: its orderable durable-key
 /// scalar and the entropy-minted ledger id anchored at `<placement>.<column>`.
 /// Column order is the declared tuple order and is part of the durable identity.
@@ -227,69 +210,83 @@ pub struct KeyColumn {
     pub id: LedgerIdBytes,
 }
 
-/// A durable root placement of a record type, plus its ledger identity block. A
-/// singleton root has an empty key tuple; a keyed root has one or more ordered
-/// [`KeyColumn`]s drawn from the closed orderable durable-key scalar set.
+/// One durable root occurrence to admit: the occurrence facts of one `store` root.
+///
+/// A singleton root has an empty key tuple; a keyed root has one or more ordered
+/// [`KeyColumn`]s drawn from the closed orderable durable-key scalar set. The member
+/// graph and the entry record are **not** here: they are Product declaration facts,
+/// declared once by [`ImageDraft::declare_product`] however many roots occur over them.
+#[doc(hidden)]
 #[derive(Debug, Clone)]
-pub struct RootDef {
+pub struct RootOccurrenceDef {
     pub name: StrId,
     pub keys: Vec<KeyColumn>,
-    pub record: TypeId,
-    pub identity: RootIdentity,
+    pub placement: LedgerIdBytes,
+    /// The root's narrow compiler-maintained managed indexes, in source declaration
+    /// order. Each projects an ordered leaf reference set from this root; it stores no
+    /// data of its own and contributes only its identity and projection to the durable
+    /// contract. They are occurrence facts: two roots over one Product may carry
+    /// different index shapes.
+    pub indexes: Vec<DurableIndexShape>,
 }
 
-/// A durable operation site: the [`SemanticPath`] of the graph node it addresses
-/// plus the closed [`SemanticTarget`] kind it performs there. The path — not a
-/// container-table index — names the node, so the site follows the durable graph's
-/// ledger ids; the verifier resolves the path against its own reconstructed node
-/// set and rejects a path that names no node or whose target kind disagrees with the
-/// resolved node's kind.
+/// What an admitted root occurrence publishes: the selector naming the occurrence row,
+/// the wire RootId an entry identity `Id(^root)` carries, and the canonical path
+/// selectors the row itself owns — its own placement, and one per managed index in
+/// declaration order.
+///
+/// The Product's member paths are not here: they belong to the declaration, are shared by
+/// every occurrence over it, and are read navigationally through
+/// [`ImageDraft::product_members`].
+#[doc(hidden)]
 #[derive(Debug, Clone)]
-pub struct SiteDef {
-    pub path: SemanticPath,
-    pub target: SemanticTarget,
+pub struct AdmittedRoot {
+    occurrence: RootOccurrenceSelector,
+    root_id: u16,
+    placement: CanonicalDeclarationPathSelector,
+    indexes: Vec<CanonicalDeclarationPathSelector>,
 }
 
-impl SiteDef {
-    /// A whole-payload site over the keyed placement `path` names.
-    pub fn whole_payload(path: SemanticPath) -> Self {
-        Self {
-            path,
-            target: SemanticTarget::WholePayload,
-        }
+impl AdmittedRoot {
+    /// The selector naming this occurrence row.
+    pub fn occurrence(&self) -> &RootOccurrenceSelector {
+        &self.occurrence
     }
 
-    /// A field-leaf site over the stored field `path` names.
-    pub fn field_leaf(path: SemanticPath) -> Self {
-        Self {
-            path,
-            target: SemanticTarget::FieldLeaf,
-        }
+    /// The DURABLE-table index of this occurrence — the discriminant an entry identity
+    /// `Id(^root)` carries on the wire. It is a wire fact the compiler emits into
+    /// identity instructions, not a way to name the occurrence row: naming it is what the
+    /// selector is for.
+    pub fn root_id(&self) -> u16 {
+        self.root_id
     }
 
-    /// A whole-group site over the unkeyed `group` node `path` names.
-    pub fn group_entry(path: SemanticPath) -> Self {
-        Self {
-            path,
-            target: SemanticTarget::GroupEntry,
-        }
+    /// The canonical path of this root's own keyed placement.
+    pub fn placement_path(&self) -> &CanonicalDeclarationPathSelector {
+        &self.placement
     }
 
-    /// A nonunique progressive-prefix read site over the managed index `path` names.
-    pub fn index_scan(path: SemanticPath) -> Self {
-        Self {
-            path,
-            target: SemanticTarget::IndexScan,
-        }
+    /// The canonical paths of this root's managed indexes, in declaration order.
+    pub fn index_paths(&self) -> &[CanonicalDeclarationPathSelector] {
+        &self.indexes
     }
+}
 
-    /// A unique complete-key exact-read site over the managed index `path` names.
-    pub fn index_lookup(path: SemanticPath) -> Self {
-        Self {
-            path,
-            target: SemanticTarget::IndexLookup,
-        }
-    }
+/// A durable operation site as the encoder writes it: the [`SemanticPath`] of the graph
+/// node it addresses plus the closed [`SemanticTarget`] kind it performs there.
+///
+/// The path — not a container-table index — names the node, so the site follows the
+/// durable graph's ledger ids; the verifier resolves the path against its own
+/// reconstructed node set and rejects a path that names no node or whose target kind
+/// disagrees with the resolved node's kind.
+///
+/// It is a **projection**, minted transiently at encode from the demand key the plan
+/// retains. Nothing retains it: a retained path is a second copy of the graph that can
+/// drift from the rows the wire and the contract id are written from.
+#[derive(Debug, Clone)]
+pub(crate) struct SiteDef {
+    pub(crate) path: SemanticPath,
+    pub(crate) target: SemanticTarget,
 }
 
 /// A source-position mapping for one instruction. The encoder converts the
@@ -371,8 +368,6 @@ pub enum ImageBuildError {
     DurableTreeTooDeep,
     DurableValueTooDeep,
     TooManySites,
-    SitePathTooDeep,
-    SitePathTooShort,
     TooManyFunctions,
     TooManyParams,
     TooManyLocals,
@@ -404,8 +399,14 @@ impl std::error::Error for ImageBuildError {}
 /// draft inside a [`DraftSavepoint`], rewinding it on exit (see [`Self::savepoint`] /
 /// [`Self::rewind_to`]); the `Clone` derive is used only by tests that need an independent
 /// copy of a built draft.
-#[derive(Debug, Default, Clone)]
+#[derive(Debug)]
 pub struct ImageDraft {
+    /// This draft's strong identity, and the identity of its one site demand plan. Every
+    /// selector, handle, and site operand it mints carries it.
+    identity: DraftIdentity,
+    /// The source of the stamps appended rows carry. It is deliberately not restored by
+    /// [`Self::rewind_to`], so an ordinal reused after a discard carries a fresh stamp.
+    next_stamp: u64,
     strings: Vec<String>,
     consts: Vec<ConstValue>,
     types: Vec<RecordTypeDef>,
@@ -418,7 +419,7 @@ pub struct ImageDraft {
     /// The flat root-occurrence rows, in declaration order. Each references the one
     /// Product declaration it projects; the index of a row is the RootId an entry
     /// identity `Id(^root)` carries.
-    occurrences: Vec<RootOccurrence>,
+    occurrences: RootOccurrenceTable,
     /// The first divergent repeat of an already-declared Product, if one was appended.
     /// Two occurrences of one Product identity that claim different graphs are two
     /// declarations wearing one identity: the draft cannot represent that, and
@@ -440,9 +441,13 @@ pub struct ImageDraft {
 /// pass only appends new entries and fills freshly-reserved records/enums (never a
 /// pre-existing index), so truncating each owner back to its recorded length restores the
 /// draft to the exact bytes it held before the pass.
-#[derive(Clone)]
 #[must_use]
 pub struct DraftSavepoint {
+    /// The draft this mark was taken on. A savepoint restores owner lengths, so applying
+    /// one to another draft silently truncates unrelated tables — and would leave a site
+    /// row whose occurrence ordinal is now held by an unrelated row, which is the one
+    /// failure the demand key exists to make impossible.
+    draft: DraftIdentity,
     strings: usize,
     consts: usize,
     types: usize,
@@ -457,9 +462,49 @@ pub struct DraftSavepoint {
     application: Option<LedgerIdBytes>,
 }
 
+impl Default for ImageDraft {
+    /// A fresh draft with a fresh identity. There is deliberately no derived `Default`:
+    /// every draft mints its own strong identity, and a derived one would hand every
+    /// default-constructed draft the same one.
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ImageDraft {
     pub fn new() -> Self {
-        Self::default()
+        Self {
+            identity: DraftIdentity::mint(),
+            next_stamp: 0,
+            strings: Vec::new(),
+            consts: Vec::new(),
+            types: Vec::new(),
+            enums: Vec::new(),
+            colls: Vec::new(),
+            products: ProductDeclarationTable::default(),
+            occurrences: RootOccurrenceTable::default(),
+            product_conflict: None,
+            application: None,
+            sites: SiteDemandPlan::default(),
+            functions: Vec::new(),
+            exports: Vec::new(),
+            test_entries: Vec::new(),
+        }
+    }
+
+    /// The stamp the next appended row carries.
+    fn next_stamp(&mut self) -> RowStamp {
+        self.next_stamp += 1;
+        RowStamp(self.next_stamp)
+    }
+
+    /// The live tables a site binding is validated and projected against.
+    fn graph(&self) -> OccurrenceGraph<'_> {
+        OccurrenceGraph {
+            draft: self.identity,
+            occurrences: &self.occurrences,
+            products: &self.products,
+        }
     }
 
     /// Intern a string, returning its logical id. Repeated interning of the same
@@ -563,43 +608,166 @@ impl ImageDraft {
         self.enums[id.0 as usize].variants = variants;
     }
 
-    /// Append a durable root **occurrence** and return its DURABLE-table index (its
-    /// declaration-ordered RootId). The index is the discriminant an entry identity
-    /// `Id(^root)` carries.
+    /// Admit one durable **Product declaration**: its canonical member/value graph and
+    /// the entry record its roots read and write, returning the declaration's direct
+    /// members exactly as [`Self::product_members`] publishes them.
     ///
-    /// The root's Product declaration — its canonical member/value graph and its entry
-    /// record — is admitted into the declaration table here: the first occurrence of a
-    /// Product identity binds it, and a later occurrence references the one already
-    /// bound. The occurrence row retains only the root's own placement, spelling, key
-    /// tuple, and managed indexes, so nothing is retained per (root x member).
-    pub fn add_root(&mut self, def: RootDef) -> u16 {
-        let RootDef {
+    /// This is the one construction path for the durable graph. It is **flat**: a
+    /// Product's members arrive as a command vector whose rows name their parent by an
+    /// earlier command, so a caller cannot hand the draft a recursive tree, and every
+    /// command is validated against the canonical rules before any row is appended.
+    ///
+    /// A Product is a declaration and a root is an occurrence of it, so the graph is held
+    /// once however many roots project it. The first declaration of a Product identity
+    /// binds the row; a later one is a reference that must match it exactly.
+    ///
+    /// Two declarations of one Product identity that claim different graphs or different
+    /// entry records are two declarations wearing one identity. That is recorded rather
+    /// than refused here — the later one still resolves to the bound row, and
+    /// [`Self::encode`] refuses the image — so the failure is reported once, in wire
+    /// order, by the owner that refuses artifacts.
+    ///
+    /// Refused — as one opaque [`SitePlanStateError`], the single refusal type this
+    /// construction seam carries — when the command vector is not a well-formed flat
+    /// declaration: a member naming a parent that is not an earlier command, a member
+    /// count over the declaration bound, or any other canonical-rule violation. No row is
+    /// appended in that case. The cause is not projected: it is a producer-side fault
+    /// about a vector the caller built, and no caller branches on which rule it broke.
+    ///
+    /// **Temporary.** Its flat command form exists because the deliberately
+    /// compiler-free test tier needs a durable-graph construction path that is neither
+    /// the compiler nor a raw builder. It is deleted when the admitted graph input plan
+    /// replaces it and every consumer migrates onto that plan, in one transaction.
+    #[doc(hidden)]
+    pub fn declare_product(
+        &mut self,
+        product: LedgerIdBytes,
+        entry_record: TypeId,
+        members: Vec<DeclarationMemberDef>,
+    ) -> Result<Vec<DeclarationMember>, SitePlanStateError> {
+        let graph = ProductDeclarationGraph::from_commands(members)
+            .map_err(|_| SitePlanStateError::new(SitePlanState::InvalidDemand))?;
+        let stamp = self.next_stamp();
+        let (row, conflict) = self.products.admit(
+            DurableProductClaim::new(DurableProductIdentity::minted(product), graph),
+            ProductEntryRecordClaim::new(entry_record),
+            stamp,
+        );
+        if let Some(conflict) = conflict {
+            self.product_conflict.get_or_insert(conflict);
+        }
+        Ok(self.graph().members_of_row(row))
+    }
+
+    /// Append one root occurrence over the Product declaration `product` names, returning
+    /// what the completed row publishes.
+    ///
+    /// The occurrence row retains only the root's own placement, spelling, key tuple, and
+    /// managed indexes and a reference to the one declaration, so nothing is retained per
+    /// (root x member). A root over a Product this draft does not hold is refused: an
+    /// occurrence with no declaration is not a root.
+    ///
+    /// The one opaque [`SitePlanStateError`] this construction seam carries covers three
+    /// causes, none of them projected: the named Product is not declared here, the
+    /// occurrence table is already at its root bound (the same bound the encoder reports
+    /// as [`ImageBuildError::TooManyRoots`]), or the completed row's published selectors
+    /// exceed what a canonical path can address. Each is a fault in the graph the caller
+    /// just built, and no caller branches on which.
+    #[doc(hidden)]
+    pub fn add_root_occurrence(
+        &mut self,
+        product: LedgerIdBytes,
+        def: RootOccurrenceDef,
+    ) -> Result<AdmittedRoot, SitePlanStateError> {
+        let RootOccurrenceDef {
             name,
             keys,
-            record,
-            identity,
+            placement,
+            indexes,
         } = def;
-        let claim = DurableProductClaim::new(
-            DurableProductIdentity::minted(identity.product),
-            identity.members,
-        );
-        let index = self.occurrences.len() as u16;
-        match self
+        let declaration = self
             .products
-            .admit(claim, ProductEntryRecordClaim::new(record))
-        {
-            Ok(declaration) => self.occurrences.push(RootOccurrence::new(
-                declaration,
-                name,
-                keys,
-                RootPlacementIdentity::minted(identity.placement),
-                identity.indexes,
-            )),
-            Err(conflict) => {
-                self.product_conflict.get_or_insert(conflict);
-            }
-        }
-        index
+            .row_of(DurableProductIdentity::minted(product))
+            .ok_or_else(|| SitePlanStateError::new(SitePlanState::InvalidDemand))?;
+        let stamp = self.next_stamp();
+        let occurrence = self
+            .occurrences
+            .push(
+                self.identity,
+                RootOccurrenceRow {
+                    declaration,
+                    name,
+                    keys,
+                    placement: RootPlacementIdentity::minted(placement),
+                    indexes,
+                },
+                stamp,
+            )
+            .ok_or_else(|| SitePlanStateError::new(SitePlanState::InvalidDemand))?;
+        let root_id = occurrence.wire_root_id();
+        let (placement, indexes) = self
+            .graph()
+            .publish(&occurrence)
+            .ok_or_else(|| SitePlanStateError::new(SitePlanState::StaleBinding))?;
+        Ok(AdmittedRoot {
+            occurrence,
+            root_id,
+            placement,
+            indexes,
+        })
+    }
+
+    /// The direct members of the Product declaration `product` names, in declaration
+    /// order — each member's canonical path selector and its declared shape — or `None`
+    /// if this draft holds no such declaration.
+    ///
+    /// A member's own members are read the same way, through [`Self::members_of`], so a
+    /// walk of a declaration is navigational and materializes one level at a time. This
+    /// is how a producer obtains a member's canonical path: it is published by the one
+    /// owner of the declaration rows, never recomputed by comparing paths. It is also how
+    /// a second root over one Product reads the declaration the draft already holds
+    /// instead of resolving that resource's anchors again.
+    #[doc(hidden)]
+    pub fn product_members(&self, product: LedgerIdBytes) -> Option<Vec<DeclarationMember>> {
+        self.graph()
+            .product_members(DurableProductIdentity::minted(product))
+    }
+
+    /// The direct members of the declaration node `path` names, in declaration order. A
+    /// field and a root-scoped path declare none.
+    ///
+    /// A selector published by another draft, or one whose declaration row was discarded,
+    /// is refused rather than answered with an empty member list: "this is not mine" and
+    /// "this node declares nothing" are different facts, and a caller that classifies a
+    /// declaration by its members would read the first as the second.
+    #[doc(hidden)]
+    pub fn members_of(
+        &self,
+        path: &CanonicalDeclarationPathSelector,
+    ) -> Result<Vec<DeclarationMember>, SitePlanStateError> {
+        self.graph()
+            .members_of(path)
+            .ok_or_else(|| SitePlanStateError::new(SitePlanState::StaleBinding))
+    }
+
+    /// Bind one root occurrence, one canonical declaration path, and one operation target
+    /// into a validated site demand.
+    ///
+    /// This is the sole binder. It proves that both selectors were published by this
+    /// draft and still name live rows, that the path is a canonical path of exactly this
+    /// occurrence's Product or exactly this occurrence's own root-scoped case, and that
+    /// the one supplied target is the target that node admits. No later call accepts a
+    /// second target, and the returned handle borrows nothing: the immutable borrow ends
+    /// here, before [`Self::request_site`] takes the draft mutably.
+    #[doc(hidden)]
+    pub fn bind_occurrence_site(
+        &self,
+        root: &RootOccurrenceSelector,
+        path: &CanonicalDeclarationPathSelector,
+        target: SemanticTarget,
+    ) -> Result<OccurrenceSiteHandle, SitePlanStateError> {
+        let demand = self.graph().validate(root, path, target)?;
+        Ok(OccurrenceSiteHandle::new(self.identity, demand))
     }
 
     /// Record the application's ledger id. Required exactly when the draft has a
@@ -609,17 +777,20 @@ impl ImageDraft {
         self.application = Some(id);
     }
 
-    /// Mint-or-return the operation site answering `def`, through the draft's one bounded
-    /// [`SiteDemandPlan`].
+    /// Mint-or-return the operation site answering the bound demand `handle` names,
+    /// through the draft's one bounded [`SiteDemandPlan`].
     ///
-    /// The first request for a `(node, target)` demand appends a row; a later request for
-    /// the same one returns the id already minted, so the site table carries a site per
-    /// *demanded* node rather than one per declared graph node. Eagerly emitted bounded
-    /// sites (whole-payload, group-entry, index) and lazily demanded field leaves share
-    /// this one mint path: they are disjoint by construction — an eager demand's terminal
-    /// step is a placement, group, or index node and its target is never `FieldLeaf` —
-    /// so unifying them mints no different row for any production graph, while leaving no
+    /// The first request for a demand appends a row; a later request for the same one
+    /// returns the id already minted, so the site table carries a site per *demanded*
+    /// place rather than one per declared graph node. Eagerly preseeded bounded sites
+    /// (whole-payload, group-entry, index) and lazily demanded field leaves share this
+    /// one mint path: they are disjoint by construction — a preseeded demand's path names
+    /// a placement, group, or index node and its target is never `FieldLeaf` — so
+    /// unifying them mints no different row for any production graph, while leaving no
     /// second path that can append a row the demand map cannot see.
+    ///
+    /// The plan retains **only** the demand key: three owned typed ordinals. The path the
+    /// site encodes to is projected from that key at encode.
     ///
     /// The returned [`LegacyDraftSiteOperand`] is the only way an instruction can name a
     /// site: it is opaque, has no constructor of its own, and carries either the id the
@@ -627,14 +798,40 @@ impl ImageDraft {
     /// nonblocking, and the encoder refuses the image through the Sites bound — but there
     /// is no id that would not alias a fitting site, so none is carried.
     #[doc(hidden)]
-    pub fn request_site(&mut self, def: SiteDef) -> LegacyDraftSiteOperand {
-        self.sites.request(def)
+    pub fn request_site(
+        &mut self,
+        handle: &OccurrenceSiteHandle,
+    ) -> Result<LegacyDraftSiteOperand, SitePlanStateError> {
+        if handle.draft() != self.identity {
+            return Err(SitePlanStateError::new(SitePlanState::WrongPlan));
+        }
+        // The rows the handle was bound against may have been discarded since; rebinding
+        // the same triple against the live tables is what proves they were not.
+        let demand = handle.demand();
+        let stamp = self.next_stamp();
+        let live = self.graph().revalidate(&demand)?;
+        Ok(self.sites.request(self.identity, live, stamp))
     }
 
-    pub fn add_function(&mut self, def: FunctionDef) -> FuncId {
+    /// Append a function body, validating every operation site its code names first.
+    ///
+    /// A site operand is evidence that *this* draft answered for a place. Appending code
+    /// is where that evidence is spent, so it is checked here rather than trusted: an
+    /// operand minted by another draft, or one whose site row or policy receipt was
+    /// discarded, is refused and **no** row is appended. The success carrier is unchanged
+    /// — a function is still named by its [`FuncId`] — so the check widens neither
+    /// function identity nor the site-binding state error's authority.
+    pub fn add_function(&mut self, def: FunctionDef) -> Result<FuncId, SitePlanStateError> {
+        for instr in &def.code {
+            if let Some(site) = instr.site_operand() {
+                self.sites
+                    .validate(self.identity, site)
+                    .map_err(SitePlanStateError::new)?;
+            }
+        }
         let id = FuncId(self.functions.len() as u16);
         self.functions.push(def);
-        id
+        Ok(id)
     }
 
     /// Bind the export identity `id` to function `func`. The compiler mints `id`
@@ -665,6 +862,7 @@ impl ImageDraft {
     /// every entry appended after this point. See [`DraftSavepoint`].
     pub fn savepoint(&self) -> DraftSavepoint {
         DraftSavepoint {
+            draft: self.identity,
             strings: self.strings.len(),
             consts: self.consts.len(),
             types: self.types.len(),
@@ -685,7 +883,15 @@ impl ImageDraft {
     /// exactly the demands of the rows it discards. The append-only discipline of the proof
     /// pass — reserve-then-fill confined to freshly-appended indices — makes this a total
     /// inverse.
-    pub fn rewind_to(&mut self, savepoint: DraftSavepoint) {
+    ///
+    /// A mark taken on another draft is refused rather than applied. Applying one would
+    /// truncate unrelated tables to a length that means nothing here, and could leave a
+    /// live site row whose occurrence ordinal is held by an unrelated occurrence — the one
+    /// failure the demand key exists to make impossible.
+    pub fn rewind_to(&mut self, savepoint: DraftSavepoint) -> Result<(), SitePlanStateError> {
+        if savepoint.draft != self.identity {
+            return Err(SitePlanStateError::new(SitePlanState::WrongPlan));
+        }
         self.sites.truncate(savepoint.sites);
         self.strings.truncate(savepoint.strings);
         self.consts.truncate(savepoint.consts);
@@ -698,6 +904,7 @@ impl ImageDraft {
         self.exports.truncate(savepoint.exports);
         self.test_entries.truncate(savepoint.test_entries);
         self.application = savepoint.application;
+        Ok(())
     }
 
     // --- accessors used by the encoder ---
@@ -718,7 +925,7 @@ impl ImageDraft {
     }
     /// The flat root-occurrence rows, in declaration order.
     pub(crate) fn root_occurrences(&self) -> &[RootOccurrence] {
-        &self.occurrences
+        self.occurrences.rows()
     }
 
     /// The Product declaration one occurrence row projects.
@@ -732,21 +939,6 @@ impl ImageDraft {
         self.products.declarations()
     }
 
-    /// The member tree of the Product declaration already bound to `identity`, if one is.
-    ///
-    /// The declaration owns flat rows; this projects them back into the tree the compiler
-    /// still builds its graph in, so a second root over one Product reads the declaration
-    /// the draft already holds instead of resolving its anchors again. It is deleted with
-    /// [`DurableMemberDef`].
-    pub fn product_member_tree(
-        &self,
-        identity: DurableProductIdentity,
-    ) -> Option<Vec<DurableMemberDef>> {
-        self.products
-            .by_identity(identity)
-            .map(|declaration| declaration.graph().member_tree())
-    }
-
     /// The first divergent repeat of an already-declared Product, if one was appended.
     pub(crate) fn product_conflict(&self) -> Option<ProductClaimConflict> {
         self.product_conflict
@@ -754,8 +946,34 @@ impl ImageDraft {
     pub(crate) fn application_identity(&self) -> Option<LedgerIdBytes> {
         self.application
     }
-    pub(crate) fn sites(&self) -> &[SiteDef] {
-        self.sites.rows()
+    /// The site table the encoder writes: each retained demand projected into the
+    /// semantic path of the node it addresses, in emission order.
+    ///
+    /// The projection is the site table's only path source. A row retains ordinals into
+    /// the occurrence and declaration tables, so the path a site encodes to is derived
+    /// from the same rows the DURABLE section's member graph is written from and cannot
+    /// disagree with them.
+    pub(crate) fn projected_sites(&self) -> Result<Vec<SiteDef>, ImageBuildError> {
+        if self.sites.rows().is_empty() {
+            return Ok(Vec::new());
+        }
+        let application = self
+            .application_identity()
+            .ok_or(ImageBuildError::InvalidReference("application identity"))?;
+        let graph = self.graph();
+        self.sites
+            .rows()
+            .iter()
+            .map(|row| {
+                let path = graph
+                    .project_path(application, row.key())
+                    .ok_or(ImageBuildError::InvalidReference("operation site"))?;
+                Ok(SiteDef {
+                    path,
+                    target: row.key().target(),
+                })
+            })
+            .collect()
     }
 
     /// The plan's logical site demand, saturating at `MAX_SITES + 1`. The encoder's Sites
@@ -842,5 +1060,236 @@ mod collection_count_tests {
         });
         assert_eq!(map.index(), 1);
         assert_eq!(draft.collection_type_count(), 2);
+    }
+}
+
+#[cfg(test)]
+mod site_binding_tests {
+    use super::{ImageDraft, RootOccurrenceDef, TypeId};
+    use crate::durable_id::{DurableValueShape, LedgerIdBytes};
+    use crate::product::{DeclarationMemberDef, DeclarationMemberShape};
+    use crate::semantic::SemanticTarget;
+    use crate::site_plan::{SitePlanState, SitePlanStateError};
+    use crate::ty::Scalar;
+
+    fn product() -> LedgerIdBytes {
+        LedgerIdBytes::from_bytes([0x11; 16])
+    }
+
+    fn placement() -> LedgerIdBytes {
+        LedgerIdBytes::from_bytes([0x22; 16])
+    }
+
+    fn field() -> LedgerIdBytes {
+        LedgerIdBytes::from_bytes([0x33; 16])
+    }
+
+    /// A draft holding one Product of one required int field and one keyless root over it.
+    fn one_root() -> (ImageDraft, super::AdmittedRoot) {
+        let mut draft = ImageDraft::new();
+        draft.set_application_identity(LedgerIdBytes::from_bytes([0x01; 16]));
+        let name = draft.intern_string("r");
+        draft
+            .declare_product(
+                product(),
+                TypeId(0),
+                vec![DeclarationMemberDef {
+                    parent: None,
+                    shape: DeclarationMemberShape::Field {
+                        id: field(),
+                        required: true,
+                        value: DurableValueShape::Scalar(Scalar::Int),
+                    },
+                }],
+            )
+            .expect("a well-formed declaration");
+        let admitted = draft
+            .add_root_occurrence(
+                product(),
+                RootOccurrenceDef {
+                    name,
+                    keys: Vec::new(),
+                    placement: placement(),
+                    indexes: Vec::new(),
+                },
+            )
+            .expect("the Product is declared");
+        (draft, admitted)
+    }
+
+    /// The three private refusal cases, each reached through the public binder.
+    ///
+    /// The public type is one opaque invariant, so the discriminant is only ever observed
+    /// here: it is what makes "wrong draft", "the row is gone", and "that is not a place"
+    /// distinguishable to the owner without publishing three of them to every consumer.
+    #[test]
+    fn the_binder_distinguishes_its_three_refusals() {
+        let (first, first_root) = one_root();
+        let (second, _) = one_root();
+
+        let mine = first.product_members(product()).expect("declared");
+        let theirs = second.product_members(product()).expect("declared");
+
+        // A path selector published by another draft is a wrong-plan refusal, however
+        // identical the two graphs look.
+        assert_eq!(
+            first
+                .bind_occurrence_site(
+                    first_root.occurrence(),
+                    theirs[0].path(),
+                    SemanticTarget::FieldLeaf,
+                )
+                .expect_err("a foreign selector cannot bind"),
+            SitePlanStateError::new(SitePlanState::WrongPlan),
+        );
+
+        // A target the node does not admit is an invalid demand: a field admits only a
+        // field-leaf read or write, and a root placement only a whole payload.
+        assert_eq!(
+            first
+                .bind_occurrence_site(
+                    first_root.occurrence(),
+                    mine[0].path(),
+                    SemanticTarget::WholePayload,
+                )
+                .expect_err("a field admits no whole-payload site"),
+            SitePlanStateError::new(SitePlanState::InvalidDemand),
+        );
+        assert_eq!(
+            first
+                .bind_occurrence_site(
+                    first_root.occurrence(),
+                    first_root.placement_path(),
+                    SemanticTarget::FieldLeaf,
+                )
+                .expect_err("a placement admits no field-leaf site"),
+            SitePlanStateError::new(SitePlanState::InvalidDemand),
+        );
+
+        // The one target each admits does bind, so the refusals above are about the
+        // target and not about the pair being unbindable.
+        assert!(
+            first
+                .bind_occurrence_site(
+                    first_root.occurrence(),
+                    mine[0].path(),
+                    SemanticTarget::FieldLeaf,
+                )
+                .is_ok()
+        );
+    }
+
+    /// Discarding the rows a handle was bound against makes it stale, and the ordinal
+    /// being reused afterwards does not revive it.
+    #[test]
+    fn a_handle_over_a_discarded_row_is_stale_even_when_its_ordinal_is_reused() {
+        let mut draft = ImageDraft::new();
+        draft.set_application_identity(LedgerIdBytes::from_bytes([0x01; 16]));
+        let mark = draft.savepoint();
+        let name = draft.intern_string("r");
+        draft
+            .declare_product(
+                product(),
+                TypeId(0),
+                vec![DeclarationMemberDef {
+                    parent: None,
+                    shape: DeclarationMemberShape::Field {
+                        id: field(),
+                        required: true,
+                        value: DurableValueShape::Scalar(Scalar::Int),
+                    },
+                }],
+            )
+            .expect("a well-formed declaration");
+        let admitted = draft
+            .add_root_occurrence(
+                product(),
+                RootOccurrenceDef {
+                    name,
+                    keys: Vec::new(),
+                    placement: placement(),
+                    indexes: Vec::new(),
+                },
+            )
+            .expect("the Product is declared");
+        let handle = draft
+            .bind_occurrence_site(
+                admitted.occurrence(),
+                admitted.placement_path(),
+                SemanticTarget::WholePayload,
+            )
+            .expect("the root admits a whole-payload site");
+
+        draft
+            .rewind_to(mark)
+            .expect("the savepoint was taken from this draft");
+
+        assert_eq!(
+            draft
+                .request_site(&handle)
+                .expect_err("the occurrence row was discarded"),
+            SitePlanStateError::new(SitePlanState::StaleBinding),
+        );
+
+        // The same ordinals are re-minted deterministically; the handle must still not
+        // authenticate the replacement.
+        let name = draft.intern_string("r");
+        draft
+            .declare_product(
+                product(),
+                TypeId(0),
+                vec![DeclarationMemberDef {
+                    parent: None,
+                    shape: DeclarationMemberShape::Field {
+                        id: field(),
+                        required: true,
+                        value: DurableValueShape::Scalar(Scalar::Int),
+                    },
+                }],
+            )
+            .expect("a well-formed declaration");
+        draft
+            .add_root_occurrence(
+                product(),
+                RootOccurrenceDef {
+                    name,
+                    keys: Vec::new(),
+                    placement: placement(),
+                    indexes: Vec::new(),
+                },
+            )
+            .expect("the Product is declared");
+
+        assert_eq!(
+            draft
+                .request_site(&handle)
+                .expect_err("a re-minted row is not the row the handle was bound against"),
+            SitePlanStateError::new(SitePlanState::StaleBinding),
+        );
+    }
+
+    /// A command vector that does not state a forest is refused before any row is
+    /// appended, so a malformed declaration cannot reach the encoder at all.
+    #[test]
+    fn a_malformed_command_vector_appends_no_row() {
+        let mut draft = ImageDraft::new();
+
+        let refusal = draft
+            .declare_product(
+                product(),
+                TypeId(0),
+                vec![DeclarationMemberDef {
+                    parent: Some(0),
+                    shape: DeclarationMemberShape::Group { id: field() },
+                }],
+            )
+            .expect_err("a command cannot be its own parent");
+
+        assert_eq!(
+            refusal,
+            SitePlanStateError::new(SitePlanState::InvalidDemand)
+        );
+        assert!(draft.product_members(product()).is_none());
+        assert!(draft.root_occurrences().is_empty());
     }
 }

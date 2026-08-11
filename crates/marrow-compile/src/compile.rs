@@ -418,11 +418,10 @@ enum InvariantCause {
     /// the image carries.
     ReservedIndexMismatch,
     /// An image-build variant unreachable from a coherent compiler: a producer-state
-    /// contradiction (an invalid cross-reference, a site path shorter than its
-    /// minimum, a local count below the parameter count) or a per-construct bound a
-    /// source precheck already refuses before the draft is built. Kept opaque: it is a
-    /// compiler-internal defect, not a source diagnostic or an aggregate resource
-    /// limit.
+    /// contradiction (an invalid cross-reference, a local count below the parameter
+    /// count) or a per-construct bound a source precheck already refuses before the
+    /// draft is built. Kept opaque: it is a compiler-internal defect, not a source
+    /// diagnostic or an aggregate resource limit.
     ImageBuild(ImageBuildError),
 }
 
@@ -450,10 +449,10 @@ fn stage_failure(diagnostics: BoundedDiagnostics) -> Option<CompileFailure> {
 /// source construct at fault and becomes a [`CompileResourceLimit`]. A per-construct
 /// bound is refused earlier by a source precheck at its offending span, so reaching
 /// it here means the draft was built past a bound the precheck should have caught — a
-/// compiler-internal defect — and a producer-state contradiction (an invalid
-/// reference, a too-short site path, a local count below the parameters) is likewise
-/// unreachable from a coherent compiler; both are opaque invariants. The match has no
-/// wildcard, so a new image-build variant forces an explicit classification here.
+/// compiler-internal defect — and a producer-state contradiction (an invalid reference,
+/// a local count below the parameters) is likewise unreachable from a coherent compiler;
+/// both are opaque invariants. The match has no wildcard, so a new image-build variant
+/// forces an explicit classification here.
 fn image_build_outcome(error: ImageBuildError) -> ImagePolicyOutcome {
     use marrow_image::bounds;
     let aggregate = |kind: ResourceLimitKind, limit: usize| {
@@ -517,8 +516,6 @@ fn image_build_outcome(error: ImageBuildError) -> ImagePolicyOutcome {
         | ImageBuildError::DurableValueTooDeep
         | ImageBuildError::TooManyParams
         | ImageBuildError::TooManyLocals
-        | ImageBuildError::SitePathTooShort
-        | ImageBuildError::SitePathTooDeep
         | ImageBuildError::LocalCountBelowParams
         // Two occurrences of one Product identity claiming a different graph or entry
         // record is unreachable from source: a Product's graph is built once, at its
@@ -2967,6 +2964,7 @@ mod tests {
             },
             GenericInvariant::DurableResourceMissing(_) => "durable resource missing",
             GenericInvariant::DeclarationIndexDrift => "declaration index drift",
+            GenericInvariant::DurableConstructionRefused => "durable construction refused",
         }
     }
 
@@ -3486,19 +3484,21 @@ mod tests {
         let Ok(local_count) = u16::try_from(marrow_image::bounds::MAX_LOCALS + 1) else {
             panic!("the current image local bound has a representable hostile successor")
         };
-        draft.add_function(marrow_image::FunctionDef {
-            name,
-            source,
-            params: Vec::new(),
-            ret: marrow_image::ImageType::Unit,
-            local_count,
-            code: vec![marrow_image::Instr::Return],
-            spans: vec![marrow_image::SpanEntry {
-                instr_index: 0,
-                line: 1,
-                column: 1,
-            }],
-        });
+        draft
+            .add_function(marrow_image::FunctionDef {
+                name,
+                source,
+                params: Vec::new(),
+                ret: marrow_image::ImageType::Unit,
+                local_count,
+                code: vec![marrow_image::Instr::Return],
+                spans: vec![marrow_image::SpanEntry {
+                    instr_index: 0,
+                    line: 1,
+                    column: 1,
+                }],
+            })
+            .expect("a storeless body names no operation site");
 
         assert!(matches!(
             draft.encode(),

@@ -117,15 +117,17 @@ fn encode(build: impl FnOnce(&mut ImageDraft) -> (ImageType, Vec<Instr>)) -> Vec
             column: 1,
         })
         .collect();
-    let func = draft.add_function(FunctionDef {
-        name,
-        source,
-        params: Vec::new(),
-        ret,
-        local_count: 2,
-        code,
-        spans,
-    });
+    let func = draft
+        .add_function(FunctionDef {
+            name,
+            source,
+            params: Vec::new(),
+            ret,
+            local_count: 2,
+            code,
+            spans,
+        })
+        .expect("every site operand is live");
     draft.add_export(ExportId::of_local("", "f"), func);
     draft.encode().expect("encode").bytes
 }

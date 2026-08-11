@@ -33,15 +33,17 @@ fn linear_span_image(with_spans: bool) -> Vec<u8> {
     } else {
         Vec::new()
     };
-    let function = draft.add_function(FunctionDef {
-        name,
-        source,
-        params: Vec::new(),
-        ret: ImageType::Unit,
-        local_count: 0,
-        code,
-        spans,
-    });
+    let function = draft
+        .add_function(FunctionDef {
+            name,
+            source,
+            params: Vec::new(),
+            ret: ImageType::Unit,
+            local_count: 0,
+            code,
+            spans,
+        })
+        .expect("every site operand is live");
     draft.add_export(ExportId::of_local("", "linearSpans"), function);
     draft.encode().expect("encode linear span image").bytes
 }

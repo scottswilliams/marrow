@@ -443,6 +443,16 @@ pub(crate) enum GenericInvariant {
     /// source, so it is neither reported against the declaration nor allowed to drop
     /// the root silently.
     DurableResourceMissing(marrow_image::TypeId),
+    /// The image draft refused a Product declaration, a root occurrence, a site binding,
+    /// a site request, or a function body's site operands. Every one of those is a
+    /// producer-side invariant: the compiler names a place the draft itself published, so
+    /// a refusal means the compiler and the image owner disagree about the graph the
+    /// compiler just built. It is named for the fault, not for the image owner's error
+    /// type: a malformed Product command vector and a root occurrence over an undeclared
+    /// Product are refusals of durable construction, not states of a site plan. The image
+    /// owner's error is opaque by construction, so no cause is carried and none is
+    /// rendered.
+    DurableConstructionRefused,
     /// A declaration ledger's lookup index and its occurrence list disagree: a
     /// refusal handle addresses a position that holds no refusal, or one namespace's
     /// handle was presented to another's ledger. The two layers name one declaration
@@ -454,6 +464,12 @@ pub(crate) enum GenericInvariant {
 impl From<DeclarationIndexDrift> for GenericInvariant {
     fn from(_: DeclarationIndexDrift) -> Self {
         Self::DeclarationIndexDrift
+    }
+}
+
+impl From<marrow_image::SitePlanStateError> for GenericInvariant {
+    fn from(_: marrow_image::SitePlanStateError) -> Self {
+        Self::DurableConstructionRefused
     }
 }
 
@@ -879,7 +895,7 @@ pub(crate) struct TemplateProofScope<'r, 'd> {
     registry: &'r TypeRegistry,
     draft: &'d mut ImageDraft,
     savepoint: Option<RegistryProofSavepoint>,
-    draft_savepoint: DraftSavepoint,
+    draft_savepoint: Option<DraftSavepoint>,
 }
 
 impl<'r, 'd> TemplateProofScope<'r, 'd> {
@@ -898,7 +914,7 @@ impl<'r, 'd> TemplateProofScope<'r, 'd> {
             registry,
             draft,
             savepoint: Some(savepoint),
-            draft_savepoint,
+            draft_savepoint: Some(draft_savepoint),
         })
     }
 
@@ -906,13 +922,24 @@ impl<'r, 'd> TemplateProofScope<'r, 'd> {
     pub(crate) fn draft(&mut self) -> &mut ImageDraft {
         self.draft
     }
+
+    /// Discard everything the proof body appended to the draft.
+    ///
+    /// The scope holds the draft exclusively and took this mark from it, so the draft can
+    /// only refuse a mark it did not issue and this one always applies. A mark is spent
+    /// once: the scope closes explicitly or on unwind, never both.
+    fn rewind_draft(&mut self) {
+        if let Some(mark) = self.draft_savepoint.take() {
+            let _ = self.draft.rewind_to(mark);
+        }
+    }
 }
 
 impl Drop for TemplateProofScope<'_, '_> {
     fn drop(&mut self) {
         if let Some(savepoint) = self.savepoint.take() {
             self.registry.exit_template_proof(savepoint);
-            self.draft.rewind_to(self.draft_savepoint.clone());
+            self.rewind_draft();
         }
     }
 }
@@ -9570,7 +9597,9 @@ mod instantiation_state_tests {
 
         let outcome = registry.take_generic_diagnostics();
         registry.exit_template_proof(proof);
-        draft.rewind_to(draft_savepoint);
+        draft
+            .rewind_to(draft_savepoint)
+            .expect("the mark was taken on this draft");
 
         // The failed proof leaked nothing: the settled registry and the draft bytes are
         // exactly what they were before the pass.

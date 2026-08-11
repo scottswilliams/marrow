@@ -833,14 +833,23 @@ fn seed_collection(registry: &TypeRegistry, draft: &mut ImageDraft, spec: CollSp
     id.index()
 }
 
-#[test]
-fn missing_non_scalar_targets_are_rejected_before_ready_publication() {
-    let mut record_draft = ImageDraft::new();
-    let record_name = record_draft.intern_string("OrphanRecord");
-    let record = record_draft.add_record_type(RecordTypeDef {
-        name: record_name,
+/// A draft holding one empty record type, and that type's id. Each call builds its own:
+/// a draft owns a strong identity, so two cases that need "the same" draft need two
+/// drafts built the same way, never one copied.
+fn orphan_record_draft() -> (ImageDraft, marrow_image::TypeId) {
+    let mut draft = ImageDraft::new();
+    let name = draft.intern_string("OrphanRecord");
+    let record = draft.add_record_type(RecordTypeDef {
+        name,
         fields: Vec::new(),
     });
+    (draft, record)
+}
+
+#[test]
+fn missing_non_scalar_targets_are_rejected_before_ready_publication() {
+    let (struct_draft, record) = orphan_record_draft();
+    let (group_draft, _) = orphan_record_draft();
 
     let mut enum_draft = ImageDraft::new();
     let enum_name = enum_draft.intern_string("OrphanEnum");
@@ -851,8 +860,8 @@ fn missing_non_scalar_targets_are_rejected_before_ready_publication() {
 
     let observations = vec![
         target_case(ImageDraft::new(), GArg::Nominal(NominalId(0))),
-        target_case(record_draft.clone(), GArg::Struct(record)),
-        target_case(record_draft, GArg::Group(record)),
+        target_case(struct_draft, GArg::Struct(record)),
+        target_case(group_draft, GArg::Group(record)),
         target_case(enum_draft, GArg::Enum(enum_id)),
         target_case(ImageDraft::new(), GArg::Param(0)),
     ];
@@ -1115,7 +1124,9 @@ fn template_proof_parameter_stays_local_to_the_savepoint() {
     // The savepoint erases the parameter row and its throwaway image; the settled owner and
     // the draft are exactly what they were before the pass.
     registry.exit_template_proof(proof);
-    draft.rewind_to(draft_savepoint);
+    draft
+        .rewind_to(draft_savepoint)
+        .expect("the mark was taken on this draft");
     assert_eq!(owner_snapshot(&registry), registry_before);
     assert_eq!(draft_fingerprint(&draft), draft_before);
 }
@@ -1333,6 +1344,7 @@ fn invariant_family_tag(invariant: GenericInvariant) -> u8 {
             18
         }
         GenericInvariant::DeclarationIndexDrift => 19,
+        GenericInvariant::DurableConstructionRefused => 20,
         GenericInvariant::ReadyBodyShapeMismatch(id) => {
             let _ = id;
             15
@@ -1431,12 +1443,8 @@ fn assert_exact_target_invariant(registry: TypeRegistry, mut draft: ImageDraft, 
 
 #[test]
 fn argument_targets_report_exact_private_causes_without_publication() {
-    let mut record_draft = ImageDraft::new();
-    let record_name = record_draft.intern_string("OrphanRecord");
-    let record = record_draft.add_record_type(RecordTypeDef {
-        name: record_name,
-        fields: Vec::new(),
-    });
+    let (struct_draft, record) = orphan_record_draft();
+    let (group_draft, _) = orphan_record_draft();
     let mut enum_draft = ImageDraft::new();
     let enum_name = enum_draft.intern_string("OrphanEnum");
     let enum_id = enum_draft.add_enum_type(EnumTypeDef {
@@ -1451,12 +1459,12 @@ fn argument_targets_report_exact_private_causes_without_publication() {
     );
     assert_exact_target_invariant(
         test_registry(vec![struct_template("Box", &["T"])]),
-        record_draft.clone(),
+        struct_draft,
         GArg::Struct(record),
     );
     assert_exact_target_invariant(
         test_registry(vec![struct_template("Box", &["T"])]),
-        record_draft,
+        group_draft,
         GArg::Group(record),
     );
     assert_exact_target_invariant(

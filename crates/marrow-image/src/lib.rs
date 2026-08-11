@@ -34,9 +34,9 @@ pub use digest::{
     image_id,
 };
 pub use draft::{
-    CollTypeId, CollectionTypeDef, ConstId, DraftSavepoint, DurableMemberDef, EnumId, EnumTypeDef,
-    FieldDef, FuncId, FunctionDef, ImageBuildError, ImageDraft, KeyColumn, RecordTypeDef, RootDef,
-    RootIdentity, SiteDef, SpanEntry, StrId, TypeId, VariantDef,
+    AdmittedRoot, CollTypeId, CollectionTypeDef, ConstId, DraftSavepoint, EnumId, EnumTypeDef,
+    FieldDef, FuncId, FunctionDef, ImageBuildError, ImageDraft, KeyColumn, RecordTypeDef,
+    RootOccurrenceDef, SpanEntry, StrId, TypeId, VariantDef,
 };
 pub use durable_id::{
     BranchPlacementIdentity, DURABLE_CONTRACT_KIND, DurableBranchShape, DurableContractDescriptor,
@@ -76,11 +76,15 @@ pub use interface::{
     Interface, InterfaceError, InterfaceId, RecordShape, RootShape, TransferField, TransferType,
     TransferVariant, VariantShape,
 };
+pub use product::{
+    CanonicalDeclarationPathSelector, DeclarationMember, DeclarationMemberDef,
+    DeclarationMemberShape, RootOccurrenceSelector,
+};
 pub use semantic::{
     EmptySemanticPath, SemanticNode, SemanticNodeKind, SemanticPath, SemanticStep,
     SemanticStepKind, SemanticTarget,
 };
-pub use site_plan::LegacyDraftSiteOperand;
+pub use site_plan::{LegacyDraftSiteOperand, OccurrenceSiteHandle, SitePlanStateError};
 pub use store_digest::{
     STORE_DATA_KIND, STORE_ENVELOPE_KIND, STORE_HEAD_KIND, STORE_INTERFACE_KIND, StoreDataDigest,
     StoreEnvelopeDigest, StoreHeadDigest, interface_fingerprint,

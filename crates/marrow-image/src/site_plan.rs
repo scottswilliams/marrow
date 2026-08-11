@@ -10,6 +10,12 @@
 //! could request past `u16::MAX` distinct durable nodes, receive a wrapped id, and hand
 //! two distinct nodes the same site operand.
 //!
+//! A row retains only its [`OccurrenceSiteDemandKey`] — three owned typed ordinals into
+//! the draft's own canonical tables. It retains no semantic path: the path a site encodes
+//! to is *projected* from the key at encode time by the one path owner, so the plan
+//! cannot hold a path that has drifted from the graph it claims to address, and a row
+//! costs a fixed width rather than a per-row heap allocation.
+//!
 //! Crossing the cap is **nonblocking**: the plan saturates its logical demand count at
 //! `MAX_SITES + 1`, records the earliest crossing once, and keeps answering. A demand it
 //! already retains still resolves to the id it was given, so a repeated reference never
@@ -20,8 +26,107 @@
 use std::collections::HashMap;
 
 use crate::bounds::MAX_SITES;
-use crate::draft::{ImageBuildError, SiteDef, SiteId};
-use crate::semantic::{SemanticPath, SemanticTarget};
+use crate::draft::{DraftIdentity, ImageBuildError, RowStamp, SiteId};
+use crate::product::{BindRefusal, BoundDemand, OccurrenceSiteDemandKey};
+
+/// A validated site demand, ready to be requested from the plan that validated it.
+///
+/// It carries the complete demand key plus the stable draft identity and the exact live
+/// occurrence and declaration rows the binder validated it against. There is no public or
+/// raw key-to-handle constructor and no rebinding step: the sole mint is
+/// [`crate::ImageDraft::bind_occurrence_site`], so a handle is evidence that this draft
+/// answered for this place, not a value a caller can assert.
+///
+/// It is `Clone` but not `Copy`, for the same reason a selector is not.
+#[doc(hidden)]
+#[derive(Clone)]
+pub struct OccurrenceSiteHandle {
+    draft: DraftIdentity,
+    demand: BoundDemand,
+}
+
+impl OccurrenceSiteHandle {
+    pub(crate) fn new(draft: DraftIdentity, demand: BoundDemand) -> Self {
+        Self { draft, demand }
+    }
+
+    pub(crate) fn draft(&self) -> DraftIdentity {
+        self.draft
+    }
+
+    pub(crate) fn demand(&self) -> BoundDemand {
+        self.demand
+    }
+}
+
+impl std::fmt::Debug for OccurrenceSiteHandle {
+    /// One fixed marker: a handle's ordinals and row stamps are the authority it carries.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("occurrence site handle")
+    }
+}
+
+/// A site binding, request, or code insertion that the plan refused.
+///
+/// It is one opaque invariant to every consumer outside this crate: there is no variant,
+/// field, constructor, accessor, raw ordinal, identity, token, or source payload, and its
+/// rendered description is one fixed non-sensitive sentence that allocates nothing. The
+/// image owner matches its private cases exhaustively and tests them; the compiler maps
+/// the whole type to one compiler-invariant failure.
+///
+/// Crossing the site cap is **not** this error: an over-policy operand is a successful
+/// opaque state of the operand, and the encoder refuses that image through the Sites
+/// bound.
+#[doc(hidden)]
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct SitePlanStateError(SitePlanState);
+
+/// What the plan refused. Private, fixed, and allocation-free.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SitePlanState {
+    /// A selector, handle, or operand was published by another draft's plan.
+    WrongPlan,
+    /// The row a selector, handle, or operand names is gone, or a later row reused its
+    /// ordinal.
+    StaleBinding,
+    /// The occurrence, path, and target do not name a place of this graph.
+    InvalidDemand,
+}
+
+impl SitePlanStateError {
+    pub(crate) fn new(state: SitePlanState) -> Self {
+        Self(state)
+    }
+}
+
+impl From<BindRefusal> for SitePlanStateError {
+    fn from(refusal: BindRefusal) -> Self {
+        Self(match refusal {
+            BindRefusal::WrongPlan => SitePlanState::WrongPlan,
+            BindRefusal::StaleBinding => SitePlanState::StaleBinding,
+            BindRefusal::InvalidDemand => SitePlanState::InvalidDemand,
+        })
+    }
+}
+
+/// One fixed description for every case. Which case was refused is a producer-side
+/// invariant the image owner tests directly; publishing it here would make the private
+/// discriminant a public one by another spelling.
+const SITE_PLAN_STATE_DESCRIPTION: &str = "the draft did not answer for this operation site";
+
+impl std::fmt::Debug for SitePlanStateError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(SITE_PLAN_STATE_DESCRIPTION)
+    }
+}
+
+impl std::fmt::Display for SitePlanStateError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(SITE_PLAN_STATE_DESCRIPTION)
+    }
+}
+
+impl std::error::Error for SitePlanStateError {}
 
 /// The operation-site operand a draft instruction carries.
 ///
@@ -34,11 +139,19 @@ use crate::semantic::{SemanticPath, SemanticTarget};
 /// It is `Clone` but deliberately not `Copy`: a site operand is a minted answer, and
 /// copying one implicitly is how a carrier ends up holding a site it never requested.
 ///
+/// Its equality and `Debug` are over the **logical ordinal only**. This is the public
+/// instruction IR's operand, so what two instructions mean is the number that reaches the
+/// wire; the provenance it carries privately is checked where a site is inserted into a
+/// function, never smuggled into instruction semantics.
+///
 /// **Temporary.** It is the existing draft instruction IR's operand, not a parallel
 /// lowering IR, and it is replaced wholesale when the planned site reference lands under
 /// an admitted transaction.
-#[derive(Clone, PartialEq, Eq)]
-pub struct LegacyDraftSiteOperand(LegacyDraftSiteOperandKind);
+#[derive(Clone)]
+pub struct LegacyDraftSiteOperand {
+    kind: LegacyDraftSiteOperandKind,
+    provenance: SiteOperandProvenance,
+}
 
 /// What a site operand stands for: the id the plan minted, or the plan's refusal.
 ///
@@ -53,15 +166,22 @@ enum LegacyDraftSiteOperandKind {
     OverPolicy,
 }
 
+/// Where one operand came from: the draft and plan that answered, the validated demand,
+/// and the exact live row the answer stands on — the site row for a fitting operand, the
+/// policy receipt for an over-policy one.
+///
+/// It is private and takes no part in equality or `Debug`. It is what
+/// [`crate::ImageDraft::add_function`] validates before a code vector is appended, so an
+/// operand transplanted from another draft, or one whose row was discarded and its
+/// ordinal deterministically reused, cannot enter a function body.
+#[derive(Clone, Copy)]
+struct SiteOperandProvenance {
+    draft: DraftIdentity,
+    demand: BoundDemand,
+    row: RowStamp,
+}
+
 impl LegacyDraftSiteOperand {
-    fn fitting(id: SiteId) -> Self {
-        Self(LegacyDraftSiteOperandKind::Fitting(id))
-    }
-
-    fn over_policy() -> Self {
-        Self(LegacyDraftSiteOperandKind::OverPolicy)
-    }
-
     /// The wire ordinal this operand encodes to.
     ///
     /// An over-policy operand has none. The encoder's Sites bound reads the plan's
@@ -70,12 +190,21 @@ impl LegacyDraftSiteOperand {
     /// spelled as a refusal rather than a stand-in number so that no non-site value can
     /// ever be written into a site operand's two bytes.
     pub(crate) fn encodable(&self) -> Result<u16, ImageBuildError> {
-        match self.0 {
+        match self.kind {
             LegacyDraftSiteOperandKind::Fitting(id) => Ok(id.index()),
             LegacyDraftSiteOperandKind::OverPolicy => Err(ImageBuildError::TooManySites),
         }
     }
 }
+
+/// Equality is over the logical site ordinal, not over which plan minted it.
+impl PartialEq for LegacyDraftSiteOperand {
+    fn eq(&self, other: &Self) -> bool {
+        self.kind == other.kind
+    }
+}
+
+impl Eq for LegacyDraftSiteOperand {}
 
 /// A fitting operand renders as the logical site number it carries, so an instruction's
 /// `Debug` reads exactly as it did when the operand was a bare `u16`. An over-policy
@@ -83,20 +212,12 @@ impl LegacyDraftSiteOperand {
 /// be the very aliasing the type exists to prevent.
 impl std::fmt::Debug for LegacyDraftSiteOperand {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self.0 {
+        match self.kind {
             LegacyDraftSiteOperandKind::Fitting(id) => write!(f, "{}", id.index()),
             LegacyDraftSiteOperandKind::OverPolicy => f.write_str("over-policy"),
         }
     }
 }
-
-/// The one demand a site row answers: the addressed node's whole semantic path and the
-/// operation target over it.
-///
-/// The key is the whole path, never the terminal step's ledger id. A Product member
-/// declaration below two root occurrences has one declaration id and two distinct paths,
-/// so a terminal-id key would hand one occurrence the other occurrence's site.
-type SiteDemandKey = (SemanticPath, SemanticTarget);
 
 /// The record that a plan's demand crossed `MAX_SITES`. The plan retains no row or key
 /// past the crossing, so this is what remains of every demand beyond it.
@@ -104,20 +225,37 @@ type SiteDemandKey = (SemanticPath, SemanticTarget);
 /// It is a typed fact rather than a flag: "this plan's demand exceeded its capacity" is a
 /// state the encoder reads and the draft cannot un-observe, and giving it a name keeps a
 /// bare boolean from standing in for it. One receipt is recorded, at the earliest
-/// crossing; later refusals do not replace it.
+/// crossing; later refusals do not replace it, and it carries the stamp an over-policy
+/// operand stands on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct SitePolicyReceipt;
+pub(crate) struct SitePolicyReceipt {
+    stamp: RowStamp,
+}
+
+/// One retained site row: the demand it answers and the stamp that distinguishes it from
+/// a later row deterministically reusing its ordinal.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SiteRow {
+    key: OccurrenceSiteDemandKey,
+    stamp: RowStamp,
+}
+
+impl SiteRow {
+    pub(crate) fn key(&self) -> OccurrenceSiteDemandKey {
+        self.key
+    }
+}
 
 /// The bounded site demand plan.
 #[derive(Debug, Default, Clone)]
 pub(crate) struct SiteDemandPlan {
     /// The retained site rows, in emission order. A row's index is its [`SiteId`].
-    rows: Vec<SiteDef>,
-    /// The retained demands, so a repeated reference to one `(node, target)` returns the
-    /// id already minted for it. The rows vector stays the sole table authority and
-    /// emission order; this only makes the table carry a site per *demanded* node rather
-    /// than one per declared graph node.
-    retained: HashMap<SiteDemandKey, SiteId>,
+    rows: Vec<SiteRow>,
+    /// The retained demands, so a repeated reference to one place returns the id already
+    /// minted for it. The rows vector stays the sole table authority and emission order;
+    /// this only makes the table carry a site per *demanded* place rather than one per
+    /// declared graph node.
+    retained: HashMap<OccurrenceSiteDemandKey, SiteId>,
     /// The earliest crossing, recorded once. With the rows it is the whole logical demand
     /// count: a plan retains exactly one row per fitting demand, and the receipt stands for
     /// every demand past the cap, so no separate counter can drift from the table.
@@ -125,40 +263,103 @@ pub(crate) struct SiteDemandPlan {
 }
 
 impl SiteDemandPlan {
-    /// Mint-or-return the operand answering `def`.
+    /// Mint-or-return the operand answering the validated `demand`.
     ///
     /// The over-policy operand is the answer when the plan has no vacant capacity and
     /// does not already retain this demand, so there is no id it can give that would not
     /// alias a fitting one.
-    pub(crate) fn request(&mut self, def: SiteDef) -> LegacyDraftSiteOperand {
-        let key = (def.path.clone(), def.target);
+    pub(crate) fn request(
+        &mut self,
+        draft: DraftIdentity,
+        demand: BoundDemand,
+        stamp: RowStamp,
+    ) -> LegacyDraftSiteOperand {
+        let key = demand.key();
         if let Some(existing) = self.retained.get(&key) {
-            return LegacyDraftSiteOperand::fitting(*existing);
+            let row = self.rows[usize::from(existing.index())].stamp;
+            return LegacyDraftSiteOperand {
+                kind: LegacyDraftSiteOperandKind::Fitting(*existing),
+                provenance: SiteOperandProvenance { draft, demand, row },
+            };
         }
         // Vacant capacity is checked before any numeric id is minted, so the fitting range
         // stays exactly `0..MAX_SITES` and the conversion below cannot narrow a length
         // into an id that aliases one.
         if self.rows.len() >= MAX_SITES {
-            return self.saturate();
+            return self.saturate(draft, demand, stamp);
         }
         let Ok(ordinal) = u16::try_from(self.rows.len()).map(SiteId::from_ordinal) else {
-            return self.saturate();
+            return self.saturate(draft, demand, stamp);
         };
-        self.rows.push(def);
+        self.rows.push(SiteRow { key, stamp });
         self.retained.insert(key, ordinal);
-        LegacyDraftSiteOperand::fitting(ordinal)
+        LegacyDraftSiteOperand {
+            kind: LegacyDraftSiteOperandKind::Fitting(ordinal),
+            provenance: SiteOperandProvenance {
+                draft,
+                demand,
+                row: stamp,
+            },
+        }
     }
 
     /// Record the crossing and refuse an id. The logical count saturates at
     /// `MAX_SITES + 1` — one past the cap is all the encoder's bound needs to read, and
     /// counting every excess demand would retain unbounded work for a refused image.
-    fn saturate(&mut self) -> LegacyDraftSiteOperand {
-        self.receipt.get_or_insert(SitePolicyReceipt);
-        LegacyDraftSiteOperand::over_policy()
+    fn saturate(
+        &mut self,
+        draft: DraftIdentity,
+        demand: BoundDemand,
+        stamp: RowStamp,
+    ) -> LegacyDraftSiteOperand {
+        let receipt = *self.receipt.get_or_insert(SitePolicyReceipt { stamp });
+        LegacyDraftSiteOperand {
+            kind: LegacyDraftSiteOperandKind::OverPolicy,
+            provenance: SiteOperandProvenance {
+                draft,
+                demand,
+                row: receipt.stamp,
+            },
+        }
+    }
+
+    /// Whether `operand` still stands on this plan: it was minted by this draft, and the
+    /// exact row it was minted against is still live.
+    ///
+    /// A clone of a valid same-plan operand stays valid; an operand whose site row or
+    /// receipt was discarded is stale even when the ordinal it names was afterwards
+    /// re-minted, because the re-minted row carries a fresh stamp.
+    pub(crate) fn validate(
+        &self,
+        draft: DraftIdentity,
+        operand: &LegacyDraftSiteOperand,
+    ) -> Result<(), SitePlanState> {
+        if operand.provenance.draft != draft {
+            return Err(SitePlanState::WrongPlan);
+        }
+        match operand.kind {
+            LegacyDraftSiteOperandKind::Fitting(id) => {
+                let row = self
+                    .rows
+                    .get(usize::from(id.index()))
+                    .ok_or(SitePlanState::StaleBinding)?;
+                if row.stamp != operand.provenance.row {
+                    return Err(SitePlanState::StaleBinding);
+                }
+                if row.key != operand.provenance.demand.key() {
+                    return Err(SitePlanState::InvalidDemand);
+                }
+                Ok(())
+            }
+            LegacyDraftSiteOperandKind::OverPolicy => match self.receipt {
+                Some(receipt) if receipt.stamp == operand.provenance.row => Ok(()),
+                _ => Err(SitePlanState::StaleBinding),
+            },
+        }
     }
 
     /// The retained site rows, in emission order.
-    pub(crate) fn rows(&self) -> &[SiteDef] {
+    pub(crate) fn rows(&self) -> &[SiteRow] {
         &self.rows
     }
 
@@ -177,207 +378,9 @@ impl SiteDemandPlan {
     /// restored by discarding a suffix: the crossing happened.
     pub(crate) fn truncate(&mut self, rows: usize) {
         for row in self.rows.drain(rows..) {
-            self.retained.remove(&(row.path, row.target));
+            self.retained.remove(&row.key);
         }
         // A saturated plan keeps its receipt: the crossing is not undone by discarding a
         // suffix, and the demands it refused were never retained to restore.
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{MAX_SITES, SiteDemandPlan};
-    use crate::draft::SiteDef;
-    use crate::durable_id::LedgerIdBytes;
-    use crate::semantic::{SemanticPath, SemanticStep, SemanticStepKind};
-
-    /// A distinct field-leaf demand below one root, seeded by `n`.
-    fn leaf(n: usize) -> SiteDef {
-        let mut bytes = [0x50u8; 16];
-        bytes[0] = u8::try_from(n & 0xff).expect("masked to one byte");
-        bytes[1] = u8::try_from((n >> 8) & 0xff).expect("masked to one byte");
-        bytes[2] = u8::try_from((n >> 16) & 0xff).expect("masked to one byte");
-        SiteDef::field_leaf(
-            SemanticPath::root(
-                LedgerIdBytes::from_bytes([0x0a; 16]),
-                LedgerIdBytes::from_bytes([0x0b; 16]),
-            )
-            .child(SemanticStep::new(
-                SemanticStepKind::Field,
-                LedgerIdBytes::from_bytes(bytes),
-            )),
-        )
-    }
-
-    /// The plan mints exactly its capacity and never narrows a table length into an id.
-    /// Requesting `u16::MAX + 2` distinct demands is the shape that handed the 65,536th
-    /// durable node the id of the first one.
-    #[test]
-    fn no_demand_past_the_cap_ever_aliases_a_fitting_site() {
-        let mut plan = SiteDemandPlan::default();
-        let mut minted = Vec::new();
-        for n in 0..(usize::from(u16::MAX) + 2) {
-            if let Ok(id) = plan.request(leaf(n)).encodable() {
-                minted.push(id);
-            }
-        }
-
-        assert_eq!(
-            minted.len(),
-            MAX_SITES,
-            "the plan mints exactly its capacity"
-        );
-        assert!(
-            minted.iter().all(|id| usize::from(*id) < MAX_SITES),
-            "every minted id is inside the table's capacity",
-        );
-        let mut unique = minted.clone();
-        unique.sort_unstable();
-        unique.dedup();
-        assert_eq!(
-            unique.len(),
-            minted.len(),
-            "no two distinct durable demands share one site id",
-        );
-    }
-
-    /// The logical count saturates one past the cap and the earliest crossing is recorded
-    /// once, so the encoder's Sites bound still fires for an image whose demand crossed.
-    #[test]
-    fn crossing_the_cap_saturates_the_count_and_records_one_earliest_receipt() {
-        let mut plan = SiteDemandPlan::default();
-        for n in 0..MAX_SITES {
-            plan.request(leaf(n))
-                .encodable()
-                .expect("every demand below the cap fits");
-        }
-        assert_eq!(
-            plan.demanded(),
-            MAX_SITES,
-            "no receipt is recorded at exactly MAX_SITES, so the demand still fits",
-        );
-
-        assert!(
-            plan.request(leaf(MAX_SITES)).encodable().is_err(),
-            "the first excess is refused"
-        );
-        assert_eq!(
-            plan.demanded(),
-            MAX_SITES + 1,
-            "the crossing is recorded and the logical count saturates one past the cap",
-        );
-
-        for n in (MAX_SITES + 1)..(MAX_SITES + 64) {
-            assert!(plan.request(leaf(n)).encodable().is_err());
-        }
-        assert_eq!(
-            plan.demanded(),
-            MAX_SITES + 1,
-            "the logical count saturates rather than counting every refused demand",
-        );
-        assert_eq!(plan.rows().len(), MAX_SITES, "no excess row is retained");
-    }
-
-    /// The crossing is nonblocking: a demand the plan already retains keeps resolving to
-    /// the id it was given.
-    #[test]
-    fn a_retained_demand_resolves_after_the_crossing() {
-        let mut plan = SiteDemandPlan::default();
-        let first = plan.request(leaf(0));
-        for n in 1..=MAX_SITES {
-            let _ = plan.request(leaf(n));
-        }
-        assert_eq!(
-            plan.request(leaf(0)),
-            first,
-            "a repeated reference returns the id already minted for it",
-        );
-    }
-
-    /// Discarding a suffix drops exactly that suffix's demands, and a demand that survived
-    /// keeps its id — the purge cannot remove a surviving row's key.
-    #[test]
-    fn discarding_a_suffix_keeps_every_surviving_demand_resolvable() {
-        let mut plan = SiteDemandPlan::default();
-        let kept = plan.request(leaf(0));
-        let mark = plan.rows().len();
-        plan.request(leaf(1));
-        plan.request(leaf(2));
-
-        plan.truncate(mark);
-
-        assert_eq!(plan.rows().len(), mark);
-        assert_eq!(plan.demanded(), mark);
-        assert_eq!(
-            plan.request(leaf(0)),
-            kept,
-            "a surviving demand keeps the id it was given",
-        );
-        assert_ne!(
-            plan.request(leaf(1)),
-            kept,
-            "a discarded demand is minted afresh, never aliased onto a survivor",
-        );
-    }
-
-    /// A fitting operand renders as its logical site number, so an instruction's `Debug`
-    /// reads as it did when the operand was a bare `u16` and every golden that shows an
-    /// instruction stays legible.
-    #[test]
-    fn a_fitting_operand_debugs_as_its_logical_site_number() {
-        let mut plan = SiteDemandPlan::default();
-
-        assert_eq!(format!("{:?}", plan.request(leaf(0))), "0");
-        assert_eq!(format!("{:?}", plan.request(leaf(1))), "1");
-        assert_eq!(
-            format!("{:?}", plan.request(leaf(0))),
-            "0",
-            "a repeated demand renders the id it was already given",
-        );
-    }
-
-    /// An over-policy operand renders one fixed marker and no number: there is no site to
-    /// name, and rendering a stand-in would read as a real site in every log and panic
-    /// message that shows an instruction.
-    #[test]
-    fn an_over_policy_operand_debugs_as_a_redacted_marker() {
-        let mut plan = SiteDemandPlan::default();
-        for n in 0..MAX_SITES {
-            let _ = plan.request(leaf(n));
-        }
-
-        let refused = plan.request(leaf(MAX_SITES));
-
-        assert_eq!(format!("{refused:?}"), "over-policy");
-        assert!(refused.encodable().is_err());
-        assert_eq!(
-            refused,
-            plan.request(leaf(MAX_SITES + 1)),
-            "every refusal is the one marker, so no two refusals are distinguishable",
-        );
-    }
-
-    /// Equality is over the logical site ordinal, not over which plan minted it. The
-    /// operand is the instruction IR's public operand, so its equality is the equality of
-    /// the number that reaches the wire; provenance is checked where a site is requested,
-    /// never smuggled into what two instructions mean.
-    #[test]
-    fn operands_with_one_ordinal_are_equal_across_independently_built_plans() {
-        let mut first = SiteDemandPlan::default();
-        let mut second = SiteDemandPlan::default();
-
-        let from_first = first.request(leaf(0));
-        let _ = second.request(leaf(7));
-        let from_second = second.request(leaf(9));
-
-        assert_eq!(
-            from_first,
-            second.request(leaf(7)),
-            "the same ordinal from another plan is the same operand",
-        );
-        assert_ne!(
-            from_first, from_second,
-            "a different ordinal is a different operand",
-        );
     }
 }

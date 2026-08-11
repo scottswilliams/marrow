@@ -27,15 +27,17 @@ fn a_direct_call_runs() {
         Instr::IntAdd,
         Instr::Return,
     ];
-    let double = draft.add_function(FunctionDef {
-        name: double_name,
-        source: src,
-        params: vec![ImageType::scalar(Scalar::Int)],
-        ret: ImageType::scalar(Scalar::Int),
-        local_count: 1,
-        spans: spans(&double_code),
-        code: double_code,
-    });
+    let double = draft
+        .add_function(FunctionDef {
+            name: double_name,
+            source: src,
+            params: vec![ImageType::scalar(Scalar::Int)],
+            ret: ImageType::scalar(Scalar::Int),
+            local_count: 1,
+            spans: spans(&double_code),
+            code: double_code,
+        })
+        .expect("every site operand is live");
     let caller_name = draft.intern_string("caller");
     let arg = draft.intern_int(21);
     let caller_code = vec![
@@ -43,15 +45,17 @@ fn a_direct_call_runs() {
         Instr::Call(double.index()),
         Instr::Return,
     ];
-    let caller = draft.add_function(FunctionDef {
-        name: caller_name,
-        source: src,
-        params: Vec::new(),
-        ret: ImageType::scalar(Scalar::Int),
-        local_count: 0,
-        spans: spans(&caller_code),
-        code: caller_code,
-    });
+    let caller = draft
+        .add_function(FunctionDef {
+            name: caller_name,
+            source: src,
+            params: Vec::new(),
+            ret: ImageType::scalar(Scalar::Int),
+            local_count: 0,
+            spans: spans(&caller_code),
+            code: caller_code,
+        })
+        .expect("every site operand is live");
     draft.add_export(ExportId::of_local("", "caller"), caller);
     let bytes = draft.encode().expect("encode").bytes;
     let image = verify(&bytes).expect("verifies");
@@ -75,15 +79,17 @@ fn the_vm_run_entry_takes_a_typed_function_index() {
     let name = draft.intern_string("answer");
     let forty_two = draft.intern_int(42);
     let code = vec![Instr::ConstLoad(forty_two.index()), Instr::Return];
-    let func = draft.add_function(FunctionDef {
-        name,
-        source: src,
-        params: Vec::new(),
-        ret: ImageType::scalar(Scalar::Int),
-        local_count: 0,
-        spans: spans(&code),
-        code,
-    });
+    let func = draft
+        .add_function(FunctionDef {
+            name,
+            source: src,
+            params: Vec::new(),
+            ret: ImageType::scalar(Scalar::Int),
+            local_count: 0,
+            spans: spans(&code),
+            code,
+        })
+        .expect("every site operand is live");
     draft.add_export(ExportId::of_local("", "answer"), func);
     let bytes = draft.encode().expect("encode").bytes;
     let image = verify(&bytes).expect("verifies");
@@ -110,15 +116,17 @@ fn a_self_recursive_call_rejects_as_a_cycle() {
     let src = draft.intern_string("src/main.mw");
     let name = draft.intern_string("loops");
     let code = vec![Instr::Call(0), Instr::Return];
-    let func = draft.add_function(FunctionDef {
-        name,
-        source: src,
-        params: Vec::new(),
-        ret: ImageType::scalar(Scalar::Int),
-        local_count: 0,
-        spans: spans(&code),
-        code,
-    });
+    let func = draft
+        .add_function(FunctionDef {
+            name,
+            source: src,
+            params: Vec::new(),
+            ret: ImageType::scalar(Scalar::Int),
+            local_count: 0,
+            spans: spans(&code),
+            code,
+        })
+        .expect("every site operand is live");
     draft.add_export(ExportId::of_local("", "loops"), func);
     let bytes = draft.encode().expect("encode").bytes;
     assert_eq!(

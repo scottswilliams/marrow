@@ -2,13 +2,22 @@
 //! encoder-computed digest and violates exactly one cross-root invariant, so it must
 //! reject at the verifier stage that owns the invariant rather than at the digest gate.
 //! These make the verifier's cross-root rejections conspicuous enforcement artifacts.
+//!
+//! Every site named here is minted through the construction seam's bind-then-request
+//! protocol. That protocol has exactly one owner in the workspace and is included here
+//! rather than copied.
 
 use marrow_image::{
-    DurableMemberDef, DurableValueShape, ExportId, FieldDef, FunctionDef, ImageBuildError,
-    ImageDraft, ImageType, Instr, KeyColumn, LedgerIdBytes, LegacyDraftSiteOperand, RecordTypeDef,
-    RootDef, RootIdentity, Scalar, SemanticPath, SiteDef, SpanEntry, TypeId, image_id,
+    DeclarationMemberDef, DeclarationMemberShape, DurableValueShape, ExportId, FieldDef,
+    FunctionDef, ImageBuildError, ImageDraft, ImageType, Instr, KeyColumn, LedgerIdBytes,
+    LegacyDraftSiteOperand, RecordTypeDef, RootOccurrenceDef, Scalar, SemanticTarget, SpanEntry,
+    TypeId, image_id,
 };
 use marrow_verify::{VerifyPhase, verify};
+
+#[path = "../../marrow-image/tests/common/site_seam.rs"]
+mod site_seam;
+use site_seam::site;
 
 const APPLICATION_ID: [u8; 16] = [0x0a; 16];
 // Root A ("assets"): placement/product/key/field ledger ids.
@@ -22,13 +31,6 @@ const B_PRODUCT: [u8; 16] = [0x1d; 16];
 const B_KEY: [u8; 16] = [0x1c; 16];
 const B_FIELD: [u8; 16] = [0x1e; 16];
 
-fn placement_path(placement: [u8; 16]) -> SemanticPath {
-    SemanticPath::root(
-        LedgerIdBytes::from_bytes(APPLICATION_ID),
-        LedgerIdBytes::from_bytes(placement),
-    )
-}
-
 fn spans(code: &[Instr]) -> Vec<SpanEntry> {
     (0..code.len())
         .map(|index| SpanEntry {
@@ -37,6 +39,18 @@ fn spans(code: &[Instr]) -> Vec<SpanEntry> {
             column: 1,
         })
         .collect()
+}
+
+/// One required int field, the whole member graph of both single-field Products here.
+fn one_int_field(id: [u8; 16]) -> Vec<DeclarationMemberDef> {
+    vec![DeclarationMemberDef {
+        parent: None,
+        shape: DeclarationMemberShape::Field {
+            id: LedgerIdBytes::from_bytes(id),
+            required: true,
+            value: DurableValueShape::Scalar(Scalar::Int),
+        },
+    }]
 }
 
 /// Add root A ("assets", int key, one int field) and root B (`b_name`, `b_key_scalar`
@@ -60,24 +74,27 @@ fn build_two_roots(
         }],
     });
     let a_root = draft.intern_string("assets");
-    draft.add_root(RootDef {
-        name: a_root,
-        keys: vec![KeyColumn {
-            scalar: Scalar::Int,
-            id: LedgerIdBytes::from_bytes(A_KEY),
-        }],
-        record: a_rec,
-        identity: RootIdentity {
-            placement: LedgerIdBytes::from_bytes(A_PLACEMENT),
-            product: LedgerIdBytes::from_bytes(A_PRODUCT),
-            indexes: vec![],
-            members: vec![DurableMemberDef::Field {
-                id: LedgerIdBytes::from_bytes(A_FIELD),
-                required: true,
-                value: DurableValueShape::Scalar(Scalar::Int),
-            }],
-        },
-    });
+    draft
+        .declare_product(
+            LedgerIdBytes::from_bytes(A_PRODUCT),
+            a_rec,
+            one_int_field(A_FIELD),
+        )
+        .expect("a well-formed declaration");
+    let a = draft
+        .add_root_occurrence(
+            LedgerIdBytes::from_bytes(A_PRODUCT),
+            RootOccurrenceDef {
+                name: a_root,
+                keys: vec![KeyColumn {
+                    scalar: Scalar::Int,
+                    id: LedgerIdBytes::from_bytes(A_KEY),
+                }],
+                placement: LedgerIdBytes::from_bytes(A_PLACEMENT),
+                indexes: vec![],
+            },
+        )
+        .expect("the Product is declared");
 
     let b_field_name = draft.intern_string("count");
     let b_rec_name = draft.intern_string("Tally");
@@ -90,27 +107,40 @@ fn build_two_roots(
         }],
     });
     let b_root = draft.intern_string(b_name);
-    draft.add_root(RootDef {
-        name: b_root,
-        keys: vec![KeyColumn {
-            scalar: b_key_scalar,
-            id: LedgerIdBytes::from_bytes(B_KEY),
-        }],
-        record: b_rec,
-        identity: RootIdentity {
-            placement: LedgerIdBytes::from_bytes(B_PLACEMENT),
-            product: LedgerIdBytes::from_bytes(B_PRODUCT),
-            indexes: vec![],
-            members: vec![DurableMemberDef::Field {
-                id: LedgerIdBytes::from_bytes(B_FIELD),
-                required: true,
-                value: DurableValueShape::Scalar(Scalar::Int),
-            }],
-        },
-    });
+    draft
+        .declare_product(
+            LedgerIdBytes::from_bytes(B_PRODUCT),
+            b_rec,
+            one_int_field(B_FIELD),
+        )
+        .expect("a well-formed declaration");
+    let b = draft
+        .add_root_occurrence(
+            LedgerIdBytes::from_bytes(B_PRODUCT),
+            RootOccurrenceDef {
+                name: b_root,
+                keys: vec![KeyColumn {
+                    scalar: b_key_scalar,
+                    id: LedgerIdBytes::from_bytes(B_KEY),
+                }],
+                placement: LedgerIdBytes::from_bytes(B_PLACEMENT),
+                indexes: vec![],
+            },
+        )
+        .expect("the Product is declared");
 
-    let a_site = draft.request_site(SiteDef::whole_payload(placement_path(A_PLACEMENT)));
-    let b_site = draft.request_site(SiteDef::whole_payload(placement_path(B_PLACEMENT)));
+    let a_site = site(
+        draft,
+        a.occurrence(),
+        a.placement_path(),
+        SemanticTarget::WholePayload,
+    );
+    let b_site = site(
+        draft,
+        b.occurrence(),
+        b.placement_path(),
+        SemanticTarget::WholePayload,
+    );
     (a_site, b_site)
 }
 
@@ -118,15 +148,17 @@ fn build_export(draft: &mut ImageDraft, code: Vec<Instr>, params: Vec<ImageType>
     let src = draft.intern_string("src/main.mw");
     let name = draft.intern_string("f");
     let local_count = params.len() as u16;
-    let func = draft.add_function(FunctionDef {
-        name,
-        source: src,
-        params,
-        ret,
-        local_count,
-        spans: spans(&code),
-        code,
-    });
+    let func = draft
+        .add_function(FunctionDef {
+            name,
+            source: src,
+            params,
+            ret,
+            local_count,
+            spans: spans(&code),
+            code,
+        })
+        .expect("every site operand is live");
     draft.add_export(ExportId::of_local("", "f"), func);
 }
 
@@ -209,7 +241,8 @@ fn a_cross_root_identity_reaching_a_foreign_site_is_rejected() {
 
 /// Two roots over **one** Product: the same product identity, the same member graph, and
 /// the same entry record, with their own placements, key tuples, and names. Root B's
-/// draft rows are built from root A's declaration, exactly as the compiler builds them.
+/// occurrence row references the declaration root A's occurrence bound, exactly as the
+/// compiler builds them.
 fn build_shared_product(draft: &mut ImageDraft) -> TypeId {
     draft.set_application_identity(LedgerIdBytes::from_bytes(APPLICATION_ID));
     let field_name = draft.intern_string("name");
@@ -229,33 +262,38 @@ fn build_shared_product(draft: &mut ImageDraft) -> TypeId {
         name: other_name,
         fields: vec![],
     });
-    let members = || {
-        vec![DurableMemberDef::Field {
-            id: LedgerIdBytes::from_bytes(A_FIELD),
-            required: true,
-            value: DurableValueShape::Scalar(Scalar::Int),
-        }]
-    };
+    draft
+        .declare_product(
+            LedgerIdBytes::from_bytes(A_PRODUCT),
+            record,
+            one_int_field(A_FIELD),
+        )
+        .expect("a well-formed declaration");
     for (name, placement, key) in [
         ("assets", A_PLACEMENT, A_KEY),
         ("tallies", B_PLACEMENT, B_KEY),
     ] {
         let root_name = draft.intern_string(name);
-        draft.add_root(RootDef {
-            name: root_name,
-            keys: vec![KeyColumn {
-                scalar: Scalar::Int,
-                id: LedgerIdBytes::from_bytes(key),
-            }],
-            record,
-            identity: RootIdentity {
-                placement: LedgerIdBytes::from_bytes(placement),
-                product: LedgerIdBytes::from_bytes(A_PRODUCT),
-                indexes: vec![],
-                members: members(),
-            },
-        });
-        draft.request_site(SiteDef::whole_payload(placement_path(placement)));
+        let root = draft
+            .add_root_occurrence(
+                LedgerIdBytes::from_bytes(A_PRODUCT),
+                RootOccurrenceDef {
+                    name: root_name,
+                    keys: vec![KeyColumn {
+                        scalar: Scalar::Int,
+                        id: LedgerIdBytes::from_bytes(key),
+                    }],
+                    placement: LedgerIdBytes::from_bytes(placement),
+                    indexes: vec![],
+                },
+            )
+            .expect("the Product is declared");
+        site(
+            draft,
+            root.occurrence(),
+            root.placement_path(),
+            SemanticTarget::WholePayload,
+        );
     }
     record
 }
@@ -361,7 +399,7 @@ fn a_duplicate_root_occurrence_is_rejected() {
 }
 
 /// The producer half of the same law: the draft holds one declaration row per Product
-/// identity, so a second occurrence that claims a different graph has nowhere to live.
+/// identity, so a second declaration that claims a different graph has nowhere to live.
 /// The draft records the conflict and refuses to encode rather than canonicalizing one of
 /// the two claims away — a divergent graph can never reach an artifact at all.
 #[test]
@@ -369,24 +407,28 @@ fn a_draft_refuses_to_encode_two_graphs_under_one_product() {
     let mut draft = ImageDraft::new();
     let record = build_shared_product(&mut draft);
     let root_name = draft.intern_string("extra");
-    draft.add_root(RootDef {
-        name: root_name,
-        keys: vec![KeyColumn {
-            scalar: Scalar::Int,
-            id: LedgerIdBytes::from_bytes([0x66; 16]),
-        }],
-        record,
-        identity: RootIdentity {
-            placement: LedgerIdBytes::from_bytes([0x67; 16]),
-            product: LedgerIdBytes::from_bytes(A_PRODUCT),
-            indexes: vec![],
-            members: vec![DurableMemberDef::Field {
-                id: LedgerIdBytes::from_bytes(B_FIELD),
-                required: true,
-                value: DurableValueShape::Scalar(Scalar::Int),
-            }],
-        },
-    });
+    // A second declaration of the same Product identity carrying a different member id.
+    draft
+        .declare_product(
+            LedgerIdBytes::from_bytes(A_PRODUCT),
+            record,
+            one_int_field(B_FIELD),
+        )
+        .expect("the command vector itself is well formed");
+    draft
+        .add_root_occurrence(
+            LedgerIdBytes::from_bytes(A_PRODUCT),
+            RootOccurrenceDef {
+                name: root_name,
+                keys: vec![KeyColumn {
+                    scalar: Scalar::Int,
+                    id: LedgerIdBytes::from_bytes([0x66; 16]),
+                }],
+                placement: LedgerIdBytes::from_bytes([0x67; 16]),
+                indexes: vec![],
+            },
+        )
+        .expect("the Product is declared");
     assert_eq!(
         draft
             .encode()

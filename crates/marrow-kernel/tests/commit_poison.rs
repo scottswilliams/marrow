@@ -17,9 +17,9 @@ use std::ops::Bound;
 use std::rc::Rc;
 
 use marrow_image::{
-    DurableMemberDef, DurableValueShape, ExportId, FieldDef, FunctionDef, ImageDraft, ImageType,
-    Instr, KeyColumn, LedgerIdBytes, RecordTypeDef, RootDef, RootIdentity, Scalar, SemanticPath,
-    SemanticStep, SemanticStepKind, SiteDef, SpanEntry,
+    DeclarationMemberDef, DeclarationMemberShape, DurableValueShape, ExportId, FieldDef,
+    FunctionDef, ImageDraft, ImageType, Instr, KeyColumn, LedgerIdBytes, RecordTypeDef,
+    RootOccurrenceDef, Scalar, SemanticTarget, SpanEntry,
 };
 use marrow_store::{ByteEngine, Cell as StoreCell, CommitOutcome, ReadView, StoreError, WriteTxn};
 use marrow_verify::{VerifiedImage, verify};
@@ -39,13 +39,6 @@ const ROOT_PLACEMENT_ID: [u8; 16] = [0x92; 16];
 const ROOT_PRODUCT_ID: [u8; 16] = [0x93; 16];
 const ROOT_KEY_ID: [u8; 16] = [0x94; 16];
 const VALUE_FIELD_ID: [u8; 16] = [0x95; 16];
-
-fn vm_root_path() -> SemanticPath {
-    SemanticPath::root(
-        LedgerIdBytes::from_bytes(APPLICATION_ID),
-        LedgerIdBytes::from_bytes(ROOT_PLACEMENT_ID),
-    )
-}
 
 fn vm_spans(code: &[Instr]) -> Vec<SpanEntry> {
     code.iter()
@@ -78,30 +71,56 @@ fn vm_commit_image(write: VmWrite) -> VerifiedImage {
     });
     draft.set_application_identity(LedgerIdBytes::from_bytes(APPLICATION_ID));
     let root_name = draft.intern_string("counters");
-    draft.add_root(RootDef {
-        name: root_name,
-        keys: vec![KeyColumn {
-            scalar: Scalar::Text,
-            id: LedgerIdBytes::from_bytes(ROOT_KEY_ID),
-        }],
-        record,
-        identity: RootIdentity {
-            placement: LedgerIdBytes::from_bytes(ROOT_PLACEMENT_ID),
-            product: LedgerIdBytes::from_bytes(ROOT_PRODUCT_ID),
-            indexes: Vec::new(),
-            members: vec![DurableMemberDef::Field {
-                id: LedgerIdBytes::from_bytes(VALUE_FIELD_ID),
-                required: true,
-                value: DurableValueShape::Scalar(Scalar::Int),
+    let product = LedgerIdBytes::from_bytes(ROOT_PRODUCT_ID);
+    draft
+        .declare_product(
+            product,
+            record,
+            vec![DeclarationMemberDef {
+                parent: None,
+                shape: DeclarationMemberShape::Field {
+                    id: LedgerIdBytes::from_bytes(VALUE_FIELD_ID),
+                    required: true,
+                    value: DurableValueShape::Scalar(Scalar::Int),
+                },
             }],
-        },
-    });
-    let entry_site = draft.request_site(SiteDef::whole_payload(vm_root_path()));
-    let field_path = vm_root_path().child(SemanticStep::new(
-        SemanticStepKind::Field,
-        LedgerIdBytes::from_bytes(VALUE_FIELD_ID),
-    ));
-    let field_site = draft.request_site(SiteDef::field_leaf(field_path));
+        )
+        .expect("a well-formed declaration");
+    let counters = draft
+        .add_root_occurrence(
+            product,
+            RootOccurrenceDef {
+                name: root_name,
+                keys: vec![KeyColumn {
+                    scalar: Scalar::Text,
+                    id: LedgerIdBytes::from_bytes(ROOT_KEY_ID),
+                }],
+                placement: LedgerIdBytes::from_bytes(ROOT_PLACEMENT_ID),
+                indexes: Vec::new(),
+            },
+        )
+        .expect("the Product is declared");
+    let members = draft.product_members(product).expect("declared");
+    let entry_handle = draft
+        .bind_occurrence_site(
+            counters.occurrence(),
+            counters.placement_path(),
+            SemanticTarget::WholePayload,
+        )
+        .expect("the root placement is a canonical path of this occurrence");
+    let entry_site = draft
+        .request_site(&entry_handle)
+        .expect("the binding is live");
+    let field_handle = draft
+        .bind_occurrence_site(
+            counters.occurrence(),
+            members[0].path(),
+            SemanticTarget::FieldLeaf,
+        )
+        .expect("the value field is a canonical path of this occurrence");
+    let field_site = draft
+        .request_site(&field_handle)
+        .expect("the binding is live");
     let key = draft.intern_text("vm");
     let value = draft.intern_int(7);
     let mut code = vec![
@@ -119,15 +138,17 @@ fn vm_commit_image(write: VmWrite) -> VerifiedImage {
     code.extend([Instr::TxnCommit, Instr::Return]);
     let name = draft.intern_string("write");
     let source = draft.intern_string("src/main.mw");
-    let function = draft.add_function(FunctionDef {
-        name,
-        source,
-        params: Vec::new(),
-        ret: ImageType::Unit,
-        local_count: 0,
-        spans: vm_spans(&code),
-        code,
-    });
+    let function = draft
+        .add_function(FunctionDef {
+            name,
+            source,
+            params: Vec::new(),
+            ret: ImageType::Unit,
+            local_count: 0,
+            spans: vm_spans(&code),
+            code,
+        })
+        .expect("every site operand is live");
     draft.add_export(ExportId::of_local("", "write"), function);
     verify(&draft.encode().expect("encode VM fixture").bytes).expect("verify VM fixture")
 }

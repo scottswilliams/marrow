@@ -68,12 +68,7 @@ impl<'a> FnLowerer<'a> {
         };
         if let Some(read) = index_read {
             if read.index.unique {
-                return self.lower_index_lookup(
-                    read.index,
-                    read.root.root_id,
-                    read.keys,
-                    expr.span(),
-                );
+                return self.lower_index_lookup(read.root, read.index, read.keys, expr.span());
             }
             self.fail(SourceDiagnostic::at(
                 Code::CheckType.as_str(),

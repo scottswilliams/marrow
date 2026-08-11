@@ -63,15 +63,17 @@ fn verify_fn(
     let name = draft.intern_string("f");
     let source = draft.intern_string("src/main.mw");
     let local_count = params.len() as u16 + 4;
-    let func = draft.add_function(FunctionDef {
-        name,
-        source,
-        params,
-        ret,
-        local_count,
-        spans: spans(&code),
-        code,
-    });
+    let func = draft
+        .add_function(FunctionDef {
+            name,
+            source,
+            params,
+            ret,
+            local_count,
+            spans: spans(&code),
+            code,
+        })
+        .expect("every site operand is live");
     draft.add_export(ExportId::of_local("", "f"), func);
     let bytes = draft.encode().expect("encode").bytes;
     verify(&bytes)
@@ -261,15 +263,17 @@ fn a_truncated_enum_table_rejects_at_envelope() {
     let name = draft.intern_string("f");
     let source = draft.intern_string("src/main.mw");
     let code = vec![Instr::Return];
-    let func = draft.add_function(FunctionDef {
-        name,
-        source,
-        params: vec![],
-        ret: ImageType::Unit,
-        local_count: 0,
-        spans: spans(&code),
-        code,
-    });
+    let func = draft
+        .add_function(FunctionDef {
+            name,
+            source,
+            params: vec![],
+            ret: ImageType::Unit,
+            local_count: 0,
+            spans: spans(&code),
+            code,
+        })
+        .expect("every site operand is live");
     draft.add_export(ExportId::of_local("", "f"), func);
     let mut bytes = draft.encode().expect("encode").bytes;
     bytes.truncate(bytes.len() - 2);

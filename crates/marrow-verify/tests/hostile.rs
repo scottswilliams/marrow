@@ -7,54 +7,66 @@
 //!     must reject at the phase that owns that invariant.
 //!
 //! Semantically valid rewrites are allowed to verify and are not asserted to reject.
+//!
+//! Every site named here is minted through the construction seam's bind-then-request
+//! protocol. That protocol has exactly one owner in the workspace and is included here
+//! rather than copied.
 
 use marrow_image::{
-    CollectionTypeDef, DurableEnumMemberShape, DurableIndexComponent, DurableIndexShape,
-    DurableMemberDef, DurableValueShape, EnumTypeDef, ExportId, FieldDef, FuncId, FunctionDef,
-    ImageDraft, ImageType, Instr, KeyColumn, LedgerIdBytes, LegacyDraftSiteOperand, RecordTypeDef,
-    RootDef, RootIdentity, Scalar, SemanticPath, SemanticStep, SemanticStepKind, SiteDef,
-    SpanEntry, VariantDef, image_id,
+    AdmittedRoot, CollectionTypeDef, DeclarationMember, DeclarationMemberDef,
+    DeclarationMemberShape, DurableEnumMemberShape, DurableIndexComponent, DurableIndexShape,
+    DurableValueShape, EnumTypeDef, ExportId, FieldDef, FuncId, FunctionDef, ImageDraft, ImageType,
+    Instr, KeyColumn, LedgerIdBytes, LegacyDraftSiteOperand, RecordTypeDef, RootOccurrenceDef,
+    Scalar, SemanticStepKind, SemanticTarget, SpanEntry, VariantDef, image_id,
 };
 use marrow_verify::{VerifyPhase, verify};
 
+#[path = "../../marrow-image/tests/common/site_seam.rs"]
+mod site_seam;
+use site_seam::site;
+
 /// The tracer graph's fixed ledger ids, shared by the durable-schema builders and
-/// the site-path helpers so a hostile mutation can target one precisely.
+/// the byte-forgery helpers so a hostile mutation can target one precisely.
 const APPLICATION_ID: [u8; 16] = [0x0a; 16];
 const PLACEMENT_ID: [u8; 16] = [0x0b; 16];
+const ROOT_KEY_ID: [u8; 16] = [0x0c; 16];
+const PRODUCT_ID: [u8; 16] = [0x0d; 16];
 const VALUE_FIELD_ID: [u8; 16] = [0x0e; 16];
 const LABEL_FIELD_ID: [u8; 16] = [0x0f; 16];
 
-/// The semantic path of the tracer root itself: `application -> placement`.
-fn root_path() -> SemanticPath {
-    SemanticPath::root(
-        LedgerIdBytes::from_bytes(APPLICATION_ID),
-        LedgerIdBytes::from_bytes(PLACEMENT_ID),
-    )
+/// The direct members of the Product every fixture in this file declares, in
+/// declaration order.
+fn product_members(draft: &ImageDraft) -> Vec<DeclarationMember> {
+    draft
+        .product_members(LedgerIdBytes::from_bytes(PRODUCT_ID))
+        .expect("the fixture Product is declared")
 }
 
-/// The semantic path of a top-level field of the tracer root.
-fn field_path(field_id: [u8; 16]) -> SemanticPath {
-    root_path().child(SemanticStep::new(
-        SemanticStepKind::Field,
-        LedgerIdBytes::from_bytes(field_id),
-    ))
+/// One flat declaration command for a stored scalar field of `parent` (`None` is a
+/// direct member of the Product).
+fn field_member(
+    parent: Option<u16>,
+    id: [u8; 16],
+    required: bool,
+    scalar: Scalar,
+) -> DeclarationMemberDef {
+    DeclarationMemberDef {
+        parent,
+        shape: DeclarationMemberShape::Field {
+            id: LedgerIdBytes::from_bytes(id),
+            required,
+            value: DurableValueShape::Scalar(scalar),
+        },
+    }
 }
 
-/// The tracer `Counter` record's durable member tree: `value:int` required then
+/// The tracer `Counter` record's declaration commands: `value:int` required then
 /// `label:string` sparse, matching the `durable_schema` record fields so the
 /// verifier's member-tree/record cross-check passes.
-fn counters_members() -> Vec<DurableMemberDef> {
+fn counters_members() -> Vec<DeclarationMemberDef> {
     vec![
-        DurableMemberDef::Field {
-            id: LedgerIdBytes::from_bytes([0x0e; 16]),
-            required: true,
-            value: DurableValueShape::Scalar(Scalar::Int),
-        },
-        DurableMemberDef::Field {
-            id: LedgerIdBytes::from_bytes([0x0f; 16]),
-            required: false,
-            value: DurableValueShape::Scalar(Scalar::Text),
-        },
+        field_member(None, VALUE_FIELD_ID, true, Scalar::Int),
+        field_member(None, LABEL_FIELD_ID, false, Scalar::Text),
     ]
 }
 
@@ -66,26 +78,30 @@ fn good_image() -> Vec<u8> {
     let helper_name = draft.intern_string("helper");
     let seven = draft.intern_int(7);
     let helper_code = vec![Instr::ConstLoad(seven.index()), Instr::Return];
-    let helper = draft.add_function(FunctionDef {
-        name: helper_name,
-        source: src,
-        params: Vec::new(),
-        ret: ImageType::scalar(Scalar::Int),
-        local_count: 0,
-        spans: spans(&helper_code),
-        code: helper_code,
-    });
+    let helper = draft
+        .add_function(FunctionDef {
+            name: helper_name,
+            source: src,
+            params: Vec::new(),
+            ret: ImageType::scalar(Scalar::Int),
+            local_count: 0,
+            spans: spans(&helper_code),
+            code: helper_code,
+        })
+        .expect("every site operand is live");
     let main_name = draft.intern_string("main");
     let main_code = vec![Instr::Call(helper.index()), Instr::Return];
-    let main = draft.add_function(FunctionDef {
-        name: main_name,
-        source: src,
-        params: Vec::new(),
-        ret: ImageType::scalar(Scalar::Int),
-        local_count: 0,
-        spans: spans(&main_code),
-        code: main_code,
-    });
+    let main = draft
+        .add_function(FunctionDef {
+            name: main_name,
+            source: src,
+            params: Vec::new(),
+            ret: ImageType::scalar(Scalar::Int),
+            local_count: 0,
+            spans: spans(&main_code),
+            code: main_code,
+        })
+        .expect("every site operand is live");
     draft.add_export(ExportId::of_local("", "main"), main);
     draft.encode().expect("encode").bytes
 }
@@ -126,6 +142,66 @@ fn sections(bytes: &[u8]) -> Vec<(u8, usize, usize)> {
         off += len;
     }
     out
+}
+
+/// One operation site exactly as the encoder writes it into the DURABLE section:
+/// `u8(step_count)`, each step's frozen ledger-kind byte and 16 id bytes, then the
+/// target byte (`WholePayload` 0x00, `FieldLeaf` 0x01, `IndexScan` 0x02,
+/// `IndexLookup` 0x03, `GroupEntry` 0x04).
+fn encoded_site(steps: &[(SemanticStepKind, [u8; 16])], target: u8) -> Vec<u8> {
+    let mut out = vec![steps.len() as u8];
+    for (kind, id) in steps {
+        out.push(kind.ledger_kind());
+        out.extend_from_slice(id);
+    }
+    out.push(target);
+    out
+}
+
+/// The tracer root's own whole-payload site, as encoded bytes.
+fn encoded_root_site() -> Vec<u8> {
+    encoded_site(
+        &[
+            (SemanticStepKind::Application, APPLICATION_ID),
+            (SemanticStepKind::Placement, PLACEMENT_ID),
+        ],
+        0x00,
+    )
+}
+
+/// A top-level field leaf of the tracer root, as encoded site bytes.
+fn encoded_field_site(field_id: [u8; 16]) -> Vec<u8> {
+    encoded_site(
+        &[
+            (SemanticStepKind::Application, APPLICATION_ID),
+            (SemanticStepKind::Placement, PLACEMENT_ID),
+            (SemanticStepKind::Field, field_id),
+        ],
+        0x01,
+    )
+}
+
+/// Replace the encoded site `original` in the DURABLE section (id 3) with `forged`,
+/// repair that section's length field, and revalidate the digest.
+///
+/// The producer binds a site against its own declaration rows and admits exactly the
+/// target the named node carries, so a divergent site — an unresolvable path, a target
+/// the node refuses, a path past the depth bound — exists only as forged bytes over a
+/// valid image. This is the trust boundary the verifier owns.
+fn forge_site(bytes: &mut Vec<u8>, original: &[u8], forged: &[u8]) {
+    let (_, body, len) = *sections(bytes)
+        .iter()
+        .find(|(id, ..)| *id == 3)
+        .expect("the durable section is present");
+    let at = bytes[body..body + len]
+        .windows(original.len())
+        .position(|window| window == original)
+        .map(|offset| body + offset)
+        .expect("the site is present in the durable section");
+    bytes.splice(at..at + original.len(), forged.iter().copied());
+    let forged_len = (len - original.len() + forged.len()) as u32;
+    bytes[body - 4..body].copy_from_slice(&forged_len.to_be_bytes());
+    rehash(bytes);
 }
 
 // --- Suite (a): stale-digest, no rehash. Every case rejects at the envelope. ---
@@ -192,26 +268,30 @@ fn two_export_image() -> Vec<u8> {
     let one = draft.intern_int(1);
     let a_name = draft.intern_string("a");
     let a_code = vec![Instr::ConstLoad(one.index()), Instr::Return];
-    let a = draft.add_function(FunctionDef {
-        name: a_name,
-        source: src,
-        params: Vec::new(),
-        ret: ImageType::scalar(Scalar::Int),
-        local_count: 0,
-        spans: spans(&a_code),
-        code: a_code,
-    });
+    let a = draft
+        .add_function(FunctionDef {
+            name: a_name,
+            source: src,
+            params: Vec::new(),
+            ret: ImageType::scalar(Scalar::Int),
+            local_count: 0,
+            spans: spans(&a_code),
+            code: a_code,
+        })
+        .expect("every site operand is live");
     let b_name = draft.intern_string("b");
     let b_code = vec![Instr::ConstLoad(one.index()), Instr::Return];
-    let b = draft.add_function(FunctionDef {
-        name: b_name,
-        source: src,
-        params: Vec::new(),
-        ret: ImageType::scalar(Scalar::Int),
-        local_count: 0,
-        spans: spans(&b_code),
-        code: b_code,
-    });
+    let b = draft
+        .add_function(FunctionDef {
+            name: b_name,
+            source: src,
+            params: Vec::new(),
+            ret: ImageType::scalar(Scalar::Int),
+            local_count: 0,
+            spans: spans(&b_code),
+            code: b_code,
+        })
+        .expect("every site operand is live");
     draft.add_export(ExportId::of_local("", "a"), a);
     draft.add_export(ExportId::of_local("", "b"), b);
     draft.encode().expect("encode").bytes
@@ -316,15 +396,17 @@ fn function_phase_unreachable_instruction() {
         Instr::ConstLoad(one.index()),
         Instr::Return,
     ];
-    let func = draft.add_function(FunctionDef {
-        name,
-        source: src,
-        params: Vec::new(),
-        ret: ImageType::scalar(Scalar::Int),
-        local_count: 0,
-        spans: spans(&code),
-        code,
-    });
+    let func = draft
+        .add_function(FunctionDef {
+            name,
+            source: src,
+            params: Vec::new(),
+            ret: ImageType::scalar(Scalar::Int),
+            local_count: 0,
+            spans: spans(&code),
+            code,
+        })
+        .expect("every site operand is live");
     draft.add_export(ExportId::of_local("", "e"), func);
     assert_eq!(code_of(&draft.encode().unwrap().bytes), "image.function");
 }
@@ -336,15 +418,17 @@ fn function_phase_call_argument_type_mismatch() {
     let src = draft.intern_string("src/main.mw");
     let helper_name = draft.intern_string("helper");
     let helper_code = vec![Instr::LocalGet(0), Instr::Return];
-    let helper = draft.add_function(FunctionDef {
-        name: helper_name,
-        source: src,
-        params: vec![ImageType::scalar(Scalar::Int)],
-        ret: ImageType::scalar(Scalar::Int),
-        local_count: 1,
-        spans: spans(&helper_code),
-        code: helper_code,
-    });
+    let helper = draft
+        .add_function(FunctionDef {
+            name: helper_name,
+            source: src,
+            params: vec![ImageType::scalar(Scalar::Int)],
+            ret: ImageType::scalar(Scalar::Int),
+            local_count: 1,
+            spans: spans(&helper_code),
+            code: helper_code,
+        })
+        .expect("every site operand is live");
     let main_name = draft.intern_string("main");
     let flag = draft.intern_bool(true);
     let main_code = vec![
@@ -352,15 +436,17 @@ fn function_phase_call_argument_type_mismatch() {
         Instr::Call(helper.index()),
         Instr::Return,
     ];
-    let main = draft.add_function(FunctionDef {
-        name: main_name,
-        source: src,
-        params: Vec::new(),
-        ret: ImageType::scalar(Scalar::Int),
-        local_count: 0,
-        spans: spans(&main_code),
-        code: main_code,
-    });
+    let main = draft
+        .add_function(FunctionDef {
+            name: main_name,
+            source: src,
+            params: Vec::new(),
+            ret: ImageType::scalar(Scalar::Int),
+            local_count: 0,
+            spans: spans(&main_code),
+            code: main_code,
+        })
+        .expect("every site operand is live");
     draft.add_export(ExportId::of_local("", "main"), main);
     assert_eq!(code_of(&draft.encode().unwrap().bytes), "image.function");
 }
@@ -374,25 +460,29 @@ fn closure_phase_mutual_recursion() {
     let pong_name = draft.intern_string("pong");
     // ping calls function index 1 (pong); pong calls index 0 (ping).
     let ping_code = vec![Instr::Call(1), Instr::Return];
-    let ping = draft.add_function(FunctionDef {
-        name: ping_name,
-        source: src,
-        params: Vec::new(),
-        ret: ImageType::scalar(Scalar::Int),
-        local_count: 0,
-        spans: spans(&ping_code),
-        code: ping_code,
-    });
+    let ping = draft
+        .add_function(FunctionDef {
+            name: ping_name,
+            source: src,
+            params: Vec::new(),
+            ret: ImageType::scalar(Scalar::Int),
+            local_count: 0,
+            spans: spans(&ping_code),
+            code: ping_code,
+        })
+        .expect("every site operand is live");
     let pong_code = vec![Instr::Call(0), Instr::Return];
-    draft.add_function(FunctionDef {
-        name: pong_name,
-        source: src,
-        params: Vec::new(),
-        ret: ImageType::scalar(Scalar::Int),
-        local_count: 0,
-        spans: spans(&pong_code),
-        code: pong_code,
-    });
+    draft
+        .add_function(FunctionDef {
+            name: pong_name,
+            source: src,
+            params: Vec::new(),
+            ret: ImageType::scalar(Scalar::Int),
+            local_count: 0,
+            spans: spans(&pong_code),
+            code: pong_code,
+        })
+        .expect("every site operand is live");
     draft.add_export(ExportId::of_local("", "ping"), ping);
     assert_eq!(code_of(&draft.encode().unwrap().bytes), "image.closure");
 }
@@ -434,24 +524,47 @@ fn durable_schema(draft: &mut ImageDraft) -> Sites {
         ],
     });
     let root = draft.intern_string("counters");
-    draft.set_application_identity(LedgerIdBytes::from_bytes([0x0a; 16]));
-    draft.add_root(RootDef {
-        name: root,
-        keys: vec![KeyColumn {
-            scalar: Scalar::Text,
-            id: LedgerIdBytes::from_bytes([0x0c; 16]),
-        }],
-        record,
-        identity: RootIdentity {
-            placement: LedgerIdBytes::from_bytes([0x0b; 16]),
-            product: LedgerIdBytes::from_bytes([0x0d; 16]),
-            indexes: Vec::new(),
-            members: counters_members(),
-        },
-    });
-    let entry = draft.request_site(SiteDef::whole_payload(root_path()));
-    let value = draft.request_site(SiteDef::field_leaf(field_path(VALUE_FIELD_ID)));
-    let label = draft.request_site(SiteDef::field_leaf(field_path(LABEL_FIELD_ID)));
+    draft.set_application_identity(LedgerIdBytes::from_bytes(APPLICATION_ID));
+    draft
+        .declare_product(
+            LedgerIdBytes::from_bytes(PRODUCT_ID),
+            record,
+            counters_members(),
+        )
+        .expect("a well-formed declaration");
+    let admitted = draft
+        .add_root_occurrence(
+            LedgerIdBytes::from_bytes(PRODUCT_ID),
+            RootOccurrenceDef {
+                name: root,
+                keys: vec![KeyColumn {
+                    scalar: Scalar::Text,
+                    id: LedgerIdBytes::from_bytes(ROOT_KEY_ID),
+                }],
+                placement: LedgerIdBytes::from_bytes(PLACEMENT_ID),
+                indexes: Vec::new(),
+            },
+        )
+        .expect("the Product is declared");
+    let members = product_members(draft);
+    let entry = site(
+        draft,
+        admitted.occurrence(),
+        admitted.placement_path(),
+        SemanticTarget::WholePayload,
+    );
+    let value = site(
+        draft,
+        admitted.occurrence(),
+        members[0].path(),
+        SemanticTarget::FieldLeaf,
+    );
+    let label = site(
+        draft,
+        admitted.occurrence(),
+        members[1].path(),
+        SemanticTarget::FieldLeaf,
+    );
     Sites {
         entry,
         value,
@@ -467,18 +580,20 @@ fn put_export(code: impl FnOnce(&Sites) -> Vec<Instr>) -> ImageDraft {
     let code = code(&sites);
     let src = draft.intern_string("src/main.mw");
     let name = draft.intern_string("put");
-    let func = draft.add_function(FunctionDef {
-        name,
-        source: src,
-        params: vec![
-            ImageType::scalar(Scalar::Text),
-            ImageType::scalar(Scalar::Int),
-        ],
-        ret: ImageType::Unit,
-        local_count: 2,
-        spans: spans(&code),
-        code,
-    });
+    let func = draft
+        .add_function(FunctionDef {
+            name,
+            source: src,
+            params: vec![
+                ImageType::scalar(Scalar::Text),
+                ImageType::scalar(Scalar::Int),
+            ],
+            ret: ImageType::Unit,
+            local_count: 2,
+            spans: spans(&code),
+            code,
+        })
+        .expect("every site operand is live");
     draft.add_export(ExportId::of_local("", "e"), func);
     draft
 }
@@ -494,15 +609,17 @@ fn read_field_export(
     let src = draft.intern_string("src/main.mw");
     let name = draft.intern_string("read");
     let code = vec![Instr::LocalGet(0), Instr::DurReadField(site), Instr::Return];
-    let func = draft.add_function(FunctionDef {
-        name,
-        source: src,
-        params: vec![ImageType::scalar(Scalar::Text)],
-        ret,
-        local_count: 1,
-        spans: spans(&code),
-        code,
-    });
+    let func = draft
+        .add_function(FunctionDef {
+            name,
+            source: src,
+            params: vec![ImageType::scalar(Scalar::Text)],
+            ret,
+            local_count: 1,
+            spans: spans(&code),
+            code,
+        })
+        .expect("every site operand is live");
     draft.add_export(ExportId::of_local("", "read"), func);
     draft
 }
@@ -577,15 +694,17 @@ fn iterate_root_export(limit: u32, from: bool) -> ImageDraft {
     code.push(Instr::Pop);
     code.push(Instr::Pop);
     code.push(Instr::Return);
-    let func = draft.add_function(FunctionDef {
-        name,
-        source: src,
-        params,
-        ret: ImageType::Unit,
-        local_count,
-        spans: spans(&code),
-        code,
-    });
+    let func = draft
+        .add_function(FunctionDef {
+            name,
+            source: src,
+            params,
+            ret: ImageType::Unit,
+            local_count,
+            spans: spans(&code),
+            code,
+        })
+        .expect("every site operand is live");
     draft.add_export(ExportId::of_local("", "iter"), func);
     draft
 }
@@ -609,8 +728,8 @@ fn a_bounded_traversal_over_a_branch_verifies_and_type_checks() {
     // A branch site traverses the branch family beneath a fixed root entry: the ancestor
     // root key (int) is popped, the frozen `List[string]` of branch keys and the on-more
     // `Bool` are pushed, and the image seals.
-    let (mut draft, _branch_record) = flat_branch_draft();
-    let site = draft.request_site(SiteDef::whole_payload(branch_entry_path()));
+    let (mut draft, root, _branch_record) = flat_branch_draft();
+    let site = flat_branch_entry_site(&mut draft, &root);
     let list_ty = draft
         .add_collection_type(CollectionTypeDef::List {
             elem: ImageType::scalar(Scalar::Text),
@@ -630,15 +749,17 @@ fn a_bounded_traversal_over_a_branch_verifies_and_type_checks() {
         Instr::Pop,
         Instr::Return,
     ];
-    let func = draft.add_function(FunctionDef {
-        name,
-        source: src,
-        params: vec![ImageType::scalar(Scalar::Int)],
-        ret: ImageType::Unit,
-        local_count: 1,
-        spans: spans(&code),
-        code,
-    });
+    let func = draft
+        .add_function(FunctionDef {
+            name,
+            source: src,
+            params: vec![ImageType::scalar(Scalar::Int)],
+            ret: ImageType::Unit,
+            local_count: 1,
+            spans: spans(&code),
+            code,
+        })
+        .expect("every site operand is live");
     draft.add_export(ExportId::of_local("", "notes"), func);
     assert_eq!(code_of(&draft.encode().unwrap().bytes), "VERIFIED");
 }
@@ -684,15 +805,17 @@ fn a_bounded_traversal_with_a_mismatched_list_type_rejects() {
         Instr::Pop,
         Instr::Return,
     ];
-    let func = draft.add_function(FunctionDef {
-        name,
-        source: src,
-        params: Vec::new(),
-        ret: ImageType::Unit,
-        local_count: 0,
-        spans: spans(&code),
-        code,
-    });
+    let func = draft
+        .add_function(FunctionDef {
+            name,
+            source: src,
+            params: Vec::new(),
+            ret: ImageType::Unit,
+            local_count: 0,
+            spans: spans(&code),
+            code,
+        })
+        .expect("every site operand is live");
     draft.add_export(ExportId::of_local("", "iter"), func);
     let rejection = verify(&draft.encode().unwrap().bytes)
         .expect_err("a mismatched frozen-list type is refused");
@@ -708,8 +831,8 @@ fn a_bounded_branch_traversal_missing_its_ancestor_key_rejects() {
     // A branch traversal pops the ancestor root key locating the parent entry. Pushing
     // no ancestor key leaves that pop against an empty stack — a key-arity forgery the
     // verifier refuses.
-    let (mut draft, _branch_record) = flat_branch_draft();
-    let site = draft.request_site(SiteDef::whole_payload(branch_entry_path()));
+    let (mut draft, root, _branch_record) = flat_branch_draft();
+    let site = flat_branch_entry_site(&mut draft, &root);
     let list_ty = draft
         .add_collection_type(CollectionTypeDef::List {
             elem: ImageType::scalar(Scalar::Text),
@@ -729,15 +852,17 @@ fn a_bounded_branch_traversal_missing_its_ancestor_key_rejects() {
         Instr::Pop,
         Instr::Return,
     ];
-    let func = draft.add_function(FunctionDef {
-        name,
-        source: src,
-        params: vec![ImageType::scalar(Scalar::Int)],
-        ret: ImageType::Unit,
-        local_count: 1,
-        spans: spans(&code),
-        code,
-    });
+    let func = draft
+        .add_function(FunctionDef {
+            name,
+            source: src,
+            params: vec![ImageType::scalar(Scalar::Int)],
+            ret: ImageType::Unit,
+            local_count: 1,
+            spans: spans(&code),
+            code,
+        })
+        .expect("every site operand is live");
     draft.add_export(ExportId::of_local("", "notes"), func);
     let rejection =
         verify(&draft.encode().unwrap().bytes).expect_err("a missing ancestor key is refused");
@@ -770,15 +895,17 @@ fn a_bounded_traversal_over_a_field_leaf_site_rejects() {
         Instr::Pop,
         Instr::Return,
     ];
-    let func = draft.add_function(FunctionDef {
-        name,
-        source: src,
-        params: Vec::new(),
-        ret: ImageType::Unit,
-        local_count: 0,
-        spans: spans(&code),
-        code,
-    });
+    let func = draft
+        .add_function(FunctionDef {
+            name,
+            source: src,
+            params: Vec::new(),
+            ret: ImageType::Unit,
+            local_count: 0,
+            spans: spans(&code),
+            code,
+        })
+        .expect("every site operand is live");
     draft.add_export(ExportId::of_local("", "iter"), func);
     let rejection = verify(&draft.encode().unwrap().bytes)
         .expect_err("a traversal over a field-leaf site is refused");
@@ -800,15 +927,17 @@ fn a_family_populated_probe_over_a_field_leaf_site_rejects() {
         Instr::Pop,
         Instr::Return,
     ];
-    let func = draft.add_function(FunctionDef {
-        name,
-        source: src,
-        params: Vec::new(),
-        ret: ImageType::Unit,
-        local_count: 0,
-        spans: spans(&code),
-        code,
-    });
+    let func = draft
+        .add_function(FunctionDef {
+            name,
+            source: src,
+            params: Vec::new(),
+            ret: ImageType::Unit,
+            local_count: 0,
+            spans: spans(&code),
+            code,
+        })
+        .expect("every site operand is live");
     draft.add_export(ExportId::of_local("", "probe"), func);
     let rejection = verify(&draft.encode().unwrap().bytes)
         .expect_err("a family probe over a field site is refused");
@@ -832,15 +961,17 @@ fn a_managed_index_probe_over_a_field_leaf_site_rejects() {
         Instr::Pop,
         Instr::Return,
     ];
-    let func = draft.add_function(FunctionDef {
-        name,
-        source: src,
-        params: vec![ImageType::scalar(Scalar::Text)],
-        ret: ImageType::Unit,
-        local_count: 1,
-        spans: spans(&code),
-        code,
-    });
+    let func = draft
+        .add_function(FunctionDef {
+            name,
+            source: src,
+            params: vec![ImageType::scalar(Scalar::Text)],
+            ret: ImageType::Unit,
+            local_count: 1,
+            spans: spans(&code),
+            code,
+        })
+        .expect("every site operand is live");
     draft.add_export(ExportId::of_local("", "probe"), func);
     let rejection = verify(&draft.encode().unwrap().bytes)
         .expect_err("a managed-index probe over a field site is refused");
@@ -857,8 +988,14 @@ fn a_non_index_opcode_over_a_managed_index_site_rejects() {
     // by SITE kind, so a forged image aiming a whole-entry/field opcode (here `DurReadField`)
     // at a managed-index site is routed there even though it is not an index read. The trust
     // boundary refuses it rather than reaching the closed-complement of the three index reads.
-    let mut draft = indexed_draft(by_label_projection());
-    let lookup_site = draft.request_site(SiteDef::index_lookup(index_path(BY_VALUE_INDEX_ID)));
+    let (mut draft, root) = indexed_draft(by_label_projection());
+    // Index 1 is the unique `byValue`, so the exact-lookup target is the one it admits.
+    let lookup_site = site(
+        &mut draft,
+        root.occurrence(),
+        &root.index_paths()[1],
+        SemanticTarget::IndexLookup,
+    );
     let src = draft.intern_string("src/main.mw");
     let name = draft.intern_string("probe");
     let code = vec![
@@ -866,15 +1003,17 @@ fn a_non_index_opcode_over_a_managed_index_site_rejects() {
         Instr::DurReadField(lookup_site),
         Instr::Return,
     ];
-    let func = draft.add_function(FunctionDef {
-        name,
-        source: src,
-        params: vec![ImageType::scalar(Scalar::Text)],
-        ret: ImageType::opt_scalar(Scalar::Int),
-        local_count: 1,
-        spans: spans(&code),
-        code,
-    });
+    let func = draft
+        .add_function(FunctionDef {
+            name,
+            source: src,
+            params: vec![ImageType::scalar(Scalar::Text)],
+            ret: ImageType::opt_scalar(Scalar::Int),
+            local_count: 1,
+            spans: spans(&code),
+            code,
+        })
+        .expect("every site operand is live");
     draft.add_export(ExportId::of_local("", "probe"), func);
     let rejection = verify(&draft.encode().unwrap().bytes)
         .expect_err("a non-index opcode over an index site is refused");
@@ -916,18 +1055,20 @@ fn a_bounded_traversal_after_commit_rejects() {
         Instr::Pop,
         Instr::Return,
     ];
-    let func = draft.add_function(FunctionDef {
-        name,
-        source: src,
-        params: vec![
-            ImageType::scalar(Scalar::Text),
-            ImageType::scalar(Scalar::Int),
-        ],
-        ret: ImageType::Unit,
-        local_count: 2,
-        spans: spans(&code),
-        code,
-    });
+    let func = draft
+        .add_function(FunctionDef {
+            name,
+            source: src,
+            params: vec![
+                ImageType::scalar(Scalar::Text),
+                ImageType::scalar(Scalar::Int),
+            ],
+            ret: ImageType::Unit,
+            local_count: 2,
+            spans: spans(&code),
+            code,
+        })
+        .expect("every site operand is live");
     draft.add_export(ExportId::of_local("", "e"), func);
     let rejection =
         verify(&draft.encode().unwrap().bytes).expect_err("a post-commit traversal is refused");
@@ -965,15 +1106,17 @@ fn a_traversal_list_type_naming_a_map_or_a_dangling_index_rejects() {
             Instr::Pop,
             Instr::Return,
         ];
-        let func = draft.add_function(FunctionDef {
-            name,
-            source: src,
-            params: Vec::new(),
-            ret: ImageType::Unit,
-            local_count: 0,
-            spans: spans(&code),
-            code,
-        });
+        let func = draft
+            .add_function(FunctionDef {
+                name,
+                source: src,
+                params: Vec::new(),
+                ret: ImageType::Unit,
+                local_count: 0,
+                spans: spans(&code),
+                code,
+            })
+            .expect("every site operand is live");
         draft.add_export(ExportId::of_local("", "iter"), func);
         draft.encode().unwrap().bytes
     };
@@ -1155,32 +1298,41 @@ fn a_composite_root_write_opcode_with_a_truncated_key_path_rejects() {
         }],
     });
     let root = draft.intern_string("pairs");
-    draft.set_application_identity(LedgerIdBytes::from_bytes([0x0a; 16]));
-    draft.add_root(RootDef {
-        name: root,
-        keys: vec![
-            KeyColumn {
-                scalar: Scalar::Text,
-                id: LedgerIdBytes::from_bytes([0x0c; 16]),
+    draft.set_application_identity(LedgerIdBytes::from_bytes(APPLICATION_ID));
+    draft
+        .declare_product(
+            LedgerIdBytes::from_bytes(PRODUCT_ID),
+            record,
+            vec![field_member(None, VALUE_FIELD_ID, true, Scalar::Int)],
+        )
+        .expect("a well-formed declaration");
+    let admitted = draft
+        .add_root_occurrence(
+            LedgerIdBytes::from_bytes(PRODUCT_ID),
+            RootOccurrenceDef {
+                name: root,
+                keys: vec![
+                    KeyColumn {
+                        scalar: Scalar::Text,
+                        id: LedgerIdBytes::from_bytes(ROOT_KEY_ID),
+                    },
+                    KeyColumn {
+                        scalar: Scalar::Int,
+                        id: LedgerIdBytes::from_bytes([0x1c; 16]),
+                    },
+                ],
+                placement: LedgerIdBytes::from_bytes(PLACEMENT_ID),
+                indexes: Vec::new(),
             },
-            KeyColumn {
-                scalar: Scalar::Int,
-                id: LedgerIdBytes::from_bytes([0x1c; 16]),
-            },
-        ],
-        record,
-        identity: RootIdentity {
-            placement: LedgerIdBytes::from_bytes([0x0b; 16]),
-            product: LedgerIdBytes::from_bytes([0x0d; 16]),
-            indexes: Vec::new(),
-            members: vec![DurableMemberDef::Field {
-                id: LedgerIdBytes::from_bytes([0x0e; 16]),
-                required: true,
-                value: DurableValueShape::Scalar(Scalar::Int),
-            }],
-        },
-    });
-    let value_site = draft.request_site(SiteDef::field_leaf(field_path(VALUE_FIELD_ID)));
+        )
+        .expect("the Product is declared");
+    let members = product_members(&draft);
+    let value_site = site(
+        &mut draft,
+        admitted.occurrence(),
+        members[0].path(),
+        SemanticTarget::FieldLeaf,
+    );
     let src = draft.intern_string("src/main.mw");
     let name = draft.intern_string("put");
     let code = vec![
@@ -1191,18 +1343,20 @@ fn a_composite_root_write_opcode_with_a_truncated_key_path_rejects() {
         Instr::TxnCommit,
         Instr::Return,
     ];
-    let func = draft.add_function(FunctionDef {
-        name,
-        source: src,
-        params: vec![
-            ImageType::scalar(Scalar::Text),
-            ImageType::scalar(Scalar::Int),
-        ],
-        ret: ImageType::Unit,
-        local_count: 2,
-        spans: spans(&code),
-        code,
-    });
+    let func = draft
+        .add_function(FunctionDef {
+            name,
+            source: src,
+            params: vec![
+                ImageType::scalar(Scalar::Text),
+                ImageType::scalar(Scalar::Int),
+            ],
+            ret: ImageType::Unit,
+            local_count: 2,
+            spans: spans(&code),
+            code,
+        })
+        .expect("every site operand is live");
     draft.add_export(ExportId::of_local("", "e"), func);
     // The truncated key-path is rejected during per-function structural/type recording
     // (the `image.function` phase), where the operation's key-path is typed.
@@ -1215,7 +1369,7 @@ fn a_composite_root_write_opcode_with_a_truncated_key_path_rejects() {
 /// carries only the top-level `title` field, so the verifier's member-tree/record
 /// cross-check passes. When `with_site` is true, an operation site and a reading
 /// function are added — the not-yet-executable shape a forged image would need.
-fn group_branch_draft(with_site: bool) -> ImageDraft {
+fn group_branch_draft(with_site: bool) -> (ImageDraft, AdmittedRoot) {
     group_branch_draft_with_branch_record(with_site, true)
 }
 
@@ -1226,7 +1380,7 @@ fn group_branch_draft(with_site: bool) -> ImageDraft {
 fn group_branch_draft_with_branch_record(
     with_site: bool,
     branch_record_required: bool,
-) -> ImageDraft {
+) -> (ImageDraft, AdmittedRoot) {
     let mut draft = ImageDraft::new();
     let book = draft.intern_string("Book");
     let title = draft.intern_string("title");
@@ -1273,80 +1427,91 @@ fn group_branch_draft_with_branch_record(
             required: branch_record_required,
         }],
     });
-    draft.set_application_identity(LedgerIdBytes::from_bytes([0x0a; 16]));
-    draft.add_root(RootDef {
-        name: root,
-        keys: vec![KeyColumn {
-            scalar: Scalar::Int,
-            id: LedgerIdBytes::from_bytes([0x0c; 16]),
-        }],
-        record,
-        identity: RootIdentity {
-            placement: LedgerIdBytes::from_bytes([0x0b; 16]),
-            product: LedgerIdBytes::from_bytes([0x0d; 16]),
-            indexes: Vec::new(),
-            members: vec![
-                DurableMemberDef::Field {
-                    id: LedgerIdBytes::from_bytes([0x0e; 16]),
-                    required: true,
-                    value: DurableValueShape::Scalar(Scalar::Text),
+    draft.set_application_identity(LedgerIdBytes::from_bytes(APPLICATION_ID));
+    draft
+        .declare_product(
+            LedgerIdBytes::from_bytes(PRODUCT_ID),
+            record,
+            vec![
+                field_member(None, VALUE_FIELD_ID, true, Scalar::Text),
+                DeclarationMemberDef {
+                    parent: None,
+                    shape: DeclarationMemberShape::Group {
+                        id: LedgerIdBytes::from_bytes([0x20; 16]),
+                    },
                 },
-                DurableMemberDef::Group {
-                    id: LedgerIdBytes::from_bytes([0x20; 16]),
-                    members: vec![DurableMemberDef::Field {
-                        id: LedgerIdBytes::from_bytes([0x21; 16]),
-                        required: false,
-                        value: DurableValueShape::Scalar(Scalar::Int),
-                    }],
+                DeclarationMemberDef {
+                    parent: None,
+                    shape: DeclarationMemberShape::Branch {
+                        placement: LedgerIdBytes::from_bytes([0x30; 16]),
+                        name: notes,
+                        record: notes_record,
+                        keys: vec![KeyColumn {
+                            scalar: Scalar::Text,
+                            id: LedgerIdBytes::from_bytes([0x31; 16]),
+                        }],
+                    },
                 },
-                DurableMemberDef::Branch {
-                    placement: LedgerIdBytes::from_bytes([0x30; 16]),
-                    name: notes,
-                    record: notes_record,
-                    keys: vec![KeyColumn {
-                        scalar: Scalar::Text,
-                        id: LedgerIdBytes::from_bytes([0x31; 16]),
-                    }],
-                    members: vec![DurableMemberDef::Field {
-                        id: LedgerIdBytes::from_bytes([0x32; 16]),
-                        required: true,
-                        value: DurableValueShape::Scalar(Scalar::Text),
-                    }],
-                },
+                field_member(Some(1), [0x21; 16], false, Scalar::Int),
+                field_member(Some(2), [0x32; 16], true, Scalar::Text),
             ],
-        },
-    });
+        )
+        .expect("a well-formed declaration");
+    let admitted = draft
+        .add_root_occurrence(
+            LedgerIdBytes::from_bytes(PRODUCT_ID),
+            RootOccurrenceDef {
+                name: root,
+                keys: vec![KeyColumn {
+                    scalar: Scalar::Int,
+                    id: LedgerIdBytes::from_bytes(ROOT_KEY_ID),
+                }],
+                placement: LedgerIdBytes::from_bytes(PLACEMENT_ID),
+                indexes: Vec::new(),
+            },
+        )
+        .expect("the Product is declared");
     let src = draft.intern_string("src/main.mw");
     if with_site {
-        let site = draft.request_site(SiteDef::field_leaf(field_path(VALUE_FIELD_ID)));
+        let members = product_members(&draft);
+        let site = site(
+            &mut draft,
+            admitted.occurrence(),
+            members[0].path(),
+            SemanticTarget::FieldLeaf,
+        );
         let name = draft.intern_string("read");
         let code = vec![Instr::LocalGet(0), Instr::DurReadField(site), Instr::Return];
-        let func = draft.add_function(FunctionDef {
-            name,
-            source: src,
-            params: vec![ImageType::scalar(Scalar::Int)],
-            ret: ImageType::opt_scalar(Scalar::Text),
-            local_count: 1,
-            spans: spans(&code),
-            code,
-        });
+        let func = draft
+            .add_function(FunctionDef {
+                name,
+                source: src,
+                params: vec![ImageType::scalar(Scalar::Int)],
+                ret: ImageType::opt_scalar(Scalar::Text),
+                local_count: 1,
+                spans: spans(&code),
+                code,
+            })
+            .expect("every site operand is live");
         draft.add_export(ExportId::of_local("", "read"), func);
     } else {
         let name = draft.intern_string("label");
         let zero = draft.intern_int(0);
         let code = vec![Instr::ConstLoad(zero.index()), Instr::Return];
-        let func = draft.add_function(FunctionDef {
-            name,
-            source: src,
-            params: Vec::new(),
-            ret: ImageType::scalar(Scalar::Int),
-            local_count: 0,
-            spans: spans(&code),
-            code,
-        });
+        let func = draft
+            .add_function(FunctionDef {
+                name,
+                source: src,
+                params: Vec::new(),
+                ret: ImageType::scalar(Scalar::Int),
+                local_count: 0,
+                spans: spans(&code),
+                code,
+            })
+            .expect("every site operand is live");
         draft.add_export(ExportId::of_local("", "label"), func);
     }
-    draft
+    (draft, admitted)
 }
 
 /// The fixed index ids of the indexed tracer graph.
@@ -1355,20 +1520,24 @@ const BY_VALUE_INDEX_ID: [u8; 16] = [0x71; 16];
 const NON_INDEX_ELIGIBLE_FIELD_DETAIL: &str =
     "durable index field component names a field that is not index-eligible";
 
-/// The semantic path of a managed index of the tracer root: `application ->
-/// placement -> index`.
-fn index_path(index_id: [u8; 16]) -> SemanticPath {
-    root_path().child(SemanticStep::new(
-        SemanticStepKind::Index,
-        LedgerIdBytes::from_bytes(index_id),
-    ))
+/// One managed index of the tracer root, as encoded site bytes: `application ->
+/// placement -> index`, with the read target the index's unique flag admits.
+fn encoded_index_site(index_id: [u8; 16], target: u8) -> Vec<u8> {
+    encoded_site(
+        &[
+            (SemanticStepKind::Application, APPLICATION_ID),
+            (SemanticStepKind::Placement, PLACEMENT_ID),
+            (SemanticStepKind::Index, index_id),
+        ],
+        target,
+    )
 }
 
 /// A well-formed indexed tracer graph: the counters root plus a nonunique
 /// `byLabel(label, k)` and a unique `byValue(value)`. `by_label_components` overrides the
 /// first index's projection, so a hostile test can point a component at a leaf the root
 /// does not carry; the unique `byValue` stays well formed.
-fn indexed_draft(by_label_components: Vec<DurableIndexComponent>) -> ImageDraft {
+fn indexed_draft(by_label_components: Vec<DurableIndexComponent>) -> (ImageDraft, AdmittedRoot) {
     indexed_draft_full(by_label_components, by_value_projection())
 }
 
@@ -1385,7 +1554,7 @@ fn by_value_projection() -> Vec<DurableIndexComponent> {
 fn indexed_draft_full(
     by_label_components: Vec<DurableIndexComponent>,
     by_value_components: Vec<DurableIndexComponent>,
-) -> ImageDraft {
+) -> (ImageDraft, AdmittedRoot) {
     let mut draft = ImageDraft::new();
     let counter = draft.intern_string("Counter");
     let value = draft.intern_string("value");
@@ -1407,32 +1576,39 @@ fn indexed_draft_full(
     });
     let root = draft.intern_string("counters");
     draft.set_application_identity(LedgerIdBytes::from_bytes(APPLICATION_ID));
-    draft.add_root(RootDef {
-        name: root,
-        keys: vec![KeyColumn {
-            scalar: Scalar::Text,
-            id: LedgerIdBytes::from_bytes([0x0c; 16]),
-        }],
-        record,
-        identity: RootIdentity {
-            placement: LedgerIdBytes::from_bytes(PLACEMENT_ID),
-            product: LedgerIdBytes::from_bytes([0x0d; 16]),
-            members: counters_members(),
-            indexes: vec![
-                DurableIndexShape {
-                    id: LedgerIdBytes::from_bytes(BY_LABEL_INDEX_ID),
-                    unique: false,
-                    components: by_label_components,
-                },
-                DurableIndexShape {
-                    id: LedgerIdBytes::from_bytes(BY_VALUE_INDEX_ID),
-                    unique: true,
-                    components: by_value_components,
-                },
-            ],
-        },
-    });
     draft
+        .declare_product(
+            LedgerIdBytes::from_bytes(PRODUCT_ID),
+            record,
+            counters_members(),
+        )
+        .expect("a well-formed declaration");
+    let admitted = draft
+        .add_root_occurrence(
+            LedgerIdBytes::from_bytes(PRODUCT_ID),
+            RootOccurrenceDef {
+                name: root,
+                keys: vec![KeyColumn {
+                    scalar: Scalar::Text,
+                    id: LedgerIdBytes::from_bytes(ROOT_KEY_ID),
+                }],
+                placement: LedgerIdBytes::from_bytes(PLACEMENT_ID),
+                indexes: vec![
+                    DurableIndexShape {
+                        id: LedgerIdBytes::from_bytes(BY_LABEL_INDEX_ID),
+                        unique: false,
+                        components: by_label_components,
+                    },
+                    DurableIndexShape {
+                        id: LedgerIdBytes::from_bytes(BY_VALUE_INDEX_ID),
+                        unique: true,
+                        components: by_value_components,
+                    },
+                ],
+            },
+        )
+        .expect("the Product is declared");
+    (draft, admitted)
 }
 
 /// The well-formed `byLabel` projection: the sparse `label` field then the identity
@@ -1447,7 +1623,13 @@ fn by_label_projection() -> Vec<DurableIndexComponent> {
 #[test]
 fn a_well_formed_indexed_graph_verifies() {
     assert_eq!(
-        code_of(&indexed_draft(by_label_projection()).encode().unwrap().bytes),
+        code_of(
+            &indexed_draft(by_label_projection())
+                .0
+                .encode()
+                .unwrap()
+                .bytes
+        ),
         "VERIFIED",
     );
 }
@@ -1458,7 +1640,11 @@ fn rehashed_mutated_index_id_breaks_the_contract_id() {
     // recomputes the contract over. Flipping that id and rehashing the outer digest
     // leaves the carried contract id stale, so the recomputation rejects — the
     // contract binds index identity, not only roots and fields.
-    let mut bytes = indexed_draft(by_label_projection()).encode().unwrap().bytes;
+    let mut bytes = indexed_draft(by_label_projection())
+        .0
+        .encode()
+        .unwrap()
+        .bytes;
     flip_ledger_id(&mut bytes, BY_VALUE_INDEX_ID);
     rehash(&mut bytes);
     assert_eq!(code_of(&bytes), "image.table");
@@ -1474,7 +1660,7 @@ fn an_index_component_naming_no_leaf_of_its_root_rejects() {
         DurableIndexComponent::Key(LedgerIdBytes::from_bytes([0x0c; 16])),
     ];
     assert_eq!(
-        code_of(&indexed_draft(forged).encode().unwrap().bytes),
+        code_of(&indexed_draft(forged).0.encode().unwrap().bytes),
         "image.table",
     );
 }
@@ -1490,7 +1676,7 @@ fn a_nonunique_index_missing_its_identity_suffix_rejects() {
         LABEL_FIELD_ID,
     ))];
     assert_eq!(
-        code_of(&indexed_draft(no_suffix).encode().unwrap().bytes),
+        code_of(&indexed_draft(no_suffix).0.encode().unwrap().bytes),
         "image.table",
     );
 }
@@ -1507,7 +1693,7 @@ fn a_nonunique_index_with_a_leading_identity_key_rejects() {
         DurableIndexComponent::Key(LedgerIdBytes::from_bytes([0x0c; 16])),
     ];
     assert_eq!(
-        code_of(&indexed_draft(leading_key).encode().unwrap().bytes),
+        code_of(&indexed_draft(leading_key).0.encode().unwrap().bytes),
         "image.table",
     );
 }
@@ -1523,7 +1709,7 @@ fn a_durable_index_repeating_a_component_rejects() {
         DurableIndexComponent::Key(LedgerIdBytes::from_bytes([0x0c; 16])),
     ];
     assert_eq!(
-        code_of(&indexed_draft(repeated).encode().unwrap().bytes),
+        code_of(&indexed_draft(repeated).0.encode().unwrap().bytes),
         "image.table",
     );
 }
@@ -1533,7 +1719,7 @@ fn a_unique_index_with_an_empty_projection_rejects() {
     // A unique index may omit the identity suffix, but it must still project at least one
     // leaf: an empty projection has no key to look up and is meaningless. A forged image
     // that carries one is refused at decode.
-    let draft = indexed_draft_full(by_label_projection(), Vec::new());
+    let (draft, _root) = indexed_draft_full(by_label_projection(), Vec::new());
     assert_eq!(code_of(&draft.encode().unwrap().bytes), "image.table");
 }
 
@@ -1555,30 +1741,33 @@ fn scalar_field_indexed_draft(scalar: Scalar) -> ImageDraft {
     });
     let root = draft.intern_string("indexedScalars");
     draft.set_application_identity(LedgerIdBytes::from_bytes(APPLICATION_ID));
-    draft.add_root(RootDef {
-        name: root,
-        keys: vec![KeyColumn {
-            scalar: Scalar::Text,
-            id: LedgerIdBytes::from_bytes([0x0c; 16]),
-        }],
-        record,
-        identity: RootIdentity {
-            placement: LedgerIdBytes::from_bytes(PLACEMENT_ID),
-            product: LedgerIdBytes::from_bytes([0x0d; 16]),
-            members: vec![DurableMemberDef::Field {
-                id: LedgerIdBytes::from_bytes(FIELD_ID),
-                required: true,
-                value: DurableValueShape::Scalar(scalar),
-            }],
-            indexes: vec![DurableIndexShape {
-                id: LedgerIdBytes::from_bytes(BY_VALUE_INDEX_ID),
-                unique: true,
-                components: vec![DurableIndexComponent::Field(LedgerIdBytes::from_bytes(
-                    FIELD_ID,
-                ))],
-            }],
-        },
-    });
+    draft
+        .declare_product(
+            LedgerIdBytes::from_bytes(PRODUCT_ID),
+            record,
+            vec![field_member(None, FIELD_ID, true, scalar)],
+        )
+        .expect("a well-formed declaration");
+    draft
+        .add_root_occurrence(
+            LedgerIdBytes::from_bytes(PRODUCT_ID),
+            RootOccurrenceDef {
+                name: root,
+                keys: vec![KeyColumn {
+                    scalar: Scalar::Text,
+                    id: LedgerIdBytes::from_bytes(ROOT_KEY_ID),
+                }],
+                placement: LedgerIdBytes::from_bytes(PLACEMENT_ID),
+                indexes: vec![DurableIndexShape {
+                    id: LedgerIdBytes::from_bytes(BY_VALUE_INDEX_ID),
+                    unique: true,
+                    components: vec![DurableIndexComponent::Field(LedgerIdBytes::from_bytes(
+                        FIELD_ID,
+                    ))],
+                }],
+            },
+        )
+        .expect("the Product is declared");
     draft
 }
 
@@ -1664,40 +1853,46 @@ fn widened_field_indexed_draft() -> ImageDraft {
     });
     let root = draft.intern_string("counters");
     draft.set_application_identity(LedgerIdBytes::from_bytes(APPLICATION_ID));
-    draft.add_root(RootDef {
-        name: root,
-        keys: vec![KeyColumn {
-            scalar: Scalar::Text,
-            id: LedgerIdBytes::from_bytes([0x0c; 16]),
-        }],
-        record,
-        identity: RootIdentity {
-            placement: LedgerIdBytes::from_bytes(PLACEMENT_ID),
-            product: LedgerIdBytes::from_bytes([0x0d; 16]),
-            members: vec![
-                DurableMemberDef::Field {
-                    id: LedgerIdBytes::from_bytes(VALUE_FIELD_ID),
-                    required: true,
-                    value: DurableValueShape::Scalar(Scalar::Int),
-                },
-                DurableMemberDef::Field {
-                    id: LedgerIdBytes::from_bytes(OWNER_FIELD_ID),
-                    required: true,
-                    value: DurableValueShape::Struct(vec![
-                        DurableValueShape::Scalar(Scalar::Text),
-                        DurableValueShape::Scalar(Scalar::Text),
-                    ]),
+    draft
+        .declare_product(
+            LedgerIdBytes::from_bytes(PRODUCT_ID),
+            record,
+            vec![
+                field_member(None, VALUE_FIELD_ID, true, Scalar::Int),
+                DeclarationMemberDef {
+                    parent: None,
+                    shape: DeclarationMemberShape::Field {
+                        id: LedgerIdBytes::from_bytes(OWNER_FIELD_ID),
+                        required: true,
+                        value: DurableValueShape::Struct(vec![
+                            DurableValueShape::Scalar(Scalar::Text),
+                            DurableValueShape::Scalar(Scalar::Text),
+                        ]),
+                    },
                 },
             ],
-            indexes: vec![DurableIndexShape {
-                id: LedgerIdBytes::from_bytes(BY_VALUE_INDEX_ID),
-                unique: true,
-                components: vec![DurableIndexComponent::Field(LedgerIdBytes::from_bytes(
-                    OWNER_FIELD_ID,
-                ))],
-            }],
-        },
-    });
+        )
+        .expect("a well-formed declaration");
+    draft
+        .add_root_occurrence(
+            LedgerIdBytes::from_bytes(PRODUCT_ID),
+            RootOccurrenceDef {
+                name: root,
+                keys: vec![KeyColumn {
+                    scalar: Scalar::Text,
+                    id: LedgerIdBytes::from_bytes(ROOT_KEY_ID),
+                }],
+                placement: LedgerIdBytes::from_bytes(PLACEMENT_ID),
+                indexes: vec![DurableIndexShape {
+                    id: LedgerIdBytes::from_bytes(BY_VALUE_INDEX_ID),
+                    unique: true,
+                    components: vec![DurableIndexComponent::Field(LedgerIdBytes::from_bytes(
+                        OWNER_FIELD_ID,
+                    ))],
+                }],
+            },
+        )
+        .expect("the Product is declared");
     draft
 }
 
@@ -1721,19 +1916,44 @@ fn a_site_that_claims_to_traverse_a_unique_index_rejects() {
     // The unique index `byValue` admits only a complete-key exact lookup. A forged
     // site with a progressive-prefix scan target over it — an attempt to traverse a
     // unique index and observe siblings — is refused when the site's read kind is
-    // checked against the index's unique flag.
-    let mut draft = indexed_draft(by_label_projection());
-    draft.request_site(SiteDef::index_scan(index_path(BY_VALUE_INDEX_ID)));
-    assert_eq!(code_of(&draft.encode().unwrap().bytes), "image.table");
+    // checked against the index's unique flag. The binder admits only the lookup target
+    // over a unique index, so the scan target is reached by rewriting the encoded site's
+    // target byte over an otherwise valid image.
+    let (mut draft, root) = indexed_draft(by_label_projection());
+    site(
+        &mut draft,
+        root.occurrence(),
+        &root.index_paths()[1],
+        SemanticTarget::IndexLookup,
+    );
+    let mut bytes = draft.encode().unwrap().bytes;
+    forge_site(
+        &mut bytes,
+        &encoded_index_site(BY_VALUE_INDEX_ID, 0x03),
+        &encoded_index_site(BY_VALUE_INDEX_ID, 0x02),
+    );
+    assert_eq!(code_of(&bytes), "image.table");
 }
 
 #[test]
 fn a_site_that_exact_looks_up_a_nonunique_index_rejects() {
     // Symmetrically, the nonunique `byLabel` admits only a progressive-prefix scan; a
-    // forged complete-key lookup site over it is refused.
-    let mut draft = indexed_draft(by_label_projection());
-    draft.request_site(SiteDef::index_lookup(index_path(BY_LABEL_INDEX_ID)));
-    assert_eq!(code_of(&draft.encode().unwrap().bytes), "image.table");
+    // forged complete-key lookup site over it is refused. The scan site the binder mints
+    // is retargeted in the encoded bytes, the mirror of the unique-index forgery above.
+    let (mut draft, root) = indexed_draft(by_label_projection());
+    site(
+        &mut draft,
+        root.occurrence(),
+        &root.index_paths()[0],
+        SemanticTarget::IndexScan,
+    );
+    let mut bytes = draft.encode().unwrap().bytes;
+    forge_site(
+        &mut bytes,
+        &encoded_index_site(BY_LABEL_INDEX_ID, 0x02),
+        &encoded_index_site(BY_LABEL_INDEX_ID, 0x03),
+    );
+    assert_eq!(code_of(&bytes), "image.table");
 }
 
 /// Flip the first occurrence of a 16-byte ledger id in `bytes`. The distinct test
@@ -1753,7 +1973,7 @@ fn rehashed_mutated_group_id_breaks_the_contract_id() {
     // member tree the verifier recomputes the contract over. Flipping that id (and
     // rehashing the outer digest) leaves the carried contract id stale, so the
     // recomputation rejects — the contract binds group structure, not only roots.
-    let mut bytes = group_branch_draft(false).encode().unwrap().bytes;
+    let mut bytes = group_branch_draft(false).0.encode().unwrap().bytes;
     flip_ledger_id(&mut bytes, [0x20; 16]);
     rehash(&mut bytes);
     assert_eq!(code_of(&bytes), "image.table");
@@ -1764,7 +1984,7 @@ fn rehashed_mutated_branch_placement_id_breaks_the_contract_id() {
     // A keyed `branch` is a distinct placement; its id is part of the member tree
     // the contract binds. Flipping it and rehashing the digest leaves the carried
     // contract id stale, so the recomputation rejects.
-    let mut bytes = group_branch_draft(false).encode().unwrap().bytes;
+    let mut bytes = group_branch_draft(false).0.encode().unwrap().bytes;
     flip_ledger_id(&mut bytes, [0x30; 16]);
     rehash(&mut bytes);
     assert_eq!(code_of(&bytes), "image.table");
@@ -1777,7 +1997,7 @@ fn a_field_site_over_a_root_level_group_bearing_root_verifies() {
     // the entry payload. A site over the root's own `title` field seals executable and its
     // read opcode verifies (a keyed branch and a root-level group no longer park the root).
     assert_eq!(
-        code_of(&group_branch_draft(true).encode().unwrap().bytes),
+        code_of(&group_branch_draft(true).0.encode().unwrap().bytes),
         "VERIFIED"
     );
 }
@@ -1826,35 +2046,39 @@ fn group_before_field_draft(record_group_first: bool) -> ImageDraft {
     };
     let record = draft.add_record_type(RecordTypeDef { name: book, fields });
     let root = draft.intern_string("books");
-    draft.set_application_identity(LedgerIdBytes::from_bytes([0x0a; 16]));
-    draft.add_root(RootDef {
-        name: root,
-        keys: vec![KeyColumn {
-            scalar: Scalar::Int,
-            id: LedgerIdBytes::from_bytes([0x0c; 16]),
-        }],
-        record,
-        identity: RootIdentity {
-            placement: LedgerIdBytes::from_bytes([0x0b; 16]),
-            product: LedgerIdBytes::from_bytes([0x0d; 16]),
-            indexes: Vec::new(),
-            members: vec![
-                DurableMemberDef::Group {
-                    id: LedgerIdBytes::from_bytes([0x20; 16]),
-                    members: vec![DurableMemberDef::Field {
-                        id: LedgerIdBytes::from_bytes([0x21; 16]),
-                        required: false,
-                        value: DurableValueShape::Scalar(Scalar::Int),
-                    }],
+    draft.set_application_identity(LedgerIdBytes::from_bytes(APPLICATION_ID));
+    // The commands state the group before the top-level field, so the Product's direct
+    // members run `[Group, Field]` — the order the fields-first invariant refuses.
+    draft
+        .declare_product(
+            LedgerIdBytes::from_bytes(PRODUCT_ID),
+            record,
+            vec![
+                DeclarationMemberDef {
+                    parent: None,
+                    shape: DeclarationMemberShape::Group {
+                        id: LedgerIdBytes::from_bytes([0x20; 16]),
+                    },
                 },
-                DurableMemberDef::Field {
-                    id: LedgerIdBytes::from_bytes([0x0e; 16]),
-                    required: true,
-                    value: DurableValueShape::Scalar(Scalar::Text),
-                },
+                field_member(Some(0), [0x21; 16], false, Scalar::Int),
+                field_member(None, VALUE_FIELD_ID, true, Scalar::Text),
             ],
-        },
-    });
+        )
+        .expect("a well-formed declaration");
+    draft
+        .add_root_occurrence(
+            LedgerIdBytes::from_bytes(PRODUCT_ID),
+            RootOccurrenceDef {
+                name: root,
+                keys: vec![KeyColumn {
+                    scalar: Scalar::Int,
+                    id: LedgerIdBytes::from_bytes(ROOT_KEY_ID),
+                }],
+                placement: LedgerIdBytes::from_bytes(PLACEMENT_ID),
+                indexes: Vec::new(),
+            },
+        )
+        .expect("the Product is declared");
     draft
 }
 
@@ -1892,28 +2116,27 @@ fn field_count_mismatch_draft(member_fields: usize, record_fields: usize) -> Ima
         .collect();
     let record = draft.add_record_type(RecordTypeDef { name: rec, fields });
     let root = draft.intern_string("recs");
-    draft.set_application_identity(LedgerIdBytes::from_bytes([0x0a; 16]));
+    draft.set_application_identity(LedgerIdBytes::from_bytes(APPLICATION_ID));
     let members = (0..member_fields)
-        .map(|i| DurableMemberDef::Field {
-            id: LedgerIdBytes::from_bytes([0x40 + i as u8; 16]),
-            required: true,
-            value: DurableValueShape::Scalar(Scalar::Text),
-        })
+        .map(|i| field_member(None, [0x40 + i as u8; 16], true, Scalar::Text))
         .collect();
-    draft.add_root(RootDef {
-        name: root,
-        keys: vec![KeyColumn {
-            scalar: Scalar::Int,
-            id: LedgerIdBytes::from_bytes([0x0c; 16]),
-        }],
-        record,
-        identity: RootIdentity {
-            placement: LedgerIdBytes::from_bytes([0x0b; 16]),
-            product: LedgerIdBytes::from_bytes([0x0d; 16]),
-            indexes: Vec::new(),
-            members,
-        },
-    });
+    draft
+        .declare_product(LedgerIdBytes::from_bytes(PRODUCT_ID), record, members)
+        .expect("a well-formed declaration");
+    draft
+        .add_root_occurrence(
+            LedgerIdBytes::from_bytes(PRODUCT_ID),
+            RootOccurrenceDef {
+                name: root,
+                keys: vec![KeyColumn {
+                    scalar: Scalar::Int,
+                    id: LedgerIdBytes::from_bytes(ROOT_KEY_ID),
+                }],
+                placement: LedgerIdBytes::from_bytes(PLACEMENT_ID),
+                indexes: Vec::new(),
+            },
+        )
+        .expect("the Product is declared");
     draft
 }
 
@@ -1943,17 +2166,62 @@ fn a_root_member_tree_with_fewer_members_than_record_slots_rejects() {
     );
 }
 
-/// The semantic path of the `details` group *node* (not its field leaf): application ->
-/// root placement -> group. A whole-group `GroupEntry` site addresses this node.
-fn group_entry_path() -> SemanticPath {
-    SemanticPath::root(
-        LedgerIdBytes::from_bytes([0x0a; 16]),
-        LedgerIdBytes::from_bytes([0x0b; 16]),
+/// The group/branch graph's root Product declares `[title field, details group, notes
+/// branch]`, so these name its four addressable nodes: the root's own `title` field, the
+/// whole `details` group node, that group's `pages` field leaf, and the `notes` branch's
+/// `text` field leaf. Each binds the one target its node kind admits.
+fn book_title_site(draft: &mut ImageDraft, root: &AdmittedRoot) -> LegacyDraftSiteOperand {
+    let members = product_members(draft);
+    site(
+        draft,
+        root.occurrence(),
+        members[0].path(),
+        SemanticTarget::FieldLeaf,
     )
-    .child(SemanticStep::new(
-        SemanticStepKind::Group,
-        LedgerIdBytes::from_bytes([0x20; 16]),
-    ))
+}
+
+fn book_group_site(draft: &mut ImageDraft, root: &AdmittedRoot) -> LegacyDraftSiteOperand {
+    let members = product_members(draft);
+    site(
+        draft,
+        root.occurrence(),
+        members[1].path(),
+        SemanticTarget::GroupEntry,
+    )
+}
+
+fn book_group_field_site(draft: &mut ImageDraft, root: &AdmittedRoot) -> LegacyDraftSiteOperand {
+    let group = product_members(draft)[1].path().clone();
+    let pages = draft
+        .members_of(&group)
+        .expect("the declaration row is live")[0]
+        .path()
+        .clone();
+    site(draft, root.occurrence(), &pages, SemanticTarget::FieldLeaf)
+}
+
+fn book_branch_field_site(draft: &mut ImageDraft, root: &AdmittedRoot) -> LegacyDraftSiteOperand {
+    let branch = product_members(draft)[2].path().clone();
+    let text = draft
+        .members_of(&branch)
+        .expect("the declaration row is live")[0]
+        .path()
+        .clone();
+    site(draft, root.occurrence(), &text, SemanticTarget::FieldLeaf)
+}
+
+/// The `details.pages` group field leaf, as encoded site bytes: application -> root
+/// placement -> group -> field.
+fn encoded_group_field_site(target: u8) -> Vec<u8> {
+    encoded_site(
+        &[
+            (SemanticStepKind::Application, APPLICATION_ID),
+            (SemanticStepKind::Placement, PLACEMENT_ID),
+            (SemanticStepKind::Group, [0x20; 16]),
+            (SemanticStepKind::Field, [0x21; 16]),
+        ],
+        target,
+    )
 }
 
 #[test]
@@ -1962,8 +2230,8 @@ fn a_whole_group_site_over_a_root_group_seals_executable_and_its_opcode_verifies
     // over it types (`K -> Rec?`): the whole materialized group value is read as a unit
     // through the root's key-path. The read record is popped so the export return type
     // stays decoupled from the group record index.
-    let mut draft = group_branch_draft(false);
-    let site = draft.request_site(SiteDef::group_entry(group_entry_path()));
+    let (mut draft, root) = group_branch_draft(false);
+    let site = book_group_site(&mut draft, &root);
     let src = draft.intern_string("src/main.mw");
     let name = draft.intern_string("readGroup");
     let zero = draft.intern_int(0);
@@ -1974,27 +2242,37 @@ fn a_whole_group_site_over_a_root_group_seals_executable_and_its_opcode_verifies
         Instr::ConstLoad(zero.index()),
         Instr::Return,
     ];
-    let func = draft.add_function(FunctionDef {
-        name,
-        source: src,
-        params: vec![ImageType::scalar(Scalar::Int)],
-        ret: ImageType::scalar(Scalar::Int),
-        local_count: 1,
-        spans: spans(&code),
-        code,
-    });
+    let func = draft
+        .add_function(FunctionDef {
+            name,
+            source: src,
+            params: vec![ImageType::scalar(Scalar::Int)],
+            ret: ImageType::scalar(Scalar::Int),
+            local_count: 1,
+            spans: spans(&code),
+            code,
+        })
+        .expect("every site operand is live");
     draft.add_export(ExportId::of_local("", "readGroup"), func);
     assert_eq!(code_of(&draft.encode().unwrap().bytes), "VERIFIED");
 }
 
 #[test]
 fn a_whole_group_target_over_a_field_node_rejects() {
-    // A GroupEntry target must resolve to a `group` node. A forged site whose path names a
-    // group *field* leaf (`details.pages`) but claims the GroupEntry target disagrees with
-    // the resolved node kind and is refused at the table phase.
-    let mut draft = group_branch_draft(false);
-    draft.request_site(SiteDef::group_entry(group_field_path()));
-    assert_eq!(code_of(&draft.encode().unwrap().bytes), "image.table");
+    // A GroupEntry target must resolve to a `group` node. The binder admits only the
+    // field-leaf target over a group *field* leaf (`details.pages`), so the GroupEntry
+    // claim is reached by rewriting that site's target byte over an otherwise valid
+    // image: the path resolves to a field node, disagrees with the claimed target, and
+    // is refused at the table phase.
+    let (mut draft, root) = group_branch_draft(false);
+    book_group_field_site(&mut draft, &root);
+    let mut bytes = draft.encode().unwrap().bytes;
+    forge_site(
+        &mut bytes,
+        &encoded_group_field_site(0x01),
+        &encoded_group_field_site(0x04),
+    );
+    assert_eq!(code_of(&bytes), "image.table");
 }
 
 #[test]
@@ -2002,8 +2280,8 @@ fn a_group_opcode_over_a_non_group_site_rejects() {
     // A DurReadGroup opcode requires a GroupEntry site. A forged image pointing it at a
     // field-leaf site (the root's own `title`) is refused during per-function typing
     // (`image.function`), independently of the compiler's boundary.
-    let mut draft = group_branch_draft(false);
-    let site = draft.request_site(SiteDef::field_leaf(field_path(VALUE_FIELD_ID)));
+    let (mut draft, root) = group_branch_draft(false);
+    let site = book_title_site(&mut draft, &root);
     let src = draft.intern_string("src/main.mw");
     let name = draft.intern_string("readGroup");
     let zero = draft.intern_int(0);
@@ -2014,27 +2292,19 @@ fn a_group_opcode_over_a_non_group_site_rejects() {
         Instr::ConstLoad(zero.index()),
         Instr::Return,
     ];
-    let func = draft.add_function(FunctionDef {
-        name,
-        source: src,
-        params: vec![ImageType::scalar(Scalar::Int)],
-        ret: ImageType::scalar(Scalar::Int),
-        local_count: 1,
-        spans: spans(&code),
-        code,
-    });
+    let func = draft
+        .add_function(FunctionDef {
+            name,
+            source: src,
+            params: vec![ImageType::scalar(Scalar::Int)],
+            ret: ImageType::scalar(Scalar::Int),
+            local_count: 1,
+            spans: spans(&code),
+            code,
+        })
+        .expect("every site operand is live");
     draft.add_export(ExportId::of_local("", "readGroup"), func);
     assert_eq!(code_of(&draft.encode().unwrap().bytes), "image.function");
-}
-
-/// The semantic path of the group/branch graph's `details.pages` group field:
-/// application -> root placement -> group (`details`) -> field (`pages`). A group field's
-/// path carries a `Group` step, distinct from a branch placement step.
-fn group_field_path() -> SemanticPath {
-    group_entry_path().child(SemanticStep::new(
-        SemanticStepKind::Field,
-        LedgerIdBytes::from_bytes([0x21; 16]),
-    ))
 }
 
 #[test]
@@ -2044,8 +2314,8 @@ fn a_group_scoped_field_site_seals_parked() {
     // as a field-leaf site; a group is read/written as a whole unit through a `GroupEntry`
     // site (group-leaf assignment lowers to a whole-group RMW). No opcode references it, so
     // the image verifies.
-    let mut draft = group_branch_draft(false);
-    draft.request_site(SiteDef::field_leaf(group_field_path()));
+    let (mut draft, root) = group_branch_draft(false);
+    book_group_field_site(&mut draft, &root);
     assert!(
         verify(&draft.encode().unwrap().bytes).is_ok(),
         "a group-scoped field site seals parked",
@@ -2058,32 +2328,24 @@ fn an_opcode_over_a_parked_group_field_site_rejects() {
     // during per-function typing (`image.function`), independently of the compiler's
     // boundary — a group leaf is reached only through a whole-group `GroupEntry` site, never
     // a direct field-leaf opcode.
-    let mut draft = group_branch_draft(false);
-    let site = draft.request_site(SiteDef::field_leaf(group_field_path()));
+    let (mut draft, root) = group_branch_draft(false);
+    let site = book_group_field_site(&mut draft, &root);
     let src = draft.intern_string("src/main.mw");
     let name = draft.intern_string("read");
     let code = vec![Instr::LocalGet(0), Instr::DurReadField(site), Instr::Return];
-    let func = draft.add_function(FunctionDef {
-        name,
-        source: src,
-        params: vec![ImageType::scalar(Scalar::Int)],
-        ret: ImageType::opt_scalar(Scalar::Int),
-        local_count: 1,
-        spans: spans(&code),
-        code,
-    });
+    let func = draft
+        .add_function(FunctionDef {
+            name,
+            source: src,
+            params: vec![ImageType::scalar(Scalar::Int)],
+            ret: ImageType::opt_scalar(Scalar::Int),
+            local_count: 1,
+            spans: spans(&code),
+            code,
+        })
+        .expect("every site operand is live");
     draft.add_export(ExportId::of_local("", "read"), func);
     assert_eq!(code_of(&draft.encode().unwrap().bytes), "image.function");
-}
-
-/// The semantic path of the group/branch graph's `notes.text` branch field:
-/// application -> root placement -> branch placement -> field (four steps), the
-/// deepest concrete address in that graph.
-fn branch_field_path() -> SemanticPath {
-    branch_entry_path().child(SemanticStep::new(
-        SemanticStepKind::Field,
-        LedgerIdBytes::from_bytes([0x32; 16]),
-    ))
 }
 
 #[test]
@@ -2092,8 +2354,8 @@ fn a_deep_nested_branch_field_site_seals_executable() {
     // seals executable — a root-level unkeyed `group` (here `details`) does not park the
     // root's sibling scalar-field branches. No opcode references the site, so the image
     // verifies regardless.
-    let mut draft = group_branch_draft(false);
-    draft.request_site(SiteDef::field_leaf(branch_field_path()));
+    let (mut draft, root) = group_branch_draft(false);
+    book_branch_field_site(&mut draft, &root);
     assert!(
         verify(&draft.encode().unwrap().bytes).is_ok(),
         "a nested branch-field site seals executable"
@@ -2109,6 +2371,7 @@ fn a_branch_record_disagreeing_with_its_member_fields_rejects() {
     // encodes (identity is unchanged), but the independent record/member cross-check
     // refuses it at the table phase.
     let bytes = group_branch_draft_with_branch_record(false, false)
+        .0
         .encode()
         .unwrap()
         .bytes;
@@ -2124,9 +2387,9 @@ fn a_branch_record_disagreeing_with_its_member_fields_rejects() {
 /// whose only extra is one single-level single-column-keyed scalar-field branch,
 /// `notes(noteId:string)` holding `text:string required` — the executable branch
 /// shape. No group, so the root is flat-executable and its branch whole-payload
-/// site seals executable. Returns the draft and the branch's materialized record type
-/// index (the whole branch-entry read's result type).
-fn flat_branch_draft() -> (ImageDraft, u16) {
+/// site seals executable. Returns the draft, its admitted root occurrence, and the
+/// branch's materialized record type index (the whole branch-entry read's result type).
+fn flat_branch_draft() -> (ImageDraft, AdmittedRoot, u16) {
     let mut draft = ImageDraft::new();
     let book = draft.intern_string("Book");
     let title = draft.intern_string("title");
@@ -2150,55 +2413,56 @@ fn flat_branch_draft() -> (ImageDraft, u16) {
         }],
     });
     let root = draft.intern_string("books");
-    draft.set_application_identity(LedgerIdBytes::from_bytes([0x0a; 16]));
-    draft.add_root(RootDef {
-        name: root,
-        keys: vec![KeyColumn {
-            scalar: Scalar::Int,
-            id: LedgerIdBytes::from_bytes([0x0c; 16]),
-        }],
-        record,
-        identity: RootIdentity {
-            placement: LedgerIdBytes::from_bytes([0x0b; 16]),
-            product: LedgerIdBytes::from_bytes([0x0d; 16]),
-            indexes: Vec::new(),
-            members: vec![
-                DurableMemberDef::Field {
-                    id: LedgerIdBytes::from_bytes([0x0e; 16]),
-                    required: true,
-                    value: DurableValueShape::Scalar(Scalar::Text),
+    draft.set_application_identity(LedgerIdBytes::from_bytes(APPLICATION_ID));
+    draft
+        .declare_product(
+            LedgerIdBytes::from_bytes(PRODUCT_ID),
+            record,
+            vec![
+                field_member(None, [0x0e; 16], true, Scalar::Text),
+                DeclarationMemberDef {
+                    parent: None,
+                    shape: DeclarationMemberShape::Branch {
+                        placement: LedgerIdBytes::from_bytes([0x30; 16]),
+                        name: notes,
+                        record: notes_record,
+                        keys: vec![KeyColumn {
+                            scalar: Scalar::Text,
+                            id: LedgerIdBytes::from_bytes([0x31; 16]),
+                        }],
+                    },
                 },
-                DurableMemberDef::Branch {
-                    placement: LedgerIdBytes::from_bytes([0x30; 16]),
-                    name: notes,
-                    record: notes_record,
-                    keys: vec![KeyColumn {
-                        scalar: Scalar::Text,
-                        id: LedgerIdBytes::from_bytes([0x31; 16]),
-                    }],
-                    members: vec![DurableMemberDef::Field {
-                        id: LedgerIdBytes::from_bytes([0x32; 16]),
-                        required: true,
-                        value: DurableValueShape::Scalar(Scalar::Text),
-                    }],
-                },
+                field_member(Some(1), [0x32; 16], true, Scalar::Text),
             ],
-        },
-    });
-    (draft, notes_record.index())
+        )
+        .expect("a well-formed declaration");
+    let admitted = draft
+        .add_root_occurrence(
+            LedgerIdBytes::from_bytes(PRODUCT_ID),
+            RootOccurrenceDef {
+                name: root,
+                keys: vec![KeyColumn {
+                    scalar: Scalar::Int,
+                    id: LedgerIdBytes::from_bytes(ROOT_KEY_ID),
+                }],
+                placement: LedgerIdBytes::from_bytes(PLACEMENT_ID),
+                indexes: Vec::new(),
+            },
+        )
+        .expect("the Product is declared");
+    (draft, admitted, notes_record.index())
 }
 
-/// The whole-payload site path of the flat-branch graph's `notes` branch entry:
-/// application -> root placement -> branch placement (three steps).
-fn branch_entry_path() -> SemanticPath {
-    SemanticPath::root(
-        LedgerIdBytes::from_bytes([0x0a; 16]),
-        LedgerIdBytes::from_bytes([0x0b; 16]),
+/// The whole-payload site of the flat-branch graph's `notes` branch entry: the branch
+/// is the root Product's second declared member, and a branch admits `WholePayload`.
+fn flat_branch_entry_site(draft: &mut ImageDraft, root: &AdmittedRoot) -> LegacyDraftSiteOperand {
+    let members = product_members(draft);
+    site(
+        draft,
+        root.occurrence(),
+        members[1].path(),
+        SemanticTarget::WholePayload,
     )
-    .child(SemanticStep::new(
-        SemanticStepKind::Placement,
-        LedgerIdBytes::from_bytes([0x30; 16]),
-    ))
 }
 
 #[test]
@@ -2206,8 +2470,8 @@ fn a_branch_whole_entry_read_over_a_flat_root_seals_and_type_checks() {
     // A single-level branch whole-payload site on a flat-executable root now seals
     // executable, and a read over it type-checks the two-element key-path
     // `[root_key, branch_key]` (int then string) and yields the branch's own record.
-    let (mut draft, branch_record) = flat_branch_draft();
-    let site = draft.request_site(SiteDef::whole_payload(branch_entry_path()));
+    let (mut draft, root, branch_record) = flat_branch_draft();
+    let site = flat_branch_entry_site(&mut draft, &root);
     let src = draft.intern_string("src/main.mw");
     let name = draft.intern_string("note");
     let code = vec![
@@ -2216,21 +2480,23 @@ fn a_branch_whole_entry_read_over_a_flat_root_seals_and_type_checks() {
         Instr::DurReadEntry(site),
         Instr::Return,
     ];
-    let func = draft.add_function(FunctionDef {
-        name,
-        source: src,
-        params: vec![
-            ImageType::scalar(Scalar::Int),
-            ImageType::scalar(Scalar::Text),
-        ],
-        ret: ImageType::Record {
-            idx: branch_record,
-            optional: true,
-        },
-        local_count: 2,
-        spans: spans(&code),
-        code,
-    });
+    let func = draft
+        .add_function(FunctionDef {
+            name,
+            source: src,
+            params: vec![
+                ImageType::scalar(Scalar::Int),
+                ImageType::scalar(Scalar::Text),
+            ],
+            ret: ImageType::Record {
+                idx: branch_record,
+                optional: true,
+            },
+            local_count: 2,
+            spans: spans(&code),
+            code,
+        })
+        .expect("every site operand is live");
     draft.add_export(ExportId::of_local("", "note"), func);
     assert_eq!(code_of(&draft.encode().unwrap().bytes), "VERIFIED");
 }
@@ -2240,8 +2506,8 @@ fn a_branch_entry_op_missing_its_root_key_rejects() {
     // A branch entry op addresses `[root_key, branch_key]`. Pushing only the branch key
     // leaves the second (root) key pop with an empty stack — a key-arity forgery the
     // verifier refuses during per-function typing.
-    let (mut draft, branch_record) = flat_branch_draft();
-    let site = draft.request_site(SiteDef::whole_payload(branch_entry_path()));
+    let (mut draft, root, branch_record) = flat_branch_draft();
+    let site = flat_branch_entry_site(&mut draft, &root);
     let src = draft.intern_string("src/main.mw");
     let name = draft.intern_string("note");
     let code = vec![
@@ -2249,21 +2515,23 @@ fn a_branch_entry_op_missing_its_root_key_rejects() {
         Instr::DurReadEntry(site),
         Instr::Return,
     ];
-    let func = draft.add_function(FunctionDef {
-        name,
-        source: src,
-        params: vec![
-            ImageType::scalar(Scalar::Int),
-            ImageType::scalar(Scalar::Text),
-        ],
-        ret: ImageType::Record {
-            idx: branch_record,
-            optional: true,
-        },
-        local_count: 2,
-        spans: spans(&code),
-        code,
-    });
+    let func = draft
+        .add_function(FunctionDef {
+            name,
+            source: src,
+            params: vec![
+                ImageType::scalar(Scalar::Int),
+                ImageType::scalar(Scalar::Text),
+            ],
+            ret: ImageType::Record {
+                idx: branch_record,
+                optional: true,
+            },
+            local_count: 2,
+            spans: spans(&code),
+            code,
+        })
+        .expect("every site operand is live");
     draft.add_export(ExportId::of_local("", "note"), func);
     assert_eq!(code_of(&draft.encode().unwrap().bytes), "image.function");
 }
@@ -2272,8 +2540,8 @@ fn a_branch_entry_op_missing_its_root_key_rejects() {
 fn a_branch_entry_op_with_the_wrong_branch_key_type_rejects() {
     // The branch key column is `string`; pushing an `int` where the branch key belongs
     // is a type mismatch the two-element key-path check refuses.
-    let (mut draft, branch_record) = flat_branch_draft();
-    let site = draft.request_site(SiteDef::whole_payload(branch_entry_path()));
+    let (mut draft, root, branch_record) = flat_branch_draft();
+    let site = flat_branch_entry_site(&mut draft, &root);
     let src = draft.intern_string("src/main.mw");
     let name = draft.intern_string("note");
     let code = vec![
@@ -2282,103 +2550,74 @@ fn a_branch_entry_op_with_the_wrong_branch_key_type_rejects() {
         Instr::DurReadEntry(site),
         Instr::Return,
     ];
-    let func = draft.add_function(FunctionDef {
-        name,
-        source: src,
-        params: vec![
-            ImageType::scalar(Scalar::Int),
-            ImageType::scalar(Scalar::Int),
-        ],
-        ret: ImageType::Record {
-            idx: branch_record,
-            optional: true,
-        },
-        local_count: 2,
-        spans: spans(&code),
-        code,
-    });
+    let func = draft
+        .add_function(FunctionDef {
+            name,
+            source: src,
+            params: vec![
+                ImageType::scalar(Scalar::Int),
+                ImageType::scalar(Scalar::Int),
+            ],
+            ret: ImageType::Record {
+                idx: branch_record,
+                optional: true,
+            },
+            local_count: 2,
+            spans: spans(&code),
+            code,
+        })
+        .expect("every site operand is live");
     draft.add_export(ExportId::of_local("", "note"), func);
     assert_eq!(code_of(&draft.encode().unwrap().bytes), "image.function");
 }
 
-/// A site path of exactly `n` steps: `Application`, `Placement`, then `n - 2` field
-/// steps carrying the distinctive id `0x91` so the first step can be located in the
-/// encoded bytes. The intermediate kinds are irrelevant to the length bound.
-fn n_step_field_path(n: usize) -> SemanticPath {
+/// An encoded site whose path is exactly `n` steps: `Application`, `Placement`, then
+/// `n - 2` field steps carrying the distinctive id `0x91`, with the field-leaf target.
+/// The intermediate kinds are irrelevant to the length bound.
+fn encoded_n_step_site(n: usize) -> Vec<u8> {
     let mut steps = vec![
-        SemanticStep::new(
-            SemanticStepKind::Application,
-            LedgerIdBytes::from_bytes(APPLICATION_ID),
-        ),
-        SemanticStep::new(
-            SemanticStepKind::Placement,
-            LedgerIdBytes::from_bytes(PLACEMENT_ID),
-        ),
+        (SemanticStepKind::Application, APPLICATION_ID),
+        (SemanticStepKind::Placement, PLACEMENT_ID),
     ];
     while steps.len() < n {
-        steps.push(SemanticStep::new(
-            SemanticStepKind::Field,
-            LedgerIdBytes::from_bytes([0x91; 16]),
-        ));
+        steps.push((SemanticStepKind::Field, [0x91; 16]));
     }
-    SemanticPath::try_from_steps(steps).expect("hostile fixture path is non-empty")
+    encoded_site(&steps, 0x01)
+}
+
+/// The tracer image whose sparse `label` field-leaf site has been rewritten to the
+/// `n`-step path above, with the encoded step count overridden to `claimed_steps`.
+///
+/// Every path the binder can produce is a canonical path of the declaration graph, whose
+/// nesting bounds its depth, so a path at (or past) the container's own depth bound that
+/// resolves to nothing exists only as forged bytes. No opcode names the label site, so the
+/// forgery isolates the site table's depth gate.
+fn forged_deep_site_image(n: usize, claimed_steps: usize) -> Vec<u8> {
+    let mut draft = ImageDraft::new();
+    durable_schema(&mut draft);
+    let mut bytes = finish_two_key(
+        draft,
+        vec![Instr::TxnBegin, Instr::TxnCommit, Instr::Return],
+    );
+    let mut forged = encoded_n_step_site(n);
+    forged[0] = claimed_steps as u8;
+    forge_site(&mut bytes, &encoded_field_site(LABEL_FIELD_ID), &forged);
+    bytes
 }
 
 #[test]
 fn a_site_path_at_the_maximum_depth_is_admitted_by_the_bound() {
-    // A site path of exactly MAX_SITE_PATH_STEPS is admitted by the length gate (the
-    // encoder builds it and the verifier's length check passes); it then fails only at
-    // node resolution — `image.table` "names no graph node", not "too deep". This pins
-    // the bound as inclusive at the maximum concrete-address depth.
-    let mut draft = ImageDraft::new();
-    durable_schema(&mut draft);
-    draft.request_site(SiteDef::field_leaf(n_step_field_path(
-        marrow_image::bounds::MAX_SITE_PATH_STEPS,
-    )));
-    let bytes = finish_two_key(
-        draft,
-        vec![Instr::TxnBegin, Instr::TxnCommit, Instr::Return],
-    );
+    // A site path of exactly MAX_SITE_PATH_STEPS is admitted by the length gate; it then
+    // fails only at node resolution — `image.table` "names no graph node", not "too deep".
+    // This pins the bound as inclusive at the maximum concrete-address depth.
+    let steps = marrow_image::bounds::MAX_SITE_PATH_STEPS;
+    let bytes = forged_deep_site_image(steps, steps);
     let rejection = verify(&bytes).expect_err("the unresolved maximum-depth path must reject");
     assert_eq!(rejection.code(), "image.table");
     assert_eq!(
         rejection.detail(),
         "durable site path does not resolve to a graph node",
         "the inclusive maximum must pass the depth gate and fail only at node resolution",
-    );
-}
-
-#[test]
-fn a_site_path_past_the_maximum_depth_is_refused_by_the_encoder() {
-    // One step deeper than the bound: the encoder refuses to build the image, so an
-    // over-deep site path can never be produced through the production path.
-    let mut draft = ImageDraft::new();
-    durable_schema(&mut draft);
-    draft.request_site(SiteDef::field_leaf(n_step_field_path(
-        marrow_image::bounds::MAX_SITE_PATH_STEPS + 1,
-    )));
-    let src = draft.intern_string("src/main.mw");
-    let name = draft.intern_string("put");
-    let code = vec![Instr::TxnBegin, Instr::TxnCommit, Instr::Return];
-    let func = draft.add_function(FunctionDef {
-        name,
-        source: src,
-        params: vec![
-            ImageType::scalar(Scalar::Text),
-            ImageType::scalar(Scalar::Text),
-        ],
-        ret: ImageType::Unit,
-        local_count: 2,
-        spans: spans(&code),
-        code,
-    });
-    draft.add_export(ExportId::of_local("", "e"), func);
-    assert!(
-        matches!(
-            draft.encode(),
-            Err(marrow_image::ImageBuildError::SitePathTooDeep)
-        ),
-        "the encoder refuses a site path past the maximum depth"
     );
 }
 
@@ -2391,20 +2630,10 @@ fn a_forged_zero_step_site_path_is_refused_before_any_path_body() {
         vec![Instr::TxnBegin, Instr::TxnCommit, Instr::Return],
     );
 
-    let mut root_site = vec![
-        marrow_image::bounds::MIN_SITE_PATH_STEPS as u8,
-        SemanticStepKind::Application.ledger_kind(),
-    ];
-    root_site.extend_from_slice(&APPLICATION_ID);
-    root_site.push(SemanticStepKind::Placement.ledger_kind());
-    root_site.extend_from_slice(&PLACEMENT_ID);
-    root_site.push(0x00);
-    let count_at = bytes
-        .windows(root_site.len())
-        .position(|window| window == root_site)
-        .expect("the root whole-payload site is present");
-    bytes[count_at] = 0;
-    rehash(&mut bytes);
+    let root_site = encoded_root_site();
+    let mut forged = root_site.clone();
+    forged[0] = 0;
+    forge_site(&mut bytes, &root_site, &forged);
 
     let rejection = verify(&bytes).expect_err("a zero-step site path must reject");
     assert_eq!(rejection.code(), "image.table");
@@ -2417,45 +2646,14 @@ fn a_forged_zero_step_site_path_is_refused_before_any_path_body() {
 
 #[test]
 fn a_forged_over_deep_site_path_is_refused_by_the_verifier() {
-    // Defense in depth for the branch the encoder guards: take the at-bound image,
-    // bump only the forged site's step-count byte to one past the bound, and rehash.
-    // The verifier's own length check trips before it decodes any step —
-    // `image.table` "durable site path too deep" — so a forged image cannot smuggle an
-    // unbounded path past the container.
-    let mut draft = ImageDraft::new();
-    durable_schema(&mut draft);
-    draft.request_site(SiteDef::field_leaf(n_step_field_path(
+    // The at-bound forgery with only its step-count byte bumped to one past the bound.
+    // The verifier's own length check trips before it decodes any step — `image.table`
+    // "durable site path too deep" — so a forged image cannot smuggle an unbounded path
+    // past the container.
+    let bytes = forged_deep_site_image(
         marrow_image::bounds::MAX_SITE_PATH_STEPS,
-    )));
-    let mut bytes = finish_two_key(
-        draft,
-        vec![Instr::TxnBegin, Instr::TxnCommit, Instr::Return],
+        marrow_image::bounds::MAX_SITE_PATH_STEPS + 1,
     );
-    // The forged site is the only one whose first step carries id 0x91; its step-count
-    // byte immediately precedes that step's kind byte (`Application` = ledger kind 0).
-    let first_step: [u8; 17] = {
-        let mut pattern = [0u8; 17];
-        pattern[0] = SemanticStepKind::Application.ledger_kind();
-        pattern[1..].copy_from_slice(&APPLICATION_ID);
-        pattern
-    };
-    // Find the forged path by its distinctive 0x91 field id, then walk back to the
-    // Application step that opens the same path.
-    let field_at = bytes
-        .windows(16)
-        .position(|w| w == [0x91; 16])
-        .expect("the forged deep path is present");
-    let step_kind_at = bytes[..field_at]
-        .windows(17)
-        .rposition(|w| w == first_step)
-        .expect("the forged path opens with an Application step");
-    assert_eq!(
-        bytes[step_kind_at - 1],
-        marrow_image::bounds::MAX_SITE_PATH_STEPS as u8,
-        "the byte before the path is its step count",
-    );
-    bytes[step_kind_at - 1] = (marrow_image::bounds::MAX_SITE_PATH_STEPS + 1) as u8;
-    rehash(&mut bytes);
     let rejection = verify(&bytes).expect_err("the forged over-deep path must reject");
     assert_eq!(rejection.code(), "image.table");
     assert_eq!(
@@ -2465,45 +2663,19 @@ fn a_forged_over_deep_site_path_is_refused_by_the_verifier() {
     );
 }
 
-/// The tracer durable schema plus a verifying `put` export, with `extra` appended to
-/// the site table. The image carries an encoder-computed digest, so any rejection is
-/// the site table's own resolution, not a stale digest.
-fn durable_with_extra_site(extra: SiteDef) -> Vec<u8> {
-    let mut draft = ImageDraft::new();
-    let sites = durable_schema(&mut draft);
-    draft.request_site(extra);
-    let src = draft.intern_string("src/main.mw");
-    let name = draft.intern_string("put");
-    let code = vec![
-        Instr::TxnBegin,
-        Instr::LocalGet(0),
-        Instr::LocalGet(1),
-        Instr::DurSetRequired(sites.value),
-        Instr::TxnCommit,
-        Instr::Return,
-    ];
-    let func = draft.add_function(FunctionDef {
-        name,
-        source: src,
-        params: vec![
-            ImageType::scalar(Scalar::Text),
-            ImageType::scalar(Scalar::Int),
-        ],
-        ret: ImageType::Unit,
-        local_count: 2,
-        spans: spans(&code),
-        code,
-    });
-    draft.add_export(ExportId::of_local("", "e"), func);
-    draft.encode().unwrap().bytes
-}
-
 #[test]
 fn a_site_path_naming_no_graph_node_rejects() {
     // A field-leaf site whose path carries a ledger id absent from the durable graph
     // — the shape a mutated site-path id takes — resolves against no reconstructed
-    // node and is refused at the durable table.
-    let bytes = durable_with_extra_site(SiteDef::field_leaf(field_path([0xbb; 16])));
+    // node and is refused at the durable table. The binder publishes only paths of the
+    // declaration, so an absent id is reached by rewriting the sparse `label` site's
+    // field step over an otherwise valid image.
+    let mut bytes = good_durable_image();
+    forge_site(
+        &mut bytes,
+        &encoded_field_site(LABEL_FIELD_ID),
+        &encoded_field_site([0xbb; 16]),
+    );
     assert_eq!(code_of(&bytes), "image.table");
 }
 
@@ -2512,7 +2684,19 @@ fn a_field_path_with_a_whole_payload_target_rejects() {
     // A whole-payload target over a field path: the path resolves to a field node,
     // but the target claims a keyed placement. A field site cannot acquire a
     // whole-payload target — the verifier rejects the kind disagreement at decode.
-    let bytes = durable_with_extra_site(SiteDef::whole_payload(field_path(VALUE_FIELD_ID)));
+    let mut bytes = good_durable_image();
+    forge_site(
+        &mut bytes,
+        &encoded_field_site(LABEL_FIELD_ID),
+        &encoded_site(
+            &[
+                (SemanticStepKind::Application, APPLICATION_ID),
+                (SemanticStepKind::Placement, PLACEMENT_ID),
+                (SemanticStepKind::Field, LABEL_FIELD_ID),
+            ],
+            0x00,
+        ),
+    );
     assert_eq!(code_of(&bytes), "image.table");
 }
 
@@ -2521,7 +2705,12 @@ fn a_root_path_with_a_field_leaf_target_rejects() {
     // The mirror hostile: a field-leaf target over the root's own path. The path
     // resolves to the placement node, but the target claims a stored field — a
     // retarget/rebind whose kind disagrees with the resolved node.
-    let bytes = durable_with_extra_site(SiteDef::field_leaf(root_path()));
+    let mut bytes = good_durable_image();
+    let root_site = encoded_root_site();
+    let mut forged = root_site.clone();
+    let target = forged.len() - 1;
+    forged[target] = 0x01;
+    forge_site(&mut bytes, &root_site, &forged);
     assert_eq!(code_of(&bytes), "image.table");
 }
 
@@ -2701,26 +2890,30 @@ fn mutating_helper_and_caller(
         Instr::DurSetRequired(sites.value.clone()),
         Instr::Return,
     ];
-    let helper = draft.add_function(FunctionDef {
-        name: helper_name,
-        source: src,
-        params: two_keys(),
-        ret: ImageType::Unit,
-        local_count: 2,
-        spans: spans(&helper_code),
-        code: helper_code,
-    });
+    let helper = draft
+        .add_function(FunctionDef {
+            name: helper_name,
+            source: src,
+            params: two_keys(),
+            ret: ImageType::Unit,
+            local_count: 2,
+            spans: spans(&helper_code),
+            code: helper_code,
+        })
+        .expect("every site operand is live");
     let caller_code = caller_body(sites.value, helper.index());
     let caller_name = draft.intern_string("put");
-    let caller = draft.add_function(FunctionDef {
-        name: caller_name,
-        source: src,
-        params: two_keys(),
-        ret: ImageType::Unit,
-        local_count: 2,
-        spans: spans(&caller_code),
-        code: caller_code,
-    });
+    let caller = draft
+        .add_function(FunctionDef {
+            name: caller_name,
+            source: src,
+            params: two_keys(),
+            ret: ImageType::Unit,
+            local_count: 2,
+            spans: spans(&caller_code),
+            code: caller_code,
+        })
+        .expect("every site operand is live");
     draft.add_export(ExportId::of_local("", "e"), caller);
     draft.encode().unwrap().bytes
 }
@@ -2789,15 +2982,17 @@ fn flow_calling_a_valid_owner_export_rejects() {
         Instr::TxnCommit,
         Instr::Return,
     ];
-    let owner = draft.add_function(FunctionDef {
-        name: owner_name,
-        source: src,
-        params: two_keys(),
-        ret: ImageType::Unit,
-        local_count: 2,
-        spans: spans(&owner_code),
-        code: owner_code,
-    });
+    let owner = draft
+        .add_function(FunctionDef {
+            name: owner_name,
+            source: src,
+            params: two_keys(),
+            ret: ImageType::Unit,
+            local_count: 2,
+            spans: spans(&owner_code),
+            code: owner_code,
+        })
+        .expect("every site operand is live");
     let caller_name = draft.intern_string("caller");
     let caller_code = vec![
         Instr::LocalGet(0),
@@ -2805,15 +3000,17 @@ fn flow_calling_a_valid_owner_export_rejects() {
         Instr::Call(owner.index()),
         Instr::Return,
     ];
-    let caller = draft.add_function(FunctionDef {
-        name: caller_name,
-        source: src,
-        params: two_keys(),
-        ret: ImageType::Unit,
-        local_count: 2,
-        spans: spans(&caller_code),
-        code: caller_code,
-    });
+    let caller = draft
+        .add_function(FunctionDef {
+            name: caller_name,
+            source: src,
+            params: two_keys(),
+            ret: ImageType::Unit,
+            local_count: 2,
+            spans: spans(&caller_code),
+            code: caller_code,
+        })
+        .expect("every site operand is live");
     draft.add_export(ExportId::of_local("", "owner"), owner);
     draft.add_export(ExportId::of_local("", "caller"), caller);
     assert_eq!(code_of(&draft.encode().unwrap().bytes), "image.flow");
@@ -2826,18 +3023,20 @@ fn flow_calling_a_valid_owner_export_rejects() {
 fn finish_two_key(mut draft: ImageDraft, code: Vec<Instr>) -> Vec<u8> {
     let src = draft.intern_string("src/main.mw");
     let name = draft.intern_string("put");
-    let func = draft.add_function(FunctionDef {
-        name,
-        source: src,
-        params: vec![
-            ImageType::scalar(Scalar::Text),
-            ImageType::scalar(Scalar::Text),
-        ],
-        ret: ImageType::Unit,
-        local_count: 2,
-        spans: spans(&code),
-        code,
-    });
+    let func = draft
+        .add_function(FunctionDef {
+            name,
+            source: src,
+            params: vec![
+                ImageType::scalar(Scalar::Text),
+                ImageType::scalar(Scalar::Text),
+            ],
+            ret: ImageType::Unit,
+            local_count: 2,
+            spans: spans(&code),
+            code,
+        })
+        .expect("every site operand is live");
     draft.add_export(ExportId::of_local("", "e"), func);
     draft.encode().expect("encode").bytes
 }
@@ -3054,45 +3253,90 @@ fn branch_presence_schema() -> (
     });
     let root = draft.intern_string("counters");
     draft.set_application_identity(LedgerIdBytes::from_bytes(APPLICATION_ID));
-    let mut members = counters_members();
-    members.push(DurableMemberDef::Branch {
-        placement: LedgerIdBytes::from_bytes([0x30; 16]),
-        name: notes,
-        record: notes_record,
-        keys: vec![KeyColumn {
-            scalar: Scalar::Text,
-            id: LedgerIdBytes::from_bytes([0x31; 16]),
-        }],
-        members: vec![DurableMemberDef::Field {
-            id: LedgerIdBytes::from_bytes([0x32; 16]),
-            required: true,
-            value: DurableValueShape::Scalar(Scalar::Text),
-        }],
-    });
-    draft.add_root(RootDef {
-        name: root,
-        keys: vec![KeyColumn {
-            scalar: Scalar::Text,
-            id: LedgerIdBytes::from_bytes([0x0c; 16]),
-        }],
+    let admitted = declare_counters_with_notes_branch(
+        &mut draft,
+        root,
         record,
-        identity: RootIdentity {
-            placement: LedgerIdBytes::from_bytes(PLACEMENT_ID),
-            product: LedgerIdBytes::from_bytes([0x0d; 16]),
-            indexes: Vec::new(),
-            members,
+        notes,
+        notes_record,
+        /* branch_field_required */ true,
+    );
+    let members = product_members(&draft);
+    let branch_path = members[2].path().clone();
+    site(
+        &mut draft,
+        admitted.occurrence(),
+        admitted.placement_path(),
+        SemanticTarget::WholePayload,
+    );
+    site(
+        &mut draft,
+        admitted.occurrence(),
+        members[0].path(),
+        SemanticTarget::FieldLeaf,
+    );
+    let label_site = site(
+        &mut draft,
+        admitted.occurrence(),
+        members[1].path(),
+        SemanticTarget::FieldLeaf,
+    );
+    let branch_entry = site(
+        &mut draft,
+        admitted.occurrence(),
+        &branch_path,
+        SemanticTarget::WholePayload,
+    );
+    (draft, label_site, branch_entry, notes_record.index())
+}
+
+/// Declare the tracer `Counter` Product extended with a string-keyed `notes` branch of
+/// one `text:string` field, and admit the `^counters(name:string)` root over it. The
+/// branch field's required flag is the caller's, so a fixture can make the branch sparse.
+fn declare_counters_with_notes_branch(
+    draft: &mut ImageDraft,
+    root: marrow_image::StrId,
+    record: marrow_image::TypeId,
+    notes: marrow_image::StrId,
+    notes_record: marrow_image::TypeId,
+    branch_field_required: bool,
+) -> AdmittedRoot {
+    let mut members = counters_members();
+    members.push(DeclarationMemberDef {
+        parent: None,
+        shape: DeclarationMemberShape::Branch {
+            placement: LedgerIdBytes::from_bytes([0x30; 16]),
+            name: notes,
+            record: notes_record,
+            keys: vec![KeyColumn {
+                scalar: Scalar::Text,
+                id: LedgerIdBytes::from_bytes([0x31; 16]),
+            }],
         },
     });
-    draft.request_site(SiteDef::whole_payload(root_path()));
-    draft.request_site(SiteDef::field_leaf(field_path(VALUE_FIELD_ID)));
-    let label_site = draft.request_site(SiteDef::field_leaf(field_path(LABEL_FIELD_ID)));
-    let branch_entry = draft.request_site(SiteDef::whole_payload(root_path().child(
-        SemanticStep::new(
-            SemanticStepKind::Placement,
-            LedgerIdBytes::from_bytes([0x30; 16]),
-        ),
-    )));
-    (draft, label_site, branch_entry, notes_record.index())
+    members.push(field_member(
+        Some(2),
+        [0x32; 16],
+        branch_field_required,
+        Scalar::Text,
+    ));
+    draft
+        .declare_product(LedgerIdBytes::from_bytes(PRODUCT_ID), record, members)
+        .expect("a well-formed declaration");
+    draft
+        .add_root_occurrence(
+            LedgerIdBytes::from_bytes(PRODUCT_ID),
+            RootOccurrenceDef {
+                name: root,
+                keys: vec![KeyColumn {
+                    scalar: Scalar::Text,
+                    id: LedgerIdBytes::from_bytes(ROOT_KEY_ID),
+                }],
+                placement: LedgerIdBytes::from_bytes(PLACEMENT_ID),
+                indexes: Vec::new(),
+            },
+        )
+        .expect("the Product is declared")
 }
 
 /// A branch whole-entry create does not establish root-entry presence: it leaves the
@@ -3131,18 +3375,20 @@ fn a_branch_create_does_not_dominate_a_strict_root_field_set_rejects() {
         Instr::TxnCommit,
         Instr::Return,
     ];
-    let func = draft.add_function(FunctionDef {
-        name,
-        source: src,
-        params: vec![
-            ImageType::scalar(Scalar::Text),
-            ImageType::scalar(Scalar::Text),
-        ],
-        ret: ImageType::Unit,
-        local_count: 3,
-        spans: spans(&code),
-        code,
-    });
+    let func = draft
+        .add_function(FunctionDef {
+            name,
+            source: src,
+            params: vec![
+                ImageType::scalar(Scalar::Text),
+                ImageType::scalar(Scalar::Text),
+            ],
+            ret: ImageType::Unit,
+            local_count: 3,
+            spans: spans(&code),
+            code,
+        })
+        .expect("every site operand is live");
     draft.add_export(ExportId::of_local("", "e"), func);
     assert_eq!(code_of(&draft.encode().unwrap().bytes), "image.flow");
 }
@@ -3186,47 +3432,32 @@ fn branch_field_schema() -> (ImageDraft, LegacyDraftSiteOperand, LegacyDraftSite
     });
     let root = draft.intern_string("counters");
     draft.set_application_identity(LedgerIdBytes::from_bytes(APPLICATION_ID));
-    let mut members = counters_members();
-    members.push(DurableMemberDef::Branch {
-        placement: LedgerIdBytes::from_bytes([0x30; 16]),
-        name: notes,
-        record: notes_record,
-        keys: vec![KeyColumn {
-            scalar: Scalar::Text,
-            id: LedgerIdBytes::from_bytes([0x31; 16]),
-        }],
-        members: vec![DurableMemberDef::Field {
-            id: LedgerIdBytes::from_bytes([0x32; 16]),
-            required: false,
-            value: DurableValueShape::Scalar(Scalar::Text),
-        }],
-    });
-    draft.add_root(RootDef {
-        name: root,
-        keys: vec![KeyColumn {
-            scalar: Scalar::Text,
-            id: LedgerIdBytes::from_bytes([0x0c; 16]),
-        }],
+    let admitted = declare_counters_with_notes_branch(
+        &mut draft,
+        root,
         record,
-        identity: RootIdentity {
-            placement: LedgerIdBytes::from_bytes(PLACEMENT_ID),
-            product: LedgerIdBytes::from_bytes([0x0d; 16]),
-            indexes: Vec::new(),
-            members,
-        },
-    });
-    let root_entry = draft.request_site(SiteDef::whole_payload(root_path()));
-    let branch_field = draft.request_site(SiteDef::field_leaf(
-        root_path()
-            .child(SemanticStep::new(
-                SemanticStepKind::Placement,
-                LedgerIdBytes::from_bytes([0x30; 16]),
-            ))
-            .child(SemanticStep::new(
-                SemanticStepKind::Field,
-                LedgerIdBytes::from_bytes([0x32; 16]),
-            )),
-    ));
+        notes,
+        notes_record,
+        /* branch_field_required */ false,
+    );
+    let branch_path = product_members(&draft)[2].path().clone();
+    let body_path = draft
+        .members_of(&branch_path)
+        .expect("the declaration row is live")[0]
+        .path()
+        .clone();
+    let root_entry = site(
+        &mut draft,
+        admitted.occurrence(),
+        admitted.placement_path(),
+        SemanticTarget::WholePayload,
+    );
+    let branch_field = site(
+        &mut draft,
+        admitted.occurrence(),
+        &body_path,
+        SemanticTarget::FieldLeaf,
+    );
     (draft, root_entry, branch_field)
 }
 
@@ -3261,15 +3492,17 @@ fn a_strict_sparse_set_over_a_branch_field_with_a_single_root_key_rejects() {
         Instr::TxnCommit,
         Instr::Return,
     ];
-    let func = draft.add_function(FunctionDef {
-        name,
-        source: src,
-        params: vec![ImageType::scalar(Scalar::Text)],
-        ret: ImageType::Unit,
-        local_count: 1,
-        spans: spans(&code),
-        code,
-    });
+    let func = draft
+        .add_function(FunctionDef {
+            name,
+            source: src,
+            params: vec![ImageType::scalar(Scalar::Text)],
+            ret: ImageType::Unit,
+            local_count: 1,
+            spans: spans(&code),
+            code,
+        })
+        .expect("every site operand is live");
     draft.add_export(ExportId::of_local("", "e"), func);
     assert_eq!(code_of(&draft.encode().unwrap().bytes), "image.function");
 }
@@ -3298,18 +3531,20 @@ fn a_two_slot_branch_strict_set_without_a_presence_fact_rejects() {
         Instr::TxnCommit,
         Instr::Return,
     ];
-    let func = draft.add_function(FunctionDef {
-        name,
-        source: src,
-        params: vec![
-            ImageType::scalar(Scalar::Text),
-            ImageType::scalar(Scalar::Text),
-        ],
-        ret: ImageType::Unit,
-        local_count: 2,
-        spans: spans(&code),
-        code,
-    });
+    let func = draft
+        .add_function(FunctionDef {
+            name,
+            source: src,
+            params: vec![
+                ImageType::scalar(Scalar::Text),
+                ImageType::scalar(Scalar::Text),
+            ],
+            ret: ImageType::Unit,
+            local_count: 2,
+            spans: spans(&code),
+            code,
+        })
+        .expect("every site operand is live");
     draft.add_export(ExportId::of_local("", "e"), func);
     assert_eq!(code_of(&draft.encode().unwrap().bytes), "image.flow");
 }
@@ -3332,26 +3567,30 @@ fn flow_transaction_owner_may_not_be_called_rejects() {
         Instr::TxnCommit,
         Instr::Return,
     ];
-    let helper = draft.add_function(FunctionDef {
-        name: helper_name,
-        source: src,
-        params: Vec::new(),
-        ret: ImageType::Unit,
-        local_count: 0,
-        spans: spans(&helper_code),
-        code: helper_code,
-    });
+    let helper = draft
+        .add_function(FunctionDef {
+            name: helper_name,
+            source: src,
+            params: Vec::new(),
+            ret: ImageType::Unit,
+            local_count: 0,
+            spans: spans(&helper_code),
+            code: helper_code,
+        })
+        .expect("every site operand is live");
     let main_name = draft.intern_string("main");
     let main_code = vec![Instr::Call(helper.index()), Instr::Return];
-    let main = draft.add_function(FunctionDef {
-        name: main_name,
-        source: src,
-        params: Vec::new(),
-        ret: ImageType::Unit,
-        local_count: 0,
-        spans: spans(&main_code),
-        code: main_code,
-    });
+    let main = draft
+        .add_function(FunctionDef {
+            name: main_name,
+            source: src,
+            params: Vec::new(),
+            ret: ImageType::Unit,
+            local_count: 0,
+            spans: spans(&main_code),
+            code: main_code,
+        })
+        .expect("every site operand is live");
     draft.add_export(ExportId::of_local("", "main"), main);
     assert_eq!(code_of(&draft.encode().unwrap().bytes), "image.flow");
 }
@@ -3421,15 +3660,17 @@ fn test_entry_image() -> (ImageDraft, FuncId) {
         Instr::Assert,
         Instr::Return,
     ];
-    let func = draft.add_function(FunctionDef {
-        name: title,
-        source: src,
-        params: Vec::new(),
-        ret: ImageType::Unit,
-        local_count: 0,
-        spans: spans(&code),
-        code,
-    });
+    let func = draft
+        .add_function(FunctionDef {
+            name: title,
+            source: src,
+            params: Vec::new(),
+            ret: ImageType::Unit,
+            local_count: 0,
+            spans: spans(&code),
+            code,
+        })
+        .expect("every site operand is live");
     draft.add_test_entry(title, func);
     (draft, func)
 }
@@ -3454,15 +3695,17 @@ fn assert_outside_a_test_entry_rejects() {
         Instr::Assert,
         Instr::Return,
     ];
-    let func = draft.add_function(FunctionDef {
-        name,
-        source: src,
-        params: Vec::new(),
-        ret: ImageType::Unit,
-        local_count: 0,
-        spans: spans(&code),
-        code,
-    });
+    let func = draft
+        .add_function(FunctionDef {
+            name,
+            source: src,
+            params: Vec::new(),
+            ret: ImageType::Unit,
+            local_count: 0,
+            spans: spans(&code),
+            code,
+        })
+        .expect("every site operand is live");
     draft.add_export(ExportId::of_local("", "f"), func);
     assert_eq!(code_of(&draft.encode().unwrap().bytes), "image.test_entry");
 }
@@ -3478,15 +3721,17 @@ fn assert_on_a_non_bool_operand_rejects_at_function() {
         Instr::Assert,
         Instr::Return,
     ];
-    let func = draft.add_function(FunctionDef {
-        name: title,
-        source: src,
-        params: Vec::new(),
-        ret: ImageType::Unit,
-        local_count: 0,
-        spans: spans(&code),
-        code,
-    });
+    let func = draft
+        .add_function(FunctionDef {
+            name: title,
+            source: src,
+            params: Vec::new(),
+            ret: ImageType::Unit,
+            local_count: 0,
+            spans: spans(&code),
+            code,
+        })
+        .expect("every site operand is live");
     draft.add_test_entry(title, func);
     assert_eq!(code_of(&draft.encode().unwrap().bytes), "image.function");
 }
@@ -3504,15 +3749,17 @@ fn test_entry_with_a_parameter_rejects() {
     let src = draft.intern_string("src/main.mw");
     let title = draft.intern_string("holds");
     let code = vec![Instr::LocalGet(0), Instr::Assert, Instr::Return];
-    let func = draft.add_function(FunctionDef {
-        name: title,
-        source: src,
-        params: vec![ImageType::scalar(Scalar::Bool)],
-        ret: ImageType::Unit,
-        local_count: 1,
-        spans: spans(&code),
-        code,
-    });
+    let func = draft
+        .add_function(FunctionDef {
+            name: title,
+            source: src,
+            params: vec![ImageType::scalar(Scalar::Bool)],
+            ret: ImageType::Unit,
+            local_count: 1,
+            spans: spans(&code),
+            code,
+        })
+        .expect("every site operand is live");
     draft.add_test_entry(title, func);
     assert_eq!(code_of(&draft.encode().unwrap().bytes), "image.test_entry");
 }
@@ -3524,15 +3771,17 @@ fn test_entry_with_a_non_unit_return_rejects() {
     let title = draft.intern_string("holds");
     let seven = draft.intern_int(7);
     let code = vec![Instr::ConstLoad(seven.index()), Instr::Return];
-    let func = draft.add_function(FunctionDef {
-        name: title,
-        source: src,
-        params: Vec::new(),
-        ret: ImageType::scalar(Scalar::Int),
-        local_count: 0,
-        spans: spans(&code),
-        code,
-    });
+    let func = draft
+        .add_function(FunctionDef {
+            name: title,
+            source: src,
+            params: Vec::new(),
+            ret: ImageType::scalar(Scalar::Int),
+            local_count: 0,
+            spans: spans(&code),
+            code,
+        })
+        .expect("every site operand is live");
     draft.add_test_entry(title, func);
     assert_eq!(code_of(&draft.encode().unwrap().bytes), "image.test_entry");
 }
@@ -3553,15 +3802,17 @@ fn test_entry_may_carry_durable_demand() {
         Instr::Assert,
         Instr::Return,
     ];
-    let func = draft.add_function(FunctionDef {
-        name: title,
-        source: src,
-        params: Vec::new(),
-        ret: ImageType::Unit,
-        local_count: 0,
-        spans: spans(&code),
-        code,
-    });
+    let func = draft
+        .add_function(FunctionDef {
+            name: title,
+            source: src,
+            params: Vec::new(),
+            ret: ImageType::Unit,
+            local_count: 0,
+            spans: spans(&code),
+            code,
+        })
+        .expect("every site operand is live");
     draft.add_test_entry(title, func);
     let image = verify(&draft.encode().unwrap().bytes).expect("durable test entry verifies");
     let entry = &image.test_entries()[0];
@@ -3584,15 +3835,17 @@ fn test_entry_as_a_call_target_rejects() {
     let src = draft.intern_string("src/main.mw");
     let name = draft.intern_string("main");
     let code = vec![Instr::Call(0), Instr::Return];
-    let main = draft.add_function(FunctionDef {
-        name,
-        source: src,
-        params: Vec::new(),
-        ret: ImageType::Unit,
-        local_count: 0,
-        spans: spans(&code),
-        code,
-    });
+    let main = draft
+        .add_function(FunctionDef {
+            name,
+            source: src,
+            params: Vec::new(),
+            ret: ImageType::Unit,
+            local_count: 0,
+            spans: spans(&code),
+            code,
+        })
+        .expect("every site operand is live");
     draft.add_export(ExportId::of_local("", "main"), main);
     assert_eq!(code_of(&draft.encode().unwrap().bytes), "image.test_entry");
 }
@@ -3615,15 +3868,17 @@ fn two_test_image() -> Vec<u8> {
             Instr::Assert,
             Instr::Return,
         ];
-        let func = draft.add_function(FunctionDef {
-            name: title,
-            source: src,
-            params: Vec::new(),
-            ret: ImageType::Unit,
-            local_count: 0,
-            spans: spans(&code),
-            code,
-        });
+        let func = draft
+            .add_function(FunctionDef {
+                name: title,
+                source: src,
+                params: Vec::new(),
+                ret: ImageType::Unit,
+                local_count: 0,
+                spans: spans(&code),
+                code,
+            })
+            .expect("every site operand is live");
         draft.add_test_entry(title, func);
     }
     draft.encode().expect("encode").bytes
@@ -3707,15 +3962,17 @@ fn rehashed_aliased_test_entry_function_rejects() {
     for title_text in ["alpha", "beta"] {
         let title = draft.intern_string(title_text);
         let code = vec![Instr::Return];
-        let func = draft.add_function(FunctionDef {
-            name: title,
-            source: src,
-            params: Vec::new(),
-            ret: ImageType::Unit,
-            local_count: 0,
-            spans: spans(&code),
-            code,
-        });
+        let func = draft
+            .add_function(FunctionDef {
+                name: title,
+                source: src,
+                params: Vec::new(),
+                ret: ImageType::Unit,
+                local_count: 0,
+                spans: spans(&code),
+                code,
+            })
+            .expect("every site operand is live");
         draft.add_test_entry(title, func);
     }
     let mut bytes = draft.encode().expect("encode").bytes;
@@ -3738,15 +3995,17 @@ fn transaction_marker_in_a_test_entry_rejects_at_flow() {
     let src = draft.intern_string("src/main.mw");
     let title = draft.intern_string("holds");
     let code = vec![Instr::TxnBegin, Instr::TxnCommit, Instr::Return];
-    let func = draft.add_function(FunctionDef {
-        name: title,
-        source: src,
-        params: Vec::new(),
-        ret: ImageType::Unit,
-        local_count: 0,
-        spans: spans(&code),
-        code,
-    });
+    let func = draft
+        .add_function(FunctionDef {
+            name: title,
+            source: src,
+            params: Vec::new(),
+            ret: ImageType::Unit,
+            local_count: 0,
+            spans: spans(&code),
+            code,
+        })
+        .expect("every site operand is live");
     draft.add_test_entry(title, func);
     assert_eq!(code_of(&draft.encode().unwrap().bytes), "image.flow");
 }
@@ -3764,15 +4023,17 @@ fn range_guard_over_a_bare_int_verifies() {
         Instr::RangeGuard { lo: 0, hi: 150 },
         Instr::Return,
     ];
-    let func = draft.add_function(FunctionDef {
-        name,
-        source: src,
-        params: Vec::new(),
-        ret: ImageType::scalar(Scalar::Int),
-        local_count: 0,
-        spans: spans(&code),
-        code,
-    });
+    let func = draft
+        .add_function(FunctionDef {
+            name,
+            source: src,
+            params: Vec::new(),
+            ret: ImageType::scalar(Scalar::Int),
+            local_count: 0,
+            spans: spans(&code),
+            code,
+        })
+        .expect("every site operand is live");
     draft.add_export(ExportId::of_local("", "main"), func);
     assert_eq!(code_of(&draft.encode().unwrap().bytes), "VERIFIED");
 }
@@ -3790,15 +4051,17 @@ fn range_guard_on_an_empty_stack_rejects_at_function() {
         Instr::ConstLoad(seven.index()),
         Instr::Return,
     ];
-    let func = draft.add_function(FunctionDef {
-        name,
-        source: src,
-        params: Vec::new(),
-        ret: ImageType::scalar(Scalar::Int),
-        local_count: 0,
-        spans: spans(&code),
-        code,
-    });
+    let func = draft
+        .add_function(FunctionDef {
+            name,
+            source: src,
+            params: Vec::new(),
+            ret: ImageType::scalar(Scalar::Int),
+            local_count: 0,
+            spans: spans(&code),
+            code,
+        })
+        .expect("every site operand is live");
     draft.add_export(ExportId::of_local("", "main"), func);
     assert_eq!(code_of(&draft.encode().unwrap().bytes), "image.function");
 }
@@ -3816,15 +4079,17 @@ fn range_guard_on_a_non_int_rejects_at_function() {
         Instr::RangeGuard { lo: 0, hi: 150 },
         Instr::Return,
     ];
-    let func = draft.add_function(FunctionDef {
-        name,
-        source: src,
-        params: Vec::new(),
-        ret: ImageType::scalar(Scalar::Bool),
-        local_count: 0,
-        spans: spans(&code),
-        code,
-    });
+    let func = draft
+        .add_function(FunctionDef {
+            name,
+            source: src,
+            params: Vec::new(),
+            ret: ImageType::scalar(Scalar::Bool),
+            local_count: 0,
+            spans: spans(&code),
+            code,
+        })
+        .expect("every site operand is live");
     draft.add_export(ExportId::of_local("", "main"), func);
     assert_eq!(code_of(&draft.encode().unwrap().bytes), "image.function");
 }
@@ -3843,15 +4108,17 @@ fn range_guard_with_an_empty_interval_rejects_at_function() {
         Instr::RangeGuard { lo: 5, hi: 4 },
         Instr::Return,
     ];
-    let func = draft.add_function(FunctionDef {
-        name,
-        source: src,
-        params: Vec::new(),
-        ret: ImageType::scalar(Scalar::Int),
-        local_count: 0,
-        spans: spans(&code),
-        code,
-    });
+    let func = draft
+        .add_function(FunctionDef {
+            name,
+            source: src,
+            params: Vec::new(),
+            ret: ImageType::scalar(Scalar::Int),
+            local_count: 0,
+            spans: spans(&code),
+            code,
+        })
+        .expect("every site operand is live");
     draft.add_export(ExportId::of_local("", "main"), func);
     assert_eq!(code_of(&draft.encode().unwrap().bytes), "image.function");
 }
@@ -3872,20 +4139,22 @@ fn range_guard_with_a_truncated_operand_rejects_at_function() {
         Instr::RangeGuard { lo: 0, hi: 150 },
         Instr::Return,
     ];
-    let func = draft.add_function(FunctionDef {
-        name,
-        source: src,
-        params: Vec::new(),
-        ret: ImageType::scalar(Scalar::Int),
-        local_count: 0,
-        // One span at instruction 0, so span offsets stay valid after the cut.
-        spans: vec![SpanEntry {
-            instr_index: 0,
-            line: 1,
-            column: 1,
-        }],
-        code,
-    });
+    let func = draft
+        .add_function(FunctionDef {
+            name,
+            source: src,
+            params: Vec::new(),
+            ret: ImageType::scalar(Scalar::Int),
+            local_count: 0,
+            // One span at instruction 0, so span offsets stay valid after the cut.
+            spans: vec![SpanEntry {
+                instr_index: 0,
+                line: 1,
+                column: 1,
+            }],
+            code,
+        })
+        .expect("every site operand is live");
     draft.add_export(ExportId::of_local("", "main"), func);
     let mut bytes = draft.encode().unwrap().bytes;
 
@@ -3940,32 +4209,36 @@ fn record_param_and_return_refs_verify() {
         Instr::RecordNew(rec.index()),
         Instr::Return,
     ];
-    draft.add_function(FunctionDef {
-        name: make_name,
-        source: src,
-        params: Vec::new(),
-        ret: ImageType::Record {
-            idx: rec.index(),
-            optional: false,
-        },
-        local_count: 0,
-        spans: spans(&make_code),
-        code: make_code,
-    });
+    draft
+        .add_function(FunctionDef {
+            name: make_name,
+            source: src,
+            params: Vec::new(),
+            ret: ImageType::Record {
+                idx: rec.index(),
+                optional: false,
+            },
+            local_count: 0,
+            spans: spans(&make_code),
+            code: make_code,
+        })
+        .expect("every site operand is live");
     let take_name = draft.intern_string("take");
     let take_code = vec![Instr::LocalGet(0), Instr::FieldGet(0), Instr::Return];
-    let take = draft.add_function(FunctionDef {
-        name: take_name,
-        source: src,
-        params: vec![ImageType::Record {
-            idx: rec.index(),
-            optional: false,
-        }],
-        ret: ImageType::scalar(Scalar::Int),
-        local_count: 1,
-        spans: spans(&take_code),
-        code: take_code,
-    });
+    let take = draft
+        .add_function(FunctionDef {
+            name: take_name,
+            source: src,
+            params: vec![ImageType::Record {
+                idx: rec.index(),
+                optional: false,
+            }],
+            ret: ImageType::scalar(Scalar::Int),
+            local_count: 1,
+            spans: spans(&take_code),
+            code: take_code,
+        })
+        .expect("every site operand is live");
     draft.add_export(ExportId::of_local("", "take"), take);
     assert_eq!(code_of(&draft.encode().unwrap().bytes), "VERIFIED");
 }
@@ -3977,19 +4250,21 @@ fn record_return_index_out_of_range_rejects() {
     let src = draft.intern_string("src/main.mw");
     let name = draft.intern_string("f");
     let code = vec![Instr::Return];
-    let f = draft.add_function(FunctionDef {
-        name,
-        source: src,
-        params: Vec::new(),
-        // No record types exist, so index 5 is out of range.
-        ret: ImageType::Record {
-            idx: 5,
-            optional: false,
-        },
-        local_count: 0,
-        spans: spans(&code),
-        code,
-    });
+    let f = draft
+        .add_function(FunctionDef {
+            name,
+            source: src,
+            params: Vec::new(),
+            // No record types exist, so index 5 is out of range.
+            ret: ImageType::Record {
+                idx: 5,
+                optional: false,
+            },
+            local_count: 0,
+            spans: spans(&code),
+            code,
+        })
+        .expect("every site operand is live");
     draft.add_export(ExportId::of_local("", "f"), f);
     assert_eq!(code_of(&draft.encode().unwrap().bytes), "image.table");
 }
@@ -4001,18 +4276,20 @@ fn record_param_index_out_of_range_rejects() {
     let src = draft.intern_string("src/main.mw");
     let name = draft.intern_string("f");
     let code = vec![Instr::Return];
-    let f = draft.add_function(FunctionDef {
-        name,
-        source: src,
-        params: vec![ImageType::Record {
-            idx: 5,
-            optional: false,
-        }],
-        ret: ImageType::Unit,
-        local_count: 1,
-        spans: spans(&code),
-        code,
-    });
+    let f = draft
+        .add_function(FunctionDef {
+            name,
+            source: src,
+            params: vec![ImageType::Record {
+                idx: 5,
+                optional: false,
+            }],
+            ret: ImageType::Unit,
+            local_count: 1,
+            spans: spans(&code),
+            code,
+        })
+        .expect("every site operand is live");
     draft.add_export(ExportId::of_local("", "f"), f);
     assert_eq!(code_of(&draft.encode().unwrap().bytes), "image.table");
 }
@@ -4025,15 +4302,17 @@ fn optional_parameter_type_rejects() {
     let src = draft.intern_string("src/main.mw");
     let name = draft.intern_string("f");
     let code = vec![Instr::Return];
-    let f = draft.add_function(FunctionDef {
-        name,
-        source: src,
-        params: vec![ImageType::opt_scalar(Scalar::Int)],
-        ret: ImageType::Unit,
-        local_count: 1,
-        spans: spans(&code),
-        code,
-    });
+    let f = draft
+        .add_function(FunctionDef {
+            name,
+            source: src,
+            params: vec![ImageType::opt_scalar(Scalar::Int)],
+            ret: ImageType::Unit,
+            local_count: 1,
+            spans: spans(&code),
+            code,
+        })
+        .expect("every site operand is live");
     draft.add_export(ExportId::of_local("", "f"), f);
     assert_eq!(code_of(&draft.encode().unwrap().bytes), "image.table");
 }
@@ -4055,15 +4334,17 @@ fn record_table_image(fields: impl FnOnce(&mut ImageDraft) -> Vec<FieldDef>) -> 
     let zero = draft.intern_int(0);
     let fname = draft.intern_string("f");
     let code = vec![Instr::ConstLoad(zero.index()), Instr::Return];
-    let func = draft.add_function(FunctionDef {
-        name: fname,
-        source: src,
-        params: Vec::new(),
-        ret: ImageType::scalar(Scalar::Int),
-        local_count: 0,
-        spans: spans(&code),
-        code,
-    });
+    let func = draft
+        .add_function(FunctionDef {
+            name: fname,
+            source: src,
+            params: Vec::new(),
+            ret: ImageType::scalar(Scalar::Int),
+            local_count: 0,
+            spans: spans(&code),
+            code,
+        })
+        .expect("every site operand is live");
     draft.add_export(ExportId::of_local("", "f"), func);
     draft.encode().expect("encode").bytes
 }
@@ -4135,15 +4416,17 @@ fn value_type_cycle_through_a_record_field_rejects() {
     let zero = draft.intern_int(0);
     let f = draft.intern_string("f");
     let code = vec![Instr::ConstLoad(zero.index()), Instr::Return];
-    let func = draft.add_function(FunctionDef {
-        name: f,
-        source: src,
-        params: Vec::new(),
-        ret: ImageType::scalar(Scalar::Int),
-        local_count: 0,
-        spans: spans(&code),
-        code,
-    });
+    let func = draft
+        .add_function(FunctionDef {
+            name: f,
+            source: src,
+            params: Vec::new(),
+            ret: ImageType::scalar(Scalar::Int),
+            local_count: 0,
+            spans: spans(&code),
+            code,
+        })
+        .expect("every site operand is live");
     draft.add_export(ExportId::of_local("", "f"), func);
     assert_eq!(code_of(&draft.encode().unwrap().bytes), "image.table");
 }
@@ -4156,15 +4439,17 @@ fn value_graph_code(draft: &mut ImageDraft) -> String {
     let zero = draft.intern_int(0);
     let fname = draft.intern_string("f");
     let code = vec![Instr::ConstLoad(zero.index()), Instr::Return];
-    let func = draft.add_function(FunctionDef {
-        name: fname,
-        source: src,
-        params: Vec::new(),
-        ret: ImageType::scalar(Scalar::Int),
-        local_count: 0,
-        spans: spans(&code),
-        code,
-    });
+    let func = draft
+        .add_function(FunctionDef {
+            name: fname,
+            source: src,
+            params: Vec::new(),
+            ret: ImageType::scalar(Scalar::Int),
+            local_count: 0,
+            spans: spans(&code),
+            code,
+        })
+        .expect("every site operand is live");
     draft.add_export(ExportId::of_local("", "f"), func);
     code_of(&draft.encode().unwrap().bytes)
 }
@@ -4335,15 +4620,17 @@ fn enum_payload_with_a_collection_leaf_rejects_at_table() {
     let zero = draft.intern_int(0);
     let fname = draft.intern_string("f");
     let code = vec![Instr::ConstLoad(zero.index()), Instr::Return];
-    let func = draft.add_function(FunctionDef {
-        name: fname,
-        source: src,
-        params: Vec::new(),
-        ret: ImageType::scalar(Scalar::Int),
-        local_count: 0,
-        spans: spans(&code),
-        code,
-    });
+    let func = draft
+        .add_function(FunctionDef {
+            name: fname,
+            source: src,
+            params: Vec::new(),
+            ret: ImageType::scalar(Scalar::Int),
+            local_count: 0,
+            spans: spans(&code),
+            code,
+        })
+        .expect("every site operand is live");
     draft.add_export(ExportId::of_local("", "f"), func);
     let bytes = draft
         .encode()
@@ -4462,44 +4749,52 @@ fn widened_draft(kind_value: DurableValueShape) -> ImageDraft {
         ],
     });
     let root = draft.intern_string("widgets");
-    draft.set_application_identity(LedgerIdBytes::from_bytes([0x0a; 16]));
-    draft.add_root(RootDef {
-        name: root,
-        keys: vec![KeyColumn {
-            scalar: Scalar::Int,
-            id: LedgerIdBytes::from_bytes([0x0c; 16]),
-        }],
-        record: rec,
-        identity: RootIdentity {
-            placement: LedgerIdBytes::from_bytes([0x0b; 16]),
-            product: LedgerIdBytes::from_bytes([0x0d; 16]),
-            indexes: Vec::new(),
-            members: vec![
-                DurableMemberDef::Field {
-                    id: LedgerIdBytes::from_bytes([0x0e; 16]),
-                    required: true,
-                    value: DurableValueShape::Scalar(Scalar::Int),
-                },
-                DurableMemberDef::Field {
-                    id: LedgerIdBytes::from_bytes([0x0f; 16]),
-                    required: true,
-                    value: kind_value,
+    draft.set_application_identity(LedgerIdBytes::from_bytes(APPLICATION_ID));
+    draft
+        .declare_product(
+            LedgerIdBytes::from_bytes(PRODUCT_ID),
+            rec,
+            vec![
+                field_member(None, VALUE_FIELD_ID, true, Scalar::Int),
+                DeclarationMemberDef {
+                    parent: None,
+                    shape: DeclarationMemberShape::Field {
+                        id: LedgerIdBytes::from_bytes(LABEL_FIELD_ID),
+                        required: true,
+                        value: kind_value,
+                    },
                 },
             ],
-        },
-    });
+        )
+        .expect("a well-formed declaration");
+    draft
+        .add_root_occurrence(
+            LedgerIdBytes::from_bytes(PRODUCT_ID),
+            RootOccurrenceDef {
+                name: root,
+                keys: vec![KeyColumn {
+                    scalar: Scalar::Int,
+                    id: LedgerIdBytes::from_bytes(ROOT_KEY_ID),
+                }],
+                placement: LedgerIdBytes::from_bytes(PLACEMENT_ID),
+                indexes: Vec::new(),
+            },
+        )
+        .expect("the Product is declared");
     let zero = draft.intern_int(0);
     let f = draft.intern_string("f");
     let code = vec![Instr::ConstLoad(zero.index()), Instr::Return];
-    let func = draft.add_function(FunctionDef {
-        name: f,
-        source: src,
-        params: Vec::new(),
-        ret: ImageType::scalar(Scalar::Int),
-        local_count: 0,
-        spans: spans(&code),
-        code,
-    });
+    let func = draft
+        .add_function(FunctionDef {
+            name: f,
+            source: src,
+            params: Vec::new(),
+            ret: ImageType::scalar(Scalar::Int),
+            local_count: 0,
+            spans: spans(&code),
+            code,
+        })
+        .expect("every site operand is live");
     draft.add_export(ExportId::of_local("", "f"), func);
     draft
 }
@@ -4616,7 +4911,7 @@ fn out_of_domain_durable_value_tag_rejects() {
 /// (`noteId:string`, `text:string required`) itself holds a nested `tags` branch
 /// (`tagId:int`, `weight:int required`) — the executable nested-branch shape. The verifier
 /// seals the whole recursive branch tree, so a valid deep site seals executable.
-fn nested_branch_draft() -> ImageDraft {
+fn nested_branch_draft() -> (ImageDraft, AdmittedRoot) {
     let mut draft = ImageDraft::new();
     let book = draft.intern_string("Book");
     let title = draft.intern_string("title");
@@ -4651,75 +4946,85 @@ fn nested_branch_draft() -> ImageDraft {
         }],
     });
     let root = draft.intern_string("books");
-    draft.set_application_identity(LedgerIdBytes::from_bytes([0x0a; 16]));
-    draft.add_root(RootDef {
-        name: root,
-        keys: vec![KeyColumn {
-            scalar: Scalar::Int,
-            id: LedgerIdBytes::from_bytes([0x0c; 16]),
-        }],
-        record,
-        identity: RootIdentity {
-            placement: LedgerIdBytes::from_bytes([0x0b; 16]),
-            product: LedgerIdBytes::from_bytes([0x0d; 16]),
-            indexes: Vec::new(),
-            members: vec![
-                DurableMemberDef::Field {
-                    id: LedgerIdBytes::from_bytes([0x0e; 16]),
-                    required: true,
-                    value: DurableValueShape::Scalar(Scalar::Text),
-                },
-                DurableMemberDef::Branch {
-                    placement: LedgerIdBytes::from_bytes([0x30; 16]),
-                    name: notes,
-                    record: notes_record,
-                    keys: vec![KeyColumn {
-                        scalar: Scalar::Text,
-                        id: LedgerIdBytes::from_bytes([0x31; 16]),
-                    }],
-                    members: vec![
-                        DurableMemberDef::Field {
-                            id: LedgerIdBytes::from_bytes([0x32; 16]),
-                            required: true,
-                            value: DurableValueShape::Scalar(Scalar::Text),
-                        },
-                        DurableMemberDef::Branch {
-                            placement: LedgerIdBytes::from_bytes([0x40; 16]),
-                            name: tags,
-                            record: tags_record,
-                            keys: vec![KeyColumn {
-                                scalar: Scalar::Int,
-                                id: LedgerIdBytes::from_bytes([0x41; 16]),
-                            }],
-                            members: vec![DurableMemberDef::Field {
-                                id: LedgerIdBytes::from_bytes([0x42; 16]),
-                                required: true,
-                                value: DurableValueShape::Scalar(Scalar::Int),
-                            }],
-                        },
-                    ],
-                },
-            ],
-        },
-    });
+    draft.set_application_identity(LedgerIdBytes::from_bytes(APPLICATION_ID));
     draft
+        .declare_product(
+            LedgerIdBytes::from_bytes(PRODUCT_ID),
+            record,
+            vec![
+                field_member(None, VALUE_FIELD_ID, true, Scalar::Text),
+                DeclarationMemberDef {
+                    parent: None,
+                    shape: DeclarationMemberShape::Branch {
+                        placement: LedgerIdBytes::from_bytes([0x30; 16]),
+                        name: notes,
+                        record: notes_record,
+                        keys: vec![KeyColumn {
+                            scalar: Scalar::Text,
+                            id: LedgerIdBytes::from_bytes([0x31; 16]),
+                        }],
+                    },
+                },
+                field_member(Some(1), [0x32; 16], true, Scalar::Text),
+                DeclarationMemberDef {
+                    parent: Some(1),
+                    shape: DeclarationMemberShape::Branch {
+                        placement: LedgerIdBytes::from_bytes([0x40; 16]),
+                        name: tags,
+                        record: tags_record,
+                        keys: vec![KeyColumn {
+                            scalar: Scalar::Int,
+                            id: LedgerIdBytes::from_bytes([0x41; 16]),
+                        }],
+                    },
+                },
+                field_member(Some(3), [0x42; 16], true, Scalar::Int),
+            ],
+        )
+        .expect("a well-formed declaration");
+    let admitted = draft
+        .add_root_occurrence(
+            LedgerIdBytes::from_bytes(PRODUCT_ID),
+            RootOccurrenceDef {
+                name: root,
+                keys: vec![KeyColumn {
+                    scalar: Scalar::Int,
+                    id: LedgerIdBytes::from_bytes(ROOT_KEY_ID),
+                }],
+                placement: LedgerIdBytes::from_bytes(PLACEMENT_ID),
+                indexes: Vec::new(),
+            },
+        )
+        .expect("the Product is declared");
+    (draft, admitted)
 }
 
-/// A step in the `books` graph.
-fn step(kind: SemanticStepKind, id: u8) -> SemanticStep {
-    SemanticStep::new(kind, LedgerIdBytes::from_bytes([id; 16]))
-}
-
-/// The whole-payload site path of the nested `tags` branch entry from a chain of steps
-/// below the root: `application -> root placement -> <chain>`.
-fn nested_path(chain: &[SemanticStep]) -> SemanticPath {
-    chain.iter().copied().fold(
-        SemanticPath::root(
-            LedgerIdBytes::from_bytes([0x0a; 16]),
-            LedgerIdBytes::from_bytes([0x0b; 16]),
-        ),
-        |path, step| path.child(step),
+/// The whole-payload site of the nested `tags` branch entry: the `notes` branch is the
+/// Product's second declared member and `tags` is that branch's second member.
+fn nested_tag_entry_site(draft: &mut ImageDraft, root: &AdmittedRoot) -> LegacyDraftSiteOperand {
+    let notes = product_members(draft)[1].path().clone();
+    let tags = draft
+        .members_of(&notes)
+        .expect("the declaration row is live")[1]
+        .path()
+        .clone();
+    site(
+        draft,
+        root.occurrence(),
+        &tags,
+        SemanticTarget::WholePayload,
     )
+}
+
+/// The nested `tags` branch entry site, as encoded bytes: `application -> root placement
+/// -> notes placement -> tags placement`, whole payload.
+fn encoded_tag_entry_site(chain: &[[u8; 16]]) -> Vec<u8> {
+    let mut steps = vec![
+        (SemanticStepKind::Application, APPLICATION_ID),
+        (SemanticStepKind::Placement, PLACEMENT_ID),
+    ];
+    steps.extend(chain.iter().map(|id| (SemanticStepKind::Placement, *id)));
+    encoded_site(&steps, 0x00)
 }
 
 /// Add a read-only export that runs `DurExists` over the whole-payload `site` at the given
@@ -4735,19 +5040,21 @@ fn exists_over_tag_entry(mut draft: ImageDraft, site: LegacyDraftSiteOperand) ->
         Instr::DurExists(site),
         Instr::Return,
     ];
-    let func = draft.add_function(FunctionDef {
-        name,
-        source: src,
-        params: vec![
-            ImageType::scalar(Scalar::Int),
-            ImageType::scalar(Scalar::Text),
-            ImageType::scalar(Scalar::Int),
-        ],
-        ret: ImageType::scalar(Scalar::Bool),
-        local_count: 3,
-        spans: spans(&code),
-        code,
-    });
+    let func = draft
+        .add_function(FunctionDef {
+            name,
+            source: src,
+            params: vec![
+                ImageType::scalar(Scalar::Int),
+                ImageType::scalar(Scalar::Text),
+                ImageType::scalar(Scalar::Int),
+            ],
+            ret: ImageType::scalar(Scalar::Bool),
+            local_count: 3,
+            spans: spans(&code),
+            code,
+        })
+        .expect("every site operand is live");
     draft.add_export(ExportId::of_local("", "has"), func);
     draft.encode().unwrap().bytes
 }
@@ -4757,12 +5064,27 @@ fn a_valid_deep_nested_branch_entry_site_seals_executable_and_its_opcode_verifie
     // The positive control: a whole-payload site over the concrete `notes -> tags` chain
     // resolves to the nested branch, seals executable, and an `exists` opcode over its
     // three-column key-path type-checks and verifies.
-    let mut draft = nested_branch_draft();
-    let site = draft.request_site(SiteDef::whole_payload(nested_path(&[
-        step(SemanticStepKind::Placement, 0x30),
-        step(SemanticStepKind::Placement, 0x40),
-    ])));
+    let (mut draft, root) = nested_branch_draft();
+    let site = nested_tag_entry_site(&mut draft, &root);
     assert_eq!(code_of(&exists_over_tag_entry(draft, site)), "VERIFIED");
+}
+
+/// The nested-branch image whose valid `notes -> tags` site path has been rewritten to
+/// the placement/field `chain` below the root.
+///
+/// The binder publishes only canonical paths of the declaration graph, so a path that
+/// routes a branch under a field, or names a hop no branch declares, exists only as
+/// forged bytes over the valid image.
+fn forged_nested_site_image(forged: Vec<u8>) -> Vec<u8> {
+    let (mut draft, root) = nested_branch_draft();
+    let site = nested_tag_entry_site(&mut draft, &root);
+    let mut bytes = exists_over_tag_entry(draft, site);
+    forge_site(
+        &mut bytes,
+        &encoded_tag_entry_site(&[[0x30; 16], [0x40; 16]]),
+        &forged,
+    );
+    bytes
 }
 
 #[test]
@@ -4771,13 +5093,17 @@ fn a_branch_path_routed_through_a_field_rejects_at_the_table_phase() {
     // (a field has no branch child) names no reconstructed durable node, so the site is
     // refused when the verifier resolves it against its own node set at the table phase —
     // before any function, and independently of whether an opcode references it.
-    let mut draft = nested_branch_draft();
-    let site = draft.request_site(SiteDef::whole_payload(nested_path(&[
-        step(SemanticStepKind::Placement, 0x30),
-        step(SemanticStepKind::Field, 0x32),
-        step(SemanticStepKind::Placement, 0x40),
-    ])));
-    assert_eq!(code_of(&exists_over_tag_entry(draft, site)), "image.table");
+    let bytes = forged_nested_site_image(encoded_site(
+        &[
+            (SemanticStepKind::Application, APPLICATION_ID),
+            (SemanticStepKind::Placement, PLACEMENT_ID),
+            (SemanticStepKind::Placement, [0x30; 16]),
+            (SemanticStepKind::Field, [0x32; 16]),
+            (SemanticStepKind::Placement, [0x40; 16]),
+        ],
+        0x00,
+    ));
+    assert_eq!(code_of(&bytes), "image.table");
 }
 
 #[test]
@@ -4785,12 +5111,8 @@ fn a_branch_path_naming_a_nonexistent_hop_rejects_at_the_table_phase() {
     // A forged path whose second hop names a placement that is no branch of `notes` names
     // no reconstructed durable node, so the site is refused at the table phase; an
     // out-of-range branch hop can never resolve to — and mis-address — a durable operation.
-    let mut draft = nested_branch_draft();
-    let site = draft.request_site(SiteDef::whole_payload(nested_path(&[
-        step(SemanticStepKind::Placement, 0x30),
-        step(SemanticStepKind::Placement, 0x99),
-    ])));
-    assert_eq!(code_of(&exists_over_tag_entry(draft, site)), "image.table");
+    let bytes = forged_nested_site_image(encoded_tag_entry_site(&[[0x30; 16], [0x99; 16]]));
+    assert_eq!(code_of(&bytes), "image.table");
 }
 
 // --- Composite-key admission hostiles (E03w slice C) ---
@@ -4819,32 +5141,40 @@ fn composite_root_draft() -> (ImageDraft, LegacyDraftSiteOperand) {
         }],
     });
     let root = draft.intern_string("cells");
-    draft.set_application_identity(LedgerIdBytes::from_bytes([0x0a; 16]));
-    draft.add_root(RootDef {
-        name: root,
-        keys: vec![
-            KeyColumn {
-                scalar: Scalar::Int,
-                id: LedgerIdBytes::from_bytes([0x0c; 16]),
+    draft.set_application_identity(LedgerIdBytes::from_bytes(APPLICATION_ID));
+    draft
+        .declare_product(
+            LedgerIdBytes::from_bytes(PRODUCT_ID),
+            record,
+            vec![field_member(None, VALUE_FIELD_ID, true, Scalar::Int)],
+        )
+        .expect("a well-formed declaration");
+    let admitted = draft
+        .add_root_occurrence(
+            LedgerIdBytes::from_bytes(PRODUCT_ID),
+            RootOccurrenceDef {
+                name: root,
+                keys: vec![
+                    KeyColumn {
+                        scalar: Scalar::Int,
+                        id: LedgerIdBytes::from_bytes(ROOT_KEY_ID),
+                    },
+                    KeyColumn {
+                        scalar: Scalar::Text,
+                        id: LedgerIdBytes::from_bytes([0x1c; 16]),
+                    },
+                ],
+                placement: LedgerIdBytes::from_bytes(PLACEMENT_ID),
+                indexes: Vec::new(),
             },
-            KeyColumn {
-                scalar: Scalar::Text,
-                id: LedgerIdBytes::from_bytes([0x1c; 16]),
-            },
-        ],
-        record,
-        identity: RootIdentity {
-            placement: LedgerIdBytes::from_bytes([0x0b; 16]),
-            product: LedgerIdBytes::from_bytes([0x0d; 16]),
-            indexes: Vec::new(),
-            members: vec![DurableMemberDef::Field {
-                id: LedgerIdBytes::from_bytes([0x0e; 16]),
-                required: true,
-                value: DurableValueShape::Scalar(Scalar::Int),
-            }],
-        },
-    });
-    let entry = draft.request_site(SiteDef::whole_payload(root_path()));
+        )
+        .expect("the Product is declared");
+    let entry = site(
+        &mut draft,
+        admitted.occurrence(),
+        admitted.placement_path(),
+        SemanticTarget::WholePayload,
+    );
     (draft, entry)
 }
 
@@ -4862,15 +5192,17 @@ fn composite_exists_export(
     code.push(Instr::DurExists(entry));
     code.push(Instr::Return);
     let local_count = params.len() as u16;
-    let func = draft.add_function(FunctionDef {
-        name,
-        source: src,
-        params,
-        ret: ImageType::scalar(Scalar::Bool),
-        local_count,
-        spans: spans(&code),
-        code,
-    });
+    let func = draft
+        .add_function(FunctionDef {
+            name,
+            source: src,
+            params,
+            ret: ImageType::scalar(Scalar::Bool),
+            local_count,
+            spans: spans(&code),
+            code,
+        })
+        .expect("every site operand is live");
     draft.add_export(ExportId::of_local("", "has"), func);
     draft.encode().unwrap().bytes
 }
@@ -4943,15 +5275,17 @@ fn a_bounded_traversal_over_a_composite_keyed_root_layer_rejects() {
         Instr::Pop,
         Instr::Return,
     ];
-    let func = draft.add_function(FunctionDef {
-        name,
-        source: src,
-        params: Vec::new(),
-        ret: ImageType::Unit,
-        local_count: 0,
-        spans: spans(&code),
-        code,
-    });
+    let func = draft
+        .add_function(FunctionDef {
+            name,
+            source: src,
+            params: Vec::new(),
+            ret: ImageType::Unit,
+            local_count: 0,
+            spans: spans(&code),
+            code,
+        })
+        .expect("every site operand is live");
     draft.add_export(ExportId::of_local("", "iter"), func);
     assert_eq!(code_of(&draft.encode().unwrap().bytes), "image.function");
 }

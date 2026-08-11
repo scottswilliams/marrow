@@ -5,14 +5,21 @@
 //! minted over a foreign root — the cross-root confusion a forged image would smuggle —
 //! rejects even though both roots carry the same key scalar, so the site's key-column type
 //! check alone cannot distinguish them.
+//!
+//! Every site named here is minted through the construction seam's bind-then-request
+//! protocol. That protocol has exactly one owner in the workspace and is included here
+//! rather than copied.
 
 use marrow_image::{
-    CollectionTypeDef, DurableMemberDef, DurableValueShape, ExportId, FieldDef, FunctionDef,
-    ImageDraft, ImageType, Instr, KeyColumn, LedgerIdBytes, LegacyDraftSiteOperand, RecordTypeDef,
-    RootDef, RootIdentity, Scalar, SemanticPath, SemanticStep, SemanticStepKind, SiteDef,
-    SpanEntry,
+    CollectionTypeDef, DeclarationMemberDef, DeclarationMemberShape, DurableValueShape, ExportId,
+    FieldDef, FunctionDef, ImageDraft, ImageType, Instr, KeyColumn, LedgerIdBytes,
+    LegacyDraftSiteOperand, RecordTypeDef, RootOccurrenceDef, Scalar, SemanticTarget, SpanEntry,
 };
 use marrow_verify::{VerifyPhase, verify};
+
+#[path = "../../marrow-image/tests/common/site_seam.rs"]
+mod site_seam;
+use site_seam::site;
 
 const APPLICATION_ID: [u8; 16] = [0x0a; 16];
 // Root A ("books"): an int key, a text field, and a `notes(text)` branch.
@@ -81,45 +88,65 @@ fn two_root_branch_draft(
         }],
     });
     let a_root = draft.intern_string("books");
-    draft.add_root(RootDef {
-        name: a_root,
-        keys: vec![KeyColumn {
-            scalar: Scalar::Int,
-            id: LedgerIdBytes::from_bytes(A_KEY),
-        }],
-        record: a_record,
-        identity: RootIdentity {
-            placement: LedgerIdBytes::from_bytes(A_PLACEMENT),
-            product: LedgerIdBytes::from_bytes(A_PRODUCT),
-            indexes: Vec::new(),
-            members: vec![
-                DurableMemberDef::Field {
-                    id: LedgerIdBytes::from_bytes(A_FIELD),
-                    required: true,
-                    value: DurableValueShape::Scalar(Scalar::Text),
+    // Commands 0/1/2 are the Product's direct members; command 3 nests under the branch.
+    draft
+        .declare_product(
+            LedgerIdBytes::from_bytes(A_PRODUCT),
+            a_record,
+            vec![
+                DeclarationMemberDef {
+                    parent: None,
+                    shape: DeclarationMemberShape::Field {
+                        id: LedgerIdBytes::from_bytes(A_FIELD),
+                        required: true,
+                        value: DurableValueShape::Scalar(Scalar::Text),
+                    },
                 },
-                DurableMemberDef::Field {
-                    id: LedgerIdBytes::from_bytes(A_SUBTITLE_FIELD),
-                    required: false,
-                    value: DurableValueShape::Scalar(Scalar::Text),
+                DeclarationMemberDef {
+                    parent: None,
+                    shape: DeclarationMemberShape::Field {
+                        id: LedgerIdBytes::from_bytes(A_SUBTITLE_FIELD),
+                        required: false,
+                        value: DurableValueShape::Scalar(Scalar::Text),
+                    },
                 },
-                DurableMemberDef::Branch {
-                    placement: LedgerIdBytes::from_bytes(A_BRANCH_PLACEMENT),
-                    name: notes,
-                    record: notes_record,
-                    keys: vec![KeyColumn {
-                        scalar: Scalar::Text,
-                        id: LedgerIdBytes::from_bytes(A_BRANCH_KEY),
-                    }],
-                    members: vec![DurableMemberDef::Field {
+                DeclarationMemberDef {
+                    parent: None,
+                    shape: DeclarationMemberShape::Branch {
+                        placement: LedgerIdBytes::from_bytes(A_BRANCH_PLACEMENT),
+                        name: notes,
+                        record: notes_record,
+                        keys: vec![KeyColumn {
+                            scalar: Scalar::Text,
+                            id: LedgerIdBytes::from_bytes(A_BRANCH_KEY),
+                        }],
+                    },
+                },
+                DeclarationMemberDef {
+                    parent: Some(2),
+                    shape: DeclarationMemberShape::Field {
                         id: LedgerIdBytes::from_bytes(A_BRANCH_FIELD),
                         required: true,
                         value: DurableValueShape::Scalar(Scalar::Text),
-                    }],
+                    },
                 },
             ],
-        },
-    });
+        )
+        .expect("a well-formed declaration");
+    let a = draft
+        .add_root_occurrence(
+            LedgerIdBytes::from_bytes(A_PRODUCT),
+            RootOccurrenceDef {
+                name: a_root,
+                keys: vec![KeyColumn {
+                    scalar: Scalar::Int,
+                    id: LedgerIdBytes::from_bytes(A_KEY),
+                }],
+                placement: LedgerIdBytes::from_bytes(A_PLACEMENT),
+                indexes: Vec::new(),
+            },
+        )
+        .expect("the Product is declared");
 
     let tally = draft.intern_string("Tally");
     let count = draft.intern_string("count");
@@ -132,72 +159,74 @@ fn two_root_branch_draft(
         }],
     });
     let b_root = draft.intern_string("tallies");
-    draft.add_root(RootDef {
-        name: b_root,
-        keys: vec![KeyColumn {
-            scalar: Scalar::Int,
-            id: LedgerIdBytes::from_bytes(B_KEY),
-        }],
-        record: b_record,
-        identity: RootIdentity {
-            placement: LedgerIdBytes::from_bytes(B_PLACEMENT),
-            product: LedgerIdBytes::from_bytes(B_PRODUCT),
-            indexes: Vec::new(),
-            members: vec![DurableMemberDef::Field {
-                id: LedgerIdBytes::from_bytes(B_FIELD),
-                required: true,
-                value: DurableValueShape::Scalar(Scalar::Int),
+    draft
+        .declare_product(
+            LedgerIdBytes::from_bytes(B_PRODUCT),
+            b_record,
+            vec![DeclarationMemberDef {
+                parent: None,
+                shape: DeclarationMemberShape::Field {
+                    id: LedgerIdBytes::from_bytes(B_FIELD),
+                    required: true,
+                    value: DurableValueShape::Scalar(Scalar::Int),
+                },
             }],
-        },
-    });
+        )
+        .expect("a well-formed declaration");
+    draft
+        .add_root_occurrence(
+            LedgerIdBytes::from_bytes(B_PRODUCT),
+            RootOccurrenceDef {
+                name: b_root,
+                keys: vec![KeyColumn {
+                    scalar: Scalar::Int,
+                    id: LedgerIdBytes::from_bytes(B_KEY),
+                }],
+                placement: LedgerIdBytes::from_bytes(B_PLACEMENT),
+                indexes: Vec::new(),
+            },
+        )
+        .expect("the Product is declared");
 
-    let branch_site = draft.request_site(SiteDef::whole_payload(branch_entry_path()));
+    // Root A's direct members in declaration order: the title field, the sparse subtitle
+    // field, then the `notes` branch.
+    let members = draft
+        .product_members(LedgerIdBytes::from_bytes(A_PRODUCT))
+        .expect("root A's Product is declared");
+    let branch_site = site(
+        draft,
+        a.occurrence(),
+        members[2].path(),
+        SemanticTarget::WholePayload,
+    );
     let list_ty = draft
         .add_collection_type(CollectionTypeDef::List {
             elem: ImageType::scalar(Scalar::Text),
         })
         .index();
-    let subtitle_site = draft.request_site(SiteDef::field_leaf(field_path(A_SUBTITLE_FIELD)));
+    let subtitle_site = site(
+        draft,
+        a.occurrence(),
+        members[1].path(),
+        SemanticTarget::FieldLeaf,
+    );
     (branch_site, list_ty, subtitle_site)
-}
-
-/// A top-level field-leaf site path on root A: application -> root placement -> field id.
-fn field_path(field_id: [u8; 16]) -> SemanticPath {
-    SemanticPath::root(
-        LedgerIdBytes::from_bytes(APPLICATION_ID),
-        LedgerIdBytes::from_bytes(A_PLACEMENT),
-    )
-    .child(SemanticStep::new(
-        SemanticStepKind::Field,
-        LedgerIdBytes::from_bytes(field_id),
-    ))
-}
-
-/// The whole-payload path of root A's `notes` branch entry: application -> root placement
-/// -> branch placement.
-fn branch_entry_path() -> SemanticPath {
-    SemanticPath::root(
-        LedgerIdBytes::from_bytes(APPLICATION_ID),
-        LedgerIdBytes::from_bytes(A_PLACEMENT),
-    )
-    .child(SemanticStep::new(
-        SemanticStepKind::Placement,
-        LedgerIdBytes::from_bytes(A_BRANCH_PLACEMENT),
-    ))
 }
 
 fn build_export(draft: &mut ImageDraft, code: Vec<Instr>) {
     let src = draft.intern_string("src/main.mw");
     let name = draft.intern_string("f");
-    let func = draft.add_function(FunctionDef {
-        name,
-        source: src,
-        params: vec![ImageType::scalar(Scalar::Int)],
-        ret: ImageType::Unit,
-        local_count: 1,
-        spans: spans(&code),
-        code,
-    });
+    let func = draft
+        .add_function(FunctionDef {
+            name,
+            source: src,
+            params: vec![ImageType::scalar(Scalar::Int)],
+            ret: ImageType::Unit,
+            local_count: 1,
+            spans: spans(&code),
+            code,
+        })
+        .expect("every site operand is live");
     draft.add_export(ExportId::of_local("", "f"), func);
 }
 
@@ -284,15 +313,17 @@ fn a_cross_root_identity_family_probe_ancestor_is_rejected() {
     ];
     let src = draft.intern_string("src/main.mw");
     let name = draft.intern_string("f");
-    let func = draft.add_function(FunctionDef {
-        name,
-        source: src,
-        params: vec![ImageType::scalar(Scalar::Int)],
-        ret: ImageType::Unit,
-        local_count: 1,
-        spans: spans(&code),
-        code,
-    });
+    let func = draft
+        .add_function(FunctionDef {
+            name,
+            source: src,
+            params: vec![ImageType::scalar(Scalar::Int)],
+            ret: ImageType::Unit,
+            local_count: 1,
+            spans: spans(&code),
+            code,
+        })
+        .expect("every site operand is live");
     draft.add_export(ExportId::of_local("", "f"), func);
     let rejection = verify(&draft.encode().expect("encode").bytes)
         .expect_err("a foreign-root identity family-probe ancestor must be rejected");
@@ -329,15 +360,17 @@ fn a_cross_root_identity_key_slot_in_a_strict_set_is_rejected() {
     ];
     let src = draft.intern_string("src/main.mw");
     let name = draft.intern_string("f");
-    let func = draft.add_function(FunctionDef {
-        name,
-        source: src,
-        params: vec![ImageType::scalar(Scalar::Int)],
-        ret: ImageType::Unit,
-        local_count: 2,
-        spans: spans(&code),
-        code,
-    });
+    let func = draft
+        .add_function(FunctionDef {
+            name,
+            source: src,
+            params: vec![ImageType::scalar(Scalar::Int)],
+            ret: ImageType::Unit,
+            local_count: 2,
+            spans: spans(&code),
+            code,
+        })
+        .expect("every site operand is live");
     draft.add_export(ExportId::of_local("", "f"), func);
     let rejection = verify(&draft.encode().expect("encode").bytes)
         .expect_err("a foreign-root identity key slot must be rejected");

@@ -15,19 +15,21 @@ fn add_main(draft: &mut ImageDraft) {
     let name = draft.intern_string("main");
     let source = draft.intern_string("src/main.mw");
     let code = vec![Instr::Return];
-    let function = draft.add_function(FunctionDef {
-        name,
-        source,
-        params: Vec::new(),
-        ret: ImageType::Unit,
-        local_count: 0,
-        spans: vec![SpanEntry {
-            instr_index: 0,
-            line: 1,
-            column: 1,
-        }],
-        code,
-    });
+    let function = draft
+        .add_function(FunctionDef {
+            name,
+            source,
+            params: Vec::new(),
+            ret: ImageType::Unit,
+            local_count: 0,
+            spans: vec![SpanEntry {
+                instr_index: 0,
+                line: 1,
+                column: 1,
+            }],
+            code,
+        })
+        .expect("every site operand is live");
     draft.add_export(ExportId::of_local("", "main"), function);
 }
 

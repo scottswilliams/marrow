@@ -1697,7 +1697,9 @@ impl<'a> FnLowerer<'a> {
                 name: branch_name,
                 ..
             } => match self.entry_address_node(parent_base)? {
-                Some(parent) => parent.branch(branch_name).map(DurNode::Branch),
+                Some(parent) => parent
+                    .branch(branch_name)
+                    .map(|branch| parent.child(branch)),
                 None => None,
             },
             _ => None,
@@ -1763,7 +1765,7 @@ impl<'a> FnLowerer<'a> {
                 };
                 let key_ty = self.single_traversal_column(&layer.key, *span)?;
                 Some(TraversalTarget {
-                    node: DurNode::Branch(layer),
+                    node: parent.child(layer),
                     key_ty,
                     ancestor_keys,
                     span: *span,
@@ -1816,7 +1818,7 @@ impl<'a> FnLowerer<'a> {
         };
         let key_ty = self.single_traversal_column(&branch.key, span)?;
         Some(TraversalTarget {
-            node: DurNode::Branch(branch),
+            node: node.child(branch),
             key_ty,
             ancestor_keys,
             span,
@@ -1966,6 +1968,9 @@ impl<'a> FnLowerer<'a> {
             }
             Vec::new()
         };
+        let Some(site) = self.entry_site_operand(target.node) else {
+            return Flow::Rejected;
+        };
         let has_from = bound.from.is_some();
         if let Some(from_expr) = &bound.from
             && self.lower_as(from_expr, LTy::bare_scalar(key_ty)).is_none()
@@ -1974,7 +1979,7 @@ impl<'a> FnLowerer<'a> {
         }
         self.push(
             Instr::DurIterateBounded {
-                site: target.node.entry_site().clone(),
+                site,
                 limit,
                 from: has_from,
                 list_ty,
@@ -2128,7 +2133,9 @@ impl<'a> FnLowerer<'a> {
             return Flow::Fallthrough;
         }
         let id_scalar = root.key[0];
-        let site = index.site.clone();
+        let Some(site) = self.bind_index_site(root, index) else {
+            return Flow::Rejected;
+        };
         // The held prefix is every projection component except the trailing identity key.
         let projection: Vec<ScalarType> = index.projection.clone();
         let Some((scanned, prefix_types)) = projection.split_last() else {

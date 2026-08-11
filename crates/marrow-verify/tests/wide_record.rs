@@ -48,15 +48,17 @@ fn draft_with_record(field_count: usize) -> ImageDraft {
     let zero = draft.intern_int(0);
     let code = vec![Instr::ConstLoad(zero.index()), Instr::Return];
     let spans = spans(&code);
-    let main = draft.add_function(FunctionDef {
-        name,
-        source: src,
-        params: Vec::new(),
-        ret: int(),
-        local_count: 0,
-        code,
-        spans,
-    });
+    let main = draft
+        .add_function(FunctionDef {
+            name,
+            source: src,
+            params: Vec::new(),
+            ret: int(),
+            local_count: 0,
+            code,
+            spans,
+        })
+        .expect("every site operand is live");
     draft.add_export(marrow_image::ExportId::of_local("", "main"), main);
     draft
 }

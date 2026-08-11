@@ -29,10 +29,10 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use marrow_codes::Code;
 use marrow_image::{
-    DurableEnumMemberShape, DurableIndexComponent, DurableIndexShape, DurableMemberDef,
-    DurableProductIdentity, DurableValueShape, FieldDef, ImageDraft, ImageType, KeyColumn,
-    LedgerIdBytes, LegacyDraftSiteOperand, RecordTypeDef, RootDef, RootIdentity, Scalar,
-    SemanticPath, SemanticStep, SemanticStepKind, SiteDef, bounds,
+    CanonicalDeclarationPathSelector, DeclarationMember, DeclarationMemberDef,
+    DeclarationMemberShape, DurableEnumMemberShape, DurableIndexComponent, DurableIndexShape,
+    DurableValueShape, FieldDef, ImageDraft, ImageType, KeyColumn, LedgerIdBytes, RecordTypeDef,
+    RootOccurrenceDef, RootOccurrenceSelector, Scalar, SemanticTarget, bounds,
 };
 use marrow_project::{FileIdentity, IdentityAnchor, IdentityKind, IdentityLedger};
 use marrow_syntax::{
@@ -91,15 +91,19 @@ struct BuiltIndex {
     projection: Vec<ScalarType>,
 }
 
-/// A managed index as the lowerer reads it: its source name, unique flag, its read
-/// site (a scan site for a nonunique index, a lookup site for a unique one), and its
-/// projected components' scalar types in projection order. A nonunique projection ends
-/// with the root's identity keys; the scan holds the leading field components as a
-/// prefix and yields the identity suffix as the source-root `Id(^root)`.
+/// A managed index as the lowerer reads it: its source name, unique flag, the canonical
+/// declaration path of its index node, and its projected components' scalar types in
+/// projection order. A nonunique projection ends with the root's identity keys; the scan
+/// holds the leading field components as a prefix and yields the identity suffix as the
+/// source-root `Id(^root)`.
+///
+/// The path is a selector, not a minted operand: the read site (a scan site for a
+/// nonunique index, a lookup site for a unique one) is bound against the owning root
+/// occurrence and requested at the instruction that names it.
 pub(crate) struct DurableIndex {
     pub(crate) name: String,
     pub(crate) unique: bool,
-    pub(crate) site: LegacyDraftSiteOperand,
+    pub(crate) path: CanonicalDeclarationPathSelector,
     pub(crate) projection: Vec<ScalarType>,
 }
 
@@ -122,13 +126,13 @@ fn orderable_key_scalar(value: &DurableValueShape) -> Option<ScalarType> {
 }
 
 /// One resolved durable field. The field-leaf operation site is not pre-minted: the
-/// field carries its stable [`SemanticPath`], and the lowerer allocates (and
-/// deduplicates) a field-leaf site through the draft the first time an instruction
-/// addresses it, so the image carries a leaf site per *referenced* field rather than
-/// one per declared field.
+/// field carries its canonical declaration path, and the lowerer binds it against the
+/// owning root occurrence and allocates (and deduplicates) a field-leaf site through the
+/// draft the first time an instruction addresses it, so the image carries a leaf site per
+/// *referenced* field rather than one per declared field.
 pub(crate) struct DurableField {
     pub(crate) name: String,
-    pub(crate) path: SemanticPath,
+    pub(crate) path: CanonicalDeclarationPathSelector,
     /// The field's resolved value type: a scalar, or a widened composite (a dense
     /// `struct`, or a closed `enum`/`Option`/`Result`). The lowerer builds the read
     /// result and written-value type from it.
@@ -137,15 +141,15 @@ pub(crate) struct DurableField {
 }
 
 /// One resolved scalar field of an executable branch entry: its source name, value
-/// scalar, required flag, and stable field-leaf [`SemanticPath`]. The whole-payload
+/// scalar, required flag, and canonical declaration path. The whole-payload
 /// create/replace flows through the branch's materialized record; `path` names the
 /// field-exact leaf a `^root(k).branch(bk).field` read or write addresses directly, one
-/// level below the root, whose site the lowerer allocates on first reference.
+/// level below the root, whose site the lowerer binds and allocates on first reference.
 pub(crate) struct DurableBranchField {
     pub(crate) name: String,
     pub(crate) scalar: ScalarType,
     pub(crate) required: bool,
-    pub(crate) path: SemanticPath,
+    pub(crate) path: CanonicalDeclarationPathSelector,
 }
 
 /// One scalar/widened leaf of an executable root-level `group`: its source name, value
@@ -162,13 +166,13 @@ pub(crate) struct DurableGroupLeaf {
 /// One executable root-level unkeyed `group` of a flat-executable root: a value unit of
 /// the root entry addressed by the root's own key-path (a group is markerless — its
 /// presence is the entry's presence). Its whole read/replace/erase address the
-/// `GroupEntry` site `entry_site` over the group node; a group-leaf access
-/// `^root(k).group.leaf` is a whole-group read-modify-write over the materialized group
-/// `record`, so a leaf never has a durable site of its own.
+/// `GroupEntry` site bound at the group's canonical declaration `path`; a group-leaf
+/// access `^root(k).group.leaf` is a whole-group read-modify-write over the materialized
+/// group `record`, so a leaf never has a durable site of its own.
 pub(crate) struct DurableGroup {
     pub(crate) name: String,
     pub(crate) record: marrow_image::TypeId,
-    pub(crate) entry_site: LegacyDraftSiteOperand,
+    pub(crate) path: CanonicalDeclarationPathSelector,
     pub(crate) fields: Vec<DurableGroupLeaf>,
 }
 
@@ -188,15 +192,15 @@ impl DurableGroup {
 /// One executable keyed `branch` of a flat-executable root: a scalar-field keyed
 /// scalar-field subtree one or more levels below the root, carrying its own nested
 /// branches recursively. Its whole-entry operations address the key-path
-/// `[root_key, branch_key, …]` through `entry_site`, and its constructor
-/// `Resource.branch.…(field: value, …)` builds `record` from `fields` in declaration
-/// order.
+/// `[root_key, branch_key, …]` through the whole-payload site bound at its canonical
+/// declaration `path`, and its constructor `Resource.branch.…(field: value, …)` builds
+/// `record` from `fields` in declaration order.
 pub(crate) struct DurableBranch {
     pub(crate) name: String,
     /// The branch's ordered key columns (one or more), the whole composite branch key.
     pub(crate) key: Vec<ScalarType>,
     pub(crate) record: marrow_image::TypeId,
-    pub(crate) entry_site: LegacyDraftSiteOperand,
+    pub(crate) path: CanonicalDeclarationPathSelector,
     pub(crate) fields: Vec<DurableBranchField>,
     pub(crate) branches: Vec<DurableBranch>,
 }
@@ -230,7 +234,13 @@ pub(crate) struct DurableRoot {
     /// The root's ordered key columns (one or more), the whole composite root key.
     pub(crate) key: Vec<ScalarType>,
     pub(crate) record: marrow_image::TypeId,
-    pub(crate) entry_site: LegacyDraftSiteOperand,
+    /// The root occurrence this store declaration admitted. Every site over this root —
+    /// its own whole payload, its members', and its managed indexes' — is bound against
+    /// it, so a site is occurrence-qualified even when two roots share one Product
+    /// declaration.
+    pub(crate) occurrence: RootOccurrenceSelector,
+    /// The canonical path of this root's own keyed placement.
+    pub(crate) placement: CanonicalDeclarationPathSelector,
     pub(crate) fields: Vec<DurableField>,
     pub(crate) groups: Vec<DurableGroup>,
     pub(crate) branches: Vec<DurableBranch>,
@@ -912,6 +922,33 @@ struct IdentityBuildState<'ledger, 'gaps> {
     reported_gaps: &'gaps mut BTreeSet<IdentityAnchor>,
 }
 
+/// Where this occurrence's Product declaration comes from: the rows the draft already
+/// holds, or the command vector this root is the first to state.
+///
+/// The two are exclusive by construction — a draft either holds the declaration or does
+/// not — and both orders place the resource's top-level fields first, in record order, so
+/// the leading run reads the same either way.
+enum ProductDeclarationSource {
+    /// The declaration the draft already holds, read back from an earlier root over this
+    /// same Product. Nothing further is admitted for it.
+    Held(Vec<DeclarationMember>),
+    /// The command vector this root just resolved. It is admitted once this store's
+    /// identity is known complete, and the admission answers with the same member rows a
+    /// later root reads back as [`ProductDeclarationSource::Held`].
+    Built(Vec<DeclarationMemberDef>),
+}
+
+impl ProductDeclarationSource {
+    /// The declared shape of each direct member, in declaration order, whichever form the
+    /// declaration is currently in.
+    fn member_shapes(&self) -> Vec<&DeclarationMemberShape> {
+        match self {
+            Self::Held(members) => members.iter().map(DeclarationMember::shape).collect(),
+            Self::Built(commands) => commands.iter().map(|command| &command.shape).collect(),
+        }
+    }
+}
+
 /// Resolve, validate, and commit one `store` declaration into the draft, returning its
 /// build outcome. A failing store pushes its diagnostic and commits no root, site, or
 /// application identity, so it cannot corrupt an already-appended root (`build_extras` may
@@ -1038,9 +1075,16 @@ fn build_one(
     // a later root over the same Product references the declaration the draft already
     // holds, resolving no anchor a second time and — decisively — minting no second
     // entry record type for its nested branches.
-    let members = match draft.product_member_tree(DurableProductIdentity::minted(product)) {
-        Some(declared) => declared,
-        None => resolver.build_product_graph(draft, records, metadata, store, resource, record),
+    //
+    // The declaration is only *admitted* into the draft once this store's identity is
+    // known complete (below). A graph with an unresolved anchor carries placeholder ids,
+    // including a placeholder Product identity, so admitting it would let one refused
+    // store's declaration answer for every other refused store's resource.
+    let source = match draft.product_members(product) {
+        Some(members) => ProductDeclarationSource::Held(members),
+        None => ProductDeclarationSource::Built(
+            resolver.build_product_graph(draft, records, metadata, store, resource, record),
+        ),
     };
     if let Some(invariant) = resolver.invariant {
         return Err(invariant);
@@ -1061,16 +1105,21 @@ fn build_one(
         .zip(&key_scalars)
         .map(|((key_param, id), scalar)| (key_param.name.clone(), *id, *scalar))
         .collect();
+    // The Product's members, however they were reached: the command vector this store
+    // just built, or the declaration the draft already holds. Both place the resource's
+    // top-level fields first, in record order, so the leading run reads the same either
+    // way.
+    let member_shapes: Vec<&DeclarationMemberShape> = source.member_shapes();
     let field_entries: Vec<IndexFieldLeaf> = record
         .fields
         .iter()
-        .zip(&members)
-        .map(|(field, member)| {
-            let (id, value) = match member {
-                DurableMemberDef::Field { id, value, .. } => (*id, value),
+        .zip(&member_shapes)
+        .map(|(field, shape)| {
+            let (id, value) = match shape {
+                DeclarationMemberShape::Field { id, value, .. } => (*id, value),
                 #[expect(
                     clippy::unreachable,
-                    reason = "match-arm narrowing: this map zips the leading top-level-field members built earlier in this function, so every zipped member is a `Field`"
+                    reason = "match-arm narrowing: this map zips the leading top-level-field members of the Product declaration, which the command vector places before its groups and branches, so every zipped member is a `Field`"
                 )]
                 _ => unreachable!("the first members are the record's top-level fields"),
             };
@@ -1106,6 +1155,14 @@ fn build_one(
     // sites, and identity. A discarded (incomplete) graph never reaches here, so no
     // placeholder id enters the join.
     let naming = std::mem::take(&mut resolver.naming);
+    // Admit the Product declaration now that every anchor in it resolved: the first store
+    // over a resource binds it, and a later store reads back the very rows this one wrote.
+    let members = match source {
+        ProductDeclarationSource::Held(members) => members,
+        ProductDeclarationSource::Built(commands) => {
+            draft.declare_product(product, record.type_id, commands)?
+        }
+    };
     draft.set_application_identity(application);
     let key_columns: Vec<KeyColumn> = key_scalars
         .iter()
@@ -1116,50 +1173,68 @@ fn build_one(
         })
         .collect();
 
+    // Admit the root occurrence over its Product declaration. It mints no site, and the
+    // encoder sorts the string pool, so admitting the occurrence — and interning its
+    // spelling — before the eager sites below leaves the wire unchanged while giving the
+    // sites the occurrence they are qualified by.
+    let indexes: Vec<DurableIndexShape> = built_indexes
+        .iter()
+        .map(|built| built.shape.clone())
+        .collect();
+    let root_name = draft.intern_string(&store.root.root);
+    let admitted = draft.add_root_occurrence(
+        product,
+        RootOccurrenceDef {
+            name: root_name,
+            keys: key_columns,
+            placement,
+            indexes,
+        },
+    )?;
+    let root_id = admitted.root_id();
+
     // Emit the eager, bounded per-node sites for the durable graph now: one
     // whole-payload site per keyed placement (this root and every nested `branch`)
-    // and one whole-group site per static `group`. A site names its target node by
-    // the node's semantic path — the chain of kind-tagged ledger ids from the
-    // application down — so it follows the graph's ledger ids. The verifier re-derives
-    // every site from its own reconstructed node set, so this path is a producer
-    // claim, not a trusted address. Field-leaf sites are NOT emitted here: they are
-    // the per-declared-field width driver, so the lowerer allocates (and
-    // deduplicates) one lazily on the first instruction that addresses a field
-    // (`ImageDraft::request_site`). The graph therefore captures each stored field's
-    // stable `SemanticPath` (below), and the site table scales with *referenced*
-    // fields, not with declared width — an untouched field mints no site. The flat
-    // executable root's whole-payload entry site is captured here for the lowerer.
-    let root_path = SemanticPath::root(application, placement);
-    let entry_site = draft.request_site(SiteDef::whole_payload(root_path.clone()));
-    let (top_field_paths, top_groups, top_branches) =
-        emit_root_member_sites(draft, &root_path, &members);
+    // and one whole-group site per static `group`. A site is named by the pair of the
+    // root occurrence and the canonical declaration path of the node it addresses, so
+    // the path owner projects the wire path from the same rows the member graph is
+    // written from. The verifier re-derives every site from its own reconstructed node
+    // set, so this claim is a producer claim, not a trusted address. Field-leaf sites are
+    // NOT emitted here: they are the per-declared-field width driver, so the lowerer
+    // binds and allocates (and deduplicates) one lazily on the first instruction that
+    // addresses a field. The graph therefore captures each stored field's canonical
+    // declaration path (below), and the site table scales with *referenced* fields, not
+    // with declared width — an untouched field mints no site.
+    request_eager_site(
+        draft,
+        admitted.occurrence(),
+        admitted.placement_path(),
+        SemanticTarget::WholePayload,
+    )?;
+    let captured = emit_root_member_sites(draft, admitted.occurrence(), &members)?;
     // One read site per managed index: a nonunique index is a progressive-prefix
     // scan, a unique index a complete-key exact lookup. There is deliberately no
     // index-write site — maintenance is compiler-owned. Every index site seals as
     // parked (an index node is never a flat-executable node); runtime traversal and
     // lookup land at E05.
     let mut lowered_indexes: Vec<DurableIndex> = Vec::with_capacity(built_indexes.len());
-    for built in &built_indexes {
-        let path = root_path.child(SemanticStep::new(SemanticStepKind::Index, built.shape.id));
-        let site = if built.shape.unique {
-            SiteDef::index_lookup(path)
+    for (built, path) in built_indexes.iter().zip(admitted.index_paths()) {
+        let target = if built.shape.unique {
+            SemanticTarget::IndexLookup
         } else {
-            SiteDef::index_scan(path)
+            SemanticTarget::IndexScan
         };
-        let site_index = draft.request_site(site);
+        request_eager_site(draft, admitted.occurrence(), path, target)?;
         lowered_indexes.push(DurableIndex {
             name: built.name.clone(),
             unique: built.shape.unique,
-            site: site_index,
+            path: path.clone(),
             projection: built.projection.clone(),
         });
     }
-    let indexes: Vec<DurableIndexShape> =
-        built_indexes.into_iter().map(|built| built.shape).collect();
 
-    // Decide executability and capture the executable branch descriptors while the
-    // member tree (which carries each branch's materialized record type) is still in
-    // hand — it moves into the `RootDef` below.
+    // Decide executability and capture the executable branch descriptors from the Product
+    // declaration the draft now holds.
     //
     // Executable durable operations exist for the flat keyed root whose top-level fields
     // are each a scalar or a widened composite (a dense struct, or a closed
@@ -1185,29 +1260,19 @@ fn build_one(
     // predicate) keeps a group parked below the root, so a group in a branch or another
     // group never makes the root flat — mirroring the verifier's `member_flat_at_root`.
     let keyed = !key_scalars.is_empty();
-    let members_flat = members.iter().all(member_flat_at_root);
+    let mut members_flat = true;
+    for member in &members {
+        members_flat &= member_flat_at_root(draft, member)?;
+    }
     let executable = keyed && all_fields_executable && members_flat;
     let (branches, groups) = if executable {
         (
-            build_executable_branches(records, resource, &top_branches),
-            build_executable_groups(&record.groups, &top_groups),
+            build_executable_branches(records, resource, &captured.branches),
+            build_executable_groups(&record.groups, &captured.groups),
         )
     } else {
         (Vec::new(), Vec::new())
     };
-
-    let root_name = draft.intern_string(&store.root.root);
-    let root_id = draft.add_root(RootDef {
-        name: root_name,
-        keys: key_columns,
-        record: record.type_id,
-        identity: RootIdentity {
-            placement,
-            product,
-            members,
-            indexes,
-        },
-    });
 
     if !executable {
         return Ok(StoreBuild::Admitted(BuiltRoot {
@@ -1215,15 +1280,16 @@ fn build_one(
             naming,
         }));
     }
-    // A flat root's top-level fields map positionally to `top_field_paths`, so
-    // `top_field_paths[i]` is the stable field-leaf path of `record.fields[i]` (both in
-    // member/record order). Each field carries its resolved value type (a scalar or a
+    // A flat root's top-level fields map positionally to the captured field paths, so
+    // `captured.fields[i]` is the canonical declaration path of `record.fields[i]` (both
+    // in member/record order). Each field carries its resolved value type (a scalar or a
     // widened composite), from which the lowerer builds the read/written value type; its
-    // field-leaf site is allocated lazily when an instruction first addresses it.
+    // field-leaf site is bound and allocated lazily when an instruction first addresses
+    // it.
     let fields = record
         .fields
         .iter()
-        .zip(top_field_paths)
+        .zip(captured.fields)
         .map(|(field, path)| DurableField {
             name: field.name.clone(),
             path,
@@ -1240,7 +1306,8 @@ fn build_one(
             resource: store.resource.clone(),
             key: key_scalars.clone(),
             record: record.type_id,
-            entry_site,
+            occurrence: admitted.occurrence().clone(),
+            placement: admitted.placement_path().clone(),
             fields,
             groups,
             branches,
@@ -1657,19 +1724,23 @@ impl<'a> IdentityResolver<'a> {
         store: &StoreDecl,
         resource: &ResourceDecl,
         record: &RecordInfo,
-    ) -> Vec<DurableMemberDef> {
-        let mut members: Vec<DurableMemberDef> = record
-            .fields
-            .iter()
-            .map(|field| DurableMemberDef::Field {
+    ) -> Vec<DeclarationMemberDef> {
+        let mut nodes: Vec<DeclarationDraftNode> = Vec::new();
+        for field in &record.fields {
+            let shape = DeclarationMemberShape::Field {
                 id: self.resolve(
                     IdentityKind::Field,
                     &format!("{}.{}", store.resource, field.name),
                 ),
                 required: field.required,
                 value: self.build_value_shape(records, metadata, field.ty, 1),
-            })
-            .collect();
+            };
+            nodes.push(DeclarationDraftNode::declared(
+                None,
+                DeclarationWireClass::Field,
+                shape,
+            ));
+        }
         // A member the type registry refused is still a member this resource declares,
         // so its identity anchor belongs to the resource's anchor set. It is resolved
         // here and contributes no node to the member tree, whose typed invariant stays
@@ -1680,28 +1751,38 @@ impl<'a> IdentityResolver<'a> {
         for member in records.refused_members(&store.resource) {
             self.resolve(IdentityKind::Field, &format!("{}.{member}", store.resource));
         }
-        let groups_and_branches =
-            self.build_extras(draft, records, &resource.members, &store.resource);
-        members.extend(groups_and_branches);
-        members
+        self.build_extras(
+            &mut nodes,
+            None,
+            draft,
+            records,
+            &resource.members,
+            &store.resource,
+        );
+        declaration_commands(nodes)
     }
 
-    /// Walk a resource's declared members, returning the durable member records for
-    /// its static `group` namespaces (first, in source order) then its keyed `branch`
-    /// placements (in source order) — its top-level stored fields are anchored by the
-    /// caller against the materialized record. `container` is the anchor path prefix —
-    /// the resource name at the top level, extended by each group or branch name as the
-    /// walk descends. A keyed scalar leaf or a non-scalar field inside a group or branch
-    /// is a precise `check.unsupported` rejection.
+    /// Walk a resource's declared members in source order, appending one
+    /// [`DeclarationDraftNode`] per static `group` namespace and keyed `branch` placement
+    /// below `parent` — its stored fields are appended by the caller. `container` is the
+    /// anchor path prefix — the resource name at the top level, extended by each group or
+    /// branch name as the walk descends. A keyed scalar leaf or a non-scalar field inside
+    /// a group or branch is a precise `check.unsupported` rejection.
+    ///
+    /// The walk is deliberately one pass in source order: identity resolution, string
+    /// interning, and entry-record minting are order-sensitive side effects (a branch's
+    /// entry record type is assigned by call order), so their sequence is fixed here while
+    /// the wire order of the nodes is carried separately by each node's
+    /// [`DeclarationWireClass`].
     fn build_extras(
         &mut self,
+        nodes: &mut Vec<DeclarationDraftNode>,
+        parent: Option<usize>,
         draft: &mut ImageDraft,
         records: &TypeRegistry,
         members: &[ResourceMember],
         container: &str,
-    ) -> Vec<DurableMemberDef> {
-        let mut groups = Vec::new();
-        let mut branches = Vec::new();
+    ) {
         for member in members {
             let ResourceMember::Group(group) = member else {
                 continue;
@@ -1713,8 +1794,13 @@ impl<'a> IdentityResolver<'a> {
                 // record type of its own.
                 let id = self.resolve(IdentityKind::Group, &path);
                 self.name_step(id, PathSigil::Child, &group.name);
-                let (inner, _record_fields) = self.build_member_tree(draft, records, group, &path);
-                groups.push(DurableMemberDef::Group { id, members: inner });
+                let at = nodes.len();
+                nodes.push(DeclarationDraftNode::declared(
+                    parent,
+                    DeclarationWireClass::Group,
+                    DeclarationMemberShape::Group { id },
+                ));
+                self.build_member_tree(nodes, at, draft, records, group, &path);
             } else {
                 // A keyed `branch`: a distinct keyed placement, like a root. Its entry
                 // is a record of its own direct scalar fields; materialize that record
@@ -1726,24 +1812,29 @@ impl<'a> IdentityResolver<'a> {
                 let placement = self.resolve(IdentityKind::Root, &path);
                 self.name_step(placement, PathSigil::Child, &group.name);
                 let keys = self.build_branch_keys(records, group, &path);
-                let (inner, record_fields) = self.build_member_tree(draft, records, group, &path);
+                // The branch's slot is reserved before its members are walked: its own
+                // members declare it as their parent, and its entry record type is minted
+                // from them, so the shape is completed once the walk returns.
+                let at = nodes.len();
+                nodes.push(DeclarationDraftNode::reserved(
+                    parent,
+                    DeclarationWireClass::Branch,
+                ));
+                let record_fields = self.build_member_tree(nodes, at, draft, records, group, &path);
                 let record_name = draft.intern_string(&path);
                 let record = draft.add_record_type(RecordTypeDef {
                     name: record_name,
                     fields: record_fields,
                 });
                 let name = draft.intern_string(&group.name);
-                branches.push(DurableMemberDef::Branch {
+                nodes[at].declare(DeclarationMemberShape::Branch {
                     placement,
                     name,
                     record,
                     keys,
-                    members: inner,
                 });
             }
         }
-        groups.extend(branches);
-        groups
     }
 
     /// The key tuple of a branch placement: each column's scalar and its ledger id
@@ -1784,29 +1875,35 @@ impl<'a> IdentityResolver<'a> {
             .collect()
     }
 
-    /// The member records of one group or branch body: its stored scalar fields,
-    /// then its nested groups and branches. Field anchors are `<path>.<field>`.
+    /// Append the members of one group or branch body below the node at `at`: its stored
+    /// scalar fields, then its nested groups and branches. Field anchors are
+    /// `<path>.<field>`. Returns the branch entry record's field layout, in the same order
+    /// as the appended field nodes.
     fn build_member_tree(
         &mut self,
+        nodes: &mut Vec<DeclarationDraftNode>,
+        at: usize,
         draft: &mut ImageDraft,
         records: &TypeRegistry,
         group: &GroupDecl,
         path: &str,
-    ) -> (Vec<DurableMemberDef>, Vec<FieldDef>) {
-        let mut members = Vec::new();
+    ) -> Vec<FieldDef> {
         let mut record_fields = Vec::new();
         for member in &group.members {
             let ResourceMember::Field(field) = member else {
                 continue;
             };
-            if let Some((def, record_field)) = self.build_field(draft, records, field, path) {
-                members.push(def);
+            if let Some((shape, record_field)) = self.build_field(draft, records, field, path) {
+                nodes.push(DeclarationDraftNode::declared(
+                    Some(at),
+                    DeclarationWireClass::Field,
+                    shape,
+                ));
                 record_fields.push(record_field);
             }
         }
-        let extras = self.build_extras(draft, records, &group.members, path);
-        members.extend(extras);
-        (members, record_fields)
+        self.build_extras(nodes, Some(at), draft, records, &group.members, path);
+        record_fields
     }
 
     /// One stored scalar field of a group or branch: its ledger id, required flag,
@@ -1820,7 +1917,7 @@ impl<'a> IdentityResolver<'a> {
         records: &TypeRegistry,
         field: &FieldDecl,
         container: &str,
-    ) -> Option<(DurableMemberDef, FieldDef)> {
+    ) -> Option<(DeclarationMemberShape, FieldDef)> {
         if !field.keys.is_empty() {
             self.refuse(DurableRefusal::Member {
                 subject: "a keyed field",
@@ -1837,7 +1934,7 @@ impl<'a> IdentityResolver<'a> {
         };
         let id = self.resolve(IdentityKind::Field, &format!("{container}.{}", field.name));
         self.name_step(id, PathSigil::Child, &field.name);
-        let member = DurableMemberDef::Field {
+        let member = DeclarationMemberShape::Field {
             id,
             required: field.required,
             value: DurableValueShape::Scalar(scalar.image()),
@@ -2080,126 +2177,228 @@ impl<'a> IdentityResolver<'a> {
     }
 }
 
-/// The operation sites and materialized record of one top-level branch: its
-/// whole-payload entry site, its direct field-leaf sites in declaration order, and its
-/// materialized record type. For an executable branch these back the branch's
-/// whole-entry operations and its field-exact `^root(k).branch(bk).field` operations
-/// respectively; a non-flat root parks them and consumes neither.
+/// The wire order of one declaration level: stored fields, then static `group`
+/// namespaces, then keyed `branch` placements, each in source order within its class.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum DeclarationWireClass {
+    Field,
+    Group,
+    Branch,
+}
+
+/// One node of a Product declaration as the source-order traversal found it: the buffer
+/// position of the node it nests under, the wire class that orders it among its siblings,
+/// and its declared shape.
+///
+/// The traversal order and the wire order deliberately differ. Identity resolution, string
+/// interning, and entry-record minting are order-sensitive side effects — a branch's entry
+/// record type is assigned by call order — so the walk runs once in source order and its
+/// buffer position *is* the traversal sequence, while `class` carries where the node
+/// belongs on the wire. [`declaration_commands`] projects the two into the flat command
+/// vector the draft admits.
+struct DeclarationDraftNode {
+    parent: Option<usize>,
+    class: DeclarationWireClass,
+    /// Vacant only while a keyed branch's own members are being walked: the branch
+    /// declares its slot first so its members can name it as their parent, and its entry
+    /// record type is minted from those members.
+    shape: Option<DeclarationMemberShape>,
+}
+
+impl DeclarationDraftNode {
+    fn declared(
+        parent: Option<usize>,
+        class: DeclarationWireClass,
+        shape: DeclarationMemberShape,
+    ) -> Self {
+        Self {
+            parent,
+            class,
+            shape: Some(shape),
+        }
+    }
+
+    fn reserved(parent: Option<usize>, class: DeclarationWireClass) -> Self {
+        Self {
+            parent,
+            class,
+            shape: None,
+        }
+    }
+
+    fn declare(&mut self, shape: DeclarationMemberShape) {
+        self.shape = Some(shape);
+    }
+}
+
+/// Project the source-order traversal buffer into the flat command vector
+/// [`ImageDraft::declare_product`] admits: every parent before its children, and each
+/// parent's children in wire order — stored fields, then static groups, then keyed
+/// branches, each in the order the traversal met them.
+///
+/// The draft places a command vector's rows level by level and keeps each parent's
+/// commands in the order they arrived, so ordering the children here is what fixes the
+/// declaration's wire order.
+fn declaration_commands(mut nodes: Vec<DeclarationDraftNode>) -> Vec<DeclarationMemberDef> {
+    // Bucket 0 holds the Product's own direct members; bucket `n + 1` holds node `n`'s.
+    let mut children: Vec<Vec<usize>> = vec![Vec::new(); nodes.len() + 1];
+    for (at, node) in nodes.iter().enumerate() {
+        children[node.parent.map_or(0, |parent| parent + 1)].push(at);
+    }
+    for bucket in &mut children {
+        bucket.sort_by_key(|at| (nodes[*at].class, *at));
+    }
+    let mut commands = Vec::with_capacity(nodes.len());
+    emit_declaration_commands(&mut commands, &mut nodes, &children, 0, None);
+    commands
+}
+
+/// The most commands [`declaration_commands`] emits: one past the member bound, which is
+/// exactly what the draft needs to record the overflow and the encoder needs to refuse the
+/// declaration. Emitting the whole of an over-wide declaration would let a parent index
+/// pass `u16`, which the command form cannot spell.
+const MAX_DECLARATION_COMMANDS: usize = bounds::MAX_DURABLE_MEMBERS + 1;
+
+/// Emit the already-ordered children in `bucket` and, immediately after each, that node's
+/// own children — so a parent's command index is always strictly less than its children's,
+/// which is the one shape the command form admits.
+fn emit_declaration_commands(
+    commands: &mut Vec<DeclarationMemberDef>,
+    nodes: &mut [DeclarationDraftNode],
+    children: &[Vec<usize>],
+    bucket: usize,
+    parent: Option<u16>,
+) {
+    for at in &children[bucket] {
+        if commands.len() >= MAX_DECLARATION_COMMANDS {
+            return;
+        }
+        let Some(shape) = nodes[*at].shape.take() else {
+            continue;
+        };
+        #[expect(
+            clippy::expect_used,
+            reason = "bounded projection: the emission stops at MAX_DECLARATION_COMMANDS, which is far below u16::MAX"
+        )]
+        let command = u16::try_from(commands.len()).expect("the command count is bounded");
+        commands.push(DeclarationMemberDef { parent, shape });
+        emit_declaration_commands(commands, nodes, children, at + 1, Some(command));
+    }
+}
+
+/// The canonical declaration paths and materialized record of one keyed branch: the
+/// branch's own path, its direct fields' paths in declaration order, its entry record
+/// type, and the same for each of its nested branches. For an executable branch these back
+/// the branch's whole-entry operations and its field-exact
+/// `^root(k).branch(bk).field` operations respectively; a non-flat root parks them and
+/// consumes neither.
 struct BranchSites {
-    entry: LegacyDraftSiteOperand,
-    /// The stable field-leaf paths of this branch's direct fields, in declaration order.
-    /// The leaf sites are allocated lazily at lowering time, so the branch carries paths
-    /// rather than pre-minted site indices.
-    fields: Vec<SemanticPath>,
+    path: CanonicalDeclarationPathSelector,
+    fields: Vec<CanonicalDeclarationPathSelector>,
     record: marrow_image::TypeId,
-    /// The captured sites of this branch's own nested branches, in declaration order, so a
-    /// nested-branch lowerer resolves a deeper `^root(k).b(bk).s(sk)` path level by level.
+    /// This branch's own nested branches, in declaration order, so a nested-branch lowerer
+    /// resolves a deeper `^root(k).b(bk).s(sk)` path level by level.
     branches: Vec<BranchSites>,
 }
 
-/// The stable field-leaf [`SemanticPath`] of one stored field under `parent`. The
-/// leaf site is not emitted here: the lowerer allocates it lazily on first reference, so
-/// an untouched field mints no site.
-fn field_leaf_path(parent: &SemanticPath, id: LedgerIdBytes) -> SemanticPath {
-    parent.child(SemanticStep::new(SemanticStepKind::Field, id))
+/// What the root's member walk captures for the executable lowerer: the canonical paths of
+/// the root's direct stored fields and root-level groups, each in declaration order, and
+/// one capture per top-level keyed branch.
+struct RootMemberSites {
+    fields: Vec<CanonicalDeclarationPathSelector>,
+    groups: Vec<CanonicalDeclarationPathSelector>,
+    branches: Vec<BranchSites>,
 }
 
-/// Emit one keyed placement's whole-payload site at `path`, returning its operand.
-fn emit_placement_site(draft: &mut ImageDraft, path: &SemanticPath) -> LegacyDraftSiteOperand {
-    draft.request_site(SiteDef::whole_payload(path.clone()))
+/// Bind one eager site over `occurrence` at `path` and request it, so its id is minted in
+/// this call's position. The operand is not retained: a descriptor holds the selector, and
+/// the instruction that names the site re-binds and re-requests it, which returns the id
+/// minted here.
+fn request_eager_site(
+    draft: &mut ImageDraft,
+    occurrence: &RootOccurrenceSelector,
+    path: &CanonicalDeclarationPathSelector,
+    target: SemanticTarget,
+) -> Result<(), GenericInvariant> {
+    let handle = draft.bind_occurrence_site(occurrence, path, target)?;
+    draft.request_site(&handle)?;
+    Ok(())
 }
 
-/// Emit the eager (bounded, per-node) operation sites of the root's member tree under
-/// `root_path` and capture what the flat executable lowerer needs: each root-level
-/// group's `GroupEntry` site (in declaration order), each top-level branch's whole-payload
-/// entry site (recursively), and the stable field-leaf *paths* of the root's direct fields.
-/// Field-leaf sites are not emitted here — the lowerer allocates one lazily on first
-/// reference — so a wide resource's site table scales with referenced fields, not declared
-/// width. A group is a namespace whose leaves are addressed through its whole-group site, so
-/// no per-leaf site is emitted. The eager sites are emitted pre-order, a placement or group
-/// node before its members, mirroring
-/// [`marrow_image::DurableContractDescriptor::semantic_nodes`] so every emitted site
-/// resolves against the verifier's independently reconstructed node set.
+/// Emit the eager (bounded, per-node) operation sites of the root's member graph and
+/// capture what the flat executable lowerer needs: each root-level group's canonical path
+/// (in declaration order), each top-level branch's path and record (recursively), and the
+/// canonical paths of the root's direct fields. Field-leaf sites are not emitted here —
+/// the lowerer binds and allocates one lazily on first reference — so a wide resource's
+/// site table scales with referenced fields, not declared width. A group is a namespace
+/// whose leaves are addressed through its whole-group site, so no per-leaf site is emitted.
+/// The eager sites are emitted pre-order, a placement or group node before its members,
+/// mirroring [`marrow_image::DurableContractDescriptor::semantic_nodes`] so every emitted
+/// site resolves against the verifier's independently reconstructed node set.
 fn emit_root_member_sites(
     draft: &mut ImageDraft,
-    root_path: &SemanticPath,
-    members: &[DurableMemberDef],
-) -> (
-    Vec<SemanticPath>,
-    Vec<LegacyDraftSiteOperand>,
-    Vec<BranchSites>,
-) {
-    let mut top_field_paths = Vec::new();
-    let mut top_group_sites = Vec::new();
-    let mut top_branches = Vec::new();
+    occurrence: &RootOccurrenceSelector,
+    members: &[DeclarationMember],
+) -> Result<RootMemberSites, GenericInvariant> {
+    let mut captured = RootMemberSites {
+        fields: Vec::new(),
+        groups: Vec::new(),
+        branches: Vec::new(),
+    };
     for member in members {
-        match member {
-            DurableMemberDef::Field { id, .. } => {
-                top_field_paths.push(field_leaf_path(root_path, *id));
+        match member.shape() {
+            DeclarationMemberShape::Field { .. } => captured.fields.push(member.path().clone()),
+            DeclarationMemberShape::Group { .. } => {
+                request_eager_site(draft, occurrence, member.path(), SemanticTarget::GroupEntry)?;
+                captured.groups.push(member.path().clone());
             }
-            DurableMemberDef::Group { id, .. } => {
-                let path = root_path.child(SemanticStep::new(SemanticStepKind::Group, *id));
-                let entry = draft.request_site(SiteDef::group_entry(path));
-                top_group_sites.push(entry);
-            }
-            DurableMemberDef::Branch {
-                placement,
-                members,
-                record,
-                ..
-            } => {
-                top_branches.push(emit_branch_sites(
-                    draft, root_path, *placement, *record, members,
-                ));
+            DeclarationMemberShape::Branch { record, .. } => {
+                let record = *record;
+                captured.branches.push(emit_branch_sites(
+                    draft,
+                    occurrence,
+                    member.path(),
+                    record,
+                )?);
             }
         }
     }
-    (top_field_paths, top_group_sites, top_branches)
+    Ok(captured)
 }
 
-/// Emit one keyed branch's eager whole-payload entry site under `parent` and capture
-/// it recursively with its direct field-leaf *paths* (leaf sites allocated lazily on
-/// reference) and each nested branch's captured sites. A static `group` inside a branch
-/// parks the whole root (`member_keeps_root_flat` refuses it), so on the executable path
-/// only fields and nested branches occur. The direct field order is the branch's
-/// materialized-record order — the leaf the verifier seals as `BranchField(field)` — and
-/// the nested-branch order indexes the sealed branch tree, so the compiler's and verifier's
-/// independent resolutions agree.
+/// Emit one keyed branch's eager whole-payload entry site and capture it recursively with
+/// its direct fields' canonical paths (leaf sites allocated lazily on reference) and each
+/// nested branch's capture. A static `group` inside a branch parks the whole root
+/// (`member_keeps_root_flat` refuses it), so on the executable path only fields and nested
+/// branches occur. The direct field order is the branch's materialized-record order — the
+/// leaf the verifier seals as `BranchField(field)` — and the nested-branch order indexes
+/// the sealed branch tree, so the compiler's and verifier's independent resolutions agree.
 fn emit_branch_sites(
     draft: &mut ImageDraft,
-    parent: &SemanticPath,
-    placement: LedgerIdBytes,
+    occurrence: &RootOccurrenceSelector,
+    path: &CanonicalDeclarationPathSelector,
     record: marrow_image::TypeId,
-    members: &[DurableMemberDef],
-) -> BranchSites {
-    let path = parent.child(SemanticStep::new(SemanticStepKind::Placement, placement));
-    let entry = emit_placement_site(draft, &path);
+) -> Result<BranchSites, GenericInvariant> {
+    request_eager_site(draft, occurrence, path, SemanticTarget::WholePayload)?;
+    let members = draft.members_of(path)?;
     let mut fields = Vec::new();
     let mut branches = Vec::new();
-    for inner in members {
-        match inner {
-            DurableMemberDef::Field { id, .. } => {
-                fields.push(field_leaf_path(&path, *id));
-            }
-            DurableMemberDef::Group { .. } => {}
-            DurableMemberDef::Branch {
-                placement,
-                members,
-                record,
-                ..
-            } => {
-                branches.push(emit_branch_sites(
-                    draft, &path, *placement, *record, members,
-                ));
+    for inner in &members {
+        match inner.shape() {
+            DeclarationMemberShape::Field { .. } => fields.push(inner.path().clone()),
+            DeclarationMemberShape::Group { .. } => {}
+            DeclarationMemberShape::Branch { record, .. } => {
+                let record = *record;
+                branches.push(emit_branch_sites(draft, occurrence, inner.path(), record)?);
             }
         }
     }
-    BranchSites {
-        entry,
+    Ok(BranchSites {
+        path: path.clone(),
         fields,
         record,
         branches,
-    }
+    })
 }
 
 /// Whether a durable member keeps its containing root flat-executable, mirroring the
@@ -2208,17 +2407,28 @@ fn emit_branch_sites(
 /// branch (one or more key columns) whose direct members recursively keep flat. A static
 /// `group` does not. (A `Field`'s value shape is always a scalar, struct, or enum — a
 /// collection field is rejected upstream — so any field keeps the root flat here.)
-fn member_keeps_root_flat(member: &DurableMemberDef) -> bool {
-    match member {
-        DurableMemberDef::Field { value, .. } => matches!(
+fn member_keeps_root_flat(
+    draft: &ImageDraft,
+    member: &DeclarationMember,
+) -> Result<bool, GenericInvariant> {
+    match member.shape() {
+        DeclarationMemberShape::Field { value, .. } => Ok(matches!(
             value,
             DurableValueShape::Scalar(_)
                 | DurableValueShape::Struct(_)
                 | DurableValueShape::Enum { .. }
-        ),
-        DurableMemberDef::Group { .. } => false,
-        DurableMemberDef::Branch { keys, members, .. } => {
-            !keys.is_empty() && members.iter().all(member_keeps_root_flat)
+        )),
+        DeclarationMemberShape::Group { .. } => Ok(false),
+        DeclarationMemberShape::Branch { keys, .. } => {
+            if keys.is_empty() {
+                return Ok(false);
+            }
+            for inner in &draft.members_of(member.path())? {
+                if !member_keeps_root_flat(draft, inner)? {
+                    return Ok(false);
+                }
+            }
+            Ok(true)
         }
     }
 }
@@ -2231,33 +2441,38 @@ fn member_keeps_root_flat(member: &DurableMemberDef) -> bool {
 /// group still parks, because branch members are classified by [`member_keeps_root_flat`]
 /// (which keeps `Group => false`), so a group below the root's direct members never makes
 /// its enclosing branch flat.
-fn member_flat_at_root(member: &DurableMemberDef) -> bool {
-    match member {
-        DurableMemberDef::Field { .. } => member_keeps_root_flat(member),
-        DurableMemberDef::Group { members, .. } => members
+fn member_flat_at_root(
+    draft: &ImageDraft,
+    member: &DeclarationMember,
+) -> Result<bool, GenericInvariant> {
+    match member.shape() {
+        DeclarationMemberShape::Field { .. } | DeclarationMemberShape::Branch { .. } => {
+            member_keeps_root_flat(draft, member)
+        }
+        DeclarationMemberShape::Group { .. } => Ok(draft
+            .members_of(member.path())?
             .iter()
-            .all(|inner| matches!(inner, DurableMemberDef::Field { .. })),
-        DurableMemberDef::Branch { .. } => member_keeps_root_flat(member),
+            .all(|inner| matches!(inner.shape(), DeclarationMemberShape::Field { .. }))),
     }
 }
 
 /// The executable root-level group descriptors of a flat-executable root, in declaration
 /// order. Each group's materialized record and its scalar/widened leaves come from the
-/// registry `GroupInfo` (`groups`), and its captured `GroupEntry` site from `sites` — both
-/// in the same declaration order, so a group descriptor and its site align by position.
+/// registry `GroupInfo` (`groups`), and its canonical declaration path from `paths` — both
+/// in the same declaration order, so a group descriptor and its path align by position.
 /// Called only when the caller has proven the root flat-executable, so every group is a
 /// storable-value-field group.
 fn build_executable_groups(
     groups: &[crate::types::GroupInfo],
-    sites: &[LegacyDraftSiteOperand],
+    paths: &[CanonicalDeclarationPathSelector],
 ) -> Vec<DurableGroup> {
     groups
         .iter()
-        .zip(sites)
-        .map(|(group, entry_site)| DurableGroup {
+        .zip(paths)
+        .map(|(group, path)| DurableGroup {
             name: group.name.clone(),
             record: group.type_id,
-            entry_site: entry_site.clone(),
+            path: path.clone(),
             fields: group
                 .fields
                 .iter()
@@ -2344,7 +2559,7 @@ fn build_branches(
                 name: group.name.clone(),
                 key,
                 record: sites.record,
-                entry_site: sites.entry.clone(),
+                path: sites.path.clone(),
                 fields,
                 branches,
             }
@@ -2732,5 +2947,152 @@ store ^holders[id: int]: Holder
             registry.product("Unbound"),
             Ok(ProductBinding::Absent)
         ));
+    }
+}
+
+#[cfg(test)]
+mod declaration_command_bound_tests {
+    use super::*;
+    use marrow_image::{ExportId, FunctionDef, ImageBuildError, Instr, SpanEntry};
+
+    const APPLICATION_ID: [u8; 16] = [0x0a; 16];
+    const PLACEMENT_ID: [u8; 16] = [0x0b; 16];
+    const KEY_ID: [u8; 16] = [0x0c; 16];
+    const PRODUCT_ID: [u8; 16] = [0x0d; 16];
+
+    /// A distinct member ledger id seeded by `n`, so a width fixture cannot be
+    /// answered by an identity-collision refusal instead of the bound under test.
+    fn member_id(n: usize) -> LedgerIdBytes {
+        let mut bytes = [0x40u8; 16];
+        bytes[0] = n as u8;
+        bytes[1] = (n >> 8) as u8;
+        LedgerIdBytes::from_bytes(bytes)
+    }
+
+    /// Encode a minimal image whose one keyed root projects a Product declaring exactly
+    /// `commands`, so the declaration width is the only reason an encode can fail.
+    fn encode_product(commands: Vec<DeclarationMemberDef>) -> Result<(), ImageBuildError> {
+        let mut draft = ImageDraft::new();
+        let type_name = draft.intern_string("R");
+        let record = draft.add_record_type(RecordTypeDef {
+            name: type_name,
+            fields: Vec::new(),
+        });
+        draft.set_application_identity(LedgerIdBytes::from_bytes(APPLICATION_ID));
+        let root_name = draft.intern_string("r");
+        draft
+            .declare_product(LedgerIdBytes::from_bytes(PRODUCT_ID), record, commands)
+            .expect("a well-formed flat declaration");
+        draft
+            .add_root_occurrence(
+                LedgerIdBytes::from_bytes(PRODUCT_ID),
+                RootOccurrenceDef {
+                    name: root_name,
+                    keys: vec![KeyColumn {
+                        scalar: Scalar::Int,
+                        id: LedgerIdBytes::from_bytes(KEY_ID),
+                    }],
+                    placement: LedgerIdBytes::from_bytes(PLACEMENT_ID),
+                    indexes: Vec::new(),
+                },
+            )
+            .expect("the Product is declared");
+        let src = draft.intern_string("src/main.mw");
+        let main_name = draft.intern_string("main");
+        let zero = draft.intern_int(0);
+        let code = vec![Instr::ConstLoad(zero.index()), Instr::Return];
+        let spans = (0..code.len())
+            .map(|index| SpanEntry {
+                instr_index: index as u32,
+                line: 1,
+                column: 1,
+            })
+            .collect();
+        let main = draft
+            .add_function(FunctionDef {
+                name: main_name,
+                source: src,
+                params: Vec::new(),
+                ret: ImageType::scalar(Scalar::Int),
+                local_count: 0,
+                code,
+                spans,
+            })
+            .expect("every site operand is live");
+        draft.add_export(ExportId::of_local("", "main"), main);
+        draft.encode().map(|_| ())
+    }
+
+    /// The declaration member bound has two owners and they agree by exactly one command.
+    /// This module stops emitting at [`MAX_DECLARATION_COMMANDS`]; `marrow-image` records
+    /// a declaration as over-bound only at *more* than `MAX_DURABLE_MEMBERS` rows and the
+    /// encoder then refuses the image with
+    /// [`ImageBuildError::TooManyDurableMembers`] — which the compiler classifies as the
+    /// `DurableMembers` resource limit. Truncating one command lower would hand the image
+    /// owner a full-width declaration it accepts, and the over-wide resource would encode
+    /// silently short instead of being refused. This drives the real emitter with an
+    /// over-wide node buffer and carries its output to a real encode, so moving either
+    /// bound without the other fails here.
+    ///
+    /// It is a producer-seam fixture rather than a `compile()`-tier one because the width
+    /// is not reachable from source today: every member anchors one identity ledger row,
+    /// and `marrow-project`'s `MAX_IDS_ROWS` (8192) admits no ledger that also carries the
+    /// application, product, placement, and key rows a resource of this width needs.
+    #[test]
+    fn one_member_past_the_member_bound_encodes_as_too_many_durable_members() {
+        assert_eq!(
+            MAX_DECLARATION_COMMANDS,
+            bounds::MAX_DURABLE_MEMBERS + 1,
+            "the emission cap must sit exactly one command past the image owner's bound"
+        );
+
+        let nodes: Vec<DeclarationDraftNode> = (0..bounds::MAX_DURABLE_MEMBERS + 64)
+            .map(|n| {
+                DeclarationDraftNode::declared(
+                    None,
+                    DeclarationWireClass::Field,
+                    DeclarationMemberShape::Field {
+                        id: member_id(n),
+                        required: false,
+                        value: DurableValueShape::Scalar(Scalar::Int),
+                    },
+                )
+            })
+            .collect();
+        let commands = declaration_commands(nodes);
+        assert_eq!(
+            commands.len(),
+            bounds::MAX_DURABLE_MEMBERS + 1,
+            "an over-wide resource emits exactly one command past the member bound"
+        );
+
+        assert!(
+            matches!(
+                encode_product(commands),
+                Err(ImageBuildError::TooManyDurableMembers)
+            ),
+            "one command past the bound must reach the encoder as the durable-member limit"
+        );
+
+        let at_bound = declaration_commands(
+            (0..bounds::MAX_DURABLE_MEMBERS)
+                .map(|n| {
+                    DeclarationDraftNode::declared(
+                        None,
+                        DeclarationWireClass::Field,
+                        DeclarationMemberShape::Field {
+                            id: member_id(n),
+                            required: false,
+                            value: DurableValueShape::Scalar(Scalar::Int),
+                        },
+                    )
+                })
+                .collect(),
+        );
+        assert_eq!(at_bound.len(), bounds::MAX_DURABLE_MEMBERS);
+        assert!(
+            encode_product(at_bound).is_ok(),
+            "a declaration exactly at the member bound still encodes"
+        );
     }
 }

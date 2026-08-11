@@ -37,15 +37,17 @@ fn verify_conv(setup: impl FnOnce(&mut ImageDraft) -> Vec<Instr>) -> Result<(), 
     code.push(Instr::ConvString);
     code.push(Instr::Return);
     let spans = spans(&code);
-    let main = draft.add_function(FunctionDef {
-        name,
-        source: src,
-        params: Vec::new(),
-        ret: TEXT,
-        local_count: 0,
-        code,
-        spans,
-    });
+    let main = draft
+        .add_function(FunctionDef {
+            name,
+            source: src,
+            params: Vec::new(),
+            ret: TEXT,
+            local_count: 0,
+            code,
+            spans,
+        })
+        .expect("every site operand is live");
     draft.add_export(ExportId::of_local("", "main"), main);
     let bytes = draft.encode().expect("encode").bytes;
     verify(&bytes).map(|_| ()).map_err(|r| r.code().to_string())

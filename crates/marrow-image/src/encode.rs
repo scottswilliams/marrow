@@ -16,7 +16,7 @@ use crate::durable_id::{
 };
 use crate::instr::Instr;
 use crate::product::{
-    DeclarationNode, DeclarationNodeKind, ProductClaimConflict, ProductDeclarationGraph,
+    DeclarationMemberShape, DeclarationNode, ProductClaimConflict, ProductDeclarationGraph,
 };
 use crate::semantic::{SemanticPath, SemanticTarget};
 use crate::ty::ImageType;
@@ -142,15 +142,6 @@ impl ImageDraft {
         }
         if self.site_demand() > bounds::MAX_SITES {
             return Err(ImageBuildError::TooManySites);
-        }
-        for site in self.sites() {
-            let steps = site.path.steps().len();
-            if steps < bounds::MIN_SITE_PATH_STEPS {
-                return Err(ImageBuildError::SitePathTooShort);
-            }
-            if steps > bounds::MAX_SITE_PATH_STEPS {
-                return Err(ImageBuildError::SitePathTooDeep);
-            }
         }
         if self.functions().len() > bounds::MAX_FUNCTIONS {
             return Err(ImageBuildError::TooManyFunctions);
@@ -305,8 +296,9 @@ impl ImageDraft {
             encode_declaration_members(&mut body, graph, graph.members(), str_map);
             encode_durable_indexes(&mut body, occurrence.indexes());
         }
-        push_u16(&mut body, self.sites().len() as u16);
-        for site in self.sites() {
+        let sites = self.projected_sites()?;
+        push_u16(&mut body, sites.len() as u16);
+        for site in &sites {
             encode_site_path(&mut body, &site.path);
             body.push(match site.target {
                 SemanticTarget::WholePayload => 0x00,
@@ -628,8 +620,10 @@ fn encode_key_tuple(body: &mut Vec<u8>, keys: &[KeyColumn]) {
 /// Encode one operation site's semantic path: `u8(step_count) ‖ step*`, each step a
 /// `u8(ledger_kind) ‖ 16 id bytes`. The step kind byte is the same frozen ledger
 /// `IDREF` tag a durable node's identity uses, so the verifier decodes the path's
-/// kinds exactly as it spells its own node paths. The step count fits one byte
-/// (`MAX_SITE_PATH_STEPS` is far below 256, rechecked in `check_bounds`).
+/// kinds exactly as it spells its own node paths. The step count fits one byte: a path
+/// is projected from the declaration graph, so it is the two root steps plus that node's
+/// nesting depth, and `validate_declaration_graph` has already refused a graph nesting
+/// past `MAX_DURABLE_DEPTH` — well inside `MAX_SITE_PATH_STEPS`, itself far below 256.
 fn encode_site_path(body: &mut Vec<u8>, path: &SemanticPath) {
     body.push(path.steps().len() as u8);
     for step in path.steps() {
@@ -656,8 +650,8 @@ fn encode_declaration_members(
 ) {
     push_u16(body, members.len() as u16);
     for member in members {
-        match member.kind() {
-            DeclarationNodeKind::Field {
+        match member.shape() {
+            DeclarationMemberShape::Field {
                 id,
                 required,
                 value,
@@ -667,12 +661,12 @@ fn encode_declaration_members(
                 body.push(u8::from(*required));
                 encode_value_shape_section(body, value);
             }
-            DeclarationNodeKind::Group { id } => {
+            DeclarationMemberShape::Group { id } => {
                 body.push(0x01);
                 body.extend_from_slice(id.bytes());
                 encode_declaration_members(body, graph, graph.members_of(member), str_map);
             }
-            DeclarationNodeKind::Branch {
+            DeclarationMemberShape::Branch {
                 placement,
                 name,
                 record,
@@ -728,10 +722,10 @@ fn validate_declaration_graph(graph: &ProductDeclarationGraph) -> Result<(), Ima
         if depth > bounds::MAX_DURABLE_DEPTH {
             return Err(ImageBuildError::DurableTreeTooDeep);
         }
-        match node.kind() {
-            DeclarationNodeKind::Field { value, .. } => validate_value_shape(value, 1)?,
-            DeclarationNodeKind::Group { .. } => {}
-            DeclarationNodeKind::Branch { keys, .. } => {
+        match node.shape() {
+            DeclarationMemberShape::Field { value, .. } => validate_value_shape(value, 1)?,
+            DeclarationMemberShape::Group { .. } => {}
+            DeclarationMemberShape::Branch { keys, .. } => {
                 if keys.len() > bounds::MAX_KEY_COLUMNS {
                     return Err(ImageBuildError::TooManyKeyColumns);
                 }
@@ -832,8 +826,8 @@ fn member_shapes(
 ) -> Vec<DurableMemberShape> {
     members
         .iter()
-        .map(|member| match member.kind() {
-            DeclarationNodeKind::Field {
+        .map(|member| match member.shape() {
+            DeclarationMemberShape::Field {
                 id,
                 required,
                 value,
@@ -842,14 +836,14 @@ fn member_shapes(
                 required: *required,
                 value: value.clone(),
             }),
-            DeclarationNodeKind::Group { id } => DurableMemberShape::Group(DurableGroupShape {
+            DeclarationMemberShape::Group { id } => DurableMemberShape::Group(DurableGroupShape {
                 id: *id,
                 members: member_shapes(graph, graph.members_of(member)),
             }),
             // The branch's name and record type are surface, not identity: the
             // descriptor carries only its placement, key tuple, and member value
             // shapes, so a rename or a record retype preserves the contract id.
-            DeclarationNodeKind::Branch {
+            DeclarationMemberShape::Branch {
                 placement, keys, ..
             } => DurableMemberShape::Branch(DurableBranchShape {
                 placement: *placement,
