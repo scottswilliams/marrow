@@ -5318,3 +5318,183 @@ fn a_bounded_traversal_over_a_composite_keyed_root_layer_rejects() {
     draft.add_export(ExportId::of_local("", "iter"), func);
     assert_eq!(code_of(&draft.encode().unwrap().bytes), "image.function");
 }
+
+// --- Suite: the verifier's own durable-graph bounds, forged N/N+1. ---
+//
+// A coherent producer cannot emit any of these images: the encoder rechecks the member
+// bound, the depth bound, and the index-component bound before it writes a byte. Each of
+// these bounds is therefore reachable only from forged bytes over a valid image, which is
+// what makes it the verifier's own bound rather than a restatement of the producer's.
+//
+// Every one of the three refusals fires **inside the decode**, from the bytes read so far
+// rather than from a reconstructed graph. The pair per bound is exact: at `N` the decode
+// passes the bound and a later, differently named invariant answers; at `N + 1` the
+// bound's own detail answers. Freezing both sides is what makes the pair a statement about
+// which bound answers, rather than only that something refused.
+
+/// A hand-built DURABLE section body over one root of one Product, closed by a
+/// placeholder contract identity.
+///
+/// `members` and `indexes` are spliced in whole, so a caller states exactly the member run
+/// and index run it wants the verifier to read — including runs no encoder would write.
+fn forged_durable_body(members: Vec<u8>, indexes: Vec<u8>) -> Vec<u8> {
+    let mut body = Vec::new();
+    body.extend_from_slice(&1u16.to_be_bytes()); // one root occurrence
+    body.extend_from_slice(&APPLICATION_ID);
+    body.extend_from_slice(&0u16.to_be_bytes()); // root name: string 0
+    // The tracer root's real key tuple: one `text` column.
+    body.extend_from_slice(&1u16.to_be_bytes());
+    body.push(Scalar::Text.tag());
+    body.extend_from_slice(&ROOT_KEY_ID);
+    body.extend_from_slice(&0u16.to_be_bytes()); // root entry record: type 0
+    body.extend_from_slice(&PLACEMENT_ID);
+    body.extend_from_slice(&PRODUCT_ID);
+    body.extend_from_slice(&members);
+    body.extend_from_slice(&indexes);
+    body.extend_from_slice(&0u16.to_be_bytes()); // no site rows
+    body.extend_from_slice(&[0u8; 32]); // the carried contract identity
+    body
+}
+
+/// One durable field member: `tag(0x00) ‖ id ‖ required ‖ value`, its value the bare
+/// `int` scalar shape (`0x00 ‖ scalar_tag`).
+fn forged_field_member(n: usize) -> Vec<u8> {
+    let mut id = [0x60u8; 16];
+    id[0] = (n & 0xff) as u8;
+    id[1] = ((n >> 8) & 0xff) as u8;
+    id[2] = ((n >> 16) & 0xff) as u8;
+    let mut out = vec![0x00u8];
+    out.extend_from_slice(&id);
+    out.push(1);
+    out.push(0x00);
+    out.push(Scalar::Int.tag());
+    out
+}
+
+/// The member run the tracer's `Counter` record materializes: `required value: int` then
+/// optional `label: text`. A forged graph that must survive the record invariant to reach
+/// a later bound states this run.
+fn matching_member_run() -> Vec<u8> {
+    let mut out = 2u16.to_be_bytes().to_vec();
+    out.push(0x00);
+    out.extend_from_slice(&VALUE_FIELD_ID);
+    out.push(1);
+    out.push(0x00);
+    out.push(Scalar::Int.tag());
+    out.push(0x00);
+    out.extend_from_slice(&LABEL_FIELD_ID);
+    out.push(0);
+    out.push(0x00);
+    out.push(Scalar::Text.tag());
+    out
+}
+
+/// A member run of `count` distinct top-level fields.
+fn forged_field_run(count: usize) -> Vec<u8> {
+    let mut out = (count as u16).to_be_bytes().to_vec();
+    for n in 0..count {
+        out.extend_from_slice(&forged_field_member(n));
+    }
+    out
+}
+
+/// A member run one field deep inside `nesting` static `group` namespaces. The root's own
+/// run is depth 1, so the innermost field sits at depth `nesting + 1`.
+fn forged_group_nest(nesting: usize) -> Vec<u8> {
+    let mut inner = forged_field_run(1);
+    for level in (0..nesting).rev() {
+        let mut id = [0x80u8; 16];
+        id[0] = (level & 0xff) as u8;
+        let mut out = 1u16.to_be_bytes().to_vec();
+        out.push(0x01);
+        out.extend_from_slice(&id);
+        out.extend_from_slice(&inner);
+        inner = out;
+    }
+    inner
+}
+
+/// One managed index projecting `components` copies of the root's single field.
+fn forged_index_run(components: usize) -> Vec<u8> {
+    let mut out = 1u16.to_be_bytes().to_vec();
+    out.extend_from_slice(&[0x70u8; 16]);
+    out.push(0); // nonunique
+    out.extend_from_slice(&(components as u16).to_be_bytes());
+    for _ in 0..components {
+        out.push(0x02);
+        out.extend_from_slice(&VALUE_FIELD_ID);
+    }
+    out
+}
+
+/// Replace the DURABLE section body of a valid image with `forged`, repair the section
+/// length, revalidate the digest, and report the rejection the verifier answers with.
+fn forged_durable_rejection(forged: Vec<u8>) -> marrow_verify::VerifyRejection {
+    let mut bytes = good_durable_image();
+    let (_, body, len) = *sections(&bytes).iter().find(|(id, ..)| *id == 3).unwrap();
+    let forged_len = forged.len() as u32;
+    bytes.splice(body..body + len, forged);
+    bytes[body - 4..body].copy_from_slice(&forged_len.to_be_bytes());
+    rehash(&mut bytes);
+    verify(&bytes).expect_err("a forged durable graph never verifies")
+}
+
+/// The member budget bounds the whole tree, and it answers at exactly one member past it.
+#[test]
+fn a_forged_durable_member_run_past_the_budget_rejects_with_the_budget_detail() {
+    const N: usize = marrow_image::bounds::MAX_DURABLE_MEMBERS;
+
+    let over = forged_durable_rejection(forged_durable_body(forged_field_run(N + 1), vec![0, 0]));
+    assert_eq!(over.phase(), VerifyPhase::Table);
+    assert_eq!(over.detail(), "too many durable members");
+
+    // At the budget the decode completes and a later invariant — the member tree against
+    // the materialized record — is what answers instead.
+    let at = forged_durable_rejection(forged_durable_body(forged_field_run(N), vec![0, 0]));
+    assert_eq!(at.phase(), VerifyPhase::Table);
+    assert_ne!(at.detail(), "too many durable members");
+    assert_eq!(at.detail(), AT_BUDGET_DETAIL);
+}
+
+/// The depth bound answers at exactly one level past it, and the nesting one level
+/// shallower reaches the record invariant instead.
+#[test]
+fn a_forged_durable_member_tree_past_the_depth_bound_rejects_with_the_depth_detail() {
+    const N: usize = marrow_image::bounds::MAX_DURABLE_DEPTH;
+
+    let over = forged_durable_rejection(forged_durable_body(forged_group_nest(N), vec![0, 0]));
+    assert_eq!(over.phase(), VerifyPhase::Table);
+    assert_eq!(over.detail(), "durable member tree too deep");
+
+    let at = forged_durable_rejection(forged_durable_body(forged_group_nest(N - 1), vec![0, 0]));
+    assert_eq!(at.phase(), VerifyPhase::Table);
+    assert_ne!(at.detail(), "durable member tree too deep");
+    assert_eq!(at.detail(), AT_DEPTH_DETAIL);
+}
+
+/// The index-component bound answers at exactly one component past it.
+#[test]
+fn a_forged_durable_index_past_the_component_bound_rejects_with_the_component_detail() {
+    const N: usize = marrow_image::bounds::MAX_INDEX_COMPONENTS;
+
+    let over = forged_durable_rejection(forged_durable_body(
+        matching_member_run(),
+        forged_index_run(N + 1),
+    ));
+    assert_eq!(over.phase(), VerifyPhase::Table);
+    assert_eq!(over.detail(), "too many durable index components");
+
+    let at = forged_durable_rejection(forged_durable_body(
+        matching_member_run(),
+        forged_index_run(N),
+    ));
+    assert_eq!(at.phase(), VerifyPhase::Table);
+    assert_ne!(at.detail(), "too many durable index components");
+    assert_eq!(at.detail(), AT_COMPONENTS_DETAIL);
+}
+
+/// The exact detail each corpus draws at `N`, frozen so the pair states which bound
+/// answers on each side rather than only that something refused.
+const AT_BUDGET_DETAIL: &str = "root member tree fields do not match the record fields";
+const AT_DEPTH_DETAIL: &str = "a root group slot is not a group record";
+const AT_COMPONENTS_DETAIL: &str = "durable index repeats a projection component";
