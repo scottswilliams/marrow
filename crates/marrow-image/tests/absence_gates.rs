@@ -625,3 +625,308 @@ fn every_site_bearing_instruction_is_answered_by_the_site_accessor() {
          answer for, so an appended function never validates it: {unanswered:?}",
     );
 }
+
+/// Every `struct`/`enum` declaration in `code`, as `(name, whole declaration span)`.
+///
+/// A carrier's fields span many lines, and a line-at-a-time scan of a field list answers
+/// about lines rather than about carriers — the exact failure mode the standing scanner law
+/// names. Each span runs from the item's header to the point where its own braces or
+/// parentheses close.
+fn type_declaration_spans(code: &str) -> Vec<(String, String)> {
+    let mut spans = Vec::new();
+    let mut current: Option<(String, String)> = None;
+    let mut depth = 0usize;
+    for line in code.lines() {
+        let trimmed = line.trim_start();
+        if current.is_none() {
+            let header = trimmed
+                .strip_prefix("pub(crate) ")
+                .or_else(|| trimmed.strip_prefix("pub "))
+                .unwrap_or(trimmed);
+            let Some(rest) = header
+                .strip_prefix("struct ")
+                .or_else(|| header.strip_prefix("enum "))
+            else {
+                continue;
+            };
+            let name = rest
+                .split(['<', '(', '{', ' ', ';'])
+                .next()
+                .unwrap_or_default()
+                .to_string();
+            if name.is_empty() {
+                continue;
+            }
+            current = Some((name, String::new()));
+            depth = 0;
+        }
+        let Some((_, span)) = current.as_mut() else {
+            continue;
+        };
+        span.push_str(line);
+        span.push('\n');
+        let opens = line.matches(['(', '{']).count();
+        let closes = line.matches([')', '}']).count();
+        depth += opens;
+        if depth == 0 {
+            // A unit struct terminated by `;` on its own header line.
+            let (name, span) = current.take().expect("a declaration is accumulating");
+            spans.push((name, span));
+            continue;
+        }
+        depth -= closes;
+        if depth == 0 {
+            let (name, span) = current.take().expect("a declaration is accumulating");
+            spans.push((name, span));
+        }
+    }
+    spans
+}
+
+/// No carrier holds both a site handle and a minted site operand.
+///
+/// A handle is permission to request a site; an operand is the answer to one request. A
+/// carrier holding both keeps a stale answer beside the live permission that would produce
+/// a fresh one, and the two can disagree the moment the rows they stand on move — which is
+/// exactly what the row stamps exist to make detectable. Descriptors keep the handle and
+/// re-request; emitted code keeps the operand and nothing else.
+#[test]
+fn no_carrier_holds_both_a_handle_and_an_operand() {
+    let mut offenders = Vec::new();
+    for path in src_files() {
+        let code = without_literals(&fs::read_to_string(&path).expect("read source file"));
+        for (name, span) in type_declaration_spans(&code) {
+            if span.contains("OccurrenceSiteHandle") && span.contains("LegacyDraftSiteOperand") {
+                offenders.push(format!("{}::{name}", path.display()));
+            }
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "these carriers hold a site permission and a minted site together: {offenders:?}",
+    );
+}
+
+/// No owner retains a table of site handles keyed by anything.
+///
+/// A retained root-by-Product-member handle table is the `roots x members` residency the
+/// declaration/occurrence split exists to remove: it costs one entry per (root, member)
+/// whether or not any instruction names the place, and it holds permissions across the very
+/// row movements that should invalidate them. Handles are minted at the moment of use.
+#[test]
+fn no_retained_handle_table_exists() {
+    let mut offenders = Vec::new();
+    for path in src_files() {
+        let code = without_literals(&fs::read_to_string(&path).expect("read source file"));
+        for (name, span) in type_declaration_spans(&code) {
+            for collection in ["HashMap<", "BTreeMap<", "Vec<", "HashSet<", "BTreeSet<"] {
+                for at in span.match_indices(collection).map(|(at, _)| at) {
+                    let tail = &span[at..];
+                    let end = tail.find('>').unwrap_or(tail.len());
+                    if tail[..end].contains("OccurrenceSiteHandle") {
+                        offenders.push(format!("{}::{name}", path.display()));
+                    }
+                }
+            }
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "these owners retain a table of site permissions: {offenders:?}",
+    );
+}
+
+/// Both carrier scans see a planted defect, and are not passing merely by finding nothing.
+///
+/// Neither defect can be planted in the live tree — the crate would still compile, but the
+/// gate would then be red for the rest of the row — so the same predicates are run here over
+/// source that does carry them.
+#[test]
+fn the_carrier_scans_detect_a_planted_declaration() {
+    let planted = without_literals(
+        r##"
+        /// OccurrenceSiteHandle and LegacyDraftSiteOperand named in prose only.
+        pub struct Innocent {
+            handle: OccurrenceSiteHandle,
+        }
+        pub(crate) struct Guilty {
+            handle: OccurrenceSiteHandle,
+            minted: LegacyDraftSiteOperand,
+        }
+        struct Hoarder {
+            per_member: BTreeMap<DeclarationNodeOrdinal, OccurrenceSiteHandle>,
+        }
+        "##,
+    );
+    let spans = type_declaration_spans(&planted);
+    let names: Vec<&str> = spans.iter().map(|(name, _)| name.as_str()).collect();
+    assert_eq!(names, ["Innocent", "Guilty", "Hoarder"]);
+
+    let both: Vec<&str> = spans
+        .iter()
+        .filter(|(_, span)| {
+            span.contains("OccurrenceSiteHandle") && span.contains("LegacyDraftSiteOperand")
+        })
+        .map(|(name, _)| name.as_str())
+        .collect();
+    assert_eq!(both, ["Guilty"], "the doc comment naming both is not code");
+
+    let hoarders: Vec<&str> = spans
+        .iter()
+        .filter(|(_, span)| {
+            span.match_indices("BTreeMap<").any(|(at, _)| {
+                let tail = &span[at..];
+                let end = tail.find('>').unwrap_or(tail.len());
+                tail[..end].contains("OccurrenceSiteHandle")
+            })
+        })
+        .map(|(name, _)| name.as_str())
+        .collect();
+    assert_eq!(hoarders, ["Hoarder"]);
+}
+
+/// The site binder and the graph it validates against use no interior mutability and no
+/// unsafe field split.
+///
+/// The binder answers "is this occurrence, this declaration path, and this target one live
+/// place of this graph?" against rows it borrows. An interior-mutable cell or an aliasing
+/// split would let the rows change under a validation that already answered, so a handle
+/// could be minted against a row that no longer exists — precisely the check's subject.
+#[test]
+fn the_binder_holds_no_interior_mutability() {
+    for owner in ["src/product.rs", "src/site_plan.rs", "src/draft.rs"] {
+        let code = without_literals(
+            &fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join(owner))
+                .expect("read the binder owner"),
+        );
+        let found = shared_mutation_needles(&code);
+        assert!(
+            found.is_empty(),
+            "{owner} names {found:?}: the binder validates rows it borrows",
+        );
+    }
+    let binder = without_literals(
+        &fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/draft.rs"))
+            .expect("read the binder owner"),
+    );
+    assert!(
+        binder.contains("fn bind_occurrence_site"),
+        "the binder itself is in the scanned owners, so this gate has a live subject",
+    );
+}
+
+/// Every shared-mutation or aliasing spelling `code` names.
+fn shared_mutation_needles(code: &str) -> Vec<&'static str> {
+    [
+        "Cell<",
+        "RefCell<",
+        "UnsafeCell<",
+        "Mutex<",
+        "RwLock<",
+        "unsafe",
+        "split_at_mut",
+        "as *mut",
+        "as *const",
+    ]
+    .into_iter()
+    .filter(|needle| code.contains(needle))
+    .collect()
+}
+
+/// The interior-mutability scan sees a planted field and not a planted mention.
+///
+/// A real plant would not compile, so the gate above can never observe its own defect in a
+/// running test. The predicate is run here over source that carries it.
+#[test]
+fn the_interior_mutability_scan_detects_a_planted_field() {
+    let innocent = without_literals(
+        r##"
+        /// A RefCell<Vec<u8>> would let the rows change under a validation.
+        struct Rows {
+            rows: Vec<DeclarationNode>,
+        }
+        "##,
+    );
+    assert!(shared_mutation_needles(&innocent).is_empty());
+
+    let planted = without_literals(
+        r##"
+        struct Rows {
+            scratch: RefCell<Vec<u8>>,
+            rows: Vec<DeclarationNode>,
+        }
+        "##,
+    );
+    // `Cell<` is a substring of `RefCell<`, so a `RefCell` field trips both spellings;
+    // what matters is that the field is seen and the doc mention is not.
+    assert_eq!(shared_mutation_needles(&planted), ["Cell<", "RefCell<"]);
+}
+
+/// There is no free-standing draft rollback mark.
+///
+/// `DraftSavepoint` was a `Clone` value a caller held: it could be copied, stored, and
+/// offered to a draft other than the one it was taken on, where it truncated unrelated
+/// tables to lengths that meant nothing there. Its replacement is
+/// `TemplateProofDraftGuard`, whose checkpoint is a private type this crate never returns —
+/// so there is no mark to transplant, and the exclusive borrow makes the draft unreachable
+/// while a proof is open. A returned mark is that capability coming back.
+#[test]
+fn no_free_standing_draft_rollback_mark_exists() {
+    for needle in ["DraftSavepoint", "fn savepoint", "fn rewind_to"] {
+        let found = occurrences(needle);
+        assert!(
+            found.is_empty(),
+            "`{needle}` is a rollback mark a caller can hold: {found:?}",
+        );
+    }
+    assert!(
+        !occurrences("TemplateProofDraftGuard").is_empty(),
+        "the guard that replaced the mark is present, so this gate has a live subject",
+    );
+    let checkpoint = occurrences("DraftCheckpoint");
+    assert!(
+        checkpoint
+            .iter()
+            .all(|(path, _)| path.ends_with("draft.rs")),
+        "the checkpoint stays inside the draft owner: {checkpoint:?}",
+    );
+}
+
+/// The draft is not `Clone`.
+///
+/// Every selector, handle, and operand a draft mints carries its identity, and its row
+/// stamps come from one cursor. A copied draft carries a copied identity and a copied
+/// cursor, so every capability minted afterwards authenticates in both copies and the stamp
+/// check that detects a reused ordinal answers for a row a different draft appended. The
+/// compile-fail known-answer test on `ImageDraft` pins the same absence from the other side;
+/// this one catches an `impl` that would satisfy it without a derive.
+#[test]
+fn the_draft_is_not_clone() {
+    let code = without_literals(
+        &fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/draft.rs"))
+            .expect("read the draft owner"),
+    );
+    assert!(
+        !code.contains("impl Clone for ImageDraft"),
+        "a hand-written `Clone` copies the draft's identity and its stamp cursor",
+    );
+    let (_, declaration) = type_declaration_spans(&code)
+        .into_iter()
+        .find(|(name, _)| name == "ImageDraft")
+        .expect("the draft is declared");
+    let derives = code
+        .split("pub struct ImageDraft")
+        .next()
+        .expect("the draft is declared")
+        .rsplit("#[derive(")
+        .next()
+        .expect("the draft carries a derive list");
+    assert!(
+        !derives.contains("Clone"),
+        "the draft's derive list names `Clone`: {derives}",
+    );
+    assert!(
+        declaration.contains("identity: DraftIdentity"),
+        "the identity a copy would duplicate is present, so this gate has a live subject",
+    );
+}
