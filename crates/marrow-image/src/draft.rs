@@ -31,6 +31,7 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use crate::bounds;
 use crate::durable_id::{
     DurableIndexShape, DurableProductIdentity, LedgerIdBytes, RootPlacementIdentity,
 };
@@ -63,6 +64,103 @@ impl DraftIdentity {
     fn mint() -> Self {
         static NEXT: AtomicU64 = AtomicU64::new(1);
         Self(NEXT.fetch_add(1, Ordering::Relaxed))
+    }
+}
+
+/// The durable-graph construction budget one compile is admitted for.
+///
+/// The draft's flat construction entry points are the one path into the durable graph,
+/// and every one of them requires this plan: no plan, no construction. It carries the
+/// counts an admission owner froze *before* construction began — how many Product
+/// declarations, how many root occurrences, and how wide one declaration's command vector
+/// may be — so a caller cannot hand the draft an unbounded, uncounted, unadmitted command
+/// stream and have it discovered only by the encoder afterwards.
+///
+/// It is unforgeable on the compiler's `SignaturesComplete` idiom: the counts are private
+/// and [`Self::admit`] is the only constructor, so it has no literal form outside this
+/// module and its existence is proof that an admission owner checked its counts against
+/// what a ProgramImage can hold. A plan carrying unadmitted counts does not exist.
+///
+/// It is a budget, not permission to reach it. Every table the entry points append to
+/// still rechecks its own bound, [`ProductDeclarationGraph::from_commands`] remains the
+/// one structural validator of a command vector, and the independent verifier rechecks
+/// every bound against received bytes. The plan bounds *intake*; it classifies nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AdmittedGraphInputPlan {
+    products: usize,
+    roots: usize,
+    commands: usize,
+}
+
+impl AdmittedGraphInputPlan {
+    /// The plan a storeless compile carries: no durable construction is admitted at all.
+    ///
+    /// A storeless image declares no Product, occurs no root, and states no member, so its
+    /// budget is zero rather than absent. The construction entry points refuse under it
+    /// because they are over budget, and the reading ones answer nothing because a draft
+    /// built under it holds nothing — neither needs a second, planless spelling.
+    pub const EMPTY: Self = Self {
+        products: 0,
+        roots: 0,
+        commands: 0,
+    };
+
+    /// The largest intake the durable graph accepts from anyone: every term at the ceiling
+    /// [`Self::admit`] checks.
+    ///
+    /// It grants nothing `admit` would not grant for the same numbers, and it is not a way
+    /// around a census. It exists so an admission owner whose census is *larger* than any
+    /// image could carry has a total answer — the graph takes what it can take, and the
+    /// owner that reports the overrun still reports it over a complete graph.
+    pub const MAXIMUM: Self = Self {
+        products: bounds::MAX_ADMITTED_PRODUCT_DECLARATIONS,
+        roots: bounds::MAX_ADMITTED_ROOT_OCCURRENCES,
+        commands: bounds::MAX_ADMITTED_DECLARATION_COMMANDS,
+    };
+
+    /// Admit a construction budget of `products` Product declarations, `roots` root
+    /// occurrences, and `commands` member commands in any one declaration.
+    ///
+    /// Refused when a term is beyond what may be handed to the durable graph at all: an
+    /// intake no image could carry is not a budget, and admitting one would leave the
+    /// unbounded, uncounted command stream this type exists to close. Each ceiling follows
+    /// the admitted-intake rule stated on [`bounds::MAX_ADMITTED_ROOT_OCCURRENCES`] — one
+    /// past the bound whose refusal owner keeps its refusal — so an over-wide declaration
+    /// still reaches [`ImageBuildError::TooManyDurableMembers`] and an over-count graph
+    /// still reaches [`ImageBuildError::TooManyRoots`] over a complete graph.
+    ///
+    /// An admission owner mints its terms from its own census, never from a caller's wish:
+    /// the compiler's from the store-declaration census it takes before the first store is
+    /// built, and the identity ledger binds a Product narrower still — every admitted
+    /// member anchors one live ledger row, so `MAX_IDS_ROWS - 3` members is the real
+    /// per-Product ceiling, asserted where both constants are in scope.
+    pub fn admit(products: usize, roots: usize, commands: usize) -> Option<Self> {
+        if products > bounds::MAX_ADMITTED_PRODUCT_DECLARATIONS
+            || roots > bounds::MAX_ADMITTED_ROOT_OCCURRENCES
+            || commands > bounds::MAX_ADMITTED_DECLARATION_COMMANDS
+        {
+            return None;
+        }
+        Some(Self {
+            products,
+            roots,
+            commands,
+        })
+    }
+
+    /// Product declarations this plan admits.
+    pub(crate) fn products(&self) -> usize {
+        self.products
+    }
+
+    /// Root occurrences this plan admits.
+    pub(crate) fn roots(&self) -> usize {
+        self.roots
+    }
+
+    /// Member commands this plan admits in any one declaration.
+    pub(crate) fn commands(&self) -> usize {
+        self.commands
     }
 }
 
@@ -229,7 +327,6 @@ pub struct KeyColumn {
 /// [`KeyColumn`]s drawn from the closed orderable durable-key scalar set. The member
 /// graph and the entry record are **not** here: they are Product declaration facts,
 /// declared once by [`ImageDraft::declare_product`] however many roots occur over them.
-#[doc(hidden)]
 #[derive(Debug, Clone)]
 pub struct RootOccurrenceDef {
     pub name: StrId,
@@ -251,7 +348,6 @@ pub struct RootOccurrenceDef {
 /// The Product's member paths are not here: they belong to the declaration, are shared by
 /// every occurrence over it, and are read navigationally through
 /// [`ImageDraft::product_members`].
-#[doc(hidden)]
 #[derive(Debug, Clone)]
 pub struct AdmittedRoot {
     occurrence: RootOccurrenceSelector,
@@ -431,7 +527,8 @@ impl std::error::Error for ImageBuildError {}
 /// // There is no raw ordinal or key binder: `bind_occurrence_site` takes published
 /// // selectors, and neither selector can be spelled as a number.
 /// let mut draft = marrow_image::ImageDraft::new();
-/// let _ = draft.bind_occurrence_site(&0usize, &0usize, marrow_image::SemanticTarget::WholePayload);
+/// let plan = marrow_image::AdmittedGraphInputPlan::EMPTY;
+/// let _ = draft.bind_occurrence_site(&plan, &0usize, &0usize, marrow_image::SemanticTarget::WholePayload);
 /// ```
 ///
 /// A handle already carries the one target it was bound for, so requesting a site takes no
@@ -440,8 +537,26 @@ impl std::error::Error for ImageBuildError {}
 /// ```compile_fail,E0061
 /// // A handle carries its target; there is no second target input to disagree with it.
 /// let mut draft = marrow_image::ImageDraft::new();
+/// let plan = marrow_image::AdmittedGraphInputPlan::EMPTY;
 /// let handle: marrow_image::OccurrenceSiteHandle = unimplemented!();
-/// let _ = draft.request_site(&handle, marrow_image::SemanticTarget::WholePayload);
+/// let _ = draft.request_site(&plan, &handle, marrow_image::SemanticTarget::WholePayload);
+/// ```
+///
+/// Entering the durable graph requires an [`AdmittedGraphInputPlan`]: no plan, no
+/// construction.
+///
+/// ```compile_fail,E0061
+/// // There is no planless construction entry point.
+/// let mut draft = marrow_image::ImageDraft::new();
+/// let _ = draft.declare_product(unimplemented!(), unimplemented!(), Vec::new());
+/// ```
+///
+/// A plan has no literal form: its counts are private, so [`AdmittedGraphInputPlan::admit`]
+/// is the only way one comes into being.
+///
+/// ```compile_fail,E0451
+/// // A plan carrying unadmitted counts cannot be spelled.
+/// let _ = marrow_image::AdmittedGraphInputPlan { products: 4096, roots: 4096, commands: 1 << 20 };
 /// ```
 ///
 /// A template proof's rollback is a guard over one draft, not a mark a caller holds, so
@@ -769,29 +884,43 @@ impl ImageDraft {
     /// [`Self::encode`] refuses the image — so the failure is reported once, in wire
     /// order, by the owner that refuses artifacts.
     ///
-    /// Refused — as one opaque [`SitePlanStateError`], the single refusal type this
-    /// construction seam carries — when the command vector is not a well-formed flat
+    /// Refused — as one opaque [`SitePlanStateError`], the single refusal type the durable
+    /// construction entry points carry — when the command vector is not a well-formed flat
     /// declaration: a member naming a parent that is not an earlier command, a member
     /// count over the declaration bound, or any other canonical-rule violation. No row is
     /// appended in that case. The cause is not projected: it is a producer-side fault
     /// about a vector the caller built, and no caller branches on which rule it broke.
     ///
-    /// **Temporary.** Its flat command form exists because the deliberately
-    /// compiler-free test tier needs a durable-graph construction path that is neither
-    /// the compiler nor a raw builder. It is deleted when the admitted graph input plan
-    /// replaces it and every consumer migrates onto that plan, in one transaction.
-    #[doc(hidden)]
+    /// Entering construction requires `plan`, and the command vector is admitted under it:
+    /// a vector wider than the plan's admitted command count, or a declaration past the
+    /// plan's admitted Product count, is refused before any row is appended. The plan
+    /// bounds the intake; [`ProductDeclarationGraph::from_commands`] remains the one
+    /// validator of the vector's structure, and the encoder remains the one owner of the
+    /// member bound — a vector the plan admits one command past that bound still reaches
+    /// [`ImageBuildError::TooManyDurableMembers`] rather than being masked here.
     pub fn declare_product(
         &mut self,
+        plan: &AdmittedGraphInputPlan,
         product: LedgerIdBytes,
         entry_record: TypeId,
         members: Vec<DeclarationMemberDef>,
     ) -> Result<Vec<DeclarationMember>, SitePlanStateError> {
+        if members.len() > plan.commands() {
+            return Err(SitePlanStateError::new(SitePlanState::InvalidDemand));
+        }
+        let identity = DurableProductIdentity::minted(product);
+        // A repeat of an already-bound identity resolves to that row and declares no new
+        // Product, so it spends no Product budget.
+        if self.products.row_of(identity).is_none()
+            && self.products.declarations().len() >= plan.products()
+        {
+            return Err(SitePlanStateError::new(SitePlanState::InvalidDemand));
+        }
         let graph = ProductDeclarationGraph::from_commands(members)
             .map_err(|_| SitePlanStateError::new(SitePlanState::InvalidDemand))?;
         let stamp = self.next_stamp();
         let (row, conflict) = self.products.admit(
-            DurableProductClaim::new(DurableProductIdentity::minted(product), graph),
+            DurableProductClaim::new(identity, graph),
             ProductEntryRecordClaim::new(entry_record),
             stamp,
         );
@@ -809,18 +938,22 @@ impl ImageDraft {
     /// (root x member). A root over a Product this draft does not hold is refused: an
     /// occurrence with no declaration is not a root.
     ///
-    /// The one opaque [`SitePlanStateError`] this construction seam carries covers three
-    /// causes, none of them projected: the named Product is not declared here, the
+    /// The one opaque [`SitePlanStateError`] the construction entry points carry covers
+    /// three causes here, none of them projected: the named Product is not declared here, the
     /// occurrence table is already at its root bound (the same bound the encoder reports
     /// as [`ImageBuildError::TooManyRoots`]), or the completed row's published selectors
     /// exceed what a canonical path can address. Each is a fault in the graph the caller
-    /// just built, and no caller branches on which.
-    #[doc(hidden)]
+    /// just built, and no caller branches on which. An occurrence past the plan's admitted
+    /// root count is refused the same way, before the row is pushed.
     pub fn add_root_occurrence(
         &mut self,
+        plan: &AdmittedGraphInputPlan,
         product: LedgerIdBytes,
         def: RootOccurrenceDef,
     ) -> Result<AdmittedRoot, SitePlanStateError> {
+        if self.occurrences.len() >= plan.roots() {
+            return Err(SitePlanStateError::new(SitePlanState::InvalidDemand));
+        }
         let RootOccurrenceDef {
             name,
             keys,
@@ -869,8 +1002,15 @@ impl ImageDraft {
     /// owner of the declaration rows, never recomputed by comparing paths. It is also how
     /// a second root over one Product reads the declaration the draft already holds
     /// instead of resolving that resource's anchors again.
-    #[doc(hidden)]
-    pub fn product_members(&self, product: LedgerIdBytes) -> Option<Vec<DeclarationMember>> {
+    ///
+    /// `plan` is the entry capability, not a budget: reading a declaration appends nothing,
+    /// and a draft built under [`AdmittedGraphInputPlan::EMPTY`] holds no declaration to
+    /// read, so this answers `None` under it without a check of its own.
+    pub fn product_members(
+        &self,
+        _plan: &AdmittedGraphInputPlan,
+        product: LedgerIdBytes,
+    ) -> Option<Vec<DeclarationMember>> {
         self.graph()
             .product_members(DurableProductIdentity::minted(product))
     }
@@ -882,9 +1022,12 @@ impl ImageDraft {
     /// is refused rather than answered with an empty member list: "this is not mine" and
     /// "this node declares nothing" are different facts, and a caller that classifies a
     /// declaration by its members would read the first as the second.
-    #[doc(hidden)]
+    ///
+    /// `plan` is the entry capability, not a budget: reading appends nothing, and no
+    /// selector this draft published exists under [`AdmittedGraphInputPlan::EMPTY`].
     pub fn members_of(
         &self,
+        _plan: &AdmittedGraphInputPlan,
         path: &CanonicalDeclarationPathSelector,
     ) -> Result<Vec<DeclarationMember>, SitePlanStateError> {
         self.graph()
@@ -901,9 +1044,14 @@ impl ImageDraft {
     /// the one supplied target is the target that node admits. No later call accepts a
     /// second target, and the returned handle borrows nothing: the immutable borrow ends
     /// here, before [`Self::request_site`] takes the draft mutably.
-    #[doc(hidden)]
+    ///
+    /// `plan` is the entry capability, not a budget: binding appends nothing, and both
+    /// selectors it proves live are ones only an admitted construction could have
+    /// published, so a draft built under [`AdmittedGraphInputPlan::EMPTY`] can present
+    /// none.
     pub fn bind_occurrence_site(
         &self,
+        _plan: &AdmittedGraphInputPlan,
         root: &RootOccurrenceSelector,
         path: &CanonicalDeclarationPathSelector,
         target: SemanticTarget,
@@ -939,9 +1087,13 @@ impl ImageDraft {
     /// plan minted or the plan's refusal. A refusal is not a failure — the crossing is
     /// nonblocking, and the encoder refuses the image through the Sites bound — but there
     /// is no id that would not alias a fitting site, so none is carried.
-    #[doc(hidden)]
+    ///
+    /// `plan` is the entry capability. The site table is its own bounded owner — the plan
+    /// admits graph input, not site capacity — and the handle a request spends could only
+    /// have been bound against rows an admitted construction published.
     pub fn request_site(
         &mut self,
+        _plan: &AdmittedGraphInputPlan,
         handle: &OccurrenceSiteHandle,
     ) -> Result<LegacyDraftSiteOperand, SitePlanStateError> {
         if handle.draft() != self.identity {
@@ -1241,12 +1393,20 @@ mod collection_count_tests {
 
 #[cfg(test)]
 mod site_binding_tests {
-    use super::{ImageDraft, RootOccurrenceDef, TypeId};
+    use super::{AdmittedGraphInputPlan, ImageDraft, RootOccurrenceDef, TypeId};
     use crate::durable_id::LedgerIdBytes;
     use crate::product::{DeclarationMemberDef, DeclarationMemberShape};
     use crate::semantic::SemanticTarget;
     use crate::site_plan::{SitePlanState, SitePlanStateError};
     use crate::ty::Scalar;
+
+    /// The construction budget these fixtures are admitted under: one Product, two root
+    /// occurrences (the two-draft cases build one each), and the image's own command
+    /// ceiling.
+    fn plan() -> AdmittedGraphInputPlan {
+        AdmittedGraphInputPlan::admit(1, 2, crate::bounds::MAX_ADMITTED_DECLARATION_COMMANDS)
+            .expect("a one-Product fixture census is within what an image can hold")
+    }
 
     fn product() -> LedgerIdBytes {
         LedgerIdBytes::from_bytes([0x11; 16])
@@ -1268,6 +1428,7 @@ mod site_binding_tests {
         let value = draft.value_shapes_mut().scalar(Scalar::Int);
         draft
             .declare_product(
+                &plan(),
                 product(),
                 TypeId(0),
                 vec![DeclarationMemberDef {
@@ -1282,6 +1443,7 @@ mod site_binding_tests {
             .expect("a well-formed declaration");
         let admitted = draft
             .add_root_occurrence(
+                &plan(),
                 product(),
                 RootOccurrenceDef {
                     name,
@@ -1304,14 +1466,17 @@ mod site_binding_tests {
         let (first, first_root) = one_root();
         let (second, _) = one_root();
 
-        let mine = first.product_members(product()).expect("declared");
-        let theirs = second.product_members(product()).expect("declared");
+        let mine = first.product_members(&plan(), product()).expect("declared");
+        let theirs = second
+            .product_members(&plan(), product())
+            .expect("declared");
 
         // A path selector published by another draft is a wrong-plan refusal, however
         // identical the two graphs look.
         assert_eq!(
             first
                 .bind_occurrence_site(
+                    &plan(),
                     first_root.occurrence(),
                     theirs[0].path(),
                     SemanticTarget::FieldLeaf,
@@ -1325,6 +1490,7 @@ mod site_binding_tests {
         assert_eq!(
             first
                 .bind_occurrence_site(
+                    &plan(),
                     first_root.occurrence(),
                     mine[0].path(),
                     SemanticTarget::WholePayload,
@@ -1335,6 +1501,7 @@ mod site_binding_tests {
         assert_eq!(
             first
                 .bind_occurrence_site(
+                    &plan(),
                     first_root.occurrence(),
                     first_root.placement_path(),
                     SemanticTarget::FieldLeaf,
@@ -1348,6 +1515,7 @@ mod site_binding_tests {
         assert!(
             first
                 .bind_occurrence_site(
+                    &plan(),
                     first_root.occurrence(),
                     mine[0].path(),
                     SemanticTarget::FieldLeaf,
@@ -1370,6 +1538,7 @@ mod site_binding_tests {
             let value = proof.value_shapes_mut().scalar(Scalar::Int);
             proof
                 .declare_product(
+                    &plan(),
                     product(),
                     TypeId(0),
                     vec![DeclarationMemberDef {
@@ -1384,6 +1553,7 @@ mod site_binding_tests {
                 .expect("a well-formed declaration");
             let admitted = proof
                 .add_root_occurrence(
+                    &plan(),
                     product(),
                     RootOccurrenceDef {
                         name,
@@ -1395,6 +1565,7 @@ mod site_binding_tests {
                 .expect("the Product is declared");
             proof
                 .bind_occurrence_site(
+                    &plan(),
                     admitted.occurrence(),
                     admitted.placement_path(),
                     SemanticTarget::WholePayload,
@@ -1404,7 +1575,7 @@ mod site_binding_tests {
 
         assert_eq!(
             draft
-                .request_site(&handle)
+                .request_site(&plan(), &handle)
                 .expect_err("the occurrence row was discarded"),
             SitePlanStateError::new(SitePlanState::StaleBinding),
         );
@@ -1415,6 +1586,7 @@ mod site_binding_tests {
         let value = draft.value_shapes_mut().scalar(Scalar::Int);
         draft
             .declare_product(
+                &plan(),
                 product(),
                 TypeId(0),
                 vec![DeclarationMemberDef {
@@ -1429,6 +1601,7 @@ mod site_binding_tests {
             .expect("a well-formed declaration");
         draft
             .add_root_occurrence(
+                &plan(),
                 product(),
                 RootOccurrenceDef {
                     name,
@@ -1441,7 +1614,7 @@ mod site_binding_tests {
 
         assert_eq!(
             draft
-                .request_site(&handle)
+                .request_site(&plan(), &handle)
                 .expect_err("a re-minted row is not the row the handle was bound against"),
             SitePlanStateError::new(SitePlanState::StaleBinding),
         );
@@ -1455,6 +1628,7 @@ mod site_binding_tests {
 
         let refusal = draft
             .declare_product(
+                &plan(),
                 product(),
                 TypeId(0),
                 vec![DeclarationMemberDef {
@@ -1468,7 +1642,7 @@ mod site_binding_tests {
             refusal,
             SitePlanStateError::new(SitePlanState::InvalidDemand)
         );
-        assert!(draft.product_members(product()).is_none());
+        assert!(draft.product_members(&plan(), product()).is_none());
         assert!(draft.root_occurrences().is_empty());
     }
 }

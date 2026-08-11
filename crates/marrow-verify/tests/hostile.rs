@@ -46,7 +46,7 @@ const LABEL_FIELD_ID: [u8; 16] = [0x0f; 16];
 /// declaration order.
 fn product_members(draft: &ImageDraft) -> Vec<DeclarationMember> {
     draft
-        .product_members(LedgerIdBytes::from_bytes(PRODUCT_ID))
+        .product_members(&admitted_plan(), LedgerIdBytes::from_bytes(PRODUCT_ID))
         .expect("the fixture Product is declared")
 }
 
@@ -574,6 +574,7 @@ fn durable_schema(draft: &mut ImageDraft) -> Sites {
     let shapes = scalar_shapes(draft);
     draft
         .declare_product(
+            &admitted_plan(),
             LedgerIdBytes::from_bytes(PRODUCT_ID),
             record,
             counters_members(shapes),
@@ -581,6 +582,7 @@ fn durable_schema(draft: &mut ImageDraft) -> Sites {
         .expect("a well-formed declaration");
     let admitted = draft
         .add_root_occurrence(
+            &admitted_plan(),
             LedgerIdBytes::from_bytes(PRODUCT_ID),
             RootOccurrenceDef {
                 name: root,
@@ -596,18 +598,21 @@ fn durable_schema(draft: &mut ImageDraft) -> Sites {
     let members = product_members(draft);
     let entry = site(
         draft,
+        &admitted_plan(),
         admitted.occurrence(),
         admitted.placement_path(),
         SemanticTarget::WholePayload,
     );
     let value = site(
         draft,
+        &admitted_plan(),
         admitted.occurrence(),
         members[0].path(),
         SemanticTarget::FieldLeaf,
     );
     let label = site(
         draft,
+        &admitted_plan(),
         admitted.occurrence(),
         members[1].path(),
         SemanticTarget::FieldLeaf,
@@ -1039,6 +1044,7 @@ fn a_non_index_opcode_over_a_managed_index_site_rejects() {
     // Index 1 is the unique `byValue`, so the exact-lookup target is the one it admits.
     let lookup_site = site(
         &mut draft,
+        &admitted_plan(),
         root.occurrence(),
         &root.index_paths()[1],
         SemanticTarget::IndexLookup,
@@ -1349,6 +1355,7 @@ fn a_composite_root_write_opcode_with_a_truncated_key_path_rejects() {
     draft.set_application_identity(LedgerIdBytes::from_bytes(APPLICATION_ID));
     draft
         .declare_product(
+            &admitted_plan(),
             LedgerIdBytes::from_bytes(PRODUCT_ID),
             record,
             vec![field_member(
@@ -1362,6 +1369,7 @@ fn a_composite_root_write_opcode_with_a_truncated_key_path_rejects() {
         .expect("a well-formed declaration");
     let admitted = draft
         .add_root_occurrence(
+            &admitted_plan(),
             LedgerIdBytes::from_bytes(PRODUCT_ID),
             RootOccurrenceDef {
                 name: root,
@@ -1383,6 +1391,7 @@ fn a_composite_root_write_opcode_with_a_truncated_key_path_rejects() {
     let members = product_members(&draft);
     let value_site = site(
         &mut draft,
+        &admitted_plan(),
         admitted.occurrence(),
         members[0].path(),
         SemanticTarget::FieldLeaf,
@@ -1485,6 +1494,7 @@ fn group_branch_draft_with_branch_record(
     draft.set_application_identity(LedgerIdBytes::from_bytes(APPLICATION_ID));
     draft
         .declare_product(
+            &admitted_plan(),
             LedgerIdBytes::from_bytes(PRODUCT_ID),
             record,
             vec![
@@ -1514,6 +1524,7 @@ fn group_branch_draft_with_branch_record(
         .expect("a well-formed declaration");
     let admitted = draft
         .add_root_occurrence(
+            &admitted_plan(),
             LedgerIdBytes::from_bytes(PRODUCT_ID),
             RootOccurrenceDef {
                 name: root,
@@ -1531,6 +1542,7 @@ fn group_branch_draft_with_branch_record(
         let members = product_members(&draft);
         let site = site(
             &mut draft,
+            &admitted_plan(),
             admitted.occurrence(),
             members[0].path(),
             SemanticTarget::FieldLeaf,
@@ -1634,6 +1646,7 @@ fn indexed_draft_full(
     let shapes = scalar_shapes(&mut draft);
     draft
         .declare_product(
+            &admitted_plan(),
             LedgerIdBytes::from_bytes(PRODUCT_ID),
             record,
             counters_members(shapes),
@@ -1641,6 +1654,7 @@ fn indexed_draft_full(
         .expect("a well-formed declaration");
     let admitted = draft
         .add_root_occurrence(
+            &admitted_plan(),
             LedgerIdBytes::from_bytes(PRODUCT_ID),
             RootOccurrenceDef {
                 name: root,
@@ -1800,6 +1814,7 @@ fn scalar_field_indexed_draft(scalar: Scalar) -> ImageDraft {
     draft.set_application_identity(LedgerIdBytes::from_bytes(APPLICATION_ID));
     draft
         .declare_product(
+            &admitted_plan(),
             LedgerIdBytes::from_bytes(PRODUCT_ID),
             record,
             vec![field_member(shapes, None, FIELD_ID, true, scalar)],
@@ -1807,6 +1822,7 @@ fn scalar_field_indexed_draft(scalar: Scalar) -> ImageDraft {
         .expect("a well-formed declaration");
     draft
         .add_root_occurrence(
+            &admitted_plan(),
             LedgerIdBytes::from_bytes(PRODUCT_ID),
             RootOccurrenceDef {
                 name: root,
@@ -1915,6 +1931,7 @@ fn widened_field_indexed_draft() -> ImageDraft {
     let owner_value = draft.value_shapes_mut().struct_shape(vec![shapes.text; 2]);
     draft
         .declare_product(
+            &admitted_plan(),
             LedgerIdBytes::from_bytes(PRODUCT_ID),
             record,
             vec![
@@ -1932,6 +1949,7 @@ fn widened_field_indexed_draft() -> ImageDraft {
         .expect("a well-formed declaration");
     draft
         .add_root_occurrence(
+            &admitted_plan(),
             LedgerIdBytes::from_bytes(PRODUCT_ID),
             RootOccurrenceDef {
                 name: root,
@@ -1979,6 +1997,7 @@ fn a_site_that_claims_to_traverse_a_unique_index_rejects() {
     let (mut draft, root) = indexed_draft(by_label_projection());
     site(
         &mut draft,
+        &admitted_plan(),
         root.occurrence(),
         &root.index_paths()[1],
         SemanticTarget::IndexLookup,
@@ -2000,6 +2019,7 @@ fn a_site_that_exact_looks_up_a_nonunique_index_rejects() {
     let (mut draft, root) = indexed_draft(by_label_projection());
     site(
         &mut draft,
+        &admitted_plan(),
         root.occurrence(),
         &root.index_paths()[0],
         SemanticTarget::IndexScan,
@@ -2109,6 +2129,7 @@ fn group_before_field_draft(record_group_first: bool) -> ImageDraft {
     // members run `[Group, Field]` — the order the fields-first invariant refuses.
     draft
         .declare_product(
+            &admitted_plan(),
             LedgerIdBytes::from_bytes(PRODUCT_ID),
             record,
             vec![
@@ -2125,6 +2146,7 @@ fn group_before_field_draft(record_group_first: bool) -> ImageDraft {
         .expect("a well-formed declaration");
     draft
         .add_root_occurrence(
+            &admitted_plan(),
             LedgerIdBytes::from_bytes(PRODUCT_ID),
             RootOccurrenceDef {
                 name: root,
@@ -2180,10 +2202,16 @@ fn field_count_mismatch_draft(member_fields: usize, record_fields: usize) -> Ima
         .map(|i| field_member(shapes, None, [0x40 + i as u8; 16], true, Scalar::Text))
         .collect();
     draft
-        .declare_product(LedgerIdBytes::from_bytes(PRODUCT_ID), record, members)
+        .declare_product(
+            &admitted_plan(),
+            LedgerIdBytes::from_bytes(PRODUCT_ID),
+            record,
+            members,
+        )
         .expect("a well-formed declaration");
     draft
         .add_root_occurrence(
+            &admitted_plan(),
             LedgerIdBytes::from_bytes(PRODUCT_ID),
             RootOccurrenceDef {
                 name: root,
@@ -2233,6 +2261,7 @@ fn book_title_site(draft: &mut ImageDraft, root: &AdmittedRoot) -> LegacyDraftSi
     let members = product_members(draft);
     site(
         draft,
+        &admitted_plan(),
         root.occurrence(),
         members[0].path(),
         SemanticTarget::FieldLeaf,
@@ -2243,6 +2272,7 @@ fn book_group_site(draft: &mut ImageDraft, root: &AdmittedRoot) -> LegacyDraftSi
     let members = product_members(draft);
     site(
         draft,
+        &admitted_plan(),
         root.occurrence(),
         members[1].path(),
         SemanticTarget::GroupEntry,
@@ -2252,21 +2282,33 @@ fn book_group_site(draft: &mut ImageDraft, root: &AdmittedRoot) -> LegacyDraftSi
 fn book_group_field_site(draft: &mut ImageDraft, root: &AdmittedRoot) -> LegacyDraftSiteOperand {
     let group = product_members(draft)[1].path().clone();
     let pages = draft
-        .members_of(&group)
+        .members_of(&admitted_plan(), &group)
         .expect("the declaration row is live")[0]
         .path()
         .clone();
-    site(draft, root.occurrence(), &pages, SemanticTarget::FieldLeaf)
+    site(
+        draft,
+        &admitted_plan(),
+        root.occurrence(),
+        &pages,
+        SemanticTarget::FieldLeaf,
+    )
 }
 
 fn book_branch_field_site(draft: &mut ImageDraft, root: &AdmittedRoot) -> LegacyDraftSiteOperand {
     let branch = product_members(draft)[2].path().clone();
     let text = draft
-        .members_of(&branch)
+        .members_of(&admitted_plan(), &branch)
         .expect("the declaration row is live")[0]
         .path()
         .clone();
-    site(draft, root.occurrence(), &text, SemanticTarget::FieldLeaf)
+    site(
+        draft,
+        &admitted_plan(),
+        root.occurrence(),
+        &text,
+        SemanticTarget::FieldLeaf,
+    )
 }
 
 /// The `details.pages` group field leaf, as encoded site bytes: application -> root
@@ -2476,6 +2518,7 @@ fn flat_branch_draft() -> (ImageDraft, AdmittedRoot, u16) {
     draft.set_application_identity(LedgerIdBytes::from_bytes(APPLICATION_ID));
     draft
         .declare_product(
+            &admitted_plan(),
             LedgerIdBytes::from_bytes(PRODUCT_ID),
             record,
             vec![
@@ -2498,6 +2541,7 @@ fn flat_branch_draft() -> (ImageDraft, AdmittedRoot, u16) {
         .expect("a well-formed declaration");
     let admitted = draft
         .add_root_occurrence(
+            &admitted_plan(),
             LedgerIdBytes::from_bytes(PRODUCT_ID),
             RootOccurrenceDef {
                 name: root,
@@ -2519,6 +2563,7 @@ fn flat_branch_entry_site(draft: &mut ImageDraft, root: &AdmittedRoot) -> Legacy
     let members = product_members(draft);
     site(
         draft,
+        &admitted_plan(),
         root.occurrence(),
         members[1].path(),
         SemanticTarget::WholePayload,
@@ -3325,24 +3370,28 @@ fn branch_presence_schema() -> (
     let branch_path = members[2].path().clone();
     site(
         &mut draft,
+        &admitted_plan(),
         admitted.occurrence(),
         admitted.placement_path(),
         SemanticTarget::WholePayload,
     );
     site(
         &mut draft,
+        &admitted_plan(),
         admitted.occurrence(),
         members[0].path(),
         SemanticTarget::FieldLeaf,
     );
     let label_site = site(
         &mut draft,
+        &admitted_plan(),
         admitted.occurrence(),
         members[1].path(),
         SemanticTarget::FieldLeaf,
     );
     let branch_entry = site(
         &mut draft,
+        &admitted_plan(),
         admitted.occurrence(),
         &branch_path,
         SemanticTarget::WholePayload,
@@ -3383,10 +3432,16 @@ fn declare_counters_with_notes_branch(
         Scalar::Text,
     ));
     draft
-        .declare_product(LedgerIdBytes::from_bytes(PRODUCT_ID), record, members)
+        .declare_product(
+            &admitted_plan(),
+            LedgerIdBytes::from_bytes(PRODUCT_ID),
+            record,
+            members,
+        )
         .expect("a well-formed declaration");
     draft
         .add_root_occurrence(
+            &admitted_plan(),
             LedgerIdBytes::from_bytes(PRODUCT_ID),
             RootOccurrenceDef {
                 name: root,
@@ -3504,18 +3559,20 @@ fn branch_field_schema() -> (ImageDraft, LegacyDraftSiteOperand, LegacyDraftSite
     );
     let branch_path = product_members(&draft)[2].path().clone();
     let body_path = draft
-        .members_of(&branch_path)
+        .members_of(&admitted_plan(), &branch_path)
         .expect("the declaration row is live")[0]
         .path()
         .clone();
     let root_entry = site(
         &mut draft,
+        &admitted_plan(),
         admitted.occurrence(),
         admitted.placement_path(),
         SemanticTarget::WholePayload,
     );
     let branch_field = site(
         &mut draft,
+        &admitted_plan(),
         admitted.occurrence(),
         &body_path,
         SemanticTarget::FieldLeaf,
@@ -4806,6 +4863,7 @@ fn widened_draft(members: Vec<[u8; 16]>) -> ImageDraft {
     draft.set_application_identity(LedgerIdBytes::from_bytes(APPLICATION_ID));
     draft
         .declare_product(
+            &admitted_plan(),
             LedgerIdBytes::from_bytes(PRODUCT_ID),
             rec,
             vec![
@@ -4823,6 +4881,7 @@ fn widened_draft(members: Vec<[u8; 16]>) -> ImageDraft {
         .expect("a well-formed declaration");
     draft
         .add_root_occurrence(
+            &admitted_plan(),
             LedgerIdBytes::from_bytes(PRODUCT_ID),
             RootOccurrenceDef {
                 name: root,
@@ -4971,6 +5030,7 @@ fn nested_branch_draft() -> (ImageDraft, AdmittedRoot) {
     draft.set_application_identity(LedgerIdBytes::from_bytes(APPLICATION_ID));
     draft
         .declare_product(
+            &admitted_plan(),
             LedgerIdBytes::from_bytes(PRODUCT_ID),
             record,
             vec![
@@ -5006,6 +5066,7 @@ fn nested_branch_draft() -> (ImageDraft, AdmittedRoot) {
         .expect("a well-formed declaration");
     let admitted = draft
         .add_root_occurrence(
+            &admitted_plan(),
             LedgerIdBytes::from_bytes(PRODUCT_ID),
             RootOccurrenceDef {
                 name: root,
@@ -5026,12 +5087,13 @@ fn nested_branch_draft() -> (ImageDraft, AdmittedRoot) {
 fn nested_tag_entry_site(draft: &mut ImageDraft, root: &AdmittedRoot) -> LegacyDraftSiteOperand {
     let notes = product_members(draft)[1].path().clone();
     let tags = draft
-        .members_of(&notes)
+        .members_of(&admitted_plan(), &notes)
         .expect("the declaration row is live")[1]
         .path()
         .clone();
     site(
         draft,
+        &admitted_plan(),
         root.occurrence(),
         &tags,
         SemanticTarget::WholePayload,
@@ -5167,6 +5229,7 @@ fn composite_root_draft() -> (ImageDraft, LegacyDraftSiteOperand) {
     draft.set_application_identity(LedgerIdBytes::from_bytes(APPLICATION_ID));
     draft
         .declare_product(
+            &admitted_plan(),
             LedgerIdBytes::from_bytes(PRODUCT_ID),
             record,
             vec![field_member(
@@ -5180,6 +5243,7 @@ fn composite_root_draft() -> (ImageDraft, LegacyDraftSiteOperand) {
         .expect("a well-formed declaration");
     let admitted = draft
         .add_root_occurrence(
+            &admitted_plan(),
             LedgerIdBytes::from_bytes(PRODUCT_ID),
             RootOccurrenceDef {
                 name: root,
@@ -5200,6 +5264,7 @@ fn composite_root_draft() -> (ImageDraft, LegacyDraftSiteOperand) {
         .expect("the Product is declared");
     let entry = site(
         &mut draft,
+        &admitted_plan(),
         admitted.occurrence(),
         admitted.placement_path(),
         SemanticTarget::WholePayload,
@@ -5498,3 +5563,19 @@ fn a_forged_durable_index_past_the_component_bound_rejects_with_the_component_de
 const AT_BUDGET_DETAIL: &str = "root member tree fields do not match the record fields";
 const AT_DEPTH_DETAIL: &str = "a root group slot is not a group record";
 const AT_COMPONENTS_DETAIL: &str = "durable index repeats a projection component";
+
+/// The construction budget this file's fixtures are admitted under.
+///
+/// The compiler-free tier states a census the way the compiler's admission owner does: a
+/// plan minted before construction, whose terms `admit` checks against what a ProgramImage
+/// can hold. These fixtures build small graphs, so the census is the image's own ceilings
+/// rather than a second, narrower policy stated here — what the plan closes is unadmitted
+/// intake, not fixture size.
+fn admitted_plan() -> marrow_image::AdmittedGraphInputPlan {
+    marrow_image::AdmittedGraphInputPlan::admit(
+        marrow_image::bounds::MAX_ADMITTED_PRODUCT_DECLARATIONS,
+        marrow_image::bounds::MAX_ADMITTED_ROOT_OCCURRENCES,
+        marrow_image::bounds::MAX_ADMITTED_DECLARATION_COMMANDS,
+    )
+    .expect("the image's own ceilings are admitted counts")
+}

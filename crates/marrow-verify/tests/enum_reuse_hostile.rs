@@ -126,6 +126,7 @@ fn build(
     let root_name = draft.intern_string("grants");
     draft
         .declare_product(
+            &admitted_plan(),
             id(PRODUCT),
             record,
             vec![
@@ -150,6 +151,7 @@ fn build(
         .expect("a well-formed declaration");
     let occurrence = draft
         .add_root_occurrence(
+            &admitted_plan(),
             id(PRODUCT),
             RootOccurrenceDef {
                 name: root_name,
@@ -164,6 +166,7 @@ fn build(
         .expect("the Product is declared");
     site(
         &mut draft,
+        &admitted_plan(),
         occurrence.occurrence(),
         occurrence.placement_path(),
         SemanticTarget::WholePayload,
@@ -478,6 +481,7 @@ fn forge(spec: &GraphSpec) -> Vec<u8> {
         // member, then the branch and its one member.
         draft
             .declare_product(
+                &admitted_plan(),
                 id(root.product),
                 root_record,
                 vec![
@@ -534,6 +538,7 @@ fn forge(spec: &GraphSpec) -> Vec<u8> {
             .expect("a well-formed declaration");
         let occurrence = draft
             .add_root_occurrence(
+                &admitted_plan(),
                 id(root.product),
                 RootOccurrenceDef {
                     name,
@@ -555,12 +560,14 @@ fn forge(spec: &GraphSpec) -> Vec<u8> {
             .expect("the Product is declared");
         site(
             &mut draft,
+            &admitted_plan(),
             occurrence.occurrence(),
             occurrence.placement_path(),
             SemanticTarget::WholePayload,
         );
         site(
             &mut draft,
+            &admitted_plan(),
             occurrence.occurrence(),
             &occurrence.index_paths()[0],
             SemanticTarget::IndexLookup,
@@ -712,4 +719,20 @@ fn only_the_two_reference_exceptions_admit_a_reused_declaration_id() {
     assert_eq!(references, 2, "exactly two reuses are references");
     assert_eq!(singletons, 1, "only the application is declared once");
     assert_eq!(refusals, 118);
+}
+
+/// The construction budget this file's fixtures are admitted under.
+///
+/// The compiler-free tier states a census the way the compiler's admission owner does: a
+/// plan minted before construction, whose terms `admit` checks against what a ProgramImage
+/// can hold. These fixtures build small graphs, so the census is the image's own ceilings
+/// rather than a second, narrower policy stated here — what the plan closes is unadmitted
+/// intake, not fixture size.
+fn admitted_plan() -> marrow_image::AdmittedGraphInputPlan {
+    marrow_image::AdmittedGraphInputPlan::admit(
+        marrow_image::bounds::MAX_ADMITTED_PRODUCT_DECLARATIONS,
+        marrow_image::bounds::MAX_ADMITTED_ROOT_OCCURRENCES,
+        marrow_image::bounds::MAX_ADMITTED_DECLARATION_COMMANDS,
+    )
+    .expect("the image's own ceilings are admitted counts")
 }

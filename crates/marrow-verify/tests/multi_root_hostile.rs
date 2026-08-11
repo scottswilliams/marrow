@@ -80,6 +80,7 @@ fn build_two_roots(
     let int_value = draft.value_shapes_mut().scalar(Scalar::Int);
     draft
         .declare_product(
+            &admitted_plan(),
             LedgerIdBytes::from_bytes(A_PRODUCT),
             a_rec,
             one_int_field(int_value, A_FIELD),
@@ -87,6 +88,7 @@ fn build_two_roots(
         .expect("a well-formed declaration");
     let a = draft
         .add_root_occurrence(
+            &admitted_plan(),
             LedgerIdBytes::from_bytes(A_PRODUCT),
             RootOccurrenceDef {
                 name: a_root,
@@ -114,6 +116,7 @@ fn build_two_roots(
     let int_value = draft.value_shapes_mut().scalar(Scalar::Int);
     draft
         .declare_product(
+            &admitted_plan(),
             LedgerIdBytes::from_bytes(B_PRODUCT),
             b_rec,
             one_int_field(int_value, B_FIELD),
@@ -121,6 +124,7 @@ fn build_two_roots(
         .expect("a well-formed declaration");
     let b = draft
         .add_root_occurrence(
+            &admitted_plan(),
             LedgerIdBytes::from_bytes(B_PRODUCT),
             RootOccurrenceDef {
                 name: b_root,
@@ -136,12 +140,14 @@ fn build_two_roots(
 
     let a_site = site(
         draft,
+        &admitted_plan(),
         a.occurrence(),
         a.placement_path(),
         SemanticTarget::WholePayload,
     );
     let b_site = site(
         draft,
+        &admitted_plan(),
         b.occurrence(),
         b.placement_path(),
         SemanticTarget::WholePayload,
@@ -273,6 +279,7 @@ fn build_shared_product(draft: &mut ImageDraft) -> TypeId {
     let int_value = draft.value_shapes_mut().scalar(Scalar::Int);
     draft
         .declare_product(
+            &admitted_plan(),
             LedgerIdBytes::from_bytes(A_PRODUCT),
             record,
             one_int_field(int_value, A_FIELD),
@@ -285,6 +292,7 @@ fn build_shared_product(draft: &mut ImageDraft) -> TypeId {
         let root_name = draft.intern_string(name);
         let root = draft
             .add_root_occurrence(
+                &admitted_plan(),
                 LedgerIdBytes::from_bytes(A_PRODUCT),
                 RootOccurrenceDef {
                     name: root_name,
@@ -299,6 +307,7 @@ fn build_shared_product(draft: &mut ImageDraft) -> TypeId {
             .expect("the Product is declared");
         site(
             draft,
+            &admitted_plan(),
             root.occurrence(),
             root.placement_path(),
             SemanticTarget::WholePayload,
@@ -399,6 +408,7 @@ fn a_draft_refuses_to_encode_two_graphs_under_one_product() {
     // A second declaration of the same Product identity carrying a different member id.
     draft
         .declare_product(
+            &admitted_plan(),
             LedgerIdBytes::from_bytes(A_PRODUCT),
             record,
             one_int_field(int_value, B_FIELD),
@@ -406,6 +416,7 @@ fn a_draft_refuses_to_encode_two_graphs_under_one_product() {
         .expect("the command vector itself is well formed");
     draft
         .add_root_occurrence(
+            &admitted_plan(),
             LedgerIdBytes::from_bytes(A_PRODUCT),
             RootOccurrenceDef {
                 name: root_name,
@@ -424,4 +435,20 @@ fn a_draft_refuses_to_encode_two_graphs_under_one_product() {
             .expect_err("a divergent Product claim must not encode"),
         ImageBuildError::ProductGraphConflict
     );
+}
+
+/// The construction budget this file's fixtures are admitted under.
+///
+/// The compiler-free tier states a census the way the compiler's admission owner does: a
+/// plan minted before construction, whose terms `admit` checks against what a ProgramImage
+/// can hold. These fixtures build small graphs, so the census is the image's own ceilings
+/// rather than a second, narrower policy stated here — what the plan closes is unadmitted
+/// intake, not fixture size.
+fn admitted_plan() -> marrow_image::AdmittedGraphInputPlan {
+    marrow_image::AdmittedGraphInputPlan::admit(
+        marrow_image::bounds::MAX_ADMITTED_PRODUCT_DECLARATIONS,
+        marrow_image::bounds::MAX_ADMITTED_ROOT_OCCURRENCES,
+        marrow_image::bounds::MAX_ADMITTED_DECLARATION_COMMANDS,
+    )
+    .expect("the image's own ceilings are admitted counts")
 }

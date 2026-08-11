@@ -89,6 +89,7 @@ fn traversal_image() -> VerifiedImage {
     let text_value = draft.value_shapes_mut().scalar(Scalar::Text);
     draft
         .declare_product(
+            &admitted_plan(),
             product,
             book_record,
             vec![
@@ -125,6 +126,7 @@ fn traversal_image() -> VerifiedImage {
         .expect("a well-formed declaration");
     let books = draft
         .add_root_occurrence(
+            &admitted_plan(),
             product,
             RootOccurrenceDef {
                 name: root,
@@ -138,15 +140,19 @@ fn traversal_image() -> VerifiedImage {
         )
         .expect("the Product is declared");
 
-    let members = draft.product_members(product).expect("declared");
+    let members = draft
+        .product_members(&admitted_plan(), product)
+        .expect("declared");
     let root_entry = site(
         &mut draft,
+        &admitted_plan(),
         books.occurrence(),
         books.placement_path(),
         SemanticTarget::WholePayload,
     );
     let branch_entry = site(
         &mut draft,
+        &admitted_plan(),
         books.occurrence(),
         members[1].path(),
         SemanticTarget::WholePayload,
@@ -485,6 +491,7 @@ fn wide_key_image() -> (VerifiedImage, u16) {
     let value = draft.value_shapes_mut().scalar(Scalar::Int);
     draft
         .declare_product(
+            &admitted_plan(),
             product,
             record,
             vec![DeclarationMemberDef {
@@ -499,6 +506,7 @@ fn wide_key_image() -> (VerifiedImage, u16) {
         .expect("a well-formed declaration");
     let big = draft
         .add_root_occurrence(
+            &admitted_plan(),
             product,
             RootOccurrenceDef {
                 name: root,
@@ -513,6 +521,7 @@ fn wide_key_image() -> (VerifiedImage, u16) {
         .expect("the Product is declared");
     let root_entry = site(
         &mut draft,
+        &admitted_plan(),
         big.occurrence(),
         big.placement_path(),
         SemanticTarget::WholePayload,
@@ -644,4 +653,20 @@ fn a_frozen_list_that_exceeds_the_aggregate_ceiling_faults() {
             describe(&other)
         ),
     }
+}
+
+/// The construction budget this file's fixtures are admitted under.
+///
+/// The compiler-free tier states a census the way the compiler's admission owner does: a
+/// plan minted before construction, whose terms `admit` checks against what a ProgramImage
+/// can hold. These fixtures build small graphs, so the census is the image's own ceilings
+/// rather than a second, narrower policy stated here — what the plan closes is unadmitted
+/// intake, not fixture size.
+fn admitted_plan() -> marrow_image::AdmittedGraphInputPlan {
+    marrow_image::AdmittedGraphInputPlan::admit(
+        marrow_image::bounds::MAX_ADMITTED_PRODUCT_DECLARATIONS,
+        marrow_image::bounds::MAX_ADMITTED_ROOT_OCCURRENCES,
+        marrow_image::bounds::MAX_ADMITTED_DECLARATION_COMMANDS,
+    )
+    .expect("the image's own ceilings are admitted counts")
 }

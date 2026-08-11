@@ -57,6 +57,7 @@ fn commit_image(post_commit_fault: PostCommitFault, mutating: bool) -> VerifiedI
     let value = draft.value_shapes_mut().scalar(Scalar::Int);
     draft
         .declare_product(
+            &admitted_plan(),
             product,
             record,
             vec![DeclarationMemberDef {
@@ -71,6 +72,7 @@ fn commit_image(post_commit_fault: PostCommitFault, mutating: bool) -> VerifiedI
         .expect("a well-formed declaration");
     let counters = draft
         .add_root_occurrence(
+            &admitted_plan(),
             product,
             RootOccurrenceDef {
                 name: root_name,
@@ -85,12 +87,15 @@ fn commit_image(post_commit_fault: PostCommitFault, mutating: bool) -> VerifiedI
         .expect("the Product is declared");
     let handle = draft
         .bind_occurrence_site(
+            &admitted_plan(),
             counters.occurrence(),
             counters.placement_path(),
             SemanticTarget::WholePayload,
         )
         .expect("the root placement is a canonical path of this occurrence");
-    let site = draft.request_site(&handle).expect("the binding is live");
+    let site = draft
+        .request_site(&admitted_plan(), &handle)
+        .expect("the binding is live");
     let key = draft.intern_int(1);
     let value = draft.intern_int(7);
     let one = draft.intern_int(1);
@@ -439,4 +444,20 @@ fn read_only_region_followed_by_pure_fault_is_an_ordinary_runtime_fault() {
         panic!("a read-only region was misreported as a confirmed durable write")
     };
     assert_eq!(fault.code(), "run.divide_by_zero");
+}
+
+/// The construction budget this file's fixtures are admitted under.
+///
+/// The compiler-free tier states a census the way the compiler's admission owner does: a
+/// plan minted before construction, whose terms `admit` checks against what a ProgramImage
+/// can hold. These fixtures build small graphs, so the census is the image's own ceilings
+/// rather than a second, narrower policy stated here — what the plan closes is unadmitted
+/// intake, not fixture size.
+fn admitted_plan() -> marrow_image::AdmittedGraphInputPlan {
+    marrow_image::AdmittedGraphInputPlan::admit(
+        marrow_image::bounds::MAX_ADMITTED_PRODUCT_DECLARATIONS,
+        marrow_image::bounds::MAX_ADMITTED_ROOT_OCCURRENCES,
+        marrow_image::bounds::MAX_ADMITTED_DECLARATION_COMMANDS,
+    )
+    .expect("the image's own ceilings are admitted counts")
 }

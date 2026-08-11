@@ -130,6 +130,28 @@ pub const MAX_COLLECTIONS: usize = 4096;
 pub const MAX_ROOTS: usize = 4096;
 pub const MAX_SITES: usize = 8192;
 
+/// Root occurrences an [`crate::AdmittedGraphInputPlan`] can admit into construction.
+///
+/// **The admitted-intake rule.** A plan bounds what may be *handed* to the durable graph;
+/// it does not decide what an image may *hold*. Each of its terms is therefore exactly one
+/// past the bound whose refusal owner must keep its refusal — never at that bound, which
+/// would move the refusal to the entry point, and never above it, which would leave the
+/// intake unbounded again.
+///
+/// For roots that owner is the encoder. `Roots` is the sole nonblocking durable-graph
+/// aggregate: construction publishes a complete traversable graph at root N+1 and the
+/// encoder reports [`crate::ImageBuildError::TooManyRoots`] over the whole of it, so
+/// diagnostics and invariants keep their exact precedence. A plan stopping at
+/// [`MAX_ROOTS`] would truncate the graph the candidate is reported over.
+pub const MAX_ADMITTED_ROOT_OCCURRENCES: usize = MAX_ROOTS + 1;
+
+/// Product declarations an [`crate::AdmittedGraphInputPlan`] can admit into construction.
+///
+/// Derived from [`MAX_ADMITTED_ROOT_OCCURRENCES`], not chosen: a Product declaration with
+/// no root occurrence projects nothing into an image, so admitted declarations cannot
+/// exceed admitted occurrences.
+pub const MAX_ADMITTED_PRODUCT_DECLARATIONS: usize = MAX_ADMITTED_ROOT_OCCURRENCES;
+
 /// Managed indexes per durable root, and projected leaf components per index. Each
 /// index projects a small ordered leaf set (top-level fields and identity keys) for
 /// a narrow lookup. The component count is deliberately fixed and independent of the
@@ -168,6 +190,17 @@ pub const MAX_KEY_COLUMNS: usize = 8;
 /// groups, keyed branches, and their own members. It is a deliberate widen — the
 /// M-shaped workload's members exceed a narrow tree — not a silent one.
 pub const MAX_DURABLE_MEMBERS: usize = 8192;
+
+/// Member commands one Product declaration may be handed, and so the widest command
+/// vector an [`crate::AdmittedGraphInputPlan`] can admit.
+///
+/// Derived, not chosen: it is exactly one command past [`MAX_DURABLE_MEMBERS`], by the
+/// admitted-intake rule stated on [`MAX_ADMITTED_ROOT_OCCURRENCES`]. A declaration at the
+/// member bound encodes, and a declaration one command wider must still reach the
+/// encoder's [`crate::ImageBuildError::TooManyDurableMembers`] refusal rather than being
+/// masked at the construction entry point — admitting fewer would hand the encoder a
+/// silently truncated declaration instead of refusing the over-wide one.
+pub const MAX_ADMITTED_DECLARATION_COMMANDS: usize = MAX_DURABLE_MEMBERS + 1;
 
 /// Nesting depth of a durable field's stored value shape: a top-level field value
 /// is depth 1, a struct leaf or an enum member payload leaf one deeper. The bound

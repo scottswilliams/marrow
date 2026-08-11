@@ -135,11 +135,17 @@ fn encode_corpus(fields: usize, levels: &dyn Fn(&mut ImageDraft) -> Vec<Level>) 
         .collect();
     draft.set_application_identity(LedgerIdBytes::from_bytes(APPLICATION_ID));
     draft
-        .declare_product(LedgerIdBytes::from_bytes(PRODUCT_ID), entry, members)
+        .declare_product(
+            &admitted_plan(),
+            LedgerIdBytes::from_bytes(PRODUCT_ID),
+            entry,
+            members,
+        )
         .expect("a well-formed declaration");
     let root_name = draft.intern_string("counters");
     draft
         .add_root_occurrence(
+            &admitted_plan(),
             LedgerIdBytes::from_bytes(PRODUCT_ID),
             RootOccurrenceDef {
                 name: root_name,
@@ -269,4 +275,20 @@ fn a_shared_value_shape_is_one_node_however_many_fields_reference_it() {
         "a repeated shape mints no second node"
     );
     assert_eq!(before, 27, "two scalars, the base struct, and 24 levels");
+}
+
+/// The construction budget this file's fixtures are admitted under.
+///
+/// The compiler-free tier states a census the way the compiler's admission owner does: a
+/// plan minted before construction, whose terms `admit` checks against what a ProgramImage
+/// can hold. These fixtures build small graphs, so the census is the image's own ceilings
+/// rather than a second, narrower policy stated here — what the plan closes is unadmitted
+/// intake, not fixture size.
+fn admitted_plan() -> marrow_image::AdmittedGraphInputPlan {
+    marrow_image::AdmittedGraphInputPlan::admit(
+        marrow_image::bounds::MAX_ADMITTED_PRODUCT_DECLARATIONS,
+        marrow_image::bounds::MAX_ADMITTED_ROOT_OCCURRENCES,
+        marrow_image::bounds::MAX_ADMITTED_DECLARATION_COMMANDS,
+    )
+    .expect("the image's own ceilings are admitted counts")
 }

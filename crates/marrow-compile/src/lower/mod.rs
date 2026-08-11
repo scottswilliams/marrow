@@ -1157,7 +1157,10 @@ impl<'a> FnLowerer<'a> {
         path: &CanonicalDeclarationPathSelector,
         target: SemanticTarget,
     ) -> Option<OccurrenceSiteHandle> {
-        match self.draft.bind_occurrence_site(occurrence, path, target) {
+        match self
+            .draft
+            .bind_occurrence_site(self.durable.plan(), occurrence, path, target)
+        {
             Ok(handle) => Some(handle),
             Err(refused) => {
                 self.record_invariant(LowerInvariant::from(refused));
@@ -1170,7 +1173,7 @@ impl<'a> FnLowerer<'a> {
     /// already requested every bounded per-node site, so a re-request of one of those
     /// returns the id it minted; a field leaf is minted here on its first reference.
     fn site_operand(&mut self, handle: &OccurrenceSiteHandle) -> Option<LegacyDraftSiteOperand> {
-        match self.draft.request_site(handle) {
+        match self.draft.request_site(self.durable.plan(), handle) {
             Ok(operand) => Some(operand),
             Err(refused) => {
                 self.record_invariant(LowerInvariant::from(refused));

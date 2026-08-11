@@ -67,6 +67,7 @@ fn declare_wide_product(draft: &mut ImageDraft, fields: usize) {
     let value = draft.value_shapes_mut().scalar(Scalar::Int);
     draft
         .declare_product(
+            &admitted_plan(),
             product(),
             record,
             (0..fields)
@@ -89,6 +90,7 @@ fn admit_root(draft: &mut ImageDraft, n: u8) -> AdmittedRoot {
     let name = draft.intern_string(&format!("r{n}"));
     draft
         .add_root_occurrence(
+            &admitted_plan(),
             product(),
             RootOccurrenceDef {
                 name,
@@ -106,7 +108,9 @@ fn wide_draft(fields: usize) -> (ImageDraft, AdmittedRoot, Vec<DeclarationMember
     let mut draft = ImageDraft::new();
     declare_wide_product(&mut draft, fields);
     let root = admit_root(&mut draft, 0x21);
-    let members = draft.product_members(product()).expect("declared");
+    let members = draft
+        .product_members(&admitted_plan(), product())
+        .expect("declared");
     (draft, root, members)
 }
 
@@ -115,6 +119,7 @@ fn demand_every_leaf(draft: &mut ImageDraft, root: &AdmittedRoot, members: &[Dec
     for member in members {
         let _ = site(
             draft,
+            &admitted_plan(),
             root.occurrence(),
             member.path(),
             SemanticTarget::FieldLeaf,
@@ -144,6 +149,7 @@ fn a_draft_whose_demand_crosses_the_cap_cannot_be_encoded() {
     for member in members.iter().take(64) {
         let _ = site(
             &mut draft,
+            &admitted_plan(),
             excess.occurrence(),
             member.path(),
             SemanticTarget::FieldLeaf,
@@ -161,6 +167,7 @@ fn a_retained_demand_still_reuses_its_operand_after_the_cap_is_crossed() {
     let (mut draft, root, members) = wide_draft(MAX_SITES);
     let first = site(
         &mut draft,
+        &admitted_plan(),
         root.occurrence(),
         members[0].path(),
         SemanticTarget::FieldLeaf,
@@ -170,12 +177,14 @@ fn a_retained_demand_still_reuses_its_operand_after_the_cap_is_crossed() {
     let over = admit_root(&mut draft, 0x22);
     let refused = site(
         &mut draft,
+        &admitted_plan(),
         over.occurrence(),
         members[0].path(),
         SemanticTarget::FieldLeaf,
     );
     let again = site(
         &mut draft,
+        &admitted_plan(),
         root.occurrence(),
         members[0].path(),
         SemanticTarget::FieldLeaf,
@@ -215,6 +224,7 @@ fn every_target_draft() -> (ImageDraft, AdmittedRoot, Vec<DeclarationMember>) {
     let value = draft.value_shapes_mut().scalar(Scalar::Int);
     draft
         .declare_product(
+            &admitted_plan(),
             product(),
             record,
             vec![
@@ -250,6 +260,7 @@ fn every_target_draft() -> (ImageDraft, AdmittedRoot, Vec<DeclarationMember>) {
     let root_name = draft.intern_string("r");
     let root = draft
         .add_root_occurrence(
+            &admitted_plan(),
             product(),
             RootOccurrenceDef {
                 name: root_name,
@@ -274,7 +285,9 @@ fn every_target_draft() -> (ImageDraft, AdmittedRoot, Vec<DeclarationMember>) {
             },
         )
         .expect("the Product is declared");
-    let members = draft.product_members(product()).expect("declared");
+    let members = draft
+        .product_members(&admitted_plan(), product())
+        .expect("declared");
     (draft, root, members)
 }
 
@@ -318,8 +331,20 @@ fn one_demand_minted_eagerly_then_lazily_is_one_row_with_one_id() {
         let (mut draft, root, members) = every_target_draft();
         let places = every_place(&root, &members);
         let (path, target) = &places[index];
-        let eager = site(&mut draft, root.occurrence(), path, *target);
-        let lazy = site(&mut draft, root.occurrence(), path, *target);
+        let eager = site(
+            &mut draft,
+            &admitted_plan(),
+            root.occurrence(),
+            path,
+            *target,
+        );
+        let lazy = site(
+            &mut draft,
+            &admitted_plan(),
+            root.occurrence(),
+            path,
+            *target,
+        );
 
         assert_eq!(
             eager, lazy,
@@ -328,7 +353,13 @@ fn one_demand_minted_eagerly_then_lazily_is_one_row_with_one_id() {
 
         let (other_path, other_target) = &places[(index + 1) % PLACE_COUNT];
         assert_ne!(
-            site(&mut draft, root.occurrence(), other_path, *other_target),
+            site(
+                &mut draft,
+                &admitted_plan(),
+                root.occurrence(),
+                other_path,
+                *other_target
+            ),
             eager,
             "the repeated demand appended no second row, so a fresh demand is a fresh row",
         );
@@ -344,7 +375,15 @@ fn each_admitted_target_is_its_own_row() {
 
     let operands: Vec<LegacyDraftSiteOperand> = places
         .iter()
-        .map(|(path, target)| site(&mut draft, root.occurrence(), path, *target))
+        .map(|(path, target)| {
+            site(
+                &mut draft,
+                &admitted_plan(),
+                root.occurrence(),
+                path,
+                *target,
+            )
+        })
         .collect();
 
     for (left, first) in operands.iter().enumerate() {
@@ -371,12 +410,14 @@ fn one_declaration_path_under_two_occurrences_is_two_rows() {
 
     let first = site(
         &mut draft,
+        &admitted_plan(),
         first_root.occurrence(),
         members[0].path(),
         SemanticTarget::FieldLeaf,
     );
     let second = site(
         &mut draft,
+        &admitted_plan(),
         second_root.occurrence(),
         members[0].path(),
         SemanticTarget::FieldLeaf,
@@ -396,12 +437,14 @@ fn a_fitting_operand_renders_its_logical_site_number() {
 
     let zero = site(
         &mut draft,
+        &admitted_plan(),
         root.occurrence(),
         members[0].path(),
         SemanticTarget::FieldLeaf,
     );
     let one = site(
         &mut draft,
+        &admitted_plan(),
         root.occurrence(),
         members[1].path(),
         SemanticTarget::FieldLeaf,
@@ -423,12 +466,14 @@ fn every_over_policy_operand_renders_one_fixed_redacted_marker() {
     let over = admit_root(&mut draft, 0x22);
     let first = site(
         &mut draft,
+        &admitted_plan(),
         over.occurrence(),
         members[0].path(),
         SemanticTarget::FieldLeaf,
     );
     let second = site(
         &mut draft,
+        &admitted_plan(),
         over.occurrence(),
         members[1].path(),
         SemanticTarget::FieldLeaf,
@@ -459,6 +504,7 @@ fn one_ordinal_from_two_independent_drafts_compares_equal() {
     let (mut left, left_root, left_members) = wide_draft(1);
     let left_site = site(
         &mut left,
+        &admitted_plan(),
         left_root.occurrence(),
         left_members[0].path(),
         SemanticTarget::FieldLeaf,
@@ -476,6 +522,7 @@ fn one_ordinal_from_two_independent_drafts_compares_equal() {
     let value = right.value_shapes_mut().scalar(Scalar::Text);
     right
         .declare_product(
+            &admitted_plan(),
             LedgerIdBytes::from_bytes([0x1d; 16]),
             record,
             vec![DeclarationMemberDef {
@@ -491,6 +538,7 @@ fn one_ordinal_from_two_independent_drafts_compares_equal() {
     let root_name = right.intern_string("s");
     let right_root = right
         .add_root_occurrence(
+            &admitted_plan(),
             LedgerIdBytes::from_bytes([0x1d; 16]),
             RootOccurrenceDef {
                 name: root_name,
@@ -501,10 +549,11 @@ fn one_ordinal_from_two_independent_drafts_compares_equal() {
         )
         .expect("the Product is declared");
     let right_members = right
-        .product_members(LedgerIdBytes::from_bytes([0x1d; 16]))
+        .product_members(&admitted_plan(), LedgerIdBytes::from_bytes([0x1d; 16]))
         .expect("declared");
     let right_site = site(
         &mut right,
+        &admitted_plan(),
         right_root.occurrence(),
         right_members[0].path(),
         SemanticTarget::FieldLeaf,
@@ -532,6 +581,7 @@ fn a_crossing_inside_a_discarded_proof_does_not_survive_it() {
         let excess = admit_root(proof, 0x22);
         let over = site(
             proof,
+            &admitted_plan(),
             excess.occurrence(),
             members[0].path(),
             SemanticTarget::FieldLeaf,
@@ -558,6 +608,7 @@ fn a_crossing_before_a_proof_survives_the_proof() {
     let excess = admit_root(&mut draft, 0x22);
     let _ = site(
         &mut draft,
+        &admitted_plan(),
         excess.occurrence(),
         members[0].path(),
         SemanticTarget::FieldLeaf,
@@ -585,6 +636,7 @@ fn redeclare_divergent(draft: &mut ImageDraft) {
     let value = draft.value_shapes_mut().scalar(Scalar::Int);
     draft
         .declare_product(
+            &admitted_plan(),
             product(),
             record,
             vec![DeclarationMemberDef {
@@ -687,7 +739,9 @@ fn one_thousand_roots_touching_sixty_four_fields_saturate_exactly_once() {
 
     let mut draft = ImageDraft::new();
     declare_wide_product(&mut draft, FIELDS);
-    let members = draft.product_members(product()).expect("declared");
+    let members = draft
+        .product_members(&admitted_plan(), product())
+        .expect("declared");
 
     let mut first_root: Option<AdmittedRoot> = None;
     let mut first_operand: Option<LegacyDraftSiteOperand> = None;
@@ -704,6 +758,7 @@ fn one_thousand_roots_touching_sixty_four_fields_saturate_exactly_once() {
         let name = draft.intern_string(&format!("r{n}"));
         let admitted = draft
             .add_root_occurrence(
+                &admitted_plan(),
                 product(),
                 RootOccurrenceDef {
                     name,
@@ -718,6 +773,7 @@ fn one_thousand_roots_touching_sixty_four_fields_saturate_exactly_once() {
             .expect("the Product is declared");
         let root_site = site(
             &mut draft,
+            &admitted_plan(),
             admitted.occurrence(),
             admitted.placement_path(),
             SemanticTarget::WholePayload,
@@ -726,6 +782,7 @@ fn one_thousand_roots_touching_sixty_four_fields_saturate_exactly_once() {
         for member in &members {
             let leaf = site(
                 &mut draft,
+                &admitted_plan(),
                 admitted.occurrence(),
                 member.path(),
                 SemanticTarget::FieldLeaf,
@@ -751,6 +808,7 @@ fn one_thousand_roots_touching_sixty_four_fields_saturate_exactly_once() {
     let first = first_root.expect("root 0");
     let repeat = site(
         &mut draft,
+        &admitted_plan(),
         first.occurrence(),
         first.placement_path(),
         SemanticTarget::WholePayload,
@@ -815,13 +873,14 @@ fn four_thousand_roots_over_a_hundred_unoperated_groups_cost_one_site_each() {
         });
     }
     draft
-        .declare_product(product(), record, commands)
+        .declare_product(&admitted_plan(), product(), record, commands)
         .expect("a well-formed declaration");
 
     for n in 0..ROOTS {
         let name = draft.intern_string(&format!("r{n}"));
         let admitted = draft
             .add_root_occurrence(
+                &admitted_plan(),
                 product(),
                 RootOccurrenceDef {
                     name,
@@ -833,6 +892,7 @@ fn four_thousand_roots_over_a_hundred_unoperated_groups_cost_one_site_each() {
             .expect("the Product is declared");
         site(
             &mut draft,
+            &admitted_plan(),
             admitted.occurrence(),
             admitted.placement_path(),
             SemanticTarget::WholePayload,
@@ -843,4 +903,20 @@ fn four_thousand_roots_over_a_hundred_unoperated_groups_cost_one_site_each() {
         !matches!(draft.encode(), Err(ImageBuildError::TooManySites)),
         "4,000 occurrence sites over a 200-row declaration is inside the site table",
     );
+}
+
+/// The construction budget this file's fixtures are admitted under.
+///
+/// The compiler-free tier states a census the way the compiler's admission owner does: a
+/// plan minted before construction, whose terms `admit` checks against what a ProgramImage
+/// can hold. These fixtures build small graphs, so the census is the image's own ceilings
+/// rather than a second, narrower policy stated here — what the plan closes is unadmitted
+/// intake, not fixture size.
+fn admitted_plan() -> marrow_image::AdmittedGraphInputPlan {
+    marrow_image::AdmittedGraphInputPlan::admit(
+        marrow_image::bounds::MAX_ADMITTED_PRODUCT_DECLARATIONS,
+        marrow_image::bounds::MAX_ADMITTED_ROOT_OCCURRENCES,
+        marrow_image::bounds::MAX_ADMITTED_DECLARATION_COMMANDS,
+    )
+    .expect("the image's own ceilings are admitted counts")
 }

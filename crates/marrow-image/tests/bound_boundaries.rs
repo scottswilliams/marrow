@@ -6,11 +6,14 @@
 //! verifier rechecks), so a future re-coupling to the widened record width is
 //! conspicuous, not silent.
 
-use marrow_image::bounds::{MAX_INDEX_COMPONENTS, MAX_STRUCT_LEAVES};
+use marrow_image::bounds::{
+    MAX_ADMITTED_DECLARATION_COMMANDS, MAX_ADMITTED_PRODUCT_DECLARATIONS,
+    MAX_ADMITTED_ROOT_OCCURRENCES, MAX_INDEX_COMPONENTS, MAX_STRUCT_LEAVES,
+};
 use marrow_image::{
-    DeclarationMemberDef, DeclarationMemberShape, DurableIndexComponent, DurableIndexShape,
-    ExportId, FunctionDef, ImageBuildError, ImageDraft, ImageType, Instr, KeyColumn, LedgerIdBytes,
-    RecordTypeDef, RootOccurrenceDef, Scalar, SpanEntry,
+    AdmittedGraphInputPlan, DeclarationMemberDef, DeclarationMemberShape, DurableIndexComponent,
+    DurableIndexShape, ExportId, FunctionDef, ImageBuildError, ImageDraft, ImageType, Instr,
+    KeyColumn, LedgerIdBytes, RecordTypeDef, RootOccurrenceDef, Scalar, SpanEntry,
 };
 
 const APPLICATION_ID: [u8; 16] = [0x0a; 16];
@@ -53,10 +56,16 @@ fn encode_root(
     draft.set_application_identity(LedgerIdBytes::from_bytes(APPLICATION_ID));
     let root_name = draft.intern_string("r");
     draft
-        .declare_product(LedgerIdBytes::from_bytes(PRODUCT_ID), record, members)
+        .declare_product(
+            &admitted_plan(),
+            LedgerIdBytes::from_bytes(PRODUCT_ID),
+            record,
+            members,
+        )
         .expect("a well-formed declaration");
     draft
         .add_root_occurrence(
+            &admitted_plan(),
             LedgerIdBytes::from_bytes(PRODUCT_ID),
             RootOccurrenceDef {
                 name: root_name,
@@ -194,5 +203,123 @@ fn an_index_one_component_over_the_limit_is_refused() {
         ),
         Err(ImageBuildError::TooManyIndexComponents),
         "one component past the projection limit is refused as TooManyIndexComponents",
+    );
+}
+
+/// The construction budget this file's fixtures are admitted under.
+///
+/// The compiler-free tier states a census the way the compiler's admission owner does: a
+/// plan minted before construction, whose terms `admit` checks against what a ProgramImage
+/// can hold. These fixtures build small graphs, so the census is the image's own ceilings
+/// rather than a second, narrower policy stated here — what the plan closes is unadmitted
+/// intake, not fixture size.
+fn admitted_plan() -> marrow_image::AdmittedGraphInputPlan {
+    marrow_image::AdmittedGraphInputPlan::admit(
+        marrow_image::bounds::MAX_ADMITTED_PRODUCT_DECLARATIONS,
+        marrow_image::bounds::MAX_ADMITTED_ROOT_OCCURRENCES,
+        marrow_image::bounds::MAX_ADMITTED_DECLARATION_COMMANDS,
+    )
+    .expect("the image's own ceilings are admitted counts")
+}
+
+// ---- The admitted graph input plan's own ceilings.
+
+/// The construction budget refuses a term beyond what may be handed to the durable graph,
+/// and admits every term at its ceiling.
+///
+/// This is the plan's teeth: the entry points check a caller's input against the plan's
+/// counts, so a plan carrying unadmitted counts would make every one of those checks
+/// vacuous. Each ceiling sits exactly one past the bound whose refusal owner keeps its
+/// refusal — the encoder's `TooManyRoots` over a complete graph, and its
+/// `TooManyDurableMembers` over an over-wide declaration — so an admitted N+1 still
+/// reaches the owner that reports it, while N+2 is never handed over at all.
+#[test]
+fn a_construction_budget_beyond_the_admitted_intake_is_refused() {
+    assert!(
+        AdmittedGraphInputPlan::admit(
+            MAX_ADMITTED_PRODUCT_DECLARATIONS,
+            MAX_ADMITTED_ROOT_OCCURRENCES,
+            MAX_ADMITTED_DECLARATION_COMMANDS,
+        )
+        .is_some(),
+        "every term at its ceiling is an admitted budget",
+    );
+
+    for (products, roots, commands, term) in [
+        (
+            MAX_ADMITTED_PRODUCT_DECLARATIONS + 1,
+            MAX_ADMITTED_ROOT_OCCURRENCES,
+            MAX_ADMITTED_DECLARATION_COMMANDS,
+            "Product declarations",
+        ),
+        (
+            MAX_ADMITTED_PRODUCT_DECLARATIONS,
+            MAX_ADMITTED_ROOT_OCCURRENCES + 1,
+            MAX_ADMITTED_DECLARATION_COMMANDS,
+            "root occurrences",
+        ),
+        (
+            MAX_ADMITTED_PRODUCT_DECLARATIONS,
+            MAX_ADMITTED_ROOT_OCCURRENCES,
+            MAX_ADMITTED_DECLARATION_COMMANDS + 1,
+            "declaration commands",
+        ),
+    ] {
+        assert!(
+            AdmittedGraphInputPlan::admit(products, roots, commands).is_none(),
+            "one past the admitted {term} ceiling is not a budget any image could carry",
+        );
+    }
+
+    assert!(
+        AdmittedGraphInputPlan::admit(usize::MAX, usize::MAX, usize::MAX).is_none(),
+        "an unbounded wish is refused rather than saturated into a budget",
+    );
+}
+
+/// A budget the plan admits cannot be spent past its own counts: the entry point refuses a
+/// command vector wider than the plan admitted, before any row is appended.
+///
+/// The refusal is the plan's, not the encoder's — a narrower plan binds earlier than the
+/// member bound does — and it leaves the draft holding no declaration at all.
+#[test]
+fn a_command_vector_wider_than_its_budget_appends_no_row() {
+    let plan = AdmittedGraphInputPlan::admit(1, 1, 1).expect("a one-command budget");
+    let mut draft = ImageDraft::new();
+    let name = draft.intern_string("R");
+    let record = draft.add_record_type(RecordTypeDef {
+        name,
+        fields: Vec::new(),
+    });
+    let value = draft.value_shapes_mut().scalar(Scalar::Int);
+    let two = vec![
+        DeclarationMemberDef {
+            parent: None,
+            shape: DeclarationMemberShape::Field {
+                id: LedgerIdBytes::from_bytes(FIELD_ID),
+                required: true,
+                value,
+            },
+        },
+        DeclarationMemberDef {
+            parent: None,
+            shape: DeclarationMemberShape::Field {
+                id: component_id(1),
+                required: false,
+                value,
+            },
+        },
+    ];
+    assert!(
+        draft
+            .declare_product(&plan, LedgerIdBytes::from_bytes(PRODUCT_ID), record, two)
+            .is_err(),
+        "a command vector past the admitted count is refused",
+    );
+    assert!(
+        draft
+            .product_members(&plan, LedgerIdBytes::from_bytes(PRODUCT_ID))
+            .is_none(),
+        "the refused declaration appended no row",
     );
 }

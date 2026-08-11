@@ -95,6 +95,7 @@ fn groups_image() -> VerifiedImage {
     let int_value = draft.value_shapes_mut().scalar(Scalar::Int);
     draft
         .declare_product(
+            &admitted_plan(),
             product,
             book_record,
             vec![
@@ -125,6 +126,7 @@ fn groups_image() -> VerifiedImage {
         .expect("a well-formed declaration");
     let books = draft
         .add_root_occurrence(
+            &admitted_plan(),
             product,
             RootOccurrenceDef {
                 name: root,
@@ -138,15 +140,19 @@ fn groups_image() -> VerifiedImage {
         )
         .expect("the Product is declared");
 
-    let members = draft.product_members(product).expect("declared");
+    let members = draft
+        .product_members(&admitted_plan(), product)
+        .expect("declared");
     let root_entry = site(
         &mut draft,
+        &admitted_plan(),
         books.occurrence(),
         books.placement_path(),
         SemanticTarget::WholePayload,
     );
     let group_entry = site(
         &mut draft,
+        &admitted_plan(),
         books.occurrence(),
         members[1].path(),
         SemanticTarget::GroupEntry,
@@ -421,4 +427,20 @@ fn a_whole_group_erase_clears_the_leaves_and_keeps_the_entry_and_top_level_field
     );
     let book = record_slots(present(run_read(&image, &mut attachment, "readEntry")));
     assert_eq!(text_of(book[0].clone().expect("title present")), "hi");
+}
+
+/// The construction budget this file's fixtures are admitted under.
+///
+/// The compiler-free tier states a census the way the compiler's admission owner does: a
+/// plan minted before construction, whose terms `admit` checks against what a ProgramImage
+/// can hold. These fixtures build small graphs, so the census is the image's own ceilings
+/// rather than a second, narrower policy stated here — what the plan closes is unadmitted
+/// intake, not fixture size.
+fn admitted_plan() -> marrow_image::AdmittedGraphInputPlan {
+    marrow_image::AdmittedGraphInputPlan::admit(
+        marrow_image::bounds::MAX_ADMITTED_PRODUCT_DECLARATIONS,
+        marrow_image::bounds::MAX_ADMITTED_ROOT_OCCURRENCES,
+        marrow_image::bounds::MAX_ADMITTED_DECLARATION_COMMANDS,
+    )
+    .expect("the image's own ceilings are admitted counts")
 }

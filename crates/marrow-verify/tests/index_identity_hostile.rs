@@ -92,6 +92,7 @@ fn build_graph(draft: &mut ImageDraft) -> Graph {
     let text = draft.value_shapes_mut().scalar(Scalar::Text);
     draft
         .declare_product(
+            &admitted_plan(),
             LedgerIdBytes::from_bytes(PRODUCT_ID),
             record,
             vec![
@@ -105,6 +106,7 @@ fn build_graph(draft: &mut ImageDraft) -> Graph {
     // `byShelf` first, then the unique `byIsbn`.
     let r = draft
         .add_root_occurrence(
+            &admitted_plan(),
             LedgerIdBytes::from_bytes(PRODUCT_ID),
             RootOccurrenceDef {
                 name: root,
@@ -138,13 +140,21 @@ fn build_graph(draft: &mut ImageDraft) -> Graph {
     let lookup_path = r.index_paths()[1].clone();
     let entry_site = site(
         draft,
+        &admitted_plan(),
         r.occurrence(),
         r.placement_path(),
         SemanticTarget::WholePayload,
     );
-    let scan_site = site(draft, r.occurrence(), &scan_path, SemanticTarget::IndexScan);
+    let scan_site = site(
+        draft,
+        &admitted_plan(),
+        r.occurrence(),
+        &scan_path,
+        SemanticTarget::IndexScan,
+    );
     let lookup_site = site(
         draft,
+        &admitted_plan(),
         r.occurrence(),
         &lookup_path,
         SemanticTarget::IndexLookup,
@@ -375,4 +385,20 @@ fn a_valid_identity_round_trip_verifies() {
         ]
     };
     assert!(verify_one(code, vec![int()], ImageType::scalar(Scalar::Bool)).is_ok());
+}
+
+/// The construction budget this file's fixtures are admitted under.
+///
+/// The compiler-free tier states a census the way the compiler's admission owner does: a
+/// plan minted before construction, whose terms `admit` checks against what a ProgramImage
+/// can hold. These fixtures build small graphs, so the census is the image's own ceilings
+/// rather than a second, narrower policy stated here — what the plan closes is unadmitted
+/// intake, not fixture size.
+fn admitted_plan() -> marrow_image::AdmittedGraphInputPlan {
+    marrow_image::AdmittedGraphInputPlan::admit(
+        marrow_image::bounds::MAX_ADMITTED_PRODUCT_DECLARATIONS,
+        marrow_image::bounds::MAX_ADMITTED_ROOT_OCCURRENCES,
+        marrow_image::bounds::MAX_ADMITTED_DECLARATION_COMMANDS,
+    )
+    .expect("the image's own ceilings are admitted counts")
 }

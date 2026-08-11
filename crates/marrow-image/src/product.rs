@@ -91,7 +91,6 @@ impl DeclarationSpan {
 /// are rows of their own, reached through [`ProductDeclarationGraph::members_of`] — the
 /// shape carries no owned member vector, so the graph has exactly one nesting owner and
 /// this type cannot express a tree.
-#[doc(hidden)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DeclarationMemberShape {
     Field {
@@ -125,7 +124,6 @@ pub enum DeclarationMemberShape {
 /// strictly less than the row's own index, so a command vector states a forest with every
 /// parent before its children and can never state a cycle. It carries no owned member
 /// vector, so a caller cannot hand the draft a recursive tree.
-#[doc(hidden)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeclarationMemberDef {
     pub parent: Option<u16>,
@@ -632,7 +630,6 @@ impl RootOccurrenceTable {
 /// one implicitly is how a carrier ends up naming an occurrence it was never given.
 ///
 /// A staged row publishes none; only a completed canonical publication does.
-#[doc(hidden)]
 #[derive(Clone)]
 pub struct RootOccurrenceSelector {
     draft: DraftIdentity,
@@ -695,7 +692,6 @@ enum PathPublisher {
 /// rows; the root-whole and root-scoped-index cases live only in their flat occurrence
 /// row. Like [`RootOccurrenceSelector`] it is opaque, `Clone` but not `Copy`, carries the
 /// exact live row it was published by, and exposes no ordinal.
-#[doc(hidden)]
 #[derive(Clone)]
 pub struct CanonicalDeclarationPathSelector {
     draft: DraftIdentity,
@@ -716,7 +712,6 @@ impl std::fmt::Debug for CanonicalDeclarationPathSelector {
 /// The shape carries no members — a member's own members are reached by asking the draft
 /// for them ([`crate::ImageDraft::members_of`]), so reading a declaration back is
 /// navigational and materializes one level at a time.
-#[doc(hidden)]
 #[derive(Debug, Clone)]
 pub struct DeclarationMember {
     path: CanonicalDeclarationPathSelector,

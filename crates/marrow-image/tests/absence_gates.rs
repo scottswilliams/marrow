@@ -462,76 +462,193 @@ fn the_site_plan_retains_no_semantic_path() {
     }
 }
 
-/// The checked flat construction seam has no production caller beyond the compiler's one
-/// durable owner and the verifier's code decoder.
+/// Nothing in production mints an [`marrow_image::AdmittedGraphInputPlan`] outside the one
+/// admission owner.
 ///
-/// The seam exists for a deliberately compiler-free test tier and for the compiler's own
-/// construction. A third production caller would make it a second construction path, and
-/// it is a declared absorb-and-delete target of the admitted graph input plan: every
-/// caller must be migrated in that one transaction, so the caller set is pinned here.
+/// Entering the durable graph now requires a plan, so the question the old caller allowlist
+/// asked — who may construct — is answered by who may *mint*. A second minter would be a
+/// second admission owner, free to state a census no store declaration backs, and every
+/// entry point downstream would accept it. The compiler's store-declaration census is that
+/// one owner; the verifier's structural preflight joins it when its own graph
+/// reconstruction lands.
 #[test]
-fn the_construction_seam_has_no_unlisted_production_caller() {
-    let sources = workspace_sources("src");
-    for needle in SEAM_ENTRY_POINTS {
-        let found: Vec<String> = sources
-            .iter()
-            .filter(|(path, code)| {
-                contains_symbol(code, needle)
-                    && !path.starts_with(Path::new(env!("CARGO_MANIFEST_DIR")).join("src"))
-                    && !PERMITTED_SEAM_CALLERS
-                        .iter()
-                        .any(|permitted| path.to_string_lossy().contains(permitted))
-            })
-            .map(|(path, _)| path.display().to_string())
-            .collect();
-        assert!(
-            found.is_empty(),
-            "`{needle}` gained a production caller outside the pinned seam caller set: \
-             {found:?}",
-        );
-    }
+fn no_production_file_mints_a_graph_input_plan_outside_its_admission_owner() {
+    let found: Vec<String> = plan_minting_sources()
+        .into_iter()
+        .filter(|path| {
+            !PERMITTED_PLAN_MINTERS
+                .iter()
+                .any(|permitted| path.contains(permitted))
+        })
+        .collect();
+    assert!(
+        found.is_empty(),
+        "a production file mints a durable-graph construction budget outside the pinned \
+         admission owner set: {found:?}",
+    );
 }
 
-/// The staleness half of the caller gate: every permitted path must still call the seam.
+/// Every production source that mints a construction budget.
 ///
-/// An allowlist entry that names no caller is a pre-opened door — it permits a future
-/// widening into that file silently, and it is exactly what the gate above cannot see,
-/// because a row that matches nothing never fails. A caller that migrates off the seam
-/// must take its row with it.
-#[test]
-fn every_permitted_seam_caller_still_calls_the_seam() {
-    let sources = workspace_sources("src");
-    for permitted in PERMITTED_SEAM_CALLERS {
-        let calls = sources.iter().any(|(path, code)| {
-            path.to_string_lossy().contains(permitted)
-                && SEAM_ENTRY_POINTS
+/// A minter is a file that both names the plan type and states one of its minting entry
+/// points. Requiring both is what makes the scan precise without being alias-blind: `admit`
+/// alone is a common verb across the workspace's admission owners, while a file that mints
+/// a plan — under any local alias — must name the type to import it.
+fn plan_minting_sources() -> Vec<String> {
+    let owner = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    workspace_sources("src")
+        .into_iter()
+        .filter(|(path, code)| {
+            !path.starts_with(&owner)
+                && contains_symbol(code, "AdmittedGraphInputPlan")
+                && PLAN_MINTING_ENTRY_POINTS
                     .iter()
                     .any(|needle| contains_symbol(code, needle))
-        });
+        })
+        .map(|(path, _)| path.display().to_string())
+        .collect()
+}
+
+/// The staleness half of the minter gate: every permitted path must still mint a plan.
+///
+/// An allowlist entry that names no minter is a pre-opened door — it permits a future
+/// widening into that file silently, and it is exactly what the gate above cannot see,
+/// because a row that matches nothing never fails. An owner that stops minting must take
+/// its row with it.
+#[test]
+fn every_permitted_plan_minter_still_mints_one() {
+    let minters = plan_minting_sources();
+    for permitted in PERMITTED_PLAN_MINTERS {
         assert!(
-            calls,
-            "`{permitted}` is a permitted seam caller that calls nothing in the seam: \
-             a dead allowlist row pre-permits a widening the caller gate cannot see",
+            minters.iter().any(|path| path.contains(permitted)),
+            "`{permitted}` is a permitted plan minter that mints nothing: a dead allowlist \
+             row pre-permits a widening the minter gate cannot see",
         );
     }
 }
 
-/// The construction seam's published entry points, as the caller gates scan for them.
-const SEAM_ENTRY_POINTS: [&str; 5] = [
-    "declare_product",
-    "add_root_occurrence",
-    "bind_occurrence_site",
-    "request_site",
-    "product_members",
-];
+/// A construction budget is minted, never spelled: no source anywhere states an
+/// [`marrow_image::AdmittedGraphInputPlan`] by struct literal or reaches its count fields.
+///
+/// The counts are private, so this cannot compile outside the owning module today. The gate
+/// is here because the *reason* is not local: if the fields were ever loosened for a
+/// convenience constructor, every checked ceiling in `admit` would become optional, and the
+/// loosening would read as a small visibility edit rather than as the removal of the teeth.
+#[test]
+fn no_source_spells_a_graph_input_plan_by_literal() {
+    let sources = [workspace_sources("src"), workspace_sources("tests")].concat();
+    let owner = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let found: Vec<String> = sources
+        .iter()
+        .filter(|(path, code)| !path.starts_with(&owner) && spells_a_plan_literal(code))
+        .map(|(path, _)| path.display().to_string())
+        .collect();
+    assert!(
+        found.is_empty(),
+        "an admitted graph input plan is spelled by literal rather than minted: {found:?}",
+    );
+}
 
-/// The production callers of the construction seam: the compiler's one durable owner —
-/// the store builder and the lowering boundary that first demands a field-leaf site — and
-/// the verifier's code decoder. Widening this set is the thing the caller gate exists to
-/// notice; a row that no longer calls anything is what the staleness gate exists to notice.
-const PERMITTED_SEAM_CALLERS: [&str; 3] = [
+/// The planted-probe half of the two minter gates: the discriminators must see a real mint
+/// and a real literal, and must not see the same words in prose or in ordinary type
+/// mentions. A gate whose discriminator answers "no" to everything passes for the wrong
+/// reason.
+#[test]
+fn the_plan_scan_separates_a_mint_and_a_literal_from_a_mention() {
+    let mint = without_literals(
+        "use marrow_image::AdmittedGraphInputPlan;\nlet p = AdmittedGraphInputPlan::admit(1, 1, 1);",
+    );
+    assert!(
+        contains_symbol(&mint, "AdmittedGraphInputPlan") && contains_symbol(&mint, "admit"),
+        "the minter gate's discriminator must see a real mint",
+    );
+
+    let mention = without_literals("fn f(plan: &AdmittedGraphInputPlan) -> usize { 0 }");
+    assert!(
+        contains_symbol(&mention, "AdmittedGraphInputPlan") && !contains_symbol(&mention, "admit"),
+        "naming the plan as a parameter type is not minting one",
+    );
+
+    let prose = without_literals("// an AdmittedGraphInputPlan is what admit() answers with\n");
+    assert!(
+        !contains_symbol(&prose, "AdmittedGraphInputPlan") && !contains_symbol(&prose, "admit"),
+        "prose about minting is not minting",
+    );
+
+    assert!(
+        spells_a_plan_literal(&without_literals(
+            "let p = AdmittedGraphInputPlan { products: 1, roots: 1, commands: 1 };",
+        )),
+        "the literal gate's discriminator must see a real struct literal",
+    );
+    assert!(
+        !spells_a_plan_literal(&mention),
+        "a parameter type is not a struct literal",
+    );
+    assert!(
+        !spells_a_plan_literal(&mint),
+        "a mint is not a struct literal",
+    );
+    for opener in [
+        "fn f() -> AdmittedGraphInputPlan { unimplemented!() }",
+        "impl AdmittedGraphInputPlan { fn g() {} }",
+    ] {
+        assert!(
+            !spells_a_plan_literal(&without_literals(opener)),
+            "a brace that opens a body or an impl block is not a struct literal: {opener}",
+        );
+    }
+    for spelling in [
+        "let p = AdmittedGraphInputPlan {};",
+        "let p = AdmittedGraphInputPlan { ..q };",
+    ] {
+        assert!(
+            spells_a_plan_literal(&without_literals(spelling)),
+            "a countless literal is still a literal: {spelling}",
+        );
+    }
+}
+
+/// Whether `code` states the plan by struct literal: the type name, a brace, and then the
+/// counts themselves.
+///
+/// The brace alone is not the discriminator — `-> AdmittedGraphInputPlan {` opens a
+/// function body and `impl AdmittedGraphInputPlan {` opens an impl block, and a gate that
+/// read either as a literal would fire on every honest mint. What only a literal has is a
+/// count named where a field goes: an empty or functional-update literal states the type
+/// without a count, so those spellings are named here too rather than left as the way past.
+fn spells_a_plan_literal(code: &str) -> bool {
+    const NAME: &str = "AdmittedGraphInputPlan";
+    const COUNTS: [&str; 3] = ["products", "roots", "commands"];
+    symbol_positions(code, NAME).any(|at| {
+        let Some(body) = code[at + NAME.len()..].trim_start().strip_prefix('{') else {
+            return false;
+        };
+        let body = body.trim_start();
+        body.starts_with('}')
+            || body.starts_with("..")
+            || COUNTS.iter().any(|count| {
+                body.strip_prefix(count)
+                    .is_some_and(|rest| rest.trim_start().starts_with(':'))
+            })
+    })
+}
+
+/// The plan's minting entry points, as the minter gates scan for them. A file is a minter
+/// only if it names the plan type as well, so this needle is read in that company rather
+/// than alone.
+const PLAN_MINTING_ENTRY_POINTS: [&str; 1] = ["admit"];
+
+/// The production files that mint a durable-graph construction budget.
+///
+/// `marrow-compile/src/durable.rs` is the compiler's admission owner: the store-declaration
+/// census, taken over the whole declaration set before the first store is built.
+/// `marrow-verify/src/verify/decode_code.rs` mints only in its own decode fixtures today;
+/// its production minter is the allocation-free structural preflight, which lands with the
+/// verifier's graph reconstruction. Widening this set is the thing the minter gate exists to
+/// notice; a row that no longer mints is what the staleness gate exists to notice.
+const PERMITTED_PLAN_MINTERS: [&str; 2] = [
     "marrow-compile/src/durable.rs",
-    "marrow-compile/src/lower/mod.rs",
     "marrow-verify/src/verify/decode_code.rs",
 ];
 
@@ -568,7 +685,8 @@ fn the_seam_scan_sees_code_and_not_prose() {
         "add_root",
         "SitePathTooShort",
         "SemanticPath",
-        "bind_occurrence_site",
+        "AdmittedGraphInputPlan",
+        "admit",
     ] {
         let planted = without_literals(&format!(
             "

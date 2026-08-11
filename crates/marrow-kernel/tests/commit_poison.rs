@@ -75,6 +75,7 @@ fn vm_commit_image(write: VmWrite) -> VerifiedImage {
     let value = draft.value_shapes_mut().scalar(Scalar::Int);
     draft
         .declare_product(
+            &admitted_plan(),
             product,
             record,
             vec![DeclarationMemberDef {
@@ -89,6 +90,7 @@ fn vm_commit_image(write: VmWrite) -> VerifiedImage {
         .expect("a well-formed declaration");
     let counters = draft
         .add_root_occurrence(
+            &admitted_plan(),
             product,
             RootOccurrenceDef {
                 name: root_name,
@@ -101,26 +103,30 @@ fn vm_commit_image(write: VmWrite) -> VerifiedImage {
             },
         )
         .expect("the Product is declared");
-    let members = draft.product_members(product).expect("declared");
+    let members = draft
+        .product_members(&admitted_plan(), product)
+        .expect("declared");
     let entry_handle = draft
         .bind_occurrence_site(
+            &admitted_plan(),
             counters.occurrence(),
             counters.placement_path(),
             SemanticTarget::WholePayload,
         )
         .expect("the root placement is a canonical path of this occurrence");
     let entry_site = draft
-        .request_site(&entry_handle)
+        .request_site(&admitted_plan(), &entry_handle)
         .expect("the binding is live");
     let field_handle = draft
         .bind_occurrence_site(
+            &admitted_plan(),
             counters.occurrence(),
             members[0].path(),
             SemanticTarget::FieldLeaf,
         )
         .expect("the value field is a canonical path of this occurrence");
     let field_site = draft
-        .request_site(&field_handle)
+        .request_site(&admitted_plan(), &field_handle)
         .expect("the binding is live");
     let key = draft.intern_text("vm");
     let value = draft.intern_int(7);
@@ -939,4 +945,20 @@ fn an_apply_write_fault_faults_and_the_store_stays_abortable() {
             "the aborted erase left the prior entry intact"
         );
     }
+}
+
+/// The construction budget this file's fixtures are admitted under.
+///
+/// The compiler-free tier states a census the way the compiler's admission owner does: a
+/// plan minted before construction, whose terms `admit` checks against what a ProgramImage
+/// can hold. These fixtures build small graphs, so the census is the image's own ceilings
+/// rather than a second, narrower policy stated here — what the plan closes is unadmitted
+/// intake, not fixture size.
+fn admitted_plan() -> marrow_image::AdmittedGraphInputPlan {
+    marrow_image::AdmittedGraphInputPlan::admit(
+        marrow_image::bounds::MAX_ADMITTED_PRODUCT_DECLARATIONS,
+        marrow_image::bounds::MAX_ADMITTED_ROOT_OCCURRENCES,
+        marrow_image::bounds::MAX_ADMITTED_DECLARATION_COMMANDS,
+    )
+    .expect("the image's own ceilings are admitted counts")
 }

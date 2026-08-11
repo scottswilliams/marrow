@@ -29,10 +29,11 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use marrow_codes::Code;
 use marrow_image::{
-    CanonicalDeclarationPathSelector, CanonicalValueShapeDag, DeclarationMember,
-    DeclarationMemberDef, DeclarationMemberShape, DurableIndexComponent, DurableIndexShape,
-    FieldDef, ImageDraft, ImageType, KeyColumn, LedgerIdBytes, RecordTypeDef, RootOccurrenceDef,
-    RootOccurrenceSelector, Scalar, SemanticTarget, ValueShapeNodeId, ValueShapeView, bounds,
+    AdmittedGraphInputPlan, CanonicalDeclarationPathSelector, CanonicalValueShapeDag,
+    DeclarationMember, DeclarationMemberDef, DeclarationMemberShape, DurableIndexComponent,
+    DurableIndexShape, FieldDef, ImageDraft, ImageType, KeyColumn, LedgerIdBytes, RecordTypeDef,
+    RootOccurrenceDef, RootOccurrenceSelector, Scalar, SemanticTarget, ValueShapeNodeId,
+    ValueShapeView, bounds,
 };
 use marrow_project::{FileIdentity, IdentityAnchor, IdentityKind, IdentityLedger};
 use marrow_syntax::{
@@ -445,6 +446,14 @@ pub(crate) struct DurableRegistry {
     /// simple name)`, accumulated across the project's admitted stores. The
     /// [`DurableNaming`] the demand sentence spells paths through is built from this.
     naming: Vec<(LedgerIdBytes, PathSigil, String)>,
+    /// The construction budget this compile's durable graph was admitted for, minted from
+    /// the store-declaration census before the first store is built.
+    ///
+    /// It is retained because lowering enters the same graph later — a field leaf is
+    /// demanded on its first reference, long after the census — and the plan is the entry
+    /// capability for every one of those crossings. A storeless compile carries
+    /// [`AdmittedGraphInputPlan::EMPTY`].
+    plan: AdmittedGraphInputPlan,
 }
 
 impl DurableRegistry {
@@ -460,7 +469,13 @@ impl DurableRegistry {
             branch_paths: BTreeMap::new(),
             declared_branch_paths: BTreeSet::new(),
             naming: Vec::new(),
+            plan: AdmittedGraphInputPlan::EMPTY,
         }
+    }
+
+    /// The construction budget this compile's durable graph was admitted for.
+    pub(crate) fn plan(&self) -> &AdmittedGraphInputPlan {
+        &self.plan
     }
 }
 
@@ -703,8 +718,13 @@ impl DurableRegistry {
         // multiplicity is a property of the whole declaration set, not of the store being
         // built, and a per-store decision would give the roots of one Product two policies.
         let census = ProductOccurrenceCensus::take(stores);
+        // The census is the admission owner for durable graph input: it is the one place
+        // that knows the whole declaration set before any of it reaches the draft, so it
+        // is where the construction budget is frozen.
+        let plan = census.plan();
         records.with_metadata_session(|metadata| {
             let mut registry = Self::empty(budget.clone());
+            registry.plan = plan;
             let mut type_metadata = DurableTypeMetadata { records, metadata };
             let mut reported_identity_gaps = BTreeSet::new();
             let mut identity_build = IdentityBuildState {
@@ -736,7 +756,7 @@ impl DurableRegistry {
                     continue;
                 }
                 let occurrence = match build_one(
-                    draft,
+                    AdmittedDraft { draft, plan: &plan },
                     &mut type_metadata,
                     resources,
                     declared,
@@ -933,6 +953,16 @@ struct IdentityBuildState<'ledger, 'gaps> {
     reported_gaps: &'gaps mut BTreeSet<IdentityAnchor>,
 }
 
+/// The draft under construction and the budget its construction is admitted under.
+///
+/// They travel as one because neither is usable alone: no durable-graph entry point takes
+/// the draft without the plan, so a signature that could carry one and not the other would
+/// state a shape the API does not have.
+struct AdmittedDraft<'draft, 'plan> {
+    draft: &'draft mut ImageDraft,
+    plan: &'plan AdmittedGraphInputPlan,
+}
+
 /// Where this occurrence's Product declaration comes from: the rows the draft already
 /// holds, or the command vector this root is the first to state.
 ///
@@ -996,6 +1026,11 @@ enum ProductOccurrenceMultiplicity {
 struct ProductOccurrenceCensus<'stores> {
     /// The resources named by more than one admissible store declaration.
     repeated: BTreeSet<&'stores str>,
+    /// Distinct resources named by an admissible store declaration: the Product
+    /// declarations this compile can admit.
+    products: usize,
+    /// Admissible store declarations: the root occurrences this compile can append.
+    roots: usize,
 }
 
 impl<'stores> ProductOccurrenceCensus<'stores> {
@@ -1021,7 +1056,31 @@ impl<'stores> ProductOccurrenceCensus<'stores> {
                 repeated.insert(store.resource.as_str());
             }
         }
-        Self { repeated }
+        Self {
+            products: seen_once.len(),
+            roots: declared.len(),
+            repeated,
+        }
+    }
+
+    /// The construction budget this compile's durable graph is admitted for.
+    ///
+    /// The census over-approximates the accepted set by exactly the stores that fail
+    /// admission, so the budget never binds a compile that produces an image; it bounds
+    /// what the draft can be handed.
+    ///
+    /// A census larger than any image could carry takes the maximum intake rather than a
+    /// refusal: this pass reports source problems as typed diagnostics and never aborts,
+    /// and the overrun already has an owner — the encoder's
+    /// [`marrow_image::ImageBuildError::TooManyRoots`], reported over a complete graph.
+    /// Minting the ceiling is what leaves that graph complete.
+    fn plan(&self) -> AdmittedGraphInputPlan {
+        AdmittedGraphInputPlan::admit(
+            self.products,
+            self.roots,
+            bounds::MAX_ADMITTED_DECLARATION_COMMANDS,
+        )
+        .unwrap_or(AdmittedGraphInputPlan::MAXIMUM)
     }
 
     fn multiplicity(&self, resource: &str) -> ProductOccurrenceMultiplicity {
@@ -1051,7 +1110,7 @@ struct StoreOccurrence<'store> {
 /// gate below precedes every root/site/identity commit, so the draft is touched only once
 /// the store is known admissible.
 fn build_one(
-    draft: &mut ImageDraft,
+    admitted: AdmittedDraft<'_, '_>,
     type_metadata: &mut DurableTypeMetadata<'_, '_>,
     resources: &[(FileRef, FileIdentity, &ResourceDecl)],
     declared: DeclarationSite<'_>,
@@ -1059,6 +1118,7 @@ fn build_one(
     identity_build: &mut IdentityBuildState<'_, '_>,
     diagnostics: &mut DiagnosticCollector,
 ) -> Result<StoreBuild, GenericInvariant> {
+    let AdmittedDraft { draft, plan } = admitted;
     let StoreOccurrence {
         decl: store,
         multiplicity,
@@ -1176,7 +1236,7 @@ fn build_one(
     // known complete (below). A graph with an unresolved anchor carries placeholder ids,
     // including a placeholder Product identity, so admitting it would let one refused
     // store's declaration answer for every other refused store's resource.
-    let source = match draft.product_members(product) {
+    let source = match draft.product_members(plan, product) {
         Some(members) => ProductDeclarationSource::Held(members),
         None => ProductDeclarationSource::Built(
             resolver.build_product_graph(draft, records, metadata, store, resource, record),
@@ -1256,7 +1316,7 @@ fn build_one(
     let members = match source {
         ProductDeclarationSource::Held(members) => members,
         ProductDeclarationSource::Built(commands) => {
-            draft.declare_product(product, record.type_id, commands)?
+            draft.declare_product(plan, product, record.type_id, commands)?
         }
     };
     draft.set_application_identity(application);
@@ -1279,6 +1339,7 @@ fn build_one(
         .collect();
     let root_name = draft.intern_string(&store.root.root);
     let admitted = draft.add_root_occurrence(
+        plan,
         product,
         RootOccurrenceDef {
             name: root_name,
@@ -1307,11 +1368,13 @@ fn build_one(
     // graph rather than its declared graph multiplied by the roots over it.
     request_eager_site(
         draft,
+        plan,
         admitted.occurrence(),
         admitted.placement_path(),
         SemanticTarget::WholePayload,
     )?;
-    let captured = emit_root_member_sites(draft, admitted.occurrence(), &members, multiplicity)?;
+    let captured =
+        emit_root_member_sites(draft, plan, admitted.occurrence(), &members, multiplicity)?;
     // One read site per managed index: a nonunique index is a progressive-prefix
     // scan, a unique index a complete-key exact lookup. There is deliberately no
     // index-write site — maintenance is compiler-owned. Every index site seals as
@@ -1324,7 +1387,7 @@ fn build_one(
         } else {
             SemanticTarget::IndexScan
         };
-        request_eager_site(draft, admitted.occurrence(), path, target)?;
+        request_eager_site(draft, plan, admitted.occurrence(), path, target)?;
         lowered_indexes.push(DurableIndex {
             name: built.name.clone(),
             unique: built.shape.unique,
@@ -1362,7 +1425,7 @@ fn build_one(
     let keyed = !key_scalars.is_empty();
     let mut members_flat = true;
     for member in &members {
-        members_flat &= member_flat_at_root(draft, member)?;
+        members_flat &= member_flat_at_root(draft, plan, member)?;
     }
     let executable = keyed && all_fields_executable && members_flat;
     let (branches, groups) = if executable {
@@ -2370,11 +2433,13 @@ fn declaration_commands(mut nodes: Vec<DeclarationDraftNode>) -> Vec<Declaration
     commands
 }
 
-/// The most commands [`declaration_commands`] emits: one past the member bound, which is
-/// exactly what the draft needs to record the overflow and the encoder needs to refuse the
-/// declaration. Emitting the whole of an over-wide declaration would let a parent index
-/// pass `u16`, which the command form cannot spell.
-const MAX_DECLARATION_COMMANDS: usize = bounds::MAX_DURABLE_MEMBERS + 1;
+/// The most commands [`declaration_commands`] emits: exactly what an
+/// [`AdmittedGraphInputPlan`] can admit for one declaration, which is one past the member
+/// bound — what the draft needs to record the overflow and the encoder needs to refuse the
+/// declaration. The image owner states that derivation; this emitter reads it rather than
+/// restating it, so the two cannot drift. Emitting the whole of an over-wide declaration
+/// would let a parent index pass `u16`, which the command form cannot spell.
+const MAX_DECLARATION_COMMANDS: usize = bounds::MAX_ADMITTED_DECLARATION_COMMANDS;
 
 /// Emit the already-ordered children in `bucket` and, immediately after each, that node's
 /// own children — so a parent's command index is always strictly less than its children's,
@@ -2433,12 +2498,13 @@ struct RootMemberSites {
 /// minted here.
 fn request_eager_site(
     draft: &mut ImageDraft,
+    plan: &AdmittedGraphInputPlan,
     occurrence: &RootOccurrenceSelector,
     path: &CanonicalDeclarationPathSelector,
     target: SemanticTarget,
 ) -> Result<(), GenericInvariant> {
-    let handle = draft.bind_occurrence_site(occurrence, path, target)?;
-    draft.request_site(&handle)?;
+    let handle = draft.bind_occurrence_site(plan, occurrence, path, target)?;
+    draft.request_site(plan, &handle)?;
     Ok(())
 }
 
@@ -2459,6 +2525,7 @@ fn request_eager_site(
 /// either way and the only difference is when its site is minted.
 fn emit_root_member_sites(
     draft: &mut ImageDraft,
+    plan: &AdmittedGraphInputPlan,
     occurrence: &RootOccurrenceSelector,
     members: &[DeclarationMember],
     multiplicity: ProductOccurrenceMultiplicity,
@@ -2476,6 +2543,7 @@ fn emit_root_member_sites(
                 if eager {
                     request_eager_site(
                         draft,
+                        plan,
                         occurrence,
                         member.path(),
                         SemanticTarget::GroupEntry,
@@ -2487,6 +2555,7 @@ fn emit_root_member_sites(
                 let record = *record;
                 captured.branches.push(emit_branch_sites(
                     draft,
+                    plan,
                     occurrence,
                     member.path(),
                     record,
@@ -2507,15 +2576,16 @@ fn emit_root_member_sites(
 /// the sealed branch tree, so the compiler's and verifier's independent resolutions agree.
 fn emit_branch_sites(
     draft: &mut ImageDraft,
+    plan: &AdmittedGraphInputPlan,
     occurrence: &RootOccurrenceSelector,
     path: &CanonicalDeclarationPathSelector,
     record: marrow_image::TypeId,
     multiplicity: ProductOccurrenceMultiplicity,
 ) -> Result<BranchSites, GenericInvariant> {
     if multiplicity == ProductOccurrenceMultiplicity::Unique {
-        request_eager_site(draft, occurrence, path, SemanticTarget::WholePayload)?;
+        request_eager_site(draft, plan, occurrence, path, SemanticTarget::WholePayload)?;
     }
-    let members = draft.members_of(path)?;
+    let members = draft.members_of(plan, path)?;
     let mut fields = Vec::new();
     let mut branches = Vec::new();
     for inner in &members {
@@ -2526,6 +2596,7 @@ fn emit_branch_sites(
                 let record = *record;
                 branches.push(emit_branch_sites(
                     draft,
+                    plan,
                     occurrence,
                     inner.path(),
                     record,
@@ -2550,6 +2621,7 @@ fn emit_branch_sites(
 /// collection field is rejected upstream — so any field keeps the root flat here.)
 fn member_keeps_root_flat(
     draft: &ImageDraft,
+    plan: &AdmittedGraphInputPlan,
     member: &DeclarationMember,
 ) -> Result<bool, GenericInvariant> {
     match member.shape() {
@@ -2559,8 +2631,8 @@ fn member_keeps_root_flat(
             if keys.is_empty() {
                 return Ok(false);
             }
-            for inner in &draft.members_of(member.path())? {
-                if !member_keeps_root_flat(draft, inner)? {
+            for inner in &draft.members_of(plan, member.path())? {
+                if !member_keeps_root_flat(draft, plan, inner)? {
                     return Ok(false);
                 }
             }
@@ -2579,14 +2651,15 @@ fn member_keeps_root_flat(
 /// its enclosing branch flat.
 fn member_flat_at_root(
     draft: &ImageDraft,
+    plan: &AdmittedGraphInputPlan,
     member: &DeclarationMember,
 ) -> Result<bool, GenericInvariant> {
     match member.shape() {
         DeclarationMemberShape::Field { .. } | DeclarationMemberShape::Branch { .. } => {
-            member_keeps_root_flat(draft, member)
+            member_keeps_root_flat(draft, plan, member)
         }
         DeclarationMemberShape::Group { .. } => Ok(draft
-            .members_of(member.path())?
+            .members_of(plan, member.path())?
             .iter()
             .all(|inner| matches!(inner.shape(), DeclarationMemberShape::Field { .. }))),
     }
@@ -3162,6 +3235,16 @@ mod declaration_command_bound_tests {
     fn encode_product(
         commands: impl FnOnce(&mut ImageDraft) -> Vec<DeclarationMemberDef>,
     ) -> Result<(), ImageBuildError> {
+        /// The construction budget these producer-seam fixtures are admitted under.
+        ///
+        /// The command term is the image's own [`bounds::MAX_ADMITTED_DECLARATION_COMMANDS`],
+        /// which sits exactly one past the member bound, so the over-wide declaration below
+        /// is admitted into the draft and refused where that refusal lives — at the encoder.
+        fn admitted_plan() -> AdmittedGraphInputPlan {
+            AdmittedGraphInputPlan::admit(1, 1, bounds::MAX_ADMITTED_DECLARATION_COMMANDS)
+                .expect("one Product, one root, and the image's own command ceiling")
+        }
+
         let mut draft = ImageDraft::new();
         let commands = commands(&mut draft);
         let type_name = draft.intern_string("R");
@@ -3172,10 +3255,16 @@ mod declaration_command_bound_tests {
         draft.set_application_identity(LedgerIdBytes::from_bytes(APPLICATION_ID));
         let root_name = draft.intern_string("r");
         draft
-            .declare_product(LedgerIdBytes::from_bytes(PRODUCT_ID), record, commands)
+            .declare_product(
+                &admitted_plan(),
+                LedgerIdBytes::from_bytes(PRODUCT_ID),
+                record,
+                commands,
+            )
             .expect("a well-formed flat declaration");
         draft
             .add_root_occurrence(
+                &admitted_plan(),
                 LedgerIdBytes::from_bytes(PRODUCT_ID),
                 RootOccurrenceDef {
                     name: root_name,
@@ -3214,8 +3303,10 @@ mod declaration_command_bound_tests {
         draft.encode().map(|_| ())
     }
 
-    /// The declaration member bound has two owners and they agree by exactly one command.
-    /// This module stops emitting at [`MAX_DECLARATION_COMMANDS`]; `marrow-image` records
+    /// The declaration member bound is admitted, emitted, and refused by three owners that
+    /// agree by exactly one command.
+    /// This module stops emitting at [`MAX_DECLARATION_COMMANDS`] — the same count an
+    /// [`AdmittedGraphInputPlan`] admits for one declaration; `marrow-image` records
     /// a declaration as over-bound only at *more* than `MAX_DURABLE_MEMBERS` rows and the
     /// encoder then refuses the image with
     /// [`ImageBuildError::TooManyDurableMembers`] — which the compiler classifies as a
@@ -3232,9 +3323,9 @@ mod declaration_command_bound_tests {
     #[test]
     fn one_member_past_the_member_bound_encodes_as_too_many_durable_members() {
         assert_eq!(
-            MAX_DECLARATION_COMMANDS,
+            bounds::MAX_ADMITTED_DECLARATION_COMMANDS,
             bounds::MAX_DURABLE_MEMBERS + 1,
-            "the emission cap must sit exactly one command past the image owner's bound"
+            "the admitted command count must sit exactly one past the image owner's bound"
         );
 
         let flat_fields = |draft: &mut ImageDraft, count: usize| {

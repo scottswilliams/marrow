@@ -889,6 +889,20 @@ mod index_site_partition {
 
     /// Bind one occurrence, one canonical declaration path, and one target, then request
     /// the site the binding names.
+    /// The construction budget this module's fixtures are admitted under.
+    ///
+    /// The verifier's own decode fixtures state a census the way an admission owner does:
+    /// a plan minted before construction, whose terms `admit` checks against what a
+    /// ProgramImage can hold.
+    fn admitted_plan() -> marrow_image::AdmittedGraphInputPlan {
+        marrow_image::AdmittedGraphInputPlan::admit(
+            marrow_image::bounds::MAX_ADMITTED_PRODUCT_DECLARATIONS,
+            marrow_image::bounds::MAX_ADMITTED_ROOT_OCCURRENCES,
+            marrow_image::bounds::MAX_ADMITTED_DECLARATION_COMMANDS,
+        )
+        .expect("the image's own ceilings are admitted counts")
+    }
+
     fn site(
         draft: &mut ImageDraft,
         root: &RootOccurrenceSelector,
@@ -896,9 +910,11 @@ mod index_site_partition {
         target: SemanticTarget,
     ) -> LegacyDraftSiteOperand {
         let handle = draft
-            .bind_occurrence_site(root, path, target)
+            .bind_occurrence_site(&admitted_plan(), root, path, target)
             .expect("the path is a canonical path of this occurrence");
-        draft.request_site(&handle).expect("the binding is live")
+        draft
+            .request_site(&admitted_plan(), &handle)
+            .expect("the binding is live")
     }
 
     /// A minimal single-root durable schema with a whole-entry site and a field-leaf
@@ -932,6 +948,7 @@ mod index_site_partition {
         let text_value = draft.value_shapes_mut().scalar(Scalar::Text);
         draft
             .declare_product(
+                &admitted_plan(),
                 LedgerIdBytes::from_bytes(PRODUCT_ID),
                 record,
                 vec![
@@ -956,6 +973,7 @@ mod index_site_partition {
             .expect("a well-formed declaration");
         let root = draft
             .add_root_occurrence(
+                &admitted_plan(),
                 LedgerIdBytes::from_bytes(PRODUCT_ID),
                 RootOccurrenceDef {
                     name: root_name,
@@ -969,7 +987,7 @@ mod index_site_partition {
             )
             .expect("the Product is declared");
         let members = draft
-            .product_members(LedgerIdBytes::from_bytes(PRODUCT_ID))
+            .product_members(&admitted_plan(), LedgerIdBytes::from_bytes(PRODUCT_ID))
             .expect("declared");
         site(
             &mut draft,

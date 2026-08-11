@@ -38,7 +38,6 @@ use crate::product::{BindRefusal, BoundDemand, OccurrenceSiteDemandKey};
 /// answered for this place, not a value a caller can assert.
 ///
 /// It is `Clone` but not `Copy`, for the same reason a selector is not.
-#[doc(hidden)]
 #[derive(Clone)]
 pub struct OccurrenceSiteHandle {
     draft: DraftIdentity,
@@ -77,7 +76,6 @@ impl std::fmt::Debug for OccurrenceSiteHandle {
 /// Crossing the site cap is **not** this error: an over-policy operand is a successful
 /// opaque state of the operand, and the encoder refuses that image through the Sites
 /// bound.
-#[doc(hidden)]
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct SitePlanStateError(SitePlanState);
 

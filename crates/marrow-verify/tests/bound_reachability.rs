@@ -66,6 +66,7 @@ fn roots_corpus(roots: usize) -> ImageDraft {
     let value = draft.value_shapes_mut().scalar(Scalar::Int);
     draft
         .declare_product(
+            &admitted_plan(),
             LedgerIdBytes::from_bytes(PRODUCT_ID),
             record,
             vec![DeclarationMemberDef {
@@ -82,6 +83,7 @@ fn roots_corpus(roots: usize) -> ImageDraft {
         let name = draft.intern_string(&format!("r{n}"));
         let admitted = draft
             .add_root_occurrence(
+                &admitted_plan(),
                 LedgerIdBytes::from_bytes(PRODUCT_ID),
                 RootOccurrenceDef {
                     name,
@@ -93,6 +95,7 @@ fn roots_corpus(roots: usize) -> ImageDraft {
             .expect("the Product is declared");
         site(
             &mut draft,
+            &admitted_plan(),
             admitted.occurrence(),
             admitted.placement_path(),
             SemanticTarget::WholePayload,
@@ -234,6 +237,7 @@ fn wide_corpus(roots: usize) -> Result<Vec<u8>, ImageBuildError> {
     let value = draft.value_shapes_mut().scalar(Scalar::Int);
     draft
         .declare_product(
+            &admitted_plan(),
             LedgerIdBytes::from_bytes(PRODUCT_ID),
             record,
             (0..WIDE_FIELDS)
@@ -249,12 +253,13 @@ fn wide_corpus(roots: usize) -> Result<Vec<u8>, ImageBuildError> {
         )
         .expect("a well-formed declaration");
     let members = draft
-        .product_members(LedgerIdBytes::from_bytes(PRODUCT_ID))
+        .product_members(&admitted_plan(), LedgerIdBytes::from_bytes(PRODUCT_ID))
         .expect("declared");
     for n in 0..roots {
         let name = draft.intern_string(&format!("r{n}"));
         let admitted = draft
             .add_root_occurrence(
+                &admitted_plan(),
                 LedgerIdBytes::from_bytes(PRODUCT_ID),
                 RootOccurrenceDef {
                     name,
@@ -266,6 +271,7 @@ fn wide_corpus(roots: usize) -> Result<Vec<u8>, ImageBuildError> {
             .expect("the Product is declared");
         site(
             &mut draft,
+            &admitted_plan(),
             admitted.occurrence(),
             admitted.placement_path(),
             SemanticTarget::WholePayload,
@@ -273,6 +279,7 @@ fn wide_corpus(roots: usize) -> Result<Vec<u8>, ImageBuildError> {
         for member in &members {
             site(
                 &mut draft,
+                &admitted_plan(),
                 admitted.occurrence(),
                 member.path(),
                 SemanticTarget::FieldLeaf,
@@ -336,3 +343,19 @@ fn the_highest_fitting_site_count_is_bounded_by_image_bytes_not_by_the_table() {
 /// pair reaches from the other side, measured here rather than argued.
 const H_SITES: usize = 7_150;
 const H_BYTES: usize = 523_779;
+
+/// The construction budget this file's fixtures are admitted under.
+///
+/// The compiler-free tier states a census the way the compiler's admission owner does: a
+/// plan minted before construction, whose terms `admit` checks against what a ProgramImage
+/// can hold. These fixtures build small graphs, so the census is the image's own ceilings
+/// rather than a second, narrower policy stated here — what the plan closes is unadmitted
+/// intake, not fixture size.
+fn admitted_plan() -> marrow_image::AdmittedGraphInputPlan {
+    marrow_image::AdmittedGraphInputPlan::admit(
+        marrow_image::bounds::MAX_ADMITTED_PRODUCT_DECLARATIONS,
+        marrow_image::bounds::MAX_ADMITTED_ROOT_OCCURRENCES,
+        marrow_image::bounds::MAX_ADMITTED_DECLARATION_COMMANDS,
+    )
+    .expect("the image's own ceilings are admitted counts")
+}

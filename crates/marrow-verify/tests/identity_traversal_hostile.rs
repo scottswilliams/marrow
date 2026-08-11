@@ -92,6 +92,7 @@ fn two_root_branch_draft(
     // Commands 0/1/2 are the Product's direct members; command 3 nests under the branch.
     draft
         .declare_product(
+            &admitted_plan(),
             LedgerIdBytes::from_bytes(A_PRODUCT),
             a_record,
             vec![
@@ -136,6 +137,7 @@ fn two_root_branch_draft(
         .expect("a well-formed declaration");
     let a = draft
         .add_root_occurrence(
+            &admitted_plan(),
             LedgerIdBytes::from_bytes(A_PRODUCT),
             RootOccurrenceDef {
                 name: a_root,
@@ -163,6 +165,7 @@ fn two_root_branch_draft(
     let int_value = draft.value_shapes_mut().scalar(Scalar::Int);
     draft
         .declare_product(
+            &admitted_plan(),
             LedgerIdBytes::from_bytes(B_PRODUCT),
             b_record,
             vec![DeclarationMemberDef {
@@ -177,6 +180,7 @@ fn two_root_branch_draft(
         .expect("a well-formed declaration");
     draft
         .add_root_occurrence(
+            &admitted_plan(),
             LedgerIdBytes::from_bytes(B_PRODUCT),
             RootOccurrenceDef {
                 name: b_root,
@@ -193,10 +197,11 @@ fn two_root_branch_draft(
     // Root A's direct members in declaration order: the title field, the sparse subtitle
     // field, then the `notes` branch.
     let members = draft
-        .product_members(LedgerIdBytes::from_bytes(A_PRODUCT))
+        .product_members(&admitted_plan(), LedgerIdBytes::from_bytes(A_PRODUCT))
         .expect("root A's Product is declared");
     let branch_site = site(
         draft,
+        &admitted_plan(),
         a.occurrence(),
         members[2].path(),
         SemanticTarget::WholePayload,
@@ -208,6 +213,7 @@ fn two_root_branch_draft(
         .index();
     let subtitle_site = site(
         draft,
+        &admitted_plan(),
         a.occurrence(),
         members[1].path(),
         SemanticTarget::FieldLeaf,
@@ -385,4 +391,20 @@ fn a_cross_root_identity_key_slot_in_a_strict_set_is_rejected() {
         rejection.detail(),
         "set-sparse-present key slot has the wrong type",
     );
+}
+
+/// The construction budget this file's fixtures are admitted under.
+///
+/// The compiler-free tier states a census the way the compiler's admission owner does: a
+/// plan minted before construction, whose terms `admit` checks against what a ProgramImage
+/// can hold. These fixtures build small graphs, so the census is the image's own ceilings
+/// rather than a second, narrower policy stated here — what the plan closes is unadmitted
+/// intake, not fixture size.
+fn admitted_plan() -> marrow_image::AdmittedGraphInputPlan {
+    marrow_image::AdmittedGraphInputPlan::admit(
+        marrow_image::bounds::MAX_ADMITTED_PRODUCT_DECLARATIONS,
+        marrow_image::bounds::MAX_ADMITTED_ROOT_OCCURRENCES,
+        marrow_image::bounds::MAX_ADMITTED_DECLARATION_COMMANDS,
+    )
+    .expect("the image's own ceilings are admitted counts")
 }
