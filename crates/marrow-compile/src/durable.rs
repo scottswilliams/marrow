@@ -2415,14 +2415,6 @@ fn declaration_commands(mut nodes: Vec<DeclarationDraftNode>) -> Vec<Declaration
     commands
 }
 
-/// The most commands [`declaration_commands`] emits: exactly what an
-/// [`AdmittedGraphInputPlan`] can admit for one declaration, which is one past the member
-/// bound — what the draft needs to record the overflow and the encoder needs to refuse the
-/// declaration. The image owner states that derivation; this emitter reads it rather than
-/// restating it, so the two cannot drift. Emitting the whole of an over-wide declaration
-/// would let a parent index pass `u16`, which the command form cannot spell.
-const MAX_DECLARATION_COMMANDS: usize = bounds::MAX_ADMITTED_DECLARATION_COMMANDS;
-
 /// Emit the already-ordered children in `bucket` and, immediately after each, that node's
 /// own children — so a parent's command index is always strictly less than its children's,
 /// which is the one shape the command form admits.
@@ -2434,7 +2426,12 @@ fn emit_declaration_commands(
     parent: Option<u16>,
 ) {
     for at in &children[bucket] {
-        if commands.len() >= MAX_DECLARATION_COMMANDS {
+        // The emission stops at exactly what a plan can admit for one declaration, which
+        // is one past the member bound — what the draft needs to record the overflow and
+        // the encoder needs to refuse the declaration. Emitting the whole of an over-wide
+        // declaration would let a parent index pass `u16`, which the command form cannot
+        // spell.
+        if commands.len() >= bounds::MAX_ADMITTED_DECLARATION_COMMANDS {
             return;
         }
         let Some(shape) = nodes[*at].shape.take() else {
@@ -2442,7 +2439,7 @@ fn emit_declaration_commands(
         };
         #[expect(
             clippy::expect_used,
-            reason = "bounded projection: the emission stops at MAX_DECLARATION_COMMANDS, which is far below u16::MAX"
+            reason = "bounded projection: the emission stops at MAX_ADMITTED_DECLARATION_COMMANDS, which is far below u16::MAX"
         )]
         let command = u16::try_from(commands.len()).expect("the command count is bounded");
         commands.push(DeclarationMemberDef { parent, shape });
@@ -3279,7 +3276,7 @@ mod declaration_command_bound_tests {
 
     /// The declaration member bound is admitted, emitted, and refused by three owners that
     /// agree by exactly one command.
-    /// This module stops emitting at [`MAX_DECLARATION_COMMANDS`] — the same count an
+    /// This module stops emitting at [`bounds::MAX_ADMITTED_DECLARATION_COMMANDS`] — the same count an
     /// [`AdmittedGraphInputPlan`] admits for one declaration; `marrow-image` records
     /// a declaration as over-bound only at *more* than `MAX_DURABLE_MEMBERS` rows and the
     /// encoder then refuses the image with

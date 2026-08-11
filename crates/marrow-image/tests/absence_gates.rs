@@ -1211,6 +1211,47 @@ fn no_recursive_durable_contract_shape_survives() {
     }
 }
 
+/// A deleted symbol does not survive in prose either.
+///
+/// The scan above reads the code projection, so a deleted name left in a doc comment, a
+/// rationale, or a diagnostic message is invisible to it — and prose is where a deleted
+/// symbol actually survives, because nothing stops compiling when it does. A reader then
+/// meets a type the tree has not had for rows, and reasons about the deletion from the
+/// thing it replaced. So the same needles are run over the unblanked sources.
+///
+/// This file is the one exemption, by necessity rather than by convenience: it is where the
+/// needle table itself is written, so it names every deleted symbol in order to forbid it.
+#[test]
+fn no_deleted_contract_shape_survives_in_prose() {
+    let mut found = Vec::new();
+    for tier in ["src", "tests"] {
+        for path in raw_workspace_sources(tier) {
+            if path.ends_with("tests/absence_gates.rs") {
+                continue;
+            }
+            let text = fs::read_to_string(&path).expect("read source file");
+            for needle in DELETED_CONTRACT_SHAPE_FAMILY {
+                if text.contains(needle) {
+                    found.push(format!("{}: {needle}", path.display()));
+                }
+            }
+        }
+    }
+    assert!(
+        found.is_empty(),
+        "a deleted contract-shape symbol survives in prose: {found:#?}",
+    );
+}
+
+/// Every workspace source path in `tier`, unprojected — for the one scan whose subject is
+/// the text a reader sees rather than the code the compiler sees.
+fn raw_workspace_sources(tier: &str) -> Vec<PathBuf> {
+    workspace_sources(tier)
+        .into_iter()
+        .map(|(path, _)| path)
+        .collect()
+}
+
 /// The plant probe for the gate above: a source stating any of the deleted names is seen.
 #[test]
 fn the_recursive_contract_shape_gate_sees_a_planted_name() {

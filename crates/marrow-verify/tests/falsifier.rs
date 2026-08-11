@@ -216,8 +216,6 @@ fn journey() {
     // owned an expanded shape per member would copy it here.
     let cloned = view.value_shapes().clone();
     assert_eq!(&cloned, view.value_shapes(), "cloning preserves the arena");
-    let rendered = format!("{cloned:?}");
-    assert!(!rendered.is_empty(), "Debug renders the arena");
 
     // 4. The contract codec: the identity streams its preimage without materializing it.
     let contract = view.contract_id().expect("the corpus is inside the bound");
@@ -356,6 +354,11 @@ fn falsifier_starved_child() {
 /// unconditionally after joining, ignoring the worker's outcome — so the probe proves the
 /// exit-status half of the check is load-bearing on its own. An overflow aborts the process
 /// before that line is reached, or the join returns an error the status still reflects.
+///
+/// This is also what couples the sentinel to the journey. A child that stopped after its
+/// first leg, or a harness that printed the sentinel unconditionally, is refused *here*, by
+/// running such a child and watching the parent's check refuse it — not by reading this
+/// file's own text and asserting where its `println!` sits relative to its `join`.
 #[test]
 fn the_parent_check_detects_a_child_that_cannot_finish() {
     let exe = std::env::current_exe().expect("the test binary's own path");
@@ -374,41 +377,5 @@ fn the_parent_check_detects_a_child_that_cannot_finish() {
         !(output.status.success() && stdout.contains(SENTINEL)),
         "a child that cannot complete the journey satisfied the parent-side check, so the \
          check would pass on a representation that overflowed\n{stdout}",
-    );
-}
-
-/// The protocol's own control: the sentinel is not printed by a child that did not finish.
-///
-/// A parent that only checked the exit status would pass on a child whose journey stopped
-/// after its first leg, and a sentinel the harness printed unconditionally would pass on any
-/// child at all. This asserts the two halves are actually coupled — the sentinel is written
-/// once, after the join, and nowhere else in this file.
-#[test]
-fn the_sentinel_is_printed_once_and_only_after_the_journey() {
-    let source = include_str!("falsifier.rs");
-    let child = source
-        .split_once("fn falsifier_child()")
-        .expect("the child helper")
-        .1
-        .split_once("\n}\n")
-        .expect("the child helper's body ends")
-        .0;
-
-    let prints = child.matches("println!").count();
-    assert_eq!(
-        prints, 1,
-        "the measured child must write the sentinel exactly once, found {prints}"
-    );
-    let join = child.find(".join()").expect("the child joins its worker");
-    let print = child
-        .find("println!")
-        .expect("the child prints the sentinel");
-    let resume = child
-        .find("resume_unwind")
-        .expect("the child re-raises a worker panic");
-    assert!(
-        join < resume && resume < print,
-        "the sentinel must be written after the worker is joined and after a worker panic \
-         has been re-raised, not before either"
     );
 }

@@ -18,8 +18,8 @@
 //! The ledger ids themselves are the separate entropy-minted identity family;
 //! this id is a deterministic hash *over* them. The compiler mints it and
 //! carries it in the image; the verifier never trusts the carried bytes as
-//! authoritative — it independently rebuilds the descriptor from the decoded
-//! tables, recomputes the id, and rejects a mismatch. Anyone can mint a valid
+//! authoritative — it independently rebuilds the graph from the decoded tables,
+//! recomputes the id over its own view of it, and rejects a mismatch. Anyone can mint a valid
 //! id, so trust comes only from that recomputation.
 //!
 //! ```text
@@ -155,7 +155,7 @@ const PREIMAGE_IDREF_BYTES: usize = 1 + LP_HEADER_BYTES + LEDGER_ID_BYTES;
 const MAX_FITTING_DURABLE_BODY_BYTES: usize = bounds::MAX_IMAGE_BYTES - DurableContractId::BYTES;
 
 /// The longest canonical graph payload a DURABLE body an image can carry can produce, and
-/// so the length past which [`DurableContractDescriptor::contract_id`] refuses.
+/// so the length past which [`DurableContractView::contract_id`] refuses.
 ///
 /// # The implication, term by term
 ///
@@ -823,7 +823,7 @@ impl<'a> DurableContractView<'a> {
 ///
 /// Every count the payload spells — roots, key columns, members, index components — is
 /// bounded far below `u16::MAX` in [`crate::bounds`], and the encoder rechecks each of
-/// them before a descriptor is built. A descriptor's public constructor takes the graph
+/// them before a view is taken. A view's public constructor takes the graph
 /// a caller states, though, so a wider one can reach here directly. A wrapping cast would
 /// let it present a narrower graph's count and so share its identity; refusing instead
 /// keeps that answer typed and keeps it this owner's.

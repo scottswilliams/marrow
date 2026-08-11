@@ -1214,7 +1214,8 @@ const MAX_LIVE_DURABLE_GRAPH_BYTES: u64 =
 /// representation costs proves nothing, because every widening would raise both sides
 /// equally. 64 MiB is a generous fraction of the compiler's owned heap for one of its
 /// several live structures, and it still fails a representation that charged per
-/// (root x member) — the shape this row deleted — as the negative control below shows.
+/// (root x member) — a member tree per occurrence rather than one shared declaration — as
+/// the negative control below shows.
 const H_DURABLE_GRAPH_BYTES: u64 = 64 * 1024 * 1024;
 
 /// Prove the compiler-side equation closes at compile time. A representation change that
@@ -1233,14 +1234,13 @@ const _: () = {
 };
 
 /// The maximum-live value arena the same drive holds, in bytes — **an exported term, not a
-/// bound this row asserts.**
+/// bound this suite asserts.**
 ///
 /// The arena's populations are bounded by the type population (`MAX_TYPES` distinct
 /// composite shapes, `MAX_ENUMS` distinct enum shapes, each at its own admitted width), not
 /// by the identity ledger, so this figure is dominated by enum payload leaves and is far
 /// looser than anything the durable graph contributes. Tightening it is the durable-value
-/// owner's work (the stored-value admission row), which this row's stop conditions place
-/// out of scope; it is derived and published here so that owner and the capacity join
+/// owner's work; it is derived and published here so that owner and the capacity join
 /// consume a stated number rather than rediscovering it.
 const MAX_LIVE_DURABLE_VALUE_ARENA_BYTES: u64 =
     marrow_image::bounds::max_live_durable_graph_bytes(marrow_image::bounds::DurableGraphCounts {
@@ -1275,9 +1275,9 @@ fn the_compiler_side_maximum_live_graph_holds_its_accounted_figures() {
     );
 }
 
-/// **The negative control.** The superseded representation — one fully expanded member tree
-/// per root occurrence, which is what `member_shapes` allocated inside the per-occurrence
-/// map — does not close under the same ceiling.
+/// **The negative control.** The superseded representation — one fully expanded member
+/// tree materialized per root occurrence, rather than one declaration shared by every
+/// occurrence over it — does not close under the same ceiling.
 ///
 /// Without this, the equation above would be satisfied by any representation at all,
 /// including the one this row deleted, and closing it would not be evidence that the

@@ -424,10 +424,13 @@ const _: () = {
 // *costs* the owner that builds it. They are published because the two admission owners —
 // the compiler, bounded by its identity-ledger census, and the independent verifier,
 // bounded by the received bytes — each derive their own maximum-live equation from this
-// one representation instead of sampling a fixture. Three earlier campaign attempts to
-// publish a measured term were each beaten by a denser admissible input; an equation over
-// the representation cannot be, and widening a row moves every equation that consumes it
-// at the place the equation is asserted.
+// one representation instead of sampling a fixture.
+//
+// The invariant is that no admissible input can exceed a figure derived this way. A measured
+// term states what one input cost, and a denser admissible input then exceeds it — so it was
+// never a bound. An equation over the representation charges every element the representation
+// has, and widening a row moves every equation that consumes it, at the place that equation
+// is asserted.
 //
 // No ceiling is asserted here. This crate takes intake from whoever holds a plan, so the
 // admitted-intake ceilings above are what an arbitrary caller may hand over, not a peak any
