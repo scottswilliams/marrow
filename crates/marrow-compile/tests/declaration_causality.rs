@@ -2077,8 +2077,8 @@ fn a_struct_field_naming_a_refused_sibling_steers_to_its_cause() {
 }
 
 /// the collection-element shape of the same position. The element type is
-/// resolved inside a generic application, so it reaches the member row by a second
-/// route and must arrive at the same steer.
+/// resolved one level inside a generic application, so it reaches the member row by
+/// a second route and must arrive at the same steer.
 #[test]
 fn a_collection_element_naming_a_refused_sibling_steers_to_its_cause() {
     let diagnostics = diagnostics(
@@ -2086,30 +2086,60 @@ fn a_collection_element_naming_a_refused_sibling_steers_to_its_cause() {
          struct Bad {\n\
          \x20   p: int?\n\
          }\n\n\
-         resource R {\n\
-         \x20   required xs: List<Bad>\n\
+         struct Holder {\n\
+         \x20   xs: List<Bad>\n\
          }\n\n\
          pub fn make(): int {\n\
          \x20   return 1\n\
          }\n",
     );
 
-    for row in &diagnostics {
-        assert!(
-            !row.message().contains("is not yet supported")
-                || row.message().contains("optional struct field"),
-            "the element type names a declared, refused struct; the member position \
-             must name that cause: {:#?}",
-            messages(&diagnostics),
-        );
-    }
+    assert_steers_to(
+        &diagnostics,
+        DeclarationNamespace::NamedType,
+        "check.unsupported",
+        RefusalReport::AtDeclaration,
+    );
     assert_eq!(
-        rows(&diagnostics)
-            .iter()
-            .filter(|(_, _, line, _)| *line == 4)
-            .count(),
-        1,
-        "the refused struct still reports its own cause exactly once: {:#?}",
+        rows(&diagnostics),
+        vec![
+            ("src/main.mw", "check.unsupported", 4, 8),
+            ("src/main.mw", "check.unsupported", 8, 9),
+        ],
+        "the element position is steered to the refused struct's cause: {:#?}",
+        messages(&diagnostics),
+    );
+}
+
+/// The over-suppression partner for both shapes: a member type that is genuinely
+/// outside the admitted set keeps the subset-gap phrase. The causal arm must not
+/// swallow a real language gap — `List` of a struct is not a durable member type,
+/// and that is a true statement about the beta line rather than about any
+/// declaration.
+#[test]
+fn a_genuinely_unadmitted_member_type_keeps_the_subset_gap_phrase() {
+    let diagnostics = diagnostics(
+        "module main\n\n\
+         struct Good {\n\
+         \x20   p: int\n\
+         }\n\n\
+         resource R {\n\
+         \x20   required xs: List<Good>\n\
+         }\n\n\
+         pub fn make(): int {\n\
+         \x20   return 1\n\
+         }\n",
+    );
+
+    assert_eq!(
+        rows(&diagnostics),
+        vec![("src/main.mw", "check.unsupported", 8, 18)],
+        "nothing here was refused; the report is about the admitted subset: {:#?}",
+        messages(&diagnostics),
+    );
+    assert!(
+        diagnostics[0].refused_declaration().is_none(),
+        "a subset gap names no declaration: {:#?}",
         messages(&diagnostics),
     );
 }

@@ -3699,10 +3699,15 @@ impl TypeRegistry {
             Ok(GArg::Nominal(id))
         } else if let Some(info) = self.struct_by_name(text) {
             Ok(GArg::Struct(info.type_id))
+        } else if let Some(info) = self.enum_by_name(text) {
+            Ok(GArg::Enum(info.enum_id))
         } else {
-            self.enum_by_name(text)
-                .map(|info| GArg::Enum(info.enum_id))
-                .ok_or(ResolveError::Refusal(ResolveRefusal::Unsupported))
+            // A name no table answers is either genuinely undeclared or a declaration
+            // this project refused; the ledger tells them apart. Answering
+            // `Unsupported` for both is what let a member position describe a refused
+            // sibling as a language form the beta line does not admit — the one
+            // statement the subset-gap phrase must never make.
+            Err(ResolveError::Refusal(self.unresolved_named_type(text)?))
         }
     }
 

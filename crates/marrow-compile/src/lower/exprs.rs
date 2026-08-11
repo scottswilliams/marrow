@@ -1228,6 +1228,11 @@ impl<'a> FnLowerer<'a> {
             ([_, item], Some(template)) => self
                 .lower_generic_enum_construct(template, item.text(), args, span)
                 .map(CallResult::Value),
+            // The enum table above answers no refused name, so a payload construction
+            // on a refused enum would fall through to the qualified-call report and
+            // call the member out of scope. Its bare `Enum::member` sibling steers;
+            // both spellings are one use of one refused declaration.
+            ([head, _], _) if self.steer_refused_type(head.text(), span) => None,
             ([prefix @ .., item], _) => {
                 self.lower_qualified_call(prefix, item.text(), args, span, callee_span)
             }
