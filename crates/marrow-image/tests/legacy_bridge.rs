@@ -45,9 +45,9 @@ use marrow_image::bounds::{
 };
 use marrow_image::{
     CollectionTypeDef, DeclarationMemberDef, DeclarationMemberShape, EnumTypeDef, ExportId,
-    FieldDef, FunctionDef, ImageBuildError, ImageDraft, ImageType, Instr, KeyColumn, LedgerIdBytes,
-    RecordTypeDef, RootOccurrenceDef, Scalar, SemanticTarget, SpanEntry, StrId, ValueShapeNodeId,
-    VariantDef,
+    FieldDef, FuncId, FunctionDef, ImageBuildError, ImageDraft, ImageType, Instr, KeyColumn,
+    LedgerIdBytes, RecordTypeDef, RootOccurrenceDef, Scalar, SemanticTarget, SpanEntry, StrId,
+    ValueShapeNodeId, VariantDef,
 };
 
 #[path = "common/admitted_plan.rs"]
@@ -124,6 +124,13 @@ const FORGED_RECORD_NAME: u16 = 60000;
 const FORGED_TEST_ENTRY_NAME: u16 = 60002;
 const FORGED_ENUM_NAME: u16 = 60003;
 const FORGED_BRANCH_NAME: u16 = 61000;
+
+/// A type reference naming a TYPES row no fixture declares: the raw table ordinal is
+/// written to the wire unchecked today.
+const FORGED_TYPE: ImageType = ImageType::Record {
+    idx: u16::MAX,
+    optional: false,
+};
 
 /// How a fixture's `main` is shaped.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -206,6 +213,13 @@ struct Fixture {
     forged_enum_name: bool,
     forged_branch_name: bool,
     forged_test_entry_name: bool,
+    forged_export_target: bool,
+    forged_test_entry_target: bool,
+    forged_field_type: bool,
+    forged_enum_payload_type: bool,
+    forged_collection_elem: bool,
+    extra_instrs: Vec<Instr>,
+    extra_function: Option<Code>,
 }
 
 impl Fixture {
@@ -228,6 +242,13 @@ impl Fixture {
             forged_enum_name: false,
             forged_branch_name: false,
             forged_test_entry_name: false,
+            forged_export_target: false,
+            forged_test_entry_target: false,
+            forged_field_type: false,
+            forged_enum_payload_type: false,
+            forged_collection_elem: false,
+            extra_instrs: Vec::new(),
+            extra_function: None,
         }
     }
 
@@ -339,6 +360,48 @@ impl Fixture {
         self
     }
 
+    /// An EXPORTS row whose function index no row answers.
+    fn with_forged_export_target(mut self) -> Self {
+        self.forged_export_target = true;
+        self
+    }
+
+    /// A TEST-ENTRY row (valid name) whose function index no row answers.
+    fn with_forged_test_entry_target(mut self) -> Self {
+        self.forged_test_entry_target = true;
+        self
+    }
+
+    /// The base record carries one field whose `ImageType` names no TYPES row.
+    fn with_forged_field_type(mut self) -> Self {
+        self.forged_field_type = true;
+        self
+    }
+
+    /// An ENUMS definition whose variant payload leaf names no TYPES row.
+    fn with_forged_enum_payload_type(mut self) -> Self {
+        self.forged_enum_payload_type = true;
+        self
+    }
+
+    /// A COLLTYPES row whose element `ImageType` names no TYPES row.
+    fn with_forged_collection_elem(mut self) -> Self {
+        self.forged_collection_elem = true;
+        self
+    }
+
+    /// Instructions appended to `main`'s body after its [`Code`] shape.
+    fn with_extra_instrs(mut self, instrs: Vec<Instr>) -> Self {
+        self.extra_instrs = instrs;
+        self
+    }
+
+    /// A second function added after `main`, shaped by its own [`Code`].
+    fn with_extra_function(mut self, code: Code) -> Self {
+        self.extra_function = Some(code);
+        self
+    }
+
     fn encode(self) -> Result<(), ImageBuildError> {
         let mut draft = ImageDraft::new();
         let value = self.value.shape(&mut draft);
@@ -357,6 +420,13 @@ impl Fixture {
                 };
                 MAX_RECORD_FIELDS + 1
             ]
+        } else if self.forged_field_type {
+            let field_name = draft.intern_string("f");
+            vec![FieldDef {
+                name: field_name,
+                ty: FORGED_TYPE,
+                required: true,
+            }]
         } else {
             Vec::new()
         };
@@ -488,33 +558,8 @@ impl Fixture {
             draft.intern_string("main")
         };
         let zero = draft.intern_int(0);
-        let code = match self.code {
-            Code::Short => vec![Instr::ConstLoad(zero.index()), Instr::Return],
-            // `ConstLoad` is three bytes, so this is comfortably past the limit while
-            // staying well inside the instruction count the draft admits.
-            Code::OverCodeBytes => {
-                let mut code = vec![Instr::ConstLoad(zero.index()); MAX_CODE_BYTES / 2];
-                code.push(Instr::Return);
-                code
-            }
-            Code::BadConst => vec![Instr::ConstLoad(OUT_OF_RANGE), Instr::Return],
-            Code::BadJump => vec![
-                Instr::ConstLoad(zero.index()),
-                Instr::Jump(u32::from(OUT_OF_RANGE)),
-                Instr::Return,
-            ],
-            Code::OverCodeBytesBadConst => {
-                let mut code = vec![Instr::ConstLoad(OUT_OF_RANGE); MAX_CODE_BYTES / 2];
-                code.push(Instr::Return);
-                code
-            }
-            Code::OverCodeBytesBadJump => {
-                let mut code = vec![Instr::ConstLoad(zero.index()); MAX_CODE_BYTES / 2];
-                code.push(Instr::Jump(u32::from(OUT_OF_RANGE)));
-                code.push(Instr::Return);
-                code
-            }
-        };
+        let mut code = body(self.code, zero.index());
+        code.extend(self.extra_instrs.iter().cloned());
         let params = match self.frame {
             Frame::LocalsBelowParams => vec![ImageType::scalar(Scalar::Int)],
             Frame::Fits | Frame::OverLocals => Vec::new(),
@@ -540,14 +585,102 @@ impl Fixture {
             })
             .expect("every site operand is live");
         draft.add_export(ExportId::of_local("", "main"), main);
+        if let Some(extra) = self.extra_function {
+            let aux_name = draft.intern_string("aux");
+            draft
+                .add_function(FunctionDef {
+                    name: aux_name,
+                    source: src,
+                    params: Vec::new(),
+                    ret: ImageType::scalar(Scalar::Int),
+                    local_count: 0,
+                    spans: Vec::new(),
+                    code: body(extra, zero.index()),
+                })
+                .expect("every site operand is live");
+        }
         if self.forged_test_entry_name {
             draft.add_test_entry(StrId::from_index(FORGED_TEST_ENTRY_NAME), main);
+        }
+        if self.forged_test_entry_target {
+            let entry_name = draft.intern_string("tt");
+            draft.add_test_entry(entry_name, forged_func_id());
+        }
+        if self.forged_export_target {
+            draft.add_export(ExportId::of_local("", "ghost"), forged_func_id());
+        }
+        if self.forged_enum_payload_type {
+            let name = draft.intern_string("P");
+            let variant_name = draft.intern_string("pv");
+            draft.add_enum_type(EnumTypeDef {
+                name,
+                variants: vec![VariantDef {
+                    name: variant_name,
+                    category: false,
+                    payload: vec![FORGED_TYPE],
+                }],
+            });
+        }
+        if self.forged_collection_elem {
+            draft.add_collection_type(CollectionTypeDef::List { elem: FORGED_TYPE });
         }
         if let Some(policy) = self.policy {
             apply_policy(policy, &mut draft);
         }
         draft.encode().map(|_| ())
     }
+}
+
+/// One function body per [`Code`] shape, over the fixture's zero constant.
+fn body(code: Code, zero: u16) -> Vec<Instr> {
+    match code {
+        Code::Short => vec![Instr::ConstLoad(zero), Instr::Return],
+        // `ConstLoad` is three bytes, so this is comfortably past the limit while
+        // staying well inside the instruction count the draft admits.
+        Code::OverCodeBytes => {
+            let mut code = vec![Instr::ConstLoad(zero); MAX_CODE_BYTES / 2];
+            code.push(Instr::Return);
+            code
+        }
+        Code::BadConst => vec![Instr::ConstLoad(OUT_OF_RANGE), Instr::Return],
+        Code::BadJump => vec![
+            Instr::ConstLoad(zero),
+            Instr::Jump(u32::from(OUT_OF_RANGE)),
+            Instr::Return,
+        ],
+        Code::OverCodeBytesBadConst => {
+            let mut code = vec![Instr::ConstLoad(OUT_OF_RANGE); MAX_CODE_BYTES / 2];
+            code.push(Instr::Return);
+            code
+        }
+        Code::OverCodeBytesBadJump => {
+            let mut code = vec![Instr::ConstLoad(zero); MAX_CODE_BYTES / 2];
+            code.push(Instr::Jump(u32::from(OUT_OF_RANGE)));
+            code.push(Instr::Return);
+            code
+        }
+    }
+}
+
+/// A function index no row of this fixture answers, minted by a draft that holds two:
+/// a `FuncId` is a table position, not a capability bound to its draft.
+fn forged_func_id() -> FuncId {
+    let mut other = ImageDraft::new();
+    let src = other.intern_string("s");
+    let name = other.intern_string("f");
+    let def = FunctionDef {
+        name,
+        source: src,
+        params: Vec::new(),
+        ret: ImageType::scalar(Scalar::Int),
+        local_count: 0,
+        spans: Vec::new(),
+        code: vec![Instr::Return],
+    };
+    other
+        .add_function(def.clone())
+        .expect("every site operand is live");
+    other.add_function(def).expect("every site operand is live")
 }
 
 /// Drive exactly one resource-policy aggregate over its cap on an otherwise complete
@@ -1538,4 +1671,228 @@ fn a_forged_branch_name_currently_panics_before_a_forged_record_name() {
         .with_forged_branch_name()
         .with_forged_record_name()
         .encode();
+}
+
+// ---- The named missing byte-fence cells (§A): CodeBytes and the whole-image ceiling
+// crossed with never-validated table ordinals. Each ordinal is written to the wire
+// unchecked today, so the policy verdict decides.
+
+/// This pin may flip under the sanctioned checked-conversion class ("call target"); the
+/// flip must cite this pin: today the CodeBytes length check decides, and the call
+/// ordinal would have been written unchecked.
+#[test]
+fn a_bad_call_target_with_over_code_bytes_currently_draws_code_too_long() {
+    assert_eq!(
+        Fixture::clean()
+            .code(Code::OverCodeBytes)
+            .with_extra_instrs(vec![Instr::Call(u16::MAX)])
+            .encode(),
+        Err(ImageBuildError::CodeTooLong),
+    );
+}
+
+/// This pin may flip under the sanctioned checked-conversion class ("test target"); the
+/// flip must cite this pin: today the CodeBytes length check decides, and the
+/// test-entry function index would have been written unchecked.
+#[test]
+fn a_bad_test_entry_target_with_over_code_bytes_currently_draws_code_too_long() {
+    assert_eq!(
+        Fixture::clean()
+            .code(Code::OverCodeBytes)
+            .with_forged_test_entry_target()
+            .encode(),
+        Err(ImageBuildError::CodeTooLong),
+    );
+}
+
+/// This pin may flip under the sanctioned checked-conversion class ("call target"); the
+/// flip must cite this pin: today the durable-body fence decides, and the call ordinal
+/// would have been written unchecked.
+#[test]
+fn a_bad_call_target_with_a_body_past_the_ceiling_currently_draws_the_image_ceiling() {
+    assert_eq!(
+        Fixture::clean()
+            .value(Value::OverCeiling)
+            .with_extra_instrs(vec![Instr::Call(u16::MAX)])
+            .encode(),
+        Err(ImageBuildError::ImageTooLarge),
+    );
+}
+
+/// This pin may flip under the sanctioned checked-conversion class ("export target");
+/// the flip must cite this pin: today the durable-body fence decides, and the export's
+/// function index would have been written unchecked.
+#[test]
+fn a_bad_export_target_with_a_body_past_the_ceiling_currently_draws_the_image_ceiling() {
+    assert_eq!(
+        Fixture::clean()
+            .value(Value::OverCeiling)
+            .with_forged_export_target()
+            .encode(),
+        Err(ImageBuildError::ImageTooLarge),
+    );
+}
+
+/// This pin may flip under the sanctioned checked-conversion class ("type table"); the
+/// flip must cite this pin: today the durable-body fence decides, and the `RecordNew`
+/// type ordinal would have been written unchecked.
+#[test]
+fn a_bad_type_ordinal_with_a_body_past_the_ceiling_currently_draws_the_image_ceiling() {
+    assert_eq!(
+        Fixture::clean()
+            .value(Value::OverCeiling)
+            .with_extra_instrs(vec![Instr::RecordNew(u16::MAX)])
+            .encode(),
+        Err(ImageBuildError::ImageTooLarge),
+    );
+}
+
+// ---- First-cap boundary cells for the remaining §B.3 reference families. Every
+// ordinal here is written unchecked today, so the first policy cap decides trivially;
+// each cell is the boundary the coherence hoist will move. Standalone baselines for the
+// same families live in `marrow-verify/tests/legacy_ok_pins.rs` (they encode Ok today
+// and only the verifier rejects). One §B.3 family is not separately constructible as a
+// *defect* here: `DurIterateBounded`/`DurIndexScan` `list_ty` requires a live site
+// operand whose typed `encodable()` state the fixture cannot forge, and its collection
+// ordinal is the same raw-write kind `ListNew` already represents.
+
+/// This pin may flip under the sanctioned checked-conversion class ("type table"); the
+/// flip must cite this pin.
+#[test]
+fn a_bad_record_new_ordinal_with_over_strings_currently_draws_the_string_cap() {
+    assert_eq!(
+        Fixture::clean()
+            .with_extra_instrs(vec![Instr::RecordNew(u16::MAX)])
+            .policy(Overflow::Strings)
+            .encode(),
+        Err(ImageBuildError::TooManyStrings),
+    );
+}
+
+/// This pin may flip under the sanctioned checked-conversion class ("collection
+/// type"); the flip must cite this pin.
+#[test]
+fn a_bad_list_new_ordinal_with_over_strings_currently_draws_the_string_cap() {
+    assert_eq!(
+        Fixture::clean()
+            .with_extra_instrs(vec![Instr::ListNew(u16::MAX)])
+            .policy(Overflow::Strings)
+            .encode(),
+        Err(ImageBuildError::TooManyStrings),
+    );
+}
+
+/// This pin may flip under the sanctioned checked-conversion class ("enum type"); the
+/// flip must cite this pin.
+#[test]
+fn a_bad_enum_construct_ordinal_with_over_strings_currently_draws_the_string_cap() {
+    assert_eq!(
+        Fixture::clean()
+            .with_extra_instrs(vec![Instr::EnumConstruct {
+                enum_idx: u16::MAX,
+                variant: 0,
+            }])
+            .policy(Overflow::Strings)
+            .encode(),
+        Err(ImageBuildError::TooManyStrings),
+    );
+}
+
+/// This pin may flip under the sanctioned checked-conversion class ("type table"); the
+/// flip must cite this pin.
+#[test]
+fn a_bad_vacant_load_type_with_over_strings_currently_draws_the_string_cap() {
+    assert_eq!(
+        Fixture::clean()
+            .with_extra_instrs(vec![Instr::VacantLoad(FORGED_TYPE)])
+            .policy(Overflow::Strings)
+            .encode(),
+        Err(ImageBuildError::TooManyStrings),
+    );
+}
+
+/// This pin may flip under the sanctioned checked-conversion class ("root table"); the
+/// flip must cite this pin.
+#[test]
+fn a_bad_make_identity_root_with_over_strings_currently_draws_the_string_cap() {
+    assert_eq!(
+        Fixture::clean()
+            .with_extra_instrs(vec![Instr::MakeIdentity {
+                root: u16::MAX,
+                cols: 0,
+            }])
+            .policy(Overflow::Strings)
+            .encode(),
+        Err(ImageBuildError::TooManyStrings),
+    );
+}
+
+/// This pin may flip under the sanctioned checked-conversion class ("type table"); the
+/// flip must cite this pin.
+#[test]
+fn a_bad_field_type_ordinal_with_over_strings_currently_draws_the_string_cap() {
+    assert_eq!(
+        Fixture::clean()
+            .with_forged_field_type()
+            .policy(Overflow::Strings)
+            .encode(),
+        Err(ImageBuildError::TooManyStrings),
+    );
+}
+
+/// This pin may flip under the sanctioned checked-conversion class ("type table"); the
+/// flip must cite this pin.
+#[test]
+fn a_bad_enum_payload_type_with_over_strings_currently_draws_the_string_cap() {
+    assert_eq!(
+        Fixture::clean()
+            .with_forged_enum_payload_type()
+            .policy(Overflow::Strings)
+            .encode(),
+        Err(ImageBuildError::TooManyStrings),
+    );
+}
+
+/// This pin may flip under the sanctioned checked-conversion class ("type table"); the
+/// flip must cite this pin.
+#[test]
+fn a_bad_collection_elem_type_with_over_strings_currently_draws_the_string_cap() {
+    assert_eq!(
+        Fixture::clean()
+            .with_forged_collection_elem()
+            .policy(Overflow::Strings)
+            .encode(),
+        Err(ImageBuildError::TooManyStrings),
+    );
+}
+
+// ---- The across-function permutation: the map-indexed const defect and the CodeBytes
+// policy result in two different functions, both orders. Functions encode in table
+// order, and each function's length check precedes its own tape encoding, so whichever
+// function comes first decides.
+
+/// Measured winner: `main` (earlier, fitting) reaches its const remap and panics
+/// before the later function's length is ever checked. This pin may flip under the
+/// sanctioned checked-conversion class; the flip must cite this pin.
+#[test]
+#[should_panic(expected = "index out of bounds")]
+fn a_bad_const_in_the_earlier_function_currently_panics_before_the_later_code_too_long() {
+    let _ = Fixture::clean()
+        .code(Code::BadConst)
+        .with_extra_function(Code::OverCodeBytes)
+        .encode();
+}
+
+/// Measured winner: the earlier function's CodeBytes length check decides before the
+/// later function's bad const is ever remapped. This pin may flip under the sanctioned
+/// checked-conversion class; the flip must cite this pin.
+#[test]
+fn a_bad_const_in_the_later_function_currently_draws_the_earlier_code_too_long() {
+    assert_eq!(
+        Fixture::clean()
+            .code(Code::OverCodeBytes)
+            .with_extra_function(Code::BadConst)
+            .encode(),
+        Err(ImageBuildError::CodeTooLong),
+    );
 }
