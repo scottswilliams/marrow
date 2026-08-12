@@ -28,6 +28,12 @@ const FORGED_TYPE: ImageType = ImageType::Record {
 
 /// A minimal exported `main`: one function, one constant, one export, no durable graph.
 fn main_draft(params: Vec<ImageType>, code: Vec<Instr>) -> ImageDraft {
+    main_draft_with_id(params, code).0
+}
+
+/// [`main_draft`] plus `main`'s own `FuncId`, for the relation pins that need to name
+/// the exported function a second time.
+fn main_draft_with_id(params: Vec<ImageType>, code: Vec<Instr>) -> (ImageDraft, FuncId) {
     let mut draft = ImageDraft::new();
     let src = draft.intern_string("src/main.mw");
     let name = draft.intern_string("main");
@@ -48,7 +54,34 @@ fn main_draft(params: Vec<ImageType>, code: Vec<Instr>) -> ImageDraft {
         })
         .expect("every site operand is live");
     draft.add_export(ExportId::of_local("", "main"), main);
+    (draft, main)
+}
+
+/// An unexported companion function with the given return type and body, for the
+/// test-entry relation pins.
+fn add_plain_function(
+    draft: &mut ImageDraft,
+    name: &str,
+    ret: ImageType,
+    code: Vec<Instr>,
+) -> FuncId {
+    let src = draft.intern_string("src/tests.mw");
+    let fname = draft.intern_string(name);
     draft
+        .add_function(FunctionDef {
+            name: fname,
+            source: src,
+            params: Vec::new(),
+            ret,
+            local_count: 0,
+            spans: vec![SpanEntry {
+                instr_index: 0,
+                line: 1,
+                column: 1,
+            }],
+            code,
+        })
+        .expect("every site operand is live")
 }
 
 fn short_code() -> Vec<Instr> {
@@ -197,18 +230,27 @@ fn an_out_of_range_enum_construct_ordinal_encodes_today_and_only_the_verifier_re
 /// for its optionality before the ordinal is ever consulted.)
 #[test]
 fn an_out_of_range_vacant_load_type_encodes_today_and_only_the_verifier_rejects() {
-    let image = main_draft(
-        Vec::new(),
+    let body = |idx: u16| {
         vec![
             Instr::VacantLoad(ImageType::Record {
-                idx: u16::MAX,
+                idx,
                 optional: true,
             }),
+            Instr::Pop,
+            Instr::ConstLoad(0),
             Instr::Return,
-        ],
-    )
-    .encode()
-    .expect("the producer accepts the unanswered vacant-load type today");
+        ]
+    };
+    // The corrected twin — the same fixture with a TYPES row answering index 0 —
+    // verifies, so the rejection below is the forged ordinal's alone.
+    let corrected = with_decoy_record(main_draft(Vec::new(), body(0)))
+        .encode()
+        .expect("the corrected twin encodes");
+    let outcome = verify(&corrected.bytes);
+    assert!(outcome.is_ok(), "{outcome:?}");
+    let image = with_decoy_record(main_draft(Vec::new(), body(u16::MAX)))
+        .encode()
+        .expect("the producer accepts the unanswered vacant-load type today");
     let rejection = verify(&image.bytes).expect_err("the vacant-load ordinal is refused");
     assert_eq!(rejection.detail(), "vacant-load record index out of range");
 }
@@ -537,28 +579,42 @@ fn a_dangling_iterate_list_type_encodes_today_and_only_the_verifier_rejects() {
 /// row still encodes, and only the verifier refuses the bytes.
 #[test]
 fn a_dangling_index_scan_list_type_encodes_today_and_only_the_verifier_rejects() {
-    let (mut draft, root) = durable_parts(TableRef::Valid, None, true);
-    let scan_path = root.index_paths()[0].clone();
-    let handle = draft
-        .bind_occurrence_site(root.occurrence(), &scan_path, SemanticTarget::IndexScan)
-        .expect("a managed index");
-    let site = draft.request_site(&handle).expect("a live demand");
-    // The scan pops its held field-component prefix (one `int`) before the list check.
-    let code = vec![
-        Instr::ConstLoad(0),
-        Instr::DurIndexScan {
-            site,
-            limit: 2,
-            from: false,
-            list_ty: u16::MAX,
-        },
-        Instr::Pop,
-        Instr::Return,
-    ];
-    let image = finish_main(draft, code, ImageType::Unit)
-        .encode()
-        .expect("the producer accepts the dangling list type today");
-    let rejection = verify(&image.bytes).expect_err("the dangling list type is refused");
+    let scan_image = |list_ty: u16| {
+        let (mut draft, root) = durable_parts(TableRef::Valid, None, true);
+        // COLLTYPES row 0: the `List[int]` a corrected scan freezes its keys into.
+        draft.add_collection_type(CollectionTypeDef::List {
+            elem: ImageType::scalar(Scalar::Int),
+        });
+        let scan_path = root.index_paths()[0].clone();
+        let handle = draft
+            .bind_occurrence_site(root.occurrence(), &scan_path, SemanticTarget::IndexScan)
+            .expect("a managed index");
+        let site = draft.request_site(&handle).expect("a live demand");
+        // The scan pops its held field-component prefix (one `int`) before the list
+        // check, and a corrected scan pushes the frozen list then the truncation flag —
+        // both popped before the unit return.
+        let code = vec![
+            Instr::ConstLoad(0),
+            Instr::DurIndexScan {
+                site,
+                limit: 2,
+                from: false,
+                list_ty,
+            },
+            Instr::Pop,
+            Instr::Pop,
+            Instr::Return,
+        ];
+        finish_main(draft, code, ImageType::Unit)
+            .encode()
+            .expect("the producer accepts either list type today")
+    };
+    // The corrected twin — the same fixture naming the real `List[int]` row —
+    // verifies, so the rejection below is the dangling ordinal's alone.
+    let outcome = verify(&scan_image(0).bytes);
+    assert!(outcome.is_ok(), "{outcome:?}");
+    let rejection =
+        verify(&scan_image(u16::MAX).bytes).expect_err("the dangling list type is refused");
     assert_eq!(
         rejection.detail(),
         "index scan list type does not name a list of the identity key",
@@ -671,21 +727,139 @@ fn an_identity_type_decoy_draws_the_roots_domain_rejection() {
 /// position — the `enum_idx` crossings in `legacy_bridge.rs` carry both operands).
 #[test]
 fn an_out_of_range_enum_construct_variant_draws_the_exact_variant_rejection() {
-    let mut draft = with_decoy_enum(main_draft(
-        Vec::new(),
+    let body = |variant: u16| {
         vec![
             Instr::EnumConstruct {
                 enum_idx: 0,
-                variant: 5,
+                variant,
             },
+            Instr::Pop,
+            Instr::ConstLoad(0),
             Instr::Return,
-        ],
-    ));
+        ]
+    };
+    // The corrected twin — variant 0, the decoy enum's one payloadless member —
+    // verifies, so the rejection below is the unanswered variant's alone.
+    let corrected = with_decoy_enum(main_draft(Vec::new(), body(0)))
+        .encode()
+        .expect("the corrected twin encodes");
+    let outcome = verify(&corrected.bytes);
+    assert!(outcome.is_ok(), "{outcome:?}");
     // The decoy enum is the one ENUMS row; variant 5 names no member of it.
-    draft.intern_int(0);
-    let image = draft
+    let image = with_decoy_enum(main_draft(Vec::new(), body(5)))
         .encode()
         .expect("the producer accepts the variant today");
     let rejection = verify(&image.bytes).expect_err("the unanswered variant is refused");
     assert_eq!(rejection.detail(), "enum variant index out of range");
+}
+
+// ---- The remaining collection-ordinal opcode (design draft 8 §B.3): `MapNew` shares
+// `ListNew`'s operand kind and tape position; `TextSplit`/`TextLines` derive from
+// these two by the cutpoint law in `legacy_bridge.rs`.
+
+/// The coherence hoist will convert this Ok to `InvalidReference("collection type")`;
+/// the flip must cite this pin: today a `MapNew` naming no COLLTYPES row still encodes.
+#[test]
+fn an_out_of_range_map_new_ordinal_encodes_today_and_only_the_verifier_rejects() {
+    let image = main_draft(Vec::new(), vec![Instr::MapNew(u16::MAX), Instr::Return])
+        .encode()
+        .expect("the producer accepts the unanswered collection ordinal today");
+    assert!(verify(&image.bytes).is_err());
+}
+
+// ---- The non-range export/test relations (design draft 8 §B.3): rows the public
+// draft APIs accept unchecked today, refused only by the verifier. Calls INTO test
+// entries remain the verifier's flow-phase law (they need call closure, which
+// coherence does not build) and are not pinned here. Their policy crossings sit in
+// `legacy_bridge.rs` (a literal Strings × duplicate-export cell; the rest derive by
+// the cutpoint law — EXPORTS and TEST-ENTRY rows assemble after every cutpoint).
+
+/// The coherence hoist will convert this Ok to `InvalidReference("export table")`; the
+/// flip must cite this pin: two exports naming one function violate the
+/// one-export-per-function relation.
+#[test]
+fn a_duplicate_export_target_encodes_today_and_only_the_verifier_rejects() {
+    let (mut draft, main) = main_draft_with_id(Vec::new(), short_code());
+    draft.add_export(ExportId::of_local("", "again"), main);
+    let image = draft
+        .encode()
+        .expect("the producer accepts the duplicate export target today");
+    let rejection = verify(&image.bytes).expect_err("the duplicate export is refused");
+    assert_eq!(rejection.detail(), "duplicate export function index");
+}
+
+/// The coherence hoist will convert this Ok to `InvalidReference("test table")`; the
+/// flip must cite this pin: two test entries naming one function violate the
+/// unique-test-function relation.
+#[test]
+fn a_duplicate_test_target_encodes_today_and_only_the_verifier_rejects() {
+    let mut draft = main_draft(Vec::new(), short_code());
+    let test_fn = add_plain_function(&mut draft, "t", ImageType::Unit, vec![Instr::Return]);
+    let first = draft.intern_string("ta");
+    let second = draft.intern_string("tb");
+    draft.add_test_entry(first, test_fn);
+    draft.add_test_entry(second, test_fn);
+    let image = draft
+        .encode()
+        .expect("the producer accepts the duplicate test target today");
+    let rejection = verify(&image.bytes).expect_err("the duplicate test target is refused");
+    assert_eq!(rejection.detail(), "duplicate test-entry function index");
+}
+
+/// The coherence hoist will convert this Ok to `InvalidReference("test table")`; the
+/// flip must cite this pin: two test entries wearing one name violate the unique-name
+/// relation the sorted table encodes.
+#[test]
+fn a_duplicate_test_name_encodes_today_and_only_the_verifier_rejects() {
+    let mut draft = main_draft(Vec::new(), short_code());
+    let first = add_plain_function(&mut draft, "t1", ImageType::Unit, vec![Instr::Return]);
+    let second = add_plain_function(&mut draft, "t2", ImageType::Unit, vec![Instr::Return]);
+    let name = draft.intern_string("t");
+    draft.add_test_entry(name, first);
+    draft.add_test_entry(name, second);
+    let image = draft
+        .encode()
+        .expect("the producer accepts the duplicate test name today");
+    let rejection = verify(&image.bytes).expect_err("the duplicate test name is refused");
+    assert_eq!(
+        rejection.detail(),
+        "test entries must be sorted and unique by name",
+    );
+}
+
+/// The coherence hoist will convert this Ok to `InvalidReference("test table")`; the
+/// flip must cite this pin: a test entry naming an exported function violates the
+/// export/test disjointness relation.
+#[test]
+fn an_export_test_overlap_encodes_today_and_only_the_verifier_rejects() {
+    let (mut draft, main) = main_draft_with_id(Vec::new(), short_code());
+    let name = draft.intern_string("t");
+    draft.add_test_entry(name, main);
+    let image = draft
+        .encode()
+        .expect("the producer accepts the overlap today");
+    let rejection = verify(&image.bytes).expect_err("the export/test overlap is refused");
+    assert_eq!(rejection.detail(), "a test entry is also an export");
+}
+
+/// The coherence hoist will convert this Ok to `InvalidReference("test table")`; the
+/// flip must cite this pin: a test entry over an int-returning function violates the
+/// test signature law (zero params, unit return).
+#[test]
+fn a_bad_test_signature_encodes_today_and_only_the_verifier_rejects() {
+    let mut draft = main_draft(Vec::new(), short_code());
+    // A structurally valid int function, wrong only as a TEST target.
+    let test_fn = add_plain_function(
+        &mut draft,
+        "t",
+        ImageType::scalar(Scalar::Int),
+        vec![Instr::ConstLoad(0), Instr::Return],
+    );
+    let name = draft.intern_string("tn");
+    draft.add_test_entry(name, test_fn);
+    let image = draft
+        .encode()
+        .expect("the producer accepts the signature today");
+    let rejection = verify(&image.bytes).expect_err("the test signature is refused");
+    assert_eq!(rejection.detail(), "a test entry must return unit");
 }

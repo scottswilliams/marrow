@@ -44,10 +44,10 @@ use marrow_image::bounds::{
     MAX_STRING_BYTES, MAX_STRINGS, MAX_STRUCT_LEAVES, MAX_TEST_ENTRIES, MAX_TYPES, MAX_VARIANTS,
 };
 use marrow_image::{
-    CollectionTypeDef, DeclarationMemberDef, DeclarationMemberShape, EnumTypeDef, ExportId,
-    FieldDef, FuncId, FunctionDef, ImageBuildError, ImageDraft, ImageType, Instr, KeyColumn,
-    LedgerIdBytes, RecordTypeDef, RootOccurrenceDef, Scalar, SemanticTarget, SpanEntry, StrId,
-    TypeId, ValueShapeNodeId, VariantDef,
+    CollectionTypeDef, DeclarationMemberDef, DeclarationMemberShape, DurableIndexComponent,
+    DurableIndexShape, EnumTypeDef, ExportId, FieldDef, FuncId, FunctionDef, ImageBuildError,
+    ImageDraft, ImageType, Instr, KeyColumn, LedgerIdBytes, RecordTypeDef, RootOccurrenceDef,
+    Scalar, SemanticTarget, SpanEntry, StrId, TypeId, ValueShapeNodeId, VariantDef,
 };
 
 #[path = "common/admitted_plan.rs"]
@@ -227,7 +227,10 @@ struct Fixture {
     forged_collection_elem: bool,
     forged_entry_record: bool,
     forged_branch_record: bool,
+    forged_param_type: bool,
     dangling_traversal: bool,
+    dangling_index_scan: bool,
+    duplicate_export: bool,
     extra_instrs: Vec<Instr>,
     extra_function: Option<Code>,
 }
@@ -259,7 +262,10 @@ impl Fixture {
             forged_collection_elem: false,
             forged_entry_record: false,
             forged_branch_record: false,
+            forged_param_type: false,
             dangling_traversal: false,
+            dangling_index_scan: false,
+            duplicate_export: false,
             extra_instrs: Vec::new(),
             extra_function: None,
         }
@@ -422,6 +428,26 @@ impl Fixture {
     /// unchecked today.
     fn with_dangling_traversal(mut self) -> Self {
         self.dangling_traversal = true;
+        self
+    }
+
+    /// `main`'s one parameter `ImageType` names no TYPES row.
+    fn with_forged_param_type(mut self) -> Self {
+        self.forged_param_type = true;
+        self
+    }
+
+    /// The root gains a nonunique managed index, and `main` carries an index scan over
+    /// its live site whose `list_ty` names no COLLTYPES row.
+    fn with_dangling_index_scan(mut self) -> Self {
+        self.dangling_index_scan = true;
+        self
+    }
+
+    /// A second export naming `main`'s function index: a duplicate export target, a
+    /// relation the encoder accepts unchecked today.
+    fn with_duplicate_export(mut self) -> Self {
+        self.duplicate_export = true;
         self
     }
 
@@ -589,6 +615,18 @@ impl Fixture {
                 .expect("a well-formed declaration");
         }
         let root_name = draft.intern_string("r");
+        let indexes = if self.dangling_index_scan {
+            vec![DurableIndexShape {
+                id: seeded_id(0x77, 0),
+                unique: false,
+                components: vec![
+                    DurableIndexComponent::Field(LedgerIdBytes::from_bytes(FIELD_ID)),
+                    DurableIndexComponent::Key(key_id(0)),
+                ],
+            }]
+        } else {
+            Vec::new()
+        };
         let root = draft
             .add_root_occurrence(
                 &admitted_plan(),
@@ -602,7 +640,7 @@ impl Fixture {
                         })
                         .collect(),
                     placement: LedgerIdBytes::from_bytes(PLACEMENT_ID),
-                    indexes: Vec::new().into(),
+                    indexes: indexes.into(),
                 },
             )
             .expect("the Product is declared");
@@ -631,13 +669,34 @@ impl Fixture {
                 list_ty: u16::MAX,
             });
         }
-        let params = match self.frame {
-            Frame::LocalsBelowParams => vec![ImageType::scalar(Scalar::Int)],
-            Frame::Fits | Frame::OverLocals => Vec::new(),
+        if self.dangling_index_scan {
+            let scan_path = root.index_paths()[0].clone();
+            let handle = draft
+                .bind_occurrence_site(root.occurrence(), &scan_path, SemanticTarget::IndexScan)
+                .expect("a managed index");
+            let site = draft.request_site(&handle).expect("a live demand");
+            code.push(Instr::DurIndexScan {
+                site,
+                limit: 2,
+                from: false,
+                list_ty: u16::MAX,
+            });
+        }
+        let params = if self.forged_param_type {
+            vec![FORGED_TYPE]
+        } else {
+            match self.frame {
+                Frame::LocalsBelowParams => vec![ImageType::scalar(Scalar::Int)],
+                Frame::Fits | Frame::OverLocals => Vec::new(),
+            }
         };
-        let local_count = match self.frame {
-            Frame::OverLocals => (MAX_LOCALS + 1) as u16,
-            Frame::Fits | Frame::LocalsBelowParams => 0,
+        let local_count = if self.forged_param_type {
+            1
+        } else {
+            match self.frame {
+                Frame::OverLocals => (MAX_LOCALS + 1) as u16,
+                Frame::Fits | Frame::LocalsBelowParams => 0,
+            }
         };
         let main = draft
             .add_function(FunctionDef {
@@ -656,6 +715,9 @@ impl Fixture {
             })
             .expect("every site operand is live");
         draft.add_export(ExportId::of_local("", "main"), main);
+        if self.duplicate_export {
+            draft.add_export(ExportId::of_local("", "dup"), main);
+        }
         if let Some(extra) = self.extra_function {
             let aux_name = draft.intern_string("aux");
             draft
@@ -733,8 +795,11 @@ fn body(code: Code, zero: u16) -> Vec<Instr> {
     }
 }
 
-/// A function index no row of this fixture answers, minted by a draft that holds two:
-/// a `FuncId` is a table position, not a capability bound to its draft.
+/// A function index no fixture's final table can answer — `u16::MAX`, minted by a
+/// draft that fills the whole index space. A `FuncId` is a table position, not a
+/// capability bound to its draft, and the ordinal must sit beyond every table a policy
+/// overflow can grow: an ordinal of 1 would be healed into validity by the fixtures
+/// that append real functions (the TestEntries and Exports overflows).
 fn forged_func_id() -> FuncId {
     let mut other = ImageDraft::new();
     let src = other.intern_string("s");
@@ -748,10 +813,15 @@ fn forged_func_id() -> FuncId {
         spans: Vec::new(),
         code: vec![Instr::Return],
     };
-    other
+    let mut last = other
         .add_function(def.clone())
         .expect("every site operand is live");
-    other.add_function(def).expect("every site operand is live")
+    while last.index() < u16::MAX {
+        last = other
+            .add_function(def.clone())
+            .expect("every site operand is live");
+    }
+    last
 }
 
 /// Drive exactly one resource-policy aggregate over its cap on an otherwise complete
@@ -1822,38 +1892,58 @@ fn a_bad_type_ordinal_with_a_body_past_the_ceiling_currently_draws_the_image_cei
 // ordinal here is written unchecked today, so the first policy cap decides trivially;
 // each cell is the boundary the coherence hoist will move. Standalone baselines for the
 // same families live in `marrow-verify/tests/legacy_ok_pins.rs` (they encode Ok today
-// and only the verifier rejects). The `DurIterateBounded`/`DurIndexScan` `list_ty`
-// operand is the same public raw ordinal as the rest — a live site operand carries the
-// instruction while its `list_ty` dangles — and has its own first-cap cell below.
+// and only the verifier rejects).
 //
-// # Equivalence classes (the derivation review 7 item 2 requires)
+// # Derivation law — member-by-member policy cutpoints (design draft 8 §A)
 //
-// Every policy verdict is decided at a fixed site — the `check_bounds` caps, the
-// per-function CodeBytes length check, the durable counting fence, the final ceiling —
-// and a reference defect only competes with it at the moment its bytes are written. Two
-// references written at the same emission position therefore draw identical verdicts
-// against every policy cap, and one member's pinned row carries its whole class:
+// The earlier three-class same-position table is WITHDRAWN. A derived member's
+// crossing verdicts follow its representative's iff (a) both defects are unchecked
+// writes — their standalone encode-Ok pins are in
+// `marrow-verify/tests/legacy_ok_pins.rs` — and (b) both sit strictly after the policy
+// decision being crossed. The three cutpoints are: the END of `check_bounds` (every
+// cap decides before any emission), the PER-FUNCTION CodeBytes length check (decides
+// before everything at or after its own function's row), and the DURABLE fence
+// (decides before everything at or after section assembly). The proof per member needs
+// only its emission position relative to those cutpoints, never same-writer or
+// same-arm identity. Member — position — representative:
 //
-// | class (emission position) | representative rows pinned literally | derived members |
-// |---|---|---|
-// | TAPE — written by `encode_code` inside the carrying function, after that
-// |   function's own CodeBytes check | `Call` and `RecordNew`
-// |   (Strings/TestEntries/CodeBytes/ImageBytes each) | `ListNew`,
-// |   `EnumConstruct.enum_idx` (+ its subordinate `variant`), `VacantLoad`,
-// |   `MakeIdentity.root` (+ its `cols` relation), `DurIterateBounded.list_ty`,
-// |   `DurIndexScan.list_ty`, and the signature param/return `ImageType` refs (written
-// |   just before the tape, after the same length check) — each keeps its literal
-// |   first-cap (Strings) cell below; its TestEntries/CodeBytes/ImageBytes cells follow
-// |   from the representatives |
-// | SECTION — written during tail section assembly, after `check_bounds`, all function
-// |   encoding, and the durable fence | export target and test-entry target
-// |   (Strings/TestEntries/CodeBytes/ImageBytes each) | TYPES field-`ImageType`, ENUMS
-// |   payload-`ImageType`, COLLTYPES element — each keeps its literal Strings cell;
-// |   the other rows follow from the representatives |
-// | DURABLE — written by the counting fence, after `check_bounds` and function
-// |   encoding, before section assembly | root entry record
-// |   (Strings/TestEntries/CodeBytes/ImageBytes each) | branch record (literal Strings
-// |   and ImageBytes cells; TestEntries/CodeBytes follow from the entry record) |
+// - `ListNew`, `MapNew`, `TextSplit`, `TextLines` (collection ordinals): tape of the
+//   carrying function — after all three cutpoints for Strings/TestEntries cells, after
+//   its own function's CodeBytes check, before the fence → `RecordNew` (a `MapNew`
+//   standalone Ok-pin sits beside `ListNew`'s; `TextSplit`/`TextLines` share the exact
+//   operand kind and tape position with both).
+// - `EnumConstruct.enum_idx` (+ its subordinate `variant`, checked against the
+//   resolved enum): same tape position → `RecordNew`; literal Strings cell kept.
+// - `VacantLoad` embedded type: same tape position → `RecordNew`; literal Strings
+//   cell kept.
+// - `MakeIdentity.root` (+ its `cols` relation): same tape position → `RecordNew`;
+//   literal Strings cell kept.
+// - `DurIterateBounded.list_ty`: tape position, written after the operand's fallible
+//   site validation — which cannot fire in these fixtures, because every crossing
+//   carries a live provenance-validated site — so past that precondition it is an
+//   unchecked write at the same tape position → `RecordNew`; literal Strings cell
+//   kept.
+// - `DurIndexScan.list_ty`: same precondition, its own instruction arm → literal
+//   Strings cell below (not derived from the iterate arm); TestEntries/CodeBytes/
+//   ImageBytes → `RecordNew` under the same live-site precondition.
+// - Signature param/return `ImageType` refs: written INSIDE the function row —
+//   straddling the per-function CodeBytes cutpoint differently from the tape — so the
+//   Strings and CodeBytes cells are literal below (the CodeBytes one measured);
+//   TestEntries and ImageBytes cells → `RecordNew`, since both of those cutpoints
+//   precede the whole function row alike.
+// - TYPES field-`ImageType`, ENUMS payload-`ImageType`, COLLTYPES element: their
+//   sections assemble after all three cutpoints (different writers, but position is
+//   all the law consumes) → export-target/test-target rows; literal Strings cells
+//   kept.
+// - Branch record: DURABLE body at a deeper recursive position than the root entry
+//   record, but the fence decides on the counted total before any of the body is
+//   assembled, so both records sit identically after/before each cutpoint → root
+//   entry record; literal Strings and ImageBytes cells kept.
+// - Duplicate export target, duplicate test target, duplicate test name, export/test
+//   overlap, test-signature law: EXPORTS and TEST-ENTRY rows, assembled strictly
+//   after all three cutpoints → export-target/test-target rows; a literal
+//   Strings × duplicate-export cell sits below, and their CodeBytes/ImageBytes cells
+//   derive by the same position argument.
 
 /// This pin may flip under the sanctioned checked-conversion class ("type table"); the
 /// flip must cite this pin.
@@ -2261,6 +2351,64 @@ fn a_dangling_traversal_list_type_with_over_strings_currently_draws_the_string_c
     assert_eq!(
         Fixture::clean()
             .with_dangling_traversal()
+            .policy(Overflow::Strings)
+            .encode(),
+        Err(ImageBuildError::TooManyStrings),
+    );
+}
+
+/// This pin may flip under the sanctioned checked-conversion class ("collection
+/// type"); the flip must cite this pin: the index-scan arm gets its own first-cap cell
+/// rather than deriving from the iterate arm.
+#[test]
+fn a_dangling_index_scan_list_type_with_over_strings_currently_draws_the_string_cap() {
+    assert_eq!(
+        Fixture::clean()
+            .with_dangling_index_scan()
+            .policy(Overflow::Strings)
+            .encode(),
+        Err(ImageBuildError::TooManyStrings),
+    );
+}
+
+/// This pin may flip under the sanctioned checked-conversion class ("type table"); the
+/// flip must cite this pin: a signature type straddles the per-function cutpoint
+/// differently from the tape, so its first-cap cell is literal.
+#[test]
+fn a_forged_param_type_with_over_strings_currently_draws_the_string_cap() {
+    assert_eq!(
+        Fixture::clean()
+            .with_forged_param_type()
+            .policy(Overflow::Strings)
+            .encode(),
+        Err(ImageBuildError::TooManyStrings),
+    );
+}
+
+/// Measured winner: the per-function CodeBytes length check runs at the head of the
+/// function row, before the same function's signature types are written — and the
+/// forged signature type is an unchecked write in any case — so CodeTooLong decides.
+/// This pin may flip under the sanctioned checked-conversion class ("type table"); the
+/// flip must cite this pin.
+#[test]
+fn a_forged_param_type_with_over_code_bytes_currently_draws_code_too_long() {
+    assert_eq!(
+        Fixture::clean()
+            .code(Code::OverCodeBytes)
+            .with_forged_param_type()
+            .encode(),
+        Err(ImageBuildError::CodeTooLong),
+    );
+}
+
+/// This pin may flip under the sanctioned checked-conversion class ("export table");
+/// the flip must cite this pin: a duplicate export target is a relation the encoder
+/// accepts unchecked today, and the first policy cap decides.
+#[test]
+fn a_duplicate_export_target_with_over_strings_currently_draws_the_string_cap() {
+    assert_eq!(
+        Fixture::clean()
+            .with_duplicate_export()
             .policy(Overflow::Strings)
             .encode(),
         Err(ImageBuildError::TooManyStrings),
