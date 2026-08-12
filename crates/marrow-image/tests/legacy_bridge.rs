@@ -1981,8 +1981,9 @@ fn a_bad_type_ordinal_with_a_body_past_the_ceiling_currently_draws_the_image_cei
 // - TYPES field-`ImageType`, ENUMS payload-`ImageType`, and the COLLTYPES sub-members
 //   `List.elem`, `Map.key`, and `Map.value` (the value ref is written only after its
 //   row's key ref, so reaching a `Map.value` defect presupposes a valid key): their
-//   sections assemble after all three cutpoints (different writers, but position is
-//   all the law consumes) → export-target/test-target rows; literal Strings cells
+//   sections assemble after the FIRST THREE cutpoints and before cutpoint four, the
+//   final assembled-image ceiling (different writers, but position is all the law
+//   consumes) → export-target/test-target rows; literal Strings cells
 //   kept (the COLLTYPES cell carries `List.elem`; the `Map` sub-members share its
 //   section position and unchecked-write mechanics).
 // - Branch record: DURABLE body at a deeper recursive position than the root entry
@@ -1995,13 +1996,19 @@ fn a_bad_type_ordinal_with_a_body_past_the_ceiling_currently_draws_the_image_cei
 //   membership (a tape-position instruction whose only check is the verifier's
 //   TEST-ENTRY seal scan — the encoder writes the opcode unchecked), and the
 //   test-driver-mix law (a direct durable op beside a call to a transaction-owning
-//   export — both halves ordinary unchecked tape writes): EXPORTS and TEST-ENTRY rows
-//   plus the seal-phase relation checks over them, all strictly after every encode
-//   cutpoint → export-target/test-target rows; a literal Strings × duplicate-export
-//   cell sits below, their CodeBytes cells derive by the same position argument, and
-//   their ImageBytes cells split like every relation's: fence overage via the
-//   unchecked-write-completes argument, final overage via the literal
-//   final-overage × duplicate-export cell.
+//   export — both halves ordinary unchecked tape writes): nothing here sits after
+//   every encode cutpoint — the tape-carried members precede the DURABLE fence and
+//   the final ceiling, and the EXPORTS/TEST-ENTRY rows precede the final ceiling;
+//   only the VERIFIER-side relation decisions occur after a successful encode. The
+//   derivation is therefore the unchecked-write one throughout: each relation's
+//   defect is a write the encoder completes without an error, so every policy
+//   decision that runs at all decides — the caps in `check_bounds`, then CodeBytes,
+//   then the fence, then the final ceiling — and any pre-final PANIC (the map-indexed
+//   lookups) wins before the final ceiling can. Representative rows:
+//   export-target/test-target; a literal Strings × duplicate-export-target cell sits
+//   below, their CodeBytes cells derive by the position argument, and their
+//   ImageBytes cells split: fence overage via unchecked-write-completes, final
+//   overage via the literal final-overage × duplicate-export-target cell.
 
 /// This pin may flip under the sanctioned checked-conversion class ("type table"); the
 /// flip must cite this pin.
@@ -2486,10 +2493,13 @@ fn a_final_only_overage_alone_currently_draws_the_image_ceiling() {
     );
 }
 
-/// Measured winner at cutpoint four: a duplicate export is an unchecked relation, so
-/// the EXPORTS section assembles without an error and the final ceiling decides. This
-/// pin may flip under the sanctioned checked-conversion class ("export table"); the
-/// flip must cite this pin.
+/// Measured winner at cutpoint four: a duplicate export FUNCTION TARGET (two distinct
+/// `ExportId`s naming one function) is an unchecked relation, so the EXPORTS section
+/// assembles without an error and the final ceiling decides. Duplicate-`ExportId`
+/// coverage derives from this cell: same EXPORTS-row mechanics, same emission
+/// position, and both relations are verifier-side decisions. This pin may flip under
+/// the sanctioned checked-conversion class ("export table"); the flip must cite this
+/// pin.
 #[test]
 fn a_duplicate_export_target_with_a_final_only_overage_currently_draws_the_image_ceiling() {
     assert_eq!(

@@ -790,8 +790,11 @@ fn an_out_of_range_map_new_ordinal_encodes_today_and_only_the_verifier_rejects()
 // target relations, the id relation, both test-signature decision sites, and calls
 // into test entries (the draft-8 call-closure exclusion was false; the verifier scans
 // direct tape call targets in its seal phase). Their policy crossings sit in
-// `legacy_bridge.rs` (a literal Strings × duplicate-export cell; the rest derive by
-// the cutpoint law — EXPORTS and TEST-ENTRY rows assemble after every cutpoint).
+// `legacy_bridge.rs` (a literal Strings × duplicate-export-target cell; the rest
+// derive by the cutpoint law — the EXPORTS and TEST-ENTRY rows assemble after the
+// caps, CodeBytes, and the DURABLE fence but BEFORE the final assembled-image
+// ceiling, and every relation here is a write the encoder completes without an error,
+// so whichever policy decision runs decides).
 
 /// The coherence hoist will convert this Ok to `InvalidReference("export table")`; the
 /// flip must cite this pin: two exports naming one function violate the
