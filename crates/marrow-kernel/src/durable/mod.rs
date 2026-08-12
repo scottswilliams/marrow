@@ -33,6 +33,7 @@ pub use schema::{
     MAX_DURABLE_DEPTH, SchemaBuildError, StoreSchema, StoreSchemaBuilder,
 };
 pub use session_host::SessionHost;
+pub(crate) use site::SiteSlot;
 pub use site::{ProjectionBuildError, SiteTarget, StoreProjection, StoreProjectionBuilder};
 pub use store::{Durable, DurableStore, ReadSession, TxnSession};
 

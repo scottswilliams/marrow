@@ -25,7 +25,7 @@ use super::schema::{BranchPos, FieldPos, GroupPos, IndexPos, RootPos, StoreSchem
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StoreProjection {
     roots: Vec<StoreSchema>,
-    sites: Vec<Site>,
+    sites: Vec<SiteSlot>,
 }
 
 impl StoreProjection {
@@ -39,8 +39,9 @@ impl StoreProjection {
         &self.roots
     }
 
-    /// The checked site table, in image site-index order.
-    pub(crate) fn sites(&self) -> &[Site] {
+    /// The checked site table, in image site-index order. A parked image site keeps its
+    /// slot as a typed absence, so a resolved site index always means the image's.
+    pub(crate) fn sites(&self) -> &[SiteSlot] {
         &self.sites
     }
 
@@ -65,8 +66,16 @@ impl StoreProjection {
 #[derive(Debug, Default)]
 pub struct StoreProjectionBuilder {
     roots: Vec<StoreSchema>,
-    sites: Vec<(u16, SiteTarget)>,
+    sites: Vec<PendingSite>,
     error: Option<ProjectionBuildError>,
+}
+
+/// One site as the builder holds it before resolution: named by caller positions, or a
+/// typed parked absence keeping the table index-aligned with the image's site table.
+#[derive(Debug)]
+enum PendingSite {
+    Named { root: u16, target: SiteTarget },
+    Parked,
 }
 
 impl StoreProjectionBuilder {
@@ -80,7 +89,16 @@ impl StoreProjectionBuilder {
     /// The target is resolved at [`finish`](Self::finish), once every root is complete: a
     /// site may name a branch, field, group, or index of a root declared after it.
     pub fn site(&mut self, root: u16, target: SiteTarget) -> &mut Self {
-        self.sites.push((root, target));
+        self.sites.push(PendingSite::Named { root, target });
+        self
+    }
+
+    /// Append one parked site: an image site the flat kernel does not execute. The slot
+    /// stays in the table as a typed absence — never as a semantically valid site standing
+    /// in for "not executable" — so the table remains index-aligned with the image's sites
+    /// while an operation addressing the slot has nothing to resolve.
+    pub fn parked_site(&mut self) -> &mut Self {
+        self.sites.push(PendingSite::Parked);
         self
     }
 
@@ -100,14 +118,27 @@ impl StoreProjectionBuilder {
             return Err(ProjectionBuildError::TooManyNodes);
         }
         let mut sites = Vec::with_capacity(self.sites.len());
-        for (root, target) in &self.sites {
-            sites.push(resolve(&self.roots, *root, target)?);
+        for pending in &self.sites {
+            sites.push(match pending {
+                PendingSite::Named { root, target } => {
+                    SiteSlot::Resolved(resolve(&self.roots, *root, target)?)
+                }
+                PendingSite::Parked => SiteSlot::Parked,
+            });
         }
         Ok(StoreProjection {
             roots: self.roots,
             sites,
         })
     }
+}
+
+/// One slot of the published site table: a site resolved against the roots, or the typed
+/// absence a parked image site keeps so later slots stay at their image indices.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum SiteSlot {
+    Resolved(Site),
+    Parked,
 }
 
 /// One checked site: the root it addresses and its resolved target.
@@ -373,6 +404,28 @@ mod tests {
         let mut projection = StoreProjection::builder();
         projection.root(first).root(second);
         projection.finish().expect("two plain roots project")
+    }
+
+    /// A parked image site stays a typed absence at its own index: the slots around it keep
+    /// their image positions, and nothing about the parked slot resolves to a real target.
+    #[test]
+    fn a_parked_site_is_a_typed_absence_at_its_image_index() {
+        let mut builder = StoreSchemaBuilder::root("counters", vec![ScalarKind::Str]);
+        builder.scalar_field("value", ScalarKind::Int, false);
+        let schema = builder.finish().expect("a flat schema builds");
+
+        let mut projection = StoreProjection::builder();
+        projection.root(schema);
+        projection.site(0, super::SiteTarget::whole_payload());
+        projection.parked_site();
+        projection.site(0, super::SiteTarget::field_leaf(0));
+        let projection = projection.finish().expect("the named sites resolve");
+
+        let sites = projection.sites();
+        assert_eq!(sites.len(), 3);
+        assert!(matches!(sites[0], super::SiteSlot::Resolved(_)));
+        assert!(matches!(sites[1], super::SiteSlot::Parked));
+        assert!(matches!(sites[2], super::SiteSlot::Resolved(_)));
     }
 
     /// The split pre-order, pinned as a known answer: root, its fields, each group (the

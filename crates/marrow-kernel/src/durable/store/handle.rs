@@ -8,8 +8,8 @@ use marrow_store::{ByteEngine, ReadView, StoreError};
 use super::super::physical;
 use super::super::{
     AuthorizedSite, CommitRecovery, CommitRecoveryScope, DemandCoverage, Denied,
-    DurableCommitState, IndexSchema, InvocationGrant, RootNumbering, SessionError, StoreProjection,
-    number_store,
+    DurableCommitState, IndexSchema, InvocationGrant, RootNumbering, SessionError, SiteSlot,
+    StoreProjection, number_store,
 };
 use super::resolve::resolve_site;
 use super::{ReadSession, TxnSession};
@@ -179,17 +179,20 @@ impl<E: ByteEngine> DurableStore<E> {
         }
     }
 
-    fn authorized_sites(&self) -> Vec<AuthorizedSite> {
+    fn authorized_sites(&self) -> Vec<Option<AuthorizedSite>> {
         self.projection
             .sites()
             .iter()
-            .map(|site| {
-                resolve_site(
+            .map(|slot| match slot {
+                SiteSlot::Resolved(site) => Some(resolve_site(
                     site.root().of(self.projection.roots()),
                     site.root().of(&self.numbering),
                     site.root().index(),
                     site.target(),
-                )
+                )),
+                // A parked image site: the slot keeps the table index-aligned, and no
+                // authorized site exists for an operation to address.
+                SiteSlot::Parked => None,
             })
             .collect()
     }

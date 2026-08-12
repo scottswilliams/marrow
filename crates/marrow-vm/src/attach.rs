@@ -279,16 +279,16 @@ fn derive_projection(image: &VerifiedImage) -> Option<StoreProjection> {
     for (root_index, root) in image.roots().iter().enumerate() {
         let schema = derive_root_schema(image, root_index as u16, root)?;
         index_offsets.push(running_indexes);
-        running_indexes += schema.indexes().len() as u16;
+        running_indexes = running_indexes.checked_add(schema.indexes().len() as u16)?;
         projection.root(schema);
     }
 
     // The site table is index-aligned with the image's sites so `Durable::site` resolves by
     // image site index. A parked site is never referenced by a verified durable opcode (the
-    // verifier refuses that in phase 3), so it maps to an inert root-0 whole-payload
-    // placeholder that no execution observes.
+    // verifier refuses that in phase 3), so it keeps its slot as the kernel's typed absence
+    // rather than as a semantically valid placeholder site.
     for site in image.sites() {
-        emit_site(&mut projection, site, &index_offsets);
+        emit_site(&mut projection, site, &index_offsets)?;
     }
 
     // Every position the sites name is resolved against the completed roots here. A verified
@@ -323,18 +323,16 @@ fn derive_root_schema(
     let mut builder = StoreSchemaBuilder::root(root.name().to_string(), key_columns(root.keys()));
 
     // The unified root record is `[leading value fields][one Record slot per root-level
-    // group]`, in declaration order. The kernel's flat field set is only the leading value
-    // fields; the trailing group slots become groups below. The split is by count over the
-    // one record, exactly as the image lays it out.
-    let group_count = root.groups().len();
-    let record = image.record_type(root.record());
-    let field_count = record.fields().len().checked_sub(group_count)?;
-    emit_fields(image, &mut builder, &record.fields()[..field_count])?;
+    // group]`, in declaration order. The typed split carries the two halves by name; the
+    // kernel's flat field set is only the value fields, and the group slots become groups
+    // below.
+    let split = RecordSplit::of(image.record_type(root.record()), root.groups().len())?;
+    emit_fields(image, &mut builder, split.value_fields)?;
     // A trailing group slot contributes no kernel field, but its shape still has to be one
     // the durable codec stores: the pre-projection derivation shaped every slot of the one
     // record and parked the root when any of them was not storable. Deriving and discarding
     // keeps that parking condition exactly.
-    for slot in &record.fields()[field_count..] {
+    for slot in split.group_slots {
         value_shape(image, slot.ty)?;
     }
 
@@ -401,6 +399,30 @@ fn derive_root_schema(
     builder.finish().ok()
 }
 
+/// The unified root record's two typed halves: the leading value fields the kernel
+/// materializes directly, and the trailing per-group `Record` slots (one per root-level
+/// group, in group declaration order) that become kernel groups instead. Splitting once,
+/// by name, keeps the layout fact in one place rather than as positional truncation at
+/// each use.
+struct RecordSplit<'a> {
+    value_fields: &'a [marrow_verify::SealedField],
+    group_slots: &'a [marrow_verify::SealedField],
+}
+
+impl<'a> RecordSplit<'a> {
+    /// Split `record` before its trailing `group_count` slots. `None` when the record
+    /// holds fewer fields than the root holds groups — a divergence from the image's
+    /// unified-record layout — so the caller parks the root.
+    fn of(record: &'a marrow_verify::SealedRecordType, group_count: usize) -> Option<Self> {
+        let values = record.fields().len().checked_sub(group_count)?;
+        let (value_fields, group_slots) = record.fields().split_at(values);
+        Some(Self {
+            value_fields,
+            group_slots,
+        })
+    }
+}
+
 /// One step of the explicit branch walk: open a sealed branch, or close the branch whose
 /// subtree has been emitted.
 enum BranchStep<'a> {
@@ -441,16 +463,22 @@ fn emit_fields(
     builder.refusal().map_or(Some(()), |_| None)
 }
 
-/// Project one sealed site to a kernel [`SiteSpec`], tagging it with its root's declaration
-/// position and rebasing an index-read position from image-wide to root-local. A parked
-/// site — never referenced by a verified durable opcode — maps to an inert root-0
-/// whole-payload placeholder.
-fn emit_site(projection: &mut StoreProjectionBuilder, site: &SealedSite, index_offsets: &[u16]) {
+/// Project one sealed site into the kernel's site table, tagging it with its root's
+/// declaration position and rebasing an index-read position from image-wide to root-local.
+/// A parked site — never referenced by a verified durable opcode — keeps its slot as the
+/// table's typed absence. `None` when an index position does not project onto its own
+/// root's table — a divergence from the verifier's shape — so the caller parks the image
+/// rather than publishing a table it would have to trust.
+fn emit_site(
+    projection: &mut StoreProjectionBuilder,
+    site: &SealedSite,
+    index_offsets: &[u16],
+) -> Option<()> {
     let (root, target) = match site {
         SealedSite::Flat { root, target } => (*root, target),
         SealedSite::Parked { .. } => {
-            projection.site(0, SiteTarget::whole_payload());
-            return;
+            projection.parked_site();
+            return Some(());
         }
     };
     let target = match target {
@@ -462,15 +490,25 @@ fn emit_site(projection: &mut StoreProjectionBuilder, site: &SealedSite, index_o
         }
         SealedSiteTarget::GroupEntry(group) => SiteTarget::group_entry(*group),
         // An index-read site names its index by image-wide position; the kernel resolves it
-        // against this root's own schema, so rebase it by the root's index offset.
+        // against this root's own schema, so the checked projection rebases it by the
+        // root's index offset. Underflow or an unknown root is a shape divergence.
         SealedSiteTarget::IndexScan(index) => {
-            SiteTarget::index_scan(*index - index_offsets[root as usize])
+            SiteTarget::index_scan(root_local_index(*index, root, index_offsets)?)
         }
         SealedSiteTarget::IndexLookup(index) => {
-            SiteTarget::index_lookup(*index - index_offsets[root as usize])
+            SiteTarget::index_lookup(root_local_index(*index, root, index_offsets)?)
         }
     };
     projection.site(root, target);
+    Some(())
+}
+
+/// Rebase one image-wide managed-index position onto its root's own index table: the typed
+/// root-local position the kernel's site targets carry. `None` when the position sits below
+/// its root's first index or the root is unknown — either way the image's shape and the
+/// derived projection disagree, and the caller parks.
+fn root_local_index(index: u16, root: u16, index_offsets: &[u16]) -> Option<u16> {
+    index.checked_sub(*index_offsets.get(root as usize)?)
 }
 
 /// Derive a field's kernel [`ValueShape`] from its image type: a scalar carries its kind; a

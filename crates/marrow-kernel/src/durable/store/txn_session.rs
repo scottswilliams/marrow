@@ -40,7 +40,8 @@ where
     /// The store's poison flag, set on an indeterminate commit so a reopen
     /// reclassifies.
     pub(super) poisoned: &'s mut bool,
-    pub(super) auth: Vec<AuthorizedSite>,
+    /// One slot per image site; `None` is a parked site no verified opcode addresses.
+    pub(super) auth: Vec<Option<AuthorizedSite>>,
     /// The exact before/proposed-after witness states and lifecycle scope. Present until the
     /// commit resolves; moved into the sole affine fact only for an indeterminate verdict.
     pub(super) recovery: Option<RecoveryIntent>,
@@ -227,7 +228,9 @@ impl<'s, E: ByteEngine + 's> TxnSession<'s, E> {
 
 impl<'s, E: ByteEngine + 's> Durable for TxnSession<'s, E> {
     fn site(&self, index: u16) -> AuthorizedSite {
-        self.auth[index as usize].clone()
+        self.auth[index as usize]
+            .clone()
+            .expect("a verified durable opcode never addresses a parked site")
     }
     fn presence(
         &mut self,

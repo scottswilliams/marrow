@@ -21,12 +21,15 @@ where
     E: 's,
 {
     pub(super) view: E::View<'s>,
-    pub(super) auth: Vec<AuthorizedSite>,
+    /// One slot per image site; `None` is a parked site no verified opcode addresses.
+    pub(super) auth: Vec<Option<AuthorizedSite>>,
 }
 
 impl<'s, E: ByteEngine + 's> Durable for ReadSession<'s, E> {
     fn site(&self, index: u16) -> AuthorizedSite {
-        self.auth[index as usize].clone()
+        self.auth[index as usize]
+            .clone()
+            .expect("a verified durable opcode never addresses a parked site")
     }
     fn presence(
         &mut self,

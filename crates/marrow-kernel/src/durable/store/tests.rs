@@ -2246,7 +2246,10 @@ mod read {
         let schema = indexed_schema();
         let projection = super::project(&schema, vec![target]);
         let numbering = number_store(&projection);
-        resolve_site(&schema, &numbering[0], 0, projection.sites()[0].target())
+        let crate::durable::SiteSlot::Resolved(site) = &projection.sites()[0] else {
+            panic!("a named site resolves rather than parking");
+        };
+        resolve_site(&schema, &numbering[0], 0, site.target())
     }
 
     fn scan_site() -> AuthorizedSite {
