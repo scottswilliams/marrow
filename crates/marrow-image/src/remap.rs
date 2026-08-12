@@ -64,8 +64,10 @@ impl StringToken {
     }
 
     /// The DURABLE writer's spending path: `write_durable_body` keeps its pinned
-    /// public-sink signature, so its tokens append through the bound the gate pins;
-    /// the writer-region gate forbids this spelling anywhere else.
+    /// public-sink signature, so its tokens append through the bound the gate pins.
+    /// The writer lives in a sibling module, so no visibility narrower than
+    /// `pub(crate)` can reach it; the spend gate pins every spelling of this call —
+    /// dot and UFCS alike — to the writer file instead.
     pub(crate) fn emit_durable(self, sink: &mut impl ImageByteSink) {
         push_u16(sink, self.0);
     }

@@ -20,7 +20,10 @@
 //!    counted==emitted KATs prove order-independent. FUNCTIONS and SPANS are counted
 //!    arithmetically from the same per-item width owners their writers spell, so no
 //!    layout offsets exist before a verdict. The sink saturates decisively one byte
-//!    past [`bounds::MAX_IMAGE_BYTES`] and every counting row loop polls it. The
+//!    past [`bounds::MAX_IMAGE_BYTES`], and every independently unbounded or outer
+//!    row loop polls it — bounded inner runs (a record's fields, an enum's variants,
+//!    a function's parameters) are already covered by coherence's own width bounds.
+//!    The
 //!    result is an affine [`LegacyV0WirePlan`] — inline per-section body and framed
 //!    spans plus the envelope spans, no heap — or
 //!    [`ImageBuildError::ImageTooLarge`] with nothing retained; the whole-image
@@ -516,10 +519,11 @@ impl<'d> LegacyV0WirePlan<'d> {
 const DECISIVE_TOTAL: usize = bounds::MAX_IMAGE_BYTES + 1;
 
 /// The one checked counting sink: it keeps nothing, every accumulation saturates at
-/// [`DECISIVE_TOTAL`], and every counting row loop polls [`ImageByteSink::is_full`] —
-/// so an over-ceiling draft stops at the decisive byte with only per-row granularity
-/// slack, "full" and "fits" stay distinguishable, and the work an over-ceiling draft
-/// costs is the bytes the ceiling admits.
+/// [`DECISIVE_TOTAL`], and every independently unbounded or outer counting row loop
+/// polls [`ImageByteSink::is_full`] (bounded inner runs are covered by coherence's
+/// own width bounds) — so an over-ceiling draft stops at the decisive byte with only
+/// per-row granularity slack, "full" and "fits" stay distinguishable, and the work an
+/// over-ceiling draft costs is the bytes the ceiling admits.
 #[derive(Default)]
 pub(crate) struct CappedImageCount(usize);
 
@@ -542,7 +546,7 @@ impl CappedImageCount {
     /// Count `bytes` at once — fixed widths a counting arithmetic states without a
     /// buffer (the contract identity, a function row's header, a span table).
     pub(crate) fn pad(&mut self, bytes: usize) {
-        self.0 = (self.0 + bytes).min(DECISIVE_TOTAL);
+        self.0 = self.0.saturating_add(bytes).min(DECISIVE_TOTAL);
     }
 
     /// The saturating running total, for the decisiveness pins and the plan spans.

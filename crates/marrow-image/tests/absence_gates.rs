@@ -1848,15 +1848,10 @@ fn tokens_are_spent_only_inside_the_writers() {
             continue;
         }
         let production = without_cfg_test_items(&code);
-        for spelling in [".emit(", ".emit_durable("] {
-            let found = production.matches(spelling).count()
-                - if spelling == ".emit(" {
-                    // `.emit_durable(` contains no `.emit(` prefix match ambiguity:
-                    // the spellings are distinct needles.
-                    0
-                } else {
-                    0
-                };
+        // Both call spellings per path: the method call and the UFCS form, which is
+        // the same call written without a receiver.
+        for spelling in [".emit(", ".emit_durable(", "::emit(", "::emit_durable("] {
+            let found = production.matches(spelling).count();
             let expected = SPEND_SET
                 .iter()
                 .find(|(suffix, name, _)| display.contains(suffix) && *name == spelling)
@@ -1878,6 +1873,7 @@ fn the_token_spend_scan_sees_code_and_not_prose() {
         // strings.token(id).emit(&mut probe);
         const DOC: &str = "strings.token(id).emit(&mut probe)";
         fn live(sink: &mut S) { strings.token(id).emit(sink); }
+        fn ufcs_probe() { crate::remap::StringToken::emit_durable(token, &mut probe); }
         #[cfg(test)]
         mod tests {
             fn hostile() { strings.token(id).emit(&mut probe); }
@@ -1887,7 +1883,12 @@ fn the_token_spend_scan_sees_code_and_not_prose() {
     assert_eq!(
         planted.matches(".emit(").count(),
         1,
-        "exactly the production code occurrence is visible to the scan",
+        "exactly the production method-call occurrence is visible to the scan",
+    );
+    assert_eq!(
+        planted.matches("::emit_durable(").count(),
+        1,
+        "the UFCS spelling of the same call is visible to the scan",
     );
 }
 
