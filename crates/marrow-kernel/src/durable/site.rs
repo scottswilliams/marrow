@@ -86,9 +86,18 @@ impl StoreProjectionBuilder {
 
     /// Resolve every site against the completed roots and publish the projection, or return
     /// the first refusal. Consuming, so no partially resolved table is observable.
+    ///
+    /// The root table is also held to the store's number space here: a projection past
+    /// [`MAX_STORE_NODES`](super::MAX_STORE_NODES) durable nodes is refused at mint, which is
+    /// what lets `number_store`'s counter be total rather than checked at every step of every
+    /// store open.
     pub fn finish(self) -> Result<StoreProjection, ProjectionBuildError> {
         if let Some(error) = self.error {
             return Err(error);
+        }
+        let nodes: u64 = self.roots.iter().map(super::root_node_count).sum();
+        if nodes > u64::from(super::MAX_STORE_NODES) {
+            return Err(ProjectionBuildError::TooManyNodes);
         }
         let mut sites = Vec::with_capacity(self.sites.len());
         for (root, target) in &self.sites {
@@ -228,6 +237,9 @@ pub enum ProjectionBuildError {
     UnknownGroup,
     /// A site named a managed-index position the root does not declare.
     UnknownIndex,
+    /// The root table declares more durable nodes than the store's cell-key number space
+    /// ([`MAX_STORE_NODES`](super::MAX_STORE_NODES)) can name.
+    TooManyNodes,
 }
 
 impl std::fmt::Display for ProjectionBuildError {
@@ -238,6 +250,12 @@ impl std::fmt::Display for ProjectionBuildError {
             Self::UnknownBranch => write!(f, "a site names an undeclared branch"),
             Self::UnknownGroup => write!(f, "a site names an undeclared group"),
             Self::UnknownIndex => write!(f, "a site names an undeclared managed index"),
+            Self::TooManyNodes => {
+                write!(
+                    f,
+                    "the store declares more durable nodes than its number space"
+                )
+            }
         }
     }
 }
@@ -321,5 +339,113 @@ fn field_pos_at(schema: &StoreSchema, path: &[BranchPos], field: u16) -> Option<
     match branch {
         Some(branch) => branch.field_pos(field),
         None => schema.field_pos(field),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::schema::StoreSchemaBuilder;
+    use super::super::{MAX_STORE_NODES, number_store, root_node_count};
+    use super::{ProjectionBuildError, StoreProjection};
+    use crate::codec::value::ScalarKind;
+
+    /// A two-root fixture exercising every numbered node kind: fields, a group with its own
+    /// fields, and a nested branch tree.
+    fn two_roots() -> StoreProjection {
+        let mut first = StoreSchemaBuilder::root("patients", vec![ScalarKind::Str]);
+        first.scalar_field("name", ScalarKind::Str, true);
+        first.scalar_field("age", ScalarKind::Int, false);
+        first.open_group("vitals");
+        first.scalar_field("pulse", ScalarKind::Int, false);
+        first.close_group();
+        first.open_branch("visits", vec![ScalarKind::Int]);
+        first.scalar_field("note", ScalarKind::Str, false);
+        first.open_branch("charges", vec![ScalarKind::Int]);
+        first.scalar_field("amount", ScalarKind::Int, true);
+        first.close_branch();
+        first.close_branch();
+        let first = first.finish().expect("the patients schema builds");
+
+        let mut second = StoreSchemaBuilder::root("wards", vec![ScalarKind::Str]);
+        second.scalar_field("floor", ScalarKind::Int, true);
+        let second = second.finish().expect("the wards schema builds");
+
+        let mut projection = StoreProjection::builder();
+        projection.root(first).root(second);
+        projection.finish().expect("two plain roots project")
+    }
+
+    /// The split pre-order, pinned as a known answer: root, its fields, each group (the
+    /// group node then its fields), each branch (the branch node, its fields, then its
+    /// sub-branches), then the next root continuing the same store-wide counter. This is
+    /// the order the store persisted before the walk was checked, so the pin is the
+    /// traversal-rewrite regression gate.
+    #[test]
+    fn numbering_is_the_split_pre_order_known_answer() {
+        let numbering = number_store(&two_roots());
+
+        let patients = &numbering[0];
+        assert_eq!(patients.root(), 0);
+        assert_eq!(patients.fields(), &[1, 2]);
+        assert_eq!(patients.groups()[0].number(), 3);
+        assert_eq!(patients.groups()[0].fields(), &[4]);
+        let visits = &patients.branches()[0];
+        assert_eq!(visits.number(), 5);
+        assert_eq!(visits.fields(), &[6]);
+        let charges = &visits.branches()[0];
+        assert_eq!(charges.number(), 7);
+        assert_eq!(charges.fields(), &[8]);
+
+        let wards = &numbering[1];
+        assert_eq!(wards.root(), 9);
+        assert_eq!(wards.fields(), &[10]);
+    }
+
+    /// The refusal's count and the walk's output are two readings of one definition of
+    /// "node"; holding them equal keeps the mint-time bound honest about what the counter
+    /// later numbers.
+    #[test]
+    fn the_node_count_equals_the_walk_it_bounds() {
+        let projection = two_roots();
+        let numbering = number_store(&projection);
+        let numbered: u64 = numbering
+            .iter()
+            .map(|root| {
+                let mut nodes = 1 + root.fields().len() as u64;
+                for group in root.groups() {
+                    nodes += 1 + group.fields().len() as u64;
+                }
+                let mut stack: Vec<_> = root.branches().iter().collect();
+                while let Some(branch) = stack.pop() {
+                    nodes += 1 + branch.fields().len() as u64;
+                    stack.extend(branch.branches());
+                }
+                nodes
+            })
+            .sum();
+        let counted: u64 = projection.roots().iter().map(root_node_count).sum();
+        assert_eq!(counted, numbered);
+    }
+
+    /// One root with the widest field table the number space admits beside it: exactly at
+    /// the bound the projection publishes, one field past it the projection refuses.
+    #[test]
+    fn the_number_space_bound_refuses_at_mint_and_admits_at_the_edge() {
+        let build = |fields: u32| {
+            let mut builder = StoreSchemaBuilder::root("wide", vec![ScalarKind::Str]);
+            for i in 0..fields {
+                builder.scalar_field(format!("f{i}"), ScalarKind::Int, false);
+            }
+            let schema = builder.finish().expect("a flat wide schema builds");
+            let mut projection = StoreProjection::builder();
+            projection.root(schema);
+            projection.finish()
+        };
+
+        assert!(build(MAX_STORE_NODES - 1).is_ok());
+        assert_eq!(
+            build(MAX_STORE_NODES).unwrap_err(),
+            ProjectionBuildError::TooManyNodes,
+        );
     }
 }

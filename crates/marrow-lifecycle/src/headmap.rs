@@ -25,7 +25,9 @@ use crate::codec::{FormatError, Reader, put_u32};
 /// 9). It sits far above any image's total durable-node count — the image family bounds cap
 /// roots, fields, groups, branches, indexes, and enums well below this — while the number
 /// field itself stays `u32` for lifetime headroom, so the allocation guard and the number
-/// width are independent (FR01 §4).
+/// width are independent (FR01 §4). It is a hand-copy of the kernel's
+/// `MAX_STORE_NODES` — the number space projections are admitted into — held equal by a
+/// drift gate in this module's tests.
 pub const MAX_HEAD_MAP_ENTRIES: u32 = 1 << 16;
 
 /// One binding in the head map: a durable node's ledger id and its compact store-local
@@ -183,6 +185,17 @@ mod tests {
 
     fn id(byte: u8) -> LedgerIdBytes {
         LedgerIdBytes::from_bytes([byte; 16])
+    }
+
+    /// The head map frames the same number space the kernel admits projections into: its
+    /// entry bound is a hand-copy of the kernel's [`MAX_STORE_NODES`] and may not drift, or
+    /// a store the kernel numbers could fail to persist its bijection.
+    #[test]
+    fn the_entry_bound_mirrors_the_kernel_number_space() {
+        assert_eq!(
+            MAX_HEAD_MAP_ENTRIES,
+            marrow_kernel::durable::MAX_STORE_NODES
+        );
     }
 
     #[test]

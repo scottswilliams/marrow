@@ -65,6 +65,13 @@ use crate::equality::ValueDomain;
 /// `u32` for lifetime headroom, independent of the image's `u16` table rings (FR01 §4).
 pub type NodeNumber = u32;
 
+/// The most durable nodes one store may declare: the size of the cell-key number space a
+/// projection is admitted into. [`StoreProjection`]'s builder refuses a larger root table at
+/// mint, so every projection [`number_store`] receives already fits — the counter cannot
+/// exhaust, and the persisted head map (whose entry bound mirrors this value, under a
+/// downstream drift gate) can always frame the full bijection.
+pub const MAX_STORE_NODES: u32 = 1 << 16;
+
 /// The store-local numbering of one root's durable nodes, mirroring its [`StoreSchema`]
 /// structure: the root's own number, one number per top-level field (in order), one
 /// [`GroupNumbering`] per group, and one [`BranchNumbering`] per branch. Computed once from
@@ -161,7 +168,11 @@ pub fn number_store(projection: &StoreProjection) -> Vec<RootNumbering> {
     let mut next = 0u32;
     let mut alloc = || {
         let n = next;
-        next += 1;
+        // Total by invariant: the projection's builder refused any root table holding more
+        // than [`MAX_STORE_NODES`] nodes, so the checked step cannot see `u32::MAX`.
+        next = next
+            .checked_add(1)
+            .expect("a published projection holds at most MAX_STORE_NODES nodes");
         n
     };
     projection
@@ -181,6 +192,30 @@ pub fn number_store(projection: &StoreProjection) -> Vec<RootNumbering> {
             branches: number_branches(schema.branches(), &mut alloc),
         })
         .collect()
+}
+
+/// The count of durable nodes [`number_store`] would number under one root: the root
+/// itself, its fields, each group and the group's fields, and each branch with its fields
+/// and sub-branches. Kept beside the walk it mirrors so "node" has one definition; the
+/// projection builder sums it over its roots to refuse a table past [`MAX_STORE_NODES`],
+/// and a test holds it equal to the walk's own output length. Deliberately per-root: a
+/// crate-visible signature over a raw root slice is the intake shape the absence gate
+/// forbids.
+pub(crate) fn root_node_count(schema: &StoreSchema) -> u64 {
+    1 + schema.fields().len() as u64
+        + schema
+            .groups()
+            .iter()
+            .map(|group| 1 + group.fields().len() as u64)
+            .sum::<u64>()
+        + branch_node_count(schema.branches())
+}
+
+fn branch_node_count(branches: &[BranchSchema]) -> u64 {
+    branches
+        .iter()
+        .map(|branch| 1 + branch.fields().len() as u64 + branch_node_count(branch.branches()))
+        .sum()
 }
 
 /// Number a level of branches in pre-order, recursing into sub-branches, through the shared
