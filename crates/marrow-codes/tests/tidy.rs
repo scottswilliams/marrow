@@ -1212,3 +1212,222 @@ fn native_store_alias_docs_name_the_opaque_owner_not_a_removed_constructor() {
         "the native alias docs must name the opaque semantic owner",
     );
 }
+
+// ---------------------------------------------------------------------------
+// The per-file length cap.
+// ---------------------------------------------------------------------------
+
+/// The raw-line ceiling for a tracked Rust source file.
+///
+/// A file past this length has stopped being one readable unit: reviews sample it
+/// instead of reading it, and unrelated concerns accrete inside it unnoticed. The
+/// cap is deliberately blunt — raw lines, not statements or items — so it cannot be
+/// argued with, and the remedy is always the same: find the seam and lift it out.
+const FILE_LINE_CAP: usize = 3_000;
+
+/// The files that were already past [`FILE_LINE_CAP`] when the cap was installed,
+/// each with the exact length it is allowed to keep. These are inherited debt and
+/// named follow-on split targets, not exemptions: a budget may only ever be
+/// lowered. Growing one fails, and so does leaving a retired entry behind.
+///
+/// Recording the exact length rather than a blanket waiver is what keeps the gate
+/// honest — without it the longest files in the tree would be the only ones free
+/// to grow without limit.
+const OVER_CAP_ALLOWLIST: &[(&str, usize)] = &[
+    ("crates/marrow-compile/src/analysis.rs", 3_444),
+    ("crates/marrow-compile/src/compile.rs", 3_750),
+    ("crates/marrow-compile/src/durable.rs", 3_349),
+    ("crates/marrow-compile/src/lower/durable.rs", 3_107),
+    ("crates/marrow-compile/src/lower/exprs.rs", 3_371),
+    (
+        "crates/marrow-compile/src/types/instantiation_state_tests.rs",
+        3_731,
+    ),
+    ("crates/marrow-compile/src/types/mod.rs", 4_407),
+    ("crates/marrow-kernel/src/durable/store/tests.rs", 3_590),
+    ("crates/marrow-verify/tests/hostile.rs", 5_541),
+];
+
+/// Why one file, or one allowlist entry, fails the cap.
+#[derive(Debug, PartialEq, Eq)]
+enum CapViolation {
+    /// A file grew past the cap without being an inherited, budgeted one.
+    OverCap { path: String, lines: usize },
+    /// An inherited file grew past the budget it was admitted with.
+    OverBudget {
+        path: String,
+        lines: usize,
+        budget: usize,
+    },
+    /// An inherited file came back under the cap: the entry has to go, or the
+    /// allowlist will silently re-license it to grow again later.
+    Retired { path: String, lines: usize },
+    /// An entry names a file that is no longer tracked.
+    Vanished { path: String },
+}
+
+impl CapViolation {
+    fn render(&self) -> String {
+        match self {
+            Self::OverCap { path, lines } => format!(
+                "{path}: {lines} lines exceeds the {FILE_LINE_CAP}-line cap; split it at a seam"
+            ),
+            Self::OverBudget {
+                path,
+                lines,
+                budget,
+            } => format!("{path}: {lines} lines exceeds its inherited budget of {budget}"),
+            Self::Retired { path, lines } => {
+                format!("{path}: {lines} lines is under the cap; drop its OVER_CAP_ALLOWLIST entry")
+            }
+            Self::Vanished { path } => {
+                format!("{path}: no longer tracked; drop its OVER_CAP_ALLOWLIST entry")
+            }
+        }
+    }
+}
+
+/// The whole cap decision, over measured `(path, lines)` pairs, as a pure function
+/// so both of its failure directions can be probed directly.
+fn cap_violations(measured: &[(String, usize)], allowlist: &[(&str, usize)]) -> Vec<CapViolation> {
+    let mut violations = Vec::new();
+
+    for (path, lines) in measured {
+        let budget = allowlist
+            .iter()
+            .find(|(allowed, _)| allowed == path)
+            .map(|(_, budget)| *budget);
+        match budget {
+            None if *lines > FILE_LINE_CAP => violations.push(CapViolation::OverCap {
+                path: path.clone(),
+                lines: *lines,
+            }),
+            Some(budget) if *lines > budget => violations.push(CapViolation::OverBudget {
+                path: path.clone(),
+                lines: *lines,
+                budget,
+            }),
+            Some(_) if *lines <= FILE_LINE_CAP => violations.push(CapViolation::Retired {
+                path: path.clone(),
+                lines: *lines,
+            }),
+            _ => {}
+        }
+    }
+
+    for (path, _) in allowlist {
+        if !measured.iter().any(|(measured, _)| measured == path) {
+            violations.push(CapViolation::Vanished {
+                path: (*path).to_string(),
+            });
+        }
+    }
+
+    violations
+}
+
+/// Every tracked Rust source file, as a repository-relative path and its raw line
+/// count.
+fn measured_rust_sources(root: &Path) -> Vec<(String, usize)> {
+    let mut measured = Vec::new();
+    for path in tracked_files(root) {
+        if path.extension().is_some_and(|ext| ext == "rs") {
+            let contents = std::fs::read_to_string(&path).expect("read a tracked rust source");
+            let relative = path
+                .strip_prefix(root)
+                .expect("a tracked path lies under the workspace root");
+            measured.push((
+                relative.to_string_lossy().into_owned(),
+                contents.lines().count(),
+            ));
+        }
+    }
+    measured
+}
+
+#[test]
+fn no_rust_source_exceeds_the_line_cap() {
+    let root = workspace_root();
+    let measured = measured_rust_sources(&root);
+    assert!(
+        measured.len() > 100,
+        "the tracked-source scan found only {} files; the enumeration broke",
+        measured.len()
+    );
+
+    let violations = cap_violations(&measured, OVER_CAP_ALLOWLIST);
+    assert!(
+        violations.is_empty(),
+        "the {FILE_LINE_CAP}-line cap is violated:\n{}",
+        violations
+            .iter()
+            .map(CapViolation::render)
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
+}
+
+/// The gate's own coverage: planted inputs drive each arm, so a refactor that
+/// quietly stops detecting one direction fails here rather than going unnoticed
+/// until the tree has already grown into the gap.
+#[test]
+fn the_line_cap_detects_every_violation_direction() {
+    let allowlist: &[(&str, usize)] = &[("inherited.rs", 4_000)];
+
+    /// The planted tree: the inherited file at some length, plus one ordinary
+    /// file at another. Both entries are always present, so every violation the
+    /// probe sees is the one it planted.
+    fn planted(
+        allowlist: &[(&str, usize)],
+        inherited: usize,
+        ordinary: usize,
+    ) -> Vec<CapViolation> {
+        cap_violations(
+            &[
+                ("inherited.rs".to_string(), inherited),
+                ("ordinary.rs".to_string(), ordinary),
+            ],
+            allowlist,
+        )
+    }
+
+    // The quiet case: nothing planted, nothing reported.
+    assert_eq!(planted(allowlist, 4_000, FILE_LINE_CAP), Vec::new());
+
+    // An ordinary file is judged against the cap, one line either side of it.
+    assert_eq!(
+        planted(allowlist, 4_000, FILE_LINE_CAP + 1),
+        vec![CapViolation::OverCap {
+            path: "ordinary.rs".to_string(),
+            lines: FILE_LINE_CAP + 1,
+        }],
+    );
+
+    // An inherited file is judged against its own budget instead, so shrinking
+    // is free and growing is not.
+    assert_eq!(planted(allowlist, 3_999, 10), Vec::new());
+    assert_eq!(
+        planted(allowlist, 4_001, 10),
+        vec![CapViolation::OverBudget {
+            path: "inherited.rs".to_string(),
+            lines: 4_001,
+            budget: 4_000,
+        }],
+    );
+
+    // The staleness half, both spellings: an inherited file that came back under
+    // the cap, and an entry whose file is no longer tracked.
+    assert_eq!(
+        planted(allowlist, FILE_LINE_CAP, 10),
+        vec![CapViolation::Retired {
+            path: "inherited.rs".to_string(),
+            lines: FILE_LINE_CAP,
+        }],
+    );
+    assert_eq!(
+        cap_violations(&[("ordinary.rs".to_string(), 10)], allowlist),
+        vec![CapViolation::Vanished {
+            path: "inherited.rs".to_string(),
+        }],
+    );
+}
