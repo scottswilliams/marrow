@@ -420,24 +420,49 @@ impl ProductDeclarationGraph {
         self.rows.get(ordinal.index())
     }
 
-    /// The chain of rows from a top-level member down to `ordinal`, outermost first.
+    /// One row's nesting depth — the length of its parent chain, 1 for a top-level
+    /// member — walked through the parent links without materializing the chain. An
+    /// ordinal outside the rows has no chain and depth 0.
     ///
-    /// A parent always precedes its children, so walking the parent ordinals up and
-    /// reversing is bounded by the graph's own nesting depth — at most
+    /// A parent always precedes its children, so the chain strictly descends in row
+    /// ordinal and the walk terminates; its length is bounded by
     /// [`crate::bounds::MAX_DURABLE_DEPTH`], enforced by [`Self::from_commands`] before a
-    /// row exists — and needs no descent.
-    fn ancestry(&self, ordinal: DeclarationNodeOrdinal) -> Vec<&DeclarationNode> {
-        let mut chain = Vec::new();
+    /// row exists.
+    fn chain_depth(&self, ordinal: DeclarationNodeOrdinal) -> usize {
+        let mut depth = 0;
         let mut cursor = Some(ordinal);
         while let Some(at) = cursor {
             let Some(node) = self.rows.get(at.index()) else {
                 break;
             };
-            chain.push(node);
+            depth += 1;
             cursor = node.parent;
         }
-        chain.reverse();
-        chain
+        depth
+    }
+
+    /// Visit the chain of rows from a top-level member down to `ordinal`, outermost
+    /// first, materializing nothing. An ordinal outside the rows has no chain and
+    /// visits nothing.
+    ///
+    /// Each level is reached by re-walking the parent links from `ordinal`, so the walk
+    /// costs at most `depth * depth` link hops over a chain [`Self::chain_depth`] already
+    /// bounds — a handful of loads — and allocates no buffer to reverse.
+    fn walk_ancestry<'a>(
+        &'a self,
+        ordinal: DeclarationNodeOrdinal,
+        mut visit: impl FnMut(&'a DeclarationNode),
+    ) {
+        let depth = self.chain_depth(ordinal);
+        for level in (0..depth).rev() {
+            let mut at = ordinal;
+            for _ in 0..level {
+                at = self.rows[at.index()]
+                    .parent
+                    .expect("the chain the depth walk counted has a parent at every hop");
+            }
+            visit(&self.rows[at.index()]);
+        }
     }
 
     /// Each row's nesting depth, 1 for a top-level member.
@@ -1209,33 +1234,43 @@ impl<'draft> OccurrenceGraph<'draft> {
         Ok(*demand)
     }
 
-    /// Project the semantic path of one validated demand: the chain of kind-tagged ledger
-    /// ids from the application down to the node the demand names.
+    /// Stream the semantic-path steps of one validated demand, outermost first: the
+    /// application step, the root placement step, then — per the demand's kind — the
+    /// index step or the named declaration node's ancestry steps.
     ///
-    /// The plan retains the demand's ordinals, never a path, so this is where a path is
-    /// minted — transiently, at encode, by the one path owner. A root's path is
-    /// `[Application, Placement]`; an index extends it with the index step; a declaration
-    /// member extends it with its ancestry's field, group, and placement steps.
-    pub(crate) fn project_path(
+    /// This is the one projection grammar. [`Self::project_path`] collects an owned path
+    /// from exactly this stream, so a step's kind, id, and position cannot differ
+    /// between a streamed walk and a materialized path. `None` means the demand names
+    /// rows that are not there; steps already emitted for such a demand are the caller's
+    /// to discard with the refusal.
+    pub(crate) fn project_steps(
         &self,
         application: LedgerIdBytes,
         key: OccurrenceSiteDemandKey,
-    ) -> Option<crate::semantic::SemanticPath> {
-        use crate::semantic::{SemanticPath, SemanticStep, SemanticStepKind};
+        mut emit: impl FnMut(crate::semantic::SemanticStep),
+    ) -> Option<()> {
+        use crate::semantic::{SemanticStep, SemanticStepKind};
 
         let row = self.occurrences.rows().get(key.occurrence.index())?;
-        let root = SemanticPath::root(application, row.placement.ledger_id());
+        emit(SemanticStep::new(
+            SemanticStepKind::Application,
+            application,
+        ));
+        emit(SemanticStep::new(
+            SemanticStepKind::Placement,
+            row.placement.ledger_id(),
+        ));
         match key.path {
-            CanonicalDeclarationPathOrdinal::RootPlacement => Some(root),
+            CanonicalDeclarationPathOrdinal::RootPlacement => Some(()),
             CanonicalDeclarationPathOrdinal::RootIndex(index) => {
                 let shape = row.indexes.get(usize::from(index))?;
-                Some(root.extend(SemanticStep::new(SemanticStepKind::Index, shape.id)))
+                emit(SemanticStep::new(SemanticStepKind::Index, shape.id));
+                Some(())
             }
             CanonicalDeclarationPathOrdinal::DeclarationNode(node) => {
                 let graph = self.products.declarations().get(row.declaration)?.graph();
-                let mut path = root;
-                for ancestor in graph.ancestry(node) {
-                    path = path.extend(match &ancestor.shape {
+                graph.walk_ancestry(node, |ancestor| {
+                    emit(match &ancestor.shape {
                         DeclarationMemberShape::Field { id, .. } => {
                             SemanticStep::new(SemanticStepKind::Field, *id)
                         }
@@ -1246,10 +1281,37 @@ impl<'draft> OccurrenceGraph<'draft> {
                             SemanticStep::new(SemanticStepKind::Placement, *placement)
                         }
                     });
-                }
-                Some(path)
+                });
+                Some(())
             }
         }
+    }
+
+    /// Project the semantic path of one validated demand: the chain of kind-tagged ledger
+    /// ids from the application down to the node the demand names.
+    ///
+    /// The plan retains the demand's ordinals, never a path, so this is where a path is
+    /// minted — transiently, at encode, by the one path owner. The path is collected
+    /// from [`Self::project_steps`], the one streaming projection grammar.
+    pub(crate) fn project_path(
+        &self,
+        application: LedgerIdBytes,
+        key: OccurrenceSiteDemandKey,
+    ) -> Option<crate::semantic::SemanticPath> {
+        use crate::semantic::{SemanticPath, SemanticStep};
+
+        let mut application_step: Option<SemanticStep> = None;
+        let mut path: Option<SemanticPath> = None;
+        self.project_steps(application, key, |step| {
+            if let Some(existing) = path.take() {
+                path = Some(existing.extend(step));
+            } else if let Some(app) = application_step {
+                path = Some(SemanticPath::root(app.id, step.id));
+            } else {
+                application_step = Some(step);
+            }
+        })?;
+        path
     }
 }
 
@@ -1783,7 +1845,8 @@ mod tests {
     }
 
     /// The ancestry of a row is the chain from its top-level member down to it, so a
-    /// path projection walks parents rather than descending the graph.
+    /// path projection walks parents rather than descending the graph. The walk streams
+    /// the chain outermost first and materializes nothing.
     #[test]
     fn ancestry_is_the_chain_from_the_top_level_member_down() {
         let mut values = CanonicalValueShapeDag::new();
@@ -1791,9 +1854,11 @@ mod tests {
             ProductDeclarationGraph::from_commands(nested(&mut values)).expect("well-formed");
 
         let deepest = graph.rows().len() - 1;
-        let chain = graph.ancestry(super::DeclarationNodeOrdinal(
-            u16::try_from(deepest).expect("bounded"),
-        ));
+        let mut chain = Vec::new();
+        graph.walk_ancestry(
+            super::DeclarationNodeOrdinal(u16::try_from(deepest).expect("bounded")),
+            |node| chain.push(node),
+        );
 
         assert_eq!(chain.len(), 3);
         assert!(matches!(
@@ -1808,6 +1873,32 @@ mod tests {
             chain[2].shape(),
             DeclarationMemberShape::Field { .. }
         ));
+    }
+
+    /// The allocation-free parent-chain depth agrees with the forward depth pass on
+    /// every row, and an ordinal outside the rows has no chain.
+    #[test]
+    fn the_parent_chain_depth_agrees_with_the_forward_depth_pass() {
+        let mut values = CanonicalValueShapeDag::new();
+        let graph =
+            ProductDeclarationGraph::from_commands(nested(&mut values)).expect("well-formed");
+
+        for (ordinal, depth) in graph.depths().into_iter().enumerate() {
+            assert_eq!(
+                graph.chain_depth(super::DeclarationNodeOrdinal(
+                    u16::try_from(ordinal).expect("bounded"),
+                )),
+                depth,
+                "row {ordinal} carries one depth however it is walked",
+            );
+        }
+        assert_eq!(
+            graph.chain_depth(super::DeclarationNodeOrdinal(
+                u16::try_from(graph.rows().len()).expect("bounded"),
+            )),
+            0,
+            "an ordinal outside the rows has no chain",
+        );
     }
 
     /// A command vector that does not state a forest is refused rather than materialized:
