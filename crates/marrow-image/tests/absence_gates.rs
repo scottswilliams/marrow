@@ -1639,6 +1639,61 @@ fn the_durable_body_has_one_writer() {
     );
 }
 
+/// The shared section writers resolve string and constant references only through
+/// opaque remap tokens, never by indexing a sort map.
+///
+/// A writer that can read a remapped index can branch on it, which is exactly how a
+/// counted section and an emitted section drift apart. The owner-safe raw reads —
+/// the constant comparator's sort key and the test-entry permutation's comparator
+/// keys — live in the draft owner, outside the writers' file, so the writers' file
+/// spells no sort-map indexing at all.
+#[test]
+fn the_shared_writers_index_no_sort_map() {
+    let encode = without_literals(
+        &fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/encode.rs"))
+            .expect("read the encoder"),
+    );
+    for needle in ["str_map[", "const_map["] {
+        assert!(
+            !encode.contains(needle),
+            "`{needle}` reads a sort map inside the shared-writer file; writers receive \
+             opaque tokens",
+        );
+    }
+    assert!(
+        encode.contains("StringRemap") && encode.contains("ConstRemap"),
+        "the token providers are present, so this gate has a live subject",
+    );
+}
+
+/// The planted-probe half of the sort-map gate: each needle must be visible to the
+/// scan in code and invisible in prose, or the gate passes for the wrong reason.
+#[test]
+fn the_sort_map_scan_sees_code_and_not_prose() {
+    let planted = without_literals(
+        r##"
+        // let final_index = str_map[old as usize];
+        const DOC: &str = "str_map[old]";
+        const RAW: &str = r#"const_map[old]"#;
+        let live = str_map[old as usize];
+        let also_live = const_map[old as usize];
+        "##,
+    );
+    let hits: Vec<&str> = planted
+        .lines()
+        .filter(|line| line.contains("str_map[") || line.contains("const_map["))
+        .collect();
+    assert_eq!(
+        hits.len(),
+        2,
+        "exactly the code occurrences are visible to the scan: {hits:?}",
+    );
+    assert!(
+        hits[0].contains("let live") && hits[1].contains("let also_live"),
+        "the visible occurrences are the code ones: {hits:?}",
+    );
+}
+
 // ---- The bounded-representation discipline the falsifier's claim rests on.
 
 /// The crates that own the durable contract graph and the verified graph it decodes into.
