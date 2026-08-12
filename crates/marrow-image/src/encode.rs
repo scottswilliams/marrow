@@ -6,6 +6,17 @@
 //! maps, and lays out each function's bytecode so jump targets — held as
 //! instruction indices while drafting — become container byte offsets.
 //!
+//! # Row law and token law (design §C)
+//!
+//! Each canonicalized pool — strings, constants, exports, test entries — is its one
+//! retained base row set plus one permutation computed by the pool's one comparator;
+//! emission iterates the permutation-mapped base rows, so no second sorted copy of a
+//! pool exists to disagree with the rows it came from. Every section writer is generic
+//! over its [`ImageByteSink`], and a writer resolves a string or constant reference
+//! only as an opaque [`crate::remap`] token whose sole operation appends two bytes —
+//! so a section's byte length cannot depend on which permutation or sink drives the
+//! writer, which is what lets one writer serve counting and building alike.
+//!
 //! # Why the row-count conversions cannot truncate
 //!
 //! Each table is length-prefixed, so the encoder narrows a `usize` row count to the
@@ -35,6 +46,7 @@ use crate::instr::Instr;
 use crate::product::{
     DeclarationMemberShape, DeclarationNode, ProductClaimConflict, ProductDeclarationGraph,
 };
+use crate::remap::{ConstRemap, StringRemap};
 use crate::semantic::{SemanticPath, SemanticTarget};
 use crate::ty::ImageType;
 use crate::value_dag::{
@@ -190,11 +202,11 @@ impl<'a> LegacyDurableBodyLowerBoundFence<'a> {
     /// image can carry.
     fn admit(
         preflight: LegacyFullDraftCoherencePreflight<'a>,
-        str_map: &[u16],
+        strings: &StringRemap<'_>,
     ) -> Result<Self, ImageBuildError> {
         let draft = preflight.0;
         let mut lower_bound = DurableBodyLowerBound::default();
-        draft.write_durable_body(&mut lower_bound, str_map)?;
+        draft.write_durable_body(&mut lower_bound, strings)?;
         if lower_bound.over_ceiling() {
             return Err(ImageBuildError::ImageTooLarge);
         }
@@ -209,9 +221,9 @@ impl<'a> LegacyDurableBodyLowerBoundFence<'a> {
     ///
     /// This is the only site in the crate that mints a contract identity, so the identity
     /// exists only for a graph that already fits.
-    fn encode_body(self, str_map: &[u16]) -> Result<Vec<u8>, ImageBuildError> {
+    fn encode_body(self, strings: &StringRemap<'_>) -> Result<Vec<u8>, ImageBuildError> {
         let mut body = Vec::with_capacity(self.body_len + DurableContractId::BYTES);
-        self.draft.write_durable_body(&mut body, str_map)?;
+        self.draft.write_durable_body(&mut body, strings)?;
         let identity = self
             .draft
             .contract_view()
@@ -228,14 +240,21 @@ impl ImageDraft {
     pub fn encode(&self) -> Result<EncodedImage, ImageBuildError> {
         let preflight = LegacyFullDraftCoherencePreflight::run(self)?;
 
-        let str_map = self.string_sort_map();
-        let sorted_strings = self.sorted_strings(&str_map);
-        let (const_map, sorted_consts) = self.const_sort(&str_map);
+        // Row law: the canonical string and constant orders are one permutation each
+        // over the retained base rows, and every reference is rewritten through the
+        // permutation's inverse — read by the writers only as opaque tokens.
+        let string_order = self.string_permutation();
+        let str_map = remap_of(&string_order);
+        let strings = StringRemap::new(&str_map);
+        let const_order = self.const_permutation(&str_map);
+        let const_map = remap_of(&const_order);
+        let consts = ConstRemap::new(&const_map);
 
         // CodeBytes and its sibling operand references are discovered before the
         // whole-image ceiling result, so they are computed before the body is measured.
         // Their section lands at 0x05 below.
-        let function_offsets = self.encode_functions(&str_map, &const_map)?;
+        let mut functions = Vec::new();
+        let per_fn = self.encode_functions(&mut functions, &strings, &consts)?;
 
         // The DURABLE body is the one section whose size is not bounded by the draft's
         // own row counts: a value shape's wire form is its expansion, and a shape shared
@@ -243,20 +262,59 @@ impl ImageDraft {
         // counted before it is built, and a body no image could carry is refused here,
         // with the same ImageBytes result it has always drawn.
         let durable =
-            LegacyDurableBodyLowerBoundFence::admit(preflight, &str_map)?.encode_body(&str_map)?;
+            LegacyDurableBodyLowerBoundFence::admit(preflight, &strings)?.encode_body(&strings)?;
 
         let mut tail = Vec::new();
         tail.push(SECTION_COUNT);
-        push_section(&mut tail, 0x01, encode_strings(&sorted_strings))?;
-        push_section(&mut tail, 0x02, self.encode_types(&str_map))?;
+        push_section(
+            &mut tail,
+            0x01,
+            section_body(|body| self.encode_strings(body, string_order.iter().copied())),
+        )?;
+        push_section(
+            &mut tail,
+            0x02,
+            section_body(|body| self.encode_types(body, &strings)),
+        )?;
         push_section(&mut tail, 0x03, durable)?;
-        push_section(&mut tail, 0x04, encode_consts(&sorted_consts, &str_map))?;
-        push_section(&mut tail, 0x05, function_offsets.body)?;
-        push_section(&mut tail, 0x06, self.encode_exports())?;
-        push_section(&mut tail, 0x07, self.encode_spans(&function_offsets.per_fn))?;
-        push_section(&mut tail, 0x08, self.encode_test_entries(&str_map))?;
-        push_section(&mut tail, 0x09, self.encode_enums(&str_map))?;
-        push_section(&mut tail, 0x0A, self.encode_collections())?;
+        push_section(
+            &mut tail,
+            0x04,
+            section_body(|body| self.encode_consts(body, &strings, const_order.iter().copied())),
+        )?;
+        push_section(&mut tail, 0x05, functions)?;
+        let export_order = self.export_permutation();
+        push_section(
+            &mut tail,
+            0x06,
+            section_body(|body| self.encode_exports(body, export_order.iter().copied())),
+        )?;
+        push_section(
+            &mut tail,
+            0x07,
+            section_body(|body| self.encode_spans(body, &per_fn)),
+        )?;
+        // The test-entry permutation reads the raw sort map through its comparator, so
+        // it is computed at the section's own position: a name reference outside the
+        // pool keeps reporting exactly where the old sorted copy reported it.
+        let test_entry_order = self.test_entry_permutation(&str_map);
+        push_section(
+            &mut tail,
+            0x08,
+            section_body(|body| {
+                self.encode_test_entries(body, &strings, test_entry_order.iter().copied())
+            }),
+        )?;
+        push_section(
+            &mut tail,
+            0x09,
+            section_body(|body| self.encode_enums(body, &strings)),
+        )?;
+        push_section(
+            &mut tail,
+            0x0A,
+            section_body(|body| self.encode_collections(body)),
+        )?;
 
         let id = image_id(&tail);
         let mut bytes = Vec::with_capacity(37 + tail.len());
@@ -350,10 +408,10 @@ impl ImageDraft {
         if self.functions().len() > bounds::MAX_FUNCTIONS {
             return Err(ImageBuildError::TooManyFunctions);
         }
-        if self.export_entries().len() > bounds::MAX_EXPORTS {
+        if self.export_count() > bounds::MAX_EXPORTS {
             return Err(ImageBuildError::TooManyExports);
         }
-        if self.test_entry_rows().len() > bounds::MAX_TEST_ENTRIES {
+        if self.test_entry_count() > bounds::MAX_TEST_ENTRIES {
             return Err(ImageBuildError::TooManyTestEntries);
         }
         for function in self.functions() {
@@ -370,59 +428,105 @@ impl ImageDraft {
         Ok(())
     }
 
-    /// `str_map[old_id] = final byte-sorted index`.
-    fn string_sort_map(&self) -> Vec<u16> {
+    /// The canonical string permutation (row law): the base-row indices in emitted
+    /// order, computed by the pool's one byte comparator over the retained base rows.
+    fn string_permutation(&self) -> Vec<usize> {
         let mut order: Vec<usize> = (0..self.strings().len()).collect();
         order.sort_by(|&a, &b| {
             self.strings()[a]
                 .as_bytes()
                 .cmp(self.strings()[b].as_bytes())
         });
-        let mut map = vec![0u16; self.strings().len()];
-        for (final_index, &old) in order.iter().enumerate() {
-            map[old] = final_index as u16;
-        }
-        map
+        order
     }
 
-    fn sorted_strings(&self, str_map: &[u16]) -> Vec<String> {
-        let mut sorted = vec![String::new(); self.strings().len()];
-        for (old, text) in self.strings().iter().enumerate() {
-            sorted[str_map[old] as usize] = text.clone();
-        }
-        sorted
-    }
-
-    /// Returns `const_map[old_id] = final index` and the constants in canonical order.
-    fn const_sort(&self, str_map: &[u16]) -> (Vec<u16>, Vec<ConstValue>) {
+    /// The canonical constant permutation (row law), ordered by each base row's
+    /// `(tag, wire-byte)` sort key with text payloads resolved to final string indices.
+    fn const_permutation(&self, str_map: &[u16]) -> Vec<usize> {
         let mut order: Vec<usize> = (0..self.consts().len()).collect();
         order.sort_by(|&a, &b| {
             self.consts()[a]
                 .sort_key(str_map)
                 .cmp(&self.consts()[b].sort_key(str_map))
         });
-        let mut map = vec![0u16; self.consts().len()];
-        let mut sorted = Vec::with_capacity(self.consts().len());
-        for (final_index, &old) in order.iter().enumerate() {
-            map[old] = final_index as u16;
-            sorted.push(self.consts()[old]);
-        }
-        (map, sorted)
+        order
     }
 
-    fn encode_types(&self, str_map: &[u16]) -> Vec<u8> {
-        let mut body = Vec::new();
-        push_u16(&mut body, self.types().len() as u16);
-        for record in self.types() {
-            push_u16(&mut body, str_map[record.name.raw() as usize]);
-            push_u16(&mut body, record.fields.len() as u16);
-            for field in &record.fields {
-                push_u16(&mut body, str_map[field.name.raw() as usize]);
-                field.ty.encode(&mut body);
-                body.push(u8::from(field.required));
+    /// The canonical export permutation (row law): the base-row indices ascending by
+    /// the 32 [`crate::export_id::ExportId`] bytes.
+    fn export_permutation(&self) -> Vec<usize> {
+        let mut order: Vec<usize> = (0..self.export_count()).collect();
+        order.sort_by(|&a, &b| {
+            self.export_rows()[a]
+                .id()
+                .bytes()
+                .cmp(self.export_rows()[b].id().bytes())
+        });
+        order
+    }
+
+    /// Encode the STRINGS table (section 0x01): a count, then per row its
+    /// length-prefixed text, iterating the base rows in the order `order` states.
+    fn encode_strings(&self, sink: &mut impl ImageByteSink, order: impl Iterator<Item = usize>) {
+        push_u16(sink, self.strings().len() as u16);
+        for row in order {
+            let text = &self.strings()[row];
+            push_u16(sink, text.len() as u16);
+            sink.extend_bytes(text.as_bytes());
+        }
+    }
+
+    /// Encode the CONSTS table (section 0x04): a count, then per row its tag and
+    /// payload, iterating the base rows in the order `order` states. A text payload is
+    /// its remapped string reference, written as an opaque token.
+    fn encode_consts(
+        &self,
+        sink: &mut impl ImageByteSink,
+        strings: &StringRemap<'_>,
+        order: impl Iterator<Item = usize>,
+    ) {
+        push_u16(sink, self.consts().len() as u16);
+        for row in order {
+            match self.consts()[row] {
+                ConstValue::Int(v) => {
+                    sink.push(0x01);
+                    sink.extend_bytes(&v.to_be_bytes());
+                }
+                ConstValue::Bool(v) => {
+                    sink.push(0x02);
+                    sink.push(u8::from(v));
+                }
+                ConstValue::Text(str_id) => {
+                    sink.push(0x03);
+                    strings.token(str_id).emit(sink);
+                }
+                ConstValue::Date(v) => {
+                    sink.push(0x04);
+                    sink.extend_bytes(&v.to_be_bytes());
+                }
+                ConstValue::Instant(v) => {
+                    sink.push(0x05);
+                    sink.extend_bytes(&v.to_be_bytes());
+                }
+                ConstValue::Duration(v) => {
+                    sink.push(0x06);
+                    sink.extend_bytes(&v.to_be_bytes());
+                }
             }
         }
-        body
+    }
+
+    fn encode_types(&self, sink: &mut impl ImageByteSink, strings: &StringRemap<'_>) {
+        push_u16(sink, self.types().len() as u16);
+        for record in self.types() {
+            strings.token(record.name).emit(sink);
+            push_u16(sink, record.fields.len() as u16);
+            for field in &record.fields {
+                strings.token(field.name).emit(sink);
+                field.ty.encode(sink);
+                sink.push(u8::from(field.required));
+            }
+        }
     }
 
     /// Encode the ENUMS table (section 0x09): a count, then per enum its name
@@ -430,45 +534,41 @@ impl ImageDraft {
     /// `category` flag byte, a payload count, and one bare-`ImageType` reference per
     /// payload leaf in declaration order (a scalar tag, or a tag plus a big-endian
     /// `u16` index for a record or enum leaf).
-    fn encode_enums(&self, str_map: &[u16]) -> Vec<u8> {
-        let mut body = Vec::new();
-        push_u16(&mut body, self.enums().len() as u16);
+    fn encode_enums(&self, sink: &mut impl ImageByteSink, strings: &StringRemap<'_>) {
+        push_u16(sink, self.enums().len() as u16);
         for enum_def in self.enums() {
-            push_u16(&mut body, str_map[enum_def.name.raw() as usize]);
-            push_u16(&mut body, enum_def.variants.len() as u16);
+            strings.token(enum_def.name).emit(sink);
+            push_u16(sink, enum_def.variants.len() as u16);
             for variant in &enum_def.variants {
-                push_u16(&mut body, str_map[variant.name.raw() as usize]);
-                body.push(u8::from(variant.category));
-                body.push(variant.payload.len() as u8);
+                strings.token(variant.name).emit(sink);
+                sink.push(u8::from(variant.category));
+                sink.push(variant.payload.len() as u8);
                 for ty in &variant.payload {
-                    ty.encode(&mut body);
+                    ty.encode(sink);
                 }
             }
         }
-        body
     }
 
     /// Encode the COLLTYPES table (section 0x0A): a count, then per collection type
     /// a one-byte kind tag (`0x00` List, `0x01` Map) followed by its bare-`ImageType`
     /// element reference (List) or key then value references (Map). Element/key/value
     /// references may themselves be `Collection` tags into an earlier COLLTYPES row.
-    fn encode_collections(&self) -> Vec<u8> {
-        let mut body = Vec::new();
-        push_u16(&mut body, self.collections().len() as u16);
+    fn encode_collections(&self, sink: &mut impl ImageByteSink) {
+        push_u16(sink, self.collections().len() as u16);
         for coll in self.collections() {
             match coll {
                 CollectionTypeDef::List { elem } => {
-                    body.push(0x00);
-                    elem.encode(&mut body);
+                    sink.push(0x00);
+                    elem.encode(sink);
                 }
                 CollectionTypeDef::Map { key, value } => {
-                    body.push(0x01);
-                    key.encode(&mut body);
-                    value.encode(&mut body);
+                    sink.push(0x01);
+                    key.encode(sink);
+                    value.encode(sink);
                 }
             }
         }
-        body
     }
 
     /// Write the DURABLE section body, minus its closing contract identity, into `sink`.
@@ -479,7 +579,7 @@ impl ImageDraft {
     fn write_durable_body(
         &self,
         sink: &mut impl ImageByteSink,
-        str_map: &[u16],
+        strings: &StringRemap<'_>,
     ) -> Result<(), ImageBuildError> {
         push_u16(sink, self.root_occurrences().len() as u16);
         // The application's ledger id anchors a non-empty durable graph; a
@@ -494,7 +594,7 @@ impl ImageDraft {
         // one retained declaration it references rather than carrying its own copy.
         for occurrence in self.root_occurrences() {
             let declaration = self.declaration_of(occurrence);
-            push_u16(sink, str_map[occurrence.name().raw() as usize]);
+            strings.token(occurrence.name()).emit(sink);
             // The key tuple: a count, then each column's scalar type and ledger id.
             // Zero columns is a singleton root; more than one is a composite key.
             encode_key_tuple(sink, occurrence.keys());
@@ -505,7 +605,7 @@ impl ImageDraft {
             sink.extend_bytes(occurrence.placement().ledger_id().bytes());
             sink.extend_bytes(declaration.identity().ledger_id().bytes());
             let graph = declaration.graph();
-            encode_declaration_members(sink, graph, graph.members(), str_map, self.value_shapes())?;
+            encode_declaration_members(sink, graph, graph.members(), strings, self.value_shapes())?;
             // A body already past the ceiling is decided; the remaining roots would only
             // add to a count that is already refused.
             if sink.is_full() {
@@ -531,67 +631,62 @@ impl ImageDraft {
 
     fn encode_functions(
         &self,
-        str_map: &[u16],
-        const_map: &[u16],
-    ) -> Result<EncodedFunctions, ImageBuildError> {
-        let mut body = Vec::new();
-        push_u16(&mut body, self.functions().len() as u16);
+        sink: &mut impl ImageByteSink,
+        strings: &StringRemap<'_>,
+        consts: &ConstRemap<'_>,
+    ) -> Result<Vec<CodeLayout>, ImageBuildError> {
+        push_u16(sink, self.functions().len() as u16);
         let mut per_fn = Vec::with_capacity(self.functions().len());
         for function in self.functions() {
             let layout = code_layout(&function.code);
             if layout.total_len as usize > bounds::MAX_CODE_BYTES {
                 return Err(ImageBuildError::CodeTooLong);
             }
-            push_u16(&mut body, str_map[function.name.raw() as usize]);
-            push_u16(&mut body, str_map[function.source.raw() as usize]);
-            body.push(function.params.len() as u8);
+            strings.token(function.name).emit(sink);
+            strings.token(function.source).emit(sink);
+            sink.push(function.params.len() as u8);
             for param in &function.params {
-                param.encode(&mut body);
+                param.encode(sink);
             }
-            function.ret.encode(&mut body);
-            push_u16(&mut body, function.local_count);
-            push_u32(&mut body, layout.total_len);
-            let code = encode_code(&function.code, &layout, const_map)?;
-            body.extend_from_slice(&code);
+            function.ret.encode(sink);
+            push_u16(sink, function.local_count);
+            push_u32(sink, layout.total_len);
+            encode_code(sink, &function.code, &layout, consts)?;
             per_fn.push(layout);
         }
-        Ok(EncodedFunctions { body, per_fn })
+        Ok(per_fn)
     }
 
     /// Encode the EXPORTS table: a count, then each `32-byte ExportId ‖ u16 func`
-    /// entry in strictly ascending id order. The id is the only export key carried;
+    /// entry, iterating the base rows in the order `order` states — strictly ascending
+    /// id order under the canonical permutation. The id is the only export key carried;
     /// the source name is not, so the VM can only dispatch on a verified id.
-    fn encode_exports(&self) -> Vec<u8> {
-        let mut entries = self.export_entries();
-        entries.sort_by(|a, b| a.0.bytes().cmp(b.0.bytes()));
-        let mut body = Vec::new();
-        push_u16(&mut body, entries.len() as u16);
-        for (id, func) in entries {
-            body.extend_from_slice(id.bytes());
-            push_u16(&mut body, func);
+    fn encode_exports(&self, sink: &mut impl ImageByteSink, order: impl Iterator<Item = usize>) {
+        push_u16(sink, self.export_count() as u16);
+        for row in order {
+            let export = &self.export_rows()[row];
+            sink.extend_bytes(export.id().bytes());
+            push_u16(sink, export.func());
         }
-        body
     }
 
     /// Encode the TEST-ENTRY table (section 0x08): a count, then each
-    /// `u16 name-string-index ‖ u16 function-index` entry in strictly ascending
-    /// name-index order. The name index is remapped through the string sort map;
-    /// names are unique across the project, so the sort is total and the verifier
-    /// rechecks the strict ordering.
-    fn encode_test_entries(&self, str_map: &[u16]) -> Vec<u8> {
-        let mut entries: Vec<(u16, u16)> = self
-            .test_entry_rows()
-            .into_iter()
-            .map(|(name, func)| (str_map[name as usize], func))
-            .collect();
-        entries.sort_by_key(|(name, _)| *name);
-        let mut body = Vec::new();
-        push_u16(&mut body, entries.len() as u16);
-        for (name, func) in entries {
-            push_u16(&mut body, name);
-            push_u16(&mut body, func);
+    /// `u16 name-string-index ‖ u16 function-index` entry, iterating the base rows in
+    /// the order `order` states — strictly ascending remapped-name order under the
+    /// canonical permutation. Names are unique across the project, so the sort is
+    /// total and the verifier rechecks the strict ordering.
+    fn encode_test_entries(
+        &self,
+        sink: &mut impl ImageByteSink,
+        strings: &StringRemap<'_>,
+        order: impl Iterator<Item = usize>,
+    ) {
+        push_u16(sink, self.test_entry_count() as u16);
+        for row in order {
+            let entry = &self.test_entry_rows()[row];
+            strings.token(entry.name()).emit(sink);
+            push_u16(sink, entry.func());
         }
-        body
     }
 
     /// Encode the SPANS section: per function in table order, a `u16` span count then
@@ -607,30 +702,23 @@ impl ImageDraft {
     /// span count can be accepted. The assertion below fails the build if a later
     /// ceiling widening breaks that derivation, at which point this count needs a
     /// bound and a typed refusal of its own rather than a comment.
-    fn encode_spans(&self, per_fn: &[CodeLayout]) -> Vec<u8> {
+    fn encode_spans(&self, sink: &mut impl ImageByteSink, per_fn: &[CodeLayout]) {
         const SPAN_ROW_BYTES: usize = 12;
         const _: () = assert!(
             bounds::MAX_IMAGE_BYTES / SPAN_ROW_BYTES < u16::MAX as usize,
             "the image ceiling must refuse a span table before its count outgrows the u16 prefix",
         );
 
-        let mut body = Vec::new();
         for (function, layout) in self.functions().iter().zip(per_fn) {
-            push_u16(&mut body, function.spans.len() as u16);
+            push_u16(sink, function.spans.len() as u16);
             for span in &function.spans {
                 let offset = layout.offsets[span.instr_index as usize];
-                push_u32(&mut body, offset);
-                push_u32(&mut body, span.line);
-                push_u32(&mut body, span.column);
+                push_u32(sink, offset);
+                push_u32(sink, span.line);
+                push_u32(sink, span.column);
             }
         }
-        body
     }
-}
-
-struct EncodedFunctions {
-    body: Vec<u8>,
-    per_fn: Vec<CodeLayout>,
 }
 
 /// The byte offset of each instruction plus the total code length.
@@ -661,26 +749,24 @@ fn code_layout(code: &[Instr]) -> CodeLayout {
 }
 
 fn encode_code(
+    sink: &mut impl ImageByteSink,
     code: &[Instr],
     layout: &CodeLayout,
-    const_map: &[u16],
-) -> Result<Vec<u8>, ImageBuildError> {
-    let mut out = Vec::with_capacity(layout.total_len as usize);
+    consts: &ConstRemap<'_>,
+) -> Result<(), ImageBuildError> {
     for instr in code {
-        out.push(instr.opcode());
+        sink.push(instr.opcode());
         match instr {
             Instr::ConstLoad(raw) | Instr::Unreachable(raw) | Instr::Todo(raw) => {
-                push_u16(&mut out, const_map[*raw as usize])
+                consts.token(*raw).emit(sink)
             }
-            Instr::LocalGet(l) | Instr::LocalSet(l) => push_u16(&mut out, *l),
-            Instr::Call(f) => push_u16(&mut out, *f),
-            Instr::RecordNew(t) => push_u16(&mut out, *t),
+            Instr::LocalGet(l) | Instr::LocalSet(l) => push_u16(sink, *l),
+            Instr::Call(f) => push_u16(sink, *f),
+            Instr::RecordNew(t) => push_u16(sink, *t),
             Instr::ListNew(c) | Instr::MapNew(c) | Instr::TextSplit(c) | Instr::TextLines(c) => {
-                push_u16(&mut out, *c)
+                push_u16(sink, *c)
             }
-            Instr::FieldGet(f) | Instr::FieldSet(f) | Instr::FieldUnset(f) => {
-                push_u16(&mut out, *f)
-            }
+            Instr::FieldGet(f) | Instr::FieldSet(f) | Instr::FieldUnset(f) => push_u16(sink, *f),
             Instr::DurExists(s)
             | Instr::DurFamilyExists(s)
             | Instr::DurReadField(s)
@@ -693,7 +779,7 @@ fn encode_code(
             | Instr::DurEraseEntry(s)
             | Instr::DurReadGroup(s)
             | Instr::DurReplaceGroup(s)
-            | Instr::DurEraseGroup(s) => push_u16(&mut out, s.encodable()?),
+            | Instr::DurEraseGroup(s) => push_u16(sink, s.encodable()?),
             Instr::Jump(target)
             | Instr::JumpIfFalse(target)
             | Instr::BranchPresent(target)
@@ -707,31 +793,31 @@ fn encode_code(
                     .offsets
                     .get(*target as usize)
                     .ok_or(ImageBuildError::InvalidReference("jump target"))?;
-                push_u32(&mut out, byte_offset);
+                push_u32(sink, byte_offset);
             }
-            Instr::VacantLoad(ty) => ty.encode(&mut out),
+            Instr::VacantLoad(ty) => ty.encode(sink),
             Instr::RangeGuard { lo, hi } => {
-                out.extend_from_slice(&lo.to_be_bytes());
-                out.extend_from_slice(&hi.to_be_bytes());
+                sink.extend_bytes(&lo.to_be_bytes());
+                sink.extend_bytes(&hi.to_be_bytes());
             }
             Instr::EnumConstruct { enum_idx, variant } => {
-                push_u16(&mut out, *enum_idx);
-                push_u16(&mut out, *variant);
+                push_u16(sink, *enum_idx);
+                push_u16(sink, *variant);
             }
             Instr::EnumPayloadGet { variant, field } => {
-                push_u16(&mut out, *variant);
-                push_u16(&mut out, *field);
+                push_u16(sink, *variant);
+                push_u16(sink, *field);
             }
             Instr::DurSetSparsePresent { site, key_slots } => {
-                push_u16(&mut out, site.encodable()?);
+                push_u16(sink, site.encodable()?);
                 // The slot count fits its `u16` prefix: each slot is two more bytes of
                 // this instruction's operand, and `encode_functions` has already
                 // refused a function whose laid-out code exceeds
                 // `bounds::MAX_CODE_BYTES` — half that ceiling in slots is well inside
                 // the prefix.
-                push_u16(&mut out, key_slots.len() as u16);
+                push_u16(sink, key_slots.len() as u16);
                 for slot in key_slots {
-                    push_u16(&mut out, *slot);
+                    push_u16(sink, *slot);
                 }
             }
             Instr::DurIterateBounded {
@@ -740,77 +826,53 @@ fn encode_code(
                 from,
                 list_ty,
             } => {
-                push_u16(&mut out, site.encodable()?);
-                push_u32(&mut out, *limit);
-                out.push(u8::from(*from));
-                push_u16(&mut out, *list_ty);
+                push_u16(sink, site.encodable()?);
+                push_u32(sink, *limit);
+                sink.push(u8::from(*from));
+                push_u16(sink, *list_ty);
             }
             Instr::MakeIdentity { root, cols } => {
-                push_u16(&mut out, *root);
-                push_u16(&mut out, *cols);
+                push_u16(sink, *root);
+                push_u16(sink, *cols);
             }
-            Instr::IdentityKeyPath(cols) => push_u16(&mut out, *cols),
+            Instr::IdentityKeyPath(cols) => push_u16(sink, *cols),
             Instr::DurIndexScan {
                 site,
                 limit,
                 from,
                 list_ty,
             } => {
-                push_u16(&mut out, site.encodable()?);
-                push_u32(&mut out, *limit);
-                out.push(u8::from(*from));
-                push_u16(&mut out, *list_ty);
+                push_u16(sink, site.encodable()?);
+                push_u32(sink, *limit);
+                sink.push(u8::from(*from));
+                push_u16(sink, *list_ty);
             }
             Instr::DurIndexLookup(site) | Instr::DurIndexExists(site) => {
-                push_u16(&mut out, site.encodable()?)
+                push_u16(sink, site.encodable()?)
             }
             _ => {}
         }
     }
-    Ok(out)
+    Ok(())
 }
 
-fn encode_strings(sorted: &[String]) -> Vec<u8> {
-    let mut body = Vec::new();
-    push_u16(&mut body, sorted.len() as u16);
-    for text in sorted {
-        push_u16(&mut body, text.len() as u16);
-        body.extend_from_slice(text.as_bytes());
+/// `map[base] = final index` — the inverse of one canonical permutation (row law).
+///
+/// The permutation is the base-row indices sorted into emitted order, so inverting it
+/// is the whole remap; the narrowing rests on the same §E-bound derivation the module
+/// doc states for every row count.
+fn remap_of(permutation: &[usize]) -> Vec<u16> {
+    let mut map = vec![0u16; permutation.len()];
+    for (final_index, &base) in permutation.iter().enumerate() {
+        map[base] = final_index as u16;
     }
-    body
+    map
 }
 
-fn encode_consts(sorted: &[ConstValue], str_map: &[u16]) -> Vec<u8> {
+/// Build one section body through its sink-generic writer.
+fn section_body(write: impl FnOnce(&mut Vec<u8>)) -> Vec<u8> {
     let mut body = Vec::new();
-    push_u16(&mut body, sorted.len() as u16);
-    for value in sorted {
-        match value {
-            ConstValue::Int(v) => {
-                body.push(0x01);
-                body.extend_from_slice(&v.to_be_bytes());
-            }
-            ConstValue::Bool(v) => {
-                body.push(0x02);
-                body.push(u8::from(*v));
-            }
-            ConstValue::Text(str_id) => {
-                body.push(0x03);
-                push_u16(&mut body, str_map[str_id.raw() as usize]);
-            }
-            ConstValue::Date(v) => {
-                body.push(0x04);
-                body.extend_from_slice(&v.to_be_bytes());
-            }
-            ConstValue::Instant(v) => {
-                body.push(0x05);
-                body.extend_from_slice(&v.to_be_bytes());
-            }
-            ConstValue::Duration(v) => {
-                body.push(0x06);
-                body.extend_from_slice(&v.to_be_bytes());
-            }
-        }
-    }
+    write(&mut body);
     body
 }
 
@@ -878,7 +940,7 @@ fn encode_declaration_members(
     body: &mut impl ImageByteSink,
     graph: &ProductDeclarationGraph,
     members: &[DeclarationNode],
-    str_map: &[u16],
+    strings: &StringRemap<'_>,
     values: &CanonicalValueShapeDag,
 ) -> Result<(), ImageBuildError> {
     push_u16(body, members.len() as u16);
@@ -903,7 +965,7 @@ fn encode_declaration_members(
             DeclarationMemberShape::Group { id } => {
                 body.push(0x01);
                 body.extend_bytes(id.bytes());
-                encode_declaration_members(body, graph, graph.members_of(member), str_map, values)?;
+                encode_declaration_members(body, graph, graph.members_of(member), strings, values)?;
             }
             DeclarationMemberShape::Branch {
                 placement,
@@ -913,10 +975,10 @@ fn encode_declaration_members(
             } => {
                 body.push(0x02);
                 body.extend_bytes(placement.bytes());
-                push_u16(body, str_map[name.raw() as usize]);
+                strings.token(*name).emit(body);
                 push_u16(body, record.0);
                 encode_key_tuple(body, keys);
-                encode_declaration_members(body, graph, graph.members_of(member), str_map, values)?;
+                encode_declaration_members(body, graph, graph.members_of(member), strings, values)?;
             }
         }
     }
@@ -1033,4 +1095,495 @@ fn validate_value_shapes(values: &CanonicalValueShapeDag) -> Result<(), ImageBui
 
 fn push_u32(out: &mut impl ImageByteSink, value: u32) {
     out.extend_bytes(&value.to_be_bytes());
+}
+
+/// Counted==emitted known-answer tests (design §C): each of the ten section writers,
+/// driven once with a counting sink over the base rows with constant tokens and once
+/// with a byte sink over the permutation-mapped rows with the real remap, produces the
+/// same byte length. Fixed-width tokens and one shared per-item writer are exactly what
+/// make a section's length independent of permutation and remap values; these KATs pin
+/// that per section, so a later counting caller may measure before sorting.
+///
+/// The fixtures are built directly through the draft API — this crate cannot compile
+/// the frozen corpus programs, whose byte digests stay pinned in `marrow-compile` — and
+/// cover every section family those programs cover: sorted strings and constants of
+/// every tag, records, enums, collections, a keyed and an indexed durable root with
+/// group/branch/struct-shape members and an operation site, functions with jumps and
+/// remapped operands, spans, exports, and test entries.
+#[cfg(test)]
+mod counted_equals_emitted {
+    use super::{CodeLayout, remap_of};
+    use crate::draft::{
+        AdmittedGraphInputPlan, CollectionTypeDef, FieldDef, FunctionDef, ImageDraft,
+        RecordTypeDef, RootOccurrenceDef, SpanEntry, VariantDef,
+    };
+    use crate::durable_id::{DurableIndexComponent, DurableIndexShape, LedgerIdBytes};
+    use crate::instr::Instr;
+    use crate::product::{DeclarationMemberDef, DeclarationMemberShape};
+    use crate::remap::{ConstRemap, StringRemap};
+    use crate::semantic::SemanticTarget;
+    use crate::ty::{ImageType, Scalar};
+    use crate::value_dag::ImageByteSink;
+
+    /// A sink that keeps nothing: the counting instantiation of each writer.
+    #[derive(Default)]
+    struct CountingSink(usize);
+
+    impl ImageByteSink for CountingSink {
+        fn push(&mut self, _byte: u8) {
+            self.0 += 1;
+        }
+
+        fn extend_bytes(&mut self, bytes: &[u8]) {
+            self.0 += bytes.len();
+        }
+    }
+
+    fn id(byte: u8) -> LedgerIdBytes {
+        LedgerIdBytes::from_bytes([byte; 16])
+    }
+
+    /// A storeless draft whose insertion orders disagree with every canonical order.
+    fn storeless() -> ImageDraft {
+        let mut draft = ImageDraft::new();
+        let source = draft.intern_string("src/main.mw");
+        let zeta = draft.intern_string("zeta");
+        let alpha = draft.intern_string("alpha");
+        let record_name = draft.intern_string("record");
+        let field_name = draft.intern_string("field");
+        let enum_name = draft.intern_string("choice");
+        let variant_one = draft.intern_string("one");
+        let variant_two = draft.intern_string("two");
+
+        let text = draft.intern_text("zeta");
+        draft.intern_int(-1);
+        draft.intern_int(0);
+        draft.intern_bool(true);
+        draft.intern_date(20_000);
+        draft.intern_instant(7);
+        draft.intern_duration(-7);
+
+        let record = draft.add_record_type(RecordTypeDef {
+            name: record_name,
+            fields: Vec::new(),
+        });
+        draft.set_record_fields(
+            record,
+            vec![
+                FieldDef {
+                    name: field_name,
+                    ty: ImageType::scalar(Scalar::Int),
+                    required: true,
+                },
+                FieldDef {
+                    name: alpha,
+                    ty: ImageType::scalar(Scalar::Text),
+                    required: false,
+                },
+            ],
+        );
+        let choice = draft.add_enum_type(crate::draft::EnumTypeDef {
+            name: enum_name,
+            variants: Vec::new(),
+        });
+        draft.set_enum_variants(
+            choice,
+            vec![
+                VariantDef {
+                    name: variant_one,
+                    category: false,
+                    payload: vec![ImageType::scalar(Scalar::Int)],
+                },
+                VariantDef {
+                    name: variant_two,
+                    category: false,
+                    payload: Vec::new(),
+                },
+            ],
+        );
+        let list = draft.add_collection_type(CollectionTypeDef::List {
+            elem: ImageType::scalar(Scalar::Int),
+        });
+        draft.add_collection_type(CollectionTypeDef::Map {
+            key: ImageType::scalar(Scalar::Text),
+            value: ImageType::scalar(Scalar::Bool),
+        });
+
+        let mut funcs = Vec::new();
+        for name in [zeta, alpha] {
+            let func = draft
+                .add_function(FunctionDef {
+                    name,
+                    source,
+                    params: vec![ImageType::scalar(Scalar::Int)],
+                    ret: ImageType::Unit,
+                    local_count: 2,
+                    code: vec![
+                        Instr::ConstLoad(text.index()),
+                        Instr::LocalSet(1),
+                        Instr::LocalGet(0),
+                        Instr::JumpIfFalse(6),
+                        Instr::RecordNew(record.index()),
+                        Instr::EnumConstruct {
+                            enum_idx: choice.index(),
+                            variant: 0,
+                        },
+                        Instr::ListNew(list.index()),
+                        Instr::VacantLoad(ImageType::scalar(Scalar::Text)),
+                        Instr::Jump(9),
+                        Instr::Return,
+                    ],
+                    spans: vec![
+                        SpanEntry {
+                            instr_index: 0,
+                            line: 1,
+                            column: 1,
+                        },
+                        SpanEntry {
+                            instr_index: 9,
+                            line: 2,
+                            column: 5,
+                        },
+                    ],
+                })
+                .expect("no site operand needs validating");
+            funcs.push(func);
+        }
+        // Exports inserted in descending id order; test entries in descending name
+        // order — the canonical permutations must reorder both.
+        let mut exports: Vec<crate::export_id::ExportId> = ["a", "b"]
+            .into_iter()
+            .map(|item| crate::export_id::ExportId::of_local("m", item))
+            .collect();
+        exports.sort_by(|left, right| left.bytes().cmp(right.bytes()));
+        for (export, func) in exports.into_iter().rev().zip(funcs.iter()) {
+            draft.add_export(export, *func);
+        }
+        draft.add_test_entry(zeta, funcs[0]);
+        draft.add_test_entry(alpha, funcs[1]);
+        draft
+    }
+
+    /// A durable draft: a keyed root and an indexed root over one Product whose members
+    /// nest a struct-shaped field, a group, and a keyed branch, plus one operation site.
+    fn durable() -> ImageDraft {
+        let mut draft = ImageDraft::new();
+        draft.set_application_identity(id(0x01));
+        let record_name = draft.intern_string("entry");
+        let keyed = draft.intern_string("keyed");
+        let indexed = draft.intern_string("indexed");
+        let branch_name = draft.intern_string("branch");
+
+        let entry = draft.add_record_type(RecordTypeDef {
+            name: record_name,
+            fields: Vec::new(),
+        });
+        let leaf = draft.value_shapes_mut().scalar(Scalar::Int);
+        let pair = draft.value_shapes_mut().struct_shape(vec![leaf, leaf]);
+        let sum = draft.value_shapes_mut().enum_shape(
+            id(0x60),
+            vec![(id(0x61), vec![leaf]), (id(0x62), Vec::new())],
+        );
+
+        let plan = AdmittedGraphInputPlan::admit(1, 2, 8).expect("a small census is admitted");
+        let product = id(0x10);
+        draft
+            .declare_product(
+                &plan,
+                product,
+                entry,
+                vec![
+                    DeclarationMemberDef {
+                        parent: None,
+                        shape: DeclarationMemberShape::Field {
+                            id: id(0x20),
+                            required: true,
+                            value: pair,
+                        },
+                    },
+                    DeclarationMemberDef {
+                        parent: None,
+                        shape: DeclarationMemberShape::Group { id: id(0x21) },
+                    },
+                    DeclarationMemberDef {
+                        parent: Some(1),
+                        shape: DeclarationMemberShape::Field {
+                            id: id(0x22),
+                            required: false,
+                            value: sum,
+                        },
+                    },
+                    DeclarationMemberDef {
+                        parent: None,
+                        shape: DeclarationMemberShape::Branch {
+                            placement: id(0x30),
+                            name: branch_name,
+                            record: entry,
+                            keys: vec![crate::draft::KeyColumn {
+                                scalar: Scalar::Int,
+                                id: id(0x31),
+                            }],
+                        },
+                    },
+                    DeclarationMemberDef {
+                        parent: Some(3),
+                        shape: DeclarationMemberShape::Field {
+                            id: id(0x32),
+                            required: true,
+                            value: leaf,
+                        },
+                    },
+                ],
+            )
+            .expect("a well-formed declaration");
+        let admitted = draft
+            .add_root_occurrence(
+                &plan,
+                product,
+                RootOccurrenceDef {
+                    name: keyed,
+                    keys: vec![crate::draft::KeyColumn {
+                        scalar: Scalar::Int,
+                        id: id(0x40),
+                    }],
+                    placement: id(0x41),
+                    indexes: Vec::new().into(),
+                },
+            )
+            .expect("the Product is declared");
+        draft
+            .add_root_occurrence(
+                &plan,
+                product,
+                RootOccurrenceDef {
+                    name: indexed,
+                    keys: Vec::new(),
+                    placement: id(0x51),
+                    indexes: vec![DurableIndexShape {
+                        id: id(0x52),
+                        unique: true,
+                        components: vec![DurableIndexComponent::Field(id(0x20))],
+                    }]
+                    .into(),
+                },
+            )
+            .expect("the Product is declared");
+        let handle = draft
+            .bind_occurrence_site(
+                admitted.occurrence(),
+                admitted.placement_path(),
+                SemanticTarget::WholePayload,
+            )
+            .expect("a root admits a whole-payload site");
+        draft
+            .request_site(&handle)
+            .expect("the plan has capacity for one site");
+        draft
+    }
+
+    fn fixtures() -> [ImageDraft; 2] {
+        [storeless(), durable()]
+    }
+
+    /// The canonical permutations and their inverse maps, exactly as `encode` builds
+    /// them.
+    fn canonical(draft: &ImageDraft) -> (Vec<usize>, Vec<u16>, Vec<usize>, Vec<u16>) {
+        let string_order = draft.string_permutation();
+        let str_map = remap_of(&string_order);
+        let const_order = draft.const_permutation(&str_map);
+        let const_map = remap_of(&const_order);
+        (string_order, str_map, const_order, const_map)
+    }
+
+    /// A same-width all-zero map: every token it yields is the constant token, minted
+    /// through the one production constructor.
+    fn constant_map(map: &[u16]) -> Vec<u16> {
+        vec![0; map.len()]
+    }
+
+    /// The KATs prove nothing over empty row sets, so the fixtures must be populated
+    /// and must encode.
+    #[test]
+    fn the_kat_fixtures_are_populated_and_encode() {
+        let storeless = storeless();
+        storeless.encode().expect("the storeless fixture encodes");
+        assert!(!storeless.strings().is_empty());
+        assert!(!storeless.consts().is_empty());
+        assert!(!storeless.types().is_empty());
+        assert!(!storeless.enums().is_empty());
+        assert!(!storeless.collections().is_empty());
+        assert!(!storeless.functions().is_empty());
+        assert!(storeless.export_count() > 0);
+        assert!(storeless.test_entry_count() > 0);
+
+        let durable = durable();
+        durable.encode().expect("the durable fixture encodes");
+        assert_eq!(durable.root_occurrences().len(), 2);
+        assert!(durable.site_row_count() > 0);
+    }
+
+    #[test]
+    fn counted_strings_equal_emitted_strings() {
+        for draft in fixtures() {
+            let (string_order, ..) = canonical(&draft);
+            let mut emitted = Vec::new();
+            draft.encode_strings(&mut emitted, string_order.iter().copied());
+            let mut counted = CountingSink::default();
+            draft.encode_strings(&mut counted, 0..draft.strings().len());
+            assert_eq!(counted.0, emitted.len());
+        }
+    }
+
+    #[test]
+    fn counted_types_equal_emitted_types() {
+        for draft in fixtures() {
+            let (_, str_map, ..) = canonical(&draft);
+            let mut emitted = Vec::new();
+            draft.encode_types(&mut emitted, &StringRemap::new(&str_map));
+            let constant = constant_map(&str_map);
+            let mut counted = CountingSink::default();
+            draft.encode_types(&mut counted, &StringRemap::new(&constant));
+            assert_eq!(counted.0, emitted.len());
+        }
+    }
+
+    #[test]
+    fn counted_durable_body_equals_emitted_durable_body() {
+        for draft in fixtures() {
+            let (_, str_map, ..) = canonical(&draft);
+            let mut emitted = Vec::new();
+            draft
+                .write_durable_body(&mut emitted, &StringRemap::new(&str_map))
+                .expect("the fixture's durable body is coherent");
+            let constant = constant_map(&str_map);
+            let mut counted = CountingSink::default();
+            draft
+                .write_durable_body(&mut counted, &StringRemap::new(&constant))
+                .expect("the count walks the same rows");
+            assert_eq!(counted.0, emitted.len());
+        }
+    }
+
+    #[test]
+    fn counted_consts_equal_emitted_consts() {
+        for draft in fixtures() {
+            let (_, str_map, const_order, _) = canonical(&draft);
+            let mut emitted = Vec::new();
+            draft.encode_consts(
+                &mut emitted,
+                &StringRemap::new(&str_map),
+                const_order.iter().copied(),
+            );
+            let constant = constant_map(&str_map);
+            let mut counted = CountingSink::default();
+            draft.encode_consts(
+                &mut counted,
+                &StringRemap::new(&constant),
+                0..draft.consts().len(),
+            );
+            assert_eq!(counted.0, emitted.len());
+        }
+    }
+
+    #[test]
+    fn counted_functions_equal_emitted_functions() {
+        for draft in fixtures() {
+            let (_, str_map, _, const_map) = canonical(&draft);
+            let mut emitted = Vec::new();
+            draft
+                .encode_functions(
+                    &mut emitted,
+                    &StringRemap::new(&str_map),
+                    &ConstRemap::new(&const_map),
+                )
+                .expect("the fixture's code encodes");
+            let constant_strings = constant_map(&str_map);
+            let constant_consts = constant_map(&const_map);
+            let mut counted = CountingSink::default();
+            draft
+                .encode_functions(
+                    &mut counted,
+                    &StringRemap::new(&constant_strings),
+                    &ConstRemap::new(&constant_consts),
+                )
+                .expect("the count lays out the same code");
+            assert_eq!(counted.0, emitted.len());
+        }
+    }
+
+    #[test]
+    fn counted_exports_equal_emitted_exports() {
+        for draft in fixtures() {
+            let mut emitted = Vec::new();
+            draft.encode_exports(&mut emitted, draft.export_permutation().iter().copied());
+            let mut counted = CountingSink::default();
+            draft.encode_exports(&mut counted, 0..draft.export_count());
+            assert_eq!(counted.0, emitted.len());
+        }
+    }
+
+    #[test]
+    fn counted_spans_equal_emitted_spans() {
+        for draft in fixtures() {
+            let (_, str_map, _, const_map) = canonical(&draft);
+            let per_fn: Vec<CodeLayout> = draft
+                .encode_functions(
+                    &mut CountingSink::default(),
+                    &StringRemap::new(&str_map),
+                    &ConstRemap::new(&const_map),
+                )
+                .expect("the fixture's code lays out");
+            let mut emitted = Vec::new();
+            draft.encode_spans(&mut emitted, &per_fn);
+            let mut counted = CountingSink::default();
+            draft.encode_spans(&mut counted, &per_fn);
+            assert_eq!(counted.0, emitted.len());
+        }
+    }
+
+    #[test]
+    fn counted_test_entries_equal_emitted_test_entries() {
+        for draft in fixtures() {
+            let (_, str_map, ..) = canonical(&draft);
+            let order = draft.test_entry_permutation(&str_map);
+            let mut emitted = Vec::new();
+            draft.encode_test_entries(
+                &mut emitted,
+                &StringRemap::new(&str_map),
+                order.iter().copied(),
+            );
+            let constant = constant_map(&str_map);
+            let mut counted = CountingSink::default();
+            draft.encode_test_entries(
+                &mut counted,
+                &StringRemap::new(&constant),
+                0..draft.test_entry_count(),
+            );
+            assert_eq!(counted.0, emitted.len());
+        }
+    }
+
+    #[test]
+    fn counted_enums_equal_emitted_enums() {
+        for draft in fixtures() {
+            let (_, str_map, ..) = canonical(&draft);
+            let mut emitted = Vec::new();
+            draft.encode_enums(&mut emitted, &StringRemap::new(&str_map));
+            let constant = constant_map(&str_map);
+            let mut counted = CountingSink::default();
+            draft.encode_enums(&mut counted, &StringRemap::new(&constant));
+            assert_eq!(counted.0, emitted.len());
+        }
+    }
+
+    #[test]
+    fn counted_collections_equal_emitted_collections() {
+        for draft in fixtures() {
+            let mut emitted = Vec::new();
+            draft.encode_collections(&mut emitted);
+            let mut counted = CountingSink::default();
+            draft.encode_collections(&mut counted);
+            assert_eq!(counted.0, emitted.len());
+        }
+    }
 }

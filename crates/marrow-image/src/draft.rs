@@ -440,18 +440,40 @@ pub struct FunctionDef {
 /// never the source name — the VM looks an export up by its verified id, so no
 /// human-readable name crosses the trust boundary.
 #[derive(Debug, Clone)]
-struct ExportDef {
+pub(crate) struct ExportDef {
     id: ExportId,
     func: FuncId,
+}
+
+impl ExportDef {
+    pub(crate) fn id(&self) -> &ExportId {
+        &self.id
+    }
+
+    /// The bound function's table index, as the wire spells it.
+    pub(crate) fn func(&self) -> u16 {
+        self.func.0
+    }
 }
 
 /// A test entry: a report-name string bound to a storeless zero-argument function
 /// `marrow test` runs. Unlike an export it carries no wire identity — the name is a
 /// human report label only, never an interface, demand, or durable identity.
 #[derive(Debug, Clone)]
-struct TestEntryDef {
+pub(crate) struct TestEntryDef {
     name: StrId,
     func: FuncId,
+}
+
+impl TestEntryDef {
+    pub(crate) fn name(&self) -> StrId {
+        self.name
+    }
+
+    /// The bound function's table index, as the wire spells it.
+    pub(crate) fn func(&self) -> u16 {
+        self.func.0
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1249,21 +1271,44 @@ impl ImageDraft {
         &self.functions
     }
 
-    /// The `(ExportId, function-index)` pairs for the export table.
-    pub(crate) fn export_entries(&self) -> Vec<(ExportId, u16)> {
-        self.exports
-            .iter()
-            .map(|export| (export.id, export.func.0))
-            .collect()
+    /// The export rows, borrowed in insertion order: the retained base row set the
+    /// encoder's canonical permutation maps.
+    pub(crate) fn export_rows(&self) -> &[ExportDef] {
+        &self.exports
     }
 
-    /// The `(raw name StrId, function-index)` pairs for the TEST-ENTRY table. The
-    /// encoder remaps the name index through the string sort map and sorts.
-    pub(crate) fn test_entry_rows(&self) -> Vec<(u16, u16)> {
-        self.test_entries
+    /// The number of export rows, without materializing them.
+    pub(crate) fn export_count(&self) -> usize {
+        self.exports.len()
+    }
+
+    /// The test-entry rows, borrowed in insertion order: the retained base row set the
+    /// encoder's canonical permutation maps.
+    pub(crate) fn test_entry_rows(&self) -> &[TestEntryDef] {
+        &self.test_entries
+    }
+
+    /// The number of test-entry rows, without materializing them.
+    pub(crate) fn test_entry_count(&self) -> usize {
+        self.test_entries.len()
+    }
+
+    /// The canonical test-entry permutation (row law): the base-row indices ascending
+    /// by remapped name index, computed by the table's one comparator.
+    ///
+    /// The raw map reads are owner-safe and deliberately outside the token seal: they
+    /// are the comparator's keys, resolved once per base row in row order — so a name
+    /// reference outside the pool reports exactly where the old sorted copy reported
+    /// it — never a section writer resolving a reference it could branch on.
+    pub(crate) fn test_entry_permutation(&self, str_map: &[u16]) -> Vec<usize> {
+        let keys: Vec<u16> = self
+            .test_entries
             .iter()
-            .map(|entry| (entry.name.raw(), entry.func.0))
-            .collect()
+            .map(|entry| str_map[entry.name.raw() as usize])
+            .collect();
+        let mut order: Vec<usize> = (0..keys.len()).collect();
+        order.sort_by_key(|&row| keys[row]);
+        order
     }
 }
 
@@ -1302,6 +1347,10 @@ impl StrId {
 impl ConstValue {
     /// A sort key `(tag, payload-bytes)` where the Text payload is the *final*
     /// string index resolved through `str_map`.
+    ///
+    /// This raw map read is owner-safe and deliberately outside the token seal: it is
+    /// the canonical-order *comparator* itself, fed by the checked base rows, not a
+    /// section writer resolving a reference it could branch on.
     pub(crate) fn sort_key(self, str_map: &[u16]) -> (u8, Vec<u8>) {
         match self {
             ConstValue::Int(v) => (0x01, v.to_be_bytes().to_vec()),
@@ -1561,6 +1610,74 @@ mod site_binding_tests {
         );
     }
 
+    /// The streamed step projection and the owned path are one grammar: collecting the
+    /// stream yields exactly the owned path's steps, for every demand kind — the root
+    /// placement, a managed index, and a declaration member.
+    #[test]
+    fn the_streamed_projection_and_the_owned_path_agree() {
+        use crate::durable_id::{DurableIndexComponent, DurableIndexShape};
+
+        let mut draft = ImageDraft::new();
+        draft.set_application_identity(LedgerIdBytes::from_bytes([0x01; 16]));
+        let name = draft.intern_string("r");
+        let value = draft.value_shapes_mut().scalar(Scalar::Int);
+        draft
+            .declare_product(
+                &plan(),
+                product(),
+                TypeId(0),
+                vec![DeclarationMemberDef {
+                    parent: None,
+                    shape: DeclarationMemberShape::Field {
+                        id: field(),
+                        required: true,
+                        value,
+                    },
+                }],
+            )
+            .expect("a well-formed declaration");
+        let admitted = draft
+            .add_root_occurrence(
+                &plan(),
+                product(),
+                RootOccurrenceDef {
+                    name,
+                    keys: Vec::new(),
+                    placement: placement(),
+                    indexes: vec![DurableIndexShape {
+                        id: LedgerIdBytes::from_bytes([0x44; 16]),
+                        unique: false,
+                        components: vec![DurableIndexComponent::Field(field())],
+                    }]
+                    .into(),
+                },
+            )
+            .expect("the Product is declared");
+        let members = draft.product_members(product()).expect("declared");
+
+        let cases = [
+            (admitted.placement_path(), SemanticTarget::WholePayload),
+            (&admitted.index_paths()[0], SemanticTarget::IndexScan),
+            (members[0].path(), SemanticTarget::FieldLeaf),
+        ];
+        for (selector, target) in cases {
+            let handle = draft
+                .bind_occurrence_site(admitted.occurrence(), selector, target)
+                .expect("the node admits its one target");
+            let key = handle.demand().key();
+            let application = draft.application_identity().expect("anchored");
+            let graph = draft.graph();
+            let owned = graph
+                .project_path(application, key)
+                .expect("a bound demand projects");
+            let mut streamed = Vec::new();
+            graph
+                .project_steps(application, key, |step| streamed.push(step))
+                .expect("the stream projects the same demand");
+            assert_eq!(streamed.as_slice(), owned.steps());
+        }
+    }
+
     /// A command vector that does not state a forest is refused before any row is
     /// appended, so a malformed declaration cannot reach the encoder at all.
     #[test]
@@ -1585,5 +1702,88 @@ mod site_binding_tests {
         );
         assert!(draft.product_members(product()).is_none());
         assert!(draft.root_occurrences().is_empty());
+    }
+}
+
+#[cfg(test)]
+mod row_access_tests {
+    use super::{FunctionDef, ImageDraft};
+    use crate::export_id::ExportId;
+    use crate::instr::Instr;
+    use crate::ty::ImageType;
+
+    /// The borrowed row slices and their counts mirror exactly what was added, in
+    /// insertion order — the retained base row set the encoder's permutations map.
+    #[test]
+    fn the_borrowed_export_and_test_rows_mirror_what_was_added() {
+        let mut draft = ImageDraft::new();
+        let source = draft.intern_string("s");
+        let alpha = draft.intern_string("alpha");
+        let zeta = draft.intern_string("zeta");
+        let mut funcs = Vec::new();
+        for name in [zeta, alpha] {
+            funcs.push(
+                draft
+                    .add_function(FunctionDef {
+                        name,
+                        source,
+                        params: Vec::new(),
+                        ret: ImageType::Unit,
+                        local_count: 0,
+                        code: vec![Instr::Return],
+                        spans: Vec::new(),
+                    })
+                    .expect("no site operand needs validating"),
+            );
+        }
+        let first = ExportId::of_local("m", "zeta");
+        let second = ExportId::of_local("m", "alpha");
+        draft.add_export(first, funcs[0]);
+        draft.add_export(second, funcs[1]);
+        draft.add_test_entry(zeta, funcs[0]);
+
+        assert_eq!(draft.export_count(), 2);
+        assert_eq!(draft.test_entry_count(), 1);
+
+        let exports = draft.export_rows();
+        assert_eq!(exports.len(), 2);
+        assert_eq!(exports[0].id(), &first);
+        assert_eq!(exports[0].func(), funcs[0].index());
+        assert_eq!(exports[1].id(), &second);
+        assert_eq!(exports[1].func(), funcs[1].index());
+
+        let tests = draft.test_entry_rows();
+        assert_eq!(tests.len(), 1);
+        assert_eq!(tests[0].name(), zeta);
+        assert_eq!(tests[0].func(), funcs[0].index());
+    }
+
+    /// The canonical test-entry permutation orders base-row indices by remapped name,
+    /// stably, without touching the rows themselves.
+    #[test]
+    fn the_test_entry_permutation_orders_rows_by_remapped_name() {
+        let mut draft = ImageDraft::new();
+        let source = draft.intern_string("s");
+        let zeta = draft.intern_string("zeta");
+        let alpha = draft.intern_string("alpha");
+        for name in [zeta, alpha] {
+            let func = draft
+                .add_function(FunctionDef {
+                    name,
+                    source,
+                    params: Vec::new(),
+                    ret: ImageType::Unit,
+                    local_count: 0,
+                    code: vec![Instr::Return],
+                    spans: Vec::new(),
+                })
+                .expect("no site operand needs validating");
+            draft.add_test_entry(name, func);
+        }
+        // The pool interned [s, zeta, alpha]; byte-sorted it is [alpha, s, zeta], so
+        // the remap is s→1, zeta→2, alpha→0 and the entries [zeta, alpha] come back
+        // as [alpha, zeta].
+        let str_map = vec![1u16, 2, 0];
+        assert_eq!(draft.test_entry_permutation(&str_map), vec![1, 0]);
     }
 }

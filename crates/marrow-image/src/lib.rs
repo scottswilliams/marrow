@@ -19,6 +19,7 @@ mod export_id;
 mod instr;
 mod interface;
 mod product;
+mod remap;
 mod semantic;
 mod site_plan;
 mod store_digest;
@@ -83,6 +84,7 @@ pub use product::{
     DeclarationMemberShape, DurableContractGraph, DurableGraphInputRefusal, DurableProductGraph,
     RootOccurrenceSelector,
 };
+pub use remap::{ConstToken, StringToken};
 pub use semantic::{
     SemanticNode, SemanticNodeKind, SemanticPath, SemanticPathRefusal, SemanticStep,
     SemanticStepKind, SemanticTarget,
