@@ -15,9 +15,22 @@ use marrow_kernel::codec::key::KeyScalar;
 use marrow_kernel::codec::value::{RuntimeScalar, ScalarKind};
 use marrow_kernel::durable::{
     BoundedLimit, DemandCoverage, Durable, DurableStore, EntryValue, IndexComponent,
-    InvocationGrant, SiteSpec, SiteTarget, StoreSchema, StoreSchemaBuilder,
+    InvocationGrant, SiteTarget, StoreProjection, StoreSchema, StoreSchemaBuilder,
 };
 use marrow_kernel::equality::ValueDomain;
+
+/// The single-root projection a case opens under: the root, plus its sites resolved against
+/// it. Every site here names root 0 — the store's only root.
+fn project(schema: &StoreSchema, sites: Vec<SiteTarget>) -> StoreProjection {
+    let mut projection = StoreProjection::builder();
+    projection.root(schema.clone());
+    for target in sites {
+        projection.site(0, target);
+    }
+    projection
+        .finish()
+        .expect("every site names the one declared root")
+}
 
 const BY_SHELF: [u8; 16] = [0xA0; 16];
 const BY_ISBN: [u8; 16] = [0xB0; 16];
@@ -38,20 +51,11 @@ fn schema() -> StoreSchema {
 }
 
 /// Site 0 the entry, site 1 the `byShelf` scan, site 2 the `byIsbn` lookup.
-fn sites() -> Vec<SiteSpec> {
+fn sites() -> Vec<SiteTarget> {
     vec![
-        SiteSpec {
-            root: 0,
-            target: SiteTarget::WholePayload,
-        },
-        SiteSpec {
-            root: 0,
-            target: SiteTarget::IndexScan(0),
-        },
-        SiteSpec {
-            root: 0,
-            target: SiteTarget::IndexLookup(1),
-        },
+        SiteTarget::whole_payload(),
+        SiteTarget::index_scan(0),
+        SiteTarget::index_lookup(1),
     ]
 }
 
@@ -80,10 +84,9 @@ fn entry(shelf: &str, isbn: &str) -> EntryValue {
 /// ids and isbns, over the counting engine.
 fn seeded(distinct: usize, fanout: usize) -> (DurableStore<CountingEngine>, Counters) {
     let counters = Counters::new();
-    let mut store = DurableStore::from_schemas_with_ceiling(
+    let mut store = DurableStore::from_projection_with_ceiling(
         CountingEngine::new(counters.clone()),
-        vec![schema()],
-        sites(),
+        project(&schema(), sites()),
         write(),
     );
     let mut txn = store

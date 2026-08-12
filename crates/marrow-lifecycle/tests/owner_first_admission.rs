@@ -19,7 +19,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use marrow_image::LedgerIdBytes;
 use marrow_kernel::codec::value::ScalarKind;
-use marrow_kernel::durable::{SiteSpec, SiteTarget, StoreSchema, StoreSchemaBuilder};
+use marrow_kernel::durable::{SiteTarget, StoreProjection, StoreSchemaBuilder};
 use marrow_lifecycle::{
     ActiveBinding, EngineKind, HeadMap, LogicalHead, OpenError, ProvisionRequest, StoreEnvelope,
     StoreInstanceId, open, provision,
@@ -57,17 +57,16 @@ impl Drop for TempDir {
     }
 }
 
-fn schemas() -> Vec<StoreSchema> {
+fn projection() -> StoreProjection {
     let mut builder = StoreSchemaBuilder::root("app", vec![ScalarKind::Int]);
     builder.scalar_field("value", ScalarKind::Int, true);
-    vec![builder.finish().expect("a bounded schema builds")]
-}
-
-fn sites() -> Vec<SiteSpec> {
-    vec![SiteSpec {
-        root: 0,
-        target: SiteTarget::WholePayload,
-    }]
+    let mut projection = StoreProjection::builder();
+    projection
+        .root(builder.finish().expect("a bounded schema builds"))
+        .site(0, SiteTarget::whole_payload());
+    projection
+        .finish()
+        .expect("the site names the one declared root")
 }
 
 fn binding() -> ActiveBinding {
@@ -107,8 +106,7 @@ fn request(instance: StoreInstanceId) -> ProvisionRequest {
     ProvisionRequest {
         envelope: envelope(instance, "0.1.0"),
         head: head(1, vec![0x44, 0x45]),
-        schemas: schemas(),
-        sites: sites(),
+        projection: projection(),
     }
 }
 
@@ -177,10 +175,10 @@ impl Damage {
 fn a_contender_is_locked_out_whatever_state_the_holder_envelope_is_in() {
     for damage in [Damage::Malformed, Damage::Truncated, Damage::Absent] {
         let (_dir, store) = provisioned(&format!("contender-envelope-{}", damage.label()));
-        let held = open(&store, schemas(), sites()).expect("the holder opens the store");
+        let held = open(&store, projection()).expect("the holder opens the store");
         damage.apply(&envelope_path(&store));
 
-        match open(&store, schemas(), sites()) {
+        match open(&store, projection()) {
             Err(OpenError::Lock(error)) => assert_eq!(
                 error.code(),
                 "store.locked",
@@ -207,10 +205,10 @@ fn a_contender_is_locked_out_whatever_state_the_holder_envelope_is_in() {
 fn a_contender_is_locked_out_whatever_state_the_holder_head_is_in() {
     for damage in [Damage::Malformed, Damage::Truncated, Damage::Absent] {
         let (_dir, store) = provisioned(&format!("contender-head-{}", damage.label()));
-        let held = open(&store, schemas(), sites()).expect("the holder opens the store");
+        let held = open(&store, projection()).expect("the holder opens the store");
         damage.apply(&head_path(&store));
 
-        match open(&store, schemas(), sites()) {
+        match open(&store, projection()) {
             Err(OpenError::Lock(error)) => assert_eq!(
                 error.code(),
                 "store.locked",
@@ -240,7 +238,7 @@ fn a_contender_is_locked_out_whatever_state_the_holder_head_is_in() {
 #[test]
 fn a_contender_is_locked_out_whatever_state_the_holder_marker_is_in() {
     let (dir, store) = provisioned("contender-marker");
-    let held = open(&store, schemas(), sites()).expect("the holder opens the store");
+    let held = open(&store, projection()).expect("the holder opens the store");
     let marker = store.join(marrow_lifecycle::LOCK_FILE);
 
     for (tag, body) in [
@@ -256,7 +254,7 @@ fn a_contender_is_locked_out_whatever_state_the_holder_marker_is_in() {
         ("garbage", b"not a marker at all"),
     ] {
         std::fs::write(&marker, body).expect("rewrite the holder's marker");
-        match open(&store, schemas(), sites()) {
+        match open(&store, projection()) {
             Err(OpenError::Lock(error)) => assert_eq!(
                 error.code(),
                 "store.locked",
@@ -268,7 +266,7 @@ fn a_contender_is_locked_out_whatever_state_the_holder_marker_is_in() {
     }
 
     std::fs::hard_link(&marker, dir.path.join("marker-alias")).expect("add a second marker link");
-    match open(&store, schemas(), sites()) {
+    match open(&store, projection()) {
         Err(OpenError::Lock(error)) => assert_eq!(
             error.code(),
             "store.locked",
@@ -295,7 +293,7 @@ fn a_contender_is_locked_out_whatever_state_the_holder_marker_is_in() {
 #[test]
 fn replacing_every_replaceable_node_a_holder_locks_admits_no_second_owner() {
     let (_dir, store) = provisioned("compound-fault");
-    let held = open(&store, schemas(), sites()).expect("the holder opens the store");
+    let held = open(&store, projection()).expect("the holder opens the store");
 
     // A fresh engine node published over the held one under its own name: a whole store
     // engine byte for byte, and an inode no holder locks.
@@ -307,7 +305,7 @@ fn replacing_every_replaceable_node_a_holder_locks_admits_no_second_owner() {
         .expect("publish the fresh engine under the engine's name");
     std::fs::remove_file(store.join(marrow_lifecycle::LOCK_FILE)).expect("remove the marker");
 
-    match open(&store, schemas(), sites()) {
+    match open(&store, projection()) {
         Err(OpenError::Lock(error)) => assert_eq!(
             error.code(),
             "store.locked",
@@ -336,14 +334,14 @@ fn a_store_directory_that_denies_access_refuses_as_a_permission_denial() {
     for holder in [false, true] {
         let tag = if holder { "denied-held" } else { "denied-idle" };
         let (_dir, store) = provisioned(tag);
-        let held = holder.then(|| open(&store, schemas(), sites()).expect("the holder opens"));
+        let held = holder.then(|| open(&store, projection()).expect("the holder opens"));
         std::fs::set_permissions(&store, std::fs::Permissions::from_mode(0o000))
             .expect("deny access to the store directory");
 
         // A process holding the mode-override capability is bound by none of those bits, so
         // only a process they do bind can observe this refusal at all.
         if std::fs::read_dir(&store).is_err() {
-            match open(&store, schemas(), sites()) {
+            match open(&store, projection()) {
                 Ok(_) => panic!("a store directory that cannot be looked inside was opened"),
                 Err(error) => assert_eq!(
                     error.code(),
@@ -498,10 +496,10 @@ fn no_door_into_a_held_store_admits_a_second_owner() {
     } in doors
     {
         let (_dir, store) = provisioned("held-store-doors");
-        let held = open(&store, schemas(), sites()).expect("the holder opens the store");
+        let held = open(&store, projection()).expect("the holder opens the store");
         damage(&store);
 
-        match open(&store, schemas(), sites()) {
+        match open(&store, projection()) {
             Ok(_) => panic!("{name} admitted a second owner of a held store"),
             Err(error) => match expected {
                 Verdict::Locked => assert_eq!(
@@ -542,20 +540,19 @@ fn the_envelope_ceiling_admits_its_maximum_and_refuses_one_byte_more() {
         ProvisionRequest {
             envelope: maximal,
             head: head(1, vec![0x44]),
-            schemas: schemas(),
-            sites: sites(),
+            projection: projection(),
         },
     )
     .expect("provision a maximal envelope");
 
-    let opened = open(&store, schemas(), sites()).expect("a maximal envelope is admitted");
+    let opened = open(&store, projection()).expect("a maximal envelope is admitted");
     assert_eq!(opened.envelope.instance, id);
     drop(opened);
 
     let mut oversize = bytes.clone();
     oversize.push(0x00);
     std::fs::write(envelope_path(&store), &oversize).expect("write an oversize envelope");
-    match open(&store, schemas(), sites()) {
+    match open(&store, projection()) {
         Err(error) => assert_eq!(
             error.code(),
             "store.limit",
@@ -584,20 +581,19 @@ fn the_head_ceiling_admits_its_maximum_and_refuses_one_byte_more() {
         ProvisionRequest {
             envelope: envelope(instance(), "0.1.0"),
             head: maximal,
-            schemas: schemas(),
-            sites: sites(),
+            projection: projection(),
         },
     )
     .expect("provision a maximal head");
 
-    let opened = open(&store, schemas(), sites()).expect("a maximal head is admitted");
+    let opened = open(&store, projection()).expect("a maximal head is admitted");
     assert_eq!(opened.head.head_map.len(), 65_536);
     drop(opened);
 
     let mut oversize = bytes.clone();
     oversize.push(0x00);
     std::fs::write(head_path(&store), &oversize).expect("write an oversize head");
-    match open(&store, schemas(), sites()) {
+    match open(&store, projection()) {
         Err(error) => assert_eq!(
             error.code(),
             "store.limit",
@@ -631,7 +627,7 @@ fn a_symbolic_link_standing_in_for_an_artifact_is_refused() {
         std::fs::rename(&path, &target).expect("move the artifact outside the store directory");
         std::os::unix::fs::symlink(&target, &path).expect("link the artifact name to it");
 
-        match open(&store, schemas(), sites()) {
+        match open(&store, projection()) {
             Ok(_) => panic!("admission followed a symbolic link standing in for the {artifact}"),
             Err(error) => assert_eq!(
                 error.code(),
@@ -655,7 +651,7 @@ fn a_second_hard_link_to_an_artifact_is_refused() {
         std::fs::hard_link(&path, dir.path.join(format!("{artifact}-alias")))
             .expect("add a second link to the artifact");
 
-        match open(&store, schemas(), sites()) {
+        match open(&store, projection()) {
             Ok(_) => panic!("admission accepted a multiply-linked {artifact}"),
             Err(error) => assert_eq!(
                 error.code(),
@@ -689,7 +685,7 @@ fn an_admission_refusal_reads_as_one_sentence_about_one_artifact() {
         damage(&mut bytes);
         std::fs::write(&path, &bytes).expect("write damaged artifact");
 
-        match open(&store, schemas(), sites()) {
+        match open(&store, projection()) {
             Ok(_) => panic!("a damaged {artifact} was admitted"),
             Err(error) => assert_eq!(error.to_string(), expected),
         }
@@ -732,14 +728,14 @@ fn each_artifact_malformation_is_reported_as_itself() {
             ),
         ] {
             let (_dir, store) = provisioned(&format!("typed-{artifact}-{tag}"));
-            open(&store, schemas(), sites()).expect("the undamaged pair opens");
+            open(&store, projection()).expect("the undamaged pair opens");
 
             let path = store.join(artifact);
             let mut bytes = std::fs::read(&path).expect("read artifact");
             damage(&mut bytes);
             std::fs::write(&path, &bytes).expect("write damaged artifact");
 
-            match open(&store, schemas(), sites()) {
+            match open(&store, projection()) {
                 Ok(_) => panic!("a {tag} {artifact} was admitted"),
                 Err(error) => assert_eq!(
                     error.code(),
@@ -790,7 +786,7 @@ fn an_artifact_rewritten_under_a_read_is_never_admitted_spliced() {
         });
 
         for _ in 0..50 {
-            match open(&store, schemas(), sites()) {
+            match open(&store, projection()) {
                 Ok(opened) => {
                     let admitted = opened.head.encode();
                     assert!(
@@ -825,7 +821,7 @@ fn an_open_of_a_directory_that_is_not_a_store_writes_nothing_into_it() {
 
     for _ in 0..2 {
         assert!(matches!(
-            open(&store, schemas(), sites()),
+            open(&store, projection()),
             Err(OpenError::Incomplete),
         ));
         let mut names = std::fs::read_dir(&store)
@@ -844,10 +840,10 @@ fn an_open_of_a_directory_that_is_not_a_store_writes_nothing_into_it() {
     // A store that has been opened before keeps its lock entry, and losing an artifact does
     // not move the completeness verdict ahead of the owner: the lock is still taken first.
     let (_dir, complete) = provisioned("refused-after-first-open");
-    drop(open(&complete, schemas(), sites()).expect("the first open creates the lock entry"));
+    drop(open(&complete, projection()).expect("the first open creates the lock entry"));
     std::fs::remove_file(complete.join(marrow_lifecycle::HEAD_FILE)).expect("remove the head");
     assert!(matches!(
-        open(&complete, schemas(), sites()),
+        open(&complete, projection()),
         Err(OpenError::Incomplete),
     ));
     assert!(

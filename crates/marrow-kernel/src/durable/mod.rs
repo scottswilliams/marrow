@@ -21,6 +21,7 @@ mod physical;
 mod plan;
 mod schema;
 mod session_host;
+mod site;
 mod store;
 
 pub use attach::{
@@ -32,6 +33,7 @@ pub use schema::{
     MAX_DURABLE_DEPTH, SchemaBuildError, StoreSchema, StoreSchemaBuilder,
 };
 pub use session_host::SessionHost;
+pub use site::{ProjectionBuildError, SiteTarget, StoreProjection, StoreProjectionBuilder};
 pub use store::{Durable, DurableStore, ReadSession, TxnSession};
 
 /// The engine error the store surfaces, re-exported so a downstream lifecycle owner can
@@ -155,14 +157,15 @@ impl BranchNumbering {
 /// which derive the same schema from the same image — number identically, and no second
 /// grammar exists. The result is store-wide unique, the bijection the head map (F02a
 /// provision) persists against ledger ids.
-pub fn number_store(schemas: &[StoreSchema]) -> Vec<RootNumbering> {
+pub fn number_store(projection: &StoreProjection) -> Vec<RootNumbering> {
     let mut next = 0u32;
     let mut alloc = || {
         let n = next;
         next += 1;
         n
     };
-    schemas
+    projection
+        .roots()
         .iter()
         .map(|schema| RootNumbering {
             root: alloc(),
@@ -214,67 +217,6 @@ pub(super) struct ResolvedField {
 pub(super) struct ResolvedGroup {
     pub(super) number: NodeNumber,
     pub(super) fields: Vec<ResolvedField>,
-}
-
-/// A verified operation site the kernel maps to physical layout, indexed by the
-/// image's site index. `root` is the site's durable root by declaration position —
-/// its index into the store's root-indexed schema table, so a per-root read or write
-/// resolves against exactly that root's [`StoreSchema`] and name-keyed cell family. The
-/// target is the sealed [`SemanticTarget`](marrow_verify::SemanticTarget) projected to
-/// that root's physical layout — the whole payload, one field, a keyed branch, a group,
-/// or a managed-index read.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SiteSpec {
-    /// The site's durable root by declaration position: its index into the store's
-    /// root-indexed schema table.
-    pub root: u16,
-    pub target: SiteTarget,
-}
-
-/// The closed operation-target set the kernel serves: the root's whole keyed payload,
-/// one of the root's field leaves (by field index into [`StoreSchema::fields`]), or a
-/// keyed branch entry's whole payload or one of its field leaves. The kernel owns the
-/// mapping from this sealed semantic target to the name-keyed physical layout (see
-/// `physical`); it is the physical projection of the verifier's closed `SemanticTarget`.
-///
-/// A branch target names its node by a *branch path*: the per-level branch indices from
-/// the root down to the addressed branch node, each an index into that level's
-/// declaration-ordered branch list (the root's [`StoreSchema::branches`], then each
-/// branch's [`BranchSchema::branches`]). A single-element path names a direct child
-/// branch; a longer path names a nested branch one level deeper per element. The node's
-/// key-path is the root key followed by one key per path element, so a path of length
-/// `d` addresses a `(1 + d)`-element key-path `d` levels below the root.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum SiteTarget {
-    WholePayload,
-    FieldLeaf(u16),
-    /// The whole payload of a keyed branch entry, named by its branch path (per-level
-    /// branch indices from the root down).
-    BranchEntry(Box<[u16]>),
-    /// The materialized record of one unkeyed group of the root entry, named by the
-    /// group's index into [`StoreSchema::groups`]. Its whole read/replace/erase confine
-    /// to the group's own leaves under the group prefix, disjoint from the entry's
-    /// top-level fields, its sibling groups, and its branches (the group-scoped
-    /// payload-only law). Emitted by the verifier's group-site admission; until then the
-    /// kernel's own tests are its only source.
-    GroupEntry(u16),
-    /// One field leaf of a keyed branch entry: the branch node's branch path and the
-    /// field's index into that branch's [`BranchSchema::fields`]. Its field-exact
-    /// operations address the `(1 + path.len())`-element key-path
-    /// `[root_key, branch_key, …]` one or more levels below the root.
-    BranchField {
-        branch: Box<[u16]>,
-        field: u16,
-    },
-    /// A managed index's nonunique progressive-prefix scan read, named by its position
-    /// in [`StoreSchema::indexes`]. The read is bounded and yields the next distinct
-    /// projected component; it observes only the index cell family and never a source
-    /// entry.
-    IndexScan(u16),
-    /// A managed index's unique complete-key lookup read, named by its position in
-    /// [`StoreSchema::indexes`]. The read is a single exact probe yielding the one
-    /// matching source key tuple or absent.
-    IndexLookup(u16),
 }
 
 /// The read/write coverage of a durable demand: whether it observes or mutates the

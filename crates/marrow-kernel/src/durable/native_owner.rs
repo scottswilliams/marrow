@@ -16,7 +16,7 @@ use super::session_host::SessionHost;
 use super::store::{DurableStore, ReadSession, TxnSession};
 use super::{
     CommitRecovery, CommitRecoveryScope, DemandCoverage, DurableCommitState, InvocationGrant,
-    SessionError, SiteSpec, StoreSchema,
+    SessionError, StoreProjection,
 };
 
 /// A persistent native store whose semantic handle, engine, and process owner
@@ -36,7 +36,7 @@ use super::{
 /// use marrow_kernel::durable::NativeStore;
 /// fn raw_scoped_open() {
 ///     let _ = NativeStore::open_native_with_recovery_scope(
-///         std::path::Path::new("store.redb"), Vec::new(), Vec::new(), [0; 16]
+///         std::path::Path::new("store.redb"), Vec::new(), [0; 16]
 ///     );
 /// }
 /// ```
@@ -44,8 +44,7 @@ pub struct NativeStoreOwner {
     store: Option<DurableStore<NativeEngineOwner>>,
     directory: PathBuf,
     instance: [u8; 16],
-    schemas: Vec<StoreSchema>,
-    sites: Vec<SiteSpec>,
+    projection: StoreProjection,
 }
 
 impl NativeStoreOwner {
@@ -87,10 +86,9 @@ impl NativeStoreOwner {
             write: engine.require_write_access("open").is_ok(),
         };
         let scope = CommitRecoveryScope::persistent(self.instance, &self.directory);
-        let mut reopened = DurableStore::from_schemas_with_ceiling_and_recovery_scope(
+        let mut reopened = DurableStore::from_projection_with_ceiling_and_recovery_scope(
             engine,
-            self.schemas.clone(),
-            self.sites.clone(),
+            self.projection.clone(),
             ceiling,
             scope,
         );
@@ -139,8 +137,7 @@ impl PendingNativeStoreOwner {
     pub fn bind_and_open_existing<R>(
         self,
         instance: [u8; 16],
-        schemas: Vec<StoreSchema>,
-        sites: Vec<SiteSpec>,
+        projection: StoreProjection,
         admit: impl FnOnce() -> Result<(), R>,
     ) -> Result<NativeStoreOwner, NativeOwnerOpenError<R>> {
         let directory = self.pending.directory().to_path_buf();
@@ -150,10 +147,9 @@ impl PendingNativeStoreOwner {
             write: engine.require_write_access("open").is_ok(),
         };
         let scope = CommitRecoveryScope::persistent(instance, &directory);
-        let store = DurableStore::from_schemas_with_ceiling_and_recovery_scope(
+        let store = DurableStore::from_projection_with_ceiling_and_recovery_scope(
             engine,
-            schemas.clone(),
-            sites.clone(),
+            projection.clone(),
             ceiling,
             scope,
         );
@@ -161,8 +157,7 @@ impl PendingNativeStoreOwner {
             store: Some(store),
             directory,
             instance,
-            schemas,
-            sites,
+            projection,
         })
     }
 }
@@ -227,9 +222,13 @@ mod tests {
         NativeStoreOwner::provision(&scratch.0).expect("provision");
         NativeStoreOwner::acquire_existing(&scratch.0)
             .expect("acquire the owner lock")
-            .bind_and_open_existing(instance, Vec::new(), Vec::new(), || {
-                Ok::<_, std::convert::Infallible>(())
-            })
+            .bind_and_open_existing(
+                instance,
+                StoreProjection::builder()
+                    .finish()
+                    .expect("a rootless projection has no site to resolve"),
+                || Ok::<_, std::convert::Infallible>(()),
+            )
             .expect("open native semantic owner")
     }
 
@@ -316,10 +315,11 @@ mod tests {
             .expect("open lower owner")
             .reopen_existing_and_audit()
             .expect("enter irreversible lower quarantine");
-        let store = DurableStore::from_schemas_with_ceiling(
+        let store = DurableStore::from_projection_with_ceiling(
             owner,
-            Vec::new(),
-            Vec::new(),
+            StoreProjection::builder()
+                .finish()
+                .expect("a rootless projection has no site to resolve"),
             DemandCoverage {
                 read: true,
                 write: true,

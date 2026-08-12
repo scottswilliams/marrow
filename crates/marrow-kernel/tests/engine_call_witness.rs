@@ -39,10 +39,23 @@ use common::{Counters, CountingEngine};
 use marrow_kernel::codec::key::KeyScalar;
 use marrow_kernel::codec::value::{RuntimeScalar, ScalarKind};
 use marrow_kernel::durable::{
-    DemandCoverage, Durable, DurableStore, InvocationGrant, KernelFault, SessionError, SiteSpec,
-    SiteTarget, StoreSchema, StoreSchemaBuilder,
+    DemandCoverage, Durable, DurableStore, InvocationGrant, KernelFault, SessionError, SiteTarget,
+    StoreProjection, StoreSchema, StoreSchemaBuilder,
 };
 use marrow_kernel::equality::ValueDomain;
+
+/// The single-root projection a case opens under: the root, plus its sites resolved against
+/// it. Every site here names root 0 — the store's only root.
+fn project(schema: &StoreSchema, sites: Vec<SiteTarget>) -> StoreProjection {
+    let mut projection = StoreProjection::builder();
+    projection.root(schema.clone());
+    for target in sites {
+        projection.site(0, target);
+    }
+    projection
+        .finish()
+        .expect("every site names the one declared root")
+}
 
 fn schema() -> StoreSchema {
     let mut builder = StoreSchemaBuilder::root("counters", vec![ScalarKind::Int]);
@@ -51,17 +64,8 @@ fn schema() -> StoreSchema {
 }
 
 /// A whole-payload entry site (index 0) and the required `value` field site (index 1).
-fn sites() -> Vec<SiteSpec> {
-    vec![
-        SiteSpec {
-            root: 0,
-            target: SiteTarget::WholePayload,
-        },
-        SiteSpec {
-            root: 0,
-            target: SiteTarget::FieldLeaf(0),
-        },
-    ]
+fn sites() -> Vec<SiteTarget> {
+    vec![SiteTarget::whole_payload(), SiteTarget::field_leaf(0)]
 }
 
 fn read_only_ceiling() -> DemandCoverage {
@@ -85,10 +89,9 @@ fn writing_demand() -> DemandCoverage {
 #[test]
 fn a_denied_transaction_open_makes_zero_engine_calls() {
     let counters = Counters::new();
-    let mut store = DurableStore::from_schemas_with_ceiling(
+    let mut store = DurableStore::from_projection_with_ceiling(
         CountingEngine::new(counters.clone()),
-        vec![schema()],
-        sites(),
+        project(&schema(), sites()),
         read_only_ceiling(),
     );
     let denied = store.txn_session(InvocationGrant::full_store(), writing_demand());
@@ -105,10 +108,9 @@ fn a_denied_transaction_open_makes_zero_engine_calls() {
 #[test]
 fn a_denied_read_open_makes_zero_engine_calls() {
     let counters = Counters::new();
-    let mut store = DurableStore::from_schemas_with_ceiling(
+    let mut store = DurableStore::from_projection_with_ceiling(
         CountingEngine::new(counters.clone()),
-        vec![schema()],
-        sites(),
+        project(&schema(), sites()),
         read_only_ceiling(),
     );
     let no_read_grant = InvocationGrant {
@@ -137,10 +139,9 @@ fn a_denied_read_open_makes_zero_engine_calls() {
 #[test]
 fn a_permitted_open_makes_a_nonzero_number_of_engine_calls() {
     let counters = Counters::new();
-    let mut store = DurableStore::from_schemas_with_ceiling(
+    let mut store = DurableStore::from_projection_with_ceiling(
         CountingEngine::new(counters.clone()),
-        vec![schema()],
-        sites(),
+        project(&schema(), sites()),
         read_only_ceiling(),
     );
     let read = store.read_session(
@@ -167,10 +168,9 @@ fn a_permitted_open_makes_a_nonzero_number_of_engine_calls() {
 #[test]
 fn a_value_range_rejection_stages_zero_engine_writes() {
     let counters = Counters::new();
-    let mut store = DurableStore::from_schemas_with_ceiling(
+    let mut store = DurableStore::from_projection_with_ceiling(
         CountingEngine::new(counters.clone()),
-        vec![schema()],
-        sites(),
+        project(&schema(), sites()),
         DemandCoverage {
             read: true,
             write: true,
@@ -201,10 +201,9 @@ fn a_value_range_rejection_stages_zero_engine_writes() {
 #[test]
 fn an_in_range_write_advances_the_write_counter() {
     let counters = Counters::new();
-    let mut store = DurableStore::from_schemas_with_ceiling(
+    let mut store = DurableStore::from_projection_with_ceiling(
         CountingEngine::new(counters.clone()),
-        vec![schema()],
-        sites(),
+        project(&schema(), sites()),
         DemandCoverage {
             read: true,
             write: true,

@@ -289,7 +289,7 @@ mod tests {
     use crate::codec::key::KeyScalar;
     use crate::codec::value::{RuntimeScalar, ScalarKind, ValueShape};
     use crate::durable::{
-        FieldSchema, IndexComponent, StoreSchema, StoreSchemaBuilder, number_store,
+        FieldSchema, IndexComponent, StoreProjection, StoreSchema, StoreSchemaBuilder, number_store,
     };
     use crate::equality::ValueDomain;
     use physical::NodeNumber;
@@ -315,7 +315,13 @@ mod tests {
     /// The root's cell-key number and its fields/groups as the planner consumes them, from
     /// the store-wide numbering — the same numbers the store computes for this schema.
     fn resolved(schema: &StoreSchema) -> (NodeNumber, Vec<ResolvedField>, Vec<ResolvedGroup>) {
-        let numbering = number_store(std::slice::from_ref(schema));
+        let mut projection = StoreProjection::builder();
+        projection.root(schema.clone());
+        let numbering = number_store(
+            &projection
+                .finish()
+                .expect("a siteless projection resolves nothing"),
+        );
         let n = &numbering[0];
         let fields = schema
             .fields()

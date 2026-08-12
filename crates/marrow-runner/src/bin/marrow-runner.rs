@@ -113,7 +113,7 @@ fn provision_command(image_path: &Path, store: &Path, accept: bool) -> ExitCode 
         Ok(image) => image,
         Err(code) => return code,
     };
-    let Some((schemas, sites)) = marrow_vm::derive_store_schemas(&image) else {
+    let Some(projection) = marrow_vm::derive_store_schemas(&image) else {
         eprintln!(
             "{}: the program's durable shape is not yet executable by the store, so it cannot \
              be provisioned",
@@ -122,7 +122,7 @@ fn provision_command(image_path: &Path, store: &Path, accept: bool) -> ExitCode 
         return ExitCode::FAILURE;
     };
 
-    let report = marrow_lifecycle::ProvisionReport::new(store, &image, &schemas);
+    let report = marrow_lifecycle::ProvisionReport::new(store, &image, &projection);
     // The report is the guided first-use flow: destination, roots, effects, and initial
     // ceiling in source vocabulary. Printed for review before any write.
     eprint!("{}", report.render());
@@ -133,7 +133,7 @@ fn provision_command(image_path: &Path, store: &Path, accept: bool) -> ExitCode 
     }
 
     let approval = marrow_lifecycle::ProvisionApproval::accept(&report);
-    match marrow_lifecycle::provision_image(store, &image, schemas, sites, &approval) {
+    match marrow_lifecycle::provision_image(store, &image, projection, &approval) {
         Ok(provisioned) => {
             // The receipt names the store instance and destination in a canonical JSON line;
             // it prints no internal identity hash as its primary output.
@@ -187,7 +187,7 @@ fn attach(image_path: &Path, store: &Path) -> ExitCode {
         Ok(image) => image,
         Err(code) => return code,
     };
-    let Some((schemas, sites)) = marrow_vm::derive_store_schemas(&image) else {
+    let Some(projection) = marrow_vm::derive_store_schemas(&image) else {
         eprintln!(
             "{}: the program's durable shape is not yet executable by the store",
             marrow_codes::Code::CliDurableUnsupported.as_str()
@@ -195,7 +195,7 @@ fn attach(image_path: &Path, store: &Path) -> ExitCode {
         return ExitCode::FAILURE;
     };
 
-    let opened = match marrow_lifecycle::attach(store, &image, schemas, sites) {
+    let opened = match marrow_lifecycle::attach(store, &image, projection) {
         Ok(marrow_lifecycle::AttachOutcome::AlreadyActive(opened)) => opened,
         // A binding-only rebind atomically updated the active code with the durable contract
         // unchanged; the store is open on the new image. The receipt is confirmed-commit
@@ -449,7 +449,7 @@ fn import_command(
         Ok(image) => image,
         Err(code) => return code,
     };
-    let Some((schemas, sites)) = marrow_vm::derive_store_schemas(&image) else {
+    let Some(projection) = marrow_vm::derive_store_schemas(&image) else {
         eprintln!(
             "{}: the program's durable shape is not yet executable by the store, so it cannot \
              be imported into",
@@ -458,7 +458,8 @@ fn import_command(
         return ExitCode::FAILURE;
     };
 
-    let Some(root_index) = schemas
+    let Some(root_index) = projection
+        .roots()
         .iter()
         .position(|schema| schema.root_name() == root_name)
     else {
@@ -489,15 +490,9 @@ fn import_command(
             return ExitCode::FAILURE;
         }
         marrow_lifecycle::Preflight::Absent => {
-            let report = marrow_lifecycle::ProvisionReport::new(store, &image, &schemas);
+            let report = marrow_lifecycle::ProvisionReport::new(store, &image, &projection);
             let approval = marrow_lifecycle::ProvisionApproval::accept(&report);
-            match marrow_lifecycle::provision_image(
-                store,
-                &image,
-                schemas.clone(),
-                sites,
-                &approval,
-            ) {
+            match marrow_lifecycle::provision_image(store, &image, projection.clone(), &approval) {
                 Ok(_) => eprintln!("provisioned a fresh store at {}", store.display()),
                 Err(error) => {
                     eprintln!("{}: {error}", error.code());
@@ -520,7 +515,7 @@ fn import_command(
     };
     match marrow_lifecycle::import_jsonl(
         store,
-        schemas,
+        projection,
         target,
         std::io::BufReader::new(file),
         marrow_lifecycle::InvocationGrant::full_store(),

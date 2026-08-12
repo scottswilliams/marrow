@@ -38,8 +38,8 @@ use marrow_kernel::codec::key::KeyScalar;
 use marrow_kernel::codec::value::{RuntimeScalar, ScalarKind};
 use marrow_kernel::durable::{
     CommitRecovery, CommitResult, CreateOutcome, DemandCoverage, Durable, DurableCommitState,
-    EntryValue, InvocationGrant, KernelFault, SessionError, SessionHost, SiteSpec, SiteTarget,
-    StoreSchema,
+    EntryValue, InvocationGrant, KernelFault, SessionError, SessionHost, SiteTarget,
+    StoreProjection, StoreSchema,
 };
 use marrow_kernel::equality::ValueDomain;
 
@@ -381,8 +381,9 @@ impl std::fmt::Display for ImportError {
 impl std::error::Error for ImportError {}
 
 /// Populate the persistent store at `dir` from flat-scalar JSONL `source`, creating one durable
-/// entry of the `target` root per line through the path kernel. Opens the store under `schemas`
-/// with a whole-payload import site on the target root (taking the single-owner lock), resolves
+/// entry of the `target` root per line through the path kernel. Opens the store under
+/// `projection`'s roots with a whole-payload import site on the target root, replacing the
+/// sites it carries (taking the single-owner lock), resolves
 /// a full write grant, and commits the rows in bounded batches (see [`ImportLimits`]). The store
 /// is closed when the import returns.
 ///
@@ -397,22 +398,25 @@ impl std::error::Error for ImportError {}
 /// because effective authority is `demand ∩ ceiling ∩ grant`.
 pub fn import_jsonl(
     dir: &Path,
-    schemas: Vec<StoreSchema>,
+    projection: StoreProjection,
     target: ImportTarget,
     source: impl BufRead,
     grant: InvocationGrant,
     limits: ImportLimits,
 ) -> Result<ImportReport, ImportError> {
-    let plan = RowPlan::resolve(&schemas, &target).map_err(ImportError::UnsupportedShape)?;
+    let plan =
+        RowPlan::resolve(projection.roots(), &target).map_err(ImportError::UnsupportedShape)?;
 
-    // Open with the importer's own site table: one whole-payload create site on the target
-    // root. Sites are supplied per open and never persisted, so the import site is independent
-    // of whatever operation sites the running program declares.
-    let sites = vec![SiteSpec {
-        root: target.root,
-        target: SiteTarget::WholePayload,
-    }];
-    let mut opened = open(dir, schemas, sites).map_err(ImportError::Open)?;
+    // Reproject onto the importer's own site table: one whole-payload create site on the
+    // target root. Sites are supplied per open and never persisted, so the import site is
+    // independent of whatever operation sites the running program declares. The row plan
+    // already proved the target root is declared, so the reprojection resolves.
+    let mut builder = projection.reproject();
+    builder.site(target.root, SiteTarget::whole_payload());
+    let projection = builder
+        .finish()
+        .expect("the row plan refused a target root the projection does not declare");
+    let mut opened = open(dir, projection).map_err(ImportError::Open)?;
 
     match import_rows_into(&mut opened, &plan, source, grant, limits) {
         Ok(report) => Ok(report),

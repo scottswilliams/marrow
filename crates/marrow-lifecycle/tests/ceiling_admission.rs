@@ -75,15 +75,15 @@ fn compile(source: &str) -> (VerifiedImage, Vec<u8>) {
 }
 
 fn provision(store: &Path, image: &VerifiedImage) {
-    let (schemas, sites) = marrow_vm::derive_store_schemas(image).expect("flat-executable");
-    let report = ProvisionReport::new(store, image, &schemas);
+    let projection = marrow_vm::derive_store_schemas(image).expect("flat-executable");
+    let report = ProvisionReport::new(store, image, &projection);
     let approval = ProvisionApproval::accept(&report);
-    provision_image(store, image, schemas, sites, &approval).expect("provision");
+    provision_image(store, image, projection, &approval).expect("provision");
 }
 
 fn attach_image(store: &Path, image: &VerifiedImage) -> Result<AttachOutcome, LifecycleError> {
-    let (schemas, sites) = marrow_vm::derive_store_schemas(image).expect("flat-executable");
-    attach(store, image, schemas, sites)
+    let projection = marrow_vm::derive_store_schemas(image).expect("flat-executable");
+    attach(store, image, projection)
 }
 
 struct Scratch {

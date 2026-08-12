@@ -1,6 +1,7 @@
 //! Ephemeral-memory durable execution (E01 tests; E02 export transactions).
 //!
-//! The executor derives a durable [`StoreSchema`] and site table from a
+//! The executor derives a durable [`StoreProjection`] — the root schemas and the
+//! site table checked against them — from a
 //! [`VerifiedImage`] — the only source of a valid schema — mints an
 //! [`EphemeralAttachment`], opens the session an invocation's demand requires under
 //! a full grant, and runs on the VM. [`run_durable_test`] mints a fresh attachment
@@ -17,7 +18,8 @@
 use marrow_kernel::codec::value::{ScalarKind, ValueShape, ValueShapeBuilder};
 use marrow_kernel::durable::{
     CeilingIdToken, DemandCoverage, DeploymentCeiling, EphemeralAttachment, IndexComponent,
-    InvocationGrant, SessionHost, SiteSpec, SiteTarget, StoreSchema, StoreSchemaBuilder,
+    InvocationGrant, SessionHost, SiteTarget, StoreProjection, StoreProjectionBuilder, StoreSchema,
+    StoreSchemaBuilder,
 };
 use marrow_verify::{
     CeilingDescriptor, ExportDemand, FunctionIndex, ImageType, Scalar, SealedExport,
@@ -45,13 +47,13 @@ pub enum DurableRun {
 /// ceiling is the test-image demand union; the invocation demand is the entry's own
 /// reconstructed demand under a full test grant.
 pub fn run_durable_test(image: &VerifiedImage, entry: &SealedTestEntry) -> DurableRun {
-    let Some((schemas, sites)) = derive_schemas(image) else {
+    let Some(projection) = derive_projection(image) else {
         return DurableRun::Parked;
     };
 
     // The deployment ceiling admits exactly the test-image demand union.
     let ceiling = deployment_ceiling(image.test_demand_union());
-    let mut attachment = match EphemeralAttachment::mint(schemas, sites, ceiling) {
+    let mut attachment = match EphemeralAttachment::mint(projection, ceiling) {
         Ok(attachment) => attachment,
         Err(_) => return DurableRun::Failed(marrow_codes::Code::CliDurableUnsupported.as_str()),
     };
@@ -93,11 +95,11 @@ fn coverage(read: bool, write: bool) -> DemandCoverage {
 /// direct durable operation — the verifier's test-entry phase refuses a body that
 /// mixes the two.
 pub fn run_driver_test(image: &VerifiedImage, entry: &SealedTestEntry) -> DurableRun {
-    let Some((schemas, sites)) = derive_schemas(image) else {
+    let Some(projection) = derive_projection(image) else {
         return DurableRun::Parked;
     };
     let ceiling = deployment_ceiling(image.test_demand_union());
-    let mut attachment = match EphemeralAttachment::mint(schemas, sites, ceiling) {
+    let mut attachment = match EphemeralAttachment::mint(projection, ceiling) {
         Ok(attachment) => attachment,
         Err(_) => return DurableRun::Failed(marrow_codes::Code::CliDurableUnsupported.as_str()),
     };
@@ -197,11 +199,11 @@ pub enum Ephemeral {
 /// retains the attachment and drives several exports against the same store, so a
 /// committed transaction is observable by a later read and a rolled-back one is not.
 pub fn mint_ephemeral(image: &VerifiedImage) -> Ephemeral {
-    let Some((schemas, sites)) = derive_schemas(image) else {
+    let Some(projection) = derive_projection(image) else {
         return Ephemeral::Parked;
     };
     let ceiling = deployment_ceiling(image.demand_union());
-    match EphemeralAttachment::mint(schemas, sites, ceiling) {
+    match EphemeralAttachment::mint(projection, ceiling) {
         Ok(attachment) => Ephemeral::Ready(Box::new(attachment)),
         Err(_) => Ephemeral::Failed(marrow_codes::Code::CliDurableUnsupported.as_str()),
     }
@@ -257,11 +259,11 @@ pub fn run_export<H: SessionHost>(
 /// lifecycle and the terminal companion derive the same tables the ephemeral attachment
 /// does, so a store is provisioned under exactly the schema the running program expects.
 /// `None` when the image's durable shape is not yet executable by the flat kernel.
-pub fn derive_store_schemas(image: &VerifiedImage) -> Option<(Vec<StoreSchema>, Vec<SiteSpec>)> {
-    derive_schemas(image)
+pub fn derive_store_schemas(image: &VerifiedImage) -> Option<StoreProjection> {
+    derive_projection(image)
 }
 
-fn derive_schemas(image: &VerifiedImage) -> Option<(Vec<StoreSchema>, Vec<SiteSpec>)> {
+fn derive_projection(image: &VerifiedImage) -> Option<StoreProjection> {
     // A durable image declares at least one root; a storeless image never reaches attach.
     if image.roots().is_empty() {
         return None;
@@ -271,27 +273,29 @@ fn derive_schemas(image: &VerifiedImage) -> Option<(Vec<StoreSchema>, Vec<SiteSp
     // the image-wide managed-index table. A site names its index by that image-wide
     // position; the kernel resolves it against its own root's schema, so the offset rebases
     // the position to root-local when the site table is built.
-    let mut schemas = Vec::with_capacity(image.roots().len());
+    let mut projection = StoreProjection::builder();
     let mut index_offsets = Vec::with_capacity(image.roots().len());
     let mut running_indexes = 0u16;
     for (root_index, root) in image.roots().iter().enumerate() {
         let schema = derive_root_schema(image, root_index as u16, root)?;
         index_offsets.push(running_indexes);
         running_indexes += schema.indexes().len() as u16;
-        schemas.push(schema);
+        projection.root(schema);
     }
 
     // The site table is index-aligned with the image's sites so `Durable::site` resolves by
     // image site index. A parked site is never referenced by a verified durable opcode (the
     // verifier refuses that in phase 3), so it maps to an inert root-0 whole-payload
     // placeholder that no execution observes.
-    let sites = image
-        .sites()
-        .iter()
-        .map(|site| build_site(site, &index_offsets))
-        .collect();
+    for site in image.sites() {
+        emit_site(&mut projection, site, &index_offsets);
+    }
 
-    Some((schemas, sites))
+    // Every position the sites name is resolved against the completed roots here. A verified
+    // image cannot name a position its own roots do not declare, so a refusal is a divergence
+    // between the verifier's shape and this projection, and the image parks rather than
+    // attaching under a site table the resolver would have to trust.
+    projection.finish().ok()
 }
 
 /// Derive one root's [`StoreSchema`] from the image, or `None` when the root is not
@@ -441,35 +445,32 @@ fn emit_fields(
 /// position and rebasing an index-read position from image-wide to root-local. A parked
 /// site — never referenced by a verified durable opcode — maps to an inert root-0
 /// whole-payload placeholder.
-fn build_site(site: &SealedSite, index_offsets: &[u16]) -> SiteSpec {
+fn emit_site(projection: &mut StoreProjectionBuilder, site: &SealedSite, index_offsets: &[u16]) {
     let (root, target) = match site {
         SealedSite::Flat { root, target } => (*root, target),
         SealedSite::Parked { .. } => {
-            return SiteSpec {
-                root: 0,
-                target: SiteTarget::WholePayload,
-            };
+            projection.site(0, SiteTarget::whole_payload());
+            return;
         }
     };
     let target = match target {
-        SealedSiteTarget::WholePayload => SiteTarget::WholePayload,
-        SealedSiteTarget::FieldLeaf(field) => SiteTarget::FieldLeaf(*field),
-        SealedSiteTarget::BranchEntry(branch) => SiteTarget::BranchEntry(branch.clone()),
-        SealedSiteTarget::BranchField { branch, field } => SiteTarget::BranchField {
-            branch: branch.clone(),
-            field: *field,
-        },
-        SealedSiteTarget::GroupEntry(group) => SiteTarget::GroupEntry(*group),
+        SealedSiteTarget::WholePayload => SiteTarget::whole_payload(),
+        SealedSiteTarget::FieldLeaf(field) => SiteTarget::field_leaf(*field),
+        SealedSiteTarget::BranchEntry(branch) => SiteTarget::branch_entry(branch.clone()),
+        SealedSiteTarget::BranchField { branch, field } => {
+            SiteTarget::branch_field(branch.clone(), *field)
+        }
+        SealedSiteTarget::GroupEntry(group) => SiteTarget::group_entry(*group),
         // An index-read site names its index by image-wide position; the kernel resolves it
         // against this root's own schema, so rebase it by the root's index offset.
         SealedSiteTarget::IndexScan(index) => {
-            SiteTarget::IndexScan(*index - index_offsets[root as usize])
+            SiteTarget::index_scan(*index - index_offsets[root as usize])
         }
         SealedSiteTarget::IndexLookup(index) => {
-            SiteTarget::IndexLookup(*index - index_offsets[root as usize])
+            SiteTarget::index_lookup(*index - index_offsets[root as usize])
         }
     };
-    SiteSpec { root, target }
+    projection.site(root, target);
 }
 
 /// Derive a field's kernel [`ValueShape`] from its image type: a scalar carries its kind; a

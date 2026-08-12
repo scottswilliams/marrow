@@ -38,15 +38,14 @@ impl Service {
     /// image is refused), and publishes the store complete-or-not-at-all. A parked durable
     /// shape, a mismatched approval, or a taken destination each surface as a typed reject.
     fn handle_provision(&self, store: &str, approval: &str) -> ServerMessage {
-        let Some((schemas, sites)) = marrow_vm::derive_store_schemas(&self.image) else {
+        let Some(projection) = marrow_vm::derive_store_schemas(&self.image) else {
             return reject(Code::CliDurableUnsupported);
         };
         let approval = marrow_lifecycle::ProvisionApproval::from_token(approval);
         match marrow_lifecycle::provision_image(
             std::path::Path::new(store),
             &self.image,
-            schemas,
-            sites,
+            projection,
             &approval,
         ) {
             Ok(provisioned) => ServerMessage::Provisioned {

@@ -848,6 +848,28 @@ fn native_lifecycle_open_is_existing_only_and_owner_inseparable() {
         .next()
         .expect("lifecycle product source");
 
+    // The store shape reaches every one of these owners as one checked projection: the roots
+    // and the site table already resolved against them. A raw root or site vector in any of
+    // their signatures is the intake that let a site name a position no root declared, and it
+    // is the pattern this pin keeps from returning.
+    for (owner, source) in [
+        ("the lifecycle open owner", lifecycle_product),
+        ("the kernel native owner", kernel_owner.as_str()),
+        ("the generic store handle", handle.as_str()),
+    ] {
+        for raw in [
+            "Vec<StoreSchema>",
+            "Vec<SiteSpec>",
+            "&[StoreSchema]",
+            "&[SiteSpec]",
+        ] {
+            assert!(
+                !source.contains(raw),
+                "{owner} takes a raw store-shape vector `{raw}` rather than the checked projection",
+            );
+        }
+    }
+
     let provision_call = ["NativeStore::", "provision("].concat();
     assert_eq!(
         lifecycle_product.match_indices(&provision_call).count(),
@@ -1062,6 +1084,9 @@ fn native_lifecycle_open_is_existing_only_and_owner_inseparable() {
 
     for forbidden in [
         "pub fn from_engine_with_recovery_scope(",
+        "pub fn from_projection_with_ceiling_and_recovery_scope(",
+        // The former spelling of the same constructor, kept so a rename back to it is as
+        // visible as reintroducing the constructor under its current name.
         "pub fn from_schemas_with_ceiling_and_recovery_scope(",
         "pub fn classify_recovery(",
         "pub fn audit(",

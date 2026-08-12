@@ -33,7 +33,7 @@ use std::path::Path;
 
 use marrow_codes::Code;
 use marrow_image::CeilingDescriptor;
-use marrow_kernel::durable::{SiteSpec, StoreSchema};
+use marrow_kernel::durable::StoreProjection;
 use marrow_verify::VerifiedImage;
 
 use crate::authority::{self, DemandExceedsCeiling};
@@ -166,7 +166,7 @@ impl std::fmt::Display for LifecycleError {
 impl std::error::Error for LifecycleError {}
 
 /// Attach the verified `image` to the store at `dir`, opening it under the store shape
-/// `schemas`/`sites` describe. Takes the store's single-owner lock, rereads the persisted
+/// `projection` describes. Takes the store's single-owner lock, rereads the persisted
 /// head, and classifies the image against the active binding (see the module documentation):
 /// an identical image opens already-active, a binding-only code update is atomically rebound
 /// and receipted, and any binding-fact change is a typed [`LifecycleError::ContractChanged`]
@@ -174,8 +174,7 @@ impl std::error::Error for LifecycleError {}
 pub fn attach(
     dir: &Path,
     image: &VerifiedImage,
-    schemas: Vec<StoreSchema>,
-    sites: Vec<SiteSpec>,
+    projection: StoreProjection,
 ) -> Result<AttachOutcome, LifecycleError> {
     // The admission gate runs after the single-owner lock and before any engine call, so an
     // image whose demand exceeds the store's accepted ceiling is refused with zero engine
@@ -187,7 +186,7 @@ pub fn attach(
             .map_err(|_| AdmissionRefusal::CeilingCorrupt)?;
         authority::admit(image, &accepted).map_err(AdmissionRefusal::Exceeds)
     };
-    let mut opened = match open_admitted(dir, schemas, sites, admit) {
+    let mut opened = match open_admitted(dir, projection, admit) {
         Ok(opened) => opened,
         Err(AdmitError::Open(error)) => return Err(LifecycleError::Open(error)),
         Err(AdmitError::Refused(AdmissionRefusal::Exceeds(refusal))) => {

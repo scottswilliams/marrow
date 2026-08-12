@@ -16,9 +16,22 @@ use marrow_kernel::codec::key::KeyScalar;
 use marrow_kernel::codec::value::{RuntimeScalar, ScalarKind};
 use marrow_kernel::durable::{
     CommitResult, CreateOutcome, DemandCoverage, Durable, DurableStore, EntryValue,
-    InvocationGrant, SiteSpec, SiteTarget, StoreSchema, StoreSchemaBuilder,
+    InvocationGrant, SiteTarget, StoreProjection, StoreSchema, StoreSchemaBuilder,
 };
 use marrow_kernel::equality::ValueDomain;
+
+/// The single-root projection a case opens under: the root, plus its sites resolved against
+/// it. Every site here names root 0 — the store's only root.
+fn project(schema: &StoreSchema, sites: Vec<SiteTarget>) -> StoreProjection {
+    let mut projection = StoreProjection::builder();
+    projection.root(schema.clone());
+    for target in sites {
+        projection.site(0, target);
+    }
+    projection
+        .finish()
+        .expect("every site names the one declared root")
+}
 
 /// A schema whose first field is a required `Int` and whose remaining `declared - 1`
 /// fields are optional `Int`s — the declared width grows while the populated set a
@@ -32,11 +45,8 @@ fn schema(declared: usize) -> StoreSchema {
     builder.finish().expect("a bounded schema builds")
 }
 
-fn sites() -> Vec<SiteSpec> {
-    vec![SiteSpec {
-        root: 0,
-        target: SiteTarget::WholePayload,
-    }]
+fn sites() -> Vec<SiteTarget> {
+    vec![SiteTarget::whole_payload()]
 }
 
 fn read() -> DemandCoverage {
@@ -67,10 +77,9 @@ struct Measured {
 fn measure_whole_entry(declared: usize, populated: usize) -> Measured {
     assert!(populated <= declared);
     let counters = Counters::new();
-    let mut store = DurableStore::from_schemas_with_ceiling(
+    let mut store = DurableStore::from_projection_with_ceiling(
         CountingEngine::new(counters.clone()),
-        vec![schema(declared)],
-        sites(),
+        project(&schema(declared), sites()),
         write(),
     );
 
@@ -236,10 +245,9 @@ fn measure_group_entry(
     b_present: usize,
 ) -> GroupMeasured {
     let counters = Counters::new();
-    let mut store = DurableStore::from_schemas_with_ceiling(
+    let mut store = DurableStore::from_projection_with_ceiling(
         CountingEngine::new(counters.clone()),
-        vec![group_schema(top_declared, group_declared)],
-        sites(),
+        project(&group_schema(top_declared, group_declared), sites()),
         write(),
     );
     let entry_value = || EntryValue {

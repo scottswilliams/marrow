@@ -53,8 +53,7 @@ impl Drop for Scratch {
 
 fn compile() -> (
     marrow_verify::VerifiedImage,
-    Vec<marrow_kernel::durable::StoreSchema>,
-    Vec<marrow_kernel::durable::SiteSpec>,
+    marrow_kernel::durable::StoreProjection,
 ) {
     let manifest = marrow_project::Manifest::parse("edition = \"2026\"\n").expect("manifest");
     let files = vec![marrow_project::CapturedFile::new(
@@ -70,22 +69,16 @@ fn compile() -> (
     .expect("capture");
     let compiled = marrow_compile::compile(&project).expect("compile");
     let image = marrow_verify::verify(&compiled.image.bytes).expect("verify");
-    let (schemas, sites) = marrow_vm::derive_store_schemas(&image).expect("durable schema");
-    (image, schemas, sites)
+    let projection = marrow_vm::derive_store_schemas(&image).expect("durable schema");
+    (image, projection)
 }
 
-fn provision_fixture(
-    store: &std::path::Path,
-) -> (
-    Vec<marrow_kernel::durable::StoreSchema>,
-    Vec<marrow_kernel::durable::SiteSpec>,
-) {
-    let (image, schemas, sites) = compile();
-    let report = ProvisionReport::new(store, &image, &schemas);
+fn provision_fixture(store: &std::path::Path) -> marrow_kernel::durable::StoreProjection {
+    let (image, projection) = compile();
+    let report = ProvisionReport::new(store, &image, &projection);
     let approval = ProvisionApproval::accept(&report);
-    provision_image(store, &image, schemas.clone(), sites.clone(), &approval)
-        .expect("provision fixture");
-    (schemas, sites)
+    provision_image(store, &image, projection.clone(), &approval).expect("provision fixture");
+    projection
 }
 
 #[test]
@@ -98,12 +91,12 @@ fn recovery_consumes_the_old_owner_and_returns_only_a_known_reopened_owner() {
 fn ordinary_open_does_not_recreate_a_missing_engine_file() {
     let scratch = Scratch::new();
     let store = scratch.0.join("store");
-    let (schemas, sites) = provision_fixture(&store);
+    let projection = provision_fixture(&store);
     let engine = store.join(ENGINE_FILE);
     std::fs::remove_file(&engine).expect("remove provisioned engine");
 
     assert!(
-        matches!(open(&store, schemas, sites), Err(OpenError::Incomplete)),
+        matches!(open(&store, projection), Err(OpenError::Incomplete)),
         "a store missing its engine artifact is incomplete, never freshly created",
     );
     assert!(
@@ -117,12 +110,12 @@ fn ordinary_open_does_not_adopt_empty_or_malformed_engine_files() {
     for (label, bytes) in [("empty", b"".as_slice()), ("malformed", b"not redb")] {
         let scratch = Scratch::new();
         let store = scratch.0.join(label);
-        let (schemas, sites) = provision_fixture(&store);
+        let projection = provision_fixture(&store);
         let engine = store.join(ENGINE_FILE);
         std::fs::write(&engine, bytes).expect("replace engine with invalid body");
 
         assert!(
-            open(&store, schemas, sites).is_err(),
+            open(&store, projection).is_err(),
             "{label} engine body must be refused",
         );
         assert_eq!(

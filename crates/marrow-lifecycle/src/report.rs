@@ -11,7 +11,7 @@
 
 use std::path::Path;
 
-use marrow_kernel::durable::{NATIVE_ENGINE_FORMAT_VERSION, SiteSpec, StoreSchema};
+use marrow_kernel::durable::{NATIVE_ENGINE_FORMAT_VERSION, StoreProjection};
 use marrow_verify::{CeilingDescriptor, VerifiedImage};
 
 use crate::envelope::{EngineKind, StoreEnvelope};
@@ -33,14 +33,15 @@ pub struct ProvisionReport {
 }
 
 impl ProvisionReport {
-    /// Render the report for provisioning `image` at `destination` under `schemas`. The roots
-    /// are named from the schema (source spelling); the effects and ceiling are the image's
-    /// demand union in reads/writes terms.
-    pub fn new(destination: &Path, image: &VerifiedImage, schemas: &[StoreSchema]) -> Self {
+    /// Render the report for provisioning `image` at `destination` under `projection`. The
+    /// roots are named from the schema (source spelling); the effects and ceiling are the
+    /// image's demand union in reads/writes terms.
+    pub fn new(destination: &Path, image: &VerifiedImage, projection: &StoreProjection) -> Self {
         let ceiling = CeilingDescriptor::from_demand_union(image.demand_union());
         Self {
             destination: destination.display().to_string(),
-            roots: schemas
+            roots: projection
+                .roots()
                 .iter()
                 .map(|schema| schema.root_name().to_string())
                 .collect(),
@@ -187,16 +188,15 @@ impl std::error::Error for ProvisionImageError {}
 /// the report the approval must match (so an approval accepted for a different store, image,
 /// or destination is refused), mints a fresh store identity, derives the envelope (writer and
 /// engine provenance) and the logical head (active binding + head identity map), and publishes
-/// the store complete-or-not-at-all through [`provision`]. `schemas`/`sites` are the store
-/// shape the caller derived from the image (`marrow_vm::derive_store_schemas`).
+/// the store complete-or-not-at-all through [`provision`]. `projection` is the store shape
+/// the caller derived from the image (`marrow_vm::derive_store_schemas`).
 pub fn provision_image(
     dest: &Path,
     image: &VerifiedImage,
-    schemas: Vec<StoreSchema>,
-    sites: Vec<SiteSpec>,
+    projection: StoreProjection,
     approval: &ProvisionApproval,
 ) -> Result<Provisioned, ProvisionImageError> {
-    let report = ProvisionReport::new(dest, image, &schemas);
+    let report = ProvisionReport::new(dest, image, &projection);
     if approval.token() != report.token() {
         return Err(ProvisionImageError::Unapproved);
     }
@@ -219,8 +219,7 @@ pub fn provision_image(
         ProvisionRequest {
             envelope,
             head,
-            schemas,
-            sites,
+            projection,
         },
     )
     .map_err(ProvisionImageError::Provision)

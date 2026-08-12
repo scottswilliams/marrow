@@ -29,14 +29,27 @@ use marrow_kernel::codec::key::KeyScalar;
 use marrow_kernel::codec::value::{RuntimeScalar, ScalarKind};
 use marrow_kernel::durable::{
     CommitResult, DemandCoverage, Durable, DurableCommitState, DurableStore, EntryValue,
-    InvocationGrant, KernelFault, NativeStore, SessionError, SiteSpec, SiteTarget, StoreSchema,
-    StoreSchemaBuilder,
+    InvocationGrant, KernelFault, NativeStore, SessionError, SiteTarget, StoreProjection,
+    StoreSchema, StoreSchemaBuilder,
 };
 use marrow_kernel::equality::ValueDomain;
 
 #[path = "../../marrow-image/tests/common/admitted_plan.rs"]
 mod admitted_plan;
 use admitted_plan::admitted_plan;
+
+/// The single-root projection a case opens under: the root, plus its sites resolved against
+/// it. Every site here names root 0 — the store's only root.
+fn project(schema: &StoreSchema, sites: Vec<SiteTarget>) -> StoreProjection {
+    let mut projection = StoreProjection::builder();
+    projection.root(schema.clone());
+    for target in sites {
+        projection.site(0, target);
+    }
+    projection
+        .finish()
+        .expect("every site names the one declared root")
+}
 
 const APPLICATION_ID: [u8; 16] = [0x91; 16];
 const ROOT_PLACEMENT_ID: [u8; 16] = [0x92; 16];
@@ -406,17 +419,8 @@ fn schema() -> StoreSchema {
     builder.finish().expect("a bounded schema builds")
 }
 
-fn sites() -> Vec<SiteSpec> {
-    vec![
-        SiteSpec {
-            root: 0,
-            target: SiteTarget::WholePayload,
-        },
-        SiteSpec {
-            root: 0,
-            target: SiteTarget::FieldLeaf(0),
-        },
-    ]
+fn sites() -> Vec<SiteTarget> {
+    vec![SiteTarget::whole_payload(), SiteTarget::field_leaf(0)]
 }
 
 fn write() -> DemandCoverage {
@@ -436,7 +440,7 @@ fn entry(v: i64) -> EntryValue {
 /// Stage one entry and commit it. The session is scoped so its mutable borrow of the
 /// store ends here, freeing the store for affine recovery classification.
 fn unscoped_store(engine: FaultEngine) -> DurableStore<FaultEngine> {
-    DurableStore::from_engine(engine, schema(), sites())
+    DurableStore::from_engine(engine, project(&schema(), sites()))
 }
 
 #[test]
@@ -454,7 +458,7 @@ fn scoped_native_reopen_leaves_a_missing_engine_path_absent() {
     assert!(
         NativeStore::acquire_existing(&dir)
             .expect("acquire the owner over a store directory with no engine")
-            .bind_and_open_existing([0x61; 16], vec![schema()], sites(), || Ok::<
+            .bind_and_open_existing([0x61; 16], project(&schema(), sites()), || Ok::<
                 _,
                 std::convert::Infallible,
             >(()))

@@ -76,6 +76,22 @@ impl StoreSchema {
     pub fn indexes(&self) -> &[IndexSchema] {
         &self.indexes
     }
+
+    /// Resolve a top-level field by position, or `None` when the root declares no such
+    /// field.
+    pub(crate) fn field_pos(&self, field: u16) -> Option<FieldPos> {
+        FieldPos::resolve(&self.fields, field)
+    }
+
+    /// Resolve an unkeyed group by position, or `None` when the root declares no such group.
+    pub(crate) fn group_pos(&self, group: u16) -> Option<GroupPos> {
+        GroupPos::resolve(&self.groups, group)
+    }
+
+    /// Resolve a managed index by position, or `None` when the root declares no such index.
+    pub(crate) fn index_pos(&self, index: u16) -> Option<IndexPos> {
+        IndexPos::resolve(&self.indexes, index)
+    }
 }
 
 /// One field of a node's record: its name, value shape, and required flag. A field's shape
@@ -167,7 +183,69 @@ impl BranchSchema {
     pub fn branches(&self) -> &[BranchSchema] {
         &self.branches
     }
+
+    /// Resolve one of the branch's own fields by position, or `None` when it declares no
+    /// such field.
+    pub(crate) fn field_pos(&self, field: u16) -> Option<FieldPos> {
+        FieldPos::resolve(&self.fields, field)
+    }
 }
+
+/// A position resolved against a completed schema. Each of these is minted only by resolving
+/// a caller-named `u16` against the table that declares it, so the lookup it later performs
+/// is total: [`of`](FieldPos::of) reads any row *parallel to that table* — the schema's own
+/// fields, the numbering that mirrors them, or the resolved record built from both — without
+/// a second bounds question. This is why the site table resolves positions once, at
+/// publication, rather than leaving raw indices for the session-setup resolver to trust.
+macro_rules! schema_position {
+    ($(#[$meta:meta])* $name:ident) => {
+        $(#[$meta])*
+        #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+        pub(crate) struct $name(u16);
+
+        impl $name {
+            /// Resolve a caller-named position against the table that declares it.
+            pub(crate) fn resolve<T>(table: &[T], position: u16) -> Option<Self> {
+                (usize::from(position) < table.len()).then_some(Self(position))
+            }
+
+            /// Read this position from any row parallel to the table it was resolved
+            /// against.
+            pub(crate) fn of<T>(self, row: &[T]) -> &T {
+                &row[usize::from(self.0)]
+            }
+        }
+    };
+}
+
+schema_position!(
+    /// One durable root's position in a store projection's root table.
+    RootPos
+);
+impl RootPos {
+    /// The root's declaration position as a plain number: the resolved site carries it into
+    /// the authorized site, which the physical layer keys the root's cell family by.
+    pub(crate) fn index(self) -> u16 {
+        self.0
+    }
+}
+
+schema_position!(
+    /// One field's position in the record that declares it.
+    FieldPos
+);
+schema_position!(
+    /// One unkeyed group's position in the root that declares it.
+    GroupPos
+);
+schema_position!(
+    /// One managed index's position in the root that declares it.
+    IndexPos
+);
+schema_position!(
+    /// One branch's position in the declaration-ordered branch list of its own level.
+    BranchPos
+);
 
 /// One managed index the kernel maintains over a keyed root: its stable durable identity
 /// (the physical cell discriminator that separates one index's cells from another's under

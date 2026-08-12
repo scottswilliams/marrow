@@ -3,7 +3,7 @@
 //! An attachment is a live binding between a verified program image and a durable
 //! store the path kernel drives. The ephemeral-memory attachment is the first
 //! production form: a fresh in-memory store, minted only from a derived
-//! [`StoreSchema`] and [`SiteSpec`] table (which the executor derives from a
+//! [`StoreProjection`] (which the executor derives from a
 //! [`VerifiedImage`](marrow_verify::VerifiedImage), the sole source of a valid
 //! schema) plus an explicit [`DeploymentCeiling`]. Each mint draws a nonforgeable
 //! [`AttachmentId`] from process entropy, and each invocation opens its own session
@@ -19,7 +19,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use marrow_store::MemoryEngine;
 
 use super::store::{DurableStore, ReadSession, TxnSession};
-use super::{DemandCoverage, InvocationGrant, SessionError, SiteSpec, StoreSchema};
+use super::{DemandCoverage, InvocationGrant, SessionError, StoreProjection};
 
 /// A nonforgeable attachment identity: 128 bits drawn from OS entropy when an
 /// attachment is minted. It is a capability token — unguessable and constructible
@@ -125,21 +125,19 @@ pub struct EphemeralAttachment {
 }
 
 impl EphemeralAttachment {
-    /// Mint a fresh ephemeral attachment over an empty in-memory store. The root-indexed
-    /// schema table and site table are the executor's derivation from a verified image;
-    /// the ceiling bounds every session's authority. A fresh id is drawn from entropy
-    /// before the store is built, so a mint either yields a fully-formed attachment
-    /// or fails without one.
+    /// Mint a fresh ephemeral attachment over an empty in-memory store. The projection —
+    /// the root-indexed schema table and the site table checked against it — is the
+    /// executor's derivation from a verified image; the ceiling bounds every session's
+    /// authority. A fresh id is drawn from entropy before the store is built, so a mint
+    /// either yields a fully-formed attachment or fails without one.
     pub fn mint(
-        schemas: Vec<StoreSchema>,
-        sites: Vec<SiteSpec>,
+        projection: StoreProjection,
         ceiling: DeploymentCeiling,
     ) -> Result<Self, AttachError> {
         let id = AttachmentId::draw()?;
-        let store = DurableStore::from_schemas_with_ceiling(
+        let store = DurableStore::from_projection_with_ceiling(
             MemoryEngine::new(),
-            schemas,
-            sites,
+            projection,
             ceiling.coverage(),
         );
         Ok(Self {
@@ -221,17 +219,18 @@ mod tests {
     use crate::codec::value::ScalarKind;
     use crate::durable::{Durable, Presence, SiteTarget, StoreSchemaBuilder};
 
-    fn schema() -> StoreSchema {
-        let mut builder = StoreSchemaBuilder::root("counters", vec![ScalarKind::Int]);
-        builder.scalar_field("value", ScalarKind::Int, true);
-        builder.finish().expect("a one-field root builds")
-    }
-
-    fn sites() -> Vec<SiteSpec> {
-        vec![SiteSpec {
-            root: 0,
-            target: SiteTarget::WholePayload,
-        }]
+    /// The one-root, one-site projection these cases attach: a keyed `counters` root with a
+    /// single required field and a whole-payload site on it.
+    fn projection() -> StoreProjection {
+        let mut schema = StoreSchemaBuilder::root("counters", vec![ScalarKind::Int]);
+        schema.scalar_field("value", ScalarKind::Int, true);
+        let mut projection = StoreProjection::builder();
+        projection
+            .root(schema.finish().expect("a one-field root builds"))
+            .site(0, SiteTarget::whole_payload());
+        projection
+            .finish()
+            .expect("the site names the declared root")
     }
 
     /// A read-only ceiling with a fixed id byte pattern; the kernel treats the id as
@@ -248,15 +247,14 @@ mod tests {
 
     #[test]
     fn each_mint_draws_a_distinct_id() {
-        let a = EphemeralAttachment::mint(vec![schema()], sites(), read_only()).expect("mint");
-        let b = EphemeralAttachment::mint(vec![schema()], sites(), read_only()).expect("mint");
+        let a = EphemeralAttachment::mint(projection(), read_only()).expect("mint");
+        let b = EphemeralAttachment::mint(projection(), read_only()).expect("mint");
         assert_ne!(a.id(), b.id(), "two attachments must not share an id");
     }
 
     #[test]
     fn a_read_only_ceiling_denies_a_writing_invocation() {
-        let mut att =
-            EphemeralAttachment::mint(vec![schema()], sites(), read_only()).expect("mint");
+        let mut att = EphemeralAttachment::mint(projection(), read_only()).expect("mint");
         // A writing demand exceeds a read-only ceiling even under a full grant.
         let denied = att.txn_session(
             InvocationGrant::full_store(),
@@ -274,8 +272,7 @@ mod tests {
         // bound to the exact ceiling it was minted under. Two distinct ceilings mint
         // attachments that report distinct ids.
         let a = EphemeralAttachment::mint(
-            vec![schema()],
-            sites(),
+            projection(),
             DeploymentCeiling::new(
                 DemandCoverage {
                     read: true,
@@ -288,8 +285,7 @@ mod tests {
         assert_eq!(a.ceiling_id(), CeilingIdToken::new([0x22; 32]));
 
         let b = EphemeralAttachment::mint(
-            vec![schema()],
-            sites(),
+            projection(),
             DeploymentCeiling::new(
                 DemandCoverage {
                     read: true,
@@ -304,8 +300,7 @@ mod tests {
 
     #[test]
     fn a_fresh_attachment_observes_no_entries() {
-        let mut att =
-            EphemeralAttachment::mint(vec![schema()], sites(), read_only()).expect("mint");
+        let mut att = EphemeralAttachment::mint(projection(), read_only()).expect("mint");
         let mut read = att
             .read_session(
                 InvocationGrant::full_store(),

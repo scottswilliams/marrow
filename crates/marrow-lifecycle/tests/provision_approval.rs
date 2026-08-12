@@ -49,12 +49,7 @@ fn compile() -> VerifiedImage {
     verify(&compiled.image.bytes).expect("verify")
 }
 
-fn schemas(
-    image: &VerifiedImage,
-) -> (
-    Vec<marrow_kernel::durable::StoreSchema>,
-    Vec<marrow_kernel::durable::SiteSpec>,
-) {
+fn projection(image: &VerifiedImage) -> marrow_kernel::durable::StoreProjection {
     marrow_vm::derive_store_schemas(image).expect("flat-executable")
 }
 
@@ -98,9 +93,9 @@ impl Drop for Scratch {
 #[test]
 fn the_report_names_roots_in_source_vocabulary_with_no_identity_hash() {
     let image = compile();
-    let (schemas, _sites) = schemas(&image);
+    let projection = projection(&image);
     let dest = Path::new("/tmp/notes-store");
-    let report = ProvisionReport::new(dest, &image, &schemas);
+    let report = ProvisionReport::new(dest, &image, &projection);
     let rendered = report.render();
 
     assert!(
@@ -131,11 +126,11 @@ fn the_report_names_roots_in_source_vocabulary_with_no_identity_hash() {
 #[test]
 fn provision_refuses_without_a_matching_approval() {
     let image = compile();
-    let (schemas_v, sites) = schemas(&image);
+    let projection = projection(&image);
     let scratch = Scratch::new();
 
     let wrong = ProvisionApproval::from_token("not-the-right-token");
-    let refused = provision_image(&scratch.store(), &image, schemas_v, sites, &wrong);
+    let refused = provision_image(&scratch.store(), &image, projection, &wrong);
     assert!(
         matches!(refused, Err(ProvisionImageError::Unapproved)),
         "a mismatched approval is refused",
@@ -152,21 +147,15 @@ fn provision_refuses_without_a_matching_approval() {
 #[test]
 fn an_accepted_provision_round_trips_through_open() {
     let image = compile();
-    let (schemas_v, sites) = schemas(&image);
+    let projection = projection(&image);
     let scratch = Scratch::new();
 
-    let report = ProvisionReport::new(&scratch.store(), &image, &schemas_v);
+    let report = ProvisionReport::new(&scratch.store(), &image, &projection);
     let approval = ProvisionApproval::accept(&report);
-    let provisioned = provision_image(
-        &scratch.store(),
-        &image,
-        schemas_v.clone(),
-        sites.clone(),
-        &approval,
-    )
-    .expect("provision");
+    let provisioned = provision_image(&scratch.store(), &image, projection.clone(), &approval)
+        .expect("provision");
 
-    let opened = open(&scratch.store(), schemas_v, sites).expect("open");
+    let opened = open(&scratch.store(), projection).expect("open");
     assert_eq!(
         opened.envelope.instance, provisioned.instance,
         "the opened store carries the provisioned instance",

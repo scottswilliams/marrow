@@ -6,24 +6,43 @@ use super::super::physical;
 use super::super::{
     BoundedKeys, BoundedLimit, CommitResult, CreateOutcome, DemandCoverage, EntryValue,
     EraseOutcome, IndexComponent, InvocationGrant, KernelFault, Presence, ReplaceOutcome,
-    SessionError, SiteSpec, SiteTarget, StoreSchema, StoreSchemaBuilder, number_store,
+    RootNumbering, SessionError, SiteTarget, StoreProjection, StoreSchema, StoreSchemaBuilder,
+    number_store,
 };
 use super::{Durable, DurableStore};
 use crate::codec::key::KeyScalar;
 use crate::codec::value::{RuntimeScalar, ScalarKind};
 use crate::equality::ValueDomain;
 
+/// The single-root projection a case opens under: the root, plus its sites resolved against
+/// it. Every site in this module names root 0 — the store's only root.
+fn project(schema: &StoreSchema, sites: Vec<SiteTarget>) -> StoreProjection {
+    let mut projection = StoreProjection::builder();
+    projection.root(schema.clone());
+    for target in sites {
+        projection.site(0, target);
+    }
+    projection
+        .finish()
+        .expect("every site names the one declared root")
+}
+
+/// The numbering of a single-root schema, through the same minter the store uses.
+fn root_numbering(schema: &StoreSchema) -> Vec<RootNumbering> {
+    number_store(&project(schema, Vec::new()))
+}
+
 /// The store-wide cell-key number of top-level field `index` of a single-root `schema`,
 /// from the same numbering the store computes — so a test's hand-built cells key by the
 /// exact numbers the ops write (correct by construction, not by hardcoded literals).
 fn field_num(schema: &StoreSchema, index: usize) -> physical::NodeNumber {
-    number_store(std::slice::from_ref(schema))[0].fields()[index]
+    root_numbering(schema)[0].fields()[index]
 }
 
 /// The cell-key number of the branch reached by `path` (per-level branch indices from the
 /// root down) in a single-root `schema`.
 fn branch_num(schema: &StoreSchema, path: &[usize]) -> physical::NodeNumber {
-    let numbering = number_store(std::slice::from_ref(schema));
+    let numbering = root_numbering(schema);
     let mut level = numbering[0].branches();
     let mut number = 0;
     for &p in path {
@@ -36,7 +55,7 @@ fn branch_num(schema: &StoreSchema, path: &[usize]) -> physical::NodeNumber {
 /// The cell-key number of field `field` of the branch reached by `path` in a single-root
 /// `schema`.
 fn branch_field_num(schema: &StoreSchema, path: &[usize], field: usize) -> physical::NodeNumber {
-    let numbering = number_store(std::slice::from_ref(schema));
+    let numbering = root_numbering(schema);
     let mut node = &numbering[0].branches()[path[0]];
     for &p in &path[1..] {
         node = &node.branches()[p];
@@ -46,12 +65,12 @@ fn branch_field_num(schema: &StoreSchema, path: &[usize], field: usize) -> physi
 
 /// The cell-key number of group `index` of a single-root `schema`.
 fn group_num(schema: &StoreSchema, index: usize) -> physical::NodeNumber {
-    number_store(std::slice::from_ref(schema))[0].groups()[index].number()
+    root_numbering(schema)[0].groups()[index].number()
 }
 
 /// The cell-key number of field `field` of group `index` of a single-root `schema`.
 fn group_field_num(schema: &StoreSchema, index: usize, field: usize) -> physical::NodeNumber {
-    number_store(std::slice::from_ref(schema))[0].groups()[index].fields()[field]
+    root_numbering(schema)[0].groups()[index].fields()[field]
 }
 
 /// The flat `counters` root — keyed by string, with a required `value` and a sparse
@@ -70,35 +89,23 @@ fn schema() -> StoreSchema {
         .expect("the counters schema builds")
 }
 
-fn sites() -> Vec<SiteSpec> {
+fn sites() -> Vec<SiteTarget> {
     vec![
-        SiteSpec {
-            root: 0,
-            target: SiteTarget::WholePayload,
-        },
-        SiteSpec {
-            root: 0,
-            target: SiteTarget::FieldLeaf(0),
-        },
-        SiteSpec {
-            root: 0,
-            target: SiteTarget::FieldLeaf(1),
-        },
+        SiteTarget::whole_payload(),
+        SiteTarget::field_leaf(0),
+        SiteTarget::field_leaf(1),
     ]
 }
 
 /// A branch-entry target naming the branch node the `path` of per-level branch
 /// indices descends to (`&[0]` a direct child branch, `&[0, 1]` a nested one).
 fn branch_entry(path: &[u16]) -> SiteTarget {
-    SiteTarget::BranchEntry(path.into())
+    SiteTarget::branch_entry(Box::from(path))
 }
 
 /// A branch-field target: the branch node `path` descends to, field index `field`.
 fn branch_field(path: &[u16], field: u16) -> SiteTarget {
-    SiteTarget::BranchField {
-        branch: path.into(),
-        field,
-    }
+    SiteTarget::branch_field(Box::from(path), field)
 }
 
 fn value_entry(v: i64) -> EntryValue {
@@ -135,7 +142,7 @@ fn the_authority_triple_admits_the_union_and_checks_the_named_record() {
     };
 
     // Invocation of a read-only export: admitted under the read-only grant.
-    let mut store = DurableStore::from_engine(MemoryEngine::new(), schema(), sites());
+    let mut store = DurableStore::from_engine(MemoryEngine::new(), project(&schema(), sites()));
     assert!(store.read_session(read_grant, read_demand()).is_ok());
 
     // Admission of a program whose union writes: denied under the read-only grant.
@@ -154,7 +161,7 @@ fn the_authority_triple_admits_the_union_and_checks_the_named_record() {
 
 #[test]
 fn iterates_created_keys_in_forward_order() {
-    let mut store = DurableStore::from_engine(MemoryEngine::new(), schema(), sites());
+    let mut store = DurableStore::from_engine(MemoryEngine::new(), project(&schema(), sites()));
     {
         let mut txn = store
             .txn_session(InvocationGrant::full_store(), write_demand())
@@ -201,7 +208,7 @@ fn a_field_leaf_without_a_marker_is_corruption() {
         .expect("seed orphan leaf");
         assert_eq!(txn.commit(), CommitOutcome::Confirmed);
     }
-    let mut store = DurableStore::from_engine(engine, schema(), sites());
+    let mut store = DurableStore::from_engine(engine, project(&schema(), sites()));
     let mut read = store
         .read_session(InvocationGrant::full_store(), read_demand())
         .expect("read session");
@@ -225,11 +232,8 @@ fn a_branch_field_write_with_a_root_only_key_path_faults() {
     builder.scalar_field("body", ScalarKind::Str, false);
     builder.close_branch();
     let schema = builder.finish().expect("the branch schema builds");
-    let sites = vec![SiteSpec {
-        root: 0,
-        target: branch_field(&[0], 0),
-    }];
-    let mut store = DurableStore::from_engine(MemoryEngine::new(), schema, sites);
+    let sites = vec![branch_field(&[0], 0)];
+    let mut store = DurableStore::from_engine(MemoryEngine::new(), project(&schema, sites));
     let mut txn = store
         .txn_session(InvocationGrant::full_store(), write_demand())
         .expect("txn session");
@@ -249,7 +253,7 @@ fn a_branch_field_write_with_a_root_only_key_path_faults() {
 fn a_required_field_missing_at_commit_rolls_back() {
     // Stage only the sparse label on a fresh entry: the required value is unset,
     // so commit reports RequiredMissing and rolls back.
-    let mut store = DurableStore::from_engine(MemoryEngine::new(), schema(), sites());
+    let mut store = DurableStore::from_engine(MemoryEngine::new(), project(&schema(), sites()));
     let mut txn = store
         .txn_session(InvocationGrant::full_store(), write_demand())
         .expect("txn session");
@@ -281,7 +285,7 @@ fn a_committed_orphan_reads_as_corruption() {
         .expect("seed orphan leaf");
         assert_eq!(txn.commit(), CommitOutcome::Confirmed);
     }
-    let mut store = DurableStore::from_engine(engine, schema(), sites());
+    let mut store = DurableStore::from_engine(engine, project(&schema(), sites()));
     let mut read = store
         .read_session(InvocationGrant::full_store(), read_demand())
         .expect("read session");
@@ -297,7 +301,7 @@ fn a_transaction_tolerates_a_staged_sparse_field_as_payload_absent() {
     // Inside a transaction a sparse field staged before its entry's marker is
     // reconcile-pending, not corruption: a whole-entry read observes it as
     // payload-absent, matching the pre-probe behavior the reconcile model needs.
-    let mut store = DurableStore::from_engine(MemoryEngine::new(), schema(), sites());
+    let mut store = DurableStore::from_engine(MemoryEngine::new(), project(&schema(), sites()));
     let mut txn = store
         .txn_session(InvocationGrant::full_store(), write_demand())
         .expect("txn session");
@@ -319,23 +323,14 @@ fn a_transaction_tolerates_a_staged_sparse_field_as_payload_absent() {
 /// A schema with one keyed branch: root `books` keyed by string with a required
 /// `title`, plus a keyed branch `notes` keyed by int with a required `text`. The
 /// site table addresses the root entry (0) and the branch entry (1).
-fn branch_schema() -> (StoreSchema, Vec<SiteSpec>) {
+fn branch_schema() -> (StoreSchema, Vec<SiteTarget>) {
     let mut builder = StoreSchemaBuilder::root("books", vec![ScalarKind::Str]);
     builder.scalar_field("title", ScalarKind::Str, true);
     builder.open_branch("notes", vec![ScalarKind::Int]);
     builder.scalar_field("text", ScalarKind::Str, true);
     builder.close_branch();
     let schema = builder.finish().expect("the books schema builds");
-    let sites = vec![
-        SiteSpec {
-            root: 0,
-            target: SiteTarget::WholePayload,
-        },
-        SiteSpec {
-            root: 0,
-            target: branch_entry(&[0]),
-        },
-    ];
+    let sites = vec![SiteTarget::whole_payload(), branch_entry(&[0])];
     (schema, sites)
 }
 
@@ -348,7 +343,7 @@ fn branch_schema() -> (StoreSchema, Vec<SiteSpec>) {
 #[test]
 fn a_branch_entry_makes_its_root_descendant_only_and_root_create_preserves_it() {
     let (schema, sites) = branch_schema();
-    let mut store = DurableStore::from_engine(MemoryEngine::new(), schema, sites);
+    let mut store = DurableStore::from_engine(MemoryEngine::new(), project(&schema, sites));
     let book = KeyScalar::Str("a".into());
     let note = [KeyScalar::Str("a".into()), KeyScalar::Int(7)];
 
@@ -494,7 +489,7 @@ fn injected_branch_store(cells: &[(Vec<u8>, Vec<u8>)]) -> DurableStore<MemoryEng
         assert_eq!(txn.commit(), CommitOutcome::Confirmed);
     }
     let (schema, sites) = branch_schema();
-    DurableStore::from_engine(engine, schema, sites)
+    DurableStore::from_engine(engine, project(&schema, sites))
 }
 
 /// VALID: a branch child (marker plus its own `text` leaf) under an absent root is a
@@ -693,7 +688,7 @@ fn a_bounded_acquisition_skips_a_run_of_descendant_only_entries_between_siblings
 /// `f0..f5` fields. The site table addresses the root (0), the branch entry (1), the
 /// middle sparse branch field `f2` (2, branch field index 3), and the required branch
 /// field `text` (3, branch field index 0).
-fn wide_branch_schema() -> (StoreSchema, Vec<SiteSpec>) {
+fn wide_branch_schema() -> (StoreSchema, Vec<SiteTarget>) {
     let mut builder = StoreSchemaBuilder::root("books", vec![ScalarKind::Str]);
     builder.scalar_field("title", ScalarKind::Str, true);
     builder.open_branch("notes", vec![ScalarKind::Int]);
@@ -704,22 +699,10 @@ fn wide_branch_schema() -> (StoreSchema, Vec<SiteSpec>) {
     builder.close_branch();
     let schema = builder.finish().expect("the wide branch schema builds");
     let sites = vec![
-        SiteSpec {
-            root: 0,
-            target: SiteTarget::WholePayload,
-        },
-        SiteSpec {
-            root: 0,
-            target: branch_entry(&[0]),
-        },
-        SiteSpec {
-            root: 0,
-            target: branch_field(&[0], 3),
-        },
-        SiteSpec {
-            root: 0,
-            target: branch_field(&[0], 0),
-        },
+        SiteTarget::whole_payload(),
+        branch_entry(&[0]),
+        branch_field(&[0], 3),
+        branch_field(&[0], 0),
     ];
     (schema, sites)
 }
@@ -753,7 +736,7 @@ fn note_stem(book: &str, note: i64) -> Vec<u8> {
 #[test]
 fn a_field_exact_branch_set_writes_one_leaf_regardless_of_branch_width() {
     let (schema, sites) = wide_branch_schema();
-    let mut store = DurableStore::from_engine(MemoryEngine::new(), schema, sites);
+    let mut store = DurableStore::from_engine(MemoryEngine::new(), project(&schema, sites));
     let note = [KeyScalar::Str("a".into()), KeyScalar::Int(7)];
 
     // Create the branch entry with only its required `text` present.
@@ -820,7 +803,7 @@ fn a_field_exact_branch_set_writes_one_leaf_regardless_of_branch_width() {
 #[test]
 fn a_field_exact_required_branch_set_reconcile_creates_the_branch_marker() {
     let (schema, sites) = wide_branch_schema();
-    let mut store = DurableStore::from_engine(MemoryEngine::new(), schema, sites);
+    let mut store = DurableStore::from_engine(MemoryEngine::new(), project(&schema, sites));
     let note = [KeyScalar::Str("a".into()), KeyScalar::Int(7)];
 
     {
@@ -855,7 +838,7 @@ fn a_field_exact_required_branch_set_reconcile_creates_the_branch_marker() {
 #[test]
 fn a_sparse_branch_set_missing_the_branch_required_field_rolls_back() {
     let (schema, sites) = wide_branch_schema();
-    let mut store = DurableStore::from_engine(MemoryEngine::new(), schema, sites);
+    let mut store = DurableStore::from_engine(MemoryEngine::new(), project(&schema, sites));
     let note = [KeyScalar::Str("a".into()), KeyScalar::Int(7)];
     let before = all_cells(&store);
 
@@ -921,7 +904,7 @@ fn strs(names: &[&str]) -> Vec<KeyScalar> {
 /// order.
 #[test]
 fn bounded_acquisition_freezes_the_first_n_and_flags_a_further_key() {
-    let mut store = DurableStore::from_engine(MemoryEngine::new(), schema(), sites());
+    let mut store = DurableStore::from_engine(MemoryEngine::new(), project(&schema(), sites()));
     seed_root(&mut store, &["c", "a", "e", "b", "d"]); // inserted out of order
 
     // N below the population: the first N, ascending, with `more` set.
@@ -954,7 +937,7 @@ fn bounded_acquisition_freezes_the_first_n_and_flags_a_further_key() {
 #[test]
 fn bounded_acquisition_covers_the_population_boundary() {
     // 0 present: empty frozen set, no more.
-    let mut empty = DurableStore::from_engine(MemoryEngine::new(), schema(), sites());
+    let mut empty = DurableStore::from_engine(MemoryEngine::new(), project(&schema(), sites()));
     assert_eq!(
         freeze_root(&mut empty, None, 2),
         BoundedKeys {
@@ -964,7 +947,7 @@ fn bounded_acquisition_covers_the_population_boundary() {
     );
 
     // 1 present (< N): the one key, no more.
-    let mut one = DurableStore::from_engine(MemoryEngine::new(), schema(), sites());
+    let mut one = DurableStore::from_engine(MemoryEngine::new(), project(&schema(), sites()));
     seed_root(&mut one, &["a"]);
     assert_eq!(
         freeze_root(&mut one, None, 2),
@@ -975,7 +958,7 @@ fn bounded_acquisition_covers_the_population_boundary() {
     );
 
     // Exactly N present: both keys, no more (the (N+1)th does not exist).
-    let mut exact = DurableStore::from_engine(MemoryEngine::new(), schema(), sites());
+    let mut exact = DurableStore::from_engine(MemoryEngine::new(), project(&schema(), sites()));
     seed_root(&mut exact, &["a", "b"]);
     assert_eq!(
         freeze_root(&mut exact, None, 2),
@@ -986,7 +969,7 @@ fn bounded_acquisition_covers_the_population_boundary() {
     );
 
     // N+1 present: the first N frozen, `more` set (the third is probed, not frozen).
-    let mut over = DurableStore::from_engine(MemoryEngine::new(), schema(), sites());
+    let mut over = DurableStore::from_engine(MemoryEngine::new(), project(&schema(), sites()));
     seed_root(&mut over, &["a", "b", "c"]);
     assert_eq!(
         freeze_root(&mut over, None, 2),
@@ -1001,7 +984,7 @@ fn bounded_acquisition_covers_the_population_boundary() {
 /// the first present key above it, and is otherwise frozen and flagged as usual.
 #[test]
 fn bounded_acquisition_from_is_an_inclusive_lower_bound() {
-    let mut store = DurableStore::from_engine(MemoryEngine::new(), schema(), sites());
+    let mut store = DurableStore::from_engine(MemoryEngine::new(), project(&schema(), sites()));
     seed_root(&mut store, &["a", "c", "e"]);
 
     // `from` a present key: inclusive — the frozen set starts at it.
@@ -1106,7 +1089,7 @@ fn bounded_acquisition_skips_descendant_only_entries() {
 #[test]
 fn bounded_acquisition_skips_a_large_descendant_fan_out_in_one_seek() {
     let (schema, sites) = branch_schema();
-    let mut store = DurableStore::from_engine(MemoryEngine::new(), schema, sites);
+    let mut store = DurableStore::from_engine(MemoryEngine::new(), project(&schema, sites));
     {
         let mut txn = store
             .txn_session(InvocationGrant::full_store(), write_demand())
@@ -1168,7 +1151,7 @@ fn bounded_acquisition_skips_a_large_descendant_fan_out_in_one_seek() {
 #[test]
 fn bounded_acquisition_traverses_a_branch_layer_under_a_fixed_root_key() {
     let (schema, sites) = branch_schema();
-    let mut store = DurableStore::from_engine(MemoryEngine::new(), schema, sites);
+    let mut store = DurableStore::from_engine(MemoryEngine::new(), project(&schema, sites));
     {
         let mut txn = store
             .txn_session(InvocationGrant::full_store(), write_demand())
@@ -1270,7 +1253,7 @@ fn bounded_acquisition_traverses_a_branch_layer_under_a_fixed_root_key() {
 #[test]
 fn family_populated_answers_whether_a_branch_family_has_a_child() {
     let (schema, sites) = branch_schema();
-    let mut store = DurableStore::from_engine(MemoryEngine::new(), schema, sites);
+    let mut store = DurableStore::from_engine(MemoryEngine::new(), project(&schema, sites));
     {
         let mut txn = store
             .txn_session(InvocationGrant::full_store(), write_demand())
@@ -1328,7 +1311,7 @@ fn family_populated_answers_whether_a_branch_family_has_a_child() {
 #[test]
 fn family_populated_skips_descendant_only_children_and_empty_families() {
     let (schema, sites) = branch_schema();
-    let mut store = DurableStore::from_engine(MemoryEngine::new(), schema, sites);
+    let mut store = DurableStore::from_engine(MemoryEngine::new(), project(&schema, sites));
     // A fresh store: the root family is empty.
     {
         let mut read = store
@@ -1384,7 +1367,7 @@ fn family_populated_skips_descendant_only_children_and_empty_families() {
 #[test]
 fn a_branch_layer_traversal_with_a_wrong_ancestor_key_path_faults() {
     let (schema, sites) = branch_schema();
-    let mut store = DurableStore::from_engine(MemoryEngine::new(), schema, sites);
+    let mut store = DurableStore::from_engine(MemoryEngine::new(), project(&schema, sites));
     let mut read = store
         .read_session(InvocationGrant::full_store(), read_demand())
         .expect("read session");
@@ -1432,7 +1415,7 @@ fn a_branch_layer_traversal_with_a_wrong_ancestor_key_path_faults() {
 /// fields; erase removes own cells; both preserve keyed descendants) and the node-
 /// parametric reconcile are exercised at depth. Sites: 0 root, 1 notes, 2 tags, 3
 /// links, 4 tags.weight (sparse), 5 tags.label (required), 6 notes.color (sparse).
-fn nested_schema() -> (StoreSchema, Vec<SiteSpec>) {
+fn nested_schema() -> (StoreSchema, Vec<SiteTarget>) {
     let mut builder = StoreSchemaBuilder::root("books", vec![ScalarKind::Str]);
     builder.scalar_field("title", ScalarKind::Str, true);
     builder.open_branch("notes", vec![ScalarKind::Int]);
@@ -1448,34 +1431,13 @@ fn nested_schema() -> (StoreSchema, Vec<SiteSpec>) {
     builder.close_branch();
     let schema = builder.finish().expect("the nested schema builds");
     let sites = vec![
-        SiteSpec {
-            root: 0,
-            target: SiteTarget::WholePayload,
-        },
-        SiteSpec {
-            root: 0,
-            target: branch_entry(&[0]),
-        },
-        SiteSpec {
-            root: 0,
-            target: branch_entry(&[0, 0]),
-        },
-        SiteSpec {
-            root: 0,
-            target: branch_entry(&[0, 0, 0]),
-        },
-        SiteSpec {
-            root: 0,
-            target: branch_field(&[0, 0], 1),
-        },
-        SiteSpec {
-            root: 0,
-            target: branch_field(&[0, 0], 0),
-        },
-        SiteSpec {
-            root: 0,
-            target: branch_field(&[0], 1),
-        },
+        SiteTarget::whole_payload(),
+        branch_entry(&[0]),
+        branch_entry(&[0, 0]),
+        branch_entry(&[0, 0, 0]),
+        branch_field(&[0, 0], 1),
+        branch_field(&[0, 0], 0),
+        branch_field(&[0], 1),
     ];
     (schema, sites)
 }
@@ -1516,7 +1478,7 @@ fn nested_tag_stem(book: &str, note: i64, tag: &str) -> Vec<u8> {
 
 fn nested_store() -> DurableStore<MemoryEngine> {
     let (schema, sites) = nested_schema();
-    DurableStore::from_engine(MemoryEngine::new(), schema, sites)
+    DurableStore::from_engine(MemoryEngine::new(), project(&schema, sites))
 }
 
 /// Seed raw `cells` into a fresh engine wrapped in the nested schema, so a read
@@ -1532,7 +1494,7 @@ fn injected_nested_store(cells: &[(Vec<u8>, Vec<u8>)]) -> DurableStore<MemoryEng
         assert_eq!(txn.commit(), CommitOutcome::Confirmed);
     }
     let (schema, sites) = nested_schema();
-    DurableStore::from_engine(engine, schema, sites)
+    DurableStore::from_engine(engine, project(&schema, sites))
 }
 
 /// Every raw cell whose key lies under `prefix`, as an owned map. A node's marker is a
@@ -2026,17 +1988,8 @@ fn a_composite_key_root_addresses_entries_by_the_ordered_tuple() {
     let mut builder = StoreSchemaBuilder::root("cells", vec![ScalarKind::Int, ScalarKind::Int]);
     builder.scalar_field("v", ScalarKind::Int, true);
     let schema = builder.finish().expect("the composite-key schema builds");
-    let sites = vec![
-        SiteSpec {
-            root: 0,
-            target: SiteTarget::WholePayload,
-        },
-        SiteSpec {
-            root: 0,
-            target: SiteTarget::FieldLeaf(0),
-        },
-    ];
-    let mut store = DurableStore::from_engine(MemoryEngine::new(), schema, sites);
+    let sites = vec![SiteTarget::whole_payload(), SiteTarget::field_leaf(0)];
+    let mut store = DurableStore::from_engine(MemoryEngine::new(), project(&schema, sites));
     {
         let mut txn = store
             .txn_session(InvocationGrant::full_store(), write_demand())
@@ -2089,11 +2042,8 @@ fn iterate_over_a_composite_keyed_root_layer_faults_corruption() {
     let mut builder = StoreSchemaBuilder::root("cells", vec![ScalarKind::Int, ScalarKind::Int]);
     builder.scalar_field("v", ScalarKind::Int, true);
     let schema = builder.finish().expect("the composite-key schema builds");
-    let sites = vec![SiteSpec {
-        root: 0,
-        target: SiteTarget::WholePayload,
-    }];
-    let mut store = DurableStore::from_engine(MemoryEngine::new(), schema, sites);
+    let sites = vec![SiteTarget::whole_payload()];
+    let mut store = DurableStore::from_engine(MemoryEngine::new(), project(&schema, sites));
     let mut read = store
         .read_session(InvocationGrant::full_store(), read_demand())
         .expect("read session");
@@ -2119,16 +2069,10 @@ fn iterate_a_single_column_branch_under_a_composite_root_consumes_multi_column_a
     builder.close_branch();
     let schema = builder.finish().expect("the grid schema builds");
     let sites = vec![
-        SiteSpec {
-            root: 0,
-            target: SiteTarget::WholePayload,
-        },
-        SiteSpec {
-            root: 0,
-            target: SiteTarget::BranchEntry(Box::from([0u16])),
-        },
+        SiteTarget::whole_payload(),
+        SiteTarget::branch_entry(Box::from([0u16])),
     ];
-    let mut store = DurableStore::from_engine(MemoryEngine::new(), schema, sites);
+    let mut store = DurableStore::from_engine(MemoryEngine::new(), project(&schema, sites));
     {
         let mut txn = store
             .txn_session(InvocationGrant::full_store(), write_demand())
@@ -2246,7 +2190,7 @@ fn native_indexed() -> (DurableStore<NativeEngineOwner>, TempDir) {
         .bind_and_open_existing([0x31; 16], || Ok::<_, std::convert::Infallible>(()))
         .expect("open native");
     (
-        DurableStore::from_engine(engine, indexed_schema(), sites()),
+        DurableStore::from_engine(engine, project(&indexed_schema(), sites())),
         temp,
     )
 }
@@ -2296,23 +2240,29 @@ mod read {
     use crate::durable::store::index_ops::{op_index_lookup, op_index_scan};
     use crate::durable::store::resolve::resolve_site;
 
-    fn scan_site() -> AuthorizedSite {
+    /// One resolved index site, reached the way the store reaches it: the target is checked
+    /// against the completed root by the projection before the resolver ever sees it.
+    fn resolved(target: SiteTarget) -> AuthorizedSite {
         let schema = indexed_schema();
-        let numbering = super::number_store(std::slice::from_ref(&schema));
-        resolve_site(&schema, &numbering[0], 0, &SiteTarget::IndexScan(0))
+        let projection = super::project(&schema, vec![target]);
+        let numbering = number_store(&projection);
+        resolve_site(&schema, &numbering[0], 0, projection.sites()[0].target())
+    }
+
+    fn scan_site() -> AuthorizedSite {
+        resolved(SiteTarget::index_scan(0))
     }
 
     fn lookup_site() -> AuthorizedSite {
-        let schema = indexed_schema();
-        let numbering = super::number_store(std::slice::from_ref(&schema));
-        resolve_site(&schema, &numbering[0], 0, &SiteTarget::IndexLookup(1))
+        resolved(SiteTarget::index_lookup(1))
     }
 
     /// A store seeded through the real maintenance path: three entries whose `byLabel`
     /// rows share label `"x"` for `a` and `b`, giving distinct labels `{x, y}` and,
     /// under `"x"`, distinct names `{a, b}`.
     fn seeded() -> DurableStore<MemoryEngine> {
-        let mut store = DurableStore::from_engine(MemoryEngine::new(), indexed_schema(), sites());
+        let mut store =
+            DurableStore::from_engine(MemoryEngine::new(), project(&indexed_schema(), sites()));
         let mut txn = store
             .txn_session(InvocationGrant::full_store(), write_demand())
             .unwrap();
@@ -2333,7 +2283,7 @@ mod read {
             txn.put(key, value.clone()).unwrap();
         }
         assert_eq!(txn.commit(), CommitOutcome::Confirmed);
-        DurableStore::from_engine(engine, indexed_schema(), sites())
+        DurableStore::from_engine(engine, project(&indexed_schema(), sites()))
     }
 
     fn scan(
@@ -2514,7 +2464,8 @@ mod read {
 /// fully present: the non-unique `byLabel` and the unique `byValue`.
 #[test]
 fn create_adds_a_row_to_every_index() {
-    let mut store = DurableStore::from_engine(MemoryEngine::new(), indexed_schema(), sites());
+    let mut store =
+        DurableStore::from_engine(MemoryEngine::new(), project(&indexed_schema(), sites()));
     {
         let mut txn = store
             .txn_session(InvocationGrant::full_store(), write_demand())
@@ -2537,7 +2488,8 @@ fn create_adds_a_row_to_every_index() {
 /// row; `byValue` (over `value`) is unchanged.
 #[test]
 fn changing_a_projected_field_moves_only_its_index_row() {
-    let mut store = DurableStore::from_engine(MemoryEngine::new(), indexed_schema(), sites());
+    let mut store =
+        DurableStore::from_engine(MemoryEngine::new(), project(&indexed_schema(), sites()));
     {
         let mut txn = store
             .txn_session(InvocationGrant::full_store(), write_demand())
@@ -2563,7 +2515,8 @@ fn changing_a_projected_field_moves_only_its_index_row() {
 /// intact — the index analogue of the descendant-preserving erase.
 #[test]
 fn erasing_one_entry_leaves_a_siblings_rows_intact() {
-    let mut store = DurableStore::from_engine(MemoryEngine::new(), indexed_schema(), sites());
+    let mut store =
+        DurableStore::from_engine(MemoryEngine::new(), project(&indexed_schema(), sites()));
     {
         let mut txn = store
             .txn_session(InvocationGrant::full_store(), write_demand())
@@ -2587,7 +2540,8 @@ fn erasing_one_entry_leaves_a_siblings_rows_intact() {
 /// of `byLabel`) without disturbing an index the field does not project.
 #[test]
 fn clearing_a_projected_field_removes_its_row() {
-    let mut store = DurableStore::from_engine(MemoryEngine::new(), indexed_schema(), sites());
+    let mut store =
+        DurableStore::from_engine(MemoryEngine::new(), project(&indexed_schema(), sites()));
     {
         let mut txn = store
             .txn_session(InvocationGrant::full_store(), write_demand())
@@ -2605,7 +2559,8 @@ fn clearing_a_projected_field_removes_its_row() {
 /// A replace rewrites the rows to the new projected values, dropping the old.
 #[test]
 fn replacing_an_entry_rewrites_its_rows() {
-    let mut store = DurableStore::from_engine(MemoryEngine::new(), indexed_schema(), sites());
+    let mut store =
+        DurableStore::from_engine(MemoryEngine::new(), project(&indexed_schema(), sites()));
     {
         let mut txn = store
             .txn_session(InvocationGrant::full_store(), write_demand())
@@ -2630,7 +2585,8 @@ fn replacing_an_entry_rewrites_its_rows() {
 /// fresh transaction still works.
 #[test]
 fn a_unique_collision_faults_and_rolls_back_without_poisoning() {
-    let mut store = DurableStore::from_engine(MemoryEngine::new(), indexed_schema(), sites());
+    let mut store =
+        DurableStore::from_engine(MemoryEngine::new(), project(&indexed_schema(), sites()));
     {
         let mut txn = store
             .txn_session(InvocationGrant::full_store(), write_demand())
@@ -2681,7 +2637,8 @@ fn a_unique_collision_faults_and_rolls_back_without_poisoning() {
 /// no `byLabel` row until the field is set.
 #[test]
 fn setting_an_absent_projected_field_adds_a_row() {
-    let mut store = DurableStore::from_engine(MemoryEngine::new(), indexed_schema(), sites());
+    let mut store =
+        DurableStore::from_engine(MemoryEngine::new(), project(&indexed_schema(), sites()));
     {
         let mut txn = store
             .txn_session(InvocationGrant::full_store(), write_demand())
@@ -2710,7 +2667,8 @@ fn setting_an_absent_projected_field_adds_a_row() {
 /// transaction — index row included — rolls back, leaving no index cell behind.
 #[test]
 fn a_required_missing_rollback_leaves_no_index_row() {
-    let mut store = DurableStore::from_engine(MemoryEngine::new(), indexed_schema(), sites());
+    let mut store =
+        DurableStore::from_engine(MemoryEngine::new(), project(&indexed_schema(), sites()));
     let result = {
         let mut txn = store
             .txn_session(InvocationGrant::full_store(), write_demand())
@@ -2740,7 +2698,8 @@ fn a_required_missing_rollback_leaves_no_index_row() {
 /// undecodable value into an index key.
 #[test]
 fn a_corrupt_projected_leaf_faults_corruption() {
-    let mut store = DurableStore::from_engine(MemoryEngine::new(), indexed_schema(), sites());
+    let mut store =
+        DurableStore::from_engine(MemoryEngine::new(), project(&indexed_schema(), sites()));
     {
         let mut txn = store
             .txn_session(InvocationGrant::full_store(), write_demand())
@@ -2795,7 +2754,8 @@ fn index_maintenance_agrees_across_engines() {
         txn.erase_entry(&e, &[ks("b")]).unwrap();
         assert!(matches!(txn.commit(), CommitResult::Committed));
     }
-    let mut mem = DurableStore::from_engine(MemoryEngine::new(), indexed_schema(), sites());
+    let mut mem =
+        DurableStore::from_engine(MemoryEngine::new(), project(&indexed_schema(), sites()));
     replay(&mut mem);
     let (mut native, _temp) = native_indexed();
     replay(&mut native);
@@ -2821,7 +2781,7 @@ fn index_maintenance_agrees_across_engines() {
 /// two unkeyed groups `details {pages, language}` and `credits {author}` (all sparse),
 /// and a keyed branch `notes(Int){text}`. Sites: 0 whole payload, 1 group `details`,
 /// 2 group `credits`, 3 branch `notes` entry.
-fn group_schema() -> (StoreSchema, Vec<SiteSpec>) {
+fn group_schema() -> (StoreSchema, Vec<SiteTarget>) {
     let mut builder = StoreSchemaBuilder::root("books", vec![ScalarKind::Str]);
     builder.scalar_field("title", ScalarKind::Str, true);
     builder.scalar_field("summary", ScalarKind::Str, false);
@@ -2837,29 +2797,17 @@ fn group_schema() -> (StoreSchema, Vec<SiteSpec>) {
     builder.close_branch();
     let schema = builder.finish().expect("the group schema builds");
     let sites = vec![
-        SiteSpec {
-            root: 0,
-            target: SiteTarget::WholePayload,
-        },
-        SiteSpec {
-            root: 0,
-            target: SiteTarget::GroupEntry(0),
-        },
-        SiteSpec {
-            root: 0,
-            target: SiteTarget::GroupEntry(1),
-        },
-        SiteSpec {
-            root: 0,
-            target: SiteTarget::BranchEntry(vec![0].into()),
-        },
+        SiteTarget::whole_payload(),
+        SiteTarget::group_entry(0),
+        SiteTarget::group_entry(1),
+        SiteTarget::branch_entry(vec![0u16]),
     ];
     (schema, sites)
 }
 
 fn group_store() -> DurableStore<MemoryEngine> {
     let (schema, sites) = group_schema();
-    DurableStore::from_engine(MemoryEngine::new(), schema, sites)
+    DurableStore::from_engine(MemoryEngine::new(), project(&schema, sites))
 }
 
 /// The physical prefix of book `book`'s `details` group — the byte range its leaves
@@ -3119,16 +3067,7 @@ fn a_present_entry_missing_a_required_group_leaf_is_corruption() {
     builder.scalar_field("isbn", ScalarKind::Str, true);
     builder.close_group();
     let schema = builder.finish().expect("the required-group schema builds");
-    let sites = vec![
-        SiteSpec {
-            root: 0,
-            target: SiteTarget::WholePayload,
-        },
-        SiteSpec {
-            root: 0,
-            target: SiteTarget::GroupEntry(0),
-        },
-    ];
+    let sites = vec![SiteTarget::whole_payload(), SiteTarget::group_entry(0)];
 
     // Inject a present entry (marker + required title) with the required group leaf
     // `isbn` absent — a state the ops never write, so it is seeded raw.
@@ -3147,7 +3086,7 @@ fn a_present_entry_missing_a_required_group_leaf_is_corruption() {
         .expect("seed title");
         assert_eq!(txn.commit(), CommitOutcome::Confirmed);
     }
-    let mut store = DurableStore::from_engine(engine, schema, sites);
+    let mut store = DurableStore::from_engine(engine, project(&schema, sites));
 
     let mut read = store
         .read_session(InvocationGrant::full_store(), read_demand())
@@ -3177,16 +3116,7 @@ fn a_whole_entry_read_faults_on_a_present_entry_missing_a_required_group_leaf() 
     builder.scalar_field("isbn", ScalarKind::Str, true);
     builder.close_group();
     let schema = builder.finish().expect("the required-group schema builds");
-    let sites = vec![
-        SiteSpec {
-            root: 0,
-            target: SiteTarget::WholePayload,
-        },
-        SiteSpec {
-            root: 0,
-            target: SiteTarget::GroupEntry(0),
-        },
-    ];
+    let sites = vec![SiteTarget::whole_payload(), SiteTarget::group_entry(0)];
 
     // Seed a present entry (marker + required title) with the required group leaf
     // `isbn` absent — a state the ops never write.
@@ -3205,7 +3135,7 @@ fn a_whole_entry_read_faults_on_a_present_entry_missing_a_required_group_leaf() 
         .expect("seed title");
         assert_eq!(txn.commit(), CommitOutcome::Confirmed);
     }
-    let mut store = DurableStore::from_engine(engine, schema, sites);
+    let mut store = DurableStore::from_engine(engine, project(&schema, sites));
 
     let mut read = store
         .read_session(InvocationGrant::full_store(), read_demand())
@@ -3244,7 +3174,7 @@ fn a_forged_markerless_group_leaf_cell_reads_as_corruption() {
         txn.put(&leaf, pages_bytes).expect("seed forged group leaf");
         assert_eq!(txn.commit(), CommitOutcome::Confirmed);
     }
-    let mut store = DurableStore::from_engine(engine, schema, sites);
+    let mut store = DurableStore::from_engine(engine, project(&schema, sites));
 
     let mut read = store
         .read_session(InvocationGrant::full_store(), read_demand())

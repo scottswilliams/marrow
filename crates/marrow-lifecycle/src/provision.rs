@@ -27,8 +27,8 @@ use std::path::{Path, PathBuf};
 use marrow_codes::Code;
 use marrow_kernel::durable::{
     CommitRecovery, DemandCoverage, DurableCommitState, InvocationGrant, NativeOwnerAcquireError,
-    NativeOwnerOpenError, NativeStore, ReadSession, SessionError, SessionHost, SiteSpec,
-    StoreError, StoreSchema, TxnSession,
+    NativeOwnerOpenError, NativeStore, ReadSession, SessionError, SessionHost, StoreError,
+    StoreProjection, TxnSession,
 };
 
 use crate::durable_fs::{sync_dir, write_file};
@@ -78,13 +78,12 @@ pub fn preflight(dir: &Path) -> Result<Preflight, StoreAccessError> {
 }
 
 /// The inputs to a provision: the persisted envelope and logical head to publish, and the
-/// schema and site tables the engine is created under. The caller (the lifecycle actor)
-/// derives these from a verified image; F02a provisions an empty engine (no user data).
+/// store projection the engine is created under. The caller (the lifecycle actor) derives
+/// these from a verified image; F02a provisions an empty engine (no user data).
 pub struct ProvisionRequest {
     pub envelope: StoreEnvelope,
     pub head: LogicalHead,
-    pub schemas: Vec<StoreSchema>,
-    pub sites: Vec<SiteSpec>,
+    pub projection: StoreProjection,
 }
 
 /// The outcome of a successful provision: the store instance now published at the
@@ -350,23 +349,18 @@ pub(crate) enum AdmitError<R> {
     Refused(R),
 }
 
-/// Open the complete store at `dir` under `schemas`/`sites`, taking the single-owner lock. A
+/// Open the complete store at `dir` under `projection`, taking the single-owner lock. A
 /// non-complete directory is refused without opening; a store held by another owner returns
 /// [`OpenError::Lock`] naming the owner. When the prior shutdown was unclean (a stale lock
 /// descriptor) a full integrity audit runs, mapping a failure to corruption. On success the
 /// returned [`OpenStore`] holds the lock for the store's whole open life.
-pub fn open(
-    dir: &Path,
-    schemas: Vec<StoreSchema>,
-    sites: Vec<SiteSpec>,
-) -> Result<OpenStore, OpenError> {
-    open_admitted(dir, schemas, sites, |_| {
-        Ok::<(), std::convert::Infallible>(())
-    })
-    .map_err(|error| match error {
-        AdmitError::Open(open) => open,
-        // The no-op admit never refuses.
-        AdmitError::Refused(never) => match never {},
+pub fn open(dir: &Path, projection: StoreProjection) -> Result<OpenStore, OpenError> {
+    open_admitted(dir, projection, |_| Ok::<(), std::convert::Infallible>(())).map_err(|error| {
+        match error {
+            AdmitError::Open(open) => open,
+            // The no-op admit never refuses.
+            AdmitError::Refused(never) => match never {},
+        }
     })
 }
 
@@ -378,8 +372,7 @@ pub fn open(
 /// [`open`] passes a no-op admit.
 pub(crate) fn open_admitted<R>(
     dir: &Path,
-    schemas: Vec<StoreSchema>,
-    sites: Vec<SiteSpec>,
+    projection: StoreProjection,
     admit: impl FnOnce(&LogicalHead) -> Result<(), R>,
 ) -> Result<OpenStore, AdmitError<R>> {
     decide_before_locking(dir).map_err(AdmitError::Open)?;
@@ -414,7 +407,7 @@ pub(crate) fn open_admitted<R>(
     // admission, and composes the existing-only engine open with any inherited audit without
     // exposing its lower owner.
     let owner = pending
-        .bind_and_open_existing(*envelope.instance.bytes(), schemas, sites, || {
+        .bind_and_open_existing(*envelope.instance.bytes(), projection, || {
             // Read and admit the mutable logical head under the same owner. The callback
             // receives no store capability.
             let head = decode_head(&admitted).map_err(Ok)?;
@@ -517,6 +510,14 @@ mod tests {
     use crate::headmap::HeadMap;
     use marrow_image::LedgerIdBytes;
 
+    /// The empty store shape: no roots, so no site to resolve. These cases exercise the
+    /// directory lifecycle, not the store's own shape.
+    fn rootless() -> StoreProjection {
+        StoreProjection::builder()
+            .finish()
+            .expect("a rootless projection has no site to resolve")
+    }
+
     /// The smallest complete provision request: one durable node, a two-byte accepted
     /// ceiling payload, and no store shape.
     fn test_request(instance: StoreInstanceId) -> ProvisionRequest {
@@ -538,8 +539,7 @@ mod tests {
                 vec![0x44, 0x45],
                 head_map,
             ),
-            schemas: Vec::new(),
-            sites: Vec::new(),
+            projection: rootless(),
         }
     }
 
@@ -606,7 +606,7 @@ mod tests {
     fn open_owner(dir: &Path, instance: [u8; 16]) -> NativeStore {
         NativeStore::acquire_existing(dir)
             .expect("acquire the owner")
-            .bind_and_open_existing(instance, Vec::new(), Vec::new(), || {
+            .bind_and_open_existing(instance, rootless(), || {
                 Ok::<_, std::convert::Infallible>(())
             })
             .expect("bind and open")
@@ -638,8 +638,8 @@ mod tests {
         provision(&store, test_request(original)).expect("provision");
 
         let mut contended = None;
-        let opened = open_admitted(&store, Vec::new(), Vec::new(), |head| {
-            contended = Some(match open(&store, Vec::new(), Vec::new()) {
+        let opened = open_admitted(&store, rootless(), |head| {
+            contended = Some(match open(&store, rootless()) {
                 Err(OpenError::Lock(error)) => error.code(),
                 Ok(_) => panic!("a competing open ran inside the admission callback"),
                 Err(other) => panic!("admission ran outside its owner: {other}"),

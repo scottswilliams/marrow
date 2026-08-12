@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use marrow_image::LedgerIdBytes;
 use marrow_kernel::codec::value::ScalarKind;
-use marrow_kernel::durable::{SiteSpec, SiteTarget, StoreSchema, StoreSchemaBuilder};
+use marrow_kernel::durable::{SiteTarget, StoreProjection, StoreSchemaBuilder};
 use marrow_lifecycle::{
     ActiveBinding, EngineKind, HeadMap, LogicalHead, OpenError, Preflight, ProvisionError,
     ProvisionRequest, StoreEnvelope, StoreInstanceId, open, preflight, provision,
@@ -48,17 +48,16 @@ impl Drop for TempDir {
     }
 }
 
-fn schemas() -> Vec<StoreSchema> {
+fn projection() -> StoreProjection {
     let mut builder = StoreSchemaBuilder::root("app", vec![ScalarKind::Int]);
     builder.scalar_field("value", ScalarKind::Int, true);
-    vec![builder.finish().expect("a bounded schema builds")]
-}
-
-fn sites() -> Vec<SiteSpec> {
-    vec![SiteSpec {
-        root: 0,
-        target: SiteTarget::WholePayload,
-    }]
+    let mut projection = StoreProjection::builder();
+    projection
+        .root(builder.finish().expect("a bounded schema builds"))
+        .site(0, SiteTarget::whole_payload());
+    projection
+        .finish()
+        .expect("the site names the one declared root")
 }
 
 fn request(instance: StoreInstanceId) -> ProvisionRequest {
@@ -78,8 +77,7 @@ fn request(instance: StoreInstanceId) -> ProvisionRequest {
     ProvisionRequest {
         envelope,
         head: LogicalHead::provision(binding, vec![0x44, 0x45], head_map),
-        schemas: schemas(),
-        sites: sites(),
+        projection: projection(),
     }
 }
 
@@ -107,7 +105,7 @@ fn provision_publishes_complete_and_open_reopens() {
     assert_eq!(provisioned.instance, id);
     assert_eq!(classify(&store), Preflight::Complete);
 
-    let opened = open(&store, schemas(), sites()).expect("open");
+    let opened = open(&store, projection()).expect("open");
     assert_eq!(
         opened.envelope.instance, id,
         "the reopened store carries its instance"
@@ -116,7 +114,7 @@ fn provision_publishes_complete_and_open_reopens() {
     drop(opened); // releases the lock (clean shutdown truncates the lock body)
 
     // A clean reopen is not an unclean shutdown: it still opens.
-    let reopened = open(&store, schemas(), sites()).expect("reopen after clean close");
+    let reopened = open(&store, projection()).expect("reopen after clean close");
     assert_eq!(reopened.envelope.instance, id);
 }
 
@@ -180,7 +178,7 @@ fn a_failed_preflight_creates_no_file() {
 
     // Open refuses an incomplete store without touching it.
     assert!(matches!(
-        open(&store, schemas(), sites()),
+        open(&store, projection()),
         Err(OpenError::Incomplete)
     ));
     assert_eq!(list(&store), before, "a refused open created nothing");
@@ -195,8 +193,8 @@ fn a_second_open_is_store_in_use_naming_the_owner() {
     let id = instance();
     provision(&store, request(id)).expect("provision");
 
-    let held = open(&store, schemas(), sites()).expect("first open holds the lock");
-    match open(&store, schemas(), sites()) {
+    let held = open(&store, projection()).expect("first open holds the lock");
+    match open(&store, projection()) {
         Err(OpenError::Lock(error)) => {
             assert_eq!(error.code(), "store.locked");
             match error {
@@ -212,7 +210,7 @@ fn a_second_open_is_store_in_use_naming_the_owner() {
     }
     drop(held);
     // Once released, the store opens again.
-    open(&store, schemas(), sites()).expect("reopen after release");
+    open(&store, projection()).expect("reopen after release");
 }
 
 /// Creator race: many threads provision the same destination concurrently; exactly one wins
@@ -248,7 +246,7 @@ fn concurrent_provision_has_one_winner_and_one_lineage() {
 
     assert_eq!(winners.len(), 1, "exactly one provisioner wins the race");
     assert_eq!(classify(&store), Preflight::Complete);
-    let opened = open(&store, schemas(), sites()).expect("open the survivor");
+    let opened = open(&store, projection()).expect("open the survivor");
     assert_eq!(
         opened.envelope.instance, winners[0],
         "the destination carries exactly the winner's instance (one lineage)",
@@ -268,7 +266,7 @@ fn an_unclean_prior_shutdown_runs_the_audit_and_a_healthy_store_opens() {
     // Simulate a crashed owner: write a stale owner descriptor into the lock body WITHOUT
     // holding the advisory lock, then leave it (a clean shutdown would have truncated it).
     {
-        let held = open(&store, schemas(), sites()).expect("open to populate the lock body");
+        let held = open(&store, projection()).expect("open to populate the lock body");
         // Copy the current lock body, then drop `held` (which truncates it), then restore the
         // stale body — modelling a crash that left the descriptor behind.
         let lock_path = store.join(marrow_lifecycle::LOCK_FILE);
@@ -285,10 +283,10 @@ fn an_unclean_prior_shutdown_runs_the_audit_and_a_healthy_store_opens() {
 
     // The next open sees the unclean prior shutdown, runs the audit, and the healthy store
     // opens. (The audit covers crash-path corruption only — see the module note.)
-    let opened = open(&store, schemas(), sites()).expect("open runs the audit and succeeds");
+    let opened = open(&store, projection()).expect("open runs the audit and succeeds");
     drop(opened);
     // The clean close truncated the lock, so the following open is not unclean and still opens.
-    open(&store, schemas(), sites()).expect("clean reopen");
+    open(&store, projection()).expect("clean reopen");
 }
 
 /// Cross-process contention: a spawned child holds the store while the parent is refused with
@@ -326,7 +324,7 @@ fn a_child_process_holding_the_store_blocks_the_parent_by_pid() {
     }
 
     // The parent is refused, named by the child's pid.
-    let outcome = open(&store, schemas(), sites());
+    let outcome = open(&store, projection());
     match outcome {
         Err(OpenError::Lock(marrow_lifecycle::LockError::StoreInUse { owner: Some(owner) })) => {
             assert_eq!(
@@ -351,7 +349,7 @@ fn a_child_process_holding_the_store_blocks_the_parent_by_pid() {
     // Release the child and confirm the store reopens once it exits.
     std::fs::write(&release, b"").expect("signal release");
     child.wait().expect("child exits");
-    open(&store, schemas(), sites()).expect("reopen after the child releases");
+    open(&store, projection()).expect("reopen after the child releases");
 }
 
 /// The child-holder helper: NOT a real test (ignored). When invoked with the coordination
@@ -368,7 +366,7 @@ fn child_holder_helper() {
     let release = std::env::var("MARROW_LC_RELEASE").expect("release path");
     let store = PathBuf::from(store);
 
-    let _held = open(&store, schemas(), sites()).expect("child opens and holds the store");
+    let _held = open(&store, projection()).expect("child opens and holds the store");
     std::fs::write(&ready, b"").expect("signal ready");
 
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);

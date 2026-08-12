@@ -1,0 +1,325 @@
+//! The store's checked projection: its root schemas and the site table validated against
+//! them.
+//!
+//! A site names one operation's durable target — a root's whole payload, a field leaf, a
+//! keyed branch entry or one of its fields, an unkeyed group, or a managed-index read. Every
+//! part of that name is a *position*: a root index, a branch path, a field index, a group
+//! index, an index index. Before this owner existed the positions arrived as public struct
+//! fields and were used as raw slice indices at session setup, so a position naming nothing
+//! was a panic in the resolver rather than a refusal at the boundary.
+//!
+//! [`StoreProjection`] closes that: it is minted only by [`StoreProjectionBuilder`], which
+//! resolves every site against the **completed** root table before publication and stores
+//! the resolved positions in typed form. A published projection therefore carries schemas
+//! and sites that are known to describe each other — they cannot be separated and re-paired,
+//! which is what made an entry-time check unable to close this class.
+
+use super::schema::{BranchPos, FieldPos, GroupPos, IndexPos, RootPos, StoreSchema};
+
+/// The store's roots and the site table checked against them: the one intake shape every
+/// store, attachment, and lifecycle entry point accepts.
+///
+/// Opaque and minted only by [`StoreProjectionBuilder`]. The roots are in declaration
+/// (image) order and the sites in image site-index order, so `Durable::site` resolves by
+/// image site index exactly as before.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoreProjection {
+    roots: Vec<StoreSchema>,
+    sites: Vec<Site>,
+}
+
+impl StoreProjection {
+    /// Begin a projection: declare every root, then every site.
+    pub fn builder() -> StoreProjectionBuilder {
+        StoreProjectionBuilder::default()
+    }
+
+    /// The store's roots by declaration position, each with its own id-keyed cell family.
+    pub fn roots(&self) -> &[StoreSchema] {
+        &self.roots
+    }
+
+    /// The checked site table, in image site-index order.
+    pub(crate) fn sites(&self) -> &[Site] {
+        &self.sites
+    }
+
+    /// Reopen this projection's roots for a different site table, consuming the sites it
+    /// carries. The importer's caller derives one projection from the image and then opens
+    /// the store under the importer's own single create site, rather than reaching for the
+    /// raw root table to pair with a second, unchecked site vector.
+    pub fn reproject(self) -> StoreProjectionBuilder {
+        StoreProjectionBuilder {
+            roots: self.roots,
+            sites: Vec::new(),
+            error: None,
+        }
+    }
+}
+
+/// The sole minter of a [`StoreProjection`]: roots pushed one at a time, then sites, with
+/// every site resolved against the completed root table at [`finish`](Self::finish).
+///
+/// Commands latch the first refusal rather than returning per call, so a projection can emit
+/// its whole stream and read one verdict. Nothing partially built escapes.
+#[derive(Debug, Default)]
+pub struct StoreProjectionBuilder {
+    roots: Vec<StoreSchema>,
+    sites: Vec<(u16, SiteTarget)>,
+    error: Option<ProjectionBuildError>,
+}
+
+impl StoreProjectionBuilder {
+    /// Append one root in declaration order. A site's root position indexes this order.
+    pub fn root(&mut self, schema: StoreSchema) -> &mut Self {
+        self.roots.push(schema);
+        self
+    }
+
+    /// Append one site in image site-index order, naming its root by declaration position.
+    /// The target is resolved at [`finish`](Self::finish), once every root is complete: a
+    /// site may name a branch, field, group, or index of a root declared after it.
+    pub fn site(&mut self, root: u16, target: SiteTarget) -> &mut Self {
+        self.sites.push((root, target));
+        self
+    }
+
+    /// Resolve every site against the completed roots and publish the projection, or return
+    /// the first refusal. Consuming, so no partially resolved table is observable.
+    pub fn finish(self) -> Result<StoreProjection, ProjectionBuildError> {
+        if let Some(error) = self.error {
+            return Err(error);
+        }
+        let mut sites = Vec::with_capacity(self.sites.len());
+        for (root, target) in &self.sites {
+            sites.push(resolve(&self.roots, *root, target)?);
+        }
+        Ok(StoreProjection {
+            roots: self.roots,
+            sites,
+        })
+    }
+}
+
+/// One checked site: the root it addresses and its resolved target.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Site {
+    root: RootPos,
+    target: CheckedTarget,
+}
+
+impl Site {
+    /// The site's root by declaration position, resolved against the projection's root
+    /// table.
+    pub(crate) fn root(&self) -> RootPos {
+        self.root
+    }
+
+    /// The site's resolved target.
+    pub(crate) fn target(&self) -> &CheckedTarget {
+        &self.target
+    }
+}
+
+/// A site target whose every position is resolved against the completed root: the form the
+/// resolver consumes, so it performs typed lookups rather than raw slice indexing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum CheckedTarget {
+    WholePayload,
+    FieldLeaf(FieldPos),
+    BranchEntry(Box<[BranchPos]>),
+    BranchField {
+        branch: Box<[BranchPos]>,
+        field: FieldPos,
+    },
+    GroupEntry(GroupPos),
+    IndexScan(IndexPos),
+    IndexLookup(IndexPos),
+}
+
+/// The closed operation-target set the kernel serves, as the caller names it: the root's
+/// whole keyed payload, one of the root's field leaves, a keyed branch entry's whole payload
+/// or one of its field leaves, one unkeyed group's record, or a managed-index read. It is
+/// the physical projection of the verifier's closed `SemanticTarget`.
+///
+/// Opaque over its kind: a target is caller-named by position and carries no claim that the
+/// position exists. It becomes addressable only by passing through
+/// [`StoreProjectionBuilder`], which resolves it against the completed root.
+///
+/// A branch target names its node by a *branch path*: the per-level branch indices from the
+/// root down to the addressed branch node, each an index into that level's
+/// declaration-ordered branch list (the root's [`StoreSchema::branches`], then each branch's
+/// [`BranchSchema::branches`](super::BranchSchema::branches)). A single-element path names a
+/// direct child branch; a longer path names a nested branch one level deeper per element.
+/// The node's key-path is the root key followed by one key per path element, so a path of
+/// length `d` addresses a `(1 + d)`-element key-path `d` levels below the root.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SiteTarget(SiteTargetKind);
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum SiteTargetKind {
+    WholePayload,
+    FieldLeaf(u16),
+    BranchEntry(Box<[u16]>),
+    BranchField { branch: Box<[u16]>, field: u16 },
+    GroupEntry(u16),
+    IndexScan(u16),
+    IndexLookup(u16),
+}
+
+impl SiteTarget {
+    /// The root entry's whole keyed payload.
+    pub fn whole_payload() -> Self {
+        Self(SiteTargetKind::WholePayload)
+    }
+
+    /// One of the root's top-level field leaves, by its position in the root's record.
+    pub fn field_leaf(field: u16) -> Self {
+        Self(SiteTargetKind::FieldLeaf(field))
+    }
+
+    /// The whole payload of the keyed branch entry the branch path descends to.
+    pub fn branch_entry(path: impl Into<Box<[u16]>>) -> Self {
+        Self(SiteTargetKind::BranchEntry(path.into()))
+    }
+
+    /// One field leaf of the keyed branch entry the branch path descends to.
+    pub fn branch_field(path: impl Into<Box<[u16]>>, field: u16) -> Self {
+        Self(SiteTargetKind::BranchField {
+            branch: path.into(),
+            field,
+        })
+    }
+
+    /// The materialized record of one unkeyed group of the root entry. Its whole
+    /// read/replace/erase confine to the group's own leaves under the group prefix, disjoint
+    /// from the entry's top-level fields, its sibling groups, and its branches (the
+    /// group-scoped payload-only law).
+    pub fn group_entry(group: u16) -> Self {
+        Self(SiteTargetKind::GroupEntry(group))
+    }
+
+    /// A managed index's nonunique progressive-prefix scan read, by the index's position in
+    /// its root's index table. The read is bounded and yields the next distinct projected
+    /// component; it observes only the index cell family and never a source entry.
+    pub fn index_scan(index: u16) -> Self {
+        Self(SiteTargetKind::IndexScan(index))
+    }
+
+    /// A managed index's unique complete-key lookup read, by the index's position in its
+    /// root's index table. The read is a single exact probe yielding the one matching source
+    /// key tuple or absent.
+    pub fn index_lookup(index: u16) -> Self {
+        Self(SiteTargetKind::IndexLookup(index))
+    }
+}
+
+/// Why a site table did not resolve against the completed roots.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProjectionBuildError {
+    /// A site named a root position the projection does not declare.
+    UnknownRoot,
+    /// A site named a field position the addressed record does not declare.
+    UnknownField,
+    /// A branch path named a branch position its level does not declare, so the path
+    /// descends into nothing.
+    UnknownBranch,
+    /// A site named a group position the root does not declare.
+    UnknownGroup,
+    /// A site named a managed-index position the root does not declare.
+    UnknownIndex,
+}
+
+impl std::fmt::Display for ProjectionBuildError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::UnknownRoot => write!(f, "a site names an undeclared durable root"),
+            Self::UnknownField => write!(f, "a site names an undeclared field"),
+            Self::UnknownBranch => write!(f, "a site names an undeclared branch"),
+            Self::UnknownGroup => write!(f, "a site names an undeclared group"),
+            Self::UnknownIndex => write!(f, "a site names an undeclared managed index"),
+        }
+    }
+}
+
+impl std::error::Error for ProjectionBuildError {}
+
+/// Resolve one caller-named site against the completed root table. Every position is
+/// checked here and nowhere else: the resolver downstream holds only typed positions.
+fn resolve(
+    roots: &[StoreSchema],
+    root: u16,
+    target: &SiteTarget,
+) -> Result<Site, ProjectionBuildError> {
+    let root = RootPos::resolve(roots, root).ok_or(ProjectionBuildError::UnknownRoot)?;
+    let schema = root.of(roots);
+    let target = match &target.0 {
+        SiteTargetKind::WholePayload => CheckedTarget::WholePayload,
+        SiteTargetKind::FieldLeaf(field) => CheckedTarget::FieldLeaf(
+            schema
+                .field_pos(*field)
+                .ok_or(ProjectionBuildError::UnknownField)?,
+        ),
+        SiteTargetKind::BranchEntry(path) => {
+            CheckedTarget::BranchEntry(resolve_path(schema, path)?)
+        }
+        SiteTargetKind::BranchField { branch, field } => {
+            let path = resolve_path(schema, branch)?;
+            CheckedTarget::BranchField {
+                field: field_pos_at(schema, &path, *field)
+                    .ok_or(ProjectionBuildError::UnknownField)?,
+                branch: path,
+            }
+        }
+        SiteTargetKind::GroupEntry(group) => CheckedTarget::GroupEntry(
+            schema
+                .group_pos(*group)
+                .ok_or(ProjectionBuildError::UnknownGroup)?,
+        ),
+        SiteTargetKind::IndexScan(index) => CheckedTarget::IndexScan(
+            schema
+                .index_pos(*index)
+                .ok_or(ProjectionBuildError::UnknownIndex)?,
+        ),
+        SiteTargetKind::IndexLookup(index) => CheckedTarget::IndexLookup(
+            schema
+                .index_pos(*index)
+                .ok_or(ProjectionBuildError::UnknownIndex)?,
+        ),
+    };
+    Ok(Site { root, target })
+}
+
+/// Resolve a branch path level by level: hop `i` names a branch of level `i`'s
+/// declaration-ordered list, and the next level is that branch's own sub-branches. The walk
+/// is bounded by the schema's own branch depth, which construction already capped.
+fn resolve_path(
+    schema: &StoreSchema,
+    path: &[u16],
+) -> Result<Box<[BranchPos]>, ProjectionBuildError> {
+    let mut resolved = Vec::with_capacity(path.len());
+    let mut level = schema.branches();
+    for step in path {
+        let pos = BranchPos::resolve(level, *step).ok_or(ProjectionBuildError::UnknownBranch)?;
+        level = pos.of(level).branches();
+        resolved.push(pos);
+    }
+    Ok(resolved.into_boxed_slice())
+}
+
+/// Resolve a field position against the record the branch path addresses: the branch the
+/// path descends to, or the root's own record when the path is empty. The walk is total —
+/// every hop was resolved against the level it re-enters, in the same order.
+fn field_pos_at(schema: &StoreSchema, path: &[BranchPos], field: u16) -> Option<FieldPos> {
+    let mut level = schema.branches();
+    let mut branch = None;
+    for pos in path {
+        let next = pos.of(level);
+        level = next.branches();
+        branch = Some(next);
+    }
+    match branch {
+        Some(branch) => branch.field_pos(field),
+        None => schema.field_pos(field),
+    }
+}

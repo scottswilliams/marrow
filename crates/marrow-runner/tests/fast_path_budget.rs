@@ -64,10 +64,10 @@ fn scratch(tag: &str) -> PathBuf {
 }
 
 fn provision(store: &Path, image: &VerifiedImage) {
-    let (schemas, sites) = marrow_vm::derive_store_schemas(image).expect("flat");
-    let report = marrow_lifecycle::ProvisionReport::new(store, image, &schemas);
+    let projection = marrow_vm::derive_store_schemas(image).expect("flat");
+    let report = marrow_lifecycle::ProvisionReport::new(store, image, &projection);
     let approval = marrow_lifecycle::ProvisionApproval::accept(&report);
-    marrow_lifecycle::provision_image(store, image, schemas, sites, &approval).expect("provision");
+    marrow_lifecycle::provision_image(store, image, projection, &approval).expect("provision");
 }
 
 fn export_id(image: &VerifiedImage, name: &str) -> [u8; 32] {
@@ -99,7 +99,7 @@ fn measure(runs: usize, mut f: impl FnMut()) -> Duration {
 #[test]
 fn fast_path_costs_are_recorded() {
     let (bytes, image) = workshop();
-    let (schemas, sites) = marrow_vm::derive_store_schemas(&image).expect("flat");
+    let projection = marrow_vm::derive_store_schemas(&image).expect("flat");
 
     // verification
     let verify = measure(21, || {
@@ -111,7 +111,7 @@ fn fast_path_costs_are_recorded() {
     std::fs::create_dir_all(store.parent().unwrap()).unwrap();
     provision(&store, &image);
     let open = measure(21, || {
-        let opened = marrow_lifecycle::open(&store, schemas.clone(), sites.clone()).expect("open");
+        let opened = marrow_lifecycle::open(&store, projection.clone()).expect("open");
         drop(opened);
     });
 
@@ -141,8 +141,7 @@ fn fast_path_costs_are_recorded() {
         // Alternate the active image so every attach is a real rebind (a head commit).
         let img = if toggle { &image } else { &edited };
         toggle = !toggle;
-        match marrow_lifecycle::attach(&store, img, schemas.clone(), sites.clone()).expect("attach")
-        {
+        match marrow_lifecycle::attach(&store, img, projection.clone()).expect("attach") {
             marrow_lifecycle::AttachOutcome::Rebound { store, .. } => drop(store),
             marrow_lifecycle::AttachOutcome::AlreadyActive(store) => drop(store),
         }

@@ -8,8 +8,8 @@ use marrow_store::{ByteEngine, ReadView, StoreError};
 use super::super::physical;
 use super::super::{
     AuthorizedSite, CommitRecovery, CommitRecoveryScope, DemandCoverage, Denied,
-    DurableCommitState, IndexSchema, InvocationGrant, RootNumbering, SessionError, SiteSpec,
-    StoreSchema, number_store,
+    DurableCommitState, IndexSchema, InvocationGrant, RootNumbering, SessionError, StoreProjection,
+    number_store,
 };
 use super::resolve::resolve_site;
 use super::{ReadSession, TxnSession};
@@ -17,17 +17,16 @@ use super::{ReadSession, TxnSession};
 /// The durable store handle. CLI-only caller at T01; dies at D00.
 pub struct DurableStore<E: ByteEngine> {
     pub(super) engine: E,
-    /// The store's roots by declaration position: one [`StoreSchema`] per durable root,
-    /// each with its own id-keyed physical cell family. A site's `root` indexes this
-    /// table. One engine transaction spans every root, so a cross-root write commits or
-    /// rolls back as one unit.
-    schemas: Vec<StoreSchema>,
+    /// The store's shape: one root schema per durable root in declaration position, each
+    /// with its own id-keyed physical cell family, and the site table already resolved
+    /// against them. One engine transaction spans every root, so a cross-root write commits
+    /// or rolls back as one unit.
+    projection: StoreProjection,
     /// The store-local cell-key numbering of every root's durable nodes (FR01 §3), computed
-    /// once from `schemas` at construction and parallel to it. The site resolver walks a
-    /// root's [`RootNumbering`] in lockstep with its schema to number every addressed node,
-    /// so cell keys are keyed by number, never by source spelling.
+    /// once from the projection's roots at construction and parallel to them. The site
+    /// resolver walks a root's [`RootNumbering`] in lockstep with its schema to number every
+    /// addressed node, so cell keys are keyed by number, never by source spelling.
     numbering: Vec<RootNumbering>,
-    sites: Vec<SiteSpec>,
     /// The store's deployment ceiling: the read/write coverage this handle admits,
     /// intersected with each invocation's grant before the first engine call. For a
     /// native handle it is the handle's own write capability; an ephemeral
@@ -64,61 +63,57 @@ pub struct DurableStore<E: ByteEngine> {
 impl<E: ByteEngine> DurableStore<E> {
     /// Build a single-root store over an already-open engine, minting the store ceiling
     /// from the handle's write capability. The native/tracer caller; an ephemeral
-    /// attachment uses [`Self::from_schemas_with_ceiling`] to bound the ceiling by image
+    /// attachment uses [`Self::from_projection_with_ceiling`] to bound the ceiling by image
     /// demand and to carry every root of a multi-root image.
-    pub fn from_engine(engine: E, schema: StoreSchema, sites: Vec<SiteSpec>) -> Self {
+    pub fn from_engine(engine: E, projection: StoreProjection) -> Self {
         let ceiling = DemandCoverage {
             read: true,
             write: engine.require_write_access("open").is_ok(),
         };
-        Self::from_schemas_with_ceiling(engine, vec![schema], sites, ceiling)
+        Self::from_projection_with_ceiling(engine, projection, ceiling)
     }
 
     /// Build a store over an already-open engine from the image's root-indexed schema
     /// table and an explicit deployment ceiling. The ephemeral-attachment caller bounds
     /// the ceiling by the image's demand union, so authority never exceeds what the
     /// compiler described even when the backing engine is unconditionally writable. A
-    /// site's `root` indexes `schemas`; every root shares this one engine, so a
+    /// site's root position indexes the projection's roots; every root shares this one
+    /// engine, so a
     /// transaction spanning several roots commits atomically.
-    pub fn from_schemas_with_ceiling(
+    pub fn from_projection_with_ceiling(
         engine: E,
-        schemas: Vec<StoreSchema>,
-        sites: Vec<SiteSpec>,
+        projection: StoreProjection,
         ceiling: DemandCoverage,
     ) -> Self {
-        Self::from_schemas_with_optional_recovery_scope(engine, schemas, sites, ceiling, None)
+        Self::from_projection_with_optional_recovery_scope(engine, projection, ceiling, None)
     }
 
     /// Build a persistent store handle bound to the lifecycle-owned recovery scope.
-    pub(crate) fn from_schemas_with_ceiling_and_recovery_scope(
+    pub(crate) fn from_projection_with_ceiling_and_recovery_scope(
         engine: E,
-        schemas: Vec<StoreSchema>,
-        sites: Vec<SiteSpec>,
+        projection: StoreProjection,
         ceiling: DemandCoverage,
         recovery_scope: CommitRecoveryScope,
     ) -> Self {
-        Self::from_schemas_with_optional_recovery_scope(
+        Self::from_projection_with_optional_recovery_scope(
             engine,
-            schemas,
-            sites,
+            projection,
             ceiling,
             Some(recovery_scope),
         )
     }
 
-    fn from_schemas_with_optional_recovery_scope(
+    fn from_projection_with_optional_recovery_scope(
         engine: E,
-        schemas: Vec<StoreSchema>,
-        sites: Vec<SiteSpec>,
+        projection: StoreProjection,
         ceiling: DemandCoverage,
         recovery_scope: Option<CommitRecoveryScope>,
     ) -> Self {
-        let numbering = number_store(&schemas);
+        let numbering = number_store(&projection);
         Self {
             engine,
-            schemas,
+            projection,
             numbering,
-            sites,
             ceiling,
             recovery_scope,
             poisoned: false,
@@ -185,14 +180,15 @@ impl<E: ByteEngine> DurableStore<E> {
     }
 
     fn authorized_sites(&self) -> Vec<AuthorizedSite> {
-        self.sites
+        self.projection
+            .sites()
             .iter()
             .map(|site| {
                 resolve_site(
-                    &self.schemas[site.root as usize],
-                    &self.numbering[site.root as usize],
-                    site.root,
-                    &site.target,
+                    site.root().of(self.projection.roots()),
+                    site.root().of(&self.numbering),
+                    site.root().index(),
+                    site.target(),
                 )
             })
             .collect()
@@ -237,7 +233,8 @@ impl<E: ByteEngine> DurableStore<E> {
         // cross-root transaction keeps each root's own indexes coherent without confusing
         // one root's index cells with another's.
         let indexes: Vec<Vec<IndexSchema>> = self
-            .schemas
+            .projection
+            .roots()
             .iter()
             .map(|schema| schema.indexes().to_vec())
             .collect();
@@ -336,21 +333,18 @@ mod tests {
     use super::*;
     use crate::codec::value::ScalarKind;
     use crate::durable::{
-        CommitResult, Durable, InvocationGrant, SiteSpec, SiteTarget, StoreSchemaBuilder,
+        CommitResult, Durable, InvocationGrant, SiteTarget, StoreProjection, StoreSchemaBuilder,
     };
 
     fn store_with_engine<E: ByteEngine>(engine: E) -> DurableStore<E> {
         let mut builder = StoreSchemaBuilder::root("counters", vec![ScalarKind::Int]);
         builder.scalar_field("value", ScalarKind::Int, true);
         let schema = builder.finish().expect("a bounded schema builds");
-        let sites = vec![SiteSpec {
-            root: 0,
-            target: SiteTarget::WholePayload,
-        }];
-        DurableStore::from_schemas_with_ceiling(
+        let mut projection = StoreProjection::builder();
+        projection.root(schema).site(0, SiteTarget::whole_payload());
+        DurableStore::from_projection_with_ceiling(
             engine,
-            vec![schema],
-            sites,
+            projection.finish().expect("the site names a declared root"),
             DemandCoverage {
                 read: true,
                 write: true,

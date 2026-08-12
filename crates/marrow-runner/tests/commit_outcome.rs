@@ -174,13 +174,12 @@ fn confirmed_commit_then_fault_is_known_new_through_the_native_attached_service(
     let (image, ids) = compile();
     let scratch = Scratch::new();
     let store = scratch.0.join("store");
-    let (schemas, sites) =
-        marrow_vm::derive_store_schemas(&image).expect("fixture is native executable");
-    let report = marrow_lifecycle::ProvisionReport::new(&store, &image, &schemas);
+    let projection = marrow_vm::derive_store_schemas(&image).expect("fixture is native executable");
+    let report = marrow_lifecycle::ProvisionReport::new(&store, &image, &projection);
     let approval = marrow_lifecycle::ProvisionApproval::accept(&report);
-    marrow_lifecycle::provision_image(&store, &image, schemas.clone(), sites.clone(), &approval)
+    marrow_lifecycle::provision_image(&store, &image, projection.clone(), &approval)
         .expect("provision native fixture");
-    let open = match marrow_lifecycle::attach(&store, &image, schemas, sites)
+    let open = match marrow_lifecycle::attach(&store, &image, projection)
         .expect("attach native fixture")
     {
         marrow_lifecycle::AttachOutcome::AlreadyActive(open) => open,

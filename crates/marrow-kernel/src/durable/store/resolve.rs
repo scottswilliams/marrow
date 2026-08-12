@@ -4,33 +4,40 @@
 //! spelling enters a resolved site — every addressed node carries its cell-key number
 //! (FR01 §3), so the physical layer keys cells by number, never by name.
 
+use super::super::schema::BranchPos;
+use super::super::site::CheckedTarget;
 use super::super::{
     AuthTarget, AuthorizedSite, BranchHop, BranchNumbering, BranchSchema, FieldSchema,
     GroupNumbering, IndexComponent, IndexComponentRef, ResolvedField, ResolvedGroup, RootNumbering,
-    SiteTarget, StoreSchema,
+    StoreSchema,
 };
 use crate::codec::value::ScalarKind;
 
-/// Resolve a sealed [`SiteTarget`] against the store schema and its [`RootNumbering`] into
+/// Resolve a checked site target against the store schema and its [`RootNumbering`] into
 /// the executable [`AuthorizedSite`] the kernel ops address, once at session setup: the
 /// addressed node's root number, its branch path (numbered hops), its own numbered record
 /// fields (for whole-entry ops), and — for a field target — the field's number, kind, and
 /// required flag. A branch target walks its branch path through the recursive schema and
 /// numbering so the addressed node carries the key kind and numbered record of the branch
 /// the path descends to, at any depth.
+///
+/// Every position the target carries was resolved against this schema when the projection
+/// was published, so each lookup here is a typed read of a row parallel to the table the
+/// position was resolved against — the numbering mirrors the schema, and a resolved record
+/// mirrors the fields it was built from.
 pub(super) fn resolve_site(
     schema: &StoreSchema,
     numbering: &RootNumbering,
     root_index: u16,
-    target: &SiteTarget,
+    target: &CheckedTarget,
 ) -> AuthorizedSite {
     // A managed-index read addresses no source node: it resolves to the index's cell
     // family identity, its read kind, and the scalar kind of each projected component
     // (root key columns and top-level fields, by position), and carries an empty branch
     // path since every index is root-level. The index position is local to this root's
     // schema (the image-wide position was rebased per root when the site table was built).
-    if let SiteTarget::IndexScan(position) | SiteTarget::IndexLookup(position) = target {
-        let index = &schema.indexes()[*position as usize];
+    if let CheckedTarget::IndexScan(position) | CheckedTarget::IndexLookup(position) = target {
+        let index = position.of(schema.indexes());
         let projection = index
             .projection()
             .iter()
@@ -46,9 +53,9 @@ pub(super) fn resolve_site(
     // A root-level group addresses the root entry (empty branch path); it carries the
     // group's own numbered record. Group-in-branch is durable-only future work, so a group
     // site is root-level at T01.
-    if let SiteTarget::GroupEntry(position) = target {
-        let group = &schema.groups()[*position as usize];
-        let group_numbering = &numbering.groups()[*position as usize];
+    if let CheckedTarget::GroupEntry(position) = target {
+        let group = position.of(schema.groups());
+        let group_numbering = position.of(numbering.groups());
         return AuthorizedSite::new(
             numbering.root,
             root_index,
@@ -64,14 +71,16 @@ pub(super) fn resolve_site(
     // path element) and own numbered record fields. A root target's container is the root; a
     // branch target's (whole entry or field) is the branch node the path descends to.
     let (branch, container_fields): (Vec<BranchHop>, Vec<ResolvedField>) = match target {
-        SiteTarget::WholePayload | SiteTarget::FieldLeaf(_) => (
+        CheckedTarget::WholePayload | CheckedTarget::FieldLeaf(_) => (
             Vec::new(),
             resolve_fields(schema.fields(), numbering.fields()),
         ),
-        SiteTarget::BranchEntry(path) | SiteTarget::BranchField { branch: path, .. } => {
+        CheckedTarget::BranchEntry(path) | CheckedTarget::BranchField { branch: path, .. } => {
             resolve_branch_path(schema, numbering, path)
         }
-        SiteTarget::IndexScan(_) | SiteTarget::IndexLookup(_) | SiteTarget::GroupEntry(_) => {
+        CheckedTarget::IndexScan(_)
+        | CheckedTarget::IndexLookup(_)
+        | CheckedTarget::GroupEntry(_) => {
             unreachable!("index and group targets resolved above")
         }
     };
@@ -81,18 +90,20 @@ pub(super) fn resolve_site(
     // root entry's footprint includes its groups (its own payload); a branch entry carries
     // none, since group-in-branch is not yet executable.
     let target = match target {
-        SiteTarget::WholePayload => AuthTarget::Entry {
+        CheckedTarget::WholePayload => AuthTarget::Entry {
             fields: container_fields,
             groups: resolve_groups(schema.groups(), numbering.groups()),
         },
-        SiteTarget::BranchEntry(_) => AuthTarget::Entry {
+        CheckedTarget::BranchEntry(_) => AuthTarget::Entry {
             fields: container_fields,
             groups: Vec::new(),
         },
-        SiteTarget::FieldLeaf(index) | SiteTarget::BranchField { field: index, .. } => {
-            AuthTarget::field(&container_fields[*index as usize], &container_fields)
+        CheckedTarget::FieldLeaf(index) | CheckedTarget::BranchField { field: index, .. } => {
+            AuthTarget::field(index.of(&container_fields), &container_fields)
         }
-        SiteTarget::IndexScan(_) | SiteTarget::IndexLookup(_) | SiteTarget::GroupEntry(_) => {
+        CheckedTarget::IndexScan(_)
+        | CheckedTarget::IndexLookup(_)
+        | CheckedTarget::GroupEntry(_) => {
             unreachable!("index and group targets resolved above")
         }
     };
@@ -166,16 +177,16 @@ fn index_component_kind(schema: &StoreSchema, component: IndexComponent) -> Scal
 fn resolve_branch_path(
     schema: &StoreSchema,
     numbering: &RootNumbering,
-    path: &[u16],
+    path: &[BranchPos],
 ) -> (Vec<BranchHop>, Vec<ResolvedField>) {
     let mut hops = Vec::with_capacity(path.len());
     let mut branches: &[BranchSchema] = schema.branches();
     let mut branch_numbers: &[BranchNumbering] = numbering.branches();
     let mut fields: &[FieldSchema] = schema.fields();
     let mut field_numbers: &[u32] = numbering.fields();
-    for &index in path {
-        let branch = &branches[index as usize];
-        let branch_numbering = &branch_numbers[index as usize];
+    for &pos in path {
+        let branch = pos.of(branches);
+        let branch_numbering = pos.of(branch_numbers);
         hops.push(BranchHop::new(
             branch_numbering.number(),
             branch.key().to_vec(),

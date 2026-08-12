@@ -126,10 +126,10 @@ impl Drop for Scratch {
 /// outcome. The approval is accepted from the report the same call rebuilds, so nothing
 /// but the image itself decides the result.
 fn provision(dest: &Path, image: &VerifiedImage) -> Result<(), ProvisionImageError> {
-    let (schemas, sites) = marrow_vm::derive_store_schemas(image).expect("flat-executable");
-    let report = ProvisionReport::new(dest, image, &schemas);
+    let projection = marrow_vm::derive_store_schemas(image).expect("flat-executable");
+    let report = ProvisionReport::new(dest, image, &projection);
     let approval = ProvisionApproval::accept(&report);
-    provision_image(dest, image, schemas, sites, &approval).map(|_| ())
+    provision_image(dest, image, projection, &approval).map(|_| ())
 }
 
 #[test]

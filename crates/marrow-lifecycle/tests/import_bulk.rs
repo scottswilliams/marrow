@@ -10,8 +10,8 @@ use std::path::{Path, PathBuf};
 use marrow_kernel::codec::key::KeyScalar;
 use marrow_kernel::codec::value::RuntimeScalar;
 use marrow_kernel::durable::{
-    DemandCoverage, Durable, EntryValue, InvocationGrant, Presence, SessionHost, SiteSpec,
-    SiteTarget, StoreSchema,
+    DemandCoverage, Durable, EntryValue, InvocationGrant, Presence, SessionHost, SiteTarget,
+    StoreProjection,
 };
 use marrow_kernel::equality::ValueDomain;
 use marrow_lifecycle::{
@@ -127,10 +127,18 @@ fn compile(source: &str, ids: &str) -> VerifiedImage {
     verify(&compiled.image.bytes).expect("verify")
 }
 
-fn schemas_of(image: &VerifiedImage) -> Vec<StoreSchema> {
-    marrow_vm::derive_store_schemas(image)
-        .expect("flat-executable")
-        .0
+fn projection_of(image: &VerifiedImage) -> StoreProjection {
+    marrow_vm::derive_store_schemas(image).expect("flat-executable")
+}
+
+/// The same roots under one whole-payload read site on the target root: the shape a read-back
+/// opens under, distinct from the program's own operation sites.
+fn read_projection(image: &VerifiedImage) -> StoreProjection {
+    let mut projection = projection_of(image).reproject();
+    projection.site(0, SiteTarget::whole_payload());
+    projection
+        .finish()
+        .expect("the read site names the first declared root")
 }
 
 /// A unique scratch store directory, removed on drop.
@@ -168,8 +176,7 @@ impl Drop for Scratch {
 
 /// Provision a fresh store at `dir` bound to `image`.
 fn provision_from(dir: &Path, image: &VerifiedImage) {
-    let schemas = schemas_of(image);
-    let sites = marrow_vm::derive_store_schemas(image).expect("flat").1;
+    let projection = projection_of(image);
     let envelope = StoreEnvelope {
         instance: StoreInstanceId::draw().expect("entropy"),
         writer_toolchain: "0.1.0".to_string(),
@@ -186,8 +193,7 @@ fn provision_from(dir: &Path, image: &VerifiedImage) {
         ProvisionRequest {
             envelope,
             head,
-            schemas,
-            sites,
+            projection,
         },
     )
     .expect("provision");
@@ -203,11 +209,7 @@ fn counter_target() -> ImportTarget {
 /// Read one `counters` entry back through a kernel read session — proving the imported row
 /// landed as a proper kernel entry (a marker plus field leaves), not a raw byte blob.
 fn read_entry(dir: &Path, image: &VerifiedImage, id: i64) -> Option<EntryValue> {
-    let read_sites = vec![SiteSpec {
-        root: 0,
-        target: SiteTarget::WholePayload,
-    }];
-    let mut opened = open(dir, schemas_of(image), read_sites).expect("open for read-back");
+    let mut opened = open(dir, read_projection(image)).expect("open for read-back");
     let mut read = opened
         .read_session(
             InvocationGrant::full_store(),
@@ -258,7 +260,7 @@ fn a_realistic_corpus_populates_the_store_through_the_kernel() {
     };
     let report = import_jsonl(
         scratch.dir(),
-        schemas_of(&image),
+        projection_of(&image),
         counter_target(),
         Cursor::new(jsonl.into_bytes()),
         InvocationGrant::full_store(),
@@ -295,11 +297,7 @@ fn a_realistic_corpus_populates_the_store_through_the_kernel() {
     assert_eq!(odd.fields[1], None, "a null label is a sparse-absent field");
 
     // A never-imported id is absent — the importer created exactly the corpus.
-    let read_sites = vec![SiteSpec {
-        root: 0,
-        target: SiteTarget::WholePayload,
-    }];
-    let mut opened = open(scratch.dir(), schemas_of(&image), read_sites).expect("open");
+    let mut opened = open(scratch.dir(), read_projection(&image)).expect("open");
     let mut read = opened
         .read_session(
             InvocationGrant::full_store(),
@@ -328,7 +326,7 @@ fn a_read_only_grant_denies_the_import() {
     let jsonl = "{\"id\": 1, \"value\": 10}\n";
     let denied = import_jsonl(
         scratch.dir(),
-        schemas_of(&image),
+        projection_of(&image),
         counter_target(),
         Cursor::new(jsonl.as_bytes().to_vec()),
         InvocationGrant {
@@ -368,7 +366,7 @@ fn a_row_fault_names_its_line_and_keeps_the_committed_prefix() {
     };
     match import_jsonl(
         scratch.dir(),
-        schemas_of(&image),
+        projection_of(&image),
         counter_target(),
         Cursor::new(jsonl.as_bytes().to_vec()),
         InvocationGrant::full_store(),
@@ -402,7 +400,7 @@ fn a_duplicate_key_is_a_row_fault() {
     let jsonl = "{\"id\": 7, \"value\": 1}\n{\"id\": 7, \"value\": 2}\n";
     match import_jsonl(
         scratch.dir(),
-        schemas_of(&image),
+        projection_of(&image),
         counter_target(),
         Cursor::new(jsonl.as_bytes().to_vec()),
         InvocationGrant::full_store(),
@@ -433,7 +431,7 @@ fn a_unique_index_collision_is_a_located_row_fault() {
     };
     match import_jsonl(
         scratch.dir(),
-        schemas_of(&image),
+        projection_of(&image),
         ImportTarget {
             root: 0,
             key_columns: vec!["id".to_string()],
@@ -465,7 +463,7 @@ fn a_nested_root_shape_is_refused() {
     let jsonl = "{\"id\": 1, \"title\": \"x\"}\n";
     match import_jsonl(
         scratch.dir(),
-        schemas_of(&image),
+        projection_of(&image),
         ImportTarget {
             root: 0,
             key_columns: vec!["id".to_string()],
@@ -499,7 +497,7 @@ fn a_large_corpus_commits_in_bounded_batches() {
     let start = std::time::Instant::now();
     let report = import_jsonl(
         scratch.dir(),
-        schemas_of(&image),
+        projection_of(&image),
         counter_target(),
         std::io::BufReader::new(source),
         InvocationGrant::full_store(),

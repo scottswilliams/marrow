@@ -14,10 +14,23 @@ use common::{Counters, CountingEngine};
 use marrow_kernel::codec::key::KeyScalar;
 use marrow_kernel::codec::value::{RuntimeScalar, ScalarKind};
 use marrow_kernel::durable::{
-    CreateOutcome, DemandCoverage, Durable, DurableStore, EntryValue, InvocationGrant, SiteSpec,
-    SiteTarget, StoreSchema, StoreSchemaBuilder,
+    CreateOutcome, DemandCoverage, Durable, DurableStore, EntryValue, InvocationGrant, SiteTarget,
+    StoreProjection, StoreSchema, StoreSchemaBuilder,
 };
 use marrow_kernel::equality::ValueDomain;
+
+/// The single-root projection a case opens under: the root, plus its sites resolved against
+/// it. Every site here names root 0 — the store's only root.
+fn project(schema: &StoreSchema, sites: Vec<SiteTarget>) -> StoreProjection {
+    let mut projection = StoreProjection::builder();
+    projection.root(schema.clone());
+    for target in sites {
+        projection.site(0, target);
+    }
+    projection
+        .finish()
+        .expect("every site names the one declared root")
+}
 
 /// A schema whose first field is a required `Int` and whose remaining `extra`
 /// fields are optional — so the *declared* width grows while the field a caller
@@ -32,17 +45,8 @@ fn schema(extra: usize) -> StoreSchema {
 }
 
 /// A whole-payload entry site (index 0) and the required `value` field site (index 1).
-fn sites() -> Vec<SiteSpec> {
-    vec![
-        SiteSpec {
-            root: 0,
-            target: SiteTarget::WholePayload,
-        },
-        SiteSpec {
-            root: 0,
-            target: SiteTarget::FieldLeaf(0),
-        },
-    ]
+fn sites() -> Vec<SiteTarget> {
+    vec![SiteTarget::whole_payload(), SiteTarget::field_leaf(0)]
 }
 
 fn write() -> DemandCoverage {
@@ -56,10 +60,9 @@ fn write() -> DemandCoverage {
 /// declaring `1 + extra` fields.
 fn writes_for_single_field_set(extra: usize) -> usize {
     let counters = Counters::new();
-    let mut store = DurableStore::from_schemas_with_ceiling(
+    let mut store = DurableStore::from_projection_with_ceiling(
         CountingEngine::new(counters.clone()),
-        vec![schema(extra)],
-        sites(),
+        project(&schema(extra), sites()),
         write(),
     );
     let mut txn = store
@@ -80,10 +83,9 @@ fn writes_for_single_field_set(extra: usize) -> usize {
 /// stages against a resource declaring `1 + extra` fields.
 fn writes_for_narrow_create(extra: usize) -> usize {
     let counters = Counters::new();
-    let mut store = DurableStore::from_schemas_with_ceiling(
+    let mut store = DurableStore::from_projection_with_ceiling(
         CountingEngine::new(counters.clone()),
-        vec![schema(extra)],
-        sites(),
+        project(&schema(extra), sites()),
         write(),
     );
     let mut txn = store

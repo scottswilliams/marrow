@@ -11,11 +11,24 @@ use marrow_kernel::codec::key::KeyScalar;
 use marrow_kernel::codec::value::{RuntimeScalar, ScalarKind};
 use marrow_kernel::durable::{
     AuthorizedSite, BoundedLimit, CommitResult, CreateOutcome, DemandCoverage, Durable,
-    DurableStore, EntryValue, EraseOutcome, InvocationGrant, Presence, ReplaceOutcome, SiteSpec,
-    SiteTarget, StoreSchema, StoreSchemaBuilder,
+    DurableStore, EntryValue, EraseOutcome, InvocationGrant, Presence, ReplaceOutcome, SiteTarget,
+    StoreProjection, StoreSchema, StoreSchemaBuilder,
 };
 use marrow_kernel::equality::ValueDomain;
 use marrow_store::{ByteEngine, MemoryEngine, NativeEngineOwner};
+
+/// The single-root projection a case opens under: the root, plus its sites resolved against
+/// it. Every site here names root 0 — the store's only root.
+fn project(schema: &StoreSchema, sites: Vec<SiteTarget>) -> StoreProjection {
+    let mut projection = StoreProjection::builder();
+    projection.root(schema.clone());
+    for target in sites {
+        projection.site(0, target);
+    }
+    projection
+        .finish()
+        .expect("every site names the one declared root")
+}
 
 /// Enumerate every immediate key of a root layer through one bounded acquisition whose
 /// limit exceeds the fixture size, so the whole logical state dumps in ascending order.
@@ -82,20 +95,11 @@ fn schema() -> StoreSchema {
     builder.finish().expect("a bounded schema builds")
 }
 
-fn sites() -> Vec<SiteSpec> {
+fn sites() -> Vec<SiteTarget> {
     vec![
-        SiteSpec {
-            root: 0,
-            target: SiteTarget::WholePayload,
-        },
-        SiteSpec {
-            root: 0,
-            target: SiteTarget::FieldLeaf(0),
-        },
-        SiteSpec {
-            root: 0,
-            target: SiteTarget::FieldLeaf(1),
-        },
+        SiteTarget::whole_payload(),
+        SiteTarget::field_leaf(0),
+        SiteTarget::field_leaf(1),
     ]
 }
 
@@ -247,13 +251,15 @@ fn replay<E: ByteEngine>(mut store: DurableStore<E>) -> (Vec<String>, Dump) {
 fn memory_and_redb_agree_on_the_operation_trace() {
     let (mem_transcript, mem_dump) = replay(DurableStore::from_engine(
         MemoryEngine::new(),
-        schema(),
-        sites(),
+        project(&schema(), sites()),
     ));
 
     let temp = TempDir::new("optrace");
     let native = native_owner(&temp.store());
-    let (redb_transcript, redb_dump) = replay(DurableStore::from_engine(native, schema(), sites()));
+    let (redb_transcript, redb_dump) = replay(DurableStore::from_engine(
+        native,
+        project(&schema(), sites()),
+    ));
 
     assert_eq!(
         mem_transcript, redb_transcript,
@@ -354,12 +360,14 @@ fn set_sparse_present_agrees_across_engines() {
 
     let (mem_presence, mem_dump) = probe(DurableStore::from_engine(
         MemoryEngine::new(),
-        schema(),
-        sites(),
+        project(&schema(), sites()),
     ));
     let temp = TempDir::new("strict");
     let native = native_owner(&temp.store());
-    let (redb_presence, redb_dump) = probe(DurableStore::from_engine(native, schema(), sites()));
+    let (redb_presence, redb_dump) = probe(DurableStore::from_engine(
+        native,
+        project(&schema(), sites()),
+    ));
 
     assert_eq!(mem_presence, redb_presence);
     assert_eq!(mem_dump, redb_dump, "backends disagree on strict-set state");
@@ -377,7 +385,7 @@ fn set_sparse_present_agrees_across_engines() {
 /// asserts it as defense in depth.
 #[test]
 fn set_sparse_present_on_an_absent_marker_is_corruption() {
-    let mut store = DurableStore::from_engine(MemoryEngine::new(), schema(), sites());
+    let mut store = DurableStore::from_engine(MemoryEngine::new(), project(&schema(), sites()));
     let mut txn = store
         .txn_session(InvocationGrant::full_store(), write())
         .expect("txn");
@@ -412,15 +420,17 @@ fn rollback_discards_staged_writes_on_both_backends() {
     assert_eq!(
         probe(DurableStore::from_engine(
             MemoryEngine::new(),
-            schema(),
-            sites()
+            project(&schema(), sites()),
         )),
         Presence::Absent
     );
     let temp = TempDir::new("rollback");
     let native = native_owner(&temp.store());
     assert_eq!(
-        probe(DurableStore::from_engine(native, schema(), sites())),
+        probe(DurableStore::from_engine(
+            native,
+            project(&schema(), sites())
+        )),
         Presence::Absent
     );
 }
@@ -443,12 +453,14 @@ fn required_missing_commit_agrees_on_both_backends() {
     }
     assert!(probe(DurableStore::from_engine(
         MemoryEngine::new(),
-        schema(),
-        sites()
+        project(&schema(), sites()),
     )));
     let temp = TempDir::new("required-missing");
     let native = native_owner(&temp.store());
-    assert!(probe(DurableStore::from_engine(native, schema(), sites())));
+    assert!(probe(DurableStore::from_engine(
+        native,
+        project(&schema(), sites())
+    )));
 }
 
 #[test]
@@ -483,15 +495,17 @@ fn a_replaced_entry_drops_unlisted_sparse_leaves() {
     assert_eq!(
         probe(DurableStore::from_engine(
             MemoryEngine::new(),
-            schema(),
-            sites()
+            project(&schema(), sites()),
         )),
         None
     );
     let temp = TempDir::new("replace-drops");
     let native = native_owner(&temp.store());
     assert_eq!(
-        probe(DurableStore::from_engine(native, schema(), sites())),
+        probe(DurableStore::from_engine(
+            native,
+            project(&schema(), sites())
+        )),
         None
     );
 }
@@ -510,17 +524,8 @@ fn group_schema() -> StoreSchema {
     builder.finish().expect("a bounded schema builds")
 }
 
-fn group_sites() -> Vec<SiteSpec> {
-    vec![
-        SiteSpec {
-            root: 0,
-            target: SiteTarget::WholePayload,
-        },
-        SiteSpec {
-            root: 0,
-            target: SiteTarget::GroupEntry(0),
-        },
-    ]
+fn group_sites() -> Vec<SiteTarget> {
+    vec![SiteTarget::whole_payload(), SiteTarget::group_entry(0)]
 }
 
 /// The materialized group leaves of book `k` (pages, language), or `None` when the entry
@@ -616,16 +621,14 @@ fn replay_groups<E: ByteEngine>(mut store: DurableStore<E>) -> (Vec<String>, Vec
 fn memory_and_redb_agree_on_the_group_operation_trace() {
     let (mem_transcript, mem_reads) = replay_groups(DurableStore::from_engine(
         MemoryEngine::new(),
-        group_schema(),
-        group_sites(),
+        project(&group_schema(), group_sites()),
     ));
 
     let temp = TempDir::new("optrace-groups");
     let native = native_owner(&temp.store());
     let (redb_transcript, redb_reads) = replay_groups(DurableStore::from_engine(
         native,
-        group_schema(),
-        group_sites(),
+        project(&group_schema(), group_sites()),
     ));
 
     assert_eq!(

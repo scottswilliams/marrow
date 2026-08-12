@@ -55,12 +55,7 @@ fn compile(source: &str, ids: &str) -> VerifiedImage {
     verify(&compiled.image.bytes).expect("verify")
 }
 
-fn schemas_of(
-    image: &VerifiedImage,
-) -> (
-    Vec<marrow_kernel::durable::StoreSchema>,
-    Vec<marrow_kernel::durable::SiteSpec>,
-) {
+fn projection_of(image: &VerifiedImage) -> marrow_kernel::durable::StoreProjection {
     marrow_vm::derive_store_schemas(image).expect("the base image is flat-executable")
 }
 
@@ -103,7 +98,7 @@ fn now_nonce() -> u128 {
 
 /// Provision a fresh store at `dir` bound to `image`.
 fn provision_from(dir: &Path, image: &VerifiedImage) -> StoreInstanceId {
-    let (schemas, sites) = schemas_of(image);
+    let projection = projection_of(image);
     let instance = StoreInstanceId::draw().expect("entropy");
     let envelope = StoreEnvelope {
         instance,
@@ -121,8 +116,7 @@ fn provision_from(dir: &Path, image: &VerifiedImage) -> StoreInstanceId {
         ProvisionRequest {
             envelope,
             head,
-            schemas,
-            sites,
+            projection,
         },
     )
     .expect("provision");
@@ -227,10 +221,10 @@ fn head_map_numbering_agrees_with_the_kernel_node_for_node() {
     use marrow_verify::SemanticNodeKind;
 
     let image = compile(GRAPH_SOURCE, GRAPH_IDS);
-    let (schemas, _sites) = schemas_of(&image);
+    let projection = projection_of(&image);
 
     // The kernel's numbering, flattened into its cell-key node kinds in numbering order.
-    let numbering = marrow_kernel::durable::number_store(&schemas);
+    let numbering = marrow_kernel::durable::number_store(&projection);
     let mut kernel_order: Vec<SemanticNodeKind> = Vec::new();
     for root in &numbering {
         kernel_order.push(SemanticNodeKind::Root);
@@ -288,8 +282,8 @@ fn attach_to_the_same_image_is_already_active() {
     let image = compile(BASE_SOURCE, BASE_IDS);
     provision_from(scratch.dir(), &image);
 
-    let (schemas, sites) = schemas_of(&image);
-    match attach(scratch.dir(), &image, schemas, sites).expect("attach") {
+    let projection = projection_of(&image);
+    match attach(scratch.dir(), &image, projection).expect("attach") {
         AttachOutcome::AlreadyActive(store) => drop(store),
         AttachOutcome::Rebound { .. } => panic!("an identical image must be already-active"),
     }
@@ -316,8 +310,8 @@ fn a_body_only_edit_is_a_binding_only_rebind() {
         "the facts are preserved"
     );
 
-    let (schemas, sites) = schemas_of(&edited);
-    let receipt = match attach(scratch.dir(), &edited, schemas, sites).expect("attach") {
+    let projection = projection_of(&edited);
+    let receipt = match attach(scratch.dir(), &edited, projection).expect("attach") {
         AttachOutcome::Rebound { store, receipt } => {
             drop(store);
             receipt
@@ -340,8 +334,8 @@ fn a_body_only_edit_is_a_binding_only_rebind() {
 
 /// Reopen the store's head via a fresh open, returning the persisted logical head.
 fn open_head(dir: &Path, image: &VerifiedImage) -> LogicalHead {
-    let (schemas, sites) = schemas_of(image);
-    let opened = open(dir, schemas, sites).expect("open");
+    let projection = projection_of(image);
+    let opened = open(dir, projection).expect("open");
     opened.head
 }
 
@@ -365,8 +359,8 @@ fn a_crash_between_head_and_envelope_commit_recovers_to_the_new_binding() {
     // Simulate the crash: open the store, stamp the new binding into the head (the commit
     // point), and write only the head back — leaving the old envelope, exactly the on-disk
     // state a kill between the head rename and the envelope rewrite leaves.
-    let (schemas, sites) = schemas_of(&image_a);
-    let mut opened = open(scratch.dir(), schemas, sites).expect("open");
+    let projection = projection_of(&image_a);
+    let mut opened = open(scratch.dir(), projection).expect("open");
     opened.head.binding = binding_b;
     let crashed_head = opened.head.encode();
     drop(opened); // release the single-owner lock before reopening
@@ -394,8 +388,8 @@ fn adding_an_export_is_a_typed_interface_refusal() {
     let extended = format!("{BASE_SOURCE}\npub fn two(): int {{\n    return 2\n}}\n");
     let changed = compile(&extended, BASE_IDS);
 
-    let (schemas, sites) = schemas_of(&changed);
-    match attach(scratch.dir(), &changed, schemas, sites) {
+    let projection = projection_of(&changed);
+    match attach(scratch.dir(), &changed, projection) {
         Err(LifecycleError::ContractChanged(refusal)) => {
             assert_eq!(refusal.changed, ChangedFact::Interface);
             assert_eq!(refusal.code(), "store.contract_changed");
@@ -419,8 +413,8 @@ fn changing_the_durable_contract_is_a_typed_refusal() {
     let evolved_source = BASE_SOURCE.replace("    label: string\n", "    required label: string\n");
     let changed = compile(&evolved_source, BASE_IDS);
 
-    let (schemas, sites) = schemas_of(&changed);
-    match attach(scratch.dir(), &changed, schemas, sites) {
+    let projection = projection_of(&changed);
+    match attach(scratch.dir(), &changed, projection) {
         Err(LifecycleError::ContractChanged(refusal)) => {
             assert_eq!(refusal.changed, ChangedFact::DurableContract);
             assert_eq!(refusal.code(), "store.contract_changed");
