@@ -19,12 +19,34 @@
 //! that exists only for a body the fence already admitted, and the identity owner refuses
 //! a canonical payload past its own ceiling whoever asks (see the absence gate
 //! `the_contract_identity_has_one_mint_per_side_and_a_bound_of_its_own`).
+//!
+//! # The mixed-corruption matrix
+//!
+//! The tests below the six bridge cases pin the CURRENT verdict for one draft carrying a
+//! resource-policy-class defect (an aggregate table cap, a string-length cap, CodeBytes,
+//! or the whole-image byte ceiling) and an invariant-class defect (an over-wide key tuple
+//! or struct, an over-deep durable value, a broken frame, a missing application anchor)
+//! at the same time. Today that verdict is purely positional — `check_bounds` order, then
+//! the application anchor, then CodeBytes, then the ceiling — so a cap declared before
+//! the durable-graph walk outranks every invariant while a cap declared after it does
+//! not. Each pin is the differential baseline for the sanctioned invariant-over-resource
+//! restructure; a flipped verdict must cite the pin it flips.
+//!
+//! Every resource-policy candidate the encoder reports today is reachable through this
+//! fixture, so no pair in the matrix is skipped as unconstructible: the caps sitting on
+//! aggregate tables (strings, consts, types, enums, collections, roots, sites, functions,
+//! exports, test entries) are driven by appending rows, and the byte-shaped caps
+//! (StringBytes, CodeBytes, the whole-image ceiling) by one oversized element each.
 
-use marrow_image::bounds::{MAX_CODE_BYTES, MAX_KEY_COLUMNS, MAX_STRUCT_LEAVES};
+use marrow_image::bounds::{
+    MAX_CODE_BYTES, MAX_COLLECTIONS, MAX_CONSTS, MAX_DURABLE_VALUE_DEPTH, MAX_ENUMS, MAX_EXPORTS,
+    MAX_FUNCTIONS, MAX_KEY_COLUMNS, MAX_LOCALS, MAX_ROOTS, MAX_SITES, MAX_STRING_BYTES,
+    MAX_STRINGS, MAX_STRUCT_LEAVES, MAX_TEST_ENTRIES, MAX_TYPES,
+};
 use marrow_image::{
-    DeclarationMemberDef, DeclarationMemberShape, ExportId, FunctionDef, ImageBuildError,
-    ImageDraft, ImageType, Instr, KeyColumn, LedgerIdBytes, RecordTypeDef, RootOccurrenceDef,
-    Scalar, SpanEntry, ValueShapeNodeId,
+    CollectionTypeDef, DeclarationMemberDef, DeclarationMemberShape, EnumTypeDef, ExportId, FuncId,
+    FunctionDef, ImageBuildError, ImageDraft, ImageType, Instr, KeyColumn, LedgerIdBytes,
+    RecordTypeDef, RootOccurrenceDef, Scalar, SemanticTarget, SpanEntry, ValueShapeNodeId,
 };
 
 #[path = "common/admitted_plan.rs"]
@@ -48,6 +70,9 @@ enum Value {
     /// A dense struct one leaf past `MAX_STRUCT_LEAVES`: refused by `check_bounds`,
     /// which runs before every other result here.
     OverWideStruct,
+    /// A single-leaf struct nest one level past `MAX_DURABLE_VALUE_DEPTH`: a two-byte
+    /// expansion whose depth the declaration-graph walk refuses.
+    OverDeep,
 }
 
 impl Value {
@@ -64,6 +89,13 @@ impl Value {
                 level
             }
             Value::OverWideStruct => values.struct_shape(vec![int; MAX_STRUCT_LEAVES + 1]),
+            Value::OverDeep => {
+                let mut level = int;
+                for _ in 0..MAX_DURABLE_VALUE_DEPTH {
+                    level = values.struct_shape(vec![level]);
+                }
+                level
+            }
         }
     }
 }
@@ -77,15 +109,59 @@ enum Code {
     OverCodeBytes,
 }
 
+/// How the fixture's `main` frame is shaped.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Frame {
+    /// No params, no locals.
+    Fits,
+    /// One local slot past `MAX_LOCALS`: refused near the end of `check_bounds`.
+    OverLocals,
+    /// One `int` param but zero local slots, so the frame cannot hold its own params:
+    /// refused as the last `check_bounds` result.
+    LocalsBelowParams,
+}
+
+/// One resource-policy-class overflow, applied to an otherwise complete draft. Each
+/// variant drives exactly one aggregate cap over its bound without touching any other.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Overflow {
+    /// One distinct interned string past `MAX_STRINGS`.
+    Strings,
+    /// One interned string one byte past `MAX_STRING_BYTES`.
+    StringBytes,
+    /// One distinct constant past `MAX_CONSTS`.
+    Consts,
+    /// One record type past `MAX_TYPES`.
+    Types,
+    /// One enum type past `MAX_ENUMS`.
+    Enums,
+    /// One collection instantiation past `MAX_COLLECTIONS`.
+    Collections,
+    /// One root occurrence past `MAX_ROOTS` — exactly the one nonblocking overshoot
+    /// the admitted plan permits.
+    Roots,
+    /// One demanded operation site past `MAX_SITES`, through a second wide Product
+    /// whose every field leaf is demanded plus its whole-payload site.
+    Sites,
+    /// One function past `MAX_FUNCTIONS`.
+    Functions,
+    /// One export past `MAX_EXPORTS`.
+    Exports,
+    /// One test entry past `MAX_TEST_ENTRIES`.
+    TestEntries,
+}
+
 /// One fixture: a keyed root over a Product with one durable field, plus a `main`.
 ///
-/// The three knobs are independent, so a case states exactly the faults it wants and
+/// The knobs are independent, so a case states exactly the faults it wants and
 /// the encode result names which one the producer reports.
 struct Fixture {
     value: Value,
     code: Code,
     keys: usize,
     application: bool,
+    frame: Frame,
+    policy: Option<Overflow>,
 }
 
 impl Fixture {
@@ -95,6 +171,8 @@ impl Fixture {
             code: Code::Short,
             keys: 1,
             application: true,
+            frame: Frame::Fits,
+            policy: None,
         }
     }
 
@@ -105,6 +183,16 @@ impl Fixture {
 
     fn code(mut self, code: Code) -> Self {
         self.code = code;
+        self
+    }
+
+    fn frame(mut self, frame: Frame) -> Self {
+        self.frame = frame;
+        self
+    }
+
+    fn policy(mut self, policy: Overflow) -> Self {
+        self.policy = Some(policy);
         self
     }
 
@@ -178,13 +266,21 @@ impl Fixture {
                 code
             }
         };
+        let params = match self.frame {
+            Frame::LocalsBelowParams => vec![ImageType::scalar(Scalar::Int)],
+            Frame::Fits | Frame::OverLocals => Vec::new(),
+        };
+        let local_count = match self.frame {
+            Frame::OverLocals => (MAX_LOCALS + 1) as u16,
+            Frame::Fits | Frame::LocalsBelowParams => 0,
+        };
         let main = draft
             .add_function(FunctionDef {
                 name: main_name,
                 source: src,
-                params: Vec::new(),
+                params,
                 ret: ImageType::scalar(Scalar::Int),
-                local_count: 0,
+                local_count,
                 spans: vec![SpanEntry {
                     instr_index: 0,
                     line: 1,
@@ -194,8 +290,177 @@ impl Fixture {
             })
             .expect("every site operand is live");
         draft.add_export(ExportId::of_local("", "main"), main);
+        if let Some(policy) = self.policy {
+            apply_policy(policy, &mut draft, main);
+        }
         draft.encode().map(|_| ())
     }
+}
+
+/// Drive exactly one resource-policy aggregate over its cap on an otherwise complete
+/// draft, leaving every other table inside its bound.
+fn apply_policy(policy: Overflow, draft: &mut ImageDraft, main: FuncId) {
+    match policy {
+        // The base draft interns a handful of strings, so a full extra pool is over.
+        Overflow::Strings => {
+            for index in 0..MAX_STRINGS {
+                draft.intern_string(&format!("s{index}"));
+            }
+        }
+        Overflow::StringBytes => {
+            draft.intern_string(&"x".repeat(MAX_STRING_BYTES + 1));
+        }
+        // Zero is already interned by the base draft, so the pool ends one past the cap.
+        Overflow::Consts => {
+            for value in 1..=MAX_CONSTS as i64 {
+                draft.intern_int(value);
+            }
+        }
+        Overflow::Types => {
+            let name = draft.intern_string("T");
+            for _ in 0..MAX_TYPES {
+                draft.add_record_type(RecordTypeDef {
+                    name,
+                    fields: Vec::new(),
+                });
+            }
+        }
+        Overflow::Enums => {
+            let name = draft.intern_string("E");
+            for _ in 0..=MAX_ENUMS {
+                draft.add_enum_type(EnumTypeDef {
+                    name,
+                    variants: Vec::new(),
+                });
+            }
+        }
+        Overflow::Collections => {
+            for _ in 0..=MAX_COLLECTIONS {
+                draft.add_collection_type(CollectionTypeDef::List {
+                    elem: ImageType::scalar(Scalar::Int),
+                });
+            }
+        }
+        // The admitted plan permits exactly one occurrence past the root bound, so the
+        // graph is complete and the encoder — not the intake — reports the cap.
+        Overflow::Roots => {
+            for index in 0..MAX_ROOTS {
+                let name = draft.intern_string(&format!("extra{index}"));
+                draft
+                    .add_root_occurrence(
+                        &admitted_plan(),
+                        LedgerIdBytes::from_bytes(PRODUCT_ID),
+                        RootOccurrenceDef {
+                            name,
+                            keys: vec![KeyColumn {
+                                scalar: Scalar::Int,
+                                id: seeded_id(0x21, index),
+                            }],
+                            placement: seeded_id(0x22, index),
+                            indexes: Vec::new().into(),
+                        },
+                    )
+                    .expect("the Product is declared");
+            }
+        }
+        // A second Product as wide as the site table itself: demanding every field leaf
+        // fills the table, and the root's whole-payload demand is the crossing.
+        Overflow::Sites => {
+            let value = draft.value_shapes_mut().scalar(Scalar::Int);
+            let entry_name = draft.intern_string("S");
+            let entry = draft.add_record_type(RecordTypeDef {
+                name: entry_name,
+                fields: Vec::new(),
+            });
+            let members = (0..MAX_SITES)
+                .map(|index| DeclarationMemberDef {
+                    parent: None,
+                    shape: DeclarationMemberShape::Field {
+                        id: seeded_id(0x33, index),
+                        required: true,
+                        value,
+                    },
+                })
+                .collect();
+            let fields = draft
+                .declare_product(&admitted_plan(), seeded_id(0x31, 0), entry, members)
+                .expect("a well-formed declaration");
+            let root_name = draft.intern_string("sites");
+            let root = draft
+                .add_root_occurrence(
+                    &admitted_plan(),
+                    seeded_id(0x31, 0),
+                    RootOccurrenceDef {
+                        name: root_name,
+                        keys: vec![KeyColumn {
+                            scalar: Scalar::Int,
+                            id: seeded_id(0x34, 0),
+                        }],
+                        placement: seeded_id(0x35, 0),
+                        indexes: Vec::new().into(),
+                    },
+                )
+                .expect("the Product is declared");
+            for member in &fields {
+                let handle = draft
+                    .bind_occurrence_site(
+                        root.occurrence(),
+                        member.path(),
+                        SemanticTarget::FieldLeaf,
+                    )
+                    .expect("a declared field leaf");
+                draft.request_site(&handle).expect("a live demand");
+            }
+            let payload = draft
+                .bind_occurrence_site(
+                    root.occurrence(),
+                    root.placement_path(),
+                    SemanticTarget::WholePayload,
+                )
+                .expect("a keyed placement");
+            // The crossing is nonblocking: the plan records a receipt and the encoder
+            // reports the Sites bound.
+            draft.request_site(&payload).expect("a live demand");
+        }
+        Overflow::Functions => {
+            let name = draft.intern_string("f");
+            let src = draft.intern_string("src/extra.mw");
+            for _ in 0..MAX_FUNCTIONS {
+                draft
+                    .add_function(FunctionDef {
+                        name,
+                        source: src,
+                        params: Vec::new(),
+                        ret: ImageType::scalar(Scalar::Int),
+                        local_count: 0,
+                        spans: Vec::new(),
+                        code: vec![Instr::Return],
+                    })
+                    .expect("every site operand is live");
+            }
+        }
+        Overflow::Exports => {
+            for index in 0..MAX_EXPORTS {
+                draft.add_export(ExportId::of_local("", &format!("extra{index}")), main);
+            }
+        }
+        Overflow::TestEntries => {
+            for index in 0..=MAX_TEST_ENTRIES {
+                let name = draft.intern_string(&format!("t{index}"));
+                draft.add_test_entry(name, main);
+            }
+        }
+    }
+}
+
+/// A distinct 16-byte ledger id from one tag byte and one two-byte seed, disjoint from
+/// the base fixture's constant-fill ids.
+fn seeded_id(tag: u8, index: usize) -> LedgerIdBytes {
+    let index = u16::try_from(index).expect("a seed fits two bytes");
+    let mut bytes = [0x40u8; 16];
+    bytes[0] = tag;
+    bytes[1..3].copy_from_slice(&index.to_be_bytes());
+    LedgerIdBytes::from_bytes(bytes)
 }
 
 fn key_id(column: usize) -> LedgerIdBytes {
@@ -292,5 +557,238 @@ fn the_graph_anchor_outranks_code_bytes_and_the_body_ceiling() {
             .encode(),
         Err(ImageBuildError::TooManyKeyColumns),
         "a fixed bound still precedes the anchor",
+    );
+}
+
+// ---- The mixed-corruption matrix (see the module header). Each test pins the
+// pre-restructure verdict of one resource-policy cap crossed with one invariant defect.
+
+/// Pins the pre-restructure verdict; the sanctioned invariant-over-resource correction
+/// may flip it to `TooManyStructLeaves`, and the flip must cite this pin.
+#[test]
+fn over_strings_with_an_over_wide_struct_currently_draws_the_string_cap() {
+    assert_eq!(
+        Fixture::clean()
+            .policy(Overflow::Strings)
+            .value(Value::OverWideStruct)
+            .encode(),
+        Err(ImageBuildError::TooManyStrings),
+    );
+}
+
+/// Pins the pre-restructure verdict; the sanctioned invariant-over-resource correction
+/// may flip it to `TooManyStructLeaves`, and the flip must cite this pin.
+#[test]
+fn an_over_long_string_with_an_over_wide_struct_currently_draws_the_string_length_cap() {
+    assert_eq!(
+        Fixture::clean()
+            .policy(Overflow::StringBytes)
+            .value(Value::OverWideStruct)
+            .encode(),
+        Err(ImageBuildError::StringTooLong),
+    );
+}
+
+/// Pins the pre-restructure verdict; the sanctioned invariant-over-resource correction
+/// may flip it to `TooManyKeyColumns`, and the flip must cite this pin.
+#[test]
+fn over_consts_with_an_over_wide_key_currently_draws_the_const_cap() {
+    assert_eq!(
+        Fixture::clean()
+            .policy(Overflow::Consts)
+            .over_wide_key()
+            .encode(),
+        Err(ImageBuildError::TooManyConsts),
+    );
+}
+
+/// Pins the pre-restructure verdict; the sanctioned invariant-over-resource correction
+/// may flip it to `TooManyStructLeaves`, and the flip must cite this pin.
+#[test]
+fn over_types_with_an_over_wide_struct_currently_draws_the_type_cap() {
+    assert_eq!(
+        Fixture::clean()
+            .policy(Overflow::Types)
+            .value(Value::OverWideStruct)
+            .encode(),
+        Err(ImageBuildError::TooManyTypes),
+    );
+}
+
+/// Pins the pre-restructure verdict; the sanctioned invariant-over-resource correction
+/// may flip it to `DurableValueTooDeep`, and the flip must cite this pin.
+#[test]
+fn over_enums_with_an_over_deep_value_currently_draws_the_enum_cap() {
+    assert_eq!(
+        Fixture::clean()
+            .policy(Overflow::Enums)
+            .value(Value::OverDeep)
+            .encode(),
+        Err(ImageBuildError::TooManyEnums),
+    );
+}
+
+/// Pins the pre-restructure verdict; the sanctioned invariant-over-resource correction
+/// may flip it to `TooManyKeyColumns`, and the flip must cite this pin.
+#[test]
+fn over_collections_with_an_over_wide_key_currently_draws_the_collection_cap() {
+    assert_eq!(
+        Fixture::clean()
+            .policy(Overflow::Collections)
+            .over_wide_key()
+            .encode(),
+        Err(ImageBuildError::TooManyCollections),
+    );
+}
+
+/// Pins the pre-restructure verdict; the sanctioned invariant-over-resource correction
+/// may flip either case to the invariant, and the flip must cite this pin.
+#[test]
+fn over_roots_with_a_missing_application_anchor_currently_draws_the_root_cap() {
+    assert_eq!(
+        Fixture::clean()
+            .policy(Overflow::Roots)
+            .without_application()
+            .encode(),
+        Err(ImageBuildError::TooManyRoots),
+    );
+    assert_eq!(
+        Fixture::clean()
+            .policy(Overflow::Roots)
+            .over_wide_key()
+            .encode(),
+        Err(ImageBuildError::TooManyRoots),
+        "the root cap likewise precedes the key-column invariant today",
+    );
+}
+
+/// Pins the pre-restructure verdict; the sanctioned invariant-over-resource correction
+/// may flip it to `TooManyLocals`, and the flip must cite this pin.
+#[test]
+fn over_sites_with_over_locals_currently_draws_the_site_cap() {
+    assert_eq!(
+        Fixture::clean()
+            .policy(Overflow::Sites)
+            .frame(Frame::OverLocals)
+            .encode(),
+        Err(ImageBuildError::TooManySites),
+    );
+}
+
+/// Pins a pre-restructure verdict the restructure must keep: the key-column invariant
+/// already outranks the site cap today, so the sanctioned correction changes nothing here.
+#[test]
+fn over_sites_with_an_over_wide_key_currently_draws_the_key_column_invariant() {
+    assert_eq!(
+        Fixture::clean()
+            .policy(Overflow::Sites)
+            .over_wide_key()
+            .encode(),
+        Err(ImageBuildError::TooManyKeyColumns),
+    );
+}
+
+/// Pins the pre-restructure verdict; the sanctioned invariant-over-resource correction
+/// may flip it to `TooManyLocals`, and the flip must cite this pin.
+#[test]
+fn over_functions_with_over_locals_currently_draws_the_function_cap() {
+    assert_eq!(
+        Fixture::clean()
+            .policy(Overflow::Functions)
+            .frame(Frame::OverLocals)
+            .encode(),
+        Err(ImageBuildError::TooManyFunctions),
+    );
+}
+
+/// Pins a pre-restructure verdict the restructure must keep: the struct-leaf invariant
+/// already outranks the function cap today, so the sanctioned correction changes nothing
+/// here.
+#[test]
+fn over_functions_with_an_over_wide_struct_currently_draws_the_struct_leaf_invariant() {
+    assert_eq!(
+        Fixture::clean()
+            .policy(Overflow::Functions)
+            .value(Value::OverWideStruct)
+            .encode(),
+        Err(ImageBuildError::TooManyStructLeaves),
+    );
+}
+
+/// Pins the pre-restructure verdict; the sanctioned invariant-over-resource correction
+/// may flip it to `LocalCountBelowParams`, and the flip must cite this pin.
+#[test]
+fn over_exports_with_locals_below_params_currently_draws_the_export_cap() {
+    assert_eq!(
+        Fixture::clean()
+            .policy(Overflow::Exports)
+            .frame(Frame::LocalsBelowParams)
+            .encode(),
+        Err(ImageBuildError::TooManyExports),
+    );
+}
+
+/// Pins the pre-restructure verdict; the sanctioned invariant-over-resource correction
+/// may flip it to `TooManyLocals`, and the flip must cite this pin.
+#[test]
+fn over_test_entries_with_over_locals_currently_draws_the_test_entry_cap() {
+    assert_eq!(
+        Fixture::clean()
+            .policy(Overflow::TestEntries)
+            .frame(Frame::OverLocals)
+            .encode(),
+        Err(ImageBuildError::TooManyTestEntries),
+    );
+}
+
+/// Pins a pre-restructure verdict the restructure must keep: the local invariant already
+/// outranks CodeBytes today, so the sanctioned correction changes nothing here.
+#[test]
+fn over_code_bytes_with_over_locals_currently_draws_the_local_invariant() {
+    assert_eq!(
+        Fixture::clean()
+            .code(Code::OverCodeBytes)
+            .frame(Frame::OverLocals)
+            .encode(),
+        Err(ImageBuildError::TooManyLocals),
+    );
+}
+
+/// Pins a pre-restructure verdict the restructure must keep: the value-depth invariant
+/// already outranks CodeBytes today, so the sanctioned correction changes nothing here.
+#[test]
+fn over_code_bytes_with_an_over_deep_value_currently_draws_the_value_depth_invariant() {
+    assert_eq!(
+        Fixture::clean()
+            .code(Code::OverCodeBytes)
+            .value(Value::OverDeep)
+            .encode(),
+        Err(ImageBuildError::DurableValueTooDeep),
+    );
+}
+
+/// Pins a pre-restructure verdict the restructure must keep: with the same draft over the
+/// whole-image ceiling and carrying a key-column defect, the invariant already wins today.
+#[test]
+fn a_body_past_the_ceiling_with_an_over_wide_key_currently_draws_the_key_column_invariant() {
+    assert_eq!(
+        Fixture::clean()
+            .value(Value::OverCeiling)
+            .over_wide_key()
+            .encode(),
+        Err(ImageBuildError::TooManyKeyColumns),
+    );
+}
+
+/// Pins the pre-restructure verdict of the same draft over the whole-image ceiling AND
+/// over a policy cap: the string cap wins today, and any reordering must cite this pin.
+#[test]
+fn a_body_past_the_ceiling_with_over_strings_currently_draws_the_string_cap() {
+    assert_eq!(
+        Fixture::clean()
+            .value(Value::OverCeiling)
+            .policy(Overflow::Strings)
+            .encode(),
+        Err(ImageBuildError::TooManyStrings),
     );
 }
