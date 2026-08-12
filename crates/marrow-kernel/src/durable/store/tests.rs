@@ -1403,7 +1403,7 @@ fn a_branch_layer_traversal_with_a_wrong_ancestor_key_path_faults() {
 //
 // The verifier still parks nested branches, so these tests hand-build a multi-level
 // schema and multi-hop sites and drive the public store API directly — the kernel
-// executes any well-formed `StoreSchema` + `SiteSpec`, the seam the verifier/compiler
+// executes any well-formed projection of schemas and site targets, the seam the verifier/compiler
 // admission of nested branches (checkpoint 1) will target. They pin the level-
 // independence of the durable laws: a sub-branch node's marker/field/cursor topology,
 // its slot classification, its whole-entry replace/erase confinement, and its commit

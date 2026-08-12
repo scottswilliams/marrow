@@ -61,7 +61,7 @@ pub struct DurableStore<E: ByteEngine> {
 /// }
 /// ```
 impl<E: ByteEngine> DurableStore<E> {
-    /// Build a single-root store over an already-open engine, minting the store ceiling
+    /// Build a store over an already-open engine, minting the store ceiling
     /// from the handle's write capability. The native/tracer caller; an ephemeral
     /// attachment uses [`Self::from_projection_with_ceiling`] to bound the ceiling by image
     /// demand and to carry every root of a multi-root image.

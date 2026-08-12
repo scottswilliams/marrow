@@ -364,7 +364,7 @@ impl ValueShape {
 
     /// The count of composites on this shape's deepest path, at most
     /// [`MAX_DURABLE_VALUE_DEPTH`]. A scalar is `0`.
-    pub fn depth(&self) -> usize {
+    fn depth(&self) -> usize {
         self.depth as usize
     }
 }

@@ -19,10 +19,10 @@
 //! **This is the whole specified journey.** It runs from maximum construction through
 //! publication, clone/debug/equality, the contract and body codecs, verification, the
 //! VM→kernel schema projection, the current-order numbering, the store intake, early
-//! return, unwind, and drop. It is the one harness — the kernel and store legs extended
-//! the verified-graph half in place rather than forking a second one — and it lives in
-//! the lifecycle crate because that is the lowest test target whose existing dependencies
-//! reach every leg (image, verifier, VM, kernel) without adding a workspace edge.
+//! return, unwind, and drop. It is the one harness for that claim. It lives in the
+//! lifecycle crate because its existing dependencies reach every current leg (image,
+//! verifier, VM, kernel) without adding a workspace edge, and because the store legs end
+//! here: a persistent-store leg (provision, import) extends this file, not a new harness.
 //!
 //! A failure here is a representation finding, never a licence for a custom `Drop`, a second
 //! arena, `ManuallyDrop`, `mem::forget`, or `unsafe`.
@@ -185,8 +185,8 @@ fn maximum_draft() -> ImageDraft {
     draft
 }
 
-/// The whole first half of the journey, in order. Every leg runs on the worker stack; the
-/// function returns only when all of them have.
+/// The whole journey, in order. Every leg runs on the worker stack; the function returns
+/// only when all of them have.
 fn journey() {
     // 1. Maximum construction, and 2. publication of several roots over one declaration.
     let draft = maximum_draft();

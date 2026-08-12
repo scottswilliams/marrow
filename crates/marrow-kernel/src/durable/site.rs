@@ -4,9 +4,9 @@
 //! A site names one operation's durable target — a root's whole payload, a field leaf, a
 //! keyed branch entry or one of its fields, an unkeyed group, or a managed-index read. Every
 //! part of that name is a *position*: a root index, a branch path, a field index, a group
-//! index, an index index. Before this owner existed the positions arrived as public struct
-//! fields and were used as raw slice indices at session setup, so a position naming nothing
-//! was a panic in the resolver rather than a refusal at the boundary.
+//! index, an index index. Positions carried as bare struct fields would reach session
+//! setup as raw slice indices, making a position that names nothing a panic in the
+//! resolver rather than a refusal at the boundary.
 //!
 //! [`StoreProjection`] closes that: it is minted only by [`StoreProjectionBuilder`], which
 //! resolves every site against the **completed** root table before publication and stores
@@ -53,21 +53,17 @@ impl StoreProjection {
         StoreProjectionBuilder {
             roots: self.roots,
             sites: Vec::new(),
-            error: None,
         }
     }
 }
 
-/// The sole minter of a [`StoreProjection`]: roots pushed one at a time, then sites, with
-/// every site resolved against the completed root table at [`finish`](Self::finish).
-///
-/// Commands latch the first refusal rather than returning per call, so a projection can emit
-/// its whole stream and read one verdict. Nothing partially built escapes.
+/// The sole minter of a [`StoreProjection`]: roots pushed one at a time, then sites.
+/// Every site is resolved — and every refusal read — at [`finish`](Self::finish), once the
+/// root table is complete. Nothing partially built escapes.
 #[derive(Debug, Default)]
 pub struct StoreProjectionBuilder {
     roots: Vec<StoreSchema>,
     sites: Vec<PendingSite>,
-    error: Option<ProjectionBuildError>,
 }
 
 /// One site as the builder holds it before resolution: named by caller positions, or a
@@ -110,9 +106,6 @@ impl StoreProjectionBuilder {
     /// what lets `number_store`'s counter be total rather than checked at every step of every
     /// store open.
     pub fn finish(self) -> Result<StoreProjection, ProjectionBuildError> {
-        if let Some(error) = self.error {
-            return Err(error);
-        }
         let nodes: u64 = self.roots.iter().map(super::root_node_count).sum();
         if nodes > u64::from(super::MAX_STORE_NODES) {
             return Err(ProjectionBuildError::TooManyNodes);

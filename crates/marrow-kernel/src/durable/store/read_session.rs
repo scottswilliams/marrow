@@ -27,9 +27,11 @@ where
 
 impl<'s, E: ByteEngine + 's> Durable for ReadSession<'s, E> {
     fn site(&self, index: u16) -> AuthorizedSite {
-        self.auth[index as usize]
-            .clone()
-            .expect("a verified durable opcode never addresses a parked site")
+        self.auth
+            .get(index as usize)
+            .cloned()
+            .flatten()
+            .expect("a verified durable opcode addresses a resolved site in the table")
     }
     fn presence(
         &mut self,

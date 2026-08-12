@@ -296,7 +296,7 @@ enum IndexComponentKind {
 
 /// A borrowed view of one index projection component.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum IndexComponentRef {
+pub(crate) enum IndexComponentRef {
     /// An identity key column, by its index into the root's key tuple.
     Key(u16),
     /// A top-level field, by its index into the root's materialized record.
@@ -317,7 +317,7 @@ impl IndexComponent {
     }
 
     /// This component's kind and position.
-    pub fn view(self) -> IndexComponentRef {
+    pub(crate) fn view(self) -> IndexComponentRef {
         match self.0 {
             IndexComponentKind::Key(column) => IndexComponentRef::Key(column),
             IndexComponentKind::Field(field) => IndexComponentRef::Field(field),

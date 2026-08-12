@@ -28,9 +28,10 @@ pub use attach::{
     AttachError, AttachmentId, CeilingIdToken, DeploymentCeiling, EphemeralAttachment,
 };
 pub use native_owner::{NativeStoreOwner, PendingNativeStoreOwner};
+pub(crate) use schema::IndexComponentRef;
 pub use schema::{
-    BranchSchema, FieldSchema, GroupSchema, IndexComponent, IndexComponentRef, IndexSchema,
-    MAX_DURABLE_DEPTH, SchemaBuildError, StoreSchema, StoreSchemaBuilder,
+    BranchSchema, FieldSchema, GroupSchema, IndexComponent, IndexSchema, MAX_DURABLE_DEPTH,
+    SchemaBuildError, StoreSchema, StoreSchemaBuilder,
 };
 pub use session_host::SessionHost;
 pub(crate) use site::SiteSlot;

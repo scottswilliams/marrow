@@ -44,7 +44,7 @@ pub(super) fn resolve_site(
             .map(|component| index_component_kind(schema, *component))
             .collect();
         return AuthorizedSite::index(
-            numbering.root,
+            numbering.root(),
             root_index,
             schema.key().to_vec(),
             AuthTarget::index(*index.id(), index.unique(), projection),
@@ -57,7 +57,7 @@ pub(super) fn resolve_site(
         let group = position.of(schema.groups());
         let group_numbering = position.of(numbering.groups());
         return AuthorizedSite::new(
-            numbering.root,
+            numbering.root(),
             root_index,
             schema.key().to_vec(),
             Vec::new(),
@@ -108,7 +108,7 @@ pub(super) fn resolve_site(
         }
     };
     AuthorizedSite::new(
-        numbering.root,
+        numbering.root(),
         root_index,
         schema.key().to_vec(),
         branch,

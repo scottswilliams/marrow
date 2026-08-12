@@ -860,8 +860,10 @@ fn native_lifecycle_open_is_existing_only_and_owner_inseparable() {
         for raw in [
             "Vec<StoreSchema>",
             "Vec<SiteSpec>",
+            "Vec<Site>",
             "&[StoreSchema]",
             "&[SiteSpec]",
+            "&[Site]",
         ] {
             assert!(
                 !source.contains(raw),
