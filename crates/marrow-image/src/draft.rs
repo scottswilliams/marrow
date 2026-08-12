@@ -1258,6 +1258,27 @@ impl ImageDraft {
         Ok(())
     }
 
+    /// Prove that every retained site row still projects, streaming each row's steps
+    /// through the one projection grammar and retaining nothing — the coherence
+    /// walk's zero-allocation twin of [`Self::project_sites`]. The owned-path variant
+    /// stays for the DURABLE body writer, whose site codec spells a step count before
+    /// its steps and so consumes a materialized path.
+    pub(crate) fn validate_site_projection(&self) -> Result<(), ImageBuildError> {
+        if self.sites.rows().is_empty() {
+            return Ok(());
+        }
+        let application = self
+            .application_identity()
+            .ok_or(ImageBuildError::InvalidReference("application identity"))?;
+        let graph = self.graph();
+        for row in self.sites.rows() {
+            graph
+                .project_steps(application, row.key(), |_| {})
+                .ok_or(ImageBuildError::InvalidReference("operation site"))?;
+        }
+        Ok(())
+    }
+
     /// The number of site rows [`ImageDraft::project_sites`] will emit. The site table is
     /// length-prefixed and streamed, so the encoder writes this count before the rows it
     /// has not projected yet; every retained row projects exactly one site.
