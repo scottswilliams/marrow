@@ -41,12 +41,13 @@
 use marrow_image::bounds::{
     MAX_CODE_BYTES, MAX_COLLECTIONS, MAX_CONSTS, MAX_DURABLE_VALUE_DEPTH, MAX_ENUMS, MAX_EXPORTS,
     MAX_FUNCTIONS, MAX_KEY_COLUMNS, MAX_LOCALS, MAX_RECORD_FIELDS, MAX_ROOTS, MAX_SITES,
-    MAX_STRING_BYTES, MAX_STRINGS, MAX_STRUCT_LEAVES, MAX_TEST_ENTRIES, MAX_TYPES,
+    MAX_STRING_BYTES, MAX_STRINGS, MAX_STRUCT_LEAVES, MAX_TEST_ENTRIES, MAX_TYPES, MAX_VARIANTS,
 };
 use marrow_image::{
     CollectionTypeDef, DeclarationMemberDef, DeclarationMemberShape, EnumTypeDef, ExportId,
     FieldDef, FunctionDef, ImageBuildError, ImageDraft, ImageType, Instr, KeyColumn, LedgerIdBytes,
     RecordTypeDef, RootOccurrenceDef, Scalar, SemanticTarget, SpanEntry, ValueShapeNodeId,
+    VariantDef,
 };
 
 #[path = "common/admitted_plan.rs"]
@@ -73,6 +74,9 @@ enum Value {
     /// A single-leaf struct nest one level past `MAX_DURABLE_VALUE_DEPTH`: a two-byte
     /// expansion whose depth the declaration-graph walk refuses.
     OverDeep,
+    /// A node id minted by a larger arena in a different draft, out of range for this
+    /// draft's own arena: the raw-indexing defect the checked-conversion class covers.
+    Forged,
 }
 
 impl Value {
@@ -96,9 +100,21 @@ impl Value {
                 }
                 level
             }
+            Value::Forged => {
+                // Index 2 in a three-node arena; the fixture draft's arena holds one.
+                let mut other = ImageDraft::new();
+                let foreign = other.value_shapes_mut();
+                foreign.scalar(Scalar::Int);
+                foreign.scalar(Scalar::Bool);
+                foreign.scalar(Scalar::Text)
+            }
         }
     }
 }
+
+/// An instruction operand no table row answers: the raw-indexing defect the
+/// checked-conversion class covers.
+const OUT_OF_RANGE: u16 = u16::MAX;
 
 /// How a fixture's `main` is shaped.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -107,6 +123,14 @@ enum Code {
     Short,
     /// Past `MAX_CODE_BYTES`, so the function section refuses it.
     OverCodeBytes,
+    /// A `ConstLoad` whose index no constant answers.
+    BadConst,
+    /// A jump whose target names no instruction.
+    BadJump,
+    /// Past `MAX_CODE_BYTES` and every `ConstLoad` index unanswered.
+    OverCodeBytesBadConst,
+    /// Past `MAX_CODE_BYTES` with a jump whose target names no instruction.
+    OverCodeBytesBadJump,
 }
 
 /// How the fixture's `main` frame is shaped.
@@ -164,6 +188,10 @@ struct Fixture {
     policy: Option<Overflow>,
     wide_record: bool,
     conflicting_product: bool,
+    bad_span: bool,
+    wide_enum_definition: bool,
+    wide_enum_value_node: bool,
+    branch_wide_key: bool,
 }
 
 impl Fixture {
@@ -177,6 +205,10 @@ impl Fixture {
             policy: None,
             wide_record: false,
             conflicting_product: false,
+            bad_span: false,
+            wide_enum_definition: false,
+            wide_enum_value_node: false,
+            branch_wide_key: false,
         }
     }
 
@@ -228,6 +260,35 @@ impl Fixture {
         self
     }
 
+    /// A span entry whose `instr_index` names no instruction of `main`: the
+    /// raw-indexing defect the checked-conversion class covers.
+    fn with_bad_span(mut self) -> Self {
+        self.bad_span = true;
+        self
+    }
+
+    /// An enum DEFINITION one variant past `MAX_VARIANTS`: the definition-site
+    /// `TooManyVariants`, decided among the fixed table bounds.
+    fn with_wide_enum_definition(mut self) -> Self {
+        self.wide_enum_definition = true;
+        self
+    }
+
+    /// A value-DAG enum node one member past `MAX_VARIANTS`: the arena-site
+    /// `TooManyVariants`, decided by the whole-arena walk after the fixed table bounds.
+    fn with_wide_enum_value_node(mut self) -> Self {
+        self.wide_enum_value_node = true;
+        self
+    }
+
+    /// A declaration BRANCH member one key column past `MAX_KEY_COLUMNS`: the
+    /// declaration-site `TooManyKeyColumns`, decided in the declaration-graph walk
+    /// before the occurrence loop.
+    fn with_branch_wide_key(mut self) -> Self {
+        self.branch_wide_key = true;
+        self
+    }
+
     fn encode(self) -> Result<(), ImageBuildError> {
         let mut draft = ImageDraft::new();
         let value = self.value.shape(&mut draft);
@@ -252,19 +313,61 @@ impl Fixture {
         if self.application {
             draft.set_application_identity(LedgerIdBytes::from_bytes(APPLICATION_ID));
         }
+        if self.wide_enum_definition {
+            let name = draft.intern_string("WideEnum");
+            let variant_name = draft.intern_string("v");
+            draft.add_enum_type(EnumTypeDef {
+                name,
+                variants: vec![
+                    VariantDef {
+                        name: variant_name,
+                        category: false,
+                        payload: Vec::new(),
+                    };
+                    MAX_VARIANTS + 1
+                ],
+            });
+        }
+        if self.wide_enum_value_node {
+            // The arena is validated as a whole, so the node needs no referencing field.
+            let members = (0..=MAX_VARIANTS)
+                .map(|index| (seeded_id(0x61, index), Vec::new()))
+                .collect();
+            draft
+                .value_shapes_mut()
+                .enum_shape(seeded_id(0x60, 0), members);
+        }
+        let mut members = vec![DeclarationMemberDef {
+            parent: None,
+            shape: DeclarationMemberShape::Field {
+                id: LedgerIdBytes::from_bytes(FIELD_ID),
+                required: true,
+                value,
+            },
+        }];
+        if self.branch_wide_key {
+            let branch_name = draft.intern_string("b");
+            members.push(DeclarationMemberDef {
+                parent: None,
+                shape: DeclarationMemberShape::Branch {
+                    placement: seeded_id(0x71, 0),
+                    name: branch_name,
+                    record,
+                    keys: (0..=MAX_KEY_COLUMNS)
+                        .map(|column| KeyColumn {
+                            scalar: Scalar::Int,
+                            id: seeded_id(0x72, column),
+                        })
+                        .collect(),
+                },
+            });
+        }
         draft
             .declare_product(
                 &admitted_plan(),
                 LedgerIdBytes::from_bytes(PRODUCT_ID),
                 record,
-                vec![DeclarationMemberDef {
-                    parent: None,
-                    shape: DeclarationMemberShape::Field {
-                        id: LedgerIdBytes::from_bytes(FIELD_ID),
-                        required: true,
-                        value,
-                    },
-                }],
+                members,
             )
             .expect("a well-formed declaration");
         if self.conflicting_product {
@@ -316,6 +419,23 @@ impl Fixture {
                 code.push(Instr::Return);
                 code
             }
+            Code::BadConst => vec![Instr::ConstLoad(OUT_OF_RANGE), Instr::Return],
+            Code::BadJump => vec![
+                Instr::ConstLoad(zero.index()),
+                Instr::Jump(u32::from(OUT_OF_RANGE)),
+                Instr::Return,
+            ],
+            Code::OverCodeBytesBadConst => {
+                let mut code = vec![Instr::ConstLoad(OUT_OF_RANGE); MAX_CODE_BYTES / 2];
+                code.push(Instr::Return);
+                code
+            }
+            Code::OverCodeBytesBadJump => {
+                let mut code = vec![Instr::ConstLoad(zero.index()); MAX_CODE_BYTES / 2];
+                code.push(Instr::Jump(u32::from(OUT_OF_RANGE)));
+                code.push(Instr::Return);
+                code
+            }
         };
         let params = match self.frame {
             Frame::LocalsBelowParams => vec![ImageType::scalar(Scalar::Int)],
@@ -333,7 +453,8 @@ impl Fixture {
                 ret: ImageType::scalar(Scalar::Int),
                 local_count,
                 spans: vec![SpanEntry {
-                    instr_index: 0,
+                    // 99 names no instruction of any fixture body when the span is bad.
+                    instr_index: if self.bad_span { 99 } else { 0 },
                     line: 1,
                     column: 1,
                 }],
@@ -952,5 +1073,164 @@ fn a_product_conflict_with_an_over_wide_key_currently_draws_the_product_conflict
             .over_wide_key()
             .encode(),
         Err(ImageBuildError::ProductGraphConflict),
+    );
+}
+
+// ---- The checked-conversion pins: raw indexing on a caller-supplied id, crossed with
+// the policy cap that decides first today. The restructure is sanctioned to convert the
+// raw indexing into checked lookups; what each defect draws when it stands alone is
+// pinned beside its pair so the conversion has both baselines.
+
+/// This pin may flip under the sanctioned checked-conversion class; the flip must cite
+/// this pin: today the string cap in `check_bounds` decides before the declaration walk
+/// ever indexes the forged node.
+#[test]
+fn a_forged_value_node_with_over_strings_currently_draws_the_string_cap() {
+    assert_eq!(
+        Fixture::clean()
+            .value(Value::Forged)
+            .policy(Overflow::Strings)
+            .encode(),
+        Err(ImageBuildError::TooManyStrings),
+    );
+}
+
+/// This pin may flip under the sanctioned checked-conversion class; the flip must cite
+/// this pin: today the forged node reaches the raw depth lookup
+/// (`encode.rs` `validate_declaration_graph`, `value_dag.rs` `depth`) and panics there
+/// rather than drawing a typed error.
+#[test]
+#[should_panic(expected = "index out of bounds")]
+fn a_forged_value_node_alone_currently_panics_at_the_depth_lookup() {
+    let _ = Fixture::clean().value(Value::Forged).encode();
+}
+
+/// This pin may flip under the sanctioned checked-conversion class; the flip must cite
+/// this pin: today the CodeBytes length check decides before the const remap ever
+/// indexes the out-of-range operand.
+#[test]
+fn an_out_of_range_const_load_with_over_code_bytes_currently_draws_code_too_long() {
+    assert_eq!(
+        Fixture::clean().code(Code::OverCodeBytesBadConst).encode(),
+        Err(ImageBuildError::CodeTooLong),
+    );
+}
+
+/// This pin may flip under the sanctioned checked-conversion class; the flip must cite
+/// this pin: today the out-of-range operand reaches the raw const-map remap in
+/// `encode_code` and panics there rather than drawing a typed error.
+#[test]
+#[should_panic(expected = "index out of bounds")]
+fn an_out_of_range_const_load_alone_currently_panics_at_the_const_remap() {
+    let _ = Fixture::clean().code(Code::BadConst).encode();
+}
+
+/// This pin may flip under the sanctioned checked-conversion class; the flip must cite
+/// this pin: today the durable-body fence decides before the SPANS section ever indexes
+/// the out-of-range `instr_index`.
+#[test]
+fn an_out_of_range_span_with_a_body_past_the_ceiling_currently_draws_the_image_ceiling() {
+    assert_eq!(
+        Fixture::clean()
+            .with_bad_span()
+            .value(Value::OverCeiling)
+            .encode(),
+        Err(ImageBuildError::ImageTooLarge),
+    );
+}
+
+/// This pin may flip under the sanctioned checked-conversion class; the flip must cite
+/// this pin: today the out-of-range `instr_index` reaches the raw offset lookup in
+/// `encode_spans` and panics there rather than drawing a typed error.
+#[test]
+#[should_panic(expected = "index out of bounds")]
+fn an_out_of_range_span_alone_currently_panics_at_the_offset_lookup() {
+    let _ = Fixture::clean().with_bad_span().encode();
+}
+
+/// This pin may flip under the sanctioned checked-conversion class; the flip must cite
+/// this pin: today the CodeBytes length check decides before jump-target validation
+/// runs inside `encode_code`.
+#[test]
+fn a_bad_jump_with_over_code_bytes_currently_draws_code_too_long() {
+    assert_eq!(
+        Fixture::clean().code(Code::OverCodeBytesBadJump).encode(),
+        Err(ImageBuildError::CodeTooLong),
+    );
+}
+
+/// The jump target is the one code operand already answered with a typed error today;
+/// the checked-conversion class must keep this exact result.
+#[test]
+fn a_bad_jump_alone_currently_draws_the_jump_target_reference() {
+    assert_eq!(
+        Fixture::clean().code(Code::BadJump).encode(),
+        Err(ImageBuildError::InvalidReference("jump target")),
+    );
+}
+
+// ---- The decision-site pins: one error variant, two decision sites. The intra-class
+// order must not silently reorder, so each pair is pinned with both sites armed and
+// each site alone.
+
+/// Decision-site order is frozen: `TooManyVariants` is decided at the enum DEFINITION
+/// (the fixed table bounds) before the value-DAG arena walk, and both sites draw the
+/// same variant, so the combined draft must keep this exact result.
+#[test]
+fn an_enum_definition_and_a_value_dag_node_both_over_variants_currently_draw_too_many_variants() {
+    assert_eq!(
+        Fixture::clean()
+            .with_wide_enum_definition()
+            .with_wide_enum_value_node()
+            .encode(),
+        Err(ImageBuildError::TooManyVariants),
+    );
+    assert_eq!(
+        Fixture::clean().with_wide_enum_definition().encode(),
+        Err(ImageBuildError::TooManyVariants),
+        "the definition site draws the variant alone",
+    );
+    assert_eq!(
+        Fixture::clean().with_wide_enum_value_node().encode(),
+        Err(ImageBuildError::TooManyVariants),
+        "the value-DAG site draws the variant alone",
+    );
+}
+
+/// Decision-site order is frozen: `TooManyKeyColumns` is decided at the declaration
+/// BRANCH (the declaration-graph walk) before the root-occurrence loop, and both sites
+/// draw the same variant, so the combined draft must keep this exact result.
+#[test]
+fn a_branch_and_an_occurrence_both_over_key_columns_currently_draw_too_many_key_columns() {
+    assert_eq!(
+        Fixture::clean()
+            .with_branch_wide_key()
+            .over_wide_key()
+            .encode(),
+        Err(ImageBuildError::TooManyKeyColumns),
+    );
+    assert_eq!(
+        Fixture::clean().with_branch_wide_key().encode(),
+        Err(ImageBuildError::TooManyKeyColumns),
+        "the branch site draws the variant alone",
+    );
+    assert_eq!(
+        Fixture::clean().over_wide_key().encode(),
+        Err(ImageBuildError::TooManyKeyColumns),
+        "the occurrence site draws the variant alone",
+    );
+}
+
+/// Decision-site order is frozen: `InvalidReference` is decided at the application
+/// anchor (the preflight) before jump-target validation inside code encoding, and the
+/// two sites carry distinguishable payloads, so this winner is directly observable.
+#[test]
+fn a_missing_application_anchor_and_a_bad_jump_currently_draw_the_application_reference() {
+    assert_eq!(
+        Fixture::clean()
+            .without_application()
+            .code(Code::BadJump)
+            .encode(),
+        Err(ImageBuildError::InvalidReference("application identity")),
     );
 }
