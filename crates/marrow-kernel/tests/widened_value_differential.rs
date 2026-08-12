@@ -26,7 +26,7 @@ mod independent_decoder;
 
 use independent_decoder as ind;
 use marrow_kernel::codec::value::{
-    RuntimeScalar, ScalarKind, ValueShape, decode_domain, encode_domain, encode_value,
+    RuntimeScalar, ScalarKind, ValueError, ValueShape, decode_domain, encode_domain, encode_value,
 };
 use marrow_kernel::equality::ValueDomain;
 
@@ -419,8 +419,7 @@ fn depth_32_accepted_and_33_rejected_by_both_tiers() {
         "independent decode disagrees at depth 32: got {decoded:?}",
     );
 
-    // 33 nested products: production decode refuses (depth cap) and the independent decoder
-    // refuses the shape before any value bytes are read.
+    // 33 nested products: refused on every tier, and now on the encode side too.
     let value33 = ValueDomain::Product {
         ty: 0,
         fields: vec![Some(value)],
@@ -433,14 +432,23 @@ fn depth_32_accepted_and_33_rejected_by_both_tiers() {
         ty: 0,
         leaves: vec![ind_shape],
     };
-    let bytes33 = encode_domain(&value33).expect("production encodes the depth-33 bytes");
+
+    // Product framing is schema-delimited, so nesting contributes no bytes: a 33-deep
+    // composite over one int leaf encodes to exactly the bytes the 32-deep one does. That is
+    // why the byte caps can never bound depth, and it is why these same bytes are the honest
+    // input for the decode-refusal half — no forgery is needed to present 33-deep bytes.
     assert_eq!(
-        decode_domain(&bytes33, &shape33),
+        encode_domain(&value33),
+        Err(ValueError::ValueTooDeep),
+        "production refuses to encode a 33-deep composite",
+    );
+    assert_eq!(
+        decode_domain(&bytes, &shape33),
         None,
         "production refuses to decode a 33-deep composite",
     );
     assert!(
-        ind::decode(&bytes33, &ind_shape33).is_err(),
+        ind::decode(&bytes, &ind_shape33).is_err(),
         "the independent decoder refuses the 33-deep shape before descent",
     );
 }

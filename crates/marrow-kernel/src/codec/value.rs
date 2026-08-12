@@ -84,6 +84,12 @@ pub enum ValueError {
     /// collection, an ordered map, unit, or an absent product leaf in a dense struct).
     /// Storable inline values are scalars, dense products, and sums only.
     Unstorable,
+    /// A composite value nests past [`MAX_DURABLE_VALUE_DEPTH`], refused before any buffer
+    /// is built. The size caps cannot stand in for this bound: nesting contributes no bytes,
+    /// so an arbitrarily deep value encodes within any byte cap. This is the encode twin of
+    /// the decode guard, and it makes the two sides accept the same set — a cell no reader
+    /// could read back is never written. Maps to the kernel's `value.range` fault.
+    ValueTooDeep,
 }
 
 impl ValueError {
@@ -93,7 +99,8 @@ impl ValueError {
             Self::DateOutOfRange { .. }
             | Self::InstantOutOfRange { .. }
             | Self::ValueTooLarge
-            | Self::Unstorable => Code::ValueRange.as_str(),
+            | Self::Unstorable
+            | Self::ValueTooDeep => Code::ValueRange.as_str(),
         }
     }
 }
@@ -109,6 +116,7 @@ impl std::fmt::Display for ValueError {
             }
             Self::ValueTooLarge => write!(f, "a durable value exceeds its encoded size cap"),
             Self::Unstorable => write!(f, "a value shape is not storable inline in a field"),
+            Self::ValueTooDeep => write!(f, "a durable value nests past its shape depth cap"),
         }
     }
 }
@@ -266,7 +274,7 @@ pub fn encode_domain(value: &ValueDomain) -> Result<Vec<u8>, ValueError> {
         ValueDomain::Scalar(scalar) => encode_value(scalar)?,
         ValueDomain::Product { .. } | ValueDomain::Sum { .. } => {
             let mut out = Vec::new();
-            write_composite(value, &mut out)?;
+            write_composite(value, &mut out, 1)?;
             out
         }
         // An entry identity is not a storable cell value on this slice — the durable
@@ -286,15 +294,20 @@ pub fn encode_domain(value: &ValueDomain) -> Result<Vec<u8>, ValueError> {
 }
 
 /// Write a composite value's leaves. A product writes each field leaf in order; a sum writes
-/// its variant index then that variant's dense payload leaves.
-fn write_composite(value: &ValueDomain, out: &mut Vec<u8>) -> Result<(), ValueError> {
+/// its variant index then that variant's dense payload leaves. `depth` bounds nesting before
+/// any byte is written, in exact step with [`read_composite`]: the top-level composite is
+/// depth 1 and each nested composite is one deeper, so the two sides accept the same set.
+fn write_composite(value: &ValueDomain, out: &mut Vec<u8>, depth: usize) -> Result<(), ValueError> {
+    if depth > MAX_DURABLE_VALUE_DEPTH {
+        return Err(ValueError::ValueTooDeep);
+    }
     match value {
         ValueDomain::Product { fields, .. } => {
             for field in fields {
                 // A dense durable struct has every leaf present; an absent slot is not a
                 // storable inline value (optionality within a struct is an `Option` sum).
                 let field = field.as_ref().ok_or(ValueError::Unstorable)?;
-                write_member(field, out)?;
+                write_member(field, out, depth)?;
             }
             Ok(())
         }
@@ -303,7 +316,7 @@ fn write_composite(value: &ValueDomain, out: &mut Vec<u8>) -> Result<(), ValueEr
         } => {
             encode_len(u64::from(*variant), out);
             for leaf in payload {
-                write_member(leaf, out)?;
+                write_member(leaf, out, depth)?;
             }
             Ok(())
         }
@@ -312,8 +325,9 @@ fn write_composite(value: &ValueDomain, out: &mut Vec<u8>) -> Result<(), ValueEr
 }
 
 /// Write one member (leaf) of a composite: a scalar as a minimal-LEB128 length prefix then
-/// its raw scalar bytes (capped per leaf); a nested composite schema-delimited (no prefix).
-fn write_member(value: &ValueDomain, out: &mut Vec<u8>) -> Result<(), ValueError> {
+/// its raw scalar bytes (capped per leaf); a nested composite schema-delimited (no prefix),
+/// one level deeper — the mirror of [`read_member`].
+fn write_member(value: &ValueDomain, out: &mut Vec<u8>, depth: usize) -> Result<(), ValueError> {
     match value {
         ValueDomain::Scalar(scalar) => {
             let bytes = encode_value(scalar)?;
@@ -324,7 +338,9 @@ fn write_member(value: &ValueDomain, out: &mut Vec<u8>) -> Result<(), ValueError
             out.extend_from_slice(&bytes);
             Ok(())
         }
-        ValueDomain::Product { .. } | ValueDomain::Sum { .. } => write_composite(value, out),
+        ValueDomain::Product { .. } | ValueDomain::Sum { .. } => {
+            write_composite(value, out, depth + 1)
+        }
         _ => Err(ValueError::Unstorable),
     }
 }
@@ -438,7 +454,7 @@ mod tests {
 #[cfg(test)]
 mod composite_codec {
     use super::{
-        MAX_DURABLE_VALUE_DEPTH, MAX_LEAF_BYTES, RuntimeScalar, ScalarKind, ValueShape,
+        MAX_DURABLE_VALUE_DEPTH, MAX_LEAF_BYTES, RuntimeScalar, ScalarKind, ValueError, ValueShape,
         decode_domain, decode_value, encode_domain, encode_value,
     };
     use crate::equality::{ValueDomain, value_equality};
@@ -625,6 +641,52 @@ mod composite_codec {
         // A minimal byte string cannot be over-deep-valid, but the decoder must refuse the
         // over-deep shape rather than recurse unbounded; feed it a byte and expect None.
         assert_eq!(decode_domain(&[0x00], &shape), None);
+    }
+
+    /// A product value nested `composites` deep around one `int` leaf, with the shape that
+    /// decodes it. One composite is the top level, so `composites == 1` is the shallowest
+    /// case and `MAX_DURABLE_VALUE_DEPTH` is the deepest the decoder accepts.
+    fn nest(composites: usize) -> (ValueDomain, ValueShape) {
+        let mut value = di(7);
+        let mut shape = scalar(ScalarKind::Int);
+        for _ in 0..composites {
+            value = ValueDomain::Product {
+                ty: 3,
+                fields: vec![Some(value)],
+            };
+            shape = ValueShape::Product {
+                ty: 3,
+                fields: vec![shape],
+            };
+        }
+        (value, shape)
+    }
+
+    /// The encode guard is the decode guard's exact twin: the encoder accepts precisely the
+    /// nesting the decoder can read back, and refuses deeper before building any buffer.
+    ///
+    /// Without it the byte cap cannot stand in. Nesting adds no bytes, so an arbitrarily deep
+    /// product encodes to the same two bytes its leaf occupies — the cap it was supposed to
+    /// backstop can never fire, whatever its value. The encoder therefore both recursed
+    /// unbounded on caller-shaped nesting and, below the abort, minted cells at nesting the
+    /// decoder refuses: bytes written that no reader can ever read back.
+    #[test]
+    fn encode_refuses_past_the_shape_depth_bound() {
+        // N — the deepest nesting the decoder accepts encodes, and round-trips.
+        let (value, shape) = nest(MAX_DURABLE_VALUE_DEPTH);
+        let bytes = encode_domain(&value).expect("the deepest readable nesting encodes");
+        assert_eq!(decode_domain(&bytes, &shape).as_ref(), Some(&value));
+
+        // N+1 — one composite deeper is refused at encode, with the same bound the decoder
+        // enforces, so no cell can be written that no reader could read back.
+        let (deeper, deeper_shape) = nest(MAX_DURABLE_VALUE_DEPTH + 1);
+        assert_eq!(encode_domain(&deeper), Err(ValueError::ValueTooDeep));
+        assert_eq!(decode_domain(&bytes, &deeper_shape), None);
+
+        // The refusal is a return, not an abort, at nesting far past the bound — and it is
+        // reached before the buffer is built, so the byte cap is never consulted.
+        let (hostile, _) = nest(4_096);
+        assert_eq!(encode_domain(&hostile), Err(ValueError::ValueTooDeep));
     }
 
     /// The full round-trip law over a mixed corpus: `decode(encode(v), shape) == v`.
