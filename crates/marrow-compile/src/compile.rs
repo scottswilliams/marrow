@@ -482,16 +482,12 @@ fn image_build_outcome(error: ImageBuildError) -> ImagePolicyOutcome {
         // producer-state contradictions unreachable from a coherent compiler. Both are
         // opaque invariants.
         //
-        // The three durable-structural bounds are here for the same reason as the rest,
-        // by three different arguments. Index components are refused at their offending
-        // construct while the durable graph is walked. Member depth is refused twice
-        // over: at its offending construct by that walk, and again where the rows are
-        // made — the declaration graph's one constructor refuses an over-deep command
-        // vector before a row exists — so an encode-time occurrence is unreachable from
-        // any route into the draft. Per-Product member count is bounded by the identity
-        // ledger a level above: every admitted member holds a live ledger anchor, and the
-        // ledger's own row bound sits below the member bound, so a coherent compiler
-        // cannot present an over-count graph.
+        // The three durable-structural bounds are here for the same reason, by three
+        // arguments: index components are refused at their construct by the durable
+        // graph walk; member depth is refused by that walk AND by the declaration
+        // graph's one constructor, which refuses an over-deep command vector before a
+        // row exists; and the per-Product member count is bounded by the identity
+        // ledger a level above, whose own row bound sits below the member bound.
         ImageBuildError::TooManyFields
         | ImageBuildError::TooManyDurableMembers
         | ImageBuildError::DurableTreeTooDeep
@@ -510,7 +506,9 @@ fn image_build_outcome(error: ImageBuildError) -> ImagePolicyOutcome {
         // first root, and every later root references it.
         | ImageBuildError::ProductGraphConflict
         | ImageBuildError::ProductEntryRecordConflict
-        | ImageBuildError::InvalidReference(_) => {
+        | ImageBuildError::InvalidReference(_)
+        // A section drifting from its measured plan is a producer defect, never policy.
+        | ImageBuildError::EncodeDrift(_) => {
             ImagePolicyOutcome::Invariant(InvariantCause::ImageBuild(error))
         }
     }
@@ -3459,6 +3457,8 @@ mod tests {
             matches!(contradiction, super::ImagePolicyOutcome::Invariant(_)),
             "a producer-state contradiction is an opaque invariant, not a diagnostic"
         );
+        // `EncodeDrift` classifies through the same invariant arm; its payload has no
+        // constructor outside the emitter, so the wildcard-free match carries it.
     }
 
     #[test]

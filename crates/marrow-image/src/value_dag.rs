@@ -215,6 +215,14 @@ impl CanonicalValueShapeDag {
         self.depth[node.index()] as usize
     }
 
+    /// Whether `node` names a minted node of this arena. An id is minted only against
+    /// an arena, but it carries no arena identity, so one minted by a *different* arena
+    /// can be out of range here; the coherence walk refuses such a reference with a
+    /// typed error instead of letting a raw lookup abort.
+    pub(crate) fn contains(&self, node: ValueShapeNodeId) -> bool {
+        node.index() < self.nodes.len()
+    }
+
     /// Read one node: its kind and its direct references. This is the only way to look
     /// inside a shape, and it hands back references rather than subshapes, so no reader
     /// can obtain an owned nested tree.

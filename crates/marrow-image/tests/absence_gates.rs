@@ -1336,6 +1336,34 @@ fn preceding_token(code: &str, at: usize) -> &str {
     head.get(start..).unwrap_or_default()
 }
 
+/// The brace-delimited body of the first item `marker` introduces in `code` — the
+/// same anchored extraction the arena-accessor scan uses, shared by the mint gate so
+/// "inside `emit_image`" is a parsed region rather than a line heuristic.
+fn brace_body<'a>(code: &'a str, marker: &str) -> &'a str {
+    let start = code.find(marker).expect("the marked item exists");
+    let bytes = code.as_bytes();
+    let mut cursor = start;
+    while cursor < bytes.len() && bytes[cursor] != b'{' {
+        cursor += 1;
+    }
+    let body_start = cursor;
+    let mut depth = 0usize;
+    while cursor < bytes.len() {
+        match bytes[cursor] {
+            b'{' => depth += 1,
+            b'}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return &code[body_start..=cursor];
+                }
+            }
+            _ => {}
+        }
+        cursor += 1;
+    }
+    panic!("the marked item's braces close");
+}
+
 /// Whether `code` declares the ceiling the contract identity's refusal stands on.
 ///
 /// The constant is matched as a whole identifier at its own `const`, not as a prefix: a
@@ -1394,75 +1422,72 @@ fn the_pinned_caller_gate_sees_both_spellings_and_an_exact_ceiling() {
 /// The durable-contract identity has one production mint per side of the image boundary,
 /// and asking for one is bounded work wherever it is asked from.
 ///
-/// The old encoder built the DURABLE body first and hashed the graph at the end of it, so
-/// a body larger than any image could carry was still hashed — over a preimage larger than
-/// the body, since the contract spells a ledger identity as a 25-byte `IDREF` where the
-/// body writes 16 raw bytes. The producer now counts the body first and mints the identity
-/// only from `LegacyDurableBodyLowerBoundFence`, which exists only for a body that fits.
-///
-/// That fence bounds the producer, and only the producer. A `DurableContractView` is
-/// a view over a public arena, so any caller can state a value shape whose expansion
-/// is exponential in its declared levels and ask for its identity; the ceiling that answers
-/// belongs to the identity owner. This gate therefore holds both halves: the call-site set
-/// is scanned across every crate's production sources rather than one file, and the mint
-/// itself must still carry its own bound.
+/// The producer mints the identity exactly once, inside the measure core's
+/// `emit_image` — which runs only on a plan the measured ceiling already admitted —
+/// as the one normalized `.contract_view().contract_id()` chain. A
+/// `DurableContractView` is a view over a public arena, so any caller can state a
+/// value shape whose expansion is exponential in its declared levels and ask for its
+/// identity; the ceiling that answers belongs to the identity owner. This gate
+/// therefore holds both halves: the ask set is counted per file across every crate's
+/// production sources — exactly one per whitelisted site — and the mint itself must
+/// still carry its own bound.
 #[test]
 fn the_contract_identity_has_one_mint_per_side_and_a_bound_of_its_own() {
-    let callers: Vec<String> = workspace_sources("src")
-        .into_iter()
-        .filter(|(_, code)| asks_for_contract_identity(code))
-        .map(|(path, _)| path.display().to_string())
-        .collect();
-    assert_eq!(
-        callers.len(),
-        CONTRACT_IDENTITY_CALLERS.len(),
-        "the durable-contract identity is asked for at exactly the pinned production \
-         sites; found {callers:?}",
-    );
-    for permitted in CONTRACT_IDENTITY_CALLERS {
-        assert!(
-            callers.iter().any(|path| path.contains(permitted)),
-            "`{permitted}` no longer asks for a contract identity, so a pinned site is \
-             stale: {callers:?}",
+    // Exactly one production ask per whitelisted file, in any spelling, and no ask
+    // anywhere else in the workspace.
+    for (path, code) in workspace_sources("src") {
+        let production = without_cfg_test_items(&code);
+        let asks = symbol_positions(&production, "contract_id")
+            .filter(|&at| preceding_token(&production, at) != "fn")
+            .count();
+        let display = path.display().to_string();
+        let expected = usize::from(
+            CONTRACT_IDENTITY_CALLERS
+                .iter()
+                .any(|permitted| display.contains(permitted)),
+        );
+        assert_eq!(
+            asks, expected,
+            "the durable-contract identity is asked for exactly once per pinned \
+             production site and nowhere else; `{display}` asks {asks} time(s)",
         );
     }
 
-    // The producer's one call sits inside the body fence, between the fence's `impl` and
-    // the draft's, so it is reachable only from a body that already fits.
-    let encode = without_literals(
-        &fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/encode.rs"))
-            .expect("read the encoder"),
+    // Mint law: the producer's one mint sits inside the brace-extracted body of
+    // `fn emit_image`, as the exact normalized `.contract_view().contract_id()` chain,
+    // and the `contract_id` symbol appears nowhere else in this crate's production
+    // source outside the identity owner.
+    let measure = without_cfg_test_items(&without_literals(
+        &fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/measure.rs"))
+            .expect("read the measure core"),
+    ));
+    let body = brace_body(&measure, "fn emit_image");
+    let normalized: String = body.chars().filter(|c| !c.is_whitespace()).collect();
+    assert_eq!(
+        normalized.matches(".contract_view().contract_id()").count(),
+        1,
+        "`emit_image` mints the identity exactly once, over the one contract view",
     );
-    let lines: Vec<&str> = encode.lines().collect();
-    let line_of = |needle: &str| {
-        let hits: Vec<usize> = lines
-            .iter()
-            .enumerate()
-            .filter(|(_, line)| line.contains(needle))
-            .map(|(index, _)| index)
-            .collect();
-        assert_eq!(
-            hits.len(),
-            1,
-            "the encoder names `{needle}` exactly once, at lines {hits:?}",
+    assert_eq!(
+        symbol_positions(&measure, "contract_id").count(),
+        symbol_positions(body, "contract_id").count(),
+        "every `contract_id` spelling in the measure core sits inside `emit_image`",
+    );
+    for (path, code) in workspace_sources("src") {
+        let display = path.display().to_string();
+        if !display.contains("marrow-image/src/") {
+            continue;
+        }
+        if display.ends_with("durable_id.rs") || display.ends_with("measure.rs") {
+            continue;
+        }
+        let production = without_cfg_test_items(&code);
+        assert!(
+            !contains_symbol(&production, "contract_id"),
+            "`{display}` spells `contract_id`; the crate's only production spellings \
+             are the identity owner's definition and the emitter's one mint",
         );
-        hits[0]
-    };
-    let fence = line_of("impl<'a> LegacyDurableBodyLowerBoundFence<'a> {");
-    let minted = line_of("contract_id()");
-    // The descriptor this used to name is deleted; the same law re-anchors to the view the
-    // identity is now taken over, so "one mint per side" keeps being checked rather than
-    // passing because its needle vanished.
-    let viewed = line_of(".contract_view()");
-    let draft_impl = line_of("impl ImageDraft {");
-    assert!(
-        fence < minted && minted < draft_impl,
-        "the producer's one contract-identity mint sits inside the body fence",
-    );
-    assert!(
-        fence < viewed && viewed < draft_impl,
-        "so does the one contract view it hashes",
-    );
+    }
 
     // The mint's own bound. The public constructor takes a bare arena and promises
     // nothing about it, so the refusal has to live on the identity.
@@ -1603,39 +1628,118 @@ const VALUE_SHAPE_MINT_OWNERS: [&str; 2] = [
     "marrow-verify/src/verify/durable.rs",
 ];
 
-/// The production callers of the durable-contract identity: the producer's body fence and
-/// the verifier's independent recomputation. Those two are the whole point — one mint per
-/// side of the image boundary, agreeing by recomputation rather than by transfer — so a
-/// third is a new trust path and a missing one is a side that stopped checking.
+/// The production callers of the durable-contract identity: the producer's planned
+/// emitter and the verifier's independent recomputation. Those two are the whole point
+/// — one mint per side of the image boundary, agreeing by recomputation rather than by
+/// transfer — so a third is a new trust path and a missing one is a side that stopped
+/// checking.
 const CONTRACT_IDENTITY_CALLERS: [&str; 2] = [
-    "marrow-image/src/encode.rs",
+    "marrow-image/src/measure.rs",
     "marrow-verify/src/verify/durable.rs",
 ];
 
 /// The producer keeps no second, recursive way to emit a durable body.
 ///
-/// One walk writes the DURABLE section for both of its readers — the lower bound that
-/// counts its bytes and the buffer that keeps them — so the body a count admits is the
-/// body that is built. A second emitter, especially one that recursed through an owned
-/// value shape, would be free to disagree with the count that admitted it.
+/// One walk writes the DURABLE section for both of its readers — the measure core's
+/// counting run and the emission buffer — so the body a count admits is the body that
+/// is built. A second emitter, especially one that recursed through an owned value
+/// shape, would be free to disagree with the count that admitted it. The gate is
+/// tree-wide: exactly one `fn write_durable_body` in the whole workspace, and no
+/// `DurableBody`/`DurableSection` type DEFINITION anywhere (the wire-form *variant*
+/// of that name is legitimate and untouched).
 #[test]
 fn the_durable_body_has_one_writer() {
-    let encode = without_literals(
-        &fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/encode.rs"))
-            .expect("read the encoder"),
-    );
-    let writers = encode.matches("fn write_durable_body").count();
+    let mut writers = 0usize;
+    for (path, code) in workspace_sources("src") {
+        writers += code.matches("fn write_durable_body").count();
+        assert!(
+            !code.contains("struct DurableSection") && !code.contains("struct DurableBody("),
+            "`{}` defines a durable body/section type; the sink-generic writer is the              only durable-body representation",
+            path.display(),
+        );
+    }
     assert_eq!(
         writers, 1,
         "the DURABLE body has exactly one writer, generic over its sink",
+    );
+    let encode = without_literals(
+        &fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/encode.rs"))
+            .expect("read the encoder"),
     );
     assert!(
         encode.contains("sink: &mut impl ImageByteSink"),
         "that writer is sink-generic, so counting and building cannot diverge",
     );
+}
+
+/// The DURABLE traversal's access set is closed: `expand`, `ValueShapeWireForm`, and
+/// `write_durable_body` are reachable from exactly the enumerated production sites,
+/// so a renamed or transplanted second walker cannot appear without failing here.
+///
+/// The measured-DURABLE-length witness is the type-level half of the same law: it is
+/// private to the measure core and mintable only by the counting run over the one
+/// writer, and the wire plan's constructor demands it — so even a walker this text
+/// scan somehow missed could not feed a plan. The positive needle below pins that the
+/// counting run really does call the canonical writer.
+#[test]
+fn the_durable_traversal_has_a_closed_access_set() {
+    // (file suffix, symbol, expected production occurrence count)
+    const ACCESS_SET: [(&str, &str, usize); 8] = [
+        // The definition (its test-tier uses are stripped before the count).
+        ("marrow-image/src/value_dag.rs", "expand", 1),
+        // The import and the one body writer's field-value expansion call.
+        ("marrow-image/src/encode.rs", "expand", 2),
+        // The import and the identity preimage walk's call.
+        ("marrow-image/src/durable_id.rs", "expand", 2),
+        ("marrow-image/src/value_dag.rs", "ValueShapeWireForm", 4),
+        ("marrow-image/src/encode.rs", "ValueShapeWireForm", 2),
+        ("marrow-image/src/durable_id.rs", "ValueShapeWireForm", 2),
+        // The writer's definition beside its emission-order helpers...
+        ("marrow-image/src/encode.rs", "write_durable_body", 1),
+        // ...and the measure core's two runs: the counting run and the planned
+        // emission.
+        ("marrow-image/src/measure.rs", "write_durable_body", 2),
+    ];
+    // The three symbols are crate-internal — `lib.rs` publishes none of them — so the
+    // reachable caller set is exactly this crate's production sources.
+    let lib = without_cfg_test_items(&without_literals(
+        &fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/lib.rs"))
+            .expect("read the crate root"),
+    ));
+    for symbol in ["expand", "ValueShapeWireForm", "write_durable_body"] {
+        assert!(
+            !contains_symbol(&lib, symbol),
+            "`{symbol}` is published by lib.rs, so the access set is no longer closed \
+             over this crate",
+        );
+    }
+    for (path, code) in workspace_sources("src") {
+        let display = path.display().to_string();
+        if !display.contains("marrow-image/src") {
+            continue;
+        }
+        let production = without_cfg_test_items(&code);
+        for symbol in ["expand", "ValueShapeWireForm", "write_durable_body"] {
+            let found = symbol_positions(&production, symbol).count();
+            let expected = ACCESS_SET
+                .iter()
+                .find(|(suffix, name, _)| display.contains(suffix) && *name == symbol)
+                .map_or(0, |(_, _, count)| *count);
+            assert_eq!(
+                found, expected,
+                "`{display}` reaches `{symbol}` {found} time(s); the DURABLE \
+                 traversal's access set admits {expected}",
+            );
+        }
+    }
+    // The counting run drives the canonical writer through the checked sink.
+    let measure = without_cfg_test_items(&without_literals(
+        &fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/measure.rs"))
+            .expect("read the measure core"),
+    ));
     assert!(
-        !encode.contains("struct DurableSection") && !encode.contains("struct DurableBody("),
-        "the saturating body buffer the fence replaced is gone",
+        measure.contains("draft.write_durable_body(sink, &strings)"),
+        "the measured DURABLE length is counted through the one installed writer",
     );
 }
 

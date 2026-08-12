@@ -314,43 +314,9 @@ fn a_scan_list_of_the_wrong_element_type_is_refused() {
 
 // --- Entry-identity instruction forgeries. ---
 
-#[test]
-fn a_make_identity_over_an_out_of_range_root_is_refused() {
-    // `MakeIdentity` naming root index 9 — the image has one root.
-    let code = |g: &Graph| {
-        vec![
-            Instr::LocalGet(0),
-            Instr::MakeIdentity { root: 9, cols: 1 },
-            // Unreachable; the forged `MakeIdentity` rejects first.
-            Instr::DurIndexLookup(g.lookup_site.clone()),
-            Instr::Return,
-        ]
-    };
-    assert!(verify_one(code, vec![int()], opt_id()).is_err());
-}
-
-#[test]
-fn a_make_identity_with_the_wrong_column_count_is_refused() {
-    // The root has one key column; `cols: 2` disagrees.
-    let code = |_: &Graph| {
-        vec![
-            Instr::LocalGet(0),
-            Instr::MakeIdentity { root: 0, cols: 2 },
-            Instr::Return,
-        ]
-    };
-    assert!(
-        verify_one(
-            code,
-            vec![int()],
-            ImageType::Identity {
-                root: 0,
-                optional: false,
-            },
-        )
-        .is_err()
-    );
-}
+// An out-of-range `MakeIdentity` root and a `cols` count disagreeing with the root's
+// key arity are refused by the producer since the coherence hoist; their pins live in
+// `legacy_ok_pins.rs`, so no duplicate probes are kept here.
 
 #[test]
 fn an_identity_key_path_with_the_wrong_column_count_is_refused() {

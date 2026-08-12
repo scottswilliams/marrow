@@ -4,15 +4,18 @@
 //!
 //! A durable field's value is spelled on the wire as its full expansion, so a draft
 //! inside every declared bound can still describe a DURABLE body larger than any image
-//! may be. That body is now refused by counting it rather than by building it — which
-//! moves *when* the encoder learns the answer, and must not move *which* answer a draft
-//! with an earlier or later fault receives.
+//! may be. Every section is refused by counting rather than by building: the measure
+//! core decides coherence, then policy, then the measured ceiling, before assembling
+//! anything.
 //!
-//! Each case below combines the CodeBytes refusal with one earlier policy fault and one
-//! later ceiling fault and pins the exact result and the exact offending row. The
-//! ordering they pin is the one the old encoder had: every fixed bound first, in
-//! `check_bounds` order; then the durable graph's own coherence; then CodeBytes; then
-//! the whole-image ceiling.
+//! Each case below combines faults across those steps and pins the exact result and
+//! the exact offending row. The ordering they pin is the measure core's installed
+//! order: every invariant-classified decision first, in the stable-partition sequence
+//! (the `check_bounds` invariant subsequence, the durable graph's coherence, then the
+//! hoisted emission-order reference checks); then every policy cap in the legacy
+//! candidate order; then per-function CodeBytes; then the measured whole-image
+//! ceiling. Flipped verdicts cite the pre-restructure pins they flipped in their doc
+//! comments; git history carries the pre-restructure baselines.
 //!
 //! That no contract hash is ever computed over bytes no image can carry is structural
 //! rather than measured: the producer mints an identity at exactly one site, from a value
@@ -26,11 +29,12 @@
 //! resource-policy-class defect (an aggregate table cap, a string-length cap, CodeBytes,
 //! or the whole-image byte ceiling) and an invariant-class defect (an over-wide key tuple
 //! or struct, an over-deep durable value, a broken frame, a missing application anchor)
-//! at the same time. Today that verdict is purely positional — `check_bounds` order, then
-//! the application anchor, then CodeBytes, then the ceiling — so a cap declared before
-//! the durable-graph walk outranks every invariant while a cap declared after it does
-//! not. Each pin is the differential baseline for the sanctioned invariant-over-resource
-//! restructure; a flipped verdict must cite the pin it flips.
+//! at the same time. The pre-restructure verdict was purely positional — `check_bounds`
+//! order, then the application anchor, then CodeBytes, then the ceiling — so a cap
+//! declared before the durable-graph walk outranked every invariant while a cap
+//! declared after it did not. The sanctioned invariant-over-resource restructure
+//! flipped exactly the twelve sanctioned cells; every flip cites its pin, and every
+//! other cell keeps its verdict.
 //!
 //! Every resource-policy candidate the encoder reports today is reachable through this
 //! fixture, so no pair in the matrix is skipped as unconstructible: the caps sitting on
@@ -454,8 +458,8 @@ impl Fixture {
     }
 
     /// A string pool inside both of its caps whose bytes alone exceed the whole-image
-    /// ceiling: every section fits its own bound and the DURABLE body fits the fence,
-    /// so only the FINAL assembled-image check can refuse the draft.
+    /// ceiling: every section fits its own bound and the DURABLE body alone fits, so
+    /// only the measured whole-image total can refuse the draft.
     fn with_final_overage(mut self) -> Self {
         self.final_overage = true;
         self
@@ -1139,115 +1143,123 @@ fn the_graph_anchor_outranks_code_bytes_and_the_body_ceiling() {
 // ---- The mixed-corruption matrix (see the module header). Each test pins the
 // pre-restructure verdict of one resource-policy cap crossed with one invariant defect.
 
-/// Pins the pre-restructure verdict; the sanctioned invariant-over-resource correction
-/// may flip it to `TooManyStructLeaves`, and the flip must cite this pin.
+/// Flipped by the sanctioned invariant-over-resource restructure (design §B),
+/// citing the pre-restructure pin this test carried: coherence decides every
+/// invariant before any policy candidate, so the struct-leaf invariant now outranks the string cap.
 #[test]
-fn over_strings_with_an_over_wide_struct_currently_draws_the_string_cap() {
+fn over_strings_with_an_over_wide_struct_draws_the_struct_leaf_invariant() {
     assert_eq!(
         Fixture::clean()
             .policy(Overflow::Strings)
             .value(Value::OverWideStruct)
             .encode(),
-        Err(ImageBuildError::TooManyStrings),
+        Err(ImageBuildError::TooManyStructLeaves),
     );
 }
 
-/// Pins the pre-restructure verdict; the sanctioned invariant-over-resource correction
-/// may flip it to `TooManyStructLeaves`, and the flip must cite this pin.
+/// Flipped by the sanctioned invariant-over-resource restructure (design §B),
+/// citing the pre-restructure pin this test carried: coherence decides every
+/// invariant before any policy candidate, so the struct-leaf invariant now outranks the string-length cap.
 #[test]
-fn an_over_long_string_with_an_over_wide_struct_currently_draws_the_string_length_cap() {
+fn an_over_long_string_with_an_over_wide_struct_draws_the_struct_leaf_invariant() {
     assert_eq!(
         Fixture::clean()
             .policy(Overflow::StringBytes)
             .value(Value::OverWideStruct)
             .encode(),
-        Err(ImageBuildError::StringTooLong),
+        Err(ImageBuildError::TooManyStructLeaves),
     );
 }
 
-/// Pins the pre-restructure verdict; the sanctioned invariant-over-resource correction
-/// may flip it to `TooManyKeyColumns`, and the flip must cite this pin.
+/// Flipped by the sanctioned invariant-over-resource restructure (design §B),
+/// citing the pre-restructure pin this test carried: coherence decides every
+/// invariant before any policy candidate, so the key-column invariant now outranks the const cap.
 #[test]
-fn over_consts_with_an_over_wide_key_currently_draws_the_const_cap() {
+fn over_consts_with_an_over_wide_key_draws_the_key_column_invariant() {
     assert_eq!(
         Fixture::clean()
             .policy(Overflow::Consts)
             .over_wide_key()
             .encode(),
-        Err(ImageBuildError::TooManyConsts),
+        Err(ImageBuildError::TooManyKeyColumns),
     );
 }
 
-/// Pins the pre-restructure verdict; the sanctioned invariant-over-resource correction
-/// may flip it to `TooManyStructLeaves`, and the flip must cite this pin.
+/// Flipped by the sanctioned invariant-over-resource restructure (design §B),
+/// citing the pre-restructure pin this test carried: coherence decides every
+/// invariant before any policy candidate, so the struct-leaf invariant now outranks the type cap.
 #[test]
-fn over_types_with_an_over_wide_struct_currently_draws_the_type_cap() {
+fn over_types_with_an_over_wide_struct_draws_the_struct_leaf_invariant() {
     assert_eq!(
         Fixture::clean()
             .policy(Overflow::Types)
             .value(Value::OverWideStruct)
             .encode(),
-        Err(ImageBuildError::TooManyTypes),
+        Err(ImageBuildError::TooManyStructLeaves),
     );
 }
 
-/// Pins the pre-restructure verdict; the sanctioned invariant-over-resource correction
-/// may flip it to `DurableValueTooDeep`, and the flip must cite this pin.
+/// Flipped by the sanctioned invariant-over-resource restructure (design §B),
+/// citing the pre-restructure pin this test carried: coherence decides every
+/// invariant before any policy candidate, so the value-depth invariant now outranks the enum cap.
 #[test]
-fn over_enums_with_an_over_deep_value_currently_draws_the_enum_cap() {
+fn over_enums_with_an_over_deep_value_draws_the_value_depth_invariant() {
     assert_eq!(
         Fixture::clean()
             .policy(Overflow::Enums)
             .value(Value::OverDeep)
             .encode(),
-        Err(ImageBuildError::TooManyEnums),
+        Err(ImageBuildError::DurableValueTooDeep),
     );
 }
 
-/// Pins the pre-restructure verdict; the sanctioned invariant-over-resource correction
-/// may flip it to `TooManyKeyColumns`, and the flip must cite this pin.
+/// Flipped by the sanctioned invariant-over-resource restructure (design §B),
+/// citing the pre-restructure pin this test carried: coherence decides every
+/// invariant before any policy candidate, so the key-column invariant now outranks the collection cap.
 #[test]
-fn over_collections_with_an_over_wide_key_currently_draws_the_collection_cap() {
+fn over_collections_with_an_over_wide_key_draws_the_key_column_invariant() {
     assert_eq!(
         Fixture::clean()
             .policy(Overflow::Collections)
             .over_wide_key()
             .encode(),
-        Err(ImageBuildError::TooManyCollections),
+        Err(ImageBuildError::TooManyKeyColumns),
     );
 }
 
-/// Pins the pre-restructure verdict; the sanctioned invariant-over-resource correction
-/// may flip either case to the invariant, and the flip must cite this pin.
+/// Flipped by the sanctioned invariant-over-resource restructure (design §B),
+/// citing the pre-restructure pin this test carried: coherence decides every
+/// invariant before any policy candidate, so the application anchor (and the key-column invariant) now outranks the root cap.
 #[test]
-fn over_roots_with_a_missing_application_anchor_currently_draws_the_root_cap() {
+fn over_roots_with_a_missing_application_anchor_draws_the_anchor_invariant() {
     assert_eq!(
         Fixture::clean()
             .policy(Overflow::Roots)
             .without_application()
             .encode(),
-        Err(ImageBuildError::TooManyRoots),
+        Err(ImageBuildError::InvalidReference("application identity")),
     );
     assert_eq!(
         Fixture::clean()
             .policy(Overflow::Roots)
             .over_wide_key()
             .encode(),
-        Err(ImageBuildError::TooManyRoots),
-        "the root cap likewise precedes the key-column invariant today",
+        Err(ImageBuildError::TooManyKeyColumns),
+        "the key-column invariant likewise outranks the root cap",
     );
 }
 
-/// Pins the pre-restructure verdict; the sanctioned invariant-over-resource correction
-/// may flip it to `TooManyLocals`, and the flip must cite this pin.
+/// Flipped by the sanctioned invariant-over-resource restructure (design §B),
+/// citing the pre-restructure pin this test carried: coherence decides every
+/// invariant before any policy candidate, so the local invariant now outranks the site cap.
 #[test]
-fn over_sites_with_over_locals_currently_draws_the_site_cap() {
+fn over_sites_with_over_locals_draws_the_local_invariant() {
     assert_eq!(
         Fixture::clean()
             .policy(Overflow::Sites)
             .frame(Frame::OverLocals)
             .encode(),
-        Err(ImageBuildError::TooManySites),
+        Err(ImageBuildError::TooManyLocals),
     );
 }
 
@@ -1264,16 +1276,17 @@ fn over_sites_with_an_over_wide_key_currently_draws_the_key_column_invariant() {
     );
 }
 
-/// Pins the pre-restructure verdict; the sanctioned invariant-over-resource correction
-/// may flip it to `TooManyLocals`, and the flip must cite this pin.
+/// Flipped by the sanctioned invariant-over-resource restructure (design §B),
+/// citing the pre-restructure pin this test carried: coherence decides every
+/// invariant before any policy candidate, so the local invariant now outranks the function cap.
 #[test]
-fn over_functions_with_over_locals_currently_draws_the_function_cap() {
+fn over_functions_with_over_locals_draws_the_local_invariant() {
     assert_eq!(
         Fixture::clean()
             .policy(Overflow::Functions)
             .frame(Frame::OverLocals)
             .encode(),
-        Err(ImageBuildError::TooManyFunctions),
+        Err(ImageBuildError::TooManyLocals),
     );
 }
 
@@ -1291,29 +1304,31 @@ fn over_functions_with_an_over_wide_struct_currently_draws_the_struct_leaf_invar
     );
 }
 
-/// Pins the pre-restructure verdict; the sanctioned invariant-over-resource correction
-/// may flip it to `LocalCountBelowParams`, and the flip must cite this pin.
+/// Flipped by the sanctioned invariant-over-resource restructure (design §B),
+/// citing the pre-restructure pin this test carried: coherence decides every
+/// invariant before any policy candidate, so the frame invariant now outranks the export cap.
 #[test]
-fn over_exports_with_locals_below_params_currently_draws_the_export_cap() {
+fn over_exports_with_locals_below_params_draws_the_frame_invariant() {
     assert_eq!(
         Fixture::clean()
             .policy(Overflow::Exports)
             .frame(Frame::LocalsBelowParams)
             .encode(),
-        Err(ImageBuildError::TooManyExports),
+        Err(ImageBuildError::LocalCountBelowParams),
     );
 }
 
-/// Pins the pre-restructure verdict; the sanctioned invariant-over-resource correction
-/// may flip it to `TooManyLocals`, and the flip must cite this pin.
+/// Flipped by the sanctioned invariant-over-resource restructure (design §B),
+/// citing the pre-restructure pin this test carried: coherence decides every
+/// invariant before any policy candidate, so the local invariant now outranks the test-entry cap.
 #[test]
-fn over_test_entries_with_over_locals_currently_draws_the_test_entry_cap() {
+fn over_test_entries_with_over_locals_draws_the_local_invariant() {
     assert_eq!(
         Fixture::clean()
             .policy(Overflow::TestEntries)
             .frame(Frame::OverLocals)
             .encode(),
-        Err(ImageBuildError::TooManyTestEntries),
+        Err(ImageBuildError::TooManyLocals),
     );
 }
 
@@ -1454,81 +1469,86 @@ fn a_product_conflict_with_an_over_wide_key_currently_draws_the_product_conflict
 // raw indexing into checked lookups; what each defect draws when it stands alone is
 // pinned beside its pair so the conversion has both baselines.
 
-/// This pin may flip under the sanctioned checked-conversion class; the flip must cite
-/// this pin: today the string cap in `check_bounds` decides before the declaration walk
-/// ever indexes the forged node.
+/// Flipped under the sanctioned checked-conversion class (`value shape`), citing the
+/// pre-restructure pin this test carried: the hoisted coherence check decides
+/// before the string cap.
 #[test]
-fn a_forged_value_node_with_over_strings_currently_draws_the_string_cap() {
+fn a_forged_value_node_with_over_strings_draws_the_value_shape_reference() {
     assert_eq!(
         Fixture::clean()
             .value(Value::Forged)
             .policy(Overflow::Strings)
             .encode(),
-        Err(ImageBuildError::TooManyStrings),
+        Err(ImageBuildError::InvalidReference("value shape")),
     );
 }
 
-/// This pin may flip under the sanctioned checked-conversion class; the flip must cite
-/// this pin: today the forged node reaches the raw depth lookup
-/// (`encode.rs` `validate_declaration_graph`, `value_dag.rs` `depth`) and panics there
-/// rather than drawing a typed error.
+/// Flipped under the sanctioned panic-to-typed conversion, citing the
+/// pre-restructure panic pin this test carried: the raw depth lookup is now the
+/// declaration walk's checked arena lookup, `InvalidReference("value shape")`.
 #[test]
-#[should_panic(expected = "index out of bounds")]
-fn a_forged_value_node_alone_currently_panics_at_the_depth_lookup() {
-    let _ = Fixture::clean().value(Value::Forged).encode();
+fn a_forged_value_node_alone_draws_the_value_shape_reference() {
+    assert_eq!(
+        Fixture::clean().value(Value::Forged).encode(),
+        Err(ImageBuildError::InvalidReference("value shape")),
+    );
 }
 
-/// This pin may flip under the sanctioned checked-conversion class; the flip must cite
-/// this pin: today the CodeBytes length check decides before the const remap ever
-/// indexes the out-of-range operand.
+/// Flipped under the sanctioned checked-conversion class (`constant`), citing the
+/// pre-restructure pin this test carried: the hoisted coherence check decides
+/// before the CodeBytes policy candidate.
 #[test]
-fn an_out_of_range_const_load_with_over_code_bytes_currently_draws_code_too_long() {
+fn an_out_of_range_const_load_with_over_code_bytes_draws_the_constant_reference() {
     assert_eq!(
         Fixture::clean().code(Code::OverCodeBytesBadConst).encode(),
-        Err(ImageBuildError::CodeTooLong),
+        Err(ImageBuildError::InvalidReference("constant")),
     );
 }
 
-/// This pin may flip under the sanctioned checked-conversion class; the flip must cite
-/// this pin: today the out-of-range operand reaches the raw const-map remap in
-/// `encode_code` and panics there rather than drawing a typed error.
+/// Flipped under the sanctioned panic-to-typed conversion, citing the
+/// pre-restructure panic pin this test carried: the raw const-map remap is now the
+/// tape walk's `InvalidReference("constant")` range check.
 #[test]
-#[should_panic(expected = "index out of bounds")]
-fn an_out_of_range_const_load_alone_currently_panics_at_the_const_remap() {
-    let _ = Fixture::clean().code(Code::BadConst).encode();
+fn an_out_of_range_const_load_alone_draws_the_constant_reference() {
+    assert_eq!(
+        Fixture::clean().code(Code::BadConst).encode(),
+        Err(ImageBuildError::InvalidReference("constant")),
+    );
 }
 
-/// This pin may flip under the sanctioned checked-conversion class; the flip must cite
-/// this pin: today the durable-body fence decides before the SPANS section ever indexes
-/// the out-of-range `instr_index`.
+/// Flipped under the sanctioned checked-conversion class (`span instruction`), citing the
+/// pre-restructure pin this test carried: the hoisted coherence check decides
+/// before the whole-image ceiling.
 #[test]
-fn an_out_of_range_span_with_a_body_past_the_ceiling_currently_draws_the_image_ceiling() {
+fn an_out_of_range_span_with_a_body_past_the_ceiling_draws_the_span_reference() {
     assert_eq!(
         Fixture::clean()
             .with_bad_span()
             .value(Value::OverCeiling)
             .encode(),
-        Err(ImageBuildError::ImageTooLarge),
+        Err(ImageBuildError::InvalidReference("span instruction")),
     );
 }
 
-/// This pin may flip under the sanctioned checked-conversion class; the flip must cite
-/// this pin: today the out-of-range `instr_index` reaches the raw offset lookup in
-/// `encode_spans` and panics there rather than drawing a typed error.
+/// Flipped under the sanctioned panic-to-typed conversion, citing the
+/// pre-restructure panic pin this test carried: the raw offset lookup is now the
+/// SPANS coherence item's `InvalidReference("span instruction")` range check.
 #[test]
-#[should_panic(expected = "index out of bounds")]
-fn an_out_of_range_span_alone_currently_panics_at_the_offset_lookup() {
-    let _ = Fixture::clean().with_bad_span().encode();
+fn an_out_of_range_span_alone_draws_the_span_reference() {
+    assert_eq!(
+        Fixture::clean().with_bad_span().encode(),
+        Err(ImageBuildError::InvalidReference("span instruction")),
+    );
 }
 
-/// This pin may flip under the sanctioned checked-conversion class; the flip must cite
-/// this pin: today the CodeBytes length check decides before jump-target validation
-/// runs inside `encode_code`.
+/// Flipped under the sanctioned checked-conversion class (`jump target`), citing the
+/// pre-restructure pin this test carried: the hoisted coherence check decides
+/// before the CodeBytes policy candidate.
 #[test]
-fn a_bad_jump_with_over_code_bytes_currently_draws_code_too_long() {
+fn a_bad_jump_with_over_code_bytes_draws_the_jump_target_reference() {
     assert_eq!(
         Fixture::clean().code(Code::OverCodeBytesBadJump).encode(),
-        Err(ImageBuildError::CodeTooLong),
+        Err(ImageBuildError::InvalidReference("jump target")),
     );
 }
 
@@ -1608,186 +1628,188 @@ fn a_missing_application_anchor_and_a_bad_jump_currently_draw_the_application_re
     );
 }
 
-// ---- The F-A boundary cells: each newly-checkable reference family crossed with the
-// FIRST policy cap in `check_bounds` order (Strings) and the LAST (TestEntries). Every
-// cap decides before any section encoding indexes the reference, so the cap wins today.
-// What each reference defect draws alone is pinned in the checked-conversion family
-// above (a panic at its raw-indexing site, or the jump target's typed reference).
+// ---- The F-A boundary cells: each hoisted reference family crossed with the FIRST
+// policy cap in candidate order (Strings) and the LAST (TestEntries). Coherence
+// decides before any policy candidate, so the hoisted reference check wins in every
+// cell; each pin cites the pre-restructure cap verdict it flipped. What each
+// reference defect draws alone is pinned in the checked-conversion family above.
 
-/// This pin may flip under the sanctioned checked-conversion class; the flip must cite
-/// this pin: today the first policy cap decides before the TYPES section indexes the
-/// forged record name.
+/// Flipped under the sanctioned checked-conversion class (`record name`), citing the
+/// pre-restructure pin this test carried: the hoisted coherence check decides
+/// before the first policy cap.
 #[test]
-fn a_forged_record_name_with_over_strings_currently_draws_the_string_cap() {
+fn a_forged_record_name_with_over_strings_draws_the_record_name_reference() {
     assert_eq!(
         Fixture::clean()
             .with_forged_record_name()
             .policy(Overflow::Strings)
             .encode(),
-        Err(ImageBuildError::TooManyStrings),
+        Err(ImageBuildError::InvalidReference("record name")),
     );
 }
 
-/// This pin may flip under the sanctioned checked-conversion class; the flip must cite
-/// this pin: today the first policy cap decides before the const remap indexes the
-/// out-of-range operand.
+/// Flipped under the sanctioned checked-conversion class (`constant`), citing the
+/// pre-restructure pin this test carried: the hoisted coherence check decides
+/// before the first policy cap.
 #[test]
-fn an_out_of_range_const_load_with_over_strings_currently_draws_the_string_cap() {
+fn an_out_of_range_const_load_with_over_strings_draws_the_constant_reference() {
     assert_eq!(
         Fixture::clean()
             .code(Code::BadConst)
             .policy(Overflow::Strings)
             .encode(),
-        Err(ImageBuildError::TooManyStrings),
+        Err(ImageBuildError::InvalidReference("constant")),
     );
 }
 
-/// This pin may flip under the sanctioned checked-conversion class; the flip must cite
-/// this pin: today the first policy cap decides before jump-target validation runs.
+/// Flipped under the sanctioned checked-conversion class (`jump target`), citing the
+/// pre-restructure pin this test carried: the hoisted coherence check decides
+/// before the first policy cap.
 #[test]
-fn a_bad_jump_with_over_strings_currently_draws_the_string_cap() {
+fn a_bad_jump_with_over_strings_draws_the_jump_target_reference() {
     assert_eq!(
         Fixture::clean()
             .code(Code::BadJump)
             .policy(Overflow::Strings)
             .encode(),
-        Err(ImageBuildError::TooManyStrings),
+        Err(ImageBuildError::InvalidReference("jump target")),
     );
 }
 
-/// This pin may flip under the sanctioned checked-conversion class; the flip must cite
-/// this pin: today the first policy cap decides before the SPANS section indexes the
-/// out-of-range `instr_index`.
+/// Flipped under the sanctioned checked-conversion class (`span instruction`), citing the
+/// pre-restructure pin this test carried: the hoisted coherence check decides
+/// before the first policy cap.
 #[test]
-fn an_out_of_range_span_with_over_strings_currently_draws_the_string_cap() {
+fn an_out_of_range_span_with_over_strings_draws_the_span_reference() {
     assert_eq!(
         Fixture::clean()
             .with_bad_span()
             .policy(Overflow::Strings)
             .encode(),
-        Err(ImageBuildError::TooManyStrings),
+        Err(ImageBuildError::InvalidReference("span instruction")),
     );
 }
 
-/// This pin may flip under the sanctioned checked-conversion class; the flip must cite
-/// this pin: today even the last policy cap decides before the TYPES section indexes
-/// the forged record name.
+/// Flipped under the sanctioned checked-conversion class (`record name`), citing the
+/// pre-restructure pin this test carried: the hoisted coherence check decides
+/// before the last policy cap.
 #[test]
-fn a_forged_record_name_with_over_test_entries_currently_draws_the_test_entry_cap() {
+fn a_forged_record_name_with_over_test_entries_draws_the_record_name_reference() {
     assert_eq!(
         Fixture::clean()
             .with_forged_record_name()
             .policy(Overflow::TestEntries)
             .encode(),
-        Err(ImageBuildError::TooManyTestEntries),
+        Err(ImageBuildError::InvalidReference("record name")),
     );
 }
 
-/// This pin may flip under the sanctioned checked-conversion class; the flip must cite
-/// this pin: today even the last policy cap decides before the const remap indexes the
-/// out-of-range operand.
+/// Flipped under the sanctioned checked-conversion class (`constant`), citing the
+/// pre-restructure pin this test carried: the hoisted coherence check decides
+/// before the last policy cap.
 #[test]
-fn an_out_of_range_const_load_with_over_test_entries_currently_draws_the_test_entry_cap() {
+fn an_out_of_range_const_load_with_over_test_entries_draws_the_constant_reference() {
     assert_eq!(
         Fixture::clean()
             .code(Code::BadConst)
             .policy(Overflow::TestEntries)
             .encode(),
-        Err(ImageBuildError::TooManyTestEntries),
+        Err(ImageBuildError::InvalidReference("constant")),
     );
 }
 
-/// This pin may flip under the sanctioned checked-conversion class; the flip must cite
-/// this pin: today even the last policy cap decides before jump-target validation runs.
+/// Flipped under the sanctioned checked-conversion class (`jump target`), citing the
+/// pre-restructure pin this test carried: the hoisted coherence check decides
+/// before the last policy cap.
 #[test]
-fn a_bad_jump_with_over_test_entries_currently_draws_the_test_entry_cap() {
+fn a_bad_jump_with_over_test_entries_draws_the_jump_target_reference() {
     assert_eq!(
         Fixture::clean()
             .code(Code::BadJump)
             .policy(Overflow::TestEntries)
             .encode(),
-        Err(ImageBuildError::TooManyTestEntries),
+        Err(ImageBuildError::InvalidReference("jump target")),
     );
 }
 
-/// This pin may flip under the sanctioned checked-conversion class; the flip must cite
-/// this pin: today even the last policy cap decides before the SPANS section indexes
-/// the out-of-range `instr_index`.
+/// Flipped under the sanctioned checked-conversion class (`span instruction`), citing the
+/// pre-restructure pin this test carried: the hoisted coherence check decides
+/// before the last policy cap.
 #[test]
-fn an_out_of_range_span_with_over_test_entries_currently_draws_the_test_entry_cap() {
+fn an_out_of_range_span_with_over_test_entries_draws_the_span_reference() {
     assert_eq!(
         Fixture::clean()
             .with_bad_span()
             .policy(Overflow::TestEntries)
             .encode(),
-        Err(ImageBuildError::TooManyTestEntries),
+        Err(ImageBuildError::InvalidReference("span instruction")),
     );
 }
 
 // ---- The F-B/F-C completion cells: the two byte-shaped results (CodeBytes and the
-// whole-image ceiling) crossed with reference defects the later sections would index.
+// whole-image ceiling) crossed with reference defects; the hoisted checks decide
+// before either byte-shaped candidate.
 
-/// This pin may flip under the sanctioned checked-conversion class; the flip must cite
-/// this pin: today the CodeBytes length check decides before the SPANS section indexes
-/// the out-of-range `instr_index`.
+/// Flipped under the sanctioned checked-conversion class (`span instruction`), citing the
+/// pre-restructure pin this test carried: the hoisted coherence check decides
+/// before the CodeBytes policy candidate.
 #[test]
-fn an_out_of_range_span_with_over_code_bytes_currently_draws_code_too_long() {
+fn an_out_of_range_span_with_over_code_bytes_draws_the_span_reference() {
     assert_eq!(
         Fixture::clean()
             .code(Code::OverCodeBytes)
             .with_bad_span()
             .encode(),
-        Err(ImageBuildError::CodeTooLong),
+        Err(ImageBuildError::InvalidReference("span instruction")),
     );
 }
 
-/// This pin may flip under the sanctioned checked-conversion class; the flip must cite
-/// this pin: today the per-function length check decides before the same function's
-/// forged name is remapped through the string sort map.
+/// Flipped under the sanctioned checked-conversion class (`function name`), citing the
+/// pre-restructure pin this test carried: the hoisted coherence check decides
+/// before the CodeBytes policy candidate.
 #[test]
-fn a_forged_function_name_with_over_code_bytes_currently_draws_code_too_long() {
+fn a_forged_function_name_with_over_code_bytes_draws_the_function_name_reference() {
     assert_eq!(
         Fixture::clean()
             .code(Code::OverCodeBytes)
             .with_forged_function_name()
             .encode(),
-        Err(ImageBuildError::CodeTooLong),
+        Err(ImageBuildError::InvalidReference("function name")),
     );
 }
 
-/// This pin may flip under the sanctioned checked-conversion class; the flip must cite
-/// this pin: today the durable-body fence decides before the TYPES section indexes the
-/// forged record name.
+/// Flipped under the sanctioned checked-conversion class (`record name`), citing the
+/// pre-restructure pin this test carried: the hoisted coherence check decides
+/// before the whole-image ceiling.
 #[test]
-fn a_forged_record_name_with_a_body_past_the_ceiling_currently_draws_the_image_ceiling() {
+fn a_forged_record_name_with_a_body_past_the_ceiling_draws_the_record_name_reference() {
     assert_eq!(
         Fixture::clean()
             .with_forged_record_name()
             .value(Value::OverCeiling)
             .encode(),
-        Err(ImageBuildError::ImageTooLarge),
+        Err(ImageBuildError::InvalidReference("record name")),
     );
 }
 
-/// This pin may flip under the sanctioned checked-conversion class; the flip must cite
-/// this pin: today the durable-body fence decides before the ENUMS section indexes the
-/// forged enum name.
+/// Flipped under the sanctioned checked-conversion class (`enum name`), citing the
+/// pre-restructure pin this test carried: the hoisted coherence check decides
+/// before the whole-image ceiling.
 #[test]
-fn a_forged_enum_name_with_a_body_past_the_ceiling_currently_draws_the_image_ceiling() {
+fn a_forged_enum_name_with_a_body_past_the_ceiling_draws_the_enum_name_reference() {
     assert_eq!(
         Fixture::clean()
             .with_forged_enum_name()
             .value(Value::OverCeiling)
             .encode(),
-        Err(ImageBuildError::ImageTooLarge),
+        Err(ImageBuildError::InvalidReference("enum name")),
     );
 }
 
 // ---- The intra-class reference-order pins: two forged references in one draft, in
-// different sections. Both sites panic today rather than draw typed errors, so each
-// pair is pinned only by the panic of the EARLIER site — identified by its distinct
-// forged index in the out-of-bounds message — and the restructure's emission-order
-// subsequence must keep that relative order.
+// different sections. Both sites panicked before the restructure; each pair is now
+// pinned by the typed reference of the EARLIER site, proving the coherence walk kept
+// the emission-order subsequence the panics measured.
 //
 // One pair from the mandate is not constructible and is documented instead of forced:
 // TYPES record-name vs CONSTS text reference. A text constant's string id is minted
@@ -1796,152 +1818,149 @@ fn a_forged_enum_name_with_a_body_past_the_ceiling_currently_draws_the_image_cei
 // today: the const sort key resolves text ids through the string sort map *before*
 // function or section encoding begins.
 
-/// Reference-order pin (both sites panic today): the FUNCTIONS section indexes `main`'s
-/// forged name (index 65535) before the TYPES section indexes the forged record name
-/// (index 60000), so the panic names the function-name site.
+/// Reference-order pin, flipped under the sanctioned panic-to-typed conversion and
+/// citing the pre-restructure panic pin (`the index is 65535`): the per-function
+/// item still precedes the TYPES item, so the earlier site's hoisted check —
+/// `InvalidReference("function name")` — decides, never the record name's.
 #[test]
-#[should_panic(expected = "the index is 65535")]
-fn a_forged_function_name_currently_panics_before_a_forged_record_name() {
-    let _ = Fixture::clean()
-        .with_forged_function_name()
-        .with_forged_record_name()
-        .encode();
+fn a_forged_function_name_draws_its_reference_before_a_forged_record_name() {
+    assert_eq!(
+        Fixture::clean()
+            .with_forged_function_name()
+            .with_forged_record_name()
+            .encode(),
+        Err(ImageBuildError::InvalidReference("function name")),
+    );
 }
 
-/// Reference-order pin (both sites panic today): the SPANS section indexes the
-/// out-of-range `instr_index` (4294967295) before the TEST-ENTRY section indexes the
-/// forged entry name (index 60002), so the panic names the span site.
+/// Reference-order pin, flipped under the sanctioned panic-to-typed conversion and
+/// citing the pre-restructure panic pin (`the index is 4294967295`): the SPANS item
+/// still precedes the TEST-ENTRY item, so the earlier site's hoisted check —
+/// `InvalidReference("span instruction")` — decides, never the entry name's.
 #[test]
-#[should_panic(expected = "the index is 4294967295")]
-fn an_out_of_range_span_currently_panics_before_a_forged_test_entry_name() {
-    let _ = Fixture::clean()
-        .with_bad_span()
-        .with_forged_test_entry_name()
-        .encode();
+fn an_out_of_range_span_draws_its_reference_before_a_forged_test_entry_name() {
+    assert_eq!(
+        Fixture::clean()
+            .with_bad_span()
+            .with_forged_test_entry_name()
+            .encode(),
+        Err(ImageBuildError::InvalidReference("span instruction")),
+    );
 }
 
-/// Reference-order pin (both sites panic today): the DURABLE body count indexes the
-/// forged branch name (index 61000) before the TYPES section indexes the forged record
-/// name (index 60000), so the panic names the branch-name site.
+/// Reference-order pin, flipped under the sanctioned panic-to-typed conversion and
+/// citing the pre-restructure panic pin (`the index is 61000`): the DURABLE item
+/// still precedes the TYPES item, so the earlier site's hoisted check —
+/// `InvalidReference("branch name")` — decides, never the record name's.
 #[test]
-#[should_panic(expected = "the index is 61000")]
-fn a_forged_branch_name_currently_panics_before_a_forged_record_name() {
-    let _ = Fixture::clean()
-        .with_forged_branch_name()
-        .with_forged_record_name()
-        .encode();
+fn a_forged_branch_name_draws_its_reference_before_a_forged_record_name() {
+    assert_eq!(
+        Fixture::clean()
+            .with_forged_branch_name()
+            .with_forged_record_name()
+            .encode(),
+        Err(ImageBuildError::InvalidReference("branch name")),
+    );
 }
 
 // ---- The named missing byte-fence cells (§A): CodeBytes and the whole-image ceiling
-// crossed with never-validated table ordinals. Each ordinal is written to the wire
-// unchecked today, so the policy verdict decides.
+// crossed with once-unchecked table ordinals, now hoisted coherence checks that
+// decide before either policy verdict.
 
-/// This pin may flip under the sanctioned checked-conversion class ("call target"); the
-/// flip must cite this pin: today the CodeBytes length check decides, and the call
-/// ordinal would have been written unchecked.
+/// Flipped under the sanctioned checked-conversion class (`call target`), citing the
+/// pre-restructure pin this test carried: the hoisted coherence check decides
+/// before the CodeBytes policy candidate.
 #[test]
-fn a_bad_call_target_with_over_code_bytes_currently_draws_code_too_long() {
+fn a_bad_call_target_with_over_code_bytes_draws_the_call_target_reference() {
     assert_eq!(
         Fixture::clean()
             .code(Code::OverCodeBytes)
             .with_extra_instrs(vec![Instr::Call(u16::MAX)])
             .encode(),
-        Err(ImageBuildError::CodeTooLong),
+        Err(ImageBuildError::InvalidReference("call target")),
     );
 }
 
-/// This pin may flip under the sanctioned checked-conversion class ("test target"); the
-/// flip must cite this pin: today the CodeBytes length check decides, and the
-/// test-entry function index would have been written unchecked.
+/// Flipped under the sanctioned checked-conversion class (`test target`), citing the
+/// pre-restructure pin this test carried: the hoisted coherence check decides
+/// before the CodeBytes policy candidate.
 #[test]
-fn a_bad_test_entry_target_with_over_code_bytes_currently_draws_code_too_long() {
+fn a_bad_test_entry_target_with_over_code_bytes_draws_the_test_target_reference() {
     assert_eq!(
         Fixture::clean()
             .code(Code::OverCodeBytes)
             .with_forged_test_entry_target()
             .encode(),
-        Err(ImageBuildError::CodeTooLong),
+        Err(ImageBuildError::InvalidReference("test target")),
     );
 }
 
-/// This pin may flip under the sanctioned checked-conversion class ("call target"); the
-/// flip must cite this pin: today the durable-body fence decides, and the call ordinal
-/// would have been written unchecked.
+/// Flipped under the sanctioned checked-conversion class (`call target`), citing the
+/// pre-restructure pin this test carried: the hoisted coherence check decides
+/// before the whole-image ceiling.
 #[test]
-fn a_bad_call_target_with_a_body_past_the_ceiling_currently_draws_the_image_ceiling() {
+fn a_bad_call_target_with_a_body_past_the_ceiling_draws_the_call_target_reference() {
     assert_eq!(
         Fixture::clean()
             .value(Value::OverCeiling)
             .with_extra_instrs(vec![Instr::Call(u16::MAX)])
             .encode(),
-        Err(ImageBuildError::ImageTooLarge),
+        Err(ImageBuildError::InvalidReference("call target")),
     );
 }
 
-/// This pin may flip under the sanctioned checked-conversion class ("export target");
-/// the flip must cite this pin: today the durable-body fence decides, and the export's
-/// function index would have been written unchecked.
+/// Flipped under the sanctioned checked-conversion class (`export target`), citing the
+/// pre-restructure pin this test carried: the hoisted coherence check decides
+/// before the whole-image ceiling.
 #[test]
-fn a_bad_export_target_with_a_body_past_the_ceiling_currently_draws_the_image_ceiling() {
+fn a_bad_export_target_with_a_body_past_the_ceiling_draws_the_export_target_reference() {
     assert_eq!(
         Fixture::clean()
             .value(Value::OverCeiling)
             .with_forged_export_target()
             .encode(),
-        Err(ImageBuildError::ImageTooLarge),
+        Err(ImageBuildError::InvalidReference("export target")),
     );
 }
 
-/// This pin may flip under the sanctioned checked-conversion class ("type table"); the
-/// flip must cite this pin: today the durable-body fence decides, and the `RecordNew`
-/// type ordinal would have been written unchecked.
+/// Flipped under the sanctioned checked-conversion class (`type table`), citing the
+/// pre-restructure pin this test carried: the hoisted coherence check decides
+/// before the whole-image ceiling.
 #[test]
-fn a_bad_type_ordinal_with_a_body_past_the_ceiling_currently_draws_the_image_ceiling() {
+fn a_bad_type_ordinal_with_a_body_past_the_ceiling_draws_the_type_table_reference() {
     assert_eq!(
         Fixture::clean()
             .value(Value::OverCeiling)
             .with_extra_instrs(vec![Instr::RecordNew(u16::MAX)])
             .encode(),
-        Err(ImageBuildError::ImageTooLarge),
+        Err(ImageBuildError::InvalidReference("type table")),
     );
 }
 
 // ---- First-cap boundary cells for the remaining §B.3 reference families. Every
-// ordinal here is written unchecked today, so the first policy cap decides trivially;
-// each cell is the boundary the coherence hoist will move. Standalone baselines for the
-// same families live in `marrow-verify/tests/legacy_ok_pins.rs` (they encode Ok today
-// and only the verifier rejects).
+// ordinal here was written unchecked before the restructure, so the first policy cap
+// decided trivially; the coherence hoist moved every one of these boundaries, and
+// each cell cites the cap verdict it flipped. Standalone baselines for the same
+// families live in `marrow-verify/tests/legacy_ok_pins.rs` (they encoded Ok before
+// the hoist; they now pin the producer refusal).
 //
 // # Derivation law — member-by-member policy cutpoints (design draft 8 §A, corrected
-// # per review 9)
+// # per review 9; positions restated for the installed measure core)
 //
-// The earlier three-class same-position table is WITHDRAWN. The FOUR cutpoints, in
-// the encoder's actual order: the END of `check_bounds` (every cap decides before any
-// emission), the PER-FUNCTION CodeBytes length check (the layout is computed and
-// checked at the HEAD of each function row — before that row's name/source refs, then
-// its signature types, then its tape), the DURABLE fence (which runs AFTER all
-// function encoding and decides before any section is assembled), and the FINAL
-// whole-image ceiling (checked only after every tail section is assembled — a
-// separate decision from the fence, which bounds the DURABLE body alone). The earlier
-// ImageBytes cells all drive the fence (an over-ceiling DURABLE body); the
-// final-overage cells at the end of this file drive cutpoint four literally, and they
-// show its position exactly: it decides AFTER every section writer runs, so a
-// post-DURABLE panicking member (the span offset lookup) still panics first, while a
-// post-DURABLE unchecked relation (a duplicate export) never errors and the final
-// ceiling decides.
-//
-// A derived member's Strings/TestEntries/CodeBytes crossing verdicts follow its
-// representative's iff (a) both defects are unchecked writes — their standalone
-// encode-Ok pins are in `marrow-verify/tests/legacy_ok_pins.rs` — and (b) both sit
-// strictly after the policy decision being crossed. ImageBytes crossings of function-
-// row members need a DIFFERENT argument, because function rows encode BEFORE the
-// fence: for a member whose standalone behavior is an unchecked write, function
-// encoding completes without an error, so the fence still decides — that argument,
-// not the after-the-fence clause, carries every tape/signature × ImageBytes
-// derivation below. For the map-indexed members that PANIC standalone (the
-// `ConstLoad`/`Unreachable`/`Todo` const remap, the name/source string remaps, the
-// span offset lookup), no ImageBytes derivation applies at all; their coverage is the
-// literal 1c/1d pins (the panic pins and the measured ImageTooLarge cells).
+// The FOUR pre-restructure cutpoints (the END of `check_bounds`, the PER-FUNCTION
+// CodeBytes check, the DURABLE fence, the FINAL assembled-image ceiling) collapse
+// under the measure core into ONE law: every coherence item — in the stable
+// partition's emission-order sequence — decides before every policy candidate, the
+// policy candidates keep their legacy candidate order (the eleven caps, then
+// CodeBytes per function), and the whole-image ceiling is decided last, by the
+// measured plan, envelope and frames included, before any section is assembled. A
+// derived member's crossing verdicts therefore follow its representative's iff both
+// defects are coherence-classified at the same sequence item — which §B.3's position
+// assignment states — and every crossing against any policy candidate resolves to
+// the coherence side. The final-overage cells at the end of this file pin the
+// measured ceiling's position literally: coherence items (the span check, the
+// duplicate-export relation) decide before it, and a final-only overage keeps its
+// ImageTooLarge verdict, decided at measurement rather than after assembly.
 //
 // Correction to design draft 8's exclusion (the design correction rides here): calls
 // INTO test entries were excluded as "needing call closure"; that rationale is false —
@@ -2010,36 +2029,39 @@ fn a_bad_type_ordinal_with_a_body_past_the_ceiling_currently_draws_the_image_cei
 //   ImageBytes cells split: fence overage via unchecked-write-completes, final
 //   overage via the literal final-overage × duplicate-export-target cell.
 
-/// This pin may flip under the sanctioned checked-conversion class ("type table"); the
-/// flip must cite this pin.
+/// Flipped under the sanctioned checked-conversion class (`type table`), citing the
+/// pre-restructure pin this test carried: the hoisted coherence check decides
+/// before the first policy cap.
 #[test]
-fn a_bad_record_new_ordinal_with_over_strings_currently_draws_the_string_cap() {
+fn a_bad_record_new_ordinal_with_over_strings_draws_the_type_table_reference() {
     assert_eq!(
         Fixture::clean()
             .with_extra_instrs(vec![Instr::RecordNew(u16::MAX)])
             .policy(Overflow::Strings)
             .encode(),
-        Err(ImageBuildError::TooManyStrings),
+        Err(ImageBuildError::InvalidReference("type table")),
     );
 }
 
-/// This pin may flip under the sanctioned checked-conversion class ("collection
-/// type"); the flip must cite this pin.
+/// Flipped under the sanctioned checked-conversion class (`collection type`), citing the
+/// pre-restructure pin this test carried: the hoisted coherence check decides
+/// before the first policy cap.
 #[test]
-fn a_bad_list_new_ordinal_with_over_strings_currently_draws_the_string_cap() {
+fn a_bad_list_new_ordinal_with_over_strings_draws_the_collection_type_reference() {
     assert_eq!(
         Fixture::clean()
             .with_extra_instrs(vec![Instr::ListNew(u16::MAX)])
             .policy(Overflow::Strings)
             .encode(),
-        Err(ImageBuildError::TooManyStrings),
+        Err(ImageBuildError::InvalidReference("collection type")),
     );
 }
 
-/// This pin may flip under the sanctioned checked-conversion class ("enum type"); the
-/// flip must cite this pin.
+/// Flipped under the sanctioned checked-conversion class (`enum type`), citing the
+/// pre-restructure pin this test carried: the hoisted coherence check decides
+/// before the first policy cap.
 #[test]
-fn a_bad_enum_construct_ordinal_with_over_strings_currently_draws_the_string_cap() {
+fn a_bad_enum_construct_ordinal_with_over_strings_draws_the_enum_type_reference() {
     assert_eq!(
         Fixture::clean()
             .with_extra_instrs(vec![Instr::EnumConstruct {
@@ -2048,27 +2070,29 @@ fn a_bad_enum_construct_ordinal_with_over_strings_currently_draws_the_string_cap
             }])
             .policy(Overflow::Strings)
             .encode(),
-        Err(ImageBuildError::TooManyStrings),
+        Err(ImageBuildError::InvalidReference("enum type")),
     );
 }
 
-/// This pin may flip under the sanctioned checked-conversion class ("type table"); the
-/// flip must cite this pin.
+/// Flipped under the sanctioned checked-conversion class (`type table`), citing the
+/// pre-restructure pin this test carried: the hoisted coherence check decides
+/// before the first policy cap.
 #[test]
-fn a_bad_vacant_load_type_with_over_strings_currently_draws_the_string_cap() {
+fn a_bad_vacant_load_type_with_over_strings_draws_the_type_table_reference() {
     assert_eq!(
         Fixture::clean()
             .with_extra_instrs(vec![Instr::VacantLoad(FORGED_OPT_TYPE)])
             .policy(Overflow::Strings)
             .encode(),
-        Err(ImageBuildError::TooManyStrings),
+        Err(ImageBuildError::InvalidReference("type table")),
     );
 }
 
-/// This pin may flip under the sanctioned checked-conversion class ("root table"); the
-/// flip must cite this pin.
+/// Flipped under the sanctioned checked-conversion class (`root table`), citing the
+/// pre-restructure pin this test carried: the hoisted coherence check decides
+/// before the first policy cap.
 #[test]
-fn a_bad_make_identity_root_with_over_strings_currently_draws_the_string_cap() {
+fn a_bad_make_identity_root_with_over_strings_draws_the_root_table_reference() {
     assert_eq!(
         Fixture::clean()
             .with_extra_instrs(vec![Instr::MakeIdentity {
@@ -2077,149 +2101,158 @@ fn a_bad_make_identity_root_with_over_strings_currently_draws_the_string_cap() {
             }])
             .policy(Overflow::Strings)
             .encode(),
-        Err(ImageBuildError::TooManyStrings),
+        Err(ImageBuildError::InvalidReference("root table")),
     );
 }
 
-/// This pin may flip under the sanctioned checked-conversion class ("type table"); the
-/// flip must cite this pin.
+/// Flipped under the sanctioned checked-conversion class (`type table`), citing the
+/// pre-restructure pin this test carried: the hoisted coherence check decides
+/// before the first policy cap.
 #[test]
-fn a_bad_field_type_ordinal_with_over_strings_currently_draws_the_string_cap() {
+fn a_bad_field_type_ordinal_with_over_strings_draws_the_type_table_reference() {
     assert_eq!(
         Fixture::clean()
             .with_forged_field_type()
             .policy(Overflow::Strings)
             .encode(),
-        Err(ImageBuildError::TooManyStrings),
+        Err(ImageBuildError::InvalidReference("type table")),
     );
 }
 
-/// This pin may flip under the sanctioned checked-conversion class ("type table"); the
-/// flip must cite this pin.
+/// Flipped under the sanctioned checked-conversion class (`type table`), citing the
+/// pre-restructure pin this test carried: the hoisted coherence check decides
+/// before the first policy cap.
 #[test]
-fn a_bad_enum_payload_type_with_over_strings_currently_draws_the_string_cap() {
+fn a_bad_enum_payload_type_with_over_strings_draws_the_type_table_reference() {
     assert_eq!(
         Fixture::clean()
             .with_forged_enum_payload_type()
             .policy(Overflow::Strings)
             .encode(),
-        Err(ImageBuildError::TooManyStrings),
+        Err(ImageBuildError::InvalidReference("type table")),
     );
 }
 
-/// This pin may flip under the sanctioned checked-conversion class ("type table"); the
-/// flip must cite this pin.
+/// Flipped under the sanctioned checked-conversion class (`type table`), citing the
+/// pre-restructure pin this test carried: the hoisted coherence check decides
+/// before the first policy cap.
 #[test]
-fn a_bad_collection_elem_type_with_over_strings_currently_draws_the_string_cap() {
+fn a_bad_collection_elem_type_with_over_strings_draws_the_type_table_reference() {
     assert_eq!(
         Fixture::clean()
             .with_forged_collection_elem()
             .policy(Overflow::Strings)
             .encode(),
-        Err(ImageBuildError::TooManyStrings),
+        Err(ImageBuildError::InvalidReference("type table")),
     );
 }
 
-// ---- The across-function permutation: the map-indexed const defect and the CodeBytes
-// policy result in two different functions, both orders. Functions encode in table
-// order, and each function's length check precedes its own tape encoding, so whichever
-// function comes first decides.
+// ---- The across-function permutation: the const defect and the CodeBytes policy
+// result in two different functions, both orders. All of coherence precedes all
+// policy, so the reference decides in BOTH orders — the positional whichever-comes-
+// first law these pins measured before the restructure is gone, and both flips cite
+// their pins.
 
-/// Measured winner: `main` (earlier, fitting) reaches its const remap and panics
-/// before the later function's length is ever checked. This pin may flip under the
-/// sanctioned checked-conversion class; the flip must cite this pin.
+/// Flipped under the sanctioned panic-to-typed conversion, citing the
+/// pre-restructure panic pin this test carried: all of coherence precedes all
+/// policy, so the earlier function's bad const draws `InvalidReference("constant")`
+/// before any function's length is checked.
 #[test]
-#[should_panic(expected = "index out of bounds")]
-fn a_bad_const_in_the_earlier_function_currently_panics_before_the_later_code_too_long() {
-    let _ = Fixture::clean()
-        .code(Code::BadConst)
-        .with_extra_function(Code::OverCodeBytes)
-        .encode();
+fn a_bad_const_in_the_earlier_function_draws_the_constant_reference() {
+    assert_eq!(
+        Fixture::clean()
+            .code(Code::BadConst)
+            .with_extra_function(Code::OverCodeBytes)
+            .encode(),
+        Err(ImageBuildError::InvalidReference("constant")),
+    );
 }
 
-/// Measured winner: the earlier function's CodeBytes length check decides before the
-/// later function's bad const is ever remapped. This pin may flip under the sanctioned
-/// checked-conversion class; the flip must cite this pin.
+/// Flipped under the sanctioned checked-conversion class (`constant`), citing
+/// the pre-restructure pin this test carried: all of coherence precedes all
+/// policy, so even a LATER function's bad const outranks an earlier
+/// function's CodeBytes — the positional law the restructure replaces.
 #[test]
-fn a_bad_const_in_the_later_function_currently_draws_the_earlier_code_too_long() {
+fn a_bad_const_in_the_later_function_draws_the_constant_reference() {
     assert_eq!(
         Fixture::clean()
             .code(Code::OverCodeBytes)
             .with_extra_function(Code::BadConst)
             .encode(),
-        Err(ImageBuildError::CodeTooLong),
+        Err(ImageBuildError::InvalidReference("constant")),
     );
 }
 
 // ---- The two omitted DURABLE type-table ordinals (design draft 7 §B.3): the root
-// entry record and a branch's entry record, both raw `TypeId` newtypes written to the
-// body unchecked today. Standalone Ok-pins live in
-// `marrow-verify/tests/legacy_ok_pins.rs`.
+// entry record and a branch's entry record, both raw `TypeId` newtypes once written
+// to the body unchecked, now checked at their exact body positions. Standalone
+// producer-refusal pins live in `marrow-verify/tests/legacy_ok_pins.rs`.
 
-/// This pin may flip under the sanctioned checked-conversion class ("type table"); the
-/// flip must cite this pin.
+/// Flipped under the sanctioned checked-conversion class (`type table`), citing the
+/// pre-restructure pin this test carried: the hoisted coherence check decides
+/// before the first policy cap.
 #[test]
-fn a_forged_entry_record_with_over_strings_currently_draws_the_string_cap() {
+fn a_forged_entry_record_with_over_strings_draws_the_type_table_reference() {
     assert_eq!(
         Fixture::clean()
             .with_forged_entry_record()
             .policy(Overflow::Strings)
             .encode(),
-        Err(ImageBuildError::TooManyStrings),
+        Err(ImageBuildError::InvalidReference("type table")),
     );
 }
 
-/// This pin may flip under the sanctioned checked-conversion class ("type table"); the
-/// flip must cite this pin.
+/// Flipped under the sanctioned checked-conversion class (`type table`), citing the
+/// pre-restructure pin this test carried: the hoisted coherence check decides
+/// before the first policy cap.
 #[test]
-fn a_forged_branch_record_with_over_strings_currently_draws_the_string_cap() {
+fn a_forged_branch_record_with_over_strings_draws_the_type_table_reference() {
     assert_eq!(
         Fixture::clean()
             .with_forged_branch_record()
             .policy(Overflow::Strings)
             .encode(),
-        Err(ImageBuildError::TooManyStrings),
+        Err(ImageBuildError::InvalidReference("type table")),
     );
 }
 
-/// This pin may flip under the sanctioned checked-conversion class ("type table"); the
-/// flip must cite this pin: the counting fence writes the forged ordinal like any
-/// two-byte field and refuses the body's size before section assembly.
+/// Flipped under the sanctioned checked-conversion class (`type table`), citing the
+/// pre-restructure pin this test carried: the hoisted coherence check decides
+/// before the whole-image ceiling.
 #[test]
-fn a_forged_entry_record_with_a_body_past_the_ceiling_currently_draws_the_image_ceiling() {
+fn a_forged_entry_record_with_a_body_past_the_ceiling_draws_the_type_table_reference() {
     assert_eq!(
         Fixture::clean()
             .with_forged_entry_record()
             .value(Value::OverCeiling)
             .encode(),
-        Err(ImageBuildError::ImageTooLarge),
+        Err(ImageBuildError::InvalidReference("type table")),
     );
 }
 
-/// This pin may flip under the sanctioned checked-conversion class ("type table"); the
-/// flip must cite this pin: the counting fence writes the forged ordinal like any
-/// two-byte field and refuses the body's size before section assembly.
+/// Flipped under the sanctioned checked-conversion class (`type table`), citing the
+/// pre-restructure pin this test carried: the hoisted coherence check decides
+/// before the whole-image ceiling.
 #[test]
-fn a_forged_branch_record_with_a_body_past_the_ceiling_currently_draws_the_image_ceiling() {
+fn a_forged_branch_record_with_a_body_past_the_ceiling_draws_the_type_table_reference() {
     assert_eq!(
         Fixture::clean()
             .with_forged_branch_record()
             .value(Value::OverCeiling)
             .encode(),
-        Err(ImageBuildError::ImageTooLarge),
+        Err(ImageBuildError::InvalidReference("type table")),
     );
 }
 
-// ---- Across-function outcome classes 2 and 3 (class 1 — the map-indexed panic — is
-// pinned above): the three classes together freeze the positional law the restructure
-// replaces with "all of step 1 precedes all policy".
+// ---- Across-function outcome classes 2 and 3 (class 1 — the once-panicking const
+// defect — is pinned above): the three classes now all resolve to the reference,
+// pinning "all of step 1 precedes all policy" from three different starting laws.
 
-/// Class 2, measured winner: the earlier function's bad jump draws its typed reference
-/// before the later function's length is ever checked. This pin may flip under the
-/// sanctioned checked-conversion class; the flip must cite this pin.
+/// Class 2, verdict preserved through the restructure: the earlier function's
+/// bad jump draws its typed reference — now from the hoisted coherence walk,
+/// which precedes every policy candidate — exactly as it did positionally.
 #[test]
-fn a_bad_jump_in_the_earlier_function_currently_draws_its_reference_before_the_later_code_too_long()
-{
+fn a_bad_jump_in_the_earlier_function_draws_its_reference_before_the_later_code_too_long() {
     assert_eq!(
         Fixture::clean()
             .code(Code::BadJump)
@@ -2229,297 +2262,308 @@ fn a_bad_jump_in_the_earlier_function_currently_draws_its_reference_before_the_l
     );
 }
 
-/// Class 3, measured winner: the earlier function's unchecked `Call` ordinal is written
-/// through, so encoding continues and the later function's CodeBytes length check
-/// decides. This pin may flip under the sanctioned checked-conversion class; the flip
-/// must cite this pin.
+/// Class 3, flipped under the sanctioned checked-conversion class
+/// (`call target`) and citing the pre-restructure pin this test carried: the
+/// once-unchecked `Call` ordinal is now a hoisted coherence check, so it
+/// decides before the later function's CodeBytes.
 #[test]
-fn an_unchecked_call_in_the_earlier_function_currently_draws_the_later_code_too_long() {
+fn an_unchecked_call_in_the_earlier_function_draws_the_call_target_reference() {
     assert_eq!(
         Fixture::clean()
             .with_extra_instrs(vec![Instr::Call(u16::MAX)])
             .with_extra_function(Code::OverCodeBytes)
             .encode(),
-        Err(ImageBuildError::CodeTooLong),
+        Err(ImageBuildError::InvalidReference("call target")),
     );
 }
 
 // ---- The complete coarse F-E matrix (review 7 item 1): every remaining
 // boundary × {Call, export target, test target, type table} cell, pinned literally.
-// The policy verdict wins in every cell today; each pin may flip under the sanctioned
-// checked-conversion class, and the flip must cite it.
+// The hoisted reference wins in every cell; each pin cites the policy verdict it
+// flipped.
 
-/// This pin may flip under the sanctioned checked-conversion class ("call target");
-/// the flip must cite this pin.
+/// Flipped under the sanctioned checked-conversion class (`call target`), citing the
+/// pre-restructure pin this test carried: the hoisted coherence check decides
+/// before the first policy cap.
 #[test]
-fn a_bad_call_target_with_over_strings_currently_draws_the_string_cap() {
+fn a_bad_call_target_with_over_strings_draws_the_call_target_reference() {
     assert_eq!(
         Fixture::clean()
             .with_extra_instrs(vec![Instr::Call(u16::MAX)])
             .policy(Overflow::Strings)
             .encode(),
-        Err(ImageBuildError::TooManyStrings),
+        Err(ImageBuildError::InvalidReference("call target")),
     );
 }
 
-/// This pin may flip under the sanctioned checked-conversion class ("export target");
-/// the flip must cite this pin.
+/// Flipped under the sanctioned checked-conversion class (`export target`), citing the
+/// pre-restructure pin this test carried: the hoisted coherence check decides
+/// before the first policy cap.
 #[test]
-fn a_bad_export_target_with_over_strings_currently_draws_the_string_cap() {
+fn a_bad_export_target_with_over_strings_draws_the_export_target_reference() {
     assert_eq!(
         Fixture::clean()
             .with_forged_export_target()
             .policy(Overflow::Strings)
             .encode(),
-        Err(ImageBuildError::TooManyStrings),
+        Err(ImageBuildError::InvalidReference("export target")),
     );
 }
 
-/// This pin may flip under the sanctioned checked-conversion class ("test target");
-/// the flip must cite this pin.
+/// Flipped under the sanctioned checked-conversion class (`test target`), citing the
+/// pre-restructure pin this test carried: the hoisted coherence check decides
+/// before the first policy cap.
 #[test]
-fn a_bad_test_entry_target_with_over_strings_currently_draws_the_string_cap() {
+fn a_bad_test_entry_target_with_over_strings_draws_the_test_target_reference() {
     assert_eq!(
         Fixture::clean()
             .with_forged_test_entry_target()
             .policy(Overflow::Strings)
             .encode(),
-        Err(ImageBuildError::TooManyStrings),
+        Err(ImageBuildError::InvalidReference("test target")),
     );
 }
 
-/// This pin may flip under the sanctioned checked-conversion class ("call target");
-/// the flip must cite this pin.
+/// Flipped under the sanctioned checked-conversion class (`call target`), citing the
+/// pre-restructure pin this test carried: the hoisted coherence check decides
+/// before the last policy cap.
 #[test]
-fn a_bad_call_target_with_over_test_entries_currently_draws_the_test_entry_cap() {
+fn a_bad_call_target_with_over_test_entries_draws_the_call_target_reference() {
     assert_eq!(
         Fixture::clean()
             .with_extra_instrs(vec![Instr::Call(u16::MAX)])
             .policy(Overflow::TestEntries)
             .encode(),
-        Err(ImageBuildError::TooManyTestEntries),
+        Err(ImageBuildError::InvalidReference("call target")),
     );
 }
 
-/// This pin may flip under the sanctioned checked-conversion class ("export target");
-/// the flip must cite this pin.
+/// Flipped under the sanctioned checked-conversion class (`export target`), citing the
+/// pre-restructure pin this test carried: the hoisted coherence check decides
+/// before the last policy cap.
 #[test]
-fn a_bad_export_target_with_over_test_entries_currently_draws_the_test_entry_cap() {
+fn a_bad_export_target_with_over_test_entries_draws_the_export_target_reference() {
     assert_eq!(
         Fixture::clean()
             .with_forged_export_target()
             .policy(Overflow::TestEntries)
             .encode(),
-        Err(ImageBuildError::TooManyTestEntries),
+        Err(ImageBuildError::InvalidReference("export target")),
     );
 }
 
-/// This pin may flip under the sanctioned checked-conversion class ("test target");
-/// the flip must cite this pin.
+/// Flipped under the sanctioned checked-conversion class (`test target`), citing the
+/// pre-restructure pin this test carried: the hoisted coherence check decides
+/// before the last policy cap.
 #[test]
-fn a_bad_test_entry_target_with_over_test_entries_currently_draws_the_test_entry_cap() {
+fn a_bad_test_entry_target_with_over_test_entries_draws_the_test_target_reference() {
     assert_eq!(
         Fixture::clean()
             .with_forged_test_entry_target()
             .policy(Overflow::TestEntries)
             .encode(),
-        Err(ImageBuildError::TooManyTestEntries),
+        Err(ImageBuildError::InvalidReference("test target")),
     );
 }
 
-/// This pin may flip under the sanctioned checked-conversion class ("type table");
-/// the flip must cite this pin.
+/// Flipped under the sanctioned checked-conversion class (`type table`), citing the
+/// pre-restructure pin this test carried: the hoisted coherence check decides
+/// before the last policy cap.
 #[test]
-fn a_bad_type_ordinal_with_over_test_entries_currently_draws_the_test_entry_cap() {
+fn a_bad_type_ordinal_with_over_test_entries_draws_the_type_table_reference() {
     assert_eq!(
         Fixture::clean()
             .with_extra_instrs(vec![Instr::RecordNew(u16::MAX)])
             .policy(Overflow::TestEntries)
             .encode(),
-        Err(ImageBuildError::TooManyTestEntries),
+        Err(ImageBuildError::InvalidReference("type table")),
     );
 }
 
-/// This pin may flip under the sanctioned checked-conversion class ("export target");
-/// the flip must cite this pin.
+/// Flipped under the sanctioned checked-conversion class (`export target`), citing the
+/// pre-restructure pin this test carried: the hoisted coherence check decides
+/// before the CodeBytes policy candidate.
 #[test]
-fn a_bad_export_target_with_over_code_bytes_currently_draws_code_too_long() {
+fn a_bad_export_target_with_over_code_bytes_draws_the_export_target_reference() {
     assert_eq!(
         Fixture::clean()
             .code(Code::OverCodeBytes)
             .with_forged_export_target()
             .encode(),
-        Err(ImageBuildError::CodeTooLong),
+        Err(ImageBuildError::InvalidReference("export target")),
     );
 }
 
-/// This pin may flip under the sanctioned checked-conversion class ("type table");
-/// the flip must cite this pin.
+/// Flipped under the sanctioned checked-conversion class (`type table`), citing the
+/// pre-restructure pin this test carried: the hoisted coherence check decides
+/// before the CodeBytes policy candidate.
 #[test]
-fn a_bad_type_ordinal_with_over_code_bytes_currently_draws_code_too_long() {
+fn a_bad_type_ordinal_with_over_code_bytes_draws_the_type_table_reference() {
     assert_eq!(
         Fixture::clean()
             .code(Code::OverCodeBytes)
             .with_extra_instrs(vec![Instr::RecordNew(u16::MAX)])
             .encode(),
-        Err(ImageBuildError::CodeTooLong),
+        Err(ImageBuildError::InvalidReference("type table")),
     );
 }
 
-/// This pin may flip under the sanctioned checked-conversion class ("test target");
-/// the flip must cite this pin.
+/// Flipped under the sanctioned checked-conversion class (`test target`), citing the
+/// pre-restructure pin this test carried: the hoisted coherence check decides
+/// before the whole-image ceiling.
 #[test]
-fn a_bad_test_entry_target_with_a_body_past_the_ceiling_currently_draws_the_image_ceiling() {
+fn a_bad_test_entry_target_with_a_body_past_the_ceiling_draws_the_test_target_reference() {
     assert_eq!(
         Fixture::clean()
             .value(Value::OverCeiling)
             .with_forged_test_entry_target()
             .encode(),
-        Err(ImageBuildError::ImageTooLarge),
+        Err(ImageBuildError::InvalidReference("test target")),
     );
 }
 
 // ---- The DURABLE-class representative rows the equivalence table names (review 7
 // item 2): the root entry record's remaining boundary cells.
 
-/// This pin may flip under the sanctioned checked-conversion class ("type table");
-/// the flip must cite this pin.
+/// Flipped under the sanctioned checked-conversion class (`type table`), citing the
+/// pre-restructure pin this test carried: the hoisted coherence check decides
+/// before the last policy cap.
 #[test]
-fn a_forged_entry_record_with_over_test_entries_currently_draws_the_test_entry_cap() {
+fn a_forged_entry_record_with_over_test_entries_draws_the_type_table_reference() {
     assert_eq!(
         Fixture::clean()
             .with_forged_entry_record()
             .policy(Overflow::TestEntries)
             .encode(),
-        Err(ImageBuildError::TooManyTestEntries),
+        Err(ImageBuildError::InvalidReference("type table")),
     );
 }
 
-/// This pin may flip under the sanctioned checked-conversion class ("type table");
-/// the flip must cite this pin.
+/// Flipped under the sanctioned checked-conversion class (`type table`), citing the
+/// pre-restructure pin this test carried: the hoisted coherence check decides
+/// before the CodeBytes policy candidate.
 #[test]
-fn a_forged_entry_record_with_over_code_bytes_currently_draws_code_too_long() {
+fn a_forged_entry_record_with_over_code_bytes_draws_the_type_table_reference() {
     assert_eq!(
         Fixture::clean()
             .code(Code::OverCodeBytes)
             .with_forged_entry_record()
             .encode(),
-        Err(ImageBuildError::CodeTooLong),
+        Err(ImageBuildError::InvalidReference("type table")),
     );
 }
 
-/// This pin may flip under the sanctioned checked-conversion class ("collection
-/// type"); the flip must cite this pin: a live site operand carries the traversal while
-/// its `list_ty` dangles, and the first policy cap still decides today.
+/// Flipped under the sanctioned checked-conversion class (`collection type`), citing the
+/// pre-restructure pin this test carried: the hoisted coherence check decides
+/// before the first policy cap.
 #[test]
-fn a_dangling_traversal_list_type_with_over_strings_currently_draws_the_string_cap() {
+fn a_dangling_traversal_list_type_with_over_strings_draws_the_collection_type_reference() {
     assert_eq!(
         Fixture::clean()
             .with_dangling_traversal()
             .policy(Overflow::Strings)
             .encode(),
-        Err(ImageBuildError::TooManyStrings),
+        Err(ImageBuildError::InvalidReference("collection type")),
     );
 }
 
-/// This pin may flip under the sanctioned checked-conversion class ("collection
-/// type"); the flip must cite this pin: the index-scan arm gets its own first-cap cell
-/// rather than deriving from the iterate arm.
+/// Flipped under the sanctioned checked-conversion class (`collection type`), citing the
+/// pre-restructure pin this test carried: the hoisted coherence check decides
+/// before the first policy cap.
 #[test]
-fn a_dangling_index_scan_list_type_with_over_strings_currently_draws_the_string_cap() {
+fn a_dangling_index_scan_list_type_with_over_strings_draws_the_collection_type_reference() {
     assert_eq!(
         Fixture::clean()
             .with_dangling_index_scan()
             .policy(Overflow::Strings)
             .encode(),
-        Err(ImageBuildError::TooManyStrings),
+        Err(ImageBuildError::InvalidReference("collection type")),
     );
 }
 
-/// This pin may flip under the sanctioned checked-conversion class ("type table"); the
-/// flip must cite this pin: a signature type straddles the per-function cutpoint
-/// differently from the tape, so its first-cap cell is literal.
+/// Flipped under the sanctioned checked-conversion class (`type table`), citing the
+/// pre-restructure pin this test carried: the hoisted coherence check decides
+/// before the first policy cap.
 #[test]
-fn a_forged_param_type_with_over_strings_currently_draws_the_string_cap() {
+fn a_forged_param_type_with_over_strings_draws_the_type_table_reference() {
     assert_eq!(
         Fixture::clean()
             .with_forged_param_type()
             .policy(Overflow::Strings)
             .encode(),
-        Err(ImageBuildError::TooManyStrings),
+        Err(ImageBuildError::InvalidReference("type table")),
     );
 }
 
-/// Measured winner: the per-function CodeBytes length check runs at the head of the
-/// function row, before the same function's signature types are written — and the
-/// forged signature type is an unchecked write in any case — so CodeTooLong decides.
-/// This pin may flip under the sanctioned checked-conversion class ("type table"); the
-/// flip must cite this pin.
+/// Flipped under the sanctioned checked-conversion class (`type table`), citing the
+/// pre-restructure pin this test carried: the hoisted coherence check decides
+/// before the CodeBytes policy candidate.
 #[test]
-fn a_forged_param_type_with_over_code_bytes_currently_draws_code_too_long() {
+fn a_forged_param_type_with_over_code_bytes_draws_the_type_table_reference() {
     assert_eq!(
         Fixture::clean()
             .code(Code::OverCodeBytes)
             .with_forged_param_type()
             .encode(),
-        Err(ImageBuildError::CodeTooLong),
+        Err(ImageBuildError::InvalidReference("type table")),
     );
 }
 
-/// This pin may flip under the sanctioned checked-conversion class ("export table");
-/// the flip must cite this pin: a duplicate export target is a relation the encoder
-/// accepts unchecked today, and the first policy cap decides.
+/// Flipped under the sanctioned checked-conversion class (`export table`), citing the
+/// pre-restructure pin this test carried: the hoisted coherence check decides
+/// before the first policy cap.
 #[test]
-fn a_duplicate_export_target_with_over_strings_currently_draws_the_string_cap() {
+fn a_duplicate_export_target_with_over_strings_draws_the_export_table_relation() {
     assert_eq!(
         Fixture::clean()
             .with_duplicate_export()
             .policy(Overflow::Strings)
             .encode(),
-        Err(ImageBuildError::TooManyStrings),
+        Err(ImageBuildError::InvalidReference("export table")),
     );
 }
 
-// ---- The fourth cutpoint (review 10 item 1): a draft every cap and the DURABLE
-// fence admit, refused only by the FINAL whole-image ceiling after tail assembly.
+// ---- The fourth cutpoint (review 10 item 1): a draft every coherence item and
+// every cap admits, refused only by the measured whole-image ceiling — decided at
+// measurement, envelope and frames included, before any section is assembled.
 
-/// The final ceiling is reachable on its own: every string is inside both string
-/// caps, the DURABLE body fits the fence, and only the assembled image is too large.
+/// The final-only overage keeps its ImageTooLarge verdict through the
+/// sanctioned measurement-first change: the whole-image ceiling is now decided
+/// by the measured plan — envelope and frames included — before any section is
+/// assembled, so the same draft draws the same result earlier.
 #[test]
-fn a_final_only_overage_alone_currently_draws_the_image_ceiling() {
+fn a_final_only_overage_alone_draws_the_image_ceiling() {
     assert_eq!(
         Fixture::clean().with_final_overage().encode(),
         Err(ImageBuildError::ImageTooLarge),
     );
 }
 
-/// Measured winner at cutpoint four: a duplicate export FUNCTION TARGET (two distinct
-/// `ExportId`s naming one function) is an unchecked relation, so the EXPORTS section
-/// assembles without an error and the final ceiling decides. Duplicate-`ExportId`
-/// coverage derives from this cell: same EXPORTS-row mechanics, same emission
-/// position, and both relations are verifier-side decisions. This pin may flip under
-/// the sanctioned checked-conversion class ("export table"); the flip must cite this
-/// pin.
+/// Flipped under the sanctioned checked-conversion class (`export table`), citing the
+/// pre-restructure pin this test carried: the hoisted coherence check decides
+/// before the final whole-image ceiling.
 #[test]
-fn a_duplicate_export_target_with_a_final_only_overage_currently_draws_the_image_ceiling() {
+fn a_duplicate_export_target_with_a_final_only_overage_draws_the_export_table_relation() {
     assert_eq!(
         Fixture::clean()
             .with_final_overage()
             .with_duplicate_export()
             .encode(),
-        Err(ImageBuildError::ImageTooLarge),
+        Err(ImageBuildError::InvalidReference("export table")),
     );
 }
 
-/// Measured winner at cutpoint four: the SPANS section assembles BEFORE the final
-/// ceiling is checked, so the out-of-range `instr_index` still panics at the raw
-/// offset lookup first. This pin may flip under the sanctioned checked-conversion
-/// class; the flip must cite this pin.
+/// Flipped under the sanctioned panic-to-typed conversion, citing the
+/// pre-restructure panic pin this test carried: the SPANS raw offset lookup is now
+/// the hoisted `InvalidReference("span instruction")` check, which — like every
+/// coherence item — decides before the measured whole-image ceiling.
 #[test]
-#[should_panic(expected = "index out of bounds")]
-fn an_out_of_range_span_with_a_final_only_overage_currently_panics_before_the_ceiling() {
-    let _ = Fixture::clean()
-        .with_final_overage()
-        .with_bad_span()
-        .encode();
+fn an_out_of_range_span_with_a_final_only_overage_draws_the_span_reference() {
+    assert_eq!(
+        Fixture::clean()
+            .with_final_overage()
+            .with_bad_span()
+            .encode(),
+        Err(ImageBuildError::InvalidReference("span instruction")),
+    );
 }

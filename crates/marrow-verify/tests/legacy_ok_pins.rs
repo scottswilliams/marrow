@@ -1,17 +1,18 @@
-//! Structural Ok-pins: drafts the producer ENCODES today although the reference they
-//! carry answers to no table row, leaving the independent verifier as the only owner
-//! that refuses them.
+//! Producer-refusal pins for the hoisted structural references and relations: drafts
+//! that ENCODED before the coherence hoist — leaving the independent verifier as the
+//! only owner that refused them — and are now refused by the producer's coherence
+//! walk with the exact typed payload each pin states. Every flip cites its
+//! pre-restructure Ok-pin, whose baseline git history carries.
 //!
-//! Each case pins both halves of that split — `encode()` returns `Ok` and
-//! `verify(&bytes)` returns `Err` — so the coherence hoist has an executable baseline
-//! for the producer-side conversion. Each clean twin is asserted to verify, proving the
-//! rejection comes from the one defect and not from the fixture's shape.
+//! The clean twins still encode and verify, proving each refusal comes from the one
+//! defect and not from the fixture's shape; the verifier remains the independent
+//! decoder of whatever the producer emits.
 
 use marrow_image::{
     AdmittedRoot, CollectionTypeDef, DeclarationMemberDef, DeclarationMemberShape, EncodedImage,
-    EnumTypeDef, ExportId, FieldDef, FuncId, FunctionDef, ImageDraft, ImageType, Instr, KeyColumn,
-    LedgerIdBytes, RecordTypeDef, RootOccurrenceDef, Scalar, SemanticTarget, SpanEntry, TypeId,
-    VariantDef,
+    EnumTypeDef, ExportId, FieldDef, FuncId, FunctionDef, ImageBuildError, ImageDraft, ImageType,
+    Instr, KeyColumn, LedgerIdBytes, RecordTypeDef, RootOccurrenceDef, Scalar, SemanticTarget,
+    SpanEntry, TypeId, VariantDef,
 };
 use marrow_image::{DurableIndexComponent, DurableIndexShape};
 use marrow_verify::verify;
@@ -127,109 +128,123 @@ fn the_clean_twin_verifies() {
     assert!(outcome.is_ok(), "{outcome:?}");
 }
 
-/// The coherence hoist will convert this Ok to `InvalidReference("call target")`; the
-/// flip must cite this pin: today a `Call` naming no function row still encodes, and
-/// only the verifier refuses the bytes.
+/// Flipped by the coherence hoist, citing the pre-restructure Ok-pin this test
+/// carried: the producer now refuses this draft with
+/// `InvalidReference("call target")` before any byte is measured or emitted.
 #[test]
-fn an_out_of_range_call_target_encodes_today_and_only_the_verifier_rejects() {
-    let image = main_draft(Vec::new(), vec![Instr::Call(u16::MAX), Instr::Return])
-        .encode()
-        .expect("the producer accepts the unanswered call target today");
-    assert!(verify(&image.bytes).is_err());
+fn an_out_of_range_call_target_draws_the_call_target_refusal() {
+    assert_eq!(
+        main_draft(Vec::new(), vec![Instr::Call(u16::MAX), Instr::Return])
+            .encode()
+            .map(|_| ()),
+        Err(ImageBuildError::InvalidReference("call target")),
+    );
 }
 
-/// The coherence hoist will convert this Ok to `InvalidReference("export target")`; the
-/// flip must cite this pin: today an export naming no function row still encodes, and
-/// only the verifier refuses the bytes.
+/// Flipped by the coherence hoist, citing the pre-restructure Ok-pin this test
+/// carried: the producer now refuses this draft with
+/// `InvalidReference("export target")` before any byte is measured or emitted.
 #[test]
-fn an_out_of_range_export_target_encodes_today_and_only_the_verifier_rejects() {
+fn an_out_of_range_export_target_draws_the_export_target_refusal() {
     let mut draft = main_draft(Vec::new(), short_code());
     draft.add_export(ExportId::of_local("", "ghost"), forged_func_id());
-    let image = draft
-        .encode()
-        .expect("the producer accepts the unanswered export target today");
-    assert!(verify(&image.bytes).is_err());
+    assert_eq!(
+        draft.encode().map(|_| ()),
+        Err(ImageBuildError::InvalidReference("export target")),
+    );
 }
 
-/// The coherence hoist will convert this Ok to `InvalidReference("test target")`; the
-/// flip must cite this pin: today a test entry naming no function row still encodes,
-/// and only the verifier refuses the bytes.
+/// Flipped by the coherence hoist, citing the pre-restructure Ok-pin this test
+/// carried: the producer now refuses this draft with
+/// `InvalidReference("test target")` before any byte is measured or emitted.
 #[test]
-fn an_out_of_range_test_entry_target_encodes_today_and_only_the_verifier_rejects() {
+fn an_out_of_range_test_entry_target_draws_the_test_target_refusal() {
     let mut draft = main_draft(Vec::new(), short_code());
     let entry_name = draft.intern_string("t");
     draft.add_test_entry(entry_name, forged_func_id());
-    let image = draft
-        .encode()
-        .expect("the producer accepts the unanswered test target today");
-    assert!(verify(&image.bytes).is_err());
+    assert_eq!(
+        draft.encode().map(|_| ()),
+        Err(ImageBuildError::InvalidReference("test target")),
+    );
 }
 
-/// The coherence hoist will convert this Ok to `InvalidReference("type table")`; the
-/// flip must cite this pin: today a parameter type naming no TYPES row still encodes
-/// (`ImageType::Record` is publicly constructible over any raw index), and only the
-/// verifier refuses the bytes.
+/// Flipped by the coherence hoist, citing the pre-restructure Ok-pin this test
+/// carried: the producer now refuses this draft with
+/// `InvalidReference("type table")` before any byte is measured or emitted.
 #[test]
-fn an_out_of_range_param_type_encodes_today_and_only_the_verifier_rejects() {
-    let image = main_draft(vec![FORGED_TYPE], short_code())
-        .encode()
-        .expect("the producer accepts the unanswered type index today");
-    assert!(verify(&image.bytes).is_err());
+fn an_out_of_range_param_type_draws_the_type_table_refusal() {
+    assert_eq!(
+        main_draft(vec![FORGED_TYPE], short_code())
+            .encode()
+            .map(|_| ()),
+        Err(ImageBuildError::InvalidReference("type table")),
+    );
 }
 
 // ---- The remaining §B.3 reference families: each raw table ordinal the encoder
-// writes unchecked today, pinned standalone as Ok-then-verifier-rejects. The
-// `DurIterateBounded`/`DurIndexScan` `list_ty` operand belongs here too — a live
-// site operand carries the instruction while its `list_ty` is a public raw ordinal
-// that dangles — and both opcode paths are pinned below the durable fixture.
+// once wrote unchecked, pinned standalone as the producer refusal the coherence
+// hoist installed. The `DurIterateBounded`/`DurIndexScan` `list_ty` operand belongs
+// here too — a live site operand carries the instruction while its `list_ty` is a
+// public raw ordinal that dangles — and both opcode paths are pinned below the
+// durable fixture.
 
-/// The coherence hoist will convert this Ok to `InvalidReference("type table")`; the
-/// flip must cite this pin: today a `RecordNew` naming no TYPES row still encodes.
+/// Flipped by the coherence hoist, citing the pre-restructure Ok-pin this test
+/// carried: the producer now refuses this draft with
+/// `InvalidReference("type table")` before any byte is measured or emitted.
 #[test]
-fn an_out_of_range_record_new_ordinal_encodes_today_and_only_the_verifier_rejects() {
-    let image = main_draft(Vec::new(), vec![Instr::RecordNew(u16::MAX), Instr::Return])
+fn an_out_of_range_record_new_ordinal_draws_the_type_table_refusal() {
+    assert_eq!(
+        main_draft(Vec::new(), vec![Instr::RecordNew(u16::MAX), Instr::Return])
+            .encode()
+            .map(|_| ()),
+        Err(ImageBuildError::InvalidReference("type table")),
+    );
+}
+
+/// Flipped by the coherence hoist, citing the pre-restructure Ok-pin this test
+/// carried: the producer now refuses this draft with
+/// `InvalidReference("collection type")` before any byte is measured or emitted.
+#[test]
+fn an_out_of_range_list_new_ordinal_draws_the_collection_type_refusal() {
+    assert_eq!(
+        main_draft(Vec::new(), vec![Instr::ListNew(u16::MAX), Instr::Return])
+            .encode()
+            .map(|_| ()),
+        Err(ImageBuildError::InvalidReference("collection type")),
+    );
+}
+
+/// Flipped by the coherence hoist, citing the pre-restructure Ok-pin this test
+/// carried: the producer now refuses this draft with
+/// `InvalidReference("enum type")` before any byte is measured or emitted.
+#[test]
+fn an_out_of_range_enum_construct_ordinal_draws_the_enum_type_refusal() {
+    assert_eq!(
+        main_draft(
+            Vec::new(),
+            vec![
+                Instr::EnumConstruct {
+                    enum_idx: u16::MAX,
+                    variant: 0,
+                },
+                Instr::Return,
+            ],
+        )
         .encode()
-        .expect("the producer accepts the unanswered record ordinal today");
-    assert!(verify(&image.bytes).is_err());
+        .map(|_| ()),
+        Err(ImageBuildError::InvalidReference("enum type")),
+    );
 }
 
-/// The coherence hoist will convert this Ok to `InvalidReference("collection type")`;
-/// the flip must cite this pin: today a `ListNew` naming no COLLTYPES row still
-/// encodes.
+/// Flipped by the coherence hoist, citing the pre-restructure Ok-pin this test
+/// carried: the producer now refuses this draft with
+/// `InvalidReference("type table")` before any byte is measured or emitted.
+/// The corrected twin — the same fixture with a TYPES row answering index 0 — still
+/// encodes and verifies, so the refusal is the forged ordinal's alone. (The operand
+/// stays optional: the coherence check is the domain range check; optionality remains
+/// the verifier's law.)
 #[test]
-fn an_out_of_range_list_new_ordinal_encodes_today_and_only_the_verifier_rejects() {
-    let image = main_draft(Vec::new(), vec![Instr::ListNew(u16::MAX), Instr::Return])
-        .encode()
-        .expect("the producer accepts the unanswered collection ordinal today");
-    assert!(verify(&image.bytes).is_err());
-}
-
-/// The coherence hoist will convert this Ok to `InvalidReference("enum type")`; the
-/// flip must cite this pin: today an `EnumConstruct` naming no ENUMS row still encodes.
-#[test]
-fn an_out_of_range_enum_construct_ordinal_encodes_today_and_only_the_verifier_rejects() {
-    let image = main_draft(
-        Vec::new(),
-        vec![
-            Instr::EnumConstruct {
-                enum_idx: u16::MAX,
-                variant: 0,
-            },
-            Instr::Return,
-        ],
-    )
-    .encode()
-    .expect("the producer accepts the unanswered enum ordinal today");
-    assert!(verify(&image.bytes).is_err());
-}
-
-/// The coherence hoist will convert this Ok to `InvalidReference("type table")`; the
-/// flip must cite this pin: today a `VacantLoad` embedding an optional record type
-/// that names no TYPES row still encodes, and the verifier's record-ordinal check is
-/// the exact refusal. (The operand must be optional — a bare forged type is rejected
-/// for its optionality before the ordinal is ever consulted.)
-#[test]
-fn an_out_of_range_vacant_load_type_encodes_today_and_only_the_verifier_rejects() {
+fn an_out_of_range_vacant_load_type_draws_the_type_table_refusal() {
     let body = |idx: u16| {
         vec![
             Instr::VacantLoad(ImageType::Record {
@@ -241,44 +256,46 @@ fn an_out_of_range_vacant_load_type_encodes_today_and_only_the_verifier_rejects(
             Instr::Return,
         ]
     };
-    // The corrected twin — the same fixture with a TYPES row answering index 0 —
-    // verifies, so the rejection below is the forged ordinal's alone.
     let corrected = with_decoy_record(main_draft(Vec::new(), body(0)))
         .encode()
         .expect("the corrected twin encodes");
     let outcome = verify(&corrected.bytes);
     assert!(outcome.is_ok(), "{outcome:?}");
-    let image = with_decoy_record(main_draft(Vec::new(), body(u16::MAX)))
+    assert_eq!(
+        with_decoy_record(main_draft(Vec::new(), body(u16::MAX)))
+            .encode()
+            .map(|_| ()),
+        Err(ImageBuildError::InvalidReference("type table")),
+    );
+}
+
+/// Flipped by the coherence hoist, citing the pre-restructure Ok-pin this test
+/// carried: the producer now refuses this draft with
+/// `InvalidReference("root table")` before any byte is measured or emitted.
+#[test]
+fn an_out_of_range_make_identity_root_draws_the_root_table_refusal() {
+    assert_eq!(
+        main_draft(
+            Vec::new(),
+            vec![
+                Instr::MakeIdentity {
+                    root: u16::MAX,
+                    cols: 0,
+                },
+                Instr::Return,
+            ],
+        )
         .encode()
-        .expect("the producer accepts the unanswered vacant-load type today");
-    let rejection = verify(&image.bytes).expect_err("the vacant-load ordinal is refused");
-    assert_eq!(rejection.detail(), "vacant-load record index out of range");
+        .map(|_| ()),
+        Err(ImageBuildError::InvalidReference("root table")),
+    );
 }
 
-/// The coherence hoist will convert this Ok to `InvalidReference("root table")`; the
-/// flip must cite this pin: today a `MakeIdentity` naming no ROOTS row still encodes.
+/// Flipped by the coherence hoist, citing the pre-restructure Ok-pin this test
+/// carried: the producer now refuses this draft with
+/// `InvalidReference("type table")` before any byte is measured or emitted.
 #[test]
-fn an_out_of_range_make_identity_root_encodes_today_and_only_the_verifier_rejects() {
-    let image = main_draft(
-        Vec::new(),
-        vec![
-            Instr::MakeIdentity {
-                root: u16::MAX,
-                cols: 0,
-            },
-            Instr::Return,
-        ],
-    )
-    .encode()
-    .expect("the producer accepts the unanswered root ordinal today");
-    assert!(verify(&image.bytes).is_err());
-}
-
-/// The coherence hoist will convert this Ok to `InvalidReference("type table")`; the
-/// flip must cite this pin: today a TYPES field whose `ImageType` names no TYPES row
-/// still encodes.
-#[test]
-fn an_out_of_range_field_type_encodes_today_and_only_the_verifier_rejects() {
+fn an_out_of_range_field_type_draws_the_type_table_refusal() {
     let mut draft = main_draft(Vec::new(), short_code());
     let name = draft.intern_string("R");
     let field_name = draft.intern_string("f");
@@ -290,17 +307,17 @@ fn an_out_of_range_field_type_encodes_today_and_only_the_verifier_rejects() {
             required: true,
         }],
     });
-    let image = draft
-        .encode()
-        .expect("the producer accepts the unanswered field type today");
-    assert!(verify(&image.bytes).is_err());
+    assert_eq!(
+        draft.encode().map(|_| ()),
+        Err(ImageBuildError::InvalidReference("type table")),
+    );
 }
 
-/// The coherence hoist will convert this Ok to `InvalidReference("type table")`; the
-/// flip must cite this pin: today an ENUMS variant payload leaf naming no TYPES row
-/// still encodes.
+/// Flipped by the coherence hoist, citing the pre-restructure Ok-pin this test
+/// carried: the producer now refuses this draft with
+/// `InvalidReference("type table")` before any byte is measured or emitted.
 #[test]
-fn an_out_of_range_enum_payload_type_encodes_today_and_only_the_verifier_rejects() {
+fn an_out_of_range_enum_payload_type_draws_the_type_table_refusal() {
     let mut draft = main_draft(Vec::new(), short_code());
     let name = draft.intern_string("P");
     let variant_name = draft.intern_string("pv");
@@ -312,28 +329,29 @@ fn an_out_of_range_enum_payload_type_encodes_today_and_only_the_verifier_rejects
             payload: vec![FORGED_TYPE],
         }],
     });
-    let image = draft
-        .encode()
-        .expect("the producer accepts the unanswered payload type today");
-    assert!(verify(&image.bytes).is_err());
+    assert_eq!(
+        draft.encode().map(|_| ()),
+        Err(ImageBuildError::InvalidReference("type table")),
+    );
 }
 
-/// The coherence hoist will convert this Ok to `InvalidReference("type table")`; the
-/// flip must cite this pin: today a COLLTYPES element naming no TYPES row still
-/// encodes.
+/// Flipped by the coherence hoist, citing the pre-restructure Ok-pin this test
+/// carried: the producer now refuses this draft with
+/// `InvalidReference("type table")` before any byte is measured or emitted.
 #[test]
-fn an_out_of_range_collection_elem_type_encodes_today_and_only_the_verifier_rejects() {
+fn an_out_of_range_collection_elem_type_draws_the_type_table_refusal() {
     let mut draft = main_draft(Vec::new(), short_code());
     draft.add_collection_type(CollectionTypeDef::List { elem: FORGED_TYPE });
-    let image = draft
-        .encode()
-        .expect("the producer accepts the unanswered element type today");
-    assert!(verify(&image.bytes).is_err());
+    assert_eq!(
+        draft.encode().map(|_| ()),
+        Err(ImageBuildError::InvalidReference("type table")),
+    );
 }
 
 // ---- The two omitted DURABLE type-table ordinals and the `MakeIdentity` cols
 // relation (design draft 7 §B.3). `TypeId` is a raw newtype with a public
-// `from_index`, so both record ordinals are forged directly.
+// `from_index`, so both record ordinals are forged directly; both now draw the
+// producer's type-table refusal at their exact body positions.
 
 /// How the durable fixture's two forgeable record references are shaped.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -492,58 +510,63 @@ fn the_durable_clean_twin_verifies() {
     assert!(outcome.is_ok(), "{outcome:?}");
 }
 
-/// The coherence hoist will convert this Ok to `InvalidReference("type table")`; the
-/// flip must cite this pin: today a root entry record naming no TYPES row is written
-/// to the DURABLE body unchecked, and only the verifier refuses the bytes.
+/// Flipped by the coherence hoist, citing the pre-restructure Ok-pin this test
+/// carried: the producer now refuses this draft with
+/// `InvalidReference("type table")` before any byte is measured or emitted.
 #[test]
-fn an_out_of_range_root_entry_record_encodes_today_and_only_the_verifier_rejects() {
-    let image = durable_draft(TableRef::Forged, None, short_code())
-        .encode()
-        .expect("the producer accepts the unanswered entry record today");
-    assert!(verify(&image.bytes).is_err());
+fn an_out_of_range_root_entry_record_draws_the_type_table_refusal() {
+    assert_eq!(
+        durable_draft(TableRef::Forged, None, short_code())
+            .encode()
+            .map(|_| ()),
+        Err(ImageBuildError::InvalidReference("type table")),
+    );
 }
 
-/// The coherence hoist will convert this Ok to `InvalidReference("type table")`; the
-/// flip must cite this pin: today a branch entry record naming no TYPES row is written
-/// to the DURABLE body unchecked, and only the verifier refuses the bytes.
+/// Flipped by the coherence hoist, citing the pre-restructure Ok-pin this test
+/// carried: the producer now refuses this draft with
+/// `InvalidReference("type table")` before any byte is measured or emitted.
 #[test]
-fn an_out_of_range_branch_record_encodes_today_and_only_the_verifier_rejects() {
-    let image = durable_draft(TableRef::Valid, Some(TableRef::Forged), short_code())
-        .encode()
-        .expect("the producer accepts the unanswered branch record today");
-    assert!(verify(&image.bytes).is_err());
+fn an_out_of_range_branch_record_draws_the_type_table_refusal() {
+    assert_eq!(
+        durable_draft(TableRef::Valid, Some(TableRef::Forged), short_code())
+            .encode()
+            .map(|_| ()),
+        Err(ImageBuildError::InvalidReference("type table")),
+    );
 }
 
-/// The coherence hoist will convert this Ok to `InvalidReference("root table")`; the
-/// flip must cite this pin: today a `MakeIdentity` naming a valid root but a `cols`
-/// count unequal to that root's key arity still encodes, and only the verifier
-/// refuses the bytes.
+/// Flipped by the coherence hoist, citing the pre-restructure Ok-pin this test
+/// carried: the producer now refuses this draft with
+/// `InvalidReference("root table")` before any byte is measured or emitted.
 #[test]
-fn a_make_identity_cols_arity_mismatch_encodes_today_and_only_the_verifier_rejects() {
-    let image = durable_draft(
-        TableRef::Valid,
-        None,
-        vec![
-            Instr::ConstLoad(0),
-            Instr::ConstLoad(0),
-            Instr::MakeIdentity { root: 0, cols: 2 },
-            Instr::Return,
-        ],
-    )
-    .encode()
-    .expect("the producer accepts the arity mismatch today");
-    assert!(verify(&image.bytes).is_err());
+fn a_make_identity_cols_arity_mismatch_draws_the_root_table_refusal() {
+    assert_eq!(
+        durable_draft(
+            TableRef::Valid,
+            None,
+            vec![
+                Instr::ConstLoad(0),
+                Instr::ConstLoad(0),
+                Instr::MakeIdentity { root: 0, cols: 2 },
+                Instr::Return,
+            ],
+        )
+        .encode()
+        .map(|_| ()),
+        Err(ImageBuildError::InvalidReference("root table")),
+    );
 }
 
 // ---- The `list_ty` family, both opcode paths: a live provenance-validated site
 // operand carries the instruction, while its `list_ty` — a public raw COLLTYPES
 // ordinal — dangles past the (empty) collection table.
 
-/// The coherence hoist will convert this Ok to `InvalidReference("collection type")`;
-/// the flip must cite this pin: today a bounded traversal whose `list_ty` names no
-/// COLLTYPES row still encodes, and only the verifier refuses the bytes.
+/// Flipped by the coherence hoist, citing the pre-restructure Ok-pin this test
+/// carried: the producer now refuses this draft with
+/// `InvalidReference("collection type")` before any byte is measured or emitted.
 #[test]
-fn a_dangling_iterate_list_type_encodes_today_and_only_the_verifier_rejects() {
+fn a_dangling_iterate_list_type_draws_the_collection_type_refusal() {
     let (mut draft, root) = durable_parts(TableRef::Valid, None, false);
     let handle = draft
         .bind_occurrence_site(
@@ -564,22 +587,23 @@ fn a_dangling_iterate_list_type_encodes_today_and_only_the_verifier_rejects() {
         Instr::Pop,
         Instr::Return,
     ];
-    let image = finish_main(draft, code, ImageType::Unit)
-        .encode()
-        .expect("the producer accepts the dangling list type today");
-    let rejection = verify(&image.bytes).expect_err("the dangling list type is refused");
     assert_eq!(
-        rejection.detail(),
-        "bounded traversal list type does not name a list of the traversed key",
+        finish_main(draft, code, ImageType::Unit)
+            .encode()
+            .map(|_| ()),
+        Err(ImageBuildError::InvalidReference("collection type")),
     );
 }
 
-/// The coherence hoist will convert this Ok to `InvalidReference("collection type")`;
-/// the flip must cite this pin: today an index scan whose `list_ty` names no COLLTYPES
-/// row still encodes, and only the verifier refuses the bytes.
+/// Flipped by the coherence hoist, citing the pre-restructure Ok-pin this test
+/// carried: the producer now refuses this draft with
+/// `InvalidReference("collection type")` before any byte is measured or emitted.
+/// The corrected twin — the same fixture naming the real `List[int]` row — still
+/// encodes and verifies, so the refusal is the dangling ordinal's alone; the deeper
+/// list-of-the-identity-key law remains the verifier's.
 #[test]
-fn a_dangling_index_scan_list_type_encodes_today_and_only_the_verifier_rejects() {
-    let scan_image = |list_ty: u16| {
+fn a_dangling_index_scan_list_type_draws_the_collection_type_refusal() {
+    let scan_draft = |list_ty: u16| {
         let (mut draft, root) = durable_parts(TableRef::Valid, None, true);
         // COLLTYPES row 0: the `List[int]` a corrected scan freezes its keys into.
         draft.add_collection_type(CollectionTypeDef::List {
@@ -606,24 +630,19 @@ fn a_dangling_index_scan_list_type_encodes_today_and_only_the_verifier_rejects()
             Instr::Return,
         ];
         finish_main(draft, code, ImageType::Unit)
-            .encode()
-            .expect("the producer accepts either list type today")
     };
-    // The corrected twin — the same fixture naming the real `List[int]` row —
-    // verifies, so the rejection below is the dangling ordinal's alone.
-    let outcome = verify(&scan_image(0).bytes);
+    let corrected = scan_draft(0).encode().expect("the corrected twin encodes");
+    let outcome = verify(&corrected.bytes);
     assert!(outcome.is_ok(), "{outcome:?}");
-    let rejection =
-        verify(&scan_image(u16::MAX).bytes).expect_err("the dangling list type is refused");
     assert_eq!(
-        rejection.detail(),
-        "index scan list type does not name a list of the identity key",
+        scan_draft(u16::MAX).encode().map(|_| ()),
+        Err(ImageBuildError::InvalidReference("collection type")),
     );
 }
 
 // ---- Domain-decoy `ImageType` pins (review 7 item 5): index 0 into an EMPTY target
 // domain while a WRONG domain is populated at index 0, asserting the exact
-// target-domain rejection — a check consulting the wrong table would accept these.
+// target-domain refusal — a check consulting the wrong table would accept these.
 
 /// A fieldless record populating TYPES row 0, as decoy for the non-record domains.
 fn with_decoy_record(mut draft: ImageDraft) -> ImageDraft {
@@ -650,11 +669,12 @@ fn with_decoy_enum(mut draft: ImageDraft) -> ImageDraft {
     draft
 }
 
-/// The Record domain resolves against TYPES: with TYPES empty and ENUMS populated at
-/// index 0, a wrong-table check would accept this draft; the exact TYPES-domain
-/// rejection pins the correct domain.
+/// Flipped by the coherence hoist, citing the pre-restructure decoy pin this test
+/// carried: with TYPES empty and ENUMS populated at index 0, a producer check
+/// consulting the wrong table would accept this draft; the exact
+/// `InvalidReference("type table")` refusal pins the correct domain.
 #[test]
-fn a_record_type_decoy_draws_the_types_domain_rejection() {
+fn a_record_type_decoy_draws_the_types_domain_refusal() {
     let draft = with_decoy_enum(main_draft(
         vec![ImageType::Record {
             idx: 0,
@@ -662,15 +682,18 @@ fn a_record_type_decoy_draws_the_types_domain_rejection() {
         }],
         short_code(),
     ));
-    let image = draft.encode().expect("the decoy encodes");
-    let rejection = verify(&image.bytes).expect_err("the empty TYPES domain refuses index 0");
-    assert_eq!(rejection.detail(), "record param type index out of range");
+    assert_eq!(
+        draft.encode().map(|_| ()),
+        Err(ImageBuildError::InvalidReference("type table")),
+    );
 }
 
-/// The Enum domain resolves against ENUMS: with ENUMS empty and TYPES populated at
-/// index 0, a wrong-table check would accept this draft.
+/// Flipped by the coherence hoist, citing the pre-restructure decoy pin this test
+/// carried: with ENUMS empty and TYPES populated at index 0, a producer check
+/// consulting the wrong table would accept this draft; the exact
+/// `InvalidReference("enum type")` refusal pins the correct domain.
 #[test]
-fn an_enum_type_decoy_draws_the_enums_domain_rejection() {
+fn an_enum_type_decoy_draws_the_enums_domain_refusal() {
     let draft = with_decoy_record(main_draft(
         vec![ImageType::Enum {
             idx: 0,
@@ -678,15 +701,18 @@ fn an_enum_type_decoy_draws_the_enums_domain_rejection() {
         }],
         short_code(),
     ));
-    let image = draft.encode().expect("the decoy encodes");
-    let rejection = verify(&image.bytes).expect_err("the empty ENUMS domain refuses index 0");
-    assert_eq!(rejection.detail(), "enum param type index out of range");
+    assert_eq!(
+        draft.encode().map(|_| ()),
+        Err(ImageBuildError::InvalidReference("enum type")),
+    );
 }
 
-/// The Collection domain resolves against COLLTYPES: with COLLTYPES empty and TYPES
-/// populated at index 0, a wrong-table check would accept this draft.
+/// Flipped by the coherence hoist, citing the pre-restructure decoy pin this test
+/// carried: with COLLTYPES empty and TYPES populated at index 0, a producer check
+/// consulting the wrong table would accept this draft; the exact
+/// `InvalidReference("collection type")` refusal pins the correct domain.
 #[test]
-fn a_collection_type_decoy_draws_the_colltypes_domain_rejection() {
+fn a_collection_type_decoy_draws_the_colltypes_domain_refusal() {
     let draft = with_decoy_record(main_draft(
         vec![ImageType::Collection {
             idx: 0,
@@ -694,18 +720,18 @@ fn a_collection_type_decoy_draws_the_colltypes_domain_rejection() {
         }],
         short_code(),
     ));
-    let image = draft.encode().expect("the decoy encodes");
-    let rejection = verify(&image.bytes).expect_err("the empty COLLTYPES domain refuses index 0");
     assert_eq!(
-        rejection.detail(),
-        "collection param type index out of range"
+        draft.encode().map(|_| ()),
+        Err(ImageBuildError::InvalidReference("collection type")),
     );
 }
 
-/// The Identity domain resolves against ROOTS: with ROOTS empty (a storeless image)
-/// and TYPES populated at index 0, a wrong-table check would accept this draft.
+/// Flipped by the coherence hoist, citing the pre-restructure decoy pin this test
+/// carried: with ROOTS empty and TYPES populated at index 0, a producer check
+/// consulting the wrong table would accept this draft; the exact
+/// `InvalidReference("root table")` refusal pins the correct domain.
 #[test]
-fn an_identity_type_decoy_draws_the_roots_domain_rejection() {
+fn an_identity_type_decoy_draws_the_roots_domain_refusal() {
     let draft = with_decoy_record(main_draft(
         vec![ImageType::Identity {
             root: 0,
@@ -713,20 +739,20 @@ fn an_identity_type_decoy_draws_the_roots_domain_rejection() {
         }],
         short_code(),
     ));
-    let image = draft.encode().expect("the decoy encodes");
-    let rejection = verify(&image.bytes).expect_err("the empty ROOTS domain refuses index 0");
     assert_eq!(
-        rejection.detail(),
-        "identity param type root index out of range",
+        draft.encode().map(|_| ()),
+        Err(ImageBuildError::InvalidReference("root table")),
     );
 }
 
-/// The subordinate `EnumConstruct.variant` ordinal, designated into the pinned set: it
-/// is checked against the resolved enum, not a table of its own, so its boundary
-/// coverage derives from the adjacent `enum_idx` cells (same instruction, same tape
-/// position — the `enum_idx` crossings in `legacy_bridge.rs` carry both operands).
+/// Flipped by the coherence hoist, citing the pre-restructure Ok-pin this test
+/// carried: the producer now refuses this draft with
+/// `InvalidReference("enum type")` before any byte is measured or emitted.
+/// The subordinate `EnumConstruct.variant` ordinal is checked against the resolved
+/// enum, not a table of its own. The corrected twin — variant 0, the decoy enum's one
+/// payloadless member — still encodes and verifies.
 #[test]
-fn an_out_of_range_enum_construct_variant_draws_the_exact_variant_rejection() {
+fn an_out_of_range_enum_construct_variant_draws_the_enum_type_refusal() {
     let body = |variant: u16| {
         vec![
             Instr::EnumConstruct {
@@ -738,29 +764,40 @@ fn an_out_of_range_enum_construct_variant_draws_the_exact_variant_rejection() {
             Instr::Return,
         ]
     };
-    // The corrected twin — variant 0, the decoy enum's one payloadless member —
-    // verifies, so the rejection below is the unanswered variant's alone.
     let corrected = with_decoy_enum(main_draft(Vec::new(), body(0)))
         .encode()
         .expect("the corrected twin encodes");
     let outcome = verify(&corrected.bytes);
     assert!(outcome.is_ok(), "{outcome:?}");
     // The decoy enum is the one ENUMS row; variant 5 names no member of it.
-    let image = with_decoy_enum(main_draft(Vec::new(), body(5)))
-        .encode()
-        .expect("the producer accepts the variant today");
-    let rejection = verify(&image.bytes).expect_err("the unanswered variant is refused");
-    assert_eq!(rejection.detail(), "enum variant index out of range");
+    assert_eq!(
+        with_decoy_enum(main_draft(Vec::new(), body(5)))
+            .encode()
+            .map(|_| ()),
+        Err(ImageBuildError::InvalidReference("enum type")),
+    );
 }
 
 // ---- The remaining collection-ordinal opcode (design draft 8 §B.3): `MapNew` shares
-// `ListNew`'s operand kind and tape position; `TextSplit`/`TextLines` derive from
-// these two by the cutpoint law in `legacy_bridge.rs`.
+// `ListNew`'s operand kind, tape position, and hoisted check arm;
+// `TextSplit`/`TextLines` derive from these two by the derivation law in
+// `legacy_bridge.rs`.
 
-/// The coherence hoist will convert this Ok to `InvalidReference("collection type")`;
-/// the flip must cite this pin: today a `MapNew` naming no COLLTYPES row still encodes.
+/// Flipped by the coherence hoist, citing the pre-restructure Ok-pin this test
+/// carried: the producer now refuses this draft with
+/// `InvalidReference("collection type")` before any byte is measured or emitted.
+/// The corrected twin — the same fixture naming the real Map row — still encodes and
+/// verifies, so the refusal is the dangling ordinal's alone.
 #[test]
-fn an_out_of_range_map_new_ordinal_encodes_today_and_only_the_verifier_rejects() {
+fn an_out_of_range_map_new_ordinal_draws_the_collection_type_refusal() {
+    let with_map_row = |code: Vec<Instr>| {
+        let mut draft = main_draft(Vec::new(), code);
+        draft.add_collection_type(CollectionTypeDef::Map {
+            key: ImageType::scalar(Scalar::Int),
+            value: ImageType::scalar(Scalar::Int),
+        });
+        draft
+    };
     let body = |idx: u16| {
         vec![
             Instr::MapNew(idx),
@@ -769,93 +806,80 @@ fn an_out_of_range_map_new_ordinal_encodes_today_and_only_the_verifier_rejects()
             Instr::Return,
         ]
     };
-    let with_map_row = |code: Vec<Instr>| {
-        let mut draft = main_draft(Vec::new(), code);
-        draft.add_collection_type(CollectionTypeDef::Map {
-            key: ImageType::scalar(Scalar::Int),
-            value: ImageType::scalar(Scalar::Int),
-        });
-        draft.encode().expect("either collection ordinal encodes")
-    };
-    // The corrected twin — the same fixture naming the real Map row — verifies, so
-    // the rejection below is the dangling ordinal's alone.
-    let outcome = verify(&with_map_row(body(0)).bytes);
+    let corrected = with_map_row(body(0))
+        .encode()
+        .expect("the corrected twin encodes");
+    let outcome = verify(&corrected.bytes);
     assert!(outcome.is_ok(), "{outcome:?}");
-    verify(&with_map_row(body(u16::MAX)).bytes)
-        .expect_err("the unanswered collection ordinal is refused");
+    assert_eq!(
+        with_map_row(body(u16::MAX)).encode().map(|_| ()),
+        Err(ImageBuildError::InvalidReference("collection type")),
+    );
 }
 
 // ---- The non-range export/test relations (design drafts 8 §B.3 and review 9): rows
-// the public draft APIs accept unchecked today, refused only by the verifier — the
-// target relations, the id relation, both test-signature decision sites, and calls
-// into test entries (the draft-8 call-closure exclusion was false; the verifier scans
-// direct tape call targets in its seal phase). Their policy crossings sit in
-// `legacy_bridge.rs` (a literal Strings × duplicate-export-target cell; the rest
-// derive by the cutpoint law — the EXPORTS and TEST-ENTRY rows assemble after the
-// caps, CodeBytes, and the DURABLE fence but BEFORE the final assembled-image
-// ceiling, and every relation here is a write the encoder completes without an error,
-// so whichever policy decision runs decides).
+// the public draft APIs accept unchecked, now refused by the coherence walk at the
+// EXPORTS and TEST-ENTRY positions — the target relations, the id relation, both
+// test-signature decision sites, and calls into test entries (the draft-8
+// call-closure exclusion was false; the verifier scans direct tape call targets in
+// its seal phase, and the producer mirrors exactly that direct scan). Their policy
+// crossings sit in `legacy_bridge.rs`; every crossing now resolves to the coherence
+// side, per the derivation law recorded there.
 
-/// The coherence hoist will convert this Ok to `InvalidReference("export table")`; the
-/// flip must cite this pin: two exports naming one function violate the
-/// one-export-per-function relation.
+/// Flipped by the coherence hoist, citing the pre-restructure Ok-pin this test
+/// carried: the producer now refuses this draft with
+/// `InvalidReference("export table")` before any byte is measured or emitted.
 #[test]
-fn a_duplicate_export_target_encodes_today_and_only_the_verifier_rejects() {
+fn a_duplicate_export_target_draws_the_export_table_refusal() {
     let (mut draft, main) = main_draft_with_id(Vec::new(), short_code());
     draft.add_export(ExportId::of_local("", "again"), main);
-    let image = draft
-        .encode()
-        .expect("the producer accepts the duplicate export target today");
-    let rejection = verify(&image.bytes).expect_err("the duplicate export is refused");
-    assert_eq!(rejection.detail(), "duplicate export function index");
+    assert_eq!(
+        draft.encode().map(|_| ()),
+        Err(ImageBuildError::InvalidReference("export table")),
+    );
 }
 
-/// The coherence hoist will convert this Ok to `InvalidReference("test table")`; the
-/// flip must cite this pin: two test entries naming one function violate the
-/// unique-test-function relation.
+/// Flipped by the coherence hoist, citing the pre-restructure Ok-pin this test
+/// carried: the producer now refuses this draft with
+/// `InvalidReference("test table")` before any byte is measured or emitted.
 #[test]
-fn a_duplicate_test_target_encodes_today_and_only_the_verifier_rejects() {
+fn a_duplicate_test_target_draws_the_test_table_refusal() {
     let mut draft = main_draft(Vec::new(), short_code());
     let test_fn = add_plain_function(&mut draft, "t", ImageType::Unit, vec![Instr::Return]);
     let first = draft.intern_string("ta");
     let second = draft.intern_string("tb");
     draft.add_test_entry(first, test_fn);
     draft.add_test_entry(second, test_fn);
-    let image = draft
-        .encode()
-        .expect("the producer accepts the duplicate test target today");
-    let rejection = verify(&image.bytes).expect_err("the duplicate test target is refused");
-    assert_eq!(rejection.detail(), "duplicate test-entry function index");
+    assert_eq!(
+        draft.encode().map(|_| ()),
+        Err(ImageBuildError::InvalidReference("test table")),
+    );
 }
 
-/// The coherence hoist will convert this Ok to `InvalidReference("test table")`; the
-/// flip must cite this pin: two test entries wearing one name violate the unique-name
-/// relation the sorted table encodes.
+/// Flipped by the coherence hoist, citing the pre-restructure Ok-pin this test
+/// carried: the producer now refuses this draft with
+/// `InvalidReference("test table")` before any byte is measured or emitted.
 #[test]
-fn a_duplicate_test_name_encodes_today_and_only_the_verifier_rejects() {
+fn a_duplicate_test_name_draws_the_test_table_refusal() {
     let mut draft = main_draft(Vec::new(), short_code());
     let first = add_plain_function(&mut draft, "t1", ImageType::Unit, vec![Instr::Return]);
     let second = add_plain_function(&mut draft, "t2", ImageType::Unit, vec![Instr::Return]);
     let name = draft.intern_string("t");
     draft.add_test_entry(name, first);
     draft.add_test_entry(name, second);
-    let image = draft
-        .encode()
-        .expect("the producer accepts the duplicate test name today");
-    let rejection = verify(&image.bytes).expect_err("the duplicate test name is refused");
     assert_eq!(
-        rejection.detail(),
-        "test entries must be sorted and unique by name",
+        draft.encode().map(|_| ()),
+        Err(ImageBuildError::InvalidReference("test table")),
     );
 }
 
-/// The coherence hoist will convert this Ok to `InvalidReference("test table")`; the
-/// flip must cite this pin: a test entry naming an exported function violates the
-/// export/test disjointness relation.
+/// Flipped by the coherence hoist, citing the pre-restructure Ok-pin this test
+/// carried: the producer now refuses this draft with
+/// `InvalidReference("test table")` before any byte is measured or emitted.
+/// The corrected twin — the same entry without the export — still encodes and
+/// verifies, so the refusal is the overlap relation's alone.
 #[test]
-fn an_export_test_overlap_encodes_today_and_only_the_verifier_rejects() {
-    // The overlapping function is unit-returning and structurally test-valid, so the
-    // overlap is the ONE defect: removing the export alone makes the image verify.
+fn an_export_test_overlap_draws_the_test_table_refusal() {
     let build = |exported: bool| {
         let mut draft = main_draft(Vec::new(), short_code());
         let test_fn = add_plain_function(&mut draft, "t", ImageType::Unit, vec![Instr::Return]);
@@ -864,19 +888,22 @@ fn an_export_test_overlap_encodes_today_and_only_the_verifier_rejects() {
         }
         let name = draft.intern_string("tn");
         draft.add_test_entry(name, test_fn);
-        draft.encode().expect("the overlap fixture encodes")
+        draft
     };
-    let outcome = verify(&build(false).bytes);
+    let corrected = build(false).encode().expect("the corrected twin encodes");
+    let outcome = verify(&corrected.bytes);
     assert!(outcome.is_ok(), "{outcome:?}");
-    let rejection = verify(&build(true).bytes).expect_err("the export/test overlap is refused");
-    assert_eq!(rejection.detail(), "a test entry is also an export");
+    assert_eq!(
+        build(true).encode().map(|_| ()),
+        Err(ImageBuildError::InvalidReference("test table")),
+    );
 }
 
-/// The coherence hoist will convert this Ok to `InvalidReference("export table")`; the
-/// flip must cite this pin: two export rows wearing one `ExportId` violate the
-/// unique-id relation the sorted table encodes.
+/// Flipped by the coherence hoist, citing the pre-restructure Ok-pin this test
+/// carried: the producer now refuses this draft with
+/// `InvalidReference("export table")` before any byte is measured or emitted.
 #[test]
-fn a_duplicate_export_id_encodes_today_and_only_the_verifier_rejects() {
+fn a_duplicate_export_id_draws_the_export_table_refusal() {
     let mut draft = main_draft(Vec::new(), short_code());
     // A second structurally valid function, exported under `main`'s exact id.
     let second = add_plain_function(
@@ -886,22 +913,20 @@ fn a_duplicate_export_id_encodes_today_and_only_the_verifier_rejects() {
         vec![Instr::ConstLoad(0), Instr::Return],
     );
     draft.add_export(ExportId::of_local("", "main"), second);
-    let image = draft
-        .encode()
-        .expect("the producer accepts the duplicate export id today");
-    let rejection = verify(&image.bytes).expect_err("the duplicate export id is refused");
     assert_eq!(
-        rejection.detail(),
-        "exports must be sorted and unique by id"
+        draft.encode().map(|_| ()),
+        Err(ImageBuildError::InvalidReference("export table")),
     );
 }
 
-/// The coherence hoist will convert this Ok to `InvalidReference("test table")`; the
-/// flip must cite this pin: a test entry over a parameter-taking function violates the
-/// FIRST decision site of the test signature law (nonzero params — decided before the
-/// return-shape site the non-unit pin above covers).
+/// Flipped by the coherence hoist, citing the pre-restructure Ok-pin this test
+/// carried: the producer now refuses this draft with
+/// `InvalidReference("test table")` before any byte is measured or emitted.
+/// The parameter site is the FIRST decision site of the test signature law, decided
+/// before the return-shape site. The corrected twin — the same entry over a
+/// zero-parameter unit function — still encodes and verifies.
 #[test]
-fn a_test_entry_with_params_encodes_today_and_only_the_verifier_rejects() {
+fn a_test_entry_with_params_draws_the_test_table_refusal() {
     let build = |params: Vec<ImageType>| {
         let mut draft = main_draft(Vec::new(), short_code());
         let src = draft.intern_string("src/tests.mw");
@@ -924,23 +949,28 @@ fn a_test_entry_with_params_encodes_today_and_only_the_verifier_rejects() {
             .expect("every site operand is live");
         let name = draft.intern_string("tn");
         draft.add_test_entry(name, test_fn);
-        draft.encode().expect("the signature fixture encodes")
+        draft
     };
-    // The corrected twin — the same entry over a zero-parameter unit function —
-    // verifies, so the rejection below is the parameter's alone.
-    let outcome = verify(&build(Vec::new()).bytes);
+    let corrected = build(Vec::new())
+        .encode()
+        .expect("the corrected twin encodes");
+    let outcome = verify(&corrected.bytes);
     assert!(outcome.is_ok(), "{outcome:?}");
-    let rejection = verify(&build(vec![ImageType::scalar(Scalar::Int)]).bytes)
-        .expect_err("the parameter-taking test entry is refused");
-    assert_eq!(rejection.detail(), "a test entry takes no parameters");
+    assert_eq!(
+        build(vec![ImageType::scalar(Scalar::Int)])
+            .encode()
+            .map(|_| ()),
+        Err(ImageBuildError::InvalidReference("test table")),
+    );
 }
 
-/// The coherence hoist will convert this Ok to `InvalidReference("test table")`; the
-/// flip must cite this pin: an `Assert` in a non-test exported function violates the
-/// membership law — the encoder writes the opcode unchecked, and the verifier's
-/// TEST-ENTRY seal scan is the only owner that refuses it.
+/// Flipped by the coherence hoist, citing the pre-restructure Ok-pin this test
+/// carried: the producer now refuses this draft with
+/// `InvalidReference("test table")` before any byte is measured or emitted.
+/// The corrected twin — the SAME asserting body inside a registered test entry —
+/// still encodes and verifies, so the refusal is the membership relation's alone.
 #[test]
-fn an_assert_outside_a_test_entry_encodes_today_and_only_the_verifier_rejects() {
+fn an_assert_outside_a_test_entry_draws_the_test_table_refusal() {
     let assert_body = |draft: &mut ImageDraft| {
         let truth = draft.intern_bool(true);
         vec![
@@ -949,8 +979,6 @@ fn an_assert_outside_a_test_entry_encodes_today_and_only_the_verifier_rejects() 
             Instr::Return,
         ]
     };
-    // The corrected twin — the SAME asserting body inside a registered test entry —
-    // verifies, so the rejection below is the membership relation's alone.
     let mut corrected = main_draft(Vec::new(), short_code());
     let code = assert_body(&mut corrected);
     let test_fn = add_plain_function(&mut corrected, "t", ImageType::Unit, code);
@@ -964,22 +992,19 @@ fn an_assert_outside_a_test_entry_encodes_today_and_only_the_verifier_rejects() 
     let code = assert_body(&mut draft);
     let asserting = add_plain_function(&mut draft, "t", ImageType::Unit, code);
     draft.add_export(ExportId::of_local("", "t"), asserting);
-    let image = draft
-        .encode()
-        .expect("the producer accepts the assert today");
-    let rejection = verify(&image.bytes).expect_err("the stray assert is refused");
     assert_eq!(
-        rejection.detail(),
-        "an assert instruction sits outside a test entry",
+        draft.encode().map(|_| ()),
+        Err(ImageBuildError::InvalidReference("test table")),
     );
 }
 
-/// The coherence hoist will convert this Ok to `InvalidReference("test table")`; the
-/// flip must cite this pin: a test body that performs a direct durable operation AND
-/// drives a transaction-owning export violates the driver-mix law — both halves are
-/// ordinary unchecked tape writes the encoder accepts.
+/// Flipped by the coherence hoist, citing the pre-restructure Ok-pin this test
+/// carried: the producer now refuses this draft with
+/// `InvalidReference("test table")` before any byte is measured or emitted.
+/// The corrected twin — the same direct-durable test without the owner call — still
+/// encodes and verifies, so the refusal is the mix's alone.
 #[test]
-fn a_test_driver_mix_encodes_today_and_only_the_verifier_rejects() {
+fn a_test_driver_mix_draws_the_test_table_refusal() {
     let build = |drives_owner: bool| {
         let (mut draft, root) = durable_parts(TableRef::Valid, None, false);
         let handle = draft
@@ -1020,27 +1045,23 @@ fn a_test_driver_mix_encodes_today_and_only_the_verifier_rejects() {
         let name = draft.intern_string("tn");
         draft.add_test_entry(name, test_fn);
         finish_main(draft, short_code(), ImageType::scalar(Scalar::Int))
-            .encode()
-            .expect("the driver-mix fixture encodes")
     };
-    // The corrected twin — the same direct-durable test without the owner call —
-    // verifies, so the rejection below is the mix's alone.
-    let outcome = verify(&build(false).bytes);
+    let corrected = build(false).encode().expect("the corrected twin encodes");
+    let outcome = verify(&corrected.bytes);
     assert!(outcome.is_ok(), "{outcome:?}");
-    let rejection = verify(&build(true).bytes).expect_err("the driver mix is refused");
     assert_eq!(
-        rejection.detail(),
-        "a test body performs a direct durable operation and also drives a \
-         transaction-owning export",
+        build(true).encode().map(|_| ()),
+        Err(ImageBuildError::InvalidReference("test table")),
     );
 }
 
-/// The coherence hoist will convert this Ok to `InvalidReference("test table")`; the
-/// flip must cite this pin: a `Call` whose direct tape target is a test entry violates
-/// the entry-point relation (the verifier scans direct call targets in its seal phase
-/// — no call closure is needed, correcting draft 8's exclusion).
+/// Flipped by the coherence hoist, citing the pre-restructure Ok-pin this test
+/// carried: the producer now refuses this draft with
+/// `InvalidReference("test table")` before any byte is measured or emitted.
+/// The corrected twin — the same call with the callee not registered as a test —
+/// still encodes and verifies, so the refusal is the entry-point relation's alone.
 #[test]
-fn a_call_into_a_test_entry_encodes_today_and_only_the_verifier_rejects() {
+fn a_call_into_a_test_entry_draws_the_test_table_refusal() {
     // `main` is ordinal 0, so the companion the call names is ordinal 1.
     let build = |tested: bool| {
         let mut draft = main_draft(
@@ -1053,21 +1074,23 @@ fn a_call_into_a_test_entry_encodes_today_and_only_the_verifier_rejects() {
             let name = draft.intern_string("tn");
             draft.add_test_entry(name, callee);
         }
-        draft.encode().expect("the call fixture encodes")
+        draft
     };
-    // The corrected twin — the same call with the callee not registered as a test —
-    // verifies, so the rejection below is the entry-point relation's alone.
-    let outcome = verify(&build(false).bytes);
+    let corrected = build(false).encode().expect("the corrected twin encodes");
+    let outcome = verify(&corrected.bytes);
     assert!(outcome.is_ok(), "{outcome:?}");
-    let rejection = verify(&build(true).bytes).expect_err("the call into a test entry is refused");
-    assert_eq!(rejection.detail(), "a test entry may not be called");
+    assert_eq!(
+        build(true).encode().map(|_| ()),
+        Err(ImageBuildError::InvalidReference("test table")),
+    );
 }
 
-/// The coherence hoist will convert this Ok to `InvalidReference("test table")`; the
-/// flip must cite this pin: a test entry over an int-returning function violates the
-/// test signature law (zero params, unit return).
+/// Flipped by the coherence hoist, citing the pre-restructure Ok-pin this test
+/// carried: the producer now refuses this draft with
+/// `InvalidReference("test table")` before any byte is measured or emitted.
+/// The return-shape site: the SECOND decision site of the test signature law.
 #[test]
-fn a_bad_test_signature_encodes_today_and_only_the_verifier_rejects() {
+fn a_bad_test_signature_draws_the_test_table_refusal() {
     let mut draft = main_draft(Vec::new(), short_code());
     // A structurally valid int function, wrong only as a TEST target.
     let test_fn = add_plain_function(
@@ -1078,9 +1101,8 @@ fn a_bad_test_signature_encodes_today_and_only_the_verifier_rejects() {
     );
     let name = draft.intern_string("tn");
     draft.add_test_entry(name, test_fn);
-    let image = draft
-        .encode()
-        .expect("the producer accepts the signature today");
-    let rejection = verify(&image.bytes).expect_err("the test signature is refused");
-    assert_eq!(rejection.detail(), "a test entry must return unit");
+    assert_eq!(
+        draft.encode().map(|_| ()),
+        Err(ImageBuildError::InvalidReference("test table")),
+    );
 }

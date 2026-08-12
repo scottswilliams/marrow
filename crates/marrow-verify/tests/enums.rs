@@ -1,11 +1,13 @@
 //! Enum-image verification: a well-formed enum-bearing image seals, and each
 //! single enum-table or enum-opcode defect rejects at the phase that owns it.
-//! Images are minted with `ImageDraft` (which does not validate cross-references),
-//! so the verifier — the only decoder — is what rejects.
+//! Images are minted with `ImageDraft`; since the coherence hoist the producer
+//! refuses out-of-range enum references itself (the pinned flips live in
+//! `legacy_ok_pins.rs`), so those cases assert the producer refusal here while
+//! every defect the producer still emits stays the verifier's own rejection.
 
 use marrow_image::{
-    CollectionTypeDef, EnumTypeDef, ExportId, FunctionDef, ImageDraft, ImageType, Instr, Scalar,
-    SpanEntry, VariantDef,
+    CollectionTypeDef, EnumTypeDef, ExportId, FunctionDef, ImageBuildError, ImageDraft, ImageType,
+    Instr, Scalar, SpanEntry, VariantDef,
 };
 use marrow_verify::verify;
 
@@ -82,6 +84,32 @@ fn verify_fn(
         .unwrap_or_else(|| "VERIFIED".to_string())
 }
 
+/// Add the same storeless export shape as [`verify_fn`] and return the producer's
+/// own verdict, for the defects the coherence hoist refuses before any byte exists.
+fn encode_fn(
+    mut draft: ImageDraft,
+    params: Vec<ImageType>,
+    ret: ImageType,
+    code: Vec<Instr>,
+) -> Result<(), ImageBuildError> {
+    let name = draft.intern_string("f");
+    let source = draft.intern_string("src/main.mw");
+    let local_count = params.len() as u16 + 4;
+    let func = draft
+        .add_function(FunctionDef {
+            name,
+            source,
+            params,
+            ret,
+            local_count,
+            spans: spans(&code),
+            code,
+        })
+        .expect("every site operand is live");
+    draft.add_export(ExportId::of_local("", "f"), func);
+    draft.encode().map(|_| ())
+}
+
 #[test]
 fn a_well_formed_enum_image_verifies() {
     let mut draft = ImageDraft::new();
@@ -106,14 +134,16 @@ fn a_well_formed_enum_image_verifies() {
     );
 }
 
+/// Flipped by the coherence hoist (the pinned flip lives in `legacy_ok_pins.rs`):
+/// an out-of-range enum parameter reference is refused by the producer.
 #[test]
-fn an_enum_param_index_out_of_range_rejects_at_table() {
+fn an_enum_param_index_out_of_range_is_refused_by_the_producer() {
     let mut draft = ImageDraft::new();
     let _ = shape(&mut draft); // one enum exists (index 0)
     // A parameter references enum index 7, which is out of range.
     let code = vec![Instr::Return];
     assert_eq!(
-        verify_fn(
+        encode_fn(
             draft,
             vec![ImageType::Enum {
                 idx: 7,
@@ -122,16 +152,18 @@ fn an_enum_param_index_out_of_range_rejects_at_table() {
             ImageType::Unit,
             code,
         ),
-        "image.table"
+        Err(ImageBuildError::InvalidReference("enum type")),
     );
 }
 
+/// Flipped by the coherence hoist (the pinned flip lives in `legacy_ok_pins.rs`):
+/// an out-of-range enum return reference is refused by the producer.
 #[test]
-fn an_enum_return_index_out_of_range_rejects_at_table() {
+fn an_enum_return_index_out_of_range_is_refused_by_the_producer() {
     let draft = ImageDraft::new(); // no enums at all
     let code = vec![Instr::Return];
     assert_eq!(
-        verify_fn(
+        encode_fn(
             draft,
             vec![],
             ImageType::Enum {
@@ -140,7 +172,7 @@ fn an_enum_return_index_out_of_range_rejects_at_table() {
             },
             code,
         ),
-        "image.table"
+        Err(ImageBuildError::InvalidReference("enum type")),
     );
 }
 
@@ -171,8 +203,10 @@ fn a_duplicate_variant_name_rejects_at_table() {
     );
 }
 
+/// Flipped by the coherence hoist (the pinned flip lives in `legacy_ok_pins.rs`):
+/// a construct variant outside the resolved enum is refused by the producer.
 #[test]
-fn an_out_of_range_construct_variant_rejects_at_function() {
+fn an_out_of_range_construct_variant_is_refused_by_the_producer() {
     let mut draft = ImageDraft::new();
     let enum_idx = shape(&mut draft);
     // Shape has 3 variants; constructing variant 9 is out of range.
@@ -184,7 +218,7 @@ fn an_out_of_range_construct_variant_rejects_at_function() {
         Instr::Return,
     ];
     assert_eq!(
-        verify_fn(
+        encode_fn(
             draft,
             vec![],
             ImageType::Enum {
@@ -193,7 +227,7 @@ fn an_out_of_range_construct_variant_rejects_at_function() {
             },
             code,
         ),
-        "image.function"
+        Err(ImageBuildError::InvalidReference("enum type")),
     );
 }
 

@@ -4,7 +4,8 @@
 //! digest), so every rejection is a structural/type invariant, not a digest flip.
 
 use marrow_image::{
-    CollectionTypeDef, ExportId, FunctionDef, ImageDraft, ImageType, Instr, Scalar, SpanEntry,
+    CollectionTypeDef, ExportId, FunctionDef, ImageBuildError, ImageDraft, ImageType, Instr,
+    Scalar, SpanEntry,
 };
 use marrow_verify::verify;
 
@@ -117,16 +118,35 @@ fn a_well_formed_map_program_verifies() {
     verify(&bytes).expect("a well-formed map image verifies");
 }
 
+/// Flipped by the coherence hoist (the pinned flip lives in `legacy_ok_pins.rs`): an
+/// out-of-range `ListNew` is refused by the producer, so no image carrying one can be
+/// emitted for the verifier to see. The wrong-KIND case below stays the verifier's
+/// own function-phase rejection — its ordinal is in range, so it still encodes.
 #[test]
-fn a_list_new_index_out_of_range_rejects() {
+fn a_list_new_index_out_of_range_is_refused_by_the_producer() {
     // Only one collection type exists, so `ListNew(9)` names no collection.
-    let bytes = image_with(
-        &[LIST_INT],
-        vec![Instr::ListNew(9), Instr::ListLen, Instr::Return],
-        ImageType::scalar(Scalar::Int),
+    let mut draft = ImageDraft::new();
+    draft.add_collection_type(LIST_INT);
+    let src = draft.intern_string("src/main.mw");
+    let name = draft.intern_string("main");
+    let code = vec![Instr::ListNew(9), Instr::ListLen, Instr::Return];
+    let spans = spans(&code);
+    let main = draft
+        .add_function(FunctionDef {
+            name,
+            source: src,
+            params: Vec::new(),
+            ret: ImageType::scalar(Scalar::Int),
+            local_count: 0,
+            code,
+            spans,
+        })
+        .expect("every site operand is live");
+    draft.add_export(ExportId::of_local("", "main"), main);
+    assert_eq!(
+        draft.encode().map(|_| ()),
+        Err(ImageBuildError::InvalidReference("collection type")),
     );
-    let rejection = verify(&bytes).expect_err("an out-of-range list-new index rejects");
-    assert_eq!(rejection.code(), "image.function");
 }
 
 #[test]

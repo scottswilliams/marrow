@@ -18,6 +18,7 @@ mod encode;
 mod export_id;
 mod instr;
 mod interface;
+mod measure;
 mod product;
 mod remap;
 mod semantic;
@@ -79,6 +80,7 @@ pub use interface::{
     Interface, InterfaceError, InterfaceId, RecordShape, RootShape, TransferField, TransferType,
     TransferVariant, VariantShape,
 };
+pub use measure::EncodeDriftSection;
 pub use product::{
     CanonicalDeclarationPathSelector, DeclarationMember, DeclarationMemberDef,
     DeclarationMemberShape, DurableContractGraph, DurableGraphInputRefusal, DurableProductGraph,

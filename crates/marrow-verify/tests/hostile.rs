@@ -1133,11 +1133,10 @@ fn a_bounded_traversal_after_commit_rejects() {
 }
 
 #[test]
-fn a_traversal_list_type_naming_a_map_or_a_dangling_index_rejects() {
-    // `list_ty` must name exactly `List[K]` for the traversed key. A COLLTYPES index that
-    // names a `Map` shape, and one that dangles past the collection table, are each a
-    // forged frozen-list type the verifier refuses before the runtime materializes it.
-    let build = |list_ty: u16| -> Vec<u8> {
+fn a_traversal_list_type_naming_a_map_rejects() {
+    // `list_ty` must name exactly `List[K]` for the traversed key; a `Map`-shaped
+    // index is in range and remains the verifier's forged-frozen-list refusal.
+    let build = |list_ty: u16| -> ImageDraft {
         let mut draft = ImageDraft::new();
         let sites = durable_schema(&mut draft);
         // One well-formed `Map` row at index 0: a valid collection, but the wrong kind for
@@ -1171,16 +1170,18 @@ fn a_traversal_list_type_naming_a_map_or_a_dangling_index_rejects() {
             })
             .expect("every site operand is live");
         draft.add_export(ExportId::of_local("", "iter"), func);
-        draft.encode().unwrap().bytes
+        draft
     };
-    for list_ty in [0u16, 1] {
-        let rejection = verify(&build(list_ty)).expect_err("a non-List[K] frozen type is refused");
-        assert_eq!(rejection.code(), "image.function");
-        assert_eq!(
-            rejection.detail(),
-            "bounded traversal list type does not name a list of the traversed key"
-        );
-    }
+    // A DANGLING index is refused by the producer since the coherence hoist (its pin
+    // lives in `legacy_ok_pins.rs`); the wrong-KIND index (0, a Map row) is in range,
+    // so it still encodes and the verifier's own function-phase law refuses it.
+    let rejection = verify(&build(0).encode().unwrap().bytes)
+        .expect_err("a non-List[K] frozen type is refused");
+    assert_eq!(rejection.code(), "image.function");
+    assert_eq!(
+        rejection.detail(),
+        "bounded traversal list type does not name a list of the traversed key"
+    );
 }
 
 #[test]
@@ -3709,23 +3710,8 @@ fn set_sparse_on_a_required_field_rejects_at_function() {
     assert_eq!(code_of(&draft.encode().unwrap().bytes), "image.function");
 }
 
-#[test]
-fn vacant_load_of_an_out_of_range_record_rejects_at_function() {
-    // A record-typed optional is an admitted `VacantLoad` operand, but its index
-    // is bounds-checked against the RECORD-TYPES table in phase 3. An index past
-    // the table is a function-phase rejection, not an out-of-bounds panic.
-    let draft = put_export(|_sites| {
-        vec![
-            Instr::VacantLoad(ImageType::Record {
-                idx: 9_999,
-                optional: true,
-            }),
-            Instr::Pop,
-            Instr::Return,
-        ]
-    });
-    assert_eq!(code_of(&draft.encode().unwrap().bytes), "image.function");
-}
+// The out-of-range vacant-load defect is refused by the producer since the coherence hoist;
+// its pin lives in `legacy_ok_pins.rs`, so no duplicate probe is kept here.
 
 #[test]
 fn create_on_a_field_site_rejects_at_function() {
@@ -3779,33 +3765,8 @@ fn assert_in_a_test_entry_verifies() {
     assert_eq!(code_of(&draft.encode().unwrap().bytes), "VERIFIED");
 }
 
-#[test]
-fn assert_outside_a_test_entry_rejects() {
-    // The same asserting function, exported instead of test-entered: `assert`
-    // is legal only inside a test entry.
-    let mut draft = ImageDraft::new();
-    let src = draft.intern_string("src/main.mw");
-    let name = draft.intern_string("f");
-    let truth = draft.intern_bool(true);
-    let code = vec![
-        Instr::ConstLoad(truth.index()),
-        Instr::Assert,
-        Instr::Return,
-    ];
-    let func = draft
-        .add_function(FunctionDef {
-            name,
-            source: src,
-            params: Vec::new(),
-            ret: ImageType::Unit,
-            local_count: 0,
-            spans: spans(&code),
-            code,
-        })
-        .expect("every site operand is live");
-    draft.add_export(ExportId::of_local("", "f"), func);
-    assert_eq!(code_of(&draft.encode().unwrap().bytes), "image.test_entry");
-}
+// The assert-membership defect is refused by the producer since the coherence hoist;
+// its pin lives in `legacy_ok_pins.rs`, so no duplicate probe is kept here.
 
 #[test]
 fn assert_on_a_non_bool_operand_rejects_at_function() {
@@ -3833,55 +3794,14 @@ fn assert_on_a_non_bool_operand_rejects_at_function() {
     assert_eq!(code_of(&draft.encode().unwrap().bytes), "image.function");
 }
 
-#[test]
-fn test_entry_that_is_also_an_export_rejects() {
-    let (mut draft, func) = test_entry_image();
-    draft.add_export(ExportId::of_local("", "holds"), func);
-    assert_eq!(code_of(&draft.encode().unwrap().bytes), "image.test_entry");
-}
+// The export/test-overlap defect is refused by the producer since the coherence hoist;
+// its pin lives in `legacy_ok_pins.rs`, so no duplicate probe is kept here.
 
-#[test]
-fn test_entry_with_a_parameter_rejects() {
-    let mut draft = ImageDraft::new();
-    let src = draft.intern_string("src/main.mw");
-    let title = draft.intern_string("holds");
-    let code = vec![Instr::LocalGet(0), Instr::Assert, Instr::Return];
-    let func = draft
-        .add_function(FunctionDef {
-            name: title,
-            source: src,
-            params: vec![ImageType::scalar(Scalar::Bool)],
-            ret: ImageType::Unit,
-            local_count: 1,
-            spans: spans(&code),
-            code,
-        })
-        .expect("every site operand is live");
-    draft.add_test_entry(title, func);
-    assert_eq!(code_of(&draft.encode().unwrap().bytes), "image.test_entry");
-}
+// The parameter-taking test-entry defect is refused by the producer since the coherence hoist;
+// its pin lives in `legacy_ok_pins.rs`, so no duplicate probe is kept here.
 
-#[test]
-fn test_entry_with_a_non_unit_return_rejects() {
-    let mut draft = ImageDraft::new();
-    let src = draft.intern_string("src/main.mw");
-    let title = draft.intern_string("holds");
-    let seven = draft.intern_int(7);
-    let code = vec![Instr::ConstLoad(seven.index()), Instr::Return];
-    let func = draft
-        .add_function(FunctionDef {
-            name: title,
-            source: src,
-            params: Vec::new(),
-            ret: ImageType::scalar(Scalar::Int),
-            local_count: 0,
-            spans: spans(&code),
-            code,
-        })
-        .expect("every site operand is live");
-    draft.add_test_entry(title, func);
-    assert_eq!(code_of(&draft.encode().unwrap().bytes), "image.test_entry");
-}
+// The non-unit test-entry defect is refused by the producer since the coherence hoist;
+// its pin lives in `legacy_ok_pins.rs`, so no duplicate probe is kept here.
 
 #[test]
 fn test_entry_may_carry_durable_demand() {
@@ -3924,28 +3844,8 @@ fn test_entry_may_carry_durable_demand() {
     assert!(image.exports().is_empty());
 }
 
-#[test]
-fn test_entry_as_a_call_target_rejects() {
-    // An exported function that calls the test entry: a test entry is an entry
-    // point and may never be a call target.
-    let (mut draft, _) = test_entry_image();
-    let src = draft.intern_string("src/main.mw");
-    let name = draft.intern_string("main");
-    let code = vec![Instr::Call(0), Instr::Return];
-    let main = draft
-        .add_function(FunctionDef {
-            name,
-            source: src,
-            params: Vec::new(),
-            ret: ImageType::Unit,
-            local_count: 0,
-            spans: spans(&code),
-            code,
-        })
-        .expect("every site operand is live");
-    draft.add_export(ExportId::of_local("", "main"), main);
-    assert_eq!(code_of(&draft.encode().unwrap().bytes), "image.test_entry");
-}
+// The call-into-a-test-entry defect is refused by the producer since the coherence hoist;
+// its pin lives in `legacy_ok_pins.rs`, so no duplicate probe is kept here.
 
 /// The TEST-ENTRY section frame (id 8) of an encoded image.
 fn test_entry_section(bytes: &[u8]) -> (usize, usize) {
@@ -4340,56 +4240,11 @@ fn record_param_and_return_refs_verify() {
     assert_eq!(code_of(&draft.encode().unwrap().bytes), "VERIFIED");
 }
 
-/// A record return type index past the type table rejects at the table phase.
-#[test]
-fn record_return_index_out_of_range_rejects() {
-    let mut draft = ImageDraft::new();
-    let src = draft.intern_string("src/main.mw");
-    let name = draft.intern_string("f");
-    let code = vec![Instr::Return];
-    let f = draft
-        .add_function(FunctionDef {
-            name,
-            source: src,
-            params: Vec::new(),
-            // No record types exist, so index 5 is out of range.
-            ret: ImageType::Record {
-                idx: 5,
-                optional: false,
-            },
-            local_count: 0,
-            spans: spans(&code),
-            code,
-        })
-        .expect("every site operand is live");
-    draft.add_export(ExportId::of_local("", "f"), f);
-    assert_eq!(code_of(&draft.encode().unwrap().bytes), "image.table");
-}
+// The out-of-range record return type defect is refused by the producer since the coherence hoist;
+// its pin lives in `legacy_ok_pins.rs`, so no duplicate probe is kept here.
 
-/// A record parameter type index past the type table rejects at the table phase.
-#[test]
-fn record_param_index_out_of_range_rejects() {
-    let mut draft = ImageDraft::new();
-    let src = draft.intern_string("src/main.mw");
-    let name = draft.intern_string("f");
-    let code = vec![Instr::Return];
-    let f = draft
-        .add_function(FunctionDef {
-            name,
-            source: src,
-            params: vec![ImageType::Record {
-                idx: 5,
-                optional: false,
-            }],
-            ret: ImageType::Unit,
-            local_count: 1,
-            spans: spans(&code),
-            code,
-        })
-        .expect("every site operand is live");
-    draft.add_export(ExportId::of_local("", "f"), f);
-    assert_eq!(code_of(&draft.encode().unwrap().bytes), "image.table");
-}
+// The out-of-range record parameter type defect is refused by the producer since the coherence hoist;
+// its pin lives in `legacy_ok_pins.rs`, so no duplicate probe is kept here.
 
 /// An optional parameter type is outside the parameter subset and rejects at the
 /// table phase.
@@ -4460,22 +4315,8 @@ fn record_field_with_optional_type_rejects() {
     assert_eq!(code_of(&bytes), "image.table");
 }
 
-#[test]
-fn record_field_with_out_of_range_enum_index_rejects() {
-    // An enum-typed field naming an index past the (empty) enum table rejects.
-    let bytes = record_table_image(|draft| {
-        let name = draft.intern_string("x");
-        vec![FieldDef {
-            name,
-            ty: ImageType::Enum {
-                idx: 3,
-                optional: false,
-            },
-            required: true,
-        }]
-    });
-    assert_eq!(code_of(&bytes), "image.table");
-}
+// The out-of-range field enum ordinal defect is refused by the producer since the coherence hoist;
+// its pin lives in `legacy_ok_pins.rs`, so no duplicate probe is kept here.
 
 #[test]
 fn value_type_cycle_through_a_record_field_rejects() {
@@ -4551,23 +4392,8 @@ fn value_graph_code(draft: &mut ImageDraft) -> String {
     code_of(&draft.encode().unwrap().bytes)
 }
 
-#[test]
-fn record_field_with_out_of_range_record_index_rejects() {
-    // A struct-typed field naming a record index past the RECORD-TYPES table rejects
-    // before the acyclicity pass.
-    let bytes = record_table_image(|draft| {
-        let name = draft.intern_string("x");
-        vec![FieldDef {
-            name,
-            ty: ImageType::Record {
-                idx: 5,
-                optional: false,
-            },
-            required: true,
-        }]
-    });
-    assert_eq!(code_of(&bytes), "image.table");
-}
+// The out-of-range field record ordinal defect is refused by the producer since the coherence hoist;
+// its pin lives in `legacy_ok_pins.rs`, so no duplicate probe is kept here.
 
 #[test]
 fn self_referential_record_field_rejects() {
@@ -4702,6 +4528,11 @@ fn enum_payload_with_a_collection_leaf_rejects_at_table() {
     let mut draft = ImageDraft::new();
     let ename = draft.intern_string("E");
     let vname = draft.intern_string("hold");
+    // The collection row exists, so the ordinal is in range and the producer's
+    // coherence walk admits it: the KIND law stays the verifier's own.
+    draft.add_collection_type(CollectionTypeDef::List {
+        elem: ImageType::scalar(Scalar::Int),
+    });
     draft.add_enum_type(EnumTypeDef {
         name: ename,
         variants: vec![VariantDef {

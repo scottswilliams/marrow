@@ -97,33 +97,56 @@ impl ConstToken {
 /// The string remap: the one owner of reads from the string sort map. Writers receive
 /// this provider and obtain per-reference [`StringToken`]s; the map's values never
 /// leave it in readable form.
-pub(crate) struct StringRemap<'a>(&'a [u16]);
+///
+/// The counting instantiation carries no map and yields the constant token: a token is
+/// two bytes whatever its value, so a counted section's length cannot depend on the
+/// sort — which is what lets the measure core count every section before sorting
+/// anything, with the counted==emitted KATs as the executable proof.
+pub(crate) struct StringRemap<'a>(Option<&'a [u16]>);
 
 impl<'a> StringRemap<'a> {
     pub(crate) fn new(map: &'a [u16]) -> Self {
-        Self(map)
+        Self(Some(map))
     }
 
-    /// The token for one drafted string reference. An id outside the pool panics
-    /// exactly as the raw map indexing it replaces did.
+    /// The allocation-free counting instantiation: every token is the constant token.
+    /// Its callers run strictly after the coherence walk has proved every reference in
+    /// range, so no lookup is skipped that could have refused one.
+    pub(crate) fn counting() -> Self {
+        Self(None)
+    }
+
+    /// The token for one drafted string reference. Under a sorted map, an id outside
+    /// the pool panics exactly as the raw map indexing it replaces did.
     pub(crate) fn token(&self, id: StrId) -> StringToken {
-        StringToken(self.0[id.raw() as usize])
+        StringToken(match self.0 {
+            Some(map) => map[id.raw() as usize],
+            None => 0,
+        })
     }
 }
 
 /// The constant remap: the one owner of reads from the constant sort map. Instruction
 /// operands carry raw drafted indices, so the lookup takes the raw index rather than a
-/// typed id.
-pub(crate) struct ConstRemap<'a>(&'a [u16]);
+/// typed id. The counting instantiation mirrors [`StringRemap::counting`].
+pub(crate) struct ConstRemap<'a>(Option<&'a [u16]>);
 
 impl<'a> ConstRemap<'a> {
     pub(crate) fn new(map: &'a [u16]) -> Self {
-        Self(map)
+        Self(Some(map))
     }
 
-    /// The token for one drafted constant reference. An index outside the pool panics
-    /// exactly as the raw map indexing it replaces did.
+    /// The allocation-free counting instantiation: every token is the constant token.
+    pub(crate) fn counting() -> Self {
+        Self(None)
+    }
+
+    /// The token for one drafted constant reference. Under a sorted map, an index
+    /// outside the pool panics exactly as the raw map indexing it replaces did.
     pub(crate) fn token(&self, raw: u16) -> ConstToken {
-        ConstToken(self.0[raw as usize])
+        ConstToken(match self.0 {
+            Some(map) => map[raw as usize],
+            None => 0,
+        })
     }
 }

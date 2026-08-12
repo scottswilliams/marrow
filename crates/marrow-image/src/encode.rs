@@ -23,10 +23,9 @@
 //! `u16` or `u8` the wire spells it in. Every such conversion below rests on the same
 //! two-part derivation, stated once here rather than at each site:
 //!
-//! 1. [`ImageDraft::check_bounds`] runs before any section is built (through
-//!    [`LegacyFullDraftCoherencePreflight`]) and refuses a draft whose row count
-//!    exceeds the §E bound for that table, so the value converted is at most that
-//!    bound.
+//! 1. The measure core's coherence and policy walks (`crate::measure`) run before any
+//!    section is counted or built and refuse a draft whose row count exceeds the §E
+//!    bound for that table, so the value converted is at most that bound.
 //! 2. The `const _` encoded-width block in [`bounds`] asserts at compile time that
 //!    every one of those bounds fits the width its count is spelled in, so widening a
 //!    bound past its encoded width breaks the build rather than truncating a count in
@@ -37,63 +36,25 @@
 //! derivation at their site.
 
 use crate::bounds;
-use crate::digest::{ImageId, image_id};
+use crate::digest::ImageId;
 use crate::draft::{CollectionTypeDef, ConstValue, ImageBuildError, ImageDraft, KeyColumn};
-use crate::durable_id::{
-    DurableContractId, DurableGraphTooLarge, DurableIndexComponent, DurableIndexShape,
-};
+use crate::durable_id::{DurableGraphTooLarge, DurableIndexComponent, DurableIndexShape};
 use crate::instr::Instr;
-use crate::product::{
-    DeclarationMemberShape, DeclarationNode, ProductClaimConflict, ProductDeclarationGraph,
-};
+use crate::measure::LegacyV0MeasureCore;
+use crate::product::{DeclarationMemberShape, DeclarationNode, ProductDeclarationGraph};
 use crate::remap::{ConstRemap, StringRemap};
 use crate::semantic::{SemanticPath, SemanticTarget};
 use crate::ty::ImageType;
 use crate::value_dag::{
-    CanonicalValueShapeDag, ImageByteSink, ValueShapeView, ValueShapeWireForm, expand, push_u16,
+    CanonicalValueShapeDag, ImageByteSink, ValueShapeWireForm, expand, push_u16,
 };
 
-/// Container magic and version.
-const MAGIC: &[u8; 4] = b"MWI\0";
-const VERSION: u8 = 0x00;
-const SECTION_COUNT: u8 = 10;
-
-/// The length of a DURABLE section body, counted without building it.
-///
-/// Every other section's size follows from row counts the draft already bounds. A durable
-/// field value is different: the wire spells a value shape as its full expansion, and a
-/// shape shared across nesting levels expands geometrically in its depth, so a draft well
-/// inside every declared bound can still describe a body larger than any image may be.
-///
-/// This sink writes nothing. It saturates one byte past the whole-image ceiling rather
-/// than at it, so "full" and "fits" stay distinguishable, and [`expand`] returns the
-/// moment it saturates — the work an over-deep shape costs is the bytes the ceiling
-/// admits, not the bytes its expansion would have produced, and no buffer, hash input, or
-/// output is allocated to find that out.
-#[derive(Default)]
-struct DurableBodyLowerBound(usize);
-
-impl DurableBodyLowerBound {
-    /// Whether the body alone, contract identity included, is larger than any image may
-    /// be.
-    fn over_ceiling(&self) -> bool {
-        self.0.saturating_add(DurableContractId::BYTES) > bounds::MAX_IMAGE_BYTES
-    }
-}
-
-impl ImageByteSink for DurableBodyLowerBound {
-    fn push(&mut self, _byte: u8) {
-        self.0 += 1;
-    }
-
-    fn extend_bytes(&mut self, bytes: &[u8]) {
-        self.0 += bytes.len();
-    }
-
-    fn is_full(&self) -> bool {
-        self.0 > bounds::MAX_IMAGE_BYTES
-    }
-}
+/// Container magic, version, and envelope widths, shared with the measure core.
+pub(crate) const MAGIC: &[u8; 4] = b"MWI\0";
+pub(crate) const VERSION: u8 = 0x00;
+pub(crate) const SECTION_COUNT: u8 = 10;
+/// The fixed image header: magic, version, and the 32-byte [`ImageId`] slot.
+pub(crate) const HEADER_BYTES: usize = 37;
 
 /// The encoded image plus its digest.
 #[derive(Debug, Clone)]
@@ -102,335 +63,22 @@ pub struct EncodedImage {
     pub image_id: ImageId,
 }
 
-/// A draft that has passed the complete legacy producer-side policy and coherence
-/// journey — every result the old encoder could reach before the whole-image ceiling,
-/// in the order the old encoder reached it.
-///
-/// **Temporary bridge.** Its only caller is [`ImageDraft::encode`]; it exists so
-/// [`LegacyDurableBodyLowerBoundFence`] may refuse an over-ceiling DURABLE body
-/// *early*, without letting the refusal overtake a result the old encoder reported
-/// first. Nothing else may mint one, and the borrow binds it to the one draft it
-/// examined.
-///
-/// **Deletion condition.** This owner exists only to preserve the order in which the old
-/// encoder reported producer-side results. It goes when the encoder decides every
-/// producer-side result from the draft alone, before building any section, so that no
-/// outcome depends on replaying a build order.
-///
-/// # What it replays, in order
-///
-/// 1. [`ImageDraft::check_bounds`] — every fixed §E count and width, the Product claim
-///    conflict, the declaration graph's member/depth/value-depth walk, the value-shape
-///    arena's fan-out walk, and the per-occurrence key/index widths.
-/// 2. The application identity a non-empty durable graph requires.
-/// 3. The site table's path projection, streamed and retained nowhere.
-///
-/// The one remaining producer-side result — CodeBytes, and its sibling operand
-/// references — keeps its own position inside [`ImageDraft::encode`] rather than moving
-/// here: it is discovered before the body's ceiling result there, which is exactly where
-/// it was discovered when the body was built first and refused last.
-struct LegacyFullDraftCoherencePreflight<'a>(&'a ImageDraft);
-
-impl<'a> LegacyFullDraftCoherencePreflight<'a> {
-    fn run(draft: &'a ImageDraft) -> Result<Self, ImageBuildError> {
-        draft.check_bounds()?;
-        // A non-empty durable graph is anchored by the application's ledger id, and the
-        // old encoder demanded it at the head of the DURABLE section, before any member
-        // row. Demanding it here reports the same error at the same position.
-        if !draft.root_occurrences().is_empty() && draft.application_identity().is_none() {
-            return Err(ImageBuildError::InvalidReference("application identity"));
-        }
-        // The projection is walked once per reader — here, by the body's lower bound, and
-        // by the body itself — rather than materialized once and held, because a retained
-        // table is `MAX_SITES` owned paths live for the whole encode while a walk costs
-        // only the rows it visits and retains none of them.
-        draft.project_sites(|_| {})?;
-        Ok(Self(draft))
-    }
-}
-
-/// A draft whose DURABLE section body, contract identity included, is small enough for
-/// an image to carry.
-///
-/// **Temporary bridge.** The body's length is counted through
-/// [`DurableBodyLowerBound`] before a single byte of it is built, so a body no image
-/// could carry is refused with the existing [`ImageBuildError::ImageTooLarge`] before any
-/// expansion buffer, contract preimage, hash input, or output is allocated, and only
-/// fitting input reaches the old encoder.
-///
-/// The fence bounds *this producer's* peak allocation, which is what makes the phase
-/// maxima below statable. It does not bound what any other caller of
-/// [`DurableContractView::contract_id`] can ask for, and it never could: a
-/// view is a view over an arena, and this type has no reach into one. That the
-/// contract hash is never computed over bytes no image can carry is a property of the
-/// identity owner's own ceiling on its canonical payload, which holds for every caller
-/// including this one.
-///
-/// # `B_LEGACY_DRAFT` — the retained baseline this bridge stands on
-///
-/// `B_LEGACY_DRAFT[target]` is the retained [`ImageDraft`] baseline every encode carries:
-/// the string pool and its bytes, the constant pool, the record/enum/collection tables,
-/// the canonical Product declaration table with its member rows and its one
-/// [`CanonicalValueShapeDag`], the root-occurrence table with its key tuples and managed
-/// indexes, the site-demand plan with its retained rows, the function table with its
-/// instruction tapes and span tables, the export table, and the test-entry table —
-/// each at its own `MAX_*` bound in [`crate::bounds`], plus the handles and backing
-/// allocations `Vec` and `HashMap` reserve for them. It is live throughout
-/// [`ImageDraft::encode`] and so is stated once, as a baseline, never as a per-phase term.
-/// It dies with the draft owner it describes, at a later row.
-///
-/// The contract identity contributes no term of its own. It is computed by streaming the
-/// canonical payload into the hash, over a length the identity owner counts without
-/// writing it, so no preimage buffer coexists with the body at any size — which is why
-/// this bridge no longer states a peak-allocation maximum.
-///
-/// **Deletion condition.** This owner exists only to refuse an over-ceiling body before
-/// the old encoder allocates one. It goes when the encoder measures every section against
-/// the whole-image ceiling through the same codec that writes it, and does so before it
-/// allocates — at which point there is no unmeasured allocation left for a separate fence
-/// to stand in front of.
-struct LegacyDurableBodyLowerBoundFence<'a> {
-    draft: &'a ImageDraft,
-    /// The exact body length the count measured, so the body is allocated once at its
-    /// final size. A `Vec` grown by doubling would transiently hold two buffers and up
-    /// to twice the bytes, which is exactly the term phase (A) above states.
-    body_len: usize,
-}
-
-impl<'a> LegacyDurableBodyLowerBoundFence<'a> {
-    /// Count the DURABLE body a coherent draft would write, and admit only a body an
-    /// image can carry.
-    fn admit(
-        preflight: LegacyFullDraftCoherencePreflight<'a>,
-        strings: &StringRemap<'_>,
-    ) -> Result<Self, ImageBuildError> {
-        let draft = preflight.0;
-        let mut lower_bound = DurableBodyLowerBound::default();
-        draft.write_durable_body(&mut lower_bound, strings)?;
-        if lower_bound.over_ceiling() {
-            return Err(ImageBuildError::ImageTooLarge);
-        }
-        Ok(Self {
-            draft,
-            body_len: lower_bound.0,
-        })
-    }
-
-    /// The DURABLE section body: the graph the lower bound just measured, written this
-    /// time, and closed by the 32-byte durable-contract identity.
-    ///
-    /// This is the only site in the crate that mints a contract identity, so the identity
-    /// exists only for a graph that already fits.
-    fn encode_body(self, strings: &StringRemap<'_>) -> Result<Vec<u8>, ImageBuildError> {
-        let mut body = Vec::with_capacity(self.body_len + DurableContractId::BYTES);
-        self.draft.write_durable_body(&mut body, strings)?;
-        let identity = self
-            .draft
-            .contract_view()
-            .contract_id()
-            .map_err(|DurableGraphTooLarge| ImageBuildError::ImageTooLarge)?;
-        body.extend_from_slice(identity.bytes());
-        Ok(body)
-    }
-}
-
 impl ImageDraft {
     /// Encode the draft into canonical container bytes, or fail with a producer-side
-    /// [`ImageBuildError`] when a §E bound is exceeded or a reference is invalid.
+    /// [`ImageBuildError`] when a reference is incoherent, a §E bound is exceeded, or
+    /// the measured image cannot fit.
+    ///
+    /// The thin driver over the measure core's four affine steps: coherence, the
+    /// policy walk, capped measurement, and planned emission (`crate::measure`).
     pub fn encode(&self) -> Result<EncodedImage, ImageBuildError> {
-        let preflight = LegacyFullDraftCoherencePreflight::run(self)?;
-
-        // Row law: the canonical string and constant orders are one permutation each
-        // over the retained base rows, and every reference is rewritten through the
-        // permutation's inverse — read by the writers only as opaque tokens.
-        let string_order = self.string_permutation();
-        let str_map = remap_of(&string_order);
-        let strings = StringRemap::new(&str_map);
-        let const_order = self.const_permutation(&str_map);
-        let const_map = remap_of(&const_order);
-        let consts = ConstRemap::new(&const_map);
-
-        // CodeBytes and its sibling operand references are discovered before the
-        // whole-image ceiling result, so they are computed before the body is measured.
-        // Their section lands at 0x05 below.
-        let mut functions = Vec::new();
-        let per_fn = self.encode_functions(&mut functions, &strings, &consts)?;
-
-        // The DURABLE body is the one section whose size is not bounded by the draft's
-        // own row counts: a value shape's wire form is its expansion, and a shape shared
-        // across levels expands geometrically in its depth. Its length is therefore
-        // counted before it is built, and a body no image could carry is refused here,
-        // with the same ImageBytes result it has always drawn.
-        let durable =
-            LegacyDurableBodyLowerBoundFence::admit(preflight, &strings)?.encode_body(&strings)?;
-
-        let mut tail = Vec::new();
-        tail.push(SECTION_COUNT);
-        push_section(
-            &mut tail,
-            0x01,
-            section_body(|body| self.encode_strings(body, string_order.iter().copied())),
-        )?;
-        push_section(
-            &mut tail,
-            0x02,
-            section_body(|body| self.encode_types(body, &strings)),
-        )?;
-        push_section(&mut tail, 0x03, durable)?;
-        push_section(
-            &mut tail,
-            0x04,
-            section_body(|body| self.encode_consts(body, &strings, const_order.iter().copied())),
-        )?;
-        push_section(&mut tail, 0x05, functions)?;
-        let export_order = self.export_permutation();
-        push_section(
-            &mut tail,
-            0x06,
-            section_body(|body| self.encode_exports(body, export_order.iter().copied())),
-        )?;
-        push_section(
-            &mut tail,
-            0x07,
-            section_body(|body| self.encode_spans(body, &per_fn)),
-        )?;
-        // The test-entry permutation reads the raw sort map through its comparator, so
-        // it is computed at the section's own position: a name reference outside the
-        // pool keeps reporting exactly where the old sorted copy reported it.
-        let test_entry_order = self.test_entry_permutation(&str_map);
-        push_section(
-            &mut tail,
-            0x08,
-            section_body(|body| {
-                self.encode_test_entries(body, &strings, test_entry_order.iter().copied())
-            }),
-        )?;
-        push_section(
-            &mut tail,
-            0x09,
-            section_body(|body| self.encode_enums(body, &strings)),
-        )?;
-        push_section(
-            &mut tail,
-            0x0A,
-            section_body(|body| self.encode_collections(body)),
-        )?;
-
-        let id = image_id(&tail);
-        let mut bytes = Vec::with_capacity(37 + tail.len());
-        bytes.extend_from_slice(MAGIC);
-        bytes.push(VERSION);
-        bytes.extend_from_slice(&id.0);
-        bytes.extend_from_slice(&tail);
-
-        if bytes.len() > bounds::MAX_IMAGE_BYTES {
-            return Err(ImageBuildError::ImageTooLarge);
-        }
-        Ok(EncodedImage {
-            bytes,
-            image_id: id,
-        })
-    }
-
-    fn check_bounds(&self) -> Result<(), ImageBuildError> {
-        if self.strings().len() > bounds::MAX_STRINGS {
-            return Err(ImageBuildError::TooManyStrings);
-        }
-        for text in self.strings() {
-            if text.len() > bounds::MAX_STRING_BYTES {
-                return Err(ImageBuildError::StringTooLong);
-            }
-        }
-        if self.consts().len() > bounds::MAX_CONSTS {
-            return Err(ImageBuildError::TooManyConsts);
-        }
-        if self.types().len() > bounds::MAX_TYPES {
-            return Err(ImageBuildError::TooManyTypes);
-        }
-        for record in self.types() {
-            if record.fields.len() > bounds::MAX_RECORD_FIELDS {
-                return Err(ImageBuildError::TooManyFields);
-            }
-        }
-        if self.enums().len() > bounds::MAX_ENUMS {
-            return Err(ImageBuildError::TooManyEnums);
-        }
-        if self.collections().len() > bounds::MAX_COLLECTIONS {
-            return Err(ImageBuildError::TooManyCollections);
-        }
-        for enum_def in self.enums() {
-            if enum_def.variants.len() > bounds::MAX_VARIANTS {
-                return Err(ImageBuildError::TooManyVariants);
-            }
-            for variant in &enum_def.variants {
-                if variant.payload.len() > bounds::MAX_PAYLOAD_FIELDS {
-                    return Err(ImageBuildError::TooManyPayloadFields);
-                }
-            }
-        }
-        // A Product identity that two occurrences claim differently is two declarations
-        // wearing one identity. The draft records the first such conflict rather than
-        // canonicalizing one of them away; refuse to encode it.
-        if let Some(conflict) = self.product_conflict() {
-            return Err(match conflict {
-                ProductClaimConflict::Graph(_) => ImageBuildError::ProductGraphConflict,
-                ProductClaimConflict::EntryRecord(_) => ImageBuildError::ProductEntryRecordConflict,
-            });
-        }
-        if self.root_occurrences().len() > bounds::MAX_ROOTS {
-            return Err(ImageBuildError::TooManyRoots);
-        }
-        // The member tree is a Product declaration fact, so it is validated once per
-        // declaration however many roots project it; the key tuple and managed indexes
-        // are occurrence facts and are validated per root.
-        for declaration in self.product_declarations() {
-            validate_declaration_graph(declaration.graph(), self.value_shapes())?;
-        }
-        // Every distinct value shape is measured once, whatever the number of fields
-        // that reference it: a shape shared by a thousand fields is one node here.
-        validate_value_shapes(self.value_shapes())?;
-        for occurrence in self.root_occurrences() {
-            if occurrence.keys().len() > bounds::MAX_KEY_COLUMNS {
-                return Err(ImageBuildError::TooManyKeyColumns);
-            }
-            if occurrence.indexes().len() > bounds::MAX_INDEXES {
-                return Err(ImageBuildError::TooManyIndexes);
-            }
-            for index in occurrence.indexes() {
-                if index.components.len() > bounds::MAX_INDEX_COMPONENTS {
-                    return Err(ImageBuildError::TooManyIndexComponents);
-                }
-            }
-        }
-        if self.site_demand() > bounds::MAX_SITES {
-            return Err(ImageBuildError::TooManySites);
-        }
-        if self.functions().len() > bounds::MAX_FUNCTIONS {
-            return Err(ImageBuildError::TooManyFunctions);
-        }
-        if self.export_count() > bounds::MAX_EXPORTS {
-            return Err(ImageBuildError::TooManyExports);
-        }
-        if self.test_entry_count() > bounds::MAX_TEST_ENTRIES {
-            return Err(ImageBuildError::TooManyTestEntries);
-        }
-        for function in self.functions() {
-            if function.params.len() > bounds::MAX_PARAMS {
-                return Err(ImageBuildError::TooManyParams);
-            }
-            if (function.local_count as usize) > bounds::MAX_LOCALS {
-                return Err(ImageBuildError::TooManyLocals);
-            }
-            if (function.local_count as usize) < function.params.len() {
-                return Err(ImageBuildError::LocalCountBelowParams);
-            }
-        }
-        Ok(())
+        let coherent = LegacyV0MeasureCore::coherence(self)?;
+        let plan = coherent.policy()?.measure()?;
+        plan.emit_image()
     }
 
     /// The canonical string permutation (row law): the base-row indices in emitted
     /// order, computed by the pool's one byte comparator over the retained base rows.
-    fn string_permutation(&self) -> Vec<usize> {
+    pub(crate) fn string_permutation(&self) -> Vec<usize> {
         let mut order: Vec<usize> = (0..self.strings().len()).collect();
         order.sort_by(|&a, &b| {
             self.strings()[a]
@@ -442,7 +90,7 @@ impl ImageDraft {
 
     /// The canonical constant permutation (row law), ordered by each base row's
     /// `(tag, wire-byte)` sort key with text payloads resolved to final string indices.
-    fn const_permutation(&self, str_map: &[u16]) -> Vec<usize> {
+    pub(crate) fn const_permutation(&self, str_map: &[u16]) -> Vec<usize> {
         let mut order: Vec<usize> = (0..self.consts().len()).collect();
         order.sort_by(|&a, &b| {
             self.consts()[a]
@@ -454,7 +102,7 @@ impl ImageDraft {
 
     /// The canonical export permutation (row law): the base-row indices ascending by
     /// the 32 [`crate::export_id::ExportId`] bytes.
-    fn export_permutation(&self) -> Vec<usize> {
+    pub(crate) fn export_permutation(&self) -> Vec<usize> {
         let mut order: Vec<usize> = (0..self.export_count()).collect();
         order.sort_by(|&a, &b| {
             self.export_rows()[a]
@@ -467,7 +115,11 @@ impl ImageDraft {
 
     /// Encode the STRINGS table (section 0x01): a count, then per row its
     /// length-prefixed text, iterating the base rows in the order `order` states.
-    fn encode_strings(&self, sink: &mut impl ImageByteSink, order: impl Iterator<Item = usize>) {
+    pub(crate) fn encode_strings(
+        &self,
+        sink: &mut impl ImageByteSink,
+        order: impl Iterator<Item = usize>,
+    ) {
         push_u16(sink, self.strings().len() as u16);
         for row in order {
             let text = &self.strings()[row];
@@ -479,7 +131,7 @@ impl ImageDraft {
     /// Encode the CONSTS table (section 0x04): a count, then per row its tag and
     /// payload, iterating the base rows in the order `order` states. A text payload is
     /// its remapped string reference, written as an opaque token.
-    fn encode_consts(
+    pub(crate) fn encode_consts(
         &self,
         sink: &mut impl ImageByteSink,
         strings: &StringRemap<'_>,
@@ -516,7 +168,7 @@ impl ImageDraft {
         }
     }
 
-    fn encode_types(&self, sink: &mut impl ImageByteSink, strings: &StringRemap<'_>) {
+    pub(crate) fn encode_types(&self, sink: &mut impl ImageByteSink, strings: &StringRemap<'_>) {
         push_u16(sink, self.types().len() as u16);
         for record in self.types() {
             strings.token(record.name).emit(sink);
@@ -534,7 +186,7 @@ impl ImageDraft {
     /// `category` flag byte, a payload count, and one bare-`ImageType` reference per
     /// payload leaf in declaration order (a scalar tag, or a tag plus a big-endian
     /// `u16` index for a record or enum leaf).
-    fn encode_enums(&self, sink: &mut impl ImageByteSink, strings: &StringRemap<'_>) {
+    pub(crate) fn encode_enums(&self, sink: &mut impl ImageByteSink, strings: &StringRemap<'_>) {
         push_u16(sink, self.enums().len() as u16);
         for enum_def in self.enums() {
             strings.token(enum_def.name).emit(sink);
@@ -554,7 +206,7 @@ impl ImageDraft {
     /// a one-byte kind tag (`0x00` List, `0x01` Map) followed by its bare-`ImageType`
     /// element reference (List) or key then value references (Map). Element/key/value
     /// references may themselves be `Collection` tags into an earlier COLLTYPES row.
-    fn encode_collections(&self, sink: &mut impl ImageByteSink) {
+    pub(crate) fn encode_collections(&self, sink: &mut impl ImageByteSink) {
         push_u16(sink, self.collections().len() as u16);
         for coll in self.collections() {
             match coll {
@@ -576,7 +228,7 @@ impl ImageDraft {
     /// One owner writes the section for both of its readers: the lower bound that only
     /// counts the bytes, and the buffer that keeps them. A body admitted by the count is
     /// therefore the body that is built, because it is the same walk over the same rows.
-    fn write_durable_body(
+    pub(crate) fn write_durable_body(
         &self,
         sink: &mut impl ImageByteSink,
         strings: &StringRemap<'_>,
@@ -629,7 +281,7 @@ impl ImageDraft {
         })
     }
 
-    fn encode_functions(
+    pub(crate) fn encode_functions(
         &self,
         sink: &mut impl ImageByteSink,
         strings: &StringRemap<'_>,
@@ -661,7 +313,11 @@ impl ImageDraft {
     /// entry, iterating the base rows in the order `order` states — strictly ascending
     /// id order under the canonical permutation. The id is the only export key carried;
     /// the source name is not, so the VM can only dispatch on a verified id.
-    fn encode_exports(&self, sink: &mut impl ImageByteSink, order: impl Iterator<Item = usize>) {
+    pub(crate) fn encode_exports(
+        &self,
+        sink: &mut impl ImageByteSink,
+        order: impl Iterator<Item = usize>,
+    ) {
         push_u16(sink, self.export_count() as u16);
         for row in order {
             let export = &self.export_rows()[row];
@@ -675,7 +331,7 @@ impl ImageDraft {
     /// the order `order` states — strictly ascending remapped-name order under the
     /// canonical permutation. Names are unique across the project, so the sort is
     /// total and the verifier rechecks the strict ordering.
-    fn encode_test_entries(
+    pub(crate) fn encode_test_entries(
         &self,
         sink: &mut impl ImageByteSink,
         strings: &StringRemap<'_>,
@@ -702,7 +358,7 @@ impl ImageDraft {
     /// span count can be accepted. The assertion below fails the build if a later
     /// ceiling widening breaks that derivation, at which point this count needs a
     /// bound and a typed refusal of its own rather than a comment.
-    fn encode_spans(&self, sink: &mut impl ImageByteSink, per_fn: &[CodeLayout]) {
+    pub(crate) fn encode_spans(&self, sink: &mut impl ImageByteSink, per_fn: &[CodeLayout]) {
         const SPAN_ROW_BYTES: usize = 12;
         const _: () = assert!(
             bounds::MAX_IMAGE_BYTES / SPAN_ROW_BYTES < u16::MAX as usize,
@@ -722,9 +378,17 @@ impl ImageDraft {
 }
 
 /// The byte offset of each instruction plus the total code length.
-struct CodeLayout {
+pub(crate) struct CodeLayout {
     offsets: Vec<u32>,
     total_len: u32,
+}
+
+/// One function's laid-out code length: the sum of the per-instruction widths the
+/// one width owner ([`Instr::encoded_len`]) states — the same widths `code_layout`
+/// accumulates into offsets. The policy walk reads the length without materializing
+/// the offsets.
+pub(crate) fn laid_out_code_len(code: &[Instr]) -> u32 {
+    code.iter().map(|instr| instr.encoded_len() as u32).sum()
 }
 
 /// Lay out one function's code: each instruction's byte offset, and the total width.
@@ -861,19 +525,12 @@ fn encode_code(
 /// The permutation is the base-row indices sorted into emitted order, so inverting it
 /// is the whole remap; the narrowing rests on the same §E-bound derivation the module
 /// doc states for every row count.
-fn remap_of(permutation: &[usize]) -> Vec<u16> {
+pub(crate) fn remap_of(permutation: &[usize]) -> Vec<u16> {
     let mut map = vec![0u16; permutation.len()];
     for (final_index, &base) in permutation.iter().enumerate() {
         map[base] = final_index as u16;
     }
     map
-}
-
-/// Build one section body through its sink-generic writer.
-fn section_body(write: impl FnOnce(&mut Vec<u8>)) -> Vec<u8> {
-    let mut body = Vec::new();
-    write(&mut body);
-    body
 }
 
 /// Append one section: `u8(id) ‖ u32(body_len) ‖ body`.
@@ -886,7 +543,11 @@ fn section_body(write: impl FnOnce(&mut Vec<u8>)) -> Vec<u8> {
 /// is the remaining one: its rows are producer-supplied and no bound caps their number
 /// (see `encode_spans`), so this length rests on the producer, which would have to hold
 /// four gibibytes of spans in memory to reach the prefix width.
-fn push_section(out: &mut Vec<u8>, id: u8, body: Vec<u8>) -> Result<(), ImageBuildError> {
+pub(crate) fn push_section(
+    out: &mut Vec<u8>,
+    id: u8,
+    body: Vec<u8>,
+) -> Result<(), ImageBuildError> {
     out.push(id);
     push_u32(out, body.len() as u32);
     out.extend_from_slice(&body);
@@ -1005,92 +666,6 @@ fn encode_durable_indexes(body: &mut impl ImageByteSink, indexes: &[DurableIndex
             body.extend_bytes(id.bytes());
         }
     }
-}
-
-/// Recheck the durable member-graph bounds a well-formed declaration must satisfy: total
-/// member rows within [`bounds::MAX_DURABLE_MEMBERS`] and nesting within
-/// [`bounds::MAX_DURABLE_DEPTH`]. A branch's key tuple is bounded by the same
-/// [`bounds::MAX_KEY_COLUMNS`] as a root's.
-///
-/// Every row carries its parent's ordinal and a parent always precedes its children, so
-/// this is one forward pass over the rows rather than a descent of the graph. A graph that
-/// exceeded the member bound holds only the prefix the flattening was willing to
-/// materialize; it reports the exceeded bound here and is never encoded.
-///
-/// The nesting check is **defense in depth**: no route builds an over-deep row, because
-/// [`ProductDeclarationGraph::from_commands`] refuses an over-deep command vector before
-/// materializing one. It is kept because this pass is the encoder's own recheck of what it
-/// is about to spell, and because the descent below relies on the bound.
-fn validate_declaration_graph(
-    graph: &ProductDeclarationGraph,
-    values: &CanonicalValueShapeDag,
-) -> Result<(), ImageBuildError> {
-    if graph.over_member_bound() {
-        return Err(ImageBuildError::TooManyDurableMembers);
-    }
-    for (node, depth) in graph.rows().iter().zip(graph.depths()) {
-        if depth > bounds::MAX_DURABLE_DEPTH {
-            return Err(ImageBuildError::DurableTreeTooDeep);
-        }
-        match node.shape() {
-            // A field value rooted at this node occupies `depth(node)` levels, whatever
-            // depth the same node reaches under some other field.
-            DeclarationMemberShape::Field { value, .. } => {
-                if values.depth(*value) > bounds::MAX_DURABLE_VALUE_DEPTH {
-                    return Err(ImageBuildError::DurableValueTooDeep);
-                }
-            }
-            DeclarationMemberShape::Group { .. } => {}
-            DeclarationMemberShape::Branch { keys, .. } => {
-                if keys.len() > bounds::MAX_KEY_COLUMNS {
-                    return Err(ImageBuildError::TooManyKeyColumns);
-                }
-            }
-        }
-    }
-    Ok(())
-}
-
-/// Recheck every distinct durable value shape's fan-out against the value-type bounds,
-/// so a well-formed draft always encodes within the limits the verifier rechecks
-/// (§ law 9). Nesting depth is decided per durable field, at its value's root node, by
-/// [`validate_declaration_graph`].
-///
-/// This is one pass over the arena: each distinct shape is measured once however many
-/// fields, structs, or enum payloads reference it, and no occurrence is expanded.
-///
-/// # Declared precondition
-///
-/// The draft's arena is validated **as a whole**, not through the fields that reference
-/// it. A node no declaration reaches is measured here like any other, and an over-bound
-/// one refuses the encode. That is deliberate: the arena is the draft's own retained
-/// state, so a node past a value bound is a producer defect wherever it came from, and
-/// deciding it by reachability would mean the same draft encodes or refuses depending on
-/// a traversal — while costing a reachability walk to learn something no correct producer
-/// can produce. Every downstream owner may therefore assume that an encoded arena is
-/// within the value bounds, whatever part of it a walk happens to visit.
-fn validate_value_shapes(values: &CanonicalValueShapeDag) -> Result<(), ImageBuildError> {
-    for node in values.nodes() {
-        match values.view(node) {
-            ValueShapeView::Scalar(_) => {}
-            ValueShapeView::Struct(leaves) => {
-                if leaves.len() > bounds::MAX_STRUCT_LEAVES {
-                    return Err(ImageBuildError::TooManyStructLeaves);
-                }
-            }
-            ValueShapeView::Enum { members, .. } => {
-                if members.len() > bounds::MAX_VARIANTS {
-                    return Err(ImageBuildError::TooManyVariants);
-                }
-                for member in members {
-                    if member.payload().len() > bounds::MAX_PAYLOAD_FIELDS {
-                        return Err(ImageBuildError::TooManyPayloadFields);
-                    }
-                }
-            }
-        }
-    }
-    Ok(())
 }
 
 fn push_u32(out: &mut impl ImageByteSink, value: u32) {
@@ -1259,8 +834,23 @@ mod counted_equals_emitted {
         for (export, func) in exports.into_iter().rev().zip(funcs.iter()) {
             draft.add_export(export, *func);
         }
-        draft.add_test_entry(zeta, funcs[0]);
-        draft.add_test_entry(alpha, funcs[1]);
+        // Test entries name their own unexported zero-parameter unit functions — the
+        // test relations the coherence walk enforces — under names whose remapped
+        // order disagrees with insertion order.
+        for name in [zeta, alpha] {
+            let test_fn = draft
+                .add_function(FunctionDef {
+                    name,
+                    source,
+                    params: Vec::new(),
+                    ret: ImageType::Unit,
+                    local_count: 0,
+                    code: vec![Instr::Return],
+                    spans: Vec::new(),
+                })
+                .expect("no site operand needs validating");
+            draft.add_test_entry(name, test_fn);
+        }
         draft
     }
 
@@ -1395,12 +985,6 @@ mod counted_equals_emitted {
         (string_order, str_map, const_order, const_map)
     }
 
-    /// A same-width all-zero map: every token it yields is the constant token, minted
-    /// through the one production constructor.
-    fn constant_map(map: &[u16]) -> Vec<u16> {
-        vec![0; map.len()]
-    }
-
     /// The KATs prove nothing over empty row sets, so the fixtures must be populated
     /// and must encode.
     #[test]
@@ -1440,9 +1024,8 @@ mod counted_equals_emitted {
             let (_, str_map, ..) = canonical(&draft);
             let mut emitted = Vec::new();
             draft.encode_types(&mut emitted, &StringRemap::new(&str_map));
-            let constant = constant_map(&str_map);
             let mut counted = CountingSink::default();
-            draft.encode_types(&mut counted, &StringRemap::new(&constant));
+            draft.encode_types(&mut counted, &StringRemap::counting());
             assert_eq!(counted.0, emitted.len());
         }
     }
@@ -1455,10 +1038,9 @@ mod counted_equals_emitted {
             draft
                 .write_durable_body(&mut emitted, &StringRemap::new(&str_map))
                 .expect("the fixture's durable body is coherent");
-            let constant = constant_map(&str_map);
             let mut counted = CountingSink::default();
             draft
-                .write_durable_body(&mut counted, &StringRemap::new(&constant))
+                .write_durable_body(&mut counted, &StringRemap::counting())
                 .expect("the count walks the same rows");
             assert_eq!(counted.0, emitted.len());
         }
@@ -1474,11 +1056,10 @@ mod counted_equals_emitted {
                 &StringRemap::new(&str_map),
                 const_order.iter().copied(),
             );
-            let constant = constant_map(&str_map);
             let mut counted = CountingSink::default();
             draft.encode_consts(
                 &mut counted,
-                &StringRemap::new(&constant),
+                &StringRemap::counting(),
                 0..draft.consts().len(),
             );
             assert_eq!(counted.0, emitted.len());
@@ -1497,14 +1078,12 @@ mod counted_equals_emitted {
                     &ConstRemap::new(&const_map),
                 )
                 .expect("the fixture's code encodes");
-            let constant_strings = constant_map(&str_map);
-            let constant_consts = constant_map(&const_map);
             let mut counted = CountingSink::default();
             draft
                 .encode_functions(
                     &mut counted,
-                    &StringRemap::new(&constant_strings),
-                    &ConstRemap::new(&constant_consts),
+                    &StringRemap::counting(),
+                    &ConstRemap::counting(),
                 )
                 .expect("the count lays out the same code");
             assert_eq!(counted.0, emitted.len());
@@ -1552,11 +1131,10 @@ mod counted_equals_emitted {
                 &StringRemap::new(&str_map),
                 order.iter().copied(),
             );
-            let constant = constant_map(&str_map);
             let mut counted = CountingSink::default();
             draft.encode_test_entries(
                 &mut counted,
-                &StringRemap::new(&constant),
+                &StringRemap::counting(),
                 0..draft.test_entry_count(),
             );
             assert_eq!(counted.0, emitted.len());
@@ -1569,9 +1147,8 @@ mod counted_equals_emitted {
             let (_, str_map, ..) = canonical(&draft);
             let mut emitted = Vec::new();
             draft.encode_enums(&mut emitted, &StringRemap::new(&str_map));
-            let constant = constant_map(&str_map);
             let mut counted = CountingSink::default();
-            draft.encode_enums(&mut counted, &StringRemap::new(&constant));
+            draft.encode_enums(&mut counted, &StringRemap::counting());
             assert_eq!(counted.0, emitted.len());
         }
     }

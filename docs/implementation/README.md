@@ -337,12 +337,17 @@ exponential in its nesting; both wire forms are therefore written by one iterati
 walk straight into a byte sink that stops at a ceiling, and no expanded tree is built
 in the compiler, in the contract preimage, or in the DURABLE section.
 
-The encoder's two temporary bridges stand in front of that walk: a full-draft
-coherence preflight replays every producer-side bound and coherence result in its
-legacy order, and a durable-body lower bound then counts the DURABLE section before
-building it, so a body no image could carry is refused before any buffer, contract
-preimage, or output is allocated. The producer mints a durable-contract identity only
-from the value that fence returns.
+The measure core (`marrow-image/src/measure.rs`) stands in front of that walk and
+drives the whole encode as four affine steps: a coherence walk decides every
+invariant-classified result — the fixed widths, the durable graph walks, and every
+structural reference the sections would resolve, hoisted into the legacy
+emission-order sequence; a policy walk decides every resource cap in the legacy
+candidate order; a capped counting pass then measures all ten sections through the
+same sink-generic writers emission uses, refusing an over-ceiling image — envelope
+and frames included — before any section is assembled; and emission consumes that
+plan, comparing every section's byte length against it, with a disagreement reported
+as the typed `EncodeDrift`. The producer mints a durable-contract identity exactly
+once, inside the planned emission, for a graph the measured plan already admitted.
 
 The identity carries its own ceiling as well. The canonical identity payload spells a
 value as its expansion, so the length of that payload is not bounded by the size of the
@@ -351,9 +356,9 @@ materializing it and refuses a graph whose payload passes
 `MAX_FITTING_CONTRACT_PREIMAGE_BYTES` instead of allocating it. That bound is derived,
 not chosen: the preimage and the DURABLE body are the same walk over the same rows,
 differing only in that the preimage spells a ledger reference in 25 bytes where the body
-writes it in 16, so the widest payload a fence-admitted body can produce is that ratio of
-the whole-image ceiling. Every graph an image can carry is therefore inside it, and the
-refusal bounds the work of asking for an identity for every other caller.
+writes it in 16, so the widest payload a measurement-admitted body can produce is that
+ratio of the whole-image ceiling. Every graph an image can carry is therefore inside it,
+and the refusal bounds the work of asking for an identity for every other caller.
 
 ### The durable contract graph is opaque
 

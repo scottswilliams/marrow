@@ -528,6 +528,11 @@ pub enum ImageBuildError {
     /// with a different entry record.
     ProductEntryRecordConflict,
     InvalidReference(&'static str),
+    /// An emitted section's byte length disagrees with the length the measure core
+    /// counted for it through the same writer. Unreachable from any input by
+    /// construction — the counted==emitted KATs pin per-section length invariance — so
+    /// an occurrence is a producer defect, named by the section that drifted.
+    EncodeDrift(crate::measure::EncodeDriftSection),
 }
 
 impl std::fmt::Display for ImageBuildError {
@@ -1266,6 +1271,14 @@ impl ImageDraft {
     /// silently disable the check.
     pub(crate) fn site_demand(&self) -> usize {
         self.sites.demanded()
+    }
+
+    /// Whether `site` was minted by this draft's plan and the exact row or receipt it
+    /// stands on is still live: the coherence walk's provenance recheck, deliberately
+    /// the plan's `validate` rather than `encodable` — an over-policy operand is live
+    /// provenance the Sites policy candidate reports, never a coherence fault.
+    pub(crate) fn site_operand_is_live(&self, site: &LegacyDraftSiteOperand) -> bool {
+        self.sites.validate(self.durable.identity(), site).is_ok()
     }
     pub(crate) fn functions(&self) -> &[FunctionDef] {
         &self.functions
