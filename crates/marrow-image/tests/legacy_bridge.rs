@@ -46,7 +46,7 @@ use marrow_image::bounds::{
 use marrow_image::{
     CollectionTypeDef, DeclarationMemberDef, DeclarationMemberShape, EnumTypeDef, ExportId,
     FieldDef, FunctionDef, ImageBuildError, ImageDraft, ImageType, Instr, KeyColumn, LedgerIdBytes,
-    RecordTypeDef, RootOccurrenceDef, Scalar, SemanticTarget, SpanEntry, ValueShapeNodeId,
+    RecordTypeDef, RootOccurrenceDef, Scalar, SemanticTarget, SpanEntry, StrId, ValueShapeNodeId,
     VariantDef,
 };
 
@@ -115,6 +115,15 @@ impl Value {
 /// An instruction operand no table row answers: the raw-indexing defect the
 /// checked-conversion class covers.
 const OUT_OF_RANGE: u16 = u16::MAX;
+
+// Forged string-pool ids (`StrId::from_index` is public: a logical string id is a pool
+// position, not a capability). Every value is far past any fixture's pool, and each
+// site gets a DISTINCT index so an out-of-bounds panic message names the site that
+// panicked first.
+const FORGED_RECORD_NAME: u16 = 60000;
+const FORGED_TEST_ENTRY_NAME: u16 = 60002;
+const FORGED_ENUM_NAME: u16 = 60003;
+const FORGED_BRANCH_NAME: u16 = 61000;
 
 /// How a fixture's `main` is shaped.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -192,6 +201,11 @@ struct Fixture {
     wide_enum_definition: bool,
     wide_enum_value_node: bool,
     branch_wide_key: bool,
+    forged_record_name: bool,
+    forged_function_name: bool,
+    forged_enum_name: bool,
+    forged_branch_name: bool,
+    forged_test_entry_name: bool,
 }
 
 impl Fixture {
@@ -209,6 +223,11 @@ impl Fixture {
             wide_enum_definition: false,
             wide_enum_value_node: false,
             branch_wide_key: false,
+            forged_record_name: false,
+            forged_function_name: false,
+            forged_enum_name: false,
+            forged_branch_name: false,
+            forged_test_entry_name: false,
         }
     }
 
@@ -289,10 +308,45 @@ impl Fixture {
         self
     }
 
+    /// The base record's TYPES-table name is a pool id no string answers.
+    fn with_forged_record_name(mut self) -> Self {
+        self.forged_record_name = true;
+        self
+    }
+
+    /// `main`'s FUNCTIONS-table name is a pool id no string answers.
+    fn with_forged_function_name(mut self) -> Self {
+        self.forged_function_name = true;
+        self
+    }
+
+    /// An ENUMS-table definition whose name is a pool id no string answers.
+    fn with_forged_enum_name(mut self) -> Self {
+        self.forged_enum_name = true;
+        self
+    }
+
+    /// A declaration BRANCH member (otherwise valid) whose DURABLE-section name is a
+    /// pool id no string answers.
+    fn with_forged_branch_name(mut self) -> Self {
+        self.forged_branch_name = true;
+        self
+    }
+
+    /// A TEST-ENTRY row whose name is a pool id no string answers.
+    fn with_forged_test_entry_name(mut self) -> Self {
+        self.forged_test_entry_name = true;
+        self
+    }
+
     fn encode(self) -> Result<(), ImageBuildError> {
         let mut draft = ImageDraft::new();
         let value = self.value.shape(&mut draft);
-        let type_name = draft.intern_string("R");
+        let type_name = if self.forged_record_name {
+            StrId::from_index(FORGED_RECORD_NAME)
+        } else {
+            draft.intern_string("R")
+        };
         let fields = if self.wide_record {
             let field_name = draft.intern_string("wide");
             vec![
@@ -312,6 +366,12 @@ impl Fixture {
         });
         if self.application {
             draft.set_application_identity(LedgerIdBytes::from_bytes(APPLICATION_ID));
+        }
+        if self.forged_enum_name {
+            draft.add_enum_type(EnumTypeDef {
+                name: StrId::from_index(FORGED_ENUM_NAME),
+                variants: Vec::new(),
+            });
         }
         if self.wide_enum_definition {
             let name = draft.intern_string("WideEnum");
@@ -362,6 +422,20 @@ impl Fixture {
                 },
             });
         }
+        if self.forged_branch_name {
+            members.push(DeclarationMemberDef {
+                parent: None,
+                shape: DeclarationMemberShape::Branch {
+                    placement: seeded_id(0x74, 0),
+                    name: StrId::from_index(FORGED_BRANCH_NAME),
+                    record,
+                    keys: vec![KeyColumn {
+                        scalar: Scalar::Int,
+                        id: seeded_id(0x73, 0),
+                    }],
+                },
+            });
+        }
         draft
             .declare_product(
                 &admitted_plan(),
@@ -408,7 +482,11 @@ impl Fixture {
             )
             .expect("the Product is declared");
         let src = draft.intern_string("src/main.mw");
-        let main_name = draft.intern_string("main");
+        let main_name = if self.forged_function_name {
+            StrId::from_index(OUT_OF_RANGE)
+        } else {
+            draft.intern_string("main")
+        };
         let zero = draft.intern_int(0);
         let code = match self.code {
             Code::Short => vec![Instr::ConstLoad(zero.index()), Instr::Return],
@@ -453,8 +531,8 @@ impl Fixture {
                 ret: ImageType::scalar(Scalar::Int),
                 local_count,
                 spans: vec![SpanEntry {
-                    // 99 names no instruction of any fixture body when the span is bad.
-                    instr_index: if self.bad_span { 99 } else { 0 },
+                    // `u32::MAX` names no instruction of any fixture body, however long.
+                    instr_index: if self.bad_span { u32::MAX } else { 0 },
                     line: 1,
                     column: 1,
                 }],
@@ -462,6 +540,9 @@ impl Fixture {
             })
             .expect("every site operand is live");
         draft.add_export(ExportId::of_local("", "main"), main);
+        if self.forged_test_entry_name {
+            draft.add_test_entry(StrId::from_index(FORGED_TEST_ENTRY_NAME), main);
+        }
         if let Some(policy) = self.policy {
             apply_policy(policy, &mut draft);
         }
@@ -1233,4 +1314,228 @@ fn a_missing_application_anchor_and_a_bad_jump_currently_draw_the_application_re
             .encode(),
         Err(ImageBuildError::InvalidReference("application identity")),
     );
+}
+
+// ---- The F-A boundary cells: each newly-checkable reference family crossed with the
+// FIRST policy cap in `check_bounds` order (Strings) and the LAST (TestEntries). Every
+// cap decides before any section encoding indexes the reference, so the cap wins today.
+// What each reference defect draws alone is pinned in the checked-conversion family
+// above (a panic at its raw-indexing site, or the jump target's typed reference).
+
+/// This pin may flip under the sanctioned checked-conversion class; the flip must cite
+/// this pin: today the first policy cap decides before the TYPES section indexes the
+/// forged record name.
+#[test]
+fn a_forged_record_name_with_over_strings_currently_draws_the_string_cap() {
+    assert_eq!(
+        Fixture::clean()
+            .with_forged_record_name()
+            .policy(Overflow::Strings)
+            .encode(),
+        Err(ImageBuildError::TooManyStrings),
+    );
+}
+
+/// This pin may flip under the sanctioned checked-conversion class; the flip must cite
+/// this pin: today the first policy cap decides before the const remap indexes the
+/// out-of-range operand.
+#[test]
+fn an_out_of_range_const_load_with_over_strings_currently_draws_the_string_cap() {
+    assert_eq!(
+        Fixture::clean()
+            .code(Code::BadConst)
+            .policy(Overflow::Strings)
+            .encode(),
+        Err(ImageBuildError::TooManyStrings),
+    );
+}
+
+/// This pin may flip under the sanctioned checked-conversion class; the flip must cite
+/// this pin: today the first policy cap decides before jump-target validation runs.
+#[test]
+fn a_bad_jump_with_over_strings_currently_draws_the_string_cap() {
+    assert_eq!(
+        Fixture::clean()
+            .code(Code::BadJump)
+            .policy(Overflow::Strings)
+            .encode(),
+        Err(ImageBuildError::TooManyStrings),
+    );
+}
+
+/// This pin may flip under the sanctioned checked-conversion class; the flip must cite
+/// this pin: today the first policy cap decides before the SPANS section indexes the
+/// out-of-range `instr_index`.
+#[test]
+fn an_out_of_range_span_with_over_strings_currently_draws_the_string_cap() {
+    assert_eq!(
+        Fixture::clean()
+            .with_bad_span()
+            .policy(Overflow::Strings)
+            .encode(),
+        Err(ImageBuildError::TooManyStrings),
+    );
+}
+
+/// This pin may flip under the sanctioned checked-conversion class; the flip must cite
+/// this pin: today even the last policy cap decides before the TYPES section indexes
+/// the forged record name.
+#[test]
+fn a_forged_record_name_with_over_test_entries_currently_draws_the_test_entry_cap() {
+    assert_eq!(
+        Fixture::clean()
+            .with_forged_record_name()
+            .policy(Overflow::TestEntries)
+            .encode(),
+        Err(ImageBuildError::TooManyTestEntries),
+    );
+}
+
+/// This pin may flip under the sanctioned checked-conversion class; the flip must cite
+/// this pin: today even the last policy cap decides before the const remap indexes the
+/// out-of-range operand.
+#[test]
+fn an_out_of_range_const_load_with_over_test_entries_currently_draws_the_test_entry_cap() {
+    assert_eq!(
+        Fixture::clean()
+            .code(Code::BadConst)
+            .policy(Overflow::TestEntries)
+            .encode(),
+        Err(ImageBuildError::TooManyTestEntries),
+    );
+}
+
+/// This pin may flip under the sanctioned checked-conversion class; the flip must cite
+/// this pin: today even the last policy cap decides before jump-target validation runs.
+#[test]
+fn a_bad_jump_with_over_test_entries_currently_draws_the_test_entry_cap() {
+    assert_eq!(
+        Fixture::clean()
+            .code(Code::BadJump)
+            .policy(Overflow::TestEntries)
+            .encode(),
+        Err(ImageBuildError::TooManyTestEntries),
+    );
+}
+
+/// This pin may flip under the sanctioned checked-conversion class; the flip must cite
+/// this pin: today even the last policy cap decides before the SPANS section indexes
+/// the out-of-range `instr_index`.
+#[test]
+fn an_out_of_range_span_with_over_test_entries_currently_draws_the_test_entry_cap() {
+    assert_eq!(
+        Fixture::clean()
+            .with_bad_span()
+            .policy(Overflow::TestEntries)
+            .encode(),
+        Err(ImageBuildError::TooManyTestEntries),
+    );
+}
+
+// ---- The F-B/F-C completion cells: the two byte-shaped results (CodeBytes and the
+// whole-image ceiling) crossed with reference defects the later sections would index.
+
+/// This pin may flip under the sanctioned checked-conversion class; the flip must cite
+/// this pin: today the CodeBytes length check decides before the SPANS section indexes
+/// the out-of-range `instr_index`.
+#[test]
+fn an_out_of_range_span_with_over_code_bytes_currently_draws_code_too_long() {
+    assert_eq!(
+        Fixture::clean()
+            .code(Code::OverCodeBytes)
+            .with_bad_span()
+            .encode(),
+        Err(ImageBuildError::CodeTooLong),
+    );
+}
+
+/// This pin may flip under the sanctioned checked-conversion class; the flip must cite
+/// this pin: today the per-function length check decides before the same function's
+/// forged name is remapped through the string sort map.
+#[test]
+fn a_forged_function_name_with_over_code_bytes_currently_draws_code_too_long() {
+    assert_eq!(
+        Fixture::clean()
+            .code(Code::OverCodeBytes)
+            .with_forged_function_name()
+            .encode(),
+        Err(ImageBuildError::CodeTooLong),
+    );
+}
+
+/// This pin may flip under the sanctioned checked-conversion class; the flip must cite
+/// this pin: today the durable-body fence decides before the TYPES section indexes the
+/// forged record name.
+#[test]
+fn a_forged_record_name_with_a_body_past_the_ceiling_currently_draws_the_image_ceiling() {
+    assert_eq!(
+        Fixture::clean()
+            .with_forged_record_name()
+            .value(Value::OverCeiling)
+            .encode(),
+        Err(ImageBuildError::ImageTooLarge),
+    );
+}
+
+/// This pin may flip under the sanctioned checked-conversion class; the flip must cite
+/// this pin: today the durable-body fence decides before the ENUMS section indexes the
+/// forged enum name.
+#[test]
+fn a_forged_enum_name_with_a_body_past_the_ceiling_currently_draws_the_image_ceiling() {
+    assert_eq!(
+        Fixture::clean()
+            .with_forged_enum_name()
+            .value(Value::OverCeiling)
+            .encode(),
+        Err(ImageBuildError::ImageTooLarge),
+    );
+}
+
+// ---- The intra-class reference-order pins: two forged references in one draft, in
+// different sections. Both sites panic today rather than draw typed errors, so each
+// pair is pinned only by the panic of the EARLIER site — identified by its distinct
+// forged index in the out-of-bounds message — and the restructure's emission-order
+// subsequence must keep that relative order.
+//
+// One pair from the mandate is not constructible and is documented instead of forced:
+// TYPES record-name vs CONSTS text reference. A text constant's string id is minted
+// only by `ImageDraft::intern_text`, which interns the text itself, so no public path
+// binds a raw `StrId` to a constant. Were it constructible, the CONSTS site would win
+// today: the const sort key resolves text ids through the string sort map *before*
+// function or section encoding begins.
+
+/// Reference-order pin (both sites panic today): the FUNCTIONS section indexes `main`'s
+/// forged name (index 65535) before the TYPES section indexes the forged record name
+/// (index 60000), so the panic names the function-name site.
+#[test]
+#[should_panic(expected = "the index is 65535")]
+fn a_forged_function_name_currently_panics_before_a_forged_record_name() {
+    let _ = Fixture::clean()
+        .with_forged_function_name()
+        .with_forged_record_name()
+        .encode();
+}
+
+/// Reference-order pin (both sites panic today): the SPANS section indexes the
+/// out-of-range `instr_index` (4294967295) before the TEST-ENTRY section indexes the
+/// forged entry name (index 60002), so the panic names the span site.
+#[test]
+#[should_panic(expected = "the index is 4294967295")]
+fn an_out_of_range_span_currently_panics_before_a_forged_test_entry_name() {
+    let _ = Fixture::clean()
+        .with_bad_span()
+        .with_forged_test_entry_name()
+        .encode();
+}
+
+/// Reference-order pin (both sites panic today): the DURABLE body count indexes the
+/// forged branch name (index 61000) before the TYPES section indexes the forged record
+/// name (index 60000), so the panic names the branch-name site.
+#[test]
+#[should_panic(expected = "the index is 61000")]
+fn a_forged_branch_name_currently_panics_before_a_forged_record_name() {
+    let _ = Fixture::clean()
+        .with_forged_branch_name()
+        .with_forged_record_name()
+        .encode();
 }
