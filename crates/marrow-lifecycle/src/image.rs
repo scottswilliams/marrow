@@ -65,15 +65,20 @@ pub fn head_map(image: &VerifiedImage) -> Result<HeadMap, FormatError> {
     HeadMap::assign(&ledger_ids)
 }
 
-/// The kind of each durable node in the same canonical split pre-order the head map numbers,
-/// the other projection of [`split_order`]. This is the cross-crate enforcement artifact: a
-/// test compares this sequence against the kernel's [`number_store`](marrow_kernel::durable::number_store)
-/// structure flattened in the same order, so a divergence in the two independent walks — the
-/// exact hazard of a two-owner numbering — fails a build rather than silently binding ledger
-/// ids to the wrong cell numbers after a rename.
-pub fn head_map_node_order(image: &VerifiedImage) -> Vec<SemanticNodeKind> {
+/// The kind **and ledger identity** of each durable node in the same canonical split
+/// pre-order the head map numbers, the other projection of [`split_order`]. This is the
+/// cross-crate enforcement artifact: a test compares this sequence against the kernel's
+/// [`number_store`](marrow_kernel::durable::number_store) structure flattened in the same
+/// order, so a divergence in the two independent walks — the exact hazard of a two-owner
+/// numbering — fails a build rather than silently binding ledger ids to the wrong cell
+/// numbers. The identity travels with the kind because two same-kind siblings swapped in
+/// only one walk keep the kind sequence identical; only their ids reveal the drift.
+pub fn head_map_node_order(image: &VerifiedImage) -> Vec<(SemanticNodeKind, LedgerIdBytes)> {
     let (nodes, order) = split_order(image);
-    order.iter().map(|&i| nodes[i].kind).collect()
+    order
+        .iter()
+        .map(|&i| (nodes[i].kind, nodes[i].path.node_id()))
+        .collect()
 }
 
 /// The single owner of the durable graph's canonical split pre-order over the image's

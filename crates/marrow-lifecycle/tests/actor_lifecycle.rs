@@ -210,70 +210,110 @@ const GRAPH_IDS: &str = "marrow ids v0\n\
      end\n";
 
 /// The head-map numbering agrees node-for-node with the kernel's `number_store`: both walk
-/// the durable graph in the same canonical split pre-order, so they assign the same *kind* to
-/// each cell-key node at each position. This is the cross-crate enforcement artifact against
-/// pre-order drift between the two independent numbering owners (FR01 §3): a divergence in the
-/// order of, or the fields/groups/branches split within, either walk fails here. The fixture
-/// drives multi-root order, sibling-field and sibling-group order, and recursive nested-branch
-/// descent — every point where the two independent walks could disagree.
+/// the durable graph in the same canonical split pre-order, so position `i` in both walks
+/// must be the *same node* — same kind **and same ledger identity**, resolved here through
+/// [`GRAPH_IDS`]'s explicit anchor table. This is the cross-crate enforcement artifact
+/// against pre-order drift between the two independent numbering owners (FR01 §3): a
+/// divergence in the order of, or the fields/groups/branches split within, either walk fails
+/// here — including two same-kind siblings swapped in only one walk, which a kind-only
+/// comparison would miss while the head map bound their ledger ids to each other's numbers.
+/// The fixture drives multi-root order, sibling-field and sibling-group order, and recursive
+/// nested-branch descent — every point where the two independent walks could disagree.
 #[test]
 fn head_map_numbering_agrees_with_the_kernel_node_for_node() {
-    use marrow_verify::SemanticNodeKind;
+    use marrow_verify::SemanticNodeKind::{Branch, Field, Group, Root};
 
     let image = compile(GRAPH_SOURCE, GRAPH_IDS);
     let projection = projection_of(&image);
 
-    // The kernel's numbering, flattened into its cell-key node kinds in numbering order.
-    let numbering = marrow_kernel::durable::number_store(&projection);
-    let mut kernel_order: Vec<SemanticNodeKind> = Vec::new();
-    for root in &numbering {
-        kernel_order.push(SemanticNodeKind::Root);
-        kernel_order.extend(root.fields().iter().map(|_| SemanticNodeKind::Field));
-        for group in root.groups() {
-            kernel_order.push(SemanticNodeKind::Group);
-            kernel_order.extend(group.fields().iter().map(|_| SemanticNodeKind::Field));
+    // The kernel's numbering order, flattened by walking the projection's schemas in
+    // lockstep (the numbering mirrors the schema structurally), each node resolved to the
+    // ledger id GRAPH_IDS anchors it to.
+    let mut kernel_order: Vec<(marrow_verify::SemanticNodeKind, marrow_image::LedgerIdBytes)> =
+        Vec::new();
+    for schema in projection.roots() {
+        let root = schema.root_name();
+        kernel_order.push((Root, graph_id(&[root])));
+        for field in schema.fields() {
+            kernel_order.push((Field, graph_id(&[root, field.name()])));
         }
-        flatten_branches(root.branches(), &mut kernel_order);
+        for group in schema.groups() {
+            kernel_order.push((Group, graph_id(&[root, group.name()])));
+            for field in group.fields() {
+                kernel_order.push((Field, graph_id(&[root, group.name(), field.name()])));
+            }
+        }
+        flatten_branches(root, &mut Vec::new(), schema.branches(), &mut kernel_order);
     }
 
-    // The lifecycle head-map walk's node kinds, in its numbering order.
+    // The lifecycle head-map walk's (kind, ledger id) pairs, in its numbering order.
     let lifecycle_order = marrow_lifecycle::head_map_node_order(&image);
 
     assert_eq!(
         lifecycle_order, kernel_order,
         "the head-map split-order walk must agree node-for-node with the kernel numbering",
     );
-    // And the persisted head map has exactly one entry per node, numbered 0..n in that order.
+    // And the persisted head map has exactly one entry per node, numbered 0..n in that
+    // order, binding exactly the ids the kernel walk expects at each number.
     let map = head_map(&image).expect("head map");
     assert_eq!(map.len(), kernel_order.len());
-    let count = |kind| kernel_order.iter().filter(|k| **k == kind).count();
-    assert!(
-        count(SemanticNodeKind::Root) >= 2,
-        "multi-root not exercised"
-    );
-    assert!(
-        count(SemanticNodeKind::Group) >= 2,
-        "sibling groups not exercised",
-    );
-    assert!(
-        count(SemanticNodeKind::Branch) >= 2,
-        "nested branch not exercised",
-    );
+    let count = |kind| kernel_order.iter().filter(|(k, _)| *k == kind).count();
+    assert!(count(Root) >= 2, "multi-root not exercised");
+    assert!(count(Group) >= 2, "sibling groups not exercised");
+    assert!(count(Branch) >= 2, "nested branch not exercised");
     for (i, entry) in map.entries().iter().enumerate() {
         assert_eq!(entry.number, i as u32);
+        assert_eq!(
+            entry.ledger_id, kernel_order[i].1,
+            "head-map number {i} binds a different node than the kernel walk",
+        );
     }
 }
 
 fn flatten_branches(
-    branches: &[marrow_kernel::durable::BranchNumbering],
-    out: &mut Vec<marrow_verify::SemanticNodeKind>,
+    root: &str,
+    path: &mut Vec<String>,
+    branches: &[marrow_kernel::durable::BranchSchema],
+    out: &mut Vec<(marrow_verify::SemanticNodeKind, marrow_image::LedgerIdBytes)>,
 ) {
-    use marrow_verify::SemanticNodeKind;
+    use marrow_verify::SemanticNodeKind::{Branch, Field};
     for branch in branches {
-        out.push(SemanticNodeKind::Branch);
-        out.extend(branch.fields().iter().map(|_| SemanticNodeKind::Field));
-        flatten_branches(branch.branches(), out);
+        path.push(branch.name().to_string());
+        let mut segments: Vec<&str> = vec![root];
+        segments.extend(path.iter().map(String::as_str));
+        out.push((Branch, graph_id(&segments)));
+        for field in branch.fields() {
+            let mut segments = segments.clone();
+            segments.push(field.name());
+            out.push((Field, graph_id(&segments)));
+        }
+        flatten_branches(root, path, branch.branches(), out);
+        path.pop();
     }
+}
+
+/// Resolve a kernel-walk node — named by its store root and member-name path — to the
+/// ledger id [`GRAPH_IDS`] anchors it to. The store roots are occurrence anchors; their
+/// members are declaration anchors under the occurrence's product. Explicit per fixture, so
+/// a wrong binding cannot hide in a clever shared renderer.
+fn graph_id(segments: &[&str]) -> marrow_image::LedgerIdBytes {
+    let byte = match segments {
+        ["books"] => 0x0b,
+        ["books", "title"] => 0x0e,
+        ["books", "subtitle"] => 0x1e,
+        ["books", "details"] => 0x20,
+        ["books", "details", "pages"] => 0x21,
+        ["books", "meta"] => 0x22,
+        ["books", "meta", "isbn"] => 0x23,
+        ["books", "notes"] => 0x30,
+        ["books", "notes", "body"] => 0x32,
+        ["books", "notes", "replies"] => 0x33,
+        ["books", "notes", "replies", "text"] => 0x35,
+        ["tags"] => 0x4b,
+        ["tags", "name"] => 0x41,
+        other => panic!("no GRAPH_IDS anchor for kernel walk node {other:?}"),
+    };
+    marrow_image::LedgerIdBytes::from_bytes([byte; 16])
 }
 
 #[test]

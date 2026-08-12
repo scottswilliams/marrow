@@ -27,6 +27,12 @@ pub use txn_session::TxnSession;
 /// mutation.
 pub trait Durable {
     /// The authorized site at image site index `index`.
+    ///
+    /// The caller's contract is the verifier's: every durable opcode names an in-range,
+    /// non-parked site, which verification proves before an image can execute. An index
+    /// outside the table, or one whose slot is a parked absence, is a caller defect with
+    /// no meaningful recovery, and it panics conspicuously rather than resolving to a
+    /// site the program never named.
     fn site(&self, index: u16) -> AuthorizedSite;
     /// Every node-addressing op takes the addressed node's key-path: `[root_key]` for
     /// a root node and `[root_key, branch_key, …]` for a branch node, matching the

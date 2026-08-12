@@ -343,6 +343,16 @@ pub enum SchemaBuildError {
     /// An index projection named a top-level field whose value shape is not a scalar, so it
     /// has no order-preserving key projection.
     NonScalarIndexComponent,
+    /// An index declared no projection components, so it would project nothing.
+    EmptyIndexProjection,
+    /// Two managed indexes of one root claimed the same stable index id, which would alias
+    /// their physical cell families.
+    DuplicateIndexId,
+    /// The root declared more managed indexes than a `u16` position can name.
+    TooManyIndexes,
+    /// The root declared no identity key columns. The flat kernel keys every entry by its
+    /// root key tuple; a keyless (singleton) root is parked upstream, never built here.
+    KeylessRoot,
 }
 
 impl std::fmt::Display for SchemaBuildError {
@@ -357,6 +367,15 @@ impl std::fmt::Display for SchemaBuildError {
             Self::NonScalarIndexComponent => {
                 write!(f, "an index projection names a non-scalar field")
             }
+            Self::EmptyIndexProjection => write!(f, "a managed index projects no components"),
+            Self::DuplicateIndexId => write!(f, "two managed indexes share one index id"),
+            Self::TooManyIndexes => {
+                write!(
+                    f,
+                    "the root declares more managed indexes than a u16 can name"
+                )
+            }
+            Self::KeylessRoot => write!(f, "the root declares no identity key columns"),
         }
     }
 }
@@ -393,6 +412,9 @@ pub struct StoreSchemaBuilder {
     groups: Vec<GroupSchema>,
     branches: Vec<BranchSchema>,
     indexes: Vec<IndexSchema>,
+    /// The index ids already claimed, so a duplicate is refused in constant time even at
+    /// the table's `u16` cardinality edge.
+    index_ids: std::collections::HashSet<[u8; 16]>,
     stack: Vec<SchemaFrame>,
     /// Containers refused for depth, still awaiting their matching close so the stream's
     /// open/close balance is read correctly rather than reported as a second, spurious fault.
@@ -410,6 +432,7 @@ impl StoreSchemaBuilder {
             groups: Vec::new(),
             branches: Vec::new(),
             indexes: Vec::new(),
+            index_ids: std::collections::HashSet::new(),
             stack: Vec::new(),
             suppressed: 0,
             error: None,
@@ -558,6 +581,12 @@ impl StoreSchemaBuilder {
     /// Add a managed index over the root, resolving every projection component against the
     /// root's completed key columns and top-level fields. An index is root-level, so it is
     /// refused while a group or branch is open.
+    ///
+    /// The structural laws are enforced here: a nonempty projection, resolvable scalar
+    /// components, a store-unique index id, and a `u16`-nameable position. The semantic
+    /// index laws — the identity-key suffix a nonunique projection must end with, and what
+    /// uniqueness itself admits — belong to the verifier, which proves them before any
+    /// image reaches this builder; the kernel maintains what the schema says.
     pub fn index(
         &mut self,
         id: [u8; 16],
@@ -569,6 +598,15 @@ impl StoreSchemaBuilder {
         }
         if !self.stack.is_empty() {
             return self.fail(SchemaBuildError::Misplaced);
+        }
+        if projection.is_empty() {
+            return self.fail(SchemaBuildError::EmptyIndexProjection);
+        }
+        if self.indexes.len() > usize::from(u16::MAX) {
+            return self.fail(SchemaBuildError::TooManyIndexes);
+        }
+        if !self.index_ids.insert(id) {
+            return self.fail(SchemaBuildError::DuplicateIndexId);
         }
         for component in &projection {
             match component.view() {
@@ -610,6 +648,9 @@ impl StoreSchemaBuilder {
         if !self.stack.is_empty() || self.suppressed > 0 {
             return Err(SchemaBuildError::Unclosed);
         }
+        if self.key.is_empty() {
+            return Err(SchemaBuildError::KeylessRoot);
+        }
         Ok(StoreSchema {
             root_name: self.root_name,
             key: self.key,
@@ -640,8 +681,8 @@ mod tests {
 
     /// The bound is a construction-time refusal, not an entry-time one: a hostile stream of
     /// branch opens far past the depth cap returns a typed verdict, having retained only the
-    /// bound's worth of frames. Before this row the same shape was a public recursive struct
-    /// literal, and building it aborted the process.
+    /// bound's worth of frames. A public recursive struct literal for the same shape would
+    /// abort the process while being built or dropped.
     #[test]
     fn a_hostile_branch_stream_is_refused_at_the_bound() {
         let mut builder = StoreSchemaBuilder::root("root", vec![ScalarKind::Int]);
@@ -652,6 +693,51 @@ mod tests {
             builder.close_branch();
         }
         assert_eq!(builder.finish(), Err(SchemaBuildError::TooDeep));
+    }
+
+    /// The flat kernel keys every entry by its root key tuple, so a keyless root never
+    /// publishes: the VM parks singleton roots upstream, and the builder refuses the shape
+    /// rather than letting a staged write reach an address with no last key.
+    #[test]
+    fn a_keyless_root_is_refused_at_finish() {
+        let mut builder = StoreSchemaBuilder::root("singleton", Vec::new());
+        builder.scalar_field("value", ScalarKind::Int, false);
+        assert_eq!(builder.finish(), Err(SchemaBuildError::KeylessRoot));
+    }
+
+    /// A managed index must project something, and no two indexes of one root may share a
+    /// stable id: identical ids would alias their physical cell families, so the second
+    /// claim is refused at the command.
+    #[test]
+    fn empty_and_id_colliding_indexes_are_refused() {
+        let mut builder = StoreSchemaBuilder::root("root", vec![ScalarKind::Int]);
+        builder.index([0x01; 16], false, Vec::new());
+        assert_eq!(
+            builder.finish(),
+            Err(SchemaBuildError::EmptyIndexProjection)
+        );
+
+        let mut builder = StoreSchemaBuilder::root("root", vec![ScalarKind::Int]);
+        builder.index([0x01; 16], false, vec![IndexComponent::key(0)]);
+        builder.index([0x01; 16], true, vec![IndexComponent::key(0)]);
+        assert_eq!(builder.finish(), Err(SchemaBuildError::DuplicateIndexId));
+    }
+
+    /// N/N+1 on the index table's `u16` position space: the last nameable position fills,
+    /// and one more is refused rather than published beyond what a site can address.
+    #[test]
+    fn the_index_table_refuses_past_its_u16_position_space() {
+        let build = |count: u32| {
+            let mut builder = StoreSchemaBuilder::root("root", vec![ScalarKind::Int]);
+            for ordinal in 0..count {
+                let mut id = [0u8; 16];
+                id[..4].copy_from_slice(&ordinal.to_be_bytes());
+                builder.index(id, false, vec![IndexComponent::key(0)]);
+            }
+            builder.finish()
+        };
+        assert!(build(1 << 16).is_ok());
+        assert_eq!(build((1 << 16) + 1), Err(SchemaBuildError::TooManyIndexes));
     }
 
     /// N/N+1 on the member-depth bound. A branch opened at depth `d` places its own fields at

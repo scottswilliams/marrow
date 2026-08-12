@@ -110,6 +110,9 @@ impl StoreProjectionBuilder {
         if nodes > u64::from(super::MAX_STORE_NODES) {
             return Err(ProjectionBuildError::TooManyNodes);
         }
+        if self.sites.len() > usize::from(u16::MAX) + 1 {
+            return Err(ProjectionBuildError::TooManySites);
+        }
         let mut sites = Vec::with_capacity(self.sites.len());
         for pending in &self.sites {
             sites.push(match pending {
@@ -261,6 +264,12 @@ pub enum ProjectionBuildError {
     UnknownGroup,
     /// A site named a managed-index position the root does not declare.
     UnknownIndex,
+    /// A branch site carried an empty branch path. A path names its node one hop per
+    /// element, so an empty path names no branch at all — it would alias the root entry
+    /// under branch semantics, silently skipping the root's own groups.
+    EmptyBranchPath,
+    /// The site table holds more slots than a `u16` image site index can name.
+    TooManySites,
     /// The root table declares more durable nodes than the store's cell-key number space
     /// ([`MAX_STORE_NODES`](super::MAX_STORE_NODES)) can name.
     TooManyNodes,
@@ -274,6 +283,13 @@ impl std::fmt::Display for ProjectionBuildError {
             Self::UnknownBranch => write!(f, "a site names an undeclared branch"),
             Self::UnknownGroup => write!(f, "a site names an undeclared group"),
             Self::UnknownIndex => write!(f, "a site names an undeclared managed index"),
+            Self::EmptyBranchPath => write!(f, "a branch site carries an empty branch path"),
+            Self::TooManySites => {
+                write!(
+                    f,
+                    "the site table holds more slots than a u16 site index can name"
+                )
+            }
             Self::TooManyNodes => {
                 write!(
                     f,
@@ -339,6 +355,9 @@ fn resolve_path(
     schema: &StoreSchema,
     path: &[u16],
 ) -> Result<Box<[BranchPos]>, ProjectionBuildError> {
+    if path.is_empty() {
+        return Err(ProjectionBuildError::EmptyBranchPath);
+    }
     let mut resolved = Vec::with_capacity(path.len());
     let mut level = schema.branches();
     for step in path {
@@ -397,6 +416,51 @@ mod tests {
         let mut projection = StoreProjection::builder();
         projection.root(first).root(second);
         projection.finish().expect("two plain roots project")
+    }
+
+    /// An empty branch path names no branch at all: resolving it would alias the root
+    /// entry under branch semantics — replace and erase would skip the root's own groups —
+    /// so the projection refuses it at mint for both branch target forms.
+    #[test]
+    fn an_empty_branch_path_is_refused_at_mint() {
+        let mut builder = StoreSchemaBuilder::root("counters", vec![ScalarKind::Str]);
+        builder.scalar_field("value", ScalarKind::Int, false);
+        let schema = builder.finish().expect("a flat schema builds");
+
+        for target in [
+            super::SiteTarget::branch_entry(Vec::new()),
+            super::SiteTarget::branch_field(Vec::new(), 0),
+        ] {
+            let mut projection = StoreProjection::builder();
+            projection.root(schema.clone());
+            projection.site(0, target);
+            assert_eq!(
+                projection.finish().unwrap_err(),
+                ProjectionBuildError::EmptyBranchPath,
+            );
+        }
+    }
+
+    /// N/N+1 on the site table's `u16` index space: the last nameable slot fills, and one
+    /// more is refused rather than published beyond what an image site index can address.
+    #[test]
+    fn the_site_table_refuses_past_its_u16_index_space() {
+        let build = |slots: u32| {
+            let mut builder = StoreSchemaBuilder::root("counters", vec![ScalarKind::Str]);
+            builder.scalar_field("value", ScalarKind::Int, false);
+            let schema = builder.finish().expect("a flat schema builds");
+            let mut projection = StoreProjection::builder();
+            projection.root(schema);
+            for _ in 0..slots {
+                projection.parked_site();
+            }
+            projection.finish()
+        };
+        assert!(build(1 << 16).is_ok());
+        assert_eq!(
+            build((1 << 16) + 1).unwrap_err(),
+            ProjectionBuildError::TooManySites,
+        );
     }
 
     /// A parked image site stays a typed absence at its own index: the slots around it keep
