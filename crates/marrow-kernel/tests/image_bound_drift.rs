@@ -1,23 +1,35 @@
-//! Drift gate for the durable bounds the kernel codec mirrors from the image.
+//! Drift gates for the durable bounds the kernel mirrors from the image.
 //!
 //! `marrow-kernel` keeps **no production dependency** on `marrow-image`: the kernel
 //! must bound its own recursion without an image in hand, so the value-shape depth
-//! cap is spelled in `codec::value`. That spelling was a hand-copy — two constants
-//! stating one contract with nothing tying them together, so either could move and
-//! leave the other silently behind. The image is a **dev** dependency, which is
-//! enough to close the copy here without adding an edge to the shipped crate.
+//! cap is spelled in `codec::value` and the member-tree depth cap in
+//! `durable::schema`. Each spelling was a hand-copy — two constants stating one
+//! contract with nothing tying them together, so either could move and leave the
+//! other silently behind. The image is a **dev** dependency, which is enough to
+//! close the copies here without adding an edge to the shipped crate.
 //!
-//! The coupling is a `const` assertion, so a divergence fails the build rather than
+//! Each coupling is a `const` assertion, so a divergence fails the build rather than
 //! a run: there is no way to land a moved bound and read a green suite.
 
-use marrow_image::bounds::MAX_DURABLE_VALUE_DEPTH as IMAGE_VALUE_DEPTH;
+use marrow_image::bounds::{
+    MAX_DURABLE_DEPTH as IMAGE_MEMBER_DEPTH, MAX_DURABLE_VALUE_DEPTH as IMAGE_VALUE_DEPTH,
+};
 use marrow_kernel::codec::value::MAX_DURABLE_VALUE_DEPTH as KERNEL_VALUE_DEPTH;
+use marrow_kernel::durable::MAX_DURABLE_DEPTH as KERNEL_MEMBER_DEPTH;
 
 /// The hand-copy, closed at compile time. Moving either constant without the other
 /// fails this crate's test build.
 const _: () = assert!(
     KERNEL_VALUE_DEPTH == IMAGE_VALUE_DEPTH,
     "the kernel's value-shape depth cap must equal the image bound it mirrors",
+);
+
+/// The member-tree hand-copy, closed the same way. The kernel's store-schema builder
+/// bounds branch and group nesting with its own constant; the image's decoder bounds
+/// the member rows that projection is derived from. One contract, so one value.
+const _: () = assert!(
+    KERNEL_MEMBER_DEPTH == IMAGE_MEMBER_DEPTH,
+    "the kernel's durable member-depth cap must equal the image bound it mirrors",
 );
 
 /// The same fact as a named test, so the gate appears in the suite it protects and a
@@ -31,7 +43,50 @@ fn the_kernel_value_depth_cap_mirrors_the_image_bound() {
     );
 }
 
-/// The bound is only meaningful if both sides count the same thing. Both owners
+/// The member-depth fact as a named test, for the same reason.
+#[test]
+fn the_kernel_member_depth_cap_mirrors_the_image_bound() {
+    assert_eq!(
+        KERNEL_MEMBER_DEPTH, IMAGE_MEMBER_DEPTH,
+        "marrow_kernel::durable::MAX_DURABLE_DEPTH and \
+         marrow_image::bounds::MAX_DURABLE_DEPTH state one contract",
+    );
+}
+
+/// The member bound is only meaningful if both sides count the same thing. Both owners
+/// document a top-level member as depth 1 with a member of a group or branch one deeper.
+/// This case pins that unit on the kernel's side at the boundary: a field nested under
+/// `MAX_DURABLE_DEPTH - 1` branches sits at exactly the bound and mints, and one branch
+/// further is refused — the same N/N+1 the image states over its member rows.
+#[test]
+fn the_shared_member_bound_counts_a_top_level_member_as_depth_one() {
+    use marrow_kernel::codec::value::ScalarKind;
+    use marrow_kernel::durable::{SchemaBuildError, StoreSchemaBuilder};
+
+    let nest = |branches: usize| {
+        let mut builder = StoreSchemaBuilder::root("root", vec![ScalarKind::Int]);
+        for _ in 0..branches {
+            builder.open_branch("b", vec![ScalarKind::Int]);
+        }
+        builder.scalar_field("leaf", ScalarKind::Int, false);
+        for _ in 0..branches {
+            builder.close_branch();
+        }
+        builder.finish()
+    };
+
+    assert!(
+        nest(KERNEL_MEMBER_DEPTH - 1).is_ok(),
+        "a member at exactly the shared bound mints",
+    );
+    assert_eq!(
+        nest(KERNEL_MEMBER_DEPTH),
+        Err(SchemaBuildError::TooDeep),
+        "one member past the shared bound is refused",
+    );
+}
+
+/// The value bound is only meaningful if both sides count the same thing. Both owners
 /// document a top-level field value as depth 1 with each nested composite one
 /// deeper, and the kernel's encoder and decoder are held to that by their own N/N+1
 /// cases in `codec::value`. This case pins the shared unit at the boundary: the
