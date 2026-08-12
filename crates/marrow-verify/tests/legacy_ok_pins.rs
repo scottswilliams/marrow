@@ -8,10 +8,15 @@
 //! rejection comes from the one defect and not from the fixture's shape.
 
 use marrow_image::{
-    CollectionTypeDef, EncodedImage, EnumTypeDef, ExportId, FieldDef, FuncId, FunctionDef,
-    ImageDraft, ImageType, Instr, RecordTypeDef, Scalar, SpanEntry, VariantDef,
+    CollectionTypeDef, DeclarationMemberDef, DeclarationMemberShape, EncodedImage, EnumTypeDef,
+    ExportId, FieldDef, FuncId, FunctionDef, ImageDraft, ImageType, Instr, KeyColumn,
+    LedgerIdBytes, RecordTypeDef, RootOccurrenceDef, Scalar, SpanEntry, TypeId, VariantDef,
 };
 use marrow_verify::verify;
+
+#[path = "../../marrow-image/tests/common/admitted_plan.rs"]
+mod admitted_plan;
+use admitted_plan::admitted_plan;
 
 /// A type reference naming a TYPES row no fixture declares.
 const FORGED_TYPE: ImageType = ImageType::Record {
@@ -271,5 +276,180 @@ fn an_out_of_range_collection_elem_type_encodes_today_and_only_the_verifier_reje
     let image = draft
         .encode()
         .expect("the producer accepts the unanswered element type today");
+    assert!(verify(&image.bytes).is_err());
+}
+
+// ---- The two omitted DURABLE type-table ordinals and the `MakeIdentity` cols
+// relation (design draft 7 §B.3). `TypeId` is a raw newtype with a public
+// `from_index`, so both record ordinals are forged directly.
+
+/// How the durable fixture's two forgeable record references are shaped.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum TableRef {
+    Valid,
+    Forged,
+}
+
+impl TableRef {
+    fn resolve(self, valid: TypeId) -> TypeId {
+        match self {
+            TableRef::Valid => valid,
+            TableRef::Forged => TypeId::from_index(u16::MAX),
+        }
+    }
+}
+
+/// One keyed root over one Product with one `int` field, plus the exported `main`:
+/// the durable clean shape the three pins below vary one reference from. `branch`
+/// adds an otherwise-valid keyed branch member with the given entry record.
+fn durable_draft(entry: TableRef, branch: Option<TableRef>, code: Vec<Instr>) -> ImageDraft {
+    let mut draft = ImageDraft::new();
+    let value = draft.value_shapes_mut().scalar(Scalar::Int);
+    let type_name = draft.intern_string("R");
+    // The verifier ties each field/group member to one record slot (a keyed branch is
+    // a distinct durable node, not a slot), so the entry record declares exactly one
+    // field for the declaration's one field member.
+    let field_name = draft.intern_string("f0");
+    let fields = vec![FieldDef {
+        name: field_name,
+        ty: ImageType::scalar(Scalar::Int),
+        required: true,
+    }];
+    let record = draft.add_record_type(RecordTypeDef {
+        name: type_name,
+        fields,
+    });
+    draft.set_application_identity(LedgerIdBytes::from_bytes([0x0a; 16]));
+    let mut members = vec![DeclarationMemberDef {
+        parent: None,
+        shape: DeclarationMemberShape::Field {
+            id: LedgerIdBytes::from_bytes([0x0e; 16]),
+            required: true,
+            value,
+        },
+    }];
+    if let Some(branch) = branch {
+        // The branch declares no members, so its own entry record is a fieldless type.
+        let branch_type_name = draft.intern_string("B");
+        let branch_record = draft.add_record_type(RecordTypeDef {
+            name: branch_type_name,
+            fields: Vec::new(),
+        });
+        let branch_name = draft.intern_string("b");
+        members.push(DeclarationMemberDef {
+            parent: None,
+            shape: DeclarationMemberShape::Branch {
+                placement: LedgerIdBytes::from_bytes([0x21; 16]),
+                name: branch_name,
+                record: branch.resolve(branch_record),
+                keys: vec![KeyColumn {
+                    scalar: Scalar::Int,
+                    id: LedgerIdBytes::from_bytes([0x22; 16]),
+                }],
+            },
+        });
+    }
+    draft
+        .declare_product(
+            &admitted_plan(),
+            LedgerIdBytes::from_bytes([0x0d; 16]),
+            entry.resolve(record),
+            members,
+        )
+        .expect("a well-formed declaration");
+    let root_name = draft.intern_string("r");
+    draft
+        .add_root_occurrence(
+            &admitted_plan(),
+            LedgerIdBytes::from_bytes([0x0d; 16]),
+            RootOccurrenceDef {
+                name: root_name,
+                keys: vec![KeyColumn {
+                    scalar: Scalar::Int,
+                    id: LedgerIdBytes::from_bytes([0x0c; 16]),
+                }],
+                placement: LedgerIdBytes::from_bytes([0x0b; 16]),
+                indexes: Vec::new().into(),
+            },
+        )
+        .expect("the Product is declared");
+    let src = draft.intern_string("src/main.mw");
+    let name = draft.intern_string("main");
+    draft.intern_int(0);
+    let main = draft
+        .add_function(FunctionDef {
+            name,
+            source: src,
+            params: Vec::new(),
+            ret: ImageType::scalar(Scalar::Int),
+            local_count: 0,
+            spans: vec![SpanEntry {
+                instr_index: 0,
+                line: 1,
+                column: 1,
+            }],
+            code,
+        })
+        .expect("every site operand is live");
+    draft.add_export(ExportId::of_local("", "main"), main);
+    draft
+}
+
+/// The durable clean twin (with and without a valid branch) verifies, so each
+/// rejection below comes from the one forged reference.
+#[test]
+fn the_durable_clean_twin_verifies() {
+    let plain = durable_draft(TableRef::Valid, None, short_code())
+        .encode()
+        .expect("the durable clean twin encodes");
+    let outcome = verify(&plain.bytes);
+    assert!(outcome.is_ok(), "{outcome:?}");
+    let branched = durable_draft(TableRef::Valid, Some(TableRef::Valid), short_code())
+        .encode()
+        .expect("the branched clean twin encodes");
+    let outcome = verify(&branched.bytes);
+    assert!(outcome.is_ok(), "{outcome:?}");
+}
+
+/// The coherence hoist will convert this Ok to `InvalidReference("type table")`; the
+/// flip must cite this pin: today a root entry record naming no TYPES row is written
+/// to the DURABLE body unchecked, and only the verifier refuses the bytes.
+#[test]
+fn an_out_of_range_root_entry_record_encodes_today_and_only_the_verifier_rejects() {
+    let image = durable_draft(TableRef::Forged, None, short_code())
+        .encode()
+        .expect("the producer accepts the unanswered entry record today");
+    assert!(verify(&image.bytes).is_err());
+}
+
+/// The coherence hoist will convert this Ok to `InvalidReference("type table")`; the
+/// flip must cite this pin: today a branch entry record naming no TYPES row is written
+/// to the DURABLE body unchecked, and only the verifier refuses the bytes.
+#[test]
+fn an_out_of_range_branch_record_encodes_today_and_only_the_verifier_rejects() {
+    let image = durable_draft(TableRef::Valid, Some(TableRef::Forged), short_code())
+        .encode()
+        .expect("the producer accepts the unanswered branch record today");
+    assert!(verify(&image.bytes).is_err());
+}
+
+/// The coherence hoist will convert this Ok to `InvalidReference("root table")`; the
+/// flip must cite this pin: today a `MakeIdentity` naming a valid root but a `cols`
+/// count unequal to that root's key arity still encodes, and only the verifier
+/// refuses the bytes.
+#[test]
+fn a_make_identity_cols_arity_mismatch_encodes_today_and_only_the_verifier_rejects() {
+    let image = durable_draft(
+        TableRef::Valid,
+        None,
+        vec![
+            Instr::ConstLoad(0),
+            Instr::ConstLoad(0),
+            Instr::MakeIdentity { root: 0, cols: 2 },
+            Instr::Return,
+        ],
+    )
+    .encode()
+    .expect("the producer accepts the arity mismatch today");
     assert!(verify(&image.bytes).is_err());
 }

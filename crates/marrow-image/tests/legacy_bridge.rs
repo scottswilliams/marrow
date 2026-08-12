@@ -47,7 +47,7 @@ use marrow_image::{
     CollectionTypeDef, DeclarationMemberDef, DeclarationMemberShape, EnumTypeDef, ExportId,
     FieldDef, FuncId, FunctionDef, ImageBuildError, ImageDraft, ImageType, Instr, KeyColumn,
     LedgerIdBytes, RecordTypeDef, RootOccurrenceDef, Scalar, SemanticTarget, SpanEntry, StrId,
-    ValueShapeNodeId, VariantDef,
+    TypeId, ValueShapeNodeId, VariantDef,
 };
 
 #[path = "common/admitted_plan.rs"]
@@ -218,6 +218,8 @@ struct Fixture {
     forged_field_type: bool,
     forged_enum_payload_type: bool,
     forged_collection_elem: bool,
+    forged_entry_record: bool,
+    forged_branch_record: bool,
     extra_instrs: Vec<Instr>,
     extra_function: Option<Code>,
 }
@@ -247,6 +249,8 @@ impl Fixture {
             forged_field_type: false,
             forged_enum_payload_type: false,
             forged_collection_elem: false,
+            forged_entry_record: false,
+            forged_branch_record: false,
             extra_instrs: Vec::new(),
             extra_function: None,
         }
@@ -390,6 +394,20 @@ impl Fixture {
         self
     }
 
+    /// The Product declaration's root entry record names no TYPES row (`TypeId` is a
+    /// raw newtype with a public `from_index`).
+    fn with_forged_entry_record(mut self) -> Self {
+        self.forged_entry_record = true;
+        self
+    }
+
+    /// A declaration BRANCH member (otherwise valid) whose entry record names no
+    /// TYPES row.
+    fn with_forged_branch_record(mut self) -> Self {
+        self.forged_branch_record = true;
+        self
+    }
+
     /// Instructions appended to `main`'s body after its [`Code`] shape.
     fn with_extra_instrs(mut self, instrs: Vec<Instr>) -> Self {
         self.extra_instrs = instrs;
@@ -506,11 +524,31 @@ impl Fixture {
                 },
             });
         }
+        if self.forged_branch_record {
+            let branch_name = draft.intern_string("fb");
+            members.push(DeclarationMemberDef {
+                parent: None,
+                shape: DeclarationMemberShape::Branch {
+                    placement: seeded_id(0x76, 0),
+                    name: branch_name,
+                    record: TypeId::from_index(u16::MAX),
+                    keys: vec![KeyColumn {
+                        scalar: Scalar::Int,
+                        id: seeded_id(0x75, 0),
+                    }],
+                },
+            });
+        }
+        let entry_record = if self.forged_entry_record {
+            TypeId::from_index(u16::MAX)
+        } else {
+            record
+        };
         draft
             .declare_product(
                 &admitted_plan(),
                 LedgerIdBytes::from_bytes(PRODUCT_ID),
-                record,
+                entry_record,
                 members,
             )
             .expect("a well-formed declaration");
@@ -1892,6 +1930,99 @@ fn a_bad_const_in_the_later_function_currently_draws_the_earlier_code_too_long()
         Fixture::clean()
             .code(Code::OverCodeBytes)
             .with_extra_function(Code::BadConst)
+            .encode(),
+        Err(ImageBuildError::CodeTooLong),
+    );
+}
+
+// ---- The two omitted DURABLE type-table ordinals (design draft 7 §B.3): the root
+// entry record and a branch's entry record, both raw `TypeId` newtypes written to the
+// body unchecked today. Standalone Ok-pins live in
+// `marrow-verify/tests/legacy_ok_pins.rs`.
+
+/// This pin may flip under the sanctioned checked-conversion class ("type table"); the
+/// flip must cite this pin.
+#[test]
+fn a_forged_entry_record_with_over_strings_currently_draws_the_string_cap() {
+    assert_eq!(
+        Fixture::clean()
+            .with_forged_entry_record()
+            .policy(Overflow::Strings)
+            .encode(),
+        Err(ImageBuildError::TooManyStrings),
+    );
+}
+
+/// This pin may flip under the sanctioned checked-conversion class ("type table"); the
+/// flip must cite this pin.
+#[test]
+fn a_forged_branch_record_with_over_strings_currently_draws_the_string_cap() {
+    assert_eq!(
+        Fixture::clean()
+            .with_forged_branch_record()
+            .policy(Overflow::Strings)
+            .encode(),
+        Err(ImageBuildError::TooManyStrings),
+    );
+}
+
+/// This pin may flip under the sanctioned checked-conversion class ("type table"); the
+/// flip must cite this pin: the counting fence writes the forged ordinal like any
+/// two-byte field and refuses the body's size before section assembly.
+#[test]
+fn a_forged_entry_record_with_a_body_past_the_ceiling_currently_draws_the_image_ceiling() {
+    assert_eq!(
+        Fixture::clean()
+            .with_forged_entry_record()
+            .value(Value::OverCeiling)
+            .encode(),
+        Err(ImageBuildError::ImageTooLarge),
+    );
+}
+
+/// This pin may flip under the sanctioned checked-conversion class ("type table"); the
+/// flip must cite this pin: the counting fence writes the forged ordinal like any
+/// two-byte field and refuses the body's size before section assembly.
+#[test]
+fn a_forged_branch_record_with_a_body_past_the_ceiling_currently_draws_the_image_ceiling() {
+    assert_eq!(
+        Fixture::clean()
+            .with_forged_branch_record()
+            .value(Value::OverCeiling)
+            .encode(),
+        Err(ImageBuildError::ImageTooLarge),
+    );
+}
+
+// ---- Across-function outcome classes 2 and 3 (class 1 — the map-indexed panic — is
+// pinned above): the three classes together freeze the positional law the restructure
+// replaces with "all of step 1 precedes all policy".
+
+/// Class 2, measured winner: the earlier function's bad jump draws its typed reference
+/// before the later function's length is ever checked. This pin may flip under the
+/// sanctioned checked-conversion class; the flip must cite this pin.
+#[test]
+fn a_bad_jump_in_the_earlier_function_currently_draws_its_reference_before_the_later_code_too_long()
+{
+    assert_eq!(
+        Fixture::clean()
+            .code(Code::BadJump)
+            .with_extra_function(Code::OverCodeBytes)
+            .encode(),
+        Err(ImageBuildError::InvalidReference("jump target")),
+    );
+}
+
+/// Class 3, measured winner: the earlier function's unchecked `Call` ordinal is written
+/// through, so encoding continues and the later function's CodeBytes length check
+/// decides. This pin may flip under the sanctioned checked-conversion class; the flip
+/// must cite this pin.
+#[test]
+fn an_unchecked_call_in_the_earlier_function_currently_draws_the_later_code_too_long() {
+    assert_eq!(
+        Fixture::clean()
+            .with_extra_instrs(vec![Instr::Call(u16::MAX)])
+            .with_extra_function(Code::OverCodeBytes)
             .encode(),
         Err(ImageBuildError::CodeTooLong),
     );
