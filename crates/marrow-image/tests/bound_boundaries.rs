@@ -313,6 +313,179 @@ fn a_command_vector_wider_than_its_budget_appends_no_row() {
     );
 }
 
+/// The plan's Product term is spent where the declarations are held: a second *distinct*
+/// Product past the admitted count is refused, on both routes, and appends no row.
+///
+/// A repeat of an already-declared identity is a reference rather than a declaration, so it
+/// spends nothing — which is what makes a one-Product budget usable by many roots, and is
+/// asserted here so a refusal that fired on the repeat would be caught too.
+#[test]
+fn a_second_distinct_product_past_its_plan_budget_is_refused_and_appends_no_row() {
+    let plan = AdmittedGraphInputPlan::admit(1, 1, 1).expect("a one-Product budget");
+    let second_product = component_id(0x51);
+
+    let mut draft = ImageDraft::new();
+    let name = draft.intern_string("R");
+    let record = draft.add_record_type(RecordTypeDef {
+        name,
+        fields: Vec::new(),
+    });
+    let value = draft.value_shapes_mut().scalar(Scalar::Int);
+    let one_field = |id| {
+        vec![DeclarationMemberDef {
+            parent: None,
+            shape: DeclarationMemberShape::Field {
+                id,
+                required: true,
+                value,
+            },
+        }]
+    };
+    draft
+        .declare_product(
+            &plan,
+            LedgerIdBytes::from_bytes(PRODUCT_ID),
+            record,
+            one_field(LedgerIdBytes::from_bytes(FIELD_ID)),
+        )
+        .expect("the first Product fits a one-Product budget");
+    draft
+        .declare_product(
+            &plan,
+            LedgerIdBytes::from_bytes(PRODUCT_ID),
+            record,
+            one_field(LedgerIdBytes::from_bytes(FIELD_ID)),
+        )
+        .expect("a repeat of a declared Product is a reference and spends no budget");
+    assert!(
+        draft
+            .declare_product(&plan, second_product, record, one_field(component_id(0x52)))
+            .is_err(),
+        "a second distinct Product is past the one-Product budget",
+    );
+    assert!(
+        draft.product_members(second_product).is_none(),
+        "the refused declaration appended no row",
+    );
+    assert!(
+        draft
+            .product_members(LedgerIdBytes::from_bytes(PRODUCT_ID))
+            .is_some(),
+        "the admitted declaration survives the refusal",
+    );
+
+    let mut graph = DurableContractGraph::new();
+    graph
+        .declare_product(
+            &plan,
+            LedgerIdBytes::from_bytes(PRODUCT_ID),
+            TypeId::from_index(0),
+            one_field(LedgerIdBytes::from_bytes(FIELD_ID)),
+        )
+        .expect("the first Product fits a one-Product budget");
+    assert_eq!(
+        graph.declare_product(
+            &plan,
+            second_product,
+            TypeId::from_index(0),
+            one_field(component_id(0x52)),
+        ),
+        Err(DurableGraphInputRefusal::OverPlan),
+        "the graph's own route spends the same Product term",
+    );
+}
+
+/// The plan's root-occurrence term is spent where the occurrences are held: a second
+/// occurrence past the admitted count is refused, on both routes.
+///
+/// The two occurrences project the same Product, so the Product term is not what answers:
+/// only the occurrence count can refuse this.
+#[test]
+fn a_second_root_occurrence_past_its_plan_budget_is_refused() {
+    let plan = AdmittedGraphInputPlan::admit(1, 1, 1).expect("a one-occurrence budget");
+    let product = LedgerIdBytes::from_bytes(PRODUCT_ID);
+    let second_placement = component_id(0x53);
+
+    let mut draft = ImageDraft::new();
+    let name = draft.intern_string("R");
+    let record = draft.add_record_type(RecordTypeDef {
+        name,
+        fields: Vec::new(),
+    });
+    let value = draft.value_shapes_mut().scalar(Scalar::Int);
+    let members = vec![DeclarationMemberDef {
+        parent: None,
+        shape: DeclarationMemberShape::Field {
+            id: LedgerIdBytes::from_bytes(FIELD_ID),
+            required: true,
+            value,
+        },
+    }];
+    draft
+        .declare_product(&plan, product, record, members.clone())
+        .expect("one Product fits the budget");
+    let first_name = draft.intern_string("a");
+    let second_name = draft.intern_string("b");
+    draft
+        .add_root_occurrence(
+            &plan,
+            product,
+            RootOccurrenceDef {
+                name: first_name,
+                keys: Vec::new(),
+                placement: LedgerIdBytes::from_bytes(PLACEMENT_ID),
+                indexes: Vec::new().into(),
+            },
+        )
+        .expect("the first occurrence fits a one-occurrence budget");
+    assert!(
+        draft
+            .add_root_occurrence(
+                &plan,
+                product,
+                RootOccurrenceDef {
+                    name: second_name,
+                    keys: Vec::new(),
+                    placement: second_placement,
+                    indexes: Vec::new().into(),
+                },
+            )
+            .is_err(),
+        "a second occurrence over the same Product is past the one-occurrence budget",
+    );
+
+    let mut graph = DurableContractGraph::new();
+    graph
+        .declare_product(&plan, product, TypeId::from_index(0), members)
+        .expect("one Product fits the budget");
+    graph
+        .add_root_occurrence(
+            &plan,
+            product,
+            RootOccurrenceDef {
+                name: first_name,
+                keys: Vec::new(),
+                placement: LedgerIdBytes::from_bytes(PLACEMENT_ID),
+                indexes: Vec::new().into(),
+            },
+        )
+        .expect("the first occurrence fits a one-occurrence budget");
+    assert_eq!(
+        graph.add_root_occurrence(
+            &plan,
+            product,
+            RootOccurrenceDef {
+                name: second_name,
+                keys: Vec::new(),
+                placement: second_placement,
+                indexes: Vec::new().into(),
+            },
+        ),
+        Err(DurableGraphInputRefusal::OverPlan),
+        "the graph's own route spends the same occurrence term",
+    );
+}
+
 // ---- Nesting depth is bounded where the rows are made.
 
 /// A command vector nesting `depth` groups, each the parent of the next.
