@@ -132,6 +132,13 @@ const FORGED_TYPE: ImageType = ImageType::Record {
     optional: false,
 };
 
+/// The optional spelling of [`FORGED_TYPE`], for `VacantLoad`: the operand must be
+/// optional for verification to reach the record-ordinal check at all.
+const FORGED_OPT_TYPE: ImageType = ImageType::Record {
+    idx: u16::MAX,
+    optional: true,
+};
+
 /// How a fixture's `main` is shaped.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Code {
@@ -220,6 +227,7 @@ struct Fixture {
     forged_collection_elem: bool,
     forged_entry_record: bool,
     forged_branch_record: bool,
+    dangling_traversal: bool,
     extra_instrs: Vec<Instr>,
     extra_function: Option<Code>,
 }
@@ -251,6 +259,7 @@ impl Fixture {
             forged_collection_elem: false,
             forged_entry_record: false,
             forged_branch_record: false,
+            dangling_traversal: false,
             extra_instrs: Vec::new(),
             extra_function: None,
         }
@@ -405,6 +414,14 @@ impl Fixture {
     /// TYPES row.
     fn with_forged_branch_record(mut self) -> Self {
         self.forged_branch_record = true;
+        self
+    }
+
+    /// `main` carries a bounded traversal over a live whole-payload site whose
+    /// `list_ty` names no COLLTYPES row: the operand is a public raw ordinal written
+    /// unchecked today.
+    fn with_dangling_traversal(mut self) -> Self {
+        self.dangling_traversal = true;
         self
     }
 
@@ -572,7 +589,7 @@ impl Fixture {
                 .expect("a well-formed declaration");
         }
         let root_name = draft.intern_string("r");
-        draft
+        let root = draft
             .add_root_occurrence(
                 &admitted_plan(),
                 LedgerIdBytes::from_bytes(PRODUCT_ID),
@@ -598,6 +615,22 @@ impl Fixture {
         let zero = draft.intern_int(0);
         let mut code = body(self.code, zero.index());
         code.extend(self.extra_instrs.iter().cloned());
+        if self.dangling_traversal {
+            let handle = draft
+                .bind_occurrence_site(
+                    root.occurrence(),
+                    root.placement_path(),
+                    SemanticTarget::WholePayload,
+                )
+                .expect("a keyed placement");
+            let site = draft.request_site(&handle).expect("a live demand");
+            code.push(Instr::DurIterateBounded {
+                site,
+                limit: 2,
+                from: false,
+                list_ty: u16::MAX,
+            });
+        }
         let params = match self.frame {
             Frame::LocalsBelowParams => vec![ImageType::scalar(Scalar::Int)],
             Frame::Fits | Frame::OverLocals => Vec::new(),
@@ -1789,10 +1822,38 @@ fn a_bad_type_ordinal_with_a_body_past_the_ceiling_currently_draws_the_image_cei
 // ordinal here is written unchecked today, so the first policy cap decides trivially;
 // each cell is the boundary the coherence hoist will move. Standalone baselines for the
 // same families live in `marrow-verify/tests/legacy_ok_pins.rs` (they encode Ok today
-// and only the verifier rejects). One §B.3 family is not separately constructible as a
-// *defect* here: `DurIterateBounded`/`DurIndexScan` `list_ty` requires a live site
-// operand whose typed `encodable()` state the fixture cannot forge, and its collection
-// ordinal is the same raw-write kind `ListNew` already represents.
+// and only the verifier rejects). The `DurIterateBounded`/`DurIndexScan` `list_ty`
+// operand is the same public raw ordinal as the rest — a live site operand carries the
+// instruction while its `list_ty` dangles — and has its own first-cap cell below.
+//
+// # Equivalence classes (the derivation review 7 item 2 requires)
+//
+// Every policy verdict is decided at a fixed site — the `check_bounds` caps, the
+// per-function CodeBytes length check, the durable counting fence, the final ceiling —
+// and a reference defect only competes with it at the moment its bytes are written. Two
+// references written at the same emission position therefore draw identical verdicts
+// against every policy cap, and one member's pinned row carries its whole class:
+//
+// | class (emission position) | representative rows pinned literally | derived members |
+// |---|---|---|
+// | TAPE — written by `encode_code` inside the carrying function, after that
+// |   function's own CodeBytes check | `Call` and `RecordNew`
+// |   (Strings/TestEntries/CodeBytes/ImageBytes each) | `ListNew`,
+// |   `EnumConstruct.enum_idx` (+ its subordinate `variant`), `VacantLoad`,
+// |   `MakeIdentity.root` (+ its `cols` relation), `DurIterateBounded.list_ty`,
+// |   `DurIndexScan.list_ty`, and the signature param/return `ImageType` refs (written
+// |   just before the tape, after the same length check) — each keeps its literal
+// |   first-cap (Strings) cell below; its TestEntries/CodeBytes/ImageBytes cells follow
+// |   from the representatives |
+// | SECTION — written during tail section assembly, after `check_bounds`, all function
+// |   encoding, and the durable fence | export target and test-entry target
+// |   (Strings/TestEntries/CodeBytes/ImageBytes each) | TYPES field-`ImageType`, ENUMS
+// |   payload-`ImageType`, COLLTYPES element — each keeps its literal Strings cell;
+// |   the other rows follow from the representatives |
+// | DURABLE — written by the counting fence, after `check_bounds` and function
+// |   encoding, before section assembly | root entry record
+// |   (Strings/TestEntries/CodeBytes/ImageBytes each) | branch record (literal Strings
+// |   and ImageBytes cells; TestEntries/CodeBytes follow from the entry record) |
 
 /// This pin may flip under the sanctioned checked-conversion class ("type table"); the
 /// flip must cite this pin.
@@ -1842,7 +1903,7 @@ fn a_bad_enum_construct_ordinal_with_over_strings_currently_draws_the_string_cap
 fn a_bad_vacant_load_type_with_over_strings_currently_draws_the_string_cap() {
     assert_eq!(
         Fixture::clean()
-            .with_extra_instrs(vec![Instr::VacantLoad(FORGED_TYPE)])
+            .with_extra_instrs(vec![Instr::VacantLoad(FORGED_OPT_TYPE)])
             .policy(Overflow::Strings)
             .encode(),
         Err(ImageBuildError::TooManyStrings),
@@ -2025,5 +2086,183 @@ fn an_unchecked_call_in_the_earlier_function_currently_draws_the_later_code_too_
             .with_extra_function(Code::OverCodeBytes)
             .encode(),
         Err(ImageBuildError::CodeTooLong),
+    );
+}
+
+// ---- The complete coarse F-E matrix (review 7 item 1): every remaining
+// boundary × {Call, export target, test target, type table} cell, pinned literally.
+// The policy verdict wins in every cell today; each pin may flip under the sanctioned
+// checked-conversion class, and the flip must cite it.
+
+/// This pin may flip under the sanctioned checked-conversion class ("call target");
+/// the flip must cite this pin.
+#[test]
+fn a_bad_call_target_with_over_strings_currently_draws_the_string_cap() {
+    assert_eq!(
+        Fixture::clean()
+            .with_extra_instrs(vec![Instr::Call(u16::MAX)])
+            .policy(Overflow::Strings)
+            .encode(),
+        Err(ImageBuildError::TooManyStrings),
+    );
+}
+
+/// This pin may flip under the sanctioned checked-conversion class ("export target");
+/// the flip must cite this pin.
+#[test]
+fn a_bad_export_target_with_over_strings_currently_draws_the_string_cap() {
+    assert_eq!(
+        Fixture::clean()
+            .with_forged_export_target()
+            .policy(Overflow::Strings)
+            .encode(),
+        Err(ImageBuildError::TooManyStrings),
+    );
+}
+
+/// This pin may flip under the sanctioned checked-conversion class ("test target");
+/// the flip must cite this pin.
+#[test]
+fn a_bad_test_entry_target_with_over_strings_currently_draws_the_string_cap() {
+    assert_eq!(
+        Fixture::clean()
+            .with_forged_test_entry_target()
+            .policy(Overflow::Strings)
+            .encode(),
+        Err(ImageBuildError::TooManyStrings),
+    );
+}
+
+/// This pin may flip under the sanctioned checked-conversion class ("call target");
+/// the flip must cite this pin.
+#[test]
+fn a_bad_call_target_with_over_test_entries_currently_draws_the_test_entry_cap() {
+    assert_eq!(
+        Fixture::clean()
+            .with_extra_instrs(vec![Instr::Call(u16::MAX)])
+            .policy(Overflow::TestEntries)
+            .encode(),
+        Err(ImageBuildError::TooManyTestEntries),
+    );
+}
+
+/// This pin may flip under the sanctioned checked-conversion class ("export target");
+/// the flip must cite this pin.
+#[test]
+fn a_bad_export_target_with_over_test_entries_currently_draws_the_test_entry_cap() {
+    assert_eq!(
+        Fixture::clean()
+            .with_forged_export_target()
+            .policy(Overflow::TestEntries)
+            .encode(),
+        Err(ImageBuildError::TooManyTestEntries),
+    );
+}
+
+/// This pin may flip under the sanctioned checked-conversion class ("test target");
+/// the flip must cite this pin.
+#[test]
+fn a_bad_test_entry_target_with_over_test_entries_currently_draws_the_test_entry_cap() {
+    assert_eq!(
+        Fixture::clean()
+            .with_forged_test_entry_target()
+            .policy(Overflow::TestEntries)
+            .encode(),
+        Err(ImageBuildError::TooManyTestEntries),
+    );
+}
+
+/// This pin may flip under the sanctioned checked-conversion class ("type table");
+/// the flip must cite this pin.
+#[test]
+fn a_bad_type_ordinal_with_over_test_entries_currently_draws_the_test_entry_cap() {
+    assert_eq!(
+        Fixture::clean()
+            .with_extra_instrs(vec![Instr::RecordNew(u16::MAX)])
+            .policy(Overflow::TestEntries)
+            .encode(),
+        Err(ImageBuildError::TooManyTestEntries),
+    );
+}
+
+/// This pin may flip under the sanctioned checked-conversion class ("export target");
+/// the flip must cite this pin.
+#[test]
+fn a_bad_export_target_with_over_code_bytes_currently_draws_code_too_long() {
+    assert_eq!(
+        Fixture::clean()
+            .code(Code::OverCodeBytes)
+            .with_forged_export_target()
+            .encode(),
+        Err(ImageBuildError::CodeTooLong),
+    );
+}
+
+/// This pin may flip under the sanctioned checked-conversion class ("type table");
+/// the flip must cite this pin.
+#[test]
+fn a_bad_type_ordinal_with_over_code_bytes_currently_draws_code_too_long() {
+    assert_eq!(
+        Fixture::clean()
+            .code(Code::OverCodeBytes)
+            .with_extra_instrs(vec![Instr::RecordNew(u16::MAX)])
+            .encode(),
+        Err(ImageBuildError::CodeTooLong),
+    );
+}
+
+/// This pin may flip under the sanctioned checked-conversion class ("test target");
+/// the flip must cite this pin.
+#[test]
+fn a_bad_test_entry_target_with_a_body_past_the_ceiling_currently_draws_the_image_ceiling() {
+    assert_eq!(
+        Fixture::clean()
+            .value(Value::OverCeiling)
+            .with_forged_test_entry_target()
+            .encode(),
+        Err(ImageBuildError::ImageTooLarge),
+    );
+}
+
+// ---- The DURABLE-class representative rows the equivalence table names (review 7
+// item 2): the root entry record's remaining boundary cells.
+
+/// This pin may flip under the sanctioned checked-conversion class ("type table");
+/// the flip must cite this pin.
+#[test]
+fn a_forged_entry_record_with_over_test_entries_currently_draws_the_test_entry_cap() {
+    assert_eq!(
+        Fixture::clean()
+            .with_forged_entry_record()
+            .policy(Overflow::TestEntries)
+            .encode(),
+        Err(ImageBuildError::TooManyTestEntries),
+    );
+}
+
+/// This pin may flip under the sanctioned checked-conversion class ("type table");
+/// the flip must cite this pin.
+#[test]
+fn a_forged_entry_record_with_over_code_bytes_currently_draws_code_too_long() {
+    assert_eq!(
+        Fixture::clean()
+            .code(Code::OverCodeBytes)
+            .with_forged_entry_record()
+            .encode(),
+        Err(ImageBuildError::CodeTooLong),
+    );
+}
+
+/// This pin may flip under the sanctioned checked-conversion class ("collection
+/// type"); the flip must cite this pin: a live site operand carries the traversal while
+/// its `list_ty` dangles, and the first policy cap still decides today.
+#[test]
+fn a_dangling_traversal_list_type_with_over_strings_currently_draws_the_string_cap() {
+    assert_eq!(
+        Fixture::clean()
+            .with_dangling_traversal()
+            .policy(Overflow::Strings)
+            .encode(),
+        Err(ImageBuildError::TooManyStrings),
     );
 }

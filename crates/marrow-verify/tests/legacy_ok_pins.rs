@@ -8,10 +8,12 @@
 //! rejection comes from the one defect and not from the fixture's shape.
 
 use marrow_image::{
-    CollectionTypeDef, DeclarationMemberDef, DeclarationMemberShape, EncodedImage, EnumTypeDef,
-    ExportId, FieldDef, FuncId, FunctionDef, ImageDraft, ImageType, Instr, KeyColumn,
-    LedgerIdBytes, RecordTypeDef, RootOccurrenceDef, Scalar, SpanEntry, TypeId, VariantDef,
+    AdmittedRoot, CollectionTypeDef, DeclarationMemberDef, DeclarationMemberShape, EncodedImage,
+    EnumTypeDef, ExportId, FieldDef, FuncId, FunctionDef, ImageDraft, ImageType, Instr, KeyColumn,
+    LedgerIdBytes, RecordTypeDef, RootOccurrenceDef, Scalar, SemanticTarget, SpanEntry, TypeId,
+    VariantDef,
 };
+use marrow_image::{DurableIndexComponent, DurableIndexShape};
 use marrow_verify::verify;
 
 #[path = "../../marrow-image/tests/common/admitted_plan.rs"]
@@ -144,10 +146,9 @@ fn an_out_of_range_param_type_encodes_today_and_only_the_verifier_rejects() {
 
 // ---- The remaining §B.3 reference families: each raw table ordinal the encoder
 // writes unchecked today, pinned standalone as Ok-then-verifier-rejects. The
-// `DurIterateBounded`/`DurIndexScan` `list_ty` family is not separately
-// constructible as a defect: those instructions demand a live site operand whose
-// typed `encodable()` state cannot be forged, and their collection ordinal is the
-// same raw-write kind `ListNew` pins here.
+// `DurIterateBounded`/`DurIndexScan` `list_ty` operand belongs here too — a live
+// site operand carries the instruction while its `list_ty` is a public raw ordinal
+// that dangles — and both opcode paths are pinned below the durable fixture.
 
 /// The coherence hoist will convert this Ok to `InvalidReference("type table")`; the
 /// flip must cite this pin: today a `RecordNew` naming no TYPES row still encodes.
@@ -190,17 +191,26 @@ fn an_out_of_range_enum_construct_ordinal_encodes_today_and_only_the_verifier_re
 }
 
 /// The coherence hoist will convert this Ok to `InvalidReference("type table")`; the
-/// flip must cite this pin: today a `VacantLoad` embedding a type that names no TYPES
-/// row still encodes.
+/// flip must cite this pin: today a `VacantLoad` embedding an optional record type
+/// that names no TYPES row still encodes, and the verifier's record-ordinal check is
+/// the exact refusal. (The operand must be optional — a bare forged type is rejected
+/// for its optionality before the ordinal is ever consulted.)
 #[test]
 fn an_out_of_range_vacant_load_type_encodes_today_and_only_the_verifier_rejects() {
     let image = main_draft(
         Vec::new(),
-        vec![Instr::VacantLoad(FORGED_TYPE), Instr::Return],
+        vec![
+            Instr::VacantLoad(ImageType::Record {
+                idx: u16::MAX,
+                optional: true,
+            }),
+            Instr::Return,
+        ],
     )
     .encode()
     .expect("the producer accepts the unanswered vacant-load type today");
-    assert!(verify(&image.bytes).is_err());
+    let rejection = verify(&image.bytes).expect_err("the vacant-load ordinal is refused");
+    assert_eq!(rejection.detail(), "vacant-load record index out of range");
 }
 
 /// The coherence hoist will convert this Ok to `InvalidReference("root table")`; the
@@ -300,9 +310,21 @@ impl TableRef {
 }
 
 /// One keyed root over one Product with one `int` field, plus the exported `main`:
-/// the durable clean shape the three pins below vary one reference from. `branch`
-/// adds an otherwise-valid keyed branch member with the given entry record.
+/// the durable clean shape the pins below vary one reference from. `branch` adds an
+/// otherwise-valid keyed branch member with the given entry record.
 fn durable_draft(entry: TableRef, branch: Option<TableRef>, code: Vec<Instr>) -> ImageDraft {
+    let (draft, _root) = durable_parts(entry, branch, false);
+    finish_main(draft, code, ImageType::scalar(Scalar::Int))
+}
+
+/// The durable graph of [`durable_draft`], before `main` is added, returning the
+/// admitted root so a caller can bind operation sites. `indexed` gives the root one
+/// nonunique managed index projecting the field then the identity key.
+fn durable_parts(
+    entry: TableRef,
+    branch: Option<TableRef>,
+    indexed: bool,
+) -> (ImageDraft, AdmittedRoot) {
     let mut draft = ImageDraft::new();
     let value = draft.value_shapes_mut().scalar(Scalar::Int);
     let type_name = draft.intern_string("R");
@@ -358,7 +380,19 @@ fn durable_draft(entry: TableRef, branch: Option<TableRef>, code: Vec<Instr>) ->
         )
         .expect("a well-formed declaration");
     let root_name = draft.intern_string("r");
-    draft
+    let indexes = if indexed {
+        vec![DurableIndexShape {
+            id: LedgerIdBytes::from_bytes([0x23; 16]),
+            unique: false,
+            components: vec![
+                DurableIndexComponent::Field(LedgerIdBytes::from_bytes([0x0e; 16])),
+                DurableIndexComponent::Key(LedgerIdBytes::from_bytes([0x0c; 16])),
+            ],
+        }]
+    } else {
+        Vec::new()
+    };
+    let root = draft
         .add_root_occurrence(
             &admitted_plan(),
             LedgerIdBytes::from_bytes([0x0d; 16]),
@@ -369,10 +403,15 @@ fn durable_draft(entry: TableRef, branch: Option<TableRef>, code: Vec<Instr>) ->
                     id: LedgerIdBytes::from_bytes([0x0c; 16]),
                 }],
                 placement: LedgerIdBytes::from_bytes([0x0b; 16]),
-                indexes: Vec::new().into(),
+                indexes: indexes.into(),
             },
         )
         .expect("the Product is declared");
+    (draft, root)
+}
+
+/// Add and export `main` over an already-built durable graph.
+fn finish_main(mut draft: ImageDraft, code: Vec<Instr>, ret: ImageType) -> ImageDraft {
     let src = draft.intern_string("src/main.mw");
     let name = draft.intern_string("main");
     draft.intern_int(0);
@@ -381,7 +420,7 @@ fn durable_draft(entry: TableRef, branch: Option<TableRef>, code: Vec<Instr>) ->
             name,
             source: src,
             params: Vec::new(),
-            ret: ImageType::scalar(Scalar::Int),
+            ret,
             local_count: 0,
             spans: vec![SpanEntry {
                 instr_index: 0,
@@ -452,4 +491,201 @@ fn a_make_identity_cols_arity_mismatch_encodes_today_and_only_the_verifier_rejec
     .encode()
     .expect("the producer accepts the arity mismatch today");
     assert!(verify(&image.bytes).is_err());
+}
+
+// ---- The `list_ty` family, both opcode paths: a live provenance-validated site
+// operand carries the instruction, while its `list_ty` — a public raw COLLTYPES
+// ordinal — dangles past the (empty) collection table.
+
+/// The coherence hoist will convert this Ok to `InvalidReference("collection type")`;
+/// the flip must cite this pin: today a bounded traversal whose `list_ty` names no
+/// COLLTYPES row still encodes, and only the verifier refuses the bytes.
+#[test]
+fn a_dangling_iterate_list_type_encodes_today_and_only_the_verifier_rejects() {
+    let (mut draft, root) = durable_parts(TableRef::Valid, None, false);
+    let handle = draft
+        .bind_occurrence_site(
+            root.occurrence(),
+            root.placement_path(),
+            SemanticTarget::WholePayload,
+        )
+        .expect("a keyed placement");
+    let site = draft.request_site(&handle).expect("a live demand");
+    let code = vec![
+        Instr::DurIterateBounded {
+            site,
+            limit: 2,
+            from: false,
+            list_ty: u16::MAX,
+        },
+        Instr::Pop,
+        Instr::Pop,
+        Instr::Return,
+    ];
+    let image = finish_main(draft, code, ImageType::Unit)
+        .encode()
+        .expect("the producer accepts the dangling list type today");
+    let rejection = verify(&image.bytes).expect_err("the dangling list type is refused");
+    assert_eq!(
+        rejection.detail(),
+        "bounded traversal list type does not name a list of the traversed key",
+    );
+}
+
+/// The coherence hoist will convert this Ok to `InvalidReference("collection type")`;
+/// the flip must cite this pin: today an index scan whose `list_ty` names no COLLTYPES
+/// row still encodes, and only the verifier refuses the bytes.
+#[test]
+fn a_dangling_index_scan_list_type_encodes_today_and_only_the_verifier_rejects() {
+    let (mut draft, root) = durable_parts(TableRef::Valid, None, true);
+    let scan_path = root.index_paths()[0].clone();
+    let handle = draft
+        .bind_occurrence_site(root.occurrence(), &scan_path, SemanticTarget::IndexScan)
+        .expect("a managed index");
+    let site = draft.request_site(&handle).expect("a live demand");
+    // The scan pops its held field-component prefix (one `int`) before the list check.
+    let code = vec![
+        Instr::ConstLoad(0),
+        Instr::DurIndexScan {
+            site,
+            limit: 2,
+            from: false,
+            list_ty: u16::MAX,
+        },
+        Instr::Pop,
+        Instr::Return,
+    ];
+    let image = finish_main(draft, code, ImageType::Unit)
+        .encode()
+        .expect("the producer accepts the dangling list type today");
+    let rejection = verify(&image.bytes).expect_err("the dangling list type is refused");
+    assert_eq!(
+        rejection.detail(),
+        "index scan list type does not name a list of the identity key",
+    );
+}
+
+// ---- Domain-decoy `ImageType` pins (review 7 item 5): index 0 into an EMPTY target
+// domain while a WRONG domain is populated at index 0, asserting the exact
+// target-domain rejection — a check consulting the wrong table would accept these.
+
+/// A fieldless record populating TYPES row 0, as decoy for the non-record domains.
+fn with_decoy_record(mut draft: ImageDraft) -> ImageDraft {
+    let name = draft.intern_string("Decoy");
+    draft.add_record_type(RecordTypeDef {
+        name,
+        fields: Vec::new(),
+    });
+    draft
+}
+
+/// A payloadless enum populating ENUMS row 0, as decoy for the record domain.
+fn with_decoy_enum(mut draft: ImageDraft) -> ImageDraft {
+    let name = draft.intern_string("DecoyEnum");
+    let variant = draft.intern_string("dv");
+    draft.add_enum_type(EnumTypeDef {
+        name,
+        variants: vec![VariantDef {
+            name: variant,
+            category: false,
+            payload: Vec::new(),
+        }],
+    });
+    draft
+}
+
+/// The Record domain resolves against TYPES: with TYPES empty and ENUMS populated at
+/// index 0, a wrong-table check would accept this draft; the exact TYPES-domain
+/// rejection pins the correct domain.
+#[test]
+fn a_record_type_decoy_draws_the_types_domain_rejection() {
+    let draft = with_decoy_enum(main_draft(
+        vec![ImageType::Record {
+            idx: 0,
+            optional: false,
+        }],
+        short_code(),
+    ));
+    let image = draft.encode().expect("the decoy encodes");
+    let rejection = verify(&image.bytes).expect_err("the empty TYPES domain refuses index 0");
+    assert_eq!(rejection.detail(), "record param type index out of range");
+}
+
+/// The Enum domain resolves against ENUMS: with ENUMS empty and TYPES populated at
+/// index 0, a wrong-table check would accept this draft.
+#[test]
+fn an_enum_type_decoy_draws_the_enums_domain_rejection() {
+    let draft = with_decoy_record(main_draft(
+        vec![ImageType::Enum {
+            idx: 0,
+            optional: false,
+        }],
+        short_code(),
+    ));
+    let image = draft.encode().expect("the decoy encodes");
+    let rejection = verify(&image.bytes).expect_err("the empty ENUMS domain refuses index 0");
+    assert_eq!(rejection.detail(), "enum param type index out of range");
+}
+
+/// The Collection domain resolves against COLLTYPES: with COLLTYPES empty and TYPES
+/// populated at index 0, a wrong-table check would accept this draft.
+#[test]
+fn a_collection_type_decoy_draws_the_colltypes_domain_rejection() {
+    let draft = with_decoy_record(main_draft(
+        vec![ImageType::Collection {
+            idx: 0,
+            optional: false,
+        }],
+        short_code(),
+    ));
+    let image = draft.encode().expect("the decoy encodes");
+    let rejection = verify(&image.bytes).expect_err("the empty COLLTYPES domain refuses index 0");
+    assert_eq!(
+        rejection.detail(),
+        "collection param type index out of range"
+    );
+}
+
+/// The Identity domain resolves against ROOTS: with ROOTS empty (a storeless image)
+/// and TYPES populated at index 0, a wrong-table check would accept this draft.
+#[test]
+fn an_identity_type_decoy_draws_the_roots_domain_rejection() {
+    let draft = with_decoy_record(main_draft(
+        vec![ImageType::Identity {
+            root: 0,
+            optional: false,
+        }],
+        short_code(),
+    ));
+    let image = draft.encode().expect("the decoy encodes");
+    let rejection = verify(&image.bytes).expect_err("the empty ROOTS domain refuses index 0");
+    assert_eq!(
+        rejection.detail(),
+        "identity param type root index out of range",
+    );
+}
+
+/// The subordinate `EnumConstruct.variant` ordinal, designated into the pinned set: it
+/// is checked against the resolved enum, not a table of its own, so its boundary
+/// coverage derives from the adjacent `enum_idx` cells (same instruction, same tape
+/// position — the `enum_idx` crossings in `legacy_bridge.rs` carry both operands).
+#[test]
+fn an_out_of_range_enum_construct_variant_draws_the_exact_variant_rejection() {
+    let mut draft = with_decoy_enum(main_draft(
+        Vec::new(),
+        vec![
+            Instr::EnumConstruct {
+                enum_idx: 0,
+                variant: 5,
+            },
+            Instr::Return,
+        ],
+    ));
+    // The decoy enum is the one ENUMS row; variant 5 names no member of it.
+    draft.intern_int(0);
+    let image = draft
+        .encode()
+        .expect("the producer accepts the variant today");
+    let rejection = verify(&image.bytes).expect_err("the unanswered variant is refused");
+    assert_eq!(rejection.detail(), "enum variant index out of range");
 }
