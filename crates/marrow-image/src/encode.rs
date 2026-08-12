@@ -11,11 +11,13 @@
 //! Each canonicalized pool — strings, constants, exports, test entries — is its one
 //! retained base row set plus one permutation computed by the pool's one comparator;
 //! emission iterates the permutation-mapped base rows, so no second sorted copy of a
-//! pool exists to disagree with the rows it came from. Every section writer is generic
-//! over its [`ImageByteSink`], and a writer resolves a string or constant reference
-//! only as an opaque [`crate::remap`] token whose sole operation appends two bytes —
-//! so a section's byte length cannot depend on which permutation or sink drives the
-//! writer, which is what lets one writer serve counting and building alike.
+//! pool exists to disagree with the rows it came from. The nine non-DURABLE section
+//! writers receive the sealed [`crate::remap::SectionSink`] their driver hands them
+//! (the DURABLE writer keeps its pinned [`ImageByteSink`] bound), and a writer
+//! resolves a string or constant reference only as an opaque [`crate::remap`] token
+//! whose sole operation appends two bytes — so a section's byte length cannot depend
+//! on which permutation or sink drives the writer, which is what lets one writer
+//! serve counting and building alike.
 //!
 //! # Why the row-count conversions cannot truncate
 //!
@@ -42,8 +44,7 @@ use crate::durable_id::{DurableGraphTooLarge, DurableIndexComponent, DurableInde
 use crate::instr::Instr;
 use crate::measure::LegacyV0MeasureCore;
 use crate::product::{DeclarationMemberShape, DeclarationNode, ProductDeclarationGraph};
-use crate::remap::{ConstRemap, StringRemap};
-use crate::semantic::{SemanticPath, SemanticTarget};
+use crate::remap::{ConstRemap, SectionSink, StringRemap};
 use crate::ty::ImageType;
 use crate::value_dag::{
     CanonicalValueShapeDag, ImageByteSink, ValueShapeWireForm, expand, push_u16,
@@ -53,8 +54,10 @@ use crate::value_dag::{
 pub(crate) const MAGIC: &[u8; 4] = b"MWI\0";
 pub(crate) const VERSION: u8 = 0x00;
 pub(crate) const SECTION_COUNT: u8 = 10;
-/// The fixed image header: magic, version, and the 32-byte [`ImageId`] slot.
-pub(crate) const HEADER_BYTES: usize = 37;
+/// One SPANS row: `u32(offset) ‖ u32(line) ‖ u32(column)` — the row width
+/// `encode_spans` spells in three `u32` pushes and the measure core's span counting
+/// consumes arithmetically; the counted==emitted KATs pin the two against each other.
+pub(crate) const SPAN_ROW_BYTES: usize = 12;
 
 /// The encoded image plus its digest.
 #[derive(Debug, Clone)]
@@ -115,13 +118,16 @@ impl ImageDraft {
 
     /// Encode the STRINGS table (section 0x01): a count, then per row its
     /// length-prefixed text, iterating the base rows in the order `order` states.
-    pub(crate) fn encode_strings(
+    pub(crate) fn encode_strings<S: ImageByteSink>(
         &self,
-        sink: &mut impl ImageByteSink,
+        sink: &mut SectionSink<'_, S>,
         order: impl Iterator<Item = usize>,
     ) {
         push_u16(sink, self.strings().len() as u16);
         for row in order {
+            if sink.is_full() {
+                return;
+            }
             let text = &self.strings()[row];
             push_u16(sink, text.len() as u16);
             sink.extend_bytes(text.as_bytes());
@@ -131,14 +137,17 @@ impl ImageDraft {
     /// Encode the CONSTS table (section 0x04): a count, then per row its tag and
     /// payload, iterating the base rows in the order `order` states. A text payload is
     /// its remapped string reference, written as an opaque token.
-    pub(crate) fn encode_consts(
+    pub(crate) fn encode_consts<S: ImageByteSink>(
         &self,
-        sink: &mut impl ImageByteSink,
+        sink: &mut SectionSink<'_, S>,
         strings: &StringRemap<'_>,
         order: impl Iterator<Item = usize>,
     ) {
         push_u16(sink, self.consts().len() as u16);
         for row in order {
+            if sink.is_full() {
+                return;
+            }
             match self.consts()[row] {
                 ConstValue::Int(v) => {
                     sink.push(0x01);
@@ -168,9 +177,16 @@ impl ImageDraft {
         }
     }
 
-    pub(crate) fn encode_types(&self, sink: &mut impl ImageByteSink, strings: &StringRemap<'_>) {
+    pub(crate) fn encode_types<S: ImageByteSink>(
+        &self,
+        sink: &mut SectionSink<'_, S>,
+        strings: &StringRemap<'_>,
+    ) {
         push_u16(sink, self.types().len() as u16);
         for record in self.types() {
+            if sink.is_full() {
+                return;
+            }
             strings.token(record.name).emit(sink);
             push_u16(sink, record.fields.len() as u16);
             for field in &record.fields {
@@ -186,9 +202,16 @@ impl ImageDraft {
     /// `category` flag byte, a payload count, and one bare-`ImageType` reference per
     /// payload leaf in declaration order (a scalar tag, or a tag plus a big-endian
     /// `u16` index for a record or enum leaf).
-    pub(crate) fn encode_enums(&self, sink: &mut impl ImageByteSink, strings: &StringRemap<'_>) {
+    pub(crate) fn encode_enums<S: ImageByteSink>(
+        &self,
+        sink: &mut SectionSink<'_, S>,
+        strings: &StringRemap<'_>,
+    ) {
         push_u16(sink, self.enums().len() as u16);
         for enum_def in self.enums() {
+            if sink.is_full() {
+                return;
+            }
             strings.token(enum_def.name).emit(sink);
             push_u16(sink, enum_def.variants.len() as u16);
             for variant in &enum_def.variants {
@@ -206,9 +229,12 @@ impl ImageDraft {
     /// a one-byte kind tag (`0x00` List, `0x01` Map) followed by its bare-`ImageType`
     /// element reference (List) or key then value references (Map). Element/key/value
     /// references may themselves be `Collection` tags into an earlier COLLTYPES row.
-    pub(crate) fn encode_collections(&self, sink: &mut impl ImageByteSink) {
+    pub(crate) fn encode_collections<S: ImageByteSink>(&self, sink: &mut SectionSink<'_, S>) {
         push_u16(sink, self.collections().len() as u16);
         for coll in self.collections() {
+            if sink.is_full() {
+                return;
+            }
             match coll {
                 CollectionTypeDef::List { elem } => {
                     sink.push(0x00);
@@ -225,9 +251,9 @@ impl ImageDraft {
 
     /// Write the DURABLE section body, minus its closing contract identity, into `sink`.
     ///
-    /// One owner writes the section for both of its readers: the lower bound that only
-    /// counts the bytes, and the buffer that keeps them. A body admitted by the count is
-    /// therefore the body that is built, because it is the same walk over the same rows.
+    /// One owner writes the section for both of its readers: the measure core's capped
+    /// counting run and the emission buffer. A body admitted by the count is therefore
+    /// the body that is built, because it is the same walk over the same rows.
     pub(crate) fn write_durable_body(
         &self,
         sink: &mut impl ImageByteSink,
@@ -246,7 +272,7 @@ impl ImageDraft {
         // one retained declaration it references rather than carrying its own copy.
         for occurrence in self.root_occurrences() {
             let declaration = self.declaration_of(occurrence);
-            strings.token(occurrence.name()).emit(sink);
+            strings.token(occurrence.name()).emit_durable(sink);
             // The key tuple: a count, then each column's scalar type and ledger id.
             // Zero columns is a singleton root; more than one is a composite key.
             encode_key_tuple(sink, occurrence.keys());
@@ -266,24 +292,15 @@ impl ImageDraft {
             encode_durable_indexes(sink, occurrence.indexes());
         }
         // The retained row count, not the demand: the plan refuses to mint past its
-        // capacity, so rows never exceed the demand `check_bounds` measured against
+        // capacity, so rows never exceed the demand the policy walk measured against
         // `MAX_SITES`, and the count fits the `u16` the table is prefixed with.
         push_u16(sink, self.site_row_count() as u16);
-        self.project_sites(|site| {
-            encode_site_path(sink, &site.path);
-            sink.push(match site.target {
-                SemanticTarget::WholePayload => 0x00,
-                SemanticTarget::FieldLeaf => 0x01,
-                SemanticTarget::IndexScan => 0x02,
-                SemanticTarget::IndexLookup => 0x03,
-                SemanticTarget::GroupEntry => 0x04,
-            });
-        })
+        self.write_site_rows(sink)
     }
 
-    pub(crate) fn encode_functions(
+    pub(crate) fn encode_functions<S: ImageByteSink>(
         &self,
-        sink: &mut impl ImageByteSink,
+        sink: &mut SectionSink<'_, S>,
         strings: &StringRemap<'_>,
         consts: &ConstRemap<'_>,
     ) -> Result<Vec<CodeLayout>, ImageBuildError> {
@@ -313,13 +330,16 @@ impl ImageDraft {
     /// entry, iterating the base rows in the order `order` states — strictly ascending
     /// id order under the canonical permutation. The id is the only export key carried;
     /// the source name is not, so the VM can only dispatch on a verified id.
-    pub(crate) fn encode_exports(
+    pub(crate) fn encode_exports<S: ImageByteSink>(
         &self,
-        sink: &mut impl ImageByteSink,
+        sink: &mut SectionSink<'_, S>,
         order: impl Iterator<Item = usize>,
     ) {
         push_u16(sink, self.export_count() as u16);
         for row in order {
+            if sink.is_full() {
+                return;
+            }
             let export = &self.export_rows()[row];
             sink.extend_bytes(export.id().bytes());
             push_u16(sink, export.func());
@@ -331,14 +351,17 @@ impl ImageDraft {
     /// the order `order` states — strictly ascending remapped-name order under the
     /// canonical permutation. Names are unique across the project, so the sort is
     /// total and the verifier rechecks the strict ordering.
-    pub(crate) fn encode_test_entries(
+    pub(crate) fn encode_test_entries<S: ImageByteSink>(
         &self,
-        sink: &mut impl ImageByteSink,
+        sink: &mut SectionSink<'_, S>,
         strings: &StringRemap<'_>,
         order: impl Iterator<Item = usize>,
     ) {
         push_u16(sink, self.test_entry_count() as u16);
         for row in order {
+            if sink.is_full() {
+                return;
+            }
             let entry = &self.test_entry_rows()[row];
             strings.token(entry.name()).emit(sink);
             push_u16(sink, entry.func());
@@ -358,8 +381,11 @@ impl ImageDraft {
     /// span count can be accepted. The assertion below fails the build if a later
     /// ceiling widening breaks that derivation, at which point this count needs a
     /// bound and a typed refusal of its own rather than a comment.
-    pub(crate) fn encode_spans(&self, sink: &mut impl ImageByteSink, per_fn: &[CodeLayout]) {
-        const SPAN_ROW_BYTES: usize = 12;
+    pub(crate) fn encode_spans<S: ImageByteSink>(
+        &self,
+        sink: &mut SectionSink<'_, S>,
+        per_fn: &[CodeLayout],
+    ) {
         const _: () = assert!(
             bounds::MAX_IMAGE_BYTES / SPAN_ROW_BYTES < u16::MAX as usize,
             "the image ceiling must refuse a span table before its count outgrows the u16 prefix",
@@ -412,8 +438,8 @@ fn code_layout(code: &[Instr]) -> CodeLayout {
     }
 }
 
-fn encode_code(
-    sink: &mut impl ImageByteSink,
+fn encode_code<S: ImageByteSink>(
+    sink: &mut SectionSink<'_, S>,
     code: &[Instr],
     layout: &CodeLayout,
     consts: &ConstRemap<'_>,
@@ -533,25 +559,38 @@ pub(crate) fn remap_of(permutation: &[usize]) -> Vec<u16> {
     map
 }
 
-/// Append one section: `u8(id) ‖ u32(body_len) ‖ body`.
+/// Write the fixed image envelope head — magic, version, and the 32-byte digest slot —
+/// the one envelope-head codec: emission drives it with the computed [`ImageId`] and
+/// measurement with the zero digest, since the slot's width, not its value, is the
+/// fact a count consumes.
+pub(crate) fn write_image_header(sink: &mut impl ImageByteSink, digest: &[u8; 32]) {
+    sink.extend_bytes(MAGIC);
+    sink.push(VERSION);
+    sink.extend_bytes(digest);
+}
+
+/// Write one section frame: `u8(id) ‖ u32(body_len)` — the one frame codec, driven by
+/// emission ahead of each assembled body and by measurement ahead of each counted body
+/// (with the zero length, for the same width-not-value reason as the header).
+pub(crate) fn push_frame(sink: &mut impl ImageByteSink, id: u8, body_len: u32) {
+    sink.push(id);
+    push_u32(sink, body_len);
+}
+
+/// Append one section: its frame, then its body.
 ///
-/// The body length fits its `u32` prefix. Every section but two is built from rows the
-/// §E bounds cap, and the widest such body — `MAX_FUNCTIONS` × `MAX_CODE_BYTES` of code
-/// — is a few hundred mebibytes. The DURABLE body's size does not follow from a row
-/// count, because a value shape expands geometrically in its depth; it is fenced against
-/// the whole-image ceiling by [`DurableBodyLowerBound`] before it is ever built. SPANS
-/// is the remaining one: its rows are producer-supplied and no bound caps their number
-/// (see `encode_spans`), so this length rests on the producer, which would have to hold
-/// four gibibytes of spans in memory to reach the prefix width.
-pub(crate) fn push_section(
-    out: &mut Vec<u8>,
-    id: u8,
-    body: Vec<u8>,
-) -> Result<(), ImageBuildError> {
-    out.push(id);
-    push_u32(out, body.len() as u32);
+/// The body length fits the frame's `u32` prefix. Every section but two is built from
+/// rows the §E bounds cap, and the widest such body — `MAX_FUNCTIONS` ×
+/// `MAX_CODE_BYTES` of code — is a few hundred mebibytes. The DURABLE body's size does
+/// not follow from a row count, because a value shape expands geometrically in its
+/// depth; the measure core's capped counting decides it against the whole-image
+/// ceiling before it is ever built. SPANS is the remaining one: its rows are
+/// producer-supplied and no bound caps their number (see `encode_spans`), so this
+/// length rests on the producer, which would have to hold four gibibytes of spans in
+/// memory to reach the prefix width.
+pub(crate) fn push_section(out: &mut Vec<u8>, id: u8, body: Vec<u8>) {
+    push_frame(out, id, body.len() as u32);
     out.extend_from_slice(&body);
-    Ok(())
 }
 
 /// Encode a placement key tuple into the DURABLE section: `u16(count) ‖
@@ -562,27 +601,6 @@ fn encode_key_tuple(body: &mut impl ImageByteSink, keys: &[KeyColumn]) {
     for key in keys {
         ImageType::scalar(key.scalar).encode(body);
         body.extend_bytes(key.id.bytes());
-    }
-}
-
-/// Encode one operation site's semantic path: `u8(step_count) ‖ step*`, each step a
-/// `u8(ledger_kind) ‖ 16 id bytes`. The step kind byte is the same frozen ledger
-/// `IDREF` tag a durable node's identity uses, so the verifier decodes the path's
-/// kinds exactly as it spells its own node paths. The step count fits one byte off the
-/// bound the path type itself carries: a [`SemanticPath`] admits at most
-/// `MAX_SITE_PATH_STEPS` steps on every public route into it, and `bounds` const-asserts
-/// that width against one byte. The projection that mints these paths walks member rows
-/// whose depth the declaration graph's constructor already bounded, so the count is
-/// in range twice over. It is a checked conversion rather than a narrowing cast because
-/// the totality is a property of the argument's type, and a cast would silently outlive a
-/// widened bound.
-fn encode_site_path(body: &mut impl ImageByteSink, path: &SemanticPath) {
-    let step_count = u8::try_from(path.steps().len())
-        .expect("a bounded semantic path's step count fits the site-path width");
-    body.push(step_count);
-    for step in path.steps() {
-        body.push(step.kind.ledger_kind());
-        body.extend_bytes(step.id.bytes());
     }
 }
 
@@ -606,6 +624,9 @@ fn encode_declaration_members(
 ) -> Result<(), ImageBuildError> {
     push_u16(body, members.len() as u16);
     for member in members {
+        if body.is_full() {
+            return Ok(());
+        }
         match member.shape() {
             DeclarationMemberShape::Field {
                 id,
@@ -636,7 +657,7 @@ fn encode_declaration_members(
             } => {
                 body.push(0x02);
                 body.extend_bytes(placement.bytes());
-                strings.token(*name).emit(body);
+                strings.token(*name).emit_durable(body);
                 push_u16(body, record.0);
                 encode_key_tuple(body, keys);
                 encode_declaration_members(body, graph, graph.members_of(member), strings, values)?;
@@ -695,7 +716,7 @@ mod counted_equals_emitted {
     use crate::durable_id::{DurableIndexComponent, DurableIndexShape, LedgerIdBytes};
     use crate::instr::Instr;
     use crate::product::{DeclarationMemberDef, DeclarationMemberShape};
-    use crate::remap::{ConstRemap, StringRemap};
+    use crate::remap::{ConstRemap, SectionSink, StringRemap};
     use crate::semantic::SemanticTarget;
     use crate::ty::{ImageType, Scalar};
     use crate::value_dag::ImageByteSink;
@@ -1011,9 +1032,15 @@ mod counted_equals_emitted {
         for draft in fixtures() {
             let (string_order, ..) = canonical(&draft);
             let mut emitted = Vec::new();
-            draft.encode_strings(&mut emitted, string_order.iter().copied());
+            draft.encode_strings(
+                &mut SectionSink::over(&mut emitted),
+                string_order.iter().copied(),
+            );
             let mut counted = CountingSink::default();
-            draft.encode_strings(&mut counted, 0..draft.strings().len());
+            draft.encode_strings(
+                &mut SectionSink::over(&mut counted),
+                0..draft.strings().len(),
+            );
             assert_eq!(counted.0, emitted.len());
         }
     }
@@ -1023,9 +1050,15 @@ mod counted_equals_emitted {
         for draft in fixtures() {
             let (_, str_map, ..) = canonical(&draft);
             let mut emitted = Vec::new();
-            draft.encode_types(&mut emitted, &StringRemap::new(&str_map));
+            draft.encode_types(
+                &mut SectionSink::over(&mut emitted),
+                &StringRemap::new(&str_map),
+            );
             let mut counted = CountingSink::default();
-            draft.encode_types(&mut counted, &StringRemap::counting());
+            draft.encode_types(
+                &mut SectionSink::over(&mut counted),
+                &StringRemap::counting(),
+            );
             assert_eq!(counted.0, emitted.len());
         }
     }
@@ -1052,13 +1085,13 @@ mod counted_equals_emitted {
             let (_, str_map, const_order, _) = canonical(&draft);
             let mut emitted = Vec::new();
             draft.encode_consts(
-                &mut emitted,
+                &mut SectionSink::over(&mut emitted),
                 &StringRemap::new(&str_map),
                 const_order.iter().copied(),
             );
             let mut counted = CountingSink::default();
             draft.encode_consts(
-                &mut counted,
+                &mut SectionSink::over(&mut counted),
                 &StringRemap::counting(),
                 0..draft.consts().len(),
             );
@@ -1066,6 +1099,9 @@ mod counted_equals_emitted {
         }
     }
 
+    /// The measure core's offset-free FUNCTIONS arithmetic against the writer: the
+    /// two consume one per-item width owner, so the counted body equals the emitted
+    /// body on every fixture.
     #[test]
     fn counted_functions_equal_emitted_functions() {
         for draft in fixtures() {
@@ -1073,20 +1109,14 @@ mod counted_equals_emitted {
             let mut emitted = Vec::new();
             draft
                 .encode_functions(
-                    &mut emitted,
+                    &mut SectionSink::over(&mut emitted),
                     &StringRemap::new(&str_map),
                     &ConstRemap::new(&const_map),
                 )
                 .expect("the fixture's code encodes");
-            let mut counted = CountingSink::default();
-            draft
-                .encode_functions(
-                    &mut counted,
-                    &StringRemap::counting(),
-                    &ConstRemap::counting(),
-                )
-                .expect("the count lays out the same code");
-            assert_eq!(counted.0, emitted.len());
+            let mut counted = crate::measure::CappedImageCount::default();
+            crate::measure::count_functions(&draft, &mut counted);
+            assert_eq!(counted.total(), emitted.len());
         }
     }
 
@@ -1094,29 +1124,36 @@ mod counted_equals_emitted {
     fn counted_exports_equal_emitted_exports() {
         for draft in fixtures() {
             let mut emitted = Vec::new();
-            draft.encode_exports(&mut emitted, draft.export_permutation().iter().copied());
+            draft.encode_exports(
+                &mut SectionSink::over(&mut emitted),
+                draft.export_permutation().iter().copied(),
+            );
             let mut counted = CountingSink::default();
-            draft.encode_exports(&mut counted, 0..draft.export_count());
+            draft.encode_exports(
+                &mut SectionSink::over(&mut counted),
+                0..draft.export_count(),
+            );
             assert_eq!(counted.0, emitted.len());
         }
     }
 
+    /// The measure core's offset-free SPANS arithmetic against the writer.
     #[test]
     fn counted_spans_equal_emitted_spans() {
         for draft in fixtures() {
             let (_, str_map, _, const_map) = canonical(&draft);
             let per_fn: Vec<CodeLayout> = draft
                 .encode_functions(
-                    &mut CountingSink::default(),
+                    &mut SectionSink::over(&mut CountingSink::default()),
                     &StringRemap::new(&str_map),
                     &ConstRemap::new(&const_map),
                 )
                 .expect("the fixture's code lays out");
             let mut emitted = Vec::new();
-            draft.encode_spans(&mut emitted, &per_fn);
-            let mut counted = CountingSink::default();
-            draft.encode_spans(&mut counted, &per_fn);
-            assert_eq!(counted.0, emitted.len());
+            draft.encode_spans(&mut SectionSink::over(&mut emitted), &per_fn);
+            let mut counted = crate::measure::CappedImageCount::default();
+            crate::measure::count_spans(&draft, &mut counted);
+            assert_eq!(counted.total(), emitted.len());
         }
     }
 
@@ -1127,13 +1164,13 @@ mod counted_equals_emitted {
             let order = draft.test_entry_permutation(&str_map);
             let mut emitted = Vec::new();
             draft.encode_test_entries(
-                &mut emitted,
+                &mut SectionSink::over(&mut emitted),
                 &StringRemap::new(&str_map),
                 order.iter().copied(),
             );
             let mut counted = CountingSink::default();
             draft.encode_test_entries(
-                &mut counted,
+                &mut SectionSink::over(&mut counted),
                 &StringRemap::counting(),
                 0..draft.test_entry_count(),
             );
@@ -1146,9 +1183,15 @@ mod counted_equals_emitted {
         for draft in fixtures() {
             let (_, str_map, ..) = canonical(&draft);
             let mut emitted = Vec::new();
-            draft.encode_enums(&mut emitted, &StringRemap::new(&str_map));
+            draft.encode_enums(
+                &mut SectionSink::over(&mut emitted),
+                &StringRemap::new(&str_map),
+            );
             let mut counted = CountingSink::default();
-            draft.encode_enums(&mut counted, &StringRemap::counting());
+            draft.encode_enums(
+                &mut SectionSink::over(&mut counted),
+                &StringRemap::counting(),
+            );
             assert_eq!(counted.0, emitted.len());
         }
     }
@@ -1157,17 +1200,18 @@ mod counted_equals_emitted {
     fn counted_collections_equal_emitted_collections() {
         for draft in fixtures() {
             let mut emitted = Vec::new();
-            draft.encode_collections(&mut emitted);
+            draft.encode_collections(&mut SectionSink::over(&mut emitted));
             let mut counted = CountingSink::default();
-            draft.encode_collections(&mut counted);
+            draft.encode_collections(&mut SectionSink::over(&mut counted));
             assert_eq!(counted.0, emitted.len());
         }
     }
 
-    /// Max-live measurement harness (LSPCAP term of record; numbers recorded in
-    /// `measure.rs`): drive the counting run's function-layout scratch over the
-    /// full 4,096-row function partition and report its exact live bytes, plus the
-    /// site projection's per-row path bound.
+    /// Emission-scratch measurement harness: drive the emission writer's
+    /// function-layout scratch over the full 4,096-row function partition and report
+    /// its exact live bytes. Post-plan and emission-only since the measure core
+    /// counts FUNCTIONS arithmetically; recorded here so a widened representation is
+    /// re-measured deliberately.
     #[test]
     #[ignore = "measurement harness: run with --ignored and record the printed numbers"]
     fn measure_the_layout_scratch_for_the_full_function_partition() {
@@ -1191,12 +1235,13 @@ mod counted_equals_emitted {
                 })
                 .expect("no site operand needs validating");
         }
+        let (_, str_map, _, const_map) = canonical(&draft);
         let mut counted = CountingSink::default();
         let per_fn = draft
             .encode_functions(
-                &mut counted,
-                &StringRemap::counting(),
-                &ConstRemap::counting(),
+                &mut SectionSink::over(&mut counted),
+                &StringRemap::new(&str_map),
+                &ConstRemap::new(&const_map),
             )
             .expect("the partition's code lays out");
         let offsets: usize = per_fn
@@ -1213,12 +1258,6 @@ mod counted_equals_emitted {
              (widest single offsets vec {widest} bytes)",
             per_fn.len(),
             per_fn.capacity() * size_of::<CodeLayout>(),
-        );
-        println!(
-            "site projection per-row path bound: {} steps x {} bytes/step = {} bytes",
-            crate::bounds::MAX_SITE_PATH_STEPS,
-            size_of::<crate::semantic::SemanticStep>(),
-            crate::bounds::MAX_SITE_PATH_STEPS * size_of::<crate::semantic::SemanticStep>(),
         );
     }
 }

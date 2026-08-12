@@ -781,7 +781,7 @@ fn an_out_of_range_enum_construct_variant_draws_the_enum_type_refusal() {
 // ---- The remaining collection-ordinal opcode (design draft 8 §B.3): `MapNew` shares
 // `ListNew`'s operand kind, tape position, and hoisted check arm;
 // `TextSplit`/`TextLines` derive from these two by the derivation law in
-// `legacy_bridge.rs`.
+// `measure_verdicts.rs`.
 
 /// Flipped by the coherence hoist, citing the pre-restructure Ok-pin this test
 /// carried: the producer now refuses this draft with
@@ -823,7 +823,7 @@ fn an_out_of_range_map_new_ordinal_draws_the_collection_type_refusal() {
 // test-signature decision sites, and calls into test entries (the draft-8
 // call-closure exclusion was false; the verifier scans direct tape call targets in
 // its seal phase, and the producer mirrors exactly that direct scan). Their policy
-// crossings sit in `legacy_bridge.rs`; every crossing now resolves to the coherence
+// crossings sit in `measure_verdicts.rs`; every crossing now resolves to the coherence
 // side, per the derivation law recorded there.
 
 /// Flipped by the coherence hoist, citing the pre-restructure Ok-pin this test

@@ -1,6 +1,5 @@
-//! The legacy encoder bridge: which producer-side result a draft
-//! with several faults reports, and what the encoder allocates on the way to reporting
-//! it.
+//! The measure core's verdict pins: which producer-side result a draft with several
+//! faults reports, and what the encoder allocates on the way to reporting it.
 //!
 //! A durable field's value is spelled on the wire as its full expansion, so a draft
 //! inside every declared bound can still describe a DURABLE body larger than any image
@@ -18,9 +17,9 @@
 //! comments; git history carries the pre-restructure baselines.
 //!
 //! That no contract hash is ever computed over bytes no image can carry is structural
-//! rather than measured: the producer mints an identity at exactly one site, from a value
-//! that exists only for a body the fence already admitted, and the identity owner refuses
-//! a canonical payload past its own ceiling whoever asks (see the absence gate
+//! rather than measured: the producer mints an identity at exactly one site, inside the
+//! planned emission the measured ceiling already admitted, and the identity owner
+//! refuses a canonical payload past its own ceiling whoever asks (see the absence gate
 //! `the_contract_identity_has_one_mint_per_side_and_a_bound_of_its_own`).
 //!
 //! # The mixed-corruption matrix
@@ -1944,8 +1943,8 @@ fn a_bad_type_ordinal_with_a_body_past_the_ceiling_draws_the_type_table_referenc
 // families live in `marrow-verify/tests/legacy_ok_pins.rs` (they encoded Ok before
 // the hoist; they now pin the producer refusal).
 //
-// # Derivation law — member-by-member policy cutpoints (design draft 8 §A, corrected
-// # per review 9; positions restated for the installed measure core)
+// # Derivation law — member-by-member policy cutpoints, restated for the installed
+// # measure core
 //
 // The FOUR pre-restructure cutpoints (the END of `check_bounds`, the PER-FUNCTION
 // CodeBytes check, the DURABLE fence, the FINAL assembled-image ceiling) collapse
@@ -2183,7 +2182,7 @@ fn a_bad_const_in_the_later_function_draws_the_constant_reference() {
     );
 }
 
-// ---- The two omitted DURABLE type-table ordinals (design draft 7 §B.3): the root
+// ---- The two once-omitted DURABLE type-table ordinals: the root
 // entry record and a branch's entry record, both raw `TypeId` newtypes once written
 // to the body unchecked, now checked at their exact body positions. Standalone
 // producer-refusal pins live in `marrow-verify/tests/legacy_ok_pins.rs`.
@@ -2277,7 +2276,7 @@ fn an_unchecked_call_in_the_earlier_function_draws_the_call_target_reference() {
     );
 }
 
-// ---- The complete coarse F-E matrix (review 7 item 1): every remaining
+// ---- The complete coarse F-E matrix: every remaining
 // boundary × {Call, export target, test target, type table} cell, pinned literally.
 // The hoisted reference wins in every cell; each pin cites the policy verdict it
 // flipped.
@@ -2422,8 +2421,8 @@ fn a_bad_test_entry_target_with_a_body_past_the_ceiling_draws_the_test_target_re
     );
 }
 
-// ---- The DURABLE-class representative rows the equivalence table names (review 7
-// item 2): the root entry record's remaining boundary cells.
+// ---- The DURABLE-class representative rows the derivation law names: the root
+// entry record's remaining boundary cells.
 
 /// Flipped under the sanctioned checked-conversion class (`type table`), citing the
 /// pre-restructure pin this test carried: the hoisted coherence check decides
@@ -2523,7 +2522,7 @@ fn a_duplicate_export_target_with_over_strings_draws_the_export_table_relation()
     );
 }
 
-// ---- The fourth cutpoint (review 10 item 1): a draft every coherence item and
+// ---- The measured ceiling's own cells: a draft every coherence item and
 // every cap admits, refused only by the measured whole-image ceiling — decided at
 // measurement, envelope and frames included, before any section is assembled.
 

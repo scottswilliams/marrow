@@ -1682,13 +1682,18 @@ fn the_durable_body_has_one_writer() {
 #[test]
 fn the_measure_core_carriers_are_closed() {
     // (file suffix, symbol, expected production occurrence count)
-    const CARRIER_SET: [(&str, &str, usize); 6] = [
+    const CARRIER_SET: [(&str, &str, usize); 9] = [
         ("marrow-image/src/measure.rs", "LegacyV0MeasureCore", 2),
         ("marrow-image/src/encode.rs", "LegacyV0MeasureCore", 2),
         ("marrow-image/src/measure.rs", "CoherentDraft", 4),
         ("marrow-image/src/measure.rs", "PolicyClean", 4),
-        ("marrow-image/src/measure.rs", "MeasuredDurableLen", 3),
+        ("marrow-image/src/measure.rs", "MeasuredDurableLen", 4),
         ("marrow-image/src/measure.rs", "LegacyV0WirePlan", 4),
+        // The sealed section sink: defined beside the tokens, received by the nine
+        // writers, constructed only by the measure core's drivers.
+        ("marrow-image/src/remap.rs", "SectionSink", 5),
+        ("marrow-image/src/encode.rs", "SectionSink", 11),
+        ("marrow-image/src/measure.rs", "SectionSink", 17),
     ];
     let lib = without_cfg_test_items(&without_literals(
         &fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/lib.rs"))
@@ -1709,6 +1714,7 @@ fn the_measure_core_carriers_are_closed() {
             "PolicyClean",
             "MeasuredDurableLen",
             "LegacyV0WirePlan",
+            "SectionSink",
         ] {
             let found = symbol_positions(&production, symbol).count();
             let expected = CARRIER_SET
@@ -1790,7 +1796,7 @@ fn the_durable_traversal_has_a_closed_access_set() {
             .expect("read the measure core"),
     ));
     assert!(
-        measure.contains("draft.write_durable_body(sink, &strings)"),
+        measure.contains("draft.write_durable_body(sink, strings)"),
         "the measured DURABLE length is counted through the one installed writer",
     );
 }
@@ -1819,6 +1825,69 @@ fn the_shared_writers_index_no_sort_map() {
     assert!(
         encode.contains("StringRemap") && encode.contains("ConstRemap"),
         "the token providers are present, so this gate has a live subject",
+    );
+}
+
+/// A token is spent only inside the writers' file: the sealed `.emit(` spelling and
+/// the DURABLE writer's `.emit_durable(` spelling appear in production code at
+/// exactly the writer sites (plus the token owner's one internal delegation), so no
+/// other owner can route a token into a sink of its own — the bypass the sealed
+/// sink exists to forbid.
+#[test]
+fn tokens_are_spent_only_inside_the_writers() {
+    // (file suffix, spelling, expected production occurrence count)
+    const SPEND_SET: [(&str, &str, usize); 3] = [
+        ("marrow-image/src/encode.rs", ".emit(", 9),
+        ("marrow-image/src/encode.rs", ".emit_durable(", 2),
+        // The token owner's `emit` delegates to the one two-byte append.
+        ("marrow-image/src/remap.rs", ".emit_durable(", 1),
+    ];
+    for (path, code) in workspace_sources("src") {
+        let display = path.display().to_string();
+        if !display.contains("marrow-image/src") {
+            continue;
+        }
+        let production = without_cfg_test_items(&code);
+        for spelling in [".emit(", ".emit_durable("] {
+            let found = production.matches(spelling).count()
+                - if spelling == ".emit(" {
+                    // `.emit_durable(` contains no `.emit(` prefix match ambiguity:
+                    // the spellings are distinct needles.
+                    0
+                } else {
+                    0
+                };
+            let expected = SPEND_SET
+                .iter()
+                .find(|(suffix, name, _)| display.contains(suffix) && *name == spelling)
+                .map_or(0, |(_, _, count)| *count);
+            assert_eq!(
+                found, expected,
+                "`{display}` spells `{spelling}` {found} time(s); tokens are spent at                  exactly the writer sites, which admit {expected}",
+            );
+        }
+    }
+}
+
+/// The planted-probe half of the token-spending gate: the spelling must be visible
+/// to the scan in code and invisible in prose or the test tier.
+#[test]
+fn the_token_spend_scan_sees_code_and_not_prose() {
+    let planted = without_cfg_test_items(&without_literals(
+        r##"
+        // strings.token(id).emit(&mut probe);
+        const DOC: &str = "strings.token(id).emit(&mut probe)";
+        fn live(sink: &mut S) { strings.token(id).emit(sink); }
+        #[cfg(test)]
+        mod tests {
+            fn hostile() { strings.token(id).emit(&mut probe); }
+        }
+        "##,
+    ));
+    assert_eq!(
+        planted.matches(".emit(").count(),
+        1,
+        "exactly the production code occurrence is visible to the scan",
     );
 }
 

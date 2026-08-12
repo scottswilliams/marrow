@@ -677,41 +677,116 @@ mod tests {
         assert_eq!(&section[1..17], ledger_id(1).bytes());
     }
 
-    /// Max-live measurement harness (LSPCAP term of record; numbers recorded in
-    /// `measure.rs`): mirror [`expand`]'s scheduling arithmetic over the 31-level
-    /// 64-edge compact-expansion shape under the capped sink's budget and report the
-    /// worklist's peak, so the one sanctioned pre-verdict allocation carries a
-    /// measured capacity rather than an estimate.
+    /// Max-live measurement harness (the editor-capacity term of record; numbers
+    /// recorded in `measure.rs`): drive the real [`expand`] over each worst-case
+    /// corpus with a ceiling-capped counting sink, and beside it a real
+    /// [`Vec<ExpandTask>`] mirroring the three scheduling arms, recording the
+    /// worklist's peak length AND capacity — capacity is what lives — plus the
+    /// `Vec`-doubling old/new-buffer overlap. Two corpora bound the admitted domain:
+    /// the 31-level 64-edge struct chain, and the 31-level enum chain of 256 members
+    /// carrying 64 payload references each, the widest scheduling fan-out the §E
+    /// bounds admit.
     #[test]
     #[ignore = "measurement harness: run with --ignored and record the printed numbers"]
-    fn measure_the_expansion_worklist_peak_for_the_compact_regression() {
-        let mut dag = CanonicalValueShapeDag::new();
-        let mut level = dag.scalar(Scalar::Int);
-        for _ in 0..31 {
-            level = dag.struct_shape(vec![level; 64]);
-        }
-        let mut tasks = vec![level];
-        let mut peak = tasks.len();
-        let mut bytes = 0usize;
-        while let Some(id) = tasks.pop() {
-            if bytes > crate::bounds::MAX_IMAGE_BYTES {
-                break;
+    fn measure_the_expansion_worklist_peak_for_the_compact_corpora() {
+        struct Capped(usize);
+        impl ImageByteSink for Capped {
+            fn push(&mut self, _byte: u8) {
+                self.0 += 1;
             }
-            match dag.view(id) {
-                ValueShapeView::Scalar(_) => bytes += 2,
-                ValueShapeView::Struct(leaves) => {
-                    bytes += 3;
-                    tasks.extend(leaves.iter().rev());
+            fn extend_bytes(&mut self, bytes: &[u8]) {
+                self.0 += bytes.len();
+            }
+            fn is_full(&self) -> bool {
+                self.0 > crate::bounds::MAX_IMAGE_BYTES
+            }
+        }
+
+        let struct_chain = |dag: &mut CanonicalValueShapeDag| {
+            let mut level = dag.scalar(Scalar::Int);
+            for _ in 0..31 {
+                level = dag.struct_shape(vec![level; 64]);
+            }
+            level
+        };
+        let enum_chain = |dag: &mut CanonicalValueShapeDag| {
+            let mut level = dag.scalar(Scalar::Int);
+            for depth in 0..31u16 {
+                let members = (0..256u16)
+                    .map(|member| {
+                        let mut bytes = [0u8; 16];
+                        bytes[0..2].copy_from_slice(&depth.to_be_bytes());
+                        bytes[2..4].copy_from_slice(&member.to_be_bytes());
+                        (LedgerIdBytes::from_bytes(bytes), vec![level; 64])
+                    })
+                    .collect();
+                let mut sum = [0xffu8; 16];
+                sum[0..2].copy_from_slice(&depth.to_be_bytes());
+                level = dag.enum_shape(LedgerIdBytes::from_bytes(sum), members);
+            }
+            level
+        };
+
+        for (name, build) in [
+            (
+                "struct 31x64",
+                &struct_chain as &dyn Fn(&mut CanonicalValueShapeDag) -> _,
+            ),
+            ("enum 31x256x64", &enum_chain),
+        ] {
+            let mut dag = CanonicalValueShapeDag::new();
+            let root = build(&mut dag);
+
+            // The real traversal against the capped sink: the run the term charges.
+            let mut sink = Capped(0);
+            expand(&dag, root, ValueShapeWireForm::DurableSection, &mut sink)
+                .expect("the capped run stops early");
+
+            // The scheduling mirror: a real Vec of the real task type, driven by the
+            // same three arms, against the same capped byte budget.
+            let mut tasks: Vec<ExpandTask> = vec![ExpandTask::Node(root)];
+            let mut bytes = 0usize;
+            let mut peak_len = tasks.len();
+            let mut peak_capacity = tasks.capacity();
+            while let Some(task) = tasks.pop() {
+                if bytes > crate::bounds::MAX_IMAGE_BYTES {
+                    break;
                 }
-                ValueShapeView::Enum { .. } => unreachable!("the shape declares no enum"),
+                match task {
+                    ExpandTask::Node(id) => match &dag.nodes[id.index()] {
+                        ValueShapeNode::Scalar(_) => bytes += 2,
+                        ValueShapeNode::Struct(leaves) => {
+                            bytes += 3;
+                            tasks.extend(leaves.iter().rev().map(|leaf| ExpandTask::Node(*leaf)));
+                        }
+                        ValueShapeNode::Enum { members, .. } => {
+                            bytes += 1 + 16 + 2;
+                            tasks.extend(members.iter().rev().map(ExpandTask::EnumMember));
+                        }
+                    },
+                    ExpandTask::EnumMember(member) => {
+                        bytes += 16 + 2;
+                        tasks.extend(
+                            member
+                                .payload
+                                .iter()
+                                .rev()
+                                .map(|leaf| ExpandTask::Node(*leaf)),
+                        );
+                    }
+                }
+                peak_len = peak_len.max(tasks.len());
+                peak_capacity = peak_capacity.max(tasks.capacity());
             }
-            peak = peak.max(tasks.len());
+            let task_bytes = size_of::<ExpandTask>();
+            println!(
+                "{name}: capped run counted {} bytes; worklist peak {peak_len} tasks, \
+                 capacity {peak_capacity} x {task_bytes} bytes/task = {} live bytes, \
+                 doubling overlap <= {} bytes",
+                sink.0,
+                peak_capacity * task_bytes,
+                (peak_capacity + peak_capacity / 2) * task_bytes,
+            );
         }
-        println!(
-            "expansion worklist peak: {peak} tasks x {} bytes/task = {} bytes \
-             (Vec doubling: transient overlap <= 2x capacity)",
-            size_of::<ExpandTask>(),
-            peak * size_of::<ExpandTask>(),
-        );
     }
 }

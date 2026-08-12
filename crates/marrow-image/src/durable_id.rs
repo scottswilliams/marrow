@@ -149,8 +149,8 @@ const LP_HEADER_BYTES: usize = size_of::<u64>();
 /// The width of one ledger reference in the canonical payload: `u8(kind) ‖ u64_be(16) ‖ id`.
 const PREIMAGE_IDREF_BYTES: usize = 1 + LP_HEADER_BYTES + LEDGER_ID_BYTES;
 
-/// The longest DURABLE body [`crate::encode`]'s lower-bound fence admits: the whole-image
-/// ceiling less the closing contract identity, which the fence charges against the ceiling
+/// The longest DURABLE body the measure core's capped counting admits: the whole-image
+/// ceiling less the closing contract identity, which measurement charges against the ceiling
 /// before the body is allocated.
 const MAX_FITTING_DURABLE_BODY_BYTES: usize = bounds::MAX_IMAGE_BYTES - DurableContractId::BYTES;
 
@@ -175,7 +175,7 @@ const MAX_FITTING_DURABLE_BODY_BYTES: usize = bounds::MAX_IMAGE_BYTES - DurableC
 ///
 /// Every row has `payload ≤ 25/16 × body`, and the ratio is reached only by a bare
 /// reference; summing the rows gives `payload ≤ 25/16 × body` for the whole walk. The
-/// fence admits a body only when `body + DurableContractId::BYTES ≤ MAX_IMAGE_BYTES`, so
+/// measured plan admits a body only when `body + DurableContractId::BYTES ≤ MAX_IMAGE_BYTES`, so
 /// the amplifiable term is [`MAX_FITTING_DURABLE_BODY_BYTES`] — the 32 identity bytes are
 /// not body bytes and are not amplified, which is why the subtraction sits **inside** the
 /// ratio rather than outside it.
@@ -194,7 +194,7 @@ const MAX_FITTING_CONTRACT_PREIMAGE_BYTES: usize =
 /// The derivation is exact arithmetic, not a saturating estimate.
 const _: () = assert!(MAX_FITTING_DURABLE_BODY_BYTES <= usize::MAX / PREIMAGE_IDREF_BYTES);
 
-/// A fence-admitted body is inside the bound, so the refusal can only ever answer for a
+/// A measurement-admitted body is inside the bound, so the refusal can only ever answer for a
 /// graph no image could carry. Widening the image ceiling widens this one with it.
 const _: () = assert!(MAX_FITTING_CONTRACT_PREIMAGE_BYTES >= MAX_FITTING_DURABLE_BODY_BYTES);
 
@@ -993,9 +993,9 @@ fn push_members(
 pub struct DurableContractId(pub(crate) [u8; 32]);
 
 impl DurableContractId {
-    /// The width of the identity on the wire. The DURABLE section's lower bound counts
-    /// these bytes without computing them, so the width has one owner and the value has
-    /// another.
+    /// The width of the identity on the wire. The measure core's DURABLE counting run
+    /// counts these bytes without computing them, so the width has one owner and the
+    /// value has another.
     pub(crate) const BYTES: usize = 32;
 
     /// Reconstruct an id from its 32 raw bytes. The verifier decodes the id carried
@@ -1914,16 +1914,16 @@ mod tests {
         );
     }
 
-    /// The fitting-preimage bound is the 25:16 ratio applied to a fence-admitted body, and
+    /// The fitting-preimage bound is the 25:16 ratio applied to a measurement-admitted body, and
     /// the subtraction of the closing identity sits **inside** the ratio.
     ///
-    /// The two are separable: the identity's 32 bytes are ceiling headroom the fence
+    /// The two are separable: the identity's 32 bytes are ceiling headroom measurement
     /// reserves before the body is allocated, not body bytes, so they are never amplified
     /// by the reference-spelling ratio. Subtracting outside would state a bound 50 bytes
-    /// wider than any fence-admitted body can produce, and so would stop being the tight
+    /// wider than any measurement-admitted body can produce, and so would stop being the tight
     /// bound the row derives.
     #[test]
-    fn the_fitting_preimage_bound_is_the_ratio_of_a_fence_admitted_body() {
+    fn the_fitting_preimage_bound_is_the_ratio_of_a_measurement_admitted_body() {
         let inside = (crate::bounds::MAX_IMAGE_BYTES - DurableContractId::BYTES) * 25 / 16;
         let outside = crate::bounds::MAX_IMAGE_BYTES * 25 / 16 - DurableContractId::BYTES;
         assert_eq!(super::MAX_FITTING_CONTRACT_PREIMAGE_BYTES, inside);
@@ -1931,7 +1931,7 @@ mod tests {
         assert!(
             inside < outside,
             "subtracting outside the ratio is the looser reading and is not what the \
-             fence admits",
+             measured plan admits",
         );
         // The ratio's own terms, so a respelled reference fails here rather than silently
         // widening the bound.

@@ -1,5 +1,5 @@
 //! The legacy-v0 measure core: coherence, policy, capped measurement, and planned
-//! emission, in that order (design §B/§C/§D/§G).
+//! emission, in that order.
 //!
 //! [`ImageDraft::encode`] drives four affine steps, each consuming the previous one:
 //!
@@ -7,84 +7,87 @@
 //!    decision — the fixed per-construct widths, the durable graph walks, the
 //!    application anchor, the site projection, and every structural reference the
 //!    emitted sections would resolve — in the exact relative order the legacy encoder
-//!    decided them (the stable partition; see the sequence note below). A coherence
-//!    failure returns the existing invariant error before any policy candidate.
+//!    decided them (the stable partition; the sequence note below names it item by
+//!    item). A coherence failure returns the existing invariant error before any
+//!    policy candidate.
 //! 2. **Policy** ([`CoherentDraft::policy`]): the resource-policy candidates in the
 //!    exact legacy candidate order — the eleven aggregate caps, then per-function
 //!    CodeBytes. A policy failure returns without measuring, hashing, or allocating.
-//! 3. **Measurement** ([`PolicyClean::measure`]): every section counted through the
-//!    one checked sink, in section order, driving the same sink-generic writers
-//!    emission uses — base rows and constant tokens, whose lengths the
-//!    counted==emitted KATs prove order-independent — saturating decisively one byte
-//!    past [`bounds::MAX_IMAGE_BYTES`]. The result is an affine [`LegacyV0WirePlan`]:
-//!    ten inline section lengths and a scalar total, no heap, or
-//!    [`ImageBuildError::ImageTooLarge`] with nothing retained. The final whole-image
-//!    ceiling is decided here, envelope and frames included, before any section is
-//!    assembled.
+//! 3. **Measurement** ([`PolicyClean::measure`]): the whole image counted through the
+//!    one checked sink in exact assembly order — the envelope head and section-count
+//!    prelude, then per section its frame and its body — driving the same codecs
+//!    emission uses over the base rows with constant tokens, whose lengths the
+//!    counted==emitted KATs prove order-independent. FUNCTIONS and SPANS are counted
+//!    arithmetically from the same per-item width owners their writers spell, so no
+//!    layout offsets exist before a verdict. The sink saturates decisively one byte
+//!    past [`bounds::MAX_IMAGE_BYTES`] and every counting row loop polls it. The
+//!    result is an affine [`LegacyV0WirePlan`] — inline per-section body and framed
+//!    spans plus the envelope spans, no heap — or
+//!    [`ImageBuildError::ImageTooLarge`] with nothing retained; the whole-image
+//!    ceiling is decided here, before any section is assembled.
 //! 4. **Emission** ([`LegacyV0WirePlan::emit_image`]): the plan is consumed; each
-//!    section is built through the same writer with the real permutations and tokens,
-//!    compared byte-for-byte in length against the plan, and a disagreement is the
-//!    typed [`ImageBuildError::EncodeDrift`] naming the drifted section. The durable
-//!    contract identity is minted exactly once, inside `emit_image`.
+//!    section is built through the same writer with the real permutations and tokens;
+//!    every body length, framed span, the tail cursor (the digest input range), the
+//!    envelope head, and the final total are compared to the plan, and a
+//!    disagreement is the typed [`ImageBuildError::EncodeDrift`] naming the drifted
+//!    region. The durable contract identity is minted exactly once, inside
+//!    `emit_image`.
 //!
 //! # The coherence sequence (stable partition)
 //!
-//! Step 1 preserves the legacy decision-site order: the `check_bounds` invariant
-//! subsequence (per-record fields → per-enum definition widths → the Product claim
-//! conflict → the per-declaration graph walk → the whole-arena value-shape walk →
-//! per-occurrence key/index widths → per-function frames), then the application
-//! anchor and the site projection with operand provenance, then the emission-order
-//! reference checks hoisted from the writers: per function (name → source → signature
-//! types → tape operands in tape order), the DURABLE body (root names, entry records,
-//! branch names and records, in body order), TYPES, CONSTS, EXPORTS (targets and the
-//! export relations), SPANS, TEST-ENTRY (names, targets, and the test relations),
-//! ENUMS, COLLTYPES. Every hoisted check is a range check over a local ordinal (or a
+//! Step 1 preserves the legacy decision-site order as eleven items: (i) the
+//! `check_bounds` invariant subsequence — per-record fields, per-enum definition
+//! widths, the Product claim conflict, the per-declaration graph walk, the
+//! whole-arena value-shape walk, per-occurrence key/index widths, per-function
+//! frames; (ii) the application anchor, the streamed site projection, and operand
+//! provenance; then the emission-order reference checks hoisted from the writers:
+//! (iii) per function its name, source, signature types, and tape operands in tape
+//! order; (iv) the DURABLE body's root names, entry records, and branch names and
+//! records in body order; (v) TYPES; (vi) CONSTS; (vii) EXPORTS with the export
+//! relations; (viii) SPANS; (ix) TEST-ENTRY with the test relations; (x) ENUMS;
+//! (xi) COLLTYPES. Every hoisted check is a range check over a local ordinal (or a
 //! locally decidable relation); an in-range id keeps its local meaning, and the
 //! independent verifier remains the only decoder.
 //!
-//! # Allocation posture and the max-live term (LSPCAP pre-join term of record)
+//! # Allocation posture and the max-live term (the editor-capacity pre-join term)
 //!
-//! The core's own state — the coherence walk (including its streaming site-projection
-//! validation, which materializes no path), the policy audit, the counting sink, the
-//! measured-length witness, and the plan — is zero-heap. What measurement drives is
-//! the installed writers, whose own scratch predates the core and is unchanged. The
-//! max-live expression therefore charges, beyond `B_LEGACY_DRAFT` (the retained draft
-//! baseline) and the fitting emitter's post-`Fits` sort/section/output topology:
+//! Every pre-verdict path is zero-heap — the coherence walk (its site-projection
+//! validation streams and materializes no path), the policy audit, the counting
+//! sink (`usize`), the witness (`u32`), the plan (inline arrays and scalars), and
+//! the offset-free FUNCTIONS/SPANS counting arithmetic — with exactly one
+//! exception, the adjudicated DURABLE expansion worklist below. Layout offsets and
+//! sort scratch are emission-only. Beyond the retained draft baseline (the pools,
+//! tables, and plans the draft owns for its whole life) and the fitting emitter's
+//! post-plan sort/section/output topology, the max-live expression charges:
 //!
-//! - **zero bytes** for coherence, the policy audit, the sink (`usize`), the witness
-//!   (`u32`), and the plan (`[u32; 10]` + two scalars, inline);
-//! - the DURABLE traversal's ceiling-bounded expansion worklist — the one sanctioned
-//!   pre-verdict allocation (stop adjudication of record). Measured on the 31-level
-//!   64-edge compact-expansion regression: peak 1,954 pending tasks × 16 bytes/task
-//!   = 31,264 bytes; `Vec`-doubling growth, so the transient old/new-buffer overlap
-//!   is bounded by 2× that capacity;
-//! - the site projection's transient per-row path, live one row at a time during the
-//!   DURABLE counting and emission runs only: ≤ `MAX_SITE_PATH_STEPS` (18) steps ×
-//!   17 bytes/step = 306 bytes + one `Vec` header (the step-count-first site codec
-//!   is why the writer consumes a materialized path; the coherence walk streams);
-//! - the tape codec's per-function layout scratch during the functions-section
-//!   counting and emission runs. Measured on the full 4,096-row function partition:
-//!   the per-function vector 4,096 × 32 bytes = 131,072 bytes, plus exact-capacity
-//!   offset vectors totalling 1,064,960 bytes (widest single vector 260 bytes);
-//!   both die with the run that built them.
+//! - the DURABLE traversal's ceiling-bounded expansion worklist — the one
+//!   sanctioned pre-verdict allocation (stop adjudication of record). Measured
+//!   through the scheduling harness over both worst-case corpora, recording `Vec`
+//!   capacity (what lives), not length: the 31-level 64-edge struct chain peaks at
+//!   1,954 pending tasks, capacity 2,048 × 16 bytes/task = 32,768 live bytes; the
+//!   31-level enum chain of 256 members × 64 payload references — the widest
+//!   scheduling fan-out the §E bounds admit — peaks at 9,859 pending tasks,
+//!   capacity 16,384 × 16 bytes/task = **262,144 live bytes**, with a
+//!   `Vec`-doubling old/new-buffer overlap of at most **393,216 bytes**. The enum
+//!   figure bounds the admitted domain.
 //!
-//! The `#[ignore]`d measurement harnesses that produced these numbers live beside
-//! the owners they measure (`value_dag.rs`, `encode.rs`); re-run them with
-//! `--ignored` when a representation widens, and re-gate through LSPCAP.
+//! The `#[ignore]`d measurement harness that produced these numbers lives beside
+//! the traversal owner (`value_dag.rs`); re-run it with `--ignored` when a
+//! representation widens, and re-gate through the persistent editor-capacity law.
 
 use crate::bounds;
 use crate::digest::image_id;
 use crate::draft::{CollectionTypeDef, ConstValue, ImageBuildError, ImageDraft, StrId};
 use crate::durable_id::{DurableContractId, DurableGraphTooLarge};
 use crate::encode::{
-    EncodedImage, HEADER_BYTES, MAGIC, SECTION_COUNT, VERSION, laid_out_code_len, push_section,
-    remap_of,
+    EncodedImage, SECTION_COUNT, SPAN_ROW_BYTES, laid_out_code_len, push_frame, push_section,
+    remap_of, write_image_header,
 };
 use crate::instr::Instr;
 use crate::product::{
     DeclarationMemberShape, DeclarationNode, ProductClaimConflict, ProductDeclarationGraph,
 };
-use crate::remap::{ConstRemap, StringRemap};
+use crate::remap::{ConstRemap, SectionSink, StringRemap};
 use crate::ty::ImageType;
 use crate::value_dag::{CanonicalValueShapeDag, ImageByteSink, ValueShapeView};
 
@@ -92,8 +95,6 @@ use crate::value_dag::{CanonicalValueShapeDag, ImageByteSink, ValueShapeView};
 const SECTION_IDS: [u8; 10] = [0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A];
 /// The plan slot of the DURABLE section (wire id 0x03).
 const DURABLE_SLOT: usize = 2;
-/// One section frame: `u8(id) ‖ u32(body_len)`.
-const SECTION_FRAME_BYTES: usize = 5;
 
 /// Which emitted region disagreed with the measured plan: one of the ten sections, by
 /// its wire id, or the image envelope. Opaque — it renders the region's name and can
@@ -152,11 +153,16 @@ pub(crate) struct PolicyClean<'d>(&'d ImageDraft);
 /// constructor demands it, so a second traversal cannot feed a plan.
 struct MeasuredDurableLen(u32);
 
-/// The measured wire plan: ten inline section body lengths and the whole-image total,
-/// envelope and frames included. No heap; affine — emission consumes it.
+/// The measured wire plan: per section its body length and its framed span, plus the
+/// envelope-head span, the tail span (the section-count prelude and every framed
+/// section — the digest input), and the whole-image total, all counted through the
+/// same codecs emission drives. No heap; affine — emission consumes it.
 pub(crate) struct LegacyV0WirePlan<'d> {
     draft: &'d ImageDraft,
-    sections: [u32; 10],
+    bodies: [u32; 10],
+    framed: [u32; 10],
+    header: u32,
+    tail: u32,
     total: u32,
 }
 
@@ -229,102 +235,164 @@ impl<'d> CoherentDraft<'d> {
 }
 
 impl<'d> PolicyClean<'d> {
-    /// Step 5: count all ten sections through one checked sink, in section order,
-    /// driving the same sink-generic writers emission uses over the base rows with
-    /// constant tokens. The sink saturates decisively one byte past the whole-image
-    /// ceiling, and the plan constructor decides the ceiling over the full total —
-    /// envelope and frames included — so a final-only overage refuses here, before
-    /// any section is assembled.
+    /// Step 3: count the whole image through one checked sink, in exact assembly
+    /// order — the envelope head (zero digest), the section-count prelude, then per
+    /// section its frame (zero length) and its body — driving the same codecs
+    /// emission uses over the base rows with constant tokens. FUNCTIONS and SPANS
+    /// are counted arithmetically from the same per-item width owners their writers
+    /// spell, so no layout offsets exist before a verdict. The sink saturates
+    /// decisively at [`bounds::MAX_IMAGE_BYTES`]` + 1`, every row loop polls it, and
+    /// the ceiling is decided here, before any section is assembled.
     pub(crate) fn measure(self) -> Result<LegacyV0WirePlan<'d>, ImageBuildError> {
         let draft = self.0;
         let strings = StringRemap::counting();
-        let consts = ConstRemap::counting();
         let mut counter = CappedImageCount::default();
-        let mut sections = [0u32; 10];
+        let mut bodies = [0u32; 10];
+        let mut framed = [0u32; 10];
 
-        sections[0] = counter.measured(|sink| {
-            draft.encode_strings(sink, 0..draft.strings().len());
+        let header = counter.measured(|sink| {
+            write_image_header(sink, &[0u8; 32]);
             Ok(())
         })?;
-        sections[1] = counter.measured(|sink| {
-            draft.encode_types(sink, &strings);
+        let tail_start = counter.total();
+        counter.measured(|sink| {
+            sink.push(SECTION_COUNT);
             Ok(())
         })?;
-        // The DURABLE counting run: the one installed writer drives the one installed
-        // expansion, exactly as emission will, and the section closes with the 32-byte
-        // contract identity the emission run appends after the body.
-        let durable = MeasuredDurableLen(counter.measured(|sink| {
-            draft.write_durable_body(sink, &strings)?;
+
+        let mut durable = None;
+        for slot in 0..SECTION_IDS.len() {
+            let framed_start = counter.total();
+            counter.measured(|sink| {
+                push_frame(sink, SECTION_IDS[slot], 0);
+                Ok(())
+            })?;
+            bodies[slot] = counter
+                .measured(|sink| count_section_body(draft, slot, &strings, sink, &mut durable))?;
+            // Within the ceiling the sink just re-proved, so the span fits `u32`.
+            framed[slot] = (counter.total() - framed_start) as u32;
+        }
+        let durable = durable.expect("the DURABLE slot was just counted");
+        let tail = (counter.total() - tail_start) as u32;
+        LegacyV0WirePlan::new(draft, bodies, framed, header, tail, durable)
+    }
+}
+
+/// Count one section body over the base rows with constant tokens, minting the
+/// measured-DURABLE witness at the DURABLE slot. FUNCTIONS and SPANS consume the
+/// shared per-item width owners ([`laid_out_code_len`], [`crate::ty::ImageType`]'s
+/// encoded widths, [`SPAN_ROW_BYTES`]) rather than the offset-laying writers, so
+/// measurement allocates nothing; the counted==emitted KATs pin the arithmetic
+/// against the writers per section.
+fn count_section_body(
+    draft: &ImageDraft,
+    slot: usize,
+    strings: &StringRemap<'_>,
+    sink: &mut CappedImageCount,
+    durable: &mut Option<MeasuredDurableLen>,
+) -> Result<(), ImageBuildError> {
+    match SECTION_IDS[slot] {
+        0x01 => draft.encode_strings(&mut SectionSink::over(sink), 0..draft.strings().len()),
+        0x02 => draft.encode_types(&mut SectionSink::over(sink), strings),
+        0x03 => {
+            // The one installed DURABLE writer drives the one installed expansion,
+            // exactly as emission will; the section closes with the 32-byte contract
+            // identity the emission run appends after the body.
+            let body_start = sink.total();
+            draft.write_durable_body(sink, strings)?;
             sink.pad(DurableContractId::BYTES);
-            Ok(())
-        })?);
-        sections[3] = counter.measured(|sink| {
-            draft.encode_consts(sink, &strings, 0..draft.consts().len());
-            Ok(())
-        })?;
-        let mut per_fn = Vec::new();
-        sections[4] = counter.measured(|sink| {
-            per_fn = draft.encode_functions(sink, &strings, &consts)?;
-            Ok(())
-        })?;
-        sections[5] = counter.measured(|sink| {
-            draft.encode_exports(sink, 0..draft.export_count());
-            Ok(())
-        })?;
-        sections[6] = counter.measured(|sink| {
-            draft.encode_spans(sink, &per_fn);
-            Ok(())
-        })?;
-        sections[7] = counter.measured(|sink| {
-            draft.encode_test_entries(sink, &strings, 0..draft.test_entry_count());
-            Ok(())
-        })?;
-        sections[8] = counter.measured(|sink| {
-            draft.encode_enums(sink, &strings);
-            Ok(())
-        })?;
-        sections[9] = counter.measured(|sink| {
-            draft.encode_collections(sink);
-            Ok(())
-        })?;
-        LegacyV0WirePlan::new(draft, sections, durable)
+            // Within the capped count, so the length fits `u32`.
+            *durable = Some(MeasuredDurableLen((sink.total() - body_start) as u32));
+        }
+        0x04 => draft.encode_consts(
+            &mut SectionSink::over(sink),
+            strings,
+            0..draft.consts().len(),
+        ),
+        0x05 => count_functions(draft, sink),
+        0x06 => draft.encode_exports(&mut SectionSink::over(sink), 0..draft.export_count()),
+        0x07 => count_spans(draft, sink),
+        0x08 => draft.encode_test_entries(
+            &mut SectionSink::over(sink),
+            strings,
+            0..draft.test_entry_count(),
+        ),
+        0x09 => draft.encode_enums(&mut SectionSink::over(sink), strings),
+        0x0A => draft.encode_collections(&mut SectionSink::over(sink)),
+        _ => unreachable!("the section id table is closed"),
+    }
+    Ok(())
+}
+
+/// The FUNCTIONS section body, counted without laying out offsets: the row-count
+/// prefix, then per function its fixed header widths — the two remap tokens, the
+/// parameter-count byte, each parameter's and the return's encoded type width, the
+/// local count, the code-length prefix — plus [`laid_out_code_len`], the one
+/// per-instruction width owner the emission layout accumulates into offsets. Jump
+/// operands are fixed-width, so no offset value affects a length.
+pub(crate) fn count_functions(draft: &ImageDraft, sink: &mut CappedImageCount) {
+    sink.pad(2);
+    for function in draft.functions() {
+        if sink.is_full() {
+            return;
+        }
+        sink.pad(2 + 2 + 1);
+        for param in &function.params {
+            sink.pad(param.encoded_len());
+        }
+        sink.pad(function.ret.encoded_len());
+        sink.pad(2 + 4);
+        sink.pad(laid_out_code_len(&function.code) as usize);
+    }
+}
+
+/// The SPANS section body, counted without offsets: per function its `u16` count
+/// prefix plus [`SPAN_ROW_BYTES`] per row — the widths `encode_spans` spells.
+pub(crate) fn count_spans(draft: &ImageDraft, sink: &mut CappedImageCount) {
+    for function in draft.functions() {
+        if sink.is_full() {
+            return;
+        }
+        sink.pad(2 + SPAN_ROW_BYTES * function.spans.len());
     }
 }
 
 impl<'d> LegacyV0WirePlan<'d> {
-    /// Complete the plan and decide the whole-image ceiling over the full framed
-    /// total. Demanding the witness is what makes a plan unforgeable: only the
-    /// counting run over the installed DURABLE writer can mint one.
+    /// Complete the plan. Every span was counted through the one saturating sink, so
+    /// the ceiling verdict is already decided when this is reached; demanding the
+    /// witness is what makes a plan unforgeable — only the counting run over the
+    /// installed DURABLE writer can mint one.
     fn new(
         draft: &'d ImageDraft,
-        mut sections: [u32; 10],
+        mut bodies: [u32; 10],
+        framed: [u32; 10],
+        header: u32,
+        tail: u32,
         durable: MeasuredDurableLen,
     ) -> Result<Self, ImageBuildError> {
-        sections[DURABLE_SLOT] = durable.0;
-        let framed: usize = sections
-            .iter()
-            .map(|len| SECTION_FRAME_BYTES + *len as usize)
-            .sum();
-        let total = HEADER_BYTES + 1 + framed;
-        if total > bounds::MAX_IMAGE_BYTES {
-            return Err(ImageBuildError::ImageTooLarge);
-        }
+        bodies[DURABLE_SLOT] = durable.0;
         Ok(Self {
             draft,
-            sections,
-            // The ceiling was just decided, so the total fits far inside `u32`.
-            total: total as u32,
+            bodies,
+            framed,
+            header,
+            tail,
+            total: header + tail,
         })
     }
 
-    /// Step 6: consume the plan and emit the image — the real permutations and remap
-    /// tokens through the same writers measurement counted, every section length
-    /// compared to the plan, the contract identity minted exactly once, and the
-    /// assembled envelope compared to the planned total.
+    /// Step 4: consume the plan and emit the image — the real permutations and remap
+    /// tokens through the same writers measurement counted, every section body and
+    /// framed span compared to the plan, the contract identity minted exactly once,
+    /// the tail cursor (the digest input range) and the assembled envelope compared
+    /// to the planned spans.
     pub(crate) fn emit_image(self) -> Result<EncodedImage, ImageBuildError> {
         let Self {
             draft,
-            sections,
+            bodies,
+            framed,
+            header,
+            tail,
             total,
         } = self;
 
@@ -338,72 +406,101 @@ impl<'d> LegacyV0WirePlan<'d> {
         let const_map = remap_of(&const_order);
         let consts = ConstRemap::new(&const_map);
 
-        let mut tail = Vec::with_capacity(total as usize - HEADER_BYTES);
-        tail.push(SECTION_COUNT);
-        let emit = |tail: &mut Vec<u8>, slot: usize, body: Vec<u8>| {
-            if body.len() != sections[slot] as usize {
-                return Err(ImageBuildError::EncodeDrift(EncodeDriftSection::of(
-                    SECTION_IDS[slot],
-                )));
+        let mut out = Vec::with_capacity(tail as usize);
+        out.push(SECTION_COUNT);
+        let emit = |out: &mut Vec<u8>, slot: usize, body: Vec<u8>| {
+            let drift = || ImageBuildError::EncodeDrift(EncodeDriftSection::of(SECTION_IDS[slot]));
+            if body.len() != bodies[slot] as usize {
+                return Err(drift());
             }
-            push_section(tail, SECTION_IDS[slot], body)
+            let cursor = out.len();
+            push_section(out, SECTION_IDS[slot], body);
+            // The frame comparison: the section advanced the cursor by exactly the
+            // framed span the one frame codec counted.
+            if out.len() - cursor != framed[slot] as usize {
+                return Err(drift());
+            }
+            Ok(())
         };
 
-        let mut body = Vec::with_capacity(sections[0] as usize);
-        draft.encode_strings(&mut body, string_order.iter().copied());
-        emit(&mut tail, 0, body)?;
+        let mut body = Vec::with_capacity(bodies[0] as usize);
+        draft.encode_strings(
+            &mut SectionSink::over(&mut body),
+            string_order.iter().copied(),
+        );
+        emit(&mut out, 0, body)?;
 
-        let mut body = Vec::with_capacity(sections[1] as usize);
-        draft.encode_types(&mut body, &strings);
-        emit(&mut tail, 1, body)?;
+        let mut body = Vec::with_capacity(bodies[1] as usize);
+        draft.encode_types(&mut SectionSink::over(&mut body), &strings);
+        emit(&mut out, 1, body)?;
 
         // The DURABLE body the plan measured, written this time, closed by the 32-byte
         // durable-contract identity: the one mint, for a graph the plan already fits.
-        let mut body = Vec::with_capacity(sections[DURABLE_SLOT] as usize);
+        let mut body = Vec::with_capacity(bodies[DURABLE_SLOT] as usize);
         draft.write_durable_body(&mut body, &strings)?;
         let identity = draft
             .contract_view()
             .contract_id()
             .map_err(|DurableGraphTooLarge| ImageBuildError::ImageTooLarge)?;
         body.extend_from_slice(identity.bytes());
-        emit(&mut tail, DURABLE_SLOT, body)?;
+        emit(&mut out, DURABLE_SLOT, body)?;
 
-        let mut body = Vec::with_capacity(sections[3] as usize);
-        draft.encode_consts(&mut body, &strings, const_order.iter().copied());
-        emit(&mut tail, 3, body)?;
+        let mut body = Vec::with_capacity(bodies[3] as usize);
+        draft.encode_consts(
+            &mut SectionSink::over(&mut body),
+            &strings,
+            const_order.iter().copied(),
+        );
+        emit(&mut out, 3, body)?;
 
-        let mut body = Vec::with_capacity(sections[4] as usize);
-        let per_fn = draft.encode_functions(&mut body, &strings, &consts)?;
-        emit(&mut tail, 4, body)?;
+        let mut body = Vec::with_capacity(bodies[4] as usize);
+        let per_fn =
+            draft.encode_functions(&mut SectionSink::over(&mut body), &strings, &consts)?;
+        emit(&mut out, 4, body)?;
 
         let export_order = draft.export_permutation();
-        let mut body = Vec::with_capacity(sections[5] as usize);
-        draft.encode_exports(&mut body, export_order.iter().copied());
-        emit(&mut tail, 5, body)?;
+        let mut body = Vec::with_capacity(bodies[5] as usize);
+        draft.encode_exports(
+            &mut SectionSink::over(&mut body),
+            export_order.iter().copied(),
+        );
+        emit(&mut out, 5, body)?;
 
-        let mut body = Vec::with_capacity(sections[6] as usize);
-        draft.encode_spans(&mut body, &per_fn);
-        emit(&mut tail, 6, body)?;
+        let mut body = Vec::with_capacity(bodies[6] as usize);
+        draft.encode_spans(&mut SectionSink::over(&mut body), &per_fn);
+        emit(&mut out, 6, body)?;
 
         let test_entry_order = draft.test_entry_permutation(&str_map);
-        let mut body = Vec::with_capacity(sections[7] as usize);
-        draft.encode_test_entries(&mut body, &strings, test_entry_order.iter().copied());
-        emit(&mut tail, 7, body)?;
+        let mut body = Vec::with_capacity(bodies[7] as usize);
+        draft.encode_test_entries(
+            &mut SectionSink::over(&mut body),
+            &strings,
+            test_entry_order.iter().copied(),
+        );
+        emit(&mut out, 7, body)?;
 
-        let mut body = Vec::with_capacity(sections[8] as usize);
-        draft.encode_enums(&mut body, &strings);
-        emit(&mut tail, 8, body)?;
+        let mut body = Vec::with_capacity(bodies[8] as usize);
+        draft.encode_enums(&mut SectionSink::over(&mut body), &strings);
+        emit(&mut out, 8, body)?;
 
-        let mut body = Vec::with_capacity(sections[9] as usize);
-        draft.encode_collections(&mut body);
-        emit(&mut tail, 9, body)?;
+        let mut body = Vec::with_capacity(bodies[9] as usize);
+        draft.encode_collections(&mut SectionSink::over(&mut body));
+        emit(&mut out, 9, body)?;
 
-        let id = image_id(&tail);
-        let mut bytes = Vec::with_capacity(HEADER_BYTES + tail.len());
-        bytes.extend_from_slice(MAGIC);
-        bytes.push(VERSION);
-        bytes.extend_from_slice(&id.0);
-        bytes.extend_from_slice(&tail);
+        // The final tail cursor: the digest input is exactly the measured tail span —
+        // the section-count prelude and every framed section.
+        if out.len() != tail as usize {
+            return Err(ImageBuildError::EncodeDrift(EncodeDriftSection::envelope()));
+        }
+        let id = image_id(&out);
+        let mut bytes = Vec::with_capacity(total as usize);
+        write_image_header(&mut bytes, &id.0);
+        // The envelope head matched its measured span, so the digest input begins at
+        // exactly the counted header cursor.
+        if bytes.len() != header as usize {
+            return Err(ImageBuildError::EncodeDrift(EncodeDriftSection::envelope()));
+        }
+        bytes.extend_from_slice(&out);
         if bytes.len() != total as usize {
             return Err(ImageBuildError::EncodeDrift(EncodeDriftSection::envelope()));
         }
@@ -414,14 +511,20 @@ impl<'d> LegacyV0WirePlan<'d> {
     }
 }
 
-/// The one checked counting sink: it keeps nothing and saturates decisively one byte
-/// past the whole-image ceiling, so "full" and "fits" stay distinguishable and the
-/// work an over-ceiling draft costs is the bytes the ceiling admits.
+/// The decisive sentinel: one byte past the whole-image ceiling, where the counting
+/// sink saturates and stays.
+const DECISIVE_TOTAL: usize = bounds::MAX_IMAGE_BYTES + 1;
+
+/// The one checked counting sink: it keeps nothing, every accumulation saturates at
+/// [`DECISIVE_TOTAL`], and every counting row loop polls [`ImageByteSink::is_full`] —
+/// so an over-ceiling draft stops at the decisive byte with only per-row granularity
+/// slack, "full" and "fits" stay distinguishable, and the work an over-ceiling draft
+/// costs is the bytes the ceiling admits.
 #[derive(Default)]
-struct CappedImageCount(usize);
+pub(crate) struct CappedImageCount(usize);
 
 impl CappedImageCount {
-    /// Run one section's writer against this sink and return the section's byte
+    /// Run one region's writer against this sink and return the region's byte
     /// length, or refuse a saturated count with the whole-image ceiling verdict.
     fn measured(
         &mut self,
@@ -436,19 +539,25 @@ impl CappedImageCount {
         Ok((self.0 - before) as u32)
     }
 
-    /// Count fixed trailing bytes a writer does not produce (the contract identity).
-    fn pad(&mut self, bytes: usize) {
-        self.0 += bytes;
+    /// Count `bytes` at once — fixed widths a counting arithmetic states without a
+    /// buffer (the contract identity, a function row's header, a span table).
+    pub(crate) fn pad(&mut self, bytes: usize) {
+        self.0 = (self.0 + bytes).min(DECISIVE_TOTAL);
+    }
+
+    /// The saturating running total, for the decisiveness pins and the plan spans.
+    pub(crate) fn total(&self) -> usize {
+        self.0
     }
 }
 
 impl ImageByteSink for CappedImageCount {
     fn push(&mut self, _byte: u8) {
-        self.0 += 1;
+        self.pad(1);
     }
 
     fn extend_bytes(&mut self, bytes: &[u8]) {
-        self.0 += bytes.len();
+        self.pad(bytes.len());
     }
 
     fn is_full(&self) -> bool {
@@ -540,7 +649,7 @@ fn validate_declaration_graph(
     if graph.over_member_bound() {
         return Err(ImageBuildError::TooManyDurableMembers);
     }
-    for (node, depth) in graph.rows().iter().zip(graph.depths()) {
+    for (node, depth) in graph.rows_with_depths() {
         if depth > bounds::MAX_DURABLE_DEPTH {
             return Err(ImageBuildError::DurableTreeTooDeep);
         }
@@ -790,7 +899,7 @@ fn durable_references(draft: &ImageDraft) -> Result<(), ImageBuildError> {
 }
 
 /// One run of declaration members, in declaration order, descending exactly as the
-/// body writer does. Field value shapes were validated arena-wide in step 1.
+/// body writer does. Field value shapes were validated arena-wide in item (i).
 fn member_references(
     draft: &ImageDraft,
     graph: &ProductDeclarationGraph,
@@ -973,4 +1082,153 @@ fn collections_references(draft: &ImageDraft) -> Result<(), ImageBuildError> {
         }
     }
     Ok(())
+}
+
+/// Decisive-saturation pins: on every over-ceiling corpus family the counting sink's
+/// final value is exactly [`DECISIVE_TOTAL`] — accumulation saturates there and every
+/// counting row loop polls fullness — so over-ceiling measurement performs only
+/// decisive capped work and the `N`/`N + 1` boundary is byte-exact. The boundary
+/// corpora in `tests/ceiling_boundary.rs` pin the same families end to end; these
+/// unit pins see the sink itself.
+#[cfg(test)]
+mod decisive_saturation {
+    use super::*;
+    use crate::draft::{FunctionDef, RootOccurrenceDef, SpanEntry};
+    use crate::product::{DeclarationMemberDef, DeclarationMemberShape};
+    use crate::ty::Scalar;
+
+    fn saturated(drive: impl FnOnce(&mut CappedImageCount)) -> usize {
+        let mut counter = CappedImageCount::default();
+        drive(&mut counter);
+        counter.total()
+    }
+
+    #[test]
+    fn an_over_ceiling_span_table_saturates_at_the_decisive_byte() {
+        let mut draft = ImageDraft::new();
+        let src = draft.intern_string("s");
+        let name = draft.intern_string("f");
+        draft
+            .add_function(FunctionDef {
+                name,
+                source: src,
+                params: Vec::new(),
+                ret: ImageType::Unit,
+                local_count: 0,
+                spans: vec![
+                    SpanEntry {
+                        instr_index: 0,
+                        line: 1,
+                        column: 1,
+                    };
+                    44_000
+                ],
+                code: vec![Instr::Return],
+            })
+            .expect("no site operand needs validating");
+        assert_eq!(
+            saturated(|counter| count_spans(&draft, counter)),
+            DECISIVE_TOTAL,
+        );
+    }
+
+    #[test]
+    fn an_over_ceiling_function_table_saturates_at_the_decisive_byte() {
+        let mut draft = ImageDraft::new();
+        let src = draft.intern_string("s");
+        let name = draft.intern_string("f");
+        let zero = draft.intern_int(0);
+        let body: Vec<Instr> = std::iter::repeat_n(Instr::ConstLoad(zero.index()), 400)
+            .chain([Instr::Return])
+            .collect();
+        for _ in 0..512 {
+            draft
+                .add_function(FunctionDef {
+                    name,
+                    source: src,
+                    params: Vec::new(),
+                    ret: ImageType::Unit,
+                    local_count: 0,
+                    spans: Vec::new(),
+                    code: body.clone(),
+                })
+                .expect("no site operand needs validating");
+        }
+        assert_eq!(
+            saturated(|counter| count_functions(&draft, counter)),
+            DECISIVE_TOTAL,
+        );
+    }
+
+    #[test]
+    fn an_over_ceiling_string_pool_saturates_at_the_decisive_byte() {
+        let mut draft = ImageDraft::new();
+        for index in 0..200 {
+            draft.intern_string(&format!("{index:04}{}", "x".repeat(3_996)));
+        }
+        assert_eq!(
+            saturated(|counter| {
+                draft.encode_strings(&mut SectionSink::over(counter), 0..draft.strings().len());
+            }),
+            DECISIVE_TOTAL,
+        );
+    }
+
+    #[test]
+    fn an_over_ceiling_durable_expansion_saturates_at_the_decisive_byte() {
+        let mut draft = ImageDraft::new();
+        draft.set_application_identity(crate::durable_id::LedgerIdBytes::from_bytes([0x01; 16]));
+        let value = {
+            let values = draft.value_shapes_mut();
+            let mut level = values.scalar(Scalar::Int);
+            for _ in 0..31 {
+                level = values.struct_shape(vec![level; 64]);
+            }
+            level
+        };
+        let type_name = draft.intern_string("R");
+        let record = draft.add_record_type(crate::draft::RecordTypeDef {
+            name: type_name,
+            fields: Vec::new(),
+        });
+        let plan = crate::draft::AdmittedGraphInputPlan::admit(1, 1, 4)
+            .expect("a small census is admitted");
+        let product = crate::durable_id::LedgerIdBytes::from_bytes([0x0d; 16]);
+        draft
+            .declare_product(
+                &plan,
+                product,
+                record,
+                vec![DeclarationMemberDef {
+                    parent: None,
+                    shape: DeclarationMemberShape::Field {
+                        id: crate::durable_id::LedgerIdBytes::from_bytes([0x0e; 16]),
+                        required: true,
+                        value,
+                    },
+                }],
+            )
+            .expect("a well-formed declaration");
+        let root_name = draft.intern_string("r");
+        draft
+            .add_root_occurrence(
+                &plan,
+                product,
+                RootOccurrenceDef {
+                    name: root_name,
+                    keys: Vec::new(),
+                    placement: crate::durable_id::LedgerIdBytes::from_bytes([0x0b; 16]),
+                    indexes: Vec::new().into(),
+                },
+            )
+            .expect("the Product is declared");
+        assert_eq!(
+            saturated(|counter| {
+                draft
+                    .write_durable_body(counter, &StringRemap::counting())
+                    .expect("the capped count stops early");
+            }),
+            DECISIVE_TOTAL,
+        );
+    }
 }

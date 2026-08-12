@@ -55,8 +55,18 @@ use crate::value_dag::{ImageByteSink, push_u16};
 pub struct StringToken(u16);
 
 impl StringToken {
-    /// Append this token's two big-endian bytes — the one operation a token has.
-    pub(crate) fn emit(self, sink: &mut impl ImageByteSink) {
+    /// Append this token's two big-endian bytes — the one operation a token has. The
+    /// nine non-DURABLE section writers spend tokens only into the sealed
+    /// [`SectionSink`] their drivers hand them, so a writer holds no sink it could
+    /// read a token's bytes back out of.
+    pub(crate) fn emit<S: ImageByteSink>(self, sink: &mut SectionSink<'_, S>) {
+        self.emit_durable(sink);
+    }
+
+    /// The DURABLE writer's spending path: `write_durable_body` keeps its pinned
+    /// public-sink signature, so its tokens append through the bound the gate pins;
+    /// the writer-region gate forbids this spelling anywhere else.
+    pub(crate) fn emit_durable(self, sink: &mut impl ImageByteSink) {
         push_u16(sink, self.0);
     }
 }
@@ -88,8 +98,10 @@ impl StringToken {
 pub struct ConstToken(u16);
 
 impl ConstToken {
-    /// Append this token's two big-endian bytes — the one operation a token has.
-    pub(crate) fn emit(self, sink: &mut impl ImageByteSink) {
+    /// Append this token's two big-endian bytes — the one operation a token has,
+    /// sealed to the [`SectionSink`] like [`StringToken::emit`]. The constant remap
+    /// serves only section writers, so it has no DURABLE spending path.
+    pub(crate) fn emit<S: ImageByteSink>(self, sink: &mut SectionSink<'_, S>) {
         push_u16(sink, self.0);
     }
 }
@@ -128,25 +140,51 @@ impl<'a> StringRemap<'a> {
 
 /// The constant remap: the one owner of reads from the constant sort map. Instruction
 /// operands carry raw drafted indices, so the lookup takes the raw index rather than a
-/// typed id. The counting instantiation mirrors [`StringRemap::counting`].
-pub(crate) struct ConstRemap<'a>(Option<&'a [u16]>);
+/// typed id. It has no counting instantiation: the measure core counts the FUNCTIONS
+/// section arithmetically from the shared per-item widths, so only emission resolves
+/// constant references.
+pub(crate) struct ConstRemap<'a>(&'a [u16]);
 
 impl<'a> ConstRemap<'a> {
     pub(crate) fn new(map: &'a [u16]) -> Self {
-        Self(Some(map))
+        Self(map)
     }
 
-    /// The allocation-free counting instantiation: every token is the constant token.
-    pub(crate) fn counting() -> Self {
-        Self(None)
-    }
-
-    /// The token for one drafted constant reference. Under a sorted map, an index
-    /// outside the pool panics exactly as the raw map indexing it replaces did.
+    /// The token for one drafted constant reference. An index outside the pool panics
+    /// exactly as the raw map indexing it replaces did.
     pub(crate) fn token(&self, raw: u16) -> ConstToken {
-        ConstToken(match self.0 {
-            Some(map) => map[raw as usize],
-            None => 0,
-        })
+        ConstToken(self.0[raw as usize])
+    }
+}
+
+/// The sealed sink the nine non-DURABLE section writers receive.
+///
+/// A writer generic over the public [`ImageByteSink`] could conjure a probe
+/// `Vec<u8>`, spend a token into it, and branch on the bytes — exactly the
+/// remap-dependent behavior the token seal exists to forbid. This newtype closes
+/// that route: the writers' signatures demand it, tokens spend only into it, its
+/// field is private, and its one constructor is pinned by the carrier gate to the
+/// measure core's counting and emission drivers (and the test tier), so no writer
+/// can seal a sink of its own.
+pub(crate) struct SectionSink<'a, S: ImageByteSink>(&'a mut S);
+
+impl<'a, S: ImageByteSink> SectionSink<'a, S> {
+    /// Seal one driver-owned sink for a section writer's run.
+    pub(crate) fn over(sink: &'a mut S) -> Self {
+        Self(sink)
+    }
+}
+
+impl<S: ImageByteSink> ImageByteSink for SectionSink<'_, S> {
+    fn push(&mut self, byte: u8) {
+        self.0.push(byte);
+    }
+
+    fn extend_bytes(&mut self, bytes: &[u8]) {
+        self.0.extend_bytes(bytes);
+    }
+
+    fn is_full(&self) -> bool {
+        self.0.is_full()
     }
 }

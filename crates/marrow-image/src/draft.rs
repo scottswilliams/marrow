@@ -43,13 +43,13 @@ use crate::product::{
     DurableContractGraph, DurableGraphCheckpoint, OccurrenceGraph, ProductClaimConflict,
     ProductDeclaration, RootOccurrence, RootOccurrenceSelector,
 };
-use crate::semantic::{SemanticPath, SemanticTarget};
+use crate::semantic::SemanticTarget;
 use crate::site_plan::{
     LegacyDraftSiteOperand, OccurrenceSiteHandle, SiteDemandPlan, SitePlanState,
     SitePlanStateError, SitePolicyReceipt,
 };
 use crate::ty::{ImageType, Scalar};
-use crate::value_dag::CanonicalValueShapeDag;
+use crate::value_dag::{CanonicalValueShapeDag, ImageByteSink};
 
 /// The strong identity of one draft and its site demand plan.
 ///
@@ -395,23 +395,6 @@ impl AdmittedRoot {
     }
 }
 
-/// A durable operation site as the encoder writes it: the [`SemanticPath`] of the graph
-/// node it addresses plus the closed [`SemanticTarget`] kind it performs there.
-///
-/// The path — not a container-table index — names the node, so the site follows the
-/// durable graph's ledger ids; the verifier resolves the path against its own
-/// reconstructed node set and rejects a path that names no node or whose target kind
-/// disagrees with the resolved node's kind.
-///
-/// It is a **projection**, minted transiently at encode from the demand key the plan
-/// retains. Nothing retains it: a retained path is a second copy of the graph that can
-/// drift from the rows the wire and the contract id are written from.
-#[derive(Debug, Clone)]
-pub(crate) struct SiteDef {
-    pub(crate) path: SemanticPath,
-    pub(crate) target: SemanticTarget,
-}
-
 /// A source-position mapping for one instruction. The encoder converts the
 /// instruction index to its container byte offset.
 #[derive(Debug, Clone)]
@@ -537,7 +520,14 @@ pub enum ImageBuildError {
 
 impl std::fmt::Display for ImageBuildError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "image build error: {self:?}")
+        match self {
+            // The drifted region renders by name, so the one invariant that names a
+            // section reads as one.
+            ImageBuildError::EncodeDrift(section) => {
+                write!(f, "image build error: encode drift in {section}")
+            }
+            other => write!(f, "image build error: {other:?}"),
+        }
     }
 }
 
@@ -1223,21 +1213,27 @@ impl ImageDraft {
     pub(crate) fn application_identity(&self) -> Option<LedgerIdBytes> {
         self.durable.application()
     }
-    /// The site table the encoder writes: each retained demand projected into the
-    /// semantic path of the node it addresses, handed to `emit` in emission order.
+    /// Write the site-table rows into `sink`: per retained row, the semantic path of
+    /// the node the demand addresses — `u8(step_count) ‖ [u8(ledger_kind) ‖ 16 id
+    /// bytes]*`, the same frozen ledger `IDREF` kinds a durable node's identity uses —
+    /// then the one-byte operation target. The one site-row codec, driven by the
+    /// measure core's counting run and by emission alike.
     ///
-    /// The projection is the site table's only path source. A row retains ordinals into
-    /// the occurrence and declaration tables, so the path a site encodes to is derived
-    /// from the same rows the DURABLE section's member graph is written from and cannot
-    /// disagree with them.
+    /// Each row's steps are streamed twice through the one projection grammar
+    /// ([`crate::product::OccurrenceGraph::project_steps`]): once to spell the
+    /// count-first prefix, once to spell the steps — so no path is materialized and
+    /// no row retains anything. The projection is the site table's only path source:
+    /// a row retains ordinals into the occurrence and declaration tables, so the path
+    /// a site encodes to is derived from the same rows the DURABLE member graph is
+    /// written from and cannot disagree with them.
     ///
-    /// The rows are streamed rather than returned as a table: the encoder writes each
-    /// site straight into the section it is building, and its coherence preflight walks
-    /// the same projection while retaining nothing, so neither holds a second copy of
-    /// the site table.
-    pub(crate) fn project_sites(
+    /// The step count fits one byte off the bound the projection itself carries: a
+    /// chain is at most `2 + MAX_DURABLE_DEPTH = MAX_SITE_PATH_STEPS` steps, which
+    /// `bounds` const-asserts against one byte; the checked conversion keeps the
+    /// totality tied to that bound rather than to a silent cast.
+    pub(crate) fn write_site_rows(
         &self,
-        mut emit: impl FnMut(SiteDef),
+        sink: &mut impl ImageByteSink,
     ) -> Result<(), ImageBuildError> {
         if self.sites.rows().is_empty() {
             return Ok(());
@@ -1247,12 +1243,29 @@ impl ImageDraft {
             .ok_or(ImageBuildError::InvalidReference("application identity"))?;
         let graph = self.graph();
         for row in self.sites.rows() {
-            let path = graph
-                .project_path(application, row.key())
+            // A count already past the ceiling is decided; further rows only grow it.
+            if sink.is_full() {
+                return Ok(());
+            }
+            let mut steps = 0usize;
+            graph
+                .project_steps(application, row.key(), |_| steps += 1)
                 .ok_or(ImageBuildError::InvalidReference("operation site"))?;
-            emit(SiteDef {
-                path,
-                target: row.key().target(),
+            let step_count = u8::try_from(steps)
+                .expect("a bounded semantic path's step count fits the site-path width");
+            sink.push(step_count);
+            graph
+                .project_steps(application, row.key(), |step| {
+                    sink.push(step.kind.ledger_kind());
+                    sink.extend_bytes(step.id.bytes());
+                })
+                .ok_or(ImageBuildError::InvalidReference("operation site"))?;
+            sink.push(match row.key().target() {
+                SemanticTarget::WholePayload => 0x00,
+                SemanticTarget::FieldLeaf => 0x01,
+                SemanticTarget::IndexScan => 0x02,
+                SemanticTarget::IndexLookup => 0x03,
+                SemanticTarget::GroupEntry => 0x04,
             });
         }
         Ok(())
@@ -1260,9 +1273,7 @@ impl ImageDraft {
 
     /// Prove that every retained site row still projects, streaming each row's steps
     /// through the one projection grammar and retaining nothing — the coherence
-    /// walk's zero-allocation twin of [`Self::project_sites`]. The owned-path variant
-    /// stays for the DURABLE body writer, whose site codec spells a step count before
-    /// its steps and so consumes a materialized path.
+    /// walk's validation-only twin of [`Self::write_site_rows`].
     pub(crate) fn validate_site_projection(&self) -> Result<(), ImageBuildError> {
         if self.sites.rows().is_empty() {
             return Ok(());
@@ -1279,7 +1290,7 @@ impl ImageDraft {
         Ok(())
     }
 
-    /// The number of site rows [`ImageDraft::project_sites`] will emit. The site table is
+    /// The number of site rows [`ImageDraft::write_site_rows`] will emit. The site table is
     /// length-prefixed and streamed, so the encoder writes this count before the rows it
     /// has not projected yet; every retained row projects exactly one site.
     pub(crate) fn site_row_count(&self) -> usize {
@@ -1644,11 +1655,11 @@ mod site_binding_tests {
         );
     }
 
-    /// The streamed step projection and the owned path are one grammar: collecting the
-    /// stream yields exactly the owned path's steps, for every demand kind — the root
-    /// placement, a managed index, and a declaration member.
+    /// The one streaming projection grammar spells every demand kind outermost-first —
+    /// the application step, the placement step, then the index or member chain — for
+    /// the root placement, a managed index, and a declaration member alike.
     #[test]
-    fn the_streamed_projection_and_the_owned_path_agree() {
+    fn the_streamed_projection_spells_every_demand_kind() {
         use crate::durable_id::{DurableIndexComponent, DurableIndexShape};
 
         let mut draft = ImageDraft::new();
@@ -1689,26 +1700,44 @@ mod site_binding_tests {
             .expect("the Product is declared");
         let members = draft.product_members(product()).expect("declared");
 
+        use crate::semantic::SemanticStepKind;
         let cases = [
-            (admitted.placement_path(), SemanticTarget::WholePayload),
-            (&admitted.index_paths()[0], SemanticTarget::IndexScan),
-            (members[0].path(), SemanticTarget::FieldLeaf),
+            (
+                admitted.placement_path(),
+                SemanticTarget::WholePayload,
+                vec![SemanticStepKind::Application, SemanticStepKind::Placement],
+            ),
+            (
+                &admitted.index_paths()[0],
+                SemanticTarget::IndexScan,
+                vec![
+                    SemanticStepKind::Application,
+                    SemanticStepKind::Placement,
+                    SemanticStepKind::Index,
+                ],
+            ),
+            (
+                members[0].path(),
+                SemanticTarget::FieldLeaf,
+                vec![
+                    SemanticStepKind::Application,
+                    SemanticStepKind::Placement,
+                    SemanticStepKind::Field,
+                ],
+            ),
         ];
-        for (selector, target) in cases {
+        for (selector, target, expected) in cases {
             let handle = draft
                 .bind_occurrence_site(admitted.occurrence(), selector, target)
                 .expect("the node admits its one target");
             let key = handle.demand().key();
             let application = draft.application_identity().expect("anchored");
             let graph = draft.graph();
-            let owned = graph
-                .project_path(application, key)
-                .expect("a bound demand projects");
-            let mut streamed = Vec::new();
+            let mut kinds = Vec::new();
             graph
-                .project_steps(application, key, |step| streamed.push(step))
-                .expect("the stream projects the same demand");
-            assert_eq!(streamed.as_slice(), owned.steps());
+                .project_steps(application, key, |step| kinds.push(step.kind))
+                .expect("a bound demand projects");
+            assert_eq!(kinds, expected);
         }
     }
 
