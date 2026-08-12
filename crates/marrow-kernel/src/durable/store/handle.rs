@@ -336,18 +336,13 @@ mod tests {
     use super::*;
     use crate::codec::value::ScalarKind;
     use crate::durable::{
-        CommitResult, Durable, FieldSchema, InvocationGrant, SiteSpec, SiteTarget,
+        CommitResult, Durable, InvocationGrant, SiteSpec, SiteTarget, StoreSchemaBuilder,
     };
 
     fn store_with_engine<E: ByteEngine>(engine: E) -> DurableStore<E> {
-        let schema = StoreSchema {
-            root_name: "counters".into(),
-            key: vec![ScalarKind::Int],
-            fields: vec![FieldSchema::scalar("value", ScalarKind::Int, true)],
-            branches: Vec::new(),
-            groups: Vec::new(),
-            indexes: Vec::new(),
-        };
+        let mut builder = StoreSchemaBuilder::root("counters", vec![ScalarKind::Int]);
+        builder.scalar_field("value", ScalarKind::Int, true);
+        let schema = builder.finish().expect("a bounded schema builds");
         let sites = vec![SiteSpec {
             root: 0,
             target: SiteTarget::WholePayload,

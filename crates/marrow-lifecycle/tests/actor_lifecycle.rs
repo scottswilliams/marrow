@@ -234,12 +234,12 @@ fn head_map_numbering_agrees_with_the_kernel_node_for_node() {
     let mut kernel_order: Vec<SemanticNodeKind> = Vec::new();
     for root in &numbering {
         kernel_order.push(SemanticNodeKind::Root);
-        kernel_order.extend(root.fields.iter().map(|_| SemanticNodeKind::Field));
-        for group in &root.groups {
+        kernel_order.extend(root.fields().iter().map(|_| SemanticNodeKind::Field));
+        for group in root.groups() {
             kernel_order.push(SemanticNodeKind::Group);
-            kernel_order.extend(group.fields.iter().map(|_| SemanticNodeKind::Field));
+            kernel_order.extend(group.fields().iter().map(|_| SemanticNodeKind::Field));
         }
-        flatten_branches(&root.branches, &mut kernel_order);
+        flatten_branches(root.branches(), &mut kernel_order);
     }
 
     // The lifecycle head-map walk's node kinds, in its numbering order.
@@ -277,8 +277,8 @@ fn flatten_branches(
     use marrow_verify::SemanticNodeKind;
     for branch in branches {
         out.push(SemanticNodeKind::Branch);
-        out.extend(branch.fields.iter().map(|_| SemanticNodeKind::Field));
-        flatten_branches(&branch.branches, out);
+        out.extend(branch.fields().iter().map(|_| SemanticNodeKind::Field));
+        flatten_branches(branch.branches(), out);
     }
 }
 

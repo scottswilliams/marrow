@@ -11,8 +11,8 @@ use marrow_kernel::codec::key::KeyScalar;
 use marrow_kernel::codec::value::{RuntimeScalar, ScalarKind};
 use marrow_kernel::durable::{
     AuthorizedSite, BoundedLimit, CommitResult, CreateOutcome, DemandCoverage, Durable,
-    DurableStore, EntryValue, EraseOutcome, FieldSchema, GroupSchema, InvocationGrant, Presence,
-    ReplaceOutcome, SiteSpec, SiteTarget, StoreSchema,
+    DurableStore, EntryValue, EraseOutcome, InvocationGrant, Presence, ReplaceOutcome, SiteSpec,
+    SiteTarget, StoreSchema, StoreSchemaBuilder,
 };
 use marrow_kernel::equality::ValueDomain;
 use marrow_store::{ByteEngine, MemoryEngine, NativeEngineOwner};
@@ -76,17 +76,10 @@ impl Drop for TempDir {
 }
 
 fn schema() -> StoreSchema {
-    StoreSchema {
-        root_name: "counters".into(),
-        key: vec![ScalarKind::Str],
-        fields: vec![
-            FieldSchema::scalar("value", ScalarKind::Int, true),
-            FieldSchema::scalar("label", ScalarKind::Str, false),
-        ],
-        branches: Vec::new(),
-        groups: Vec::new(),
-        indexes: Vec::new(),
-    }
+    let mut builder = StoreSchemaBuilder::root("counters", vec![ScalarKind::Str]);
+    builder.scalar_field("value", ScalarKind::Int, true);
+    builder.scalar_field("label", ScalarKind::Str, false);
+    builder.finish().expect("a bounded schema builds")
 }
 
 fn sites() -> Vec<SiteSpec> {
@@ -508,20 +501,13 @@ fn a_replaced_entry_drops_unlisted_sparse_leaves() {
 /// A group-bearing root: `books`(Str) with a required `title` and one root-level group
 /// `details {pages, language}` (both sparse). Sites: 0 whole payload, 1 group `details`.
 fn group_schema() -> StoreSchema {
-    StoreSchema {
-        root_name: "books".into(),
-        key: vec![ScalarKind::Str],
-        fields: vec![FieldSchema::scalar("title", ScalarKind::Str, true)],
-        groups: vec![GroupSchema {
-            name: "details".into(),
-            fields: vec![
-                FieldSchema::scalar("pages", ScalarKind::Int, false),
-                FieldSchema::scalar("language", ScalarKind::Str, false),
-            ],
-        }],
-        branches: Vec::new(),
-        indexes: Vec::new(),
-    }
+    let mut builder = StoreSchemaBuilder::root("books", vec![ScalarKind::Str]);
+    builder.scalar_field("title", ScalarKind::Str, true);
+    builder.open_group("details");
+    builder.scalar_field("pages", ScalarKind::Int, false);
+    builder.scalar_field("language", ScalarKind::Str, false);
+    builder.close_group();
+    builder.finish().expect("a bounded schema builds")
 }
 
 fn group_sites() -> Vec<SiteSpec> {

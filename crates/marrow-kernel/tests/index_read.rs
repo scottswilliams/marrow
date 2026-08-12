@@ -14,8 +14,8 @@ use common::{Counters, CountingEngine};
 use marrow_kernel::codec::key::KeyScalar;
 use marrow_kernel::codec::value::{RuntimeScalar, ScalarKind};
 use marrow_kernel::durable::{
-    BoundedLimit, DemandCoverage, Durable, DurableStore, EntryValue, FieldSchema, IndexComponent,
-    IndexSchema, InvocationGrant, SiteSpec, SiteTarget, StoreSchema,
+    BoundedLimit, DemandCoverage, Durable, DurableStore, EntryValue, IndexComponent,
+    InvocationGrant, SiteSpec, SiteTarget, StoreSchema, StoreSchemaBuilder,
 };
 use marrow_kernel::equality::ValueDomain;
 
@@ -25,28 +25,16 @@ const BY_ISBN: [u8; 16] = [0xB0; 16];
 /// A keyed `books` root with a nonunique `byShelf[shelf, id]` index and a unique
 /// `byIsbn[isbn]` index.
 fn schema() -> StoreSchema {
-    StoreSchema {
-        root_name: "books".into(),
-        key: vec![ScalarKind::Int],
-        fields: vec![
-            FieldSchema::scalar("shelf", ScalarKind::Str, true),
-            FieldSchema::scalar("isbn", ScalarKind::Str, true),
-        ],
-        branches: Vec::new(),
-        groups: Vec::new(),
-        indexes: vec![
-            IndexSchema {
-                id: BY_SHELF,
-                unique: false,
-                projection: vec![IndexComponent::Field(0), IndexComponent::Key(0)],
-            },
-            IndexSchema {
-                id: BY_ISBN,
-                unique: true,
-                projection: vec![IndexComponent::Field(1)],
-            },
-        ],
-    }
+    let mut builder = StoreSchemaBuilder::root("books", vec![ScalarKind::Int]);
+    builder.scalar_field("shelf", ScalarKind::Str, true);
+    builder.scalar_field("isbn", ScalarKind::Str, true);
+    builder.index(
+        BY_SHELF,
+        false,
+        vec![IndexComponent::field(0), IndexComponent::key(0)],
+    );
+    builder.index(BY_ISBN, true, vec![IndexComponent::field(1)]);
+    builder.finish().expect("a bounded schema builds")
 }
 
 /// Site 0 the entry, site 1 the `byShelf` scan, site 2 the `byIsbn` lookup.

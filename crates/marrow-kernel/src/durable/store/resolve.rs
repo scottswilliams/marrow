@@ -7,8 +7,7 @@
 use super::super::{
     AuthTarget, AuthorizedSite, BranchHop, BranchNumbering, BranchSchema, FieldSchema,
     GroupNumbering, IndexComponent, IndexComponentRef, ResolvedField, ResolvedGroup, RootNumbering,
-    SiteTarget,
-    StoreSchema,
+    SiteTarget, StoreSchema,
 };
 use crate::codec::value::ScalarKind;
 
@@ -148,7 +147,10 @@ fn resolve_groups(
 fn index_component_kind(schema: &StoreSchema, component: IndexComponent) -> ScalarKind {
     match component.view() {
         IndexComponentRef::Key(column) => schema.key()[column as usize],
-        IndexComponentRef::Field(field) => match schema.fields()[field as usize].shape().scalar_kind() {
+        IndexComponentRef::Field(field) => match schema.fields()[field as usize]
+            .shape()
+            .scalar_kind()
+        {
             Some(kind) => kind,
             None => unreachable!("the schema builder proves an index component is a stored scalar"),
         },
@@ -174,7 +176,10 @@ fn resolve_branch_path(
     for &index in path {
         let branch = &branches[index as usize];
         let branch_numbering = &branch_numbers[index as usize];
-        hops.push(BranchHop::new(branch_numbering.number(), branch.key().to_vec()));
+        hops.push(BranchHop::new(
+            branch_numbering.number(),
+            branch.key().to_vec(),
+        ));
         fields = branch.fields();
         field_numbers = branch_numbering.fields();
         branches = branch.branches();

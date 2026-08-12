@@ -29,8 +29,8 @@ use marrow_kernel::codec::key::KeyScalar;
 use marrow_kernel::codec::value::{RuntimeScalar, ScalarKind};
 use marrow_kernel::durable::{
     CommitResult, DemandCoverage, Durable, DurableCommitState, DurableStore, EntryValue,
-    FieldSchema, InvocationGrant, KernelFault, NativeStore, SessionError, SiteSpec, SiteTarget,
-    StoreSchema,
+    InvocationGrant, KernelFault, NativeStore, SessionError, SiteSpec, SiteTarget, StoreSchema,
+    StoreSchemaBuilder,
 };
 use marrow_kernel::equality::ValueDomain;
 
@@ -401,14 +401,9 @@ impl ByteEngine for FaultEngine {
 }
 
 fn schema() -> StoreSchema {
-    StoreSchema {
-        root_name: "counters".into(),
-        key: vec![ScalarKind::Str],
-        fields: vec![FieldSchema::scalar("value", ScalarKind::Int, true)],
-        branches: Vec::new(),
-        groups: Vec::new(),
-        indexes: Vec::new(),
-    }
+    let mut builder = StoreSchemaBuilder::root("counters", vec![ScalarKind::Str]);
+    builder.scalar_field("value", ScalarKind::Int, true);
+    builder.finish().expect("a bounded schema builds")
 }
 
 fn sites() -> Vec<SiteSpec> {

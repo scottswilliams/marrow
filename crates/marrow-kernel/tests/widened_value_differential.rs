@@ -26,7 +26,8 @@ mod independent_decoder;
 
 use independent_decoder as ind;
 use marrow_kernel::codec::value::{
-    RuntimeScalar, ScalarKind, ValueError, ValueShape, decode_domain, encode_domain, encode_value,
+    RuntimeScalar, ScalarKind, ShapeBuildError, ValueError, ValueShape, ValueShapeBuilder,
+    ValueShapeRef, decode_domain, encode_domain, encode_value,
 };
 use marrow_kernel::equality::ValueDomain;
 
@@ -34,14 +35,14 @@ use marrow_kernel::equality::ValueDomain;
 /// independent `Shape` now carries the same nominal `type-index` (§A7 A12) as the production
 /// shape, so the identity handle crosses and is compared on both sides.
 fn to_ind_shape(shape: &ValueShape) -> ind::Shape {
-    match shape {
-        ValueShape::Scalar(kind) => ind::Shape::Scalar(to_ind_kind(*kind)),
-        ValueShape::Product { ty, fields } => ind::Shape::Product {
-            ty: *ty,
+    match shape.view() {
+        ValueShapeRef::Scalar(kind) => ind::Shape::Scalar(to_ind_kind(kind)),
+        ValueShapeRef::Product { ty, fields } => ind::Shape::Product {
+            ty,
             leaves: fields.iter().map(to_ind_shape).collect(),
         },
-        ValueShape::Sum { ty, variants } => ind::Shape::Sum {
-            ty: *ty,
+        ValueShapeRef::Sum { ty, variants } => ind::Shape::Sum {
+            ty,
             variants: variants
                 .iter()
                 .map(|payload| payload.iter().map(to_ind_shape).collect())
@@ -176,11 +177,34 @@ fn si(v: i64) -> ValueDomain {
 fn ss(s: &str) -> ValueDomain {
     ValueDomain::Scalar(RuntimeScalar::Str(s.into()))
 }
-fn opt_shape(inner: ValueShape) -> ValueShape {
-    ValueShape::Sum {
-        ty: 0,
-        variants: vec![vec![], vec![inner]],
+/// A dense product shape of type index `ty` over the given leaf shapes, in declaration
+/// order.
+fn product_shape(ty: u16, leaves: impl IntoIterator<Item = ValueShape>) -> ValueShape {
+    let mut builder = ValueShapeBuilder::new();
+    builder.open_product(ty);
+    for leaf in leaves {
+        builder.shape(leaf);
     }
+    builder.close();
+    builder.finish().expect("a bounded shape builds")
+}
+/// A closed sum shape of type index `ty` over per-variant dense payload shapes, in
+/// declaration order.
+fn sum_shape(ty: u16, variants: impl IntoIterator<Item = Vec<ValueShape>>) -> ValueShape {
+    let mut builder = ValueShapeBuilder::new();
+    builder.open_sum(ty);
+    for payload in variants {
+        builder.open_variant();
+        for leaf in payload {
+            builder.shape(leaf);
+        }
+        builder.close();
+    }
+    builder.close();
+    builder.finish().expect("a bounded shape builds")
+}
+fn opt_shape(inner: ValueShape) -> ValueShape {
+    sum_shape(0, [vec![], vec![inner]])
 }
 fn none() -> ValueDomain {
     ValueDomain::Sum {
@@ -197,7 +221,7 @@ fn some(inner: ValueDomain) -> ValueDomain {
     }
 }
 fn sc(kind: ScalarKind) -> ValueShape {
-    ValueShape::Scalar(kind)
+    ValueShape::scalar(kind)
 }
 fn dur(nanos: i128) -> ValueDomain {
     ValueDomain::Scalar(RuntimeScalar::Duration(nanos))
@@ -266,10 +290,7 @@ fn corpus() -> Vec<(ValueDomain, ValueShape)> {
                 ty: 3,
                 fields: vec![Some(si(7)), Some(ss("a\u{0}b"))],
             },
-            ValueShape::Product {
-                ty: 3,
-                fields: vec![sc(ScalarKind::Int), sc(ScalarKind::Str)],
-            },
+            product_shape(3, [sc(ScalarKind::Int), sc(ScalarKind::Str)]),
         ),
         // A user-enum-style sum: variant 2 with two payload leaves.
         (
@@ -278,14 +299,14 @@ fn corpus() -> Vec<(ValueDomain, ValueShape)> {
                 variant: 2,
                 payload: vec![si(1), ss("x")],
             },
-            ValueShape::Sum {
-                ty: 5,
-                variants: vec![
+            sum_shape(
+                5,
+                [
                     vec![],
                     vec![sc(ScalarKind::Int)],
                     vec![sc(ScalarKind::Int), sc(ScalarKind::Str)],
                 ],
-            },
+            ),
         ),
         // Option none / some / nested.
         (none(), opt_shape(sc(ScalarKind::Int))),
@@ -298,10 +319,7 @@ fn corpus() -> Vec<(ValueDomain, ValueShape)> {
                 ty: 3,
                 fields: vec![Some(si(1)), Some(some(ss("z")))],
             },
-            ValueShape::Product {
-                ty: 3,
-                fields: vec![sc(ScalarKind::Int), opt_shape(sc(ScalarKind::Str))],
-            },
+            product_shape(3, [sc(ScalarKind::Int), opt_shape(sc(ScalarKind::Str))]),
         ),
     ]
 }
@@ -367,7 +385,7 @@ fn extreme_duration_round_trips_through_the_independent_decoder() {
         let bytes = encode_domain(&value).expect("production encodes an i128-endpoint duration");
         // Production itself round-trips it.
         assert_eq!(
-            decode_domain(&bytes, &ValueShape::Scalar(ScalarKind::Duration)),
+            decode_domain(&bytes, &sc(ScalarKind::Duration)),
             Some(value.clone()),
         );
         // The reconciled u128-seconds independent decoder now agrees (no longer rejects).
@@ -383,9 +401,11 @@ fn extreme_duration_round_trips_through_the_independent_decoder() {
 /// RESOLVED DIVERGENCE (brief §A7 A12 depth-convention finding). Production counts
 /// `MAX_DURABLE_VALUE_DEPTH = 32` over *composite* levels only — a scalar leaf is free, so a
 /// chain of exactly 32 nested products over one scalar is admitted, and the 33rd composite is
-/// refused before descent. The reconciled independent decoder now uses the same convention:
-/// it accepts 32 composites and rejects 33. Both the accept (agreement) and the reject
-/// (both tiers refuse) are pinned.
+/// refused. Production refuses the 33rd composite at shape construction — the shape minter
+/// is the sole route to a shape, so a 33-deep one never exists to present to the decoder.
+/// The reconciled independent decoder uses the same convention: it accepts 32 composites and
+/// rejects 33 before descent. Both the accept (agreement) and the reject (both tiers refuse)
+/// are pinned.
 #[test]
 fn depth_32_accepted_and_33_rejected_by_both_tiers() {
     // 32 nested products over one int scalar: production round-trips, independent agrees.
@@ -397,10 +417,7 @@ fn depth_32_accepted_and_33_rejected_by_both_tiers() {
             ty: 0,
             fields: vec![Some(value)],
         };
-        shape = ValueShape::Product {
-            ty: 0,
-            fields: vec![shape],
-        };
+        shape = product_shape(0, [shape]);
         ind_shape = ind::Shape::Product {
             ty: 0,
             leaves: vec![ind_shape],
@@ -424,10 +441,6 @@ fn depth_32_accepted_and_33_rejected_by_both_tiers() {
         ty: 0,
         fields: vec![Some(value)],
     };
-    let shape33 = ValueShape::Product {
-        ty: 0,
-        fields: vec![shape],
-    };
     let ind_shape33 = ind::Shape::Product {
         ty: 0,
         leaves: vec![ind_shape],
@@ -442,10 +455,20 @@ fn depth_32_accepted_and_33_rejected_by_both_tiers() {
         Err(ValueError::ValueTooDeep),
         "production refuses to encode a 33-deep composite",
     );
+    // Production's shape minter refuses the 33rd composite at the opening command, so no
+    // 33-deep production shape exists for the decoder to be handed.
+    let mut deeper = ValueShapeBuilder::new();
+    for _ in 0..33 {
+        deeper.open_product(0);
+    }
+    deeper.scalar(ScalarKind::Int);
+    for _ in 0..33 {
+        deeper.close();
+    }
     assert_eq!(
-        decode_domain(&bytes, &shape33),
-        None,
-        "production refuses to decode a 33-deep composite",
+        deeper.finish(),
+        Err(ShapeBuildError::TooDeep),
+        "production refuses to mint a 33-deep composite shape",
     );
     assert!(
         ind::decode(&bytes, &ind_shape33).is_err(),

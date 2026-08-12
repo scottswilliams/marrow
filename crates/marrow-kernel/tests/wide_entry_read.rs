@@ -15,8 +15,8 @@ use common::{Counters, CountingEngine};
 use marrow_kernel::codec::key::KeyScalar;
 use marrow_kernel::codec::value::{RuntimeScalar, ScalarKind};
 use marrow_kernel::durable::{
-    CommitResult, CreateOutcome, DemandCoverage, Durable, DurableStore, EntryValue, FieldSchema,
-    GroupSchema, InvocationGrant, SiteSpec, SiteTarget, StoreSchema,
+    CommitResult, CreateOutcome, DemandCoverage, Durable, DurableStore, EntryValue,
+    InvocationGrant, SiteSpec, SiteTarget, StoreSchema, StoreSchemaBuilder,
 };
 use marrow_kernel::equality::ValueDomain;
 
@@ -24,18 +24,12 @@ use marrow_kernel::equality::ValueDomain;
 /// fields are optional `Int`s — the declared width grows while the populated set a
 /// caller reads stays the same.
 fn schema(declared: usize) -> StoreSchema {
-    let mut fields = vec![FieldSchema::scalar("value", ScalarKind::Int, true)];
+    let mut builder = StoreSchemaBuilder::root("wide", vec![ScalarKind::Int]);
+    builder.scalar_field("value", ScalarKind::Int, true);
     for i in 0..declared.saturating_sub(1) {
-        fields.push(FieldSchema::scalar(format!("f{i}"), ScalarKind::Int, false));
+        builder.scalar_field(format!("f{i}"), ScalarKind::Int, false);
     }
-    StoreSchema {
-        root_name: "wide".into(),
-        key: vec![ScalarKind::Int],
-        fields,
-        branches: Vec::new(),
-        groups: Vec::new(),
-        indexes: Vec::new(),
-    }
+    builder.finish().expect("a bounded schema builds")
 }
 
 fn sites() -> Vec<SiteSpec> {
@@ -192,30 +186,18 @@ fn whole_entry_read_value_size_is_the_declared_width() {
 /// declaring `group_declared` optional `Int` fields. A whole-entry read materializes
 /// the top-level record and every group, each through its own field-leaf range scan.
 fn group_schema(top_declared: usize, group_declared: usize) -> StoreSchema {
-    let group_fields = |prefix: &str| {
-        (0..group_declared)
-            .map(|i| FieldSchema::scalar(format!("{prefix}{i}"), ScalarKind::Int, false))
-            .collect()
-    };
-    StoreSchema {
-        root_name: "wide".into(),
-        key: vec![ScalarKind::Int],
-        fields: (0..top_declared)
-            .map(|i| FieldSchema::scalar(format!("t{i}"), ScalarKind::Int, false))
-            .collect(),
-        branches: Vec::new(),
-        groups: vec![
-            GroupSchema {
-                name: "a".into(),
-                fields: group_fields("af"),
-            },
-            GroupSchema {
-                name: "b".into(),
-                fields: group_fields("bf"),
-            },
-        ],
-        indexes: Vec::new(),
+    let mut builder = StoreSchemaBuilder::root("wide", vec![ScalarKind::Int]);
+    for i in 0..top_declared {
+        builder.scalar_field(format!("t{i}"), ScalarKind::Int, false);
     }
+    for (name, prefix) in [("a", "af"), ("b", "bf")] {
+        builder.open_group(name);
+        for i in 0..group_declared {
+            builder.scalar_field(format!("{prefix}{i}"), ScalarKind::Int, false);
+        }
+        builder.close_group();
+    }
+    builder.finish().expect("a bounded schema builds")
 }
 
 /// A dense schema-aligned column of `declared` slots with the leading `present` slots

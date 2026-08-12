@@ -4,10 +4,9 @@ use marrow_store::{
 
 use super::super::physical;
 use super::super::{
-    BoundedKeys, BoundedLimit, BranchSchema, CommitResult, CreateOutcome, DemandCoverage,
-    EntryValue, EraseOutcome, FieldSchema, GroupSchema, IndexComponent, IndexSchema,
-    InvocationGrant, KernelFault, Presence, ReplaceOutcome, SessionError, SiteSpec, SiteTarget,
-    StoreSchema, number_store,
+    BoundedKeys, BoundedLimit, CommitResult, CreateOutcome, DemandCoverage, EntryValue,
+    EraseOutcome, IndexComponent, InvocationGrant, KernelFault, Presence, ReplaceOutcome,
+    SessionError, SiteSpec, SiteTarget, StoreSchema, StoreSchemaBuilder, number_store,
 };
 use super::{Durable, DurableStore};
 use crate::codec::key::KeyScalar;
@@ -18,18 +17,18 @@ use crate::equality::ValueDomain;
 /// from the same numbering the store computes — so a test's hand-built cells key by the
 /// exact numbers the ops write (correct by construction, not by hardcoded literals).
 fn field_num(schema: &StoreSchema, index: usize) -> physical::NodeNumber {
-    number_store(std::slice::from_ref(schema))[0].fields[index]
+    number_store(std::slice::from_ref(schema))[0].fields()[index]
 }
 
 /// The cell-key number of the branch reached by `path` (per-level branch indices from the
 /// root down) in a single-root `schema`.
 fn branch_num(schema: &StoreSchema, path: &[usize]) -> physical::NodeNumber {
     let numbering = number_store(std::slice::from_ref(schema));
-    let mut level = &numbering[0].branches;
+    let mut level = numbering[0].branches();
     let mut number = 0;
     for &p in path {
-        number = level[p].number;
-        level = &level[p].branches;
+        number = level[p].number();
+        level = level[p].branches();
     }
     number
 }
@@ -38,37 +37,37 @@ fn branch_num(schema: &StoreSchema, path: &[usize]) -> physical::NodeNumber {
 /// `schema`.
 fn branch_field_num(schema: &StoreSchema, path: &[usize], field: usize) -> physical::NodeNumber {
     let numbering = number_store(std::slice::from_ref(schema));
-    let mut level = &numbering[0].branches;
-    let mut node = &level[path[0]];
+    let mut node = &numbering[0].branches()[path[0]];
     for &p in &path[1..] {
-        level = &node.branches;
-        node = &level[p];
+        node = &node.branches()[p];
     }
-    node.fields[field]
+    node.fields()[field]
 }
 
 /// The cell-key number of group `index` of a single-root `schema`.
 fn group_num(schema: &StoreSchema, index: usize) -> physical::NodeNumber {
-    number_store(std::slice::from_ref(schema))[0].groups[index].number
+    number_store(std::slice::from_ref(schema))[0].groups()[index].number()
 }
 
 /// The cell-key number of field `field` of group `index` of a single-root `schema`.
 fn group_field_num(schema: &StoreSchema, index: usize, field: usize) -> physical::NodeNumber {
-    number_store(std::slice::from_ref(schema))[0].groups[index].fields[field]
+    number_store(std::slice::from_ref(schema))[0].groups()[index].fields()[field]
+}
+
+/// The flat `counters` root — keyed by string, with a required `value` and a sparse
+/// `label` — as an unfinished builder, so the indexed variant can add its managed indexes
+/// to the same root without a second spelling of the fields.
+fn counters_builder() -> StoreSchemaBuilder {
+    let mut builder = StoreSchemaBuilder::root("counters", vec![ScalarKind::Str]);
+    builder.scalar_field("value", ScalarKind::Int, true);
+    builder.scalar_field("label", ScalarKind::Str, false);
+    builder
 }
 
 fn schema() -> StoreSchema {
-    StoreSchema {
-        root_name: "counters".into(),
-        key: vec![ScalarKind::Str],
-        fields: vec![
-            FieldSchema::scalar("value", ScalarKind::Int, true),
-            FieldSchema::scalar("label", ScalarKind::Str, false),
-        ],
-        branches: Vec::new(),
-        groups: Vec::new(),
-        indexes: Vec::new(),
-    }
+    counters_builder()
+        .finish()
+        .expect("the counters schema builds")
 }
 
 fn sites() -> Vec<SiteSpec> {
@@ -220,19 +219,12 @@ fn a_branch_field_write_with_a_root_only_key_path_faults() {
     // key path must fault at the trust boundary rather than drop the branch hop and
     // mis-address the write to the root node. This is the release backstop over
     // `node_stem`'s key-path arity that the verifier's proof stands on.
-    let schema = StoreSchema {
-        root_name: "counters".into(),
-        key: vec![ScalarKind::Str],
-        fields: vec![FieldSchema::scalar("value", ScalarKind::Int, true)],
-        branches: vec![BranchSchema {
-            name: "notes".into(),
-            key: vec![ScalarKind::Str],
-            fields: vec![FieldSchema::scalar("body", ScalarKind::Str, false)],
-            branches: Vec::new(),
-        }],
-        groups: Vec::new(),
-        indexes: Vec::new(),
-    };
+    let mut builder = StoreSchemaBuilder::root("counters", vec![ScalarKind::Str]);
+    builder.scalar_field("value", ScalarKind::Int, true);
+    builder.open_branch("notes", vec![ScalarKind::Str]);
+    builder.scalar_field("body", ScalarKind::Str, false);
+    builder.close_branch();
+    let schema = builder.finish().expect("the branch schema builds");
     let sites = vec![SiteSpec {
         root: 0,
         target: branch_field(&[0], 0),
@@ -328,19 +320,12 @@ fn a_transaction_tolerates_a_staged_sparse_field_as_payload_absent() {
 /// `title`, plus a keyed branch `notes` keyed by int with a required `text`. The
 /// site table addresses the root entry (0) and the branch entry (1).
 fn branch_schema() -> (StoreSchema, Vec<SiteSpec>) {
-    let schema = StoreSchema {
-        root_name: "books".into(),
-        key: vec![ScalarKind::Str],
-        fields: vec![FieldSchema::scalar("title", ScalarKind::Str, true)],
-        branches: vec![BranchSchema {
-            name: "notes".into(),
-            key: vec![ScalarKind::Int],
-            fields: vec![FieldSchema::scalar("text", ScalarKind::Str, true)],
-            branches: Vec::new(),
-        }],
-        groups: Vec::new(),
-        indexes: Vec::new(),
-    };
+    let mut builder = StoreSchemaBuilder::root("books", vec![ScalarKind::Str]);
+    builder.scalar_field("title", ScalarKind::Str, true);
+    builder.open_branch("notes", vec![ScalarKind::Int]);
+    builder.scalar_field("text", ScalarKind::Str, true);
+    builder.close_branch();
+    let schema = builder.finish().expect("the books schema builds");
     let sites = vec![
         SiteSpec {
             root: 0,
@@ -709,23 +694,15 @@ fn a_bounded_acquisition_skips_a_run_of_descendant_only_entries_between_siblings
 /// middle sparse branch field `f2` (2, branch field index 3), and the required branch
 /// field `text` (3, branch field index 0).
 fn wide_branch_schema() -> (StoreSchema, Vec<SiteSpec>) {
-    let mut branch_fields = vec![FieldSchema::scalar("text", ScalarKind::Str, true)];
+    let mut builder = StoreSchemaBuilder::root("books", vec![ScalarKind::Str]);
+    builder.scalar_field("title", ScalarKind::Str, true);
+    builder.open_branch("notes", vec![ScalarKind::Int]);
+    builder.scalar_field("text", ScalarKind::Str, true);
     for i in 0..6 {
-        branch_fields.push(FieldSchema::scalar(format!("f{i}"), ScalarKind::Int, false));
+        builder.scalar_field(format!("f{i}"), ScalarKind::Int, false);
     }
-    let schema = StoreSchema {
-        root_name: "books".into(),
-        key: vec![ScalarKind::Str],
-        fields: vec![FieldSchema::scalar("title", ScalarKind::Str, true)],
-        branches: vec![BranchSchema {
-            name: "notes".into(),
-            key: vec![ScalarKind::Int],
-            fields: branch_fields,
-            branches: Vec::new(),
-        }],
-        groups: Vec::new(),
-        indexes: Vec::new(),
-    };
+    builder.close_branch();
+    let schema = builder.finish().expect("the wide branch schema builds");
     let sites = vec![
         SiteSpec {
             root: 0,
@@ -1456,38 +1433,20 @@ fn a_branch_layer_traversal_with_a_wrong_ancestor_key_path_faults() {
 /// parametric reconcile are exercised at depth. Sites: 0 root, 1 notes, 2 tags, 3
 /// links, 4 tags.weight (sparse), 5 tags.label (required), 6 notes.color (sparse).
 fn nested_schema() -> (StoreSchema, Vec<SiteSpec>) {
-    let links = BranchSchema {
-        name: "links".into(),
-        key: vec![ScalarKind::Int],
-        fields: vec![FieldSchema::scalar("url", ScalarKind::Str, false)],
-        branches: Vec::new(),
-    };
-    let tags = BranchSchema {
-        name: "tags".into(),
-        key: vec![ScalarKind::Str],
-        fields: vec![
-            FieldSchema::scalar("label", ScalarKind::Str, true),
-            FieldSchema::scalar("weight", ScalarKind::Int, false),
-        ],
-        branches: vec![links],
-    };
-    let notes = BranchSchema {
-        name: "notes".into(),
-        key: vec![ScalarKind::Int],
-        fields: vec![
-            FieldSchema::scalar("text", ScalarKind::Str, true),
-            FieldSchema::scalar("color", ScalarKind::Str, false),
-        ],
-        branches: vec![tags],
-    };
-    let schema = StoreSchema {
-        root_name: "books".into(),
-        key: vec![ScalarKind::Str],
-        fields: vec![FieldSchema::scalar("title", ScalarKind::Str, true)],
-        branches: vec![notes],
-        groups: Vec::new(),
-        indexes: Vec::new(),
-    };
+    let mut builder = StoreSchemaBuilder::root("books", vec![ScalarKind::Str]);
+    builder.scalar_field("title", ScalarKind::Str, true);
+    builder.open_branch("notes", vec![ScalarKind::Int]);
+    builder.scalar_field("text", ScalarKind::Str, true);
+    builder.scalar_field("color", ScalarKind::Str, false);
+    builder.open_branch("tags", vec![ScalarKind::Str]);
+    builder.scalar_field("label", ScalarKind::Str, true);
+    builder.scalar_field("weight", ScalarKind::Int, false);
+    builder.open_branch("links", vec![ScalarKind::Int]);
+    builder.scalar_field("url", ScalarKind::Str, false);
+    builder.close_branch();
+    builder.close_branch();
+    builder.close_branch();
+    let schema = builder.finish().expect("the nested schema builds");
     let sites = vec![
         SiteSpec {
             root: 0,
@@ -2064,14 +2023,9 @@ fn bounded_acquisition_traverses_a_level_two_layer_and_skips_a_descendant_only_t
 /// arity — too few or too many columns — faults corruption at the trust boundary.
 #[test]
 fn a_composite_key_root_addresses_entries_by_the_ordered_tuple() {
-    let schema = StoreSchema {
-        root_name: "cells".into(),
-        key: vec![ScalarKind::Int, ScalarKind::Int],
-        fields: vec![FieldSchema::scalar("v", ScalarKind::Int, true)],
-        branches: Vec::new(),
-        groups: Vec::new(),
-        indexes: Vec::new(),
-    };
+    let mut builder = StoreSchemaBuilder::root("cells", vec![ScalarKind::Int, ScalarKind::Int]);
+    builder.scalar_field("v", ScalarKind::Int, true);
+    let schema = builder.finish().expect("the composite-key schema builds");
     let sites = vec![
         SiteSpec {
             root: 0,
@@ -2132,14 +2086,9 @@ fn a_composite_key_root_addresses_entries_by_the_ordered_tuple() {
 /// composite whole-payload site faults at `layer_of` rather than mis-decoding.
 #[test]
 fn iterate_over_a_composite_keyed_root_layer_faults_corruption() {
-    let schema = StoreSchema {
-        root_name: "cells".into(),
-        key: vec![ScalarKind::Int, ScalarKind::Int],
-        fields: vec![FieldSchema::scalar("v", ScalarKind::Int, true)],
-        branches: Vec::new(),
-        groups: Vec::new(),
-        indexes: Vec::new(),
-    };
+    let mut builder = StoreSchemaBuilder::root("cells", vec![ScalarKind::Int, ScalarKind::Int]);
+    builder.scalar_field("v", ScalarKind::Int, true);
+    let schema = builder.finish().expect("the composite-key schema builds");
     let sites = vec![SiteSpec {
         root: 0,
         target: SiteTarget::WholePayload,
@@ -2163,19 +2112,12 @@ fn iterate_over_a_composite_keyed_root_layer_faults_corruption() {
 /// works-side counterpart to the composite-layer traversal park.
 #[test]
 fn iterate_a_single_column_branch_under_a_composite_root_consumes_multi_column_ancestors() {
-    let schema = StoreSchema {
-        root_name: "grid".into(),
-        key: vec![ScalarKind::Int, ScalarKind::Int],
-        fields: vec![FieldSchema::scalar("label", ScalarKind::Str, false)],
-        branches: vec![BranchSchema {
-            name: "cell".into(),
-            key: vec![ScalarKind::Int],
-            fields: vec![FieldSchema::scalar("cval", ScalarKind::Int, true)],
-            branches: Vec::new(),
-        }],
-        groups: Vec::new(),
-        indexes: Vec::new(),
-    };
+    let mut builder = StoreSchemaBuilder::root("grid", vec![ScalarKind::Int, ScalarKind::Int]);
+    builder.scalar_field("label", ScalarKind::Str, false);
+    builder.open_branch("cell", vec![ScalarKind::Int]);
+    builder.scalar_field("cval", ScalarKind::Int, true);
+    builder.close_branch();
+    let schema = builder.finish().expect("the grid schema builds");
     let sites = vec![
         SiteSpec {
             root: 0,
@@ -2244,20 +2186,16 @@ const BY_VALUE: [u8; 16] = [0x71; 16];
 /// The `counters` root with a non-unique `byLabel(label, name)` index and a unique
 /// `byValue(value)` index — the maintenance the write path keeps coherent.
 fn indexed_schema() -> StoreSchema {
-    let mut schema = schema();
-    schema.indexes = vec![
-        IndexSchema {
-            id: BY_LABEL,
-            unique: false,
-            projection: vec![IndexComponent::Field(1), IndexComponent::Key(0)],
-        },
-        IndexSchema {
-            id: BY_VALUE,
-            unique: true,
-            projection: vec![IndexComponent::Field(0)],
-        },
-    ];
-    schema
+    let mut builder = counters_builder();
+    builder.index(
+        BY_LABEL,
+        false,
+        vec![IndexComponent::field(1), IndexComponent::key(0)],
+    );
+    builder.index(BY_VALUE, true, vec![IndexComponent::field(0)]);
+    builder
+        .finish()
+        .expect("the indexed counters schema builds")
 }
 
 /// Every managed-index cell (family `0x02`) of a store, in ascending key order — the
@@ -2884,34 +2822,20 @@ fn index_maintenance_agrees_across_engines() {
 /// and a keyed branch `notes(Int){text}`. Sites: 0 whole payload, 1 group `details`,
 /// 2 group `credits`, 3 branch `notes` entry.
 fn group_schema() -> (StoreSchema, Vec<SiteSpec>) {
-    let schema = StoreSchema {
-        root_name: "books".into(),
-        key: vec![ScalarKind::Str],
-        fields: vec![
-            FieldSchema::scalar("title", ScalarKind::Str, true),
-            FieldSchema::scalar("summary", ScalarKind::Str, false),
-        ],
-        groups: vec![
-            GroupSchema {
-                name: "details".into(),
-                fields: vec![
-                    FieldSchema::scalar("pages", ScalarKind::Int, false),
-                    FieldSchema::scalar("language", ScalarKind::Str, false),
-                ],
-            },
-            GroupSchema {
-                name: "credits".into(),
-                fields: vec![FieldSchema::scalar("author", ScalarKind::Str, false)],
-            },
-        ],
-        branches: vec![BranchSchema {
-            name: "notes".into(),
-            key: vec![ScalarKind::Int],
-            fields: vec![FieldSchema::scalar("text", ScalarKind::Str, true)],
-            branches: Vec::new(),
-        }],
-        indexes: Vec::new(),
-    };
+    let mut builder = StoreSchemaBuilder::root("books", vec![ScalarKind::Str]);
+    builder.scalar_field("title", ScalarKind::Str, true);
+    builder.scalar_field("summary", ScalarKind::Str, false);
+    builder.open_group("details");
+    builder.scalar_field("pages", ScalarKind::Int, false);
+    builder.scalar_field("language", ScalarKind::Str, false);
+    builder.close_group();
+    builder.open_group("credits");
+    builder.scalar_field("author", ScalarKind::Str, false);
+    builder.close_group();
+    builder.open_branch("notes", vec![ScalarKind::Int]);
+    builder.scalar_field("text", ScalarKind::Str, true);
+    builder.close_branch();
+    let schema = builder.finish().expect("the group schema builds");
     let sites = vec![
         SiteSpec {
             root: 0,
@@ -3189,17 +3113,12 @@ fn read_group_follows_entry_presence_and_replace_requires_the_entry() {
 fn a_present_entry_missing_a_required_group_leaf_is_corruption() {
     use crate::codec::value::encode_domain;
 
-    let schema = StoreSchema {
-        root_name: "books".into(),
-        key: vec![ScalarKind::Str],
-        fields: vec![FieldSchema::scalar("title", ScalarKind::Str, true)],
-        groups: vec![GroupSchema {
-            name: "meta".into(),
-            fields: vec![FieldSchema::scalar("isbn", ScalarKind::Str, true)],
-        }],
-        branches: Vec::new(),
-        indexes: Vec::new(),
-    };
+    let mut builder = StoreSchemaBuilder::root("books", vec![ScalarKind::Str]);
+    builder.scalar_field("title", ScalarKind::Str, true);
+    builder.open_group("meta");
+    builder.scalar_field("isbn", ScalarKind::Str, true);
+    builder.close_group();
+    let schema = builder.finish().expect("the required-group schema builds");
     let sites = vec![
         SiteSpec {
             root: 0,
@@ -3252,17 +3171,12 @@ fn a_present_entry_missing_a_required_group_leaf_is_corruption() {
 fn a_whole_entry_read_faults_on_a_present_entry_missing_a_required_group_leaf() {
     use crate::codec::value::encode_domain;
 
-    let schema = StoreSchema {
-        root_name: "books".into(),
-        key: vec![ScalarKind::Str],
-        fields: vec![FieldSchema::scalar("title", ScalarKind::Str, true)],
-        groups: vec![GroupSchema {
-            name: "meta".into(),
-            fields: vec![FieldSchema::scalar("isbn", ScalarKind::Str, true)],
-        }],
-        branches: Vec::new(),
-        indexes: Vec::new(),
-    };
+    let mut builder = StoreSchemaBuilder::root("books", vec![ScalarKind::Str]);
+    builder.scalar_field("title", ScalarKind::Str, true);
+    builder.open_group("meta");
+    builder.scalar_field("isbn", ScalarKind::Str, true);
+    builder.close_group();
+    let schema = builder.finish().expect("the required-group schema builds");
     let sites = vec![
         SiteSpec {
             root: 0,

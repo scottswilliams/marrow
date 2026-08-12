@@ -39,20 +39,15 @@ use common::{Counters, CountingEngine};
 use marrow_kernel::codec::key::KeyScalar;
 use marrow_kernel::codec::value::{RuntimeScalar, ScalarKind};
 use marrow_kernel::durable::{
-    DemandCoverage, Durable, DurableStore, FieldSchema, InvocationGrant, KernelFault, SessionError,
-    SiteSpec, SiteTarget, StoreSchema,
+    DemandCoverage, Durable, DurableStore, InvocationGrant, KernelFault, SessionError, SiteSpec,
+    SiteTarget, StoreSchema, StoreSchemaBuilder,
 };
 use marrow_kernel::equality::ValueDomain;
 
 fn schema() -> StoreSchema {
-    StoreSchema {
-        root_name: "counters".into(),
-        key: vec![ScalarKind::Int],
-        fields: vec![FieldSchema::scalar("value", ScalarKind::Int, true)],
-        branches: Vec::new(),
-        groups: Vec::new(),
-        indexes: Vec::new(),
-    }
+    let mut builder = StoreSchemaBuilder::root("counters", vec![ScalarKind::Int]);
+    builder.scalar_field("value", ScalarKind::Int, true);
+    builder.finish().expect("a bounded schema builds")
 }
 
 /// A whole-payload entry site (index 0) and the required `value` field site (index 1).

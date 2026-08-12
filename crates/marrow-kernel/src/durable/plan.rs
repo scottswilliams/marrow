@@ -22,7 +22,9 @@
 //!   perform finite-ancestor maintenance.
 
 use super::physical;
-use super::{EntryValue, IndexComponentRef, IndexSchema, KernelFault, ResolvedField, ResolvedGroup};
+use super::{
+    EntryValue, IndexComponentRef, IndexSchema, KernelFault, ResolvedField, ResolvedGroup,
+};
 use crate::codec::key::KeyScalar;
 use crate::codec::value::encode_domain;
 use crate::equality::ValueDomain;
@@ -229,7 +231,9 @@ impl Planner {
             }
             if let Some(row) = &old_row {
                 ops.push(IndexOp::Remove(physical::index_cell_key(
-                    root, index.id(), row,
+                    root,
+                    index.id(),
+                    row,
                 )));
             }
             if let Some(row) = &new_row {
@@ -283,23 +287,18 @@ fn project_row(
 mod tests {
     use super::*;
     use crate::codec::key::KeyScalar;
-    use crate::codec::value::{RuntimeScalar, ScalarKind};
-    use crate::durable::{FieldSchema, StoreSchema, number_store};
+    use crate::codec::value::{RuntimeScalar, ScalarKind, ValueShape};
+    use crate::durable::{
+        FieldSchema, IndexComponent, StoreSchema, StoreSchemaBuilder, number_store,
+    };
     use crate::equality::ValueDomain;
     use physical::NodeNumber;
 
     fn schema() -> StoreSchema {
-        StoreSchema {
-            root_name: "counters".into(),
-            key: vec![ScalarKind::Int],
-            fields: vec![
-                FieldSchema::scalar("value", ScalarKind::Int, true),
-                FieldSchema::scalar("label", ScalarKind::Str, false),
-            ],
-            branches: Vec::new(),
-            groups: Vec::new(),
-            indexes: Vec::new(),
-        }
+        let mut builder = StoreSchemaBuilder::root("counters", vec![ScalarKind::Int]);
+        builder.scalar_field("value", ScalarKind::Int, true);
+        builder.scalar_field("label", ScalarKind::Str, false);
+        builder.finish().expect("a bounded schema builds")
     }
 
     /// A resolved field with an arbitrary distinct number (the planner keys leaves by the
@@ -308,7 +307,7 @@ mod tests {
         ResolvedField {
             number,
             name: String::new(),
-            shape: crate::codec::value::ValueShape::Scalar(kind),
+            shape: ValueShape::scalar(kind),
             required,
         }
     }
@@ -319,34 +318,34 @@ mod tests {
         let numbering = number_store(std::slice::from_ref(schema));
         let n = &numbering[0];
         let fields = schema
-            .fields
+            .fields()
             .iter()
-            .zip(&n.fields)
+            .zip(n.fields())
             .map(|(f, num)| rf_named(*num, f))
             .collect();
         let groups = schema
-            .groups
+            .groups()
             .iter()
-            .zip(&n.groups)
+            .zip(n.groups())
             .map(|(g, gn)| ResolvedGroup {
-                number: gn.number,
+                number: gn.number(),
                 fields: g
-                    .fields
+                    .fields()
                     .iter()
-                    .zip(&gn.fields)
+                    .zip(gn.fields())
                     .map(|(f, num)| rf_named(*num, f))
                     .collect(),
             })
             .collect();
-        (n.root, fields, groups)
+        (n.root(), fields, groups)
     }
 
     fn rf_named(number: NodeNumber, field: &FieldSchema) -> ResolvedField {
         ResolvedField {
             number,
-            name: field.name.clone(),
-            shape: field.shape.clone(),
-            required: field.required,
+            name: field.name().to_string(),
+            shape: field.shape().clone(),
+            required: field.required(),
         }
     }
 
@@ -569,27 +568,26 @@ mod tests {
     #[test]
     fn index_writes_emit_remove_then_put_per_changed_index_in_order() {
         let planner = Planner::new();
-        // The root's cell-key number (the schema's single root numbers to 0).
-        let (root, _, _) = resolved(&schema());
         // Two indexes over a root keyed by one int column, with one int field (position 0):
         // a non-unique index projecting [field 0, key 0] and a unique index projecting
-        // [field 0].
-        let indexes = vec![
-            IndexSchema {
-                id: [0xA0; 16],
-                unique: false,
-                projection: vec![IndexComponent::Field(0), IndexComponent::Key(0)],
-            },
-            IndexSchema {
-                id: [0xB1; 16],
-                unique: true,
-                projection: vec![IndexComponent::Field(0)],
-            },
-        ];
+        // [field 0]. Indexes are declared with the root, so the schema is built here rather
+        // than through the shared `schema()` helper.
+        let mut builder = StoreSchemaBuilder::root("counters", vec![ScalarKind::Int]);
+        builder.scalar_field("value", ScalarKind::Int, true);
+        builder.scalar_field("label", ScalarKind::Str, false);
+        builder.index(
+            [0xA0; 16],
+            false,
+            vec![IndexComponent::field(0), IndexComponent::key(0)],
+        );
+        builder.index([0xB1; 16], true, vec![IndexComponent::field(0)]);
+        let schema = builder.finish().expect("a bounded schema builds");
+        // The root's cell-key number (the schema's single root numbers to 0).
+        let (root, _, _) = resolved(&schema);
         let keys = [KeyScalar::Int(7)];
         // Field 0 changes from 1 to 2: both indexes' rows move.
         let ops = planner
-            .index_writes(root, &indexes, &keys, &[scalar(1)], &[scalar(2)])
+            .index_writes(root, schema.indexes(), &keys, &[scalar(1)], &[scalar(2)])
             .expect("in range");
 
         let nonunique_old =
@@ -614,16 +612,20 @@ mod tests {
     #[test]
     fn an_absent_projected_field_contributes_no_row() {
         let planner = Planner::new();
-        let (root, _, _) = resolved(&schema());
-        let indexes = vec![IndexSchema {
-            id: [0xA0; 16],
-            unique: false,
-            projection: vec![IndexComponent::Field(0), IndexComponent::Key(0)],
-        }];
+        let mut builder = StoreSchemaBuilder::root("counters", vec![ScalarKind::Int]);
+        builder.scalar_field("value", ScalarKind::Int, true);
+        builder.scalar_field("label", ScalarKind::Str, false);
+        builder.index(
+            [0xA0; 16],
+            false,
+            vec![IndexComponent::field(0), IndexComponent::key(0)],
+        );
+        let schema = builder.finish().expect("a bounded schema builds");
+        let (root, _, _) = resolved(&schema);
         let keys = [KeyScalar::Int(7)];
         // Create (old all-absent) with the projected field absent: no row.
         let ops = planner
-            .index_writes(root, &indexes, &keys, &[None], &[None])
+            .index_writes(root, schema.indexes(), &keys, &[None], &[None])
             .expect("in range");
         assert!(ops.is_empty());
     }

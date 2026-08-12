@@ -339,7 +339,11 @@ fn derive_root_schema(
     // set but no key.
     for group in root.groups() {
         builder.open_group(group.name().to_string());
-        emit_fields(image, &mut builder, image.record_type(group.record()).fields())?;
+        emit_fields(
+            image,
+            &mut builder,
+            image.record_type(group.record()).fields(),
+        )?;
         builder.close_group();
     }
 
@@ -353,7 +357,11 @@ fn derive_root_schema(
         match step {
             BranchStep::Open(branch) => {
                 builder.open_branch(branch.name().to_string(), key_columns(branch.keys()));
-                emit_fields(image, &mut builder, image.record_type(branch.record()).fields())?;
+                emit_fields(
+                    image,
+                    &mut builder,
+                    image.record_type(branch.record()).fields(),
+                )?;
                 pending.push(BranchStep::Close);
                 push_branches(&mut pending, branch.branches());
             }
@@ -367,7 +375,11 @@ fn derive_root_schema(
     // This root's own managed indexes, in declaration order, each with a projection the
     // builder resolves against the completed root. An index over a parked root never reaches
     // here (the root parks above before its indexes are read).
-    for index in image.indexes().iter().filter(|index| index.root() == root_index) {
+    for index in image
+        .indexes()
+        .iter()
+        .filter(|index| index.root() == root_index)
+    {
         builder.index(
             *index.id().bytes(),
             index.unique(),
@@ -393,7 +405,10 @@ enum BranchStep<'a> {
 }
 
 /// Queue a level of sealed branches so they are opened in declaration order.
-fn push_branches<'a>(pending: &mut Vec<BranchStep<'a>>, branches: &'a [marrow_verify::SealedBranch]) {
+fn push_branches<'a>(
+    pending: &mut Vec<BranchStep<'a>>,
+    branches: &'a [marrow_verify::SealedBranch],
+) {
     pending.extend(branches.iter().rev().map(BranchStep::Open));
 }
 

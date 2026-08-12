@@ -1074,7 +1074,10 @@ mod composite_codec {
                     ty: 3,
                     fields: vec![Some(di(1)), Some(some(ds("z")))],
                 },
-                product(3, [scalar(ScalarKind::Int), opt_shape(scalar(ScalarKind::Str))]),
+                product(
+                    3,
+                    [scalar(ScalarKind::Int), opt_shape(scalar(ScalarKind::Str))],
+                ),
             ),
         ];
         for (value, shape) in cases {

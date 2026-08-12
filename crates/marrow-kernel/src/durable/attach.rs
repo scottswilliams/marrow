@@ -219,17 +219,12 @@ mod tests {
     use super::*;
     use crate::codec::key::KeyScalar;
     use crate::codec::value::ScalarKind;
-    use crate::durable::{Durable, FieldSchema, Presence, SiteTarget};
+    use crate::durable::{Durable, Presence, SiteTarget, StoreSchemaBuilder};
 
     fn schema() -> StoreSchema {
-        StoreSchema {
-            root_name: "counters".into(),
-            key: vec![ScalarKind::Int],
-            fields: vec![FieldSchema::scalar("value", ScalarKind::Int, true)],
-            branches: Vec::new(),
-            groups: Vec::new(),
-            indexes: Vec::new(),
-        }
+        let mut builder = StoreSchemaBuilder::root("counters", vec![ScalarKind::Int]);
+        builder.scalar_field("value", ScalarKind::Int, true);
+        builder.finish().expect("a one-field root builds")
     }
 
     fn sites() -> Vec<SiteSpec> {

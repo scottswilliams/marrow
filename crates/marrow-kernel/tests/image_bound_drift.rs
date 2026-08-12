@@ -39,34 +39,44 @@ fn the_kernel_value_depth_cap_mirrors_the_image_bound() {
 #[test]
 fn the_shared_bound_counts_composites_not_leaves() {
     use marrow_kernel::codec::value::{
-        RuntimeScalar, ScalarKind, ValueShape, decode_domain, encode_domain,
+        RuntimeScalar, ScalarKind, ValueShapeBuilder, decode_domain, encode_domain,
     };
     use marrow_kernel::equality::ValueDomain;
 
-    let nest = |composites: usize| {
+    // The value and the shape are separate owners: a durable value is caller-built, while
+    // a shape is minted only by the command builder, which refuses one composite past the
+    // bound. So each half nests on its own.
+    let nest_value = |composites: usize| {
         let mut value = ValueDomain::Scalar(RuntimeScalar::Int(7));
-        let mut shape = ValueShape::Scalar(ScalarKind::Int);
         for _ in 0..composites {
             value = ValueDomain::Product {
                 ty: 3,
                 fields: vec![Some(value)],
             };
-            shape = ValueShape::Product {
-                ty: 3,
-                fields: vec![shape],
-            };
         }
-        (value, shape)
+        value
+    };
+    let nest_shape = |composites: usize| {
+        let mut builder = ValueShapeBuilder::new();
+        for _ in 0..composites {
+            builder.open_product(3);
+        }
+        builder.scalar(ScalarKind::Int);
+        for _ in 0..composites {
+            builder.close();
+        }
+        builder.finish()
     };
 
-    let (deepest, deepest_shape) = nest(KERNEL_VALUE_DEPTH);
+    let deepest = nest_value(KERNEL_VALUE_DEPTH);
+    let deepest_shape = nest_shape(KERNEL_VALUE_DEPTH).expect("the bound's own depth mints");
     let bytes = encode_domain(&deepest).expect("the bound's own depth is admitted");
     assert_eq!(
         decode_domain(&bytes, &deepest_shape).as_ref(),
         Some(&deepest)
     );
 
-    let (over, _) = nest(KERNEL_VALUE_DEPTH + 1);
+    let over = nest_value(KERNEL_VALUE_DEPTH + 1);
     assert!(
         encode_domain(&over).is_err(),
         "one composite past the shared bound is refused",

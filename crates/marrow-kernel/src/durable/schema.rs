@@ -339,7 +339,12 @@ impl StoreSchemaBuilder {
     }
 
     /// Add a field to the innermost open container, or to the root when none is open.
-    pub fn field(&mut self, name: impl Into<String>, shape: ValueShape, required: bool) -> &mut Self {
+    pub fn field(
+        &mut self,
+        name: impl Into<String>,
+        shape: ValueShape,
+        required: bool,
+    ) -> &mut Self {
         if self.suppressed > 0 {
             return self;
         }
@@ -475,7 +480,12 @@ impl StoreSchemaBuilder {
     /// Add a managed index over the root, resolving every projection component against the
     /// root's completed key columns and top-level fields. An index is root-level, so it is
     /// refused while a group or branch is open.
-    pub fn index(&mut self, id: [u8; 16], unique: bool, projection: Vec<IndexComponent>) -> &mut Self {
+    pub fn index(
+        &mut self,
+        id: [u8; 16],
+        unique: bool,
+        projection: Vec<IndexComponent>,
+    ) -> &mut Self {
         if self.suppressed > 0 {
             return self;
         }

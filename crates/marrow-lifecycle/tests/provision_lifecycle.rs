@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use marrow_image::LedgerIdBytes;
 use marrow_kernel::codec::value::ScalarKind;
-use marrow_kernel::durable::{FieldSchema, SiteSpec, SiteTarget, StoreSchema};
+use marrow_kernel::durable::{SiteSpec, SiteTarget, StoreSchema, StoreSchemaBuilder};
 use marrow_lifecycle::{
     ActiveBinding, EngineKind, HeadMap, LogicalHead, OpenError, Preflight, ProvisionError,
     ProvisionRequest, StoreEnvelope, StoreInstanceId, open, preflight, provision,
@@ -49,14 +49,9 @@ impl Drop for TempDir {
 }
 
 fn schemas() -> Vec<StoreSchema> {
-    vec![StoreSchema {
-        root_name: "app".into(),
-        key: vec![ScalarKind::Int],
-        fields: vec![FieldSchema::scalar("value", ScalarKind::Int, true)],
-        groups: Vec::new(),
-        branches: Vec::new(),
-        indexes: Vec::new(),
-    }]
+    let mut builder = StoreSchemaBuilder::root("app", vec![ScalarKind::Int]);
+    builder.scalar_field("value", ScalarKind::Int, true);
+    vec![builder.finish().expect("a bounded schema builds")]
 }
 
 fn sites() -> Vec<SiteSpec> {
