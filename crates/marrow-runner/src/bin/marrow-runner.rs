@@ -460,7 +460,7 @@ fn import_command(
 
     let Some(root_index) = schemas
         .iter()
-        .position(|schema| schema.root_name == root_name)
+        .position(|schema| schema.root_name() == root_name)
     else {
         eprintln!(
             "{}: no store root named `{root_name}` in this program",

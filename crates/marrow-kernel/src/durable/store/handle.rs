@@ -239,7 +239,7 @@ impl<E: ByteEngine> DurableStore<E> {
         let indexes: Vec<Vec<IndexSchema>> = self
             .schemas
             .iter()
-            .map(|schema| schema.indexes.clone())
+            .map(|schema| schema.indexes().to_vec())
             .collect();
         // Capture the exact before-state and derive the next tagged generation before
         // beginning the write transaction. `&mut self` plus the lifecycle's owner lock means

@@ -22,7 +22,7 @@
 //!   perform finite-ancestor maintenance.
 
 use super::physical;
-use super::{EntryValue, IndexComponent, IndexSchema, KernelFault, ResolvedField, ResolvedGroup};
+use super::{EntryValue, IndexComponentRef, IndexSchema, KernelFault, ResolvedField, ResolvedGroup};
 use crate::codec::key::KeyScalar;
 use crate::codec::value::encode_domain;
 use crate::equality::ValueDomain;
@@ -229,13 +229,13 @@ impl Planner {
             }
             if let Some(row) = &old_row {
                 ops.push(IndexOp::Remove(physical::index_cell_key(
-                    root, &index.id, row,
+                    root, index.id(), row,
                 )));
             }
             if let Some(row) = &new_row {
-                let cell = physical::index_cell_key(root, &index.id, row);
+                let cell = physical::index_cell_key(root, index.id(), row);
                 let value = physical::index_cell_value(keys);
-                ops.push(if index.unique {
+                ops.push(if index.unique() {
                     IndexOp::UniquePut(cell, value)
                 } else {
                     IndexOp::Put(cell, value)
@@ -255,15 +255,15 @@ fn project_row(
     keys: &[KeyScalar],
     fields: &[Option<ValueDomain>],
 ) -> Result<Option<Vec<KeyScalar>>, KernelFault> {
-    let mut row = Vec::with_capacity(index.projection.len());
-    for component in &index.projection {
-        let key = match component {
-            IndexComponent::Key(column) => keys
-                .get(*column as usize)
+    let mut row = Vec::with_capacity(index.projection().len());
+    for component in index.projection() {
+        let key = match component.view() {
+            IndexComponentRef::Key(column) => keys
+                .get(column as usize)
                 .cloned()
                 .ok_or(KernelFault::Corruption)?,
-            IndexComponent::Field(field) => {
-                match fields.get(*field as usize).and_then(Option::as_ref) {
+            IndexComponentRef::Field(field) => {
+                match fields.get(field as usize).and_then(Option::as_ref) {
                     None => return Ok(None),
                     Some(ValueDomain::Scalar(scalar)) => scalar
                         .as_key()

@@ -35,7 +35,7 @@ use std::io::BufRead;
 use std::path::Path;
 
 use marrow_kernel::codec::key::KeyScalar;
-use marrow_kernel::codec::value::{RuntimeScalar, ScalarKind, ValueShape};
+use marrow_kernel::codec::value::{RuntimeScalar, ScalarKind};
 use marrow_kernel::durable::{
     CommitRecovery, CommitResult, CreateOutcome, DemandCoverage, Durable, DurableCommitState,
     EntryValue, InvocationGrant, KernelFault, SessionError, SessionHost, SiteSpec, SiteTarget,
@@ -477,50 +477,50 @@ impl RowPlan {
                 declared: schemas.len(),
             })?;
 
-        if !schema.groups.is_empty() || !schema.branches.is_empty() {
+        if !schema.groups().is_empty() || !schema.branches().is_empty() {
             return Err(ShapeFault::HasGroupsOrBranches {
-                root: schema.root_name.clone(),
+                root: schema.root_name().to_string(),
             });
         }
 
-        if schema.key.len() != target.key_columns.len() {
+        if schema.key().len() != target.key_columns.len() {
             return Err(ShapeFault::KeyArity {
-                root: schema.root_name.clone(),
-                declared: schema.key.len(),
+                root: schema.root_name().to_string(),
+                declared: schema.key().len(),
                 named: target.key_columns.len(),
             });
         }
-        let mut key_columns = Vec::with_capacity(schema.key.len());
-        for (name, kind) in target.key_columns.iter().zip(&schema.key) {
-            if !importable_scalar(*kind) {
+        let mut key_columns = Vec::with_capacity(schema.key().len());
+        for (name, &kind) in target.key_columns.iter().zip(schema.key()) {
+            if !importable_scalar(kind) {
                 return Err(ShapeFault::KeyScalarUnsupported {
                     column: name.clone(),
-                    kind: *kind,
+                    kind,
                 });
             }
             key_columns.push(KeyColumnPlan {
                 name: name.clone(),
-                kind: *kind,
+                kind,
             });
         }
 
-        let mut fields = Vec::with_capacity(schema.fields.len());
-        for field in &schema.fields {
-            let ValueShape::Scalar(kind) = &field.shape else {
+        let mut fields = Vec::with_capacity(schema.fields().len());
+        for field in schema.fields() {
+            let Some(kind) = field.shape().scalar_kind() else {
                 return Err(ShapeFault::FieldNotScalar {
-                    field: field.name.clone(),
+                    field: field.name().to_string(),
                 });
             };
-            if !importable_scalar(*kind) {
+            if !importable_scalar(kind) {
                 return Err(ShapeFault::FieldScalarUnsupported {
-                    field: field.name.clone(),
-                    kind: *kind,
+                    field: field.name().to_string(),
+                    kind,
                 });
             }
             fields.push(FieldSlot {
-                name: field.name.clone(),
-                kind: *kind,
-                required: field.required,
+                name: field.name().to_string(),
+                kind,
+                required: field.required(),
             });
         }
 

@@ -19,6 +19,7 @@ mod attach;
 mod native_owner;
 mod physical;
 mod plan;
+mod schema;
 mod session_host;
 mod store;
 
@@ -26,6 +27,10 @@ pub use attach::{
     AttachError, AttachmentId, CeilingIdToken, DeploymentCeiling, EphemeralAttachment,
 };
 pub use native_owner::{NativeStoreOwner, PendingNativeStoreOwner};
+pub use schema::{
+    BranchSchema, FieldSchema, GroupSchema, IndexComponent, IndexComponentRef, IndexSchema,
+    MAX_DURABLE_DEPTH, SchemaBuildError, StoreSchema, StoreSchemaBuilder,
+};
 pub use session_host::SessionHost;
 pub use store::{Durable, DurableStore, ReadSession, TxnSession};
 
@@ -52,115 +57,6 @@ use crate::codec::key::KeyScalar;
 use crate::codec::value::{ScalarKind, ValueShape};
 use crate::equality::ValueDomain;
 
-/// The schema descriptor the store profile records and every session revalidates.
-/// One root; its top-level fields and its keyed branches in declaration (image)
-/// order. A branch is a keyed subtree nested beneath every root entry; the schema is
-/// recursive, so scalar-field branches with one or more key columns nest to any depth.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct StoreSchema {
-    pub root_name: String,
-    /// The root's ordered key columns (one scalar kind per column), the whole composite
-    /// key. A single-column root is the one-element case.
-    pub key: Vec<ScalarKind>,
-    pub fields: Vec<FieldSchema>,
-    /// The root's unkeyed groups, in declaration (image) order. A group is a static
-    /// field-path namespace inside the entry's payload — not a keyed node — so it
-    /// contributes leaves to every root entry rather than a keyed child layer. Empty for a
-    /// root that declares none.
-    pub groups: Vec<GroupSchema>,
-    pub branches: Vec<BranchSchema>,
-    /// The root's compiler-maintained managed indexes, in stable declaration order — the
-    /// order every maintenance pass visits them so a whole-entry write's index writes are
-    /// deterministic. Empty for a root that declares none.
-    pub indexes: Vec<IndexSchema>,
-}
-
-/// One managed index the kernel maintains over a keyed root: its stable durable identity
-/// (the physical cell discriminator that separates one index's cells from another's under
-/// the same root, and survives a rename), its `unique` flag, and its ordered projection
-/// resolved to record/key positions. The kernel stores the identity as raw bytes and
-/// stays free of any image dependency; the executor derives it from a verified
-/// [`SealedIndex`](marrow_verify::SealedIndex). An index stores no data of its own and has
-/// no application write path — maintenance is a consequence of the source write.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct IndexSchema {
-    /// The index's stable 16-byte identity, the physical discriminator of its cell family.
-    pub id: [u8; 16],
-    /// Whether a complete-key lookup yields at most one source key (a unique index) rather
-    /// than an ordered non-unique index whose rows carry the identity suffix.
-    pub unique: bool,
-    /// The ordered projection: each component names a root key column or a top-level field
-    /// by position. A non-unique index's projection ends with the identity key columns (the
-    /// row-distinguishing suffix); a unique index's may omit them.
-    pub projection: Vec<IndexComponent>,
-}
-
-/// One component of a managed index's ordered projection, naming a durable-key leaf of the
-/// root by position: an identity key column or a top-level field. The physical projection
-/// of a verified [`SealedIndexComponent`](marrow_verify::SealedIndexComponent).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum IndexComponent {
-    /// An identity key column, by its index into the root's key tuple.
-    Key(u16),
-    /// A top-level field, by its index into the root's materialized record.
-    Field(u16),
-}
-
-/// One field of a node's record: its name, value shape, and required flag. A field's
-/// shape is the closed storable durable value set — a scalar, a dense product
-/// (`struct`/record), or a closed sum (`enum`/`Option`/`Result`). The value codec
-/// (`codec::value`) frames a composite within the one field-leaf cell; a scalar field
-/// stays byte-identical to the pre-widening form.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FieldSchema {
-    pub name: String,
-    pub shape: ValueShape,
-    pub required: bool,
-}
-
-impl FieldSchema {
-    /// A scalar-shaped field. Bounds the churn of the value-shape widening: a call site
-    /// that knows a field is scalar names its kind rather than wrapping a [`ValueShape`].
-    pub fn scalar(name: impl Into<String>, kind: ScalarKind, required: bool) -> Self {
-        Self {
-            name: name.into(),
-            shape: ValueShape::Scalar(kind),
-            required,
-        }
-    }
-}
-
-/// One unkeyed group nested beneath a root entry: its name and its own record's fields.
-/// A group is part of the entry's materialized value (a nested sub-record), not a keyed
-/// durable node: it carries no marker and no key, and its presence is exactly its
-/// containing entry's presence. Its leaves are stored as the entry's own payload,
-/// namespaced under the group's number (`<marker> 0x28 num(group) 0x10 num(field)`; see
-/// [`physical`](self)). A group holding nested groups or branches is not yet part of the
-/// executable graph, so this schema carries fields only.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct GroupSchema {
-    pub name: String,
-    pub fields: Vec<FieldSchema>,
-}
-
-/// One keyed branch nested beneath a parent entry: its name, its single key column's
-/// scalar kind, its own record's fields, and its own nested branches. A branch entry is
-/// addressed by extending the parent's key-path with the branch key and carries its own
-/// marker and field leaves, so it is a distinct durable node reusing the parent entry's
-/// marker/field topology one level down. The schema is recursive — a branch may itself
-/// declare keyed branches — so the store profile describes a whole nested branch shape
-/// and a sub-branch shape change is a profile mismatch at session open.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BranchSchema {
-    pub name: String,
-    /// The branch's ordered key columns (one scalar kind per column). A single-column
-    /// branch is the one-element case; a branch entry's key-path extends its parent's
-    /// with this whole tuple.
-    pub key: Vec<ScalarKind>,
-    pub fields: Vec<FieldSchema>,
-    pub branches: Vec<BranchSchema>,
-}
-
 /// A durable node's store-local cell-key number (FR01 §3): a store-wide, never-reused
 /// `u32` assigned to each root, field, group, and branch. Cell keys are prefixed by these
 /// numbers rather than by source spelling, so a rename is zero-cell metadata. The width is
@@ -172,28 +68,82 @@ pub type NodeNumber = u32;
 /// [`GroupNumbering`] per group, and one [`BranchNumbering`] per branch. Computed once from
 /// the schema at store construction by [`number_store`], and walked in lockstep with the
 /// schema by the site resolver to number every addressed node.
+/// Opaque: [`number_store`] is its sole minter, so a numbering always mirrors a schema whose
+/// branch tree is already bounded by [`MAX_DURABLE_DEPTH`]. There is no route to a
+/// caller-built numbering tree, and therefore none to an unbounded one.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RootNumbering {
-    pub root: NodeNumber,
-    pub fields: Vec<NodeNumber>,
-    pub groups: Vec<GroupNumbering>,
-    pub branches: Vec<BranchNumbering>,
+    root: NodeNumber,
+    fields: Vec<NodeNumber>,
+    groups: Vec<GroupNumbering>,
+    branches: Vec<BranchNumbering>,
+}
+
+impl RootNumbering {
+    /// The root node's own cell-key number.
+    pub fn root(&self) -> NodeNumber {
+        self.root
+    }
+
+    /// One number per top-level field, in declaration order.
+    pub fn fields(&self) -> &[NodeNumber] {
+        &self.fields
+    }
+
+    /// One numbering per unkeyed group, in declaration order.
+    pub fn groups(&self) -> &[GroupNumbering] {
+        &self.groups
+    }
+
+    /// One numbering per keyed branch, in declaration order.
+    pub fn branches(&self) -> &[BranchNumbering] {
+        &self.branches
+    }
 }
 
 /// The numbering of one unkeyed group: its own number and one number per field.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GroupNumbering {
-    pub number: NodeNumber,
-    pub fields: Vec<NodeNumber>,
+    number: NodeNumber,
+    fields: Vec<NodeNumber>,
+}
+
+impl GroupNumbering {
+    /// The group node's own cell-key number.
+    pub fn number(&self) -> NodeNumber {
+        self.number
+    }
+
+    /// One number per group field, in declaration order.
+    pub fn fields(&self) -> &[NodeNumber] {
+        &self.fields
+    }
 }
 
 /// The numbering of one keyed branch, recursively: its own number, one number per field,
 /// and one [`BranchNumbering`] per nested sub-branch.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BranchNumbering {
-    pub number: NodeNumber,
-    pub fields: Vec<NodeNumber>,
-    pub branches: Vec<BranchNumbering>,
+    number: NodeNumber,
+    fields: Vec<NodeNumber>,
+    branches: Vec<BranchNumbering>,
+}
+
+impl BranchNumbering {
+    /// The branch node's own cell-key number.
+    pub fn number(&self) -> NodeNumber {
+        self.number
+    }
+
+    /// One number per branch field, in declaration order.
+    pub fn fields(&self) -> &[NodeNumber] {
+        &self.fields
+    }
+
+    /// One numbering per nested sub-branch, in declaration order.
+    pub fn branches(&self) -> &[BranchNumbering] {
+        &self.branches
+    }
 }
 
 /// Assign store-wide pre-order [`NodeNumber`]s to every durable node of every root, the
@@ -216,16 +166,16 @@ pub fn number_store(schemas: &[StoreSchema]) -> Vec<RootNumbering> {
         .iter()
         .map(|schema| RootNumbering {
             root: alloc(),
-            fields: schema.fields.iter().map(|_| alloc()).collect(),
+            fields: schema.fields().iter().map(|_| alloc()).collect(),
             groups: schema
-                .groups
+                .groups()
                 .iter()
                 .map(|group| GroupNumbering {
                     number: alloc(),
-                    fields: group.fields.iter().map(|_| alloc()).collect(),
+                    fields: group.fields().iter().map(|_| alloc()).collect(),
                 })
                 .collect(),
-            branches: number_branches(&schema.branches, &mut alloc),
+            branches: number_branches(schema.branches(), &mut alloc),
         })
         .collect()
 }
@@ -240,8 +190,8 @@ fn number_branches(
         .iter()
         .map(|branch| BranchNumbering {
             number: alloc(),
-            fields: branch.fields.iter().map(|_| alloc()).collect(),
-            branches: number_branches(&branch.branches, alloc),
+            fields: branch.fields().iter().map(|_| alloc()).collect(),
+            branches: number_branches(branch.branches(), alloc),
         })
         .collect()
 }

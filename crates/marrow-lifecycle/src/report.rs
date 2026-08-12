@@ -42,7 +42,7 @@ impl ProvisionReport {
             destination: destination.display().to_string(),
             roots: schemas
                 .iter()
-                .map(|schema| schema.root_name.clone())
+                .map(|schema| schema.root_name().to_string())
                 .collect(),
             reads: ceiling.reads(),
             writes: ceiling.writes(),

@@ -6,10 +6,11 @@
 
 use super::super::{
     AuthTarget, AuthorizedSite, BranchHop, BranchNumbering, BranchSchema, FieldSchema,
-    GroupNumbering, IndexComponent, ResolvedField, ResolvedGroup, RootNumbering, SiteTarget,
+    GroupNumbering, IndexComponent, IndexComponentRef, ResolvedField, ResolvedGroup, RootNumbering,
+    SiteTarget,
     StoreSchema,
 };
-use crate::codec::value::{ScalarKind, ValueShape};
+use crate::codec::value::ScalarKind;
 
 /// Resolve a sealed [`SiteTarget`] against the store schema and its [`RootNumbering`] into
 /// the executable [`AuthorizedSite`] the kernel ops address, once at session setup: the
@@ -30,33 +31,33 @@ pub(super) fn resolve_site(
     // path since every index is root-level. The index position is local to this root's
     // schema (the image-wide position was rebased per root when the site table was built).
     if let SiteTarget::IndexScan(position) | SiteTarget::IndexLookup(position) = target {
-        let index = &schema.indexes[*position as usize];
+        let index = &schema.indexes()[*position as usize];
         let projection = index
-            .projection
+            .projection()
             .iter()
             .map(|component| index_component_kind(schema, *component))
             .collect();
         return AuthorizedSite::index(
             numbering.root,
             root_index,
-            schema.key.clone(),
-            AuthTarget::index(index.id, index.unique, projection),
+            schema.key().to_vec(),
+            AuthTarget::index(*index.id(), index.unique(), projection),
         );
     }
     // A root-level group addresses the root entry (empty branch path); it carries the
     // group's own numbered record. Group-in-branch is durable-only future work, so a group
     // site is root-level at T01.
     if let SiteTarget::GroupEntry(position) = target {
-        let group = &schema.groups[*position as usize];
-        let group_numbering = &numbering.groups[*position as usize];
+        let group = &schema.groups()[*position as usize];
+        let group_numbering = &numbering.groups()[*position as usize];
         return AuthorizedSite::new(
             numbering.root,
             root_index,
-            schema.key.clone(),
+            schema.key().to_vec(),
             Vec::new(),
             AuthTarget::Group {
-                number: group_numbering.number,
-                fields: resolve_fields(&group.fields, &group_numbering.fields),
+                number: group_numbering.number(),
+                fields: resolve_fields(group.fields(), group_numbering.fields()),
             },
         );
     }
@@ -66,7 +67,7 @@ pub(super) fn resolve_site(
     let (branch, container_fields): (Vec<BranchHop>, Vec<ResolvedField>) = match target {
         SiteTarget::WholePayload | SiteTarget::FieldLeaf(_) => (
             Vec::new(),
-            resolve_fields(&schema.fields, &numbering.fields),
+            resolve_fields(schema.fields(), numbering.fields()),
         ),
         SiteTarget::BranchEntry(path) | SiteTarget::BranchField { branch: path, .. } => {
             resolve_branch_path(schema, numbering, path)
@@ -83,7 +84,7 @@ pub(super) fn resolve_site(
     let target = match target {
         SiteTarget::WholePayload => AuthTarget::Entry {
             fields: container_fields,
-            groups: resolve_groups(&schema.groups, &numbering.groups),
+            groups: resolve_groups(schema.groups(), numbering.groups()),
         },
         SiteTarget::BranchEntry(_) => AuthTarget::Entry {
             fields: container_fields,
@@ -99,7 +100,7 @@ pub(super) fn resolve_site(
     AuthorizedSite::new(
         numbering.root,
         root_index,
-        schema.key.clone(),
+        schema.key().to_vec(),
         branch,
         target,
     )
@@ -115,9 +116,9 @@ fn resolve_fields(fields: &[FieldSchema], numbers: &[u32]) -> Vec<ResolvedField>
         .zip(numbers)
         .map(|(field, number)| ResolvedField {
             number: *number,
-            name: field.name.clone(),
-            shape: field.shape.clone(),
-            required: field.required,
+            name: field.name().to_string(),
+            shape: field.shape().clone(),
+            required: field.required(),
         })
         .collect()
 }
@@ -132,8 +133,8 @@ fn resolve_groups(
         .iter()
         .zip(numberings)
         .map(|(group, numbering)| ResolvedGroup {
-            number: numbering.number,
-            fields: resolve_fields(&group.fields, &numbering.fields),
+            number: numbering.number(),
+            fields: resolve_fields(group.fields(), numbering.fields()),
         })
         .collect()
 }
@@ -145,11 +146,11 @@ fn resolve_groups(
 /// index-ineligible projection — faulted as a kernel invariant breach rather than
 /// silently mis-encoded.
 fn index_component_kind(schema: &StoreSchema, component: IndexComponent) -> ScalarKind {
-    match component {
-        IndexComponent::Key(column) => schema.key[column as usize],
-        IndexComponent::Field(field) => match &schema.fields[field as usize].shape {
-            ValueShape::Scalar(kind) => *kind,
-            _ => unreachable!("the verifier proves an index component is a stored scalar"),
+    match component.view() {
+        IndexComponentRef::Key(column) => schema.key()[column as usize],
+        IndexComponentRef::Field(field) => match schema.fields()[field as usize].shape().scalar_kind() {
+            Some(kind) => kind,
+            None => unreachable!("the schema builder proves an index component is a stored scalar"),
         },
     }
 }
@@ -166,18 +167,18 @@ fn resolve_branch_path(
     path: &[u16],
 ) -> (Vec<BranchHop>, Vec<ResolvedField>) {
     let mut hops = Vec::with_capacity(path.len());
-    let mut branches: &[BranchSchema] = &schema.branches;
-    let mut branch_numbers: &[BranchNumbering] = &numbering.branches;
-    let mut fields: &[FieldSchema] = &schema.fields;
-    let mut field_numbers: &[u32] = &numbering.fields;
+    let mut branches: &[BranchSchema] = schema.branches();
+    let mut branch_numbers: &[BranchNumbering] = numbering.branches();
+    let mut fields: &[FieldSchema] = schema.fields();
+    let mut field_numbers: &[u32] = numbering.fields();
     for &index in path {
         let branch = &branches[index as usize];
         let branch_numbering = &branch_numbers[index as usize];
-        hops.push(BranchHop::new(branch_numbering.number, branch.key.clone()));
-        fields = &branch.fields;
-        field_numbers = &branch_numbering.fields;
-        branches = &branch.branches;
-        branch_numbers = &branch_numbering.branches;
+        hops.push(BranchHop::new(branch_numbering.number(), branch.key().to_vec()));
+        fields = branch.fields();
+        field_numbers = branch_numbering.fields();
+        branches = branch.branches();
+        branch_numbers = branch_numbering.branches();
     }
     (hops, resolve_fields(fields, field_numbers))
 }

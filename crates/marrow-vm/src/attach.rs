@@ -14,14 +14,13 @@
 //! parked durable shape — a singleton root, a group, or a nominal-typed field — is
 //! [`DurableRun::Parked`], reported honestly rather than run against a partial store.
 
-use marrow_kernel::codec::value::{ScalarKind, ValueShape};
+use marrow_kernel::codec::value::{ScalarKind, ValueShape, ValueShapeBuilder};
 use marrow_kernel::durable::{
-    BranchSchema, CeilingIdToken, DemandCoverage, DeploymentCeiling, EphemeralAttachment,
-    FieldSchema, GroupSchema, IndexComponent, IndexSchema, InvocationGrant, SessionHost, SiteSpec,
-    SiteTarget, StoreSchema,
+    CeilingIdToken, DemandCoverage, DeploymentCeiling, EphemeralAttachment, IndexComponent,
+    InvocationGrant, SessionHost, SiteSpec, SiteTarget, StoreSchema, StoreSchemaBuilder,
 };
 use marrow_verify::{
-    CeilingDescriptor, ExportDemand, FunctionIndex, ImageType, Scalar, SealedExport, SealedIndex,
+    CeilingDescriptor, ExportDemand, FunctionIndex, ImageType, Scalar, SealedExport,
     SealedIndexComponent, SealedSite, SealedSiteTarget, SealedTestEntry, VerifiedImage,
 };
 
@@ -278,7 +277,7 @@ fn derive_schemas(image: &VerifiedImage) -> Option<(Vec<StoreSchema>, Vec<SiteSp
     for (root_index, root) in image.roots().iter().enumerate() {
         let schema = derive_root_schema(image, root_index as u16, root)?;
         index_offsets.push(running_indexes);
-        running_indexes += schema.indexes.len() as u16;
+        running_indexes += schema.indexes().len() as u16;
         schemas.push(schema);
     }
 
@@ -297,6 +296,12 @@ fn derive_schemas(image: &VerifiedImage) -> Option<(Vec<StoreSchema>, Vec<SiteSp
 
 /// Derive one root's [`StoreSchema`] from the image, or `None` when the root is not
 /// flat-executable (a singleton keyless root, or a group nested below its direct members).
+///
+/// The projection is a flat command stream into the kernel's schema builder over an
+/// explicit stack — it never assembles a recursive kernel value and then hands it over,
+/// because there is no longer any such value to assemble. A hostile or divergent branch
+/// tree therefore costs the walk's own heap, not the machine stack, and the builder returns
+/// a typed refusal that parks the root.
 fn derive_root_schema(
     image: &VerifiedImage,
     root_index: u16,
@@ -311,59 +316,110 @@ fn derive_root_schema(
     if root.has_extras() || root.keys().is_empty() {
         return None;
     }
-    let key: Vec<ScalarKind> = root
-        .keys()
-        .iter()
-        .map(|scalar| scalar_kind(*scalar))
-        .collect();
+    let mut builder = StoreSchemaBuilder::root(root.name().to_string(), key_columns(root.keys()));
 
     // The unified root record is `[leading value fields][one Record slot per root-level
     // group]`, in declaration order. The kernel's flat field set is only the leading value
-    // fields; the trailing group slots become `groups` below. `field_schemas` derives every
-    // slot (a group slot is a product), so split off the trailing group slots by count.
+    // fields; the trailing group slots become groups below. The split is by count over the
+    // one record, exactly as the image lays it out.
     let group_count = root.groups().len();
-    let all_fields = field_schemas(image, root.record())?;
-    let field_count = all_fields.len().checked_sub(group_count)?;
-    let fields = all_fields[..field_count].to_vec();
+    let record = image.record_type(root.record());
+    let field_count = record.fields().len().checked_sub(group_count)?;
+    emit_fields(image, &mut builder, &record.fields()[..field_count])?;
+    // A trailing group slot contributes no kernel field, but its shape still has to be one
+    // the durable codec stores: the pre-projection derivation shaped every slot of the one
+    // record and parked the root when any of them was not storable. Deriving and discarding
+    // keeps that parking condition exactly.
+    for slot in &record.fields()[field_count..] {
+        value_shape(image, slot.ty)?;
+    }
 
     // Each root-level group derives its own materialized record from the image; a group is a
     // value unit of the root entry, addressed by the root's key-path, so it carries a field
     // set but no key.
-    let mut groups = Vec::with_capacity(group_count);
     for group in root.groups() {
-        groups.push(GroupSchema {
-            name: group.name().to_string(),
-            fields: field_schemas(image, group.record())?,
-        });
+        builder.open_group(group.name().to_string());
+        emit_fields(image, &mut builder, image.record_type(group.record()).fields())?;
+        builder.close_group();
     }
 
-    // Each executable branch derives its own record and nested branches from the image; the
-    // sealed branch tree is in declaration order, so a `BranchEntry` branch path indexes it
-    // level by level. `branch_schema` recurses over the sealed sub-branch tree, so a whole
-    // nested branch shape becomes a recursive `BranchSchema` the store profile describes.
-    let mut branches = Vec::with_capacity(root.branches().len());
-    for branch in root.branches() {
-        branches.push(branch_schema(image, branch)?);
+    // The sealed branch tree is in declaration order, so a `BranchEntry` branch path indexes
+    // it level by level. The walk is an explicit stack over that tree: a branch's own fields
+    // are emitted, then its sub-branches, then its close — the same pre-order the recursive
+    // projection produced, without the recursion.
+    let mut pending: Vec<BranchStep<'_>> = Vec::new();
+    push_branches(&mut pending, root.branches());
+    while let Some(step) = pending.pop() {
+        match step {
+            BranchStep::Open(branch) => {
+                builder.open_branch(branch.name().to_string(), key_columns(branch.keys()));
+                emit_fields(image, &mut builder, image.record_type(branch.record()).fields())?;
+                pending.push(BranchStep::Close);
+                push_branches(&mut pending, branch.branches());
+            }
+            BranchStep::Close => {
+                builder.close_branch();
+            }
+        }
+        builder.refusal().map_or(Some(()), |_| None)?;
     }
 
-    // This root's own managed indexes, in declaration order, each with a position-resolved
-    // projection the kernel maintains. An index over a parked root never reaches here (the
-    // root parks above before its indexes are read).
-    let indexes = image
-        .indexes()
-        .iter()
-        .filter(|index| index.root() == root_index)
-        .map(index_schema)
-        .collect();
+    // This root's own managed indexes, in declaration order, each with a projection the
+    // builder resolves against the completed root. An index over a parked root never reaches
+    // here (the root parks above before its indexes are read).
+    for index in image.indexes().iter().filter(|index| index.root() == root_index) {
+        builder.index(
+            *index.id().bytes(),
+            index.unique(),
+            index
+                .projection()
+                .iter()
+                .map(|component| match component {
+                    SealedIndexComponent::Key(column) => IndexComponent::key(*column),
+                    SealedIndexComponent::Field(field) => IndexComponent::field(*field),
+                })
+                .collect(),
+        );
+    }
 
-    Some(StoreSchema {
-        root_name: root.name().to_string(),
-        key,
-        fields,
-        groups,
-        branches,
-        indexes,
-    })
+    builder.finish().ok()
+}
+
+/// One step of the explicit branch walk: open a sealed branch, or close the branch whose
+/// subtree has been emitted.
+enum BranchStep<'a> {
+    Open(&'a marrow_verify::SealedBranch),
+    Close,
+}
+
+/// Queue a level of sealed branches so they are opened in declaration order.
+fn push_branches<'a>(pending: &mut Vec<BranchStep<'a>>, branches: &'a [marrow_verify::SealedBranch]) {
+    pending.extend(branches.iter().rev().map(BranchStep::Open));
+}
+
+/// The kernel key-column kinds of a sealed key tuple.
+fn key_columns(keys: &[Scalar]) -> Vec<ScalarKind> {
+    keys.iter().map(|scalar| scalar_kind(*scalar)).collect()
+}
+
+/// Emit one node's record fields into the schema builder, in declaration order, each with
+/// its storable value shape. `None` when a field is a collection, unit, or identity — shapes
+/// the durable field codec never stores inline — so the whole derivation parks. The verifier
+/// proves an executable node's record fields are a scalar or a widened composite, so this is
+/// defense in depth over that proof.
+fn emit_fields(
+    image: &VerifiedImage,
+    builder: &mut StoreSchemaBuilder,
+    fields: &[marrow_verify::SealedField],
+) -> Option<()> {
+    for field in fields {
+        builder.field(
+            field.name.to_string(),
+            value_shape(image, field.ty)?,
+            field.required,
+        );
+    }
+    builder.refusal().map_or(Some(()), |_| None)
 }
 
 /// Project one sealed site to a kernel [`SiteSpec`], tagging it with its root's declaration
@@ -401,101 +457,75 @@ fn build_site(site: &SealedSite, index_offsets: &[u16]) -> SiteSpec {
     SiteSpec { root, target }
 }
 
-/// Derive one managed index's kernel [`IndexSchema`] from its sealed form: its stable
-/// identity (as raw bytes, keeping the kernel image-free), its `unique` flag, and its
-/// position-resolved projection. The verifier already resolved every projection component
-/// to a record/key position, so this is a direct structural projection.
-fn index_schema(index: &SealedIndex) -> IndexSchema {
-    IndexSchema {
-        id: *index.id().bytes(),
-        unique: index.unique(),
-        projection: index
-            .projection()
-            .iter()
-            .map(|component| match component {
-                SealedIndexComponent::Key(column) => IndexComponent::Key(*column),
-                SealedIndexComponent::Field(field) => IndexComponent::Field(*field),
-            })
-            .collect(),
-    }
-}
-
-/// Derive one branch's recursive [`BranchSchema`] from the image: its name, key columns,
-/// materialized record fields, and — recursively — its own nested branches. `None` when a
-/// record field is not an inline field value (a collection), mirroring [`field_schemas`].
-/// The verifier proves an executable branch's fields are storable and its sub-branches are
-/// simple, so this is defense in depth over that proof.
-fn branch_schema(
-    image: &VerifiedImage,
-    branch: &marrow_verify::SealedBranch,
-) -> Option<BranchSchema> {
-    let mut branches = Vec::with_capacity(branch.branches().len());
-    for sub in branch.branches() {
-        branches.push(branch_schema(image, sub)?);
-    }
-    Some(BranchSchema {
-        name: branch.name().to_string(),
-        key: branch
-            .keys()
-            .iter()
-            .map(|scalar| scalar_kind(*scalar))
-            .collect(),
-        fields: field_schemas(image, branch.record())?,
-        branches,
-    })
-}
-
-/// The kernel field schemas of a node's materialized record: one per field, in order,
-/// each carrying the field's storable value shape (a scalar, a dense product, or a
-/// closed sum). `None` when a field is a collection or unit — shapes the durable field
-/// codec never stores inline — so the whole derivation parks. The verifier proves an
-/// executable node's record fields are a scalar or a widened composite, so this is
-/// defense in depth over that proof.
-fn field_schemas(image: &VerifiedImage, record: u16) -> Option<Vec<FieldSchema>> {
-    let record = image.record_type(record);
-    let mut fields = Vec::with_capacity(record.fields().len());
-    for field in record.fields() {
-        fields.push(FieldSchema {
-            name: field.name.to_string(),
-            shape: value_shape(image, field.ty)?,
-            required: field.required,
-        });
-    }
-    Some(fields)
-}
-
-/// Derive a field's kernel [`ValueShape`] from its image type, recursively: a scalar
-/// carries its kind; a record becomes a product of its fields' shapes in declaration
-/// order; a closed enum (`Option`/`Result`/a user `enum`) becomes a sum of its variants'
-/// dense payload shapes. A collection or unit is not an inline field value, so it parks
-/// (`None`). The image is depth-bounded by the verifier, so the recursion terminates.
+/// Derive a field's kernel [`ValueShape`] from its image type: a scalar carries its kind; a
+/// record becomes a product of its fields' shapes in declaration order; a closed enum
+/// (`Option`/`Result`/a user `enum`) becomes a sum of its variants' dense payload shapes. A
+/// collection, unit, or identity is not an inline field value, so it parks (`None`).
+///
+/// The walk is an explicit stack emitting flat builder commands, so the projection's own
+/// depth is heap-bounded and the shape's depth is the builder's to refuse.
 fn value_shape(image: &VerifiedImage, ty: ImageType) -> Option<ValueShape> {
-    match ty {
-        ImageType::Scalar { scalar, .. } => Some(ValueShape::Scalar(scalar_kind(scalar))),
-        ImageType::Record { idx, .. } => {
-            let record = image.record_type(idx);
-            let mut fields = Vec::with_capacity(record.fields().len());
-            for field in record.fields() {
-                fields.push(value_shape(image, field.ty)?);
-            }
-            Some(ValueShape::Product { ty: idx, fields })
-        }
-        ImageType::Enum { idx, .. } => {
-            let sealed = image.enums().get(idx as usize)?;
-            let mut variants = Vec::with_capacity(sealed.variants().len());
-            for variant in sealed.variants() {
-                let mut payload = Vec::with_capacity(variant.payload.len());
-                for leaf in &variant.payload {
-                    payload.push(value_shape(image, *leaf)?);
-                }
-                variants.push(payload);
-            }
-            Some(ValueShape::Sum { ty: idx, variants })
-        }
-        // An entry identity is not an inline durable field value on this line, so it
-        // parks like a collection or unit.
-        ImageType::Unit | ImageType::Collection { .. } | ImageType::Identity { .. } => None,
+    /// One step of the explicit shape walk.
+    enum ShapeStep {
+        /// Emit the shape of this image type.
+        Ty(ImageType),
+        /// Open the next variant of the sum at the top of the builder's stack.
+        Variant { enum_idx: u16, variant: usize },
+        /// Close the composite or variant whose members have been emitted.
+        Close,
     }
+
+    let mut builder = ValueShapeBuilder::new();
+    let mut pending = vec![ShapeStep::Ty(ty)];
+    while let Some(step) = pending.pop() {
+        match step {
+            ShapeStep::Ty(ImageType::Scalar { scalar, .. }) => {
+                builder.scalar(scalar_kind(scalar));
+            }
+            ShapeStep::Ty(ImageType::Record { idx, .. }) => {
+                builder.open_product(idx);
+                pending.push(ShapeStep::Close);
+                pending.extend(
+                    image
+                        .record_type(idx)
+                        .fields()
+                        .iter()
+                        .rev()
+                        .map(|field| ShapeStep::Ty(field.ty)),
+                );
+            }
+            ShapeStep::Ty(ImageType::Enum { idx, .. }) => {
+                let sealed = image.enums().get(idx as usize)?;
+                builder.open_sum(idx);
+                pending.push(ShapeStep::Close);
+                pending.extend((0..sealed.variants().len()).rev().map(|variant| {
+                    ShapeStep::Variant {
+                        enum_idx: idx,
+                        variant,
+                    }
+                }));
+            }
+            // An entry identity is not an inline durable field value on this line, so it
+            // parks like a collection or unit.
+            ShapeStep::Ty(
+                ImageType::Unit | ImageType::Collection { .. } | ImageType::Identity { .. },
+            ) => return None,
+            ShapeStep::Variant { enum_idx, variant } => {
+                let sealed = image.enums().get(enum_idx as usize)?;
+                let payload = &sealed.variants().get(variant)?.payload;
+                builder.open_variant();
+                pending.push(ShapeStep::Close);
+                pending.extend(payload.iter().rev().map(|leaf| ShapeStep::Ty(*leaf)));
+            }
+            ShapeStep::Close => {
+                builder.close();
+            }
+        }
+        // A latched refusal ends the walk: the remaining commands cannot change the verdict,
+        // and stopping keeps a divergent type graph from driving the walk's own stack.
+        builder.refusal().map_or(Some(()), |_| None)?;
+    }
+    builder.finish().ok()
 }
 
 /// Map an image scalar type to the runtime codec's scalar kind. Total over the

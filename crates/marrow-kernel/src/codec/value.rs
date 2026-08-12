@@ -252,8 +252,28 @@ pub const MAX_DURABLE_VALUE_DEPTH: usize = 32;
 /// order; a sum carries its type index and, per variant in declaration order, that variant's
 /// dense payload shapes. `Option`/`Result` are ordinary sums (fixed indices `none=0/some=1`,
 /// `ok=0/err=1`).
+///
+/// The type is opaque over a private recursive node and a checked depth metric. There is no
+/// public recursive field, variant, struct literal, or `Vec`-taking constructor: the only
+/// way to obtain a composite shape is [`ValueShapeBuilder`], whose flat open/close command
+/// stream refuses a composite opened past [`MAX_DURABLE_VALUE_DEPTH`]. That is a
+/// construction-time bound, not an entry-time one, and the difference is the whole point: a
+/// caller-built recursive shape overflows the stack while it is being built and again while
+/// the refused argument is dropped, so no amount of validation at an entry point can make
+/// one safe. Because every reachable value is bounded, both the codec's recursion and the
+/// implicit recursive `Drop` are bounded by construction.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ValueShape {
+pub struct ValueShape {
+    node: ShapeNode,
+    /// The count of composites on this shape's deepest path, including itself. A scalar is
+    /// `0`; the top-level composite the codec calls depth 1 is `1`. Never exceeds
+    /// [`MAX_DURABLE_VALUE_DEPTH`] — the builder is the sole minter and refuses beyond it.
+    depth: u32,
+}
+
+/// The private recursive representation. Reachable only through [`ValueShape::view`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ShapeNode {
     Scalar(ScalarKind),
     Product {
         ty: u16,
@@ -263,6 +283,331 @@ pub enum ValueShape {
         ty: u16,
         variants: Vec<Vec<ValueShape>>,
     },
+}
+
+/// A borrowed view of one [`ValueShape`] node. Carries no owned recursive payload, so a
+/// consumer can match on the shape's structure without a route to constructing one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ValueShapeRef<'a> {
+    Scalar(ScalarKind),
+    Product {
+        ty: u16,
+        fields: &'a [ValueShape],
+    },
+    Sum {
+        ty: u16,
+        variants: VariantShapes<'a>,
+    },
+}
+
+/// The borrowed per-variant payload shapes of a sum, in declaration order. A wrapper rather
+/// than a bare slice so no public signature names a recursive owned `Vec<ValueShape>`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VariantShapes<'a>(&'a [Vec<ValueShape>]);
+
+impl<'a> VariantShapes<'a> {
+    /// The number of declared variants.
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    /// Whether the sum declares no variant.
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    /// The dense payload shapes of variant `index`, or `None` when the index is out of
+    /// range — the decoder's own bound on a forged variant index.
+    pub fn get(&self, index: usize) -> Option<&'a [ValueShape]> {
+        self.0.get(index).map(Vec::as_slice)
+    }
+
+    /// The variants' payload shapes in declaration order.
+    pub fn iter(&self) -> impl ExactSizeIterator<Item = &'a [ValueShape]> {
+        self.0.iter().map(Vec::as_slice)
+    }
+}
+
+impl ValueShape {
+    /// A scalar leaf shape. The one composite-free constructor: it nests nothing, so it
+    /// carries no depth obligation and cannot be chained into an unbounded tree.
+    pub fn scalar(kind: ScalarKind) -> Self {
+        Self {
+            node: ShapeNode::Scalar(kind),
+            depth: 0,
+        }
+    }
+
+    /// This shape's node, borrowed.
+    pub fn view(&self) -> ValueShapeRef<'_> {
+        match &self.node {
+            ShapeNode::Scalar(kind) => ValueShapeRef::Scalar(*kind),
+            ShapeNode::Product { ty, fields } => ValueShapeRef::Product {
+                ty: *ty,
+                fields: fields.as_slice(),
+            },
+            ShapeNode::Sum { ty, variants } => ValueShapeRef::Sum {
+                ty: *ty,
+                variants: VariantShapes(variants.as_slice()),
+            },
+        }
+    }
+
+    /// The scalar kind of a scalar leaf, or `None` for a composite. The common projection
+    /// for a consumer that admits only scalar-shaped fields.
+    pub fn scalar_kind(&self) -> Option<ScalarKind> {
+        match &self.node {
+            ShapeNode::Scalar(kind) => Some(*kind),
+            ShapeNode::Product { .. } | ShapeNode::Sum { .. } => None,
+        }
+    }
+
+    /// The count of composites on this shape's deepest path, at most
+    /// [`MAX_DURABLE_VALUE_DEPTH`]. A scalar is `0`.
+    pub fn depth(&self) -> usize {
+        self.depth as usize
+    }
+}
+
+/// Why a flat shape command stream did not yield a shape.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShapeBuildError {
+    /// A composite was opened past [`MAX_DURABLE_VALUE_DEPTH`]. Refused at the opening
+    /// command, so the builder's own partial tree never grows past the bound either.
+    TooDeep,
+    /// A command was issued in a position the shape grammar has no place for: a variant
+    /// opened outside a sum, a leaf or composite placed directly inside a sum rather than
+    /// inside one of its variants, or a close with nothing open.
+    Misplaced,
+    /// The stream did not describe exactly one shape: it left a composite open, or it
+    /// emitted no shape or more than one at the top level.
+    NotOneShape,
+}
+
+impl std::fmt::Display for ShapeBuildError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::TooDeep => write!(f, "a value shape nests past its depth cap"),
+            Self::Misplaced => write!(f, "a value shape command has no place in the grammar"),
+            Self::NotOneShape => write!(f, "a value shape stream did not describe one shape"),
+        }
+    }
+}
+
+impl std::error::Error for ShapeBuildError {}
+
+/// One open composite of a shape under construction.
+#[derive(Debug)]
+enum ShapeFrame {
+    Product {
+        ty: u16,
+        fields: Vec<ValueShape>,
+    },
+    Sum {
+        ty: u16,
+        variants: Vec<Vec<ValueShape>>,
+    },
+    /// One variant of the enclosing sum. Not a composite: it adds no nesting to the encoded
+    /// form, so it does not count against the depth bound.
+    Variant {
+        payload: Vec<ValueShape>,
+    },
+}
+
+/// The sole minter of a composite [`ValueShape`]: a flat stream of open/leaf/close commands
+/// over an explicit stack, never a recursive value the caller assembles.
+///
+/// The distinction is the invariant. A caller holding a recursive constructor can build a
+/// chain deeper than any machine stack before the callee ever sees it; here the caller holds
+/// only a builder, and the builder refuses the command that would open a composite past
+/// [`MAX_DURABLE_VALUE_DEPTH`]. A hostile loop issuing a million `open_product` commands
+/// costs `O(bound)` memory and returns a typed refusal.
+///
+/// Commands latch the first refusal rather than returning per call, so a projection can emit
+/// its whole stream and read one verdict at [`finish`](Self::finish). Nothing partially built
+/// escapes: `finish` consumes the builder and yields a shape only when the stream was whole
+/// and within the bound.
+#[derive(Debug, Default)]
+pub struct ValueShapeBuilder {
+    stack: Vec<ShapeFrame>,
+    /// Completed top-level shapes. A well-formed stream leaves exactly one.
+    finished: Vec<ValueShape>,
+    /// Composites refused for depth, still awaiting their matching close so the stream's
+    /// open/close balance is read correctly rather than reported as a second, spurious fault.
+    suppressed: usize,
+    error: Option<ShapeBuildError>,
+}
+
+impl ValueShapeBuilder {
+    /// An empty builder, awaiting the commands of one shape.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Emit a scalar leaf at the current position.
+    pub fn scalar(&mut self, kind: ScalarKind) -> &mut Self {
+        let shape = ValueShape::scalar(kind);
+        self.place(shape)
+    }
+
+    /// Place an already-built shape at the current position. Checked against the same
+    /// bound: the shape's own depth plus the composites currently open must stay within
+    /// [`MAX_DURABLE_VALUE_DEPTH`], so composing built shapes cannot reach a depth the
+    /// open/close commands would have refused.
+    pub fn shape(&mut self, shape: ValueShape) -> &mut Self {
+        if self.suppressed > 0 {
+            return self;
+        }
+        if self.open_composites() + shape.depth() > MAX_DURABLE_VALUE_DEPTH {
+            return self.fail(ShapeBuildError::TooDeep);
+        }
+        self.place(shape)
+    }
+
+    /// Open a dense product (`struct`/record) of type index `ty`. Its fields are the shapes
+    /// emitted until the matching [`close`](Self::close).
+    pub fn open_product(&mut self, ty: u16) -> &mut Self {
+        self.open(ShapeFrame::Product {
+            ty,
+            fields: Vec::new(),
+        })
+    }
+
+    /// Open a closed sum (`enum`/`Option`/`Result`) of type index `ty`. Its direct children
+    /// are variants, opened with [`open_variant`](Self::open_variant).
+    pub fn open_sum(&mut self, ty: u16) -> &mut Self {
+        self.open(ShapeFrame::Sum {
+            ty,
+            variants: Vec::new(),
+        })
+    }
+
+    /// Open the next variant of the enclosing sum. Its dense payload is the shapes emitted
+    /// until the matching [`close`](Self::close). A variant adds no nesting.
+    pub fn open_variant(&mut self) -> &mut Self {
+        if self.suppressed > 0 {
+            self.suppressed += 1;
+            return self;
+        }
+        if !matches!(self.stack.last(), Some(ShapeFrame::Sum { .. })) {
+            return self.fail(ShapeBuildError::Misplaced);
+        }
+        self.stack.push(ShapeFrame::Variant {
+            payload: Vec::new(),
+        });
+        self
+    }
+
+    /// Close the innermost open product, sum, or variant.
+    pub fn close(&mut self) -> &mut Self {
+        if self.suppressed > 0 {
+            self.suppressed -= 1;
+            return self;
+        }
+        let Some(frame) = self.stack.pop() else {
+            return self.fail(ShapeBuildError::Misplaced);
+        };
+        match frame {
+            ShapeFrame::Product { ty, fields } => {
+                let depth = 1 + fields.iter().map(ValueShape::depth).max().unwrap_or(0);
+                let shape = ValueShape {
+                    node: ShapeNode::Product { ty, fields },
+                    depth: depth as u32,
+                };
+                self.place(shape)
+            }
+            ShapeFrame::Sum { ty, variants } => {
+                let depth = 1 + variants
+                    .iter()
+                    .flat_map(|payload| payload.iter().map(ValueShape::depth))
+                    .max()
+                    .unwrap_or(0);
+                let shape = ValueShape {
+                    node: ShapeNode::Sum { ty, variants },
+                    depth: depth as u32,
+                };
+                self.place(shape)
+            }
+            ShapeFrame::Variant { payload } => match self.stack.last_mut() {
+                Some(ShapeFrame::Sum { variants, .. }) => {
+                    variants.push(payload);
+                    self
+                }
+                _ => self.fail(ShapeBuildError::Misplaced),
+            },
+        }
+    }
+
+    /// The refusal this stream has already latched, if any. A projection driving a long
+    /// stream reads it to stop early rather than emitting commands into a builder that has
+    /// already decided.
+    pub fn refusal(&self) -> Option<ShapeBuildError> {
+        self.error
+    }
+
+    /// Consume the stream and yield the one shape it described, or the first refusal it hit.
+    pub fn finish(self) -> Result<ValueShape, ShapeBuildError> {
+        if let Some(error) = self.error {
+            return Err(error);
+        }
+        if !self.stack.is_empty() || self.suppressed > 0 {
+            return Err(ShapeBuildError::NotOneShape);
+        }
+        let mut finished = self.finished;
+        match finished.len() {
+            1 => Ok(finished.pop().expect("one finished shape")),
+            _ => Err(ShapeBuildError::NotOneShape),
+        }
+    }
+
+    /// Open a composite frame, refusing one past the depth bound. Depth is the count of
+    /// composite frames on the stack; a variant frame is not a composite.
+    fn open(&mut self, frame: ShapeFrame) -> &mut Self {
+        if self.suppressed > 0 {
+            self.suppressed += 1;
+            return self;
+        }
+        if self.open_composites() + 1 > MAX_DURABLE_VALUE_DEPTH {
+            self.suppressed = 1;
+            return self.fail(ShapeBuildError::TooDeep);
+        }
+        if matches!(self.stack.last(), Some(ShapeFrame::Sum { .. })) {
+            return self.fail(ShapeBuildError::Misplaced);
+        }
+        self.stack.push(frame);
+        self
+    }
+
+    /// The number of composites currently open — the nesting a shape placed here would sit
+    /// under. A variant frame is not a composite and contributes nothing.
+    fn open_composites(&self) -> usize {
+        self.stack
+            .iter()
+            .filter(|frame| !matches!(frame, ShapeFrame::Variant { .. }))
+            .count()
+    }
+
+    /// Place a completed shape into the innermost open frame, or at the top level.
+    fn place(&mut self, shape: ValueShape) -> &mut Self {
+        if self.suppressed > 0 {
+            return self;
+        }
+        match self.stack.last_mut() {
+            Some(ShapeFrame::Product { fields, .. }) => fields.push(shape),
+            Some(ShapeFrame::Variant { payload }) => payload.push(shape),
+            // A sum's direct children are variants; a leaf or composite here has no place.
+            Some(ShapeFrame::Sum { .. }) => return self.fail(ShapeBuildError::Misplaced),
+            None => self.finished.push(shape),
+        }
+        self
+    }
+
+    /// Latch the first refusal. Later commands are accepted and discarded so a projection
+    /// need not branch mid-stream; `finish` reports this one verdict.
+    fn fail(&mut self, error: ShapeBuildError) -> &mut Self {
+        self.error.get_or_insert(error);
+        self
+    }
 }
 
 /// Encode a storable value to its canonical cell bytes. A top-level scalar is the raw scalar
@@ -349,9 +694,9 @@ fn write_member(value: &ValueDomain, out: &mut Vec<u8>, depth: usize) -> Result<
 /// the whole cell; a composite is shape-driven and must consume the whole cell with no
 /// trailing bytes. Returns `None` on any malformed or non-canonical input.
 pub fn decode_domain(bytes: &[u8], shape: &ValueShape) -> Option<ValueDomain> {
-    match shape {
-        ValueShape::Scalar(kind) => decode_value(bytes, *kind).map(ValueDomain::Scalar),
-        ValueShape::Product { .. } | ValueShape::Sum { .. } => {
+    match shape.view() {
+        ValueShapeRef::Scalar(kind) => decode_value(bytes, kind).map(ValueDomain::Scalar),
+        ValueShapeRef::Product { .. } | ValueShapeRef::Sum { .. } => {
             let (value, used) = read_composite(bytes, shape, 1)?;
             (used == bytes.len()).then_some(value)
         }
@@ -364,43 +709,37 @@ fn read_composite(bytes: &[u8], shape: &ValueShape, depth: usize) -> Option<(Val
     if depth > MAX_DURABLE_VALUE_DEPTH {
         return None;
     }
-    match shape {
-        ValueShape::Product { ty, fields } => {
+    match shape.view() {
+        ValueShapeRef::Product { ty, fields } => {
             let mut used = 0;
             let mut slots = Vec::with_capacity(fields.len());
             for field in fields {
-                let (value, n) = read_member(&bytes[used..], field, depth)?;
+                let (value, n) = read_member(bytes.get(used..)?, field, depth)?;
                 slots.push(Some(value));
                 used += n;
             }
-            Some((
-                ValueDomain::Product {
-                    ty: *ty,
-                    fields: slots,
-                },
-                used,
-            ))
+            Some((ValueDomain::Product { ty, fields: slots }, used))
         }
-        ValueShape::Sum { ty, variants } => {
+        ValueShapeRef::Sum { ty, variants } => {
             let (index, mut used) = decode_len(bytes)?;
             let variant = usize::try_from(index).ok()?;
             let payload_shapes = variants.get(variant)?;
             let mut payload = Vec::with_capacity(payload_shapes.len());
             for leaf in payload_shapes {
-                let (value, n) = read_member(&bytes[used..], leaf, depth)?;
+                let (value, n) = read_member(bytes.get(used..)?, leaf, depth)?;
                 payload.push(value);
                 used += n;
             }
             Some((
                 ValueDomain::Sum {
-                    ty: *ty,
+                    ty,
                     variant: variant as u16,
                     payload,
                 },
                 used,
             ))
         }
-        ValueShape::Scalar(_) => None,
+        ValueShapeRef::Scalar(_) => None,
     }
 }
 
@@ -408,18 +747,18 @@ fn read_composite(bytes: &[u8], shape: &ValueShape, depth: usize) -> Option<(Val
 /// reads its minimal-LEB128 length (capped) then that many raw scalar bytes; a nested
 /// composite recurses one deeper.
 fn read_member(bytes: &[u8], shape: &ValueShape, depth: usize) -> Option<(ValueDomain, usize)> {
-    match shape {
-        ValueShape::Scalar(kind) => {
+    match shape.view() {
+        ValueShapeRef::Scalar(kind) => {
             let (len, prefix) = decode_len(bytes)?;
             let len = usize::try_from(len).ok()?;
             if len > MAX_LEAF_BYTES {
                 return None;
             }
-            let leaf = bytes.get(prefix..prefix + len)?;
-            let scalar = decode_value(leaf, *kind)?;
+            let leaf = bytes.get(prefix..prefix.checked_add(len)?)?;
+            let scalar = decode_value(leaf, kind)?;
             Some((ValueDomain::Scalar(scalar), prefix + len))
         }
-        ValueShape::Product { .. } | ValueShape::Sum { .. } => {
+        ValueShapeRef::Product { .. } | ValueShapeRef::Sum { .. } => {
             read_composite(bytes, shape, depth + 1)
         }
     }
@@ -454,13 +793,25 @@ mod tests {
 #[cfg(test)]
 mod composite_codec {
     use super::{
-        MAX_DURABLE_VALUE_DEPTH, MAX_LEAF_BYTES, RuntimeScalar, ScalarKind, ValueError, ValueShape,
-        decode_domain, decode_value, encode_domain, encode_value,
+        MAX_DURABLE_VALUE_DEPTH, MAX_LEAF_BYTES, RuntimeScalar, ScalarKind, ShapeBuildError,
+        ValueError, ValueShape, ValueShapeBuilder, decode_domain, decode_value, encode_domain,
+        encode_value,
     };
     use crate::equality::{ValueDomain, value_equality};
 
     fn scalar(kind: ScalarKind) -> ValueShape {
-        ValueShape::Scalar(kind)
+        ValueShape::scalar(kind)
+    }
+
+    /// A product of the given member shapes, through the sole minter.
+    fn product(ty: u16, members: impl IntoIterator<Item = ValueShape>) -> ValueShape {
+        let mut builder = ValueShapeBuilder::new();
+        builder.open_product(ty);
+        for member in members {
+            builder.shape(member);
+        }
+        builder.close();
+        builder.finish().expect("a bounded product builds")
     }
     fn di(v: i64) -> ValueDomain {
         ValueDomain::Scalar(RuntimeScalar::Int(v))
@@ -470,10 +821,16 @@ mod composite_codec {
     }
     /// An `Option`-shaped sum: variant 0 = none (empty payload), variant 1 = some(inner).
     fn opt_shape(inner: ValueShape) -> ValueShape {
-        ValueShape::Sum {
-            ty: 9,
-            variants: vec![vec![], vec![inner]],
-        }
+        let mut builder = ValueShapeBuilder::new();
+        builder
+            .open_sum(9)
+            .open_variant()
+            .close()
+            .open_variant()
+            .shape(inner)
+            .close()
+            .close();
+        builder.finish().expect("a bounded option sum builds")
     }
     fn none() -> ValueDomain {
         ValueDomain::Sum {
@@ -518,10 +875,7 @@ mod composite_codec {
     /// order, and round-trips.
     #[test]
     fn a_product_frames_leaves_in_order_and_round_trips() {
-        let shape = ValueShape::Product {
-            ty: 3,
-            fields: vec![scalar(ScalarKind::Int), scalar(ScalarKind::Str)],
-        };
+        let shape = product(3, [scalar(ScalarKind::Int), scalar(ScalarKind::Str)]);
         let value = ValueDomain::Product {
             ty: 3,
             fields: vec![Some(di(5)), Some(ds("ab"))],
@@ -602,10 +956,7 @@ mod composite_codec {
     /// Forged bytes are rejected, never normalized.
     #[test]
     fn forged_bytes_are_rejected() {
-        let prod = ValueShape::Product {
-            ty: 3,
-            fields: vec![scalar(ScalarKind::Int), scalar(ScalarKind::Int)],
-        };
+        let prod = product(3, [scalar(ScalarKind::Int), scalar(ScalarKind::Int)]);
         // Truncation: a leaf length says 2 but only 1 byte follows.
         assert_eq!(decode_domain(&[0x02, b'5'], &prod), None);
         // Trailing bytes after a complete value.
@@ -620,9 +971,17 @@ mod composite_codec {
         assert_eq!(decode_domain(&[0x02], &opt), None);
     }
 
-    /// Over-cap and over-depth are Law-9 refusals at encode and decode.
+    /// Over-cap is a Law-9 refusal at encode; over-depth is refused one step earlier, at
+    /// construction, so no over-deep shape exists to hand a decoder.
+    ///
+    /// This case previously proved the decoder refused a caller-built over-deep shape. That
+    /// shape can no longer be built: the refusal moved from the entry point to the sole
+    /// minter, which is the stronger property and the only one that closes the class — an
+    /// entry point that refuses its argument still has to drop it, and dropping an
+    /// unbounded recursive argument overflows the stack. The decoder's own depth guard
+    /// stays as defense in depth over a representation defect.
     #[test]
-    fn over_cap_and_over_depth_are_refused() {
+    fn over_cap_is_refused_and_over_depth_is_unconstructible() {
         // An over-`MAX_LEAF_BYTES` scalar leaf inside a product is refused at encode.
         let big = ValueDomain::Product {
             ty: 3,
@@ -630,36 +989,43 @@ mod composite_codec {
         };
         assert!(encode_domain(&big).is_err());
 
-        // A decode shape nested past MAX_DURABLE_VALUE_DEPTH is refused before allocation.
-        let mut shape = ValueShape::Scalar(ScalarKind::Int);
-        for _ in 0..=MAX_DURABLE_VALUE_DEPTH + 1 {
-            shape = ValueShape::Product {
-                ty: 3,
-                fields: vec![shape],
-            };
-        }
-        // A minimal byte string cannot be over-deep-valid, but the decoder must refuse the
-        // over-deep shape rather than recurse unbounded; feed it a byte and expect None.
-        assert_eq!(decode_domain(&[0x00], &shape), None);
+        // The bound's own depth builds; one composite deeper has no minting route.
+        assert!(nest_shape(MAX_DURABLE_VALUE_DEPTH).is_ok());
+        assert_eq!(
+            nest_shape(MAX_DURABLE_VALUE_DEPTH + 1),
+            Err(ShapeBuildError::TooDeep),
+        );
+
+        // A hostile stream far past the bound costs O(bound) and returns the same verdict —
+        // it neither recurses nor retains the commands it refused.
+        assert_eq!(nest_shape(100_000), Err(ShapeBuildError::TooDeep));
     }
 
-    /// A product value nested `composites` deep around one `int` leaf, with the shape that
-    /// decodes it. One composite is the top level, so `composites == 1` is the shallowest
-    /// case and `MAX_DURABLE_VALUE_DEPTH` is the deepest the decoder accepts.
-    fn nest(composites: usize) -> (ValueDomain, ValueShape) {
+    /// A product value nested `composites` deep around one `int` leaf. One composite is the
+    /// top level, so `composites == 1` is the shallowest case.
+    fn nest_value(composites: usize) -> ValueDomain {
         let mut value = di(7);
-        let mut shape = scalar(ScalarKind::Int);
         for _ in 0..composites {
             value = ValueDomain::Product {
                 ty: 3,
                 fields: vec![Some(value)],
             };
-            shape = ValueShape::Product {
-                ty: 3,
-                fields: vec![shape],
-            };
         }
-        (value, shape)
+        value
+    }
+
+    /// The shape that decodes [`nest_value`] of the same depth, or the builder's refusal.
+    /// `MAX_DURABLE_VALUE_DEPTH` is the deepest that mints.
+    fn nest_shape(composites: usize) -> Result<ValueShape, ShapeBuildError> {
+        let mut builder = ValueShapeBuilder::new();
+        for _ in 0..composites {
+            builder.open_product(3);
+        }
+        builder.scalar(ScalarKind::Int);
+        for _ in 0..composites {
+            builder.close();
+        }
+        builder.finish()
     }
 
     /// The encode guard is the decode guard's exact twin: the encoder accepts precisely the
@@ -673,19 +1039,25 @@ mod composite_codec {
     #[test]
     fn encode_refuses_past_the_shape_depth_bound() {
         // N — the deepest nesting the decoder accepts encodes, and round-trips.
-        let (value, shape) = nest(MAX_DURABLE_VALUE_DEPTH);
+        let value = nest_value(MAX_DURABLE_VALUE_DEPTH);
+        let shape = nest_shape(MAX_DURABLE_VALUE_DEPTH).expect("the bound's own depth mints");
         let bytes = encode_domain(&value).expect("the deepest readable nesting encodes");
         assert_eq!(decode_domain(&bytes, &shape).as_ref(), Some(&value));
 
-        // N+1 — one composite deeper is refused at encode, with the same bound the decoder
-        // enforces, so no cell can be written that no reader could read back.
-        let (deeper, deeper_shape) = nest(MAX_DURABLE_VALUE_DEPTH + 1);
+        // N+1 — one composite deeper is refused at encode, with the same bound the shape
+        // minter enforces, so no cell can be written that no reader could read back. The
+        // value side is still caller-built (stored durable values are a separate owner), so
+        // the encoder's guard is the live refusal there.
+        let deeper = nest_value(MAX_DURABLE_VALUE_DEPTH + 1);
         assert_eq!(encode_domain(&deeper), Err(ValueError::ValueTooDeep));
-        assert_eq!(decode_domain(&bytes, &deeper_shape), None);
+        assert_eq!(
+            nest_shape(MAX_DURABLE_VALUE_DEPTH + 1),
+            Err(ShapeBuildError::TooDeep),
+        );
 
         // The refusal is a return, not an abort, at nesting far past the bound — and it is
         // reached before the buffer is built, so the byte cap is never consulted.
-        let (hostile, _) = nest(4_096);
+        let hostile = nest_value(4_096);
         assert_eq!(encode_domain(&hostile), Err(ValueError::ValueTooDeep));
     }
 
@@ -702,10 +1074,7 @@ mod composite_codec {
                     ty: 3,
                     fields: vec![Some(di(1)), Some(some(ds("z")))],
                 },
-                ValueShape::Product {
-                    ty: 3,
-                    fields: vec![scalar(ScalarKind::Int), opt_shape(scalar(ScalarKind::Str))],
-                },
+                product(3, [scalar(ScalarKind::Int), opt_shape(scalar(ScalarKind::Str))]),
             ),
         ];
         for (value, shape) in cases {

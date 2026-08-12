@@ -9,7 +9,7 @@ use super::super::physical;
 use super::super::plan::{CellWrite, IndexOp, Planner};
 use super::super::{
     AuthTarget, AuthorizedSite, BoundedKeys, BoundedLimit, CommitRecovery, CommitRecoveryScope,
-    CommitResult, CreateOutcome, EntryValue, EraseOutcome, IndexComponent, IndexSchema,
+    CommitResult, CreateOutcome, EntryValue, EraseOutcome, IndexComponentRef, IndexSchema,
     KernelFault, Presence, ReplaceOutcome, ResolvedField,
 };
 use super::Durable;
@@ -576,11 +576,11 @@ impl<'s, E: ByteEngine + 's> TxnSession<'s, E> {
             .iter()
             .flat_map(|index| {
                 index
-                    .projection
+                    .projection()
                     .iter()
-                    .filter_map(|component| match component {
-                        IndexComponent::Field(field) => Some(*field as usize),
-                        IndexComponent::Key(_) => None,
+                    .filter_map(|component| match component.view() {
+                        IndexComponentRef::Field(field) => Some(field as usize),
+                        IndexComponentRef::Key(_) => None,
                     })
             })
             .collect();
@@ -596,8 +596,8 @@ impl<'s, E: ByteEngine + 's> TxnSession<'s, E> {
         self.indexes_of(site)
             .iter()
             .filter(|index| {
-                index.projection.iter().any(|component| {
-                    matches!(component, IndexComponent::Field(field) if *field as usize == position)
+                index.projection().iter().any(|component| {
+                    matches!(component.view(), IndexComponentRef::Field(field) if field as usize == position)
                 })
             })
             .cloned()
