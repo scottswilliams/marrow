@@ -933,6 +933,106 @@ fn a_test_entry_with_params_encodes_today_and_only_the_verifier_rejects() {
 }
 
 /// The coherence hoist will convert this Ok to `InvalidReference("test table")`; the
+/// flip must cite this pin: an `Assert` in a non-test exported function violates the
+/// membership law — the encoder writes the opcode unchecked, and the verifier's
+/// TEST-ENTRY seal scan is the only owner that refuses it.
+#[test]
+fn an_assert_outside_a_test_entry_encodes_today_and_only_the_verifier_rejects() {
+    let assert_body = |draft: &mut ImageDraft| {
+        let truth = draft.intern_bool(true);
+        vec![
+            Instr::ConstLoad(truth.index()),
+            Instr::Assert,
+            Instr::Return,
+        ]
+    };
+    // The corrected twin — the SAME asserting body inside a registered test entry —
+    // verifies, so the rejection below is the membership relation's alone.
+    let mut corrected = main_draft(Vec::new(), short_code());
+    let code = assert_body(&mut corrected);
+    let test_fn = add_plain_function(&mut corrected, "t", ImageType::Unit, code);
+    let name = corrected.intern_string("tn");
+    corrected.add_test_entry(name, test_fn);
+    let corrected = corrected.encode().expect("the corrected twin encodes");
+    let outcome = verify(&corrected.bytes);
+    assert!(outcome.is_ok(), "{outcome:?}");
+
+    let mut draft = main_draft(Vec::new(), short_code());
+    let code = assert_body(&mut draft);
+    let asserting = add_plain_function(&mut draft, "t", ImageType::Unit, code);
+    draft.add_export(ExportId::of_local("", "t"), asserting);
+    let image = draft
+        .encode()
+        .expect("the producer accepts the assert today");
+    let rejection = verify(&image.bytes).expect_err("the stray assert is refused");
+    assert_eq!(
+        rejection.detail(),
+        "an assert instruction sits outside a test entry",
+    );
+}
+
+/// The coherence hoist will convert this Ok to `InvalidReference("test table")`; the
+/// flip must cite this pin: a test body that performs a direct durable operation AND
+/// drives a transaction-owning export violates the driver-mix law — both halves are
+/// ordinary unchecked tape writes the encoder accepts.
+#[test]
+fn a_test_driver_mix_encodes_today_and_only_the_verifier_rejects() {
+    let build = |drives_owner: bool| {
+        let (mut draft, root) = durable_parts(TableRef::Valid, None, false);
+        let handle = draft
+            .bind_occurrence_site(
+                root.occurrence(),
+                root.placement_path(),
+                SemanticTarget::WholePayload,
+            )
+            .expect("a keyed placement");
+        let owner_site = draft.request_site(&handle).expect("a live demand");
+        draft.intern_int(0);
+        // Ordinal 0: the transaction-owning export the mixed test drives (its
+        // transaction must itself perform a durable operation to be a valid owner).
+        let owner = add_plain_function(
+            &mut draft,
+            "put",
+            ImageType::Unit,
+            vec![
+                Instr::TxnBegin,
+                Instr::ConstLoad(0),
+                Instr::DurExists(owner_site),
+                Instr::Pop,
+                Instr::TxnCommit,
+                Instr::Return,
+            ],
+        );
+        assert_eq!(owner.index(), 0, "the call names the owner");
+        draft.add_export(ExportId::of_local("", "put"), owner);
+        let site = draft.request_site(&handle).expect("a live demand");
+        // The direct durable op (an existence probe over the root key)...
+        let mut code = vec![Instr::ConstLoad(0), Instr::DurExists(site), Instr::Pop];
+        // ...beside the drive of the transaction owner.
+        if drives_owner {
+            code.push(Instr::Call(0));
+        }
+        code.push(Instr::Return);
+        let test_fn = add_plain_function(&mut draft, "t", ImageType::Unit, code);
+        let name = draft.intern_string("tn");
+        draft.add_test_entry(name, test_fn);
+        finish_main(draft, short_code(), ImageType::scalar(Scalar::Int))
+            .encode()
+            .expect("the driver-mix fixture encodes")
+    };
+    // The corrected twin — the same direct-durable test without the owner call —
+    // verifies, so the rejection below is the mix's alone.
+    let outcome = verify(&build(false).bytes);
+    assert!(outcome.is_ok(), "{outcome:?}");
+    let rejection = verify(&build(true).bytes).expect_err("the driver mix is refused");
+    assert_eq!(
+        rejection.detail(),
+        "a test body performs a direct durable operation and also drives a \
+         transaction-owning export",
+    );
+}
+
+/// The coherence hoist will convert this Ok to `InvalidReference("test table")`; the
 /// flip must cite this pin: a `Call` whose direct tape target is a test entry violates
 /// the entry-point relation (the verifier scans direct call targets in its seal phase
 /// — no call closure is needed, correcting draft 8's exclusion).

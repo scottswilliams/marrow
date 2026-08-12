@@ -231,6 +231,7 @@ struct Fixture {
     dangling_traversal: bool,
     dangling_index_scan: bool,
     duplicate_export: bool,
+    final_overage: bool,
     extra_instrs: Vec<Instr>,
     extra_function: Option<Code>,
 }
@@ -266,6 +267,7 @@ impl Fixture {
             dangling_traversal: false,
             dangling_index_scan: false,
             duplicate_export: false,
+            final_overage: false,
             extra_instrs: Vec::new(),
             extra_function: None,
         }
@@ -448,6 +450,14 @@ impl Fixture {
     /// relation the encoder accepts unchecked today.
     fn with_duplicate_export(mut self) -> Self {
         self.duplicate_export = true;
+        self
+    }
+
+    /// A string pool inside both of its caps whose bytes alone exceed the whole-image
+    /// ceiling: every section fits its own bound and the DURABLE body fits the fence,
+    /// so only the FINAL assembled-image check can refuse the draft.
+    fn with_final_overage(mut self) -> Self {
+        self.final_overage = true;
         self
     }
 
@@ -734,6 +744,14 @@ impl Fixture {
         }
         if self.forged_test_entry_name {
             draft.add_test_entry(StrId::from_index(FORGED_TEST_ENTRY_NAME), main);
+        }
+        if self.final_overage {
+            // 132 distinct strings of 4,004 bytes: 528,528 string bytes — every string
+            // inside MAX_STRING_BYTES, the count far inside MAX_STRINGS, and the sum
+            // past MAX_IMAGE_BYTES (524,288) on its own.
+            for index in 0..132 {
+                draft.intern_string(&format!("{:04}{}", index, "x".repeat(4000)));
+            }
         }
         if self.forged_test_entry_target {
             let entry_name = draft.intern_string("tt");
@@ -1897,12 +1915,20 @@ fn a_bad_type_ordinal_with_a_body_past_the_ceiling_currently_draws_the_image_cei
 // # Derivation law — member-by-member policy cutpoints (design draft 8 §A, corrected
 // # per review 9)
 //
-// The earlier three-class same-position table is WITHDRAWN. The three cutpoints, in
+// The earlier three-class same-position table is WITHDRAWN. The FOUR cutpoints, in
 // the encoder's actual order: the END of `check_bounds` (every cap decides before any
 // emission), the PER-FUNCTION CodeBytes length check (the layout is computed and
 // checked at the HEAD of each function row — before that row's name/source refs, then
-// its signature types, then its tape), and the DURABLE fence (which runs AFTER all
-// function encoding and decides before any section is assembled).
+// its signature types, then its tape), the DURABLE fence (which runs AFTER all
+// function encoding and decides before any section is assembled), and the FINAL
+// whole-image ceiling (checked only after every tail section is assembled — a
+// separate decision from the fence, which bounds the DURABLE body alone). The earlier
+// ImageBytes cells all drive the fence (an over-ceiling DURABLE body); the
+// final-overage cells at the end of this file drive cutpoint four literally, and they
+// show its position exactly: it decides AFTER every section writer runs, so a
+// post-DURABLE panicking member (the span offset lookup) still panics first, while a
+// post-DURABLE unchecked relation (a duplicate export) never errors and the final
+// ceiling decides.
 //
 // A derived member's Strings/TestEntries/CodeBytes crossing verdicts follow its
 // representative's iff (a) both defects are unchecked writes — their standalone
@@ -1965,11 +1991,17 @@ fn a_bad_type_ordinal_with_a_body_past_the_ceiling_currently_draws_the_image_cei
 //   entry record; literal Strings and ImageBytes cells kept.
 // - Duplicate export target, duplicate export id, duplicate test target, duplicate
 //   test name, export/test overlap, the test-signature law (both decision sites:
-//   nonzero params and non-unit return), and a call into a test entry: EXPORTS and
-//   TEST-ENTRY rows plus the seal-phase relation checks over them, all strictly after
-//   every cutpoint → export-target/test-target rows; a literal
-//   Strings × duplicate-export cell sits below, and their CodeBytes/ImageBytes cells
-//   derive by the same position argument.
+//   nonzero params and non-unit return), a call into a test entry, `Assert`
+//   membership (a tape-position instruction whose only check is the verifier's
+//   TEST-ENTRY seal scan — the encoder writes the opcode unchecked), and the
+//   test-driver-mix law (a direct durable op beside a call to a transaction-owning
+//   export — both halves ordinary unchecked tape writes): EXPORTS and TEST-ENTRY rows
+//   plus the seal-phase relation checks over them, all strictly after every encode
+//   cutpoint → export-target/test-target rows; a literal Strings × duplicate-export
+//   cell sits below, their CodeBytes cells derive by the same position argument, and
+//   their ImageBytes cells split like every relation's: fence overage via the
+//   unchecked-write-completes argument, final overage via the literal
+//   final-overage × duplicate-export cell.
 
 /// This pin may flip under the sanctioned checked-conversion class ("type table"); the
 /// flip must cite this pin.
@@ -2439,4 +2471,45 @@ fn a_duplicate_export_target_with_over_strings_currently_draws_the_string_cap() 
             .encode(),
         Err(ImageBuildError::TooManyStrings),
     );
+}
+
+// ---- The fourth cutpoint (review 10 item 1): a draft every cap and the DURABLE
+// fence admit, refused only by the FINAL whole-image ceiling after tail assembly.
+
+/// The final ceiling is reachable on its own: every string is inside both string
+/// caps, the DURABLE body fits the fence, and only the assembled image is too large.
+#[test]
+fn a_final_only_overage_alone_currently_draws_the_image_ceiling() {
+    assert_eq!(
+        Fixture::clean().with_final_overage().encode(),
+        Err(ImageBuildError::ImageTooLarge),
+    );
+}
+
+/// Measured winner at cutpoint four: a duplicate export is an unchecked relation, so
+/// the EXPORTS section assembles without an error and the final ceiling decides. This
+/// pin may flip under the sanctioned checked-conversion class ("export table"); the
+/// flip must cite this pin.
+#[test]
+fn a_duplicate_export_target_with_a_final_only_overage_currently_draws_the_image_ceiling() {
+    assert_eq!(
+        Fixture::clean()
+            .with_final_overage()
+            .with_duplicate_export()
+            .encode(),
+        Err(ImageBuildError::ImageTooLarge),
+    );
+}
+
+/// Measured winner at cutpoint four: the SPANS section assembles BEFORE the final
+/// ceiling is checked, so the out-of-range `instr_index` still panics at the raw
+/// offset lookup first. This pin may flip under the sanctioned checked-conversion
+/// class; the flip must cite this pin.
+#[test]
+#[should_panic(expected = "index out of bounds")]
+fn an_out_of_range_span_with_a_final_only_overage_currently_panics_before_the_ceiling() {
+    let _ = Fixture::clean()
+        .with_final_overage()
+        .with_bad_span()
+        .encode();
 }
