@@ -16,12 +16,13 @@
 //! early would print no sentinel while exiting cleanly. Neither signal alone is sufficient,
 //! which is why both are checked.
 //!
-//! **This is the first half of the journey.** It runs from maximum construction through
-//! publication, clone/debug/equality, the contract and body codecs, verification, early
-//! return, unwind, and drop — terminating at the verified bounded graph. The kernel and
-//! store legs (schema projection, current-order numbering, store intake) extend this same
-//! harness rather than forking a second one; the sentinel and the parent-side check are
-//! written to be extended, not replaced.
+//! **This is the whole specified journey.** It runs from maximum construction through
+//! publication, clone/debug/equality, the contract and body codecs, verification, the
+//! VM→kernel schema projection, the current-order numbering, the store intake, early
+//! return, unwind, and drop. It is the one harness — the kernel and store legs extended
+//! the verified-graph half in place rather than forking a second one — and it lives in
+//! the lifecycle crate because that is the lowest test target whose existing dependencies
+//! reach every leg (image, verifier, VM, kernel) without adding a workspace edge.
 //!
 //! A failure here is a representation finding, never a licence for a custom `Drop`, a second
 //! arena, `ManuallyDrop`, `mem::forget`, or `unsafe`.
@@ -235,10 +236,46 @@ fn journey() {
         nodes.len(),
         "the verifier enumerates the same node set the compiler did"
     );
+
+    // 7. The VM→kernel schema projection: the sealed maximum graph becomes the kernel's
+    //    checked store projection through the production adapter, on the same small stack.
+    let projection =
+        marrow_vm::derive_store_schemas(&sealed).expect("the maximum corpus is flat-executable");
+    assert_eq!(projection.roots().len(), OCCURRENCES);
+
+    // 8. The current-order numbering: the split pre-order walk numbers every node of every
+    //    root through the one checked counter. Contiguity from zero is the walk's own law,
+    //    so the last root's last field carries the count minus one.
+    let numbering = marrow_kernel::durable::number_store(&projection);
+    let numbered: usize = numbering.iter().map(|root| 1 + root.fields().len()).sum();
+    assert_eq!(
+        numbered,
+        OCCURRENCES * (1 + MEMBERS),
+        "every root and member is numbered exactly once"
+    );
+    let last = numbering
+        .last()
+        .and_then(|root| root.fields().last())
+        .copied();
+    assert_eq!(
+        last,
+        Some(numbered as u32 - 1),
+        "the store-wide pre-order is contiguous from zero"
+    );
+
+    // 9. The store intake: the projection opens a real ephemeral store through the
+    //    production mint, and the attachment is dropped again — the leg a recursive
+    //    schema teardown would overflow on.
+    let attachment = marrow_vm::mint_ephemeral(&sealed);
+    assert!(
+        matches!(attachment, marrow_vm::Ephemeral::Ready(_)),
+        "the maximum corpus attaches"
+    );
+    drop(attachment);
     drop(sealed);
     drop(encoded);
 
-    // 7. Early return: an intake wider than its plan is refused before a row is appended,
+    // 10. Early return: an intake wider than its plan is refused before a row is appended,
     //    and the rejected input is dropped on the way out.
     let narrow = AdmittedGraphInputPlan::admit(1, 1, 1).expect("a one-command budget");
     let mut refused = ImageDraft::new();
@@ -263,7 +300,7 @@ fn journey() {
         .expect_err("a command vector wider than its budget is refused");
     drop(refused);
 
-    // 8. Unwind: a panic while the maximum graph is live drops it during unwinding, which
+    // 11. Unwind: a panic while the maximum graph is live drops it during unwinding, which
     //    is the leg a recursive drop glue would overflow on rather than return from.
     let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let held = maximum_draft();
@@ -272,7 +309,7 @@ fn journey() {
     }));
     assert!(unwound.is_err(), "the unwind leg must actually unwind");
 
-    // 9. Drop: the graph the whole journey was built on goes out last, ordinarily.
+    // 12. Drop: the graph the whole journey was built on goes out last, ordinarily.
     drop(draft);
 }
 
