@@ -761,16 +761,35 @@ fn an_out_of_range_enum_construct_variant_draws_the_exact_variant_rejection() {
 /// the flip must cite this pin: today a `MapNew` naming no COLLTYPES row still encodes.
 #[test]
 fn an_out_of_range_map_new_ordinal_encodes_today_and_only_the_verifier_rejects() {
-    let image = main_draft(Vec::new(), vec![Instr::MapNew(u16::MAX), Instr::Return])
-        .encode()
-        .expect("the producer accepts the unanswered collection ordinal today");
-    assert!(verify(&image.bytes).is_err());
+    let body = |idx: u16| {
+        vec![
+            Instr::MapNew(idx),
+            Instr::Pop,
+            Instr::ConstLoad(0),
+            Instr::Return,
+        ]
+    };
+    let with_map_row = |code: Vec<Instr>| {
+        let mut draft = main_draft(Vec::new(), code);
+        draft.add_collection_type(CollectionTypeDef::Map {
+            key: ImageType::scalar(Scalar::Int),
+            value: ImageType::scalar(Scalar::Int),
+        });
+        draft.encode().expect("either collection ordinal encodes")
+    };
+    // The corrected twin — the same fixture naming the real Map row — verifies, so
+    // the rejection below is the dangling ordinal's alone.
+    let outcome = verify(&with_map_row(body(0)).bytes);
+    assert!(outcome.is_ok(), "{outcome:?}");
+    verify(&with_map_row(body(u16::MAX)).bytes)
+        .expect_err("the unanswered collection ordinal is refused");
 }
 
-// ---- The non-range export/test relations (design draft 8 §B.3): rows the public
-// draft APIs accept unchecked today, refused only by the verifier. Calls INTO test
-// entries remain the verifier's flow-phase law (they need call closure, which
-// coherence does not build) and are not pinned here. Their policy crossings sit in
+// ---- The non-range export/test relations (design drafts 8 §B.3 and review 9): rows
+// the public draft APIs accept unchecked today, refused only by the verifier — the
+// target relations, the id relation, both test-signature decision sites, and calls
+// into test entries (the draft-8 call-closure exclusion was false; the verifier scans
+// direct tape call targets in its seal phase). Their policy crossings sit in
 // `legacy_bridge.rs` (a literal Strings × duplicate-export cell; the rest derive by
 // the cutpoint law — EXPORTS and TEST-ENTRY rows assemble after every cutpoint).
 
@@ -832,14 +851,113 @@ fn a_duplicate_test_name_encodes_today_and_only_the_verifier_rejects() {
 /// export/test disjointness relation.
 #[test]
 fn an_export_test_overlap_encodes_today_and_only_the_verifier_rejects() {
-    let (mut draft, main) = main_draft_with_id(Vec::new(), short_code());
-    let name = draft.intern_string("t");
-    draft.add_test_entry(name, main);
+    // The overlapping function is unit-returning and structurally test-valid, so the
+    // overlap is the ONE defect: removing the export alone makes the image verify.
+    let build = |exported: bool| {
+        let mut draft = main_draft(Vec::new(), short_code());
+        let test_fn = add_plain_function(&mut draft, "t", ImageType::Unit, vec![Instr::Return]);
+        if exported {
+            draft.add_export(ExportId::of_local("", "t"), test_fn);
+        }
+        let name = draft.intern_string("tn");
+        draft.add_test_entry(name, test_fn);
+        draft.encode().expect("the overlap fixture encodes")
+    };
+    let outcome = verify(&build(false).bytes);
+    assert!(outcome.is_ok(), "{outcome:?}");
+    let rejection = verify(&build(true).bytes).expect_err("the export/test overlap is refused");
+    assert_eq!(rejection.detail(), "a test entry is also an export");
+}
+
+/// The coherence hoist will convert this Ok to `InvalidReference("export table")`; the
+/// flip must cite this pin: two export rows wearing one `ExportId` violate the
+/// unique-id relation the sorted table encodes.
+#[test]
+fn a_duplicate_export_id_encodes_today_and_only_the_verifier_rejects() {
+    let mut draft = main_draft(Vec::new(), short_code());
+    // A second structurally valid function, exported under `main`'s exact id.
+    let second = add_plain_function(
+        &mut draft,
+        "g",
+        ImageType::scalar(Scalar::Int),
+        vec![Instr::ConstLoad(0), Instr::Return],
+    );
+    draft.add_export(ExportId::of_local("", "main"), second);
     let image = draft
         .encode()
-        .expect("the producer accepts the overlap today");
-    let rejection = verify(&image.bytes).expect_err("the export/test overlap is refused");
-    assert_eq!(rejection.detail(), "a test entry is also an export");
+        .expect("the producer accepts the duplicate export id today");
+    let rejection = verify(&image.bytes).expect_err("the duplicate export id is refused");
+    assert_eq!(
+        rejection.detail(),
+        "exports must be sorted and unique by id"
+    );
+}
+
+/// The coherence hoist will convert this Ok to `InvalidReference("test table")`; the
+/// flip must cite this pin: a test entry over a parameter-taking function violates the
+/// FIRST decision site of the test signature law (nonzero params — decided before the
+/// return-shape site the non-unit pin above covers).
+#[test]
+fn a_test_entry_with_params_encodes_today_and_only_the_verifier_rejects() {
+    let build = |params: Vec<ImageType>| {
+        let mut draft = main_draft(Vec::new(), short_code());
+        let src = draft.intern_string("src/tests.mw");
+        let fname = draft.intern_string("t");
+        let local_count = params.len() as u16;
+        let test_fn = draft
+            .add_function(FunctionDef {
+                name: fname,
+                source: src,
+                params,
+                ret: ImageType::Unit,
+                local_count,
+                spans: vec![SpanEntry {
+                    instr_index: 0,
+                    line: 1,
+                    column: 1,
+                }],
+                code: vec![Instr::Return],
+            })
+            .expect("every site operand is live");
+        let name = draft.intern_string("tn");
+        draft.add_test_entry(name, test_fn);
+        draft.encode().expect("the signature fixture encodes")
+    };
+    // The corrected twin — the same entry over a zero-parameter unit function —
+    // verifies, so the rejection below is the parameter's alone.
+    let outcome = verify(&build(Vec::new()).bytes);
+    assert!(outcome.is_ok(), "{outcome:?}");
+    let rejection = verify(&build(vec![ImageType::scalar(Scalar::Int)]).bytes)
+        .expect_err("the parameter-taking test entry is refused");
+    assert_eq!(rejection.detail(), "a test entry takes no parameters");
+}
+
+/// The coherence hoist will convert this Ok to `InvalidReference("test table")`; the
+/// flip must cite this pin: a `Call` whose direct tape target is a test entry violates
+/// the entry-point relation (the verifier scans direct call targets in its seal phase
+/// — no call closure is needed, correcting draft 8's exclusion).
+#[test]
+fn a_call_into_a_test_entry_encodes_today_and_only_the_verifier_rejects() {
+    // `main` is ordinal 0, so the companion the call names is ordinal 1.
+    let build = |tested: bool| {
+        let mut draft = main_draft(
+            Vec::new(),
+            vec![Instr::Call(1), Instr::ConstLoad(0), Instr::Return],
+        );
+        let callee = add_plain_function(&mut draft, "t", ImageType::Unit, vec![Instr::Return]);
+        assert_eq!(callee.index(), 1, "the call names the companion");
+        if tested {
+            let name = draft.intern_string("tn");
+            draft.add_test_entry(name, callee);
+        }
+        draft.encode().expect("the call fixture encodes")
+    };
+    // The corrected twin — the same call with the callee not registered as a test —
+    // verifies, so the rejection below is the entry-point relation's alone.
+    let outcome = verify(&build(false).bytes);
+    assert!(outcome.is_ok(), "{outcome:?}");
+    let rejection = verify(&build(true).bytes).expect_err("the call into a test entry is refused");
+    assert_eq!(rejection.detail(), "a test entry may not be called");
 }
 
 /// The coherence hoist will convert this Ok to `InvalidReference("test table")`; the

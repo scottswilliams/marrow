@@ -1894,54 +1894,80 @@ fn a_bad_type_ordinal_with_a_body_past_the_ceiling_currently_draws_the_image_cei
 // same families live in `marrow-verify/tests/legacy_ok_pins.rs` (they encode Ok today
 // and only the verifier rejects).
 //
-// # Derivation law — member-by-member policy cutpoints (design draft 8 §A)
+// # Derivation law — member-by-member policy cutpoints (design draft 8 §A, corrected
+// # per review 9)
 //
-// The earlier three-class same-position table is WITHDRAWN. A derived member's
-// crossing verdicts follow its representative's iff (a) both defects are unchecked
-// writes — their standalone encode-Ok pins are in
-// `marrow-verify/tests/legacy_ok_pins.rs` — and (b) both sit strictly after the policy
-// decision being crossed. The three cutpoints are: the END of `check_bounds` (every
-// cap decides before any emission), the PER-FUNCTION CodeBytes length check (decides
-// before everything at or after its own function's row), and the DURABLE fence
-// (decides before everything at or after section assembly). The proof per member needs
-// only its emission position relative to those cutpoints, never same-writer or
-// same-arm identity. Member — position — representative:
+// The earlier three-class same-position table is WITHDRAWN. The three cutpoints, in
+// the encoder's actual order: the END of `check_bounds` (every cap decides before any
+// emission), the PER-FUNCTION CodeBytes length check (the layout is computed and
+// checked at the HEAD of each function row — before that row's name/source refs, then
+// its signature types, then its tape), and the DURABLE fence (which runs AFTER all
+// function encoding and decides before any section is assembled).
+//
+// A derived member's Strings/TestEntries/CodeBytes crossing verdicts follow its
+// representative's iff (a) both defects are unchecked writes — their standalone
+// encode-Ok pins are in `marrow-verify/tests/legacy_ok_pins.rs` — and (b) both sit
+// strictly after the policy decision being crossed. ImageBytes crossings of function-
+// row members need a DIFFERENT argument, because function rows encode BEFORE the
+// fence: for a member whose standalone behavior is an unchecked write, function
+// encoding completes without an error, so the fence still decides — that argument,
+// not the after-the-fence clause, carries every tape/signature × ImageBytes
+// derivation below. For the map-indexed members that PANIC standalone (the
+// `ConstLoad`/`Unreachable`/`Todo` const remap, the name/source string remaps, the
+// span offset lookup), no ImageBytes derivation applies at all; their coverage is the
+// literal 1c/1d pins (the panic pins and the measured ImageTooLarge cells).
+//
+// Correction to design draft 8's exclusion (the design correction rides here): calls
+// INTO test entries were excluded as "needing call closure"; that rationale is false —
+// the verifier scans DIRECT tape call targets in its seal phase, so the relation is
+// pinned standalone in `legacy_ok_pins.rs` like every other export/test relation, and
+// its policy crossings derive by the TEST-ENTRY-position argument below.
+//
+// Member — position — representative:
 //
 // - `ListNew`, `MapNew`, `TextSplit`, `TextLines` (collection ordinals): tape of the
-//   carrying function — after all three cutpoints for Strings/TestEntries cells, after
-//   its own function's CodeBytes check, before the fence → `RecordNew` (a `MapNew`
-//   standalone Ok-pin sits beside `ListNew`'s; `TextSplit`/`TextLines` share the exact
-//   operand kind and tape position with both).
+//   carrying function, after its own CodeBytes check → `RecordNew` for
+//   Strings/TestEntries/CodeBytes; ImageBytes via the unchecked-write-completes
+//   argument (`ListNew` and `MapNew` standalone Ok-pins are literal;
+//   `TextSplit`/`TextLines` share their exact operand kind and tape position).
 // - `EnumConstruct.enum_idx` (+ its subordinate `variant`, checked against the
-//   resolved enum): same tape position → `RecordNew`; literal Strings cell kept.
+//   resolved enum): same tape position → `RecordNew`; literal Strings cell kept;
+//   ImageBytes via the unchecked-write-completes argument.
 // - `VacantLoad` embedded type: same tape position → `RecordNew`; literal Strings
-//   cell kept.
-// - `MakeIdentity.root` (+ its `cols` relation): same tape position → `RecordNew`;
-//   literal Strings cell kept.
+//   cell kept; ImageBytes via the unchecked-write-completes argument.
+// - `MakeIdentity.root`: same tape position → `RecordNew`; literal Strings cell kept;
+//   ImageBytes via the unchecked-write-completes argument. Its `cols` relation is
+//   reachable only past a VALID root (a dangling root ordinal is rejected first), and
+//   under that precondition `cols` is the same unchecked tape write.
 // - `DurIterateBounded.list_ty`: tape position, written after the operand's fallible
 //   site validation — which cannot fire in these fixtures, because every crossing
 //   carries a live provenance-validated site — so past that precondition it is an
 //   unchecked write at the same tape position → `RecordNew`; literal Strings cell
-//   kept.
+//   kept; ImageBytes via the unchecked-write-completes argument.
 // - `DurIndexScan.list_ty`: same precondition, its own instruction arm → literal
-//   Strings cell below (not derived from the iterate arm); TestEntries/CodeBytes/
-//   ImageBytes → `RecordNew` under the same live-site precondition.
-// - Signature param/return `ImageType` refs: written INSIDE the function row —
-//   straddling the per-function CodeBytes cutpoint differently from the tape — so the
-//   Strings and CodeBytes cells are literal below (the CodeBytes one measured);
-//   TestEntries and ImageBytes cells → `RecordNew`, since both of those cutpoints
-//   precede the whole function row alike.
-// - TYPES field-`ImageType`, ENUMS payload-`ImageType`, COLLTYPES element: their
+//   Strings cell below (not derived from the iterate arm); TestEntries/CodeBytes →
+//   `RecordNew`; ImageBytes via the unchecked-write-completes argument.
+// - Signature param/return `ImageType` refs: written inside the function row AFTER
+//   that row's CodeBytes check and before its tape — so the Strings and CodeBytes
+//   cells are literal below (the CodeBytes one measured, and consistent with the
+//   check-first order); TestEntries → `RecordNew` (the cap decides in `check_bounds`,
+//   before any row); ImageBytes via the unchecked-write-completes argument.
+// - TYPES field-`ImageType`, ENUMS payload-`ImageType`, and the COLLTYPES sub-members
+//   `List.elem`, `Map.key`, and `Map.value` (the value ref is written only after its
+//   row's key ref, so reaching a `Map.value` defect presupposes a valid key): their
 //   sections assemble after all three cutpoints (different writers, but position is
 //   all the law consumes) → export-target/test-target rows; literal Strings cells
-//   kept.
+//   kept (the COLLTYPES cell carries `List.elem`; the `Map` sub-members share its
+//   section position and unchecked-write mechanics).
 // - Branch record: DURABLE body at a deeper recursive position than the root entry
 //   record, but the fence decides on the counted total before any of the body is
 //   assembled, so both records sit identically after/before each cutpoint → root
 //   entry record; literal Strings and ImageBytes cells kept.
-// - Duplicate export target, duplicate test target, duplicate test name, export/test
-//   overlap, test-signature law: EXPORTS and TEST-ENTRY rows, assembled strictly
-//   after all three cutpoints → export-target/test-target rows; a literal
+// - Duplicate export target, duplicate export id, duplicate test target, duplicate
+//   test name, export/test overlap, the test-signature law (both decision sites:
+//   nonzero params and non-unit return), and a call into a test entry: EXPORTS and
+//   TEST-ENTRY rows plus the seal-phase relation checks over them, all strictly after
+//   every cutpoint → export-target/test-target rows; a literal
 //   Strings × duplicate-export cell sits below, and their CodeBytes/ImageBytes cells
 //   derive by the same position argument.
 
