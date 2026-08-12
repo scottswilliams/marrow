@@ -349,7 +349,7 @@ fn no_fact_carrier_outside_the_ledger_exists() {
     for carrier in ["Vec<DeclSymbol", "Vec<(FileRef, FactSpan)"] {
         let found: Vec<(PathBuf, usize)> = occurrences(carrier)
             .into_iter()
-            .filter(|(path, _)| path.file_name().is_none_or(|name| name != "analysis.rs"))
+            .filter(|(path, _)| src_relative(path) != "analysis.rs")
             .collect();
         assert!(
             found.is_empty(),
@@ -505,6 +505,45 @@ fn production_occurrences(needle: &str) -> Vec<(PathBuf, usize)> {
 fn production_code_of(file: &str) -> String {
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("src").join(file);
     production_code(&fs::read_to_string(path).expect("read source file"))
+}
+
+/// The production code of a whole module directory, concatenated.
+///
+/// A module split across sibling files is still one search space: the siblings see
+/// their parent's private items, so scanning only `mod.rs` would leave the rest of
+/// the module unscanned while still reporting a clean result.
+fn production_code_of_module(module: &str) -> String {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("src")
+        .join(module);
+    let mut code = String::new();
+    let mut scanned = 0usize;
+    for path in src_files() {
+        if !path.starts_with(&dir) || is_test_only_file(&path) {
+            continue;
+        }
+        code.push_str(&production_code(
+            &fs::read_to_string(&path).expect("read source file"),
+        ));
+        code.push('\n');
+        scanned += 1;
+    }
+    assert!(
+        scanned > 0,
+        "the `{module}` module has no production source; the scan root moved"
+    );
+    code
+}
+
+/// A source file's path relative to `src`, as the stable key for the inventories
+/// below. The bare file name is ambiguous once a crate has subdirectories — this
+/// crate has two `durable.rs` and several `mod.rs` — so two audited sites in
+/// different modules would key alike and one could be substituted for the other.
+fn src_relative(path: &Path) -> String {
+    path.strip_prefix(Path::new(env!("CARGO_MANIFEST_DIR")).join("src"))
+        .expect("a source path lies under src")
+        .to_string_lossy()
+        .into_owned()
 }
 
 /// The scanner sees code and only code. Each probe is a shape a literal-blind scan would
@@ -727,28 +766,34 @@ fn no_phase_runs_on_an_empty_diagnostic_set() {
 const PROFILE_GUARD_ALLOWLIST: &[(&str, &str)] = &[
     ("analysis.rs", "debug_assert!("),
     ("analysis.rs", "debug_assert!("),
-    ("types.rs", "debug_assert!(scratch.seen_rows[index]);"),
-    ("types.rs", "debug_assert!(scratch.tasks.is_empty());"),
-    ("types.rs", "debug_assert_eq!(*active, 1);"),
-    ("types.rs", "debug_assert_eq!(*active, 1);"),
     (
-        "types.rs",
+        "types/metadata.rs",
+        "debug_assert!(scratch.seen_rows[index]);",
+    ),
+    (
+        "types/metadata.rs",
+        "debug_assert!(scratch.tasks.is_empty());",
+    ),
+    ("types/mod.rs", "debug_assert_eq!(*active, 1);"),
+    ("types/mod.rs", "debug_assert_eq!(*active, 1);"),
+    (
+        "types/mod.rs",
         "debug_assert_eq!(collections.len(), cache_index);",
     ),
     (
-        "types.rs",
+        "types/mod.rs",
         "debug_assert_eq!(id.index() as usize, cache_index);",
     ),
     (
-        "types.rs",
+        "types/render.rs",
         "debug_assert_eq!(removed, Some(DisplayNode::Collection(index)));",
     ),
     (
-        "types.rs",
+        "types/render.rs",
         "debug_assert_eq!(removed, Some(DisplayNode::Row(row)));",
     ),
-    ("types.rs", "debug_assert_eq!(removed, Some(node));"),
-    ("types.rs", "debug_assert_eq!(removed, Some(node));"),
+    ("types/render.rs", "debug_assert_eq!(removed, Some(node));"),
+    ("types/render.rs", "debug_assert_eq!(removed, Some(node));"),
 ];
 
 /// A profile-dependent guard makes the release build disagree with the debug build about
@@ -885,15 +930,7 @@ fn every_covered_refusal_names_its_covering_report() {
     let calls = production_occurrences("refuse_covered(");
     let sites: Vec<(String, usize)> = calls
         .iter()
-        .map(|(path, line)| {
-            (
-                path.file_name()
-                    .and_then(|name| name.to_str())
-                    .expect("a source file name")
-                    .to_string(),
-                *line,
-            )
-        })
+        .map(|(path, line)| (src_relative(path), *line))
         .collect();
     // The definition, the two durable classes that use it — a repeated project-wide
     // identity anchor, reported by the first store to reach it, and a durable value
@@ -906,9 +943,9 @@ fn every_covered_refusal_names_its_covering_report() {
         "decl.rs",
         "durable.rs",
         "durable.rs",
-        "registry.rs",
-        "types.rs",
-        "types.rs",
+        "lower/registry.rs",
+        "types/build.rs",
+        "types/build.rs",
     ];
     let names: Vec<&str> = sites.iter().map(|(name, _)| name.as_str()).collect();
     assert_eq!(
@@ -990,8 +1027,8 @@ fn no_declaration_builder_pushes_a_row_and_drops_the_key() {
         (("compile.rs", "?"), 1),
         (("durable.rs", "Code::CheckType"), 1),
         (("konst.rs", "Code::CheckNameConflict"), 1),
-        (("types.rs", "Code::CheckNameConflict"), 9),
-        (("types.rs", "Code::CheckType"), 1),
+        (("types/build.rs", "Code::CheckNameConflict"), 9),
+        (("types/build.rs", "Code::CheckType"), 1),
     ]);
     let found = declaration_drop_sites();
     let mut shapes: BTreeMap<(&str, &str), usize> = BTreeMap::new();
@@ -1290,11 +1327,7 @@ fn declaration_drop_sites() -> Vec<(String, usize, String)> {
         if is_test_only_file(&path) {
             continue;
         }
-        let name = path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .expect("a source file name")
-            .to_string();
+        let name = src_relative(&path);
         let source = fs::read_to_string(&path).expect("read source file");
         for (line, code) in drop_sites_in(&production_code(&source)) {
             found.push((name.clone(), line, code));
@@ -1806,7 +1839,7 @@ fn unfiltered_value_type_name_lookups(code: &str) -> Vec<String> {
 /// refused row, and every lookup that resolves a reserved id does not.
 ///
 /// The candidate set is *derived*, not pinned: the tables are module-private fields
-/// of the registry, so `types.rs` is the only code that can traverse them, and every
+/// of the registry, so the `types` module is the only code that can traverse them, and every
 /// traversal there that compares a row's name is required to test the verdict. A
 /// sixth name lookup therefore cannot join the family unfiltered — it is classified
 /// by its own shape, not by having been listed here.
@@ -1818,7 +1851,7 @@ fn unfiltered_value_type_name_lookups(code: &str) -> Vec<String> {
 /// an answer about source the compiler had already diagnosed.
 #[test]
 fn every_value_type_name_lookup_excludes_a_refused_row() {
-    let code = production_code_of("types.rs");
+    let code = production_code_of_module("types");
     assert!(
         unfiltered_value_type_name_lookups(&code).is_empty(),
         "a lookup keyed on a source spelling must answer only for an accepted \
@@ -1892,12 +1925,43 @@ fn the_value_type_lookup_classifier_catches_a_new_unfiltered_scan() {
     );
 }
 
+/// The module scan's own probe: it must aggregate the whole directory, not just
+/// `mod.rs`. A regression to a single file would leave the derived gates above
+/// reporting clean over a fraction of their search space, which is the failure mode
+/// they exist to prevent.
+#[test]
+fn the_module_scan_covers_every_sibling_not_only_mod_rs() {
+    let whole = production_code_of_module("types");
+    let only_mod = production_code_of("types/mod.rs");
+    assert!(
+        whole.len() > only_mod.len(),
+        "the `types` module scan returned no more than `mod.rs` alone; the sibling \
+         files are not being read"
+    );
+    for sibling in [
+        "fn build_nominals(",
+        "fn place_generic_row(",
+        "fn render_best_effort_display(",
+    ] {
+        assert!(
+            whole.contains(sibling),
+            "the `types` module scan is missing `{sibling}`, which lives in a sibling \
+             file rather than in `mod.rs`"
+        );
+        assert!(
+            !only_mod.contains(sibling),
+            "`{sibling}` moved back into `mod.rs`; pick a probe that still proves the \
+             siblings are read"
+        );
+    }
+}
+
 /// The tables the gate above derives over are module-private, which is what makes
-/// `types.rs` the whole search space. A `pub(crate)` on either field would put a
+/// the `types` module the whole search space. A `pub(crate)` on either field would put a
 /// name lookup outside the derivation with nothing to catch it.
 #[test]
 fn the_value_type_tables_are_private_to_their_registry() {
-    let code = production_code_of("types.rs");
+    let code = production_code_of_module("types");
     for field in ["structs: Vec<StructInfo>", "enums: Vec<EnumInfo>"] {
         let start = code
             .find(field)
