@@ -577,6 +577,11 @@ fn a_fitting_diamond_keeps_its_exact_bytes_and_contract_identity() {
         "the contract identity closes the DURABLE section",
     );
     assert_eq!(compiled.image.image_id.to_hex(), DIAMOND_IMAGE_ID);
+    assert_eq!(
+        marrow_image::image_id(&compiled.image.bytes).to_hex(),
+        DIAMOND_FULL_IMAGE_DIGEST,
+        "the full image bytes are frozen, header and embedded digest slot included",
+    );
 }
 
 /// The exact DURABLE section bytes of [`small_diamond`], as the occurrence-tree
@@ -597,6 +602,13 @@ const DIAMOND_CONTRACT_ID: &str =
 /// The exact whole-image identity of [`small_diamond`], as the occurrence-tree encoder
 /// produced it.
 const DIAMOND_IMAGE_ID: &str = "58eaf4f478da12063519113e058998453a1e5e414c2a2e48855826dd961b8b3d";
+
+/// The full-image digest of [`small_diamond`]: marrow-image's domain-separated
+/// `image_id` construction applied to EVERY emitted byte — magic, version, the embedded
+/// `ImageId` slot, and all sections — so a header rewrite or digest-slot forgery of
+/// equal length cannot hide behind the section and embedded-id pins above.
+const DIAMOND_FULL_IMAGE_DIGEST: &str =
+    "1d0b2f0fba6d7a0d71081060856cb33f9a7e64311f8295aeffb18d808b6ada94";
 
 // ---- The refusal rows compose rather than replace one another.
 

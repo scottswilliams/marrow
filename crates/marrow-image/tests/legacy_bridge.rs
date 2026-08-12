@@ -40,12 +40,12 @@
 
 use marrow_image::bounds::{
     MAX_CODE_BYTES, MAX_COLLECTIONS, MAX_CONSTS, MAX_DURABLE_VALUE_DEPTH, MAX_ENUMS, MAX_EXPORTS,
-    MAX_FUNCTIONS, MAX_KEY_COLUMNS, MAX_LOCALS, MAX_ROOTS, MAX_SITES, MAX_STRING_BYTES,
-    MAX_STRINGS, MAX_STRUCT_LEAVES, MAX_TEST_ENTRIES, MAX_TYPES,
+    MAX_FUNCTIONS, MAX_KEY_COLUMNS, MAX_LOCALS, MAX_RECORD_FIELDS, MAX_ROOTS, MAX_SITES,
+    MAX_STRING_BYTES, MAX_STRINGS, MAX_STRUCT_LEAVES, MAX_TEST_ENTRIES, MAX_TYPES,
 };
 use marrow_image::{
-    CollectionTypeDef, DeclarationMemberDef, DeclarationMemberShape, EnumTypeDef, ExportId, FuncId,
-    FunctionDef, ImageBuildError, ImageDraft, ImageType, Instr, KeyColumn, LedgerIdBytes,
+    CollectionTypeDef, DeclarationMemberDef, DeclarationMemberShape, EnumTypeDef, ExportId,
+    FieldDef, FunctionDef, ImageBuildError, ImageDraft, ImageType, Instr, KeyColumn, LedgerIdBytes,
     RecordTypeDef, RootOccurrenceDef, Scalar, SemanticTarget, SpanEntry, ValueShapeNodeId,
 };
 
@@ -162,6 +162,8 @@ struct Fixture {
     application: bool,
     frame: Frame,
     policy: Option<Overflow>,
+    wide_record: bool,
+    conflicting_product: bool,
 }
 
 impl Fixture {
@@ -173,6 +175,8 @@ impl Fixture {
             application: true,
             frame: Frame::Fits,
             policy: None,
+            wide_record: false,
+            conflicting_product: false,
         }
     }
 
@@ -209,13 +213,41 @@ impl Fixture {
         self
     }
 
+    /// A record type one field past `MAX_RECORD_FIELDS`: the per-record width fault,
+    /// reported early in `check_bounds`.
+    fn over_wide_record(mut self) -> Self {
+        self.wide_record = true;
+        self
+    }
+
+    /// Declare the base Product identity a second time with a different member graph:
+    /// two declarations wearing one identity, recorded at declaration and refused by
+    /// `check_bounds` as the Product claim conflict.
+    fn with_conflicting_product(mut self) -> Self {
+        self.conflicting_product = true;
+        self
+    }
+
     fn encode(self) -> Result<(), ImageBuildError> {
         let mut draft = ImageDraft::new();
         let value = self.value.shape(&mut draft);
         let type_name = draft.intern_string("R");
+        let fields = if self.wide_record {
+            let field_name = draft.intern_string("wide");
+            vec![
+                FieldDef {
+                    name: field_name,
+                    ty: ImageType::scalar(Scalar::Int),
+                    required: true,
+                };
+                MAX_RECORD_FIELDS + 1
+            ]
+        } else {
+            Vec::new()
+        };
         let record = draft.add_record_type(RecordTypeDef {
             name: type_name,
-            fields: Vec::new(),
+            fields,
         });
         if self.application {
             draft.set_application_identity(LedgerIdBytes::from_bytes(APPLICATION_ID));
@@ -235,6 +267,25 @@ impl Fixture {
                 }],
             )
             .expect("a well-formed declaration");
+        if self.conflicting_product {
+            // The later declaration still resolves to the bound row; the conflict is
+            // recorded and reported by the encoder, not refused here.
+            draft
+                .declare_product(
+                    &admitted_plan(),
+                    LedgerIdBytes::from_bytes(PRODUCT_ID),
+                    record,
+                    vec![DeclarationMemberDef {
+                        parent: None,
+                        shape: DeclarationMemberShape::Field {
+                            id: seeded_id(0x51, 0),
+                            required: true,
+                            value,
+                        },
+                    }],
+                )
+                .expect("a well-formed declaration");
+        }
         let root_name = draft.intern_string("r");
         draft
             .add_root_occurrence(
@@ -291,7 +342,7 @@ impl Fixture {
             .expect("every site operand is live");
         draft.add_export(ExportId::of_local("", "main"), main);
         if let Some(policy) = self.policy {
-            apply_policy(policy, &mut draft, main);
+            apply_policy(policy, &mut draft);
         }
         draft.encode().map(|_| ())
     }
@@ -299,7 +350,7 @@ impl Fixture {
 
 /// Drive exactly one resource-policy aggregate over its cap on an otherwise complete
 /// draft, leaving every other table inside its bound.
-fn apply_policy(policy: Overflow, draft: &mut ImageDraft, main: FuncId) {
+fn apply_policy(policy: Overflow, draft: &mut ImageDraft) {
     match policy {
         // The base draft interns a handful of strings, so a full extra pool is over.
         Overflow::Strings => {
@@ -439,15 +490,46 @@ fn apply_policy(policy: Overflow, draft: &mut ImageDraft, main: FuncId) {
                     .expect("every site operand is live");
             }
         }
+        // Each extra export targets its own structurally valid function, honoring v0's
+        // one-export-per-function relation while only the export table crosses its cap.
         Overflow::Exports => {
+            let src = draft.intern_string("src/extra.mw");
+            let zero = draft.intern_int(0);
             for index in 0..MAX_EXPORTS {
-                draft.add_export(ExportId::of_local("", &format!("extra{index}")), main);
+                let name = draft.intern_string(&format!("extra{index}"));
+                let func = draft
+                    .add_function(FunctionDef {
+                        name,
+                        source: src,
+                        params: Vec::new(),
+                        ret: ImageType::scalar(Scalar::Int),
+                        local_count: 0,
+                        spans: Vec::new(),
+                        code: vec![Instr::ConstLoad(zero.index()), Instr::Return],
+                    })
+                    .expect("every site operand is live");
+                draft.add_export(ExportId::of_local("", &format!("extra{index}")), func);
             }
         }
+        // Each test entry names its own unexported zero-argument unit function, honoring
+        // the unique-test-function, export/test-disjointness, and unit-return relations
+        // while only the test-entry table crosses its cap.
         Overflow::TestEntries => {
+            let src = draft.intern_string("src/tests.mw");
             for index in 0..=MAX_TEST_ENTRIES {
                 let name = draft.intern_string(&format!("t{index}"));
-                draft.add_test_entry(name, main);
+                let func = draft
+                    .add_function(FunctionDef {
+                        name,
+                        source: src,
+                        params: Vec::new(),
+                        ret: ImageType::Unit,
+                        local_count: 0,
+                        spans: Vec::new(),
+                        code: vec![Instr::Return],
+                    })
+                    .expect("every site operand is live");
+                draft.add_test_entry(name, func);
             }
         }
     }
@@ -790,5 +872,85 @@ fn a_body_past_the_ceiling_with_over_strings_currently_draws_the_string_cap() {
             .policy(Overflow::Strings)
             .encode(),
         Err(ImageBuildError::TooManyStrings),
+    );
+}
+
+// ---- The invariant×invariant matrix: one draft carrying two invariant-classified
+// defects, pinning which the encoder reports today. Invariant-relative order is frozen;
+// no restructure may flip any of these.
+
+/// Invariant-relative order is frozen; no restructure may flip this: the per-record
+/// field width is decided before the occurrence key tuple.
+#[test]
+fn an_over_wide_record_with_an_over_wide_key_currently_draws_the_field_width_invariant() {
+    assert_eq!(
+        Fixture::clean().over_wide_record().over_wide_key().encode(),
+        Err(ImageBuildError::TooManyFields),
+    );
+}
+
+/// Invariant-relative order is frozen; no restructure may flip this: the value-shape
+/// arena's struct width is decided before the function frame.
+#[test]
+fn an_over_wide_struct_with_over_locals_currently_draws_the_struct_leaf_invariant() {
+    assert_eq!(
+        Fixture::clean()
+            .value(Value::OverWideStruct)
+            .frame(Frame::OverLocals)
+            .encode(),
+        Err(ImageBuildError::TooManyStructLeaves),
+    );
+}
+
+/// Invariant-relative order is frozen; no restructure may flip this: the occurrence key
+/// tuple is decided before the function frame.
+#[test]
+fn an_over_wide_key_with_over_locals_currently_draws_the_key_column_invariant() {
+    assert_eq!(
+        Fixture::clean()
+            .over_wide_key()
+            .frame(Frame::OverLocals)
+            .encode(),
+        Err(ImageBuildError::TooManyKeyColumns),
+    );
+}
+
+/// Invariant-relative order is frozen; no restructure may flip this: the declaration
+/// graph's value depth is decided before the application anchor.
+#[test]
+fn an_over_deep_value_with_a_missing_application_anchor_currently_draws_the_value_depth_invariant()
+{
+    assert_eq!(
+        Fixture::clean()
+            .value(Value::OverDeep)
+            .without_application()
+            .encode(),
+        Err(ImageBuildError::DurableValueTooDeep),
+    );
+}
+
+/// Invariant-relative order is frozen; no restructure may flip this: the function frame
+/// is decided before the application anchor.
+#[test]
+fn over_locals_with_a_missing_application_anchor_currently_draws_the_local_invariant() {
+    assert_eq!(
+        Fixture::clean()
+            .frame(Frame::OverLocals)
+            .without_application()
+            .encode(),
+        Err(ImageBuildError::TooManyLocals),
+    );
+}
+
+/// Invariant-relative order is frozen; no restructure may flip this: the Product claim
+/// conflict is decided before the occurrence key tuple.
+#[test]
+fn a_product_conflict_with_an_over_wide_key_currently_draws_the_product_conflict() {
+    assert_eq!(
+        Fixture::clean()
+            .with_conflicting_product()
+            .over_wide_key()
+            .encode(),
+        Err(ImageBuildError::ProductGraphConflict),
     );
 }

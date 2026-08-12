@@ -646,6 +646,84 @@ const FROZEN_REFUSED: &[(&str, &str, u64)] = &[
     ("over-functions", "Functions", 4096),
 ];
 
+/// The full-image digest of each accepted corpus entry: marrow-image's domain-separated
+/// `image_id` construction, applied by this test to EVERY emitted byte — magic, version,
+/// the embedded `ImageId` slot, and all sections. [`FROZEN_ACCEPTED`] freezes only the
+/// total length and the embedded id, which a header rewrite or a digest-slot forgery of
+/// equal length could survive; a whole-byte digest cannot.
+const FROZEN_FULL_IMAGE_DIGESTS: &[(&str, &str)] = &[
+    (
+        "unit",
+        "1d722ce25469d85c56178bed2844b5c2f5629773daa5f3da7506e6b953feae0d",
+    ),
+    (
+        "multi-module",
+        "c80bc283b4951c73ba9bccd9175f52a40f6bb3e8f68b96059bfaba321fbe2ebf",
+    ),
+    (
+        "tests",
+        "759470cd2ccffe440a0a3fd7b27ffa6658529f51832165d1f96c8be9a1773c63",
+    ),
+    (
+        "durable",
+        "4e740593a18ce82a2418888c3c3aae6b83449dd30900de8dba03346b37800f2d",
+    ),
+];
+
+/// The exact full byte vector of the smallest accepted corpus entry (`unit`, 241 bytes),
+/// hex-spelled: the one entry small enough to freeze byte-for-byte rather than only
+/// through a digest, so a digest-construction change cannot silently re-pin all four.
+const FROZEN_UNIT_IMAGE_BYTES: &str = concat!(
+    "4d5749000075054e7c9d536984fe524c510504a1f840234e369a5e4fb66745a70708b67a7d0a010000001200",
+    "02000166000b7372632f6d61696e2e6d77020000000200000300000024000000002dfe38374fee7fb0f47165",
+    "a51be68bd3ff0a3800d3c31622e369eaf8e8aa437e040000000b000101000000000000000105000000120001",
+    "000000010001000000000004010000050600000024000113e67fafae418c8c50bbc520d97f63360a8ad63c1a",
+    "d066300cfd15b09a858ffc0000070000001a000200000000000000040000000c000000030000000400000005",
+    "08000000020000090000000200000a000000020000",
+);
+
+fn hex(bytes: &[u8]) -> String {
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        out.push_str(&format!("{byte:02x}"));
+    }
+    out
+}
+
+/// Red 4b. Every accepted corpus entry's full image bytes are frozen: digest-by-digest
+/// over all bytes, and byte-for-byte for the smallest entry.
+#[test]
+fn the_full_image_bytes_are_frozen() {
+    let mut pinned = FROZEN_FULL_IMAGE_DIGESTS.iter();
+    for entry in corpus() {
+        let input = project_with_ids(&entry.files, entry.ids.as_deref());
+        let Ok(compiled) = compile_with_tests(&input) else {
+            continue;
+        };
+        let (name, digest) = pinned.next().expect("every accepted entry is pinned");
+        assert_eq!(
+            entry.name, *name,
+            "the corpus order and the frozen order must agree",
+        );
+        assert_eq!(
+            marrow_image::image_id(&compiled.image.bytes).to_hex(),
+            *digest,
+            "the full image bytes moved for `{name}`",
+        );
+        if entry.name == "unit" {
+            assert_eq!(
+                hex(&compiled.image.bytes),
+                FROZEN_UNIT_IMAGE_BYTES,
+                "the smallest entry is frozen byte-for-byte",
+            );
+        }
+    }
+    assert!(
+        pinned.next().is_none(),
+        "every pinned entry was produced by the corpus",
+    );
+}
+
 /// Red 4. Over the frozen corpus, the six things `compile` reports about an image are
 /// identical to the values the base produced, fact by fact.
 #[test]
