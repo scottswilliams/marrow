@@ -1163,4 +1163,62 @@ mod counted_equals_emitted {
             assert_eq!(counted.0, emitted.len());
         }
     }
+
+    /// Max-live measurement harness (LSPCAP term of record; numbers recorded in
+    /// `measure.rs`): drive the counting run's function-layout scratch over the
+    /// full 4,096-row function partition and report its exact live bytes, plus the
+    /// site projection's per-row path bound.
+    #[test]
+    #[ignore = "measurement harness: run with --ignored and record the printed numbers"]
+    fn measure_the_layout_scratch_for_the_full_function_partition() {
+        let mut draft = ImageDraft::new();
+        let source = draft.intern_string("src/main.mw");
+        let name = draft.intern_string("f");
+        let zero = draft.intern_int(0);
+        let body: Vec<Instr> = std::iter::repeat_n(Instr::ConstLoad(zero.index()), 64)
+            .chain([Instr::Return])
+            .collect();
+        for _ in 0..crate::bounds::MAX_FUNCTIONS {
+            draft
+                .add_function(crate::draft::FunctionDef {
+                    name,
+                    source,
+                    params: Vec::new(),
+                    ret: ImageType::scalar(crate::ty::Scalar::Int),
+                    local_count: 0,
+                    spans: Vec::new(),
+                    code: body.clone(),
+                })
+                .expect("no site operand needs validating");
+        }
+        let mut counted = CountingSink::default();
+        let per_fn = draft
+            .encode_functions(
+                &mut counted,
+                &StringRemap::counting(),
+                &ConstRemap::counting(),
+            )
+            .expect("the partition's code lays out");
+        let offsets: usize = per_fn
+            .iter()
+            .map(|layout| layout.offsets.capacity() * size_of::<u32>())
+            .sum();
+        let widest = per_fn
+            .iter()
+            .map(|layout| layout.offsets.capacity() * size_of::<u32>())
+            .max()
+            .unwrap_or(0);
+        println!(
+            "layout scratch over {} functions: per-fn vec {} bytes + offsets {offsets} bytes \
+             (widest single offsets vec {widest} bytes)",
+            per_fn.len(),
+            per_fn.capacity() * size_of::<CodeLayout>(),
+        );
+        println!(
+            "site projection per-row path bound: {} steps x {} bytes/step = {} bytes",
+            crate::bounds::MAX_SITE_PATH_STEPS,
+            size_of::<crate::semantic::SemanticStep>(),
+            crate::bounds::MAX_SITE_PATH_STEPS * size_of::<crate::semantic::SemanticStep>(),
+        );
+    }
 }

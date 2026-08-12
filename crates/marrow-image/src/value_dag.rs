@@ -676,4 +676,42 @@ mod tests {
         assert_eq!(section[0], VSHAPE_ENUM);
         assert_eq!(&section[1..17], ledger_id(1).bytes());
     }
+
+    /// Max-live measurement harness (LSPCAP term of record; numbers recorded in
+    /// `measure.rs`): mirror [`expand`]'s scheduling arithmetic over the 31-level
+    /// 64-edge compact-expansion shape under the capped sink's budget and report the
+    /// worklist's peak, so the one sanctioned pre-verdict allocation carries a
+    /// measured capacity rather than an estimate.
+    #[test]
+    #[ignore = "measurement harness: run with --ignored and record the printed numbers"]
+    fn measure_the_expansion_worklist_peak_for_the_compact_regression() {
+        let mut dag = CanonicalValueShapeDag::new();
+        let mut level = dag.scalar(Scalar::Int);
+        for _ in 0..31 {
+            level = dag.struct_shape(vec![level; 64]);
+        }
+        let mut tasks = vec![level];
+        let mut peak = tasks.len();
+        let mut bytes = 0usize;
+        while let Some(id) = tasks.pop() {
+            if bytes > crate::bounds::MAX_IMAGE_BYTES {
+                break;
+            }
+            match dag.view(id) {
+                ValueShapeView::Scalar(_) => bytes += 2,
+                ValueShapeView::Struct(leaves) => {
+                    bytes += 3;
+                    tasks.extend(leaves.iter().rev());
+                }
+                ValueShapeView::Enum { .. } => unreachable!("the shape declares no enum"),
+            }
+            peak = peak.max(tasks.len());
+        }
+        println!(
+            "expansion worklist peak: {peak} tasks x {} bytes/task = {} bytes \
+             (Vec doubling: transient overlap <= 2x capacity)",
+            size_of::<ExpandTask>(),
+            peak * size_of::<ExpandTask>(),
+        );
+    }
 }

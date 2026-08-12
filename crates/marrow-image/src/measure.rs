@@ -42,14 +42,35 @@
 //! locally decidable relation); an in-range id keeps its local meaning, and the
 //! independent verifier remains the only decoder.
 //!
-//! # Allocation posture
+//! # Allocation posture and the max-live term (LSPCAP pre-join term of record)
 //!
-//! The core's own state — the coherence walk, the policy audit, the counting sink,
-//! the measured-length witness, and the plan — is zero-heap. What measurement drives
-//! is the installed writers, whose own scratch predates the core and is unchanged:
-//! the DURABLE traversal's ceiling-bounded expansion worklist (the one sanctioned
-//! pre-verdict allocation the stop adjudication names), the site projection's
-//! transient per-row path, and the tape codec's per-function layout offsets.
+//! The core's own state — the coherence walk (including its streaming site-projection
+//! validation, which materializes no path), the policy audit, the counting sink, the
+//! measured-length witness, and the plan — is zero-heap. What measurement drives is
+//! the installed writers, whose own scratch predates the core and is unchanged. The
+//! max-live expression therefore charges, beyond `B_LEGACY_DRAFT` (the retained draft
+//! baseline) and the fitting emitter's post-`Fits` sort/section/output topology:
+//!
+//! - **zero bytes** for coherence, the policy audit, the sink (`usize`), the witness
+//!   (`u32`), and the plan (`[u32; 10]` + two scalars, inline);
+//! - the DURABLE traversal's ceiling-bounded expansion worklist — the one sanctioned
+//!   pre-verdict allocation (stop adjudication of record). Measured on the 31-level
+//!   64-edge compact-expansion regression: peak 1,954 pending tasks × 16 bytes/task
+//!   = 31,264 bytes; `Vec`-doubling growth, so the transient old/new-buffer overlap
+//!   is bounded by 2× that capacity;
+//! - the site projection's transient per-row path, live one row at a time during the
+//!   DURABLE counting and emission runs only: ≤ `MAX_SITE_PATH_STEPS` (18) steps ×
+//!   17 bytes/step = 306 bytes + one `Vec` header (the step-count-first site codec
+//!   is why the writer consumes a materialized path; the coherence walk streams);
+//! - the tape codec's per-function layout scratch during the functions-section
+//!   counting and emission runs. Measured on the full 4,096-row function partition:
+//!   the per-function vector 4,096 × 32 bytes = 131,072 bytes, plus exact-capacity
+//!   offset vectors totalling 1,064,960 bytes (widest single vector 260 bytes);
+//!   both die with the run that built them.
+//!
+//! The `#[ignore]`d measurement harnesses that produced these numbers live beside
+//! the owners they measure (`value_dag.rs`, `encode.rs`); re-run them with
+//! `--ignored` when a representation widens, and re-gate through LSPCAP.
 
 use crate::bounds;
 use crate::digest::image_id;
@@ -587,10 +608,11 @@ fn anchor_and_sites(draft: &ImageDraft) -> Result<(), ImageBuildError> {
     if !draft.root_occurrences().is_empty() && draft.application_identity().is_none() {
         return Err(ImageBuildError::InvalidReference("application identity"));
     }
-    // The projection is walked and retained nowhere: a retained table is `MAX_SITES`
-    // owned paths live for the whole encode, while a walk costs only the rows it
-    // visits.
-    draft.project_sites(|_| {})?;
+    // The projection is validated by streaming each row's steps through the one
+    // projection grammar, materializing no path: the coherence walk stays
+    // zero-allocation. (The DURABLE writer's own projection keeps its transient
+    // per-row path — its site codec spells a step count before the steps.)
+    draft.validate_site_projection()?;
     // Operand/receipt provenance — the plan's `validate`, never `encodable`: an
     // over-policy operand is live provenance the Sites policy candidate reports.
     for function in draft.functions() {

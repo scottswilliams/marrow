@@ -1672,6 +1672,58 @@ fn the_durable_body_has_one_writer() {
     );
 }
 
+/// The measure core's affine carriers are closed: the coherence witness, the
+/// policy-clean witness, the measured-length witness, and the wire plan are
+/// nameable only inside the measure core, and the core's entry point is reachable
+/// only from the one encode driver — so no caller can mint a second constructor,
+/// pair a witness or plan with another draft, or supply its own draft at emission.
+/// (Within the core the borrow-bound affine types carry the same law at the type
+/// level; this scan pins that no second spelling grows outside it.)
+#[test]
+fn the_measure_core_carriers_are_closed() {
+    // (file suffix, symbol, expected production occurrence count)
+    const CARRIER_SET: [(&str, &str, usize); 6] = [
+        ("marrow-image/src/measure.rs", "LegacyV0MeasureCore", 2),
+        ("marrow-image/src/encode.rs", "LegacyV0MeasureCore", 2),
+        ("marrow-image/src/measure.rs", "CoherentDraft", 4),
+        ("marrow-image/src/measure.rs", "PolicyClean", 4),
+        ("marrow-image/src/measure.rs", "MeasuredDurableLen", 3),
+        ("marrow-image/src/measure.rs", "LegacyV0WirePlan", 4),
+    ];
+    let lib = without_cfg_test_items(&without_literals(
+        &fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/lib.rs"))
+            .expect("read the crate root"),
+    ));
+    for (_, symbol, _) in CARRIER_SET {
+        assert!(
+            !contains_symbol(&lib, symbol),
+            "`{symbol}` is published by lib.rs, so the carrier set is no longer closed",
+        );
+    }
+    for (path, code) in workspace_sources("src") {
+        let display = path.display().to_string();
+        let production = without_cfg_test_items(&code);
+        for symbol in [
+            "LegacyV0MeasureCore",
+            "CoherentDraft",
+            "PolicyClean",
+            "MeasuredDurableLen",
+            "LegacyV0WirePlan",
+        ] {
+            let found = symbol_positions(&production, symbol).count();
+            let expected = CARRIER_SET
+                .iter()
+                .find(|(suffix, name, _)| display.contains(suffix) && *name == symbol)
+                .map_or(0, |(_, _, count)| *count);
+            assert_eq!(
+                found, expected,
+                "`{display}` spells `{symbol}` {found} time(s); the carrier set \
+                 admits {expected}",
+            );
+        }
+    }
+}
+
 /// The DURABLE traversal's access set is closed: `expand`, `ValueShapeWireForm`, and
 /// `write_durable_body` are reachable from exactly the enumerated production sites,
 /// so a renamed or transplanted second walker cannot appear without failing here.
