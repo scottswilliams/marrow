@@ -398,7 +398,7 @@ row, one occurrence row, one managed index, one value node, one value reference 
 admission owner derives its own maximum from those charges rather than sampling a fixture.
 
 ```text
-compiler-side, at the identity ledger's admitted anchors    =  42,457,192 B  (<= 64 MiB declared)
+compiler-side, at the identity ledger's admitted anchors    =  42,850,312 B  (<= 64 MiB declared)
 verifier-side, at the whole-image ceiling                   =  72,876,264 B  (<= 256 MiB declared)
 durable value arena, at the type population                 = 8,212,611,072 B  (exported, unbounded here)
 ```
