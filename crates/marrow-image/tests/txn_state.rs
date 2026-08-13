@@ -485,3 +485,337 @@ fn a_complete_definition_is_not_replaceable_and_vacancy_is_fence_distinct() {
         "a complete enum definition is not a reservation and admits no fill",
     );
 }
+
+/// Each counted kind's exact-N arm, the law the N+1 arm above cannot state on its own:
+/// exactly `MAX_<kind>` rows are accepted at the fence, and the N-th row really is in
+/// the artifact — one more row of the same kind flips the fence to that kind's verdict,
+/// so the boundary sits exactly at N and no accepted row was quietly dropped.
+///
+/// Where the kind has a keyed lookup, the N-th row also stays available through it: a
+/// re-request at the maximum is served from the existing row rather than minting, which
+/// the still-clean fence proves (a mint would have crossed).
+///
+/// The seeded counts below are self-checking. If the fixture ever seeds a different
+/// number of rows the exact-N encode or the N+1 refusal fails, so neither figure can
+/// drift silently.
+#[test]
+fn each_counted_kind_admits_exactly_its_maximum_and_stays_available() {
+    struct Kind {
+        /// Rows of this kind the exporting fixture already holds.
+        seeded: usize,
+        maximum: usize,
+        mint: fn(&mut DraftTxn<'_>, usize),
+        /// Re-request row `index` through the kind's keyed lookup, where it has one.
+        lookup: Option<fn(&mut DraftTxn<'_>, usize)>,
+        verdict: ImageBuildError,
+    }
+    let kinds = [
+        Kind {
+            // "main" and "src/main.mw".
+            seeded: 2,
+            maximum: MAX_STRINGS,
+            mint: |txn, index| {
+                txn.intern_string(&format!("s{index:05}"))
+                    .expect("a within-domain mint");
+            },
+            lookup: Some(|txn, index| {
+                txn.intern_string(&format!("s{index:05}"))
+                    .expect("a within-domain mint");
+            }),
+            verdict: ImageBuildError::TooManyStrings,
+        },
+        Kind {
+            // The interned `0`.
+            seeded: 1,
+            maximum: MAX_CONSTS,
+            mint: |txn, index| {
+                txn.intern_int(index as i64 + 1)
+                    .expect("a within-domain mint");
+            },
+            lookup: Some(|txn, index| {
+                txn.intern_int(index as i64 + 1)
+                    .expect("a within-domain mint");
+            }),
+            verdict: ImageBuildError::TooManyConsts,
+        },
+        Kind {
+            seeded: 0,
+            maximum: MAX_TYPES,
+            mint: |txn, _| {
+                let name = txn.intern_string("T").expect("a within-domain mint");
+                txn.add_record_type(RecordTypeDef {
+                    name,
+                    fields: Vec::new(),
+                })
+                .expect("a within-domain mint");
+            },
+            lookup: None,
+            verdict: ImageBuildError::TooManyTypes,
+        },
+        Kind {
+            seeded: 0,
+            maximum: MAX_ENUMS,
+            mint: |txn, _| {
+                let name = txn.intern_string("E").expect("a within-domain mint");
+                txn.add_enum_type(EnumTypeDef {
+                    name,
+                    variants: Vec::new(),
+                })
+                .expect("a within-domain mint");
+            },
+            lookup: None,
+            verdict: ImageBuildError::TooManyEnums,
+        },
+        Kind {
+            seeded: 0,
+            maximum: MAX_COLLECTIONS,
+            mint: |txn, _| {
+                txn.add_collection_type(CollectionTypeDef::List {
+                    elem: ImageType::scalar(Scalar::Int),
+                })
+                .expect("a within-domain mint");
+            },
+            lookup: None,
+            verdict: ImageBuildError::TooManyCollections,
+        },
+    ];
+
+    for kind in kinds {
+        let mut owner = exporting_owner();
+        let mut txn = admitted(&mut owner);
+        for index in 0..kind.maximum - kind.seeded {
+            (kind.mint)(&mut txn, index);
+        }
+        assert_eq!(
+            txn.encode().map(|_| ()),
+            Ok(()),
+            "exactly the maximum is accepted at the fence",
+        );
+        if let Some(lookup) = kind.lookup {
+            (lookup)(&mut txn, 0);
+            assert_eq!(
+                txn.encode().map(|_| ()),
+                Ok(()),
+                "the keyed lookup served the existing row at the maximum instead of minting",
+            );
+        }
+        txn.commit();
+        assert!(
+            owner.encode().is_ok(),
+            "the committed maximum is still a complete artifact",
+        );
+
+        let mut txn = admitted(&mut owner);
+        (kind.mint)(&mut txn, kind.maximum);
+        assert_eq!(
+            txn.encode().map(|_| ()),
+            Err(kind.verdict),
+            "the boundary sits exactly at the maximum: one more row crosses",
+        );
+    }
+}
+
+/// The duplicate-constant law, the constant-side sibling of the duplicate string hit:
+/// interning the same integer, text, or date twice returns the same id and mutates
+/// nothing, so a repeated constant costs no row and leaves the artifact byte-identical.
+#[test]
+fn a_duplicate_constant_hit_returns_the_same_id_and_mutates_nothing() {
+    let mut owner = exporting_owner();
+    let mut txn = admitted(&mut owner);
+    let first_int = txn.intern_int(4242).expect("a within-domain mint");
+    let first_text = txn.intern_text("duplicate").expect("a within-domain mint");
+    let first_date = txn.intern_date(19_000).expect("a within-domain mint");
+    txn.commit();
+    let minted = owner.encode().expect("the minted draft encodes").bytes;
+
+    let mut txn = admitted(&mut owner);
+    assert_eq!(
+        txn.intern_int(4242).expect("a within-domain mint"),
+        first_int,
+        "a duplicate integer hit reuses its row",
+    );
+    assert_eq!(
+        txn.intern_text("duplicate").expect("a within-domain mint"),
+        first_text,
+        "a duplicate text hit reuses its row",
+    );
+    assert_eq!(
+        txn.intern_date(19_000).expect("a within-domain mint"),
+        first_date,
+        "a duplicate date hit reuses its row",
+    );
+    txn.commit();
+
+    assert_eq!(
+        owner.encode().expect("the draft still encodes").bytes,
+        minted,
+        "three duplicate constant hits mutated nothing",
+    );
+}
+
+/// The complete post-unwind savepoint law, whose three clauses hold together and not
+/// merely one at a time: an admitted transaction unwinds, every owner is restored
+/// exactly, the sibling and the reused admitted savepoint are both still stale because
+/// the epoch stays rotated, and a freshly minted savepoint captures that rotated epoch
+/// and admits normally.
+#[test]
+fn after_an_unwind_the_owners_restore_while_both_savepoints_stay_stale() {
+    let mut owner = exporting_owner();
+    let clean = owner.encode().expect("the base draft encodes").bytes;
+
+    let sibling = owner.savepoint();
+    let admitted_token = owner.savepoint();
+
+    let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let mut txn = owner
+            .begin_transaction(admitted_token)
+            .expect("a fresh savepoint admits");
+        txn.intern_string("during-the-unwind")
+            .expect("a within-domain mint");
+        txn.intern_int(777).expect("a within-domain mint");
+        panic!("the body raises after mutating its owners");
+    }));
+    assert!(unwound.is_err(), "the panic reached the catch");
+
+    assert_eq!(
+        owner.encode().expect("the restored draft encodes").bytes,
+        clean,
+        "the armed guard restored every owner during the unwind",
+    );
+
+    assert!(
+        matches!(
+            owner.begin_transaction(sibling),
+            Err(DraftStateError::StaleEpoch)
+        ),
+        "the sibling savepoint stays stale: admission consumed the epoch it captured",
+    );
+    assert!(
+        owner.begin_transaction(owner.savepoint()).is_ok(),
+        "a savepoint minted after the unwind captures the rotated epoch and admits",
+    );
+    assert_eq!(
+        owner.encode().expect("the draft still encodes").bytes,
+        clean,
+        "neither the refusal nor the fresh admission changed an owner",
+    );
+}
+
+/// The multiple-policy permutation law: when a coupled batch crosses two table policies,
+/// the fence returns the canonical minimum — the lower-ranked kind in the legacy walk's
+/// own candidate order — whichever order the two crossings were induced in.
+///
+/// This is the property that makes the policy result a function of the draft rather than
+/// of the traversal that built it: a lowering pass that happens to intern before it
+/// declares, or the reverse, cannot change which limit a program is reported against.
+#[test]
+fn every_pair_of_policy_crossings_yields_the_canonical_minimum_in_either_order() {
+    struct Crossing {
+        /// Position in the legacy walk's candidate order; the lower rank is canonical.
+        rank: usize,
+        cross: fn(&mut DraftTxn<'_>),
+        verdict: ImageBuildError,
+    }
+    let crossings = [
+        Crossing {
+            rank: 0,
+            cross: |txn| {
+                for index in 0..=MAX_STRINGS {
+                    txn.intern_string(&format!("s{index:05}"))
+                        .expect("a within-domain mint");
+                }
+            },
+            verdict: ImageBuildError::TooManyStrings,
+        },
+        Crossing {
+            rank: 2,
+            cross: |txn| {
+                for value in 0..=(MAX_CONSTS as i64) {
+                    txn.intern_int(value).expect("a within-domain mint");
+                }
+            },
+            verdict: ImageBuildError::TooManyConsts,
+        },
+        Crossing {
+            rank: 3,
+            cross: |txn| {
+                let name = txn.intern_string("T").expect("a within-domain mint");
+                for _ in 0..=MAX_TYPES {
+                    txn.add_record_type(RecordTypeDef {
+                        name,
+                        fields: Vec::new(),
+                    })
+                    .expect("a within-domain mint");
+                }
+            },
+            verdict: ImageBuildError::TooManyTypes,
+        },
+        Crossing {
+            rank: 4,
+            cross: |txn| {
+                let name = txn.intern_string("E").expect("a within-domain mint");
+                for _ in 0..=MAX_ENUMS {
+                    txn.add_enum_type(EnumTypeDef {
+                        name,
+                        variants: Vec::new(),
+                    })
+                    .expect("a within-domain mint");
+                }
+            },
+            verdict: ImageBuildError::TooManyEnums,
+        },
+        Crossing {
+            rank: 5,
+            cross: |txn| {
+                for _ in 0..=MAX_COLLECTIONS {
+                    txn.add_collection_type(CollectionTypeDef::List {
+                        elem: ImageType::scalar(Scalar::Int),
+                    })
+                    .expect("a within-domain mint");
+                }
+            },
+            verdict: ImageBuildError::TooManyCollections,
+        },
+    ];
+
+    for first in &crossings {
+        for second in &crossings {
+            if first.rank == second.rank {
+                continue;
+            }
+            let canonical = if first.rank < second.rank {
+                first.verdict.clone()
+            } else {
+                second.verdict.clone()
+            };
+
+            let mut owner = exporting_owner();
+            let clean = owner.encode().expect("the base draft encodes").bytes;
+            {
+                let mut txn = admitted(&mut owner);
+                (first.cross)(&mut txn);
+                (second.cross)(&mut txn);
+                assert_eq!(
+                    txn.encode().map(|_| ()),
+                    Err(canonical.clone()),
+                    "the canonical minimum does not depend on which crossing came first",
+                );
+            }
+            assert_eq!(
+                owner.encode().expect("the restored draft encodes").bytes,
+                clean,
+                "rollback restored both crossings and the whole ledger byte for byte",
+            );
+
+            let mut txn = admitted(&mut owner);
+            (first.cross)(&mut txn);
+            (second.cross)(&mut txn);
+            txn.commit();
+            assert_eq!(
+                owner.encode().map(|_| ()),
+                Err(canonical),
+                "the committed pair keeps the same canonical minimum",
+            );
+        }
+    }
+}

@@ -824,6 +824,30 @@ struct DraftSnapshot {
 /// let sp = draft.savepoint();
 /// let _copy = sp.clone();
 /// ```
+///
+/// Savepoints and element references occupy separate domains, and the boundary is a
+/// type fact rather than a convention. A savepoint authorizes mutation over a whole
+/// draft for one epoch; it names no element and can neither mint nor validate one, so
+/// holding one grants none of the handle-provenance authority an element reference
+/// carries.
+///
+/// ```compile_fail,E0599
+/// // A savepoint cannot mint, carry, or validate an element reference.
+/// let draft = marrow_image::ImageDraft::new();
+/// let sp = draft.savepoint();
+/// let _: marrow_image::PlannedSiteRef = sp.site_ref();
+/// ```
+///
+/// The separation runs both ways: an element reference authenticates against the draft
+/// and plan identity it was minted under, and carries no transaction epoch, so it can
+/// neither open a transaction nor validate one.
+///
+/// ```compile_fail,E0599
+/// // An element reference cannot open or validate a transaction epoch.
+/// let mut draft = marrow_image::ImageDraft::new();
+/// let element: marrow_image::PlannedSiteRef = unimplemented!();
+/// let _ = draft.begin_transaction(element.savepoint());
+/// ```
 #[doc(hidden)]
 pub struct DraftSavepoint {
     identity: Rc<DraftIdentityCell>,

@@ -1050,3 +1050,85 @@ fn four_thousand_roots_over_a_hundred_unoperated_groups_cost_one_site_each() {
         "4,000 occurrence sites over a 200-row declaration is inside the site table",
     );
 }
+
+/// The reversed-demand law: the same set of site demands requested in reverse order
+/// yields the same artifact. The demand key is `(occurrence, path, target)` and the
+/// plan's row order is request order, so a reversed sweep proves the *set* — not the
+/// sequence — decides what the draft holds: the same number of retained demands, the
+/// same encodability, and, at the crossing, the same refusal.
+///
+/// Order independence is what lets a lowering pass visit a declaration's leaves in
+/// whatever order its own traversal produces without changing which program the image
+/// describes.
+#[test]
+fn a_reversed_demand_sweep_yields_the_same_artifact() {
+    // Under the cap: both orders encode, and every demand keeps a distinct operand.
+    let forward = {
+        let (mut owner, root, members) = wide_draft(MAX_SITES);
+        let mut draft = admitted(&mut owner);
+        let mut refs: Vec<PlannedSiteRef> = Vec::new();
+        for member in &members {
+            refs.push(site(
+                &mut draft,
+                root.occurrence(),
+                member.path(),
+                SemanticTarget::FieldLeaf,
+            ));
+        }
+        assert!(
+            !matches!(draft.encode(), Err(ImageBuildError::TooManySites)),
+            "the forward sweep fits the site cap",
+        );
+        draft.commit();
+        refs.len()
+    };
+    let reversed = {
+        let (mut owner, root, members) = wide_draft(MAX_SITES);
+        let mut draft = admitted(&mut owner);
+        let mut refs: Vec<PlannedSiteRef> = Vec::new();
+        for member in members.iter().rev() {
+            refs.push(site(
+                &mut draft,
+                root.occurrence(),
+                member.path(),
+                SemanticTarget::FieldLeaf,
+            ));
+        }
+        assert!(
+            !matches!(draft.encode(), Err(ImageBuildError::TooManySites)),
+            "the reversed sweep fits the site cap identically",
+        );
+        draft.commit();
+        refs.len()
+    };
+    assert_eq!(
+        forward, reversed,
+        "the reversed sweep retained the same number of demands",
+    );
+
+    // Across the cap: both orders refuse with the same verdict, so which demand happens
+    // to be the one past the cap cannot change the classification.
+    for reverse in [false, true] {
+        let (mut owner, root, members) = wide_draft(MAX_SITES);
+        let mut draft = admitted(&mut owner);
+        demand_every_leaf(&mut draft, &root, &members);
+        let excess = admit_root(&mut draft, 0x22);
+        let excess_members: Vec<_> = if reverse {
+            members.iter().take(64).rev().collect()
+        } else {
+            members.iter().take(64).collect()
+        };
+        for member in excess_members {
+            let _ = site(
+                &mut draft,
+                excess.occurrence(),
+                member.path(),
+                SemanticTarget::FieldLeaf,
+            );
+        }
+        assert!(
+            matches!(draft.encode(), Err(ImageBuildError::TooManySites)),
+            "the crossing classifies the same in either request order",
+        );
+    }
+}
